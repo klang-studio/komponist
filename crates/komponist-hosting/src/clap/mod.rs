@@ -15,7 +15,7 @@ mod host;
 mod processor;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};

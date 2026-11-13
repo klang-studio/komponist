@@ -53,6 +53,9 @@ mod processor;
 pub(crate) mod stream;
 mod strings;
 
+#[cfg(test)]
+mod tests;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;

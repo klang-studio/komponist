@@ -15,7 +15,7 @@
 //!   ```
 
 mod fixtures;
-mod gui;
+pub(crate) mod gui;
 mod installed;
 
 use std::path::{Path, PathBuf};
@@ -29,10 +29,10 @@ use crate::host_loop::PollLoop;
 use crate::plugin::{ActivateConfig, EventOut, HostedPlugin, HostedProcessor, ProcessBlock};
 use crate::{PluginFormat, ProcessStatus};
 
-pub(super) const SAMPLE_RATE: f64 = 48_000.0;
-pub(super) const BLOCK: usize = 256;
+pub(crate) const SAMPLE_RATE: f64 = 48_000.0;
+pub(crate) const BLOCK: usize = 256;
 
-pub(super) const CONFIG: ActivateConfig = ActivateConfig {
+pub(crate) const CONFIG: ActivateConfig = ActivateConfig {
     sample_rate: SAMPLE_RATE,
     min_frames: 1,
     max_frames: BLOCK as u32,
@@ -55,7 +55,7 @@ pub(super) fn fixture(name: &str) -> Option<PathBuf> {
 }
 
 /// An installed bundle (`~/` expanded), or `None` (with a note) if it is not installed.
-pub(super) fn installed(path: &str) -> Option<PathBuf> {
+pub(crate) fn installed(path: &str) -> Option<PathBuf> {
     let path = match path.strip_prefix("~/") {
         Some(rest) => Path::new(&std::env::var("HOME").ok()?).join(rest),
         None => PathBuf::from(path),
@@ -100,17 +100,17 @@ pub(super) fn param_id(plugin: &dyn HostedPlugin, name: &str) -> u32 {
 
 /// Buffers for processing blocks, allocated up front so that `process` runs inside
 /// `assert_no_alloc`.
-pub(super) struct Blocks {
-    pub(super) input: [Vec<f32>; 2],
-    pub(super) output: [Vec<f32>; 2],
-    pub(super) events_out: Vec<WireEvent>,
-    pub(super) out_count: usize,
-    pub(super) transport: WireTransport,
-    pub(super) steady_time: u64,
+pub(crate) struct Blocks {
+    pub(crate) input: [Vec<f32>; 2],
+    pub(crate) output: [Vec<f32>; 2],
+    pub(crate) events_out: Vec<WireEvent>,
+    pub(crate) out_count: usize,
+    pub(crate) transport: WireTransport,
+    pub(crate) steady_time: u64,
 }
 
 impl Blocks {
-    pub(super) fn new() -> Blocks {
+    pub(crate) fn new() -> Blocks {
         Blocks {
             input: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
             output: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
@@ -122,7 +122,7 @@ impl Blocks {
     }
 
     /// Processes one block of `BLOCK` frames with `events`; the output stays in `self.output`.
-    pub(super) fn run(
+    pub(crate) fn run(
         &mut self,
         processor: &mut dyn HostedProcessor,
         events: &[WireEvent],
@@ -149,7 +149,7 @@ impl Blocks {
     }
 
     /// Largest absolute output sample of both channels in `range` of the last block.
-    pub(super) fn peak(&self, range: std::ops::Range<usize>) -> f32 {
+    pub(crate) fn peak(&self, range: std::ops::Range<usize>) -> f32 {
         self.output
             .iter()
             .flat_map(|c| c[range.clone()].iter())
@@ -157,7 +157,7 @@ impl Blocks {
     }
 
     /// Whether the last block contains a NaN (a frame the plugin did not write).
-    pub(super) fn has_nan(&self) -> bool {
+    pub(crate) fn has_nan(&self) -> bool {
         self.output.iter().flatten().any(|s| s.is_nan())
     }
 }
