@@ -25,7 +25,7 @@
 //!
 //! Behaviour in detail:
 //! - Segments: a block is processed in segments that end at the loop end, at the end of the
-//!   count-in and after `max_block` frames ([`crate::transport`]). Every processor is called once
+//!   count-in and after `max_block` frames (see the private `transport` module). Every processor is called once
 //!   per segment, with the transport of the segment's first frame, so a loop wrap is sample-exact
 //!   for events and transport alike.
 //! - Stop and locate (while playing): note-offs for all sounding notes and `AllNotesOff` at offset
