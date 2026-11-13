@@ -1,0 +1,27 @@
+# Muted MIDI and step clips are skipped; a muted track keeps its notes
+# Golden fixture of compile::build (WP-24). Regenerate with
+# UPDATE_GOLDEN=1 cargo test -p komponist-engine --test compile
+
+tempo 120.00 bpm, meter 4/4
+loop off, 1.1.000 .. 5.1.000 (ticks 0 .. 15360)
+metronome off, count-in 1 bar(s)
+song end 3.1.000 (tick 7680)
+master: gain 1.0000, pan +0.00, mute off
+  chain: empty
+slots: none
+tracks: 2
+
+track 1 "Spur": gain 1.0000, pan +0.00, mute off, solo off, arm off, monitor off
+  input: all ports, omni; pdc delay 0
+  chain: empty
+  notes: 2
+    pos         tick length      key  vel   prob  ch
+    1.1.000        0    240  60 C4    100    100   0
+    1.2.000      960    240  62 D4    100    100   0
+
+track 2 "Stumm": gain 1.0000, pan +0.00, mute on, solo off, arm off, monitor off
+  input: all ports, omni; pdc delay 0
+  chain: empty
+  notes: 1
+    pos         tick length      key  vel   prob  ch
+    1.1.000        0    960  50 D3     90    100   0

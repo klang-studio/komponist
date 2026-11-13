@@ -1,0 +1,28 @@
+# Step clips with ratchet 3 (1/16 and 1/16 triplets)
+# Golden fixture of compile::build (WP-24). Regenerate with
+# UPDATE_GOLDEN=1 cargo test -p komponist-engine --test compile
+
+tempo 120.00 bpm, meter 4/4
+loop off, 1.1.000 .. 5.1.000 (ticks 0 .. 15360)
+metronome off, count-in 1 bar(s)
+song end 2.2.000 (tick 4800)
+master: gain 1.0000, pan +0.00, mute off
+  chain: empty
+slots: none
+tracks: 1
+
+track 1 "Drums": gain 1.0000, pan +0.00, mute off, solo off, arm off, monitor off
+  input: all ports, omni; pdc delay 0
+  chain: empty
+  notes: 10
+    pos         tick length      key  vel   prob  ch
+    1.1.000        0    240  36 C2    100    100   0
+    1.2.000      960     80  38 D2    100    100   0
+    1.2.020     1040     80  38 D2     75 follow   0
+    1.2.040     1120     80  38 D2     75 follow   0
+    1.4.000     2880     80  38 D2     90     50   0
+    1.4.020     2960     80  38 D2     68 follow   0
+    1.4.040     3040     80  38 D2     68 follow   0
+    2.1.000     3840     53  42 F#2   100    100   0
+    2.1.013     3893     53  42 F#2    75 follow   0
+    2.1.026     3946     54  42 F#2    75 follow   0

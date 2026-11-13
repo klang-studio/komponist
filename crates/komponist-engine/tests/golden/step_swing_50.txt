@@ -1,0 +1,46 @@
+# Step clips with swing 50 % (1/16, and 1/8 with a 4-step pattern)
+# Golden fixture of compile::build (WP-24). Regenerate with
+# UPDATE_GOLDEN=1 cargo test -p komponist-engine --test compile
+
+tempo 120.00 bpm, meter 4/4
+loop off, 1.1.000 .. 5.1.000 (ticks 0 .. 15360)
+metronome off, count-in 1 bar(s)
+song end 3.1.000 (tick 7680)
+master: gain 1.0000, pan +0.00, mute off
+  chain: empty
+slots: none
+tracks: 1
+
+track 1 "Drums": gain 1.0000, pan +0.00, mute off, solo off, arm off, monitor off
+  input: all ports, omni; pdc delay 0
+  chain: empty
+  notes: 28
+    pos         tick length      key  vel   prob  ch
+    1.1.000        0    240  36 C2    120    100   0
+    1.1.000        0    240  42 F#2    90    100   0
+    1.1.075      300    240  42 F#2    50    100   0
+    1.1.120      480    240  42 F#2    90    100   0
+    1.1.195      780    240  42 F#2    50    100   0
+    1.2.000      960    240  36 C2    120    100   0
+    1.2.000      960    240  42 F#2    90    100   0
+    1.2.075     1260    240  42 F#2    50    100   0
+    1.2.120     1440    240  42 F#2    90    100   0
+    1.2.195     1740    240  42 F#2    50    100   0
+    1.3.000     1920    240  36 C2    120    100   0
+    1.3.000     1920    240  42 F#2    90    100   0
+    1.3.075     2220    240  42 F#2    50    100   0
+    1.3.120     2400    240  42 F#2    90    100   0
+    1.3.195     2700    240  42 F#2    50    100   0
+    1.4.000     2880    240  36 C2    120    100   0
+    1.4.000     2880    240  42 F#2    90    100   0
+    1.4.075     3180    240  42 F#2    50    100   0
+    1.4.120     3360    240  42 F#2    90    100   0
+    1.4.195     3660    180  42 F#2    50    100   0
+    2.1.000     3840    480  42 F#2   100    100   0
+    2.1.150     4440    480  42 F#2   100    100   0
+    2.2.000     4800    480  42 F#2   100    100   0
+    2.2.150     5400    480  42 F#2   100    100   0
+    2.3.000     5760    480  42 F#2   100    100   0
+    2.3.150     6360    480  42 F#2   100    100   0
+    2.4.000     6720    480  42 F#2   100    100   0
+    2.4.150     7320    360  42 F#2   100    100   0
