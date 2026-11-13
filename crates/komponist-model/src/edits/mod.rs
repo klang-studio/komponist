@@ -26,9 +26,9 @@ use std::sync::Arc;
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
     BUILTIN_KLOPFER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
-    DeviceRole, Hue, MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat,
-    PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX,
-    TRACK_HEIGHT_MIN, Take, Track, TrackKind, VOLUME_DB_MAX, VOLUME_DB_MIN,
+    DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
+    PluginFormat, PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT,
+    TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, VOLUME_DB_MAX, VOLUME_DB_MIN,
 };
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
@@ -1036,16 +1036,17 @@ pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
             expected: ClipKind::Step,
         });
     };
-    let hits = step_hits(steps, source.length);
+    let hits = steps.hits(source.length);
     let mut p = project.clone();
     let notes: Vec<Note> = hits
         .into_iter()
-        .map(|(start, length, pitch, velocity)| Note {
+        .filter(|h| h.probability > 0)
+        .map(|h| Note {
             id: NoteId(p.alloc_id()),
-            start,
-            length,
-            pitch,
-            velocity,
+            start: h.start,
+            length: h.length,
+            pitch: h.note,
+            velocity: h.velocity,
         })
         .collect();
     update_clip(&mut p, location, |c| {
@@ -1231,10 +1232,6 @@ pub fn select_take(project: &Project, clip: ClipId, take: usize) -> EditResult {
 const MIN_LENGTH: Tick = Tick(1);
 /// Longest count-in.
 const MAX_COUNT_IN_BARS: u8 = 4;
-/// Highest swing amount (75 %).
-const MAX_SWING: f32 = 0.75;
-/// Velocity of ratchet hits after the first, relative to the step velocity (prototype `schedule`).
-const RATCHET_FOLLOW: f32 = 0.75;
 /// Default name of a track with klopfer (prototype `addTrack`).
 const KLOPFER_TRACK_NAME: &str = "Drums";
 /// Default name of a track without instrument.
@@ -1725,57 +1722,4 @@ fn with_step_clip(
             expected: ClipKind::Step,
         }),
     })
-}
-
-/// What a step pattern plays within `length` ticks, as `(start, length, pitch, velocity)` sorted
-/// by start and pitch: the pattern repeated from 0, odd steps delayed by `swing × step / 2`,
-/// ratchets split into evenly spaced hits (later hits at 75 % velocity), muted rows and (with any
-/// row soloed) non-soloed rows left out, steps with probability 0 left out. Hits are cut at
-/// `length`.
-fn step_hits(pattern: &StepClip, length: Tick) -> Vec<(Tick, Tick, u8, u8)> {
-    let step = pattern.resolution.ticks().0;
-    let steps = usize::from(pattern.length_steps).clamp(1, MAX_STEPS);
-    let swing = (f64::from(pattern.swing.clamp(0.0, MAX_SWING)) * step as f64 / 2.0).round() as i64;
-    let any_solo = pattern.rows.iter().any(|r| r.solo);
-    let rows: Vec<&StepRow> = pattern
-        .rows
-        .iter()
-        .filter(|r| !r.mute && (!any_solo || r.solo))
-        .collect();
-    let mut hits = Vec::new();
-    for k in 0.. {
-        let step_start = k * step;
-        if step_start >= length.0 {
-            break;
-        }
-        let index = k as usize % steps;
-        let start = step_start + if index % 2 == 1 { swing } else { 0 };
-        for row in &rows {
-            let s = row.steps[index];
-            if !s.on || s.probability == 0 {
-                continue;
-            }
-            let count = i64::from(s.ratchet.clamp(1, 4));
-            for q in 0..count {
-                let hit_start = start + q * step / count;
-                let hit_end = (start + (q + 1) * step / count).min(length.0);
-                if hit_start >= length.0 {
-                    break;
-                }
-                let velocity = if q == 0 {
-                    s.velocity
-                } else {
-                    (f32::from(s.velocity) * RATCHET_FOLLOW).round() as u8
-                };
-                hits.push((
-                    Tick(hit_start),
-                    Tick(hit_end - hit_start),
-                    row.note.min(127),
-                    velocity.clamp(1, 127),
-                ));
-            }
-        }
-    }
-    hits.sort_by_key(|&(start, _, pitch, _)| (start, pitch));
-    hits
 }

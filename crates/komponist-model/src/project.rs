@@ -510,7 +510,8 @@ pub struct Note {
 /// clip end. Compiled notes: one per `on` step at `row.note`, one step long; a ratchet of `n` splits
 /// the step into `n` evenly spaced hits of `step / n` ticks, hits after the first at 75 % velocity
 /// (prototype `schedule`). Swing delays every second step (odd index) by
-/// `swing × step length / 2`.
+/// `swing × step length / 2`. [`StepClip::hits`] implements these rules for the engine compiler and
+/// `edits::step_clip_to_midi`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepClip {
     /// Rows top to bottom; default [`DEFAULT_STEP_ROWS`], or the instrument's note names.
@@ -521,6 +522,105 @@ pub struct StepClip {
     pub resolution: StepResolution,
     /// Swing amount `0.0 ..= 0.75` (shown as 0–75 %).
     pub swing: f32,
+}
+
+/// Highest swing amount (75 %).
+pub(crate) const MAX_SWING: f32 = 0.75;
+
+/// Velocity of ratchet hits after the first, relative to the step velocity (prototype `schedule`).
+const RATCHET_FOLLOW_VELOCITY: f32 = 0.75;
+
+impl StepClip {
+    /// Everything the pattern plays in a clip of `length` ticks, sorted by `start`, then `note`,
+    /// then `row`, then `hit`.
+    ///
+    /// Rules:
+    /// - The pattern (`length_steps` steps of `resolution` ticks) repeats from clip-local tick 0.
+    ///   Step `k` counted from the clip start plays pattern index `i = k % length_steps`; steps at
+    ///   or beyond `length_steps` (hidden) never play.
+    /// - Swing: steps with an **odd pattern index** `i` start `round(swing × step / 2)` ticks late.
+    ///   With an odd `length_steps` the parity follows the pattern index, not `k`.
+    /// - A step plays when it is `on` and its row is audible: not muted and, if any row is soloed,
+    ///   soloed itself.
+    /// - Ratchet `n` (clamped to 1 ..= 4): `n` hits; hit `q` spans `start + q × step / n` to
+    ///   `start + (q + 1) × step / n` (integer division, so the hits tile the step exactly). Hit 0
+    ///   has the step velocity, later hits `round(velocity × 0.75)`, at least 1.
+    /// - Every hit carries the step's `probability` unchanged, including 0. All hits of one step
+    ///   share one roll: the engine rolls for `hit == 0` and lets later hits follow (`hit > 0`);
+    ///   `edits::step_clip_to_midi` drops probability-0 steps and ignores the rest.
+    /// - Hits are cut at `length`; hits starting at or after it are left out (also when swing
+    ///   pushes them there).
+    ///
+    /// Clip-level transposition, velocity change and mute are not applied here.
+    pub fn hits(&self, length: Tick) -> Vec<StepHit> {
+        let step = self.resolution.ticks().0;
+        let steps = usize::from(self.length_steps).clamp(1, MAX_STEPS);
+        let swing =
+            (f64::from(self.swing.clamp(0.0, MAX_SWING)) * step as f64 / 2.0).round() as i64;
+        let any_solo = self.rows.iter().any(|r| r.solo);
+        let audible = |r: &StepRow| !r.mute && (!any_solo || r.solo);
+        let mut hits = Vec::new();
+        for k in 0.. {
+            let step_start = k * step;
+            if step_start >= length.0 {
+                break;
+            }
+            let index = k as usize % steps;
+            let start = step_start + if index % 2 == 1 { swing } else { 0 };
+            for (row_index, row) in self.rows.iter().enumerate().filter(|(_, r)| audible(r)) {
+                let s = row.steps[index];
+                if !s.on {
+                    continue;
+                }
+                let count = i64::from(s.ratchet.clamp(1, 4));
+                for q in 0..count {
+                    let hit_start = start + q * step / count;
+                    if hit_start >= length.0 {
+                        break;
+                    }
+                    let hit_end = (start + (q + 1) * step / count).min(length.0);
+                    let velocity = if q == 0 {
+                        s.velocity
+                    } else {
+                        (f32::from(s.velocity) * RATCHET_FOLLOW_VELOCITY).round() as u8
+                    };
+                    hits.push(StepHit {
+                        row: row_index,
+                        step: index,
+                        hit: q as u8,
+                        note: row.note.min(127),
+                        start: Tick(hit_start),
+                        length: Tick(hit_end - hit_start),
+                        velocity: velocity.clamp(1, 127),
+                        probability: s.probability.min(100),
+                    });
+                }
+            }
+        }
+        hits.sort_by_key(|h| (h.start, h.note, h.row, h.hit));
+        hits
+    }
+}
+
+/// One note a step pattern plays ([`StepClip::hits`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StepHit {
+    /// Index of the row in [`StepClip::rows`].
+    pub row: usize,
+    /// Pattern index of the step, `0 .. length_steps`.
+    pub step: usize,
+    /// Index of the hit within its step, `0 .. ratchet`; 0 is the hit that rolls the probability.
+    pub hit: u8,
+    /// MIDI note (the row's note).
+    pub note: u8,
+    /// Start relative to the clip start, ≥ 0.
+    pub start: Tick,
+    /// Length, ≥ 1 tick.
+    pub length: Tick,
+    /// MIDI velocity `1 ..= 127`.
+    pub velocity: u8,
+    /// The step's probability in percent `0 ..= 100`, the same on every hit of the step.
+    pub probability: u8,
 }
 
 /// One row (pad) of a step clip.
@@ -608,6 +708,147 @@ mod tests {
         assert_eq!(p.count_in_bars, 1);
         assert_eq!(p.song_end(), Tick::ZERO);
         assert!(p.tracks.is_empty());
+    }
+
+    /// A pattern of `rows` rows (notes 36, 37, …), `steps` long at 1/16, all steps off.
+    fn pattern(rows: u8, steps: u8) -> StepClip {
+        StepClip {
+            rows: (0..rows)
+                .map(|i| StepRow {
+                    name: format!("Pad {}", i + 1),
+                    note: 36 + i,
+                    mute: false,
+                    solo: false,
+                    steps: [Step::default(); MAX_STEPS],
+                })
+                .collect(),
+            length_steps: steps,
+            resolution: StepResolution::Sixteenth,
+            swing: 0.0,
+        }
+    }
+
+    fn on(p: &mut StepClip, row: usize, step: usize) -> &mut Step {
+        let s = &mut p.rows[row].steps[step];
+        s.on = true;
+        s
+    }
+
+    /// `(start, length, note, velocity)` of each hit.
+    fn played(hits: &[StepHit]) -> Vec<(i64, i64, u8, u8)> {
+        hits.iter()
+            .map(|h| (h.start.0, h.length.0, h.note, h.velocity))
+            .collect()
+    }
+
+    #[test]
+    fn hits_repeat_the_pattern() {
+        let mut p = pattern(2, 4);
+        on(&mut p, 0, 0).velocity = 90;
+        on(&mut p, 1, 2);
+        // Hidden steps never play.
+        on(&mut p, 1, 5);
+        let hits = p.hits(Tick(8 * 240));
+        assert_eq!(
+            played(&hits),
+            [
+                (0, 240, 36, 90),
+                (480, 240, 37, 100),
+                (960, 240, 36, 90),
+                (1440, 240, 37, 100),
+            ]
+        );
+        let h = hits[3];
+        assert_eq!((h.row, h.step, h.hit, h.probability), (1, 2, 0, 100));
+        assert!(p.hits(Tick::ZERO).is_empty());
+        assert!(pattern(8, 16).hits(Tick(3840)).is_empty());
+        // Eighths: 480 ticks per step.
+        p.resolution = StepResolution::Eighth;
+        assert_eq!(played(&p.hits(Tick(1920)))[1], (960, 480, 37, 100));
+    }
+
+    #[test]
+    fn hits_swing_on_odd_pattern_indices() {
+        let mut p = pattern(1, 3);
+        for i in 0..3 {
+            on(&mut p, 0, i);
+        }
+        p.swing = 0.5;
+        // Index 1 starts 60 ticks late; the pattern has 3 steps, so step k = 4 is index 1 again.
+        let starts: Vec<(i64, usize)> = p
+            .hits(Tick(6 * 240))
+            .iter()
+            .map(|h| (h.start.0, h.step))
+            .collect();
+        assert_eq!(
+            starts,
+            [(0, 0), (300, 1), (480, 2), (720, 0), (1020, 1), (1200, 2)]
+        );
+        // Swing is clamped to 75 %: 90 ticks.
+        p.swing = 5.0;
+        assert_eq!(p.hits(Tick(480))[1].start, Tick(330));
+    }
+
+    #[test]
+    fn hits_split_ratchets() {
+        let mut p = pattern(1, 16);
+        let s = on(&mut p, 0, 0);
+        s.ratchet = 3;
+        s.velocity = 90;
+        s.probability = 40;
+        let hits = p.hits(Tick(3840));
+        assert_eq!(
+            played(&hits),
+            [(0, 80, 36, 90), (80, 80, 36, 68), (160, 80, 36, 68)]
+        );
+        let ids: Vec<(u8, u8)> = hits.iter().map(|h| (h.hit, h.probability)).collect();
+        assert_eq!(ids, [(0, 40), (1, 40), (2, 40)]);
+        // 1/16 triplets: 160 ticks in three hits that tile the step.
+        p.resolution = StepResolution::SixteenthTriplet;
+        let tiles: Vec<(i64, i64)> = p
+            .hits(Tick(160))
+            .iter()
+            .map(|h| (h.start.0, h.length.0))
+            .collect();
+        assert_eq!(tiles, [(0, 53), (53, 53), (106, 54)]);
+        // Velocity 1 stays 1 on later hits.
+        p.rows[0].steps[0].velocity = 1;
+        assert!(p.hits(Tick(160)).iter().all(|h| h.velocity == 1));
+    }
+
+    #[test]
+    fn hits_keep_probability_and_follow_mute_and_solo() {
+        let mut p = pattern(3, 4);
+        on(&mut p, 0, 0).probability = 0;
+        on(&mut p, 1, 0);
+        on(&mut p, 2, 0);
+        let rows = |p: &StepClip| -> Vec<(usize, u8)> {
+            p.hits(Tick(240))
+                .iter()
+                .map(|h| (h.row, h.probability))
+                .collect()
+        };
+        assert_eq!(rows(&p), [(0, 0), (1, 100), (2, 100)]);
+        p.rows[1].mute = true;
+        assert_eq!(rows(&p), [(0, 0), (2, 100)]);
+        p.rows[0].solo = true;
+        p.rows[1].solo = true;
+        assert_eq!(rows(&p), [(0, 0)], "muted wins over solo");
+    }
+
+    #[test]
+    fn hits_are_cut_at_the_clip_end() {
+        let mut p = pattern(1, 4);
+        on(&mut p, 0, 0);
+        on(&mut p, 0, 1).ratchet = 2;
+        p.swing = 0.5;
+        // Step 1 starts at 300 (swing); its hits at 300 and 420, the second cut out at 400.
+        assert_eq!(
+            played(&p.hits(Tick(400))),
+            [(0, 240, 36, 100), (300, 100, 36, 100)]
+        );
+        // A swung step pushed to or past the end is left out.
+        assert_eq!(played(&p.hits(Tick(300))), [(0, 240, 36, 100)]);
     }
 
     #[test]

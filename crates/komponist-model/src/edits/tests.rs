@@ -908,17 +908,34 @@ fn split_a_step_clip_keeps_what_plays() {
         p = ok(set_step(&p, f.step, row, step, prop));
     }
     p = ok(set_clip_length(&p, f.step, Tick(2 * 3840)));
-    let before = step_hits(pattern(&p, f.step), clip(&p, f.step).length);
+    // What sounds: (start, length, note, velocity, probability); step indices differ after the
+    // rotation.
+    let sound = |hits: Vec<crate::StepHit>, offset: Tick| -> Vec<(Tick, Tick, u8, u8, u8)> {
+        hits.into_iter()
+            .map(|h| {
+                (
+                    h.start + offset,
+                    h.length,
+                    h.note,
+                    h.velocity,
+                    h.probability,
+                )
+            })
+            .collect()
+    };
+    let before = sound(
+        pattern(&p, f.step).hits(clip(&p, f.step).length),
+        Tick::ZERO,
+    );
     // Split after 6 steps (an even shift, so swing would agree as well).
     let (q, rights) = ok_with(split_clips(&p, &[f.step], Tick(6 * 240)));
     let (left, right) = (clip(&q, f.step), clip(&q, rights[0]));
-    let mut after = step_hits(pattern(&q, f.step), left.length);
-    after.extend(
-        step_hits(pattern(&q, rights[0]), right.length)
-            .into_iter()
-            .map(|(s, l, n, v)| (s + Tick(6 * 240), l, n, v)),
-    );
-    after.sort_by_key(|&(s, _, n, _)| (s, n));
+    let mut after = sound(pattern(&q, f.step).hits(left.length), Tick::ZERO);
+    after.extend(sound(
+        pattern(&q, rights[0]).hits(right.length),
+        Tick(6 * 240),
+    ));
+    after.sort_by_key(|&(s, _, n, _, _)| (s, n));
     assert_eq!(after, before);
     assert!(pattern(&q, rights[0]).rows[1].steps[0].on);
     assert_eq!(pattern(&q, rights[0]).rows[1].steps[0].ratchet, 3);

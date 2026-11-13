@@ -34,8 +34,8 @@ pub use edits::EditError;
 pub use ids::{ClipId, DeviceId, NoteId, TrackId};
 pub use project::{
     Channel, ChannelRef, Clip, ClipContent, ClipKind, Device, DeviceRole, Hue, MidiChannelSel,
-    MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepRow, Take,
-    Track, TrackKind,
+    MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepHit,
+    StepRow, Take, Track, TrackKind,
 };
 pub use time::{
     Bbt, DISPLAY_TICKS_PER_BEAT, Grid, Meter, PPQ, StepResolution, TICKS_PER_STEP, Tempo, TempoMap,
