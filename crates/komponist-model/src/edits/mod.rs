@@ -33,7 +33,7 @@ use crate::project::{
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 // ------------------------------------------------------------------------------------------------
 // Errors

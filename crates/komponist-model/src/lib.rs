@@ -30,6 +30,9 @@ pub mod persist;
 pub mod project;
 pub mod time;
 
+#[cfg(test)]
+mod proptests;
+
 pub use document::{Document, Gesture, UNDO_LIMIT, UndoStep};
 pub use edits::EditError;
 pub use ids::{ClipId, DeviceId, NoteId, TrackId};
