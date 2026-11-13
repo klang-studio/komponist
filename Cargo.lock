@@ -2418,7 +2418,11 @@ name = "komponist-app"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "eframe",
+ "egui",
+ "egui_kittest",
  "hound",
+ "klang-dsp",
  "komponist-audio",
  "komponist-builtin",
  "komponist-engine",
@@ -2427,6 +2431,7 @@ dependencies = [
  "komponist-tokens",
  "komponist-ui",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
