@@ -6,6 +6,10 @@
 //! mouse button press turns it off. [`install`] adds a small egui plugin that watches the input of
 //! every pass; [`is_visible`] answers the question for the current pass, and [`ring_visible`]
 //! for one widget.
+//!
+//! egui reports widget focus only while the window itself has keyboard focus
+//! (`Response::has_focus`). Under Xvfb without a window manager the window never gets it, so a
+//! live check must focus the window first (`xdotool windowfocus`) to see the ring.
 
 use egui::{Context, Event, Id, Painter, Rect, Response, Ui};
 use komponist_tokens::egui_support::color32;

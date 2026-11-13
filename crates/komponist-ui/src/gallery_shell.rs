@@ -313,6 +313,19 @@ impl Gallery {
             ui.add_space(space::SPACE_1);
             ui.label(fonts::rich_text("Galerie", &typography::SMALL));
             ui.add_space(space::SPACE_6);
+            // The scale switch first, so it stays reachable when the bar overflows at 2×.
+            let ppp = ui.ctx().pixels_per_point();
+            for scale in [1.0_f32, 2.0] {
+                let label = format!("{scale}×");
+                if ui
+                    .add(egui::Button::selectable(ppp == scale, label))
+                    .on_hover_text("Maßstab")
+                    .clicked()
+                {
+                    ui.ctx().set_pixels_per_point(scale);
+                }
+            }
+            ui.add_space(space::SPACE_6);
             for (i, section) in self.sections.iter().enumerate() {
                 let selected = self.current == Some(i);
                 if ui
@@ -323,19 +336,6 @@ impl Gallery {
                     self.current = Some(i);
                 }
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let ppp = ui.ctx().pixels_per_point();
-                for scale in [2.0_f32, 1.0] {
-                    let label = format!("{scale}×");
-                    if ui
-                        .add(egui::Button::selectable(ppp == scale, label))
-                        .on_hover_text("Maßstab")
-                        .clicked()
-                    {
-                        ui.ctx().set_pixels_per_point(scale);
-                    }
-                }
-            });
         });
     }
 
