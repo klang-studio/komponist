@@ -1,7 +1,150 @@
 //! `komponist`: a MIDI DAW for Linux.
 //!
-//! Scaffold only: the app shell arrives with WP-30.
+//! ```text
+//! komponist [PROJECT.komponist] [--null-audio] [--scale N] [--settings PATH]
+//! ```
+//!
+//! Opens `PROJECT` or, until the start screen (S09, WP-52) exists, the demo project
+//! "Nachtfahrt". The audio output comes from the settings (`~/.config/komponist/settings.json`);
+//! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
+//! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. With
+//! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
 
-fn main() {
-    println!("komponist {} (scaffold)", env!("CARGO_PKG_VERSION"));
+use std::path::PathBuf;
+
+use komponist_app::App;
+use komponist_app::device_host::BuiltinHost;
+use komponist_app::engine_sync::{EngineSync, MidiSetup};
+use komponist_app::panels::transport::WORDMARK;
+use komponist_app::settings::{self, Settings};
+use komponist_audio::{HostKind, StreamConfig};
+use komponist_model::{Document, Project, fixtures, persist};
+use komponist_ui::RunOptions;
+
+// Debug builds abort on any allocation inside the audio callback (ARCHITECTURE §6.1).
+#[cfg(debug_assertions)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+const USAGE: &str = "\
+usage: komponist [PROJECT.komponist] [options]
+
+  --null-audio     no audio or MIDI device: the engine runs on a timer (also KOMPONIST_NULL_AUDIO=1)
+  --scale N        UI scale (pixels per point), e.g. 1 or 2
+  --settings PATH  settings file (default ~/.config/komponist/settings.json)";
+
+#[derive(Debug, Default)]
+struct Args {
+    project: Option<PathBuf>,
+    null_audio: bool,
+    scale: Option<f32>,
+    settings: Option<PathBuf>,
+}
+
+fn parse_args() -> Result<Option<Args>, String> {
+    let mut args = Args {
+        null_audio: std::env::var("KOMPONIST_NULL_AUDIO").is_ok_and(|v| v != "0" && !v.is_empty()),
+        ..Args::default()
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().ok_or_else(|| format!("{arg} needs a value"));
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(None),
+            "--null-audio" => args.null_audio = true,
+            "--scale" => {
+                let v: f32 = value()?.parse().map_err(|e| format!("--scale: {e}"))?;
+                if !(v.is_finite() && v > 0.0) {
+                    return Err("--scale must be positive".to_owned());
+                }
+                args.scale = Some(v);
+            }
+            "--settings" => args.settings = Some(PathBuf::from(value()?)),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+            path if args.project.is_none() => args.project = Some(PathBuf::from(path)),
+            extra => return Err(format!("unexpected argument {extra}")),
+        }
+    }
+    Ok(Some(args))
+}
+
+fn load_project(path: Option<&std::path::Path>) -> Result<Project, String> {
+    let Some(path) = path else {
+        return Ok(fixtures::demo_project());
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    persist::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn main() -> eframe::Result {
+    let args = match parse_args() {
+        Ok(Some(args)) => args,
+        Ok(None) => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("komponist: {e}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    let project = match load_project(args.project.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("komponist: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // An unreadable settings file is reported and left alone: this session runs on the
+    // defaults and does not overwrite it.
+    let path = args.settings.clone().or_else(settings::default_path);
+    let (settings, settings_path) = match path.as_deref().map(Settings::load) {
+        Some(Ok(s)) => (s, path),
+        Some(Err(e)) => {
+            eprintln!("komponist: settings not loaded, using defaults: {e}");
+            (Settings::default(), None)
+        }
+        None => (Settings::default(), None),
+    };
+
+    let (config, midi) = if args.null_audio {
+        let config = StreamConfig {
+            host: HostKind::Null,
+            device: None,
+            device_id: None,
+            ..settings.audio.clone()
+        };
+        (config, MidiSetup::None)
+    } else {
+        (settings.audio.clone(), MidiSetup::System)
+    };
+    let (engine, started) = EngineSync::new(&config, midi, Box::new(BuiltinHost::new()));
+    if let Err(e) = started {
+        eprintln!("komponist: audio output not available ({e}); running without device");
+    }
+    let title = format!("{WORDMARK} · {}", project.name);
+    let mut options = RunOptions::new(WORDMARK, title);
+    options.pixels_per_point = args.scale.or(settings.ui_scale);
+    let mut app = App::new(Document::new(project), engine, settings, settings_path);
+    for name in app.settings().midi_disabled.clone() {
+        if let Some(hub) = app.engine_mut().midi_mut() {
+            let _ = hub.set_enabled(&name, false);
+        }
+    }
+    komponist_ui::run(options, move |_cc| Shell(app))
+}
+
+/// The eframe side of the app.
+struct Shell(App);
+
+impl eframe::App for Shell {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.0.show(ui);
+    }
+
+    fn on_exit(&mut self) {
+        self.0.shutdown();
+    }
 }
