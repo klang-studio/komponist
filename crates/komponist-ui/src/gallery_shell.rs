@@ -23,7 +23,7 @@ use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, size, space};
 
 use crate::state::{self, State};
-use crate::{focus, fonts, px, theme};
+use crate::{focus, fonts, px, theme, widgets};
 
 /// Draws the content of a card.
 pub type CardContent = fn(&mut Ui);
@@ -203,10 +203,12 @@ pub fn designsystem() -> Vec<Section> {
             Card::new("Zahlenfeld, ziehbar")
                 .spec("h 24 · px 8 · value-m · Einheit text.3")
                 .ix(ix::NUMBER)
+                .content(widgets::number_field::gallery)
                 .owner("WP-21"),
             Card::new("Drehregler, flach")
                 .spec("Ø 28 (klein 20) · Bogen 270° · Strich 2")
                 .ix(ix::KNOB)
+                .content(widgets::knob::gallery)
                 .owner("WP-21"),
             Card::new("Fader und Pegelanzeige")
                 .spec(
@@ -214,6 +216,7 @@ pub fn designsystem() -> Vec<Section> {
                      (Taille 15, 1 Rille je Hälfte) · Pegel 2 × 4, Abstand 1",
                 )
                 .ix(ix::FADER)
+                .content(widgets::fader::gallery)
                 .owner("WP-21"),
         ])),
         Section::new("05", "Spur, Clip, Note").group(components(vec![
