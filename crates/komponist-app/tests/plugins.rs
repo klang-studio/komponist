@@ -343,10 +343,10 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     app.shutdown();
 }
 
-/// The demo with the plugins installed on this machine: klopfer, Surge XT and Dexed play, the
-/// others (Vital, LSP, Dragonfly, TAL) stay `Missing` with their state. Run with
-/// `cargo test -p komponist-app --test plugins -- --ignored` (scans the default folders into a
-/// scratch cache; Surge XT may take seconds to load).
+/// The demo with the plugins installed on this machine: klopfer, Surge XT and Dexed load (the
+/// latter two sound), the others (Vital, LSP, Dragonfly, TAL) stay `Missing` with their state.
+/// Run with `cargo test -p komponist-app --test plugins -- --ignored` (scans the default folders
+/// into a scratch cache; Surge XT may take seconds to load).
 #[test]
 #[ignore = "needs Klopfer.clap, Surge XT and Dexed installed"]
 fn the_demo_plays_the_installed_plugins() {
@@ -401,14 +401,18 @@ fn the_demo_plays_the_installed_plugins() {
 
     app.dispatch(Action::Transport(TransportAction::Locate(bar_5())));
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
-    let drums = track_named(app.project(), "Drums");
-    let drums_level = level(&mut app, drums, Duration::from_secs(2));
-    for name in ["Pad", "Keys"] {
-        let track = track_named(app.project(), name);
-        let (l, r) = app.engine().track_meter(track).unwrap().take();
-        eprintln!("{name}: peak {:.3}", l.max(r));
-    }
-    assert!(drums_level > 0.01, "Drums (klopfer) {drums_level}");
+    // Surge XT and Dexed play; klopfer without a stored kit has empty pads and stays silent
+    // (kits: WP-54), so Drums only has to be `Ok`.
+    let pad = track_named(app.project(), "Pad");
+    let pad_level = level(&mut app, pad, Duration::from_secs(2));
+    let keys = track_named(app.project(), "Keys");
+    let (l, r) = app.engine().track_meter(keys).unwrap().take();
+    eprintln!(
+        "Pad (Surge XT): peak {pad_level:.3}, Keys (Dexed): peak {:.3}",
+        l.max(r)
+    );
+    assert!(pad_level > 0.01, "Pad (Surge XT) is silent");
+    assert!(l.max(r) > 0.01, "Keys (Dexed) is silent");
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
 
     // The missing devices' states survive a save byte for byte.
