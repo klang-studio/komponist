@@ -2518,6 +2518,8 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
+ "klang-dsp",
+ "komponist-model",
  "komponist-tokens",
  "komponist-ui",
  "winit",
