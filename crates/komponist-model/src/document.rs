@@ -114,6 +114,27 @@ impl Document {
         todo!("WP-12")
     }
 
+    /// During a gesture: applies `edit` to the root from [`Document::begin_gesture`] (not to the
+    /// current root) and makes the result current, without pushing. For drags that send the total
+    /// delta since the drag start: each call replaces the previous intermediate state, and ids
+    /// allocated by the edit are the same on every call. Without an open gesture this is
+    /// [`Document::apply`] with the label "".
+    pub fn apply_in_gesture(
+        &mut self,
+        edit: impl FnOnce(&Project) -> Result<Project, EditError>,
+    ) -> Result<(), EditError> {
+        todo!("WP-12")
+    }
+
+    /// Like [`Document::apply_in_gesture`] for edits that also return a value (Alt-drag copies
+    /// return the ids of the copies).
+    pub fn apply_in_gesture_with<T>(
+        &mut self,
+        edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
+    ) -> Result<T, EditError> {
+        todo!("WP-12")
+    }
+
     /// Whether a gesture is open.
     pub fn in_gesture(&self) -> bool {
         self.gesture.is_some()
