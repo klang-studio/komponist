@@ -6,6 +6,7 @@
 //! `~/.cache/komponist/plugins.json` ([`ScanCache`]). A bundle that crashes or times out is listed
 //! as skipped ("1 Plugin übersprungen", S07).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
+use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
 
 /// Time one bundle scan may take before its process is killed and the bundle skipped.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -68,7 +70,33 @@ pub enum EffectCategory {
 impl EffectCategory {
     /// The category for a feature list (first matching rule in the order of the variants).
     pub fn from_features(features: &[String]) -> EffectCategory {
-        todo!("WP-45")
+        const RULES: [(EffectCategory, &[&str]); 4] = [
+            (EffectCategory::EqFilter, &["equalizer", "eq", "filter"]),
+            (
+                EffectCategory::Dynamics,
+                &[
+                    "compressor",
+                    "limiter",
+                    "gate",
+                    "expander",
+                    "transient-shaper",
+                    "dynamics",
+                ],
+            ),
+            (EffectCategory::ReverbDelay, &["reverb", "delay"]),
+            (
+                EffectCategory::Modulation,
+                &["chorus", "flanger", "phaser", "tremolo", "modulation"],
+            ),
+        ];
+        RULES
+            .iter()
+            .find(|(_, names)| {
+                features
+                    .iter()
+                    .any(|f| names.iter().any(|n| f.eq_ignore_ascii_case(n)))
+            })
+            .map_or(EffectCategory::Other, |(category, _)| *category)
     }
 }
 
@@ -105,7 +133,28 @@ impl Catalog {
     /// Only the built-ins: pisynth always; klopfer if `klopfer_bundle` is `Some` (dev path from
     /// `scripts/build-klopfer.sh`, or `<prefix>/lib/komponist/plugins/Klopfer.clap`; WP-54).
     pub fn builtin(klopfer_bundle: Option<PathBuf>) -> Catalog {
-        todo!("WP-45, WP-54")
+        let mut entries = vec![CatalogEntry {
+            plugin: builtin_ref(BUILTIN_PISYNTH, "pisynth", "klang-studio"),
+            kind: PluginKind::Instrument,
+            category: None,
+            features: vec!["instrument".into(), "synthesizer".into()],
+            location: PluginLocation::InProcess(BuiltinKind::Pisynth),
+        }];
+        if let Some(path) = klopfer_bundle {
+            entries.push(CatalogEntry {
+                // klopfer's CLAP vendor (`../klopfer/src/lib.rs`), as in the demo project.
+                plugin: builtin_ref(BUILTIN_KLOPFER, "klopfer", "Klopfer"),
+                kind: PluginKind::Instrument,
+                category: None,
+                features: vec!["instrument".into(), "drum".into(), "sampler".into()],
+                location: PluginLocation::Bundle {
+                    format: BundleFormat::Clap,
+                    path,
+                    plugin_id: KLOPFER_CLAP_ID.into(),
+                },
+            });
+        }
+        Catalog { entries }
     }
 
     /// All entries: built-ins first, then scanned plugins sorted by name (case-insensitive).
@@ -122,14 +171,76 @@ impl Catalog {
 
     /// Replaces all scanned entries with `descriptors` (built-ins stay). Descriptors of kind
     /// `Other` are left out.
+    ///
+    /// The same plugin in several bundles (one per folder) is listed once, from the first
+    /// descriptor. The bundled klopfer is not listed again as a CLAP plugin while the built-in
+    /// entry exists.
     pub fn set_scanned(&mut self, descriptors: &[PluginDescriptor]) {
-        todo!("WP-45")
+        self.entries.retain(CatalogEntry::is_builtin);
+        let has_klopfer = self.entries.iter().any(|e| e.plugin.id == BUILTIN_KLOPFER);
+        let mut seen = HashSet::new();
+        let mut scanned: Vec<CatalogEntry> = descriptors
+            .iter()
+            .filter(|d| d.kind != PluginKind::Other)
+            .filter(|d| !(has_klopfer && d.format == BundleFormat::Clap && d.id == KLOPFER_CLAP_ID))
+            .filter(|d| seen.insert((d.format, d.id.clone())))
+            .map(scanned_entry)
+            .collect();
+        scanned.sort_by_cached_key(|e| e.plugin.name.to_lowercase());
+        self.entries.extend(scanned);
     }
 
     /// Entries whose name, vendor or features contain `query` (case-insensitive; empty query = all),
     /// in catalog order (browser search, Ctrl F).
     pub fn search(&self, query: &str) -> Vec<&CatalogEntry> {
-        todo!("WP-45")
+        let query = query.to_lowercase();
+        let hit = |text: &str| text.to_lowercase().contains(&query);
+        self.entries
+            .iter()
+            .filter(|e| {
+                query.is_empty()
+                    || hit(&e.plugin.name)
+                    || hit(&e.plugin.vendor)
+                    || e.features.iter().any(|f| hit(f))
+            })
+            .collect()
+    }
+}
+
+/// The reference of a built-in ("INTERN").
+fn builtin_ref(id: &str, name: &str, vendor: &str) -> PluginRef {
+    PluginRef {
+        format: komponist_model::PluginFormat::Builtin,
+        id: id.into(),
+        name: name.into(),
+        vendor: vendor.into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+    }
+}
+
+/// The catalog entry of a scanned plugin.
+fn scanned_entry(d: &PluginDescriptor) -> CatalogEntry {
+    let format = match d.format {
+        BundleFormat::Clap => komponist_model::PluginFormat::Clap,
+        BundleFormat::Vst3 => komponist_model::PluginFormat::Vst3,
+    };
+    CatalogEntry {
+        plugin: PluginRef {
+            format,
+            id: d.id.clone(),
+            name: d.name.clone(),
+            vendor: d.vendor.clone(),
+            version: d.version.clone(),
+        },
+        kind: d.kind,
+        category: (d.kind == PluginKind::Effect)
+            .then(|| EffectCategory::from_features(&d.features)),
+        features: d.features.clone(),
+        location: PluginLocation::Bundle {
+            format: d.format,
+            path: d.bundle.clone(),
+            plugin_id: d.id.clone(),
+        },
     }
 }
 
@@ -147,7 +258,26 @@ impl PluginDirs {
     /// `/usr/local/lib/clap` and the entries of `$CLAP_PATH`; VST3 `~/.vst3`, `/usr/lib/vst3`,
     /// `/usr/local/lib/vst3`.
     pub fn defaults() -> PluginDirs {
-        todo!("WP-45")
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let clap_path = std::env::var_os("CLAP_PATH");
+        PluginDirs::defaults_from(home.as_deref(), clap_path.as_deref())
+    }
+
+    /// [`PluginDirs::defaults`] for a given home folder and `$CLAP_PATH` value. Empty entries of
+    /// `$CLAP_PATH` and folders listed twice are left out.
+    fn defaults_from(home: Option<&Path>, clap_path: Option<&std::ffi::OsStr>) -> PluginDirs {
+        let mut clap: Vec<PathBuf> = home.map(|h| h.join(".clap")).into_iter().collect();
+        clap.push("/usr/lib/clap".into());
+        clap.push("/usr/local/lib/clap".into());
+        if let Some(paths) = clap_path {
+            clap.extend(std::env::split_paths(paths).filter(|p| !p.as_os_str().is_empty()));
+        }
+        let mut seen = HashSet::new();
+        clap.retain(|p| seen.insert(p.clone()));
+        let mut vst3: Vec<PathBuf> = home.map(|h| h.join(".vst3")).into_iter().collect();
+        vst3.push("/usr/lib/vst3".into());
+        vst3.push("/usr/local/lib/vst3".into());
+        PluginDirs { clap, vst3 }
     }
 }
 
@@ -174,12 +304,43 @@ pub struct ScanCache {
 impl ScanCache {
     /// Reads the cache; a missing or unreadable file gives an empty cache.
     pub fn load(path: &Path) -> ScanCache {
-        todo!("WP-45")
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     /// Writes the cache (creating the directory if needed).
+    ///
+    /// Written to a temporary file next to `path` and renamed over it, so a crash never leaves a
+    /// half-written cache.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        todo!("WP-45")
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(format!(".{}.tmp", std::process::id()));
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+    }
+
+    /// The cached result for `path` scanned at `mtime_secs`, if any.
+    pub(crate) fn lookup(&self, path: &Path, mtime_secs: u64) -> Option<&CachedBundle> {
+        self.bundles
+            .iter()
+            .find(|b| b.path == path && b.mtime_secs == mtime_secs)
+    }
+
+    /// All descriptors in cache order.
+    pub(crate) fn descriptors(&self) -> Vec<PluginDescriptor> {
+        self.bundles
+            .iter()
+            .flat_map(|b| b.descriptors.iter().cloned())
+            .collect()
     }
 }
 
@@ -215,4 +376,258 @@ pub struct ScanReport {
     pub skipped: Vec<SkippedBundle>,
     /// When the scan finished.
     pub finished: SystemTime,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> PluginDescriptor {
+        PluginDescriptor {
+            format: BundleFormat::Clap,
+            id: id.into(),
+            name: name.into(),
+            vendor: "Vendor".into(),
+            version: "1.0".into(),
+            kind,
+            features: features.iter().map(|f| (*f).into()).collect(),
+            bundle: format!("/usr/lib/clap/{name}.clap").into(),
+        }
+    }
+
+    fn features(list: &[&str]) -> Vec<String> {
+        list.iter().map(|f| (*f).into()).collect()
+    }
+
+    #[test]
+    fn effect_categories_follow_the_mapping_table() {
+        let cases: [(&[&str], EffectCategory); 12] = [
+            (&["audio-effect", "equalizer"], EffectCategory::EqFilter),
+            (&["audio-effect", "filter"], EffectCategory::EqFilter),
+            (&["fx", "eq"], EffectCategory::EqFilter),
+            (&["audio-effect", "compressor"], EffectCategory::Dynamics),
+            (
+                &["audio-effect", "transient-shaper"],
+                EffectCategory::Dynamics,
+            ),
+            (&["fx", "dynamics"], EffectCategory::Dynamics),
+            (&["audio-effect", "reverb"], EffectCategory::ReverbDelay),
+            (&["fx", "Delay"], EffectCategory::ReverbDelay),
+            (&["audio-effect", "phaser"], EffectCategory::Modulation),
+            (&["fx", "modulation"], EffectCategory::Modulation),
+            (&["audio-effect", "distortion"], EffectCategory::Other),
+            // The first rule in variant order wins.
+            (&["delay", "chorus", "filter"], EffectCategory::EqFilter),
+        ];
+        for (list, expected) in cases {
+            assert_eq!(
+                EffectCategory::from_features(&features(list)),
+                expected,
+                "{list:?}"
+            );
+        }
+        assert_eq!(EffectCategory::from_features(&[]), EffectCategory::Other);
+    }
+
+    #[test]
+    fn builtins_come_first_and_klopfer_only_with_a_bundle() {
+        let catalog = Catalog::builtin(None);
+        assert_eq!(catalog.entries().len(), 1);
+        let pisynth = &catalog.entries()[0];
+        assert!(pisynth.is_builtin());
+        assert_eq!(pisynth.plugin.id, BUILTIN_PISYNTH);
+        assert_eq!(pisynth.plugin.name, "pisynth");
+        assert_eq!(pisynth.kind, PluginKind::Instrument);
+        assert_eq!(
+            pisynth.location,
+            PluginLocation::InProcess(BuiltinKind::Pisynth)
+        );
+
+        let catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
+        let klopfer = &catalog.entries()[1];
+        assert!(klopfer.is_builtin());
+        assert_eq!(klopfer.plugin.id, BUILTIN_KLOPFER);
+        assert_eq!(klopfer.plugin.vendor, "Klopfer");
+        assert_eq!(
+            klopfer.location,
+            PluginLocation::Bundle {
+                format: BundleFormat::Clap,
+                path: "/opt/Klopfer.clap".into(),
+                plugin_id: KLOPFER_CLAP_ID.into(),
+            }
+        );
+        assert_eq!(catalog.resolve(&klopfer.plugin), Some(klopfer));
+    }
+
+    #[test]
+    fn scanned_entries_are_sorted_filtered_and_resolved() {
+        let mut catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
+        let mut vst3 = descriptor("0123ABCD", "dexed", PluginKind::Instrument, &["instrument"]);
+        vst3.format = BundleFormat::Vst3;
+        let descriptors = [
+            descriptor(
+                "org.surge",
+                "Surge XT",
+                PluginKind::Instrument,
+                &["instrument"],
+            ),
+            descriptor(
+                "x.reverb",
+                "Big Hall",
+                PluginKind::Effect,
+                &["audio-effect", "reverb"],
+            ),
+            descriptor("x.analyzer", "Scope", PluginKind::Other, &["analyzer"]),
+            vst3,
+            // The same plugin from a later folder, and the bundled klopfer as CLAP.
+            descriptor("org.surge", "Surge XT (old)", PluginKind::Instrument, &[]),
+            descriptor(KLOPFER_CLAP_ID, "Klopfer", PluginKind::Instrument, &[]),
+        ];
+        catalog.set_scanned(&descriptors);
+        let names: Vec<&str> = catalog
+            .entries()
+            .iter()
+            .map(|e| e.plugin.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["pisynth", "klopfer", "Big Hall", "dexed", "Surge XT"]
+        );
+        let hall = &catalog.entries()[2];
+        assert_eq!(hall.category, Some(EffectCategory::ReverbDelay));
+        assert_eq!(hall.plugin.format, komponist_model::PluginFormat::Clap);
+        assert_eq!(
+            catalog.entries()[3].plugin.format,
+            komponist_model::PluginFormat::Vst3
+        );
+        assert_eq!(catalog.entries()[4].category, None);
+
+        let surge = PluginRef {
+            format: komponist_model::PluginFormat::Clap,
+            id: "org.surge".into(),
+            name: "renamed".into(),
+            vendor: String::new(),
+            version: String::new(),
+        };
+        assert_eq!(catalog.resolve(&surge).unwrap().plugin.name, "Surge XT");
+        let as_vst3 = PluginRef {
+            format: komponist_model::PluginFormat::Vst3,
+            ..surge
+        };
+        assert_eq!(catalog.resolve(&as_vst3), None);
+
+        // A rescan replaces the scanned entries; without the built-in klopfer the CLAP one shows.
+        let mut catalog = Catalog::builtin(None);
+        catalog.set_scanned(&descriptors);
+        catalog.set_scanned(&descriptors[5..]);
+        let names: Vec<&str> = catalog
+            .entries()
+            .iter()
+            .map(|e| e.plugin.name.as_str())
+            .collect();
+        assert_eq!(names, ["pisynth", "Klopfer"]);
+    }
+
+    #[test]
+    fn search_matches_name_vendor_and_features() {
+        let mut catalog = Catalog::builtin(None);
+        catalog.set_scanned(&[
+            descriptor(
+                "x.reverb",
+                "Big Hall",
+                PluginKind::Effect,
+                &["audio-effect", "reverb"],
+            ),
+            descriptor(
+                "x.comp",
+                "Squash",
+                PluginKind::Effect,
+                &["audio-effect", "compressor"],
+            ),
+        ]);
+        let names = |q: &str| -> Vec<String> {
+            catalog
+                .search(q)
+                .iter()
+                .map(|e| e.plugin.name.clone())
+                .collect()
+        };
+        assert_eq!(names(""), ["pisynth", "Big Hall", "Squash"]);
+        assert_eq!(names("HALL"), ["Big Hall"]);
+        assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
+        assert_eq!(names("compress"), ["Squash"]);
+        assert_eq!(names("synth"), ["pisynth"]);
+        assert!(names("nothing like this").is_empty());
+    }
+
+    #[test]
+    fn default_folders() {
+        let dirs = PluginDirs::defaults_from(
+            Some(Path::new("/home/x")),
+            Some(std::ffi::OsStr::new(
+                "/opt/clap::/usr/lib/clap:/home/x/more",
+            )),
+        );
+        let clap: Vec<&str> = dirs.clap.iter().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(
+            clap,
+            [
+                "/home/x/.clap",
+                "/usr/lib/clap",
+                "/usr/local/lib/clap",
+                "/opt/clap",
+                "/home/x/more"
+            ]
+        );
+        let vst3: Vec<&str> = dirs.vst3.iter().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(
+            vst3,
+            ["/home/x/.vst3", "/usr/lib/vst3", "/usr/local/lib/vst3"]
+        );
+        let bare = PluginDirs::defaults_from(None, None);
+        assert_eq!(bare.clap.len(), 2);
+        assert_eq!(bare.vst3.len(), 2);
+        // The real environment gives at least the system folders.
+        assert!(
+            PluginDirs::defaults()
+                .clap
+                .contains(&PathBuf::from("/usr/lib/clap"))
+        );
+    }
+
+    #[test]
+    fn scan_cache_round_trips_and_tolerates_bad_files() {
+        let dir = std::env::temp_dir().join(format!("kp-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("nested/plugins.json");
+        assert_eq!(ScanCache::load(&file), ScanCache::default());
+        let cache = ScanCache {
+            bundles: vec![
+                CachedBundle {
+                    path: "/usr/lib/clap/A.clap".into(),
+                    mtime_secs: 1_700_000_000,
+                    descriptors: vec![descriptor("a", "A", PluginKind::Effect, &["eq"])],
+                    error: None,
+                },
+                CachedBundle {
+                    path: "/usr/lib/clap/B.clap".into(),
+                    mtime_secs: 3,
+                    descriptors: Vec::new(),
+                    error: Some("crashed (signal 11)".into()),
+                },
+            ],
+        };
+        cache.save(&file).unwrap();
+        assert_eq!(ScanCache::load(&file), cache);
+        assert!(
+            cache
+                .lookup(Path::new("/usr/lib/clap/A.clap"), 1_700_000_000)
+                .is_some()
+        );
+        assert!(cache.lookup(Path::new("/usr/lib/clap/A.clap"), 1).is_none());
+        assert_eq!(cache.descriptors().len(), 1);
+        std::fs::write(&file, b"{ not json").unwrap();
+        assert_eq!(ScanCache::load(&file), ScanCache::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
