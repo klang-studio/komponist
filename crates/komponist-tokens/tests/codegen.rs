@@ -129,6 +129,8 @@ fn komponist_additions_generate() {
         "pub const CANVAS_OUTSIDE_CLIP: Srgba = [0x11, 0x12, 0x14, 0x99];",
         // rgba(78,167,230,0.10): alpha 0.10 × 255 = 25.5 → 26.
         "pub const CANVAS_BOX_SELECT: Srgba = [0x4e, 0xa7, 0xe6, 0x1a];",
+        // rgba(232,233,235,0.16): alpha 0.16 × 255 = 40.8 → 41.
+        "pub const CANVAS_CLIP_EDGE_SELECTED: Srgba = [0xe8, 0xe9, 0xeb, 0x29];",
     ] {
         assert!(color.contains(line), "{line} missing in {color}");
     }

@@ -1,0 +1,241 @@
+//! What lies around and over the tracks: the "Neue Spur" area below them, the S10 hint of an
+//! empty project, the insert line of a track drag and the drop target of a browser drag.
+
+use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::{Color32, Id, Painter, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_model::Project;
+use komponist_tokens::egui_support::color32;
+use komponist_tokens::{color, radius, space, typography};
+use komponist_ui::state::State;
+use komponist_ui::widgets::button::{self, Appearance, Kind};
+use komponist_ui::widgets::metrics as wm;
+use komponist_ui::{focus, fonts, px, widgets as w};
+
+use super::geometry::Geometry;
+use super::{Arrangement, Drag, metrics, names};
+use crate::actions::{Action, DropTarget, EditAction, ProjectAction};
+use crate::views::ViewCtx;
+
+impl Arrangement {
+    /// "Neue Spur" with its hint in the header column below the last track (S01, S10).
+    pub(super) fn new_track_area(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, g: &Geometry) {
+        let area = g.new_track();
+        let left = Rect::from_x_y_ranges(g.header_x, area.y_range());
+        if left.height() <= 0.0 {
+            return;
+        }
+        let ppp = ui.pixels_per_point();
+        let [pad_x, pad_y] = metrics::NEW_TRACK_PADDING;
+        let shortcut = ctx
+            .keymap
+            .label_for(&Action::Edit(EditAction::NewMidiTrack))
+            .unwrap_or_default();
+        let hint = format!("{} {shortcut}", names::NEW_TRACK_HINT);
+        let x = px::snap(left.left() + pad_x, ppp);
+        let mut y = px::snap(left.top() + pad_y, ppp);
+        for (text, style, c) in [
+            (names::NEW_TRACK, typography::UI, color::TEXT_2),
+            (hint.trim_end(), typography::SMALL, color::TEXT_3),
+        ] {
+            let galley = w::styled_galley(ui, text, &style);
+            let r = Rect::from_min_size(pos2(x, y), galley.size());
+            y = px::snap(r.bottom() + metrics::NEW_TRACK_GAP, ppp);
+            ui.painter().galley(r.min, galley, color32(c));
+            let response = ui.interact(
+                r,
+                Id::unique(("komponist_arrangement_new_track", text)),
+                Sense::hover(),
+            );
+            response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+        }
+    }
+
+    /// The 2 px insert line while headers are dragged.
+    pub(super) fn overlays(
+        &mut self,
+        ui: &mut Ui,
+        _ctx: &mut ViewCtx<'_>,
+        _project: &Project,
+        g: &Geometry,
+    ) {
+        if let Some(Drag::Reorder {
+            slot: Some(slot), ..
+        }) = &self.drag
+        {
+            insert_line(ui.painter(), g, g.slot_y(*slot));
+        }
+    }
+
+    /// S10: "Leeres Projekt" with its text and the actions "MIDI-Spur hinzufügen" (primary, with
+    /// its shortcut) and "Projekt öffnen", centred over the lanes.
+    pub(super) fn empty_hint(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, g: &Geometry) {
+        let area = Rect::from_x_y_ranges(g.lane_x, g.tracks.y_range());
+        let ppp = ui.pixels_per_point();
+        let width = metrics::EMPTY_HINT_WIDTH.min(area.width() - 2.0 * space::SPACE_4);
+        if width <= 0.0 {
+            return;
+        }
+        let title = w::styled_galley(ui, names::EMPTY_TITLE, &typography::TITLE);
+        let mut job = LayoutJob::single_section(
+            names::EMPTY_TEXT.to_owned(),
+            TextFormat {
+                font_id: w::font_at(&typography::TRACK, metrics::EMPTY_TEXT_WEIGHT),
+                line_height: Some(metrics::EMPTY_TEXT_LINE_HEIGHT),
+                color: color32(color::TEXT_2),
+                ..Default::default()
+            },
+        );
+        job.wrap = TextWrapping {
+            max_width: width,
+            ..Default::default()
+        };
+        let text = ui.painter().layout_job(job);
+        let gap = metrics::EMPTY_HINT_GAP;
+        let total = title.size().y
+            + gap
+            + text.size().y
+            + gap
+            + metrics::EMPTY_BUTTONS_TOP
+            + metrics::EMPTY_BUTTON_HEIGHT;
+        let x = px::snap(area.center().x - width / 2.0, ppp);
+        let mut y = px::snap(area.center().y - total / 2.0, ppp);
+
+        let title_rect = Rect::from_min_size(pos2(x, y), title.size());
+        ui.painter()
+            .galley(title_rect.min, title, color32(color::TEXT_1));
+        label_node(ui, title_rect, names::EMPTY_TITLE);
+        y = px::snap(title_rect.bottom() + gap, ppp);
+        let text_rect = Rect::from_min_size(pos2(x, y), text.size());
+        ui.painter()
+            .galley(text_rect.min, text, Color32::PLACEHOLDER);
+        label_node(ui, text_rect, names::EMPTY_TEXT);
+        y = px::snap(text_rect.bottom() + gap + metrics::EMPTY_BUTTONS_TOP, ppp);
+
+        let shortcut = ctx
+            .keymap
+            .label_for(&Action::Edit(EditAction::NewMidiTrack));
+        let add = hint_button(
+            ui,
+            pos2(x, y),
+            names::ADD_MIDI_TRACK,
+            shortcut.as_deref(),
+            Kind::Primary,
+        );
+        if add.clicked() {
+            ctx.send(Action::Edit(EditAction::NewMidiTrack));
+        }
+        let open = hint_button(
+            ui,
+            pos2(add.rect.right() + metrics::EMPTY_BUTTON_GAP, y),
+            names::OPEN_PROJECT,
+            None,
+            Kind::Secondary,
+        );
+        if open.clicked() {
+            ctx.send(Action::Project(ProjectAction::Open));
+        }
+    }
+}
+
+/// A label node for painted text.
+fn label_node(ui: &Ui, rect: Rect, text: &str) {
+    let response = ui.interact(
+        rect,
+        Id::unique(("komponist_arrangement_label", text)),
+        Sense::hover(),
+    );
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+}
+
+/// A button of the S10 hint (`height:28px; padding:0 12px; font-size:12px`, primary semibold
+/// with the shortcut in Mono 10 medium after a 10 px gap; secondary medium), in the colours of
+/// the design system's button (`button::look`).
+fn hint_button(
+    ui: &mut Ui,
+    at: egui::Pos2,
+    label: &str,
+    shortcut: Option<&str>,
+    kind: Kind,
+) -> egui::Response {
+    let ppp = ui.pixels_per_point();
+    let style = typography::UI;
+    let font = match kind {
+        Kind::Primary => w::font_at(&style, wm::SEMIBOLD),
+        Kind::Secondary => fonts::emphasis_font_id(&style),
+    };
+    let text = w::galley(ui, label, font, style.line_height);
+    let sc = shortcut.map(|s| {
+        w::galley(
+            ui,
+            s,
+            w::font_at(&typography::VALUE_S, wm::MEDIUM),
+            typography::VALUE_S.line_height,
+        )
+    });
+    let inner = text.size().x.ceil()
+        + sc.as_ref()
+            .map_or(0.0, |g| metrics::EMPTY_SHORTCUT_GAP + g.size().x.ceil());
+    let rect = Rect::from_min_size(
+        at,
+        vec2(
+            inner + 2.0 * metrics::EMPTY_BUTTON_PADDING_X,
+            metrics::EMPTY_BUTTON_HEIGHT,
+        ),
+    );
+    let response = ui.interact(
+        rect,
+        Id::unique(("komponist_arrangement_hint", label)),
+        Sense::click(),
+    );
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
+    let st = State::of(ui, &response);
+    let look = button::look(
+        Appearance {
+            kind,
+            ..Appearance::default()
+        },
+        st,
+    );
+    let painter = ui.painter();
+    if let Some(fill) = look.fill {
+        px::fill(painter, rect, radius::M, fill);
+    }
+    let x = rect.left() + metrics::EMPTY_BUTTON_PADDING_X;
+    let pos = w::text_pos(rect, &text, x, ppp);
+    let text_right = pos.x + text.size().x;
+    painter.galley(pos, text, look.text);
+    if let Some(sc) = sc {
+        let pos = w::text_pos(rect, &sc, text_right + metrics::EMPTY_SHORTCUT_GAP, ppp);
+        painter.galley(pos, sc, look.text);
+    }
+    if look.focus_ring {
+        focus::paint_ring(painter, rect, radius::M);
+    }
+    response
+}
+
+/// A 2 px accent line across headers and lanes, centred on `y` (`ix.header` "Einfügelinie").
+fn insert_line(painter: &Painter, g: &Geometry, y: f32) {
+    let h = metrics::INSERT_LINE;
+    let r = Rect::from_min_max(
+        pos2(g.body.left(), y - h / 2.0),
+        pos2(g.body.right(), y + h / 2.0),
+    );
+    px::fill(painter, r, 0.0, color32(color::ACCENT));
+}
+
+/// Shows where a dragged plugin would go: an accent frame around the track's header and lane,
+/// or the insert line below the last track for a new track.
+pub(super) fn paint_drop_target(ui: &Ui, g: &Geometry, target: &DropTarget) {
+    let painter = ui.painter();
+    match target {
+        DropTarget::Track(id) => {
+            if let Some(row) = g.rows.iter().find(|r| r.track == *id) {
+                let r = Rect::from_x_y_ranges(g.tracks.x_range(), row.y);
+                px::inner_border(painter, r, color32(color::ACCENT));
+            }
+        }
+        DropTarget::NewTrack { .. } => insert_line(painter, g, g.rows_end),
+        DropTarget::Chain { .. } => {}
+    }
+}
