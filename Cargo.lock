@@ -18,6 +18,15 @@ dependencies = [
 [[package]]
 name = "komponist-app"
 version = "0.1.0"
+dependencies = [
+ "komponist-audio",
+ "komponist-builtin",
+ "komponist-engine",
+ "komponist-model",
+ "komponist-plugins",
+ "komponist-ui",
+ "serde",
+]
 
 [[package]]
 name = "komponist-audio"
@@ -38,6 +47,7 @@ dependencies = [
 name = "komponist-builtin"
 version = "0.1.0"
 dependencies = [
+ "komponist-engine",
  "synth-core",
 ]
 
