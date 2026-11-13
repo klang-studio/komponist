@@ -528,12 +528,13 @@ where
         .map_err(map_err)
 }
 
-/// The cpal error callback. Xruns arrive on the audio thread: atomics only. The stream is dead
-/// after the other handled kinds, so their message may allocate.
-fn on_stream_error(stats: &StreamStats, shared: &StreamShared, err: cpal::Error) {
+/// The cpal error callback. Xruns and refused real-time promotion may arrive on the audio thread:
+/// atomics only. The stream is dead after the other handled kinds, so their message may allocate.
+pub(crate) fn on_stream_error(stats: &StreamStats, shared: &StreamShared, err: cpal::Error) {
     use cpal::ErrorKind as K;
     match err.kind() {
         K::Xrun => stats.record_xrun(),
+        K::RealtimeDenied => stats.record_realtime_denied(),
         K::DeviceNotAvailable | K::StreamInvalidated | K::HostUnavailable => {
             shared.mark_lost(err.to_string());
         }
@@ -682,5 +683,31 @@ mod lookup_tests {
             find_device(&host, &config(None, Some(missing))),
             Err(AudioError::NoDevice(_))
         ));
+    }
+
+    #[test]
+    fn stream_errors_update_stats_and_loss() {
+        let stats = StreamStats::new();
+        let shared = StreamShared::default();
+        on_stream_error(
+            &stats,
+            &shared,
+            cpal::Error::new(cpal::ErrorKind::RealtimeDenied),
+        );
+        assert!(stats.realtime_denied());
+        on_stream_error(&stats, &shared, cpal::Error::new(cpal::ErrorKind::Xrun));
+        on_stream_error(
+            &stats,
+            &shared,
+            cpal::Error::new(cpal::ErrorKind::DeviceChanged),
+        );
+        assert_eq!(stats.xruns(), 1);
+        assert_eq!(shared.lost(), None);
+        on_stream_error(
+            &stats,
+            &shared,
+            cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable),
+        );
+        assert!(shared.lost().is_some());
     }
 }

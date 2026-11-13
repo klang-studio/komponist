@@ -1,7 +1,7 @@
 //! Audio hosts, devices and the stream lifecycle (ARCHITECTURE §7, R1, S07).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -173,6 +173,8 @@ pub struct StreamStats {
     xruns: AtomicU32,
     /// Callbacks run, since the system was created.
     callbacks: AtomicU64,
+    /// The backend refused real-time scheduling for the current stream's audio thread.
+    realtime_denied: AtomicBool,
 }
 
 impl StreamStats {
@@ -215,6 +217,26 @@ impl StreamStats {
     /// RT. Counts one xrun.
     pub fn record_xrun(&self) {
         self.xruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Whether the backend reported that real-time scheduling was refused for the audio thread of
+    /// the current stream (cpal `RealtimeDenied`): the hint in S07 and the status bar. Reset when a
+    /// stream is torn down.
+    ///
+    /// `false` does not prove real-time scheduling: the null backend and server-backed ALSA devices
+    /// (such as ALSA's PipeWire default) are not promoted and report nothing. PipeWire is promoted
+    /// through RTKit; JACK threads are the server's.
+    pub fn realtime_denied(&self) -> bool {
+        self.realtime_denied.load(Ordering::Relaxed)
+    }
+
+    /// Error callback (any thread): real-time scheduling was refused.
+    pub(crate) fn record_realtime_denied(&self) {
+        self.realtime_denied.store(true, Ordering::Relaxed);
+    }
+
+    fn reset_realtime_denied(&self) {
+        self.realtime_denied.store(false, Ordering::Relaxed);
     }
 }
 
@@ -516,6 +538,7 @@ impl<P: AudioProcess> AudioSystem<P> {
         // Every backend drops its callback (and with it the slot) before this returns; the wait is
         // a safety net.
         drop(backend);
+        self.stats.reset_realtime_denied();
         let deadline = Instant::now() + TEARDOWN_TIMEOUT;
         while !handle.is_closed() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(1));
@@ -834,6 +857,20 @@ mod tests {
         system.start(&null(64)).unwrap();
         assert!(runs(&probe, 5));
         assert_eq!(probe.events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn realtime_denial_is_reported_per_stream() {
+        let (mut system, _probe, _sender) = system(0.0);
+        system.start(&null(64)).unwrap();
+        assert!(!system.stats().realtime_denied());
+        system.stats().record_realtime_denied();
+        assert!(system.stats().realtime_denied());
+        system.start(&null(128)).unwrap();
+        assert!(
+            !system.stats().realtime_denied(),
+            "reset for the new stream"
+        );
     }
 
     #[test]
