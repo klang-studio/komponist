@@ -935,6 +935,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kp-test-crash"
+version = "0.1.0"
+dependencies = [
+ "fake-host",
+ "libc",
+ "nice-plug",
+]
+
+[[package]]
 name = "kp-test-fx"
 version = "0.1.0"
 dependencies = [
