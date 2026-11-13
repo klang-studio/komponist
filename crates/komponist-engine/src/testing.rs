@@ -360,6 +360,7 @@ mod tests {
                 loop_range: TickRange::new(Tick::ZERO, Tick::ZERO),
             },
             offline: false,
+            deadline: None,
         }
     }
 

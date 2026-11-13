@@ -2,8 +2,8 @@
 //!
 //! Implements `komponist_engine::Processor` on top of `komponist_ipc::BridgeClient`. Per call:
 //! convert the events to `WireEvent`s and the transport to `WireTransport`, `begin_block`, then
-//! `wait_done` with a deadline of about 60 % of the block period (at the sample rate) minus the time
-//! already spent in this callback. Fallbacks (passthrough for effects, silence for instruments):
+//! `wait_done` until the callback's shared deadline (`ProcessContext::deadline`: 60 % of the
+//! callback period after the callback started, the same for every processor of the callback). Fallbacks (passthrough for effects, silence for instruments):
 //! while the bridge loads (`Loading`), when a block is late or the bridge busy (counted as "late"),
 //! and permanently once the bridge died (then `ProcessStatus::Failed`). Undelivered note-offs are
 //! kept and sent with the next block that reaches the bridge.
@@ -11,11 +11,11 @@
 //! Created only by [`crate::PluginManager`]; lives on the audio thread; dropped on the UI thread
 //! (engine garbage).
 //!
-//! The processor does not know when the audio callback started, so "time already spent" counts
-//! from the entry into [`Processor::process`]. Offline calls (export) wait up to
+//! Without a deadline in the context (calls outside the engine) the processor takes
+//! [`DEADLINE_SHARE`] of its own call's period from its entry. Offline calls (export) wait up to
 //! [`OFFLINE_DEADLINE`] instead, so a render never drops a block for timing reasons.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -32,8 +32,9 @@ use komponist_model::{DeviceRole, PPQ};
 
 use crate::manager::ProcessorSetup;
 
-/// Share of the block period a bridge gets before the block counts as late (ARCHITECTURE §8.1).
-pub const DEADLINE_SHARE: f64 = 0.6;
+/// Share of the callback period by which bridges must be done (ARCHITECTURE §8.1); the engine's
+/// constant, re-exported.
+pub use komponist_engine::processor::DEADLINE_SHARE;
 
 /// How long an offline call (export) waits for the bridge.
 pub const OFFLINE_DEADLINE: Duration = Duration::from_secs(2);
@@ -61,7 +62,7 @@ pub(crate) struct Shared {
     /// The setup `activate` asked for; taken by the manager.
     pub reactivate: Mutex<Option<ProcessorSetup>>,
     /// Blocks that missed their deadline or found the bridge busy.
-    pub late_blocks: AtomicU32,
+    pub late_blocks: AtomicU64,
 }
 
 impl Shared {
@@ -70,7 +71,7 @@ impl Shared {
             run: AtomicU8::new(RUN_LOADING),
             reactivating: AtomicBool::new(false),
             reactivate: Mutex::new(None),
-            late_blocks: AtomicU32::new(0),
+            late_blocks: AtomicU64::new(0),
         }
     }
 }
@@ -283,11 +284,13 @@ impl Processor for ExternalProcessor {
         };
         self.reset = false;
         self.wire.clear();
-        let deadline = if ctx.offline {
-            entered + OFFLINE_DEADLINE
-        } else {
-            let period = frames as f64 / f64::from(ctx.sample_rate);
-            entered + Duration::from_secs_f64(period * DEADLINE_SHARE)
+        let deadline = match ctx.deadline {
+            _ if ctx.offline => entered + OFFLINE_DEADLINE,
+            Some(deadline) => deadline,
+            None => {
+                let period = frames as f64 / f64::from(ctx.sample_rate);
+                entered + Duration::from_secs_f64(period * DEADLINE_SHARE)
+            }
         };
         let [left, right] = &mut io.output;
         match self

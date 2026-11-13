@@ -73,6 +73,7 @@ fn ctx(frames: usize) -> ProcessContext {
             loop_range: TickRange::new(Tick::ZERO, Tick::ZERO),
         },
         offline: false,
+        deadline: None,
     }
 }
 

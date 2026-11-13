@@ -1348,6 +1348,7 @@ mod tests {
                 loop_range: TickRange::default(),
             },
             offline: true,
+            deadline: None,
         };
         let mut io = StereoIo {
             input: [&silence, &silence],
