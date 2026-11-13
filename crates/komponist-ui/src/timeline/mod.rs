@@ -28,12 +28,17 @@
 
 mod mesh;
 pub mod metrics;
+pub mod track_header;
 
 use egui::load::{SizeHint, TexturePoll};
 use egui::{Color32, Painter, Rangef, Rect, Role, TextureOptions, WidgetInfo, accesskit, pos2};
 use komponist_model::{Meter, Tick};
 use komponist_tokens::Icon;
 
+pub use track_header::{
+    HeaderLayout, HeaderModel, MeterLevel, ToggleLook, TrackToggle, header_access, header_layout,
+    paint_track_header,
+};
 
 /// Maps musical time to screen x: `x = x0 + tick × px_per_tick`.
 ///
