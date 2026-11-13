@@ -12,6 +12,7 @@
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
+//! - [`export`]: WAV export: normalisation, TPDF dither, PCM quantisation.
 //! - [`testing`]: test processors ([`testing::TestSine`], [`testing::TestGain`]).
 //!
 //! Engine internals: `transport` (position, loop, count-in), `sequencer` (active notes,
@@ -25,6 +26,7 @@
 pub mod api;
 pub mod compile;
 pub mod engine;
+pub mod export;
 mod garbage;
 mod metronome;
 mod mixer;
