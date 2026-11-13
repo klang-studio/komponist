@@ -383,3 +383,55 @@ impl StepResolution {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prototype_steps_convert_to_ticks() {
+        assert_eq!(Tick::from_steps(16), Tick(3840));
+        assert_eq!(Tick::from_steps(1), Tick(240));
+        assert_eq!(Tick::from_quarters(1), Tick(PPQ));
+    }
+
+    #[test]
+    fn meter_lengths() {
+        assert_eq!(Meter::FOUR_FOUR.ticks_per_bar(), 3840);
+        let six_eight = Meter { num: 6, den: 8 };
+        assert_eq!(six_eight.ticks_per_beat(), 480);
+        assert_eq!(six_eight.ticks_per_bar(), 2880);
+    }
+
+    #[test]
+    fn grid_ladders_stay_closed() {
+        let m = Meter::FOUR_FOUR;
+        assert_eq!(Grid::Bar.ticks(m), Tick(3840));
+        assert_eq!(Grid::SixteenthTriplet.ticks(m), Tick(160));
+        assert_eq!(Grid::ThirtySecond.finer(), Grid::ThirtySecond);
+        assert_eq!(Grid::Bar.coarser(), Grid::Bar);
+        assert_eq!(
+            Grid::SixteenthTriplet.coarser().coarser(),
+            Grid::QuarterTriplet
+        );
+        assert_eq!(Grid::QuarterTriplet.coarser(), Grid::QuarterTriplet);
+    }
+
+    #[test]
+    fn tick_sample_rounding() {
+        // 120 bpm at 48 kHz: one tick is 25 samples.
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        assert_eq!(map.tick_to_sample(Tick(1), 48_000.0), 25);
+        assert_eq!(map.sample_to_tick(49, 48_000.0), Tick(1));
+        assert_eq!(map.sample_to_tick(-1, 48_000.0), Tick(-1));
+        assert_eq!(map.bar_start(10), Tick(9 * 3840));
+    }
+
+    #[test]
+    fn tick_range_basics() {
+        let r = TickRange::new(Tick(10), Tick(20));
+        assert_eq!(r.len(), Tick(10));
+        assert!(r.contains(Tick(10)) && !r.contains(Tick(20)));
+        assert!(TickRange::new(Tick(5), Tick(5)).is_empty());
+    }
+}

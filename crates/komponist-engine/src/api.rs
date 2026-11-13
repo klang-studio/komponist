@@ -211,6 +211,9 @@ pub enum EngineEvent {
 }
 
 /// Objects the engine hands back for dropping on the UI thread (the audio thread never frees).
+///
+/// When the event queue is full, the engine parks retired objects in a preallocated holding list
+/// and sends them in later blocks; it never drops them itself.
 pub enum Garbage {
     /// A replaced program.
     Program(Box<Program>),
@@ -366,5 +369,27 @@ impl EngineHandle {
 impl fmt::Debug for EngineHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EngineHandle").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_meter_keeps_the_maximum_until_taken() {
+        let m = TrackMeter::new();
+        m.record(0.25, 0.5);
+        m.record(0.75, 0.125);
+        assert_eq!(m.take(), (0.75, 0.5));
+        assert_eq!(m.take(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn telemetry_starts_stopped_at_zero() {
+        let t = Telemetry::new();
+        assert_eq!(t.transport(), TransportState::Stopped);
+        assert_eq!(t.playhead(), Tick::ZERO);
+        assert_eq!(t.master_meter().take(), (0.0, 0.0));
     }
 }

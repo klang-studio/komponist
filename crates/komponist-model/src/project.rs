@@ -553,3 +553,59 @@ impl Default for Step {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The model mirrors a few design tokens it cannot import (no studio dependencies): the hue
+    /// list, the auto-assign order and the track height range.
+    #[test]
+    fn mirrored_tokens_match_tokens_json() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/tokens.json");
+        let tokens: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("tokens.json")).unwrap();
+
+        let colors = tokens["track"]["colors"].as_object().expect("track.colors");
+        // serde_json maps are sorted by key, so compare the hues sorted (token order is ascending).
+        let mut hues: Vec<u16> = colors
+            .values()
+            .map(|c| c["hue"].as_u64().expect("hue") as u16)
+            .collect();
+        hues.sort_unstable();
+        assert_eq!(hues, Hue::ALL.map(|h| h.0).to_vec());
+
+        let order: Vec<u16> = tokens["track"]["auto-assign-hue-order"]
+            .as_array()
+            .expect("auto-assign-hue-order")
+            .iter()
+            .map(|h| h.as_u64().unwrap() as u16)
+            .collect();
+        assert_eq!(order, Hue::AUTO_ORDER.map(|h| h.0).to_vec());
+
+        let track = &tokens["size"]["track"];
+        assert_eq!(track["min"].as_u64(), Some(TRACK_HEIGHT_MIN as u64));
+        assert_eq!(track["max"].as_u64(), Some(TRACK_HEIGHT_MAX as u64));
+        assert_eq!(track["default"].as_u64(), Some(TRACK_HEIGHT_DEFAULT as u64));
+    }
+
+    #[test]
+    fn new_project_defaults() {
+        let p = Project::new(DEFAULT_PROJECT_NAME);
+        assert_eq!(p.tempo, Tempo::DEFAULT);
+        assert_eq!(p.loop_range, TickRange::new(Tick(0), Tick(4 * 3840)));
+        assert!(!p.loop_on && !p.metronome);
+        assert_eq!(p.count_in_bars, 1);
+        assert_eq!(p.song_end(), Tick::ZERO);
+        assert!(p.tracks.is_empty());
+    }
+
+    #[test]
+    fn step_defaults() {
+        let s = Step::default();
+        assert_eq!(
+            (s.on, s.velocity, s.probability, s.ratchet),
+            (false, 100, 100, 1)
+        );
+    }
+}

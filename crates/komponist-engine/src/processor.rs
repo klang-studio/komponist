@@ -197,3 +197,23 @@ impl StereoIo<'_> {
         self.output[1].fill(0.0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stereo_io_fallbacks() {
+        let (l, r) = ([1.0_f32, 2.0], [3.0_f32, 4.0]);
+        let (mut ol, mut or) = ([0.0_f32; 2], [9.0_f32; 2]);
+        let mut io = StereoIo {
+            input: [&l, &r],
+            output: [&mut ol, &mut or],
+        };
+        assert_eq!(io.frames(), 2);
+        io.passthrough();
+        assert_eq!((io.output[0][1], io.output[1][0]), (2.0, 3.0));
+        io.silence();
+        assert!(io.output.iter().all(|c| c.iter().all(|&s| s == 0.0)));
+    }
+}

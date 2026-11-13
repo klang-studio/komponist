@@ -20,7 +20,10 @@ pub struct ExternalProcessor {
 }
 
 impl Processor for ExternalProcessor {
-    /// Non-RT: sends `Activate` over the control socket if the rate or block size changed.
+    /// Non-RT (engine out of the callback, e.g. inside `Engine::set_sample_rate`). If the rate or
+    /// block size changed, asks the plugin manager (through a queue it polls) to re-activate the
+    /// bridge, and returns at once; until the bridge is `Active` again the processor uses the
+    /// fallback.
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError> {
         todo!("WP-45")
     }

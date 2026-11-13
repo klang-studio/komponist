@@ -83,7 +83,9 @@ pub enum TransportAction {
 }
 
 /// Document edits. Variants without ids act on the current selection and focus; the others mirror
-/// the functions in `komponist_model::edits` one to one.
+/// functions of `komponist_model::edits` one to one. Device insertion goes through
+/// [`PluginAction::Add`]; takes (`add_take`), step-row replacement (`set_step_rows`) and plugin
+/// state snapshots (`set_device_state`) are issued by the dispatcher itself.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditAction {
     /// Ctrl Z.

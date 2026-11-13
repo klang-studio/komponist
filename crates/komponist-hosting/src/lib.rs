@@ -65,3 +65,44 @@ pub fn bundle_format(path: &Path) -> Option<PluginFormat> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_ipc::WireEvent;
+
+    #[test]
+    fn bundle_format_by_extension() {
+        assert_eq!(
+            bundle_format(Path::new("/x/Klopfer.clap")),
+            Some(PluginFormat::Clap)
+        );
+        assert_eq!(
+            bundle_format(Path::new("/x/Vital.VST3")),
+            Some(PluginFormat::Vst3)
+        );
+        assert_eq!(bundle_format(Path::new("/x/readme.txt")), None);
+        assert_eq!(bundle_format(Path::new("/x/noext")), None);
+    }
+
+    #[test]
+    fn event_out_counts_drops() {
+        let mut slots = [WireEvent::default(); 2];
+        let mut out = EventOut::new(&mut slots);
+        let e = WireEvent {
+            offset: 7,
+            ..WireEvent::default()
+        };
+        assert!(out.push(e) && out.push(e));
+        assert!(!out.push(e));
+        assert_eq!(out.as_slice().len(), 2);
+        assert_eq!(out.dropped(), 1);
+    }
+
+    #[test]
+    fn fd_events_bits() {
+        let rw = FdEvents::READ.union(FdEvents::WRITE);
+        assert!(rw.contains(FdEvents::READ) && rw.contains(FdEvents::WRITE));
+        assert!(!rw.contains(FdEvents::ERROR));
+    }
+}

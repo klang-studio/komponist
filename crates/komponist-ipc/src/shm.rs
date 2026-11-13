@@ -535,3 +535,37 @@ impl BridgeMonitor {
         &self.region
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_sizes() {
+        assert_eq!(core::mem::size_of::<WireEvent>(), 32);
+        assert_eq!(core::mem::size_of::<WireTransport>(), 56);
+        assert_eq!(SHM_SIZE % 4096, 0);
+        assert!(SHM_SIZE >= core::mem::size_of::<ShmLayout>());
+        // The futex words must be naturally aligned for FUTEX_WAIT.
+        assert_eq!(core::mem::offset_of!(ShmHeader, request_seq) % 4, 0);
+        assert_eq!(core::mem::offset_of!(ShmHeader, done_seq) % 4, 0);
+    }
+
+    #[test]
+    fn bridge_state_decoding() {
+        for s in [
+            BridgeState::Starting,
+            BridgeState::Loaded,
+            BridgeState::Active,
+            BridgeState::Failed,
+        ] {
+            assert_eq!(BridgeState::from_u32(s as u32), s);
+        }
+        assert_eq!(BridgeState::from_u32(99), BridgeState::Failed);
+    }
+
+    #[test]
+    fn magic_is_kpsm() {
+        assert_eq!(&SHM_MAGIC.to_le_bytes(), b"KPSM");
+    }
+}

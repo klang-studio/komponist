@@ -213,3 +213,25 @@ pub const NOTE_KEYS: [(Key, u8); 14] = [
     (Key::J, 11),
     (Key::K, 12),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_keys_span_one_octave() {
+        let offsets: Vec<u8> = NOTE_KEYS.iter().map(|(_, o)| *o).collect();
+        assert_eq!(offsets.first(), Some(&0));
+        assert_eq!(offsets.last(), Some(&12));
+        // Y and Z are the same physical position on QWERTZ / QWERTY.
+        assert!(NOTE_KEYS.contains(&(Key::Y, 8)) && NOTE_KEYS.contains(&(Key::Z, 8)));
+    }
+
+    #[test]
+    fn tab_toggles_the_mixer_only_from_canvases() {
+        assert!(FocusArea::Arrangement.is_canvas());
+        assert!(FocusArea::Mixer.is_canvas());
+        assert!(!FocusArea::Inspector.is_canvas());
+        assert!(!FocusArea::Dialog.is_canvas());
+    }
+}
