@@ -27,6 +27,7 @@ pub mod px;
 pub mod state;
 pub mod theme;
 pub mod tooltip;
+pub mod widgets;
 
 #[cfg(feature = "snapshot")]
 pub mod snapshot;
