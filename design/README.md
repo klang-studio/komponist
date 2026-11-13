@@ -22,7 +22,7 @@ in its `<script>` block.
 | `color.canvas.lane-selected` | `#1a1c1f` | `Screens.dc.html` `arrangement()` `lane` (`t.sel?'#1a1c1f':C.f1`); `ks-view.js` `arrView` `lane` | Arrangement lane of a selected track (else `surface.1`) |
 | `color.canvas.black-key-row` | `#1a1b1d` | `Screens.dc.html` `pianoRoll()` `rows` (`b?'#1a1b1d':C.f2`); `ks-view.js` `prView` `rows` | Piano-roll row of a black key (white keys `surface.2`) |
 | `color.canvas.outside-clip` | `#11121499` | `Screens.dc.html` `pianoRoll()` `outside` (`rgba(17,18,20,0.6)`); `ks-view.js` `prView` `outside` | Overlay on the piano-roll grid after the clip end: `surface.0` at 60 % (0.6 × 255 = 153 = `0x99`) |
-| `color.canvas.box-select` | `#4ea7e61a` | `ks-view.js` `prView` `box` (`background:'rgba(78,167,230,0.10)'`, with `boxShadow:'inset 0 0 0 1px '+C.acc`) | Fill of the piano roll's box selection: `accent` at 10 % (0.10 × 255 = 25.5 → 26 = `0x1a`); its 1 px edge is `accent` (WP-41) |
+| `color.canvas.box-select` | `#4ea7e61a` | `ks-view.js` `prView` `box` (`background:'rgba(78,167,230,0.10)'`, with `boxShadow:'inset 0 0 0 1px '+C.acc`) | Fill of the box selection in the piano roll (WP-41) and the arrangement (WP-40): `accent` at 10 % (0.10 × 255 = 25.5 → 26 = `0x1a`); its 1 px edge is `accent` |
 | `color.canvas.clip-edge-selected` | `#e8e9eb29` | `ks-view.js` `clipView` `edge` (`background: sel ? 'rgba(232,233,235,0.16)' : 'transparent'`, `width:6`, `right:0`) | Right edge of a selected arrangement clip, where the length is dragged: `text.1` at 16 % (0.16 × 255 = 40.8 → 41 = `0x29`) |
 
 In Rust: `TrackPalette::{key_playing, note_muted, clip_handle}` (formulas in

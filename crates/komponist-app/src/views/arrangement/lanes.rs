@@ -454,12 +454,14 @@ impl Arrangement {
             );
         }
 
-        // Box selection.
+        // Box selection: `canvas.box-select` with a 1 px accent edge, as in the piano roll
+        // (`ks-view.js` `prView` `box`).
         if let Some(Drag::Box { origin, .. }) = &self.drag
             && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
         {
             let area = Rect::from_two_pos(*origin, pos).intersect(lanes);
             if area.is_positive() {
+                px::fill(painter, area, 0.0, color32(color::CANVAS_BOX_SELECT));
                 px::inner_border(painter, area, color32(color::ACCENT));
             }
         }
