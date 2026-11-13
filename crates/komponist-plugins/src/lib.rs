@@ -10,14 +10,15 @@
 //! - [`external`]: [`ExternalProcessor`], the engine's `Processor` for a bridge.
 //!
 //! This crate links no plugin format (only `komponist-bridge` does) and no UI.
+//!
+//! Internals: `bridge` (one bridge process: spawn, writer thread, messages, watchdog) and `scan`
+//! (bundle discovery and scan processes).
 
-// Contract stage (WP-01): bodies are `todo!()` until WP-45 implements them, so parameters are
-// unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
+mod bridge;
 pub mod catalog;
 pub mod external;
 pub mod manager;
+mod scan;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,

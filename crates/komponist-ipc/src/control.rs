@@ -7,10 +7,11 @@
 //! and reassembled by [`Channel`]; callers always see whole messages. The shared-memory fd travels
 //! over the same socket as SCM_RIGHTS ancillary data ([`Channel::send_fd`]).
 //!
-//! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `Activate`,
-//! then `SetState` if it has a state; the bridge answers `Loaded`, then `RtPriority` and
-//! `Activated`. Control messages are handled by the bridge's main thread; RT data never goes
-//! through the socket.
+//! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `SetState`
+//! if it has a state, then `Activate` (so the plugin starts processing with its state); the bridge
+//! answers `Loaded`, then `RtPriority` and `Activated`. `SetState` has no answer; a failure comes as
+//! `Error` with context `State`. Control messages are handled by the bridge's main thread; RT data
+//! never goes through the socket.
 //!
 //! Watchdog: the app sends `Ping` periodically and expects the matching `Pong`. The bridge main
 //! thread answers between two plugin calls, so a `Pong` also waits while the main thread is inside

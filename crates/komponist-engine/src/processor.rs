@@ -9,10 +9,17 @@
 //! `Command::InsertProcessor`, processed on the audio thread, sent back through the garbage queue
 //! and dropped on the UI thread. A processor is never dropped on the audio thread.
 
+use std::time::Instant;
+
 use komponist_model::{Meter, TickRange};
 
 /// MIDI note id meaning "no id" (live input, or when the sender does not track notes).
 pub const NOTE_ID_NONE: u32 = u32::MAX;
+
+/// Share of the callback period by which every processor of a realtime callback must be done
+/// (ARCHITECTURE §8.1): [`ProcessContext::deadline`] = callback start + `DEADLINE_SHARE` × the
+/// callback's frames / sample rate.
+pub const DEADLINE_SHARE: f64 = 0.6;
 
 /// One device in a chain, driven by the engine.
 ///
@@ -147,6 +154,13 @@ pub struct ProcessContext {
     /// `true` during offline render (export): processors may use higher quality and must not
     /// expect realtime pacing (CLAP render extension, VST3 `kOffline`).
     pub offline: bool,
+    /// When this realtime callback's processing must be done: `Engine::process` takes the time once
+    /// at entry and adds [`DEADLINE_SHARE`] × the callback period (all of its frames / sample
+    /// rate). Every segment and every processor of the callback gets the same value, so processors
+    /// that wait (bridges) share one budget instead of each taking their own. A processor that
+    /// would wait past it gives up and uses its fallback. `None` for offline render (no pacing)
+    /// and for calls outside the engine.
+    pub deadline: Option<Instant>,
 }
 
 /// Transport snapshot at frame 0 of a processor call (maps onto CLAP's transport event and VST3's

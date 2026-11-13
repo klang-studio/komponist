@@ -2511,10 +2511,14 @@ dependencies = [
 name = "komponist-plugins"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "komponist-engine",
  "komponist-ipc",
  "komponist-model",
+ "rustix 1.1.6",
  "serde",
+ "serde_json",
+ "x11rb 0.14.0",
 ]
 
 [[package]]
