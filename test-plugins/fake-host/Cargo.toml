@@ -1,0 +1,10 @@
+[package]
+name = "fake-host"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Drives the test plugins' nice-plug Plugin impls in unit tests, without a real host"
+
+[dependencies]
+nice-plug.workspace = true
+nice-assert-no-alloc.workspace = true

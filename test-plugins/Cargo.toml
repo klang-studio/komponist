@@ -1,0 +1,32 @@
+# Test plugins for komponist's plugin hosting, IPC and crash handling (PLAN WP-27).
+#
+# A Cargo workspace of its own, excluded from komponist's: nice-plug brings its own egui, baseview
+# and windowing versions, which must never meet the DAW's.
+[workspace]
+resolver = "3"
+members = [
+    "fake-host",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# Same versions as klopfer (../klopfer/Cargo.toml), but straight from crates.io without its forks.
+nice-plug = { version = "0.4.2", features = ["assert_process_allocs"] }
+nice-plug-egui = "0.5.1"
+nice-plug-xtask = "0.1.1"
+# The egui of nice-plug-egui, with its default fonts (nice-plug-egui leaves them out).
+egui = "0.36.2"
+
+# Tests.
+fake-host = { path = "fake-host" }
+# The crate behind nice-plug's `assert_process_allocs`, for `assert_no_alloc` around `process`.
+nice-assert-no-alloc = "1.0.0"
+# `prctl(PR_SET_DUMPABLE)`: no core dumps from the crash tests' child processes.
+libc = "0.2.191"
+
+[profile.release]
+lto = "thin"
