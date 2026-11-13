@@ -7,3 +7,12 @@ publish.workspace = true
 [[bin]]
 name = "komponist"
 path = "src/main.rs"
+
+[dependencies]
+komponist-model.workspace = true
+komponist-engine.workspace = true
+komponist-audio.workspace = true
+komponist-builtin.workspace = true
+komponist-plugins.workspace = true
+komponist-ui.workspace = true
+serde.workspace = true

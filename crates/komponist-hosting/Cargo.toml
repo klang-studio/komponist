@@ -3,3 +3,7 @@ name = "komponist-hosting"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+# Shared plugin vocabulary and the per-block wire types (no plugin format, no audio backend).
+komponist-ipc.workspace = true
