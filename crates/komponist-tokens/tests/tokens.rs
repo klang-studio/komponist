@@ -39,6 +39,10 @@ fn komponist_colours() {
     let [r, g, b, a] = color::CANVAS_OUTSIDE_CLIP;
     assert_eq!([r, g, b, 0xff], color::SURFACE_0);
     assert_eq!(a, (0.6_f64 * 255.0).round() as u8);
+    // `rgba(232,233,235,0.16)`: text.1 at 16 % opacity.
+    let [r, g, b, a] = color::CANVAS_CLIP_EDGE_SELECTED;
+    assert_eq!([r, g, b, 0xff], color::TEXT_1);
+    assert_eq!(a, (0.16_f64 * 255.0).round() as u8);
 }
 
 #[test]
