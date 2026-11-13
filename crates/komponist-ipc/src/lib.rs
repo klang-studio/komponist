@@ -23,6 +23,12 @@ pub mod ring;
 pub mod shm;
 pub mod signal;
 
+// Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
+// in release builds `assert_no_alloc` is a no-op).
+#[cfg(all(test, debug_assertions))]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
 pub use control::{
     AppChannel, BridgeChannel, BridgeMsg, Channel, ChannelError, ControlMsg, ErrorContext, GuiSize,
     LoadedInfo, LogLevel, NoteName, ParamInfo, ParamValue, PluginDescriptor, PluginFormat,
