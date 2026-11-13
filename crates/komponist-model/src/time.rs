@@ -262,14 +262,26 @@ impl TempoMap {
     /// Splits `tick` into bar, beat and display tick (floor division, so it works for negative
     /// count-in ticks too).
     pub fn bbt(&self, tick: Tick) -> Bbt {
-        todo!("WP-12")
+        let per_bar = self.meter.ticks_per_bar();
+        let per_beat = self.meter.ticks_per_beat();
+        let in_bar = tick.0.rem_euclid(per_bar);
+        Bbt {
+            bar: tick.0.div_euclid(per_bar) + 1,
+            beat: (in_bar / per_beat) as u32 + 1,
+            tick: ((in_bar % per_beat) * DISPLAY_TICKS_PER_BEAT / per_beat) as u32,
+        }
     }
 
     /// The tick of a bar/beat/display-tick position; inverse of [`TempoMap::bbt`] for display-tick
     /// granularity (`from_bbt(bbt(t))` equals `t` rounded down to a multiple of
     /// `ticks_per_beat / 240`).
     pub fn from_bbt(&self, bbt: Bbt) -> Tick {
-        todo!("WP-12")
+        let per_beat = self.meter.ticks_per_beat();
+        Tick(
+            (bbt.bar - 1) * self.meter.ticks_per_bar()
+                + (i64::from(bbt.beat) - 1) * per_beat
+                + i64::from(bbt.tick) * per_beat / DISPLAY_TICKS_PER_BEAT,
+        )
     }
 }
 
@@ -346,12 +358,19 @@ impl Grid {
     /// Rounds `tick` to the nearest grid line (ties away from zero). Grid lines are multiples of
     /// [`Grid::ticks`] counted from tick 0.
     pub fn snap(self, tick: Tick, meter: Meter) -> Tick {
-        todo!("WP-12")
+        let g = self.ticks(meter).0;
+        let a = tick.0.abs();
+        let mut q = a / g;
+        if 2 * (a % g) >= g {
+            q += 1;
+        }
+        Tick(tick.0.signum() * q * g)
     }
 
     /// Rounds `tick` down to the grid line at or before it.
     pub fn snap_floor(self, tick: Tick, meter: Meter) -> Tick {
-        todo!("WP-12")
+        let g = self.ticks(meter).0;
+        Tick(tick.0.div_euclid(g) * g)
     }
 }
 
@@ -428,10 +447,171 @@ mod tests {
     }
 
     #[test]
+    fn bbt_splits_positions() {
+        let map = TempoMap::constant(Tempo::new(124.0), Meter::FOUR_FOUR);
+        let bbt = |bar, beat, tick| Bbt { bar, beat, tick };
+        assert_eq!(map.bbt(Tick(0)), bbt(1, 1, 0));
+        // 10.2.120: nine bars, one beat and half a beat.
+        assert_eq!(map.bbt(Tick(9 * 3840 + 960 + 480)), bbt(10, 2, 120));
+        assert_eq!(map.bbt(Tick(3839)), bbt(1, 4, 239));
+        assert_eq!(map.bbt(Tick(3840)), bbt(2, 1, 0));
+        // Count-in: floor division.
+        assert_eq!(map.bbt(Tick(-1)), bbt(0, 4, 239));
+        assert_eq!(map.bbt(Tick(-3840)), bbt(0, 1, 0));
+        assert_eq!(map.bbt(Tick(-3841)), bbt(-1, 4, 239));
+
+        let six_eight = TempoMap::constant(Tempo::DEFAULT, Meter { num: 6, den: 8 });
+        assert_eq!(six_eight.bbt(Tick(5 * 480 + 100)), bbt(1, 6, 50));
+        assert_eq!(six_eight.bbt(Tick(2880)), bbt(2, 1, 0));
+    }
+
+    #[test]
+    fn from_bbt_inverts_bbt() {
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        let t = Tick(9 * 3840 + 960 + 483);
+        assert_eq!(map.from_bbt(map.bbt(t)), Tick(9 * 3840 + 960 + 480));
+        assert_eq!(map.from_bbt(map.bbt(Tick(-1))), Tick(-4));
+        assert_eq!(map.bar_start(1), map.from_bbt(map.bbt(Tick::ZERO)));
+    }
+
+    #[test]
+    fn seconds_follow_the_tempo() {
+        let map = TempoMap::constant(Tempo::new(124.0), Meter::FOUR_FOUR);
+        // 37 beats at 124 bpm.
+        let s = map.tick_to_seconds(Tick::from_quarters(37));
+        assert!((s - 37.0 * 60.0 / 124.0).abs() < 1e-12);
+        assert!((map.seconds_to_ticks(s) - 37.0 * 960.0).abs() < 1e-9);
+        assert!((map.tick_to_samples(Tick(960), 48_000.0) - 48_000.0 * 60.0 / 124.0).abs() < 1e-9);
+        assert!((map.samples_to_ticks(48_000.0, 48_000.0) - 960.0 * 124.0 / 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tick_to_sample_rounds_ties_up() {
+        // 120 bpm at 44.1 kHz: 22.96875 samples per tick.
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        assert_eq!(map.tick_to_sample(Tick(1), 44_100.0), 23);
+        // 3 ticks = 68.90625 samples → 69; 16 ticks = 367.5 samples exactly → 368 (tie up).
+        assert_eq!(map.tick_to_sample(Tick(3), 44_100.0), 69);
+        assert_eq!(map.tick_to_sample(Tick(16), 44_100.0), 368);
+        assert_eq!(map.tick_to_sample(Tick(-16), 44_100.0), -367);
+        // Floor on the way back: sample 367 lies before tick 16.
+        assert_eq!(map.sample_to_tick(367, 44_100.0), Tick(15));
+        assert_eq!(map.sample_to_tick(368, 44_100.0), Tick(16));
+    }
+
+    #[test]
+    fn snap_rounds_to_the_nearest_line() {
+        let m = Meter::FOUR_FOUR;
+        let g = Grid::Sixteenth;
+        assert_eq!(g.snap(Tick(119), m), Tick(0));
+        assert_eq!(g.snap(Tick(120), m), Tick(240));
+        assert_eq!(g.snap(Tick(121), m), Tick(240));
+        assert_eq!(g.snap(Tick(-119), m), Tick(0));
+        assert_eq!(g.snap(Tick(-120), m), Tick(-240));
+        assert_eq!(Grid::Bar.snap(Tick(1919), m), Tick(0));
+        assert_eq!(Grid::Bar.snap(Tick(1920), m), Tick(3840));
+        assert_eq!(Grid::EighthTriplet.snap(Tick(500), m), Tick(640));
+        assert_eq!(
+            Grid::Bar.snap(Tick(1500), Meter { num: 3, den: 4 }),
+            Tick(2880)
+        );
+    }
+
+    #[test]
+    fn snap_floor_rounds_down() {
+        let m = Meter::FOUR_FOUR;
+        assert_eq!(Grid::Sixteenth.snap_floor(Tick(239), m), Tick(0));
+        assert_eq!(Grid::Sixteenth.snap_floor(Tick(240), m), Tick(240));
+        assert_eq!(Grid::Sixteenth.snap_floor(Tick(-1), m), Tick(-240));
+        assert_eq!(
+            Grid::Quarter.snap_floor(Tick(36_000), m),
+            Tick(36_000 - 480)
+        );
+    }
+
+    #[test]
+    fn step_resolutions() {
+        assert_eq!(StepResolution::default().ticks(), Tick(240));
+        assert_eq!(StepResolution::EighthTriplet.ticks(), Tick(320));
+        assert_eq!(StepResolution::SixteenthTriplet.ticks(), Tick(160));
+    }
+
+    #[test]
     fn tick_range_basics() {
         let r = TickRange::new(Tick(10), Tick(20));
         assert_eq!(r.len(), Tick(10));
         assert!(r.contains(Tick(10)) && !r.contains(Tick(20)));
         assert!(TickRange::new(Tick(5), Tick(5)).is_empty());
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        const METERS: [Meter; 5] = [
+            Meter::FOUR_FOUR,
+            Meter { num: 3, den: 4 },
+            Meter { num: 6, den: 8 },
+            Meter { num: 7, den: 16 },
+            Meter { num: 5, den: 2 },
+        ];
+
+        const GRIDS: [Grid; 9] = [
+            Grid::Bar,
+            Grid::Half,
+            Grid::Quarter,
+            Grid::Eighth,
+            Grid::Sixteenth,
+            Grid::ThirtySecond,
+            Grid::QuarterTriplet,
+            Grid::EighthTriplet,
+            Grid::SixteenthTriplet,
+        ];
+
+        proptest! {
+            #[test]
+            fn bbt_round_trip(t in -100_000i64..10_000_000, m in 0usize..METERS.len()) {
+                let meter = METERS[m];
+                let map = TempoMap::constant(Tempo::DEFAULT, meter);
+                let bbt = map.bbt(Tick(t));
+                prop_assert!(bbt.beat >= 1 && bbt.beat <= u32::from(meter.num));
+                prop_assert!(bbt.tick < DISPLAY_TICKS_PER_BEAT as u32);
+                let unit = meter.ticks_per_beat() / DISPLAY_TICKS_PER_BEAT;
+                prop_assert_eq!(map.from_bbt(bbt), Tick(t.div_euclid(unit) * unit));
+            }
+
+            #[test]
+            fn snap_lands_on_the_nearest_line(
+                t in -1_000_000i64..1_000_000,
+                g in 0usize..GRIDS.len(),
+                m in 0usize..METERS.len(),
+            ) {
+                let (grid, meter) = (GRIDS[g], METERS[m]);
+                let step = grid.ticks(meter).0;
+                let snapped = grid.snap(Tick(t), meter).0;
+                prop_assert_eq!(snapped % step, 0);
+                prop_assert!(2 * (snapped - t).abs() <= step);
+                let floor = grid.snap_floor(Tick(t), meter).0;
+                prop_assert_eq!(floor % step, 0);
+                prop_assert!(floor <= t && t < floor + step);
+            }
+
+            #[test]
+            fn sample_and_tick_conversions_agree(
+                s in -10_000_000i64..100_000_000,
+                bpm in 40.0f64..=240.0,
+                rate in prop::sample::select(vec![44_100.0f64, 48_000.0, 96_000.0]),
+            ) {
+                let map = TempoMap::constant(Tempo::new(bpm), Meter::FOUR_FOUR);
+                let tick = map.sample_to_tick(s, rate);
+                // Floor: the tick starts at or before the sample, the next one after it.
+                let eps = 1e-6;
+                prop_assert!(map.tick_to_samples(tick, rate) <= s as f64 + eps);
+                prop_assert!(map.tick_to_samples(tick + Tick(1), rate) > s as f64 - eps);
+                // Nearest sample of a tick, within half a sample.
+                let back = map.tick_to_sample(tick, rate);
+                prop_assert!((back as f64 - map.tick_to_samples(tick, rate)).abs() <= 0.5 + eps);
+            }
+        }
     }
 }
