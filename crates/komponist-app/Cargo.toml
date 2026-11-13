@@ -20,6 +20,7 @@ komponist-audio.workspace = true
 komponist-builtin.workspace = true
 komponist-plugins.workspace = true
 komponist-ui.workspace = true
+komponist-tokens = { workspace = true, features = ["egui"] }
 serde.workspace = true
 # komponist-play: WAV export.
 hound.workspace = true

@@ -31,12 +31,17 @@
 //! | Q | piano roll | `Edit(QuantizeSelection)` |
 //! | Strg A | piano roll, arrangement | `Ui(SelectAll)` |
 //! | 1 / 2 / 3 | piano roll | `Ui(SetTool(Pointer / Pencil / Eraser))` |
+//! | Rücktaste | arrangement, piano roll | `Edit(DeleteSelection)` (prototype `key()`) |
+//! | Esc | dialog | `Ui(CloseDialog)` |
 //!
-//! Computer keyboard MIDI is a separate layer ([`NOTE_KEYS`]) checked before the table while
-//! [`crate::ui_state::UiState::keyboard_midi`] is on; text fields get keys before both.
+//! Computer keyboard MIDI is a separate layer ([`NOTE_KEYS`], [`note_for`]) checked before the
+//! table while it is active (a track is armed, or [`crate::ui_state::UiState::keyboard_midi`]
+//! is on; ARCHITECTURE §13.2), by physical key position; text fields get keys before both. The
+//! app (`App::show`) applies the table: the Esc binding means `Transport(DiscardTake)` while
+//! recording, and a widget reached with Tab keeps Space, Enter, arrows and Tab.
 
-use crate::actions::Action;
-use crate::ui_state::FocusArea;
+use crate::actions::{Action, EditAction, ProjectAction, TransportAction, UiAction};
+use crate::ui_state::{FocusArea, Panel, SettingsSection, Tool};
 
 /// Keys the keymap can bind (logical keys; letters by their US-layout name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -125,7 +130,147 @@ impl KeyChord {
     /// The German label shown in tooltips and context menus ("Strg Shift E", "Leertaste", "Pos1",
     /// "Entf", "Strg ↑"), as written in `HANDOFF.md` §7.
     pub fn label(&self) -> String {
-        todo!("WP-30")
+        let mut parts: Vec<&str> = Vec::with_capacity(4);
+        if self.mods.ctrl {
+            parts.push("Strg");
+        }
+        if self.mods.shift {
+            parts.push("Shift");
+        }
+        if self.mods.alt {
+            parts.push("Alt");
+        }
+        parts.push(self.key.label());
+        parts.join(" ")
+    }
+
+    /// `key` without modifiers.
+    pub const fn plain(key: Key) -> KeyChord {
+        KeyChord {
+            key,
+            mods: Modifiers::NONE,
+        }
+    }
+
+    /// Ctrl + `key`.
+    pub const fn ctrl(key: Key) -> KeyChord {
+        KeyChord {
+            key,
+            mods: Modifiers::CTRL,
+        }
+    }
+
+    /// Ctrl + Shift + `key`.
+    pub const fn ctrl_shift(key: Key) -> KeyChord {
+        KeyChord {
+            key,
+            mods: Modifiers {
+                ctrl: true,
+                shift: true,
+                alt: false,
+            },
+        }
+    }
+
+    /// Shift + `key`.
+    pub const fn shift(key: Key) -> KeyChord {
+        KeyChord {
+            key,
+            mods: Modifiers {
+                ctrl: false,
+                shift: true,
+                alt: false,
+            },
+        }
+    }
+
+    /// Alt + `key`.
+    pub const fn alt(key: Key) -> KeyChord {
+        KeyChord {
+            key,
+            mods: Modifiers {
+                ctrl: false,
+                shift: false,
+                alt: true,
+            },
+        }
+    }
+}
+
+impl Modifiers {
+    /// No modifier.
+    pub const NONE: Modifiers = Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: false,
+    };
+
+    /// Ctrl only.
+    pub const CTRL: Modifiers = Modifiers {
+        ctrl: true,
+        shift: false,
+        alt: false,
+    };
+}
+
+impl Key {
+    /// The German key name as `HANDOFF.md` §7 writes it ("Leertaste", "Pos1", "Entf", "↑", "−").
+    pub const fn label(self) -> &'static str {
+        match self {
+            Key::A => "A",
+            Key::B => "B",
+            Key::C => "C",
+            Key::D => "D",
+            Key::E => "E",
+            Key::F => "F",
+            Key::G => "G",
+            Key::H => "H",
+            Key::I => "I",
+            Key::J => "J",
+            Key::K => "K",
+            Key::L => "L",
+            Key::M => "M",
+            Key::N => "N",
+            Key::O => "O",
+            Key::P => "P",
+            Key::Q => "Q",
+            Key::R => "R",
+            Key::S => "S",
+            Key::T => "T",
+            Key::U => "U",
+            Key::V => "V",
+            Key::W => "W",
+            Key::X => "X",
+            Key::Y => "Y",
+            Key::Z => "Z",
+            Key::Num0 => "0",
+            Key::Num1 => "1",
+            Key::Num2 => "2",
+            Key::Num3 => "3",
+            Key::Num4 => "4",
+            Key::Num5 => "5",
+            Key::Num6 => "6",
+            Key::Num7 => "7",
+            Key::Num8 => "8",
+            Key::Num9 => "9",
+            Key::Space => "Leertaste",
+            Key::Tab => "Tab",
+            Key::Enter => "Enter",
+            Key::Escape => "Esc",
+            Key::Delete => "Entf",
+            Key::Backspace => "Rücktaste",
+            Key::Home => "Pos1",
+            Key::End => "Ende",
+            Key::ArrowUp => "↑",
+            Key::ArrowDown => "↓",
+            Key::ArrowLeft => "←",
+            Key::ArrowRight => "→",
+            Key::Plus => "+",
+            Key::Minus => "\u{2212}",
+            Key::OpenBracket => "[",
+            Key::CloseBracket => "]",
+            Key::Comma => ",",
+        }
     }
 }
 
@@ -165,7 +310,220 @@ impl Keymap {
 
     /// The default table (see the module docs).
     pub fn default_bindings() -> Keymap {
-        todo!("WP-30")
+        use KeyScope::{Area, Canvases, Global};
+        let arrangement = Area(FocusArea::Arrangement);
+        let piano_roll = Area(FocusArea::PianoRoll);
+        let t = Action::Transport;
+        let e = Action::Edit;
+        let u = Action::Ui;
+        let p = Action::Project;
+        let table: Vec<(KeyChord, KeyScope, Action)> = vec![
+            // Transport.
+            (
+                KeyChord::plain(Key::Space),
+                Global,
+                t(TransportAction::TogglePlay),
+            ),
+            (
+                KeyChord::plain(Key::R),
+                Global,
+                t(TransportAction::ToggleRecord),
+            ),
+            (
+                KeyChord::plain(Key::L),
+                Global,
+                t(TransportAction::ToggleLoop),
+            ),
+            (
+                KeyChord::plain(Key::C),
+                Global,
+                t(TransportAction::ToggleMetronome),
+            ),
+            (
+                KeyChord::plain(Key::Home),
+                Global,
+                t(TransportAction::GoToStart),
+            ),
+            // Views and panels.
+            (
+                KeyChord::plain(Key::Tab),
+                Canvases,
+                u(UiAction::ToggleMixer),
+            ),
+            (
+                KeyChord::ctrl(Key::Num1),
+                Global,
+                u(UiAction::TogglePanel(Panel::Browser)),
+            ),
+            (
+                KeyChord::ctrl(Key::Num2),
+                Global,
+                u(UiAction::TogglePanel(Panel::Inspector)),
+            ),
+            (
+                KeyChord::ctrl(Key::Num3),
+                Global,
+                u(UiAction::TogglePanel(Panel::Dock)),
+            ),
+            (
+                KeyChord::ctrl(Key::ArrowUp),
+                Global,
+                u(UiAction::ToggleDockMaximized),
+            ),
+            (KeyChord::ctrl(Key::Tab), Global, u(UiAction::NextTab)),
+            (
+                KeyChord::ctrl(Key::F),
+                Global,
+                u(UiAction::FocusBrowserSearch),
+            ),
+            (
+                KeyChord::ctrl(Key::Comma),
+                Global,
+                u(UiAction::OpenSettings(SettingsSection::Audio)),
+            ),
+            (
+                KeyChord::plain(Key::Escape),
+                Global,
+                u(UiAction::ClearSelection),
+            ),
+            (
+                KeyChord::plain(Key::Escape),
+                Area(FocusArea::Dialog),
+                u(UiAction::CloseDialog),
+            ),
+            // Project.
+            (KeyChord::ctrl(Key::T), Global, e(EditAction::NewMidiTrack)),
+            (KeyChord::ctrl(Key::N), Global, p(ProjectAction::New)),
+            (KeyChord::ctrl(Key::O), Global, p(ProjectAction::Open)),
+            (KeyChord::ctrl(Key::S), Global, p(ProjectAction::Save)),
+            (
+                KeyChord::ctrl_shift(Key::E),
+                Global,
+                p(ProjectAction::OpenExportDialog),
+            ),
+            // History.
+            (KeyChord::ctrl(Key::Z), Global, e(EditAction::Undo)),
+            (KeyChord::ctrl_shift(Key::Z), Global, e(EditAction::Redo)),
+            // Canvases: zoom, fit, grid.
+            (KeyChord::plain(Key::Plus), Canvases, u(zoom(false, 1))),
+            (KeyChord::plain(Key::Minus), Canvases, u(zoom(false, -1))),
+            (KeyChord::alt(Key::Plus), Canvases, u(zoom(true, 1))),
+            (KeyChord::alt(Key::Minus), Canvases, u(zoom(true, -1))),
+            (KeyChord::plain(Key::Z), Canvases, u(UiAction::ZoomToFit)),
+            (
+                KeyChord::ctrl(Key::OpenBracket),
+                Canvases,
+                u(UiAction::GridFiner),
+            ),
+            (
+                KeyChord::ctrl(Key::CloseBracket),
+                Canvases,
+                u(UiAction::GridCoarser),
+            ),
+            // Arrangement: clips and tracks.
+            (
+                KeyChord::ctrl(Key::D),
+                arrangement,
+                e(EditAction::DuplicateSelection),
+            ),
+            (
+                KeyChord::ctrl(Key::E),
+                arrangement,
+                e(EditAction::SplitAtPlayhead),
+            ),
+            (
+                KeyChord::plain(Key::Num0),
+                arrangement,
+                e(EditAction::ToggleMuteSelection),
+            ),
+            (
+                KeyChord::plain(Key::M),
+                arrangement,
+                e(EditAction::ToggleMuteTracks),
+            ),
+            (
+                KeyChord::plain(Key::Delete),
+                arrangement,
+                e(EditAction::DeleteSelection),
+            ),
+            (
+                KeyChord::plain(Key::Backspace),
+                arrangement,
+                e(EditAction::DeleteSelection),
+            ),
+            (KeyChord::ctrl(Key::A), arrangement, u(UiAction::SelectAll)),
+            // Piano roll: notes and tools.
+            (
+                KeyChord::plain(Key::Delete),
+                piano_roll,
+                e(EditAction::DeleteSelection),
+            ),
+            (
+                KeyChord::plain(Key::Backspace),
+                piano_roll,
+                e(EditAction::DeleteSelection),
+            ),
+            (KeyChord::ctrl(Key::A), piano_roll, u(UiAction::SelectAll)),
+            (
+                KeyChord::plain(Key::ArrowUp),
+                piano_roll,
+                e(EditAction::TransposeSelection(1)),
+            ),
+            (
+                KeyChord::plain(Key::ArrowDown),
+                piano_roll,
+                e(EditAction::TransposeSelection(-1)),
+            ),
+            (
+                KeyChord::shift(Key::ArrowUp),
+                piano_roll,
+                e(EditAction::TransposeSelection(12)),
+            ),
+            (
+                KeyChord::shift(Key::ArrowDown),
+                piano_roll,
+                e(EditAction::TransposeSelection(-12)),
+            ),
+            (
+                KeyChord::plain(Key::ArrowLeft),
+                piano_roll,
+                e(EditAction::NudgeSelection(-1)),
+            ),
+            (
+                KeyChord::plain(Key::ArrowRight),
+                piano_roll,
+                e(EditAction::NudgeSelection(1)),
+            ),
+            (
+                KeyChord::plain(Key::Q),
+                piano_roll,
+                e(EditAction::QuantizeSelection),
+            ),
+            (
+                KeyChord::plain(Key::Num1),
+                piano_roll,
+                u(UiAction::SetTool(Tool::Pointer)),
+            ),
+            (
+                KeyChord::plain(Key::Num2),
+                piano_roll,
+                u(UiAction::SetTool(Tool::Pencil)),
+            ),
+            (
+                KeyChord::plain(Key::Num3),
+                piano_roll,
+                u(UiAction::SetTool(Tool::Eraser)),
+            ),
+        ];
+        let mut keymap = Keymap::new();
+        for (chord, scope, action) in table {
+            keymap.bind(Binding {
+                chord,
+                scope,
+                action,
+            });
+        }
+        keymap
     }
 
     /// Adds a binding (later bindings win over earlier ones with the same chord and scope).
@@ -182,13 +540,52 @@ impl Keymap {
     /// `Canvases` (if the area is a canvas), then `Global`. Global bindings do not apply while a
     /// dialog has focus.
     pub fn lookup(&self, chord: KeyChord, focus: FocusArea) -> Option<&Action> {
-        todo!("WP-30")
+        let find = |scope: KeyScope| {
+            self.bindings
+                .iter()
+                .rev()
+                .find(|b| b.chord == chord && b.scope == scope)
+                .map(|b| &b.action)
+        };
+        find(KeyScope::Area(focus))
+            .or_else(|| {
+                focus
+                    .is_canvas()
+                    .then(|| find(KeyScope::Canvases))
+                    .flatten()
+            })
+            .or_else(|| {
+                (focus != FocusArea::Dialog)
+                    .then(|| find(KeyScope::Global))
+                    .flatten()
+            })
     }
 
     /// The first chord bound to `action` (the shortcut column of menus and tooltips).
     pub fn chord_for(&self, action: &Action) -> Option<KeyChord> {
-        todo!("WP-30")
+        self.bindings
+            .iter()
+            .find(|b| b.action == *action)
+            .map(|b| b.chord)
     }
+
+    /// The label of [`Keymap::chord_for`] ("Strg 3"), for tooltips and menus.
+    pub fn label_for(&self, action: &Action) -> Option<String> {
+        self.chord_for(action).map(|c| c.label())
+    }
+}
+
+fn zoom(vertical: bool, steps: i32) -> UiAction {
+    UiAction::Zoom { vertical, steps }
+}
+
+/// The MIDI note the computer keyboard plays for the physical key `key` ([`NOTE_KEYS`] from
+/// [`NOTE_KEYS_BASE`]), if it is a note key.
+pub fn note_for(key: Key) -> Option<u8> {
+    NOTE_KEYS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, offset)| NOTE_KEYS_BASE + offset)
 }
 
 /// MIDI note of the [`NOTE_KEYS`] offset 0: C4.
@@ -233,5 +630,156 @@ mod tests {
         assert!(FocusArea::Mixer.is_canvas());
         assert!(!FocusArea::Inspector.is_canvas());
         assert!(!FocusArea::Dialog.is_canvas());
+        let k = Keymap::default_bindings();
+        let tab = KeyChord::plain(Key::Tab);
+        let mixer = Action::Ui(UiAction::ToggleMixer);
+        for area in [
+            FocusArea::Arrangement,
+            FocusArea::PianoRoll,
+            FocusArea::StepSequencer,
+            FocusArea::Mixer,
+        ] {
+            assert_eq!(k.lookup(tab, area), Some(&mixer), "{area:?}");
+        }
+        for area in [
+            FocusArea::Browser,
+            FocusArea::Inspector,
+            FocusArea::Devices,
+            FocusArea::Transport,
+            FocusArea::Dialog,
+        ] {
+            assert_eq!(k.lookup(tab, area), None, "{area:?}: Tab moves the focus");
+        }
+    }
+
+    #[test]
+    fn labels_follow_the_handoff() {
+        let label = |c: KeyChord| c.label();
+        assert_eq!(label(KeyChord::plain(Key::Space)), "Leertaste");
+        assert_eq!(label(KeyChord::ctrl_shift(Key::E)), "Strg Shift E");
+        assert_eq!(label(KeyChord::plain(Key::Home)), "Pos1");
+        assert_eq!(label(KeyChord::plain(Key::Delete)), "Entf");
+        assert_eq!(label(KeyChord::ctrl(Key::ArrowUp)), "Strg ↑");
+        assert_eq!(label(KeyChord::alt(Key::Minus)), "Alt \u{2212}");
+        assert_eq!(label(KeyChord::ctrl(Key::Comma)), "Strg ,");
+        assert_eq!(label(KeyChord::ctrl(Key::Num3)), "Strg 3");
+        assert_eq!(label(KeyChord::shift(Key::ArrowDown)), "Shift ↓");
+    }
+
+    #[test]
+    fn area_bindings_win_over_canvases_and_global() {
+        let k = Keymap::default_bindings();
+        let del = KeyChord::plain(Key::Delete);
+        let delete = Action::Edit(EditAction::DeleteSelection);
+        assert_eq!(k.lookup(del, FocusArea::Arrangement), Some(&delete));
+        assert_eq!(k.lookup(del, FocusArea::PianoRoll), Some(&delete));
+        assert_eq!(k.lookup(del, FocusArea::Mixer), None);
+        // Esc: global clears the selection, in a dialog it closes the dialog.
+        let esc = KeyChord::plain(Key::Escape);
+        assert_eq!(
+            k.lookup(esc, FocusArea::Arrangement),
+            Some(&Action::Ui(UiAction::ClearSelection))
+        );
+        assert_eq!(
+            k.lookup(esc, FocusArea::Dialog),
+            Some(&Action::Ui(UiAction::CloseDialog))
+        );
+        // Globals do not reach into dialogs.
+        assert_eq!(
+            k.lookup(KeyChord::plain(Key::Space), FocusArea::Dialog),
+            None
+        );
+        // Canvases: zoom only on canvases.
+        let plus = KeyChord::plain(Key::Plus);
+        assert!(k.lookup(plus, FocusArea::Arrangement).is_some());
+        assert!(k.lookup(plus, FocusArea::Inspector).is_none());
+        // Exact modifiers.
+        assert_eq!(
+            k.lookup(KeyChord::shift(Key::Space), FocusArea::Arrangement),
+            None
+        );
+        // Numbers pick tools in the piano roll only.
+        assert_eq!(
+            k.lookup(KeyChord::plain(Key::Num2), FocusArea::PianoRoll),
+            Some(&Action::Ui(UiAction::SetTool(Tool::Pencil)))
+        );
+        assert_eq!(
+            k.lookup(KeyChord::plain(Key::Num2), FocusArea::Arrangement),
+            None
+        );
+    }
+
+    #[test]
+    fn later_bindings_win_and_chords_are_found_by_action() {
+        let mut k = Keymap::default_bindings();
+        let play = Action::Transport(TransportAction::TogglePlay);
+        assert_eq!(k.chord_for(&play), Some(KeyChord::plain(Key::Space)));
+        assert_eq!(k.label_for(&play).as_deref(), Some("Leertaste"));
+        let export = Action::Project(ProjectAction::OpenExportDialog);
+        assert_eq!(k.label_for(&export).as_deref(), Some("Strg Shift E"));
+        k.bind(Binding {
+            chord: KeyChord::plain(Key::Space),
+            scope: KeyScope::Global,
+            action: Action::Transport(TransportAction::Stop),
+        });
+        assert_eq!(
+            k.lookup(KeyChord::plain(Key::Space), FocusArea::Arrangement),
+            Some(&Action::Transport(TransportAction::Stop))
+        );
+        assert_eq!(k.chord_for(&Action::Ui(UiAction::ToggleKeyboardMidi)), None);
+    }
+
+    #[test]
+    fn every_handoff_shortcut_is_bound() {
+        let k = Keymap::default_bindings();
+        // HANDOFF.md §7, in its order.
+        let global = [
+            (KeyChord::plain(Key::Space), FocusArea::Arrangement),
+            (KeyChord::plain(Key::R), FocusArea::Arrangement),
+            (KeyChord::plain(Key::L), FocusArea::Arrangement),
+            (KeyChord::plain(Key::C), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Home), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Tab), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::T), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::N), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::O), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::S), FocusArea::Arrangement),
+            (KeyChord::ctrl_shift(Key::E), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::Num1), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::Num2), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::Num3), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::F), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Plus), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Minus), FocusArea::Arrangement),
+            (KeyChord::alt(Key::Plus), FocusArea::Arrangement),
+            (KeyChord::alt(Key::Minus), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Z), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::OpenBracket), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::CloseBracket), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::Z), FocusArea::Arrangement),
+            (KeyChord::ctrl_shift(Key::Z), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::Comma), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Escape), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::D), FocusArea::Arrangement),
+            (KeyChord::ctrl(Key::E), FocusArea::Arrangement),
+            (KeyChord::plain(Key::Num0), FocusArea::Arrangement),
+            (KeyChord::plain(Key::ArrowUp), FocusArea::PianoRoll),
+            (KeyChord::plain(Key::ArrowDown), FocusArea::PianoRoll),
+            (KeyChord::shift(Key::ArrowUp), FocusArea::PianoRoll),
+            (KeyChord::shift(Key::ArrowDown), FocusArea::PianoRoll),
+            (KeyChord::plain(Key::Q), FocusArea::PianoRoll),
+        ];
+        for (chord, area) in global {
+            assert!(k.lookup(chord, area).is_some(), "{} unbound", chord.label());
+        }
+    }
+
+    #[test]
+    fn note_keys_map_to_notes_from_c4() {
+        assert_eq!(note_for(Key::A), Some(60));
+        assert_eq!(note_for(Key::K), Some(72));
+        assert_eq!(note_for(Key::Y), note_for(Key::Z));
+        assert_eq!(note_for(Key::R), None);
+        assert_eq!(note_for(Key::L), None);
     }
 }

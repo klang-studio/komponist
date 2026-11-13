@@ -9,10 +9,14 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use komponist_model::{ClipId, DeviceId, Grid, NoteId, Tick, TickRange, TrackId};
+use komponist_model::{
+    ClipContent, ClipId, DeviceId, Grid, NoteId, PPQ, Project, Tick, TickRange, TrackId,
+};
 use komponist_plugins::MissingPlugin;
+use komponist_tokens::size;
 
 use crate::actions::{Action, ExportSettings};
+use crate::metrics;
 
 /// Which panel has keyboard focus. Shortcuts are looked up per area (`Keymap::lookup`); the focused
 /// panel shows a 1 px accent line at the top of its header.
@@ -95,7 +99,108 @@ pub struct UiState {
 impl UiState {
     /// The initial state: start screen, default panel sizes from the tokens, nothing selected.
     pub fn new() -> UiState {
-        todo!("WP-30")
+        UiState {
+            screen: Screen::Start,
+            focus: FocusArea::default(),
+            layout: PanelLayout::default(),
+            selection: Selection::default(),
+            arrangement: ArrangementView::default(),
+            editor: EditorView::default(),
+            piano_roll: PianoRollView::default(),
+            step_seq: StepSeqView::default(),
+            mixer: MixerView::default(),
+            devices: DevicesView::default(),
+            browser: BrowserView::default(),
+            inspector: InspectorView::default(),
+            start: StartView::default(),
+            dialog: None,
+            plugin_windows: Vec::new(),
+            status: None,
+            keyboard_midi: false,
+        }
+    }
+
+    /// The editor kind the dock's editor tab shows for the open clip in `project`: the step
+    /// sequencer for a step clip, else the piano roll (also without a clip).
+    pub fn editor_area(&self, project: &Project) -> FocusArea {
+        let step = self
+            .editor
+            .clip
+            .and_then(|id| project.find_clip(id))
+            .is_some_and(|(_, clip)| matches!(clip.content, ClipContent::Step(_)));
+        if step {
+            FocusArea::StepSequencer
+        } else {
+            FocusArea::PianoRoll
+        }
+    }
+
+    /// The focus area of the dock's active tab ([`UiState::editor_area`] for the editor tab).
+    pub fn dock_area(&self, project: &Project) -> FocusArea {
+        match self.layout.dock_tab {
+            DockTab::Editor => self.editor_area(project),
+            DockTab::Devices => FocusArea::Devices,
+            DockTab::Mixer => FocusArea::Mixer,
+        }
+    }
+}
+
+impl FocusArea {
+    /// Whether the area lives in the dock.
+    pub fn in_dock(self) -> bool {
+        matches!(
+            self,
+            FocusArea::PianoRoll | FocusArea::StepSequencer | FocusArea::Devices | FocusArea::Mixer
+        )
+    }
+}
+
+impl Default for PanelLayout {
+    /// Everything open at the token defaults, editor tab, not maximised.
+    fn default() -> PanelLayout {
+        PanelLayout {
+            browser_open: true,
+            browser_width: size::browser::DEFAULT,
+            inspector_open: true,
+            inspector_width: size::inspector::DEFAULT,
+            dock_open: true,
+            dock_height: size::dock::DEFAULT,
+            dock_maximized: false,
+            dock_tab: DockTab::Editor,
+            before_mixer: None,
+        }
+    }
+}
+
+impl Default for ArrangementView {
+    /// The prototype's zoom (72 px per bar), scrolled to the start, grid one bar, snap on.
+    fn default() -> ArrangementView {
+        ArrangementView {
+            px_per_bar: metrics::arrangement::PX_PER_BAR,
+            scroll_tick: 0.0,
+            scroll_y: 0.0,
+            v_zoom: 1.0,
+            grid: Grid::Bar,
+            snap: true,
+        }
+    }
+}
+
+impl Default for PianoRollView {
+    /// Pointer tool, 1/16 grid with snap, keys `size.key` high, new notes 1/8 long, velocity lane
+    /// shown.
+    fn default() -> PianoRollView {
+        PianoRollView {
+            tool: Tool::Pointer,
+            grid: Grid::Sixteenth,
+            snap: true,
+            px_per_bar: metrics::piano_roll::PX_PER_BAR,
+            scroll_tick: 0.0,
+            key_height: size::key::DEFAULT,
+            top_key: metrics::piano_roll::TOP_KEY,
+            note_length: Tick(PPQ / 2),
+            velocity_lane: true,
+        }
     }
 }
 

@@ -2424,6 +2424,7 @@ dependencies = [
  "komponist-engine",
  "komponist-model",
  "komponist-plugins",
+ "komponist-tokens",
  "komponist-ui",
  "serde",
 ]

@@ -9,15 +9,11 @@
 //! - [`actions`]: [`Action`] and its sub-enums; every interaction as data.
 //! - [`ui_state`]: [`UiState`] with one struct per panel, [`FocusArea`].
 //! - [`keymap`]: [`Keymap`], key chords and the computer keyboard MIDI layer.
-//!
-//! The shell, dispatch and engine sync arrive with WP-30, the views with WP-40 … WP-44.
-
-// Contract stage (WP-01): bodies are `todo!()` until WP-30 implements them, so parameters are
-// unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
+//! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 
 pub mod actions;
 pub mod keymap;
+pub mod metrics;
 pub mod ui_state;
 
 pub use actions::{
