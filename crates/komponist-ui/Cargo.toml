@@ -1,0 +1,9 @@
+[package]
+name = "komponist-ui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "komponist-gallery"
+path = "src/bin/gallery.rs"
