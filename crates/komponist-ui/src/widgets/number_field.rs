@@ -36,16 +36,11 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, size, space};
 
+use super::metrics::number_field as metrics;
 use crate::drag::{self, ClickAction, ValueDrag};
 use crate::state::{self, State};
 use crate::theme::corner_radius;
 use crate::{focus, fonts, px, tooltip};
-
-/// Sizes of the design (`nf`) that `tokens.json` has no token for (contract change requests).
-pub mod metrics {
-    /// Default width of a number field (`width: 96`).
-    pub const WIDTH: f32 = 96.0;
-}
 
 // ---------------------------------------------------------------------------------------------
 // The number field

@@ -78,6 +78,80 @@ pub mod metrics {
     pub const MEDIUM: u16 = 500;
     /// CSS weight of IBM Plex semibold (bundled for Sans only).
     pub const SEMIBOLD: u16 = 600;
+
+    /// Number field (WP-21): `nf` in `Designsystem.dc.html`.
+    pub mod number_field {
+        /// Default width of a number field (`nf`: `width: 96`).
+        pub const WIDTH: f32 = 96.0;
+    }
+
+    /// Flat knob (WP-21): `pt`, `arc`, `knob()`, `knobs`; card spec "Ø 28 (klein 20) · Bogen
+    /// 270° · Strich 2". The diameters are the tokens `size.knob` and `size.knob-small`.
+    pub mod knob {
+        /// The arc spans 270°, from −135° to +135°, 0° up, clockwise (`a = -135 + 270 * v`).
+        pub const ARC_DEGREES: f32 = 270.0;
+        /// Stroke of track and value arc (`strokeWidth: 2`).
+        pub const ARC_STROKE: f32 = 2.0;
+        /// Arc radius = half the size − this (`r = c - 2`).
+        pub const ARC_INSET: f32 = 2.0;
+        /// Cap radius = half the size − this (`capR: c - 5`).
+        pub const CAP_INSET: f32 = 5.0;
+        /// Indicator length = half the size − this (`pt(c, c - 6, a)`).
+        pub const INDICATOR_INSET: f32 = 6.0;
+        /// Stroke of the indicator, round caps (`strokeWidth: 1.5`).
+        pub const INDICATOR_STROKE: f32 = 1.5;
+        /// Minimum width of a sample column in the gallery (`min-width: 56px`).
+        pub const SAMPLE_MIN_WIDTH: f32 = 56.0;
+    }
+
+    /// Fader (WP-21): `scale`, `fader()`, `faders`; card spec "Bahn 4 · Knopf 32 × 44,
+    /// Doppeltrapez (Taille 22) · kompakt 24 × 28 (Taille 15, 1 Rille je Hälfte)". Track width
+    /// and thumb sizes are the tokens `size.fader-track`, `size.fader-thumb(-compact)`.
+    pub mod fader {
+        use komponist_tokens::space;
+
+        /// Track length of the design's samples (`height: 200`); the default.
+        pub const TRACK_LENGTH: f32 = 200.0;
+        /// Width of the scale column, labels right-aligned in it (`width: 20`).
+        pub const SCALE_WIDTH: f32 = space::SPACE_4 + space::SPACE_1;
+        /// Gap between scale column and thumb (thumb `left: 22`).
+        pub const SCALE_GAP: f32 = space::SPACE_0_5;
+        /// Thickness of the value line ("Wertlinie", `midS` `strokeWidth: 2`).
+        pub const VALUE_LINE: f32 = 2.0;
+        /// Inset of the value line from the thumb's sides: normal (`x1=4 … x2=28`), compact.
+        pub const VALUE_LINE_INSET: [f32; 2] = [4.0, 3.0];
+        /// Waist of the normal thumb ("Taille 22"; polygon `5.5 … 26.5`).
+        pub const WAIST: f32 = 22.0;
+        /// Waist of the compact thumb ("Taille 15").
+        pub const WAIST_COMPACT: f32 = 15.0;
+        /// Grooves of the normal thumb per half: (distance from the top or bottom edge, inset
+        /// from the side), from the SVG lines at y 6 / 11 / 33 / 38.
+        pub const GROOVES: [(f32, f32); 2] = [(6.0, 5.0), (11.0, 6.0)];
+        /// The one groove per half of the compact thumb ("1 Rille je Hälfte").
+        pub const GROOVES_COMPACT: [(f32, f32); 1] = [(7.0, 6.0)];
+        /// Gap between the sample columns of the card (`gap: 28px`).
+        pub const SAMPLE_GAP: f32 = space::SPACE_6 + space::SPACE_1;
+    }
+
+    /// Level meter (WP-21): `meterV`, `meterH`, `meters`; card spec "Pegel 2 × 4, Abstand 1".
+    pub mod meter {
+        /// Bar width of the mixer meter (`meterV`: `width: 4`).
+        pub const BAR_WIDTH: f32 = 4.0;
+        /// Bar width of the track header meter (`meterH`: `width: 3`).
+        pub const HEADER_BAR_WIDTH: f32 = 3.0;
+        /// Gap between the bars (`gap: 1px`).
+        pub const BAR_GAP: f32 = 1.0;
+        /// Corner radius of bars and LED (`borderRadius: 1`).
+        pub const BAR_RADIUS: f32 = 1.0;
+        /// Height of the clip LED (`led`: `height: 4`).
+        pub const LED_HEIGHT: f32 = 4.0;
+        /// Gap between LED and bars (`gap: 2px`).
+        pub const LED_GAP: f32 = 2.0;
+        /// The clip block at the top of a header bar (`meterH` `clip`: `height: 3`).
+        pub const CLIP_BLOCK: f32 = 3.0;
+        /// Length of the design's samples (`height: 124px`); the default.
+        pub const LENGTH: f32 = 124.0;
+    }
 }
 
 /// The sense of a widget that wants `sense`: hover only while a state is forced around it

@@ -35,6 +35,7 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::{space, typography};
 
 use super::fader;
+use super::metrics::meter as metrics;
 use super::number_field::{caption, column, is_still, sense, text_width, value_label};
 use crate::px;
 
@@ -47,28 +48,8 @@ pub const LOUD_FROM_DB: f32 = -6.0;
 /// Upper end of the loud zone ("meter.loud: −6 bis 0 dBFS"); above is clip.
 pub const CLIP_FROM_DB: f32 = 0.0;
 
-/// Sizes of the design (`meterV`, `meterH`, "Pegel 2 × 4, Abstand 1") that `tokens.json` has no
-/// token for (contract change requests).
-pub mod metrics {
-    /// Bar width of the mixer meter (`width: 4`).
-    pub const BAR_WIDTH: f32 = 4.0;
-    /// Bar width of the track header meter (`width: 3`).
-    pub const HEADER_BAR_WIDTH: f32 = 3.0;
-    /// Gap between the bars (`gap: 1px`).
-    pub const BAR_GAP: f32 = 1.0;
-    /// Corner radius of bars and LED (`border-radius: 1`).
-    pub const BAR_RADIUS: f32 = 1.0;
-    /// Height of the clip LED (`height: 4`).
-    pub const LED_HEIGHT: f32 = 4.0;
-    /// Gap between LED and bars (`gap: 2px`).
-    pub const LED_GAP: f32 = 2.0;
-    /// The clip block at the top of a header bar (`height: 3`).
-    pub const CLIP_BLOCK: f32 = 3.0;
-    /// Length of the design's samples (`height: 124`); the default.
-    pub const LENGTH: f32 = 124.0;
-    /// While the meter falls, it asks for a repaint after this many seconds (60 Hz).
-    pub const FRAME_S: f32 = 1.0 / 60.0;
-}
+/// While the meter falls, it asks for a repaint after this many seconds (60 Hz).
+pub const FRAME_S: f32 = 1.0 / 60.0;
 
 /// The colour zone of a level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -441,7 +422,7 @@ impl Widget for Meter<'_> {
             }
             if self.state.is_active() {
                 ui.ctx()
-                    .request_repaint_after(Duration::from_secs_f32(metrics::FRAME_S));
+                    .request_repaint_after(Duration::from_secs_f32(FRAME_S));
             }
         }
         paint(ui.painter(), rect, self.state, &self.style);

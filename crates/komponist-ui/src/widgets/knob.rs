@@ -26,6 +26,7 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{color, size, space};
 
+use super::metrics::knob as metrics;
 use super::number_field::{
     self, Formatter, GetSet, Parser, accesskit_requests, caption, clamp_finite, column,
     drag_gesture, entry, expose_value, format_number, get_set, is_still, key_steps, normalized,
@@ -35,26 +36,13 @@ use crate::drag::{ClickAction, ValueDrag};
 use crate::state::State;
 use crate::{fonts, px, tooltip};
 
-/// Geometry of the design's knob (`knob()`, "Bogen 270° · Strich 2") that `tokens.json` has no
-/// token for (contract change requests).
-pub mod metrics {
-    /// The arc spans 270°, from −135° to +135° (0° = up, clockwise).
-    pub const ARC_DEGREES: f32 = 270.0;
-    /// Stroke of track and value arc.
-    pub const ARC_STROKE: f32 = 2.0;
-    /// Arc radius = half the size − this.
-    pub const ARC_INSET: f32 = 2.0;
-    /// Cap radius = half the size − this.
-    pub const CAP_INSET: f32 = 5.0;
-    /// Indicator length = half the size − this.
-    pub const INDICATOR_INSET: f32 = 6.0;
-    /// Stroke of the indicator (round caps).
-    pub const INDICATOR_STROKE: f32 = 1.5;
-    /// Keyboard and AccessKit step: this part of the range.
-    pub const KEY_STEP: f64 = 0.01;
-    /// Degrees per segment when the arcs are drawn as polylines.
-    pub const SEGMENT_DEGREES: f32 = 3.0;
-}
+/// Keyboard and AccessKit step: this part of the range (not in the design; `ix.knob` has no keys).
+pub const KEY_STEP: f64 = 0.01;
+/// Degrees per segment when the arcs are drawn as polylines.
+const SEGMENT_DEGREES: f32 = 3.0;
+/// Minimum width of the text entry above the knob (not in the design): two knob diameters,
+/// room for "20.0 kHz".
+const ENTRY_MIN_WIDTH: f32 = 2.0 * size::KNOB;
 
 /// The two knob sizes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -249,7 +237,7 @@ pub fn arc_points(center: Pos2, radius: f32, from: f32, to: f32) -> Vec<Pos2> {
     if a1 - a0 < 0.5 {
         return Vec::new();
     }
-    let n = ((a1 - a0) / metrics::SEGMENT_DEGREES).ceil().max(1.0) as usize;
+    let n = ((a1 - a0) / SEGMENT_DEGREES).ceil().max(1.0) as usize;
     (0..=n)
         .map(|i| point(center, radius, a0 + (a1 - a0) * i as f32 / n as f32))
         .collect()
@@ -295,7 +283,7 @@ impl Widget for Knob<'_> {
         let old = (self.get_set)(None);
         let mut value = old;
         let live = !is_still(ui) && response.enabled();
-        let key_step = (max - min) * metrics::KEY_STEP;
+        let key_step = (max - min) * KEY_STEP;
 
         if live && !entry::is_open(&ctx, id) {
             take_focus_on_press(&response);
@@ -331,7 +319,7 @@ impl Widget for Knob<'_> {
             self.bipolar,
         );
         if live && entry::is_open(&ctx, id) {
-            let min_w = 2.0 * size::KNOB;
+            let min_w = ENTRY_MIN_WIDTH;
             if let entry::Outcome::Commit(t) =
                 entry::show_floating(&ctx, id, rect, &self.name, min_w)
                 && let Some(v) = self.parsed(&t)
@@ -473,7 +461,7 @@ fn sample_column(
     // The design sets the name in Sans 10 `text.2`, which has no token; `type.small`
     // (Sans 11, `text.2`) is the nearest.
     let name_style = typography::SMALL;
-    let width = (2.0 * size::KNOB)
+    let width = metrics::SAMPLE_MIN_WIDTH
         .max(text_width(ui, name, &name_style))
         .max(text_width(ui, label, &typography::VALUE_S));
     column(ui, width, Align::Center, space::SPACE_1_5, |ui| {
@@ -565,7 +553,7 @@ fn live_row(ui: &mut Ui) {
     let mut live: Live = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::SPACE_6;
-        let width = 2.0 * size::KNOB;
+        let width = metrics::SAMPLE_MIN_WIDTH;
         column(ui, width, Align::Center, space::SPACE_1_5, |ui| {
             ui.add(
                 Knob::new(&mut live.cutoff, "Cutoff")

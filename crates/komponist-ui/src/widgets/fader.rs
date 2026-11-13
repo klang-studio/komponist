@@ -29,6 +29,8 @@ use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, line, radius, size, space};
 
 use super::meter;
+use super::metrics::fader as metrics;
+use super::metrics::meter as meter_metrics;
 use super::number_field::{
     accesskit_requests, caption, column, drag_gesture, entry, expose_value, galley, is_still,
     key_steps, paint_entry_ring, sense, snap_to, take_focus_on_press, text_pos, text_width,
@@ -111,32 +113,6 @@ pub fn scale_label(db: f32) -> String {
 
 // ---------------------------------------------------------------------------------------------
 // Geometry and look
-
-/// Sizes of the design (`fader()`, `faders`, the card's spec line) that `tokens.json` has no
-/// token for (contract change requests).
-pub mod metrics {
-    use komponist_tokens::space;
-
-    /// Track length of the design's samples (`height: 200`); the gallery default.
-    pub const TRACK_LENGTH: f32 = 200.0;
-    /// Width of the scale column (labels right-aligned in it), `space.4 + space.1`.
-    pub const SCALE_WIDTH: f32 = space::SPACE_4 + space::SPACE_1;
-    /// Gap between scale column and thumb (`left: 22` − 20).
-    pub const SCALE_GAP: f32 = space::SPACE_0_5;
-    /// Thickness of the value line ("Wertlinie", `stroke-width: 2`).
-    pub const VALUE_LINE: f32 = 2.0;
-    /// Waist of the normal thumb ("Taille 22").
-    pub const WAIST: f32 = 22.0;
-    /// Waist of the compact thumb ("Taille 15").
-    pub const WAIST_COMPACT: f32 = 15.0;
-    /// Grooves of the normal thumb, per half: (distance from the top or bottom edge, inset from
-    /// the side), from the design's SVG.
-    pub const GROOVES: [(f32, f32); 2] = [(6.0, 5.0), (11.0, 6.0)];
-    /// The one groove per half of the compact thumb ("1 Rille je Hälfte").
-    pub const GROOVES_COMPACT: [(f32, f32); 1] = [(7.0, 6.0)];
-    /// Inset of the value line from the thumb's sides (normal, compact).
-    pub const VALUE_LINE_INSET: [f32; 2] = [4.0, 3.0];
-}
 
 /// The two thumb sizes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -655,8 +631,7 @@ pub fn still(ui: &mut Ui, name: &str, state: State, db: f32, size: FaderSize) ->
 /// meters in a row of their own), then a live fader driving a live meter.
 pub fn gallery(ui: &mut Ui) {
     ui.spacing_mut().item_spacing.y = space::SPACE_4;
-    // `gap: 28px` of the design's row: space.6 + space.1.
-    let gap = space::SPACE_6 + space::SPACE_1;
+    let gap = metrics::SAMPLE_GAP;
     let fader = Layout::desired_size(FaderSize::Normal, true, metrics::TRACK_LENGTH);
     let widths: Vec<f32> = SAMPLES
         .iter()
@@ -671,7 +646,7 @@ pub fn gallery(ui: &mut Ui) {
     let meters_w = meter::gallery_width(ui, gap);
     let one_row = faders_w + 2.0 * gap + line::WIDTH + meters_w <= ui.available_width();
     // Columns align at their bottom edge, as the design's `align-items: flex-end`.
-    let meter_top = (fader.y - meter::metrics::LENGTH - space::SPACE_2).max(0.0);
+    let meter_top = (fader.y - meter_metrics::LENGTH - space::SPACE_2).max(0.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         for ((label, st, db), w) in SAMPLES.into_iter().zip(widths) {
@@ -754,7 +729,7 @@ fn live_row(ui: &mut Ui) {
             let gain = klang_dsp::units::db_to_gain(TEST_TONE_DB + live.db);
             let peak = if live.db <= VOLUME_DB_MIN { 0.0 } else { gain };
             // The bars span the fader's track, so the meter reads on the fader's scale.
-            let led = meter::metrics::LED_HEIGHT + meter::metrics::LED_GAP;
+            let led = meter_metrics::LED_HEIGHT + meter_metrics::LED_GAP;
             let thumb = FaderSize::Normal.thumb().y;
             ui.add_space(thumb / 2.0 - led);
             ui.add(
