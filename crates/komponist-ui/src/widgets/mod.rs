@@ -30,8 +30,8 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{
-    Color32, Event, FontId, Galley, Id, MouseWheelUnit, Painter, Pos2, Rect, Response, Sense,
-    Stroke, Ui, Vec2, pos2,
+    Color32, Event, FontId, Galley, Id, MouseWheelUnit, Pos2, Rect, Response, Sense, Stroke, Ui,
+    Vec2, pos2,
 };
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::font::Family;
@@ -135,11 +135,6 @@ pub fn text_pos_centered(rect: Rect, galley: &Galley, pixels_per_point: f32) -> 
         rect.center().x - galley.size().x / 2.0,
         pixels_per_point,
     )
-}
-
-/// Paints `galley` at `pos` in `color` (for galleys laid out with a placeholder colour).
-pub fn paint_galley(painter: &Painter, pos: Pos2, galley: Arc<Galley>, color: Color32) {
-    painter.galley(pos, galley, color);
 }
 
 /// Paints ✓ ([`Icon::Check`](komponist_tokens::Icon::Check) at [`metrics::CHECK_ICON`])

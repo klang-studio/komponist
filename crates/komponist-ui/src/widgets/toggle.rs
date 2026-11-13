@@ -386,34 +386,29 @@ pub fn gallery(ui: &mut Ui) {
 
 fn live_row(ui: &mut Ui) {
     let id = Id::unique("komponist_gallery_toggle_live");
-    let mut flags: [bool; 4] = ui.data(|d| d.get_temp(id)).unwrap_or([false; 4]);
-    let mut last = String::from("—");
+    let (mut flags, mut last): ([bool; 4], String) = ui
+        .data(|d| d.get_temp(id))
+        .unwrap_or(([false; 4], "—".to_owned()));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SPACE_0_5;
         for (i, kind) in ToggleKind::ALL.into_iter().enumerate() {
-            let r = TrackToggle::new(kind, flags[i])
-                .implied(kind == ToggleKind::Mute && flags[1])
-                .track("Lead")
-                .show(ui);
+            let r = TrackToggle::new(kind, flags[i]).track("Lead").show(ui);
             if let Some(ToggleEvent::Set { value, exclusive }) = r.event {
                 flags[i] = value;
-                last = format!(
-                    "{} {}",
-                    kind.letter(),
-                    if exclusive {
-                        "exklusiv"
-                    } else if value {
-                        "an"
-                    } else {
-                        "aus"
-                    }
-                );
+                let what = if exclusive {
+                    "exklusiv"
+                } else if value {
+                    "an"
+                } else {
+                    "aus"
+                };
+                last = format!("{} {what}", kind.letter());
             }
         }
         ui.add_space(space::SPACE_3);
         super::caption_text(ui, &format!("live · Lead · {last}"));
     });
-    ui.data_mut(|d| d.insert_temp(id, flags));
+    ui.data_mut(|d| d.insert_temp(id, (flags, last)));
 }
 
 #[cfg(test)]
