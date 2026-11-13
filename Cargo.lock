@@ -2451,6 +2451,7 @@ name = "komponist-builtin"
 version = "0.1.0"
 dependencies = [
  "komponist-engine",
+ "serde_json",
  "synth-core",
 ]
 
