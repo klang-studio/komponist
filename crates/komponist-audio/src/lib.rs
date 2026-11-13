@@ -10,8 +10,8 @@
 //! Module map (ARCHITECTURE §7):
 //! - [`process`]: the [`AudioProcess`] callback trait, [`OutputBuffer`], [`CallbackInfo`],
 //!   [`MidiIn`].
-//! - [`system`]: [`AudioSystem`], [`HostKind`], [`DeviceInfo`], [`StreamConfig`], [`AudioState`],
-//!   [`StreamStats`].
+//! - [`system`]: [`AudioSystem`], [`HostKind`], [`DeviceInfo`], [`DeviceId`], [`StreamConfig`],
+//!   [`AudioState`], [`StreamStats`].
 //! - [`slot`]: [`EngineSlot`], the engine handoff between streams.
 //! - [`midi`]: [`MidiInputHub`], [`MidiStamped`], [`MidiPortId`].
 //!
@@ -36,7 +36,7 @@ pub use midi::{MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, 
 pub use process::{AudioProcess, CallbackInfo, MidiIn, OutputBuffer, StreamParams};
 pub use slot::{EngineSlot, SlotHandle};
 pub use system::{
-    AudioError, AudioState, AudioSystem, DeviceInfo, HostKind, StreamConfig, StreamStats,
+    AudioError, AudioState, AudioSystem, DeviceId, DeviceInfo, HostKind, StreamConfig, StreamStats,
 };
 
 /// RT-safe. Sets flush-to-zero and denormals-are-zero for the calling thread (MXCSR on x86_64,
