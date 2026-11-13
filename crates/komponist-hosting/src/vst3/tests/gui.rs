@@ -303,7 +303,8 @@ fn gui_shortcircuit_xt() {
 
 /// The bridge's real situation: the RT thread processes while the main thread serves the editor.
 /// A GUI edit arrives as `performEdit` on the main thread, reaches the controller, and goes to the
-/// processor through the parameter ring (no flush while active).
+/// processor through the parameter ring (no flush while active), which echoes it with its
+/// gestures as output events.
 #[test]
 #[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
 fn gui_dexed_edit_while_processing() {
@@ -377,6 +378,20 @@ fn gui_dexed_edit_while_processing() {
     assert!(after > before, "no performEdit while processing");
     let (id, value) = last.unwrap();
     assert!((plugin.param_value(id).unwrap() - value).abs() < 1e-6);
+    // The processor echoed the edit with its gestures as output events.
+    let kinds: Vec<_> = events
+        .iter()
+        .filter_map(komponist_ipc::WireEvent::decode)
+        .collect();
+    assert!(
+        kinds.contains(&WireEventKind::ParamGesture { id, begin: true })
+            && kinds.contains(&WireEventKind::ParamGesture { id, begin: false }),
+        "no gestures in {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&WireEventKind::ParamValue { id, value }),
+        "the last value is missing in {kinds:?}"
+    );
     assert!(
         peak > 0.01,
         "the note played while the editor was open: {peak}"

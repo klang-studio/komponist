@@ -53,6 +53,18 @@ pub(crate) const EDIT_RING: usize = 1024;
 /// A parameter change: id and normalized value.
 pub(crate) type ParamChange = (u32, f64);
 
+/// A main-thread change on its way to the processor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Edit {
+    /// A value from the app (`set_param` / `flush_params`): applied, not echoed back.
+    Set(u32, f64),
+    /// A GUI edit (`performEdit`): applied, and echoed as a `ParamValue` output event.
+    Perform(u32, f64),
+    /// A GUI gesture (`beginEdit` = true / `endEdit` = false), echoed as a `ParamGesture` output
+    /// event.
+    Gesture(u32, bool),
+}
+
 /// Whether the interface id behind `iid` is `I`'s.
 ///
 /// # Safety
@@ -347,8 +359,8 @@ impl IAttributeListTrait for HostAttributeList {
 // ------------------------------------------------------------------------------------------------
 
 /// Where parameter changes made on the main thread (GUI edits, `flush_params`) go: into the
-/// active processor's ring, or, while inactive, into a pending list that the next processor applies
-/// in its first block.
+/// active processor's ring, or, while inactive, into a pending list of values that the next
+/// processor applies in its first block (gestures are dropped while inactive).
 #[derive(Default)]
 pub(crate) struct Edits {
     inner: Mutex<EditsInner>,
@@ -356,7 +368,7 @@ pub(crate) struct Edits {
 
 #[derive(Default)]
 struct EditsInner {
-    to_processor: Option<rtrb::Producer<ParamChange>>,
+    to_processor: Option<rtrb::Producer<Edit>>,
     pending: Vec<ParamChange>,
 }
 
@@ -371,19 +383,20 @@ impl EditsInner {
 
 impl Edits {
     /// Queues a change; `false` if the processor's ring is full (the change is lost).
-    pub(crate) fn push(&self, id: u32, value: f64) -> bool {
+    pub(crate) fn push(&self, edit: Edit) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        match inner.to_processor.as_mut() {
-            Some(ring) => ring.push((id, value)).is_ok(),
-            None => {
+        match (inner.to_processor.as_mut(), edit) {
+            (Some(ring), _) => ring.push(edit).is_ok(),
+            (None, Edit::Set(id, value) | Edit::Perform(id, value)) => {
                 inner.keep_pending((id, value));
                 true
             }
+            (None, Edit::Gesture(..)) => true,
         }
     }
 
     /// Activation: changes go to `ring` from now on; returns the pending ones.
-    pub(crate) fn connect(&self, ring: rtrb::Producer<ParamChange>) -> Vec<ParamChange> {
+    pub(crate) fn connect(&self, ring: rtrb::Producer<Edit>) -> Vec<ParamChange> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.to_processor = Some(ring);
         std::mem::take(&mut inner.pending)
@@ -461,13 +474,14 @@ impl ComponentHandler {
 }
 
 impl IComponentHandlerTrait for ComponentHandler {
-    unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        self.edits.push(Edit::Gesture(id, true));
         kResultOk
     }
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
         let value = value.clamp(0.0, 1.0);
-        if !self.edits.push(id, value) {
+        if !self.edits.push(Edit::Perform(id, value)) {
             self.notify.log(
                 LogLevel::Warning,
                 "VST3: parameter ring full, a GUI edit did not reach the processor",
@@ -479,7 +493,8 @@ impl IComponentHandlerTrait for ComponentHandler {
         kResultOk
     }
 
-    unsafe fn endEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn endEdit(&self, id: ParamID) -> tresult {
+        self.edits.push(Edit::Gesture(id, false));
         kResultOk
     }
 
@@ -909,17 +924,22 @@ mod tests {
     #[test]
     fn edits_go_to_the_ring_or_stay_pending() {
         let edits = Edits::default();
-        assert!(edits.push(1, 0.25) && edits.push(2, 0.5) && edits.push(1, 0.75));
+        assert!(edits.push(Edit::Set(1, 0.25)) && edits.push(Edit::Perform(2, 0.5)));
+        assert!(
+            edits.push(Edit::Gesture(2, true)),
+            "gestures are dropped while inactive"
+        );
+        assert!(edits.push(Edit::Set(1, 0.75)));
         assert_eq!(edits.pending(), [(1, 0.75), (2, 0.5)]);
         let (producer, mut consumer) = rtrb::RingBuffer::new(2);
         assert_eq!(edits.connect(producer), [(1, 0.75), (2, 0.5)]);
         assert!(edits.pending().is_empty());
-        assert!(edits.push(3, 0.1) && edits.push(4, 0.2));
-        assert!(!edits.push(5, 0.3), "ring full");
-        assert_eq!(consumer.pop(), Ok((3, 0.1)));
-        edits.disconnect([(4, 0.2)]);
-        assert!(edits.push(4, 0.9));
-        assert_eq!(edits.pending(), [(4, 0.9)]);
+        assert!(edits.push(Edit::Gesture(3, true)) && edits.push(Edit::Perform(3, 0.1)));
+        assert!(!edits.push(Edit::Set(5, 0.3)), "ring full");
+        assert_eq!(consumer.pop(), Ok(Edit::Gesture(3, true)));
+        edits.disconnect([(3, 0.1)]);
+        assert!(edits.push(Edit::Set(4, 0.9)));
+        assert_eq!(edits.pending(), [(3, 0.1), (4, 0.9)]);
         edits.clear_pending();
         assert!(edits.pending().is_empty());
     }

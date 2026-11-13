@@ -538,3 +538,91 @@ fn instances_share_the_module_and_reload_after_unload() {
         assert_eq!(rig.plugin.params().len(), 2);
     }
 }
+
+/// What a GUI does through `IComponentHandler`, without a GUI: inactive, an edit reaches the
+/// processor with its first block; while processing, `beginEdit` / `performEdit` / `endEdit` reach
+/// the processor in the next block and come back as gesture and value output events.
+#[test]
+fn gui_edits_reach_the_processor_and_the_output_events() {
+    use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait};
+
+    let Some((bundle, id)) = synth() else {
+        return;
+    };
+    let host_loop = PollLoop::new(false).unwrap();
+    let mut plugin = crate::vst3::Vst3Plugin::load(&bundle, &id, host_loop.context()).unwrap();
+    let gain = param_id(&plugin, "Gain");
+    let handler: vst3::ComPtr<IComponentHandler> = plugin.handler.to_com_ptr().unwrap();
+
+    // Inactive: the GUI sets the controller and reports the edit.
+    plugin.set_param(gain, 0.5);
+    unsafe {
+        handler.beginEdit(gain);
+        handler.performEdit(gain, 0.5);
+        handler.endEdit(gain);
+    }
+    assert_eq!(host_loop.notify().param_edits(), (1, Some((gain, 0.5))));
+    let mut processor = plugin.activate(CONFIG).unwrap();
+    processor.start_processing().unwrap();
+    let mut blocks = Blocks::new();
+    blocks.run(processor.as_mut(), &[note_on(0, 0, 69)]);
+    let level = blocks.peak(0..BLOCK);
+    assert!(
+        (0.025..0.04).contains(&level),
+        "−30 dB expected, level {level}"
+    );
+    assert_eq!(
+        blocks.out_count, 0,
+        "edits made while inactive are not echoed"
+    );
+
+    // Processing: nice-plug ignores `setParamNormalized` now, so only the processor path counts.
+    plugin.set_param(gain, 0.0);
+    unsafe {
+        handler.beginEdit(gain);
+        handler.performEdit(gain, 0.0);
+        handler.endEdit(gain);
+    }
+    blocks.run(processor.as_mut(), &[]);
+    assert!(
+        blocks.peak(0..BLOCK) < level * 0.05,
+        "{}",
+        blocks.peak(0..BLOCK)
+    );
+    let echoed: Vec<_> = blocks.events_out[..blocks.out_count]
+        .iter()
+        .map(|e| (e.offset, e.decode().unwrap()))
+        .collect();
+    assert_eq!(
+        echoed,
+        [
+            (
+                0,
+                WireEventKind::ParamGesture {
+                    id: gain,
+                    begin: true
+                }
+            ),
+            (
+                0,
+                WireEventKind::ParamValue {
+                    id: gain,
+                    value: 0.0
+                }
+            ),
+            (
+                0,
+                WireEventKind::ParamGesture {
+                    id: gain,
+                    begin: false
+                }
+            ),
+        ]
+    );
+    assert_eq!(host_loop.notify().param_edits(), (2, Some((gain, 0.0))));
+    // Each edit is echoed once.
+    blocks.run(processor.as_mut(), &[]);
+    assert_eq!(blocks.out_count, 0);
+    processor.stop_processing();
+    plugin.deactivate(processor);
+}

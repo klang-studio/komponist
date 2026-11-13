@@ -13,8 +13,11 @@
 //! Every bus gets buffers, active or not (VST3 FAQ: inactive buses receive silence / "nirvana"
 //! buffers). Notes go to event bus 0. Parameter values from the app, GUI edits from the main
 //! thread (a ring, see [`super::host::Edits`]) and MIDI controllers mapped through `IMidiMapping`
-//! go in as `inputParameterChanges`; `outputParameterChanges` come back as `ParamValue` events and
-//! go to the controller on the main thread (through a second ring and `MainThreadCallback`).
+//! go in as `inputParameterChanges`. GUI edits and their gestures (`beginEdit` / `performEdit` /
+//! `endEdit`) are also echoed as output events of the block that applies them, so the engine sees
+//! them with the audio as it does CLAP's. `outputParameterChanges` come back as `ParamValue`
+//! events and go to the controller on the main thread (through a second ring and
+//! `MainThreadCallback`).
 //!
 //! Everything is allocated in [`Vst3Processor::new`] (activation, main thread); `process` only
 //! copies and converts.
@@ -42,7 +45,7 @@ use super::events::{
     CTRL_AFTERTOUCH, CTRL_PITCH_BEND, EventList, MidiMap, ParameterChanges, RtCom, note_off,
     note_on, poly_pressure,
 };
-use super::host::{Edits, ParamChange};
+use super::host::{Edit, Edits, ParamChange};
 use super::module::Module;
 use crate::host::{HostNotification, HostNotify};
 use crate::plugin::{HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
@@ -248,7 +251,7 @@ pub(crate) struct ProcessorSetup {
     pub(crate) notify: Arc<dyn HostNotify>,
     pub(crate) midi_map: Arc<MidiMap>,
     pub(crate) edits: Arc<Edits>,
-    pub(crate) from_main: rtrb::Consumer<ParamChange>,
+    pub(crate) from_main: rtrb::Consumer<Edit>,
     /// Changes made while inactive, applied at offset 0 of the first block.
     pub(crate) initial: Vec<ParamChange>,
     pub(crate) to_controller: rtrb::Producer<ParamChange>,
@@ -274,7 +277,7 @@ pub(crate) struct Vst3Processor {
     notify: Arc<dyn HostNotify>,
     midi_map: Arc<MidiMap>,
     edits: Arc<Edits>,
-    from_main: rtrb::Consumer<ParamChange>,
+    from_main: rtrb::Consumer<Edit>,
     initial: Vec<ParamChange>,
     to_controller: rtrb::Producer<ParamChange>,
     /// Held notes: bit `c` of `held[key]` = channel `c`.
@@ -396,16 +399,35 @@ impl Vst3Processor {
         }
     }
 
-    /// Fills the input lists for `block`.
-    fn convert_inputs(&mut self, block: &ProcessBlock<'_>) {
-        self.params_in.clear();
-        self.events_in.clear();
+    /// Applies the main thread's changes at offset 0; GUI edits and gestures are echoed into
+    /// `echo` (the block's output events) so they travel with the audio like CLAP's.
+    fn apply_main_thread_edits(&mut self, mut echo: Option<&mut crate::plugin::EventOut<'_>>) {
         for (id, value) in self.initial.drain(..) {
             self.params_in.add(id, 0, value);
         }
-        while let Ok((id, value)) = self.from_main.pop() {
-            self.params_in.add(id, 0, value);
+        while let Ok(edit) = self.from_main.pop() {
+            let event = match edit {
+                Edit::Set(id, value) => {
+                    self.params_in.add(id, 0, value);
+                    None
+                }
+                Edit::Perform(id, value) => {
+                    self.params_in.add(id, 0, value);
+                    Some(WireEventKind::ParamValue { id, value })
+                }
+                Edit::Gesture(id, begin) => Some(WireEventKind::ParamGesture { id, begin }),
+            };
+            if let (Some(echo), Some(kind)) = (echo.as_deref_mut(), event) {
+                echo.push(WireEvent::new(0, kind));
+            }
         }
+    }
+
+    /// Fills the input lists for `block`.
+    fn convert_inputs(&mut self, block: &mut ProcessBlock<'_>) {
+        self.params_in.clear();
+        self.events_in.clear();
+        self.apply_main_thread_edits(Some(&mut block.events_out));
         if std::mem::take(&mut self.release_held) {
             self.release_all(0);
         }
@@ -465,12 +487,7 @@ impl Vst3Processor {
         self.set_processing(true);
         self.params_in.clear();
         self.events_in.clear();
-        for (id, value) in self.initial.drain(..) {
-            self.params_in.add(id, 0, value);
-        }
-        while let Ok((id, value)) = self.from_main.pop() {
-            self.params_in.add(id, 0, value);
-        }
+        self.apply_main_thread_edits(None);
         let mut data = ProcessData {
             processMode: self.process_mode,
             symbolicSampleSize: kSample32 as i32,
@@ -583,8 +600,10 @@ impl Drop for Vst3Processor {
         }
         // Changes that never reached a block are applied by the next processor.
         let mut leftover = std::mem::take(&mut self.initial);
-        while let Ok(change) = self.from_main.pop() {
-            leftover.push(change);
+        while let Ok(edit) = self.from_main.pop() {
+            if let Edit::Set(id, value) | Edit::Perform(id, value) = edit {
+                leftover.push((id, value));
+            }
         }
         self.edits.disconnect(leftover);
         self.alive.store(false, Ordering::Release);

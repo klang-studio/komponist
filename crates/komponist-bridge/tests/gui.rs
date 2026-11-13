@@ -470,8 +470,8 @@ fn gui_shortcircuit_xt_vst3() {
 }
 
 /// VST3 GUI edits reach the app as `ParamValues` on the control socket, inactive and while
-/// processing alike (`IComponentHandler::performEdit` runs on the bridge main thread; the VST3
-/// layer forwards the value to its processor itself).
+/// processing alike (`IComponentHandler::performEdit` runs on the bridge main thread), and while
+/// processing also as gestures and values in the output ring (the processor echoes them).
 #[test]
 #[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
 fn gui_dexed_vst3_edits_reach_the_app() {
@@ -515,7 +515,7 @@ fn gui_dexed_vst3_edits_reach_the_app() {
         .unwrap_or_else(|| panic!("no ParamValues from the GUI edit; seen {:?}", bridge.seen));
     let param = info.params.iter().find(|p| p.id == id).unwrap();
 
-    // Active, with blocks running: the values still come as ParamValues, not as ring events.
+    // Active, with blocks running: the values still come as ParamValues, and with the blocks.
     bridge.activate();
     run_blocks(&mut bridge, Duration::from_millis(300));
     bridge.sync();
@@ -533,19 +533,26 @@ fn gui_dexed_vst3_edits_reach_the_app() {
         second < first,
         "Cutoff closes further: {first} then {second}"
     );
+    let kinds: Vec<WireEventKind> = events.iter().filter_map(WireEvent::decode).collect();
     assert!(
-        events.is_empty(),
-        "VST3 GUI edits do not travel through the output ring: {events:?}"
+        kinds.contains(&WireEventKind::ParamGesture { id, begin: true }),
+        "no gesture begin in {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&WireEventKind::ParamValue { id, value: second }),
+        "no value {second} in {kinds:?}"
     );
 
     bridge.send(ControlMsg::CloseGui);
     bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!(
-        "VST3 GUI edits through the bridge (Dexed): inactive {} values, last {} = {first:.3};          active {} values, last {second:.3}",
+        "VST3 GUI edits through the bridge (Dexed): inactive {} values, last {} = {first:.3}; \
+         active {} values, last {second:.3}, {} ring events",
         inactive.len(),
         param.name,
         active.len(),
+        kinds.len(),
     );
     drop(parent);
 }

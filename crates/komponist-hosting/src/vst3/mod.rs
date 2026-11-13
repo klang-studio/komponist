@@ -33,8 +33,12 @@
 //! main thread). komponist therefore exposes VST3 parameters **normalized**: [`ParamInfo`] has
 //! `min = 0`, `max = 1`, `default` = the normalized default, and a stepped parameter has
 //! `step_count` steps of `1 / step_count`. Values in [`HostedPlugin::param_value`],
-//! [`HostedPlugin::set_param`], parameter events and [`HostNotification::ParamEdited`] are all
+//! [`HostedPlugin::set_param`], parameter events and [`HostNotification::ParamEdited`](crate::HostNotification::ParamEdited) are all
 //! normalized; the plugin's text for a value comes from `getParamStringByValue`.
+//!
+//! GUI edits (`IComponentHandler` on the main thread) become [`HostNotification::ParamEdited`](crate::HostNotification::ParamEdited)
+//! (plus `StateDirty`) for the app, and go to the processor, which applies them in its next block
+//! and echoes them, with their `beginEdit` / `endEdit` gestures, as output events of that block.
 //!
 //! While inactive, `flush_params` and GUI edits update the controller at once and reach the
 //! processor in the first block after the next activation (the VST3 way to hand a value to the
@@ -97,7 +101,7 @@ use vst3::{ComPtr, ComWrapper, Interface};
 
 use self::events::MidiMap;
 use self::host::{
-    ComponentHandler, EDIT_RING, Edits, HostApplication, ParamChange, PlugFrame, RunLoop,
+    ComponentHandler, EDIT_RING, Edit, Edits, HostApplication, ParamChange, PlugFrame, RunLoop,
 };
 use self::module::{Module, audio_classes, load_module, parse_cid};
 use self::processor::{BusLayout, ProcessorSetup, TO_CONTROLLER_RING, Vst3Processor};
@@ -830,7 +834,7 @@ impl HostedPlugin for Vst3Plugin {
             if let Some(WireEventKind::ParamValue { id, value }) = wire.decode() {
                 let value = value.clamp(0.0, 1.0);
                 self.set_param(id, value);
-                if !self.edits.push(id, value) {
+                if !self.edits.push(Edit::Set(id, value)) {
                     self.log(
                         LogLevel::Warning,
                         "VST3: parameter ring full, a flushed value was dropped",
