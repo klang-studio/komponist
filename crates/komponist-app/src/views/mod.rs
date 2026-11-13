@@ -19,6 +19,8 @@
 //! Until a WP lands, its slot holds a [`Placeholder`] that shows the view's name. A WP replaces
 //! the placeholder in [`Views::new`] with its own type implementing [`View`].
 
+pub mod piano_roll;
+
 use std::sync::Arc;
 
 use egui::{Rect, Ui};
@@ -178,7 +180,7 @@ impl Views {
     pub fn new() -> Views {
         Views {
             arrangement: Box::new(Placeholder::new("Arrangement")),
-            piano_roll: Box::new(Placeholder::new("Piano Roll")),
+            piano_roll: Box::new(piano_roll::PianoRoll::new()),
             step_seq: Box::new(Placeholder::new("Step Sequencer")),
             mixer: Box::new(Placeholder::new("Mixer")),
             inspector: Box::new(Placeholder::new("Inspector")),
