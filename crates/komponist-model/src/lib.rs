@@ -17,10 +17,6 @@
 //! Threads: everything here is plain data and pure functions, used on the UI thread and on workers.
 //! Nothing in this crate runs on the audio thread.
 
-// Contract stage (WP-01): most bodies are `todo!()` until WP-12 implements them, so parameters are
-// unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
 pub mod document;
 pub mod edits;
 pub mod fixtures;
@@ -30,13 +26,16 @@ pub mod persist;
 pub mod project;
 pub mod time;
 
+#[cfg(test)]
+mod proptests;
+
 pub use document::{Document, Gesture, UNDO_LIMIT, UndoStep};
 pub use edits::EditError;
 pub use ids::{ClipId, DeviceId, NoteId, TrackId};
 pub use project::{
     Channel, ChannelRef, Clip, ClipContent, ClipKind, Device, DeviceRole, Hue, MidiChannelSel,
-    MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepRow, Take,
-    Track, TrackKind,
+    MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepHit,
+    StepRow, Take, Track, TrackKind,
 };
 pub use time::{
     Bbt, DISPLAY_TICKS_PER_BEAT, Grid, Meter, PPQ, StepResolution, TICKS_PER_STEP, Tempo, TempoMap,

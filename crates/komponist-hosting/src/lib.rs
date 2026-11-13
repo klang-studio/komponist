@@ -10,6 +10,10 @@
 //! - [`host`]: [`HostLoop`] (timers, fds), [`HostNotify`] (plugin → host notifications),
 //!   [`HostContext`].
 //! - [`load`] and [`scan`]: entry points, dispatching on the bundle format.
+//! - [`host_loop`]: [`host_loop::PollLoop`], a reference `poll()` implementation of [`HostLoop`]
+//!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop).
+//! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26). VST3 arrives with WP-32;
+//!   until then [`load`] and [`scan`] answer [`HostingError::Unsupported`] for `.vst3` bundles.
 //!
 //! Format checklist for either implementation (ARCHITECTURE §8.2): CLAP audio-ports, note-ports,
 //! params, state, latency, gui (x11, embedded), timer-support, posix-fd-support, thread-check, log,
@@ -20,14 +24,18 @@
 //! Shared vocabulary comes from `komponist-ipc` and is re-exported here: [`PluginDescriptor`],
 //! [`ParamInfo`], [`NoteName`], [`RenderMode`], [`GuiSize`].
 
-// Contract stage (WP-01): bodies are `todo!()` until WP-26 / WP-32 implement them, so parameters
-// are unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
 use std::path::Path;
 
+/// Unit tests check RT paths with `assert_no_alloc`, which needs its allocator.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+mod clap;
 pub mod host;
+pub mod host_loop;
 pub mod plugin;
+mod scan;
 
 pub use host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 pub use komponist_ipc::{
@@ -46,14 +54,17 @@ pub fn load(
     plugin_id: &str,
     host: HostContext,
 ) -> Result<Box<dyn HostedPlugin>, HostingError> {
-    todo!("WP-26 (CLAP), WP-32 (VST3)")
+    match format {
+        PluginFormat::Clap => clap::load(bundle, plugin_id, host),
+        PluginFormat::Vst3 => Err(HostingError::Unsupported("VST3 hosting arrives with WP-32")),
+    }
 }
 
 /// Lists the plugins in a bundle (`komponist-bridge --scan`), without activating them. The format
 /// comes from [`bundle_format`]. Runs in a throwaway process, so a crashing bundle only fails its
 /// own scan.
 pub fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
-    todo!("WP-26 (CLAP), WP-32 (VST3)")
+    scan::scan(bundle)
 }
 
 /// The format of a bundle path by its extension (`.clap`, `.vst3`), case-insensitive.

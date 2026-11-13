@@ -1,0 +1,637 @@
+//! CLAP hosting on clack-host 0.2 (WP-26): [`load`] returns a [`ClapPlugin`] ([`HostedPlugin`]),
+//! whose `activate` returns a [`processor::ClapProcessor`] ([`crate::HostedProcessor`]).
+//!
+//! Host extensions offered (see [`host`]): log, thread-check, gui, timer-support,
+//! posix-fd-support, params, latency, state, audio-ports, note-ports, note-name. Plugin extensions
+//! used: audio-ports, note-ports, params, state, latency, gui (x11, embedded), timer-support,
+//! posix-fd-support, render, note-name.
+//!
+//! Threading follows the contract: the thread that calls [`load`] is the plugin's main thread
+//! (CLAP thread-check reports it as such), processor methods mark their thread as the audio thread
+//! while they run.
+
+mod events;
+mod host;
+mod processor;
+
+#[cfg(test)]
+mod tests;
+
+use std::cell::RefCell;
+use std::ffi::{CStr, CString};
+use std::os::fd::RawFd;
+use std::path::Path;
+
+use clack_extensions::audio_ports::PluginAudioPorts;
+use clack_extensions::gui::{
+    GuiApiType, GuiConfiguration, GuiSize as ClapGuiSize, PluginGui, Window,
+};
+use clack_extensions::latency::PluginLatency;
+use clack_extensions::note_name::{NoteNameBuffer, PluginNoteName};
+use clack_extensions::note_ports::PluginNotePorts;
+use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
+use clack_extensions::posix_fd::PluginPosixFd;
+use clack_extensions::render::{PluginRender, RenderMode as ClapRenderMode};
+use clack_extensions::state::PluginState;
+use clack_extensions::timer::{PluginTimer, TimerId as ClapTimerId};
+use clack_host::events::Match;
+use clack_host::prelude::*;
+use komponist_ipc::control::param_flags;
+use komponist_ipc::shm::MAX_BLOCK;
+use komponist_ipc::{
+    GuiSize, LogLevel, NoteName, ParamInfo, PluginDescriptor, PluginFormat, RenderMode, WireEvent,
+    WireEventKind,
+};
+
+use self::events::{InputEventList, WireSink};
+use self::host::{KpHost, MainThreadHost, SharedHost};
+use self::processor::{ClapProcessor, NoteTarget, PortLayout};
+use crate::host::{FdEvents, HostContext, TimerId};
+use crate::plugin::{ActivateConfig, GuiInfo, HostedPlugin, HostedProcessor, HostingError};
+
+/// Vendor reported to plugins in `clap_host.vendor`.
+const HOST_VENDOR: &str = "klang-studio";
+
+const X11_EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
+    api_type: GuiApiType::X11,
+    is_floating: false,
+};
+
+/// Loads a bundle's entry (dlopen + `clap_entry.init`). clack caches entries per library, so
+/// loading the same bundle twice in one process shares one initialised entry.
+fn load_entry(bundle: &Path) -> Result<PluginEntry, HostingError> {
+    // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain it.
+    unsafe { PluginEntry::load(bundle) }
+        .map_err(|e| HostingError::Load(format!("{}: {e}", bundle.display())))
+}
+
+/// A NUL-terminated C string field as UTF-8 (lossy), cut at the first NUL.
+fn c_bytes(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn c_str(s: Option<&CStr>) -> String {
+    s.map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// A CLAP factory descriptor as komponist's [`PluginDescriptor`].
+fn descriptor_of(d: &clack_host::plugin::PluginDescriptor, bundle: &Path) -> PluginDescriptor {
+    let features: Vec<String> = d
+        .features()
+        .map(|f| f.to_string_lossy().to_lowercase())
+        .collect();
+    PluginDescriptor {
+        format: PluginFormat::Clap,
+        id: c_str(d.id()),
+        name: c_str(d.name()),
+        vendor: c_str(d.vendor()),
+        version: c_str(d.version()),
+        kind: crate::scan::kind_from_features(PluginFormat::Clap, &features),
+        features,
+        bundle: std::path::absolute(bundle).unwrap_or_else(|_| bundle.to_path_buf()),
+    }
+}
+
+/// Lists the plugins of a `.clap` bundle without instantiating them.
+pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
+    let entry = load_entry(bundle)?;
+    let factory = entry
+        .get_plugin_factory()
+        .ok_or_else(|| HostingError::Load(format!("{}: no plugin factory", bundle.display())))?;
+    Ok(factory
+        .plugin_descriptors()
+        .filter(|d| d.id().is_some())
+        .map(|d| descriptor_of(d, bundle))
+        .collect())
+}
+
+/// The plugin extensions komponist uses, queried once after instantiation.
+#[derive(Clone, Copy)]
+struct Extensions {
+    audio_ports: Option<PluginAudioPorts>,
+    note_ports: Option<PluginNotePorts>,
+    params: Option<PluginParams>,
+    state: Option<PluginState>,
+    latency: Option<PluginLatency>,
+    gui: Option<PluginGui>,
+    timer: Option<PluginTimer>,
+    posix_fd: Option<PluginPosixFd>,
+    render: Option<PluginRender>,
+    note_name: Option<PluginNoteName>,
+}
+
+impl Extensions {
+    fn query(handle: &PluginMainThreadHandle) -> Extensions {
+        Extensions {
+            audio_ports: handle.get_extension(),
+            note_ports: handle.get_extension(),
+            params: handle.get_extension(),
+            state: handle.get_extension(),
+            latency: handle.get_extension(),
+            gui: handle.get_extension(),
+            timer: handle.get_extension(),
+            posix_fd: handle.get_extension(),
+            render: handle.get_extension(),
+            note_name: handle.get_extension(),
+        }
+    }
+}
+
+/// An open embedded GUI.
+#[derive(Debug, Clone, Copy)]
+struct OpenGui {
+    resizable: bool,
+}
+
+/// Loads plugin `plugin_id` from a `.clap` bundle on the calling (main) thread.
+pub(crate) fn load(
+    bundle: &Path,
+    plugin_id: &str,
+    context: HostContext,
+) -> Result<Box<dyn HostedPlugin>, HostingError> {
+    Ok(Box::new(ClapPlugin::load(bundle, plugin_id, context)?))
+}
+
+/// One loaded CLAP plugin instance, main-thread half.
+pub(crate) struct ClapPlugin {
+    // Declared first: dropped (destroyed) before the entry reference below.
+    instance: RefCell<PluginInstance<KpHost>>,
+    _entry: PluginEntry,
+    descriptor: PluginDescriptor,
+    ext: Extensions,
+    context: HostContext,
+    has_gui: bool,
+    gui: Option<OpenGui>,
+    render_mode: RenderMode,
+}
+
+impl ClapPlugin {
+    pub(crate) fn load(
+        bundle: &Path,
+        plugin_id: &str,
+        context: HostContext,
+    ) -> Result<ClapPlugin, HostingError> {
+        let entry = load_entry(bundle)?;
+        let factory = entry.get_plugin_factory().ok_or_else(|| {
+            HostingError::Load(format!("{}: no plugin factory", bundle.display()))
+        })?;
+        let descriptor = factory
+            .plugin_descriptors()
+            .find(|d| {
+                d.id()
+                    .is_some_and(|id| id.to_bytes() == plugin_id.as_bytes())
+            })
+            .map(|d| descriptor_of(d, bundle))
+            .ok_or_else(|| {
+                HostingError::Load(format!("{}: no plugin {plugin_id:?}", bundle.display()))
+            })?;
+        let id = CString::new(plugin_id)
+            .map_err(|_| HostingError::Load(format!("invalid plugin id {plugin_id:?}")))?;
+        let host_info = HostInfo::new(context.host_name, HOST_VENDOR, "", context.host_version)
+            .map_err(|e| HostingError::Load(format!("host info: {e}")))?;
+
+        let main_thread = std::thread::current().id();
+        let notify = context.notify.clone();
+        let host_loop = context.host_loop.clone();
+        let mut instance = PluginInstance::<KpHost>::new(
+            |_| SharedHost::new(notify, main_thread),
+            |shared| MainThreadHost::new(shared, host_loop),
+            &entry,
+            &id,
+            &host_info,
+        )
+        .map_err(|e| HostingError::Load(format!("{plugin_id}: {e}")))?;
+
+        let handle = instance.plugin_handle();
+        let ext = Extensions::query(&handle);
+        let has_gui = ext
+            .gui
+            .is_some_and(|gui| gui.is_api_supported(&handle, X11_EMBEDDED));
+
+        Ok(ClapPlugin {
+            instance: RefCell::new(instance),
+            _entry: entry,
+            descriptor,
+            ext,
+            context,
+            has_gui,
+            gui: None,
+            render_mode: RenderMode::Realtime,
+        })
+    }
+
+    fn log(&self, level: LogLevel, message: &str) {
+        self.context.notify.log(level, message);
+    }
+
+    fn owns_timer(&self, timer: TimerId) -> bool {
+        self.instance
+            .borrow()
+            .access_handler(|mt| mt.owns_timer(timer))
+    }
+
+    fn owns_fd(&self, fd: RawFd) -> bool {
+        self.instance.borrow().access_handler(|mt| mt.owns_fd(fd))
+    }
+
+    fn require_gui(&self) -> Result<(PluginGui, OpenGui), HostingError> {
+        match (self.ext.gui, self.gui) {
+            (Some(ext), Some(open)) => Ok((ext, open)),
+            _ => Err(HostingError::WrongState("the GUI is not open")),
+        }
+    }
+}
+
+fn param_info(info: &clack_extensions::params::ParamInfo) -> ParamInfo {
+    let f = info.flags;
+    let mut flags = 0;
+    let mut step_count = 0;
+    if f.contains(ParamInfoFlags::IS_STEPPED) {
+        flags |= param_flags::STEPPED;
+        let steps = (info.max_value - info.min_value).round();
+        step_count = if steps.is_finite() && steps > 0.0 {
+            steps.min(f64::from(u32::MAX)) as u32
+        } else {
+            0
+        };
+    }
+    for (clap, ours) in [
+        (ParamInfoFlags::IS_BYPASS, param_flags::BYPASS),
+        (ParamInfoFlags::IS_HIDDEN, param_flags::HIDDEN),
+        (ParamInfoFlags::IS_READONLY, param_flags::READ_ONLY),
+        (ParamInfoFlags::IS_AUTOMATABLE, param_flags::AUTOMATABLE),
+        (ParamInfoFlags::IS_ENUM, param_flags::ENUM),
+    ] {
+        if f.contains(clap) {
+            flags |= ours;
+        }
+    }
+    ParamInfo {
+        id: info.id.get(),
+        name: c_bytes(info.name),
+        module: c_bytes(info.module),
+        min: info.min_value,
+        max: info.max_value,
+        default: info.default_value,
+        step_count,
+        flags,
+    }
+}
+
+impl HostedPlugin for ClapPlugin {
+    fn descriptor(&self) -> &PluginDescriptor {
+        &self.descriptor
+    }
+
+    fn has_gui(&self) -> bool {
+        self.has_gui
+    }
+
+    fn activate(
+        &mut self,
+        config: ActivateConfig,
+    ) -> Result<Box<dyn HostedProcessor>, HostingError> {
+        if self.is_active() {
+            return Err(HostingError::WrongState("already active"));
+        }
+        if !(config.sample_rate.is_finite() && config.sample_rate > 0.0)
+            || config.min_frames == 0
+            || config.min_frames > config.max_frames
+            || config.max_frames as usize > MAX_BLOCK
+        {
+            return Err(HostingError::Activate(format!(
+                "invalid configuration {config:?}"
+            )));
+        }
+        let ext = self.ext;
+        let mut instance = self.instance.borrow_mut();
+        let (inputs, outputs, notes) = {
+            let handle = instance.plugin_handle();
+            if let Some(render) = ext.render {
+                let mode = match self.render_mode {
+                    RenderMode::Realtime => ClapRenderMode::Realtime,
+                    RenderMode::Offline => ClapRenderMode::Offline,
+                };
+                if render.set(&handle, mode).is_err() {
+                    self.context.notify.log(
+                        LogLevel::Info,
+                        "render: the plugin declined the render mode",
+                    );
+                }
+            }
+            (
+                PortLayout::query(ext.audio_ports, &handle, true),
+                PortLayout::query(ext.audio_ports, &handle, false),
+                NoteTarget::query(ext.note_ports, &handle),
+            )
+        };
+        let stopped = instance
+            .activate(
+                |_, _| (),
+                PluginAudioConfiguration {
+                    sample_rate: config.sample_rate,
+                    min_frames_count: config.min_frames,
+                    max_frames_count: config.max_frames,
+                },
+            )
+            .map_err(|e| HostingError::Activate(e.to_string()))?;
+        Ok(Box::new(ClapProcessor::new(
+            stopped,
+            &inputs,
+            &outputs,
+            notes,
+            config.max_frames,
+        )))
+    }
+
+    fn deactivate(&mut self, processor: Box<dyn HostedProcessor>) {
+        // The processor holds this instance's audio half; dropping it (it stops processing if
+        // still started) leaves the instance as the only owner, which `try_deactivate` needs.
+        drop(processor);
+        let result = self.instance.borrow_mut().try_deactivate();
+        if let Err(e) = result {
+            self.log(LogLevel::Error, &format!("deactivate failed: {e}"));
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.instance.borrow().is_active()
+    }
+
+    fn set_render_mode(&mut self, mode: RenderMode) -> Result<(), HostingError> {
+        if self.is_active() {
+            return Err(HostingError::WrongState(
+                "render mode changes need an inactive plugin",
+            ));
+        }
+        self.render_mode = mode;
+        Ok(())
+    }
+
+    fn params(&self) -> Vec<ParamInfo> {
+        let Some(params) = self.ext.params else {
+            return Vec::new();
+        };
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let mut buffer = ParamInfoBuffer::new();
+        (0..params.count(&handle))
+            .filter_map(|index| {
+                params
+                    .get_info(&handle, index, &mut buffer)
+                    .map(|i| param_info(&i))
+            })
+            .collect()
+    }
+
+    fn param_value(&self, id: u32) -> Option<f64> {
+        let params = self.ext.params?;
+        let id = ClapId::from_raw(id)?;
+        let mut instance = self.instance.borrow_mut();
+        params.get_value(&instance.plugin_handle(), id)
+    }
+
+    fn param_text(&self, id: u32, value: f64) -> Option<String> {
+        let params = self.ext.params?;
+        let id = ClapId::from_raw(id)?;
+        let mut instance = self.instance.borrow_mut();
+        let mut buffer = [0u8; 256];
+        let text = params
+            .value_to_text(&instance.plugin_handle(), id, value, &mut buffer)
+            .ok()?;
+        Some(c_bytes(text))
+    }
+
+    fn set_param(&mut self, _id: u32, _value: f64) {
+        // CLAP has no separate main-thread parameter view: the value reaches the plugin as an
+        // event in the next block or through `flush_params`.
+    }
+
+    fn flush_params(&mut self, input: &[WireEvent], output: &mut Vec<WireEvent>) {
+        let Some(params) = self.ext.params else {
+            return;
+        };
+        let mut list = InputEventList::with_capacity(input.len());
+        for wire in input {
+            if let Some(WireEventKind::ParamValue { id, value }) = wire.decode()
+                && let Some(event) = events::param_value_event(0, id, value)
+            {
+                list.push(event);
+            }
+        }
+        let mut instance = self.instance.borrow_mut();
+        // While active, CLAP allows `flush` only on the audio thread; the bridge then delivers
+        // parameter values as events of the next block instead.
+        let Some(mut handle) = instance.inactive_plugin_handle() else {
+            return;
+        };
+        let mut sink = WireSink(|e| output.push(e));
+        params.flush(
+            &mut handle,
+            &InputEvents::from_buffer(&list),
+            &mut OutputEvents::from_buffer(&mut sink),
+        );
+    }
+
+    fn save_state(&mut self) -> Result<Vec<u8>, HostingError> {
+        let state = self.ext.state.ok_or(HostingError::Unsupported(
+            "the plugin has no state extension",
+        ))?;
+        let mut instance = self.instance.borrow_mut();
+        let mut blob = Vec::new();
+        state
+            .save(&instance.plugin_handle(), &mut blob)
+            .map_err(|e| HostingError::State(e.to_string()))?;
+        Ok(blob)
+    }
+
+    fn load_state(&mut self, state: &[u8]) -> Result<(), HostingError> {
+        let ext = self.ext.state.ok_or(HostingError::Unsupported(
+            "the plugin has no state extension",
+        ))?;
+        let mut instance = self.instance.borrow_mut();
+        let mut reader = state;
+        ext.load(&instance.plugin_handle(), &mut reader)
+            .map_err(|e| HostingError::State(e.to_string()))
+    }
+
+    fn latency(&self) -> u32 {
+        let Some(latency) = self.ext.latency else {
+            return 0;
+        };
+        let mut instance = self.instance.borrow_mut();
+        if !instance.is_active() {
+            return 0;
+        }
+        latency.get(&instance.plugin_handle())
+    }
+
+    fn note_names(&self) -> Vec<NoteName> {
+        let Some(ext) = self.ext.note_name else {
+            return Vec::new();
+        };
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let mut buffer = NoteNameBuffer::new();
+        let count = ext.count(&handle) as u32;
+        (0..count)
+            .filter_map(|index| {
+                let name = ext.get(&handle, index, &mut buffer)?;
+                if matches!(name.port, Match::Specific(p) if p != 0) {
+                    return None;
+                }
+                let key = match name.key {
+                    Match::Specific(k) if k < 128 => k as u8,
+                    _ => return None,
+                };
+                let channel = match name.channel {
+                    Match::Specific(c) if c < 16 => Some(c as u8),
+                    Match::Specific(_) => return None,
+                    Match::All => None,
+                };
+                Some(NoteName {
+                    key,
+                    channel,
+                    name: c_bytes(name.name),
+                })
+            })
+            .collect()
+    }
+
+    fn gui_open(&mut self, parent_xid: u64, scale: f64) -> Result<GuiInfo, HostingError> {
+        if self.gui.is_some() {
+            return Err(HostingError::WrongState("the GUI is already open"));
+        }
+        let gui = self
+            .ext
+            .gui
+            .filter(|_| self.has_gui)
+            .ok_or_else(|| HostingError::Gui("the plugin has no embeddable X11 GUI".into()))?;
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        gui.create(&handle, X11_EMBEDDED)
+            .map_err(|e| HostingError::Gui(format!("create: {e}")))?;
+        let opened = (|| {
+            // Allowed to fail on X11 (Shortcircuit XT picks its own scale).
+            if gui.set_scale(&handle, scale).is_err() {
+                self.context
+                    .notify
+                    .log(LogLevel::Debug, &format!("gui.set_scale({scale}) declined"));
+            }
+            let size = gui
+                .get_size(&handle)
+                .ok_or_else(|| HostingError::Gui("get_size failed".into()))?;
+            let resizable = gui.can_resize(&handle);
+            // SAFETY: the parent is a live X11 window of the app's frame; the app keeps it until
+            // after `gui_close` (or the bridge's death).
+            unsafe { gui.set_parent(&handle, Window::from_x11_handle(parent_xid as _)) }
+                .map_err(|e| HostingError::Gui(format!("set_parent: {e}")))?;
+            gui.show(&handle)
+                .map_err(|e| HostingError::Gui(format!("show: {e}")))?;
+            Ok(GuiInfo {
+                size: GuiSize {
+                    width: size.width,
+                    height: size.height,
+                },
+                resizable,
+            })
+        })();
+        match opened {
+            Ok(info) => {
+                self.gui = Some(OpenGui {
+                    resizable: info.resizable,
+                });
+                Ok(info)
+            }
+            Err(e) => {
+                gui.destroy(&handle);
+                Err(e)
+            }
+        }
+    }
+
+    fn gui_set_size(&mut self, size: GuiSize) -> Result<GuiSize, HostingError> {
+        let (gui, open) = self.require_gui()?;
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let current = |handle: &PluginMainThreadHandle| {
+            gui.get_size(handle)
+                .map(|s| GuiSize {
+                    width: s.width,
+                    height: s.height,
+                })
+                .ok_or_else(|| HostingError::Gui("get_size failed".into()))
+        };
+        if !open.resizable {
+            // A fixed-size GUI keeps its size. Calling `set_size` anyway makes JUCE log
+            // HOST_MISBEHAVING (spike WP-15 §1.4).
+            return current(&handle);
+        }
+        let wanted = ClapGuiSize {
+            width: size.width,
+            height: size.height,
+        };
+        let adjusted = gui.adjust_size(&handle, wanted).unwrap_or(wanted);
+        gui.set_size(&handle, adjusted)
+            .map_err(|e| HostingError::Gui(format!("set_size: {e}")))?;
+        current(&handle).or(Ok(GuiSize {
+            width: adjusted.width,
+            height: adjusted.height,
+        }))
+    }
+
+    fn gui_close(&mut self) {
+        let Some(gui) = self.ext.gui else {
+            return;
+        };
+        if self.gui.take().is_none() {
+            return;
+        }
+        let mut instance = self.instance.borrow_mut();
+        let handle = instance.plugin_handle();
+        let _ = gui.hide(&handle);
+        gui.destroy(&handle);
+    }
+
+    fn on_main_thread(&mut self) {
+        self.instance.borrow_mut().call_on_main_thread_callback();
+    }
+
+    fn on_timer(&mut self, timer: TimerId) {
+        let Some(ext) = self.ext.timer else {
+            return;
+        };
+        if !self.owns_timer(timer) {
+            return;
+        }
+        let mut instance = self.instance.borrow_mut();
+        ext.on_timer(&instance.plugin_handle(), ClapTimerId(timer.0));
+    }
+
+    fn on_fd(&mut self, fd: RawFd, events: FdEvents) {
+        let Some(ext) = self.ext.posix_fd else {
+            return;
+        };
+        if !self.owns_fd(fd) {
+            return;
+        }
+        let mut instance = self.instance.borrow_mut();
+        ext.on_fd(&instance.plugin_handle(), fd, host::fd_flags(events));
+    }
+}
+
+impl Drop for ClapPlugin {
+    fn drop(&mut self) {
+        self.gui_close();
+        let mut instance = self.instance.borrow_mut();
+        if instance.is_active() && instance.try_deactivate().is_err() {
+            // The processor still lives somewhere; clack destroys the instance only after it.
+            self.context.notify.log(
+                LogLevel::Error,
+                "plugin dropped while its processor is still alive",
+            );
+        }
+    }
+}
