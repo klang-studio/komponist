@@ -31,8 +31,9 @@ egui = "0.37.0"
 eframe = { version = "0.37.0", features = ["wgpu", "inspection", "accesskit"] }
 egui_extras = { version = "0.37.0", features = ["svg"] }
 egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
-# winit is not a direct dependency: use the version eframe re-exports (`eframe::winit`),
-# e.g. for `EventLoopBuilderExtX11`.
+# eframe 0.37 does not re-export winit. Same version as egui-winit uses; only for
+# `EventLoopBuilderExtX11::with_x11()` in komponist-ui's eframe setup.
+winit = { version = "0.30.13", default-features = false, features = ["x11"] }
 
 # Audio and MIDI I/O.
 cpal = { version = "0.18.2", features = ["pipewire", "jack"] }
