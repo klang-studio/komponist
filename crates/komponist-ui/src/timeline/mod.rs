@@ -27,6 +27,7 @@
 //! anti-aliased. Geometry the design data gives without a token is collected in [`metrics`].
 
 pub mod clip;
+pub mod gallery;
 pub mod grid;
 mod mesh;
 pub mod metrics;
