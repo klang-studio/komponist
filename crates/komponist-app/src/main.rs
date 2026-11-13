@@ -124,7 +124,7 @@ fn main() -> eframe::Result {
     if let Err(e) = started {
         eprintln!("komponist: audio output not available ({e}); running without device");
     }
-    let title = format!("{WORDMARK} · {}", project.name);
+    let title = komponist_app::app::window_title(&project.name);
     let mut options = RunOptions::new(WORDMARK, title);
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(project), engine, settings, settings_path);

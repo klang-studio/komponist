@@ -552,8 +552,20 @@ fn no_device_chip(ui: &mut Ui) {
 /// The "⋯" menu (prototype `menu`): new, open, save, export, start screen.
 fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let response = ui.add(Button::icon(Icon::Ellipsis, names::MENU));
+    // The menu opens one frame after the click: a press and release delivered in one frame
+    // (egui-mcp, fast touchpads) would otherwise count as a press outside the new menu and close
+    // it at once (the context menu exempts only its own right-click).
+    let pending = response.id.with("komponist_menu_pending");
+    let ctx = ui.ctx().clone();
+    if ctx
+        .data_mut(|d| d.remove_temp::<bool>(pending))
+        .unwrap_or(false)
+    {
+        ContextMenu::<Action>::open_at(&ctx, response.id, response.rect.left_bottom());
+    }
     if response.clicked() {
-        ContextMenu::<Action>::open_at(ui.ctx(), response.id, response.rect.left_bottom());
+        ctx.data_mut(|d| d.insert_temp(pending, true));
+        ctx.request_repaint();
     }
     let p = |a| Action::Project(a);
     let entries_spec = [

@@ -35,7 +35,7 @@ use crate::actions::{
     SettingsAction, TransportAction, UiAction,
 };
 use crate::device_host::{BuiltinHost, DeviceHost};
-use crate::engine_sync::{EngineSync, SyncEvent};
+use crate::engine_sync::EngineSync;
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
@@ -89,6 +89,8 @@ pub(crate) struct ShellState {
     saved_panels: Option<PanelSettings>,
     /// The last edit that failed (diagnostics, tests).
     last_error: Option<EditError>,
+    /// The window title last sent ("komponist · Nachtfahrt").
+    title: Option<String>,
 }
 
 impl App {
@@ -243,7 +245,17 @@ impl App {
         self.flush_queue();
         self.engine.sync(&self.doc);
         self.persist_panels();
+        self.update_title(&ctx);
         self.schedule_repaint(&ctx);
+    }
+
+    /// The window title follows the project name ("komponist · Nachtfahrt").
+    fn update_title(&mut self, ctx: &Context) {
+        let title = window_title(&self.project().name);
+        if self.shell.title.as_ref() != Some(&title) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.shell.title = Some(title);
+        }
     }
 
     /// Dispatches the queued actions in order (and those they queue).
@@ -256,14 +268,10 @@ impl App {
     }
 
     fn poll_engine(&mut self, now: f64) {
-        for event in self.engine.poll() {
-            match event {
-                SyncEvent::Engine(komponist_engine::EngineEvent::ProcessorFailed { .. }) => {}
-                // Recording (WP-51) builds takes from RecordedNoteOn/Off, LoopWrapped and
-                // CountInDone; the device host's state snapshots go into the document with WP-45.
-                SyncEvent::Engine(_) | SyncEvent::Device(_) => {}
-            }
-        }
+        // Garbage is dropped inside `EngineSync::poll`. The rest has no consumer yet: recording
+        // (WP-51) builds takes from RecordedNoteOn/Off, LoopWrapped and CountInDone; the plugin
+        // manager's state snapshots go into the document with WP-45.
+        for _event in self.engine.poll() {}
         self.meters.update(&self.engine, now);
     }
 
@@ -338,15 +346,17 @@ impl App {
                 continue;
             };
             let ctrl = modifiers.ctrl || modifiers.command;
-            if self.keyboard_midi_active() && !ctrl && !modifiers.alt {
-                let physical = physical_key.unwrap_or(key);
-                if let Some(k) = key_from_egui(physical)
-                    && let Some(note) = keymap::note_for(k)
-                {
-                    ctx.input_mut(|i| i.consume_key(modifiers, key));
-                    self.keyboard_note(k, note, pressed, repeat);
-                    continue;
-                }
+            let physical = key_from_egui(physical_key.unwrap_or(key));
+            // A held note ends on release even if the layer turned off meanwhile.
+            let held = physical.is_some_and(|k| self.shell.held_notes.iter().any(|(h, _)| *h == k));
+            let layer = self.keyboard_midi_active() && !ctrl && !modifiers.alt;
+            if let Some(k) = physical
+                && let Some(note) = keymap::note_for(k)
+                && (layer || (held && !pressed))
+            {
+                ctx.input_mut(|i| i.consume_key(modifiers, key));
+                self.keyboard_note(k, note, pressed, repeat);
+                continue;
             }
             if !pressed {
                 continue;
@@ -1228,7 +1238,10 @@ impl App {
             }
             UiAction::OpenSettings(section) => self.open_dialog(Dialog::Settings(section)),
             UiAction::CloseDialog => {
-                self.ui.dialog = None;
+                // Esc reaches both the keymap and the modal; the second close changes nothing.
+                if self.ui.dialog.take().is_none() {
+                    return;
+                }
                 self.ui.focus = self
                     .shell
                     .focus_before_dialog
@@ -1569,8 +1582,8 @@ impl App {
             }
             ProjectAction::CancelExport => {}
             ProjectAction::ContinueWithMissing => self.ui_action(UiAction::CloseDialog),
+            // S06 → S07: the settings replace the dialog; the focus to return to stays.
             ProjectAction::CheckPluginFolders => {
-                self.ui.dialog = None;
                 self.open_dialog(Dialog::Settings(SettingsSection::Plugins));
             }
         }
@@ -1651,6 +1664,11 @@ impl App {
             &mut self.settings.vst3_dirs
         }
     }
+}
+
+/// The window title for a project: "komponist · Nachtfahrt" (ARCHITECTURE §13.6).
+pub fn window_title(project_name: &str) -> String {
+    format!("{} · {project_name}", crate::panels::transport::WORDMARK)
 }
 
 /// Whether a held key may repeat `action` (zoom, transpose, nudge).

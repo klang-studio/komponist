@@ -325,3 +325,21 @@ fn new_project_replaces_the_document() {
     assert_eq!(a.project().name, "Unbenannt");
     assert!(a.ui().selection.tracks.is_empty());
 }
+
+#[test]
+fn replacing_and_closing_dialogs_twice_keeps_the_focus() {
+    use komponist_app::ProjectAction;
+    use komponist_app::ui_state::{Dialog, SettingsSection};
+    let mut a = app();
+    a.dispatch(ui(UiAction::Focus(FocusArea::Browser)));
+    a.dispatch(Action::Project(ProjectAction::OpenExportDialog));
+    // S06 "Plugin-Ordner prüfen" style: one dialog replaces another.
+    a.dispatch(Action::Project(ProjectAction::CheckPluginFolders));
+    assert_eq!(
+        a.ui().dialog,
+        Some(Dialog::Settings(SettingsSection::Plugins))
+    );
+    a.dispatch(ui(UiAction::CloseDialog));
+    a.dispatch(ui(UiAction::CloseDialog));
+    assert_eq!(a.ui().focus, FocusArea::Browser);
+}
