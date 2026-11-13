@@ -1,5 +1,5 @@
 //! Track toggles M S R I (`tgl`, `toggleRows` of the design system): 18 × 16, `radius.s`, letter
-//! in Mono 10.
+//! in Mono 10 semibold.
 //!
 //! | | off | hover | on |
 //! |---|---|---|---|
@@ -271,7 +271,7 @@ impl<'a> TrackToggle<'a> {
             let galley = super::galley(
                 ui,
                 self.kind.letter(),
-                super::mono_medium(typography::VALUE_S.size),
+                super::toggle_letter_font(),
                 typography::VALUE_S.line_height,
             );
             let pos = super::text_pos_centered(rect, &galley, ui.pixels_per_point());
@@ -482,5 +482,17 @@ mod tests {
         assert!(!Mute.alt_exclusive() && !Monitor.alt_exclusive());
         let letters: String = ToggleKind::ALL.iter().map(|k| k.letter()).collect();
         assert_eq!(letters, "MSRI");
+    }
+
+    #[test]
+    fn letters_in_mono_semibold() {
+        // `tgl`: Mono 10, `fontWeight: 600`.
+        assert_eq!(
+            crate::widgets::toggle_letter_font(),
+            egui::FontId::new(
+                typography::VALUE_S.size,
+                egui::FontFamily::Name("IBMPlexMono-SemiBold".into())
+            )
+        );
     }
 }

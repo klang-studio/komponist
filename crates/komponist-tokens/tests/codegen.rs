@@ -108,6 +108,46 @@ fn unknown_or_changed_formula_fails() {
 }
 
 #[test]
+fn komponist_additions_generate() {
+    let generated = codegen::generate(&tokens()).unwrap();
+    let track = &generated.files["track.rs"];
+    for line in [
+        "pub const KEY_PLAYING: LightnessChroma = LightnessChroma { l: 0.82, c: 0.1 };",
+        "pub const NOTE_MUTED: LightnessChroma = LightnessChroma { l: 0.55, c: 0.08 };",
+        "pub const CLIP_HANDLE: LightnessChroma = LightnessChroma { l: 0.4, c: 0.07 };",
+    ] {
+        assert!(track.contains(line), "{line} missing in {track}");
+    }
+    let color = &generated.files["color.rs"];
+    for line in [
+        "pub const LINE_0: Srgba = [0x23, 0x24, 0x27, 0xff];",
+        "pub const LINE: [Srgba; 3] = [LINE_0, LINE_1, LINE_2];",
+        "pub const STATE_RECORD_INK: Srgba = [0xf2, 0xa6, 0xa8, 0xff];",
+        "pub const CANVAS_LANE_SELECTED: Srgba = [0x1a, 0x1c, 0x1f, 0xff];",
+        "pub const CANVAS_BLACK_KEY_ROW: Srgba = [0x1a, 0x1b, 0x1d, 0xff];",
+        // rgba(17,18,20,0.6): alpha 0.6 × 255 = 153.
+        "pub const CANVAS_OUTSIDE_CLIP: Srgba = [0x11, 0x12, 0x14, 0x99];",
+    ] {
+        assert!(color.contains(line), "{line} missing in {color}");
+    }
+}
+
+#[test]
+fn komponist_formulas_are_required() {
+    for key in ["key-playing", "note-muted", "clip-handle"] {
+        let e = error_after(|t| {
+            t["track"]["$formula"].as_object_mut().unwrap().remove(key);
+        });
+        assert!(
+            e.contains(&format!("`track.$formula.{key}` is missing")),
+            "{e}"
+        );
+        let e = error_after(|t| t["track"]["$formula"][key] = json!("oklch(0.5 0.1 250)"));
+        assert!(e.contains(&format!("track.$formula.{key}")), "{e}");
+    }
+}
+
+#[test]
 fn auto_assign_hue_must_exist() {
     let e = error_after(|t| t["track"]["auto-assign-hue-order"][0] = json!(151));
     assert!(e.contains("hue 151 is not in `track.colors`"), "{e}");

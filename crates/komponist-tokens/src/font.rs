@@ -1,9 +1,11 @@
-//! Bundled fonts: IBM Plex Sans (400/500/600) and IBM Plex Mono (400/500), SIL OFL 1.1.
+//! Bundled fonts: IBM Plex Sans (400/500/600) and IBM Plex Mono (400/500/600), SIL OFL 1.1.
 //!
 //! The family names come from `font.*` in `tokens.json`; [`crate::typography`] picks family and
-//! weight per text style. All faces have tabular digits in their default glyphs (equal advance
-//! for `0`–`9`), so numbers line up without OpenType features, which egui does not apply. Source,
-//! versions and the check are in `assets/fonts/README.md`.
+//! weight per text style. Mono 600 belongs to no text style: it sets the letters M S R I of the
+//! track toggles (`tgl` in the design data, `fontWeight: 600`). All faces have tabular digits in
+//! their default glyphs (equal advance for `0`–`9`), so numbers line up without OpenType
+//! features, which egui does not apply. Source, versions and the check are in
+//! `assets/fonts/README.md`.
 
 include!(concat!(env!("OUT_DIR"), "/font.rs"));
 
@@ -57,12 +59,13 @@ macro_rules! face {
 }
 
 /// All embedded faces.
-pub const FACES: [Face; 5] = [
+pub const FACES: [Face; 6] = [
     face!(Sans, 400, "IBMPlexSans-Regular"),
     face!(Sans, 500, "IBMPlexSans-Medium"),
     face!(Sans, 600, "IBMPlexSans-SemiBold"),
     face!(Mono, 400, "IBMPlexMono-Regular"),
     face!(Mono, 500, "IBMPlexMono-Medium"),
+    face!(Mono, 600, "IBMPlexMono-SemiBold"),
 ];
 
 /// The face of `family` with exactly `weight`, if bundled.
@@ -114,7 +117,16 @@ mod tests {
             "IBMPlexSans-SemiBold"
         );
         assert_eq!(face(Family::Mono, 500).unwrap().name, "IBMPlexMono-Medium");
-        assert!(face(Family::Mono, 600).is_none());
+        assert_eq!(
+            face(Family::Mono, 600).unwrap().name,
+            "IBMPlexMono-SemiBold"
+        );
+        assert!(face(Family::Mono, 700).is_none());
+        for family in [Family::Sans, Family::Mono] {
+            for weight in [400, 500, 600] {
+                assert!(face(family, weight).is_some(), "{family:?} {weight}");
+            }
+        }
         assert!(LICENSE.contains("SIL OPEN FONT LICENSE Version 1.1"));
         assert!(LICENSE.contains("Reserved Font Name \"Plex\""));
     }

@@ -50,11 +50,13 @@ pub struct BoxShadow {
     pub color: Srgba,
 }
 
-/// UI colours (`color.*`): surfaces, text, lines, accent, states, meters.
+/// UI colours (`color.*`): surfaces, text, lines, accent, states, meters, canvas fills.
 ///
 /// `color.<group>.<key>` becomes `<GROUP>_<KEY>`; `default` is dropped (`accent.default` →
 /// [`ACCENT`](color::ACCENT)). The surface scale is also available as the array
-/// [`SURFACE`](color::SURFACE) for the "+1 / +2 steps" hover and pressed rules.
+/// [`SURFACE`](color::SURFACE) for the "+1 / +2 steps" hover and pressed rules, the line scale as
+/// [`LINE`](color::LINE). `line.0`, `state.record-ink` and `canvas.*` are komponist additions
+/// taken from the design data (`design/README.md`); `canvas.outside-clip` is translucent.
 pub mod color {
     use crate::Srgba;
     include!(concat!(env!("OUT_DIR"), "/color.rs"));

@@ -6,10 +6,10 @@
 //!
 //! | State | Look |
 //! |---|---|
-//! | hover | head `clip-head-hover`, trim handles at both ends, loop handle top right (`text.1`) |
+//! | hover | head `clip-head-hover`, trim handles at both ends (`clip-handle`), loop handle top right (`text.1`) |
 //! | selected | 1 px accent ring, colours stay |
 //! | muted | head `dim`, body `surface.2`, content and name `text.3` |
-//! | recording | head `state.record`, body `state.record-surface`, name `text.1`, 1 px `text.1` head line on the right |
+//! | recording | head `state.record`, body `state.record-surface`, content `state.record-ink`, name `text.1`, 1 px `text.1` head line on the right |
 //! | looped | repetitions in `ink-dim`, joints as 1 px `surface.0` lines, ▾ mark in the head |
 //! | trimming | 2 px accent on the dragged edge |
 //! | Alt copy | the original as a dashed `text.3` outline ([`paint_clip_ghost`]) |
@@ -22,7 +22,6 @@ use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, Painter, Rect, Role, pos2, vec2};
 use komponist_model::{Clip, ClipContent, Meter, Note, StepClip, Tick};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::track::{HUES, PRECOMPUTED};
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, radius, size, space};
 
@@ -388,20 +387,6 @@ pub struct ClipColors {
     pub name: Color32,
 }
 
-/// The ink of a recording clip. Contract change pending: `state.record-ink` (#f2a6a8 in the
-/// design); until then the `ink` of the red track hue (#ffc3bc), the closest token.
-fn record_ink() -> Color32 {
-    let red = HUES
-        .iter()
-        .find(|h| h.name == "red")
-        .map_or(25, |h| h.degrees);
-    let ink = PRECOMPUTED
-        .iter()
-        .find(|p| p.hue == red)
-        .map_or(color::STATE_RECORD, |p| p.ink);
-    color32(ink)
-}
-
 /// The colours of a clip (`clipO`: `head`, `bodyC`, `inkC`).
 pub fn clip_colors(model: &ClipModel<'_>, state: ClipState) -> ClipColors {
     let p = model.palette;
@@ -409,7 +394,7 @@ pub fn clip_colors(model: &ClipModel<'_>, state: ClipState) -> ClipColors {
         ClipColors {
             head: color32(color::STATE_RECORD),
             body: color32(color::STATE_RECORD_SURFACE),
-            ink: record_ink(),
+            ink: color32(color::STATE_RECORD_INK),
             ink_repeat: color32(p.ink_dim),
             name: color32(color::TEXT_1),
         }
@@ -459,9 +444,7 @@ pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: C
     let mut q = Quads::new(ppp);
     let w = px::line_width(ppp);
     if state.hovered && !model.recording {
-        // Contract change pending: `track.$formula.clip-handle` = oklch(0.40 0.07 h); `dim`
-        // (oklch 0.42 0.03 h) is the closest token.
-        let handle = color32(model.palette.dim);
+        let handle = color32(model.palette.clip_handle);
         let hw = metrics::CLIP_HANDLE_WIDTH.min(body.width() / 2.0);
         q.rounded_corners(
             Rect::from_min_max(body.min, pos2(body.min.x + hw, body.max.y)),
@@ -747,6 +730,7 @@ mod tests {
         let c = clip_colors(&m, ClipState::REST);
         assert_eq!(c.head, color32(color::STATE_RECORD));
         assert_eq!(c.body, color32(color::STATE_RECORD_SURFACE));
+        assert_eq!(c.ink, color32(color::STATE_RECORD_INK));
     }
 
     #[test]

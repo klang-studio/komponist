@@ -7,7 +7,8 @@
 //!   [`metrics::NOTE_RING_MIN_HEIGHT`] (zoomed out to key height 4) a ring would cover the
 //!   neighbours, so selection fills the note with accent instead ("Auswahl = Akzentfläche") and a
 //!   playing note just takes the playing colour.
-//! - Muted: no fill, a 1 px inset contour. Drag original: no fill, dashed `text.3` contour.
+//! - Muted: no fill, a 1 px inset contour in `note-muted`. Drag original: no fill, dashed
+//!   `text.3` contour.
 //! - From 28 × 12 on, the note shows its name ("mit Name ab h 12, w 28").
 //!
 //! [`paint_note`] paints one note. For many, [`NoteBatch`] collects them into one mesh (fills
@@ -119,9 +120,7 @@ pub fn note_look(
         None
     };
     if state.muted {
-        // Contract change pending: `track.$formula.note-muted` = oklch(0.55 0.08 h); `ink-dim`
-        // (oklch 0.62 0.08 h) is the closest token.
-        let contour = color32(palette.ink_dim);
+        let contour = color32(palette.note_muted);
         return if rings {
             NoteLook {
                 fill: None,
@@ -383,7 +382,7 @@ mod tests {
             big,
         );
         assert_eq!(muted.fill, None);
-        assert!(muted.contour.is_some());
+        assert_eq!(muted.contour, Some(color32(p.note_muted)));
 
         let ghost = note_look(
             &p,
