@@ -184,12 +184,16 @@ fn rt_main(
         events_in: vec![WireEvent::default(); PARAM_QUEUE_CAPACITY + INPUT_EVENT_CAPACITY],
         events_out: vec![WireEvent::default(); OUTPUT_EVENT_CAPACITY],
     };
+    if ok {
+        // Before the report: once it arrives the main thread publishes `Active`, and every request
+        // after that is a fresh one.
+        serve_stale(&mut server, config.fallback);
+    }
     // The receiver waits for exactly this message.
     let _ = report.send((StartReport { priority }, started));
     drop(report);
     if ok {
         assert_no_alloc::assert_no_alloc(|| {
-            serve_stale(&mut server, config.fallback);
             while !stop.load(Ordering::Acquire) {
                 if let Some(request) = server.wait_request(Some(Instant::now() + STOP_POLL)) {
                     serve(

@@ -395,10 +395,10 @@ impl Bridge {
     /// configuration, then report `Activated` (nothing to do while inactive: ports and latency are
     /// read at the next activation).
     fn restart(&mut self) {
-        self.send(BridgeMsg::RestartRequested);
         let Some(config) = self.active.as_ref().map(|a| a.config) else {
             return;
         };
+        self.send(BridgeMsg::RestartRequested);
         self.deactivate();
         self.activate_and_report(config);
     }
