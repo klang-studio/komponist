@@ -1,0 +1,61 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Own workspaces or throwaway code, never part of this build (ARCHITECTURE §4).
+exclude = ["spikes", "test-plugins"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# Workspace crates.
+komponist-tokens = { path = "crates/komponist-tokens" }
+komponist-model = { path = "crates/komponist-model" }
+komponist-engine = { path = "crates/komponist-engine" }
+komponist-audio = { path = "crates/komponist-audio" }
+komponist-builtin = { path = "crates/komponist-builtin" }
+komponist-ipc = { path = "crates/komponist-ipc" }
+komponist-hosting = { path = "crates/komponist-hosting" }
+komponist-plugins = { path = "crates/komponist-plugins" }
+komponist-ui = { path = "crates/komponist-ui" }
+
+# Sibling repositories, referenced by relative path. A worktree must therefore sit exactly
+# one level below <workspace>/ (PLAN §1.2).
+klang-dsp = { path = "../klang-dsp" }
+synth-core = { path = "../pisynth/crates/synth-core", features = ["alloc", "serde"] }
+
+# UI (egui/eframe 0.37 family; versions must move together).
+egui = "0.37.0"
+eframe = { version = "0.37.0", features = ["wgpu", "inspection", "accesskit"] }
+egui_extras = { version = "0.37.0", features = ["svg"] }
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
+# winit is not a direct dependency: use the version eframe re-exports (`eframe::winit`),
+# e.g. for `EventLoopBuilderExtX11`.
+
+# Audio and MIDI I/O.
+cpal = { version = "0.18.2", features = ["pipewire", "jack"] }
+midir = "0.11.1"
+
+# Plugin format layer (linked only by komponist-bridge via komponist-hosting).
+# truce-rack is added only if gate G4 picks it (ARCHITECTURE §2.4, D3).
+clack-host = "0.2.0"
+clack-extensions = "0.2.0"
+vst3 = "0.3.0"
+
+# Realtime plumbing and OS interfaces.
+rtrb = "0.4.1"
+rustix = { version = "1.1.6", features = ["mm", "thread", "process", "net"] }
+x11rb = "0.14.0"
+
+# Serialization and files.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+postcard = "1.1.3"
+base64 = "0.23.1"
+hound = "3.5.1"
+
+# Testing.
+assert_no_alloc = "1.1.2"
+proptest = "1.12.0"

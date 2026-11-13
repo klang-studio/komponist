@@ -1,0 +1,9 @@
+[package]
+name = "komponist-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "komponist"
+path = "src/main.rs"
