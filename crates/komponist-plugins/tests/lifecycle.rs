@@ -272,6 +272,46 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     rig.manager.shutdown();
 }
 
+#[test]
+fn parameter_changes_are_snapshotted_once_debounced() {
+    let dir = scratch("debounce");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let from = rig.events.len();
+    let t0 = Instant::now();
+    // A knob drag: many values in a row, no explicit request.
+    for step in 0..20 {
+        rig.manager
+            .set_param(DeviceId(10), gain, 0.3 + f64::from(step) * 0.01);
+        rig.process(BLOCK);
+    }
+    let snapshots = |rig: &Rig| {
+        rig.events[from..]
+            .iter()
+            .filter(|e| matches!(e, PluginManagerEvent::StateSnapshot { .. }))
+            .count()
+    };
+    run_until(&mut rig, "a debounced snapshot", |rig| snapshots(rig) > 0);
+    let after = t0.elapsed();
+    assert!(
+        after >= Duration::from_millis(900),
+        "not debounced: {after:?}"
+    );
+    // No second one without further changes.
+    let t1 = Instant::now();
+    while t1.elapsed() < Duration::from_millis(1500) {
+        rig.process(BLOCK);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(snapshots(&rig), 1);
+    rig.manager.shutdown();
+}
+
 fn alive(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }

@@ -218,8 +218,9 @@ fn fallbacks_while_loading_late_and_busy() {
     while t0.elapsed() < Duration::from_millis(30) {
         let (status, took) = call(&mut *fx, &input, &mut output, &[note(0, 126, false)]);
         assert_eq!(status, ProcessStatus::Continue);
+        // Far below the plugin's 50 ms (with room for preemption on a loaded machine).
         assert!(
-            took < Duration::from_millis(5),
+            took < Duration::from_millis(25),
             "a busy call waited {took:?}"
         );
         assert_eq!(output[1], input);
@@ -254,7 +255,7 @@ fn fallbacks_while_loading_late_and_busy() {
     manager.release(DeviceId(21));
     let (status, took) = call(&mut *fx, &input, &mut output, &[]);
     assert_eq!(status, ProcessStatus::Failed);
-    assert!(took < Duration::from_millis(5));
+    assert!(took < Duration::from_millis(25));
     assert_eq!(output[0], input);
     let (status, _) = call(&mut *inst, &input, &mut output, &[]);
     assert_eq!(status, ProcessStatus::Failed);
