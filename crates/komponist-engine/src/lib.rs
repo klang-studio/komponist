@@ -23,9 +23,6 @@
 //! rtrb queues of [`api`] or atomics.
 
 pub mod api;
-// Contract stage (WP-01): bodies are `todo!()` until WP-24 implements them, so parameters are
-// unused for now. Remove this allow when the implementation lands.
-#[allow(unused_variables)]
 pub mod compile;
 pub mod engine;
 mod garbage;
