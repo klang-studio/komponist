@@ -12,16 +12,20 @@
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
+//! - [`testing`]: test processors ([`testing::TestSine`], [`testing::TestGain`]).
+//!
+//! Engine internals: `transport` (position, loop, count-in), `sequencer` (active notes,
+//! probability, live input), `slots` (processor table, chains), `mixer` (fader, balance, solo,
+//! delay compensation), `metronome`, `garbage` (event queue with the garbage holding list).
 //!
 //! Threads: `Engine` lives on the audio thread (or a render worker); `EngineHandle`, the compiler
 //! and processor creation run on the UI thread. Everything crossing between them goes through the
 //! rtrb queues of [`api`] or atomics.
 
-// Contract stage (WP-01): bodies are `todo!()` until WP-23 / WP-24 implement them, so parameters
-// are unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
 pub mod api;
+// Contract stage (WP-01): bodies are `todo!()` until WP-24 implements them, so parameters are
+// unused for now. Remove this allow when the implementation lands.
+#[allow(unused_variables)]
 pub mod compile;
 pub mod engine;
 mod garbage;
