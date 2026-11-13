@@ -191,14 +191,17 @@ pub fn designsystem() -> Vec<Section> {
             Card::new("Button")
                 .spec("h 24 · px 10 · radius.m · ui-medium")
                 .ix(ix::BUTTON)
+                .content(crate::widgets::button::gallery)
                 .owner("WP-20"),
             Card::new("Toggle")
                 .spec("Spur-Toggle 18 × 16 · Schalter 28 × 16")
                 .ix(ix::TOGGLE)
+                .content(crate::widgets::toggle::gallery)
                 .owner("WP-20"),
             Card::new("Dropdown")
                 .spec("h 24 · min-w 96 · Menü radius.l")
                 .ix(ix::DROPDOWN)
+                .content(crate::widgets::dropdown::gallery)
                 .owner("WP-20"),
             Card::new("Zahlenfeld, ziehbar")
                 .spec("h 24 · px 8 · value-m · Einheit text.3")
@@ -236,18 +239,22 @@ pub fn designsystem() -> Vec<Section> {
             Card::new("Tabs und Umschalter")
                 .spec("Tab h 28 · Umschalter h 24, Segment h 20")
                 .ix(ix::TABS)
+                .content(crate::widgets::tabs::gallery)
                 .owner("WP-20"),
             Card::new("Panel-Kopf")
                 .spec("h 28 · fläche-2 · px 8 · Titel label")
                 .ix(ix::PANEL)
+                .content(crate::widgets::panel_header::gallery)
                 .owner("WP-20"),
             Card::new("Kontextmenü")
                 .spec("w 220 · Zeile 24 · p 4 · fläche-3 · shadow.float")
                 .ix(ix::MENU)
+                .content(crate::widgets::context_menu::gallery)
                 .owner("WP-20"),
             Card::new("Tooltip")
                 .spec("h 22 · px 8 · fläche-5 · radius.m · shadow.float")
                 .ix(ix::TOOLTIP)
+                .content(crate::widgets::tooltip::gallery)
                 .owner("WP-20"),
         ])),
         tokens::shortcuts_and_icons(),
