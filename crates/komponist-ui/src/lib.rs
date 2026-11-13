@@ -13,12 +13,14 @@
 //! - [`state`], [`focus`]: hover/pressed/focus-visible/selected/disabled → colours, rings.
 //! - [`drag`]: drag math (1 px = 1 step, 200 px = full range, Shift × 0.1, Ctrl × 10).
 //! - [`tooltip`], [`icons`]: tooltip timing and frames; Lucide icons and drawn transport shapes.
+//! - [`gallery_shell`]: the gallery frame and its sections, filled by WP-20/21/22.
 //!
 //! The widgets arrive with WP-20 and WP-21, the timeline paint functions with WP-22.
 
 pub mod drag;
 pub mod focus;
 pub mod fonts;
+pub mod gallery_shell;
 pub mod icons;
 pub mod px;
 pub mod state;
