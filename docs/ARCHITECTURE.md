@@ -472,7 +472,10 @@ truce-rack serve as further reference code.
   IHostApplication, IComponentHandler (GUI edits), IParameterChanges/IEventList, IBStream (state:
   component + controller in one blob with a header), IPlugView with `kPlatformTypeX11EmbedWindowID`,
   IPlugFrame (resize), **Linux IRunLoop** (event handlers for fds and timers, in the bridge's poll
-  loop), IPlugViewContentScaleSupport. Host duties the spike found: call `ModuleEntry` before and
+  loop), IPlugViewContentScaleSupport. Parameters are exposed normalized (0..1) because only the
+  controller converts to plain values; the state blob is `KPV3` + class id + component and controller
+  state (`vst3/stream.rs`). Plugin libraries stay mapped (`RTLD_NODELETE`) in both formats, because
+  threads that called into a plugin crash at exit after `dlclose`. Host duties the spike found: call `ModuleEntry` before and
   `ModuleExit` after use, activate buses before processing (otherwise instruments stay silent), sync
   component state into the controller, keep the library loaded until every COM object is released.
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.

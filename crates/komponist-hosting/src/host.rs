@@ -86,7 +86,8 @@ pub enum HostNotification {
     /// `kParamValuesChanged`/`kParamTitlesChanged`). Main thread.
     ParamsChanged,
     /// A parameter was edited on the main thread (VST3 `performEdit` from the GUI); the format layer
-    /// already forwards it to its processor. Main thread.
+    /// already forwards it to its processor, and while processing the processor also echoes the edit
+    /// as gesture/value output events, so consumers must treat repeated values idempotently. Main thread.
     ParamEdited {
         /// Parameter id.
         id: u32,
