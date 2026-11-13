@@ -73,7 +73,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    tool) and compare it with the reference before you report. Once a binary shows your work (gallery
    from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb if
    needed), attach with the `egui` MCP server, read the AccessKit tree, click and type through it and
-   take a screenshot. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
+   take a screenshot. Parallel agents: use your own port, e.g. `EGUI_INSPECTION=127.0.0.1:57xyz`, not
+   the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
    (`import -window`) under Xvfb for those.
 8. **Dependencies:** use workspace dependencies. A new crate needs one sentence of justification in
    the report.
@@ -89,3 +90,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
     piano roll, step grid, mixer) expose AccessKit nodes for their **visible** objects (track, clip,
     note, step, strip) with names such as "Clip Beat A, Takt 1–4" or "Note C4, 1.1.000". Without them
     neither kittest queries nor the egui MCP server can find anything.
+
+13. **Waiting for background work:** never poll with `pgrep -f "<pattern>"` — the polling shell's own
+    command line contains the pattern, so the loop never ends (six such loops ran forever on 2026-11-13).
+    Start long commands with `run_in_background` and wait for their completion notification; if you
+    must poll, wait on a PID (`while kill -0 $PID; do sleep 3; done`) or use `pgrep -x`.
