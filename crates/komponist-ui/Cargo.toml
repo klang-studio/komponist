@@ -15,6 +15,10 @@ snapshot = ["dep:egui_kittest"]
 
 [dependencies]
 komponist-tokens = { workspace = true, features = ["egui"] }
+# dB / pan formatting and parsing for the value controls (decided at G1).
+komponist-model.workspace = true
+# Peak meter ballistics (`meter::PeakMeter`) and dB ↔ gain.
+klang-dsp.workspace = true
 egui.workspace = true
 eframe.workspace = true
 egui_extras.workspace = true
