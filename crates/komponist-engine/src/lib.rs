@@ -26,6 +26,13 @@ pub mod compile;
 pub mod engine;
 pub mod processor;
 pub mod program;
+pub mod testing;
+
+// Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
+// in release builds `assert_no_alloc` is a no-op).
+#[cfg(all(test, debug_assertions))]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 pub use api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState};
 pub use engine::{Engine, EngineConfig, LiveInput, MidiInEvent};
