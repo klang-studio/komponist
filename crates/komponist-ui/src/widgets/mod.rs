@@ -18,6 +18,8 @@
 //! foreground layer; at most one is open at a time ([`floating`]).
 
 pub mod button;
+pub mod switch;
+pub mod toggle;
 pub mod tooltip;
 
 use std::sync::Arc;
