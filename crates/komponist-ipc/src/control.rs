@@ -14,10 +14,19 @@
 //! The scan mode (`komponist-bridge --scan <bundle>`) prints a JSON array of [`PluginDescriptor`]
 //! to stdout (serde_json, same field names).
 
+use std::io::{IoSlice, IoSliceMut};
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::PathBuf;
 
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::io::Errno;
+use rustix::net::{
+    AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags,
+    SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketFlags, SocketType, recvmsg,
+    sendmsg, socketpair,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +35,25 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
+
+// Frame format: an 8-byte header — tag (1 byte), 3 reserved bytes (0), the length of the whole
+// encoded message (u32, little-endian, the same in every fragment) — then up to
+// `MAX_FRAME - FRAME_HEADER` payload bytes. A message is the payloads of its `TAG_MORE` frames
+// followed by one `TAG_LAST` frame; a `TAG_FD` frame carries one fd and no payload.
+
+/// Bytes in front of every frame.
+const FRAME_HEADER: usize = 8;
+/// Payload bytes per frame.
+const MAX_PAYLOAD: usize = MAX_FRAME - FRAME_HEADER;
+/// The last (or only) frame of a message.
+const TAG_LAST: u8 = 0;
+/// A fragment; more follow.
+const TAG_MORE: u8 = 1;
+/// A file descriptor as SCM_RIGHTS, no payload.
+const TAG_FD: u8 = 2;
+/// Largest encoded message either side accepts (a sanity limit against a corrupt peer; plugin
+/// states of sample-based instruments reach tens of MiB).
+const MAX_MESSAGE: usize = 1 << 30;
 
 // ------------------------------------------------------------------------------------------------
 // Shared plugin vocabulary
@@ -376,7 +404,54 @@ pub type BridgeChannel = Channel<BridgeMsg, ControlMsg>;
 /// Creates a connected socket pair (`SOCK_SEQPACKET | SOCK_CLOEXEC`): the app's end and the fd for
 /// the bridge (to be inherited by the child; the spawner clears `CLOEXEC` on it).
 pub fn socket_pair() -> Result<(AppChannel, OwnedFd), ChannelError> {
-    todo!("WP-16")
+    let (app, bridge) = socketpair(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .map_err(io_error)?;
+    Ok((Channel::from_fd(app), bridge))
+}
+
+fn io_error(e: Errno) -> ChannelError {
+    ChannelError::Io(e.to_string())
+}
+
+fn codec_error(message: impl Into<String>) -> ChannelError {
+    ChannelError::Codec(message.into())
+}
+
+/// One received frame (payload in the caller's buffer after the header).
+struct Frame {
+    tag: u8,
+    /// Length of the whole message, from the header.
+    total: usize,
+    /// Payload bytes in this frame.
+    len: usize,
+    /// The first fd that came with the frame (more are closed).
+    fd: Option<OwnedFd>,
+}
+
+/// Blocks until `fd` is ready for `flags` (used when someone made the socket non-blocking).
+fn wait_ready(fd: BorrowedFd<'_>, flags: PollFlags) -> Result<(), ChannelError> {
+    let mut fds = [PollFd::from_borrowed_fd(fd, flags)];
+    match poll(&mut fds, None) {
+        Ok(_) | Err(Errno::INTR) => Ok(()),
+        Err(e) => Err(io_error(e)),
+    }
+}
+
+/// Decodes exactly one message from `bytes` (trailing bytes are an error).
+fn decode<Rx: DeserializeOwned>(bytes: &[u8]) -> Result<Rx, ChannelError> {
+    let (msg, rest) = postcard::take_from_bytes(bytes).map_err(|e| codec_error(e.to_string()))?;
+    if !rest.is_empty() {
+        return Err(codec_error(format!(
+            "{} trailing bytes after the message",
+            rest.len()
+        )));
+    }
+    Ok(msg)
 }
 
 impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
@@ -389,29 +464,213 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     }
 
     /// Sends one message (blocking until the socket accepts all its frames).
+    ///
+    /// The fragments of a large message go out back to back, so one channel end must not send
+    /// from two threads at once. Messages above 1 GiB encoded are refused (`Codec`).
     pub fn send(&self, msg: &Tx) -> Result<(), ChannelError> {
-        todo!("WP-16")
+        let bytes = postcard::to_stdvec(msg).map_err(|e| codec_error(e.to_string()))?;
+        if bytes.len() > MAX_MESSAGE {
+            return Err(codec_error(format!(
+                "message of {} bytes exceeds {MAX_MESSAGE}",
+                bytes.len()
+            )));
+        }
+        let total = bytes.len();
+        let mut sent = 0;
+        loop {
+            let len = (total - sent).min(MAX_PAYLOAD);
+            let tag = if sent + len == total {
+                TAG_LAST
+            } else {
+                TAG_MORE
+            };
+            self.send_frame(tag, total, &bytes[sent..sent + len], None)?;
+            sent += len;
+            if tag == TAG_LAST {
+                return Ok(());
+            }
+        }
     }
 
     /// Receives one whole message, blocking.
     pub fn recv(&self) -> Result<Rx, ChannelError> {
-        todo!("WP-16")
+        loop {
+            if let Some(msg) = self.recv_message(false)? {
+                return Ok(msg);
+            }
+        }
     }
 
     /// Receives one whole message if one is ready, without blocking (for poll loops). A partially
     /// received fragmented message is completed blockingly.
     pub fn try_recv(&self) -> Result<Option<Rx>, ChannelError> {
-        todo!("WP-16")
+        self.recv_message(true)
     }
 
     /// Sends a file descriptor (SCM_RIGHTS) as its own frame.
     pub fn send_fd(&self, fd: BorrowedFd<'_>) -> Result<(), ChannelError> {
-        todo!("WP-16")
+        self.send_frame(TAG_FD, 0, &[], Some(fd))
     }
 
     /// Receives a file descriptor sent with [`Channel::send_fd`], blocking.
+    ///
+    /// A message frame in its place is consumed and reported as `Codec`.
     pub fn recv_fd(&self) -> Result<OwnedFd, ChannelError> {
-        todo!("WP-16")
+        let mut buf = vec![0u8; MAX_FRAME];
+        let frame = loop {
+            if let Some(frame) = self.recv_frame(&mut buf, false)? {
+                break frame;
+            }
+        };
+        match (frame.tag, frame.fd) {
+            (TAG_FD, Some(fd)) => Ok(fd),
+            (TAG_FD, None) => Err(codec_error("file descriptor frame without a descriptor")),
+            _ => Err(codec_error(
+                "expected a file descriptor, got a message frame",
+            )),
+        }
+    }
+
+    /// Writes one frame: header, `payload` and optionally `fd` as SCM_RIGHTS.
+    fn send_frame(
+        &self,
+        tag: u8,
+        total: usize,
+        payload: &[u8],
+        fd: Option<BorrowedFd<'_>>,
+    ) -> Result<(), ChannelError> {
+        let mut header = [0u8; FRAME_HEADER];
+        header[0] = tag;
+        header[4..].copy_from_slice(&(total as u32).to_le_bytes());
+        let iov = [IoSlice::new(&header), IoSlice::new(payload)];
+        let fds = fd.map(|fd| [fd]);
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        if let Some(fds) = &fds {
+            control.push(SendAncillaryMessage::ScmRights(fds));
+        }
+        loop {
+            // NOSIGNAL: a dead peer must give EPIPE, not kill us with SIGPIPE.
+            match sendmsg(&self.fd, &iov, &mut control, SendFlags::NOSIGNAL) {
+                Ok(n) if n == FRAME_HEADER + payload.len() => return Ok(()),
+                Ok(n) => {
+                    return Err(ChannelError::Io(format!(
+                        "short send: {n} of {} bytes",
+                        FRAME_HEADER + payload.len()
+                    )));
+                }
+                Err(Errno::INTR) => {}
+                Err(Errno::AGAIN) => wait_ready(self.fd.as_fd(), PollFlags::OUT)?,
+                Err(Errno::PIPE | Errno::CONNRESET) => return Err(ChannelError::Closed),
+                Err(e) => return Err(io_error(e)),
+            }
+        }
+    }
+
+    /// Reads one frame into `buf` (at least `MAX_FRAME` bytes). `None` only with `dont_wait` when
+    /// nothing is queued.
+    fn recv_frame(&self, buf: &mut [u8], dont_wait: bool) -> Result<Option<Frame>, ChannelError> {
+        let flags = if dont_wait {
+            RecvFlags::CMSG_CLOEXEC | RecvFlags::DONTWAIT
+        } else {
+            RecvFlags::CMSG_CLOEXEC
+        };
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        loop {
+            let mut control = RecvAncillaryBuffer::new(&mut space);
+            let mut iov = [IoSliceMut::new(buf)];
+            let msg = match recvmsg(&self.fd, &mut iov, &mut control, flags) {
+                Ok(msg) => msg,
+                Err(Errno::INTR) => continue,
+                Err(Errno::AGAIN) if dont_wait => return Ok(None),
+                Err(Errno::AGAIN) => {
+                    wait_ready(self.fd.as_fd(), PollFlags::IN)?;
+                    continue;
+                }
+                Err(Errno::CONNRESET) => return Err(ChannelError::Closed),
+                Err(e) => return Err(io_error(e)),
+            };
+            // Take ownership of every received fd first, so none leaks whatever happens next.
+            let mut fd = None;
+            for message in control.drain() {
+                if let RecvAncillaryMessage::ScmRights(fds) = message {
+                    for received in fds {
+                        fd.get_or_insert(received);
+                    }
+                }
+            }
+            // Every frame has a header, so an empty read is the end of the stream.
+            if msg.bytes == 0 {
+                return Err(ChannelError::Closed);
+            }
+            if msg.flags.contains(ReturnFlags::TRUNC) {
+                return Err(codec_error(format!("frame larger than {MAX_FRAME} bytes")));
+            }
+            if msg.flags.contains(ReturnFlags::CTRUNC) {
+                return Err(codec_error("too many file descriptors in one frame"));
+            }
+            if msg.bytes < FRAME_HEADER {
+                return Err(codec_error(format!("short frame of {} bytes", msg.bytes)));
+            }
+            let total = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
+            return Ok(Some(Frame {
+                tag: buf[0],
+                total,
+                len: msg.bytes - FRAME_HEADER,
+                fd,
+            }));
+        }
+    }
+
+    /// Receives one message; the first frame without blocking if `dont_wait`.
+    fn recv_message(&self, dont_wait: bool) -> Result<Option<Rx>, ChannelError> {
+        let mut buf = vec![0u8; MAX_FRAME];
+        let Some(first) = self.recv_frame(&mut buf, dont_wait)? else {
+            return Ok(None);
+        };
+        let total = first.total;
+        match first.tag {
+            TAG_LAST if first.len == total => {
+                decode(&buf[FRAME_HEADER..FRAME_HEADER + first.len]).map(Some)
+            }
+            TAG_LAST => Err(codec_error(format!(
+                "frame of {} bytes announces a message of {total}",
+                first.len
+            ))),
+            TAG_MORE if total > MAX_MESSAGE => Err(codec_error(format!(
+                "announced message of {total} bytes exceeds {MAX_MESSAGE}"
+            ))),
+            TAG_MORE if first.len >= total => {
+                Err(codec_error("fragment as long as the whole message"))
+            }
+            TAG_MORE => {
+                // Grow with the data rather than trusting the announced length up front.
+                let mut message = Vec::with_capacity(total.min(16 * MAX_FRAME));
+                message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + first.len]);
+                loop {
+                    let Some(frame) = self.recv_frame(&mut buf, false)? else {
+                        continue;
+                    };
+                    if frame.tag != TAG_MORE && frame.tag != TAG_LAST {
+                        return Err(codec_error("unexpected frame inside a fragmented message"));
+                    }
+                    if frame.total != total || message.len() + frame.len > total {
+                        return Err(codec_error("fragment lengths do not add up"));
+                    }
+                    message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + frame.len]);
+                    if frame.tag == TAG_LAST {
+                        if message.len() != total {
+                            return Err(codec_error("fragmented message ends early"));
+                        }
+                        return decode(&message).map(Some);
+                    }
+                }
+            }
+            TAG_FD => Err(codec_error(
+                "expected a message, got a file descriptor frame",
+            )),
+            tag => Err(codec_error(format!("unknown frame tag {tag}"))),
+        }
     }
 }
 
@@ -419,5 +678,286 @@ impl<Tx, Rx> AsFd for Channel<Tx, Rx> {
     /// The socket, for `poll()`.
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shm::ShmRegion;
+
+    fn pair() -> (AppChannel, BridgeChannel) {
+        let (app, fd) = socket_pair().unwrap();
+        (app, BridgeChannel::from_fd(fd))
+    }
+
+    /// Writes one raw frame (bypassing the encoder).
+    fn raw_send(fd: BorrowedFd<'_>, bytes: &[u8]) {
+        rustix::net::send(fd, bytes, SendFlags::NOSIGNAL).unwrap();
+    }
+
+    fn frame(tag: u8, total: u32, payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![tag, 0, 0, 0];
+        f.extend_from_slice(&total.to_le_bytes());
+        f.extend_from_slice(payload);
+        f
+    }
+
+    fn descriptor() -> PluginDescriptor {
+        PluginDescriptor {
+            format: PluginFormat::Clap,
+            id: "org.example.synth".into(),
+            name: "Synth".into(),
+            vendor: "Example".into(),
+            version: "1.0".into(),
+            kind: PluginKind::Instrument,
+            features: vec!["instrument".into(), "synthesizer".into()],
+            bundle: "/usr/lib/clap/Synth.clap".into(),
+        }
+    }
+
+    #[test]
+    fn every_control_message_round_trips() {
+        let (app, bridge) = pair();
+        let messages = vec![
+            ControlMsg::Load {
+                format: PluginFormat::Vst3,
+                bundle: "/x/Ü.vst3".into(),
+                plugin_id: "0123456789ABCDEF0123456789ABCDEF".into(),
+            },
+            ControlMsg::Activate {
+                sample_rate: 48_000.0,
+                max_block: 2048,
+            },
+            ControlMsg::Deactivate,
+            ControlMsg::GetState { request: 7 },
+            ControlMsg::SetState {
+                state: vec![1, 2, 3],
+            },
+            ControlMsg::ListParams,
+            ControlMsg::SetParam { id: 3, value: -0.5 },
+            ControlMsg::OpenGui {
+                parent_xid: 0x0400_0007,
+                scale: 1.5,
+            },
+            ControlMsg::SetGuiSize(GuiSize {
+                width: 800,
+                height: 600,
+            }),
+            ControlMsg::CloseGui,
+            ControlMsg::SetRenderMode(RenderMode::Offline),
+            ControlMsg::Shutdown,
+        ];
+        for msg in &messages {
+            app.send(msg).unwrap();
+            assert_eq!(&bridge.recv().unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn every_bridge_message_round_trips() {
+        let (app, bridge) = pair();
+        let param = ParamInfo {
+            id: 1,
+            name: "Cutoff".into(),
+            module: "Filter".into(),
+            min: 20.0,
+            max: 20_000.0,
+            default: 1_000.0,
+            step_count: 0,
+            flags: param_flags::AUTOMATABLE,
+        };
+        let value = ParamValue {
+            id: 1,
+            value: 80.0,
+            text: "80 Hz".into(),
+        };
+        let note = NoteName {
+            key: 36,
+            channel: None,
+            name: "Kick".into(),
+        };
+        let messages = vec![
+            BridgeMsg::Hello {
+                protocol: PROTOCOL_VERSION,
+                pid: 4242,
+            },
+            BridgeMsg::Loaded(Box::new(LoadedInfo {
+                descriptor: descriptor(),
+                params: vec![param.clone()],
+                values: vec![value.clone()],
+                latency: 64,
+                note_names: vec![note.clone()],
+                has_gui: true,
+            })),
+            BridgeMsg::Activated { latency: 64 },
+            BridgeMsg::State {
+                request: 7,
+                state: vec![9; 100],
+            },
+            BridgeMsg::Params(vec![param]),
+            BridgeMsg::ParamValues(vec![value]),
+            BridgeMsg::GuiOpened {
+                size: GuiSize {
+                    width: 640,
+                    height: 480,
+                },
+                resizable: false,
+            },
+            BridgeMsg::GuiSizeRequest(GuiSize {
+                width: 1,
+                height: 2,
+            }),
+            BridgeMsg::GuiClosed,
+            BridgeMsg::LatencyChanged(128),
+            BridgeMsg::RestartRequested,
+            BridgeMsg::StateDirty,
+            BridgeMsg::NoteNames(vec![note]),
+            BridgeMsg::Log {
+                level: LogLevel::Warning,
+                message: "„Lädt“ − slow".into(),
+            },
+            BridgeMsg::Error {
+                context: ErrorContext::Gui,
+                message: "no X11".into(),
+                fatal: false,
+            },
+        ];
+        for msg in &messages {
+            bridge.send(msg).unwrap();
+            assert_eq!(&app.recv().unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn large_messages_are_fragmented_and_reassembled() {
+        let (app, bridge) = pair();
+        // Sizes around the fragment boundary and one far beyond the socket buffer.
+        let sizes = [
+            0,
+            MAX_PAYLOAD - 4,
+            MAX_PAYLOAD - 3,
+            MAX_PAYLOAD,
+            MAX_PAYLOAD + 1,
+            3 * MAX_PAYLOAD,
+            4 * 1024 * 1024 + 3,
+        ];
+        let states: Vec<Vec<u8>> = sizes
+            .iter()
+            .map(|&n| (0..n).map(|i| (i * 7 + i / 251) as u8).collect())
+            .collect();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for state in &states {
+                    let msg = BridgeMsg::State {
+                        request: state.len() as u32,
+                        state: state.clone(),
+                    };
+                    bridge.send(&msg).unwrap();
+                }
+            });
+            for state in &states {
+                match app.recv().unwrap() {
+                    BridgeMsg::State {
+                        request,
+                        state: got,
+                    } => {
+                        assert_eq!(request as usize, state.len());
+                        assert!(got == *state, "state of {} bytes differs", state.len());
+                    }
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn try_recv_does_not_block() {
+        let (app, bridge) = pair();
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        app.send(&ControlMsg::ListParams).unwrap();
+        assert_eq!(bridge.try_recv().unwrap(), Some(ControlMsg::ListParams));
+        assert_eq!(bridge.try_recv().unwrap(), None);
+        // A fragmented message whose first frame is queued is completed.
+        let big = ControlMsg::SetState {
+            state: vec![5; 3 * MAX_FRAME],
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| app.send(&big).unwrap());
+            loop {
+                if let Some(msg) = bridge.try_recv().unwrap() {
+                    assert_eq!(msg, big);
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+    }
+
+    #[test]
+    fn a_memfd_travels_over_the_socket() {
+        let (app, bridge) = pair();
+        let region = ShmRegion::create().unwrap();
+        app.send_fd(region.fd()).unwrap();
+        app.send(&ControlMsg::ListParams).unwrap();
+        let fd = bridge.recv_fd().unwrap();
+        assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
+        let mapped = ShmRegion::open(fd).unwrap();
+        mapped.set_latency(321);
+        assert_eq!(region.latency(), 321);
+    }
+
+    #[test]
+    fn closed_peer_is_reported() {
+        let (app, bridge) = pair();
+        drop(bridge);
+        assert_eq!(app.recv().unwrap_err(), ChannelError::Closed);
+        assert_eq!(app.try_recv().unwrap_err(), ChannelError::Closed);
+        assert_eq!(
+            app.send(&ControlMsg::Shutdown).unwrap_err(),
+            ChannelError::Closed
+        );
+        let (app, bridge) = pair();
+        drop(app);
+        assert_eq!(bridge.recv_fd().unwrap_err(), ChannelError::Closed);
+    }
+
+    #[test]
+    fn malformed_frames_are_codec_errors() {
+        let (app, bridge) = pair();
+        let fd = app.as_fd();
+        let is_codec =
+            |r: Result<ControlMsg, ChannelError>| matches!(r, Err(ChannelError::Codec(_)));
+
+        // Garbage payload, trailing bytes, wrong length, unknown tag, short frame.
+        raw_send(fd, &frame(TAG_LAST, 3, &[0xff, 0xff, 0xff]));
+        assert!(is_codec(bridge.recv()));
+        let mut ok = postcard::to_stdvec(&ControlMsg::ListParams).unwrap();
+        ok.push(0);
+        raw_send(fd, &frame(TAG_LAST, ok.len() as u32, &ok));
+        assert!(is_codec(bridge.recv()));
+        raw_send(fd, &frame(TAG_LAST, 99, &ok[..1]));
+        assert!(is_codec(bridge.recv()));
+        raw_send(fd, &frame(9, 0, &[]));
+        assert!(is_codec(bridge.recv()));
+        raw_send(fd, &[TAG_LAST, 0, 0]);
+        assert!(is_codec(bridge.recv()));
+        // A frame beyond MAX_FRAME is truncated by the kernel and refused.
+        raw_send(fd, &frame(TAG_LAST, 0, &vec![0; MAX_FRAME]));
+        assert!(is_codec(bridge.recv()));
+        // Fragments whose lengths do not add up, and a fragment announcing too much.
+        raw_send(fd, &frame(TAG_MORE, 10, &[0; 4]));
+        raw_send(fd, &frame(TAG_LAST, 11, &[0; 6]));
+        assert!(is_codec(bridge.recv()));
+        raw_send(fd, &frame(TAG_MORE, u32::MAX, &[0; 4]));
+        assert!(is_codec(bridge.recv()));
+        // An fd where a message is expected, and a message where an fd is expected.
+        app.send_fd(fd).unwrap();
+        assert!(is_codec(bridge.recv()));
+        app.send(&ControlMsg::Shutdown).unwrap();
+        assert!(matches!(bridge.recv_fd(), Err(ChannelError::Codec(_))));
+        // The channel is still in sync afterwards.
+        app.send(&ControlMsg::Deactivate).unwrap();
+        assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
     }
 }

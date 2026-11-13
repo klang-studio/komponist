@@ -6,3 +6,10 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+# Workspace features (mm, thread, process, net) plus: fs (memfd, seals, fstat), event (poll on
+# pidfds), time (CLOCK_MONOTONIC for absolute futex deadlines).
+rustix = { workspace = true, features = ["fs", "event", "time"] }
+postcard = { workspace = true, features = ["use-std"] }
+
+[dev-dependencies]
+assert_no_alloc.workspace = true
