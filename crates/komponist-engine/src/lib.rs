@@ -24,9 +24,15 @@
 pub mod api;
 pub mod compile;
 pub mod engine;
+mod garbage;
+mod metronome;
+mod mixer;
 pub mod processor;
 pub mod program;
+mod sequencer;
+mod slots;
 pub mod testing;
+mod transport;
 
 // Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
 // in release builds `assert_no_alloc` is a no-op).
