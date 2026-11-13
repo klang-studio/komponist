@@ -70,6 +70,37 @@ fn scan_prints_descriptors_as_json() {
 }
 
 #[test]
+fn scan_prints_vst3_descriptors_as_json() {
+    for (name, id, kind) in [
+        ("kp-test-synth", SYNTH_VST3, PluginKind::Instrument),
+        ("kp-test-fx", FX_VST3, PluginKind::Effect),
+        ("kp-test-crash", CRASH_VST3, PluginKind::Effect),
+        ("kp-test-slow", SLOW_VST3, PluginKind::Effect),
+    ] {
+        let Some(bundle) = fixture_in("vst3", name) else {
+            continue;
+        };
+        let output = scan(&bundle);
+        let found = descriptors(&output);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let d = &found[0];
+        assert_eq!(d.format, PluginFormat::Vst3);
+        assert_eq!(d.id, id);
+        assert_eq!(d.name, name);
+        assert_eq!(d.vendor, "klang-studio");
+        assert_eq!(d.kind, kind, "{d:?}");
+        assert_eq!(d.bundle, bundle);
+        assert!(!d.features.is_empty());
+        if name == "kp-test-synth" {
+            eprintln!(
+                "scan {name}.vst3: {}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            );
+        }
+    }
+}
+
+#[test]
 fn scan_failures_have_exit_codes() {
     // Missing bundle, and a file that is no bundle: 1 with the reason on stderr, nothing on stdout.
     for bundle in ["/nonexistent/X.clap", "/etc/hostname"] {
@@ -79,15 +110,10 @@ fn scan_failures_have_exit_codes() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(bundle), "{stderr}");
     }
-    // VST3 has no hosting until WP-32: its own exit code.
-    if let Some(bundle) = fixture_in("vst3", "kp-test-synth") {
-        let output = scan(&bundle);
-        assert_eq!(output.status.code(), Some(3));
-        assert!(output.stdout.is_empty());
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("unsupported"), "{stderr}");
-        eprintln!("scan of a VST3 bundle: {}", stderr.trim());
-    }
+    // A VST3 bundle that is not there: 1 too.
+    let output = scan(Path::new("/nonexistent/X.vst3"));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
     // A path the JSON cannot carry.
     let invalid = std::ffi::OsStr::from_bytes(b"/tmp/\xff.clap");
     let output = Command::new(BRIDGE)
@@ -116,6 +142,19 @@ fn scan_installed_plugins() {
         (
             "/usr/lib/clap/Surge XT.clap",
             "org.surge-synth-team.surge-xt",
+        ),
+        ("~/.vst3/Klopfer.vst3", "4B6C6F706665724472756D536D706C72"),
+        (
+            "/usr/lib/vst3/Dexed.vst3",
+            "ABCDEF019182FAEB4447534244657864",
+        ),
+        (
+            "/usr/lib/vst3/Surge XT.vst3",
+            "ABCDEF019182FAEB566D624153675854",
+        ),
+        (
+            "/usr/local/lib/vst3/Shortcircuit XT.vst3",
+            "7B791499693F5465B590BA9435E6D873",
         ),
     ] {
         let Some(bundle) = installed(path) else {

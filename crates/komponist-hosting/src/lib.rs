@@ -12,8 +12,10 @@
 //! - [`load`] and [`scan`]: entry points, dispatching on the bundle format.
 //! - [`host_loop`]: [`host_loop::PollLoop`], a reference `poll()` implementation of [`HostLoop`]
 //!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop).
-//! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26). VST3 arrives with WP-32;
-//!   until then [`load`] and [`scan`] answer [`HostingError::Unsupported`] for `.vst3` bundles.
+//! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26).
+//! - `library` (private): `dlopen` for both layers; plugin libraries are never unmapped.
+//! - `vst3` (private): the VST3 format layer on the raw vst3 0.3 bindings (WP-32). Its parameters
+//!   are normalized (`0..=1`); its state blob format is documented in `vst3::stream`.
 //!
 //! Format checklist for either implementation (ARCHITECTURE §8.2): CLAP audio-ports, note-ports,
 //! params, state, latency, gui (x11, embedded), timer-support, posix-fd-support, thread-check, log,
@@ -34,8 +36,10 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 mod clap;
 pub mod host;
 pub mod host_loop;
+mod library;
 pub mod plugin;
 mod scan;
+mod vst3;
 
 pub use host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 pub use komponist_ipc::{
@@ -56,7 +60,7 @@ pub fn load(
 ) -> Result<Box<dyn HostedPlugin>, HostingError> {
     match format {
         PluginFormat::Clap => clap::load(bundle, plugin_id, host),
-        PluginFormat::Vst3 => Err(HostingError::Unsupported("VST3 hosting arrives with WP-32")),
+        PluginFormat::Vst3 => vst3::load(bundle, plugin_id, host),
     }
 }
 

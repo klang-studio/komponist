@@ -44,6 +44,12 @@ pub const FX: &str = "de.klang-studio.kp-test-fx";
 pub const CRASH: &str = "de.klang-studio.kp-test-crash";
 pub const SLOW: &str = "de.klang-studio.kp-test-slow";
 
+/// VST3 class ids of the fixtures (their 16 ASCII bytes in hex, test-plugins/README.md).
+pub const SYNTH_VST3: &str = "6B705465737453796E74683030303031";
+pub const FX_VST3: &str = "6B705465737446783030303030303031";
+pub const CRASH_VST3: &str = "6B705465737443726173683030303031";
+pub const SLOW_VST3: &str = "6B7054657374536C6F77303030303031";
+
 /// A WP-27 fixture bundle (`scripts/build-test-plugins.sh`), or `None` with a note on stderr.
 pub fn fixture(name: &str) -> Option<PathBuf> {
     fixture_in("clap", name)
@@ -296,9 +302,10 @@ impl Bridge {
             .collect()
     }
 
+    /// Loads `plugin_id` from `bundle`; the format comes from the extension (`.clap`, `.vst3`).
     pub fn load(&mut self, bundle: &Path, plugin_id: &str) -> LoadedInfo {
         self.send(ControlMsg::Load {
-            format: PluginFormat::Clap,
+            format: komponist_hosting::bundle_format(bundle).unwrap_or(PluginFormat::Clap),
             bundle: bundle.to_path_buf(),
             plugin_id: plugin_id.into(),
         });

@@ -40,7 +40,8 @@ pub mod exit {
     pub const FAILURE: u8 = 1;
     /// Bad command line.
     pub const USAGE: u8 = 2;
-    /// Scan: the bundle's format has no hosting yet (VST3 until WP-32).
+    /// Scan: the bundle's format has no hosting (CLAP and VST3 both have it since WP-32; kept
+    /// for formats to come).
     pub const UNSUPPORTED: u8 = 3;
 }
 

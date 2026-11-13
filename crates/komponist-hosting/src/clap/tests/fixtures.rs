@@ -94,6 +94,7 @@ fn load_errors() {
         )),
         HostingError::Load(_)
     ));
+    // VST3 ids are class ids; a CLAP id never loads through the VST3 layer.
     assert!(matches!(
         err(crate::load(
             PluginFormat::Vst3,
@@ -101,7 +102,7 @@ fn load_errors() {
             SYNTH,
             host_loop.context()
         )),
-        HostingError::Unsupported(_)
+        HostingError::Load(_)
     ));
 }
 
