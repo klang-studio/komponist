@@ -35,7 +35,8 @@ fn wait_state(bridge: &Bridge, state: BridgeState) {
 fn protocol_errors_keep_the_bridge_alive() {
     let mut bridge = Bridge::spawn();
     assert_eq!(bridge.region().bridge_state(), BridgeState::Starting);
-    // The heartbeat works before anything is loaded.
+    // The watchdog heartbeat and the parameter list work before anything is loaded.
+    bridge.heartbeat();
     bridge.send(ControlMsg::ListParams);
     let params = bridge.expect("Params", |m| match m {
         BridgeMsg::Params(p) => Some(p.clone()),
@@ -548,21 +549,37 @@ fn rt_thread_runs_at_sched_fifo_or_says_why() {
     let logs = bridge.rt_logs();
     assert_eq!(logs.len(), 1, "{:?}", bridge.seen);
     let (level, message) = &logs[0];
+    // The structured status comes right before `Activated`.
+    assert!(
+        matches!(bridge.seen.last(), Some(BridgeMsg::RtPriority { .. })),
+        "{:?}",
+        bridge.seen
+    );
+    let status = bridge.rt_status();
+    assert_eq!(status.len(), 1);
     let policy = rt_thread_policy(bridge.pid()).expect("the RT thread kp-bridge-rt");
     match level {
-        LogLevel::Info => assert_eq!(policy, (1, 80), "{message}"),
+        LogLevel::Info => {
+            assert_eq!(policy, (1, 80), "{message}");
+            assert_eq!(status[0], (true, 80, String::new()));
+        }
         // A machine without an RT rlimit: reported, and processing goes on.
-        LogLevel::Warning => assert_eq!(policy, (0, 0), "{message}"),
+        LogLevel::Warning => {
+            assert_eq!(policy, (0, 0), "{message}");
+            assert!(!status[0].0 && !status[0].2.is_empty(), "{status:?}");
+        }
         other => panic!("{other:?}: {message}"),
     }
     bridge.block(&[]);
-    // A restart (render mode) does not repeat an unchanged report.
+    // A restart (render mode) sends the status again, but does not repeat an unchanged log line.
     bridge.send(ControlMsg::SetRenderMode(RenderMode::Offline));
     bridge.expect("Activated", |m| {
         matches!(m, BridgeMsg::Activated { .. }).then_some(())
     });
     bridge.sync();
     assert_eq!(bridge.rt_logs().len(), 1);
+    assert_eq!(bridge.rt_status().len(), 2);
+    assert_eq!(bridge.rt_status()[1], status[0]);
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!("RT priority report: {level:?} {message:?}, thread (policy, priority) {policy:?}");
 
@@ -573,7 +590,9 @@ fn rt_thread_runs_at_sched_fifo_or_says_why() {
     });
     bridge.load(&bundle, FX);
     bridge.activate();
-    if bridge.rt_logs()[0].0 == LogLevel::Info {
+    let status = bridge.rt_status();
+    assert_eq!(status[0].1, 70);
+    if status[0].0 {
         assert_eq!(rt_thread_policy(bridge.pid()), Some((1, 70)));
     }
     assert_eq!(bridge.shutdown(), EXIT_OK);
@@ -598,12 +617,18 @@ fn refused_rt_priority_is_reported_and_processing_goes_on() {
     assert_eq!(logs.len(), 1, "{:?}", bridge.seen);
     assert_eq!(logs[0].0, LogLevel::Warning, "{:?}", logs[0]);
     assert!(logs[0].1.contains("SCHED_FIFO 80"), "{:?}", logs[0]);
+    let status = bridge.rt_status();
+    assert_eq!(status.len(), 1);
+    let (granted, priority, detail) = &status[0];
+    assert!(!granted);
+    assert_eq!(*priority, 80);
+    assert!(detail.contains("not permitted"), "{detail}");
     assert_eq!(rt_thread_policy(bridge.pid()), Some((0, 0)));
     bridge.input[0][0] = 1.0;
     bridge.block(&[]);
     assert_eq!(bridge.output[0][64], 1.0);
     assert_eq!(bridge.shutdown(), EXIT_OK);
-    eprintln!("refused RT priority: {:?}", logs[0]);
+    eprintln!("refused RT priority: {:?}, {:?}", status[0], logs[0]);
 }
 
 #[test]
@@ -674,9 +699,7 @@ fn heartbeat_is_answered_while_processing() {
     let (median, max) = (times[times.len() / 2], times[times.len() - 1]);
     assert!(max < Duration::from_millis(500), "max {max:?}");
     assert_eq!(bridge.shutdown(), EXIT_OK);
-    eprintln!(
-        "heartbeat (ListParams → Params) while processing: median {median:.1?}, max {max:.1?}"
-    );
+    eprintln!("heartbeat (Ping → Pong) while processing: median {median:.1?}, max {max:.1?}");
 }
 
 #[test]

@@ -131,7 +131,7 @@ pub struct Bridge {
     pub steady_time: u64,
     /// `BLOCK_FLAG_*` bits for the next block only.
     pub next_flags: u32,
-    sync_request: u32,
+    ping_seq: u32,
 }
 
 impl Bridge {
@@ -195,7 +195,7 @@ impl Bridge {
             output: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
             steady_time: 0,
             next_flags: 0,
-            sync_request: 0,
+            ping_seq: 0,
         }
     }
 
@@ -265,32 +265,35 @@ impl Bridge {
         })
     }
 
-    /// Waits until the bridge has handled everything sent before: `GetState` carries a request
-    /// number its answer echoes (`State`, or `Error` for a plugin without state). Messages before
-    /// the answer go to `seen`. Needs a loaded plugin.
+    /// Waits until the bridge has handled everything sent before (a `Ping` round trip); the
+    /// messages before the `Pong` go to `seen`.
     pub fn sync(&mut self) {
-        self.sync_request += 1;
-        let request = 0x5EED_0000 + self.sync_request;
-        self.send(ControlMsg::GetState { request });
-        self.expect("State", |m| match m {
-            BridgeMsg::State { request: r, .. } if *r == request => Some(()),
-            BridgeMsg::Error {
-                context: komponist_ipc::ErrorContext::State,
-                ..
-            } => Some(()),
-            _ => None,
-        });
+        self.heartbeat();
     }
 
-    /// The heartbeat (until the protocol has a ping): `ListParams` → `Params`. A plugin's
-    /// rescan also sends `Params`, so this proves liveness but is no exact round trip.
+    /// The watchdog heartbeat: `Ping` → the `Pong` with the same `seq`; returns the round trip.
     pub fn heartbeat(&mut self) -> Duration {
+        self.ping_seq = self.ping_seq.wrapping_add(1);
+        let seq = self.ping_seq;
         let t0 = Instant::now();
-        self.send(ControlMsg::ListParams);
-        self.expect("Params", |m| {
-            matches!(m, BridgeMsg::Params(_)).then_some(())
-        });
+        self.send(ControlMsg::Ping { seq });
+        self.expect("Pong", |m| (*m == BridgeMsg::Pong { seq }).then_some(()));
         t0.elapsed()
+    }
+
+    /// `RtPriority` messages seen so far: (granted, priority, detail).
+    pub fn rt_status(&self) -> Vec<(bool, u32, String)> {
+        self.seen
+            .iter()
+            .filter_map(|m| match m {
+                BridgeMsg::RtPriority {
+                    granted,
+                    priority,
+                    detail,
+                } => Some((*granted, *priority, detail.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn load(&mut self, bundle: &Path, plugin_id: &str) -> LoadedInfo {
