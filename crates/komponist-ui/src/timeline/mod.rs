@@ -27,9 +27,11 @@
 //! anti-aliased. Geometry the design data gives without a token is collected in [`metrics`].
 
 pub mod clip;
+pub mod grid;
 mod mesh;
 pub mod metrics;
 pub mod note;
+pub mod ruler;
 pub mod track_header;
 
 use egui::load::{SizeHint, TexturePoll};
@@ -41,7 +43,9 @@ pub use clip::{
     ClipEdge, ClipModel, ClipState, PreviewMesh, clip_access, clip_rect, paint_clip,
     paint_clip_ghost,
 };
+pub use grid::{GridSpec, LineWeight, grid_lines, paint_grid};
 pub use note::{NoteBatch, NoteState, note_access, note_rect, paint_note};
+pub use ruler::{RulerKind, RulerModel, paint_playhead, paint_ruler, ruler_access};
 pub use track_header::{
     HeaderLayout, HeaderModel, MeterLevel, ToggleLook, TrackToggle, header_access, header_layout,
     paint_track_header,
