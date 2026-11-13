@@ -1,6 +1,7 @@
 //! Code generation for `komponist-tokens`.
 //!
-//! Turns `design/tokens.json` into Rust source (one file per token module). Used by `build.rs`; `tests/codegen.rs` includes this file too, so the generator
+//! Turns `design/tokens.json` into Rust source (one file per token module) and prepares the Lucide
+//! SVGs for egui. Used by `build.rs`; `tests/codegen.rs` includes this file too, so the generator
 //! can be tested with broken token files.
 //!
 //! The generator is strict on purpose: a token group, key or value shape it does not know is an
@@ -13,11 +14,20 @@ use serde_json::{Map, Value};
 
 pub type Result<T> = std::result::Result<T, String>;
 
+/// Stroke width of an icon in px at its design size (HANDOFF §5: "16-px-Raster, 1,5 px Strich").
+/// Not in `tokens.json` yet, hence the constant here.
+pub const ICON_STROKE_PX: f64 = 1.5;
+
+/// Icons that also get a filled variant `<name>-filled` (`star` → `star-filled` for favourites).
+pub const FILLED_ICONS: &[&str] = &["star"];
+
 /// What `generate` produces.
 #[derive(Debug)]
 pub struct Generated {
     /// Rust source per file name in `OUT_DIR`.
     pub files: BTreeMap<&'static str, String>,
+    /// `size.icon` in px, needed to prepare the icons.
+    pub icon_size: f64,
 }
 
 /// Generates the Rust sources for all token groups.
@@ -61,9 +71,16 @@ pub fn generate(tokens: &Value) -> Result<Generated> {
     files.insert("focus.rs", gen_focus(field("focus")?, colors)?);
     files.insert("select.rs", gen_select(field("select")?, colors)?);
     files.insert("shadow.rs", gen_shadow(field("shadow")?, colors)?);
-    files.insert("size.rs", gen_size(field("size")?)?);
+    let size = field("size")?;
+    files.insert("size.rs", gen_size(size)?);
+    let icon_size = num(
+        obj(size, "size")?
+            .get("icon")
+            .ok_or("`size.icon` is missing")?,
+        "size.icon",
+    )?;
 
-    Ok(Generated { files })
+    Ok(Generated { files, icon_size })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -674,6 +691,90 @@ fn gen_size(size: &Value) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Icons
+
+/// Prepares a Lucide SVG for egui: intrinsic size `size` px, a stroke of `stroke_px` at that size,
+/// white stroke (and fill, if `filled`) so egui's image tint colours it.
+///
+/// Only attributes of the root `<svg>` element change; the file must look like a Lucide icon
+/// (24 × 24 view box, `currentColor` stroke of width 2), otherwise this is an error.
+pub fn prepare_icon(svg: &str, size: f64, stroke_px: f64, filled: bool) -> Result<String> {
+    let start = svg.find("<svg").ok_or("no <svg> element")?;
+    let end = start + svg[start..].find('>').ok_or("unterminated <svg> element")?;
+    let (head, rest) = (&svg[..start], &svg[end..]);
+    let mut tag = svg[start..end].to_string();
+
+    if attr_value(&tag, "viewBox")? != "0 0 24 24" {
+        return Err("expected viewBox=\"0 0 24 24\"".into());
+    }
+    let size_lit = svg_number(size);
+    tag = replace_attr(&tag, "width", "24", &size_lit)?;
+    tag = replace_attr(&tag, "height", "24", &size_lit)?;
+    tag = replace_attr(&tag, "stroke", "currentColor", "#ffffff")?;
+    tag = replace_attr(
+        &tag,
+        "stroke-width",
+        "2",
+        &svg_number(stroke_px * 24.0 / size),
+    )?;
+    if filled {
+        tag = replace_attr(&tag, "fill", "none", "#ffffff")?;
+    }
+    if rest.contains("currentColor") {
+        return Err("`currentColor` below the root element".into());
+    }
+    Ok(format!("{head}{tag}{rest}"))
+}
+
+/// The value of attribute `name` in the start tag `tag`.
+fn attr_value<'a>(tag: &'a str, name: &str) -> Result<&'a str> {
+    let at = attr_positions(tag, name);
+    let [at] = at.as_slice() else {
+        return Err(format!("expected exactly one `{name}` attribute"));
+    };
+    let value_start = at + name.len() + 2;
+    let len = tag[value_start..]
+        .find('"')
+        .ok_or_else(|| format!("unterminated `{name}`"))?;
+    Ok(&tag[value_start..value_start + len])
+}
+
+fn replace_attr(tag: &str, name: &str, expected: &str, new: &str) -> Result<String> {
+    let value = attr_value(tag, name)?;
+    if value != expected {
+        return Err(format!(
+            "expected {name}=\"{expected}\", found {name}=\"{value}\""
+        ));
+    }
+    let at = attr_positions(tag, name)[0];
+    let value_start = at + name.len() + 2;
+    Ok(format!(
+        "{}{new}{}",
+        &tag[..value_start],
+        &tag[value_start + value.len()..]
+    ))
+}
+
+/// Byte offsets of `name="` in `tag` where `name` starts after whitespace (so `width` does not
+/// match inside `stroke-width`).
+fn attr_positions(tag: &str, name: &str) -> Vec<usize> {
+    let needle = format!("{name}=\"");
+    tag.match_indices(&needle)
+        .map(|(i, _)| i)
+        .filter(|&i| tag[..i].ends_with(char::is_whitespace))
+        .collect()
+}
+
+fn svg_number(x: f64) -> String {
+    let s = format!("{x}");
+    if s.contains('e') {
+        format!("{x:.6}")
+    } else {
+        s
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

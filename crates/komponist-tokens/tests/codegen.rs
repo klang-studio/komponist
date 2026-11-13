@@ -22,6 +22,7 @@ fn error_after(edit: impl FnOnce(&mut Value)) -> String {
 #[test]
 fn real_tokens_generate() {
     let generated = codegen::generate(&tokens()).unwrap();
+    assert_eq!(generated.icon_size, 16.0);
     let names: Vec<_> = generated.files.keys().copied().collect();
     assert_eq!(
         names,
@@ -143,4 +144,39 @@ fn shadow_parsing() {
     );
     let e = error_after(|t| t["shadow"]["float"] = json!("inset 0 1px #000000"));
     assert!(e.contains("shadow.float"), "{e}");
+}
+
+#[test]
+fn prepare_icon_rewrites_the_root_attributes() {
+    let svg = "<!-- c -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" \
+               viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">\
+               <path d=\"M1 1h2\" /></svg>";
+    let out = codegen::prepare_icon(svg, 16.0, 1.5, false).unwrap();
+    assert_eq!(
+        out,
+        "<!-- c -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" \
+         viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2.25\">\
+         <path d=\"M1 1h2\" /></svg>"
+    );
+    let filled = codegen::prepare_icon(svg, 16.0, 1.5, true).unwrap();
+    assert!(filled.contains("fill=\"#ffffff\""), "{filled}");
+}
+
+#[test]
+fn prepare_icon_rejects_unexpected_files() {
+    let base = "<svg width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" \
+                stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M1 1\" /></svg>";
+    assert!(codegen::prepare_icon(base, 16.0, 1.5, false).is_ok());
+    for broken in [
+        base.replace("viewBox=\"0 0 24 24\"", "viewBox=\"0 0 16 16\""),
+        base.replace("stroke-width=\"2\"", "stroke-width=\"1.5\""),
+        base.replace(" stroke=\"currentColor\"", ""),
+        base.replace("<path", "<path stroke=\"currentColor\""),
+        "<g />".to_string(),
+    ] {
+        assert!(
+            codegen::prepare_icon(&broken, 16.0, 1.5, false).is_err(),
+            "{broken}"
+        );
+    }
 }

@@ -1,4 +1,4 @@
-//! Design tokens of komponist as Rust constants, plus the bundled fonts.
+//! Design tokens of komponist as Rust constants, plus the bundled fonts and icons.
 //!
 //! `design/tokens.json` is the single source of truth. The build script turns it into the constants
 //! of the modules below and fails on any token it does not understand. No other crate hard-codes a
@@ -10,16 +10,18 @@
 //!   are egui points.
 //! - Track colours are computed with [`oklch_to_srgb`], a port of the prototype's `hex()`;
 //!   [`TrackPalette`] holds all colours of one hue.
-//! - [`font`] embeds IBM Plex Sans and Mono.
+//! - [`font`] embeds IBM Plex Sans and Mono, [`Icon`] the Lucide icon subset ([`icon`]).
 //!
 //! The crate does not depend on egui.
 
+pub mod icon;
 mod oklch;
 pub mod track;
 
 pub mod font;
 pub mod typography;
 
+pub use icon::Icon;
 pub use oklch::oklch_to_srgb;
 pub use track::TrackPalette;
 
