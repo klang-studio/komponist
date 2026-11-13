@@ -39,7 +39,7 @@ From `HANDOFF.md` §3 and the screens:
 |---|---|---|
 | UI | **egui + eframe 0.37** (wgpu renderer, features `inspection` and `accesskit`). X11 is forced through `NativeOptions::event_loop_builder` (`with_x11()`), so it runs under XWayland on Wayland desktops. | The briefing assumes egui, and klopfer already uses egui 0.36 (known patterns). An immediate-mode `Painter` suits timeline and piano roll. eframe brings for free: event loop, extra native windows as viewports (plugin frames), AccessKit, screenshots, clipboard/IME, file drops and live inspection for agents (`EGUI_INSPECTION=1`, §11.1). Native handles stay reachable (`Frame::winit_window()`, `HasWindowHandle`). Our own integration on `egui-winit` + `egui-wgpu` is only the fallback if spike WP-15 shows that eframe cannot give us the X11 ID of a plugin frame viewport. `egui_kittest` provides headless snapshot and interaction tests. |
 | Audio I/O | **cpal 0.18** with the `pipewire`, `jack` and ALSA hosts. MIDI in through **midir 0.11** (ALSA seq, optionally JACK). | One API for all three drivers in S07. pisynth and klopfer already use cpal 0.18. A buffer change rebuilds only the stream. |
-| Hosting core (inside the bridge) | Either **truce-rack 1.1** (CLAP + VST3 host library) **or** our own thin layer on **clack-host 0.2** (CLAP) + **vst3 0.3** (VST3). The spike WP-15 decides on Linux (§2.4). Both sit behind the same `HostedPlugin` trait. | truce-rack would save most of the format work. If it fails on Linux, clack-host and vst3 are the proven building blocks (nexus hosts with both; nice-plug uses the vst3 crate on the plugin side). |
+| Hosting core (inside the bridge) | **Own layer** on **clack-host 0.2** (CLAP) + **vst3 0.3** (VST3), behind the `HostedPlugin` trait. Decided after spike WP-15 (§2.4). | The spike embedded Klopfer, Surge XT, Dexed, Shortcircuit XT and DecentSampler through both crates from a bridge process. truce-rack failed on Linux. |
 | Isolation | **One bridge process per plugin instance** (`komponist-bridge`). Audio via shared memory and futex, control via a Unix socket. | Meets R3. No Rust library provides this on Linux (§2.4). Gives parallelism across cores for free. klopfer's egui/baseview dependency stack never meets ours. |
 | Test plugins | **nice-plug** 0.4 (crates.io; the klang-studio fork only if a fix is needed) | One source exports CLAP **and** VST3, so both hosting paths get the same fixtures without the C++ SDK. Known from klopfer. |
 | RT plumbing | `rtrb` (SPSC), `rustix` (futex, memfd, pidfd), `assert_no_alloc` in tests and debug builds | Proven, small. |
@@ -68,14 +68,14 @@ system widgets and pixel-exact rendering.
 | Candidate | What it is | Verdict for komponist |
 |---|---|---|
 | **nice-plug** 0.4 (codeberg RustAudio, successor of NIH-plug) | Framework for **writing** plugins: exports CLAP, VST3 and standalone. klopfer is built with it. It has no code that loads foreign plugins. Its README still calls it experimental. | **Cannot host.** Used for the test plugins (WP-27). Its wrappers are good reading for what plugins expect from a host. Option for later: pisynth as a nice-plug plugin, so it works in other DAWs too. |
-| **truce-rack** 1.1.5 (2026-06-19, MIT/Apache) | In-process host library for CLAP and VST3 (plus AU/LV2). Pure Rust on clap-sys and vst3. `Plugin` trait with sample-accurate `EventList`, `PluginEditor` with an `X11(u64)` parent handle, versioned state envelope, scanners. | **Candidate for the hosting core inside our bridge.** Not verified on Linux: its own standalone disables the GUI on Linux, and the README says nothing about the VST3 run loop, params, latency or allocation in `process`. Small project (13 stars, no release since June). Spike WP-15 checks it. |
+| **truce-rack** 1.1.5 (2026-06-19, MIT/Apache) | In-process host library for CLAP and VST3 (plus AU/LV2). Pure Rust on clap-sys and vst3. `Plugin` trait with sample-accurate `EventList`, `PluginEditor` with an `X11(u64)` parent handle, versioned state envelope, scanners. | **Out (spike WP-15, `docs/spikes/WP-15.md` §2):** CLAP loads 0 of 5 plugins (NULL `clap_host`), VST3 instruments stay silent, state restore fails for 4 of 5, 8–12 allocations per `process`, no IRunLoop, IPlugFrame, IComponentHandler, latency or render mode, unmaintained since June. Useful only as reference code. |
 | **plughost** 0.2.5 (2026-11-13, 6 weeks old) | Host library with crash isolation: one helper process per chain, shared memory, one buffer of pipelining (the callback never waits). | **Out: no Linux support** ("Linux … not supported"). Its design confirms our approach. Its pipelining costs one buffer of latency per hop. komponist waits synchronously with a deadline instead, to keep monitoring latency low. |
 | **Carla** 2.5.10 (C++, GPL) | Mature host with bridges. VST3 through JUCE. CLAP only in the unreleased main branch. | **Out:** C++ and GPL in the core, CLAP not released, little control over the realtime handshake. |
 | **nexus** (GitHub poucet/nexus) | App and hosting engine on clack + vst3, not a published library. | **Reference code** for WP-26/32 if we write the core ourselves. |
 | **clack-host** 0.2 + **vst3** 0.3 | Low-level, safe (CLAP) and raw COM (VST3) bindings. | **Baseline and fallback.** Always works, most effort. |
 
-Conclusion: crash isolation, IPC and GUI frames stay our own design in any case. Only the format layer
-inside the bridge is open. truce-rack can shorten it, and the spike decides before WP-26/32 start.
+Conclusion: crash isolation, IPC, GUI frames and the format layer are our own. The format layer uses
+clack-host and vst3 directly (D3, decided after spike WP-15).
 
 ### 2.5 Decisions to approve (G0)
 
@@ -83,7 +83,7 @@ inside the bridge is open. truce-rack can shorten it, and the spike decides befo
 |---|---|---|
 | D1 | UI toolkit | egui + eframe 0.37 (wgpu, `inspection`), X11 via `event_loop_builder`; fallback own egui-winit + egui-wgpu integration if spike WP-15 requires it |
 | D2 | Audio/MIDI I/O | cpal 0.18 (pipewire/jack/alsa) + midir |
-| D3 | Plugin format layer | behind `HostedPlugin`: truce-rack if spike WP-15 passes, otherwise clack-host 0.2 + vst3 0.3; CLAP first. Test plugins with nice-plug |
+| D3 | Plugin format layer | **decided after WP-15:** own layer behind `HostedPlugin` on clack-host 0.2 (CLAP) + vst3 0.3 (VST3); CLAP first. Test plugins with nice-plug |
 | D4 | Plugin isolation | out of process, one bridge per instance |
 | D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN" |
 | D6 | pisynth integration | in process via `synth-core` (`alloc` + `serde` features), as a built-in `Processor` |
@@ -432,6 +432,14 @@ The bridge RT thread waits on `request_seq`, calls `process`, writes the output,
 wakes. If the deadline passes, the engine uses passthrough (effect) or silence (instrument) for this
 block, counts the device as "late", and ignores the stale result via the sequence number.
 
+**RT priority is mandatory** for the bridge RT thread (SCHED_FIFO; the owner's machine allows it:
+realtime group, rtprio 98). Spike WP-15 measured the futex roundtrip with 4 × 2 KiB copied: p99
+7.6 µs and max 16 µs at RT priority, but max 3 ms under load without it (57 % of a 5.33 ms block).
+If RT priority cannot be obtained, the bridge logs it and the UI shows a warning in the status bar.
+
+**Watchdog:** the bridge main loop must answer a heartbeat on the control socket; a stalled main
+loop (seen once with DecentSampler in the spike) is reported as "hängt" and can be restarted like a crash.
+
 **Crash:** the plugin manager watches each bridge's `pidfd`. Death → state "abgestürzt": red edge,
 the track keeps running (passthrough or silence), "Neu laden" starts a new bridge with the last known
 state. State snapshots are taken on save, on GUI close, and debounced on "state dirty" (CLAP
@@ -450,15 +458,10 @@ first-in-chain bridges at the beginning of the block and collect them afterwards
 ### 8.2 Hosting core (`komponist-hosting`, used only by the bridge)
 
 The bridge talks to plugins only through the `HostedPlugin` trait (load, activate, process, params,
-state, latency, GUI, render mode) and offers them a `HostLoop` (fds and timers). Spike WP-15 decides
-which implementation sits behind it (D3):
-
-- **(a) truce-rack adapter.** `komponist-hosting` wraps `truce_rack::{clap, vst3}` and maps its
-  `Plugin`/`PluginEditor`/`EventList`/`StateEnvelope` onto `HostedPlugin`. Missing pieces (for example
-  the VST3 run loop or note-name) are filled in by us or contributed upstream.
-- **(b) Own layer**, as described below. nexus (poucet/nexus) serves as reference code.
-
-The extension list below is the checklist either way. An adapter on truce-rack must cover it too.
+state, latency, GUI, render mode) and offers them a `HostLoop` (fds and timers). Behind it sits our own
+layer on clack-host and vst3 (D3). The spike code in `spikes/gui-embed/` (`clap_child.rs`,
+`vst3_child.rs`) is a working prototype of both formats plus `HostLoop`; nexus (poucet/nexus) and
+truce-rack serve as further reference code.
 
 - **CLAP** via clack-host. Extensions: audio-ports, note-ports, params, state, latency, gui (x11,
   embedded), timer-support, posix-fd-support, thread-check, log, render, note-name (step sequencer
@@ -468,9 +471,13 @@ The extension list below is the checklist either way. An adapter on truce-rack m
   IHostApplication, IComponentHandler (GUI edits), IParameterChanges/IEventList, IBStream (state:
   component + controller in one blob with a header), IPlugView with `kPlatformTypeX11EmbedWindowID`,
   IPlugFrame (resize), **Linux IRunLoop** (event handlers for fds and timers, in the bridge's poll
-  loop), IPlugViewContentScaleSupport.
+  loop), IPlugViewContentScaleSupport. Host duties the spike found: call `ModuleEntry` before and
+  `ModuleExit` after use, activate buses before processing (otherwise instruments stay silent), sync
+  component state into the controller, keep the library loaded until every COM object is released.
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
-  The bridge needs no X11 connection of its own.
+  The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
+  honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
+  reading by default and handle write interest only with a rate limit (WP-26/31 decide the details).
 
 ### 8.3 Scanning
 
@@ -485,13 +492,18 @@ table of CLAP features / VST3 subcategories.
 
 - Each open plugin gets a **frame window**, an eframe deferred viewport (X11): a 28 px header drawn
   with egui (bypass, presets, view, close) and below it an **X11 child window** created with `x11rb`
-  inside the viewport's native window. The viewport's XID comes from `Frame::winit_window()` /
-  `HasWindowHandle`. If eframe does not expose it for secondary viewports, the app finds the window by a
-  unique property it sets on it (x11rb). Spike WP-15 settles which. The app sends the child's XID to the
-  bridge, and the plugin attaches as a child (CLAP `set_parent`, VST3 `attached`).
+  inside the viewport's native window. eframe exposes native handles only for the root viewport, and
+  egui-winit 0.37 sets WM_CLASS only on Wayland. So the app opens the viewport with a **unique title
+  token**, finds its window with an x11rb tree walk (36–70 ms after opening in the spike), then sets the
+  real title (spike WP-15 §1.3). The app sends the child's XID to the bridge, and the plugin attaches as
+  a child (CLAP `set_parent`, VST3 `attached`).
 - Size negotiation: the plugin requests a size → the bridge sends `GuiSizeRequest` → the app resizes
   the frame window and the child → `SetGuiSize`. Scale: the egui `pixels_per_point` of the frame is
-  passed on (CLAP `set_scale`, VST3 content scale).
+  passed on (CLAP `set_scale`, VST3 content scale). egui reports a viewport's new size late, so the frame
+  needs a small resize state machine; never call `set_size` on a fixed-size CLAP plugin after its own
+  resize request.
+- Focus: JUCE plugins grab the keyboard focus, so komponist's shortcuts do not arrive while the plugin
+  window is focused. WP-50 defines the policy (which shortcuts the frame forwards, how focus returns).
 - Requirement: the app runs on X11 or XWayland (`with_x11()` in eframe's `event_loop_builder`). Native
   Wayland embedding is not part of v0.1.
 
@@ -657,9 +669,9 @@ in `../pisynth/design_handoff/`. Copied next to them, headless Chromium renders 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Cross-process X11 embedding (eframe viewport + foreign child) behaves badly with some plugins / XWayland | S05 | **Spike WP-15 in wave 1**, with Klopfer.clap and one VST3 |
+| Cross-process X11 embedding (eframe viewport + foreign child) behaves badly with some plugins / XWayland | S05 | Spike WP-15: works under Xvfb with and without a reparenting WM for 5 CLAP and 5 VST3 plugins. Open: checks on a real XWayland desktop (Vulkan, focus, fractional scaling, `docs/spikes/WP-15.md` §6) |
 | IPC roundtrip too slow at small buffers | CPU, dropouts | Spike WP-15 measures p50/p99; fan-out optimisation prepared (§8.1) |
-| Hosting libraries are young: truce-rack is unverified on Linux and small, clack-host 0.2 is new, the vst3 bindings are raw and unsafe | effort, bugs | spike WP-15 before committing; everything behind `HostedPlugin`, so the implementation can be swapped per format; test plugins for CLAP and VST3; CLAP first; VST3 fallback: C++ SDK helpers (MIT) |
+| clack-host 0.2 is new, the vst3 bindings are raw and unsafe | effort, bugs | spike prototypes for both formats exist; everything behind `HostedPlugin`; test plugins for CLAP and VST3; CLAP first; VST3 fallback: C++ SDK helpers (MIT) |
 | egui: pixel crispness, tabular digits, text styling | look | pixel snapping helpers, Mono for values, `tnum` freeze; gate G2 on the gallery before the views; option B as fallback |
 | Performance with thousands of notes | R5 | culling, cached meshes, LOD; measured in WP-61 |
 | Changes to klang-dsp break pisynth/klopfer | other projects | additive only, git, regression gate |
