@@ -167,7 +167,8 @@ fn gen_track(track: &Value) -> Result<String> {
         let text = string(value, &path)?;
         let name = const_ident(key)?;
         match key.as_str() {
-            "base" | "body" | "dim" | "ink" | "ink-dim" | "note-playing" | "clip-head-hover" => {
+            "base" | "body" | "dim" | "ink" | "ink-dim" | "note-playing" | "clip-head-hover"
+            | "key-playing" | "note-muted" | "clip-handle" => {
                 let (l, c) = parse_oklch_lc(text, &path)?;
                 writeln!(out, "    /// `{path}` = `{text}`.").unwrap();
                 writeln!(
@@ -218,6 +219,9 @@ fn gen_track(track: &Value) -> Result<String> {
         "note-hover",
         "note-playing",
         "clip-head-hover",
+        "key-playing",
+        "note-muted",
+        "clip-handle",
     ] {
         if !seen.contains(&key) {
             return Err(format!("`track.$formula.{key}` is missing"));

@@ -2,7 +2,8 @@
 //!
 //! All 14 hues share lightness and chroma, so every track colour is computed from its hue with the
 //! formulas of `track.$formula` ([`formula`]). Clip head = `base`, clip body = `body`, content =
-//! `ink`, muted = `dim`; note lightness follows velocity.
+//! `ink`, muted = `dim`; note lightness follows velocity. `key-playing`, `note-muted` and
+//! `clip-handle` are komponist additions taken from the design data (`design/README.md`).
 
 use crate::{Srgba, oklch_to_srgb};
 
@@ -87,6 +88,12 @@ pub struct TrackPalette {
     pub play: Srgba,
     /// Clip head under the mouse (`clip-head-hover`).
     pub clip_head_hover: Srgba,
+    /// Trim handles at both ends of a hovered clip's body (`clip-handle`).
+    pub clip_handle: Srgba,
+    /// Piano-roll keyboard key of a pitch that is playing right now (`key-playing`).
+    pub key_playing: Srgba,
+    /// Contour of a muted note (`note-muted`).
+    pub note_muted: Srgba,
     notes: [Srgba; 128],
     notes_hover: [Srgba; 128],
 }
@@ -114,6 +121,9 @@ impl TrackPalette {
             ink_dim: lc(formula::INK_DIM),
             play: lc(formula::NOTE_PLAYING),
             clip_head_hover: lc(formula::CLIP_HEAD_HOVER),
+            clip_handle: lc(formula::CLIP_HANDLE),
+            key_playing: lc(formula::KEY_PLAYING),
+            note_muted: lc(formula::NOTE_MUTED),
             notes,
             notes_hover,
         }
@@ -221,6 +231,41 @@ mod tests {
             formula::CLIP_HEAD_HOVER,
             LightnessChroma { l: 0.77, c: 0.12 }
         );
+        assert_eq!(formula::KEY_PLAYING, LightnessChroma { l: 0.82, c: 0.10 });
+        assert_eq!(formula::NOTE_MUTED, LightnessChroma { l: 0.55, c: 0.08 });
+        assert_eq!(formula::CLIP_HANDLE, LightnessChroma { l: 0.40, c: 0.07 });
+    }
+
+    /// `(hue, key-playing, note-muted, clip-handle)` as the prototype's `hex()` prints them
+    /// (`col.key` in `ks-engine.js`; `hex(.55,.08,h)` and `hex(.40,.07,h)` in
+    /// `Designsystem.dc.html`), run with node on the original JavaScript for every hue.
+    const ADDED: [(u16, u32, u32, u32); 14] = [
+        (25, 0xffaba3, 0x9b5f5a, 0x683834),
+        (45, 0xfbb08e, 0x99624a, 0x673b26),
+        (70, 0xeeb97b, 0x90693b, 0x604018),
+        (95, 0xd8c477, 0x807137, 0x544714),
+        (125, 0xb5d088, 0x677a44, 0x3f4e22),
+        (150, 0x95d7a2, 0x4e7f58, 0x295233),
+        (175, 0x78dac0, 0x36816f, 0x0e5445),
+        (200, 0x6bd8de, 0x298084, 0x005356),
+        (225, 0x77d2f5, 0x357b95, 0x0e4f64),
+        (250, 0x92c9ff, 0x4c759f, 0x284a6c),
+        (275, 0xb1bfff, 0x646ea0, 0x3d446d),
+        (300, 0xceb6fc, 0x79679a, 0x4e3f68),
+        (325, 0xe5aee8, 0x89618b, 0x5b3a5c),
+        (350, 0xf6a9cd, 0x955e78, 0x64374d),
+    ];
+
+    #[test]
+    fn added_formulas_match_the_prototype() {
+        let rgb = |x: u32| -> Srgba { [(x >> 16) as u8, (x >> 8) as u8, x as u8, 255] };
+        assert!(ADDED.iter().map(|a| a.0).eq(HUES.iter().map(|h| h.degrees)));
+        for (hue, key, muted, handle) in ADDED {
+            let p = TrackPalette::new(hue);
+            assert_eq!(p.key_playing, rgb(key), "hue {hue} key-playing");
+            assert_eq!(p.note_muted, rgb(muted), "hue {hue} note-muted");
+            assert_eq!(p.clip_handle, rgb(handle), "hue {hue} clip-handle");
+        }
     }
 
     #[test]

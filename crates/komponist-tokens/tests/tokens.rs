@@ -27,6 +27,20 @@ fn colours() {
     assert_eq!(color::METER_TRACK, color::SURFACE_0);
 }
 
+/// The colours komponist adds to the handoff tokens (`design/README.md`).
+#[test]
+fn komponist_colours() {
+    assert_eq!(color::LINE_0, [0x23, 0x24, 0x27, 0xff]);
+    assert_eq!(color::LINE, [color::LINE_0, color::LINE_1, color::LINE_2]);
+    assert_eq!(color::STATE_RECORD_INK, [0xf2, 0xa6, 0xa8, 0xff]);
+    assert_eq!(color::CANVAS_LANE_SELECTED, [0x1a, 0x1c, 0x1f, 0xff]);
+    assert_eq!(color::CANVAS_BLACK_KEY_ROW, [0x1a, 0x1b, 0x1d, 0xff]);
+    // `rgba(17,18,20,0.6)`: surface.0 at 60 % opacity.
+    let [r, g, b, a] = color::CANVAS_OUTSIDE_CLIP;
+    assert_eq!([r, g, b, 0xff], color::SURFACE_0);
+    assert_eq!(a, (0.6_f64 * 255.0).round() as u8);
+}
+
 #[test]
 fn lengths() {
     assert_eq!(space::SPACE_0_5, 2.0);
