@@ -26,3 +26,7 @@ egui_kittest = { workspace = true, optional = true }
 [dev-dependencies]
 komponist-ui = { path = ".", features = ["snapshot"] }
 
+# `cargo bench -p komponist-ui --bench timeline`: paint 10 000 notes, report the CPU time.
+[[bench]]
+name = "timeline"
+harness = false
