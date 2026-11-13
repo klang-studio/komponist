@@ -8,11 +8,26 @@
 //! over the same socket as SCM_RIGHTS ancillary data ([`Channel::send_fd`]).
 //!
 //! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `Activate`,
-//! then `SetState` if it has a state; the bridge answers `Loaded`, `Activated`. Control messages are
-//! handled by the bridge's main thread; RT data never goes through the socket.
+//! then `SetState` if it has a state; the bridge answers `Loaded`, then `RtPriority` and
+//! `Activated`. Control messages are handled by the bridge's main thread; RT data never goes
+//! through the socket.
 //!
-//! The scan mode (`komponist-bridge --scan <bundle>`) prints a JSON array of [`PluginDescriptor`]
-//! to stdout (serde_json, same field names).
+//! Watchdog: the app sends `Ping` periodically and expects the matching `Pong`. The bridge main
+//! thread answers between two plugin calls, so a `Pong` also waits while the main thread is inside
+//! a long plugin call (`Load`, `OpenGui`, a state load of a big sample library): the app pauses or
+//! stretches the watchdog while such a request is outstanding. The bridge's RT thread is not
+//! involved: a plugin that is slow in `process` does not delay the `Pong`.
+//!
+//! Command line of the bridge:
+//!
+//! - `komponist-bridge --instance --control-fd <fd> [--rt-priority <1..=99>]`: one plugin instance
+//!   on the inherited control socket `fd`. `--rt-priority` sets the `SCHED_FIFO` priority of the
+//!   RT thread (default 80, below PipeWire's data loops at 83/88).
+//! - `komponist-bridge --scan <bundle>`: prints a JSON array of [`PluginDescriptor`] (serde_json,
+//!   same field names) and a newline to stdout; plugin output during the scan goes to stderr.
+//!   Exit codes: 0 success (the array may be empty), 1 the bundle could not be scanned (reason on
+//!   stderr), 2 bad command line, 3 the format has no hosting yet (VST3 until WP-32). A crashing
+//!   bundle kills the scan process with its signal.
 
 use std::io::{IoSlice, IoSliceMut};
 use std::marker::PhantomData;
@@ -30,8 +45,9 @@ use rustix::net::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-/// Protocol version; `Hello` carries it and the app refuses other versions.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol version; `Hello` carries it and the app refuses other versions. 2: `Ping`/`Pong`,
+/// `RtPriority`.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -235,7 +251,8 @@ pub enum ControlMsg {
     /// Ask for the parameter list. Answer: `Params`.
     ListParams,
     /// Set a parameter from the generic view (main thread side; the bridge also feeds it to the
-    /// audio side).
+    /// audio side: an event at offset 0 of the next block while active, `flush` while inactive).
+    /// The value comes back in `ParamValues` with the plugin's text for it.
     SetParam {
         /// Parameter id.
         id: u32,
@@ -258,6 +275,11 @@ pub enum ControlMsg {
     SetRenderMode(RenderMode),
     /// Deactivate, unload and exit.
     Shutdown,
+    /// Watchdog heartbeat; answered with `Pong` carrying the same `seq` (see the module docs).
+    Ping {
+        /// Echoed in the answer.
+        seq: u32,
+    },
 }
 
 /// Bridge → app.
@@ -286,8 +308,11 @@ pub enum BridgeMsg {
     },
     /// Answer to `ListParams`, or unsolicited after the plugin rescanned its parameters.
     Params(Vec<ParamInfo>),
-    /// Parameter values that changed on the bridge's main thread (GUI edits outside processing,
-    /// after a state load), coalesced at about 30 Hz.
+    /// Parameter values with the plugin's text, coalesced to at most one message per 33 ms: values
+    /// that changed on the bridge's main thread (GUI edits outside processing, all values after a
+    /// state load or a parameter rescan) and the echo of every `SetParam` value (so the generic
+    /// view gets the plugin's text, "−12.0 dB"). GUI edits during processing arrive as output
+    /// events in the shared memory instead.
     ParamValues(Vec<ParamValue>),
     /// Answer to `OpenGui`.
     GuiOpened {
@@ -323,6 +348,23 @@ pub enum BridgeMsg {
         message: String,
         /// The bridge exits after sending this.
         fatal: bool,
+    },
+    /// Answer to `Ping`.
+    Pong {
+        /// The `seq` of the `Ping`.
+        seq: u32,
+    },
+    /// How the bridge's RT thread is scheduled; sent on every activation (also restarts and render
+    /// mode changes), right before `Activated`. Without realtime priority the plugin may miss its
+    /// deadlines under load (spike WP-15: up to 3 ms): the app shows a warning in the status bar.
+    /// The bridge also logs the outcome as a `Log` line starting with "RT priority:".
+    RtPriority {
+        /// Whether the RT thread runs at `SCHED_FIFO`.
+        granted: bool,
+        /// The requested `SCHED_FIFO` priority (`--rt-priority`).
+        priority: u32,
+        /// Why it was refused (the OS error); empty when granted.
+        detail: String,
     },
 }
 
@@ -747,6 +789,7 @@ mod tests {
             ControlMsg::CloseGui,
             ControlMsg::SetRenderMode(RenderMode::Offline),
             ControlMsg::Shutdown,
+            ControlMsg::Ping { seq: u32::MAX },
         ];
         for msg in &messages {
             app.send(msg).unwrap();
@@ -821,6 +864,12 @@ mod tests {
                 context: ErrorContext::Gui,
                 message: "no X11".into(),
                 fatal: false,
+            },
+            BridgeMsg::Pong { seq: 17 },
+            BridgeMsg::RtPriority {
+                granted: false,
+                priority: 80,
+                detail: "Operation not permitted (os error 1)".into(),
             },
         ];
         for msg in &messages {

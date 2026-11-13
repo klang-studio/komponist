@@ -8,13 +8,13 @@
 //!   ([`BridgeNotify`]), the plugin's fds and timers. Each tick dispatches plugin fds and timers,
 //!   handles notifications, reads control messages and forwards queued log lines and parameter
 //!   values. Only this thread sends on the control channel.
-//! - **Watchdog:** every control message is answered from this loop between two plugin calls, so a
-//!   stalled loop shows as a missing answer. Until the protocol has a ping (contract change request
-//!   in the WP-31 report), `ListParams` serves as the heartbeat: it is answered in every state
-//!   (with an empty list before `Load`) and has no side effects.
+//! - **Watchdog:** `Ping` is answered with `Pong` from this loop, in every state, between two
+//!   plugin calls; a stalled loop shows as a missing `Pong`. A long plugin call on this thread
+//!   (`Load`, `OpenGui`) delays it too; a plugin busy in `process` (RT thread) does not.
 //! - **RT thread:** started by `Activate` ([`RtThread`]), stopped by `Deactivate`, restarts, render
-//!   mode changes and shutdown. Its `SCHED_FIFO` outcome is reported as a `Log` line starting with
-//!   [`RT_LOG_PREFIX`] (`Info` on success, `Warning` on failure; processing goes on either way).
+//!   mode changes and shutdown. Its `SCHED_FIFO` outcome goes to the app as `RtPriority` right
+//!   before every `Activated`, and as a `Log` line starting with [`RT_LOG_PREFIX`] when it is new
+//!   or changed (`Info` on success, `Warning` on failure; processing goes on either way).
 //! - **Parameters:** `SetParam` reaches the plugin as an event at offset 0 of the next block while
 //!   active, through `flush_params` while inactive. Values the app set, values the plugin changed
 //!   outside processing (flush output, VST3 edits) and all values after a state load go back as
@@ -479,7 +479,7 @@ impl Bridge {
                 }
             }
             ControlMsg::ListParams => {
-                // Also the heartbeat: answered in every state.
+                // Answered in every state (an empty list before `Load`).
                 let params = self.plugin.as_ref().map(|p| p.params()).unwrap_or_default();
                 self.send(BridgeMsg::Params(params));
             }
@@ -515,6 +515,7 @@ impl Bridge {
             }
             ControlMsg::SetRenderMode(mode) => self.set_render_mode(mode),
             ControlMsg::Shutdown => self.shutdown = true,
+            ControlMsg::Ping { seq } => self.send(BridgeMsg::Pong { seq }),
         }
     }
 
@@ -649,7 +650,7 @@ impl Bridge {
             Ok(started) => started,
             Err(failure) => {
                 plugin.deactivate(failure.processor);
-                self.report_rt_priority(failure.report.priority);
+                self.report_rt_priority(&failure.report.priority);
                 return Err(failure.error);
             }
         };
@@ -657,12 +658,23 @@ impl Bridge {
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);
         self.active = Some(Active { rt, config });
-        self.report_rt_priority(report.priority);
+        self.report_rt_priority(&report.priority);
+        // Right before `Activated` (sent by the caller), on every activation.
+        let rt_status = BridgeMsg::RtPriority {
+            granted: report.priority.is_ok(),
+            priority: self.rt_priority as u32,
+            detail: report
+                .priority
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default(),
+        };
+        self.send(rt_status);
         Ok(latency)
     }
 
     /// Logs the `SCHED_FIFO` outcome when it is new or changed.
-    fn report_rt_priority(&mut self, outcome: std::io::Result<()>) {
+    fn report_rt_priority(&mut self, outcome: &std::io::Result<()>) {
         if self.rt_reported == Some(outcome.is_ok()) {
             return;
         }
