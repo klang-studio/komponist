@@ -8,4 +8,5 @@
 //! ```
 
 mod golden;
+mod incremental;
 mod support;
