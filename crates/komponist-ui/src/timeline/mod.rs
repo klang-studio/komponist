@@ -29,6 +29,7 @@
 pub mod clip;
 mod mesh;
 pub mod metrics;
+pub mod note;
 pub mod track_header;
 
 use egui::load::{SizeHint, TexturePoll};
@@ -40,6 +41,7 @@ pub use clip::{
     ClipEdge, ClipModel, ClipState, PreviewMesh, clip_access, clip_rect, paint_clip,
     paint_clip_ghost,
 };
+pub use note::{NoteBatch, NoteState, note_access, note_rect, paint_note};
 pub use track_header::{
     HeaderLayout, HeaderModel, MeterLevel, ToggleLook, TrackToggle, header_access, header_layout,
     paint_track_header,
