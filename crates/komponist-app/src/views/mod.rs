@@ -33,6 +33,8 @@ use crate::keymap::Keymap;
 use crate::meters::Meters;
 use crate::ui_state::UiState;
 
+pub mod step_seq;
+
 /// What a view gets for one frame.
 pub struct ViewCtx<'a> {
     /// The project (read-only; changes go through [`Action::Edit`]).
@@ -179,7 +181,7 @@ impl Views {
         Views {
             arrangement: Box::new(Placeholder::new("Arrangement")),
             piano_roll: Box::new(Placeholder::new("Piano Roll")),
-            step_seq: Box::new(Placeholder::new("Step Sequencer")),
+            step_seq: Box::new(step_seq::StepSequencer::new()),
             mixer: Box::new(Placeholder::new("Mixer")),
             inspector: Box::new(Placeholder::new("Inspector")),
             browser: Box::new(Placeholder::new("Browser")),
