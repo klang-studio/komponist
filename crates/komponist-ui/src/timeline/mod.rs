@@ -26,6 +26,7 @@
 //! All axis-aligned edges are snapped to physical pixels ([`crate::px`]); only rounded corners are
 //! anti-aliased. Geometry the design data gives without a token is collected in [`metrics`].
 
+pub mod clip;
 mod mesh;
 pub mod metrics;
 pub mod track_header;
@@ -35,6 +36,10 @@ use egui::{Color32, Painter, Rangef, Rect, Role, TextureOptions, WidgetInfo, acc
 use komponist_model::{Meter, Tick};
 use komponist_tokens::Icon;
 
+pub use clip::{
+    ClipEdge, ClipModel, ClipState, PreviewMesh, clip_access, clip_rect, paint_clip,
+    paint_clip_ghost,
+};
 pub use track_header::{
     HeaderLayout, HeaderModel, MeterLevel, ToggleLook, TrackToggle, header_access, header_layout,
     paint_track_header,
