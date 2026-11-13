@@ -14,6 +14,7 @@
 //! - [`drag`]: drag math (1 px = 1 step, 200 px = full range, Shift × 0.1, Ctrl × 10).
 //! - [`tooltip`], [`icons`]: tooltip timing and frames; Lucide icons and drawn transport shapes.
 //! - [`gallery_shell`]: the gallery frame and its sections, filled by WP-20/21/22.
+//! - `snapshot` (feature `snapshot`): the `egui_kittest` harness for snapshot tests at 1× and 2×.
 //!
 //! The widgets arrive with WP-20 and WP-21, the timeline paint functions with WP-22.
 
@@ -26,6 +27,9 @@ pub mod px;
 pub mod state;
 pub mod theme;
 pub mod tooltip;
+
+#[cfg(feature = "snapshot")]
+pub mod snapshot;
 
 pub use state::State;
 
