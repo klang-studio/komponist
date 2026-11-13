@@ -415,7 +415,7 @@ impl HostedPlugin for ClapPlugin {
         };
         let mut list = InputEventList::with_capacity(input.len());
         for wire in input {
-            if let Some(WireEventKind::ParamValue { id, value }) = events::decode(wire)
+            if let Some(WireEventKind::ParamValue { id, value }) = wire.decode()
                 && let Some(event) = events::param_value_event(0, id, value)
             {
                 list.push(event);

@@ -7,7 +7,7 @@ use std::time::Instant;
 use komponist_ipc::{PluginKind, WireEventKind};
 
 use super::*;
-use crate::clap::events::{NO_NOTE_ID, encode};
+use crate::clap::events::NO_NOTE_ID;
 
 pub(super) const KLOPFER: &str = "~/.clap/Klopfer.clap";
 pub(super) const SURGE_XT: &str = "/usr/lib/clap/Surge XT.clap";
@@ -73,7 +73,12 @@ fn exercise(path: &str, expect: Expect) {
                     None
                 }
             };
-            events.extend(notes.iter().filter_map(|&k| kind(k)).map(|k| encode(0, k)));
+            events.extend(
+                notes
+                    .iter()
+                    .filter_map(|&k| kind(k))
+                    .map(|k| WireEvent::new(0, k)),
+            );
         } else {
             for s in 0..BLOCK {
                 let v = 0.5 * phase.sin();

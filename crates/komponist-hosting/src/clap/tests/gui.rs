@@ -294,10 +294,7 @@ fn exercise_gui(bundle: &Path, name: &str, expect: Expect) {
     let mut edit = None;
     if let Some(path) = expect.drag {
         let flushed = drag(&parent, &host_loop, plugin, path);
-        let kinds: Vec<_> = flushed
-            .iter()
-            .filter_map(crate::clap::events::decode)
-            .collect();
+        let kinds: Vec<_> = flushed.iter().filter_map(WireEvent::decode).collect();
         assert!(
             kinds
                 .iter()
@@ -530,10 +527,7 @@ fn gui_dexed_edit_while_processing() {
     plugin.deactivate(processor);
 
     assert!(flushed.is_empty(), "flushed while active: {flushed:?}");
-    let kinds: Vec<_> = events
-        .iter()
-        .filter_map(crate::clap::events::decode)
-        .collect();
+    let kinds: Vec<_> = events.iter().filter_map(WireEvent::decode).collect();
     let values: Vec<_> = kinds
         .iter()
         .filter_map(|k| match *k {

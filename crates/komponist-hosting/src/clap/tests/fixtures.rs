@@ -3,7 +3,7 @@
 use komponist_ipc::{GuiSize, PluginKind, RenderMode, WireEventKind};
 
 use super::*;
-use crate::clap::events::{NO_NOTE_ID, encode};
+use crate::clap::events::NO_NOTE_ID;
 use crate::host_loop::notification_bits as bits;
 use crate::plugin::HostingError;
 
@@ -11,7 +11,7 @@ const SYNTH: &str = "de.klang-studio.kp-test-synth";
 const FX: &str = "de.klang-studio.kp-test-fx";
 
 fn note_on(offset: u32, channel: u8, key: u8) -> WireEvent {
-    encode(
+    WireEvent::new(
         offset,
         WireEventKind::NoteOn {
             channel,
@@ -23,7 +23,7 @@ fn note_on(offset: u32, channel: u8, key: u8) -> WireEvent {
 }
 
 fn note_off(offset: u32, channel: u8, key: u8) -> WireEvent {
-    encode(
+    WireEvent::new(
         offset,
         WireEventKind::NoteOff {
             channel,
@@ -34,7 +34,7 @@ fn note_off(offset: u32, channel: u8, key: u8) -> WireEvent {
 }
 
 fn param(offset: u32, id: u32, value: f64) -> WireEvent {
-    encode(offset, WireEventKind::ParamValue { id, value })
+    WireEvent::new(offset, WireEventKind::ParamValue { id, value })
 }
 
 #[test]
@@ -160,12 +160,12 @@ fn midi_messages_and_all_notes_off() {
     // A raw MIDI note on (channel 4) sounds; a raw note off ends it.
     blocks.run(
         processor.as_mut(),
-        &[encode(0, WireEventKind::Midi([0x93, 60, 100]))],
+        &[WireEvent::new(0, WireEventKind::Midi([0x93, 60, 100]))],
     );
     assert!(blocks.peak(0..BLOCK) > 0.1);
     blocks.run(
         processor.as_mut(),
-        &[encode(0, WireEventKind::Midi([0x83, 60, 0]))],
+        &[WireEvent::new(0, WireEventKind::Midi([0x83, 60, 0]))],
     );
     for _ in 0..4 {
         blocks.run(processor.as_mut(), &[]);
@@ -178,7 +178,10 @@ fn midi_messages_and_all_notes_off() {
         &[note_on(0, 0, 60), note_on(0, 9, 64), note_on(10, 0, 67)],
     );
     assert!(blocks.peak(0..BLOCK) > 0.1);
-    blocks.run(processor.as_mut(), &[encode(0, WireEventKind::AllNotesOff)]);
+    blocks.run(
+        processor.as_mut(),
+        &[WireEvent::new(0, WireEventKind::AllNotesOff)],
+    );
     for _ in 0..4 {
         blocks.run(processor.as_mut(), &[]);
     }
@@ -189,6 +192,13 @@ fn midi_messages_and_all_notes_off() {
     assert!(blocks.peak(0..BLOCK) > 0.1);
     processor.reset();
     blocks.run(processor.as_mut(), &[]);
+    assert_eq!(blocks.peak(0..BLOCK), 0.0);
+
+    // Out-of-range channels and keys (the wire format does not check them) are dropped.
+    blocks.run(
+        processor.as_mut(),
+        &[note_on(0, 200, 60), note_on(0, 0, 200), note_off(0, 16, 60)],
+    );
     assert_eq!(blocks.peak(0..BLOCK), 0.0);
 
     processor.stop_processing();

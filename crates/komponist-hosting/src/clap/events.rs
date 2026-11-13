@@ -1,8 +1,8 @@
 //! Conversion between komponist's [`WireEvent`]s and CLAP events, without allocation.
 //!
-//! - [`decode`] / [`encode`] follow the table on [`WireEvent`]. They mirror `WireEvent::decode` /
-//!   `WireEvent::new`, which WP-16 implements in parallel; once those land, these two can forward
-//!   to them.
+//! Wire events are decoded and built with komponist-ipc's [`WireEvent::decode`] /
+//! [`WireEvent::new`].
+//!
 //! - [`InputEventList`]: a fixed-capacity CLAP input event list built per block.
 //! - [`WireSink`]: a CLAP output event list that turns parameter values and gestures into
 //!   [`WireEvent`]s as the plugin pushes them.
@@ -15,93 +15,8 @@ use clack_host::events::io::{InputEventBuffer, OutputEventBuffer, TryPushError};
 use clack_host::prelude::*;
 use komponist_ipc::{WireEvent, WireEventKind};
 
-/// [`WireEvent::kind`] values (the table on [`WireEvent`]).
-pub(crate) mod kind {
-    pub const NOTE_ON: u32 = 1;
-    pub const NOTE_OFF: u32 = 2;
-    pub const MIDI: u32 = 3;
-    pub const PARAM_VALUE: u32 = 4;
-    pub const PARAM_GESTURE: u32 = 5;
-    pub const ALL_NOTES_OFF: u32 = 6;
-}
-
-/// "No note id" in [`WireEvent::note_id`].
+/// "No note id" in [`WireEvent::note_id`] (the table on [`WireEvent`]).
 pub(crate) const NO_NOTE_ID: u32 = u32::MAX;
-
-/// Decodes a wire event; `None` for an unknown kind or out-of-range MIDI data.
-pub(crate) fn decode(e: &WireEvent) -> Option<WireEventKind> {
-    let [a, b, c, _] = e.data;
-    Some(match e.kind {
-        kind::NOTE_ON if a < 16 && b < 128 && (1..128).contains(&c) => WireEventKind::NoteOn {
-            channel: a,
-            key: b,
-            velocity: c,
-            note_id: e.note_id,
-        },
-        kind::NOTE_OFF if a < 16 && b < 128 => WireEventKind::NoteOff {
-            channel: a,
-            key: b,
-            note_id: e.note_id,
-        },
-        kind::MIDI => WireEventKind::Midi([a, b, c]),
-        kind::PARAM_VALUE => WireEventKind::ParamValue {
-            id: e.param_id,
-            value: e.value,
-        },
-        kind::PARAM_GESTURE => WireEventKind::ParamGesture {
-            id: e.param_id,
-            begin: a != 0,
-        },
-        kind::ALL_NOTES_OFF => WireEventKind::AllNotesOff,
-        _ => return None,
-    })
-}
-
-/// Encodes `event` at frame `offset`.
-pub(crate) fn encode(offset: u32, event: WireEventKind) -> WireEvent {
-    let mut e = WireEvent {
-        offset,
-        note_id: NO_NOTE_ID,
-        ..WireEvent::default()
-    };
-    match event {
-        WireEventKind::NoteOn {
-            channel,
-            key,
-            velocity,
-            note_id,
-        } => {
-            e.kind = kind::NOTE_ON;
-            e.data = [channel, key, velocity, 0];
-            e.note_id = note_id;
-        }
-        WireEventKind::NoteOff {
-            channel,
-            key,
-            note_id,
-        } => {
-            e.kind = kind::NOTE_OFF;
-            e.data = [channel, key, 0, 0];
-            e.note_id = note_id;
-        }
-        WireEventKind::Midi([a, b, c]) => {
-            e.kind = kind::MIDI;
-            e.data = [a, b, c, 0];
-        }
-        WireEventKind::ParamValue { id, value } => {
-            e.kind = kind::PARAM_VALUE;
-            e.param_id = id;
-            e.value = value;
-        }
-        WireEventKind::ParamGesture { id, begin } => {
-            e.kind = kind::PARAM_GESTURE;
-            e.param_id = id;
-            e.data = [u8::from(begin), 0, 0, 0];
-        }
-        WireEventKind::AllNotesOff => e.kind = kind::ALL_NOTES_OFF,
-    }
-    e
-}
 
 /// One CLAP input event of the kinds komponist sends.
 #[derive(Debug, Clone, Copy)]
@@ -181,7 +96,7 @@ impl<F: FnMut(WireEvent)> OutputEventBuffer for WireSink<F> {
         let time = event.header().time();
         let wire = if let Some(e) = event.as_event::<ParamValueEvent>() {
             e.param_id().map(|id| {
-                encode(
+                WireEvent::new(
                     time,
                     WireEventKind::ParamValue {
                         id: id.get(),
@@ -191,7 +106,7 @@ impl<F: FnMut(WireEvent)> OutputEventBuffer for WireSink<F> {
             })
         } else if let Some(e) = event.as_event::<ParamGestureBeginEvent>() {
             e.param_id().map(|id| {
-                encode(
+                WireEvent::new(
                     time,
                     WireEventKind::ParamGesture {
                         id: id.get(),
@@ -201,7 +116,7 @@ impl<F: FnMut(WireEvent)> OutputEventBuffer for WireSink<F> {
             })
         } else if let Some(e) = event.as_event::<ParamGestureEndEvent>() {
             e.param_id().map(|id| {
-                encode(
+                WireEvent::new(
                     time,
                     WireEventKind::ParamGesture {
                         id: id.get(),
@@ -252,28 +167,13 @@ mod tests {
             },
             WireEventKind::AllNotesOff,
         ];
+        // The layer relies on komponist-ipc's encoding round-tripping every kind it handles.
         for (i, k) in kinds.into_iter().enumerate() {
-            let e = encode(i as u32, k);
+            let e = WireEvent::new(i as u32, k);
             assert_eq!(e.offset, i as u32);
-            assert_eq!(decode(&e), Some(k));
+            assert_eq!(e.decode(), Some(k));
         }
-    }
-
-    #[test]
-    fn invalid_events_do_not_decode() {
-        assert_eq!(decode(&WireEvent::default()), None);
-        let bad_channel = WireEvent {
-            kind: kind::NOTE_ON,
-            data: [16, 60, 100, 0],
-            ..WireEvent::default()
-        };
-        assert_eq!(decode(&bad_channel), None);
-        let zero_velocity = WireEvent {
-            kind: kind::NOTE_ON,
-            data: [0, 60, 0, 0],
-            ..WireEvent::default()
-        };
-        assert_eq!(decode(&zero_velocity), None);
+        assert_eq!(WireEvent::default().decode(), None);
     }
 
     #[test]
@@ -300,7 +200,10 @@ mod tests {
             .unwrap();
         sink.try_push(MidiEvent::new(0, 0, [0x90, 60, 1]).as_ref())
             .unwrap();
-        let decoded: Vec<_> = out.iter().map(|e| (e.offset, decode(e).unwrap())).collect();
+        let decoded: Vec<_> = out
+            .iter()
+            .map(|e| (e.offset, e.decode().unwrap()))
+            .collect();
         assert_eq!(
             decoded,
             vec![

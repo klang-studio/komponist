@@ -245,7 +245,12 @@ impl ClapProcessor {
         }
     }
 
+    /// A note on (`velocity > 0`) or off. Channels ≥ 16 and keys ≥ 128 are dropped: the wire
+    /// format does not range-check them, and they index `held`.
     fn note_event(&mut self, time: u32, channel: u8, key: u8, velocity: u8, note_id: u32) {
+        if !valid_note(channel, key) {
+            return;
+        }
         let on = velocity > 0;
         let bit = 1u16 << channel;
         if on {
@@ -282,7 +287,7 @@ impl ClapProcessor {
         let last = block.frames.saturating_sub(1);
         for wire in block.events_in {
             let time = wire.offset.min(last);
-            match events::decode(wire) {
+            match wire.decode() {
                 Some(WireEventKind::NoteOn {
                     channel,
                     key,
@@ -320,6 +325,11 @@ impl ClapProcessor {
             }
         }
     }
+}
+
+/// Whether `channel` and `key` are a MIDI channel (0 ..= 15) and key (0 ..= 127).
+fn valid_note(channel: u8, key: u8) -> bool {
+    channel < 16 && key < 128
 }
 
 /// The CLAP transport for `t`; `None` without a tempo (no transport known).
@@ -525,6 +535,12 @@ mod tests {
         let mut ports = PortBuffers::new(&PortLayout::default(), 2);
         ports.read_to_stereo(input, &mut [&mut l, &mut r], 2);
         assert_eq!((l, r), ([7.0; 2], [8.0; 2]));
+    }
+
+    #[test]
+    fn out_of_range_notes_are_rejected() {
+        assert!(valid_note(0, 0) && valid_note(15, 127));
+        assert!(!valid_note(16, 60) && !valid_note(0, 128) && !valid_note(255, 255));
     }
 
     #[test]
