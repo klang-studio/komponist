@@ -736,6 +736,23 @@ fn snapshots_of_the_piano_roll() {
     mask_cpu(&mut h);
     h.snapshot("piano-roll-empty-1x");
     results.extend_harness(&mut h);
+
+    // Zoom levels (`notes`: "mit Name ab h 12, w 28", "zoom · Taste 4 · Auswahl =
+    // Akzentfläche"): key height 24 shows names, key height 4 fills the selection with accent.
+    for (name, key_height, px_per_bar) in [("keys-24", 24.0, 640.0), ("keys-4", 4.0, 160.0)] {
+        let mut app = s01();
+        app.ui_mut().layout.dock_height = TEST_DOCK;
+        app.ui_mut().piano_roll.key_height = key_height;
+        app.ui_mut().piano_roll.px_per_bar = px_per_bar;
+        let mut h = harness_at(app, 1.0);
+        h.run_steps(3);
+        let top = if key_height > 12.0 { 74 } else { 90 };
+        h.state_mut().ui_mut().piano_roll.top_key = top;
+        h.run_steps(2);
+        mask_cpu(&mut h);
+        h.snapshot(format!("piano-roll-{name}-1x"));
+        results.extend_harness(&mut h);
+    }
     results.unwrap();
 }
 

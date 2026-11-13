@@ -1111,6 +1111,7 @@ impl PianoRoll {
         if !ui.ctx().has_accesskit_node(keys.unique_id()) {
             return;
         }
+        group_bounds(&keys, g.keys);
         for pitch in g.bottom_key()..=g.top_key {
             let top = g.row_top(pitch);
             let r = Rect::from_min_max(
@@ -1135,6 +1136,7 @@ impl PianoRoll {
                 .accessibility_role(Role::Grid)
                 .accessibility_label(names::NOTES),
         );
+        group_bounds(&notes, g.grid);
         for (i, rect, state) in visible.iter().take(m::MAX_NOTE_NODES) {
             let n = &f.notes[*i];
             let access = note_access(n.pitch, f.clip.start + n.start, f.meter, *state);
@@ -1165,15 +1167,29 @@ impl PianoRoll {
         }
         if let Some(lane) = g.lane {
             // The group's node is created with the child `Ui`; the lane has no child nodes.
-            let _group = ui.new_child(
+            let group = ui.new_child(
                 UiBuilder::new()
                     .max_rect(lane)
                     .id_salt("komponist_piano_roll_lane")
                     .accessibility_role(Role::Group)
                     .accessibility_label(names::VELOCITY_LANE),
             );
+            group_bounds(&group, lane);
         }
     }
+}
+
+/// Gives the AccessKit node of the group `ui` the bounds `rect` (egui leaves a `Ui`'s node
+/// without bounds), so the egui MCP server and screen readers can locate the area.
+fn group_bounds(ui: &Ui, rect: Rect) {
+    ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
+        n.set_bounds(egui::accesskit::Rect {
+            x0: rect.min.x.into(),
+            y0: rect.min.y.into(),
+            x1: rect.max.x.into(),
+            y1: rect.max.y.into(),
+        });
+    });
 }
 
 /// A hover-only AccessKit node `id` at `rect` (in the parent `ui`'s group).
