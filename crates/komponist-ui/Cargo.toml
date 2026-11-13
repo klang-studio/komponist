@@ -7,3 +7,19 @@ publish.workspace = true
 [[bin]]
 name = "komponist-gallery"
 path = "src/bin/gallery.rs"
+
+[features]
+# `komponist_ui::snapshot`: the egui_kittest harness helpers for snapshot tests. Only tests need it;
+# the dev-dependency on this crate below turns it on for unit and integration tests.
+snapshot = ["dep:egui_kittest"]
+
+[dependencies]
+komponist-tokens = { workspace = true, features = ["egui"] }
+egui.workspace = true
+eframe.workspace = true
+egui_extras.workspace = true
+winit.workspace = true
+egui_kittest = { workspace = true, optional = true }
+
+[dev-dependencies]
+komponist-ui = { path = ".", features = ["snapshot"] }
