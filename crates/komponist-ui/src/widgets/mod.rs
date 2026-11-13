@@ -19,6 +19,7 @@
 
 pub mod button;
 pub mod dropdown;
+pub mod panel_header;
 pub mod switch;
 pub mod tabs;
 pub mod toggle;
