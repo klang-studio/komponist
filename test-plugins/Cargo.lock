@@ -952,6 +952,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kp-test-slow"
+version = "0.1.0"
+dependencies = [
+ "fake-host",
+ "nice-plug",
+]
+
+[[package]]
 name = "kp-test-synth"
 version = "0.1.0"
 dependencies = [
