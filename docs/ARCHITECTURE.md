@@ -320,7 +320,8 @@ pub struct ProcessContext { pub frames: u32, pub sample_rate: f32, pub transport
 ```
 
 Implementations: `PisynthProcessor` (`komponist-builtin`), `ExternalProcessor` (`komponist-plugins`,
-talks to a bridge), `TestSine` / `TestGain` (tests). The metronome is engine-internal.
+talks to a bridge), `TestSine` / `TestGain` (public module `komponist_engine::testing`, usable by other
+crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
 
 ### 6.3 Program, commands, telemetry
 

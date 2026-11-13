@@ -47,7 +47,8 @@ pub trait Processor: Send {
     fn latency(&self) -> u32;
 
     /// RT. Silences all voices and clears internal state (tails, delay lines) without
-    /// deallocating. Called on stop, locate, loop jump and when bypass turns on.
+    /// deallocating. Called on stop, on locate while playing and when bypass turns on. Not on a loop
+    /// wrap: there only the sequenced notes end, so tails keep sounding across the loop.
     fn reset(&mut self);
 }
 
@@ -129,7 +130,8 @@ pub enum EventKind {
         /// New value, plain (not normalised).
         value: f64,
     },
-    /// Release all sounding notes now (stop, locate, loop jump, program swap cleanup).
+    /// Release all sounding notes now (stop, locate while playing, program swap cleanup; not on a
+    /// loop wrap).
     AllNotesOff,
 }
 

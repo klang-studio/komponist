@@ -1,0 +1,39 @@
+# Device chains, slots, fader gain, MIDI input routing and latency compensation
+# Golden fixture of compile::build (WP-24). Regenerate with
+# UPDATE_GOLDEN=1 cargo test -p komponist-engine --test compile
+
+tempo 120.00 bpm, meter 4/4
+loop off, 1.1.000 .. 5.1.000 (ticks 0 .. 15360)
+metronome off, count-in 1 bar(s)
+song end 1.1.000 (tick 0)
+master: gain 0.7079, pan +0.25, mute off
+  chain:
+    [0] dev 51 "Limiter" effect -> slot 6
+slots: dev 11 -> 0, dev 12 -> 1, dev 21 -> 2, dev 22 -> 3, dev 23 -> 4, dev 41 -> 5, dev 51 -> 6
+tracks: 4
+
+track 1 "Synth": gain 1.9953, pan +0.00, mute off, solo off, arm on, monitor on
+  input: port 3, channel 2; pdc delay 320
+  chain:
+    [0] dev 11 "pisynth" instrument -> slot 0
+    [1] dev 12 "EQ" effect -> slot 1
+  notes: 0
+
+track 2 "Pad": gain 0.3548, pan -0.10, mute off, solo on, arm off, monitor off
+  input: missing port (receives nothing), omni; pdc delay 0
+  chain:
+    [0] dev 21 "Surge XT" instrument -> slot 2
+    [1] dev 22 "Chorus" effect, bypass -> slot 3
+    [2] dev 23 "Reverb" effect -> slot 4
+  notes: 0
+
+track 3 "Leer": gain 0.0000, pan +0.00, mute off, solo off, arm off, monitor off
+  input: all ports, omni; pdc delay 384
+  chain: empty
+  notes: 0
+
+track 4 "Kaputt": gain 1.0000, pan +0.00, mute off, solo off, arm off, monitor off
+  input: all ports, omni; pdc delay 384
+  chain:
+    [0] dev 41 "Delay" effect -> slot 5
+  notes: 0

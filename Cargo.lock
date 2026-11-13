@@ -2437,15 +2437,23 @@ dependencies = [
 name = "komponist-bridge"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "komponist-hosting",
  "komponist-ipc",
+ "rtrb",
+ "rustix 1.1.6",
+ "serde_json",
+ "x11rb 0.14.0",
 ]
 
 [[package]]
 name = "komponist-builtin"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "komponist-engine",
+ "komponist-model",
+ "serde_json",
  "synth-core",
 ]
 
@@ -2453,6 +2461,7 @@ dependencies = [
 name = "komponist-engine"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "klang-dsp",
  "komponist-model",
  "rtrb",

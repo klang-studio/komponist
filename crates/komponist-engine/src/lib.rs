@@ -12,20 +12,34 @@
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
+//! - [`testing`]: test processors ([`testing::TestSine`], [`testing::TestGain`]).
+//!
+//! Engine internals: `transport` (position, loop, count-in), `sequencer` (active notes,
+//! probability, live input), `slots` (processor table, chains), `mixer` (fader, balance, solo,
+//! delay compensation), `metronome`, `garbage` (event queue with the garbage holding list).
 //!
 //! Threads: `Engine` lives on the audio thread (or a render worker); `EngineHandle`, the compiler
 //! and processor creation run on the UI thread. Everything crossing between them goes through the
 //! rtrb queues of [`api`] or atomics.
 
-// Contract stage (WP-01): bodies are `todo!()` until WP-23 / WP-24 implement them, so parameters
-// are unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
 pub mod api;
 pub mod compile;
 pub mod engine;
+mod garbage;
+mod metronome;
+mod mixer;
 pub mod processor;
 pub mod program;
+mod sequencer;
+mod slots;
+pub mod testing;
+mod transport;
+
+// Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
+// in release builds `assert_no_alloc` is a no-op).
+#[cfg(all(test, debug_assertions))]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 pub use api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState};
 pub use engine::{Engine, EngineConfig, LiveInput, MidiInEvent};

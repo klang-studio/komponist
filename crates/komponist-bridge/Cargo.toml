@@ -7,3 +7,16 @@ publish.workspace = true
 [dependencies]
 komponist-ipc.workspace = true
 komponist-hosting.workspace = true
+# Workspace features (mm, thread, process, net) plus: event (poll, eventfd), stdio (scan mode keeps
+# plugin output off the JSON on stdout).
+rustix = { workspace = true, features = ["event", "stdio"] }
+# Scan mode: descriptors as JSON on stdout.
+serde_json.workspace = true
+# SetParam values from the main thread to the RT thread.
+rtrb.workspace = true
+# Debug builds: the RT loop runs inside `assert_no_alloc` (no-op in release builds).
+assert_no_alloc.workspace = true
+
+[dev-dependencies]
+# Parent windows and fake pointer input for the GUI tests (run under Xvfb only).
+x11rb = { workspace = true, features = ["xtest"] }
