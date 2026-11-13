@@ -17,10 +17,6 @@
 //! Threads: everything here is plain data and pure functions, used on the UI thread and on workers.
 //! Nothing in this crate runs on the audio thread.
 
-// Contract stage (WP-01): most bodies are `todo!()` until WP-12 implements them, so parameters are
-// unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
 pub mod document;
 pub mod edits;
 pub mod fixtures;
