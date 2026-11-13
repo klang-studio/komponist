@@ -546,7 +546,7 @@ kept, S06 dialog on open), plus `Bypassed`. Held by `komponist-plugins::PluginMa
   settings). All axis-aligned rects and 1 px lines are snapped to physical pixels (helpers in
   `komponist-ui::px`). Only round shapes (knob arcs, fader thumb) use anti-aliasing. Animations are off
   (`animation_time = 0`) because the design wants "keine Animation".
-- **Fonts:** IBM Plex Sans (400/500/600) and Plex Mono (400/500), embedded. Values use Mono (type
+- **Fonts:** IBM Plex Sans (400/500/600) and Plex Mono (400/500/600), embedded. Values use Mono (type
   tokens `value.*`), so they are tabular. egui applies no OpenType features. If Plex Sans digits are
   not tabular by default, WP-02 freezes `tnum` into a renamed copy of the font (fontTools
   `pyftfeatfreeze`, OFL-compliant renaming).
