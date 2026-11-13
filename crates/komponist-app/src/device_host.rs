@@ -2,31 +2,67 @@
 //!
 //! [`EngineSync`](crate::engine_sync::EngineSync) asks a [`DeviceHost`] for a processor whenever a
 //! device gets a slot, tells it when a device leaves, reads latencies for the compiler and status
-//! for the UI, and forwards its events every frame.
+//! for the UI, and forwards its events every frame. The app handles those events
+//! (`App::show` step 1): state snapshots go into the document outside the history, a latency
+//! change recompiles the program, a finished scan retries the devices that were missing, crashes
+//! and warnings go to the status bar.
 //!
-//! Until the plugin manager (WP-45) lands, [`BuiltinHost`] is the only implementation: pisynth
-//! runs in process ([`PisynthProcessor`]); every other device (klopfer, CLAP, VST3) gets no
-//! processor, so the engine passes an effect's input through and an instrument stays silent, and
-//! its status is [`DeviceStatus::Missing`]. WP-45 implements [`DeviceHost`] for a type that wraps
-//! `komponist_plugins::PluginManager` (bridges for external devices, `Loading` / `Crashed`
-//! statuses, state snapshots) and keeps [`BuiltinHost`] for pisynth, then swaps it in with
-//! [`crate::app::App::with_device_host`].
+//! Two implementations:
+//! - [`PluginHost`], the app's: pisynth in process through [`BuiltinHost`], every other device
+//!   (klopfer, scanned CLAP and VST3 plugins) in a bridge process of the
+//!   [`PluginManager`] (ARCHITECTURE §8).
+//! - [`BuiltinHost`], for tests and as the fallback: pisynth in process
+//!   ([`PisynthProcessor`]); every other device gets no processor, so the engine passes an
+//!   effect's input through and an instrument stays silent, and its status is
+//!   [`DeviceStatus::Missing`].
+//!
+//! # API for the views and plugin windows
+//!
+//! Read through `app.engine().host()`, change through `app.engine_mut().host_mut()` or, where an
+//! action exists, through [`App::dispatch`](crate::App::dispatch):
+//!
+//! - Device cards, insert slots, track headers (WP-44): [`DeviceHost::status`],
+//!   [`DeviceHost::state_warning`] („Zustand konnte nicht geladen werden“),
+//!   [`DeviceHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
+//! - Generic parameter grid (WP-44): [`DeviceHost::params`], [`DeviceHost::param_value`]; knob
+//!   changes go through `PluginAction::SetParam` (bridged devices: [`DeviceHost::set_param`],
+//!   pisynth: the engine's `SetParam`).
+//! - Browser (WP-44) and S06/S07 (WP-52): [`DeviceHost::catalog`], [`DeviceHost::role`],
+//!   [`DeviceHost::missing_plugins`], [`DeviceHost::is_scanning`], [`DeviceHost::last_scan`];
+//!   a rescan is `SettingsAction::RescanPlugins` (or `App::scan_plugins`).
+//! - Step rows (WP-54): [`DeviceHost::note_names`].
+//! - Plugin windows (WP-50): [`DeviceHost::has_gui`], [`DeviceHost::open_gui`] with the frame's
+//!   X11 child, [`DeviceHost::set_gui_size`] after a resize, `PluginAction::CloseWindow` (which
+//!   calls [`DeviceHost::close_gui`]). The answers (`GuiOpened`, `GuiSizeRequest`, `GuiClosed`)
+//!   are in `App::device_events` for the frame in which they arrived.
 //!
 //! Thread: UI thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
 use komponist_builtin::PisynthProcessor;
 use komponist_engine::Processor;
+use komponist_ipc::{GuiSize, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
 use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
-use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
-use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent, ProcessorSetup};
+use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
+use komponist_plugins::{
+    Catalog, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError, PluginManager,
+    PluginManagerConfig, PluginManagerEvent, ProcessorSetup, ScanReport,
+};
 
 /// Creates processors for devices and reports their runtime status.
+///
+/// The methods after [`DeviceHost::role`] have defaults for a host without plugin manager (no
+/// parameters, no GUI, no scan).
 pub trait DeviceHost {
     /// Creates the processor for `device`, already activated for `setup`, for
     /// `Command::InsertProcessor`. `None`: the device plays without a processor (passthrough for
     /// an effect, silence for an instrument); its [`DeviceHost::status`] says why.
+    ///
+    /// Called again for a device that still has a slot ("Neu laden", a missing plugin that a scan
+    /// found): the new processor replaces the old one in the same slot.
     fn create_processor(
         &mut self,
         device: &Device,
@@ -50,6 +86,124 @@ pub trait DeviceHost {
     /// Instrument or effect, for a plugin from the browser; `None` if unknown (not in the
     /// catalog).
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole>;
+
+    /// The plugins the browser offers (built-ins first, then scanned plugins by name).
+    fn catalog(&self) -> &Catalog;
+
+    /// Devices of `project` whose plugin is not in the catalog (S06 dialog on open).
+    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
+        missing_in(self.catalog(), project)
+    }
+
+    /// Starts a background scan of `dirs`; ends with [`PluginManagerEvent::ScanFinished`]. A
+    /// running scan is restarted.
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        let _ = dirs;
+    }
+
+    /// Whether a scan runs (S07 "Neu scannen" shows progress).
+    fn is_scanning(&self) -> bool {
+        false
+    }
+
+    /// The last finished scan (S07: found, per folder, skipped).
+    fn last_scan(&self) -> Option<&ScanReport> {
+        None
+    }
+
+    /// Whether [`DeviceHost::poll`] has work even while the UI is idle (bridges running, a scan in
+    /// progress): the app then repaints at a low rate so status changes arrive.
+    fn needs_polling(&self) -> bool {
+        false
+    }
+
+    /// The parameters of a bridged device's plugin (generic grid); `None` for in-process and
+    /// unknown devices.
+    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
+        let _ = device;
+        None
+    }
+
+    /// The last known value and text of parameter `id`. Values from the plugin's own GUI arrive
+    /// without text; format them in the view.
+    fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
+        let _ = (device, id);
+        None
+    }
+
+    /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
+    /// caller then sends the engine's `SetParam` to the device's slot, as for pisynth).
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        let _ = (device, id, value);
+        false
+    }
+
+    /// Why the device's stored state could not be loaded, while that matters (device card
+    /// warning „Zustand konnte nicht geladen werden“).
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        let _ = device;
+        None
+    }
+
+    /// Blocks that missed their deadline since the device's bridge started (a "late" indicator).
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        let _ = device;
+        0
+    }
+
+    /// Note names of an instrument (step sequencer rows); empty if none.
+    fn note_names(&self, device: DeviceId) -> &[NoteName] {
+        let _ = device;
+        &[]
+    }
+
+    /// Whether the device's plugin has its own GUI.
+    fn has_gui(&self, device: DeviceId) -> bool {
+        let _ = device;
+        false
+    }
+
+    /// Opens the plugin GUI inside X11 window `parent_xid` at UI `scale`; answered by
+    /// [`PluginManagerEvent::GuiOpened`].
+    fn open_gui(
+        &mut self,
+        device: DeviceId,
+        parent_xid: u64,
+        scale: f64,
+    ) -> Result<(), PluginError> {
+        let _ = (parent_xid, scale);
+        Err(PluginError::UnknownDevice(device))
+    }
+
+    /// Tells the plugin GUI its new size (after the frame window resized).
+    fn set_gui_size(&mut self, device: DeviceId, size: GuiSize) {
+        let _ = (device, size);
+    }
+
+    /// Closes the plugin GUI; a state snapshot follows.
+    fn close_gui(&mut self, device: DeviceId) {
+        let _ = device;
+    }
+
+    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`].
+    fn request_state(&mut self, device: DeviceId) {
+        let _ = device;
+    }
+
+    /// Blocking, for saving: the current state of every bridged device, waiting at most
+    /// `timeout` in total. Devices that do not answer in time keep their last snapshot.
+    fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+        let _ = timeout;
+        Vec::new()
+    }
+
+    /// Switches every bridge to realtime or offline processing (around an export).
+    fn set_render_mode(&mut self, mode: RenderMode) {
+        let _ = mode;
+    }
+
+    /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
+    fn shutdown(&mut self) {}
 }
 
 /// Whether `plugin` is one of the built-in instruments (pisynth, klopfer).
@@ -63,17 +217,57 @@ pub fn is_pisynth(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_PISYNTH
 }
 
-/// The host before WP-45: pisynth in process, everything else without processor (`Missing`).
-#[derive(Debug, Default)]
+/// Devices of `project` whose plugin `catalog` does not resolve, in document order (master last).
+fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
+    let chains = project
+        .tracks
+        .iter()
+        .map(|t| (Some(t.id), &t.channel.devices))
+        .chain(std::iter::once((None, &project.master.devices)));
+    let mut missing = Vec::new();
+    for (track, devices) in chains {
+        for (index, device) in devices.iter().enumerate() {
+            if catalog.resolve(&device.plugin).is_none() {
+                missing.push(MissingPlugin {
+                    track,
+                    device: device.id,
+                    role: device.role,
+                    index,
+                    plugin: device.plugin.clone(),
+                });
+            }
+        }
+    }
+    missing
+}
+
+// ------------------------------------------------------------------------------------------------
+// BuiltinHost
+// ------------------------------------------------------------------------------------------------
+
+/// pisynth in process, everything else without processor (`Missing`).
+#[derive(Debug)]
 pub struct BuiltinHost {
     devices: HashMap<DeviceId, Known>,
     events: Vec<PluginManagerEvent>,
+    /// pisynth only.
+    catalog: Catalog,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Known {
     status: DeviceStatus,
     latency: u32,
+}
+
+impl Default for BuiltinHost {
+    fn default() -> BuiltinHost {
+        BuiltinHost {
+            devices: HashMap::new(),
+            events: Vec::new(),
+            catalog: Catalog::builtin(None),
+        }
+    }
 }
 
 impl BuiltinHost {
@@ -143,8 +337,203 @@ impl DeviceHost for BuiltinHost {
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        // The built-ins are instruments; everything else needs the catalog (WP-45).
+        // The built-ins are instruments; everything else needs the plugin manager's catalog.
         is_builtin_instrument(plugin).then_some(DeviceRole::Instrument)
+    }
+
+    fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// PluginHost
+// ------------------------------------------------------------------------------------------------
+
+/// The app's device host: pisynth in process through [`BuiltinHost`], every other device
+/// (klopfer, CLAP, VST3) in a bridge process of the [`PluginManager`].
+///
+/// A device the manager cannot resolve plays without processor and stays `Missing` with its
+/// state; after a scan the app asks again ([`DeviceHost::create_processor`] for a device that
+/// still has a slot). Dropping the host kills every bridge (the manager's drop);
+/// [`DeviceHost::shutdown`] is the graceful way at app exit.
+#[derive(Debug)]
+pub struct PluginHost {
+    manager: PluginManager,
+    builtin: BuiltinHost,
+    /// Devices handed to the manager and not released since.
+    external: HashSet<DeviceId>,
+}
+
+impl PluginHost {
+    /// A host on a new [`PluginManager`] for `config` (catalog from the scan cache; starts no
+    /// process).
+    pub fn new(config: PluginManagerConfig) -> PluginHost {
+        PluginHost {
+            manager: PluginManager::new(config),
+            builtin: BuiltinHost::new(),
+            external: HashSet::new(),
+        }
+    }
+
+    /// The plugin manager (diagnostics and tests; processors come only through
+    /// [`DeviceHost::create_processor`]).
+    pub fn manager(&self) -> &PluginManager {
+        &self.manager
+    }
+
+    /// Whether `device` is handled by the manager (a bridge, or `Missing` / `Crashed` without
+    /// one).
+    fn is_external(&self, device: DeviceId) -> bool {
+        self.external.contains(&device)
+    }
+}
+
+impl DeviceHost for PluginHost {
+    fn create_processor(
+        &mut self,
+        device: &Device,
+        setup: ProcessorSetup,
+    ) -> Option<Box<dyn Processor>> {
+        if is_pisynth(device) {
+            return self.builtin.create_processor(device, setup);
+        }
+        // A device seen before ("Neu laden", found by a scan) starts a fresh bridge with its last
+        // known state; the manager kills an old bridge that is still alive.
+        let created = if self.external.insert(device.id) {
+            self.manager.create_processor(device, setup)
+        } else {
+            self.manager.reload(device, setup)
+        };
+        // The manager records why it failed: `Missing`, or `Crashed(LoadFailed)`.
+        created.ok()
+    }
+
+    fn release(&mut self, device: DeviceId) {
+        if self.external.remove(&device) {
+            self.manager.release(device);
+        } else {
+            self.builtin.release(device);
+        }
+    }
+
+    fn status(&self, device: DeviceId) -> DeviceStatus {
+        if self.is_external(device) {
+            self.manager.status(device)
+        } else {
+            self.builtin.status(device)
+        }
+    }
+
+    fn latency(&self, device: DeviceId) -> u32 {
+        if self.is_external(device) {
+            self.manager.latency(device)
+        } else {
+            self.builtin.latency(device)
+        }
+    }
+
+    fn poll(&mut self) -> Vec<PluginManagerEvent> {
+        let mut events = self.builtin.poll();
+        events.extend(self.manager.poll());
+        events
+    }
+
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        match self.manager.catalog().resolve(plugin)?.kind {
+            PluginKind::Instrument => Some(DeviceRole::Instrument),
+            PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::Other => None,
+        }
+    }
+
+    fn catalog(&self) -> &Catalog {
+        self.manager.catalog()
+    }
+
+    fn missing_plugins(&self, project: &Project) -> Vec<MissingPlugin> {
+        self.manager.missing_plugins(project)
+    }
+
+    fn start_scan(&mut self, dirs: &PluginDirs) {
+        self.manager.start_scan(dirs);
+    }
+
+    fn is_scanning(&self) -> bool {
+        self.manager.is_scanning()
+    }
+
+    fn last_scan(&self) -> Option<&ScanReport> {
+        self.manager.last_scan()
+    }
+
+    fn needs_polling(&self) -> bool {
+        !self.external.is_empty() || self.manager.is_scanning()
+    }
+
+    fn params(&self, device: DeviceId) -> Option<&[ParamInfo]> {
+        self.manager.params(device)
+    }
+
+    fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
+        self.manager.param_value(device, id)
+    }
+
+    fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        if !self.is_external(device) {
+            return false;
+        }
+        self.manager.set_param(device, id, value);
+        true
+    }
+
+    fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        self.manager.state_warning(device)
+    }
+
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        self.manager.late_blocks(device)
+    }
+
+    fn note_names(&self, device: DeviceId) -> &[NoteName] {
+        self.manager.note_names(device)
+    }
+
+    fn has_gui(&self, device: DeviceId) -> bool {
+        self.manager.has_gui(device)
+    }
+
+    fn open_gui(
+        &mut self,
+        device: DeviceId,
+        parent_xid: u64,
+        scale: f64,
+    ) -> Result<(), PluginError> {
+        self.manager.open_gui(device, parent_xid, scale)
+    }
+
+    fn set_gui_size(&mut self, device: DeviceId, size: GuiSize) {
+        self.manager.set_gui_size(device, size);
+    }
+
+    fn close_gui(&mut self, device: DeviceId) {
+        self.manager.close_gui(device);
+    }
+
+    fn request_state(&mut self, device: DeviceId) {
+        self.manager.request_state(device);
+    }
+
+    fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+        self.manager.snapshot_states(timeout)
+    }
+
+    fn set_render_mode(&mut self, mode: RenderMode) {
+        self.manager.set_render_mode(mode);
+    }
+
+    fn shutdown(&mut self) {
+        self.manager.shutdown();
     }
 }
 
@@ -190,5 +579,45 @@ mod tests {
         host.release(lead.id);
         assert_eq!(host.status(lead.id), DeviceStatus::Ok);
         assert_eq!(host.latency(lead.id), 0);
+    }
+
+    #[test]
+    fn the_builtin_host_offers_pisynth_and_reports_the_rest_missing() {
+        let project = demo_project();
+        let mut host = BuiltinHost::new();
+        let names: Vec<&str> = host
+            .catalog()
+            .entries()
+            .iter()
+            .map(|e| e.plugin.name.as_str())
+            .collect();
+        assert_eq!(names, ["pisynth"]);
+        let missing = host.missing_plugins(&project);
+        let pisynths = project
+            .tracks
+            .iter()
+            .flat_map(|t| &t.channel.devices)
+            .filter(|d| is_pisynth(d))
+            .count();
+        let all = project
+            .tracks
+            .iter()
+            .map(|t| t.channel.devices.len())
+            .sum::<usize>();
+        assert_eq!(missing.len(), all - pisynths);
+        assert!(missing.iter().all(|m| m.plugin.name != "pisynth"));
+        // Drums: klopfer is the instrument at index 0.
+        assert_eq!(missing[0].track, Some(project.tracks[0].id));
+        assert_eq!(missing[0].index, 0);
+        assert_eq!(missing[0].role, DeviceRole::Instrument);
+        // No plugin manager: no parameters, no GUI, no scan.
+        let device = project.tracks[0].channel.devices[0].id;
+        assert!(host.params(device).is_none());
+        assert!(!host.set_param(device, 0, 0.5));
+        assert!(!host.has_gui(device));
+        assert!(host.open_gui(device, 1, 1.0).is_err());
+        host.start_scan(&PluginDirs::defaults());
+        assert!(!host.is_scanning() && !host.needs_polling());
+        assert!(host.snapshot_states(Duration::ZERO).is_empty());
     }
 }

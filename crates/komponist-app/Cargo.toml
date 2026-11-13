@@ -19,6 +19,8 @@ komponist-engine.workspace = true
 komponist-audio.workspace = true
 komponist-builtin.workspace = true
 komponist-plugins.workspace = true
+# Parameter, note-name, GUI-size and log types of the plugin manager's API (`device_host`).
+komponist-ipc.workspace = true
 komponist-ui.workspace = true
 komponist-tokens = { workspace = true, features = ["egui"] }
 klang-dsp.workspace = true
