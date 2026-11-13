@@ -22,6 +22,9 @@ version = "0.1.0"
 [[package]]
 name = "komponist-audio"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "komponist-bridge"
