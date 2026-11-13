@@ -55,7 +55,9 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    "klang-studio" for the DAW (wordmark, window title, "Rahmen von klang-studio"), write "komponist".
    klang-studio is the umbrella name of the workspace.
 2. **Tokens:** no hard-coded colours, sizes, radii or font sizes. Always use `komponist-tokens`. Missing
-   token → contract change request.
+   colour or type token → contract change request. Component metrics the handoff defines only in the
+   design data (e.g. caret size, menu paddings, swatch size) go into `komponist_ui::widgets::metrics`,
+   one constant each with its source in the `.dc.html` data — never inline in widget code.
 3. **Design sources:** the `.dc.html` files render only with their runtime. Values are in the
    `<script>` blocks (`renderVals()`, `ix`, `notes:ixs([...])`, `headers`, `clips`, `notes`, …), so read
    those, not the markup. Visual reference: `design/reference/*.png`. If a screen and the design
@@ -71,7 +73,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    tool) and compare it with the reference before you report. Once a binary shows your work (gallery
    from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb if
    needed), attach with the `egui` MCP server, read the AccessKit tree, click and type through it and
-   take a screenshot. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
+   take a screenshot. Parallel agents: use your own port, e.g. `EGUI_INSPECTION=127.0.0.1:57xyz`, not
+   the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
    (`import -window`) under Xvfb for those.
 8. **Dependencies:** use workspace dependencies. A new crate needs one sentence of justification in
    the report.

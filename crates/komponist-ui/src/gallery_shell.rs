@@ -23,7 +23,7 @@ use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, size, space};
 
 use crate::state::{self, State};
-use crate::{focus, fonts, px, theme, timeline};
+use crate::{focus, fonts, px, theme, timeline, widgets};
 
 /// Draws the content of a card.
 pub type CardContent = fn(&mut Ui);
@@ -191,22 +191,27 @@ pub fn designsystem() -> Vec<Section> {
             Card::new("Button")
                 .spec("h 24 · px 10 · radius.m · ui-medium")
                 .ix(ix::BUTTON)
+                .content(crate::widgets::button::gallery)
                 .owner("WP-20"),
             Card::new("Toggle")
                 .spec("Spur-Toggle 18 × 16 · Schalter 28 × 16")
                 .ix(ix::TOGGLE)
+                .content(crate::widgets::toggle::gallery)
                 .owner("WP-20"),
             Card::new("Dropdown")
                 .spec("h 24 · min-w 96 · Menü radius.l")
                 .ix(ix::DROPDOWN)
+                .content(crate::widgets::dropdown::gallery)
                 .owner("WP-20"),
             Card::new("Zahlenfeld, ziehbar")
                 .spec("h 24 · px 8 · value-m · Einheit text.3")
                 .ix(ix::NUMBER)
+                .content(widgets::number_field::gallery)
                 .owner("WP-21"),
             Card::new("Drehregler, flach")
                 .spec("Ø 28 (klein 20) · Bogen 270° · Strich 2")
                 .ix(ix::KNOB)
+                .content(widgets::knob::gallery)
                 .owner("WP-21"),
             Card::new("Fader und Pegelanzeige")
                 .spec(
@@ -214,6 +219,7 @@ pub fn designsystem() -> Vec<Section> {
                      (Taille 15, 1 Rille je Hälfte) · Pegel 2 × 4, Abstand 1",
                 )
                 .ix(ix::FADER)
+                .content(widgets::fader::gallery)
                 .owner("WP-21"),
         ])),
         // Full-width cards, as in the design page.
@@ -244,18 +250,22 @@ pub fn designsystem() -> Vec<Section> {
             Card::new("Tabs und Umschalter")
                 .spec("Tab h 28 · Umschalter h 24, Segment h 20")
                 .ix(ix::TABS)
+                .content(crate::widgets::tabs::gallery)
                 .owner("WP-20"),
             Card::new("Panel-Kopf")
                 .spec("h 28 · fläche-2 · px 8 · Titel label")
                 .ix(ix::PANEL)
+                .content(crate::widgets::panel_header::gallery)
                 .owner("WP-20"),
             Card::new("Kontextmenü")
                 .spec("w 220 · Zeile 24 · p 4 · fläche-3 · shadow.float")
                 .ix(ix::MENU)
+                .content(crate::widgets::context_menu::gallery)
                 .owner("WP-20"),
             Card::new("Tooltip")
                 .spec("h 22 · px 8 · fläche-5 · radius.m · shadow.float")
                 .ix(ix::TOOLTIP)
+                .content(crate::widgets::tooltip::gallery)
                 .owner("WP-20"),
         ])),
         tokens::shortcuts_and_icons(),

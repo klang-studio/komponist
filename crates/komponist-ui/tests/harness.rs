@@ -172,8 +172,10 @@ fn gallery_is_named_and_navigates() {
         .save(out.join("gallery-page.png"))
         .unwrap();
 
-    // The live sample counts clicks.
-    h.get_by_label("Quantisieren").click();
+    // The live sample counts clicks. (By role: the filled cards of WP-20 have a menu entry
+    // "Quantisieren" too.)
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Quantisieren")
+        .click();
     h.run();
     h.get_by_label_contains("Klicks 1");
 }
