@@ -27,6 +27,8 @@ pub mod midi;
 pub mod process;
 pub mod slot;
 pub mod system;
+#[cfg(test)]
+mod testing;
 
 // Unit tests run the RT paths inside `assert_no_alloc`, which needs its allocator (debug builds
 // only; in release builds `assert_no_alloc` is a no-op).

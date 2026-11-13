@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::midi::MidiReceiver;
 use crate::process::AudioProcess;
 
+/// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
+const LOAD_SMOOTHING: f32 = 0.05;
+
 /// Audio driver ("Treiber" in S07).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -158,8 +161,18 @@ impl StreamStats {
 
     /// RT. Folds one callback's load (duration / period) into the smoothed value and counts the
     /// callback.
+    ///
+    /// One-pole smoothing per callback (weight 0.05); the first callback sets the value directly.
     pub fn record_callback(&self, load: f32) {
-        todo!("WP-13")
+        let load = if load.is_finite() { load.max(0.0) } else { 0.0 };
+        let first = self.callbacks.fetch_add(1, Ordering::Relaxed) == 0;
+        let smoothed = if first {
+            load
+        } else {
+            let old = self.cpu_load();
+            old + (load - old) * LOAD_SMOOTHING
+        };
+        self.cpu_load.store(smoothed.to_bits(), Ordering::Relaxed);
     }
 
     /// RT. Counts one xrun.
