@@ -6,8 +6,16 @@
 //! - [`installed`]: plugins installed on this machine (Klopfer, Surge XT, Dexed, Shortcircuit XT).
 //!   Klopfer runs by default when installed; the third-party plugins are `#[ignore]` (large, slow
 //!   to load) and run with `cargo test -p komponist-hosting -- --ignored installed`.
+//! - [`gui`]: embedded GUIs. `#[ignore]` and additionally guarded by `KP_GUI_TESTS=1`, so they
+//!   never open windows on a desktop by accident. Run them under Xvfb only:
+//!
+//!   ```text
+//!   KP_GUI_TESTS=1 xvfb-run -a -s "-screen 0 1920x1080x24" \
+//!       cargo test -p komponist-hosting -- --ignored --test-threads=1 gui
+//!   ```
 
 mod fixtures;
+mod gui;
 mod installed;
 
 use std::path::{Path, PathBuf};
@@ -71,6 +79,13 @@ pub(super) fn load(bundle: &Path, plugin_id: &str) -> Rig {
     let plugin = crate::load(PluginFormat::Clap, bundle, plugin_id, host_loop.context())
         .unwrap_or_else(|e| panic!("loading {plugin_id} from {}: {e}", bundle.display()));
     Rig { plugin, host_loop }
+}
+
+/// Loads the first plugin of a bundle.
+pub(super) fn load_first(bundle: &Path) -> Rig {
+    let descriptors = crate::scan(bundle).unwrap();
+    let first = descriptors.first().expect("no plugin in the bundle");
+    load(bundle, &first.id)
 }
 
 /// The id of the parameter called `name`.

@@ -30,3 +30,5 @@ rustix = { workspace = true, features = ["event"] }
 [dev-dependencies]
 # RT checks around `HostedProcessor::process`.
 assert_no_alloc.workspace = true
+# Parent windows for the GUI tests (run under Xvfb only).
+x11rb = { workspace = true, features = ["xtest"] }
