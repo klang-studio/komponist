@@ -18,6 +18,9 @@
 pub mod catalog;
 pub mod external;
 pub mod manager;
+// Used by the plugin manager.
+#[allow(dead_code)]
+mod scan;
 
 pub use catalog::{
     BuiltinKind, Catalog, CatalogEntry, EffectCategory, PluginDirs, PluginLocation, ScanCache,
