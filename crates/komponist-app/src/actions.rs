@@ -495,6 +495,16 @@ pub enum UiAction {
         /// Alt: all strips.
         all: bool,
     },
+    /// Drag on a panel edge: the browser or inspector width, or the dock height, in design px
+    /// (clamped to the token range; the dock also to 70 % of the window at layout time).
+    ResizePanel {
+        /// Which panel.
+        panel: Panel,
+        /// New width (browser, inspector) or height (dock).
+        size: f32,
+    },
+    /// Double-click on a panel edge: back to the token default (dock: 320).
+    ResetPanelSize(Panel),
 }
 
 /// How a click combines with the existing selection.

@@ -1,0 +1,4 @@
+# kittest output of failing or updated snapshots
+*.new.png
+*.diff.png
+*.old.png

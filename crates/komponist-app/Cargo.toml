@@ -20,9 +20,20 @@ komponist-audio.workspace = true
 komponist-builtin.workspace = true
 komponist-plugins.workspace = true
 komponist-ui.workspace = true
+komponist-tokens = { workspace = true, features = ["egui"] }
+klang-dsp.workspace = true
+egui.workspace = true
+eframe.workspace = true
 serde.workspace = true
+# settings.json.
+serde_json.workspace = true
 # komponist-play: WAV export.
 hound.workspace = true
 # komponist-play: debug builds abort on any allocation inside the audio callback and the offline
 # render (ARCHITECTURE §6.1).
 assert_no_alloc.workspace = true
+
+[dev-dependencies]
+# Snapshot and interaction tests of the shell (`tests/`).
+komponist-ui = { workspace = true, features = ["snapshot"] }
+egui_kittest.workspace = true
