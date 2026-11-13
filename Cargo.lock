@@ -75,6 +75,12 @@ dependencies = [
 [[package]]
 name = "komponist-plugins"
 version = "0.1.0"
+dependencies = [
+ "komponist-engine",
+ "komponist-ipc",
+ "komponist-model",
+ "serde",
+]
 
 [[package]]
 name = "komponist-tokens"

@@ -3,3 +3,9 @@ name = "komponist-plugins"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+komponist-model.workspace = true
+komponist-engine.workspace = true
+komponist-ipc.workspace = true
+serde.workspace = true
