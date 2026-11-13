@@ -132,7 +132,17 @@ impl Project {
 
     /// The device with `id`, the channel that holds it and its index in that channel's chain.
     pub fn find_device(&self, id: DeviceId) -> Option<(ChannelRef, usize, &Arc<Device>)> {
-        todo!("WP-12")
+        let chains = self
+            .tracks
+            .iter()
+            .map(|t| (ChannelRef::Track(t.id), &t.channel.devices))
+            .chain(std::iter::once((ChannelRef::Master, &self.master.devices)));
+        for (channel, chain) in chains {
+            if let Some(index) = chain.iter().position(|d| d.id == id) {
+                return Some((channel, index, &chain[index]));
+            }
+        }
+        None
     }
 
     /// Whether any track is soloed. Audible = `!mute && (!any_solo || solo)`; "stumm durch Solo" is
