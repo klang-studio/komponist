@@ -1,9 +1,9 @@
 //! Vertical grid lines of the timeline canvases: bars, beats and the snap grid.
 //!
 //! Weights follow the design system's line tokens: bar lines `line.2` ("Taktlinien"), beat lines
-//! `line.1` ("Schlaglinien"), grid lines between beats a fainter line (`#232427` in the piano roll
-//! of the screens, no token yet). A level is left out when its lines would be closer than
-//! `space.2`; bar lines then thin out to every 2nd, 4th, … bar.
+//! `line.1` ("Schlaglinien"), grid lines between beats the fainter `line.0` (a komponist addition
+//! from the piano roll of the screens, `design/README.md`). A level is left out when its lines
+//! would be closer than `space.2`; bar lines then thin out to every 2nd, 4th, … bar.
 
 use egui::{Color32, Painter, Rangef, Rect, pos2};
 use komponist_model::{Grid, Meter, Tick};
@@ -21,20 +21,17 @@ pub enum LineWeight {
     Bar,
     /// Beat line: `line.1`.
     Beat,
-    /// Grid line between beats: faint.
+    /// Grid line between beats: `line.0`.
     Sub,
 }
 
 impl LineWeight {
     /// The colour of the line.
-    ///
-    /// [`LineWeight::Sub`]: contract change pending (`line.0` = #232427 from the piano roll of
-    /// S01); until then `surface.3`, the closest token.
     pub fn color(self) -> Color32 {
         color32(match self {
             Self::Bar => color::LINE_2,
             Self::Beat => color::LINE_1,
-            Self::Sub => color::SURFACE_3,
+            Self::Sub => color::LINE_0,
         })
     }
 }
