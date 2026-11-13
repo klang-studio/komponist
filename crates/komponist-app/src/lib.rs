@@ -11,6 +11,12 @@
 //! - [`keymap`]: [`Keymap`], key chords and the computer keyboard MIDI layer.
 //!
 //! The shell (WP-30):
+//! - [`app`]: [`App`] (document, view state, engine, views, keymap, settings) and
+//!   [`App::dispatch`], the one place that applies actions; [`App::headless`] for tests.
+//! - [`layout`]: layout 2a as pure rect math; `shell` draws it.
+//! - [`panels`]: transport bar, status bar, the dock's tab strip.
+//! - [`views`]: the [`views::View`] trait and the slots WP-40 … WP-44 fill (placeholders until
+//!   then).
 //! - [`engine_sync`]: [`engine_sync::EngineSync`], document → program → engine, the audio stream.
 //! - [`device_host`]: [`device_host::DeviceHost`], where processors come from; the seam for the
 //!   plugin manager (WP-45).
@@ -19,18 +25,25 @@
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 
 pub mod actions;
+pub mod app;
 pub mod device_host;
 pub mod engine_sync;
 pub mod keymap;
+pub mod layout;
 pub mod meters;
 pub mod metrics;
+pub mod panels;
 pub mod settings;
+mod shell;
 pub mod ui_state;
+pub mod views;
 
 pub use actions::{
     Action, EditAction, PluginAction, ProjectAction, SettingsAction, TransportAction, UiAction,
 };
+pub use app::App;
 pub use keymap::{Key, KeyChord, Keymap, Modifiers};
+pub use shell::names;
 pub use ui_state::{FocusArea, UiState};
 
 // Unit tests of the engine wiring run the audio callback, which `komponist-audio` wraps in
