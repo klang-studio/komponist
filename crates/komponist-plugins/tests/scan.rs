@@ -67,12 +67,10 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
         b"bad name",
     )
     .unwrap();
+    // An empty VST3 folder: VST3 scanning itself is covered by the hosting and bridge tests (WP-32).
+    // Putting the VST3 fixture here made the counts depend on whether its bundle was built.
     let vst3 = dir.join("vst3");
     std::fs::create_dir_all(&vst3).unwrap();
-    let vst3_fixture = fixtures.join("../vst3/kp-test-synth.vst3");
-    if vst3_fixture.exists() {
-        copy(&vst3_fixture, &vst3);
-    }
     let dirs = PluginDirs {
         clap: vec![clap.clone()],
         vst3: vec![vst3.clone(), dir.join("missing")],
@@ -105,13 +103,7 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     );
     assert!(!reason(&report, "Broken.clap").is_empty());
     assert_eq!(reason(&report, b"\xff.clap"), "path is not valid UTF-8");
-    if vst3_fixture.exists() {
-        assert!(
-            reason(&report, "kp-test-synth.vst3").starts_with("format not supported yet"),
-            "{report:?}"
-        );
-        assert_eq!(report.skipped.len(), 3);
-    }
+    assert_eq!(report.skipped.len(), 2, "{report:?}");
     assert!(report.finished <= SystemTime::now());
 
     assert_eq!(
@@ -134,8 +126,7 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     eprintln!("kp-test-fx features {:?} → {:?}", fx.features, fx.category);
     assert_eq!(catalog.search("kp-test").len(), 4);
 
-    // The cache holds the scanned bundles and the broken one, keyed by canonical path; not the
-    // VST3 bundle (unsupported for now: tried again next time).
+    // The cache holds the scanned bundles and the broken one, keyed by canonical path.
     let cache_file = dir.join("cache/plugins.json");
     let mut cache = ScanCache::load(&cache_file);
     assert_eq!(cache.bundles.len(), 5, "{cache:?}");

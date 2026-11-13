@@ -57,6 +57,12 @@ impl DeviceHost for AllInstalled {
     fn role(&self, plugin: &komponist_model::PluginRef) -> Option<DeviceRole> {
         self.0.role(plugin)
     }
+    fn catalog(&self) -> &komponist_plugins::Catalog {
+        self.0.catalog()
+    }
+    fn missing_plugins(&self, _project: &Project) -> Vec<komponist_plugins::MissingPlugin> {
+        Vec::new()
+    }
 }
 
 fn harness_at(app: App, ppp: f32) -> Harness<'static, App> {
@@ -91,8 +97,20 @@ fn clip_id(h: &Harness<'_, App>, track: usize, clip: usize) -> ClipId {
 }
 
 /// The rect of the node with `role` and `label`.
+/// The rect of the node with `role` and `label`. The piano roll in the dock has its own ruler
+/// ("Lineal") and grid dropdown ("Raster"): of several matches, the arrangement's is the topmost.
 fn rect_of(h: &Harness<'_, App>, role: Role, label: &str) -> Rect {
-    h.get_by_role_and_label(role, label).rect()
+    h.get_all_by_role_and_label(role, label)
+        .map(|n| n.rect())
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect("node")
+}
+
+/// The value of the arrangement's node with `role` and `label` (topmost of several).
+fn value_of(h: &Harness<'_, App>, role: Role, label: &str) -> Option<String> {
+    h.get_all_by_role_and_label(role, label)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .and_then(|n| n.value())
 }
 
 fn clip_rect(h: &Harness<'_, App>, label: &str) -> Rect {
@@ -769,8 +787,10 @@ fn ruler_top_sets_the_playhead_bottom_drags_the_loop() {
     let x = x_of(&h, Tick(4 * BAR + 100));
     click(pos2(x, ruler.top() + 4.0), &mut h);
     assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(4 * BAR)));
-    let node = h.get_by_role_and_label(Role::Slider, names::RULER);
-    assert_eq!(node.value().as_deref(), Some("5.1.000"));
+    assert_eq!(
+        value_of(&h, Role::Slider, names::RULER).as_deref(),
+        Some("5.1.000")
+    );
     // Bottom half: from bar 3 to the end of bar 6.
     let y = ruler.bottom() - 3.0;
     let from = pos2(x_of(&h, Tick(2 * BAR + 500)), y);
@@ -880,8 +900,10 @@ fn ctrl_brackets_step_the_grid_and_the_header_shows_it() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::OpenBracket);
     h.run_steps(2);
     assert_eq!(h.state().ui().arrangement.grid, komponist_model::Grid::Half);
-    let grid = h.get_by_role_and_label(Role::ComboBox, names::GRID);
-    assert_eq!(grid.value().as_deref(), Some("1/2"));
+    assert_eq!(
+        value_of(&h, Role::ComboBox, names::GRID).as_deref(),
+        Some("1/2")
+    );
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::CloseBracket);
     h.run_steps(2);
     assert_eq!(h.state().ui().arrangement.grid, komponist_model::Grid::Bar);

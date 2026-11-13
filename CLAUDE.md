@@ -57,7 +57,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
 2. **Tokens:** no hard-coded colours, sizes, radii or font sizes. Always use `komponist-tokens`. Missing
    colour or type token → contract change request. Component metrics the handoff defines only in the
    design data (e.g. caret size, menu paddings, swatch size) go into `komponist_ui::widgets::metrics`,
-   one constant each with its source in the `.dc.html` data — never inline in widget code.
+   one constant each with its source in the `.dc.html` data — never inline in widget code. Layout metrics
+   of the app shell or of one view live in that crate's or view's own `metrics` module, with sources too.
 3. **Design sources:** the `.dc.html` files render only with their runtime. Values are in the
    `<script>` blocks (`renderVals()`, `ix`, `notes:ixs([...])`, `headers`, `clips`, `notes`, …), so read
    those, not the markup. Visual reference: `design/reference/*.png`. If a screen and the design

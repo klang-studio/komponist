@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
+use komponist_plugins::PluginDirs;
 use komponist_tokens::size;
 
 use crate::actions::{BitDepth, ExportRange, ExportSettings};
@@ -32,9 +33,10 @@ pub struct Settings {
     pub audio: StreamConfig,
     /// MIDI inputs switched off in S07, by port name (new ports start enabled).
     pub midi_disabled: Vec<String>,
-    /// CLAP plugin folders (S07 "Plugin-Ordner").
+    /// CLAP plugin folders added in S07 ("Plugin-Ordner"), scanned after the default folders
+    /// ([`Settings::plugin_dirs`]).
     pub clap_dirs: Vec<PathBuf>,
-    /// VST3 plugin folders.
+    /// VST3 plugin folders added in S07.
     pub vst3_dirs: Vec<PathBuf>,
     /// UI scale override (`pixels_per_point`); `None` follows the display.
     pub ui_scale: Option<f32>,
@@ -198,6 +200,23 @@ impl Settings {
         std::fs::rename(&tmp, path).map_err(io)
     }
 
+    /// The folders a plugin scan covers: the default folders (ARCHITECTURE §8.3, `$CLAP_PATH`
+    /// included), then the folders added in S07, each once.
+    pub fn plugin_dirs(&self) -> PluginDirs {
+        let mut dirs = PluginDirs::defaults();
+        for (list, added) in [
+            (&mut dirs.clap, &self.clap_dirs),
+            (&mut dirs.vst3, &self.vst3_dirs),
+        ] {
+            for dir in added {
+                if !list.contains(dir) {
+                    list.push(dir.clone());
+                }
+            }
+        }
+        dirs
+    }
+
     /// Puts `path` at the front of the recent list (once), keeping [`RECENT_LIMIT`] entries.
     pub fn add_recent(&mut self, path: PathBuf) {
         self.recent.retain(|p| *p != path);
@@ -279,6 +298,20 @@ mod tests {
         assert_eq!(layout.inspector_width, size::inspector::MIN);
         assert!(!layout.inspector_open);
         assert_eq!(layout.dock_height, size::dock::DEFAULT);
+    }
+
+    #[test]
+    fn plugin_dirs_are_the_defaults_plus_the_added_folders() {
+        let defaults = PluginDirs::defaults();
+        let mut s = Settings::default();
+        assert_eq!(s.plugin_dirs(), defaults);
+        s.clap_dirs = vec!["/opt/clap".into(), defaults.clap[0].clone()];
+        s.vst3_dirs = vec!["/opt/vst3".into()];
+        let dirs = s.plugin_dirs();
+        assert_eq!(dirs.clap.len(), defaults.clap.len() + 1);
+        assert_eq!(dirs.clap.last(), Some(&PathBuf::from("/opt/clap")));
+        assert_eq!(dirs.vst3.last(), Some(&PathBuf::from("/opt/vst3")));
+        assert_eq!(dirs.vst3[..defaults.vst3.len()], defaults.vst3[..]);
     }
 
     #[test]

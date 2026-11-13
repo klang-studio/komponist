@@ -2432,6 +2432,7 @@ dependencies = [
  "komponist-audio",
  "komponist-builtin",
  "komponist-engine",
+ "komponist-ipc",
  "komponist-model",
  "komponist-plugins",
  "komponist-tokens",
