@@ -2470,6 +2470,7 @@ name = "komponist-engine"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "hound",
  "klang-dsp",
  "komponist-model",
  "rtrb",

@@ -12,7 +12,7 @@
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
-//! - [`export`]: WAV export: normalisation, TPDF dither, PCM quantisation.
+//! - [`export`]: WAV export of a frame range ([`export::export`]): render, normalise, dither, write.
 //! - [`testing`]: test processors ([`testing::TestSine`], [`testing::TestGain`]).
 //!
 //! Engine internals: `transport` (position, loop, count-in), `sequencer` (active notes,
