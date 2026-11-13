@@ -20,6 +20,7 @@
 pub mod button;
 pub mod dropdown;
 pub mod switch;
+pub mod tabs;
 pub mod toggle;
 pub mod tooltip;
 
