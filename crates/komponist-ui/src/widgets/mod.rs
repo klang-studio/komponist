@@ -18,6 +18,7 @@
 //! foreground layer; at most one is open at a time ([`floating`]).
 
 pub mod button;
+pub mod context_menu;
 pub mod dropdown;
 pub mod panel_header;
 pub mod switch;
