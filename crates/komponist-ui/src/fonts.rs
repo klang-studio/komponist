@@ -203,6 +203,10 @@ mod tests {
         );
         assert_eq!(
             family(Family::Mono, 600),
+            FontFamily::Name("IBMPlexMono-SemiBold".into())
+        );
+        assert_eq!(
+            family(Family::Mono, 700),
             FontFamily::Name("IBMPlexMono-Regular".into())
         );
     }
