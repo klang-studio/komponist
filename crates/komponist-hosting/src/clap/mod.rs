@@ -58,11 +58,16 @@ const X11_EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
 };
 
 /// Loads a bundle's entry (dlopen + `clap_entry.init`). clack caches entries per library, so
-/// loading the same bundle twice in one process shares one initialised entry.
+/// loading the same bundle twice in one process shares one initialised entry. The library stays
+/// mapped after its last entry is gone (see `crate::library`).
 fn load_entry(bundle: &Path) -> Result<PluginEntry, HostingError> {
     // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain it.
-    unsafe { PluginEntry::load(bundle) }
-        .map_err(|e| HostingError::Load(format!("{}: {e}", bundle.display())))
+    let entry = unsafe { PluginEntry::load(bundle) }
+        .map_err(|e| HostingError::Load(format!("{}: {e}", bundle.display())))?;
+    // clack-host unloads the library with its last entry; plugin code must stay mapped
+    // (`crate::library`, WP-32).
+    crate::library::keep_mapped(bundle);
+    Ok(entry)
 }
 
 /// A NUL-terminated C string field as UTF-8 (lossy), cut at the first NUL.

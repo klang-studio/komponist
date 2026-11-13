@@ -26,6 +26,7 @@ unsafe extern "C" {
 
 const RTLD_NOW: c_int = 2;
 const RTLD_LOCAL: c_int = 0;
+const RTLD_NOLOAD: c_int = 4;
 const RTLD_NODELETE: c_int = 0x1000;
 
 /// The last `dlerror()` message.
@@ -102,6 +103,21 @@ impl Drop for Library {
     }
 }
 
+/// Marks an already loaded library (loaded by someone else, e.g. clack-host) as never to be
+/// unmapped. A no-op if `path` is not loaded.
+pub(crate) fn keep_mapped(path: &Path) {
+    let Ok(c) = c_path(path) else {
+        return;
+    };
+    // SAFETY: RTLD_NOLOAD loads nothing and runs no code; it only promotes the flags of a loaded
+    // object. The extra reference is dropped again right away.
+    let handle = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE) };
+    if !handle.is_null() {
+        // SAFETY: balances the dlopen above.
+        unsafe { dlclose(handle) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +129,8 @@ mod tests {
             unsafe { Library::open(missing) },
             Err(HostingError::Load(m)) if m.contains("/nonexistent/lib.so")
         ));
+        // Not loaded: nothing happens.
+        keep_mapped(missing);
         // This test executable is no loadable library.
         let exe = std::env::current_exe().unwrap();
         assert!(unsafe { Library::open(&exe) }.is_err());
