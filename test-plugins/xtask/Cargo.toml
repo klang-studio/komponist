@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nice-plug-xtask.workspace = true
+# The version nice-plug-xtask uses, to find the target directory the same way it does.
+cargo_metadata = "0.23.1"

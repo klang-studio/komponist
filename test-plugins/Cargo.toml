@@ -10,6 +10,7 @@ members = [
     "kp-test-crash",
     "kp-test-slow",
     "fake-host",
+    "xtask",
 ]
 
 [workspace.package]
