@@ -19,6 +19,12 @@
 //! Keys: only the active tab or segment takes focus (Tab key); ← → then choose the neighbour
 //! (skipping disabled ones) and keep the focus on it. Ctrl Tab (next tab in the focused area) is
 //! an app shortcut; [`step`] computes the target.
+//!
+//! **Dock tabs** (WP-30, `tab()` / `editorTabs()` in `Screens.dc.html`): a tab of a [`TabBar`]
+//! can carry [`TabExtra`]s, a colour mark before the label (8 × 8, `radius.s`, the track colour
+//! of the open clip) and secondary text after it in `type.ui` `text.3` ("■ Lead A  Piano
+//! Roll"), 8 px apart. With [`TabBar::accent_line`] the active tab shows the focused-panel
+//! accent line (1 px `accent` at its top).
 
 use egui::{
     Color32, EventFilter, Frame, Id, InnerResponse, Key, Margin, Modifiers, Response, Role, Sense,
@@ -35,6 +41,54 @@ use crate::{focus, fonts, px};
 
 /// One tab or segment.
 pub type Item<'a> = super::dropdown::Item<'a>;
+
+/// Dock tab metrics from `Screens.dc.html` `tab()`. They belong into [`super::metrics`], which
+/// WP-30 may not change (report: move them there).
+pub mod dock_metrics {
+    use komponist_tokens::space;
+
+    /// The colour mark: `dot` `width:8, height:8, borderRadius:2` (the radius is `radius.s`).
+    pub const MARK: f32 = 8.0;
+    /// Gap between mark, label and secondary text: `gap:8px`.
+    pub const GAP: f32 = space::SPACE_2;
+}
+
+/// Extras of a tab in a [`TabBar`]: the dock's colour mark and secondary text.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TabExtra<'a> {
+    /// Colour mark before the label (the track colour of the open clip), `None` = none.
+    pub mark: Option<Color32>,
+    /// Secondary text after the label ("Piano Roll"), empty = none.
+    pub secondary: &'a str,
+}
+
+impl<'a> TabExtra<'a> {
+    /// A mark of `color` and the secondary text `secondary` (may be empty).
+    pub const fn new(mark: Option<Color32>, secondary: &'a str) -> Self {
+        Self { mark, secondary }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.mark.is_none() && self.secondary.is_empty()
+    }
+
+    /// The accessible name of a tab labelled `label` with these extras: "Lead A · Piano Roll"
+    /// (the tab text of `Layout.dc.html`).
+    pub fn accessible_name(&self, label: &str) -> String {
+        if self.secondary.is_empty() {
+            label.to_owned()
+        } else {
+            format!("{label} · {}", self.secondary)
+        }
+    }
+}
+
+/// Decoration of a tab: extras and the accent line of the active tab.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Deco<'a> {
+    extra: TabExtra<'a>,
+    accent_line: bool,
+}
 
 /// Colours and weight of a tab or segment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +217,18 @@ fn item(
     active: bool,
     enabled: bool,
 ) -> (Response, State) {
+    item_deco(ui, id, shape, label, active, enabled, Deco::default())
+}
+
+fn item_deco(
+    ui: &mut Ui,
+    id: Id,
+    shape: Shape,
+    label: &str,
+    active: bool,
+    enabled: bool,
+    deco: Deco<'_>,
+) -> (Response, State) {
     let style = shape.style();
     let regular = super::galley(ui, label, fonts::font_id(&style), style.line_height);
     let medium = super::galley(
@@ -171,8 +237,25 @@ fn item(
         super::font_at(&style, metrics::MEDIUM),
         style.line_height,
     );
+    let extra = deco.extra;
+    let mark_w = if extra.mark.is_some() {
+        dock_metrics::MARK + dock_metrics::GAP
+    } else {
+        0.0
+    };
+    let secondary = (!extra.secondary.is_empty()).then(|| {
+        super::galley(
+            ui,
+            extra.secondary,
+            fonts::font_id(&style),
+            style.line_height,
+        )
+    });
+    let secondary_w = secondary
+        .as_ref()
+        .map_or(0.0, |g| dock_metrics::GAP + g.size().x.ceil());
     // As wide as the medium text, so the width does not change with the state.
-    let width = medium.size().x.ceil() + 2.0 * shape.padding();
+    let width = mark_w + medium.size().x.ceil() + secondary_w + 2.0 * shape.padding();
     // Only the active entry is a Tab stop; arrows move between entries.
     let sense = if active && enabled {
         Sense::click()
@@ -186,7 +269,8 @@ fn item(
         st.disabled = true;
     }
     let is_enabled = enabled && ui.is_enabled() && !st.disabled;
-    response.widget_info(|| WidgetInfo::selected(shape.role(), is_enabled, active, label));
+    let name = extra.accessible_name(label);
+    response.widget_info(|| WidgetInfo::selected(shape.role(), is_enabled, active, &name));
     super::accesskit(&response, |n| n.set_selected(active));
     if ui.is_rect_visible(rect) {
         let l = shape.look(active, st);
@@ -194,9 +278,37 @@ fn item(
         if let Some(fill) = l.fill {
             px::fill(painter, rect, shape.radius(), fill);
         }
+        let ppp = ui.pixels_per_point();
+        let medium_w = medium.size().x.ceil();
         let galley = if l.medium { medium } else { regular };
-        let pos = super::text_pos_centered(rect, &galley, ui.pixels_per_point());
-        painter.galley(pos, galley, l.text);
+        if extra.is_empty() {
+            let pos = super::text_pos_centered(rect, &galley, ppp);
+            painter.galley(pos, galley, l.text);
+        } else {
+            let mut x = rect.left() + shape.padding();
+            if let Some(mark) = extra.mark {
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(x, rect.center().y - dock_metrics::MARK / 2.0),
+                    egui::Vec2::splat(dock_metrics::MARK),
+                );
+                px::fill(painter, r, radius::S, mark);
+                x += dock_metrics::MARK + dock_metrics::GAP;
+            }
+            painter.galley(super::text_pos(rect, &galley, x, ppp), galley, l.text);
+            if let Some(sec) = secondary {
+                let x = x + medium_w + dock_metrics::GAP;
+                let pos = super::text_pos(rect, &sec, x, ppp);
+                let text = if l.text == color32(color::TEXT_4) {
+                    l.text
+                } else {
+                    color32(color::TEXT_3)
+                };
+                painter.galley(pos, sec, text);
+            }
+        }
+        if shape == Shape::Tab && active && deco.accent_line && !st.disabled {
+            px::hline(painter, rect.x_range(), rect.top(), color32(color::ACCENT));
+        }
         if shape == Shape::Tab && l.focus_ring {
             focus::paint_ring(painter, rect, 0.0);
         }
@@ -208,6 +320,21 @@ fn item(
 pub fn tab(ui: &mut Ui, label: &str, active: bool, enabled: bool) -> Response {
     let id = ui.scope_id().with(("komponist_tab", label));
     item(ui, id, Shape::Tab, label, active, enabled).0
+}
+
+/// One tab with [`TabExtra`]s (a dock tab); `accent_line` draws the focused-panel line when the
+/// tab is active.
+pub fn tab_with(
+    ui: &mut Ui,
+    label: &str,
+    extra: TabExtra<'_>,
+    active: bool,
+    enabled: bool,
+    accent_line: bool,
+) -> Response {
+    let id = ui.scope_id().with(("komponist_tab", label));
+    let deco = Deco { extra, accent_line };
+    item_deco(ui, id, Shape::Tab, label, active, enabled, deco).0
 }
 
 /// One segment (`Role::RadioButton`) inside [`segmented_frame`]. [`Segmented`] uses it.
@@ -282,13 +409,27 @@ fn show_entries(
     bar: Id,
     items: &[Item<'_>],
     selected: usize,
+    extras: &[TabExtra<'_>],
+    accent_line: bool,
 ) -> (Option<usize>, bool) {
     let mut chosen = None;
     let mut focus_to = None;
     let mut ring = false;
     for (i, it) in items.iter().enumerate() {
         let active = i == selected;
-        let (r, st) = item(ui, entry_id(bar, i), shape, it.label, active, it.enabled);
+        let deco = Deco {
+            extra: extras.get(i).copied().unwrap_or_default(),
+            accent_line,
+        };
+        let (r, st) = item_deco(
+            ui,
+            entry_id(bar, i),
+            shape,
+            it.label,
+            active,
+            it.enabled,
+            deco,
+        );
         ring |= st.focused;
         if r.clicked() && it.enabled && !active {
             chosen = Some(i);
@@ -313,6 +454,8 @@ pub struct TabBar<'a> {
     name: &'a str,
     selected: &'a mut usize,
     items: &'a [Item<'a>],
+    extras: &'a [TabExtra<'a>],
+    accent_line: bool,
 }
 
 impl<'a> TabBar<'a> {
@@ -322,7 +465,21 @@ impl<'a> TabBar<'a> {
             name,
             selected,
             items,
+            extras: &[],
+            accent_line: false,
         }
+    }
+
+    /// Colour marks and secondary texts, one per item by index (missing entries: none).
+    pub fn extras(mut self, extras: &'a [TabExtra<'a>]) -> Self {
+        self.extras = extras;
+        self
+    }
+
+    /// Draws the focused-panel accent line on the active tab (the bar's area has the focus).
+    pub fn accent_line(mut self, on: bool) -> Self {
+        self.accent_line = on;
+        self
     }
 }
 
@@ -336,7 +493,15 @@ impl Widget for TabBar<'_> {
         let r = ui.scope_builder(builder, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                show_entries(ui, Shape::Tab, bar, self.items, *self.selected)
+                show_entries(
+                    ui,
+                    Shape::Tab,
+                    bar,
+                    self.items,
+                    *self.selected,
+                    self.extras,
+                    self.accent_line,
+                )
             })
             .inner
         });
@@ -377,7 +542,7 @@ impl Widget for Segmented<'_> {
             ui,
             self.name,
             |(_, ring): &(Option<usize>, bool)| *ring,
-            |ui| show_entries(ui, Shape::Segment, bar, items, *selected),
+            |ui| show_entries(ui, Shape::Segment, bar, items, *selected, &[], false),
         );
         let mut response = r.response;
         if let (Some(c), _) = r.inner {
@@ -431,6 +596,14 @@ pub fn gallery(ui: &mut Ui) {
             super::caption_text(ui, t);
         }
     });
+
+    super::sample(
+        ui,
+        "Dock · Farbmarke, Zweittext, Akzentlinie (Panel fokussiert)",
+        |ui| {
+            dock_strip(ui, width);
+        },
+    );
 
     super::sample_row(ui, space::SPACE_6, |ui| {
         super::sample(ui, "Umschalter", |ui| {
@@ -486,9 +659,114 @@ pub fn gallery(ui: &mut Ui) {
     ui.data_mut(|d| d.insert_temp(id, (tab_i, tool)));
 }
 
+/// The dock's tab strip of S01 as a still picture: "■ Lead A  Piano Roll" active with the
+/// accent line, "Geräte", "Mixer" (`editorTabs` in `Screens.dc.html`).
+fn dock_strip(ui: &mut Ui, width: f32) {
+    let (strip, _) = ui.allocate_exact_size(vec2(width, size::TAB), Sense::hover());
+    px::fill(ui.painter(), strip, 0.0, color32(color::SURFACE_0));
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(strip)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    row.spacing_mut().item_spacing.x = 0.0;
+    let lead = color32(komponist_tokens::TrackPalette::new(150).base);
+    state::force(&mut row, State::REST, |ui| {
+        tab_with(
+            ui,
+            "Lead A",
+            TabExtra::new(Some(lead), "Piano Roll"),
+            true,
+            true,
+            true,
+        );
+        tab(ui, "Geräte", false, true);
+        tab(ui, "Mixer", false, true);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snapshot;
+
+    #[test]
+    fn dock_tab_snapshots() {
+        let mut s = snapshot::Snapshots::new();
+        let lead = color32(komponist_tokens::TrackPalette::new(150).base);
+        for (accent, name) in [(true, "tab-dock-focused-panel"), (false, "tab-dock")] {
+            s.add_state(name, State::REST, None, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    tab_with(
+                        ui,
+                        "Lead A",
+                        TabExtra::new(Some(lead), "Piano Roll"),
+                        true,
+                        true,
+                        accent,
+                    );
+                    tab_with(ui, "Geräte", TabExtra::default(), false, true, accent);
+                });
+            });
+        }
+        s.add_state("tab-dock-inactive", State::HOVERED, None, |ui| {
+            tab_with(
+                ui,
+                "Beat B",
+                TabExtra::new(Some(lead), "Step Sequencer"),
+                false,
+                true,
+                true,
+            );
+        });
+        s.finish();
+    }
+
+    #[test]
+    fn extras_widen_the_tab_and_name_it() {
+        let ctx = egui::Context::default();
+        crate::install(&ctx);
+        let mut widths = (0.0, 0.0);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let plain = tab(ui, "Lead A", true, true).rect.width();
+            let extra = TabExtra::new(Some(Color32::RED), "Piano Roll");
+            let rich = tab_with(ui, "Lead A ", extra, true, true, true)
+                .rect
+                .width();
+            widths = (plain, rich);
+        })
+        .textures_delta
+        .clear();
+        assert!(widths.1 > widths.0 + dock_metrics::MARK + 2.0 * dock_metrics::GAP);
+        assert_eq!(
+            TabExtra::new(None, "Piano Roll").accessible_name("Lead A"),
+            "Lead A · Piano Roll"
+        );
+        assert_eq!(TabExtra::default().accessible_name("Mixer"), "Mixer");
+    }
+
+    #[test]
+    fn tab_bar_reports_extras_to_accesskit() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let items = [Item::new("Lead A"), Item::new("Geräte"), Item::new("Mixer")];
+        let extras = [TabExtra::new(Some(Color32::GREEN), "Piano Roll")];
+        let mut selected = 0usize;
+        let mut h = egui_kittest::Harness::builder().build_ui(move |ui| {
+            crate::install(ui.ctx());
+            ui.add(
+                TabBar::new("Dock", &mut selected, &items)
+                    .extras(&extras)
+                    .accent_line(true),
+            );
+        });
+        h.run();
+        let tab = h.get_by_label("Lead A · Piano Roll");
+        assert_eq!(tab.accesskit_node().role(), Role::Tab);
+        assert!(tab.accesskit_node().is_selected().unwrap_or(false));
+        h.get_by_label("Mixer").click();
+        h.run();
+    }
 
     #[test]
     fn tab_colours() {
