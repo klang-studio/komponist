@@ -196,9 +196,10 @@ fn main() {
             Ok(devices) => {
                 for d in devices {
                     println!(
-                        "  {host:?}: {:?}{} · {} ch · rates {:?} · buffers {:?}",
+                        "  {host:?}: {:?}{} · id {} · {} ch · rates {:?} · buffers {:?}",
                         d.name,
                         if d.is_default { " (default)" } else { "" },
+                        d.id.as_ref().map_or("none".to_owned(), ToString::to_string),
                         d.channels,
                         d.sample_rates,
                         d.buffer_range,
@@ -270,6 +271,7 @@ fn main() {
         let config = StreamConfig {
             host: args.host,
             device: args.device.clone(),
+            device_id: None,
             sample_rate,
             buffer_frames: buffer,
         };

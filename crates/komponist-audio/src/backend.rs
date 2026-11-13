@@ -11,7 +11,7 @@ use cpal::{BufferSize, SampleFormat, SupportedBufferSize, SupportedStreamConfigR
 
 use crate::process::{AudioProcess, CallbackInfo, OutputBuffer, StreamParams};
 use crate::slot::EngineSlot;
-use crate::system::{AudioError, DeviceInfo, HostKind, StreamConfig, StreamStats};
+use crate::system::{AudioError, DeviceId, DeviceInfo, HostKind, StreamConfig, StreamStats};
 
 /// Sample rates offered in S07.
 const STANDARD_RATES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
@@ -311,20 +311,31 @@ fn output_devices(host: &cpal::Host) -> Result<Vec<(String, cpal::Device)>, Audi
     Ok(list)
 }
 
-/// The output device named `name` (as [`devices`] lists it), or the host's default.
+/// The device of `config`: by `device_id` if `host` lists it, else by name (as [`devices`] lists
+/// it), else, when both are `None`, the host's default. An id of another host never matches.
 pub(crate) fn find_device(
     host: &cpal::Host,
-    name: Option<&str>,
+    config: &StreamConfig,
 ) -> Result<cpal::Device, AudioError> {
-    match name {
-        None => host
-            .default_output_device()
-            .ok_or_else(|| AudioError::NoDevice("no default output device".to_owned())),
-        Some(name) => output_devices(host)?
+    if let Some(id) = &config.device_id {
+        let found = output_devices(host)?
+            .into_iter()
+            .map(|(_, device)| device)
+            .find(|device| device.id().is_ok_and(|own| own.to_string() == id.0));
+        if let Some(device) = found {
+            return Ok(device);
+        }
+    }
+    match (&config.device, &config.device_id) {
+        (Some(name), _) => output_devices(host)?
             .into_iter()
             .find(|(seen, _)| seen == name)
             .map(|(_, device)| device)
             .ok_or_else(|| AudioError::NoDevice(format!("{name}: not found"))),
+        (None, Some(id)) => Err(AudioError::NoDevice(format!("{id}: not found"))),
+        (None, None) => host
+            .default_output_device()
+            .ok_or_else(|| AudioError::NoDevice("no default output device".to_owned())),
     }
 }
 
@@ -333,6 +344,7 @@ pub(crate) fn devices(kind: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
     if kind == HostKind::Null {
         return Ok(vec![DeviceInfo {
             host: HostKind::Null,
+            id: None,
             name: NULL_DEVICE.to_owned(),
             is_default: true,
             channels: 2,
@@ -365,6 +377,7 @@ pub(crate) fn devices(kind: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
         };
         list.push(DeviceInfo {
             host: kind,
+            id: device.id().ok().map(|id| DeviceId(id.to_string())),
             name,
             is_default: default.as_ref() == Some(&device),
             channels: config.channels(),
@@ -463,6 +476,7 @@ pub(crate) fn negotiate(
         effective: StreamConfig {
             host: kind,
             device: requested.device.clone(),
+            device_id: requested.device_id.clone(),
             sample_rate,
             buffer_frames,
         },
@@ -624,5 +638,49 @@ mod tests {
         drop(stream);
         assert!(handle.is_closed());
         assert!(handle.try_take_engine().is_some());
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    fn config(device: Option<&str>, device_id: Option<&str>) -> StreamConfig {
+        StreamConfig {
+            host: HostKind::Alsa,
+            device: device.map(str::to_owned),
+            device_id: device_id.map(|id| DeviceId(id.to_owned())),
+            ..StreamConfig::default()
+        }
+    }
+
+    fn id_of(device: &cpal::Device) -> String {
+        device.id().unwrap().to_string()
+    }
+
+    /// Uses the machine's ALSA devices (enumeration only, nothing is opened); skipped without any.
+    #[test]
+    fn devices_are_found_by_id_before_name() {
+        let (Ok(host), Ok(devices)) = (host(HostKind::Alsa), devices(HostKind::Alsa)) else {
+            eprintln!("no ALSA host: skipped");
+            return;
+        };
+        let Some(info) = devices.iter().find(|d| d.id.is_some()) else {
+            eprintln!("no ALSA device with an id: skipped");
+            return;
+        };
+        let id = info.id.as_ref().unwrap().0.as_str();
+        let missing = "alsa:komponist-test-missing";
+
+        let by_id = find_device(&host, &config(Some("komponist test: wrong name"), Some(id)));
+        assert_eq!(id_of(&by_id.unwrap()), id);
+        let by_name = find_device(&host, &config(Some(&info.name), Some(missing)));
+        assert_eq!(id_of(&by_name.unwrap()), id);
+        let other_host = find_device(&host, &config(Some(&info.name), Some("pipewire:x")));
+        assert_eq!(id_of(&other_host.unwrap()), id);
+        assert!(matches!(
+            find_device(&host, &config(None, Some(missing))),
+            Err(AudioError::NoDevice(_))
+        ));
     }
 }

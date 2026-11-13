@@ -2430,6 +2430,7 @@ dependencies = [
  "midir",
  "rtrb",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -37,12 +37,32 @@ pub enum HostKind {
     Null,
 }
 
+/// Stable identity of an output device, persisted in [`StreamConfig::device_id`].
+///
+/// cpal's `DeviceId` in its string form `"<host>:<id>"`: the PipeWire node name
+/// (`"pipewire:alsa_output.usb-Focusrite_Scarlett_2i2-00.analog-stereo"`), the ALSA PCM name
+/// (`"alsa:hw:CARD=USB,DEV=0"`), `"jack:output"`. Unlike [`DeviceInfo::name`] it is unique and
+/// does not depend on enumeration order. Serialised as a plain string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DeviceId(pub String);
+
+impl core::fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// An output device of a host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceInfo {
     /// The host it belongs to.
     pub host: HostKind,
+    /// Stable id, `None` if the backend gives none (and for the null host). Store it in
+    /// [`StreamConfig::device_id`].
+    pub id: Option<DeviceId>,
     /// Device name as the backend reports it ("Focusrite Scarlett 2i2"); used in [`StreamConfig`].
+    /// Names are not unique: a repeated name gets " (2)", " (3)", … in enumeration order.
     pub name: String,
     /// The host's default output device.
     pub is_default: bool,
@@ -60,8 +80,14 @@ pub struct DeviceInfo {
 pub struct StreamConfig {
     /// Driver.
     pub host: HostKind,
-    /// Output device name; `None` = the host's default device.
+    /// Output device name (display, and fallback for the lookup); `None` together with
+    /// `device_id: None` = the host's default device.
     pub device: Option<String>,
+    /// Stable id of the output device ([`DeviceInfo::id`]). [`AudioSystem::start`] looks the
+    /// device up by id first and by `device` (the name) if the id is unknown or belongs to another
+    /// host. Configurations saved without it deserialise with `None`.
+    #[serde(default)]
+    pub device_id: Option<DeviceId>,
     /// Sample rate in Hz ("48000 Hz").
     pub sample_rate: u32,
     /// Buffer size in frames (segments 64 / 128 / 256 / 512 / 1024 in S07).
@@ -74,6 +100,7 @@ impl Default for StreamConfig {
         StreamConfig {
             host: HostKind::PipeWire,
             device: None,
+            device_id: None,
             sample_rate: 48_000,
             buffer_frames: 256,
         }
@@ -269,6 +296,9 @@ impl<P: AudioProcess> AudioSystem<P> {
     ///
     /// The `Running` state carries the effective configuration: JACK imposes the server's rate and
     /// buffer size. Its `latency` is filled in by [`AudioSystem::poll`] once callbacks run.
+    ///
+    /// The device is looked up by `device_id`, then by `device` (name), and is the host's default
+    /// only when both are `None`.
     pub fn start(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
         self.teardown();
         let result = match config.host {
@@ -403,7 +433,7 @@ impl<P: AudioProcess> AudioSystem<P> {
     fn start_device(&mut self, config: &StreamConfig) -> Result<StreamConfig, AudioError> {
         backend::validate(config)?;
         let host = backend::host(config.host)?;
-        let device = backend::find_device(&host, config.device.as_deref())?;
+        let device = backend::find_device(&host, config)?;
         let negotiated = backend::negotiate(config.host, &device, config)?;
         let params = StreamParams {
             sample_rate: negotiated.effective.sample_rate,
@@ -545,6 +575,7 @@ fn null_config(config: &StreamConfig) -> StreamConfig {
     StreamConfig {
         host: HostKind::Null,
         device: None,
+        device_id: None,
         sample_rate: if backend::valid_sample_rate(config.sample_rate) {
             config.sample_rate
         } else {
@@ -576,6 +607,7 @@ mod tests {
         StreamConfig {
             host: HostKind::Null,
             device: None,
+            device_id: None,
             sample_rate: 48_000,
             buffer_frames,
         }
@@ -712,6 +744,7 @@ mod tests {
         let config = StreamConfig {
             host: HostKind::Alsa,
             device: Some("komponist test: no such device".to_owned()),
+            device_id: None,
             sample_rate: 44_100,
             buffer_frames: 128,
         };
@@ -801,6 +834,27 @@ mod tests {
         system.start(&null(64)).unwrap();
         assert!(runs(&probe, 5));
         assert_eq!(probe.events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stream_configs_without_device_id_still_load() {
+        let old = r#"{"host":"pipewire","device":"Scarlett 2i2","sample_rate":48000,"buffer_frames":256}"#;
+        let config: StreamConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(config.device.as_deref(), Some("Scarlett 2i2"));
+        assert_eq!(config.device_id, None);
+        let with_id = StreamConfig {
+            device_id: Some(DeviceId("pipewire:alsa_output.usb-x".to_owned())),
+            ..config
+        };
+        let json = serde_json::to_string(&with_id).unwrap();
+        assert!(
+            json.contains(r#""device_id":"pipewire:alsa_output.usb-x""#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<StreamConfig>(&json).unwrap(),
+            with_id
+        );
     }
 
     #[test]
