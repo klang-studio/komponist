@@ -2450,7 +2450,10 @@ dependencies = [
 name = "komponist-builtin"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "komponist-engine",
+ "komponist-model",
+ "serde_json",
  "synth-core",
 ]
 
