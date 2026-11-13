@@ -9,16 +9,22 @@
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
 //! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. With
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
+//!
+//! Plugins: pisynth runs in process; klopfer and the CLAP/VST3 plugins run in
+//! `komponist-bridge` processes next to this executable (`cargo build` builds both). At start a
+//! background scan covers the default plugin folders plus those in the settings; devices whose
+//! plugin it finds load when it ends. Closing the window shuts every bridge down.
 
 use std::path::PathBuf;
 
 use komponist_app::App;
-use komponist_app::device_host::BuiltinHost;
+use komponist_app::device_host::PluginHost;
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::panels::transport::WORDMARK;
 use komponist_app::settings::{self, Settings};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_model::{Document, Project, fixtures, persist};
+use komponist_plugins::PluginManagerConfig;
 use komponist_ui::RunOptions;
 
 // Debug builds abort on any allocation inside the audio callback (ARCHITECTURE §6.1).
@@ -120,7 +126,16 @@ fn main() -> eframe::Result {
     } else {
         (settings.audio.clone(), MidiSetup::System)
     };
-    let (engine, started) = EngineSync::new(&config, midi, Box::new(BuiltinHost::new()));
+    let plugins = PluginManagerConfig::defaults();
+    if !plugins.bridge_exe.exists() {
+        eprintln!(
+            "komponist: {} not found; plugins other than pisynth will not load \
+             (cargo build -p komponist-bridge)",
+            plugins.bridge_exe.display()
+        );
+    }
+    let host = PluginHost::new(plugins);
+    let (engine, started) = EngineSync::new(&config, midi, Box::new(host));
     if let Err(e) = started {
         eprintln!("komponist: audio output not available ({e}); running without device");
     }
@@ -128,6 +143,7 @@ fn main() -> eframe::Result {
     let mut options = RunOptions::new(WORDMARK, title);
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(project), engine, settings, settings_path);
+    app.scan_plugins();
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {
             let _ = hub.set_enabled(&name, false);
