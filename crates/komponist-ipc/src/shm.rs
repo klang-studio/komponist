@@ -26,12 +26,16 @@
 
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, Ordering};
-use std::os::fd::{BorrowedFd, OwnedFd};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Instant;
 
+use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fstat, ftruncate, memfd_create};
+use rustix::mm::{MapFlags, ProtFlags, mlock, mmap, munmap};
+
 use crate::ring::ShmRing;
+use crate::signal::{self, WaitOutcome};
 
 /// `b"KPSM"` as little-endian `u32`, the first header field.
 pub const SHM_MAGIC: u32 = u32::from_le_bytes(*b"KPSM");
@@ -64,6 +68,17 @@ pub const TRANSPORT_PLAYING: u32 = 1;
 pub const TRANSPORT_RECORDING: u32 = 2;
 /// [`WireTransport::flags`]: loop on.
 pub const TRANSPORT_LOOPING: u32 = 4;
+
+/// [`WireEvent::kind`] values (see the table at [`WireEvent`]).
+const KIND_NOTE_ON: u32 = 1;
+const KIND_NOTE_OFF: u32 = 2;
+const KIND_MIDI: u32 = 3;
+const KIND_PARAM_VALUE: u32 = 4;
+const KIND_PARAM_GESTURE: u32 = 5;
+const KIND_ALL_NOTES_OFF: u32 = 6;
+
+/// [`WireEvent::note_id`] for "no note id".
+const NO_NOTE_ID: u32 = u32::MAX;
 
 /// The whole mapping.
 #[repr(C)]
@@ -279,12 +294,77 @@ pub enum WireEventKind {
 impl WireEvent {
     /// Encodes `kind` at frame `offset`.
     pub fn new(offset: u32, kind: WireEventKind) -> WireEvent {
-        todo!("WP-16")
+        let mut event = WireEvent {
+            offset,
+            note_id: NO_NOTE_ID,
+            ..WireEvent::default()
+        };
+        match kind {
+            WireEventKind::NoteOn {
+                channel,
+                key,
+                velocity,
+                note_id,
+            } => {
+                event.kind = KIND_NOTE_ON;
+                event.data = [channel, key, velocity, 0];
+                event.note_id = note_id;
+            }
+            WireEventKind::NoteOff {
+                channel,
+                key,
+                note_id,
+            } => {
+                event.kind = KIND_NOTE_OFF;
+                event.data = [channel, key, 0, 0];
+                event.note_id = note_id;
+            }
+            WireEventKind::Midi([status, data1, data2]) => {
+                event.kind = KIND_MIDI;
+                event.data = [status, data1, data2, 0];
+            }
+            WireEventKind::ParamValue { id, value } => {
+                event.kind = KIND_PARAM_VALUE;
+                event.param_id = id;
+                event.value = value;
+            }
+            WireEventKind::ParamGesture { id, begin } => {
+                event.kind = KIND_PARAM_GESTURE;
+                event.param_id = id;
+                event.data[0] = u8::from(begin);
+            }
+            WireEventKind::AllNotesOff => event.kind = KIND_ALL_NOTES_OFF,
+        }
+        event
     }
 
     /// Decodes the event; `None` for an unknown or invalid `kind`.
     pub fn decode(&self) -> Option<WireEventKind> {
-        todo!("WP-16")
+        let [d0, d1, d2, _] = self.data;
+        Some(match self.kind {
+            KIND_NOTE_ON => WireEventKind::NoteOn {
+                channel: d0,
+                key: d1,
+                velocity: d2,
+                note_id: self.note_id,
+            },
+            KIND_NOTE_OFF => WireEventKind::NoteOff {
+                channel: d0,
+                key: d1,
+                note_id: self.note_id,
+            },
+            KIND_MIDI => WireEventKind::Midi([d0, d1, d2]),
+            KIND_PARAM_VALUE => WireEventKind::ParamValue {
+                id: self.param_id,
+                value: self.value,
+            },
+            KIND_PARAM_GESTURE => WireEventKind::ParamGesture {
+                id: self.param_id,
+                begin: d0 != 0,
+            },
+            KIND_ALL_NOTES_OFF => WireEventKind::AllNotesOff,
+            _ => return None,
+        })
     }
 }
 
@@ -319,10 +399,24 @@ impl core::fmt::Display for ShmError {
 
 impl std::error::Error for ShmError {}
 
+impl From<rustix::io::Errno> for ShmError {
+    fn from(e: rustix::io::Errno) -> ShmError {
+        ShmError::Io(e.to_string())
+    }
+}
+
+/// Role bits in [`ShmRegion::roles`]: each RT role may exist once per region.
+const ROLE_CLIENT: u8 = 1;
+const ROLE_SERVER: u8 = 2;
+const ROLE_MONITOR: u8 = 4;
+
 /// One mapped memfd holding a [`ShmLayout`]. Unmapped on drop (the fd closes with it).
 pub struct ShmRegion {
     fd: OwnedFd,
     ptr: NonNull<ShmLayout>,
+    /// `ROLE_*` bits of the live role objects in this process; keeps the unsafe single-producer /
+    /// single-consumer contracts of the rings out of reach of safe code.
+    roles: AtomicU8,
 }
 
 // SAFETY: the mapping stays valid for the lifetime of the region; all state shared between threads
@@ -337,23 +431,83 @@ impl ShmRegion {
     /// App side, non-RT. Creates a memfd named `komponist-bridge`, sizes it to [`SHM_SIZE`], maps
     /// it and writes the header constants.
     pub fn create() -> Result<ShmRegion, ShmError> {
-        todo!("WP-16")
+        let fd = memfd_create(
+            "komponist-bridge",
+            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+        )?;
+        ftruncate(&fd, SHM_SIZE as u64)?;
+        // Fix the size for good: a bridge that shrank the file would make the app's next access
+        // to the missing pages fault with SIGBUS.
+        fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL)?;
+        let ptr = map(&fd)?;
+        // SAFETY: fresh, zero-filled mapping of `SHM_SIZE` bytes that nobody else sees yet; the
+        // constants are written through raw pointers before any reference to the layout exists.
+        unsafe {
+            let header = &raw mut (*ptr.as_ptr()).header;
+            (&raw mut (*header).magic).write(SHM_MAGIC);
+            (&raw mut (*header).version).write(SHM_VERSION);
+            (&raw mut (*header).size).write(SHM_SIZE as u32);
+            (&raw mut (*header).max_block).write(MAX_BLOCK as u32);
+        }
+        Ok(ShmRegion {
+            fd,
+            ptr,
+            roles: AtomicU8::new(0),
+        })
     }
 
     /// Bridge side, non-RT. Maps a memfd received from the app and validates magic, version, size
     /// and `max_block`.
     pub fn open(fd: OwnedFd) -> Result<ShmRegion, ShmError> {
-        todo!("WP-16")
+        // Validate before mapping: the four header words through `pread`, the file size through
+        // `fstat` (a smaller file would turn accesses past its end into SIGBUS).
+        let mut words = [0u8; 16];
+        let read = rustix::io::pread(&fd, &mut words, 0)?;
+        let word = |i: usize| u32::from_ne_bytes(words[i * 4..i * 4 + 4].try_into().unwrap());
+        if read < words.len() || word(0) != SHM_MAGIC {
+            return Err(ShmError::BadMagic);
+        }
+        if word(1) != SHM_VERSION {
+            return Err(ShmError::VersionMismatch { found: word(1) });
+        }
+        let file_size = fstat(&fd)?.st_size;
+        if word(2) as usize != SHM_SIZE
+            || word(3) as usize != MAX_BLOCK
+            || file_size != SHM_SIZE as i64
+        {
+            return Err(ShmError::LayoutMismatch);
+        }
+        let ptr = map(&fd)?;
+        Ok(ShmRegion {
+            fd,
+            ptr,
+            roles: AtomicU8::new(0),
+        })
     }
 
     /// The memfd, to pass to the bridge.
     pub fn fd(&self) -> BorrowedFd<'_> {
-        todo!("WP-16")
+        self.fd.as_fd()
     }
 
     /// The mapped layout.
     pub fn layout(&self) -> &ShmLayout {
-        todo!("WP-16")
+        // SAFETY: the mapping is valid, aligned and `SHM_SIZE >= size_of::<ShmLayout>()` bytes
+        // long for the lifetime of `self`. Through `&ShmLayout` safe code reaches only atomics and
+        // the header constants (never written after `create`); everything else sits behind
+        // `UnsafeCell`s and unsafe ring methods.
+        unsafe { self.ptr.as_ref() }
+    }
+
+    /// Marks `role` as taken; panics if it already is (contract: one object per role).
+    fn claim(&self, role: u8, name: &str) {
+        let before = self.roles.fetch_or(role, Ordering::AcqRel);
+        assert!(before & role == 0, "a second {name} for one ShmRegion");
+    }
+
+    /// Frees `role` again (drop of the role object).
+    fn release(&self, role: u8) {
+        self.roles.fetch_and(!role, Ordering::AcqRel);
     }
 
     /// Bridge lifecycle state (any thread).
@@ -381,6 +535,39 @@ impl ShmRegion {
             .latency
             .store(frames, Ordering::Release);
     }
+}
+
+impl Drop for ShmRegion {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` is the start of our own `SHM_SIZE` mapping; no reference into it outlives
+        // `self` (role objects hold an `Arc<ShmRegion>`).
+        unsafe {
+            let _ = munmap(self.ptr.as_ptr().cast(), SHM_SIZE);
+        }
+    }
+}
+
+/// Maps `SHM_SIZE` bytes of `fd` shared, prefaulted and (best effort) locked, so the RT paths
+/// never take a page fault.
+fn map(fd: &OwnedFd) -> Result<NonNull<ShmLayout>, ShmError> {
+    // SAFETY: a new mapping at an address the kernel picks; nothing aliases it yet. The caller
+    // made sure the file is at least `SHM_SIZE` bytes long.
+    let ptr = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            SHM_SIZE,
+            ProtFlags::READ | ProtFlags::WRITE,
+            MapFlags::SHARED | MapFlags::POPULATE,
+            fd,
+            0,
+        )?
+    };
+    // SAFETY: locks our own fresh mapping. Failure (RLIMIT_MEMLOCK) only means the pages may be
+    // swapped out under memory pressure; MAP_POPULATE already prefaulted them.
+    unsafe {
+        let _ = mlock(ptr, SHM_SIZE);
+    }
+    NonNull::new(ptr.cast()).ok_or_else(|| ShmError::Io("mmap returned null".into()))
 }
 
 impl core::fmt::Debug for ShmRegion {
@@ -423,45 +610,164 @@ pub enum BlockError {
 #[derive(Debug)]
 pub struct BridgeClient {
     region: Arc<ShmRegion>,
+    /// Sequence number of the latest request (this client is the only writer of `request_seq`,
+    /// so a local copy cannot be confused by the bridge).
+    seq: u32,
+    /// Frames of the latest request this client published; 0 = none yet.
+    frames: u32,
 }
 
 impl BridgeClient {
-    /// The RT end of `region`. Exactly one `BridgeClient` may exist per region.
+    /// The RT end of `region`. Exactly one `BridgeClient` may exist per region (a second one
+    /// panics while the first is alive).
     pub fn new(region: Arc<ShmRegion>) -> BridgeClient {
-        BridgeClient { region }
+        region.claim(ROLE_CLIENT, "BridgeClient");
+        let seq = region.layout().header.request_seq.load(Ordering::Acquire);
+        BridgeClient {
+            region,
+            seq,
+            frames: 0,
+        }
     }
 
     /// Whether the bridge finished the latest request (`done_seq == request_seq`).
     pub fn is_idle(&self) -> bool {
-        todo!("WP-16")
+        self.region.layout().header.done_seq.load(Ordering::Acquire) == self.seq
     }
 
     /// Publishes one block (step 1 of the handshake) and wakes the bridge. Returns the sequence
     /// number to wait for. `input` holds `spec.frames` samples per channel; `events` are sorted by
     /// offset.
+    ///
+    /// # Panics
+    ///
+    /// If `spec.frames` is not in 1 ..= [`MAX_BLOCK`] or an input channel is shorter.
     pub fn begin_block(
         &mut self,
         spec: &BlockSpec,
         input: [&[f32]; 2],
         events: &[WireEvent],
     ) -> Result<u32, BlockError> {
-        todo!("WP-16")
+        let frames = spec.frames as usize;
+        assert!(
+            (1..=MAX_BLOCK).contains(&frames) && input.iter().all(|ch| ch.len() >= frames),
+            "begin_block: frames out of range or input too short"
+        );
+        if self.region.bridge_state() != BridgeState::Active {
+            return Err(BlockError::NotActive);
+        }
+        if !self.is_idle() {
+            return Err(BlockError::Busy);
+        }
+        let layout = self.region.layout();
+        let free = INPUT_EVENT_CAPACITY.saturating_sub(layout.input_events.len());
+        if events.len() > free {
+            return Err(BlockError::TooManyEvents);
+        }
+        let audio_in = layout.audio_in.get().cast::<[f32; MAX_BLOCK]>();
+        for (channel, samples) in input.iter().enumerate() {
+            // SAFETY: the bridge is idle; it reads `audio_in` only between a request and its
+            // `done_seq`, so nobody else accesses the buffer now. `frames <= MAX_BLOCK`.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    samples.as_ptr(),
+                    audio_in.add(channel).cast::<f32>(),
+                    frames,
+                );
+            }
+        }
+        let mut pushed = 0u32;
+        for event in events {
+            // SAFETY: the `BridgeClient` role (one per region) is the only input-ring producer.
+            // Cannot fail after the capacity check unless the bridge corrupted the ring.
+            if unsafe { layout.input_events.push(*event) }.is_ok() {
+                pushed += 1;
+            }
+        }
+        let seq = self.seq.wrapping_add(1);
+        let request = BlockRequest {
+            seq,
+            frames: spec.frames,
+            flags: spec.flags,
+            event_count: pushed,
+            steady_time: spec.steady_time,
+            transport: spec.transport,
+        };
+        let header = &layout.header;
+        // SAFETY: as for `audio_in`: the bridge reads `request` only after seeing the new
+        // `request_seq`, which is published below with release ordering.
+        unsafe { header.request.get().write(request) };
+        header.request_seq.store(seq, Ordering::Release);
+        signal::wake(&header.request_seq);
+        self.seq = seq;
+        self.frames = spec.frames;
+        Ok(seq)
     }
 
     /// Waits for request `seq` until `deadline` (step 3). On success copies `frames` samples per
     /// channel of output audio into `output` and returns the bridge's result.
+    ///
+    /// `Late` also for a `seq` that is not the latest request (a stale one), and for a result that
+    /// does not carry `seq`.
+    ///
+    /// # Panics
+    ///
+    /// If an output channel is shorter than the request's frames.
     pub fn wait_done(
         &mut self,
         seq: u32,
         deadline: Instant,
         output: [&mut [f32]; 2],
     ) -> Result<BlockResult, BlockError> {
-        todo!("WP-16")
+        if seq != self.seq || self.frames == 0 {
+            return Err(BlockError::Late);
+        }
+        let frames = self.frames as usize;
+        assert!(
+            output.iter().all(|ch| ch.len() >= frames),
+            "wait_done: output too short"
+        );
+        let layout = self.region.layout();
+        let header = &layout.header;
+        loop {
+            let done = header.done_seq.load(Ordering::Acquire);
+            if done == seq {
+                break;
+            }
+            if signal::wait_while(&header.done_seq, done, Some(deadline)) == WaitOutcome::TimedOut {
+                return Err(BlockError::Late);
+            }
+        }
+        // SAFETY: `done_seq == seq` (acquired): the bridge wrote `result` and `audio_out` for this
+        // request before publishing it and touches neither again until the next request, which
+        // only this client can publish.
+        let result = unsafe { header.result.get().read() };
+        if result.seq != seq {
+            return Err(BlockError::Late);
+        }
+        let audio_out = layout.audio_out.get().cast::<[f32; MAX_BLOCK]>();
+        for (channel, samples) in output.into_iter().enumerate() {
+            // SAFETY: see above; `frames <= MAX_BLOCK` (checked in `begin_block`).
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    audio_out.add(channel).cast::<f32>(),
+                    samples.as_mut_ptr(),
+                    frames,
+                );
+            }
+        }
+        Ok(result)
     }
 
     /// The region (for state and latency).
     pub fn region(&self) -> &Arc<ShmRegion> {
         &self.region
+    }
+}
+
+impl Drop for BridgeClient {
+    fn drop(&mut self) {
+        self.region.release(ROLE_CLIENT);
     }
 }
 
@@ -471,45 +777,139 @@ impl BridgeClient {
 #[derive(Debug)]
 pub struct BridgeServer {
     region: Arc<ShmRegion>,
+    /// Sequence number of the latest request taken (or, before the first one, the last finished
+    /// request: a request published before the server existed is still served).
+    seq: u32,
+    /// Input events of the current request not popped yet.
+    remaining_events: u32,
+    /// A request was taken and not finished yet.
+    busy: bool,
 }
 
 impl BridgeServer {
-    /// The RT end of `region`. Exactly one `BridgeServer` may exist per region.
+    /// The RT end of `region`. Exactly one `BridgeServer` may exist per region (a second one
+    /// panics while the first is alive).
     pub fn new(region: Arc<ShmRegion>) -> BridgeServer {
-        BridgeServer { region }
+        region.claim(ROLE_SERVER, "BridgeServer");
+        let seq = region.layout().header.done_seq.load(Ordering::Acquire);
+        BridgeServer {
+            region,
+            seq,
+            remaining_events: 0,
+            busy: false,
+        }
     }
 
     /// Blocks until a new request is published or `deadline` passes (`None` = forever; a deadline
     /// lets the RT thread check for shutdown). Returns the request.
+    ///
+    /// `frames` of the returned request is clamped to [`MAX_BLOCK`]. Complete every request with
+    /// [`Self::finish`]: until then the app's `begin_block` returns `Busy`, so no new request
+    /// arrives.
     pub fn wait_request(&mut self, deadline: Option<Instant>) -> Option<BlockRequest> {
-        todo!("WP-16")
+        let header = &self.region.layout().header;
+        loop {
+            let seq = header.request_seq.load(Ordering::Acquire);
+            if seq != self.seq {
+                // SAFETY: the app wrote `request` before publishing `seq` (acquired above) and
+                // does not write it again until this request is done.
+                let request = unsafe { header.request.get().read() };
+                self.seq = seq;
+                self.remaining_events = request.event_count.min(INPUT_EVENT_CAPACITY as u32);
+                self.busy = true;
+                return Some(BlockRequest {
+                    seq,
+                    frames: request.frames.min(MAX_BLOCK as u32),
+                    ..request
+                });
+            }
+            if signal::wait_while(&header.request_seq, seq, deadline) == WaitOutcome::TimedOut {
+                return None;
+            }
+        }
     }
 
     /// The next input event of the current request (call until `None`, before [`Self::audio`]).
     pub fn pop_event(&mut self) -> Option<WireEvent> {
-        todo!("WP-16")
+        if self.remaining_events == 0 {
+            return None;
+        }
+        // SAFETY: the `BridgeServer` role (one per region) is the only input-ring consumer.
+        match unsafe { self.region.layout().input_events.pop() } {
+            Some(event) => {
+                self.remaining_events -= 1;
+                Some(event)
+            }
+            None => {
+                self.remaining_events = 0;
+                None
+            }
+        }
     }
 
     /// Input and output audio of the current request, `frames` samples per channel.
+    ///
+    /// Empty slices while no request is open (before [`Self::wait_request`] or after
+    /// [`Self::finish`]): the app may be writing the buffers then.
+    ///
+    /// # Panics
+    ///
+    /// If `frames > MAX_BLOCK`.
     pub fn audio(&mut self, frames: usize) -> ([&[f32]; 2], [&mut [f32]; 2]) {
-        todo!("WP-16")
+        assert!(frames <= MAX_BLOCK, "audio: frames > MAX_BLOCK");
+        let frames = if self.busy { frames } else { 0 };
+        let layout = self.region.layout();
+        // SAFETY: while a request is open the app touches neither buffer (it writes `audio_in`
+        // only when idle and reads `audio_out` only after `done_seq`); the borrows are tied to
+        // `&mut self`, and `BridgeServer` exists once per region.
+        let (input, output) = unsafe { (&*layout.audio_in.get(), &mut *layout.audio_out.get()) };
+        let [out_l, out_r] = output;
+        (
+            [&input[0][..frames], &input[1][..frames]],
+            [&mut out_l[..frames], &mut out_r[..frames]],
+        )
     }
 
     /// Queues a plugin output event for the app; `false` if the ring is full (count it in the
     /// result).
     pub fn push_output_event(&mut self, event: WireEvent) -> bool {
-        todo!("WP-16")
+        // SAFETY: the `BridgeServer` role (one per region) is the only output-ring producer.
+        unsafe { self.region.layout().output_events.push(event) }.is_ok()
     }
 
     /// Completes the current request (step 2): writes `result` (its `seq` is filled in), sets
     /// `done_seq` and wakes the app.
+    ///
+    /// Input events of the request that were not popped are discarded, so the next request starts
+    /// on its own events. Without an open request this does nothing.
     pub fn finish(&mut self, result: BlockResult) {
-        todo!("WP-16")
+        if !self.busy {
+            return;
+        }
+        while self.pop_event().is_some() {}
+        let header = &self.region.layout().header;
+        // SAFETY: the app reads `result` only after `done_seq == seq`, published below with
+        // release ordering.
+        unsafe {
+            header.result.get().write(BlockResult {
+                seq: self.seq,
+                ..result
+            });
+        }
+        header.done_seq.store(self.seq, Ordering::Release);
+        signal::wake(&header.done_seq);
+        self.busy = false;
     }
 
     /// The region (for state and latency).
     pub fn region(&self) -> &Arc<ShmRegion> {
         &self.region
+    }
+}
+
+impl Drop for BridgeServer {
+    fn drop(&mut self) {
+        self.region.release(ROLE_SERVER);
     }
 }
 
@@ -521,18 +921,28 @@ pub struct BridgeMonitor {
 
 impl BridgeMonitor {
     /// The output-event consumer of `region`. Exactly one `BridgeMonitor` may exist per region.
+    ///
+    /// A second one panics while the first is alive.
     pub fn new(region: Arc<ShmRegion>) -> BridgeMonitor {
+        region.claim(ROLE_MONITOR, "BridgeMonitor");
         BridgeMonitor { region }
     }
 
     /// The next plugin output event (parameter changes and gestures from the plugin GUI).
     pub fn pop_output_event(&mut self) -> Option<WireEvent> {
-        todo!("WP-16")
+        // SAFETY: the `BridgeMonitor` role (one per region) is the only output-ring consumer.
+        unsafe { self.region.layout().output_events.pop() }
     }
 
     /// The region (for state and latency).
     pub fn region(&self) -> &Arc<ShmRegion> {
         &self.region
+    }
+}
+
+impl Drop for BridgeMonitor {
+    fn drop(&mut self) {
+        self.region.release(ROLE_MONITOR);
     }
 }
 
@@ -567,5 +977,430 @@ mod tests {
     #[test]
     fn magic_is_kpsm() {
         assert_eq!(&SHM_MAGIC.to_le_bytes(), b"KPSM");
+    }
+
+    use assert_no_alloc::assert_no_alloc;
+    use std::time::Duration;
+
+    fn dup(region: &ShmRegion) -> OwnedFd {
+        region.fd().try_clone_to_owned().unwrap()
+    }
+
+    /// A memfd of `len` bytes whose first words are `words`.
+    fn raw_memfd(len: u64, words: &[u32]) -> OwnedFd {
+        let fd = memfd_create("komponist-test", MemfdFlags::CLOEXEC).unwrap();
+        ftruncate(&fd, len).unwrap();
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+        rustix::io::pwrite(&fd, &bytes, 0).unwrap();
+        fd
+    }
+
+    #[test]
+    fn create_writes_the_header_and_open_maps_the_same_memory() {
+        let region = ShmRegion::create().unwrap();
+        let h = &region.layout().header;
+        assert_eq!(
+            (h.magic, h.version, h.size, h.max_block),
+            (SHM_MAGIC, SHM_VERSION, SHM_SIZE as u32, MAX_BLOCK as u32)
+        );
+        assert_eq!(region.bridge_state(), BridgeState::Starting);
+        let other = ShmRegion::open(dup(&region)).unwrap();
+        other.set_latency(64);
+        other.set_bridge_state(BridgeState::Active);
+        assert_eq!(region.latency(), 64);
+        assert_eq!(region.bridge_state(), BridgeState::Active);
+        assert_eq!(fstat(region.fd()).unwrap().st_size, SHM_SIZE as i64);
+    }
+
+    #[test]
+    fn the_size_is_sealed() {
+        let region = ShmRegion::create().unwrap();
+        assert!(ftruncate(region.fd(), 4096).is_err());
+        assert!(ftruncate(region.fd(), 2 * SHM_SIZE as u64).is_err());
+    }
+
+    #[test]
+    fn open_validates_the_header() {
+        let size = SHM_SIZE as u64;
+        let (s, m) = (SHM_SIZE as u32, MAX_BLOCK as u32);
+        assert_eq!(
+            ShmRegion::open(raw_memfd(size, &[])).unwrap_err(),
+            ShmError::BadMagic
+        );
+        assert_eq!(
+            ShmRegion::open(raw_memfd(0, &[])).unwrap_err(),
+            ShmError::BadMagic
+        );
+        assert_eq!(
+            ShmRegion::open(raw_memfd(size, &[SHM_MAGIC, 7, s, m])).unwrap_err(),
+            ShmError::VersionMismatch { found: 7 }
+        );
+        for words in [
+            [SHM_MAGIC, SHM_VERSION, s + 4096, m],
+            [SHM_MAGIC, SHM_VERSION, s, 512],
+        ] {
+            assert_eq!(
+                ShmRegion::open(raw_memfd(size, &words)).unwrap_err(),
+                ShmError::LayoutMismatch
+            );
+        }
+        // Right header, file too small: mapping it would fault.
+        let words = [SHM_MAGIC, SHM_VERSION, s, m];
+        assert_eq!(
+            ShmRegion::open(raw_memfd(4096, &words)).unwrap_err(),
+            ShmError::LayoutMismatch
+        );
+        assert!(ShmRegion::open(raw_memfd(size, &words)).is_ok());
+        // Not a file at all.
+        let (a, _b) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(ShmRegion::open(a).unwrap_err(), ShmError::Io(_)));
+    }
+
+    #[test]
+    fn wire_events_round_trip() {
+        let kinds = [
+            WireEventKind::NoteOn {
+                channel: 15,
+                key: 127,
+                velocity: 1,
+                note_id: 42,
+            },
+            WireEventKind::NoteOff {
+                channel: 0,
+                key: 60,
+                note_id: u32::MAX,
+            },
+            WireEventKind::Midi([0xB0, 64, 127]),
+            WireEventKind::ParamValue {
+                id: 0xDEAD_BEEF,
+                value: -1.5e300,
+            },
+            WireEventKind::ParamGesture { id: 3, begin: true },
+            WireEventKind::ParamGesture {
+                id: 3,
+                begin: false,
+            },
+            WireEventKind::AllNotesOff,
+        ];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            let event = WireEvent::new(i as u32 * 10, kind);
+            assert_eq!(event.offset, i as u32 * 10);
+            assert_eq!(event.reserved, 0);
+            assert_eq!(event.decode(), Some(kind), "{event:?}");
+        }
+        let midi = WireEvent::new(0, WireEventKind::Midi([0x90, 1, 2]));
+        assert_eq!(
+            (midi.kind, midi.data, midi.note_id),
+            (3, [0x90, 1, 2, 0], u32::MAX)
+        );
+        assert_eq!(WireEvent::default().decode(), None);
+        let unknown = WireEvent {
+            kind: 7,
+            ..WireEvent::default()
+        };
+        assert_eq!(unknown.decode(), None);
+    }
+
+    /// A region with the bridge marked active, and its three role objects.
+    fn active() -> (BridgeClient, BridgeServer, BridgeMonitor) {
+        let region = Arc::new(ShmRegion::create().unwrap());
+        region.set_bridge_state(BridgeState::Active);
+        (
+            BridgeClient::new(Arc::clone(&region)),
+            BridgeServer::new(Arc::clone(&region)),
+            BridgeMonitor::new(region),
+        )
+    }
+
+    fn spec(frames: u32) -> BlockSpec {
+        BlockSpec {
+            frames,
+            ..BlockSpec::default()
+        }
+    }
+
+    fn param(offset: u32, id: u32, value: f64) -> WireEvent {
+        WireEvent::new(offset, WireEventKind::ParamValue { id, value })
+    }
+
+    #[test]
+    fn one_block_in_process() {
+        let (mut client, mut server, mut monitor) = active();
+        let input = [[0.25f32; 64], [-0.5f32; 64]];
+        let events = [param(0, 1, 0.5), param(7, 2, 0.75)];
+        let spec = BlockSpec {
+            frames: 64,
+            flags: BLOCK_FLAG_RESET,
+            steady_time: 1234,
+            transport: WireTransport {
+                flags: TRANSPORT_PLAYING,
+                tempo_bpm: 120.0,
+                ..WireTransport::default()
+            },
+        };
+        assert!(client.is_idle());
+        let seq =
+            assert_no_alloc(|| client.begin_block(&spec, [&input[0], &input[1]], &events)).unwrap();
+        assert_eq!(seq, 1);
+        assert!(!client.is_idle());
+
+        let request = assert_no_alloc(|| server.wait_request(Some(Instant::now()))).unwrap();
+        assert_eq!(
+            (
+                request.seq,
+                request.frames,
+                request.flags,
+                request.event_count
+            ),
+            (1, 64, BLOCK_FLAG_RESET, 2)
+        );
+        assert_eq!(request.steady_time, 1234);
+        assert_eq!(request.transport, spec.transport);
+        assert_eq!(server.pop_event(), Some(events[0]));
+        assert_eq!(server.pop_event(), Some(events[1]));
+        assert_eq!(server.pop_event(), None);
+        assert_no_alloc(|| {
+            let (inp, out) = server.audio(64);
+            for c in 0..2 {
+                for (o, i) in out[c].iter_mut().zip(inp[c]) {
+                    *o = i * 2.0;
+                }
+            }
+        });
+        assert!(server.push_output_event(param(0, 9, 1.0)));
+        assert_no_alloc(|| {
+            server.finish(BlockResult {
+                seq: 999,
+                status: BlockStatus::Ok as u32,
+                dropped_events: 0,
+                reserved: 0,
+            })
+        });
+        // Nothing open any more.
+        assert_eq!(server.audio(64).0[0].len(), 0);
+
+        let mut out = [[0f32; 64]; 2];
+        let [l, r] = &mut out;
+        let result = assert_no_alloc(|| client.wait_done(seq, Instant::now(), [l, r])).unwrap();
+        assert_eq!(result.seq, 1);
+        assert_eq!(result.status, BlockStatus::Ok as u32);
+        assert_eq!(out, [[0.5f32; 64], [-1.0f32; 64]]);
+        assert!(client.is_idle());
+        assert_eq!(
+            assert_no_alloc(|| monitor.pop_output_event()),
+            Some(param(0, 9, 1.0))
+        );
+        assert_eq!(monitor.pop_output_event(), None);
+        // Asking again for the same block returns the same result; a stale seq is late.
+        let [l, r] = &mut out;
+        assert!(client.wait_done(seq, Instant::now(), [l, r]).is_ok());
+        let [l, r] = &mut out;
+        assert_eq!(
+            client.wait_done(seq.wrapping_sub(1), Instant::now(), [l, r]),
+            Err(BlockError::Late)
+        );
+    }
+
+    #[test]
+    fn not_active_busy_and_too_many_events() {
+        let (mut client, mut server, _monitor) = active();
+        let input = [0f32; MAX_BLOCK];
+        let both = [&input[..], &input[..]];
+        client.region().set_bridge_state(BridgeState::Loaded);
+        assert_eq!(
+            client.begin_block(&spec(16), both, &[]),
+            Err(BlockError::NotActive)
+        );
+        client.region().set_bridge_state(BridgeState::Active);
+
+        let many = [param(0, 0, 0.0); INPUT_EVENT_CAPACITY + 1];
+        assert_eq!(
+            client.begin_block(&spec(16), both, &many),
+            Err(BlockError::TooManyEvents)
+        );
+        let seq = client
+            .begin_block(&spec(MAX_BLOCK as u32), both, &many[..INPUT_EVENT_CAPACITY])
+            .unwrap();
+        assert_eq!(seq, 1, "refused blocks publish nothing");
+        assert_eq!(
+            client.begin_block(&spec(16), both, &[]),
+            Err(BlockError::Busy)
+        );
+
+        // The server pops only part of the events; `finish` drops the rest.
+        let request = server.wait_request(None).unwrap();
+        assert_eq!(request.event_count, INPUT_EVENT_CAPACITY as u32);
+        assert_eq!(request.frames, MAX_BLOCK as u32);
+        assert!(server.pop_event().is_some());
+        server.finish(BlockResult::default());
+        assert!(client.region().layout().input_events.is_empty());
+
+        let mut out = [[0f32; MAX_BLOCK]; 2];
+        let [l, r] = &mut out;
+        assert!(client.wait_done(seq, Instant::now(), [l, r]).is_ok());
+        let seq = client
+            .begin_block(&spec(16), both, &[param(3, 3, 3.0)])
+            .unwrap();
+        assert_eq!(seq, 2);
+        let request = server.wait_request(None).unwrap();
+        assert_eq!(request.event_count, 1);
+        assert_eq!(server.pop_event(), Some(param(3, 3, 3.0)));
+        assert_eq!(server.pop_event(), None);
+    }
+
+    #[test]
+    fn late_block_then_resync() {
+        let (mut client, mut server, _monitor) = active();
+        let ones = [1f32; 32];
+        let twos = [2f32; 32];
+        let mut out = [[0f32; 32]; 2];
+
+        let late = client.begin_block(&spec(32), [&ones, &ones], &[]).unwrap();
+        let t0 = Instant::now();
+        let [l, r] = &mut out;
+        let outcome =
+            assert_no_alloc(|| client.wait_done(late, t0 + Duration::from_millis(5), [l, r]));
+        assert_eq!(outcome, Err(BlockError::Late));
+        assert!(t0.elapsed() >= Duration::from_millis(5));
+        assert_eq!(
+            client.begin_block(&spec(32), [&twos, &twos], &[]),
+            Err(BlockError::Busy)
+        );
+
+        // The bridge finishes the late block after all; its output is never read.
+        let request = server.wait_request(None).unwrap();
+        assert_eq!(request.seq, late);
+        let (_, out_bridge) = server.audio(32);
+        for ch in out_bridge {
+            ch.fill(-1.0);
+        }
+        server.finish(BlockResult::default());
+
+        let next = client.begin_block(&spec(32), [&twos, &twos], &[]).unwrap();
+        assert_eq!(next, late + 1);
+        let [l, r] = &mut out;
+        // The stale result of `late` does not satisfy the wait for `next`.
+        assert_eq!(
+            client.wait_done(next, Instant::now() + Duration::from_millis(2), [l, r]),
+            Err(BlockError::Late)
+        );
+        let request = server.wait_request(None).unwrap();
+        assert_eq!(request.seq, next);
+        let (inp, out_bridge) = server.audio(32);
+        for c in 0..2 {
+            out_bridge[c].copy_from_slice(inp[c]);
+        }
+        server.finish(BlockResult::default());
+        let [l, r] = &mut out;
+        let result = client.wait_done(next, Instant::now(), [l, r]).unwrap();
+        assert_eq!(result.seq, next);
+        assert_eq!(out, [[2f32; 32]; 2]);
+    }
+
+    #[test]
+    fn server_serves_a_request_published_before_it_existed() {
+        let region = Arc::new(ShmRegion::create().unwrap());
+        region.set_bridge_state(BridgeState::Active);
+        let mut client = BridgeClient::new(Arc::clone(&region));
+        let input = [0f32; 8];
+        let seq = client.begin_block(&spec(8), [&input, &input], &[]).unwrap();
+        let mut server = BridgeServer::new(region);
+        assert_eq!(
+            server.wait_request(Some(Instant::now())).map(|r| r.seq),
+            Some(seq)
+        );
+        server.finish(BlockResult::default());
+        assert!(client.is_idle());
+        // Nothing new: the wait times out.
+        assert_eq!(server.wait_request(Some(Instant::now())), None);
+    }
+
+    #[test]
+    fn threads_round_trip_without_allocation() {
+        const BLOCKS: u32 = 2_000;
+        let (mut client, mut server, mut monitor) = active();
+        let bridge = std::thread::spawn(move || {
+            assert_no_alloc(|| {
+                let mut served = 0;
+                while served < BLOCKS {
+                    let Some(request) =
+                        server.wait_request(Some(Instant::now() + Duration::from_secs(10)))
+                    else {
+                        break;
+                    };
+                    let mut sum = 0.0;
+                    while let Some(e) = server.pop_event() {
+                        sum += e.value;
+                    }
+                    let (inp, out) = server.audio(request.frames as usize);
+                    for c in 0..2 {
+                        for (o, i) in out[c].iter_mut().zip(inp[c]) {
+                            *o = -i;
+                        }
+                    }
+                    server.push_output_event(param(0, request.seq, sum));
+                    server.finish(BlockResult::default());
+                    served += 1;
+                }
+                served
+            })
+        });
+        let mut input = [[0f32; 256]; 2];
+        let mut out = [[0f32; 256]; 2];
+        let mut bad = 0;
+        let mut echoed = 0;
+        for block in 0..BLOCKS {
+            for (c, ch) in input.iter_mut().enumerate() {
+                for (i, s) in ch.iter_mut().enumerate() {
+                    *s = (block * 1000 + i as u32 * 2 + c as u32) as f32;
+                }
+            }
+            let frames = 1 + block % 256;
+            let events = [param(0, 0, block as f64), param(1, 0, 0.5)];
+            let [l, r] = &mut out;
+            let result = assert_no_alloc(|| {
+                let seq = client.begin_block(&spec(frames), [&input[0], &input[1]], &events)?;
+                client.wait_done(seq, Instant::now() + Duration::from_secs(10), [l, r])
+            });
+            bad += usize::from(result.map(|r| r.seq) != Ok(block + 1));
+            for c in 0..2 {
+                let n = frames as usize;
+                bad += out[c][..n]
+                    .iter()
+                    .zip(&input[c][..n])
+                    .filter(|(o, i)| **o != -**i)
+                    .count();
+            }
+            while let Some(e) = assert_no_alloc(|| monitor.pop_output_event()) {
+                bad += usize::from(e.param_id != echoed + 1 || e.value != echoed as f64 + 0.5);
+                echoed += 1;
+            }
+        }
+        assert_eq!(bridge.join().unwrap(), BLOCKS);
+        assert_eq!(bad, 0);
+        assert_eq!(echoed, BLOCKS);
+    }
+
+    #[test]
+    #[should_panic(expected = "a second BridgeClient")]
+    fn a_second_client_panics() {
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let _first = BridgeClient::new(Arc::clone(&region));
+        let _second = BridgeClient::new(region);
+    }
+
+    #[test]
+    fn roles_are_released_on_drop() {
+        let region = Arc::new(ShmRegion::create().unwrap());
+        drop(BridgeServer::new(Arc::clone(&region)));
+        drop(BridgeMonitor::new(Arc::clone(&region)));
+        let _server = BridgeServer::new(Arc::clone(&region));
+        let _monitor = BridgeMonitor::new(region);
     }
 }
