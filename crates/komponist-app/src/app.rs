@@ -3,7 +3,8 @@
 //!
 //! A frame ([`App::show`]):
 //!
-//! 1. poll the engine (events, garbage, device status) and advance the meters;
+//! 1. poll the engine and the device host and handle their events ([`App::device_events`]),
+//!    advance the meters;
 //! 2. turn this frame's key events into actions through the [`Keymap`] (text fields first, then
 //!    the computer-keyboard MIDI layer, then the table) and dispatch them;
 //! 3. draw the shell and the views, which queue actions;
@@ -11,7 +12,14 @@
 //! 5. persist changed panel settings.
 //!
 //! [`App::headless`] builds the app on the null audio backend without a window, so tests drive it
-//! through `egui_kittest` or call [`App::dispatch`] directly.
+//! through `egui_kittest` or call [`App::dispatch`] and [`App::step`] directly.
+//!
+//! Device host events (step 1): state snapshots go into the
+//! document outside the history (`Document::apply_untracked`), a latency change recompiles the
+//! program (delay compensation), a finished scan retries the devices that were missing, crashes
+//! and the warnings the user can act on go to the status bar (all warnings and errors also to
+//! stderr). Saving takes a state snapshot of every bridged device first; [`App::shutdown`] shuts
+//! the bridges down.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -21,21 +29,24 @@ use std::time::{Duration, Instant};
 use egui::{Context, Event, FocusDirection, Ui};
 use komponist_audio::AudioState;
 use komponist_engine::{Command, TransportState};
+use komponist_ipc::LogLevel;
 use komponist_model::edits::{
     self, ChannelProp, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp, VelocityChange,
 };
 use komponist_model::project::{BUILTIN_PISYNTH, VOLUME_DB_MIN};
 use komponist_model::{
-    ChannelRef, ClipContent, DeviceRole, Document, EditError, PluginFormat, PluginRef, Project,
-    Tick, TickRange, TrackId, fixtures, persist,
+    ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat, PluginRef,
+    Project, Tick, TickRange, TrackId, fixtures, persist,
 };
+use komponist_plugins::manager::STATE_LOG_PREFIX;
+use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
 
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, ProjectAction, SelectMode, SelectionChange,
     SettingsAction, TransportAction, UiAction,
 };
 use crate::device_host::{BuiltinHost, DeviceHost};
-use crate::engine_sync::EngineSync;
+use crate::engine_sync::{EngineSync, SyncEvent};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
@@ -54,6 +65,17 @@ const LOG_LIMIT: usize = 512;
 
 /// Velocity of computer-keyboard notes (prototype `noteOn(…, 100, …)`).
 const KEYBOARD_VELOCITY: u8 = 100;
+
+/// How often an idle app still polls a device host that has work (bridges loading, running or
+/// crashing, a scan): status changes show up within this time.
+const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long saving waits for the state snapshots of all bridged devices together.
+pub const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Start of the bridge's `Log` line about its realtime priority (`komponist-bridge`
+/// `instance::RT_LOG_PREFIX`); at level `Warning` the priority was refused.
+const RT_LOG_PREFIX: &str = "RT priority:";
 
 /// The application.
 pub struct App {
@@ -91,6 +113,8 @@ pub(crate) struct ShellState {
     last_error: Option<EditError>,
     /// The window title last sent ("komponist · Nachtfahrt").
     title: Option<String>,
+    /// The device host's events of this frame ([`App::device_events`]).
+    device_events: Vec<PluginManagerEvent>,
 }
 
 impl App {
@@ -132,7 +156,8 @@ impl App {
         App::new(Document::new(project), engine, Settings::default(), None)
     }
 
-    /// Replaces the device host (WP-45 plugs in the plugin manager here).
+    /// Replaces the device host (`main` plugs in [`crate::device_host::PluginHost`]; tests may
+    /// too). The next sync creates every processor through the new host.
     pub fn with_device_host(mut self, host: Box<dyn DeviceHost>) -> App {
         self.engine.set_host(host);
         self
@@ -224,6 +249,29 @@ impl App {
         });
     }
 
+    /// The device host's events polled at the start of this frame, after the app handled them:
+    /// views and plugin windows react to what concerns them (`GuiOpened`, `GuiSizeRequest`,
+    /// `GuiClosed` for the frame windows; `ParamsChanged`, `NoteNamesChanged`, …). Replaced at
+    /// the next frame.
+    pub fn device_events(&self) -> &[PluginManagerEvent] {
+        &self.shell.device_events
+    }
+
+    /// Starts a background scan of the plugin folders ([`Settings::plugin_dirs`]); devices whose
+    /// plugin it finds load when it finishes.
+    pub fn scan_plugins(&mut self) {
+        let dirs = self.settings.plugin_dirs();
+        self.engine.host_mut().start_scan(&dirs);
+    }
+
+    /// One frame without a window (tests, headless tools): engine and device host events, queued
+    /// actions, sync. Meters are not advanced.
+    pub fn step(&mut self) {
+        self.poll_events();
+        self.flush_queue();
+        self.engine.sync(&self.doc);
+    }
+
     // --------------------------------------------------------------------------------------------
     // Frame
     // --------------------------------------------------------------------------------------------
@@ -268,21 +316,143 @@ impl App {
     }
 
     fn poll_engine(&mut self, now: f64) {
-        // Garbage is dropped inside `EngineSync::poll`. The rest has no consumer yet: recording
-        // (WP-51) builds takes from RecordedNoteOn/Off, LoopWrapped and CountInDone; the plugin
-        // manager's state snapshots go into the document with WP-45.
-        for _event in self.engine.poll() {}
+        self.poll_events();
         self.meters.update(&self.engine, now);
     }
 
+    /// Drains the engine's and the device host's events and handles the device events.
+    fn poll_events(&mut self) {
+        self.shell.device_events.clear();
+        let mut recompile = false;
+        for event in self.engine.poll() {
+            match event {
+                // Garbage is dropped inside `EngineSync::poll`. The rest has no consumer yet:
+                // recording (WP-51) builds takes from RecordedNoteOn/Off, LoopWrapped and
+                // CountInDone; a failed processor's device reports its own status.
+                SyncEvent::Engine(_) => {}
+                SyncEvent::Device(event) => {
+                    recompile |= matches!(event, PluginManagerEvent::LatencyChanged { .. });
+                    self.handle_device_event(&event);
+                    self.shell.device_events.push(event);
+                }
+            }
+        }
+        if recompile {
+            // Delay compensation follows the new latencies; the slots stay as they are.
+            self.engine.send_project(self.doc.project());
+        }
+    }
+
+    /// The app's part of a device host event (module docs).
+    fn handle_device_event(&mut self, event: &PluginManagerEvent) {
+        match event {
+            PluginManagerEvent::StateSnapshot { device, state } => {
+                self.store_state(*device, state);
+            }
+            PluginManagerEvent::StatusChanged {
+                device,
+                status: DeviceStatus::Crashed(reason),
+            } => {
+                let name = self.device_name(*device);
+                eprintln!("komponist: device {} ({name}): {reason:?}", device.0);
+                let text = match reason {
+                    FailReason::Exited { .. } => {
+                        format!("{name} abgestürzt · die Spur läuft ohne dieses Gerät weiter")
+                    }
+                    FailReason::Unresponsive => {
+                        format!("{name} hängt · die Spur läuft ohne dieses Gerät weiter")
+                    }
+                    FailReason::LoadFailed(_) => format!("{name} lässt sich nicht laden"),
+                };
+                self.set_status(text, StatusKind::Error);
+            }
+            PluginManagerEvent::ScanFinished(_) => self.load_found_devices(),
+            PluginManagerEvent::Log {
+                device,
+                level: level @ (LogLevel::Warning | LogLevel::Error),
+                message,
+            } => {
+                // Lines without device come from the scan.
+                let name = device.map_or_else(|| "Plugin-Scan".to_owned(), |d| self.device_name(d));
+                eprintln!("komponist: {name}: {level:?}: {message}");
+                if *level != LogLevel::Warning {
+                    // Errors come with a failure the device status already shows.
+                    return;
+                }
+                if message.starts_with(STATE_LOG_PREFIX) {
+                    let text = format!("{name}: Zustand konnte nicht geladen werden");
+                    self.set_status(text, StatusKind::Error);
+                } else if message.starts_with(RT_LOG_PREFIX) {
+                    let text = format!("{name} läuft ohne Echtzeit-Priorität");
+                    self.set_status(text, StatusKind::Info);
+                } else {
+                    // The plugin's or bridge's own words.
+                    self.set_status(format!("{name}: {message}"), StatusKind::Info);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Stores a plugin's state snapshot in the document, outside the history: a plugin's own
+    /// state is not an undo step, and undo must not revert it. An unchanged state is skipped, so
+    /// closing a GUI without edits leaves the document clean.
+    fn store_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        let unchanged = self
+            .project()
+            .find_device(device)
+            .is_none_or(|(_, _, d)| d.state.as_deref() == Some(&state[..]));
+        if unchanged {
+            return;
+        }
+        let _ = self
+            .doc
+            .apply_untracked(|p| edits::set_device_state(p, device, Some(Arc::clone(state))));
+    }
+
+    /// After a scan: devices that were missing and whose plugin is now in the catalog get a
+    /// processor (into the slot they already have).
+    fn load_found_devices(&mut self) {
+        let project = Arc::clone(self.doc.project());
+        let host = self.engine.host();
+        let found: Vec<DeviceId> = project
+            .tracks
+            .iter()
+            .flat_map(|t| t.channel.devices.iter())
+            .chain(project.master.devices.iter())
+            .filter(|d| host.status(d.id) == DeviceStatus::Missing)
+            .filter(|d| host.catalog().resolve(&d.plugin).is_some())
+            .map(|d| d.id)
+            .collect();
+        for device in found {
+            self.engine.reload_device(&project, device);
+        }
+    }
+
+    /// The plugin name of `device` for messages ("Surge XT"), its id if it is gone.
+    fn device_name(&self, device: DeviceId) -> String {
+        self.project().find_device(device).map_or_else(
+            || format!("Gerät {}", device.0),
+            |(_, _, d)| d.plugin.name.clone(),
+        )
+    }
+
     fn schedule_repaint(&self, ctx: &Context) {
-        if self.transport() != TransportState::Stopped || self.meters.is_active() {
+        if self.transport() != TransportState::Stopped
+            || self.meters.is_active()
+            || !self.shell.device_events.is_empty()
+        {
             ctx.request_repaint();
-        } else if let Some(status) = &self.ui.status {
+            return;
+        }
+        if let Some(status) = &self.ui.status {
             let left = STATUS_DURATION.saturating_sub(status.since.elapsed());
             if !left.is_zero() {
                 ctx.request_repaint_after(left);
             }
+        }
+        if self.engine.host().needs_polling() {
+            ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         }
     }
 
@@ -306,10 +476,11 @@ impl App {
         }
     }
 
-    /// Stops the engine and saves the settings (window closed).
+    /// Stops the engine, shuts the plugin bridges down and saves the settings (window closed).
     pub fn shutdown(&mut self) {
         self.persist_panels();
         self.engine.shutdown();
+        self.engine.host_mut().shutdown();
     }
 
     // --------------------------------------------------------------------------------------------
@@ -1460,21 +1631,44 @@ impl App {
             }
             PluginAction::OpenWindow(device) => {
                 if !self.ui.plugin_windows.iter().any(|w| w.device == device) {
+                    // The plugin's own GUI if it has one (the frame opens it, WP-50), else the
+                    // generic parameter view.
+                    let view = if self.engine.host().has_gui(device) {
+                        PluginView::Gui
+                    } else {
+                        PluginView::Params
+                    };
                     self.ui.plugin_windows.push(PluginWindow {
                         device,
-                        view: PluginView::Params,
+                        view,
                         width: 0,
                         height: 0,
                     });
                 }
             }
             PluginAction::CloseWindow(device) => {
-                self.ui.plugin_windows.retain(|w| w.device != device);
+                let open = self
+                    .ui
+                    .plugin_windows
+                    .iter()
+                    .position(|w| w.device == device);
+                if let Some(index) = open {
+                    if self.ui.plugin_windows[index].view == PluginView::Gui {
+                        // A state snapshot follows (`StateSnapshot`).
+                        self.engine.host_mut().close_gui(device);
+                    }
+                    self.ui.plugin_windows.remove(index);
+                }
             }
             PluginAction::Reload(device) => {
                 self.engine.reload_device(self.doc.project(), device);
             }
             PluginAction::SetParam { device, id, value } => {
+                // Bridged devices take parameters over their control socket; pisynth through the
+                // engine.
+                if self.engine.host_mut().set_param(device, id, value) {
+                    return;
+                }
                 if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
                     self.engine.send(Command::SetParam { slot, id, value });
                 }
@@ -1603,6 +1797,10 @@ impl App {
     }
 
     fn save_to(&mut self, path: &Path) {
+        // The bridged plugins' current states go into the file (blocking, bounded).
+        for (device, state) in self.engine.host_mut().snapshot_states(SNAPSHOT_TIMEOUT) {
+            self.store_state(device, &state);
+        }
         let result = persist::to_json(self.project())
             .map_err(|e| e.to_string())
             .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
@@ -1642,13 +1840,14 @@ impl App {
                     dirs.push(path);
                 }
                 self.save_settings();
+                self.scan_plugins();
             }
             SettingsAction::RemovePluginDir { clap, path } => {
                 self.plugin_dirs(clap).retain(|p| *p != path);
                 self.save_settings();
+                self.scan_plugins();
             }
-            // Scanning: WP-45.
-            SettingsAction::RescanPlugins => {}
+            SettingsAction::RescanPlugins => self.scan_plugins(),
             SettingsAction::SetUiScale(scale) => {
                 self.settings.ui_scale = scale;
                 self.shell.pending_scale = Some(scale);

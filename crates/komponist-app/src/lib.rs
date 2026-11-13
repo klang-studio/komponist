@@ -18,8 +18,9 @@
 //! - [`views`]: the [`views::View`] trait and the slots WP-40 … WP-44 fill (placeholders until
 //!   then).
 //! - [`engine_sync`]: [`engine_sync::EngineSync`], document → program → engine, the audio stream.
-//! - [`device_host`]: [`device_host::DeviceHost`], where processors come from; the seam for the
-//!   plugin manager (WP-45).
+//! - [`device_host`]: [`device_host::DeviceHost`], where processors come from, and its
+//!   implementations: [`device_host::PluginHost`] (pisynth in process, everything else in bridges
+//!   of the plugin manager) and [`device_host::BuiltinHost`] (pisynth only, tests).
 //! - [`meters`]: meter ballistics fed from the engine once per frame.
 //! - [`settings`]: the settings file, `~/.config/komponist/settings.json`.
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.

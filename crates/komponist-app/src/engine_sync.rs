@@ -394,6 +394,12 @@ impl EngineSync {
         &*self.host
     }
 
+    /// The device host, mutable (parameters, plugin GUIs, scans, state snapshots). Processors are
+    /// created and released only through [`EngineSync::sync`], never directly.
+    pub fn host_mut(&mut self) -> &mut dyn DeviceHost {
+        &mut *self.host
+    }
+
     /// Runtime status of a device.
     pub fn device_status(&self, device: komponist_model::DeviceId) -> DeviceStatus {
         self.host.status(device)
