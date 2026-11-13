@@ -73,7 +73,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    tool) and compare it with the reference before you report. Once a binary shows your work (gallery
    from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb if
    needed), attach with the `egui` MCP server, read the AccessKit tree, click and type through it and
-   take a screenshot. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
+   take a screenshot. Parallel agents: use your own port, e.g. `EGUI_INSPECTION=127.0.0.1:57xyz`, not
+   the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
    (`import -window`) under Xvfb for those.
 8. **Dependencies:** use workspace dependencies. A new crate needs one sentence of justification in
    the report.
