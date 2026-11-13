@@ -1,0 +1,146 @@
+//! Tests of the build-time generator (`build/codegen.rs`): the real token file generates, and a
+//! token the generator does not know fails instead of being dropped.
+
+#[allow(dead_code)]
+#[path = "../build/codegen.rs"]
+mod codegen;
+
+use serde_json::{Value, json};
+
+fn tokens() -> Value {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/tokens.json");
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// Applies `edit` to the real tokens and returns the generator's error.
+fn error_after(edit: impl FnOnce(&mut Value)) -> String {
+    let mut t = tokens();
+    edit(&mut t);
+    codegen::generate(&t).expect_err("generator accepted a broken token file")
+}
+
+#[test]
+fn real_tokens_generate() {
+    let generated = codegen::generate(&tokens()).unwrap();
+    let names: Vec<_> = generated.files.keys().copied().collect();
+    assert_eq!(
+        names,
+        [
+            "color.rs",
+            "focus.rs",
+            "font.rs",
+            "line.rs",
+            "radius.rs",
+            "select.rs",
+            "shadow.rs",
+            "size.rs",
+            "space.rs",
+            "track.rs",
+            "typography.rs"
+        ]
+    );
+}
+
+#[test]
+fn unknown_group_fails() {
+    let e = error_after(|t| t["opacity"] = json!({ "disabled": 0.4 }));
+    assert!(e.contains("unknown token group `opacity`"), "{e}");
+}
+
+#[test]
+fn missing_group_fails() {
+    let e = error_after(|t| {
+        t.as_object_mut().unwrap().remove("radius");
+    });
+    assert!(e.contains("`radius` is missing"), "{e}");
+}
+
+#[test]
+fn unknown_size_value_fails() {
+    let e = error_after(|t| t["size"]["panel-header"] = json!("28pt"));
+    assert!(e.contains("size.panel-header"), "{e}");
+    let e = error_after(|t| t["size"]["toggle"] = json!([18, 16, 2]));
+    assert!(e.contains("size.toggle"), "{e}");
+    let e = error_after(|t| t["size"]["dock"]["max"] = json!("70%"));
+    assert!(e.contains("size.dock.max"), "{e}");
+}
+
+#[test]
+fn bad_colour_fails() {
+    let e = error_after(|t| t["color"]["text"]["1"] = json!("rgb(1,2,3)"));
+    assert!(e.contains("color.text.1"), "{e}");
+    let e = error_after(|t| t["color"]["surface"]["0"] = json!("#11121"));
+    assert!(e.contains("color.surface.0"), "{e}");
+}
+
+#[test]
+fn unknown_colour_reference_fails() {
+    let e = error_after(|t| t["type"]["small"]["color"] = json!("text.9"));
+    assert!(e.contains("unknown colour token `text.9`"), "{e}");
+    let e = error_after(|t| t["focus"]["outline"] = json!("1px accnt"));
+    assert!(e.contains("accnt"), "{e}");
+}
+
+#[test]
+fn unknown_type_field_fails() {
+    let e = error_after(|t| t["type"]["ui"]["italic"] = json!(true));
+    assert!(e.contains("unknown key `type.ui.italic`"), "{e}");
+    let e = error_after(|t| t["type"]["ui"]["family"] = json!("serif"));
+    assert!(e.contains("unknown family `serif`"), "{e}");
+    let e = error_after(|t| t["type"]["label"]["case"] = json!("lower"));
+    assert!(e.contains("unknown case"), "{e}");
+}
+
+#[test]
+fn unknown_or_changed_formula_fails() {
+    let e = error_after(|t| t["track"]["$formula"]["key"] = json!("oklch(0.82 0.1 h)"));
+    assert!(e.contains("unknown formula `track.$formula.key`"), "{e}");
+    let e = error_after(|t| t["track"]["$formula"]["base"] = json!("oklch(0.70 0.12 h / 0.5)"));
+    assert!(e.contains("track.$formula.base"), "{e}");
+    let e = error_after(|t| {
+        t["track"]["$formula"]
+            .as_object_mut()
+            .unwrap()
+            .remove("note-hover");
+    });
+    assert!(e.contains("note-hover` is missing"), "{e}");
+}
+
+#[test]
+fn auto_assign_hue_must_exist() {
+    let e = error_after(|t| t["track"]["auto-assign-hue-order"][0] = json!(151));
+    assert!(e.contains("hue 151 is not in `track.colors`"), "{e}");
+}
+
+#[test]
+fn font_numbers_rule_is_checked() {
+    let e = error_after(|t| t["font"]["numbers"] = json!("proportional"));
+    assert!(e.contains("font.numbers"), "{e}");
+}
+
+#[test]
+fn meta_units_are_checked() {
+    let e = error_after(|t| t["$meta"]["units"] = json!("px @2x"));
+    assert!(e.contains("$meta.units"), "{e}");
+}
+
+#[test]
+fn shadow_parsing() {
+    let mut t = tokens();
+    t["shadow"]["test"] = json!("1px -2px 3px 4px #102030");
+    let generated = codegen::generate(&t).unwrap();
+    let shadow = &generated.files["shadow.rs"];
+    assert!(
+        shadow.contains(
+            "TEST: BoxShadow = BoxShadow { offset: [1.0, -2.0], blur: 3.0, spread: 4.0, \
+             color: [0x10, 0x20, 0x30, 0xff] }"
+        ),
+        "{shadow}"
+    );
+    assert!(
+        shadow.contains("color: [0x00, 0x00, 0x00, 0x73]"),
+        "rgba alpha 0.45 → 115: {shadow}"
+    );
+    let e = error_after(|t| t["shadow"]["float"] = json!("inset 0 1px #000000"));
+    assert!(e.contains("shadow.float"), "{e}");
+}
