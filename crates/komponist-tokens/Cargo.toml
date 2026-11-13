@@ -4,8 +4,20 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# Conversions to egui types (`egui_support`). The crate itself does not need egui.
+egui = ["dep:egui"]
+
+[dependencies]
+egui = { workspace = true, optional = true }
+
 [build-dependencies]
 serde_json.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+# Enables the `egui` feature for this crate's own tests, so `scripts/check.sh` builds and tests
+# `egui_support` even while no other crate turns the feature on.
+komponist-tokens = { path = ".", features = ["egui"] }

@@ -12,7 +12,8 @@
 //!   [`TrackPalette`] holds all colours of one hue.
 //! - [`font`] embeds IBM Plex Sans and Mono, [`Icon`] the Lucide icon subset ([`icon`]).
 //!
-//! The crate does not depend on egui.
+//! The crate does not depend on egui. The `egui` feature adds [`egui_support`] with `Color32`
+//! conversions.
 
 pub mod icon;
 mod oklch;
@@ -20,6 +21,9 @@ pub mod track;
 
 pub mod font;
 pub mod typography;
+
+#[cfg(feature = "egui")]
+pub mod egui_support;
 
 pub use icon::Icon;
 pub use oklch::oklch_to_srgb;
