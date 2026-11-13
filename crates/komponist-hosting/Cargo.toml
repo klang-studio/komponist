@@ -7,3 +7,9 @@ publish.workspace = true
 [dependencies]
 # Shared plugin vocabulary and the per-block wire types (no plugin format, no audio backend).
 komponist-ipc.workspace = true
+# poll() and eventfd for the reference `PollLoop`.
+rustix = { workspace = true, features = ["event"] }
+
+[dev-dependencies]
+# RT checks around `HostedProcessor::process`.
+assert_no_alloc.workspace = true

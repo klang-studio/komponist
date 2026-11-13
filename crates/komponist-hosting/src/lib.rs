@@ -10,6 +10,8 @@
 //! - [`host`]: [`HostLoop`] (timers, fds), [`HostNotify`] (plugin → host notifications),
 //!   [`HostContext`].
 //! - [`load`] and [`scan`]: entry points, dispatching on the bundle format.
+//! - [`host_loop`]: [`host_loop::PollLoop`], a reference `poll()` implementation of [`HostLoop`]
+//!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop).
 //!
 //! Format checklist for either implementation (ARCHITECTURE §8.2): CLAP audio-ports, note-ports,
 //! params, state, latency, gui (x11, embedded), timer-support, posix-fd-support, thread-check, log,
@@ -26,7 +28,13 @@
 
 use std::path::Path;
 
+/// Unit tests check RT paths with `assert_no_alloc`, which needs its allocator.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
 pub mod host;
+pub mod host_loop;
 pub mod plugin;
 
 pub use host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
