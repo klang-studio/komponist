@@ -10,6 +10,7 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 #[allow(dead_code)]
 mod common;
 mod export;
+mod export_demo;
 mod live;
 mod mixing;
 mod random;
