@@ -79,9 +79,9 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    attribution line your environment specifies.
 10. **Report** (final message): summary · changed files · how verified (commands + results) ·
     deviations from plan/design · open questions · contract change requests.
-11. **Missing tools** (ImageMagick, fontTools, Xvfb, …): use a devenv ad-hoc environment, e.g.
-    `devenv -O packages:pkgs "imagemagick xvfb-run" shell -- <cmd>`. Once the setup grows, the
-    orchestrator adds a `devenv.nix` to the repository.
+11. **Tools: no devenv in this workspace** (owner's decision). Use what is installed on the system
+    (Xvfb, ImageMagick, chromium, fontTools, clap-validator, egui-mcp are). If a tool is missing, run it
+    once with `nix shell nixpkgs#<pkg> --command <cmd>` (e.g. xdotool) and name it in the report.
 12. **Accessibility is part of the UI contract:** every interactive element has an AccessKit role and
     a German accessible name (icon-only buttons too, usually the tooltip text). Canvases (arrangement,
     piano roll, step grid, mixer) expose AccessKit nodes for their **visible** objects (track, clip,
