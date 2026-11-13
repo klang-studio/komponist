@@ -269,8 +269,7 @@ pub(crate) fn one_line(
 }
 
 /// Paints a track toggle as a still picture in the look of the WP-20 widget
-/// ([`toggle::look`] at rest): 18 × 16, `radius.s`, letter in Mono 10 (medium; the design's Mono
-/// 600 is not bundled).
+/// ([`toggle::look`] at rest): 18 × 16, `radius.s`, letter in Mono 10 semibold.
 pub fn paint_toggle(painter: &Painter, rect: Rect, kind: ToggleKind, on: bool, implied: bool) {
     let look = toggle::look(kind, on, implied, State::REST);
     let ppp = painter.pixels_per_point();
@@ -288,7 +287,7 @@ pub fn paint_toggle(painter: &Painter, rect: Rect, kind: ToggleKind, on: bool, i
     let galley = painter.layout_job(LayoutJob::single_section(
         kind.letter().to_owned(),
         TextFormat {
-            font_id: widgets::mono_medium(style.size),
+            font_id: widgets::toggle_letter_font(),
             line_height: Some(style.line_height),
             color: look.text,
             ..Default::default()

@@ -43,7 +43,6 @@ use egui::{
     Vec2, pos2,
 };
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::font::Family;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, shadow, space};
 
@@ -76,7 +75,7 @@ pub mod metrics {
     pub const PANEL_ACTION: [f32; 2] = [size::CONTROL, size::CONTROL_COMPACT];
     /// CSS weight of IBM Plex medium (bundled for Sans and Mono).
     pub const MEDIUM: u16 = 500;
-    /// CSS weight of IBM Plex semibold (bundled for Sans only).
+    /// CSS weight of IBM Plex semibold (bundled for Sans and Mono).
     pub const SEMIBOLD: u16 = 600;
 
     /// Number field (WP-21): `nf` in `Designsystem.dc.html`.
@@ -181,10 +180,10 @@ pub fn font_at(style: &TypeStyle, weight: u16) -> FontId {
     }
 }
 
-/// The font of the mono letters of track toggles: `type.value.s` at medium (the design asks for
-/// Mono 600, which IBM Plex Mono is not bundled in).
-pub fn mono_medium(size: f32) -> FontId {
-    FontId::new(size, fonts::family(Family::Mono, metrics::MEDIUM))
+/// The font of the letters M S R I of track toggles: `type.value.s` (Mono 10) at semibold, as
+/// `tgl` sets them (`fontWeight: 600`).
+pub fn toggle_letter_font() -> FontId {
+    font_at(&typography::VALUE_S, metrics::SEMIBOLD)
 }
 
 /// Lays out `text` on one line in `font` with line height `line_height` (no wrapping).
