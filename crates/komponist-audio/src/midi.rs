@@ -72,6 +72,14 @@ pub struct MidiReceiver {
 }
 
 impl MidiReceiver {
+    /// A receiver that no MIDI input feeds: it never yields an event. For an
+    /// [`crate::AudioSystem`] without a MIDI backend (no ALSA sequencer, headless tests and tools),
+    /// where [`MidiInputHub::new`] is not available.
+    pub fn disconnected() -> MidiReceiver {
+        let (_sender, receiver) = queue(1);
+        receiver
+    }
+
     /// RT. Pops the oldest event if it was stamped before `now`.
     pub(crate) fn pop_before(&mut self, now: Instant) -> Option<MidiStamped> {
         match self.consumer.peek() {
@@ -415,6 +423,12 @@ mod tests {
         );
         assert_eq!(port_name("Some Device"), "Some Device");
         assert_eq!(port_name("Synth:in 1:x"), "Synth:in 1:x");
+    }
+
+    #[test]
+    fn a_disconnected_receiver_stays_empty() {
+        let mut receiver = MidiReceiver::disconnected();
+        assert!(receiver.pop_before(Instant::now()).is_none());
     }
 
     #[test]

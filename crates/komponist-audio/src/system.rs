@@ -795,6 +795,15 @@ mod tests {
     }
 
     #[test]
+    fn runs_without_a_midi_backend() {
+        let (engine, probe) = TestEngine::boxed(0.0);
+        let mut system = AudioSystem::new(engine, MidiReceiver::disconnected());
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 5));
+        assert_eq!(probe.events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn hosts_and_devices() {
         let hosts = AudioSystem::<TestEngine>::available_hosts();
         assert_eq!(hosts.last(), Some(&HostKind::Null));
