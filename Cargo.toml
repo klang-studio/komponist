@@ -60,3 +60,11 @@ hound = "3.5.1"
 # Testing.
 assert_no_alloc = "1.1.2"
 proptest = "1.12.0"
+
+# Keep debug builds small: dependency debug info made every worktree's target/ 8–14 GB
+# (2026-11-13, disk nearly full). Line tables keep useful backtraces for our own code.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

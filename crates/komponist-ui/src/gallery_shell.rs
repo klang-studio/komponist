@@ -23,7 +23,7 @@ use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, size, space};
 
 use crate::state::{self, State};
-use crate::{focus, fonts, px, theme, widgets};
+use crate::{focus, fonts, px, theme, timeline, widgets};
 
 /// Draws the content of a card.
 pub type CardContent = fn(&mut Ui);
@@ -222,22 +222,30 @@ pub fn designsystem() -> Vec<Section> {
                 .content(widgets::fader::gallery)
                 .owner("WP-21"),
         ])),
-        Section::new("05", "Spur, Clip, Note").group(components(vec![
-            Card::new("Spur-Header")
-                .spec("224 × 56 (min 32, max 160) · Farbleiste 3 · Toggles M S R I · Pegel 2 × 3")
-                .ix(ix::HEADER)
-                .owner("WP-22"),
-            Card::new("Clip")
-                .spec(
-                    "Höhe = Spur − 6 · Kopf 14 · radius.m · Kopf base, Fläche body, Inhalt L 0.88",
-                )
-                .ix(ix::CLIP)
-                .owner("WP-22"),
-            Card::new("Note")
-                .spec("Rechteck, Höhe = Tastenhöhe − 2 · radius.s · Helligkeit = Velocity")
-                .ix(ix::NOTE)
-                .owner("WP-22"),
-        ])),
+        // Full-width cards, as in the design page.
+        Section::new("05", "Spur, Clip, Note")
+            .group(Group::full(
+                Card::new("Spur-Header")
+                    .spec(
+                        "224 × 56 (min 32, max 160) · Farbleiste 3 · Toggles M S R I · Pegel 2 × 3",
+                    )
+                    .ix(ix::HEADER)
+                    .content(timeline::gallery::header_card),
+            ))
+            .group(Group::full(
+                Card::new("Clip")
+                    .spec(
+                        "Höhe = Spur − 6 · Kopf 14 · radius.m · Kopf base, Fläche body, Inhalt L 0.88",
+                    )
+                    .ix(ix::CLIP)
+                    .content(timeline::gallery::clip_card),
+            ))
+            .group(Group::full(
+                Card::new("Note")
+                    .spec("Rechteck, Höhe = Tastenhöhe − 2 · radius.s · Helligkeit = Velocity")
+                    .ix(ix::NOTE)
+                    .content(timeline::gallery::note_card),
+            )),
         Section::new("06", "Rahmen und Navigation").group(components(vec![
             Card::new("Tabs und Umschalter")
                 .spec("Tab h 28 · Umschalter h 24, Segment h 20")

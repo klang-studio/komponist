@@ -79,7 +79,7 @@ const ATOMS: &[&str] = &[
 ];
 
 /// Whether GUI tests may run here.
-fn gui_allowed() -> bool {
+pub(crate) fn gui_allowed() -> bool {
     let allowed = std::env::var("KP_GUI_TESTS").is_ok_and(|v| v == "1")
         && std::env::var_os("DISPLAY").is_some();
     if !allowed {
@@ -89,14 +89,14 @@ fn gui_allowed() -> bool {
 }
 
 /// The frame's stand-in: a top-level window of our own X connection, kept alive for the test.
-struct Parent {
+pub(crate) struct Parent {
     conn: RustConnection,
     root: u32,
-    window: u32,
+    pub(crate) window: u32,
 }
 
 impl Parent {
-    fn new(width: u16, height: u16) -> Parent {
+    pub(crate) fn new(width: u16, height: u16) -> Parent {
         let (conn, screen) = x11rb::connect(None).expect("X11 connection");
         let cookies: Vec<_> = ATOMS
             .iter()
@@ -133,7 +133,7 @@ impl Parent {
     }
 
     /// Fakes a pointer event (XTEST) at window coordinates; the parent sits at the root origin.
-    fn pointer(&self, kind: u8, (x, y): (i16, i16)) {
+    pub(crate) fn pointer(&self, kind: u8, (x, y): (i16, i16)) {
         let detail = if kind == MOTION_NOTIFY_EVENT { 0 } else { 1 };
         self.conn
             .xtest_fake_input(kind, detail, 0, self.root, x, y, 0)
@@ -142,7 +142,7 @@ impl Parent {
     }
 
     /// Child windows of the parent (the plugin's window once attached).
-    fn children(&self) -> Vec<u32> {
+    pub(crate) fn children(&self) -> Vec<u32> {
         self.conn
             .query_tree(self.window)
             .unwrap()
@@ -152,7 +152,7 @@ impl Parent {
     }
 
     /// Distinct pixel values in the top-left `size` of the parent (children included).
-    fn distinct_colors(&self, size: GuiSize) -> usize {
+    pub(crate) fn distinct_colors(&self, size: GuiSize) -> usize {
         let (w, h) = (size.width.min(1600) as u16, size.height.min(1000) as u16);
         let image = self
             .conn
@@ -170,7 +170,7 @@ impl Parent {
             .len()
     }
 
-    fn screenshot(&self, name: &str) {
+    pub(crate) fn screenshot(&self, name: &str) {
         let Some(dir) = std::env::var_os("KP_GUI_SHOTS") else {
             return;
         };
@@ -191,7 +191,7 @@ impl Drop for Parent {
 }
 
 /// CPU time of this process (all threads) in seconds.
-fn cpu_seconds() -> f64 {
+pub(crate) fn cpu_seconds() -> f64 {
     let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
     // Fields after the parenthesised command: state is field 3, utime 14, stime 15.
     let rest = &stat[stat.rfind(')').unwrap() + 2..];
@@ -211,7 +211,7 @@ struct Expect {
 }
 
 /// Drags the pointer while serving the loop; returns the parameter events the edit flushed.
-fn drag(
+pub(crate) fn drag(
     parent: &Parent,
     host_loop: &PollLoop,
     plugin: &mut dyn HostedPlugin,

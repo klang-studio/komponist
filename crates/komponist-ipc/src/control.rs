@@ -7,10 +7,11 @@
 //! and reassembled by [`Channel`]; callers always see whole messages. The shared-memory fd travels
 //! over the same socket as SCM_RIGHTS ancillary data ([`Channel::send_fd`]).
 //!
-//! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `Activate`,
-//! then `SetState` if it has a state; the bridge answers `Loaded`, then `RtPriority` and
-//! `Activated`. Control messages are handled by the bridge's main thread; RT data never goes
-//! through the socket.
+//! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `SetState`
+//! if it has a state, then `Activate` (so the plugin starts processing with its state); the bridge
+//! answers `Loaded`, then `RtPriority` and `Activated`. `SetState` has no answer; a failure comes as
+//! `Error` with context `State`. Control messages are handled by the bridge's main thread; RT data
+//! never goes through the socket.
 //!
 //! Watchdog: the app sends `Ping` periodically and expects the matching `Pong`. The bridge main
 //! thread answers between two plugin calls, so a `Pong` also waits while the main thread is inside
@@ -26,7 +27,7 @@
 //! - `komponist-bridge --scan <bundle>`: prints a JSON array of [`PluginDescriptor`] (serde_json,
 //!   same field names) and a newline to stdout; plugin output during the scan goes to stderr.
 //!   Exit codes: 0 success (the array may be empty), 1 the bundle could not be scanned (reason on
-//!   stderr), 2 bad command line, 3 the format has no hosting yet (VST3 until WP-32). A crashing
+//!   stderr), 2 bad command line, 3 the format has no hosting (unused since CLAP and VST3 are both hosted). A crashing
 //!   bundle kills the scan process with its signal.
 
 use std::io::{IoSlice, IoSliceMut};
@@ -144,9 +145,11 @@ pub struct ParamInfo {
     pub name: String,
     /// Group path ("Filter/Env"), empty if none.
     pub module: String,
-    /// Lowest plain value.
+    /// Lowest plain value. VST3 parameters are exposed normalized (0..1, stepped = `step_count`
+    /// steps of 1/n), because only the controller can convert to plain values; use the plugin's
+    /// value text for display.
     pub min: f64,
-    /// Highest plain value.
+    /// Highest plain value (1.0 for VST3, see `min`).
     pub max: f64,
     /// Default plain value (Alt-click).
     pub default: f64,

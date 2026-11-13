@@ -133,6 +133,9 @@ pub mod metrics {
         pub const SAMPLE_GAP: f32 = space::SPACE_6 + space::SPACE_1;
     }
 
+    /// Timeline elements: track header, clip, note, ruler (WP-22).
+    pub mod timeline;
+
     /// Level meter (WP-21): `meterV`, `meterH`, `meters`; card spec "Pegel 2 × 4, Abstand 1".
     pub mod meter {
         /// Bar width of the mixer meter (`meterV`: `width: 4`).

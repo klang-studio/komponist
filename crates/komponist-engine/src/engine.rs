@@ -55,7 +55,7 @@ use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, Transpo
 use crate::garbage::Outbox;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
-use crate::processor::{EventKind, ProcessContext, ProcessorError};
+use crate::processor::{DEADLINE_SHARE, EventKind, ProcessContext, ProcessorError};
 use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Buf, Bufs, Slot, run_chain};
@@ -356,6 +356,8 @@ impl Core {
         latency: u32,
         offline: bool,
     ) {
+        // Taken once per callback; every segment and processor shares it.
+        let entered = std::time::Instant::now();
         self.outbox.flush();
         self.drain_commands();
         if self.unreported {
@@ -363,6 +365,9 @@ impl Core {
         }
         let n = out_l.len().min(out_r.len());
         let rate = f64::from(self.sample_rate);
+        let deadline = (!offline).then(|| {
+            entered + std::time::Duration::from_secs_f64(n as f64 / rate * DEADLINE_SHARE)
+        });
         let mut done = 0;
         let mut midi_next = 0;
         while done < n {
@@ -384,7 +389,7 @@ impl Core {
                 &midi[midi_first..midi_next],
                 done,
                 latency,
-                offline,
+                deadline,
             );
             if let Some(to) = self.transport.advance(len, end, &self.song, rate) {
                 if self.transport.state == TransportState::Recording {
@@ -725,7 +730,8 @@ impl Core {
 
     /// RT. Renders one segment into `out_l`/`out_r` (which it overwrites). `midi` holds the live
     /// messages of the segment, with frames counted from the start of the call; the segment
-    /// starts at frame `frame0` of the call.
+    /// starts at frame `frame0` of the call. `deadline` is the callback's (`run` sets one exactly
+    /// for realtime calls, so `None` means offline).
     fn segment(
         &mut self,
         out_l: &mut [f32],
@@ -733,7 +739,7 @@ impl Core {
         midi: &[MidiInEvent],
         frame0: usize,
         latency: u32,
-        offline: bool,
+        deadline: Option<std::time::Instant>,
     ) {
         let n = out_l.len();
         let sample_rate = self.sample_rate;
@@ -744,7 +750,8 @@ impl Core {
             frames: n as u32,
             sample_rate,
             transport: transport.info(&song, rate),
-            offline,
+            offline: deadline.is_none(),
+            deadline,
         };
         let win = Window {
             map: &song.map,

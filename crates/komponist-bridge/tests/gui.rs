@@ -418,3 +418,141 @@ fn gui_dexed_edits_reach_the_app() {
     );
     drop(parent);
 }
+
+#[test]
+#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
+fn gui_kp_test_synth_vst3() {
+    if gui_allowed()
+        && let Some(bundle) = fixture_in("vst3", "kp-test-synth")
+    {
+        exercise(&bundle, SYNTH_VST3, "kp-test-synth (VST3)");
+    }
+}
+
+#[test]
+#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
+fn gui_dexed_vst3() {
+    // JUCE's IRunLoop fds and the bridge's poll loop.
+    if gui_allowed()
+        && let Some(bundle) = installed("/usr/lib/vst3/Dexed.vst3")
+    {
+        exercise(&bundle, "ABCDEF019182FAEB4447534244657864", "dexed (VST3)");
+    }
+}
+
+#[test]
+#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
+fn gui_surge_xt_vst3() {
+    if gui_allowed()
+        && let Some(bundle) = installed("/usr/lib/vst3/Surge XT.vst3")
+    {
+        exercise(
+            &bundle,
+            "ABCDEF019182FAEB566D624153675854",
+            "surge-xt (VST3)",
+        );
+    }
+}
+
+#[test]
+#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
+fn gui_shortcircuit_xt_vst3() {
+    // IRunLoop timers (clap-wrapper).
+    if gui_allowed()
+        && let Some(bundle) = installed("/usr/local/lib/vst3/Shortcircuit XT.vst3")
+    {
+        exercise(
+            &bundle,
+            "7B791499693F5465B590BA9435E6D873",
+            "shortcircuit-xt (VST3)",
+        );
+    }
+}
+
+/// VST3 GUI edits reach the app as `ParamValues` on the control socket, inactive and while
+/// processing alike (`IComponentHandler::performEdit` runs on the bridge main thread), and while
+/// processing also as gestures and values in the output ring (the processor echoes them).
+#[test]
+#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
+fn gui_dexed_vst3_edits_reach_the_app() {
+    if !gui_allowed() {
+        return;
+    }
+    let Some(bundle) = installed("/usr/lib/vst3/Dexed.vst3") else {
+        return;
+    };
+    const DOWN: ((i16, i16), (i16, i16)) = ((250, 463), (250, 523));
+    let edited = |bridge: &Bridge, from: usize| -> Vec<(u32, f64)> {
+        bridge.seen[from..]
+            .iter()
+            .filter_map(|m| match m {
+                BridgeMsg::ParamValues(values) => Some(values.iter().map(|v| (v.id, v.value))),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    };
+    let parent = Parent::new(1600, 1000);
+    let mut bridge = Bridge::spawn();
+    let info = bridge.load(&bundle, "ABCDEF019182FAEB4447534244657864");
+    bridge.send(ControlMsg::OpenGui {
+        parent_xid: u64::from(parent.window),
+        scale: 1.0,
+    });
+    bridge.expect("GuiOpened", |m| {
+        matches!(m, BridgeMsg::GuiOpened { .. }).then_some(())
+    });
+    std::thread::sleep(Duration::from_secs(3));
+
+    // Inactive.
+    bridge.sync();
+    let from = bridge.seen.len();
+    parent.drag(DOWN, std::thread::sleep);
+    bridge.sync();
+    let inactive = edited(&bridge, from);
+    let (id, first) = *inactive
+        .last()
+        .unwrap_or_else(|| panic!("no ParamValues from the GUI edit; seen {:?}", bridge.seen));
+    let param = info.params.iter().find(|p| p.id == id).unwrap();
+
+    // Active, with blocks running: the values still come as ParamValues, and with the blocks.
+    bridge.activate();
+    run_blocks(&mut bridge, Duration::from_millis(300));
+    bridge.sync();
+    let from = bridge.seen.len();
+    let mut events = Vec::new();
+    parent.drag(DOWN, |d| events.extend(run_blocks(&mut bridge, d)));
+    bridge.sync();
+    let active = edited(&bridge, from);
+    let (_, second) = *active
+        .iter()
+        .rev()
+        .find(|(i, _)| *i == id)
+        .expect("no ParamValues from the GUI edit while active");
+    assert!(
+        second < first,
+        "Cutoff closes further: {first} then {second}"
+    );
+    let kinds: Vec<WireEventKind> = events.iter().filter_map(WireEvent::decode).collect();
+    assert!(
+        kinds.contains(&WireEventKind::ParamGesture { id, begin: true }),
+        "no gesture begin in {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&WireEventKind::ParamValue { id, value: second }),
+        "no value {second} in {kinds:?}"
+    );
+
+    bridge.send(ControlMsg::CloseGui);
+    bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+    eprintln!(
+        "VST3 GUI edits through the bridge (Dexed): inactive {} values, last {} = {first:.3}; \
+         active {} values, last {second:.3}, {} ring events",
+        inactive.len(),
+        param.name,
+        active.len(),
+        kinds.len(),
+    );
+    drop(parent);
+}
