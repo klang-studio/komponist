@@ -73,14 +73,22 @@ fn protocol_errors_keep_the_bridge_alive() {
         plugin_id: SYNTH.into(),
     });
     bridge.expect_error(ErrorContext::Load);
-    // VST3 arrives with WP-32: the hosting layer's `Unsupported`, cleanly.
+    // VST3 goes through the same dispatch: a missing bundle and a CLAP id are load errors.
     bridge.send(ControlMsg::Load {
         format: PluginFormat::Vst3,
         bundle: "/usr/lib/vst3/X.vst3".into(),
         plugin_id: "0123456789ABCDEF0123456789ABCDEF".into(),
     });
     let message = bridge.expect_error(ErrorContext::Load);
-    assert!(message.contains("unsupported"), "{message}");
+    assert!(message.contains("X.vst3"), "{message}");
+    if let Some(bundle) = fixture_in("vst3", "kp-test-synth") {
+        bridge.send(ControlMsg::Load {
+            format: PluginFormat::Vst3,
+            bundle,
+            plugin_id: SYNTH.into(),
+        });
+        bridge.expect_error(ErrorContext::Load);
+    }
     assert_eq!(bridge.region().bridge_state(), BridgeState::Starting);
 
     if let Some(bundle) = fixture("kp-test-synth") {

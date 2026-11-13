@@ -14,9 +14,7 @@ use crate::plugin::HostingError;
 pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
     match crate::bundle_format(bundle) {
         Some(PluginFormat::Clap) => crate::clap::scan(bundle),
-        Some(PluginFormat::Vst3) => {
-            Err(HostingError::Unsupported("VST3 hosting arrives with WP-32"))
-        }
+        Some(PluginFormat::Vst3) => crate::vst3::scan(bundle),
         None => Err(HostingError::Load(format!(
             "{}: not a .clap or .vst3 bundle",
             bundle.display()
@@ -83,7 +81,7 @@ mod tests {
         ));
         assert!(matches!(
             scan(Path::new("/nonexistent/X.vst3")),
-            Err(HostingError::Unsupported(_))
+            Err(HostingError::Load(_))
         ));
         assert!(matches!(
             scan(Path::new("/nonexistent/X.clap")),

@@ -1,5 +1,6 @@
-//! Plugins installed on this machine through the bridge: load, activate, notes for one second of
-//! blocks, state into a second bridge, shutdown. Each is skipped when its bundle is missing.
+//! Plugins installed on this machine through the bridge, as CLAP and as VST3: load, activate,
+//! notes for one second of blocks, state into a second bridge, shutdown. Each is skipped when its
+//! bundle is missing.
 //!
 //! `#[ignore]` (large third-party plugins, slow to load):
 //! `cargo test -p komponist-bridge --test installed -- --ignored`.
@@ -109,5 +110,55 @@ fn dexed() {
         "/usr/lib/clap/Dexed.clap",
         "com.digital-suburban.dexed",
         true,
+    );
+}
+
+#[test]
+#[ignore = "installed plugin; run with --ignored"]
+fn klopfer_vst3() {
+    exercise(
+        "~/.vst3/Klopfer.vst3",
+        "4B6C6F706665724472756D536D706C72",
+        false,
+    );
+}
+
+#[test]
+#[ignore = "installed plugin; run with --ignored"]
+fn surge_xt_vst3() {
+    exercise(
+        "/usr/lib/vst3/Surge XT.vst3",
+        "ABCDEF019182FAEB566D624153675854",
+        true,
+    );
+}
+
+#[test]
+#[ignore = "installed plugin; run with --ignored"]
+fn dexed_vst3() {
+    exercise(
+        "/usr/lib/vst3/Dexed.vst3",
+        "ABCDEF019182FAEB4447534244657864",
+        true,
+    );
+}
+
+#[test]
+#[ignore = "installed plugin; run with --ignored"]
+fn decent_sampler_vst3() {
+    exercise(
+        "/usr/lib/vst3/DecentSampler.vst3",
+        "ABCDEF019182FAEB446C647944736D70",
+        false,
+    );
+}
+
+#[test]
+#[ignore = "installed plugin; run with --ignored"]
+fn shortcircuit_xt_vst3() {
+    exercise(
+        "/usr/local/lib/vst3/Shortcircuit XT.vst3",
+        "7B791499693F5465B590BA9435E6D873",
+        false,
     );
 }

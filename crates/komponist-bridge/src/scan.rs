@@ -6,8 +6,8 @@
 //! at stderr while plugin code runs.
 //!
 //! Exit codes ([`crate::exit`]): 0 with the JSON (possibly `[]`), [`crate::exit::FAILURE`] when
-//! the bundle cannot be scanned, [`crate::exit::UNSUPPORTED`] for a format without hosting yet
-//! (VST3 until WP-32), [`crate::exit::USAGE`] for bad arguments. The reason goes to stderr. A
+//! the bundle cannot be scanned, [`crate::exit::UNSUPPORTED`] for a format without hosting (none
+//! since WP-32 added VST3), [`crate::exit::USAGE`] for bad arguments. The reason goes to stderr. A
 //! crashing bundle kills the scan process with its signal.
 
 use std::fs::File;

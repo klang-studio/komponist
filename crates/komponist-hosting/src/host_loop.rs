@@ -859,7 +859,9 @@ mod tests {
         sender.join().unwrap();
         assert!(woke && start.elapsed() < Duration::from_secs(1));
         lp.run_once(&mut plugin, Duration::from_millis(10));
-        assert_eq!(plugin.count(|c| *c == Call::MainThread), 1);
+        // Coalesced to one call, or two if the loop woke between the sender's two requests.
+        let main_thread_calls = plugin.count(|c| *c == Call::MainThread);
+        assert!((1..=2).contains(&main_thread_calls), "{main_thread_calls}");
         assert_eq!(plugin.count(|c| *c == Call::Flush), 1);
         let observed = lp.take_observed();
         assert!(observed.has(bits::GUI_RESIZE_REQUESTED) && observed.has(bits::PARAM_EDITED));
