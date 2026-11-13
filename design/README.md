@@ -22,6 +22,7 @@ in its `<script>` block.
 | `color.canvas.lane-selected` | `#1a1c1f` | `Screens.dc.html` `arrangement()` `lane` (`t.sel?'#1a1c1f':C.f1`); `ks-view.js` `arrView` `lane` | Arrangement lane of a selected track (else `surface.1`) |
 | `color.canvas.black-key-row` | `#1a1b1d` | `Screens.dc.html` `pianoRoll()` `rows` (`b?'#1a1b1d':C.f2`); `ks-view.js` `prView` `rows` | Piano-roll row of a black key (white keys `surface.2`) |
 | `color.canvas.outside-clip` | `#11121499` | `Screens.dc.html` `pianoRoll()` `outside` (`rgba(17,18,20,0.6)`); `ks-view.js` `prView` `outside` | Overlay on the piano-roll grid after the clip end: `surface.0` at 60 % (0.6 × 255 = 153 = `0x99`) |
+| `color.canvas.step-group-alt` | `#222326` | `Screens.dc.html` `stepSeq()` `cells` (`grp?'#222326':C.f2`); `ks-view.js` `stepView` `off` | Step-sequencer cell that is off, in every other group of four steps (steps 5–8, 13–16, …; the others `surface.2`) (WP-42) |
 
 In Rust: `TrackPalette::{key_playing, note_muted, clip_handle}` (formulas in
 `komponist_tokens::track::formula`), `color::STATE_RECORD_INK`, `color::LINE_0` (with
@@ -42,8 +43,6 @@ by a contract change when those need them:
 - `#2a2c2f` / `#202124`: arrangement bar lines (`Screens.dc.html` `arrangement()` `lines`,
   `ks-view.js` `arrView`). G2 decided the arrangement grid stays `line.2` (design system);
   recheck in WP-62.
-- `#222326`: every other group of four steps (`Screens.dc.html` `stepSeq()` cells,
-  `ks-view.js` `stepView`).
 - `#1a1f26`: mixer strip of the selected track (`Screens.dc.html` `mixer()`, `ks-view.js`
   `mixView`).
 - `rgba(78,167,230,0.10)`: box selection fill, accent at 10 % (`ks-view.js` `prView` `box`).
