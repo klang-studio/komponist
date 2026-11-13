@@ -14,6 +14,13 @@
 //! Built-in in-process devices (pisynth) are not managed here; the app creates their processors.
 //! Their status is always `Ok`.
 //!
+//! Start order per bridge: memfd, `Load`, `SetState` (if there is a state), `Activate`, so the
+//! plugin starts processing with its state. Messages to a bridge go through a writer thread of its
+//! own; a bridge busy in a long plugin call (a cold Surge XT loads for seconds) never blocks the UI
+//! thread. Watchdog: a `Ping` every second, the `Pong` due within 5 s; paused while the bridge
+//! loads or opens its GUI, which may take up to a minute. A bridge that misses it is
+//! `Crashed(Unresponsive)` and killed.
+//!
 //! Thread: UI thread only, non-blocking except where noted.
 
 use std::collections::BTreeMap;
