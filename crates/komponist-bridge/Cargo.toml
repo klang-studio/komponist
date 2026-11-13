@@ -3,3 +3,7 @@ name = "komponist-bridge"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+komponist-ipc.workspace = true
+komponist-hosting.workspace = true
