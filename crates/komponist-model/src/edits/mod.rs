@@ -18,14 +18,22 @@
 //!   bad denominator) is an [`EditError`].
 //! - Snapping is the caller's job (grid helpers in [`crate::time::Grid`]); edits take exact ticks.
 
+use std::collections::HashSet;
 use std::fmt;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    ChannelRef, ClipKind, DeviceRole, Hue, MidiChannelSel, MidiInputSel, PluginRef, Project,
+    BUILTIN_KLOPFER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
+    DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
+    PluginFormat, PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT,
+    TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, VOLUME_DB_MAX, VOLUME_DB_MIN,
 };
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
+
+#[cfg(test)]
+pub(crate) mod tests;
 
 // ------------------------------------------------------------------------------------------------
 // Errors
@@ -301,18 +309,48 @@ pub struct NewDevice {
 /// The hue a new track gets: the first of [`Hue::AUTO_ORDER`] not used by any track; if all are
 /// used, `Hue::ALL[track_count % 14]` (prototype `addTrack`).
 pub fn next_hue(project: &Project) -> Hue {
-    todo!("WP-12")
+    Hue::AUTO_ORDER
+        .into_iter()
+        .find(|hue| project.tracks.iter().all(|t| t.hue != *hue))
+        .unwrap_or(Hue::ALL[project.tracks.len() % Hue::ALL.len()])
 }
 
 /// `base` if no track has that name, else `"{base} 2"`, `"{base} 3"`, … (first free).
 pub fn unique_track_name(project: &Project, base: &str) -> String {
-    todo!("WP-12")
+    let taken = |name: &str| project.tracks.iter().any(|t| t.name == name);
+    if !taken(base) {
+        return base.to_owned();
+    }
+    (2u64..)
+        .map(|n| format!("{base} {n}"))
+        .find(|name| !taken(name))
+        .expect("one of more names than tracks is free")
 }
 
 /// Number for the next recorded take: one more than the highest `n` of any clip or take named
 /// `"Take n"` in the project, starting at 1. The caller formats the UI name "Take n".
 pub fn next_take_number(project: &Project) -> u32 {
-    todo!("WP-12")
+    fn number(name: &str) -> Option<u32> {
+        let digits = name.strip_prefix("Take ")?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse().ok()
+    }
+    project
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .flat_map(|c| {
+            let takes = match &c.content {
+                ClipContent::Midi(m) => m.takes.as_slice(),
+                ClipContent::Step(_) => &[],
+            };
+            std::iter::once(c.name.as_str()).chain(takes.iter().map(|t| t.name.as_str()))
+        })
+        .filter_map(number)
+        .max()
+        .map_or(1, |n| n.saturating_add(1))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -321,12 +359,43 @@ pub fn next_take_number(project: &Project) -> u32 {
 
 /// Sets a project-level property.
 pub fn set_project_prop(project: &Project, prop: ProjectProp) -> EditResult {
-    todo!("WP-12")
+    let mut p = project.clone();
+    match prop {
+        ProjectProp::Name(name) => p.name = valid_name(&name)?,
+        ProjectProp::Tempo(tempo) => {
+            if !(Tempo::MIN_BPM..=Tempo::MAX_BPM).contains(&tempo.bpm) {
+                return Err(EditError::Invalid("tempo out of range"));
+            }
+            p.tempo = tempo;
+        }
+        ProjectProp::Meter(meter) => {
+            if !valid_meter(meter) {
+                return Err(EditError::Invalid("meter not supported"));
+            }
+            p.meter = meter;
+        }
+        ProjectProp::LoopRange(range) => {
+            let range = TickRange::new(range.start.max(Tick::ZERO), range.end);
+            if range.is_empty() {
+                return Err(EditError::Invalid("empty loop range"));
+            }
+            p.loop_range = range;
+        }
+        ProjectProp::LoopOn(on) => p.loop_on = on,
+        ProjectProp::Metronome(on) => p.metronome = on,
+        ProjectProp::CountInBars(bars) => p.count_in_bars = bars.min(MAX_COUNT_IN_BARS),
+    }
+    Ok(p)
 }
 
 /// Sets volume, pan or mute of the master strip.
 pub fn set_master_prop(project: &Project, prop: ChannelProp) -> EditResult {
-    todo!("WP-12")
+    if let ChannelProp::Solo(_) = prop {
+        return Ok(project.clone());
+    }
+    let mut p = project.clone();
+    apply_channel_prop(Arc::make_mut(&mut p.master), prop)?;
+    Ok(p)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -336,29 +405,127 @@ pub fn set_master_prop(project: &Project, prop: ChannelProp) -> EditResult {
 /// Adds a MIDI track (Ctrl T, instrument drop). Height [`crate::project::TRACK_HEIGHT_DEFAULT`],
 /// 0 dB, centred, input "all", Omni.
 pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId), EditError> {
-    todo!("WP-12")
+    let hue = match spec.hue {
+        Some(hue) => valid_hue(hue)?,
+        None => next_hue(project),
+    };
+    let name = match &spec.name {
+        Some(name) => valid_name(name)?,
+        None => {
+            let base = match &spec.instrument {
+                Some(plugin) if is_klopfer(plugin) => KLOPFER_TRACK_NAME,
+                Some(plugin) if !plugin.name.trim().is_empty() => plugin.name.trim(),
+                _ => DEFAULT_TRACK_NAME,
+            };
+            unique_track_name(project, base)
+        }
+    };
+    let mut p = project.clone();
+    let id = TrackId(p.alloc_id());
+    let mut channel = Channel::default();
+    if let Some(plugin) = spec.instrument {
+        channel.devices.push(Arc::new(Device {
+            id: DeviceId(p.alloc_id()),
+            role: DeviceRole::Instrument,
+            plugin,
+            bypass: false,
+            state: None,
+        }));
+    }
+    if spec.arm_exclusive {
+        for index in 0..p.tracks.len() {
+            update_track(&mut p, index, |t| {
+                t.arm = false;
+                Ok(())
+            })?;
+        }
+    }
+    let track = Track {
+        id,
+        name,
+        hue,
+        kind: TrackKind::Midi,
+        channel,
+        arm: spec.arm_exclusive,
+        monitor: spec.arm_exclusive,
+        input: MidiInputSel::All,
+        midi_channel: MidiChannelSel::Omni,
+        height: TRACK_HEIGHT_DEFAULT,
+        clips: Vec::new(),
+    };
+    let index = spec.index.unwrap_or(p.tracks.len()).min(p.tracks.len());
+    p.tracks.insert(index, Arc::new(track));
+    Ok((p, id))
 }
 
 /// Removes tracks with all their clips and devices (Entf with tracks selected).
 pub fn remove_tracks(project: &Project, tracks: &[TrackId]) -> EditResult {
-    todo!("WP-12")
+    for &id in tracks {
+        locate_track(project, id)?;
+    }
+    let mut p = project.clone();
+    p.tracks.retain(|t| !tracks.contains(&t.id));
+    Ok(p)
 }
 
 /// Moves tracks (keeping their relative order) so the first of them lands at display index
 /// `to_index` of the list *without* the moved tracks (drag reorder, 2 px insert line). `to_index`
 /// is clamped to the list end.
 pub fn move_tracks(project: &Project, tracks: &[TrackId], to_index: usize) -> EditResult {
-    todo!("WP-12")
+    for &id in tracks {
+        locate_track(project, id)?;
+    }
+    let (moved, mut rest): (Vec<_>, Vec<_>) = project
+        .tracks
+        .iter()
+        .cloned()
+        .partition(|t| tracks.contains(&t.id));
+    let at = to_index.min(rest.len());
+    rest.splice(at..at, moved);
+    let mut p = project.clone();
+    p.tracks = rest;
+    Ok(p)
 }
 
 /// Sets a property on every listed track.
 pub fn set_track_prop(project: &Project, tracks: &[TrackId], prop: TrackProp) -> EditResult {
-    todo!("WP-12")
+    let indices = tracks
+        .iter()
+        .map(|&id| locate_track(project, id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let prop = match prop {
+        TrackProp::Name(name) => TrackProp::Name(valid_name(&name)?),
+        TrackProp::Hue(hue) => TrackProp::Hue(valid_hue(hue)?),
+        TrackProp::MidiChannel(MidiChannelSel::Channel(c)) if c > 15 => {
+            return Err(EditError::Invalid("MIDI channel out of range"));
+        }
+        prop => prop,
+    };
+    let mut p = project.clone();
+    for index in indices {
+        update_track(&mut p, index, |t| apply_track_prop(t, &prop))?;
+    }
+    Ok(p)
 }
 
 /// Alt-click on S or R: the flag is on for `track` and off for all others.
 pub fn set_exclusive(project: &Project, track: TrackId, flag: ExclusiveFlag) -> EditResult {
-    todo!("WP-12")
+    locate_track(project, track)?;
+    let mut p = project.clone();
+    for index in 0..p.tracks.len() {
+        let this = p.tracks[index].id == track;
+        update_track(&mut p, index, |t| {
+            match flag {
+                ExclusiveFlag::Solo => t.channel.solo = this,
+                ExclusiveFlag::Arm => {
+                    t.arm = this;
+                    t.monitor |= this;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(p)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -371,12 +538,55 @@ pub fn add_clip(
     track: TrackId,
     spec: NewClip,
 ) -> Result<(Project, ClipId), EditError> {
-    todo!("WP-12")
+    let track_index = locate_track(project, track)?;
+    let mut p = project.clone();
+    let id = ClipId(p.alloc_id());
+    let content = match spec.content {
+        NewClipContent::Midi { notes, take_name } => {
+            let mut notes: Vec<Note> = notes
+                .iter()
+                .map(|n| new_note(NoteId(p.alloc_id()), n))
+                .collect();
+            sort_notes(&mut notes);
+            ClipContent::Midi(MidiClip {
+                takes: vec![Take {
+                    name: take_name,
+                    notes: Arc::new(notes),
+                }],
+                active_take: 0,
+            })
+        }
+        NewClipContent::Step { rows } => ClipContent::Step(new_step_clip(&rows)),
+    };
+    let clip = Clip {
+        id,
+        name: spec.name,
+        start: spec.start.max(Tick::ZERO),
+        length: spec.length.max(MIN_LENGTH),
+        loop_length: None,
+        mute: false,
+        transpose: 0,
+        velocity_pct: 0,
+        content,
+    };
+    insert_clip(track_mut(&mut p, track_index), Arc::new(clip));
+    Ok((p, id))
 }
 
 /// Removes clips (Entf).
 pub fn remove_clips(project: &Project, clips: &[ClipId]) -> EditResult {
-    todo!("WP-12")
+    for &id in clips {
+        locate_clip(project, id)?;
+    }
+    let mut p = project.clone();
+    for index in 0..p.tracks.len() {
+        if p.tracks[index].clips.iter().any(|c| clips.contains(&c.id)) {
+            track_mut(&mut p, index)
+                .clips
+                .retain(|c| !clips.contains(&c.id));
+        }
+    }
+    Ok(p)
 }
 
 /// Moves clips by `delta` ticks and `track_delta` tracks (drag; negative = up). The group moves
@@ -388,7 +598,31 @@ pub fn move_clips(
     delta: Tick,
     track_delta: i32,
 ) -> EditResult {
-    todo!("WP-12")
+    let group = ClipGroup::new(project, clips, delta, track_delta)?;
+    if group.delta == Tick::ZERO && group.track_delta == 0 {
+        return Ok(project.clone());
+    }
+    let mut p = project.clone();
+    for index in 0..p.tracks.len() {
+        if p.tracks[index]
+            .clips
+            .iter()
+            .any(|c| group.clips.iter().any(|(_, g)| g.id == c.id))
+        {
+            track_mut(&mut p, index)
+                .clips
+                .retain(|c| group.clips.iter().all(|(_, g)| g.id != c.id));
+        }
+    }
+    for (track_index, clip) in &group.clips {
+        let mut clip = Clip::clone(clip);
+        clip.start += group.delta;
+        insert_clip(
+            track_mut(&mut p, group.target(*track_index)),
+            Arc::new(clip),
+        );
+    }
+    Ok(p)
 }
 
 /// Alt-drag: copies clips (new clip and note ids) to the moved position, originals stay. Same
@@ -399,7 +633,19 @@ pub fn copy_clips(
     delta: Tick,
     track_delta: i32,
 ) -> Result<(Project, Vec<ClipId>), EditError> {
-    todo!("WP-12")
+    let group = ClipGroup::new(project, clips, delta, track_delta)?;
+    let mut p = project.clone();
+    let mut copies = Vec::with_capacity(group.clips.len());
+    for (track_index, clip) in &group.clips {
+        let mut copy = copy_clip(&mut p, clip);
+        copy.start += group.delta;
+        copies.push(copy.id);
+        insert_clip(
+            track_mut(&mut p, group.target(*track_index)),
+            Arc::new(copy),
+        );
+    }
+    Ok((p, copies))
 }
 
 /// Ctrl D: copies each clip right behind itself (`start + length`) on the same track. Returns the
@@ -408,13 +654,34 @@ pub fn duplicate_clips(
     project: &Project,
     clips: &[ClipId],
 ) -> Result<(Project, Vec<ClipId>), EditError> {
-    todo!("WP-12")
+    let located = unique(clips)
+        .into_iter()
+        .map(|id| {
+            let (track_index, clip_index) = locate_clip(project, id)?;
+            Ok((
+                track_index,
+                Arc::clone(&project.tracks[track_index].clips[clip_index]),
+            ))
+        })
+        .collect::<Result<Vec<_>, EditError>>()?;
+    let mut p = project.clone();
+    let mut copies = Vec::with_capacity(located.len());
+    for (track_index, clip) in located {
+        let mut copy = copy_clip(&mut p, &clip);
+        copy.start = clip.end();
+        copies.push(copy.id);
+        insert_clip(track_mut(&mut p, track_index), Arc::new(copy));
+    }
+    Ok((p, copies))
 }
 
 /// Sets the timeline length (right edge drag), clamped to ≥ 1 tick. The start never moves; content
 /// beyond the new end is kept but not played.
 pub fn set_clip_length(project: &Project, clip: ClipId, length: Tick) -> EditResult {
-    todo!("WP-12")
+    edit_clip(project, clip, |c| {
+        c.length = length.max(MIN_LENGTH);
+        Ok(())
+    })
 }
 
 /// Sets the clip loop (top-right corner drag, inspector "Loop" / "Loop-Länge"): `loop_length`
@@ -426,7 +693,17 @@ pub fn set_clip_loop(
     loop_length: Option<Tick>,
     length: Tick,
 ) -> EditResult {
-    todo!("WP-12")
+    edit_clip(project, clip, |c| {
+        if loop_length.is_some() && c.kind() == ClipKind::Step {
+            return Err(EditError::WrongClipKind {
+                clip: c.id,
+                expected: ClipKind::Midi,
+            });
+        }
+        c.loop_length = loop_length.map(|l| l.max(MIN_LENGTH));
+        c.length = length.max(MIN_LENGTH);
+        Ok(())
+    })
 }
 
 /// Ctrl E: splits every listed clip that strictly contains `at` (timeline tick) into a left part
@@ -439,17 +716,60 @@ pub fn split_clips(
     clips: &[ClipId],
     at: Tick,
 ) -> Result<(Project, Vec<ClipId>), EditError> {
-    todo!("WP-12")
+    let ids = unique(clips);
+    for &id in &ids {
+        locate_clip(project, id)?;
+    }
+    let mut p = project.clone();
+    let mut rights = Vec::new();
+    for id in ids {
+        // Look up again: right parts inserted before may have shifted the clip's index.
+        let (track_index, clip_index) = locate_clip(&p, id)?;
+        let clip = Arc::clone(&p.tracks[track_index].clips[clip_index]);
+        if !(clip.start < at && at < clip.end()) {
+            continue;
+        }
+        let (left, right) = split_clip(&mut p, &clip, at - clip.start);
+        rights.push(right.id);
+        let track = track_mut(&mut p, track_index);
+        // Same id and start: the left part keeps the clip's place in the order.
+        track.clips[clip_index] = Arc::new(left);
+        insert_clip(track, Arc::new(right));
+    }
+    Ok((p, rights))
 }
 
 /// Key `0`: mutes or unmutes clips.
 pub fn set_clips_muted(project: &Project, clips: &[ClipId], muted: bool) -> EditResult {
-    todo!("WP-12")
+    for &id in clips {
+        locate_clip(project, id)?;
+    }
+    let mut p = project.clone();
+    for &id in clips {
+        let location = locate_clip(&p, id)?;
+        update_clip(&mut p, location, |c| {
+            c.mute = muted;
+            Ok(())
+        })?;
+    }
+    Ok(p)
 }
 
 /// Sets a clip property from the inspector.
 pub fn set_clip_prop(project: &Project, clip: ClipId, prop: ClipProp) -> EditResult {
-    todo!("WP-12")
+    let prop = match prop {
+        ClipProp::Name(name) => ClipProp::Name(valid_name(&name)?),
+        prop => prop,
+    };
+    edit_clip(project, clip, |c| {
+        match prop {
+            ClipProp::Name(name) => c.name = name,
+            ClipProp::Start(start) => c.start = start.max(Tick::ZERO),
+            ClipProp::Transpose(semitones) => c.transpose = semitones.clamp(-48, 48),
+            ClipProp::VelocityPct(percent) => c.velocity_pct = percent.clamp(-100, 100),
+        }
+        Ok(())
+    })
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -462,12 +782,25 @@ pub fn add_notes(
     clip: ClipId,
     notes: &[NewNote],
 ) -> Result<(Project, Vec<NoteId>), EditError> {
-    todo!("WP-12")
+    let mut p = project.clone();
+    let ids: Vec<NoteId> = notes.iter().map(|_| NoteId(p.alloc_id())).collect();
+    with_notes(&mut p, clip, |list| {
+        list.extend(notes.iter().zip(&ids).map(|(n, &id)| new_note(id, n)));
+        Ok(())
+    })?;
+    Ok((p, ids))
 }
 
 /// Deletes notes (Entf, eraser, pointer double-click).
 pub fn remove_notes(project: &Project, clip: ClipId, notes: &[NoteId]) -> EditResult {
-    todo!("WP-12")
+    let selection = NoteSelection::new(notes);
+    let mut p = project.clone();
+    with_notes(&mut p, clip, |list| {
+        selection.check(list)?;
+        list.retain(|n| !selection.contains(n.id));
+        Ok(())
+    })?;
+    Ok(p)
 }
 
 /// Moves notes in time and pitch (drag, ← →, ↑ ↓, Shift ↑ ↓ = ±12). The group moves together:
@@ -480,7 +813,18 @@ pub fn move_notes(
     delta: Tick,
     pitch_delta: i32,
 ) -> EditResult {
-    todo!("WP-12")
+    let selection = NoteSelection::new(notes);
+    let mut p = project.clone();
+    with_notes(&mut p, clip, |list| {
+        selection.check(list)?;
+        let (delta, pitch_delta) = clamp_note_move(list, &selection, delta, pitch_delta);
+        for n in list.iter_mut().filter(|n| selection.contains(n.id)) {
+            n.start += delta;
+            n.pitch = shift_pitch(n.pitch, pitch_delta);
+        }
+        Ok(())
+    })?;
+    Ok(p)
 }
 
 /// Alt-drag: copies notes to the moved position (same clamping as [`move_notes`]); originals stay.
@@ -492,12 +836,44 @@ pub fn copy_notes(
     delta: Tick,
     pitch_delta: i32,
 ) -> Result<(Project, Vec<NoteId>), EditError> {
-    todo!("WP-12")
+    let selection = NoteSelection::new(notes);
+    let order = unique(notes);
+    let mut p = project.clone();
+    let ids: Vec<NoteId> = order.iter().map(|_| NoteId(p.alloc_id())).collect();
+    with_notes(&mut p, clip, |list| {
+        selection.check(list)?;
+        let (delta, pitch_delta) = clamp_note_move(list, &selection, delta, pitch_delta);
+        let copies: Vec<Note> = order
+            .iter()
+            .zip(&ids)
+            .filter_map(|(original, &id)| {
+                let n = list.iter().find(|n| n.id == *original)?;
+                Some(Note {
+                    id,
+                    start: n.start + delta,
+                    pitch: shift_pitch(n.pitch, pitch_delta),
+                    ..*n
+                })
+            })
+            .collect();
+        list.extend(copies);
+        Ok(())
+    })?;
+    Ok((p, ids))
 }
 
 /// Edge drag: changes the length of all listed notes by `delta` ticks, each clamped to ≥ 1 tick.
 pub fn resize_notes(project: &Project, clip: ClipId, notes: &[NoteId], delta: Tick) -> EditResult {
-    todo!("WP-12")
+    let selection = NoteSelection::new(notes);
+    let mut p = project.clone();
+    with_notes(&mut p, clip, |list| {
+        selection.check(list)?;
+        for n in list.iter_mut().filter(|n| selection.contains(n.id)) {
+            n.length = (n.length + delta).max(MIN_LENGTH);
+        }
+        Ok(())
+    })?;
+    Ok(p)
 }
 
 /// Changes velocities (Ctrl-drag ↕, velocity lane).
@@ -507,7 +883,19 @@ pub fn set_notes_velocity(
     notes: &[NoteId],
     change: VelocityChange,
 ) -> EditResult {
-    todo!("WP-12")
+    let selection = NoteSelection::new(notes);
+    let mut p = project.clone();
+    with_notes(&mut p, clip, |list| {
+        selection.check(list)?;
+        for n in list.iter_mut().filter(|n| selection.contains(n.id)) {
+            n.velocity = match change {
+                VelocityChange::Set(v) => v.clamp(1, 127),
+                VelocityChange::Offset(d) => (i16::from(n.velocity) + d).clamp(1, 127) as u8,
+            };
+        }
+        Ok(())
+    })?;
+    Ok(p)
 }
 
 /// Key `Q`: snaps start and length of the listed notes (`None` = all notes of the take) to `grid`
@@ -519,7 +907,23 @@ pub fn quantize_notes(
     notes: Option<&[NoteId]>,
     grid: Tick,
 ) -> EditResult {
-    todo!("WP-12")
+    if grid <= Tick::ZERO {
+        return Err(EditError::Invalid("grid must be positive"));
+    }
+    let selection = notes.map(NoteSelection::new);
+    let mut p = project.clone();
+    with_notes(&mut p, clip, |list| {
+        if let Some(selection) = &selection {
+            selection.check(list)?;
+        }
+        let selected = |n: &Note| selection.as_ref().is_none_or(|s| s.contains(n.id));
+        for n in list.iter_mut().filter(|n| selected(n)) {
+            n.start = round_to(n.start, grid);
+            n.length = round_to(n.length, grid).max(grid);
+        }
+        Ok(())
+    })?;
+    Ok(p)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -534,23 +938,89 @@ pub fn set_step(
     step: usize,
     prop: StepProp,
 ) -> EditResult {
-    todo!("WP-12")
+    with_step_clip(project, clip, |s| {
+        let row = s.rows.get_mut(row).ok_or(EditError::IndexOutOfRange {
+            what: "step row",
+            index: row,
+        })?;
+        let step = row.steps.get_mut(step).ok_or(EditError::IndexOutOfRange {
+            what: "step",
+            index: step,
+        })?;
+        match prop {
+            StepProp::On(on) => step.on = on,
+            StepProp::Velocity(v) => step.velocity = v.clamp(1, 127),
+            StepProp::Probability(p) => step.probability = p.min(100),
+            StepProp::Ratchet(r) => step.ratchet = r.clamp(1, 4),
+        }
+        Ok(())
+    })
 }
 
 /// Sets a pattern property of a step clip (Länge, Auflösung, Swing).
 pub fn set_step_clip_prop(project: &Project, clip: ClipId, prop: StepClipProp) -> EditResult {
-    todo!("WP-12")
+    if let StepClipProp::Swing(swing) = prop
+        && swing.is_nan()
+    {
+        return Err(EditError::Invalid("swing is not a number"));
+    }
+    with_step_clip(project, clip, |s| {
+        match prop {
+            StepClipProp::LengthSteps(steps) => {
+                let old = usize::from(s.length_steps);
+                let new = usize::from(steps.clamp(1, MAX_STEPS as u8));
+                let hidden_off = |r: &StepRow| r.steps[old..new].iter().all(|st| !st.on);
+                if new == 2 * old && s.rows.iter().all(hidden_off) {
+                    for row in &mut s.rows {
+                        row.steps.copy_within(..old, old);
+                    }
+                }
+                s.length_steps = new as u8;
+            }
+            StepClipProp::Resolution(resolution) => s.resolution = resolution,
+            StepClipProp::Swing(swing) => s.swing = swing.clamp(0.0, MAX_SWING),
+        }
+        Ok(())
+    })
 }
 
 /// Sets a property of step row `row`.
 pub fn set_step_row(project: &Project, clip: ClipId, row: usize, prop: StepRowProp) -> EditResult {
-    todo!("WP-12")
+    let prop = match prop {
+        StepRowProp::Name(name) => StepRowProp::Name(valid_name(&name)?),
+        prop => prop,
+    };
+    with_step_clip(project, clip, |s| {
+        let r = s.rows.get_mut(row).ok_or(EditError::IndexOutOfRange {
+            what: "step row",
+            index: row,
+        })?;
+        match prop {
+            StepRowProp::Name(name) => r.name = name,
+            StepRowProp::Note(note) => r.note = note.min(127),
+            StepRowProp::Mute(mute) => r.mute = mute,
+            StepRowProp::Solo(solo) => r.solo = solo,
+        }
+        Ok(())
+    })
 }
 
 /// Replaces the row names and notes of a step clip (instrument changed, CLAP note names arrived).
 /// Rows keep their steps by index; extra rows start empty, missing rows are dropped.
 pub fn set_step_rows(project: &Project, clip: ClipId, rows: &[StepRowSpec]) -> EditResult {
-    todo!("WP-12")
+    with_step_clip(project, clip, |s| {
+        s.rows.truncate(rows.len());
+        for (index, spec) in rows.iter().enumerate() {
+            match s.rows.get_mut(index) {
+                Some(row) => {
+                    row.name.clone_from(&spec.name);
+                    row.note = spec.note.min(127);
+                }
+                None => s.rows.push(new_step_row(&spec.name, spec.note)),
+            }
+        }
+        Ok(())
+    })
 }
 
 /// "Als MIDI-Clip": turns a step clip into a MIDI clip with the same id, name, start and length.
@@ -558,7 +1028,39 @@ pub fn set_step_rows(project: &Project, clip: ClipId, rows: &[StepRowSpec]) -> E
 /// ratchets applied, muted and non-soloed rows left out). Steps with probability 0 are left out;
 /// other probabilities are dropped (the notes always play).
 pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
-    todo!("WP-12")
+    let location = locate_clip(project, clip)?;
+    let source = &project.tracks[location.0].clips[location.1];
+    let ClipContent::Step(steps) = &source.content else {
+        return Err(EditError::WrongClipKind {
+            clip,
+            expected: ClipKind::Step,
+        });
+    };
+    let hits = steps.hits(source.length);
+    let mut p = project.clone();
+    let notes: Vec<Note> = hits
+        .into_iter()
+        .filter(|h| h.probability > 0)
+        .map(|h| Note {
+            id: NoteId(p.alloc_id()),
+            start: h.start,
+            length: h.length,
+            pitch: h.note,
+            velocity: h.velocity,
+        })
+        .collect();
+    update_clip(&mut p, location, |c| {
+        c.loop_length = None;
+        c.content = ClipContent::Midi(MidiClip {
+            takes: vec![Take {
+                name: String::new(),
+                notes: Arc::new(notes),
+            }],
+            active_take: 0,
+        });
+        Ok(())
+    })?;
+    Ok(p)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -574,7 +1076,41 @@ pub fn insert_device(
     index: usize,
     spec: NewDevice,
 ) -> Result<(Project, DeviceId), EditError> {
-    todo!("WP-12")
+    let chain: &[Arc<Device>] = match channel {
+        ChannelRef::Track(id) => &project.tracks[locate_track(project, id)?].channel.devices,
+        ChannelRef::Master => {
+            if spec.role == DeviceRole::Instrument {
+                return Err(EditError::Invalid("the master takes effects only"));
+            }
+            &project.master.devices
+        }
+    };
+    let has_instrument = has_instrument(chain);
+    let index = index.min(chain.len());
+    let index = match spec.role {
+        DeviceRole::Instrument if has_instrument => {
+            return Err(EditError::Invalid("the track already has an instrument"));
+        }
+        DeviceRole::Instrument if index != 0 => {
+            return Err(EditError::Invalid("an instrument goes first in the chain"));
+        }
+        DeviceRole::Instrument => 0,
+        DeviceRole::Effect if has_instrument => index.max(1),
+        DeviceRole::Effect => index,
+    };
+    let mut p = project.clone();
+    let id = DeviceId(p.alloc_id());
+    channel_mut(&mut p, channel)?.devices.insert(
+        index,
+        Arc::new(Device {
+            id,
+            role: spec.role,
+            plugin: spec.plugin,
+            bypass: false,
+            state: spec.state,
+        }),
+    );
+    Ok((p, id))
 }
 
 /// Puts `plugin` as the instrument of `track` (browser drop on a track): replaces the existing
@@ -584,23 +1120,60 @@ pub fn replace_instrument(
     track: TrackId,
     plugin: PluginRef,
 ) -> Result<(Project, DeviceId), EditError> {
-    todo!("WP-12")
+    let track_index = locate_track(project, track)?;
+    let mut p = project.clone();
+    let id = DeviceId(p.alloc_id());
+    let device = Arc::new(Device {
+        id,
+        role: DeviceRole::Instrument,
+        plugin,
+        bypass: false,
+        state: None,
+    });
+    let chain = &mut track_mut(&mut p, track_index).channel.devices;
+    if has_instrument(chain) {
+        chain[0] = device;
+    } else {
+        chain.insert(0, device);
+    }
+    Ok((p, id))
 }
 
 /// Removes a device from its chain.
 pub fn remove_device(project: &Project, device: DeviceId) -> EditResult {
-    todo!("WP-12")
+    let (channel, index, _) = project
+        .find_device(device)
+        .ok_or(EditError::DeviceNotFound(device))?;
+    let mut p = project.clone();
+    channel_mut(&mut p, channel)?.devices.remove(index);
+    Ok(p)
 }
 
 /// Moves an effect within its chain to `to_index` of the chain without it (drag reorder). An
 /// instrument cannot move, and no effect can move before it (`Invalid`).
 pub fn move_device(project: &Project, device: DeviceId, to_index: usize) -> EditResult {
-    todo!("WP-12")
+    let (channel, index, found) = project
+        .find_device(device)
+        .ok_or(EditError::DeviceNotFound(device))?;
+    if found.role == DeviceRole::Instrument {
+        return Err(EditError::Invalid("an instrument cannot move"));
+    }
+    let mut p = project.clone();
+    let chain = &mut channel_mut(&mut p, channel)?.devices;
+    let moved = chain.remove(index);
+    let to_index = to_index.min(chain.len());
+    if to_index == 0 && has_instrument(chain) {
+        return Err(EditError::Invalid(
+            "an effect cannot go before the instrument",
+        ));
+    }
+    chain.insert(to_index, moved);
+    Ok(p)
 }
 
 /// Sets bypass (switch on the device card, Alt-click on an insert slot).
 pub fn set_device_bypass(project: &Project, device: DeviceId, bypass: bool) -> EditResult {
-    todo!("WP-12")
+    edit_device(project, device, |d| d.bypass = bypass)
 }
 
 /// Stores a plugin state snapshot. Apply with [`crate::Document::apply_untracked`] for snapshots
@@ -610,7 +1183,7 @@ pub fn set_device_state(
     device: DeviceId,
     state: Option<Arc<[u8]>>,
 ) -> EditResult {
-    todo!("WP-12")
+    edit_device(project, device, |d| d.state = state)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -624,10 +1197,529 @@ pub fn add_take(
     clip: ClipId,
     name: String,
 ) -> Result<(Project, usize), EditError> {
-    todo!("WP-12")
+    let (p, index) = edit_clip_with(project, clip, |c| {
+        let m = midi_mut(c)?;
+        m.takes.push(Take {
+            name,
+            notes: Arc::new(Vec::new()),
+        });
+        m.active_take = m.takes.len() - 1;
+        Ok(m.active_take)
+    })?;
+    Ok((p, index))
 }
 
 /// Makes take `take` the active one (inspector take list).
 pub fn select_take(project: &Project, clip: ClipId, take: usize) -> EditResult {
-    todo!("WP-12")
+    edit_clip(project, clip, |c| {
+        let m = midi_mut(c)?;
+        if take >= m.takes.len() {
+            return Err(EditError::IndexOutOfRange {
+                what: "take",
+                index: take,
+            });
+        }
+        m.active_take = take;
+        Ok(())
+    })
+}
+
+// ------------------------------------------------------------------------------------------------
+// Private helpers
+// ------------------------------------------------------------------------------------------------
+
+/// Shortest clip or note length.
+const MIN_LENGTH: Tick = Tick(1);
+/// Longest count-in.
+const MAX_COUNT_IN_BARS: u8 = 4;
+/// Default name of a track with klopfer (prototype `addTrack`).
+const KLOPFER_TRACK_NAME: &str = "Drums";
+/// Default name of a track without instrument.
+const DEFAULT_TRACK_NAME: &str = "MIDI";
+
+/// A trimmed, non-empty name.
+fn valid_name(name: &str) -> Result<String, EditError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(EditError::Invalid("empty name"));
+    }
+    Ok(name.to_owned())
+}
+
+/// `hue` if it is one of the token hues.
+fn valid_hue(hue: Hue) -> Result<Hue, EditError> {
+    if Hue::ALL.contains(&hue) {
+        Ok(hue)
+    } else {
+        Err(EditError::Invalid("hue is not a token hue"))
+    }
+}
+
+/// Whether `meter` is supported: `num` 1 ..= 32, `den` a power of two up to 16.
+pub(crate) fn valid_meter(meter: Meter) -> bool {
+    (1..=32).contains(&meter.num) && matches!(meter.den, 1 | 2 | 4 | 8 | 16)
+}
+
+/// Whether `plugin` is the built-in klopfer.
+fn is_klopfer(plugin: &PluginRef) -> bool {
+    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_KLOPFER
+}
+
+/// Whether a chain starts with an instrument.
+fn has_instrument(chain: &[Arc<Device>]) -> bool {
+    chain
+        .first()
+        .is_some_and(|d| d.role == DeviceRole::Instrument)
+}
+
+/// `ids` without repetitions, in first-seen order.
+fn unique<T: Copy + Eq + Hash>(ids: &[T]) -> Vec<T> {
+    let mut seen = HashSet::with_capacity(ids.len());
+    ids.iter().copied().filter(|id| seen.insert(*id)).collect()
+}
+
+fn apply_channel_prop(channel: &mut Channel, prop: ChannelProp) -> Result<(), EditError> {
+    match prop {
+        ChannelProp::VolumeDb(db) => {
+            if db.is_nan() {
+                return Err(EditError::Invalid("volume is not a number"));
+            }
+            channel.volume_db = db.clamp(VOLUME_DB_MIN, VOLUME_DB_MAX);
+        }
+        ChannelProp::Pan(pan) => {
+            if pan.is_nan() {
+                return Err(EditError::Invalid("pan is not a number"));
+            }
+            channel.pan = pan.clamp(-1.0, 1.0);
+        }
+        ChannelProp::Mute(mute) => channel.mute = mute,
+        ChannelProp::Solo(solo) => channel.solo = solo,
+    }
+    Ok(())
+}
+
+/// Applies a validated track property.
+fn apply_track_prop(track: &mut Track, prop: &TrackProp) -> Result<(), EditError> {
+    match prop {
+        TrackProp::Name(name) => track.name.clone_from(name),
+        TrackProp::Hue(hue) => track.hue = *hue,
+        TrackProp::Channel(prop) => apply_channel_prop(&mut track.channel, *prop)?,
+        TrackProp::Arm(arm) => {
+            track.arm = *arm;
+            track.monitor |= *arm;
+        }
+        TrackProp::Monitor(monitor) => track.monitor = *monitor,
+        TrackProp::Input(input) => track.input = input.clone(),
+        TrackProp::MidiChannel(channel) => track.midi_channel = *channel,
+        TrackProp::Height(height) => {
+            track.height = (*height).clamp(TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX)
+        }
+    }
+    Ok(())
+}
+
+// --- Locating and replacing nodes ---------------------------------------------------------------
+
+fn locate_track(project: &Project, id: TrackId) -> Result<usize, EditError> {
+    project.track_index(id).ok_or(EditError::TrackNotFound(id))
+}
+
+/// Track index and clip index of a clip.
+fn locate_clip(project: &Project, id: ClipId) -> Result<(usize, usize), EditError> {
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(t, track)| track.clips.iter().position(|c| c.id == id).map(|c| (t, c)))
+        .ok_or(EditError::ClipNotFound(id))
+}
+
+/// The track at `index`, unshared.
+fn track_mut(project: &mut Project, index: usize) -> &mut Track {
+    Arc::make_mut(&mut project.tracks[index])
+}
+
+/// The channel `channel` refers to, unshared.
+fn channel_mut(project: &mut Project, channel: ChannelRef) -> Result<&mut Channel, EditError> {
+    match channel {
+        ChannelRef::Track(id) => {
+            let index = locate_track(project, id)?;
+            Ok(&mut track_mut(project, index).channel)
+        }
+        ChannelRef::Master => Ok(Arc::make_mut(&mut project.master)),
+    }
+}
+
+/// Runs `f` on a copy of the track at `index` and stores the copy only if it differs, so tracks an
+/// edit leaves as they are stay `Arc::ptr_eq` (engine change detection).
+fn update_track(
+    project: &mut Project,
+    index: usize,
+    f: impl FnOnce(&mut Track) -> Result<(), EditError>,
+) -> Result<(), EditError> {
+    let mut track = Track::clone(&project.tracks[index]);
+    f(&mut track)?;
+    if track != *project.tracks[index] {
+        project.tracks[index] = Arc::new(track);
+    }
+    Ok(())
+}
+
+/// Runs `f` on a copy of the clip at `location` and stores the copy only if it differs (keeping
+/// the track's clips sorted).
+fn update_clip<T>(
+    project: &mut Project,
+    (track_index, clip_index): (usize, usize),
+    f: impl FnOnce(&mut Clip) -> Result<T, EditError>,
+) -> Result<T, EditError> {
+    let old = &project.tracks[track_index].clips[clip_index];
+    let mut clip = Clip::clone(old);
+    let value = f(&mut clip)?;
+    if clip != **old {
+        let moved = clip.start != old.start;
+        let track = track_mut(project, track_index);
+        track.clips[clip_index] = Arc::new(clip);
+        if moved {
+            sort_clips(&mut track.clips);
+        }
+    }
+    Ok(value)
+}
+
+/// Applies `f` to the clip with `id` in a copy of `project`.
+fn edit_clip_with<T>(
+    project: &Project,
+    id: ClipId,
+    f: impl FnOnce(&mut Clip) -> Result<T, EditError>,
+) -> Result<(Project, T), EditError> {
+    let location = locate_clip(project, id)?;
+    let mut p = project.clone();
+    let value = update_clip(&mut p, location, f)?;
+    Ok((p, value))
+}
+
+fn edit_clip(
+    project: &Project,
+    id: ClipId,
+    f: impl FnOnce(&mut Clip) -> Result<(), EditError>,
+) -> EditResult {
+    edit_clip_with(project, id, f).map(|(p, ())| p)
+}
+
+/// Applies `f` to the device with `id` in a copy of `project`.
+fn edit_device(project: &Project, id: DeviceId, f: impl FnOnce(&mut Device)) -> EditResult {
+    let (channel, index, _) = project
+        .find_device(id)
+        .ok_or(EditError::DeviceNotFound(id))?;
+    let mut p = project.clone();
+    f(Arc::make_mut(
+        &mut channel_mut(&mut p, channel)?.devices[index],
+    ));
+    Ok(p)
+}
+
+/// Inserts `clip` into a track's clips, keeping them sorted by start, then id.
+fn insert_clip(track: &mut Track, clip: Arc<Clip>) {
+    let key = (clip.start, clip.id);
+    let at = track.clips.partition_point(|c| (c.start, c.id) <= key);
+    track.clips.insert(at, clip);
+}
+
+fn sort_clips(clips: &mut [Arc<Clip>]) {
+    clips.sort_by_key(|c| (c.start, c.id));
+}
+
+fn sort_notes(notes: &mut [Note]) {
+    notes.sort_by_key(|n| (n.start, n.pitch, n.id));
+}
+
+// --- Clips --------------------------------------------------------------------------------------
+
+/// A note from a [`NewNote`], clamped into range.
+fn new_note(id: NoteId, spec: &NewNote) -> Note {
+    Note {
+        id,
+        start: spec.start.max(Tick::ZERO),
+        length: spec.length.max(MIN_LENGTH),
+        pitch: spec.pitch.min(127),
+        velocity: spec.velocity.clamp(1, 127),
+    }
+}
+
+fn new_step_row(name: &str, note: u8) -> StepRow {
+    StepRow {
+        name: name.to_owned(),
+        note: note.min(127),
+        mute: false,
+        solo: false,
+        steps: [Step::default(); MAX_STEPS],
+    }
+}
+
+/// A new pattern: 16 steps at 1/16, no swing, all steps off.
+fn new_step_clip(rows: &[StepRowSpec]) -> StepClip {
+    let rows = if rows.is_empty() {
+        DEFAULT_STEP_ROWS
+            .iter()
+            .map(|&(name, note)| new_step_row(name, note))
+            .collect()
+    } else {
+        rows.iter().map(|r| new_step_row(&r.name, r.note)).collect()
+    };
+    StepClip {
+        rows,
+        length_steps: 16,
+        resolution: StepResolution::Sixteenth,
+        swing: 0.0,
+    }
+}
+
+/// A copy of `clip` with a new clip id and new note ids (same order, so the notes stay sorted).
+fn copy_clip(project: &mut Project, clip: &Clip) -> Clip {
+    let mut copy = clip.clone();
+    copy.id = ClipId(project.alloc_id());
+    if let ClipContent::Midi(m) = &mut copy.content {
+        for take in &mut m.takes {
+            let notes = take
+                .notes
+                .iter()
+                .map(|n| Note {
+                    id: NoteId(project.alloc_id()),
+                    ..*n
+                })
+                .collect();
+            take.notes = Arc::new(notes);
+        }
+    }
+    copy
+}
+
+/// The clips of a move or copy with the group's clamped deltas.
+struct ClipGroup {
+    /// Track index and clip, in the order of the request without repetitions.
+    clips: Vec<(usize, Arc<Clip>)>,
+    /// Time delta, clamped so no clip starts before tick 0.
+    delta: Tick,
+    /// Track delta, clamped so every clip stays on a track.
+    track_delta: i64,
+}
+
+impl ClipGroup {
+    fn new(
+        project: &Project,
+        ids: &[ClipId],
+        delta: Tick,
+        track_delta: i32,
+    ) -> Result<ClipGroup, EditError> {
+        let clips = unique(ids)
+            .into_iter()
+            .map(|id| {
+                let (t, c) = locate_clip(project, id)?;
+                Ok((t, Arc::clone(&project.tracks[t].clips[c])))
+            })
+            .collect::<Result<Vec<_>, EditError>>()?;
+        let earliest = clips
+            .iter()
+            .map(|(_, c)| c.start)
+            .min()
+            .unwrap_or(Tick::ZERO);
+        let top = clips.iter().map(|&(t, _)| t).min().unwrap_or(0) as i64;
+        let bottom = clips.iter().map(|&(t, _)| t).max().unwrap_or(0) as i64;
+        let last = project.tracks.len() as i64 - 1;
+        Ok(ClipGroup {
+            clips,
+            delta: delta.max(-earliest),
+            track_delta: i64::from(track_delta).clamp(-top, (last - bottom).max(-top)),
+        })
+    }
+
+    /// Track index a clip from `track_index` moves to.
+    fn target(&self, track_index: usize) -> usize {
+        (track_index as i64 + self.track_delta) as usize
+    }
+}
+
+/// Splits `clip` at clip-local `at` (`0 < at < length`) into a left part (same id) and a right
+/// part (new id); see [`split_clips`].
+fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> (Clip, Clip) {
+    let mut left = clip.clone();
+    let mut right = clip.clone();
+    right.id = ClipId(project.alloc_id());
+    right.start = clip.start + at;
+    right.length = clip.length - at;
+    left.length = at;
+    match &mut right.content {
+        ClipContent::Midi(right_midi) => {
+            let ClipContent::Midi(left_midi) = &mut left.content else {
+                unreachable!("left and right are copies of one clip");
+            };
+            for (l, r) in left_midi.takes.iter_mut().zip(&mut right_midi.takes) {
+                let notes = match clip.loop_length {
+                    Some(loop_length) => unroll(project, &l.notes, loop_length, clip.length),
+                    None => l.notes.to_vec(),
+                };
+                let (mut before, mut after) = (Vec::new(), Vec::new());
+                for n in notes {
+                    if n.start < at {
+                        before.push(Note {
+                            length: n.length.min(at - n.start),
+                            ..n
+                        });
+                    } else {
+                        after.push(Note {
+                            id: NoteId(project.alloc_id()),
+                            start: n.start - at,
+                            ..n
+                        });
+                    }
+                }
+                sort_notes(&mut before);
+                sort_notes(&mut after);
+                l.notes = Arc::new(before);
+                r.notes = Arc::new(after);
+            }
+            left.loop_length = None;
+            right.loop_length = None;
+        }
+        ClipContent::Step(pattern) => {
+            // Start the right part with the step that plays at `at` (exact when `at` lies on a
+            // step boundary).
+            let len = usize::from(pattern.length_steps).clamp(1, MAX_STEPS);
+            let shift = (at.0 / pattern.resolution.ticks().0) as usize % len;
+            for row in &mut pattern.rows {
+                row.steps[..len].rotate_left(shift);
+            }
+        }
+    }
+    (left, right)
+}
+
+/// The notes a looped take plays within `length`: repetitions of `0 .. loop_length`, each note cut
+/// at its repetition's end and at `length`. The first repetition keeps the note ids.
+fn unroll(project: &mut Project, notes: &[Note], loop_length: Tick, length: Tick) -> Vec<Note> {
+    let mut out = Vec::new();
+    let mut offset = Tick::ZERO;
+    while offset < length {
+        for n in notes.iter().filter(|n| n.start < loop_length) {
+            let start = offset + n.start;
+            if start >= length {
+                break;
+            }
+            let end = (start + n.length).min(offset + loop_length).min(length);
+            let id = if offset == Tick::ZERO {
+                n.id
+            } else {
+                NoteId(project.alloc_id())
+            };
+            out.push(Note {
+                id,
+                start,
+                length: end - start,
+                ..*n
+            });
+        }
+        offset += loop_length;
+    }
+    out
+}
+
+// --- Notes --------------------------------------------------------------------------------------
+
+/// The MIDI content of a clip.
+fn midi_mut(clip: &mut Clip) -> Result<&mut MidiClip, EditError> {
+    match &mut clip.content {
+        ClipContent::Midi(m) => Ok(m),
+        ClipContent::Step(_) => Err(EditError::WrongClipKind {
+            clip: clip.id,
+            expected: ClipKind::Midi,
+        }),
+    }
+}
+
+/// Runs `f` on the notes of the active take of a MIDI clip and sorts them afterwards.
+fn with_notes(
+    project: &mut Project,
+    clip: ClipId,
+    f: impl FnOnce(&mut Vec<Note>) -> Result<(), EditError>,
+) -> Result<(), EditError> {
+    let location = locate_clip(project, clip)?;
+    update_clip(project, location, |c| {
+        let m = midi_mut(c)?;
+        let notes = Arc::make_mut(&mut m.takes[m.active_take].notes);
+        f(notes)?;
+        sort_notes(notes);
+        Ok(())
+    })
+}
+
+/// A set of note ids from a request.
+struct NoteSelection {
+    ids: HashSet<NoteId>,
+}
+
+impl NoteSelection {
+    fn new(ids: &[NoteId]) -> NoteSelection {
+        NoteSelection {
+            ids: ids.iter().copied().collect(),
+        }
+    }
+
+    fn contains(&self, id: NoteId) -> bool {
+        self.ids.contains(&id)
+    }
+
+    /// `NoteNotFound` for the first id not in `notes`.
+    fn check(&self, notes: &[Note]) -> Result<(), EditError> {
+        let present: HashSet<NoteId> = notes.iter().map(|n| n.id).collect();
+        match self.ids.iter().find(|id| !present.contains(id)) {
+            Some(&missing) => Err(EditError::NoteNotFound(missing)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Clamps a group move so no selected note starts before 0 or leaves `0 ..= 127`.
+fn clamp_note_move(
+    notes: &[Note],
+    selection: &NoteSelection,
+    delta: Tick,
+    pitch_delta: i32,
+) -> (Tick, i64) {
+    let selected = || notes.iter().filter(|n| selection.contains(n.id));
+    let earliest = selected().map(|n| n.start).min().unwrap_or(Tick::ZERO);
+    let lowest = selected().map(|n| i64::from(n.pitch)).min().unwrap_or(0);
+    let highest = selected().map(|n| i64::from(n.pitch)).max().unwrap_or(127);
+    (
+        delta.max(-earliest),
+        i64::from(pitch_delta).clamp(-lowest, 127 - highest),
+    )
+}
+
+/// `pitch + delta` for a delta from [`clamp_note_move`].
+fn shift_pitch(pitch: u8, delta: i64) -> u8 {
+    (i64::from(pitch) + delta).clamp(0, 127) as u8
+}
+
+/// `t` rounded to a multiple of `grid`, halves up (prototype `Math.round`).
+fn round_to(t: Tick, grid: Tick) -> Tick {
+    let q = t.0.div_euclid(grid.0);
+    let r = t.0.rem_euclid(grid.0);
+    Tick((q + i64::from(2 * r >= grid.0)) * grid.0)
+}
+
+// --- Steps --------------------------------------------------------------------------------------
+
+/// Applies `f` to the pattern of a step clip in a copy of `project`.
+fn with_step_clip(
+    project: &Project,
+    clip: ClipId,
+    f: impl FnOnce(&mut StepClip) -> Result<(), EditError>,
+) -> EditResult {
+    edit_clip(project, clip, |c| match &mut c.content {
+        ClipContent::Step(s) => f(s),
+        ClipContent::Midi(_) => Err(EditError::WrongClipKind {
+            clip,
+            expected: ClipKind::Step,
+        }),
+    })
 }
