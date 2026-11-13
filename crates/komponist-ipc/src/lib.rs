@@ -11,14 +11,12 @@
 //! - [`signal`]: futex wait with deadline and wake.
 //! - [`control`]: [`ControlMsg`] / [`BridgeMsg`] over a seqpacket [`Channel`], and the shared
 //!   plugin vocabulary ([`PluginDescriptor`], [`ParamInfo`], [`NoteName`], …).
+//! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process through its pidfd.
 //!
 //! This crate links no plugin format and no audio backend.
 
-// Contract stage (WP-01): bodies are `todo!()` until WP-16 implements them, so parameters are
-// unused for now. Remove this allow when the implementation lands.
-#![allow(unused_variables)]
-
 pub mod control;
+pub mod process;
 pub mod ring;
 pub mod shm;
 pub mod signal;
@@ -34,6 +32,7 @@ pub use control::{
     LoadedInfo, LogLevel, NoteName, ParamInfo, ParamValue, PluginDescriptor, PluginFormat,
     PluginKind, RenderMode,
 };
+pub use process::{ProcessExit, ProcessWatcher};
 pub use ring::ShmRing;
 pub use shm::{
     BlockError, BlockRequest, BlockResult, BlockSpec, BlockStatus, BridgeClient, BridgeMonitor,
