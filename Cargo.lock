@@ -2441,9 +2441,9 @@ dependencies = [
  "komponist-hosting",
  "komponist-ipc",
  "rtrb",
- "rustix",
+ "rustix 1.1.6",
  "serde_json",
- "x11rb",
+ "x11rb 0.14.0",
 ]
 
 [[package]]
