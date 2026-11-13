@@ -6,9 +6,9 @@
 //! state of each visible object and call the painters below:
 //!
 //! - [`track_header`]: [`paint_track_header`] for a track header (colour bar, name, instrument,
-//!   M S R I, mini meter) with its 12 states. The toggles are painted statically;
-//!   [`track_header::HeaderLayout::toggles`] exposes their rects so the arrangement can overlay the
-//!   interactive WP-20 toggles at exactly those positions.
+//!   M S R I, mini meter) with its 12 states. Toggles and meter are painted as still pictures in
+//!   the looks of the WP-20 toggle and the WP-21 header meter; [`HeaderLayout`] exposes their
+//!   rects so the arrangement can overlay the interactive widgets at exactly those positions.
 //! - [`clip`]: [`paint_clip`] for a clip (head, body, preview, hover handles, recording head, loop
 //!   joints, trim edge, selection) and [`paint_clip_ghost`] for the dashed original of an Alt copy.
 //!   The note or step preview is a precomputed [`PreviewMesh`], so the caller can cache it per
@@ -24,13 +24,13 @@
 //! visible object with it (rule 12), e.g. `Clip Beat A, Takt 1–4` or `Note C4, 1.1.000`.
 //!
 //! All axis-aligned edges are snapped to physical pixels ([`crate::px`]); only rounded corners are
-//! anti-aliased. Geometry the design data gives without a token is collected in [`metrics`].
+//! anti-aliased. Geometry the design data gives without a token is collected in
+//! [`crate::widgets::metrics::timeline`].
 
 pub mod clip;
 pub mod gallery;
 pub mod grid;
 mod mesh;
-pub mod metrics;
 pub mod note;
 pub mod ruler;
 pub mod track_header;
@@ -48,8 +48,7 @@ pub use grid::{GridSpec, LineWeight, grid_lines, paint_grid};
 pub use note::{NoteBatch, NoteState, note_access, note_rect, paint_note};
 pub use ruler::{RulerKind, RulerModel, paint_playhead, paint_ruler, ruler_access};
 pub use track_header::{
-    HeaderLayout, HeaderModel, MeterLevel, ToggleLook, TrackToggle, header_access, header_layout,
-    paint_track_header,
+    HeaderLayout, HeaderModel, header_access, header_layout, paint_toggle, paint_track_header,
 };
 
 /// Maps musical time to screen x: `x = x0 + tick × px_per_tick`.

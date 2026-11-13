@@ -1,23 +1,13 @@
-//! Geometry of the timeline elements that the design data gives as plain numbers.
-//!
-//! Everything a token covers comes from `komponist-tokens` in the painters (`size.clip-header`,
-//! `size.toggle`, `radius.*`, `space.*`, …). The values here have **no token**; each one names its
-//! source in `Designsystem.dc.html` / `Screens.dc.html` / `ks-view.js`. The report of WP-22 lists
-//! them as contract change requests, so they can move into `tokens.json` as a group.
+//! Timeline elements (WP-22): `hdr`, `headers`, `clipO`, `clips`, `noteBox`, `nS`, `notes` in
+//! `Designsystem.dc.html`, `arrangement`, `pianoRoll` in `Screens.dc.html`, `clipView`,
+//! `arrView`, `prView` in `ks-view.js`. Spacing that equals a `space.*` token uses the token in the
+//! painters; the values here have no token and are contract change requests of WP-22. The header
+//! meter's bar width and gap are WP-21's ([`super::meter`]).
 
 /// Track header: width of the colour bar ("Farbleiste 3", `hdr().bar`).
 pub const HEADER_COLOR_BAR: f32 = 3.0;
 /// Track header: gap between the name and the instrument line (`gap:1px`).
 pub const HEADER_TEXT_GAP: f32 = 1.0;
-/// Track header: width of one meter channel ("Pegel 2 × 3", `meterH().box`).
-pub const HEADER_METER_BAR: f32 = 3.0;
-/// Track header: gap between the two meter channels (`gap:1px`).
-pub const HEADER_METER_GAP: f32 = 1.0;
-/// Track header meter: share of the height drawn in `meter.ok`; above it `meter.loud`
-/// (`meterH`: `Math.min(l, .8)`).
-pub const HEADER_METER_LOUD_FROM: f32 = 0.8;
-/// Track header meter: height of the clip mark at the top (`meterH().clip`, `height:3`).
-pub const HEADER_METER_CLIP_MARK: f32 = 3.0;
 
 /// Track header: size of the ⚠ in front of an error in the instrument line (the glyph of
 /// `type.small` in `headers` "plugin fehlt"; drawn as the Lucide icon, Plex has no ⚠).
@@ -62,6 +52,9 @@ pub const PREVIEW_STEP_OFFSET: f32 = 0.5;
 
 /// Note: inset in its key row ("Höhe = Tastenhöhe − 2", `left: s·cw + 1`, `width: l·cw − 2`).
 pub const NOTE_INSET: f32 = 1.0;
+/// Note: largest corner radius as a share of the height (`borderRadius: Math.min(2, h/3)`; 2 is
+/// `radius.s`).
+pub const NOTE_RADIUS_PER_HEIGHT: f32 = 1.0 / 3.0;
 /// Note: smallest width (`prView`: `Math.max(3, …)`).
 pub const NOTE_MIN_WIDTH: f32 = 3.0;
 /// Note: the name is shown from this size on ("mit Name ab h 12, w 28").

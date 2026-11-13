@@ -1,110 +1,30 @@
 //! Track header ("Spur-Header", design system `hdr`, `headers`): 224 × 56 (height 32–160), colour
 //! bar, name and instrument, the toggles M S R I and a two-channel mini meter.
 //!
-//! [`paint_track_header`] paints everything, the toggles statically ([`paint_toggle`], the look of
-//! `tgl()` in the design data). The interactive toggle widget comes from WP-20; the arrangement
-//! (WP-40) puts those widgets on top of the painted ones at [`HeaderLayout::toggles`], so the
-//! static ones are only seen where no widget is placed (gallery, snapshots, thumbnails).
+//! [`paint_track_header`] paints everything as a still picture: the toggles with the colours of
+//! the WP-20 track toggle ([`toggle::look`], [`paint_toggle`]) and the meter with the WP-21 header
+//! meter ([`meter::paint`] in [`meter::Style::HEADER`], on the fader taper). The arrangement
+//! (WP-40) puts the interactive widgets on top of the painted ones: a
+//! [`toggle::TrackToggle`] at each of [`HeaderLayout::toggles`] and the clickable
+//! [`meter::Meter`] (clip reset) at [`HeaderLayout::meter`]. Painted alone (gallery, snapshots,
+//! thumbnails), the header looks the same.
 //!
 //! States ([`State`]): rest `surface.2`, hover `surface.3`, selected `accent.surface`, keyboard
 //! focus an inset 1 px accent line. Muted (M or implied by solo elsewhere): colour bar `dim`,
 //! name `text.3`. Implied mute shows M with a `text.3` contour on `surface.2`.
 
-use egui::text::TextWrapping;
-use egui::{Align2, Color32, Painter, Rect, Role, Stroke, StrokeKind, pos2, vec2};
+use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::{Color32, Painter, Rect, Role, Stroke, StrokeKind, pos2, vec2};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::font::Family;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{Icon, TrackPalette, color, line, radius, size, space};
 
-use super::{Access, metrics};
+use super::Access;
 use crate::state::{self, State};
-use crate::{fonts, px, theme};
-
-/// One of the four track toggles, in header order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TrackToggle {
-    /// M: mute.
-    Mute,
-    /// S: solo.
-    Solo,
-    /// R: record arm.
-    Arm,
-    /// I: input monitoring.
-    Monitor,
-}
-
-impl TrackToggle {
-    /// All toggles in header order: M S R I.
-    pub const ALL: [Self; 4] = [Self::Mute, Self::Solo, Self::Arm, Self::Monitor];
-
-    /// The letter on the toggle.
-    pub fn letter(self) -> &'static str {
-        match self {
-            Self::Mute => "M",
-            Self::Solo => "S",
-            Self::Arm => "R",
-            Self::Monitor => "I",
-        }
-    }
-
-    /// The tooltip text of the prototype (`arrView` `btns.tip`), also the accessible name of the
-    /// interactive toggle.
-    pub fn tooltip(self) -> &'static str {
-        match self {
-            Self::Mute => "Mute · M",
-            Self::Solo => "Solo · S · Alt-Klick exklusiv",
-            Self::Arm => "Record-Arm · Alt-Klick exklusiv",
-            Self::Monitor => "Monitoring",
-        }
-    }
-
-    /// Fill and letter colour when on (`tgl().onC`).
-    fn on_colors(self) -> (Color32, Color32) {
-        let (fill, text) = match self {
-            Self::Mute => (color::STATE_MUTE, color::SURFACE_0),
-            Self::Solo => (color::STATE_SOLO, color::SURFACE_0),
-            Self::Arm => (color::STATE_RECORD, color::TEXT_1),
-            Self::Monitor => (color::ACCENT, color::ACCENT_INK),
-        };
-        (color32(fill), color32(text))
-    }
-}
-
-/// How a statically painted toggle looks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToggleLook {
-    /// Off: `surface.4`, letter `text.2`.
-    Off,
-    /// On: the toggle's state colour.
-    On,
-    /// Muted implicitly by solo on another track (M only): `surface.2` with a 1 px `text.3`
-    /// contour. Not a click target.
-    Implied,
-}
-
-/// One meter channel of the header as fractions of the meter height (0 = bottom, 1 = top), already
-/// mapped from dB by the caller.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct MeterLevel {
-    /// Current level.
-    pub level: f32,
-    /// Peak hold; no line at 0.
-    pub peak: f32,
-    /// Clip latch: red mark at the top.
-    pub clip: bool,
-}
-
-impl MeterLevel {
-    /// A channel at `level` with peak hold `peak`, not clipping.
-    pub const fn new(level: f32, peak: f32) -> Self {
-        Self {
-            level,
-            peak,
-            clip: false,
-        }
-    }
-}
+use crate::widgets::meter::{self, MeterState};
+use crate::widgets::metrics::timeline as metrics;
+use crate::widgets::toggle::{self, ToggleKind};
+use crate::{fonts, px, theme, widgets};
 
 /// What a track header shows.
 #[derive(Clone, Copy, Debug)]
@@ -127,10 +47,10 @@ pub struct HeaderModel<'a> {
     pub arm: bool,
     /// I.
     pub monitor: bool,
-    /// Muted because another track is soloed (M shows [`ToggleLook::Implied`] unless on).
+    /// Muted because another track is soloed (M shows the implied look unless on).
     pub implied_mute: bool,
-    /// The two meter channels.
-    pub meter: [MeterLevel; 2],
+    /// The track's meter (ballistics owned by the caller, WP-21); `None`: silent.
+    pub meter: Option<&'a MeterState>,
 }
 
 impl<'a> HeaderModel<'a> {
@@ -146,7 +66,7 @@ impl<'a> HeaderModel<'a> {
             arm: false,
             monitor: false,
             implied_mute: false,
-            meter: [MeterLevel::default(); 2],
+            meter: None,
         }
     }
 
@@ -155,25 +75,19 @@ impl<'a> HeaderModel<'a> {
         self.mute || self.implied_mute
     }
 
-    /// Whether `toggle` is on.
-    pub fn is_on(&self, toggle: TrackToggle) -> bool {
-        match toggle {
-            TrackToggle::Mute => self.mute,
-            TrackToggle::Solo => self.solo,
-            TrackToggle::Arm => self.arm,
-            TrackToggle::Monitor => self.monitor,
+    /// Whether toggle `kind` is on.
+    pub fn is_on(&self, kind: ToggleKind) -> bool {
+        match kind {
+            ToggleKind::Mute => self.mute,
+            ToggleKind::Solo => self.solo,
+            ToggleKind::Arm => self.arm,
+            ToggleKind::Monitor => self.monitor,
         }
     }
 
-    /// The look of `toggle` in this header.
-    pub fn toggle_look(&self, toggle: TrackToggle) -> ToggleLook {
-        if self.is_on(toggle) {
-            ToggleLook::On
-        } else if toggle == TrackToggle::Mute && self.implied_mute {
-            ToggleLook::Implied
-        } else {
-            ToggleLook::Off
-        }
+    /// Whether toggle `kind` shows "stumm durch Solo" (M only).
+    pub fn is_implied(&self, kind: ToggleKind) -> bool {
+        kind == ToggleKind::Mute && self.implied_mute
     }
 }
 
@@ -189,12 +103,13 @@ pub struct HeaderLayout {
     pub color_bar: Rect,
     /// Name and instrument line, each clipped with an ellipsis.
     pub text: Rect,
-    /// The toggles M S R I (`size.toggle`), in [`TrackToggle::ALL`] order. WP-40 places the
+    /// The toggles M S R I (`size.toggle`), in [`ToggleKind::ALL`] order. WP-40 places the
     /// interactive WP-20 toggles exactly here.
     pub toggles: [Rect; 4],
-    /// The two meter channels (each [`metrics::HEADER_METER_BAR`] wide).
-    pub meter: [Rect; 2],
-    /// The meter with its padding: the click target that resets the clip latch.
+    /// The meter: both channels ([`meter::Style::HEADER`]); WP-40 places the clickable meter
+    /// here.
+    pub meter: Rect,
+    /// The meter with its padding.
     pub meter_area: Rect,
 }
 
@@ -209,28 +124,24 @@ pub fn header_layout(rect: Rect) -> HeaderLayout {
         pos2(body.min.x + metrics::HEADER_COLOR_BAR, body.max.y),
     );
 
-    // Meter: padding 8 8 8 6 around two channels with a 1 px gap.
-    let meters_w = 2.0 * metrics::HEADER_METER_BAR + metrics::HEADER_METER_GAP;
+    // Meter: padding 8 8 8 6 around the two channels.
+    let meter_w = meter::Style::HEADER.thickness();
     let meter_area = Rect::from_min_max(
         pos2(
-            body.max.x - space::SPACE_2 - meters_w - space::SPACE_1_5,
+            body.max.x - space::SPACE_2 - meter_w - space::SPACE_1_5,
             body.min.y,
         ),
         body.max,
     );
-    let meter_y = egui::Rangef::new(body.min.y + space::SPACE_2, body.max.y - space::SPACE_2);
-    let m0 = meter_area.min.x + space::SPACE_1_5;
-    let meter = [
-        Rect::from_x_y_ranges(m0..=m0 + metrics::HEADER_METER_BAR, meter_y),
-        Rect::from_x_y_ranges(
-            m0 + metrics::HEADER_METER_BAR + metrics::HEADER_METER_GAP..=m0 + meters_w,
-            meter_y,
-        ),
-    ];
+    let meter = Rect::from_x_y_ranges(
+        meter_area.min.x + space::SPACE_1_5..=meter_area.min.x + space::SPACE_1_5 + meter_w,
+        body.min.y + space::SPACE_2..=body.max.y - space::SPACE_2,
+    );
 
-    // Toggles: 4 × size.toggle with space.0.5 between, space.1 before the meter.
+    // Toggles: size.toggle each, space.0.5 between, space.1 before the meter.
     let [tw, th] = size::TOGGLE;
-    let toggles_w = 4.0 * tw + 3.0 * space::SPACE_0_5;
+    let n = ToggleKind::ALL.len() as f32;
+    let toggles_w = n * tw + (n - 1.0) * space::SPACE_0_5;
     let toggles_right = meter_area.min.x - space::SPACE_1;
     let toggles_left = toggles_right - toggles_w;
     let ty = body.center().y - th / 2.0;
@@ -265,6 +176,11 @@ pub fn paint_track_header(painter: &Painter, rect: Rect, model: &HeaderModel<'_>
 
     px::fill(painter, l.body, 0.0, state::row_fill(2, state));
     px::fill(painter, l.separator, 0.0, color32(color::SURFACE_0));
+    // Keyboard focus: an inset 1 px accent line. The colour bar and the rest of the content are
+    // painted over it, as CSS paints children over an inset box shadow.
+    if state.focused {
+        px::inner_border(painter, l.body, color32(color::ACCENT));
+    }
     let bar = if dimmed {
         model.palette.dim
     } else {
@@ -273,15 +189,12 @@ pub fn paint_track_header(painter: &Painter, rect: Rect, model: &HeaderModel<'_>
     px::fill(painter, l.color_bar, 0.0, color32(bar));
 
     paint_texts(painter, &l, model);
-    for (toggle, r) in TrackToggle::ALL.into_iter().zip(l.toggles) {
-        paint_toggle(painter, r, toggle, model.toggle_look(toggle));
+    for (kind, r) in ToggleKind::ALL.into_iter().zip(l.toggles) {
+        paint_toggle(painter, r, kind, model.is_on(kind), model.is_implied(kind));
     }
-    for (channel, r) in model.meter.iter().zip(l.meter) {
-        paint_meter_channel(painter, r, *channel);
-    }
-    if state.focused {
-        px::inner_border(painter, l.body, color32(color::ACCENT));
-    }
+    let silent = MeterState::new();
+    let levels = model.meter.unwrap_or(&silent);
+    meter::paint(painter, l.meter, levels, &meter::Style::HEADER);
 }
 
 fn paint_texts(painter: &Painter, l: &HeaderLayout, model: &HeaderModel<'_>) {
@@ -355,87 +268,37 @@ pub(crate) fn one_line(
     painter.layout_job(job)
 }
 
-/// Paints a track toggle statically (`tgl()`): 18 × 16, `radius.s`, letter in Mono 10.
-///
-/// The design sets the letter in Plex Mono 600, which komponist does not bundle; the medium (500)
-/// face is the closest.
-pub fn paint_toggle(painter: &Painter, rect: Rect, toggle: TrackToggle, look: ToggleLook) {
-    let (fill, text) = match look {
-        ToggleLook::Off => (color32(color::SURFACE_4), color32(color::TEXT_2)),
-        ToggleLook::On => toggle.on_colors(),
-        ToggleLook::Implied => (color32(color::SURFACE_2), color32(color::TEXT_2)),
-    };
+/// Paints a track toggle as a still picture in the look of the WP-20 widget
+/// ([`toggle::look`] at rest): 18 × 16, `radius.s`, letter in Mono 10 (medium; the design's Mono
+/// 600 is not bundled).
+pub fn paint_toggle(painter: &Painter, rect: Rect, kind: ToggleKind, on: bool, implied: bool) {
+    let look = toggle::look(kind, on, implied, State::REST);
     let ppp = painter.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
-    painter.rect_filled(r, theme::corner_radius(radius::S), fill);
-    if look == ToggleLook::Implied {
+    px::fill(painter, r, radius::S, look.fill);
+    if let Some(contour) = look.contour {
         painter.rect_stroke(
             r,
             theme::corner_radius(radius::S),
-            Stroke::new(px::line_width(ppp), color32(color::TEXT_3)),
+            Stroke::new(px::line_width(ppp), contour),
             StrokeKind::Inside,
         );
     }
-    let font = egui::FontId::new(typography::VALUE_S.size, fonts::family(Family::Mono, 500));
-    let galley = painter.layout_no_wrap(toggle.letter().to_owned(), font, text);
-    let pos = Align2::CENTER_CENTER
-        .anchor_size(r.center(), galley.size())
-        .min;
+    let style = typography::VALUE_S;
+    let galley = painter.layout_job(LayoutJob::single_section(
+        kind.letter().to_owned(),
+        TextFormat {
+            font_id: widgets::mono_medium(style.size),
+            line_height: Some(style.line_height),
+            color: look.text,
+            ..Default::default()
+        },
+    ));
     painter.galley(
-        pos2(px::snap(pos.x, ppp), px::snap(pos.y, ppp)),
+        widgets::text_pos_centered(r, &galley, ppp),
         galley,
-        text,
+        look.text,
     );
-}
-
-/// Paints one meter channel (`meterH`): `meter.track`, level in `meter.ok` up to 80 % and
-/// `meter.loud` above, a 1 px peak line (`meter.loud` above 80 %), the clip mark at the top.
-pub fn paint_meter_channel(painter: &Painter, rect: Rect, level: MeterLevel) {
-    let ppp = painter.pixels_per_point();
-    let r = px::snap_rect(rect, ppp);
-    painter.rect_filled(r, 0.0, color32(color::METER_TRACK));
-    let h = r.height();
-    let y_at = |fraction: f32| px::snap(r.max.y - fraction.clamp(0.0, 1.0) * h, ppp);
-    let loud_from = metrics::HEADER_METER_LOUD_FROM;
-    let l = level.level.clamp(0.0, 1.0);
-    if l > 0.0 {
-        let ok_top = y_at(l.min(loud_from));
-        painter.rect_filled(
-            Rect::from_min_max(pos2(r.min.x, ok_top), r.max),
-            0.0,
-            color32(color::METER_OK),
-        );
-        if l > loud_from {
-            painter.rect_filled(
-                Rect::from_min_max(pos2(r.min.x, y_at(l)), pos2(r.max.x, y_at(loud_from))),
-                0.0,
-                color32(color::METER_LOUD),
-            );
-        }
-    }
-    if level.peak > 0.0 {
-        let w = px::line_width(ppp);
-        // CSS `bottom: peak·100 %`: the line's bottom edge sits at the peak, kept inside the bar.
-        let bottom = y_at(level.peak).max(r.min.y + w);
-        let c = if level.peak > loud_from {
-            color::METER_LOUD
-        } else {
-            color::METER_OK
-        };
-        painter.rect_filled(
-            Rect::from_min_max(pos2(r.min.x, bottom - w), pos2(r.max.x, bottom)),
-            0.0,
-            color32(c),
-        );
-    }
-    if level.clip {
-        let mark = px::snap(r.min.y + metrics::HEADER_METER_CLIP_MARK, ppp);
-        painter.rect_filled(
-            Rect::from_min_max(r.min, pos2(r.max.x, mark)),
-            0.0,
-            color32(color::METER_CLIP),
-        );
-    }
 }
 
 /// Accessible name and role of a header: `Spur Lead, pisynth`, `Spur Strings, Plugin fehlt:
@@ -468,10 +331,10 @@ mod tests {
         assert_eq!(l.separator.height(), 1.0);
         assert_eq!(l.color_bar.width(), 3.0);
         // Meter: padding 8 right, two channels 3 + 1 + 3, padding 6 left.
-        assert_eq!(l.meter[1].max.x, 10.0 + 224.0 - 8.0);
-        assert_eq!(l.meter[0].min.x, 10.0 + 224.0 - 8.0 - 7.0);
+        assert_eq!(l.meter.max.x, 10.0 + 224.0 - 8.0);
+        assert_eq!(l.meter.width(), 7.0);
         assert_eq!(l.meter_area.width(), 21.0);
-        assert_eq!(l.meter[0].height(), 55.0 - 16.0);
+        assert_eq!(l.meter.height(), 55.0 - 16.0);
         // Toggles: 18 × 16, gap 2, gap 4 before the meter.
         assert_eq!(l.toggles[3].max.x, l.meter_area.min.x - 4.0);
         assert_eq!(l.toggles[1].min.x - l.toggles[0].max.x, 2.0);
@@ -481,24 +344,22 @@ mod tests {
         }
         // Text: bar 3 + gap 4 + padding 6; 110 − 6 = 104 wide.
         assert_eq!(l.text.min.x, 10.0 + 13.0);
-        assert_eq!(
-            l.text.width(),
-            224.0 - 3.0 - 4.0 - 6.0 - 4.0 - 78.0 - 4.0 - 21.0
-        );
+        assert_eq!(l.text.width(), 104.0);
     }
 
     #[test]
-    fn toggle_looks() {
+    fn toggle_states() {
         let p = TrackPalette::new(300);
         let mut m = HeaderModel::new("Pad", "stumm durch Solo", &p);
         m.implied_mute = true;
-        assert_eq!(m.toggle_look(TrackToggle::Mute), ToggleLook::Implied);
-        assert_eq!(m.toggle_look(TrackToggle::Solo), ToggleLook::Off);
+        assert!(m.is_implied(ToggleKind::Mute));
+        assert!(!m.is_implied(ToggleKind::Solo));
+        assert!(!m.is_on(ToggleKind::Mute));
         assert!(m.dimmed());
         m.mute = true;
-        assert_eq!(m.toggle_look(TrackToggle::Mute), ToggleLook::On);
-        let letters: String = TrackToggle::ALL.iter().map(|t| t.letter()).collect();
-        assert_eq!(letters, "MSRI");
+        m.arm = true;
+        assert!(m.is_on(ToggleKind::Mute) && m.is_on(ToggleKind::Arm));
+        assert!(!m.is_on(ToggleKind::Monitor));
     }
 
     #[test]

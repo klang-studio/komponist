@@ -17,9 +17,12 @@ use komponist_tokens::{TrackPalette, color, size, space};
 
 use super::clip::{ClipEdge, ClipModel, ClipState, PreviewMesh, PreviewSpec};
 use super::note::{NoteBatch, NoteState, note_access};
-use super::track_header::{HeaderModel, MeterLevel};
+use super::track_header::HeaderModel;
 use super::{clip, track_header};
 use crate::state::State;
+use crate::widgets::fader;
+use crate::widgets::meter::MeterState;
+use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
 
 /// The demo hue of the design system (`HUE = 150`, green).
@@ -195,8 +198,9 @@ pub struct HeaderRow {
     pub toggles: [bool; 4],
     /// Muted by solo elsewhere.
     pub implied: bool,
-    /// Level, peak, clip of the left channel (the right one follows the design: × 0.94 / 0.97).
-    pub meter: (f32, f32, bool),
+    /// Level and held peak of the left channel as shares of the meter height (`hdr` `l`, `pk`);
+    /// the right one follows the design data (× 0.94 / × 0.97).
+    pub meter: (f32, f32),
 }
 
 /// A header state of the design system: label, file slug, headers.
@@ -219,14 +223,14 @@ fn row(name: &'static str, instrument: &'static str, hue: u16) -> HeaderRow {
         state: State::REST,
         toggles: [false; 4],
         implied: false,
-        meter: (0.0, 0.0, false),
+        meter: (0.0, 0.0),
     }
 }
 
 /// The 12 header states of `headers`.
 pub fn header_demos() -> Vec<HeaderDemo> {
     let lead = || HeaderRow {
-        meter: (0.5, 0.6, false),
+        meter: (0.5, 0.6),
         ..row("Lead", "pisynth", HUE)
     };
     let with = |state| HeaderRow { state, ..lead() };
@@ -247,7 +251,7 @@ pub fn header_demos() -> Vec<HeaderDemo> {
                 with(State::SELECTED),
                 HeaderRow {
                     state: State::SELECTED,
-                    meter: (0.62, 0.7, false),
+                    meter: (0.62, 0.7),
                     ..row("Bass", "pisynth", 250)
                 },
             ],
@@ -257,7 +261,7 @@ pub fn header_demos() -> Vec<HeaderDemo> {
             "armed",
             vec![HeaderRow {
                 toggles: [false, false, true, true],
-                meter: (0.3, 0.4, false),
+                meter: (0.3, 0.4),
                 ..lead()
             }],
         ),
@@ -266,7 +270,7 @@ pub fn header_demos() -> Vec<HeaderDemo> {
             "solo",
             vec![HeaderRow {
                 toggles: [false, true, false, false],
-                meter: (0.7, 0.78, false),
+                meter: (0.7, 0.78),
                 ..row("Drums", "klopfer", 45)
             }],
         ),
@@ -290,7 +294,7 @@ pub fn header_demos() -> Vec<HeaderDemo> {
             "pegel clipping",
             "clipping",
             vec![HeaderRow {
-                meter: (1.0, 1.0, true),
+                meter: (1.0, 1.0),
                 ..row("Drums", "klopfer", 45)
             }],
         ),
@@ -310,6 +314,14 @@ pub fn header_demos() -> Vec<HeaderDemo> {
     ]
 }
 
+/// A still meter from the design's shares of the meter height (`meterH(l, pk)`, right channel
+/// `l × .94`, `pk × .97`), read on the fader taper the meter uses. A peak at the top (+6 dB) has
+/// clipped.
+pub fn demo_meter(level: f32, peak: f32) -> MeterState {
+    let db = |share: f32| fader::p_to_db(1.0 - share);
+    MeterState::frozen([db(level), db(level * 0.94)], [db(peak), db(peak * 0.97)])
+}
+
 fn header_size(rows: usize) -> Vec2 {
     vec2(size::TRACK_HEADER, rows as f32 * size::track::DEFAULT)
 }
@@ -327,7 +339,7 @@ pub fn header_demo_size(ui: &Ui, demo: &HeaderDemo) -> Vec2 {
 pub fn paint_header_demo(ui: &Ui, rect: Rect, demo: &HeaderDemo) {
     for (i, r) in demo.rows.iter().enumerate() {
         let palette = TrackPalette::new(r.hue);
-        let (l, pk, cl) = r.meter;
+        let meter = demo_meter(r.meter.0, r.meter.1);
         let model = HeaderModel {
             instrument_error: r.error,
             mute: r.toggles[0],
@@ -335,14 +347,7 @@ pub fn paint_header_demo(ui: &Ui, rect: Rect, demo: &HeaderDemo) {
             arm: r.toggles[2],
             monitor: r.toggles[3],
             implied_mute: r.implied,
-            meter: [
-                MeterLevel {
-                    level: l,
-                    peak: pk,
-                    clip: cl,
-                },
-                MeterLevel::new(l * 0.94, pk * 0.97),
-            ],
+            meter: Some(&meter),
             ..HeaderModel::new(r.name, r.instrument, &palette)
         };
         let hr = Rect::from_min_size(
@@ -434,7 +439,7 @@ pub struct ClipDemo {
 const CLIP_W: f32 = 180.0;
 /// Clip height in the samples (`Hh = 50`): a default track of 56 minus 6.
 fn clip_h() -> f32 {
-    size::track::DEFAULT - 2.0 * super::metrics::CLIP_INSET_Y
+    size::track::DEFAULT - 2.0 * metrics::CLIP_INSET_Y
 }
 
 fn lead() -> DemoClip {
@@ -592,7 +597,7 @@ pub fn clip_demos() -> Vec<ClipDemo> {
 /// Size of a clip state sample: the strip (`padding: 3px 0`, `margin: 0 4px`) with its label, as
 /// wide as the wider of both.
 pub fn clip_demo_size(ui: &Ui, demo: &ClipDemo) -> Vec2 {
-    let pad = super::metrics::CLIP_INSET_Y;
+    let pad = metrics::CLIP_INSET_Y;
     vec2(
         demo.width.max(label_width(ui, demo.label)) + 2.0 * space::SPACE_1,
         pad + clip_h() + LABEL_GAP + typography::VALUE_S.line_height + space::SPACE_1 + pad,
@@ -619,7 +624,7 @@ fn demo_preview(c: &DemoClip) -> Option<PreviewMesh> {
 /// Paints a clip state sample in `rect` (strip, clips, label) and registers the clips' nodes.
 pub fn paint_clip_demo(ui: &Ui, rect: Rect, demo: &ClipDemo) {
     let painter = ui.painter();
-    let pad = super::metrics::CLIP_INSET_Y;
+    let pad = metrics::CLIP_INSET_Y;
     px::fill(painter, rect, 0.0, color32(color::SURFACE_2));
     let label_top = rect.min.y + pad + clip_h() + LABEL_GAP;
     let label_box = Rect::from_min_max(

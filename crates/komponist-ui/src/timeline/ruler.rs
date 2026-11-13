@@ -23,7 +23,8 @@ use komponist_tokens::typography;
 use komponist_tokens::{Srgba, color, space};
 
 use super::mesh::Quads;
-use super::{Access, TimeAxis, metrics};
+use super::{Access, TimeAxis};
+use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
 
 /// Which ruler.

@@ -21,7 +21,8 @@ use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, radius};
 
 use super::mesh::Quads;
-use super::{Access, TimeAxis, metrics};
+use super::{Access, TimeAxis};
+use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
 
 /// What is going on with a note.
@@ -77,7 +78,7 @@ pub struct NoteLook {
     pub contour: Option<Color32>,
     /// Dashed 1 px contour inside the note (drag original).
     pub dashed: Option<Color32>,
-    /// Corner radius: `radius.s`, at most a third of the height.
+    /// Corner radius: `radius.s`, at most [`metrics::NOTE_RADIUS_PER_HEIGHT`] of the height.
     pub radius: f32,
     /// The note shows its name.
     pub label: bool,
@@ -91,7 +92,7 @@ pub fn note_look(
     size: egui::Vec2,
 ) -> NoteLook {
     let rings = size.y >= metrics::NOTE_RING_MIN_HEIGHT;
-    let radius = radius::S.min(size.y / 3.0);
+    let radius = radius::S.min(size.y * metrics::NOTE_RADIUS_PER_HEIGHT);
     let label = size.x >= metrics::NOTE_LABEL_MIN[0] && size.y >= metrics::NOTE_LABEL_MIN[1];
     if state.ghost {
         return NoteLook {

@@ -8,8 +8,8 @@
 
 use egui::{Color32, Mesh, Pos2, Rect, pos2};
 
-use super::metrics;
 use crate::px;
+use crate::widgets::metrics::timeline as metrics;
 
 /// Unit directions of a quarter circle from +x to +y (screen coordinates, y down) split into
 /// 1–4 segments, as `(cos, sin)`.

@@ -27,8 +27,9 @@ use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, radius, size, space};
 
 use super::mesh::Quads;
-use super::{Access, bar_span, metrics};
+use super::{Access, bar_span};
 use crate::icons::{self, Caret};
+use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
 
 /// Which end of a clip.

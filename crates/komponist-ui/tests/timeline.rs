@@ -19,7 +19,7 @@ use komponist_ui::snapshot::{self, SCALES, Snapshots};
 use komponist_ui::timeline::clip::{ClipModel, ClipState, PreviewMesh, body_height};
 use komponist_ui::timeline::gallery;
 use komponist_ui::timeline::note::{NoteBatch, NoteState};
-use komponist_ui::timeline::track_header::{HeaderModel, MeterLevel};
+use komponist_ui::timeline::track_header::HeaderModel;
 use komponist_ui::timeline::{
     GridSpec, RulerKind, RulerModel, TimeAxis, clip_rect, grid_lines, note_rect, paint_clip,
     paint_grid, paint_playhead, paint_ruler, paint_track_header,
@@ -55,8 +55,9 @@ fn header_states() {
 fn header_heights() {
     // Smallest and largest track height: contents stay centred, bar and meter stretch.
     let palette = TrackPalette::new(150);
+    let meter = gallery::demo_meter(0.5, 0.6);
     let mut model = HeaderModel::new("Lead", "pisynth", &palette);
-    model.meter = [MeterLevel::new(0.5, 0.6), MeterLevel::new(0.47, 0.58)];
+    model.meter = Some(&meter);
     snapshot::snapshot("timeline-header-heights", None, |ui| {
         ui.horizontal_top(|ui| {
             for h in [size::track::MIN, size::track::MAX] {
@@ -208,6 +209,7 @@ fn arrangement(ui: &mut Ui) {
     for (i, t) in project.tracks.iter().enumerate() {
         let top = r.min.y + ruler_h + i as f32 * lane_h;
         let palette = TrackPalette::new(t.hue.0);
+        let meter = gallery::demo_meter(0.55, 0.63);
         let selected = t.name == "Lead";
         let instrument = t
             .channel
@@ -221,7 +223,7 @@ fn arrangement(ui: &mut Ui) {
             arm: t.arm,
             monitor: t.monitor,
             implied_mute: any_solo && !t.channel.solo,
-            meter: [MeterLevel::new(0.55, 0.63), MeterLevel::new(0.51, 0.6)],
+            meter: (!t.channel.mute).then_some(&meter),
             ..HeaderModel::new(&t.name, instrument, &palette)
         };
         let hdr = Rect::from_min_size(pos2(r.min.x, top), vec2(size::TRACK_HEADER, lane_h));
