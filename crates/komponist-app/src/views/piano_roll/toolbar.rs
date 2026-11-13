@@ -154,6 +154,9 @@ pub fn show(
 
     if !info.selected.is_empty() {
         fields(&mut row, ctx, info, drag);
+    } else if drag.take().is_some() {
+        // The selection went away during a field drag (Esc, undo): close its undo step.
+        ctx.send(Action::Edit(EditAction::EndGesture));
     }
 
     // Zoom buttons on the right.

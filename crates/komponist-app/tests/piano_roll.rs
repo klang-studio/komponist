@@ -17,7 +17,7 @@ use komponist_app::views::piano_roll::names;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_model::edits::{NewClip, NewClipContent, NewNote};
 use komponist_model::fixtures::demo_project;
-use komponist_model::{ClipContent, ClipId, Grid, Meter, Note, NoteId, Project, Tick};
+use komponist_model::{ClipContent, ClipId, Grid, Note, NoteId, Project, Tick};
 use komponist_tokens::size;
 
 #[cfg(debug_assertions)]
@@ -270,6 +270,39 @@ fn dragging_moves_in_time_and_pitch() {
         .expect("copy one beat later");
     assert_eq!(h.state().ui().selection.notes, [copy.id].into());
     assert_eq!(h.state().doc().undo_label(), Some("Noten kopieren"));
+}
+
+#[test]
+fn esc_during_a_drag_restores_the_notes() {
+    let (app, clip) = lead_a();
+    let mut h = harness(app);
+    let g = geometry(&h, clip);
+    let n = notes_of(h.state(), clip)[2];
+    let label = h.state().doc().undo_label().map(str::to_owned);
+    let from = note_center(&g, &n);
+    let step = g.axis.width(Tick(240));
+    h.hover_at(from);
+    h.step();
+    press(&mut h, from, Modifiers::NONE, true);
+    h.step();
+    for i in 1..=4 {
+        h.hover_at(from + vec2(i as f32 * step, 0.0));
+        h.step();
+    }
+    let moved = notes_of(h.state(), clip)
+        .into_iter()
+        .find(|q| q.id == n.id)
+        .unwrap();
+    assert_eq!(moved.start, n.start + Tick(4 * 240), "moving");
+    h.key_press(egui::Key::Escape);
+    h.step();
+    // Moving on after Esc changes nothing.
+    h.hover_at(from + vec2(6.0 * step, 0.0));
+    h.step();
+    press(&mut h, from + vec2(6.0 * step, 0.0), Modifiers::NONE, false);
+    h.run_steps(2);
+    assert!(notes_of(h.state(), clip).contains(&n), "back at the start");
+    assert_eq!(h.state().doc().undo_label().map(str::to_owned), label);
 }
 
 /// "Kante ziehen — Länge ändern, gilt für alle ausgewählten Noten."
@@ -713,8 +746,7 @@ fn snapshots_of_the_piano_roll() {
 /// the hard limit is only checked with optimisations; the time is printed either way.
 #[test]
 fn ten_thousand_notes_frame_time() {
-    let mut p: Project = demo_project();
-    let mut app_project = p.clone();
+    let p: Project = demo_project();
     let track = p.tracks[2].id;
     let notes: Vec<NewNote> = (0..10_000)
         .map(|i| NewNote {
@@ -724,8 +756,8 @@ fn ten_thousand_notes_frame_time() {
             velocity: 30 + (i * 13 % 97) as u8,
         })
         .collect();
-    let (q, clip) = komponist_model::edits::add_clip(
-        &app_project,
+    let (p, clip) = komponist_model::edits::add_clip(
+        &p,
         track,
         NewClip {
             start: Tick(32 * BAR),
@@ -738,8 +770,6 @@ fn ten_thousand_notes_frame_time() {
         },
     )
     .unwrap();
-    app_project = q;
-    p = app_project;
     let mut app = App::headless(p);
     app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
     // Zoomed out so that thousands are visible: 1/16 bar per 24 px.
@@ -760,5 +790,4 @@ fn ten_thousand_notes_frame_time() {
     if !cfg!(debug_assertions) {
         assert!(median < Duration::from_millis(8), "{median:?}");
     }
-    let _ = Meter::FOUR_FOUR;
 }

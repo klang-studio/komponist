@@ -225,7 +225,19 @@ impl Pointer {
                 origin: i.pointer.press_origin(),
                 now: i.modifiers,
                 press,
-                escape: i.keys_down.contains(&Key::Escape),
+                // The app's keymap consumes Esc (`ClearSelection`) before the views run, so
+                // look at the raw events of the frame.
+                escape: i.keys_down.contains(&Key::Escape)
+                    || i.raw.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            Event::Key {
+                                key: Key::Escape,
+                                pressed: true,
+                                ..
+                            }
+                        )
+                    }),
             }
         })
     }
@@ -1152,14 +1164,14 @@ impl PianoRoll {
             );
         }
         if let Some(lane) = g.lane {
-            let l = ui.new_child(
+            // The group's node is created with the child `Ui`; the lane has no child nodes.
+            let _group = ui.new_child(
                 UiBuilder::new()
                     .max_rect(lane)
                     .id_salt("komponist_piano_roll_lane")
                     .accessibility_role(Role::Group)
                     .accessibility_label(names::VELOCITY_LANE),
             );
-            drop(l);
         }
     }
 }
