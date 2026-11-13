@@ -339,6 +339,12 @@ pub(crate) fn find_device(
     }
 }
 
+/// Whether `config`'s device can be found (the reconnect probe; runs on its own thread).
+pub(crate) fn device_present(config: &StreamConfig) -> bool {
+    config.host == HostKind::Null
+        || host(config.host).is_ok_and(|h| find_device(&h, config).is_ok())
+}
+
 /// Output devices of `kind`.
 pub(crate) fn devices(kind: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
     if kind == HostKind::Null {
@@ -683,6 +689,8 @@ mod lookup_tests {
             find_device(&host, &config(None, Some(missing))),
             Err(AudioError::NoDevice(_))
         ));
+        assert!(device_present(&config(None, Some(id))));
+        assert!(!device_present(&config(None, Some(missing))));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use cpal::traits::StreamTrait;
@@ -21,6 +21,9 @@ const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Poll interval while waiting for the callback to hand the engine out.
 const DETACH_POLL: Duration = Duration::from_micros(500);
+
+/// How often [`AudioSystem::poll`] looks for a missing device while the state is `NoDevice`.
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Audio driver ("Treiber" in S07).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -262,6 +265,19 @@ pub struct AudioSystem<P: AudioProcess> {
     current: Option<Current<P>>,
     /// Handles of torn-down streams that have not handed back yet.
     retired: Vec<SlotHandle<P>>,
+    /// Reconnection while the configured device is missing.
+    retry: Option<Retry>,
+    retry_interval: Duration,
+}
+
+/// Looking for a missing device ([`AudioSystem::poll`]).
+struct Retry {
+    /// The configuration to start once the device is back.
+    config: StreamConfig,
+    /// When the next probe starts.
+    next: Instant,
+    /// A probe running on its own thread: is the device present?
+    probe: Option<JoinHandle<bool>>,
 }
 
 /// The running stream.
@@ -292,6 +308,8 @@ impl<P: AudioProcess> AudioSystem<P> {
             detached: false,
             current: None,
             retired: Vec::new(),
+            retry: None,
+            retry_interval: RETRY_INTERVAL,
         }
     }
 
@@ -320,8 +338,10 @@ impl<P: AudioProcess> AudioSystem<P> {
     /// buffer size. Its `latency` is filled in by [`AudioSystem::poll`] once callbacks run.
     ///
     /// The device is looked up by `device_id`, then by `device` (name), and is the host's default
-    /// only when both are `None`.
+    /// only when both are `None`. When the device is missing (`NoDevice`, `HostUnavailable`) or the
+    /// backend fails (`Backend`), [`AudioSystem::poll`] keeps looking for it.
     pub fn start(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
+        self.retry = None;
         self.teardown();
         let result = match config.host {
             HostKind::Null => self.start_null(config).map(|()| config.clone()),
@@ -343,6 +363,14 @@ impl<P: AudioProcess> AudioSystem<P> {
                     config: config.clone(),
                     reason: err.to_string(),
                 };
+                if matches!(
+                    err,
+                    AudioError::NoDevice(_)
+                        | AudioError::HostUnavailable(_)
+                        | AudioError::Backend(_)
+                ) {
+                    self.arm_retry(config.clone());
+                }
                 Err(err)
             }
         }
@@ -350,6 +378,7 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Stops the stream; the engine comes back into the system. State `Stopped`.
     pub fn stop(&mut self) {
+        self.retry = None;
         self.teardown();
         self.state = AudioState::Stopped;
     }
@@ -369,6 +398,12 @@ impl<P: AudioProcess> AudioSystem<P> {
     ///
     /// It also hands an engine that came back late (after a timed-out detach) to the stream again
     /// and copies the stream's output latency into the `Running` state.
+    ///
+    /// While the state is `NoDevice` because the configured device is missing or was lost, it
+    /// looks for the device about every 2 s. The lookup runs on a short-lived thread, so the UI
+    /// thread does not wait for the enumeration; once the device is present, `poll` starts it again
+    /// (on this thread, like [`AudioSystem::start`]) and the state returns to `Running` with the
+    /// same configuration. That transition is the report that the device is back.
     pub fn poll(&mut self) {
         self.collect_retired();
         let mut returned = None;
@@ -397,9 +432,14 @@ impl<P: AudioProcess> AudioSystem<P> {
         if let Some((config, reason)) = failure {
             self.teardown();
             let _ = self.start_null(&null_config(&config));
-            self.state = AudioState::NoDevice { config, reason };
+            self.state = AudioState::NoDevice {
+                config: config.clone(),
+                reason,
+            };
+            self.arm_retry(config);
         }
         self.hand_over();
+        self.poll_retry();
     }
 
     /// Takes the engine out of the running stream (export, ARCHITECTURE §6.7): the callback hands
@@ -574,6 +614,56 @@ impl<P: AudioProcess> AudioSystem<P> {
         if self.engine.is_none() {
             self.engine = Some(engine);
         }
+    }
+
+    /// Looks for `config`'s device from the next `poll` on.
+    fn arm_retry(&mut self, config: StreamConfig) {
+        self.retry = Some(Retry {
+            config,
+            next: Instant::now() + self.retry_interval,
+            probe: None,
+        });
+    }
+
+    /// Starts a probe when one is due and restarts the stream once a probe found the device.
+    fn poll_retry(&mut self) {
+        let interval = self.retry_interval;
+        let Some(retry) = self.retry.as_mut() else {
+            return;
+        };
+        match retry.probe.take() {
+            Some(probe) if probe.is_finished() => {
+                if probe.join().unwrap_or(false) {
+                    let config = retry.config.clone();
+                    // Success clears the retry; another failure arms it again.
+                    let _ = self.start(&config);
+                } else {
+                    retry.next = Instant::now() + interval;
+                }
+            }
+            Some(probe) => retry.probe = Some(probe),
+            None if Instant::now() >= retry.next => {
+                let config = retry.config.clone();
+                retry.probe = thread::Builder::new()
+                    .name("komponist-audio-probe".to_owned())
+                    .spawn(move || backend::device_present(&config))
+                    .ok();
+                if retry.probe.is_none() {
+                    retry.next = Instant::now() + interval;
+                }
+            }
+            None => {}
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_retry_interval(&mut self, interval: Duration) {
+        self.retry_interval = interval;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_retrying(&self) -> bool {
+        self.retry.is_some()
     }
 
     #[cfg(test)]
@@ -857,6 +947,68 @@ mod tests {
         system.start(&null(64)).unwrap();
         assert!(runs(&probe, 5));
         assert_eq!(probe.events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_lost_device_is_started_again_once_it_is_back() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(10));
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 3));
+        let address = probe.address.load(Ordering::SeqCst);
+        system.simulate_device_loss("device unplugged");
+        system.poll();
+        assert!(matches!(system.state(), AudioState::NoDevice { .. }));
+        assert!(system.is_retrying());
+        // The probe finds the (null) device and `poll` starts it again.
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            matches!(system.state(), AudioState::Running { .. })
+        }));
+        assert_eq!(
+            system.state(),
+            &AudioState::Running {
+                config: null(64),
+                latency: Duration::ZERO
+            }
+        );
+        assert!(!system.is_retrying());
+        assert!(runs(&probe, 3));
+        assert_eq!(probe.address.load(Ordering::SeqCst), address);
+        // start, null fallback, reconnect.
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_missing_device_keeps_being_looked_for() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        let config = StreamConfig {
+            host: HostKind::Alsa,
+            device: Some("komponist test: no such device".to_owned()),
+            device_id: Some(DeviceId("alsa:komponist-test-missing".to_owned())),
+            sample_rate: 48_000,
+            buffer_frames: 64,
+        };
+        assert!(system.start(&config).is_err());
+        assert!(system.is_retrying());
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < deadline {
+            system.poll();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(matches!(system.state(), AudioState::NoDevice { .. }));
+        assert!(system.is_retrying());
+        assert!(
+            runs(&probe, 3),
+            "the engine keeps running on the null backend"
+        );
+        system.stop();
+        assert!(!system.is_retrying());
+
+        // An unsupported configuration is not retried.
+        assert!(system.start(&null(0)).is_err());
+        assert!(!system.is_retrying());
     }
 
     #[test]
