@@ -24,7 +24,7 @@
 //!   and unload the plugin → exit 0.
 
 use std::collections::BTreeMap;
-use std::os::fd::{AsFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -70,8 +70,14 @@ pub struct Options {
 
 /// Runs instance mode until shutdown; the process exit code.
 pub fn run(options: Options) -> ExitCode {
-    // SAFETY: the app made this inherited fd ours (`--control-fd`); nothing else in this process
-    // owns it. A wrong number fails at the first send below.
+    // SAFETY: only asks the kernel whether the number is an open fd; nothing is closed or kept.
+    let open = rustix::io::fcntl_getfd(unsafe { BorrowedFd::borrow_raw(options.control_fd) });
+    if let Err(e) = open {
+        eprintln!("komponist-bridge: control fd {}: {e}", options.control_fd);
+        return ExitCode::FAILURE;
+    }
+    // SAFETY: the app made this inherited, open fd ours (`--control-fd`); nothing else in this
+    // process owns it. A wrong kind of fd fails at the first send below.
     let fd = unsafe { OwnedFd::from_raw_fd(options.control_fd) };
     // Plugins may spawn helper processes; they must not inherit the socket, or a dead bridge would
     // never close it for the app.
