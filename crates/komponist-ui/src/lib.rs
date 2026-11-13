@@ -14,9 +14,11 @@
 //! - [`drag`]: drag math (1 px = 1 step, 200 px = full range, Shift × 0.1, Ctrl × 10).
 //! - [`tooltip`], [`icons`]: tooltip timing and frames; Lucide icons and drawn transport shapes.
 //! - [`gallery_shell`]: the gallery frame and its sections, filled by WP-20/21/22.
+//! - [`timeline`]: paint functions of the timeline elements (track header, clip, note, ruler,
+//!   grid) with their accessibility names, for the canvases of wave 4.
 //! - `snapshot` (feature `snapshot`): the `egui_kittest` harness for snapshot tests at 1× and 2×.
 //!
-//! The widgets arrive with WP-20 and WP-21, the timeline paint functions with WP-22.
+//! The widgets arrive with WP-20 and WP-21.
 
 pub mod drag;
 pub mod focus;
@@ -26,6 +28,7 @@ pub mod icons;
 pub mod px;
 pub mod state;
 pub mod theme;
+pub mod timeline;
 pub mod tooltip;
 
 #[cfg(feature = "snapshot")]

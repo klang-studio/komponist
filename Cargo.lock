@@ -2524,6 +2524,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
+ "komponist-model",
  "komponist-tokens",
  "komponist-ui",
  "winit",
