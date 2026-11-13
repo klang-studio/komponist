@@ -400,8 +400,9 @@ a lookahead plugin is in use. It can move behind v0.1 if time is short (WP-23 ma
 
 - `AudioSystem::hosts()` → PipeWire, JACK, ALSA (cpal features `pipewire`, `jack`), devices, rates,
   buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
-- **Engine handoff without restart (R1):** the callback closure owns a `EngineSlot` holding
-  `Box<Engine>`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
+- **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
+  `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
+  implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
   over a channel. The new stream takes it over. A buffer change is "short dropout, engine untouched"
   (S07).
 - No device / device lost → state `NoDevice`. The UI disables play and record and shows the red notice
