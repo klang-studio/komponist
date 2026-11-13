@@ -90,3 +90,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
     piano roll, step grid, mixer) expose AccessKit nodes for their **visible** objects (track, clip,
     note, step, strip) with names such as "Clip Beat A, Takt 1–4" or "Note C4, 1.1.000". Without them
     neither kittest queries nor the egui MCP server can find anything.
+
+13. **Waiting for background work:** never poll with `pgrep -f "<pattern>"` — the polling shell's own
+    command line contains the pattern, so the loop never ends (six such loops ran forever on 2026-11-13).
+    Start long commands with `run_in_background` and wait for their completion notification; if you
+    must poll, wait on a PID (`while kill -0 $PID; do sleep 3; done`) or use `pgrep -x`.
