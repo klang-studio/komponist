@@ -1,13 +1,29 @@
 //! Audio hosts, devices and the stream lifecycle (ARCHITECTURE §7, R1, S07).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
+use cpal::traits::StreamTrait;
 use serde::{Deserialize, Serialize};
 
+use crate::backend::{self, NullStream, StreamCallback, StreamShared};
 use crate::midi::MidiReceiver;
-use crate::process::AudioProcess;
+use crate::process::{AudioProcess, StreamParams};
+use crate::slot::{EngineSlot, SlotHandle};
+
+/// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
+const LOAD_SMOOTHING: f32 = 0.05;
+
+/// How long a stream teardown may take to hand the engine back.
+const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Poll interval while waiting for the callback to hand the engine out.
+const DETACH_POLL: Duration = Duration::from_micros(500);
+
+/// How often [`AudioSystem::poll`] looks for a missing device while the state is `NoDevice`.
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Audio driver ("Treiber" in S07).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,12 +40,32 @@ pub enum HostKind {
     Null,
 }
 
+/// Stable identity of an output device, persisted in [`StreamConfig::device_id`].
+///
+/// cpal's `DeviceId` in its string form `"<host>:<id>"`: the PipeWire node name
+/// (`"pipewire:alsa_output.usb-Focusrite_Scarlett_2i2-00.analog-stereo"`), the ALSA PCM name
+/// (`"alsa:hw:CARD=USB,DEV=0"`), `"jack:output"`. Unlike [`DeviceInfo::name`] it is unique and
+/// does not depend on enumeration order. Serialised as a plain string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DeviceId(pub String);
+
+impl core::fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// An output device of a host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceInfo {
     /// The host it belongs to.
     pub host: HostKind,
+    /// Stable id, `None` if the backend gives none (and for the null host). Store it in
+    /// [`StreamConfig::device_id`].
+    pub id: Option<DeviceId>,
     /// Device name as the backend reports it ("Focusrite Scarlett 2i2"); used in [`StreamConfig`].
+    /// Names are not unique: a repeated name gets " (2)", " (3)", … in enumeration order.
     pub name: String,
     /// The host's default output device.
     pub is_default: bool,
@@ -47,8 +83,14 @@ pub struct DeviceInfo {
 pub struct StreamConfig {
     /// Driver.
     pub host: HostKind,
-    /// Output device name; `None` = the host's default device.
+    /// Output device name (display, and fallback for the lookup); `None` together with
+    /// `device_id: None` = the host's default device.
     pub device: Option<String>,
+    /// Stable id of the output device ([`DeviceInfo::id`]). [`AudioSystem::start`] looks the
+    /// device up by id first and by `device` (the name) if the id is unknown or belongs to another
+    /// host. Configurations saved without it deserialise with `None`.
+    #[serde(default)]
+    pub device_id: Option<DeviceId>,
     /// Sample rate in Hz ("48000 Hz").
     pub sample_rate: u32,
     /// Buffer size in frames (segments 64 / 128 / 256 / 512 / 1024 in S07).
@@ -61,6 +103,7 @@ impl Default for StreamConfig {
         StreamConfig {
             host: HostKind::PipeWire,
             device: None,
+            device_id: None,
             sample_rate: 48_000,
             buffer_frames: 256,
         }
@@ -133,6 +176,8 @@ pub struct StreamStats {
     xruns: AtomicU32,
     /// Callbacks run, since the system was created.
     callbacks: AtomicU64,
+    /// The backend refused real-time scheduling for the current stream's audio thread.
+    realtime_denied: AtomicBool,
 }
 
 impl StreamStats {
@@ -158,13 +203,43 @@ impl StreamStats {
 
     /// RT. Folds one callback's load (duration / period) into the smoothed value and counts the
     /// callback.
+    ///
+    /// One-pole smoothing per callback (weight 0.05); the first callback sets the value directly.
     pub fn record_callback(&self, load: f32) {
-        todo!("WP-13")
+        let load = if load.is_finite() { load.max(0.0) } else { 0.0 };
+        let first = self.callbacks.fetch_add(1, Ordering::Relaxed) == 0;
+        let smoothed = if first {
+            load
+        } else {
+            let old = self.cpu_load();
+            old + (load - old) * LOAD_SMOOTHING
+        };
+        self.cpu_load.store(smoothed.to_bits(), Ordering::Relaxed);
     }
 
     /// RT. Counts one xrun.
     pub fn record_xrun(&self) {
         self.xruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Whether the backend reported that real-time scheduling was refused for the audio thread of
+    /// the current stream (cpal `RealtimeDenied`): the hint in S07 and the status bar. Reset when a
+    /// stream is torn down.
+    ///
+    /// `false` does not prove real-time scheduling: the null backend and server-backed ALSA devices
+    /// (such as ALSA's PipeWire default) are not promoted and report nothing. PipeWire is promoted
+    /// through RTKit; JACK threads are the server's.
+    pub fn realtime_denied(&self) -> bool {
+        self.realtime_denied.load(Ordering::Relaxed)
+    }
+
+    /// Error callback (any thread): real-time scheduling was refused.
+    pub(crate) fn record_realtime_denied(&self) {
+        self.realtime_denied.store(true, Ordering::Relaxed);
+    }
+
+    fn reset_realtime_denied(&self) {
+        self.realtime_denied.store(false, Ordering::Relaxed);
     }
 }
 
@@ -174,70 +249,843 @@ impl StreamStats {
 /// [`crate::EngineSlot`] hands the engine back, [`AudioProcess::prepare`] runs with the new
 /// parameters, and the new stream takes it over. A buffer change is "short dropout, engine
 /// untouched" (S07).
+///
+/// A new stream starts empty and outputs silence until the system has handed it the engine and
+/// the MIDI receiver (right after the stream started, or in [`AudioSystem::poll`]), so a stream that
+/// fails to open never holds the engine.
 pub struct AudioSystem<P: AudioProcess> {
-    _engine: core::marker::PhantomData<P>,
+    state: AudioState,
+    stats: Arc<StreamStats>,
+    /// The engine while no stream holds it (and it is not detached).
+    engine: Option<Box<P>>,
+    /// The MIDI receiver while no stream holds it.
+    midi: Option<MidiReceiver>,
+    /// The engine is out (detach) until `attach`.
+    detached: bool,
+    current: Option<Current<P>>,
+    /// Handles of torn-down streams that have not handed back yet.
+    retired: Vec<SlotHandle<P>>,
+    /// Reconnection while the configured device is missing.
+    retry: Option<Retry>,
+    retry_interval: Duration,
+}
+
+/// Looking for a missing device ([`AudioSystem::poll`]).
+struct Retry {
+    /// The configuration to start once the device is back.
+    config: StreamConfig,
+    /// When the next probe starts.
+    next: Instant,
+    /// A probe running on its own thread: is the device present?
+    probe: Option<JoinHandle<bool>>,
+}
+
+/// The running stream.
+struct Current<P: AudioProcess> {
+    /// Declared first: dropped before the handle, so the slot has handed back by then.
+    backend: Backend,
+    handle: SlotHandle<P>,
+    params: StreamParams,
+    shared: Arc<StreamShared>,
+    /// The configuration `start` was called with.
+    requested: StreamConfig,
+}
+
+/// Held for its `Drop`, which stops the stream.
+enum Backend {
+    Device { _stream: cpal::Stream },
+    Null { _stream: NullStream },
 }
 
 impl<P: AudioProcess> AudioSystem<P> {
     /// Takes ownership of the engine and the MIDI receiver; no stream yet (state `Stopped`).
     pub fn new(engine: Box<P>, midi: MidiReceiver) -> AudioSystem<P> {
-        todo!("WP-13")
+        AudioSystem {
+            state: AudioState::Stopped,
+            stats: Arc::new(StreamStats::new()),
+            engine: Some(engine),
+            midi: Some(midi),
+            detached: false,
+            current: None,
+            retired: Vec::new(),
+            retry: None,
+            retry_interval: RETRY_INTERVAL,
+        }
     }
 
     /// Hosts available on this machine, in preference order (PipeWire, JACK, ALSA; `Null` always
     /// last).
+    ///
+    /// JACK counts as available when a JACK server (or PipeWire's JACK emulation) answers; the
+    /// check opens a short-lived JACK client.
     pub fn available_hosts() -> Vec<HostKind> {
-        todo!("WP-13")
+        backend::available_hosts()
     }
 
     /// Output devices of `host`.
+    ///
+    /// `Null` lists one device, `"null"`. PipeWire lists the graph's allowed rates as
+    /// `sample_rates`; other rates still open (PipeWire converts).
     pub fn devices(host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
-        todo!("WP-13")
+        backend::devices(host)
     }
 
     /// Starts a stream with `config`, replacing a running one (stop → prepare → start). On failure
     /// the engine runs on the null backend with the requested rate and buffer, the state becomes
     /// `NoDevice` and the error is returned.
+    ///
+    /// The `Running` state carries the effective configuration: JACK imposes the server's rate and
+    /// buffer size. Its `latency` is filled in by [`AudioSystem::poll`] once callbacks run.
+    ///
+    /// The device is looked up by `device_id`, then by `device` (name), and is the host's default
+    /// only when both are `None`. When the device is missing (`NoDevice`, `HostUnavailable`) or the
+    /// backend fails (`Backend`), [`AudioSystem::poll`] keeps looking for it.
     pub fn start(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
-        todo!("WP-13")
+        self.retry = None;
+        self.teardown();
+        let result = match config.host {
+            HostKind::Null => self.start_null(config).map(|()| config.clone()),
+            _ => self.start_device(config),
+        };
+        match result {
+            Ok(effective) => {
+                self.state = AudioState::Running {
+                    config: effective,
+                    latency: Duration::ZERO,
+                };
+                Ok(())
+            }
+            Err(err) => {
+                // Keep the engine running so its commands drain. If even the null thread cannot
+                // start, the engine waits in the system for the next `start`.
+                let _ = self.start_null(&null_config(config));
+                self.state = AudioState::NoDevice {
+                    config: config.clone(),
+                    reason: err.to_string(),
+                };
+                if matches!(
+                    err,
+                    AudioError::NoDevice(_)
+                        | AudioError::HostUnavailable(_)
+                        | AudioError::Backend(_)
+                ) {
+                    self.arm_retry(config.clone());
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Stops the stream; the engine comes back into the system. State `Stopped`.
     pub fn stop(&mut self) {
-        todo!("WP-13")
+        self.retry = None;
+        self.teardown();
+        self.state = AudioState::Stopped;
     }
 
     /// Current state.
     pub fn state(&self) -> &AudioState {
-        todo!("WP-13")
+        &self.state
     }
 
     /// Shared statistics (survive stream changes).
     pub fn stats(&self) -> &Arc<StreamStats> {
-        todo!("WP-13")
+        &self.stats
     }
 
     /// UI thread, every frame: notices a lost device (→ `NoDevice`, engine to the null backend) and
     /// collects engines handed back by torn-down streams.
+    ///
+    /// It also hands an engine that came back late (after a timed-out detach) to the stream again
+    /// and copies the stream's output latency into the `Running` state.
+    ///
+    /// While the state is `NoDevice` because the configured device is missing or was lost, it
+    /// looks for the device about every 2 s. The lookup runs on a short-lived thread, so the UI
+    /// thread does not wait for the enumeration; once the device is present, `poll` starts it again
+    /// (on this thread, like [`AudioSystem::start`]) and the state returns to `Running` with the
+    /// same configuration. That transition is the report that the device is back.
     pub fn poll(&mut self) {
-        todo!("WP-13")
+        self.collect_retired();
+        let mut returned = None;
+        let mut failure = None;
+        if let Some(current) = self.current.as_mut() {
+            returned = current.handle.try_take_engine();
+            let reason = current.shared.lost().or_else(|| {
+                // The callback's thread ended on its own (it panicked).
+                current
+                    .handle
+                    .is_closed()
+                    .then(|| "audio stream stopped".to_owned())
+            });
+            match reason {
+                Some(reason) => failure = Some((current.requested.clone(), reason)),
+                None => {
+                    if let AudioState::Running { latency, .. } = &mut self.state {
+                        *latency = current.shared.latency();
+                    }
+                }
+            }
+        }
+        if let Some(engine) = returned {
+            self.keep_engine(engine);
+        }
+        if let Some((config, reason)) = failure {
+            self.teardown();
+            let _ = self.start_null(&null_config(&config));
+            self.state = AudioState::NoDevice {
+                config: config.clone(),
+                reason,
+            };
+            self.arm_retry(config);
+        }
+        self.hand_over();
+        self.poll_retry();
     }
 
     /// Takes the engine out of the running stream (export, ARCHITECTURE §6.7): the callback hands
     /// it back at its next run and outputs silence from then on. Waits at most `timeout`.
+    ///
+    /// Without a stream the engine comes straight out of the system. After `Timeout` the request
+    /// stays pending; an engine handed out later goes back into the stream at the next
+    /// [`AudioSystem::poll`].
     pub fn detach(&mut self, timeout: Duration) -> Result<Box<P>, AudioError> {
-        todo!("WP-13")
+        if self.detached {
+            return Err(AudioError::Detached);
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.collect_retired();
+            if let Some(current) = self.current.as_mut() {
+                if let Some(engine) = current.handle.try_take_engine() {
+                    self.keep_engine(engine);
+                } else if current.handle.is_occupied() {
+                    current.handle.request_detach();
+                }
+            }
+            if let Some(engine) = self.engine.take() {
+                self.detached = true;
+                return Ok(engine);
+            }
+            let pending = self
+                .current
+                .as_ref()
+                .is_some_and(|c| c.handle.is_occupied())
+                || !self.retired.is_empty();
+            if !pending {
+                return Err(AudioError::Detached);
+            }
+            if Instant::now() >= deadline {
+                return Err(AudioError::Timeout);
+            }
+            thread::sleep(DETACH_POLL);
+        }
     }
 
     /// Gives a detached engine back: calls `prepare` with the stream's parameters, then the
     /// callback takes it over at its next run.
+    ///
+    /// Without a stream the engine stays in the system and is prepared at the next `start`.
     pub fn attach(&mut self, engine: Box<P>) {
-        todo!("WP-13")
+        self.detached = false;
+        self.keep_engine(engine);
+        self.hand_over();
+    }
+
+    /// Opens a cpal stream for `config`; returns the effective configuration.
+    fn start_device(&mut self, config: &StreamConfig) -> Result<StreamConfig, AudioError> {
+        backend::validate(config)?;
+        let host = backend::host(config.host)?;
+        let device = backend::find_device(&host, config)?;
+        let negotiated = backend::negotiate(config.host, &device, config)?;
+        let params = StreamParams {
+            sample_rate: negotiated.effective.sample_rate,
+            max_frames: negotiated.effective.buffer_frames,
+            channels: negotiated.config.channels,
+        };
+        let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
+        let shared = Arc::new(StreamShared::default());
+        let callback = StreamCallback::new(slot, params, Arc::clone(&shared));
+        let stream =
+            backend::build_stream(&device, &negotiated, callback, Arc::clone(&self.stats))?;
+        stream.play().map_err(backend::map_err)?;
+        self.install(Current {
+            backend: Backend::Device { _stream: stream },
+            handle,
+            params,
+            shared,
+            requested: config.clone(),
+        });
+        Ok(negotiated.effective)
+    }
+
+    /// Starts the null backend with `config`'s rate and buffer size (stereo).
+    fn start_null(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
+        backend::validate(config)?;
+        let params = StreamParams {
+            sample_rate: config.sample_rate,
+            max_frames: config.buffer_frames,
+            channels: 2,
+        };
+        let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
+        let shared = Arc::new(StreamShared::default());
+        let stream = NullStream::start(StreamCallback::new(slot, params, Arc::clone(&shared)))?;
+        self.install(Current {
+            backend: Backend::Null { _stream: stream },
+            handle,
+            params,
+            shared,
+            requested: config.clone(),
+        });
+        Ok(())
+    }
+
+    fn install(&mut self, current: Current<P>) {
+        self.current = Some(current);
+        self.hand_over();
+    }
+
+    /// Hands the MIDI receiver and the engine (prepared for the stream) to the running stream.
+    fn hand_over(&mut self) {
+        let Some(current) = self.current.as_mut() else {
+            return;
+        };
+        if let Some(midi) = self.midi.take()
+            && let Err(midi) = current.handle.attach_midi(midi)
+        {
+            self.midi = Some(midi);
+        }
+        if current.handle.is_occupied() {
+            return;
+        }
+        if let Some(mut engine) = self.engine.take() {
+            engine.prepare(&current.params);
+            if let Err(engine) = current.handle.attach(engine) {
+                self.engine = Some(engine);
+            }
+        }
+    }
+
+    /// Drops the running stream and takes the engine and the MIDI receiver back.
+    fn teardown(&mut self) {
+        let Some(current) = self.current.take() else {
+            return;
+        };
+        let Current {
+            backend,
+            mut handle,
+            ..
+        } = current;
+        // Every backend drops its callback (and with it the slot) before this returns; the wait is
+        // a safety net.
+        drop(backend);
+        self.stats.reset_realtime_denied();
+        let deadline = Instant::now() + TEARDOWN_TIMEOUT;
+        while !handle.is_closed() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        self.reclaim(&mut handle);
+        if !handle.is_closed() {
+            self.retired.push(handle);
+        }
+    }
+
+    /// Takes back what `handle`'s slot handed out.
+    fn reclaim(&mut self, handle: &mut SlotHandle<P>) {
+        while let Some(engine) = handle.try_take_engine() {
+            self.keep_engine(engine);
+        }
+        if let Some(midi) = handle.try_take_midi() {
+            self.midi.get_or_insert(midi);
+        }
+    }
+
+    fn collect_retired(&mut self) {
+        let mut retired = std::mem::take(&mut self.retired);
+        retired.retain_mut(|handle| {
+            self.reclaim(handle);
+            !handle.is_closed()
+        });
+        self.retired.append(&mut retired);
+    }
+
+    /// Keeps `engine` in the system. The system owns one engine; a second one (an `attach` without
+    /// a `detach`) is dropped here, on the UI thread.
+    fn keep_engine(&mut self, engine: Box<P>) {
+        if self.engine.is_none() {
+            self.engine = Some(engine);
+        }
+    }
+
+    /// Looks for `config`'s device from the next `poll` on.
+    fn arm_retry(&mut self, config: StreamConfig) {
+        self.retry = Some(Retry {
+            config,
+            next: Instant::now() + self.retry_interval,
+            probe: None,
+        });
+    }
+
+    /// Starts a probe when one is due and restarts the stream once a probe found the device.
+    fn poll_retry(&mut self) {
+        let interval = self.retry_interval;
+        let Some(retry) = self.retry.as_mut() else {
+            return;
+        };
+        match retry.probe.take() {
+            Some(probe) if probe.is_finished() => {
+                if probe.join().unwrap_or(false) {
+                    let config = retry.config.clone();
+                    // Success clears the retry; another failure arms it again.
+                    let _ = self.start(&config);
+                } else {
+                    retry.next = Instant::now() + interval;
+                }
+            }
+            Some(probe) => retry.probe = Some(probe),
+            None if Instant::now() >= retry.next => {
+                let config = retry.config.clone();
+                retry.probe = thread::Builder::new()
+                    .name("komponist-audio-probe".to_owned())
+                    .spawn(move || backend::device_present(&config))
+                    .ok();
+                if retry.probe.is_none() {
+                    retry.next = Instant::now() + interval;
+                }
+            }
+            None => {}
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_retry_interval(&mut self, interval: Duration) {
+        self.retry_interval = interval;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_retrying(&self) -> bool {
+        self.retry.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn simulate_device_loss(&self, reason: &str) {
+        if let Some(current) = &self.current {
+            current.shared.simulate_loss(reason);
+        }
+    }
+}
+
+impl<P: AudioProcess> Drop for AudioSystem<P> {
+    /// Stops the stream first, so the engine comes back and drops here, on the UI thread.
+    fn drop(&mut self) {
+        self.teardown();
+    }
+}
+
+/// The null backend's configuration for a stream that could not open: the requested rate and
+/// buffer size, or 48000 Hz / 256 frames where those are out of range.
+fn null_config(config: &StreamConfig) -> StreamConfig {
+    let defaults = StreamConfig::default();
+    StreamConfig {
+        host: HostKind::Null,
+        device: None,
+        device_id: None,
+        sample_rate: if backend::valid_sample_rate(config.sample_rate) {
+            config.sample_rate
+        } else {
+            defaults.sample_rate
+        },
+        buffer_frames: if backend::valid_buffer_frames(config.buffer_frames) {
+            config.buffer_frames
+        } else {
+            defaults.buffer_frames
+        },
     }
 }
 
 impl<P: AudioProcess> core::fmt::Debug for AudioSystem<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AudioSystem").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::midi::{MidiPortId, queue};
+    use crate::testing::{Probe, TestEngine, wait_until};
+
+    const WAIT: Duration = Duration::from_secs(5);
+
+    fn null(buffer_frames: u32) -> StreamConfig {
+        StreamConfig {
+            host: HostKind::Null,
+            device: None,
+            device_id: None,
+            sample_rate: 48_000,
+            buffer_frames,
+        }
+    }
+
+    fn system(value: f32) -> (AudioSystem<TestEngine>, Arc<Probe>, crate::midi::MidiSender) {
+        let (engine, probe) = TestEngine::boxed(value);
+        let (sender, receiver) = queue(64);
+        (AudioSystem::new(engine, receiver), probe, sender)
+    }
+
+    /// Waits until the engine ran `n` more callbacks.
+    fn runs(probe: &Probe, n: u64) -> bool {
+        let start = probe.calls();
+        wait_until(WAIT, || probe.calls() >= start + n)
+    }
+
+    #[test]
+    fn stats_smooth_the_load() {
+        let stats = StreamStats::new();
+        stats.record_callback(1.0);
+        assert_eq!(stats.cpu_load(), 1.0);
+        stats.record_callback(0.0);
+        assert!((stats.cpu_load() - 0.95).abs() < 1e-6);
+        stats.record_callback(f32::NAN);
+        assert!((stats.cpu_load() - 0.9025).abs() < 1e-6);
+        assert_eq!(stats.callbacks(), 3);
+        stats.record_xrun();
+        assert_eq!(stats.xruns(), 1);
+    }
+
+    #[test]
+    fn null_host_drives_the_engine() {
+        let (mut system, probe, _sender) = system(0.0);
+        assert_eq!(system.state(), &AudioState::Stopped);
+        system.start(&null(64)).unwrap();
+        assert_eq!(
+            system.state(),
+            &AudioState::Running {
+                config: null(64),
+                latency: Duration::ZERO
+            }
+        );
+        assert!(runs(&probe, 10));
+        assert_eq!(
+            probe.params(),
+            StreamParams {
+                sample_rate: 48_000,
+                max_frames: 64,
+                channels: 2
+            }
+        );
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 1);
+        assert!(system.stats().callbacks() >= 10);
+        assert!(probe.max_seen_frames.load(Ordering::SeqCst) <= 64);
+        system.stop();
+        assert_eq!(system.state(), &AudioState::Stopped);
+        let calls = probe.calls();
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(probe.calls(), calls, "no callbacks after stop");
+    }
+
+    #[test]
+    fn rebuild_keeps_the_engine_object_and_its_state() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 5));
+        let address = probe.address.load(Ordering::SeqCst);
+        for buffer in [256, 128, 32] {
+            let calls = probe.calls();
+            system.start(&null(buffer)).unwrap();
+            assert!(runs(&probe, 3));
+            assert_eq!(probe.params().max_frames, buffer);
+            assert_eq!(probe.address.load(Ordering::SeqCst), address);
+            assert!(probe.calls() > calls);
+        }
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 4);
+        system.stop();
+        let engine = system.detach(Duration::ZERO).unwrap();
+        assert_eq!(&*engine as *const TestEngine as usize, address);
+        // The engine's own state counted every callback of every stream.
+        assert_eq!(engine.processed, probe.calls());
+    }
+
+    #[test]
+    fn detach_and_attach_while_running() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.start(&null(32)).unwrap();
+        assert!(runs(&probe, 3));
+        let engine = system.detach(WAIT).unwrap();
+        assert_eq!(
+            &*engine as *const TestEngine as usize,
+            probe.address.load(Ordering::SeqCst)
+        );
+        assert_eq!(system.detach(WAIT).unwrap_err(), AudioError::Detached);
+        // The stream keeps running (silence) without the engine.
+        let (calls, callbacks) = (probe.calls(), system.stats().callbacks());
+        assert!(wait_until(WAIT, || system.stats().callbacks() > callbacks + 3));
+        assert_eq!(probe.calls(), calls);
+        system.poll();
+        assert_eq!(
+            probe.calls(),
+            calls,
+            "poll does not re-attach a detached engine"
+        );
+
+        system.attach(engine);
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 2);
+        assert!(runs(&probe, 3));
+    }
+
+    #[test]
+    fn detach_without_stream_returns_the_engine_at_once() {
+        let (mut system, probe, _sender) = system(0.0);
+        let engine = system.detach(Duration::ZERO).unwrap();
+        assert_eq!(
+            system.detach(Duration::ZERO).unwrap_err(),
+            AudioError::Detached
+        );
+        system.attach(engine);
+        assert_eq!(
+            probe.prepares.load(Ordering::SeqCst),
+            0,
+            "prepared at start"
+        );
+        system.start(&null(64)).unwrap();
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 1);
+        assert!(runs(&probe, 3));
+    }
+
+    #[test]
+    fn missing_device_falls_back_to_the_null_backend() {
+        let (mut system, probe, _sender) = system(0.0);
+        let config = StreamConfig {
+            host: HostKind::Alsa,
+            device: Some("komponist test: no such device".to_owned()),
+            device_id: None,
+            sample_rate: 44_100,
+            buffer_frames: 128,
+        };
+        let err = system.start(&config).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AudioError::NoDevice(_) | AudioError::HostUnavailable(_)
+            ),
+            "{err:?}"
+        );
+        match system.state() {
+            AudioState::NoDevice {
+                config: failed,
+                reason,
+            } => {
+                assert_eq!(failed, &config);
+                assert_eq!(reason, &err.to_string());
+            }
+            other => panic!("{other:?}"),
+        }
+        // The engine runs on the null backend with the requested rate and buffer.
+        assert!(runs(&probe, 3));
+        assert_eq!(
+            probe.params(),
+            StreamParams {
+                sample_rate: 44_100,
+                max_frames: 128,
+                channels: 2
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_config_is_rejected_and_the_engine_keeps_running() {
+        let (mut system, probe, _sender) = system(0.0);
+        let err = system.start(&null(0)).unwrap_err();
+        assert!(matches!(err, AudioError::UnsupportedConfig(_)), "{err:?}");
+        assert!(matches!(system.state(), AudioState::NoDevice { .. }));
+        assert!(runs(&probe, 3));
+        assert_eq!(
+            probe.params().max_frames,
+            StreamConfig::default().buffer_frames
+        );
+    }
+
+    #[test]
+    fn lost_device_moves_the_engine_to_the_null_backend() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 3));
+        system.simulate_device_loss("device unplugged");
+        system.poll();
+        assert_eq!(
+            system.state(),
+            &AudioState::NoDevice {
+                config: null(64),
+                reason: "device unplugged".to_owned()
+            }
+        );
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 2);
+        assert!(runs(&probe, 3));
+        // A new start recovers.
+        system.start(&null(64)).unwrap();
+        assert!(matches!(system.state(), AudioState::Running { .. }));
+    }
+
+    #[test]
+    fn live_midi_reaches_the_engine_through_the_null_stream() {
+        let (mut system, probe, sender) = system(0.0);
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 2));
+        assert!(sender.push(MidiPortId(5), [0x91, 62, 90]));
+        assert!(wait_until(WAIT, || probe.events.load(Ordering::SeqCst) == 1));
+        assert_eq!(probe.last_event_data.load(Ordering::SeqCst), 0x0091_3E5A);
+        assert!(probe.last_event_frame.load(Ordering::SeqCst) < 64);
+        // The receiver survives a rebuild.
+        system.start(&null(128)).unwrap();
+        assert!(sender.push(MidiPortId(5), [0x81, 62, 0]));
+        assert!(wait_until(WAIT, || probe.events.load(Ordering::SeqCst) == 2));
+    }
+
+    #[test]
+    fn runs_without_a_midi_backend() {
+        let (engine, probe) = TestEngine::boxed(0.0);
+        let mut system = AudioSystem::new(engine, MidiReceiver::disconnected());
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 5));
+        assert_eq!(probe.events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_lost_device_is_started_again_once_it_is_back() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(10));
+        system.start(&null(64)).unwrap();
+        assert!(runs(&probe, 3));
+        let address = probe.address.load(Ordering::SeqCst);
+        system.simulate_device_loss("device unplugged");
+        system.poll();
+        assert!(matches!(system.state(), AudioState::NoDevice { .. }));
+        assert!(system.is_retrying());
+        // The probe finds the (null) device and `poll` starts it again.
+        assert!(wait_until(WAIT, || {
+            system.poll();
+            matches!(system.state(), AudioState::Running { .. })
+        }));
+        assert_eq!(
+            system.state(),
+            &AudioState::Running {
+                config: null(64),
+                latency: Duration::ZERO
+            }
+        );
+        assert!(!system.is_retrying());
+        assert!(runs(&probe, 3));
+        assert_eq!(probe.address.load(Ordering::SeqCst), address);
+        // start, null fallback, reconnect.
+        assert_eq!(probe.prepares.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_missing_device_keeps_being_looked_for() {
+        let (mut system, probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(5));
+        let config = StreamConfig {
+            host: HostKind::Alsa,
+            device: Some("komponist test: no such device".to_owned()),
+            device_id: Some(DeviceId("alsa:komponist-test-missing".to_owned())),
+            sample_rate: 48_000,
+            buffer_frames: 64,
+        };
+        assert!(system.start(&config).is_err());
+        assert!(system.is_retrying());
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < deadline {
+            system.poll();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(matches!(system.state(), AudioState::NoDevice { .. }));
+        assert!(system.is_retrying());
+        assert!(
+            runs(&probe, 3),
+            "the engine keeps running on the null backend"
+        );
+        system.stop();
+        assert!(!system.is_retrying());
+
+        // An unsupported configuration is not retried.
+        assert!(system.start(&null(0)).is_err());
+        assert!(!system.is_retrying());
+    }
+
+    #[test]
+    fn realtime_denial_is_reported_per_stream() {
+        let (mut system, _probe, _sender) = system(0.0);
+        system.start(&null(64)).unwrap();
+        assert!(!system.stats().realtime_denied());
+        system.stats().record_realtime_denied();
+        assert!(system.stats().realtime_denied());
+        system.start(&null(128)).unwrap();
+        assert!(
+            !system.stats().realtime_denied(),
+            "reset for the new stream"
+        );
+    }
+
+    #[test]
+    fn stream_configs_without_device_id_still_load() {
+        let old = r#"{"host":"pipewire","device":"Scarlett 2i2","sample_rate":48000,"buffer_frames":256}"#;
+        let config: StreamConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(config.device.as_deref(), Some("Scarlett 2i2"));
+        assert_eq!(config.device_id, None);
+        let with_id = StreamConfig {
+            device_id: Some(DeviceId("pipewire:alsa_output.usb-x".to_owned())),
+            ..config
+        };
+        let json = serde_json::to_string(&with_id).unwrap();
+        assert!(
+            json.contains(r#""device_id":"pipewire:alsa_output.usb-x""#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<StreamConfig>(&json).unwrap(),
+            with_id
+        );
+    }
+
+    #[test]
+    fn hosts_and_devices() {
+        let hosts = AudioSystem::<TestEngine>::available_hosts();
+        assert_eq!(hosts.last(), Some(&HostKind::Null));
+        let null = AudioSystem::<TestEngine>::devices(HostKind::Null).unwrap();
+        assert_eq!(null.len(), 1);
+        assert!(null[0].is_default);
+        assert_eq!(
+            null[0].sample_rates,
+            [44_100, 48_000, 88_200, 96_000, 192_000]
+        );
+        // Real devices depend on the machine: reported, not asserted.
+        for &host in &hosts {
+            match AudioSystem::<TestEngine>::devices(host) {
+                Ok(devices) => {
+                    for d in devices {
+                        println!(
+                            "{host:?}: {:?} default={} {:?}",
+                            d.name, d.is_default, d.sample_rates
+                        );
+                    }
+                }
+                Err(e) => println!("{host:?}: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_system_and_the_slot_can_move_between_threads() {
+        fn send<T: Send>() {}
+        send::<AudioSystem<TestEngine>>();
+        send::<EngineSlot<TestEngine>>();
+        send::<SlotHandle<TestEngine>>();
+        send::<MidiReceiver>();
+    }
+
+    #[test]
+    fn default_stream_config_matches_s07() {
+        let config = StreamConfig::default();
+        assert_eq!(config.host, HostKind::PipeWire);
+        assert_eq!((config.sample_rate, config.buffer_frames), (48_000, 256));
     }
 }
