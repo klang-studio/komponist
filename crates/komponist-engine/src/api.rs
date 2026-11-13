@@ -52,8 +52,9 @@ pub enum Command {
         /// The slot to empty.
         slot: SlotId,
     },
-    /// Deliver `EventKind::Param { id, value }` to the processor in `slot` at offset 0 of the next
-    /// block (pisynth macros; external plugins get parameters through `komponist-plugins`).
+    /// Deliver `EventKind::Param { id, value }` to the processor in `slot` at offset 0 of the slot's
+    /// next processor call (pisynth macros; external plugins get parameters through
+    /// `komponist-plugins`). Values wait per slot, coalesced by id, so a bypassed device keeps them.
     SetParam {
         /// Target slot.
         slot: SlotId,
@@ -181,7 +182,8 @@ pub enum EngineEvent {
         velocity: u8,
     },
     /// A captured note end; pairs with the latest open `RecordedNoteOn` of the same track and key.
-    /// Notes still held at `StopRecording` / `Stop` get a note-off at the stop position.
+    /// Notes still held at `StopRecording` / `Stop` / `Locate` get a note-off at that position, and
+    /// notes held across a loop wrap get one at the loop end, so every lap is a self-contained take.
     RecordedNoteOff {
         /// Armed track.
         track: TrackId,
