@@ -43,6 +43,10 @@ use crate::scan::{ScanJob, ScanSetup};
 /// How long a released bridge may take for `Shutdown` before it is killed.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
+/// Start of the `Log` line (level `Warning`) reporting that a device's stored state could not be
+/// loaded; the reason follows. See [`PluginManager::state_warning`].
+pub const STATE_LOG_PREFIX: &str = "state not loaded:";
+
 /// Runtime status of a device (not part of the document).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DeviceStatus {
@@ -67,7 +71,8 @@ pub enum FailReason {
         /// Terminating signal, if killed.
         signal: Option<i32>,
     },
-    /// Load, activation or state restore failed; the bridge's message.
+    /// Load or activation failed, or the bridge could not start; the message. (A stored state
+    /// that fails to load does not fail the device: see [`PluginManager::state_warning`].)
     LoadFailed(String),
     /// The bridge stopped answering control messages within the timeout.
     Unresponsive,
@@ -546,7 +551,8 @@ impl PluginManager {
         }
     }
 
-    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`].
+    /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`] (not while
+    /// the device has a [`Self::state_warning`]).
     pub fn request_state(&mut self, device: DeviceId) {
         if let Some(bridge) = self.bridges.get_mut(&device) {
             bridge.request_state(StatePurpose::Event);
@@ -555,7 +561,8 @@ impl PluginManager {
 
     /// Blocking, for saving: snapshots every running external device, waiting at most `timeout` in
     /// total. Devices that do not answer in time are left out (their last snapshot stays in the
-    /// document). Sorted by device id; a late answer arrives later as a `StateSnapshot` event.
+    /// document), and so are devices with a [`Self::state_warning`]. Sorted by device id; a late
+    /// answer arrives later as a `StateSnapshot` event.
     pub fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
         let deadline = Instant::now() + timeout;
         let mut waiting: BTreeMap<DeviceId, u32> = self
@@ -615,6 +622,29 @@ impl PluginManager {
     /// Latency of a device in frames (0 if unknown); feeds `compile::CompileEnv::device_latency`.
     pub fn latency(&self, device: DeviceId) -> u32 {
         self.bridges.get(&device).map_or(0, |b| b.latency)
+    }
+
+    /// Blocks of the device's current bridge that missed the callback deadline or found the bridge
+    /// still busy with an earlier block (each one got the fallback: passthrough or silence). For a
+    /// "late" indicator in the UI; counts from the bridge's start (a reload starts at 0), 0 for
+    /// devices without a bridge.
+    pub fn late_blocks(&self, device: DeviceId) -> u64 {
+        self.bridges.get(&device).map_or(0, Bridge::late_blocks)
+    }
+
+    /// Why the device's stored state could not be loaded, while that matters (UI warning
+    /// „Zustand konnte nicht geladen werden“ on the device).
+    ///
+    /// When the plugin refuses the stored state, the device still starts (status `Ok`) with what
+    /// the plugin has, usually its defaults. The manager then reports one `Log` event at level
+    /// `Warning` whose message starts with [`STATE_LOG_PREFIX`], and keeps the stored blob: no
+    /// `StateSnapshot`, nothing from [`Self::snapshot_states`] or [`Self::request_state`] for this
+    /// device, so the document keeps the blob for a later fix or another machine. The first change
+    /// by the user ([`Self::set_param`], an edit in the plugin's GUI, "state dirty" from the
+    /// running plugin) ends this: the warning clears and snapshots resume. [`Self::reload`] tries
+    /// the stored blob again. `None` for devices without such a problem or without a bridge.
+    pub fn state_warning(&self, device: DeviceId) -> Option<&str> {
+        self.bridges.get(&device)?.state_warning.as_deref()
     }
 
     /// Whether a device's plugin has its own GUI.

@@ -9,9 +9,15 @@
 //! not read its socket, and a large state would otherwise block the UI thread in `send` until it
 //! does. Messages from the bridge are read on the UI thread in [`Bridge::poll`].
 //!
-//! Status (`DeviceStatus`): `Loading` until the first `Activated`, then `Ok`. A failed `Load`,
-//! `SetState` or `Activate`, a fatal error, an exited process or a missed watchdog `Pong` make it
-//! `Crashed`; the bridge is then killed and the processor falls back for good.
+//! Status (`DeviceStatus`): `Loading` until the first `Activated`, then `Ok`. A failed `Load` or
+//! `Activate`, a fatal error, an exited process or a missed watchdog `Pong` make it `Crashed`; the
+//! bridge is then killed and the processor falls back for good.
+//!
+//! A stored state the plugin refuses (`SetState` fails while loading) does not: the device runs
+//! with what the plugin has (its defaults), gets a state warning, and the stored blob is kept. No
+//! snapshot is taken (none reported, none for saving) until the user changes something on the
+//! device: a parameter set through the manager, a GUI edit during processing, or "state dirty"
+//! from the running plugin. A reload tries the stored blob again.
 //!
 //! Watchdog: a `Ping` every [`Timing::ping_interval`], answered within [`Timing::pong_timeout`].
 //! Paused while the bridge loads (until `Activated`) and while an `OpenGui` is outstanding, since
@@ -36,7 +42,9 @@ use komponist_ipc::{
 use komponist_model::{DeviceId, DeviceRole};
 
 use crate::external::{ExternalProcessor, RUN_ACTIVE, RUN_DEAD, Shared};
-use crate::manager::{DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup};
+use crate::manager::{
+    DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup, STATE_LOG_PREFIX,
+};
 
 /// Watchdog and shutdown timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +136,11 @@ pub(crate) struct Bridge {
     pub latency: u32,
     gui_open: bool,
     gui_closing: bool,
+    /// Why the stored state could not be loaded (see the module docs).
+    pub state_warning: Option<String>,
+    /// The stored state failed to load and the user changed nothing yet: no snapshots, so the
+    /// document keeps the blob.
+    keep_stored_state: bool,
 }
 
 /// A started bridge and the processor for the engine.
@@ -257,8 +270,15 @@ impl Bridge {
             latency: 0,
             gui_open: false,
             gui_closing: false,
+            state_warning: None,
+            keep_stored_state: false,
         };
         Ok(Started { bridge, processor })
+    }
+
+    /// Blocks of this bridge that missed their deadline or found it busy.
+    pub(crate) fn late_blocks(&self) -> u64 {
+        self.shared.late_blocks.load(Ordering::Relaxed)
     }
 
     /// Process id of the bridge.
@@ -302,7 +322,7 @@ impl Bridge {
 
     /// Sends `GetState`; the answer is matched to `purpose`. Returns the request number.
     pub(crate) fn request_state(&mut self, purpose: StatePurpose) -> Option<u32> {
-        if self.phase != Phase::Running {
+        if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
         let request = self.seq();
@@ -318,11 +338,19 @@ impl Bridge {
         }
     }
 
+    /// The user changed something on the device: from now on its snapshots replace a stored
+    /// state that failed to load.
+    fn user_changed(&mut self) {
+        self.keep_stored_state = false;
+        self.state_warning = None;
+    }
+
     /// Sends `SetParam` and keeps the value (its text follows with the bridge's echo).
     pub(crate) fn set_param(&mut self, id: u32, value: f64) {
         if self.phase != Phase::Running {
             return;
         }
+        self.user_changed();
         self.send(ControlMsg::SetParam { id, value });
         let entry = self.values.entry(id).or_insert_with(|| ParamValue {
             id,
@@ -580,7 +608,13 @@ impl Bridge {
             }
             BridgeMsg::LatencyChanged(latency) => self.update_latency(latency, events),
             BridgeMsg::RestartRequested => {}
-            BridgeMsg::StateDirty => self.snapshot_soon(),
+            BridgeMsg::StateDirty => {
+                // While loading, "dirty" comes from the plugin itself, not from the user.
+                if self.phase == Phase::Running {
+                    self.user_changed();
+                }
+                self.snapshot_soon();
+            }
             BridgeMsg::NoteNames(names) => {
                 self.note_names = names;
                 events.push(PluginManagerEvent::NoteNamesChanged { device });
@@ -625,9 +659,20 @@ impl Bridge {
         let loading = matches!(self.phase, Phase::Hello | Phase::Loading);
         let fails = fatal
             || context == ErrorContext::Activate
-            || (loading && matches!(context, ErrorContext::Load | ErrorContext::State));
+            || (loading && context == ErrorContext::Load);
         if fails {
             return self.fail(FailReason::LoadFailed(message), events);
+        }
+        if loading && context == ErrorContext::State {
+            // The stored state (`SetState`, the only state request while loading) was refused.
+            self.keep_stored_state = true;
+            events.push(PluginManagerEvent::Log {
+                device: Some(self.device),
+                level: LogLevel::Warning,
+                message: format!("{STATE_LOG_PREFIX} {message}"),
+            });
+            self.state_warning = Some(message);
+            return;
         }
         match context {
             ErrorContext::State => {
@@ -692,6 +737,8 @@ impl Bridge {
             events.push(PluginManagerEvent::ParamValuesChanged {
                 device: self.device,
             });
+            // Values from the audio thread are edits in the plugin's GUI.
+            self.user_changed();
             self.snapshot_soon();
         }
     }

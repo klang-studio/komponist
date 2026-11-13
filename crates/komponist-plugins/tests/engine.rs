@@ -9,15 +9,19 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use assert_no_alloc::assert_no_alloc;
 use common::*;
+use komponist_engine::processor::DEADLINE_SHARE;
 use komponist_engine::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, ProcessStatus, Processor, StereoIo,
-    TransportInfo,
+    Command as EngineCommand, Event, EventKind, LiveInput, NOTE_ID_NONE, ProcessContext,
+    ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,
 };
-use komponist_model::{DeviceId, DeviceRole, Meter, Tick, TickRange};
+use komponist_model::project::BUILTIN_PISYNTH;
+use komponist_model::{DeviceId, DeviceRole, Meter, PluginFormat, PluginRef, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 /// Zero crossings per second of `samples` at `rate`, halved: the frequency of a sine.
@@ -131,6 +135,7 @@ fn context(frames: usize) -> ProcessContext {
             loop_range: TickRange::new(Tick(0), Tick(3840)),
         },
         offline: false,
+        deadline: None,
     }
 }
 
@@ -227,6 +232,9 @@ fn fallbacks_while_loading_late_and_busy() {
         busy_calls += 1;
     }
     eprintln!("slow plugin: late call, then {busy_calls} busy calls passed through");
+    // Every one of them counts as late.
+    assert!(manager.late_blocks(DeviceId(20)) > busy_calls);
+    assert_eq!(manager.late_blocks(DeviceId(21)), 0);
 
     // The instrument plays, and a reset silences it at the next block.
     let silence = vec![0.0; BLOCK];
@@ -290,4 +298,135 @@ fn sample_rate_change_reactivates_the_bridge() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(rig.manager.status(DeviceId(30)), DeviceStatus::Ok);
+}
+
+/// What a [`DeadlineProbe`] saw in its last call.
+#[derive(Default)]
+struct ProbeLog {
+    /// `ctx.deadline` in nanoseconds after the test's base instant; `u64::MAX` for `None`.
+    deadline_ns: AtomicU64,
+    calls: AtomicU32,
+}
+
+/// An effect that passes audio through and records the deadline of its calls.
+struct DeadlineProbe {
+    base: Instant,
+    log: Arc<ProbeLog>,
+}
+
+impl Processor for DeadlineProbe {
+    fn activate(&mut self, _sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        ctx: &ProcessContext,
+        _events: &[Event],
+        io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        io.passthrough();
+        let ns = ctx.deadline.map_or(u64::MAX, |d| {
+            d.saturating_duration_since(self.base).as_nanos() as u64
+        });
+        self.log.deadline_ns.store(ns, Ordering::Relaxed);
+        self.log.calls.fetch_add(1, Ordering::Relaxed);
+        ProcessStatus::Continue
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+
+    fn reset(&mut self) {}
+}
+
+#[test]
+fn bridges_in_series_share_the_callback_deadline() {
+    let dir = scratch("engine-deadline");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    // Two tracks, each a kp-test-slow (sleeps 50 ms on key 126) followed by a probe; the probes are
+    // in-process devices whose processors the test inserts itself.
+    let probe_ref = PluginRef {
+        format: PluginFormat::Builtin,
+        id: BUILTIN_PISYNTH.into(),
+        name: "probe".into(),
+        vendor: String::new(),
+        version: String::new(),
+    };
+    let tracks = (1..=2)
+        .map(|t| {
+            track(
+                t,
+                vec![
+                    device(10 * t, DeviceRole::Instrument, clap_plugin(SLOW), None),
+                    device(10 * t + 1, DeviceRole::Effect, probe_ref.clone(), None),
+                ],
+            )
+        })
+        .collect();
+    let mut rig = Rig::new(manager, project(tracks));
+    let base = Instant::now();
+    let logs: Vec<Arc<ProbeLog>> = [11u64, 21]
+        .iter()
+        .map(|&id| {
+            let log = Arc::new(ProbeLog::default());
+            let slot = rig.slots[&DeviceId(id)];
+            let processor = Box::new(DeadlineProbe {
+                base,
+                log: log.clone(),
+            });
+            rig.send(EngineCommand::InsertProcessor { slot, processor });
+            log
+        })
+        .collect();
+    rig.wait_status(10, DeviceStatus::Ok);
+    rig.wait_status(20, DeviceStatus::Ok);
+    rig.run(4);
+    let late_before = rig.manager.late_blocks(DeviceId(10)) + rig.manager.late_blocks(DeviceId(20));
+
+    // One callback of 2048 frames (42.7 ms): the deadline is 25.6 ms after its start. Both
+    // bridges sleep 50 ms. With one shared deadline the callback returns after about 25.6 ms;
+    // with a budget per processor it would take at least 51.2 ms.
+    rig.note(1, 126, 127);
+    rig.note(2, 126, 127);
+    let frames = komponist_engine::MAX_BLOCK;
+    let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let input = LiveInput {
+        midi: &[],
+        output_latency: 0,
+    };
+    let engine = &mut rig.engine;
+    let before = Instant::now();
+    assert_no_alloc(|| engine.process(&mut l, &mut r, &input));
+    let took = before.elapsed();
+    rig.poll();
+
+    let share = Duration::from_secs_f64(frames as f64 / f64::from(RATE) * DEADLINE_SHARE);
+    let deadline = |log: &ProbeLog| log.deadline_ns.load(Ordering::Relaxed);
+    assert!(logs.iter().all(|log| log.calls.load(Ordering::Relaxed) > 0));
+    assert_eq!(
+        deadline(&logs[0]),
+        deadline(&logs[1]),
+        "one deadline per callback"
+    );
+    let seen = base + Duration::from_nanos(deadline(&logs[0]));
+    let offset = seen.duration_since(before);
+    assert!(
+        offset >= share && offset < share + Duration::from_millis(5),
+        "deadline {offset:?} after the call, expected {share:?}"
+    );
+    eprintln!("two late bridges in series: callback took {took:.1?}, deadline {offset:.1?}");
+    assert!(took >= share - Duration::from_millis(1), "{took:?}");
+    assert!(
+        took < share * 3 / 2,
+        "both waited their own budget: {took:?}"
+    );
+    let late_after = rig.manager.late_blocks(DeviceId(10)) + rig.manager.late_blocks(DeviceId(20));
+    assert!(
+        late_after >= late_before + 2,
+        "{late_before} → {late_after}"
+    );
 }

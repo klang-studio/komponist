@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
+use komponist_ipc::LogLevel;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
+use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{
     DeviceStatus, FailReason, MissingPlugin, PluginError, PluginManager, PluginManagerEvent,
 };
@@ -309,6 +311,108 @@ fn parameter_changes_are_snapshotted_once_debounced() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(snapshots(&rig), 1);
+    rig.manager.shutdown();
+}
+
+#[test]
+fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
+    let dir = scratch("bad-state");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let blob: &[u8] = b"not a state of kp-test-synth";
+    let original = project(vec![
+        track(
+            1,
+            vec![device(
+                10,
+                DeviceRole::Instrument,
+                clap_plugin(SYNTH),
+                Some(blob),
+            )],
+        ),
+        track(
+            2,
+            vec![device(20, DeviceRole::Instrument, clap_plugin(SYNTH), None)],
+        ),
+    ]);
+    let mut rig = Rig::new(manager, original.clone());
+    // Usable, with the plugin's defaults (−12 dB), and a warning.
+    rig.wait_status(10, DeviceStatus::Ok);
+    rig.wait_status(20, DeviceStatus::Ok);
+    let warning = rig.manager.state_warning(DeviceId(10)).map(str::to_owned);
+    assert!(
+        warning.as_deref().is_some_and(|w| !w.is_empty()),
+        "{warning:?}"
+    );
+    assert_eq!(rig.manager.state_warning(DeviceId(20)), None);
+    assert!(rig.events.iter().any(|e| matches!(
+        e,
+        PluginManagerEvent::Log { device: Some(DeviceId(10)), level: LogLevel::Warning, message }
+            if message.starts_with(STATE_LOG_PREFIX)
+    )));
+    assert!(!rig.events.iter().any(|e| matches!(
+        e,
+        PluginManagerEvent::StatusChanged {
+            status: DeviceStatus::Crashed(_),
+            ..
+        }
+    )));
+    let level = play(&mut rig, 1, 69);
+    assert!((0.2..0.3).contains(&level), "defaults: {level}");
+
+    // No snapshot replaces the stored blob: not on request, not on save.
+    let from = rig.events.len();
+    rig.manager.request_state(DeviceId(10));
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(1500) {
+        rig.process(BLOCK);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!rig.events[from..].iter().any(|e| matches!(
+        e,
+        PluginManagerEvent::StateSnapshot {
+            device: DeviceId(10),
+            ..
+        }
+    )));
+    let states = rig.manager.snapshot_states(PATIENCE);
+    let devices: Vec<u64> = states.iter().map(|(d, _)| d.0).collect();
+    assert_eq!(devices, [20]);
+    let mut document = Document::new(original);
+    for (device, state) in states {
+        document
+            .apply_untracked(|p| {
+                komponist_model::edits::set_device_state(p, device, Some(state.clone()))
+            })
+            .unwrap();
+    }
+    let saved = komponist_model::persist::to_json(document.project()).unwrap();
+    let reopened = komponist_model::persist::from_json(&saved).unwrap();
+    assert_eq!(
+        find_device(&reopened, DeviceId(10)).state.as_deref(),
+        Some(blob),
+        "the stored blob survives the save"
+    );
+
+    // A reload tries the stored blob again.
+    rig.reload(10);
+    rig.wait_status(10, DeviceStatus::Ok);
+    assert!(rig.manager.state_warning(DeviceId(10)).is_some());
+
+    // The user changes something: the warning clears and snapshots resume (debounced).
+    let gain = param_id(&rig.manager, 10, "Gain");
+    rig.manager.set_param(DeviceId(10), gain, 0.5);
+    assert_eq!(rig.manager.state_warning(DeviceId(10)), None);
+    let state = next_snapshot(&mut rig, 10);
+    assert_ne!(&state[..], blob);
+    let devices: Vec<u64> = rig
+        .manager
+        .snapshot_states(PATIENCE)
+        .iter()
+        .map(|(d, _)| d.0)
+        .collect();
+    assert_eq!(devices, [10, 20]);
     rig.manager.shutdown();
 }
 
