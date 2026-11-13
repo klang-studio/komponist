@@ -5,6 +5,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "kp-test-synth",
     "fake-host",
 ]
 

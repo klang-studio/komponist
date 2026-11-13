@@ -1,0 +1,17 @@
+[package]
+name = "kp-test-synth"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Test instrument for komponist: a sine per note with gain, decay and a small egui GUI"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+nice-plug.workspace = true
+nice-plug-egui.workspace = true
+egui.workspace = true
+
+[dev-dependencies]
+fake-host.workspace = true
