@@ -360,16 +360,38 @@ impl Arrangement {
     /// Anchors zoom changes made elsewhere (`+` / `−` / `Alt +` / `Alt −` through the dispatcher,
     /// the panel header's buttons) around the mouse over the lanes, else the playhead
     /// (horizontally) or the top (vertically). A change that also moved the scroll position
-    /// ("Z: einpassen") is left as it is.
+    /// ("Z: Auswahl einpassen", computed by the dispatcher) keeps it, and scrolls the tracks of the
+    /// selected clips into view.
     fn follow_zoom(&self, ui: &Ui, ctx: &mut ViewCtx<'_>, project: &Project, body: Rect) {
         let Some(m) = self.memo else {
             return;
         };
         let playhead = ctx.engine.playhead();
+        // Rows of the selected clips (for "Z").
+        let selected_rows: Vec<usize> = project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.clips
+                    .iter()
+                    .any(|c| ctx.ui.selection.clips.contains(&c.id))
+            })
+            .map(|(i, _)| i)
+            .collect();
         let v = &mut ctx.ui.arrangement;
         let g = Geometry::new(body, project, v);
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        if v.px_per_bar != m.px_per_bar && v.scroll_tick == m.scroll_tick {
+        if v.scroll_tick != m.scroll_tick {
+            // Only the dispatcher's "Z: Auswahl einpassen" scrolls between frames: the tracks of
+            // the fitted clips come into view as well.
+            if let (Some(&first), Some(&last)) = (selected_rows.first(), selected_rows.last()) {
+                let (top, bottom) = (g.rows[first].y.min, g.rows[last].y.max);
+                if top < g.tracks.top() || bottom > g.tracks.bottom() {
+                    v.scroll_y += top - g.tracks.top();
+                }
+            }
+        } else if v.px_per_bar != m.px_per_bar {
             let bar = project.meter.ticks_per_bar() as f64;
             let (old, new) = (f64::from(m.px_per_bar) / bar, f64::from(v.px_per_bar) / bar);
             let left = f64::from(g.lane_x.min);

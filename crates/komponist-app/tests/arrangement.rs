@@ -9,6 +9,7 @@ use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
+use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::ui_state::FocusArea;
 use komponist_app::views::arrangement::names;
@@ -850,6 +851,27 @@ fn z_fits_the_selection() {
     assert!(
         (clip_rect(&h, "Clip Lead B, Takt 13\u{2013}16").left() - ruler.left() - 1.0).abs() < 0.5
     );
+}
+
+#[test]
+fn z_brings_the_tracks_of_the_selection_into_view() {
+    let mut h = harness(demo());
+    // Tall rows: Arp lies below the view.
+    for _ in 0..8 {
+        h.key_press_modifiers(Modifiers::ALT, egui::Key::Plus);
+    }
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("Spur Arp").is_none());
+    let arp = clip_id(&h, 5, 0);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+            clips: vec![arp],
+            mode: SelectMode::Replace,
+        })));
+    h.key_press(egui::Key::Z);
+    h.run_steps(3);
+    h.get_by_label_contains("Spur Arp");
+    h.get_by_role_and_label(Role::GridCell, "Clip Arp, Takt 9\u{2013}16, stumm");
 }
 
 #[test]
