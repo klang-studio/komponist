@@ -515,7 +515,7 @@ impl Widget for Fader<'_> {
             f64::from(*self.db),
             db_text(*self.db),
             f64::from(VOLUME_DB_MIN)..=f64::from(VOLUME_DB_MAX),
-            0.1,
+            1.0,
         );
         response
     }
@@ -677,12 +677,8 @@ pub fn gallery(ui: &mut Ui) {
         for ((label, st, db), w) in SAMPLES.into_iter().zip(widths) {
             column(ui, w, Align::Center, space::SPACE_2, |ui| {
                 still(ui, &format!("Fader · {label}"), st, db, FaderSize::Normal);
-                let c = if st.disabled {
-                    color::TEXT_4
-                } else {
-                    color::TEXT_1
-                };
-                value_label(ui, &fmt_db(db), c);
+                // The design keeps the value under the disabled sample in `text.1`.
+                value_label(ui, &fmt_db(db), color::TEXT_1);
                 caption(ui, label);
             });
         }

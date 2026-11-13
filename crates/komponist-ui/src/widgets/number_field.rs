@@ -59,11 +59,11 @@ pub type Parser<'a> = Box<dyn 'a + Fn(&str) -> Option<f64>>;
 /// control works on any number type.
 pub(crate) type GetSet<'a> = Box<dyn 'a + FnMut(Option<f64>) -> f64>;
 
-/// The [`GetSet`] of `value`.
+/// The [`GetSet`] of `value`; integer types round (egui's `from_f64` truncates).
 pub(crate) fn get_set<N: Numeric>(value: &mut N) -> GetSet<'_> {
     Box::new(move |v| {
         if let Some(v) = v {
-            *value = N::from_f64(v);
+            *value = N::from_f64(if N::INTEGRAL { v.round() } else { v });
         }
         value.to_f64()
     })
@@ -1115,5 +1115,9 @@ mod tests {
         assert_eq!(normalized(1.0, 1.0, 1.0), 0.0);
         assert_eq!(clamp_finite(f64::NAN, 0.0, 1.0, 0.3), 0.3);
         assert!((snap_to(124.30000000001, 0.1) - 124.3).abs() < 1e-12);
+        let mut vel = 100_i32;
+        assert_eq!(get_set(&mut vel)(Some(100.6)), 101.0, "integers round");
+        let mut bpm = 120.0_f32;
+        assert_eq!(get_set(&mut bpm)(Some(120.5)), 120.5);
     }
 }
