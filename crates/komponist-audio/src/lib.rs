@@ -18,11 +18,7 @@
 //! Threads: `AudioSystem` and `MidiInputHub` live on the UI thread; `EngineSlot::process` and
 //! `AudioProcess::process` run on the audio thread; midir callbacks on MIDI threads.
 
-// Contract stage (WP-01): bodies are `todo!()` until WP-13 implements them, so parameters are
-// unused for now (and boxed engines are not yet moved anywhere). Remove these allows when the
-// implementation lands.
-#![allow(unused_variables, clippy::boxed_local)]
-
+mod backend;
 pub mod midi;
 pub mod process;
 pub mod slot;
