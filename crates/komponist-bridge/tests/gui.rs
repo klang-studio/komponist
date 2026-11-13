@@ -16,9 +16,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use komponist_ipc::{BridgeMsg, ControlMsg, GuiSize};
+use komponist_ipc::{BridgeMsg, ControlMsg, GuiSize, WireEvent, WireEventKind};
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, EventMask, WindowClass};
+use x11rb::protocol::xproto::{
+    BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ConnectionExt as _, CreateWindowAux, EventMask,
+    MOTION_NOTIFY_EVENT, WindowClass,
+};
+use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -87,6 +91,7 @@ fn gui_allowed() -> bool {
 /// The frame's stand-in: a top-level window of the test's own X connection.
 struct Parent {
     conn: RustConnection,
+    root: u32,
     window: u32,
 }
 
@@ -120,7 +125,38 @@ impl Parent {
         .unwrap();
         conn.map_window(window).unwrap();
         conn.sync().unwrap();
-        Parent { conn, window }
+        Parent {
+            conn,
+            root: root.root,
+            window,
+        }
+    }
+
+    /// Fakes a pointer event (XTEST) at window coordinates; the parent sits at the root origin.
+    fn pointer(&self, kind: u8, (x, y): (i16, i16)) {
+        let detail = if kind == MOTION_NOTIFY_EVENT { 0 } else { 1 };
+        self.conn
+            .xtest_fake_input(kind, detail, 0, self.root, x, y, 0)
+            .unwrap();
+        self.conn.sync().unwrap();
+    }
+
+    /// Drags the pointer from `from` to `to` in ten steps; `serve` runs between the steps.
+    fn drag(&self, (from, to): ((i16, i16), (i16, i16)), mut serve: impl FnMut(Duration)) {
+        self.pointer(MOTION_NOTIFY_EVENT, from);
+        serve(Duration::from_millis(100));
+        self.pointer(BUTTON_PRESS_EVENT, from);
+        serve(Duration::from_millis(100));
+        for step in 1..=10i16 {
+            let at = (
+                from.0 + (to.0 - from.0) * step / 10,
+                from.1 + (to.1 - from.1) * step / 10,
+            );
+            self.pointer(MOTION_NOTIFY_EVENT, at);
+            serve(Duration::from_millis(30));
+        }
+        self.pointer(BUTTON_RELEASE_EVENT, to);
+        serve(Duration::from_millis(300));
     }
 
     /// Child windows of the parent (the plugin's window once attached).
@@ -151,12 +187,16 @@ fn thread_cpu_seconds(pid: u32, tid: u32) -> f64 {
 }
 
 /// Processes blocks at roughly the engine's pace for `duration`.
-fn run_blocks(bridge: &mut Bridge, duration: Duration) {
+/// Returns the plugin's output events of those blocks (from the shared output ring).
+fn run_blocks(bridge: &mut Bridge, duration: Duration) -> Vec<WireEvent> {
     let end = Instant::now() + duration;
+    let mut events = Vec::new();
     while Instant::now() < end {
         bridge.block(&[]);
+        events.extend(std::iter::from_fn(|| bridge.monitor.pop_output_event()));
         std::thread::sleep(Duration::from_millis(5));
     }
+    events
 }
 
 /// Opens the GUI of `plugin_id` in `bundle` through the bridge, serves it, resizes and closes it.
@@ -205,7 +245,7 @@ fn exercise(bundle: &Path, plugin_id: &str, name: &str) {
     };
     bridge.send(ControlMsg::SetGuiSize(asked));
     let adopted = if resizable {
-        bridge.heartbeat();
+        bridge.sync();
         bridge.seen.iter().rev().find_map(|m| match m {
             BridgeMsg::GuiSizeRequest(s) => Some(*s),
             _ => None,
@@ -290,4 +330,91 @@ fn gui_surge_xt() {
     {
         exercise(&bundle, "org.surge-synth-team.surge-xt", "surge-xt");
     }
+}
+
+/// GUI edits reach the app on both paths: while inactive through `request_flush` → `flush_params`
+/// → `ParamValues` on the control socket, while processing as output events of `process` through
+/// the shared output ring.
+#[test]
+#[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1"]
+fn gui_dexed_edits_reach_the_app() {
+    if !gui_allowed() {
+        return;
+    }
+    let Some(bundle) = installed("/usr/lib/clap/Dexed.clap") else {
+        return;
+    };
+    // Dexed's Cutoff knob (default: fully open), dragged down from its centre, in GUI
+    // coordinates (WP-26's GUI test). Each drag closes it a bit more.
+    const DOWN: ((i16, i16), (i16, i16)) = ((250, 463), (250, 523));
+    let parent = Parent::new(1600, 1000);
+    let mut bridge = Bridge::spawn();
+    let info = bridge.load(&bundle, "com.digital-suburban.dexed");
+    bridge.send(ControlMsg::OpenGui {
+        parent_xid: u64::from(parent.window),
+        scale: 1.0,
+    });
+    bridge.expect("GuiOpened", |m| {
+        matches!(m, BridgeMsg::GuiOpened { .. }).then_some(())
+    });
+    // Let the GUI come up completely (JUCE paints from its timers).
+    std::thread::sleep(Duration::from_secs(3));
+
+    // Inactive: the bridge main loop serves the GUI on its own.
+    parent.drag(DOWN, std::thread::sleep);
+    bridge.sync();
+    let flushed: Vec<(u32, f64)> = bridge
+        .seen
+        .iter()
+        .filter_map(|m| match m {
+            BridgeMsg::ParamValues(values) => Some(values.iter().map(|v| (v.id, v.value))),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let (id, value) = *flushed
+        .last()
+        .unwrap_or_else(|| panic!("no ParamValues from the GUI edit; seen {:?}", bridge.seen));
+    let param = info.params.iter().find(|p| p.id == id).unwrap();
+
+    // Active: the edit arrives with the blocks, as gesture and values.
+    let seen_before = bridge.seen.len();
+    bridge.activate();
+    run_blocks(&mut bridge, Duration::from_millis(300));
+    let mut events = Vec::new();
+    parent.drag(DOWN, |d| events.extend(run_blocks(&mut bridge, d)));
+    let kinds: Vec<WireEventKind> = events.iter().filter_map(WireEvent::decode).collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, WireEventKind::ParamGesture { begin: true, .. })),
+        "no gesture begin in {kinds:?}"
+    );
+    let processed = kinds
+        .iter()
+        .filter_map(|k| match *k {
+            WireEventKind::ParamValue { id, value } => Some((id, value)),
+            _ => None,
+        })
+        .count();
+    assert!(processed > 0, "no parameter values from process: {kinds:?}");
+    // The flush path stays quiet while active (no `flush_params` on an active plugin).
+    bridge.sync();
+    let values_while_active = bridge.seen[seen_before..]
+        .iter()
+        .filter(|m| matches!(m, BridgeMsg::ParamValues(_)))
+        .count();
+
+    bridge.send(ControlMsg::CloseGui);
+    bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+    eprintln!(
+        "GUI edits through the bridge (Dexed): inactive {} ParamValues entries, last {} = \
+         {value:.3}; active {} output events ({processed} values), ParamValues messages while active \
+         {values_while_active}",
+        flushed.len(),
+        param.name,
+        kinds.len(),
+    );
+    drop(parent);
 }

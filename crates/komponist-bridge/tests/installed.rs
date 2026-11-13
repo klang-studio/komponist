@@ -70,7 +70,8 @@ fn exercise(path: &str, plugin_id: &str, sound: bool) {
     second.send(ControlMsg::SetState {
         state: state.clone(),
     });
-    second.heartbeat();
+    // An `Error` for the state would fail `expect`.
+    second.sync();
     second.activate();
     for _ in 0..10 {
         second.block(&[]);

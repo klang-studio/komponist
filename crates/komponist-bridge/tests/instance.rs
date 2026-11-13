@@ -13,7 +13,7 @@ use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, Instant};
 
 use common::*;
-use komponist_ipc::shm::MAX_BLOCK;
+use komponist_ipc::shm::{BLOCK_FLAG_RESET, MAX_BLOCK};
 use komponist_ipc::{
     BlockError, BlockStatus, BridgeMsg, BridgeState, ControlMsg, ErrorContext, LogLevel,
     PluginFormat, PluginKind, ProcessExit, RenderMode,
@@ -175,6 +175,13 @@ fn synth_sounds_through_the_ipc_path() {
         bridge.block(&[]);
     }
     assert!(bridge.peak(0..BLOCK) < 1e-4, "{}", bridge.peak(0..BLOCK));
+
+    // The engine's reset flag (stop, locate, loop jump) silences a sounding note at once.
+    bridge.block(&[note_on(0, 72)]);
+    assert!(bridge.peak(0..BLOCK) > 0.1);
+    bridge.next_flags = BLOCK_FLAG_RESET;
+    bridge.block(&[]);
+    assert_eq!(bridge.peak(0..BLOCK), 0.0);
     // No output events from a synth without GUI interaction.
     assert_eq!(bridge.monitor.pop_output_event(), None);
 
@@ -195,7 +202,7 @@ fn effect_audio_and_latency_through_the_ipc_path() {
     assert_eq!(bridge.region().latency(), 64);
     // nice-plug reports the latency from `activate`; the bridge serves that before processing
     // starts, so it does not turn into a restart.
-    bridge.heartbeat();
+    bridge.sync();
     assert!(
         !bridge.seen.iter().any(|m| matches!(
             m,
@@ -214,6 +221,19 @@ fn effect_audio_and_latency_through_the_ipc_path() {
     assert_eq!(right[84], -0.5);
     assert_eq!(left.iter().filter(|s| **s != 0.0).count(), 1);
     assert_eq!(right.iter().filter(|s| **s != 0.0).count(), 1);
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+
+    // A block above the activated maximum is not given to the plugin: the effect's fallback is
+    // the dry input, flagged as a plugin error.
+    let mut bridge = Bridge::spawn();
+    bridge.load(&bundle, FX);
+    bridge.activate_with(SAMPLE_RATE, BLOCK as u32 / 2);
+    for (i, s) in bridge.input[0].iter_mut().enumerate() {
+        *s = i as f32;
+    }
+    let result = bridge.block(&[]);
+    assert_eq!(result.status, BlockStatus::PluginError as u32);
+    assert_eq!(bridge.output[0][..BLOCK], bridge.input[0][..BLOCK]);
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 
@@ -541,7 +561,7 @@ fn rt_thread_runs_at_sched_fifo_or_says_why() {
     bridge.expect("Activated", |m| {
         matches!(m, BridgeMsg::Activated { .. }).then_some(())
     });
-    bridge.heartbeat();
+    bridge.sync();
     assert_eq!(bridge.rt_logs().len(), 1);
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!("RT priority report: {level:?} {message:?}, thread (policy, priority) {policy:?}");
@@ -701,4 +721,15 @@ fn bridges_are_not_dumpable_unless_asked() {
         "KOMPONIST_BRIDGE_COREDUMP=1 keeps the bridge dumpable"
     );
     assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
+#[test]
+fn instance_mode_needs_an_open_control_fd() {
+    let output = std::process::Command::new(BRIDGE)
+        .args(["--instance", "--control-fd", "999"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("control fd 999"), "{stderr}");
 }

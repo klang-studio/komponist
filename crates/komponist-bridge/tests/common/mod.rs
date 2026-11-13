@@ -56,7 +56,7 @@ pub fn fixture_in(format: &str, name: &str) -> Option<PathBuf> {
         .join(format)
         .join(format!("{name}.{format}"));
     if path.exists() {
-        Some(std::path::absolute(path).unwrap())
+        Some(std::fs::canonicalize(path).unwrap())
     } else {
         eprintln!(
             "skipped: {} is missing; run scripts/build-test-plugins.sh",
@@ -129,6 +129,9 @@ pub struct Bridge {
     pub input: [Vec<f32>; 2],
     pub output: [Vec<f32>; 2],
     pub steady_time: u64,
+    /// `BLOCK_FLAG_*` bits for the next block only.
+    pub next_flags: u32,
+    sync_request: u32,
 }
 
 impl Bridge {
@@ -191,6 +194,8 @@ impl Bridge {
             input: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
             output: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
             steady_time: 0,
+            next_flags: 0,
+            sync_request: 0,
         }
     }
 
@@ -260,7 +265,25 @@ impl Bridge {
         })
     }
 
-    /// The heartbeat (until the protocol has a ping): `ListParams` → `Params`.
+    /// Waits until the bridge has handled everything sent before: `GetState` carries a request
+    /// number its answer echoes (`State`, or `Error` for a plugin without state). Messages before
+    /// the answer go to `seen`. Needs a loaded plugin.
+    pub fn sync(&mut self) {
+        self.sync_request += 1;
+        let request = 0x5EED_0000 + self.sync_request;
+        self.send(ControlMsg::GetState { request });
+        self.expect("State", |m| match m {
+            BridgeMsg::State { request: r, .. } if *r == request => Some(()),
+            BridgeMsg::Error {
+                context: komponist_ipc::ErrorContext::State,
+                ..
+            } => Some(()),
+            _ => None,
+        });
+    }
+
+    /// The heartbeat (until the protocol has a ping): `ListParams` → `Params`. A plugin's
+    /// rescan also sends `Params`, so this proves liveness but is no exact round trip.
     pub fn heartbeat(&mut self) -> Duration {
         let t0 = Instant::now();
         self.send(ControlMsg::ListParams);
@@ -288,9 +311,13 @@ impl Bridge {
     }
 
     pub fn activate_at(&mut self, sample_rate: f64) -> u32 {
+        self.activate_with(sample_rate, MAX_BLOCK as u32)
+    }
+
+    pub fn activate_with(&mut self, sample_rate: f64, max_block: u32) -> u32 {
         self.send(ControlMsg::Activate {
             sample_rate,
-            max_block: MAX_BLOCK as u32,
+            max_block,
         });
         self.expect("Activated", |m| match m {
             BridgeMsg::Activated { latency } => Some(*latency),
@@ -347,7 +374,7 @@ impl Bridge {
     pub fn begin(&mut self, events: &[WireEvent]) -> Result<u32, BlockError> {
         let spec = BlockSpec {
             frames: BLOCK as u32,
-            flags: 0,
+            flags: std::mem::take(&mut self.next_flags),
             steady_time: self.steady_time,
             transport: WireTransport {
                 tempo_bpm: 120.0,
