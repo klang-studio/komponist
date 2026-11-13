@@ -28,6 +28,14 @@ const W: f32 = 1920.0;
 const H: f32 = 1080.0;
 const BAR: i64 = 3840;
 
+/// The node with `role` and `label` in the dock: the arrangement above has its own ruler
+/// ("Lineal"), "Snap" and zoom buttons, so of several matches the piano roll's is the lowest.
+fn dock_node<'h>(h: &'h Harness<'_, App>, role: Role, label: &'h str) -> egui_kittest::Node<'h> {
+    h.get_all_by_role_and_label(role, label)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("node")
+}
+
 fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
@@ -473,14 +481,13 @@ fn toolbar_switches_tools_grid_and_snap() {
     h.key_press(egui::Key::Num3);
     h.run_steps(2);
     assert_eq!(h.state().ui().piano_roll.tool, Tool::Eraser);
-    h.get_by_role_and_label(Role::Button, names::SNAP).click();
+    dock_node(&h, Role::Button, names::SNAP).click();
     h.run_steps(2);
     assert!(!h.state().ui().piano_roll.snap);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::CloseBracket);
     h.run_steps(2);
     assert_eq!(h.state().ui().piano_roll.grid, Grid::Eighth);
-    h.get_by_role_and_label(Role::Button, names::ZOOM_IN)
-        .click();
+    dock_node(&h, Role::Button, names::ZOOM_IN).click();
     h.run_steps(2);
     assert!(h.state().ui().piano_roll.px_per_bar > 320.0);
     h.key_press_modifiers(Modifiers::ALT, egui::Key::Plus);
@@ -649,7 +656,7 @@ fn visible_notes_have_accesskit_nodes() {
     h.get_by_role_and_label(Role::Grid, names::NOTES);
     h.get_by_role_and_label(Role::Group, names::KEYBOARD);
     h.get_by_role_and_label(Role::Group, names::VELOCITY_LANE);
-    h.get_by_role_and_label(Role::Slider, "Lineal");
+    dock_node(&h, Role::Slider, "Lineal");
     // Only visible notes: none below the lowest visible key.
     let g = geometry(&h, clip);
     let hidden = notes_of(h.state(), clip)
@@ -659,7 +666,11 @@ fn visible_notes_have_accesskit_nodes() {
     let cells = h
         .root()
         .children_recursive()
-        .filter(|c| c.accesskit_node().role() == Role::GridCell)
+        .filter(|c| {
+            // Notes only: the arrangement's clips are grid cells too.
+            let n = c.accesskit_node();
+            n.role() == Role::GridCell && n.label().is_some_and(|l| l.starts_with("Note "))
+        })
         .count();
     assert_eq!(cells, notes_of(h.state(), clip).len() - hidden);
 }
