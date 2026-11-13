@@ -214,8 +214,8 @@ impl NoteBatch {
     /// An empty batch with room for `notes` plain notes.
     pub fn with_capacity(pixels_per_point: f32, notes: usize) -> Self {
         let mut b = Self::new(pixels_per_point);
-        // A rounded fill is 3 quads and 4 corner fans of about 3 quads each.
-        b.fills.reserve(15 * notes);
+        // A note fill is 12 vertices and 10 triangles (`Quads::soft_rounded`).
+        b.fills.reserve_exact(12 * notes, 10 * notes);
         b
     }
 
@@ -235,7 +235,7 @@ impl NoteBatch {
     /// Adds a note with a precomputed look (for callers that cache [`note_look`]).
     pub fn add_look(&mut self, rect: Rect, look: &NoteLook, pitch: u8) {
         if let Some(fill) = look.fill {
-            self.fills.rounded(rect, look.radius, fill);
+            self.fills.soft_rounded(rect, look.radius, fill);
         }
         if let Some(c) = look.contour {
             self.rings.inner_ring(rect, look.radius, c);

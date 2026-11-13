@@ -114,6 +114,56 @@ impl Quads {
         self.rounded_corners(r, radius, [true; 4], color);
     }
 
+    /// A filled rect with corner radius `radius`, cheaply: an octagon whose cut corners are
+    /// triangles fading from transparent at the corner to opaque at the cut (12 vertices,
+    /// 10 triangles). For radii of a few device pixels this reads like an anti-aliased arc; the
+    /// note batch uses it for its thousands of notes. Straight edges stay crisp.
+    pub fn soft_rounded(&mut self, r: Rect, radius: f32, color: Color32) {
+        let r = self.snap(r);
+        let k = radius.min(r.width() / 2.0).min(r.height() / 2.0);
+        if k * self.ppp < 1.0 {
+            self.quad(r, color);
+            return;
+        }
+        let (x0, x1, y0, y1) = (r.min.x, r.max.x, r.min.y, r.max.y);
+        let m = &mut self.mesh;
+        let b = m.vertices.len() as u32;
+        let octagon = [
+            pos2(x0 + k, y0),
+            pos2(x1 - k, y0),
+            pos2(x1, y0 + k),
+            pos2(x1, y1 - k),
+            pos2(x1 - k, y1),
+            pos2(x0 + k, y1),
+            pos2(x0, y1 - k),
+            pos2(x0, y0 + k),
+        ];
+        for p in octagon {
+            m.colored_vertex(p, color);
+        }
+        for i in 1..7 {
+            m.add_triangle(b, b + i, b + i + 1);
+        }
+        // The corners, each between two cut points: top left, top right, bottom right,
+        // bottom left.
+        let corners = [
+            (r.left_top(), 7, 0),
+            (r.right_top(), 1, 2),
+            (r.right_bottom(), 3, 4),
+            (r.left_bottom(), 5, 6),
+        ];
+        for (i, (corner, a, c)) in corners.into_iter().enumerate() {
+            m.colored_vertex(corner, Color32::TRANSPARENT);
+            m.add_triangle(b + 8 + i as u32, b + a, b + c);
+        }
+    }
+
+    /// Reserves room for `vertices` more vertices and `triangles` more triangles.
+    pub fn reserve_exact(&mut self, vertices: usize, triangles: usize) {
+        self.mesh.reserve_vertices(vertices);
+        self.mesh.reserve_triangles(triangles);
+    }
+
     /// Like [`Self::rounded`], but only the corners set in `corners` (top left, top right,
     /// bottom right, bottom left) are rounded; the others stay square.
     pub fn rounded_corners(&mut self, r: Rect, radius: f32, corners: [bool; 4], color: Color32) {
@@ -330,6 +380,33 @@ mod tests {
             assert_eq!(v.pos.x, v.pos.x.round());
             assert_eq!(v.pos.y, v.pos.y.round());
         }
+    }
+
+    #[test]
+    fn soft_rounded_is_an_octagon_with_fading_corners() {
+        let mut q = Quads::new(1.0);
+        q.soft_rounded(
+            Rect::from_min_size(pos2(0.3, 0.0), vec2(10.0, 10.0)),
+            2.0,
+            Color32::RED,
+        );
+        assert_eq!(q.mesh.vertices.len(), 12);
+        assert_eq!(q.mesh.indices.len(), 3 * 10);
+        let transparent = q
+            .mesh
+            .vertices
+            .iter()
+            .filter(|v| v.color == Color32::TRANSPARENT);
+        let corners: Vec<Pos2> = transparent.map(|v| v.pos).collect();
+        assert_eq!(
+            corners,
+            [
+                pos2(0.0, 0.0),
+                pos2(10.0, 0.0),
+                pos2(10.0, 10.0),
+                pos2(0.0, 10.0)
+            ]
+        );
     }
 
     #[test]
