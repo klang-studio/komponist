@@ -110,13 +110,17 @@ pub fn section() -> Section {
                 .content(fm_card),
         ],
     ))
+    .group(Group::grid(
+        page::CARDS_COMPONENTS,
+        super::graph::gallery::cards(),
+    ))
 }
 
 // ---------------------------------------------------------------------------------------------
 // Layout helpers
 
 /// The `surface.2` demo ground of a card (`widget_card`: padding 24 / 16 / 16, radius.m).
-fn demo(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+pub(super) fn demo(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::new()
         .fill(color32(color::SURFACE_2))
         .corner_radius(corner_radius(radius::M))
@@ -139,7 +143,7 @@ fn demo(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 
 /// One sample: the widget `width` wide, its caption under it in `type.device-label` (`state()`:
 /// `gap:8px`, centred).
-fn sample(ui: &mut Ui, caption: &str, width: f32, add: impl FnOnce(&mut Ui)) {
+pub(super) fn sample(ui: &mut Ui, caption: &str, width: f32, add: impl FnOnce(&mut Ui)) {
     let cap = widgets::number_field::text_width(ui, caption, &LABEL);
     column(ui, width.max(cap), Align::Center, space::SPACE_2, |ui| {
         add(ui);
@@ -147,7 +151,7 @@ fn sample(ui: &mut Ui, caption: &str, width: f32, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn live_caption(ui: &mut Ui, text: &str) {
+pub(super) fn live_caption(ui: &mut Ui, text: &str) {
     ui.add_space(space::SPACE_2);
     ui.label(fonts::rich_text(
         text,
@@ -155,7 +159,10 @@ fn live_caption(ui: &mut Ui, text: &str) {
     ));
 }
 
-fn live_state<T: Clone + Default + Send + Sync + 'static>(ui: &mut Ui, name: &str) -> (Id, T) {
+pub(super) fn live_state<T: Clone + Default + Send + Sync + 'static>(
+    ui: &mut Ui,
+    name: &str,
+) -> (Id, T) {
     let id = ui.scope_id().with(("komponist_device_gallery", name));
     let v = ui.data(|d| d.get_temp::<T>(id)).unwrap_or_default();
     (id, v)

@@ -11,6 +11,7 @@
 //! | meter_gr | 1 × 3 | [`meter_gr`] |
 //! | pad_grid | n × m | [`pad_grid`] |
 //! | fm_algorithm | n × m | [`fm_algorithm`] |
+//! | graph (envelope, eq, filter, transfer, waveform, xy, lfo) | min 2 × 1 | [`graph`] |
 //!
 //! Base rules of the design system apply to all of them: hover one surface up, focus ring, Shift
 //! fine / Ctrl coarse drag, Alt-click the default, double-click text entry, value tooltip while
@@ -22,6 +23,7 @@
 pub mod choice;
 pub mod fm_algorithm;
 pub mod gallery;
+pub mod graph;
 pub mod knob_cell;
 pub mod meter_gr;
 pub mod mini_fader;

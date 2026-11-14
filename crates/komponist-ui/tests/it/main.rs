@@ -2,6 +2,7 @@
 //! so egui/wgpu link once. Binaries that need their own process stay next to this folder.
 
 mod device_widgets;
+mod graph;
 mod harness;
 mod timeline;
 mod value_controls;

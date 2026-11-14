@@ -8,18 +8,21 @@ use komponist_ui::widgets::device::gallery;
 /// Width of a card on the page (`page::CARDS_COMPONENTS`).
 const CARD_WIDTH: f32 = 560.0;
 
+/// Card `index` of the cards of all groups of the section, in order.
 fn card(ui: &mut Ui, index: usize) {
     ui.set_width(CARD_WIDTH);
     let section = gallery::section();
-    (section.groups[0].cards[index].content.expect("content"))(ui);
+    let cards: Vec<_> = section.groups.iter().flat_map(|g| g.cards.iter()).collect();
+    (cards[index].content.expect("content"))(ui);
 }
 
 #[test]
 fn gallery_cards() {
     let mut shots = Snapshots::new();
-    let titles: Vec<&str> = gallery::section().groups[0]
-        .cards
+    let titles: Vec<&str> = gallery::section()
+        .groups
         .iter()
+        .flat_map(|g| g.cards.iter())
         .map(|c| c.title)
         .collect();
     for (i, title) in titles.iter().enumerate() {

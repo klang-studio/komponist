@@ -252,6 +252,77 @@ pub mod metrics {
             /// Room kept free at the top for the title.
             pub const TITLE_ROOM: f32 = 18.0;
         }
+
+        /// Graph (`W_env`, `W_eq`, `W_wave`, `W_lfo`, `W_xy`, `W_transfer`, `handle()`, `display()`
+        /// of `geraete_page_generator.py`): the numbers the device tokens do not carry.
+        pub mod graph {
+            /// Position of the title from the top left (`left:6px;top:4px`; token `widget.graph.title`).
+            pub const TITLE_POS: [f32; 2] = [6.0, 4.0];
+            /// Extra reach of a handle's hit area around its circle (interaction, not in the handoff).
+            pub const HIT_PAD: f32 = 3.0;
+            /// Half width of the hit strip of an edge handle (interaction, not in the handoff).
+            pub const EDGE_HIT: f32 = 6.0;
+            /// Stroke of a handle (token `widget.graph.handle.stroke` = `1.5 text.1`).
+            pub const HANDLE_STROKE: f32 = 1.5;
+            /// Stroke of the selected handle (token `widget.graph.handle.selected` = `2 accent`).
+            pub const HANDLE_STROKE_SELECTED: f32 = 2.0;
+            /// Radius of the level point marker (token `widget.graph.marker.point` = `r 3 text.1`).
+            pub const POINT_R: f32 = 3.0;
+            /// Dash and gap of the playhead (token `widget.graph.marker.playhead`: `dash 2 2`).
+            pub const PLAYHEAD_DASH: [f32; 2] = [2.0, 2.0];
+            /// Top of the playhead (`W_lfo` `y1="14"`, `W_env` `top - 4`).
+            pub const PLAYHEAD_TOP: f32 = 14.0;
+            /// Dash and gap of the transfer diagonal (`W_transfer` `stroke-dasharray="3 3"`).
+            pub const DIAGONAL_DASH: [f32; 2] = [3.0, 3.0];
+            /// Dash and gap of a threshold line (`W_transfer` `stroke-dasharray="2 2"`).
+            pub const THRESHOLD_DASH: [f32; 2] = [2.0, 2.0];
+            /// Left of the x axis labels from their tick and their distance from the bottom
+            /// (`W_eq` `x + 3`, `y = h - 4`: the baseline).
+            pub const LABEL_DX: f32 = 3.0;
+            /// Baseline of the x axis labels above the bottom edge (`y = h - 4`).
+            pub const LABEL_BASELINE: f32 = 4.0;
+            /// Baseline of a number inside a handle below its centre (`y + 3`).
+            pub const NUMBER_BASELINE: f32 = 3.0;
+            /// The XY puck (`W_xy`): fill radius, ring radius (1 px accent when selected).
+            pub const PUCK_R: [f32; 2] = [7.0, 9.0];
+            /// Opacity of the region outside the sample's start–end (token `widget.graph.region_outside`
+            /// = `surface.1 @ 75 %`).
+            pub const REGION_OPACITY: f32 = 0.75;
+            /// Gap between a readout's name and its value (the space between the spans of `W_xy`).
+            pub const READOUT_GAP: f32 = 3.0;
+            /// Distance of the XY readouts from the corners (`right:5px;bottom:3px`, `left:5px;top:3px`).
+            pub const READOUT_INSET: [f32; 2] = [5.0, 3.0];
+            /// Opacity of the XY crosshair (`stroke-opacity="0.5"`).
+            pub const CROSSHAIR_OPACITY: f32 = 0.5;
+            /// The flag of an edge handle (`W_wave`: `width 6, height 8` at `y = 14`).
+            pub const EDGE_FLAG: [f32; 2] = [6.0, 8.0];
+            /// Top of an edge handle's line and flag (`W_wave` `y1="14"`).
+            pub const EDGE_TOP: f32 = 14.0;
+
+            /// Axis padding in px at the low and the high end of the axis, per configuration.
+            pub mod pad {
+                /// `W_env`: `pad = 8`, `top = 18`, `bot = h - 8` (x, y).
+                pub const ENVELOPE: ([f32; 2], [f32; 2]) = ([8.0, 8.0], [8.0, 18.0]);
+                /// `W_eq`: x over the full width, y `h/2 ∓ (h/2 - 10)`.
+                pub const EQ: ([f32; 2], [f32; 2]) = ([0.0, 0.0], [10.0, 10.0]);
+                /// `W_wave`: amplitude `h/2 - 12` around `h/2 + 4` → 8 below, 16 above.
+                pub const WAVEFORM: ([f32; 2], [f32; 2]) = ([0.0, 0.0], [8.0, 16.0]);
+                /// `W_lfo`: `X = 8 + t(w - 16)`, `Y = h/2 + 4 - v(h/2 - 16)` → 12 below, 20 above.
+                pub const LFO: ([f32; 2], [f32; 2]) = ([8.0, 8.0], [12.0, 20.0]);
+                /// `W_xy`: `8 + x(w - 16)`, `8 + (1 - y)(h - 16)`.
+                pub const XY: ([f32; 2], [f32; 2]) = ([8.0, 8.0], [8.0, 8.0]);
+                /// `W_transfer`: the full area.
+                pub const TRANSFER: ([f32; 2], [f32; 2]) = ([0.0, 0.0], [0.0, 0.0]);
+            }
+
+            /// The envelope (`W_env`): the sustain hold between decay and release is `.22` of the
+            /// width; a segment's share of the width per unit of its normalised time.
+            pub const ENVELOPE_HOLD: f64 = 0.22;
+            /// Share of the width one unit of normalised attack, decay or release time takes
+            /// (komponist: `W_env` takes fractions of the width directly; times of 0–1 would
+            /// overlap, so the sum of the three plus the hold stays below 1).
+            pub const ENVELOPE_SEGMENT: f64 = 0.26;
+        }
     }
 
     /// Timeline elements: track header, clip, note, ruler (WP-22).
