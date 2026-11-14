@@ -14,6 +14,7 @@ mod common;
 mod export;
 mod export_demo;
 mod live;
+mod midi_fx;
 mod mixing;
 mod parallel;
 mod random;

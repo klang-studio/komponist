@@ -638,7 +638,9 @@ impl Bridge {
         }
         let fallback = match plugin.descriptor().kind {
             PluginKind::Instrument => Fallback::Silence,
-            PluginKind::Effect | PluginKind::Other => Fallback::Passthrough,
+            PluginKind::Effect | PluginKind::MidiEffect | PluginKind::Other => {
+                Fallback::Passthrough
+            }
         };
         let rt_config = RtConfig {
             priority: self.rt_priority,

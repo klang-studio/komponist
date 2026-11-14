@@ -75,7 +75,10 @@ fn param_event(kind: Internal, key: &str, value: f64, offset: u32) -> Event {
 #[test]
 fn the_catalog_data_is_unique_and_resolves_both_ways() {
     let names: Vec<&str> = Internal::ALL.iter().map(|k| k.name()).collect();
-    assert_eq!(names, ["EQ", "Delay", "Hall", "Limiter"]);
+    assert_eq!(
+        names,
+        ["EQ", "Delay", "Hall", "Limiter", "Arpeggiator", "Tonleiter"]
+    );
     for kind in Internal::ALL {
         assert_eq!(Internal::from_id(kind.id()), Some(kind));
         let plugin = kind.plugin_ref();
@@ -135,7 +138,13 @@ fn layouts_validate_for_every_band() {
 #[test]
 fn every_parameter_of_a_device_is_reachable_from_its_layout_or_the_eq_graph() {
     use komponist_model::params::layout::CellParam;
-    for kind in [Internal::Delay, Internal::Hall, Internal::Limiter] {
+    for kind in [
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+        Internal::Arpeggiator,
+        Internal::Tonleiter,
+    ] {
         let mut shown = std::collections::BTreeSet::new();
         for cell in kind.layout().pages.iter().flat_map(|p| &p.cells) {
             match &cell.param {

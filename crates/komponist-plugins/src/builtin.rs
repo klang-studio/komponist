@@ -43,7 +43,7 @@ pub const KLOPFER_FIRST_NOTE: u8 = 36;
 const SESSION_FIELDS: [&str; 2] = ["editor-state", "midi-map"];
 
 /// The built-in entries: pisynth always, klopfer if `klopfer_bundle` is `Some`, then the internal
-/// effects (EQ, Delay, Hall, Limiter).
+/// effects (EQ, Delay, Hall, Limiter) and MIDI effects (Arpeggiator, Tonleiter).
 pub(crate) fn entries(klopfer_bundle: Option<PathBuf>) -> Vec<CatalogEntry> {
     let mut entries = vec![CatalogEntry {
         plugin: builtin_ref(BUILTIN_PISYNTH, "pisynth", "klang-studio"),
@@ -70,14 +70,18 @@ pub(crate) fn entries(klopfer_bundle: Option<PathBuf>) -> Vec<CatalogEntry> {
     entries
 }
 
-/// The catalog entry of an internal effect: name, reference and features come from
+/// The catalog entry of an internal effect or MIDI effect: name, reference and features come from
 /// `komponist_builtin::Internal` (the one place a device is defined).
 fn internal_entry(kind: Internal) -> CatalogEntry {
     let features: Vec<String> = kind.features().iter().map(|f| (*f).to_owned()).collect();
     CatalogEntry {
         plugin: kind.plugin_ref(),
-        kind: PluginKind::Effect,
-        category: Some(EffectCategory::from_features(&features)),
+        kind: if kind.is_midi_effect() {
+            PluginKind::MidiEffect
+        } else {
+            PluginKind::Effect
+        },
+        category: (!kind.is_midi_effect()).then(|| EffectCategory::from_features(&features)),
         features,
         location: PluginLocation::InProcess(BuiltinKind::Internal(kind)),
     }
