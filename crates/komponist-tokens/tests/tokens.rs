@@ -39,6 +39,14 @@ fn komponist_colours() {
     let [r, g, b, a] = color::CANVAS_OUTSIDE_CLIP;
     assert_eq!([r, g, b, 0xff], color::SURFACE_0);
     assert_eq!(a, (0.6_f64 * 255.0).round() as u8);
+    // `rgba(78,167,230,0.10)`: the accent at 10 % (piano roll box selection).
+    let [r, g, b, a] = color::CANVAS_BOX_SELECT;
+    assert_eq!([r, g, b, 0xff], color::ACCENT);
+    assert_eq!(a, (0.10_f64 * 255.0).round() as u8);
+    // `rgba(232,233,235,0.16)`: text.1 at 16 % opacity.
+    let [r, g, b, a] = color::CANVAS_CLIP_EDGE_SELECTED;
+    assert_eq!([r, g, b, 0xff], color::TEXT_1);
+    assert_eq!(a, (0.16_f64 * 255.0).round() as u8);
     // `#222326`: every other group of four steps in the step sequencer.
     assert_eq!(color::CANVAS_STEP_GROUP_ALT, [0x22, 0x23, 0x26, 0xff]);
 }

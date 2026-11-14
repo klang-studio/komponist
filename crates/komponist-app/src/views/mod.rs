@@ -19,6 +19,10 @@
 //! Until a WP lands, its slot holds a [`Placeholder`] that shows the view's name. A WP replaces
 //! the placeholder in [`Views::new`] with its own type implementing [`View`].
 
+pub mod arrangement;
+pub mod piano_roll;
+pub mod step_seq;
+
 use std::sync::Arc;
 
 use egui::{Rect, Ui};
@@ -32,8 +36,6 @@ use crate::engine_sync::EngineSync;
 use crate::keymap::Keymap;
 use crate::meters::Meters;
 use crate::ui_state::UiState;
-
-pub mod step_seq;
 
 /// What a view gets for one frame.
 pub struct ViewCtx<'a> {
@@ -179,8 +181,8 @@ impl Views {
     /// The views of this build: placeholders until WP-40 … WP-44 replace them here.
     pub fn new() -> Views {
         Views {
-            arrangement: Box::new(Placeholder::new("Arrangement")),
-            piano_roll: Box::new(Placeholder::new("Piano Roll")),
+            arrangement: Box::new(arrangement::Arrangement::new()),
+            piano_roll: Box::new(piano_roll::PianoRoll::new()),
             step_seq: Box::new(step_seq::StepSequencer::new()),
             mixer: Box::new(Placeholder::new("Mixer")),
             inspector: Box::new(Placeholder::new("Inspector")),

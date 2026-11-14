@@ -574,7 +574,8 @@ impl App {
         }
     }
 
-    /// Context-dependent meaning of a shortcut: Esc while recording discards the take.
+    /// Context-dependent meaning of a shortcut: Esc while recording discards the take; else Esc
+    /// during a drag cancels its gesture (the selection stays).
     fn remap(&self, action: Action) -> Action {
         match action {
             Action::Ui(UiAction::ClearSelection)
@@ -584,6 +585,9 @@ impl App {
                 ) =>
             {
                 Action::Transport(TransportAction::DiscardTake)
+            }
+            Action::Ui(UiAction::ClearSelection) if self.doc.in_gesture() => {
+                Action::Edit(EditAction::CancelGesture)
             }
             other => other,
         }
