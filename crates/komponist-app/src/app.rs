@@ -62,6 +62,7 @@ use crate::ui_state::{
     SettingsSection, StatusKind, StatusMessage, Tool, UiState,
 };
 use crate::views::{Requests, Views};
+use crate::windows::plugin_frame::{self, PluginFrames};
 
 /// How long a status bar message stays (`ks-view.js` `statusView`: 7000 ms).
 pub const STATUS_DURATION: Duration = Duration::from_secs(7);
@@ -100,6 +101,8 @@ pub struct App {
     pub(crate) shell: ShellState,
     /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
     pub(crate) recording: Option<Recording>,
+    /// The plugin frame windows (WP-50).
+    pub(crate) frames: PluginFrames,
 }
 
 /// Per-session state of the shell that is not view state.
@@ -155,6 +158,7 @@ impl App {
                 ..ShellState::default()
             },
             recording: None,
+            frames: PluginFrames::default(),
         }
     }
 
@@ -305,6 +309,7 @@ impl App {
         self.draw_shell(&mut root);
         self.shell.requests = Requests::default();
         self.flush_queue();
+        self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
         self.persist_panels();
         self.update_title(&ctx);
@@ -568,6 +573,7 @@ impl App {
     /// Stops the engine, shuts the plugin bridges down and saves the settings (window closed).
     pub fn shutdown(&mut self) {
         self.persist_panels();
+        self.shutdown_plugin_frames();
         self.engine.shutdown();
         self.engine.host_mut().shutdown();
     }
@@ -605,6 +611,9 @@ impl App {
             else {
                 continue;
             };
+            plugin_frame::keys::log(format!(
+                "main: {key:?} pressed={pressed} repeat={repeat} {modifiers:?}"
+            ));
             let ctrl = modifiers.ctrl || modifiers.command;
             let physical = key_from_egui(physical_key.unwrap_or(key));
             // A held note ends on release even if the layer turned off meanwhile.
@@ -683,7 +692,7 @@ impl App {
         }
     }
 
-    fn keyboard_note(&mut self, key: Key, note: u8, pressed: bool, repeat: bool) {
+    pub(crate) fn keyboard_note(&mut self, key: Key, note: u8, pressed: bool, repeat: bool) {
         if pressed {
             if repeat || self.shell.held_notes.iter().any(|(k, _)| *k == key) {
                 return;
@@ -1472,8 +1481,10 @@ impl App {
             UiAction::ClearSelection => {
                 if self.ui.dialog.is_some() {
                     self.ui_action(UiAction::CloseDialog);
-                } else if !self.ui.plugin_windows.is_empty() {
-                    self.ui.plugin_windows.pop();
+                } else if let Some(window) = self.ui.plugin_windows.last() {
+                    // The frame opened last (prototype: Esc closes the plugin window).
+                    let device = window.device;
+                    self.close_plugin_window(device);
                 } else {
                     let sel = &mut self.ui.selection;
                     sel.notes.clear();
@@ -1759,20 +1770,8 @@ impl App {
                     });
                 }
             }
-            PluginAction::CloseWindow(device) => {
-                let open = self
-                    .ui
-                    .plugin_windows
-                    .iter()
-                    .position(|w| w.device == device);
-                if let Some(index) = open {
-                    if self.ui.plugin_windows[index].view == PluginView::Gui {
-                        // A state snapshot follows (`StateSnapshot`).
-                        self.engine.host_mut().close_gui(device);
-                    }
-                    self.ui.plugin_windows.remove(index);
-                }
-            }
+            // Closes the plugin's GUI if it is open; a state snapshot follows (`StateSnapshot`).
+            PluginAction::CloseWindow(device) => self.close_plugin_window(device),
             PluginAction::Reload(device) => {
                 self.engine.reload_device(self.doc.project(), device);
             }
@@ -1987,7 +1986,7 @@ pub fn window_title(project_name: &str) -> String {
 }
 
 /// Whether a held key may repeat `action` (zoom, transpose, nudge).
-fn repeatable(action: &Action) -> bool {
+pub(crate) fn repeatable(action: &Action) -> bool {
     matches!(
         action,
         Action::Ui(UiAction::Zoom { .. })

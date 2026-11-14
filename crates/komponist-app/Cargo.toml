@@ -34,6 +34,9 @@ hound.workspace = true
 # komponist-play: debug builds abort on any allocation inside the audio callback and the offline
 # render (ARCHITECTURE §6.1).
 assert_no_alloc.workspace = true
+# Plugin frames (WP-50): the X11 child window a plugin GUI attaches to, the frame's window lookup by
+# title, the key grabs (ARCHITECTURE §8.4).
+x11rb.workspace = true
 
 [dev-dependencies]
 # Snapshot and interaction tests of the shell (`tests/`).

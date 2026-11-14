@@ -25,6 +25,8 @@
 //! - [`record`]: [`record::Recording`], the take that grows while recording (WP-51).
 //! - [`settings`]: the settings file, `~/.config/komponist/settings.json`.
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
+//! - [`windows`]: windows besides the main one; [`windows::plugin_frame`], the S05 plugin frame
+//!   around a plugin's own GUI (WP-50).
 
 pub mod actions;
 pub mod app;
@@ -40,6 +42,7 @@ pub mod settings;
 mod shell;
 pub mod ui_state;
 pub mod views;
+pub mod windows;
 
 pub use actions::{
     Action, EditAction, PluginAction, ProjectAction, SettingsAction, TransportAction, UiAction,
