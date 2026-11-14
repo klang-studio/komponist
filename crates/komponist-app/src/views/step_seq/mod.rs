@@ -15,7 +15,8 @@
 //! The running light: while the transport plays the open clip, the column of the current step
 //! brightens (`surface.4`) and set steps in it glow (`TrackPalette::play`) with a `text.1`
 //! contour. Row names come from the instrument's note names when it reports them
-//! (`DeviceHost::note_names`), else from the model.
+//! (`DeviceHost::note_names`), else from the model; the small label right of the name is the
+//! klopfer pad ("P1", S03) on a klopfer track, else the note name ([`crate::step_rows`]).
 //!
 //! The view never changes the document: steps, rows and pattern properties change through
 //! [`EditAction::SetStep`](crate::actions::EditAction::SetStep), `SetStepRow`,
@@ -39,6 +40,7 @@ use egui::{Event, Key, Rect, Ui, pos2};
 use komponist_model::{ClipContent, ClipId, Project, StepClip, TrackId};
 use komponist_tokens::{TrackPalette, line};
 
+use crate::step_rows;
 use crate::ui_state::StepCursor;
 use crate::views::{View, ViewCtx, centered_text};
 use metrics as m;
@@ -97,6 +99,8 @@ pub struct Open<'p> {
     pub pattern: &'p StepClip,
     /// Row names shown: the instrument's note names where it has one, else the model's.
     pub names: Vec<String>,
+    /// The label right of each row's name: klopfer pad ("P1") or note name ("C2").
+    pub labels: Vec<String>,
     /// The step cursor, if it is in this clip.
     pub cursor: Option<StepCursor>,
     /// The row the lane shows: the cursor's, else the first.
@@ -114,21 +118,13 @@ impl<'p> Open<'p> {
             return None;
         };
         let host = ctx.engine.host();
-        let note_names = track
-            .channel
-            .devices
-            .first()
-            .map(|d| host.note_names(d.id))
-            .unwrap_or_default();
-        let names = pattern
+        let instrument = step_rows::instrument(track);
+        let note_names = instrument.map_or(&[][..], |d| host.note_names(d.id));
+        let names = step_rows::row_names(pattern, note_names);
+        let labels = pattern
             .rows
             .iter()
-            .map(|r| {
-                note_names
-                    .iter()
-                    .find(|n| n.key == r.note)
-                    .map_or_else(|| r.name.clone(), |n| n.name.clone())
-            })
+            .map(|r| step_rows::row_label(instrument.map(|d| &d.plugin), r.note))
             .collect();
         let cursor = ctx
             .ui
@@ -149,6 +145,7 @@ impl<'p> Open<'p> {
             track: track.id,
             pattern,
             names,
+            labels,
             cursor,
             lane_row,
             current,
