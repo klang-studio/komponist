@@ -754,6 +754,11 @@ impl App {
                     self.commit_take();
                     self.engine.send(Command::Stop);
                 } else if self.audio_ok() {
+                    // Play the document as it is now: changes dispatched before Play in the same
+                    // frame (a loop range, an edit) reach the engine before Play, not at the end
+                    // of the frame. Otherwise playback can start with the old loop and pass the
+                    // new loop end before the program arrives, and then it never wraps.
+                    self.engine.sync(&self.doc);
                     self.engine.send(Command::Play);
                 }
             }
