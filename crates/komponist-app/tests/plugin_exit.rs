@@ -1,8 +1,14 @@
 //! App exit leaves no bridge process (PLAN WP-46 "Done when"): `App::shutdown` (window closed)
 //! ends every bridge gracefully, dropping the app kills them. Checked by pid: this binary holds
-//! one test only, so every `komponist-bridge` child of the test process belongs to it.
+//! one test only, so every `komponist-bridge` child of the test process belongs to it. That is why it
+//! is its own binary and not a module of `tests/it` (WP-66): there, parallel tests spawn bridges too.
 
-use crate::common;
+// Debug builds only: in release builds `assert_no_alloc` is a no-op without its allocator.
+#[cfg(debug_assertions)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+mod common;
 
 use std::time::{Duration, Instant};
 
