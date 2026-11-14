@@ -77,7 +77,9 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     };
 
     let mut manager = PluginManager::new(config(&dir));
-    assert_eq!(names(&manager), ["pisynth"]);
+    // The built-in entries (pisynth and the internal devices of WP-85) come before any scan.
+    let builtins = names(&manager);
+    assert_eq!(builtins[0], "pisynth");
     assert!(!manager.is_scanning());
     let t0 = Instant::now();
     manager.start_scan(&dirs);
@@ -106,16 +108,17 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     assert_eq!(report.skipped.len(), 2, "{report:?}");
     assert!(report.finished <= SystemTime::now());
 
-    assert_eq!(
-        names(&manager),
+    let mut expected = builtins.clone();
+    expected.extend(
         [
-            "pisynth",
             "kp-test-crash",
             "kp-test-fx",
             "kp-test-slow",
-            "kp-test-synth"
+            "kp-test-synth",
         ]
+        .map(String::from),
     );
+    assert_eq!(names(&manager), expected);
     let catalog = manager.catalog();
     let synth = catalog.resolve(&clap_plugin(SYNTH)).unwrap();
     assert_eq!(synth.kind, PluginKind::Instrument);
