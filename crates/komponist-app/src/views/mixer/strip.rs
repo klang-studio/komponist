@@ -454,6 +454,8 @@ fn inserts(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, tier: Tier
                     device: insert.device,
                     bypass: !insert.bypass,
                 }));
+            } else if insert.internal {
+                ctx.send(Action::Ui(UiAction::RevealDevice(insert.device)));
             } else {
                 ctx.send(Action::Plugin(PluginAction::OpenWindow(insert.device)));
             }

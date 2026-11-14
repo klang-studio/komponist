@@ -15,7 +15,7 @@
 //! | click on a strip | selects the track (Strg toggles, Shift extends), synchronous with the arrangement |
 //! | fader / pan | drag relative, Shift fine, Alt-click default, double-click text entry; a drag is one undo step, fast-path commands while it lasts |
 //! | M S R | as in the track headers: press, drag across strips, Alt-click S / R exclusive |
-//! | insert slot | click opens the plugin window, drag reorders (2 px accent line), Alt-click bypass |
+//! | insert slot | click opens the plugin window (an internal device: the Geräte tab, scrolled to it), drag reorders (2 px accent line), Alt-click bypass |
 //! | "+" | opens the browser on Effekte |
 //! | browser plugin dropped on a strip | effect: inserted at the line; instrument: replaces the track's instrument |
 //! | peak value / meter (LED) | click resets peak and clip, Alt-click all strips |

@@ -4,7 +4,9 @@
 
 use std::collections::BTreeSet;
 
-use komponist_model::{Channel, ChannelRef, Device, DeviceId, DeviceRole, Project, TrackId};
+use komponist_model::{
+    Channel, ChannelRef, Device, DeviceId, DeviceRole, PluginFormat, Project, TrackId,
+};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
@@ -162,6 +164,9 @@ pub struct Insert {
     pub bypass: bool,
     /// Runtime state.
     pub state: SlotState,
+    /// An internal device (shipped with komponist, no GUI of its own): a click opens its frame in
+    /// the Geräte tab instead of a plugin window (device handoff §9).
+    pub internal: bool,
     /// Blocks that missed their deadline, while the slot shows "zu spät" (set by the view).
     pub late: Option<u64>,
 }
@@ -242,6 +247,7 @@ fn inserts(channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
             instrument: d.role == DeviceRole::Instrument,
             bypass: d.bypass,
             state: SlotState::from(&host.status(d.id)),
+            internal: d.plugin.format == PluginFormat::Builtin && !host.has_gui(d.id),
             late: None,
         })
         .collect()
@@ -339,6 +345,7 @@ mod tests {
                 instrument: false,
                 bypass: false,
                 state,
+                internal: false,
                 late: None,
             }
             .detail()
