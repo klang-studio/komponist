@@ -53,6 +53,10 @@ pub struct Settings {
     pub favorites: Favorites,
     /// "Oben halten" and the position of each plugin's frame, by plugin.
     pub plugin_frames: Vec<FrameMemory>,
+    /// Worker threads that process tracks in parallel with the audio callback (WP-65; settings
+    /// file only, no S07 control yet): `null` = automatic (one per core minus two, 4 on a
+    /// 6-core machine), `0` = off (single-threaded), `n` = `n` threads (at most 15).
+    pub worker_threads: Option<u32>,
 }
 
 /// What a plugin's frame window remembers between sessions (WP-50): "Oben halten" and where it
@@ -383,6 +387,15 @@ mod tests {
         assert!(m.keep_on_top);
         assert_eq!(m.pos, Some((10, 20)));
         assert!(back.frame_memory(&b).is_none());
+    }
+
+    #[test]
+    fn worker_threads_default_to_automatic() {
+        assert_eq!(Settings::default().worker_threads, None);
+        let s: Settings = serde_json::from_str(r#"{"worker_threads": 0}"#).unwrap();
+        assert_eq!(s.worker_threads, Some(0));
+        let s: Settings = serde_json::from_str(r#"{"worker_threads": null}"#).unwrap();
+        assert_eq!(s.worker_threads, None);
     }
 
     #[test]

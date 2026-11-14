@@ -130,9 +130,22 @@ fn main() -> eframe::Result {
     }
     let missing_bridge = (!plugins.bridge_exe.exists()).then(|| plugins.bridge_exe.clone());
     let host = PluginHost::new(plugins);
-    let (engine, started) = EngineSync::new(&config, midi, Box::new(host));
+    let (mut engine, started) = EngineSync::new(&config, midi, Box::new(host));
     if let Err(e) = started {
         eprintln!("komponist: audio output not available ({e}); running without device");
+    }
+    if settings.worker_threads.is_some()
+        && let Err(e) = engine.set_workers(settings.worker_threads)
+    {
+        eprintln!("komponist: worker threads not changed ({e})");
+    }
+    if let Some(status) = engine.worker_status() {
+        if let Some(e) = &status.spawn_error {
+            eprintln!("komponist: {} worker threads started ({e})", status.threads);
+        }
+        if let Some(e) = &status.realtime_error {
+            eprintln!("komponist: worker threads run without realtime priority ({e})");
+        }
     }
     let first = if args.demo {
         fixtures::demo_project()

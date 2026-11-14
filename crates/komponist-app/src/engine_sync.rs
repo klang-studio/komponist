@@ -25,8 +25,8 @@
 //! and sends what waited.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use komponist_audio::{
@@ -34,6 +34,7 @@ use komponist_audio::{
     MidiInputHub, MidiReceiver, OutputBuffer, StreamConfig, StreamParams, StreamStats,
 };
 use komponist_engine::compile::{self, CompileEnv};
+use komponist_engine::workers::{DEFAULT_WORKER_PRIORITY, WorkerStats, WorkerStatus, auto_workers};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
     MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, Telemetry, TrackMeter, TransportState,
@@ -62,10 +63,15 @@ pub struct EngineProcess {
     midi: Vec<MidiInEvent>,
     /// The sample rate the engine runs at, for the UI thread (processor activation).
     rate: Arc<AtomicU32>,
+    /// Worker threads the engine should run (WP-65), started in `prepare`.
+    workers: usize,
+    /// Outcome of the last worker start, for the UI thread (only touched outside the callback).
+    worker_status: Arc<Mutex<Option<WorkerStatus>>>,
 }
 
 impl EngineProcess {
-    /// Wraps `engine`; `rate` receives the stream's sample rate in `prepare`.
+    /// Wraps `engine`; `rate` receives the stream's sample rate in `prepare`. The engine gets
+    /// [`auto_workers`] worker threads when the stream starts ([`EngineProcess::set_workers`]).
     pub fn new(engine: Box<Engine>, rate: Arc<AtomicU32>) -> EngineProcess {
         EngineProcess {
             engine,
@@ -73,7 +79,23 @@ impl EngineProcess {
             right: vec![0.0; MAX_BLOCK],
             midi: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             rate,
+            workers: auto_workers(),
+            worker_status: Arc::default(),
         }
+    }
+
+    /// Non-RT (out of the stream). Sets the worker threads the engine runs from the next
+    /// `prepare` on (0: single-threaded).
+    pub fn set_workers(&mut self, threads: usize) {
+        self.workers = threads;
+    }
+
+    /// Starts or replaces the engine's worker pool if the count changed (non-RT).
+    fn apply_workers(&mut self) {
+        let status = self
+            .engine
+            .set_workers(self.workers, Some(DEFAULT_WORKER_PRIORITY));
+        *self.worker_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
     }
 }
 
@@ -85,6 +107,8 @@ impl AudioProcess for EngineProcess {
             let _ = self.engine.set_sample_rate(rate);
         }
         self.rate.store(params.sample_rate, Ordering::Relaxed);
+        // The worker pool is created when a stream starts (WP-65); unchanged it stays.
+        self.apply_workers();
         let frames = (params.max_frames as usize).max(MAX_BLOCK);
         self.left.resize(frames, 0.0);
         self.right.resize(frames, 0.0);
@@ -172,6 +196,11 @@ pub struct EngineSync {
     held: Option<Box<EngineProcess>>,
     /// The playhead when an export took the engine ([`EngineSync::detach`]): shown meanwhile.
     frozen: Option<Tick>,
+    /// Worker threads asked for while an export had the engine (applied at [`EngineSync::attach`]).
+    workers_after_export: Option<usize>,
+    /// Outcome of the engine's last worker start ([`EngineProcess`] writes it in `prepare`).
+    worker_status: Arc<Mutex<Option<WorkerStatus>>>,
+    worker_stats: Arc<WorkerStats>,
 }
 
 impl core::fmt::Debug for EngineSync {
@@ -218,7 +247,9 @@ impl EngineSync {
             ..EngineConfig::default()
         });
         let rate = Arc::new(AtomicU32::new(config.sample_rate));
+        let worker_stats = engine.worker_stats();
         let process = EngineProcess::new(engine, Arc::clone(&rate));
+        let worker_status = Arc::clone(&process.worker_status);
         let telemetry = Arc::clone(handle.telemetry());
         let mut sync = EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
@@ -234,6 +265,9 @@ impl EngineSync {
             telemetry,
             held: None,
             frozen: None,
+            workers_after_export: None,
+            worker_status,
+            worker_stats,
         };
         let started = sync.audio.start(config);
         (sync, started)
@@ -376,6 +410,47 @@ impl EngineSync {
     /// a new rate re-activates the processors.
     pub fn set_audio(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
         self.audio.start(config)
+    }
+
+    /// Parallel track processing (WP-65, settings file `worker_threads`): `None` = automatic
+    /// ([`auto_workers`]), `Some(0)` = off, `Some(n)` = `n` worker threads. Takes the engine out
+    /// of the stream for a moment (a short silence) if the count changes; during an export the
+    /// change waits for its end. Returns the outcome of the worker start, if one happened.
+    pub fn set_workers(
+        &mut self,
+        setting: Option<u32>,
+    ) -> Result<Option<WorkerStatus>, AudioError> {
+        let threads = setting.map_or_else(auto_workers, |n| n as usize);
+        if self.handle.is_none() {
+            self.workers_after_export = Some(threads);
+            return Ok(None);
+        }
+        match self.held.as_mut() {
+            Some(process) => {
+                process.set_workers(threads);
+                process.apply_workers();
+            }
+            None => {
+                let mut process = self.audio.detach(HOLD_TIMEOUT)?;
+                process.set_workers(threads);
+                // `attach` prepares the engine for the stream, which starts the workers.
+                self.audio.attach(process);
+            }
+        }
+        Ok(self.worker_status())
+    }
+
+    /// Outcome of the engine's last worker start (thread count, `SCHED_FIFO` refused, …).
+    pub fn worker_status(&self) -> Option<WorkerStatus> {
+        self.worker_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The engine's worker pool counters (batches, jobs on workers, late waits).
+    pub fn worker_stats(&self) -> &WorkerStats {
+        &self.worker_stats
     }
 
     /// Stops playback, lets the engine drain, stops the stream (app exit).
@@ -600,12 +675,18 @@ impl EngineSync {
     /// sends the commands that waited.
     pub fn attach(&mut self, engine: DetachedEngine) {
         let DetachedEngine {
-            process,
+            mut process,
             handle,
             held,
         } = engine;
         self.handle = Some(handle);
         self.frozen = None;
+        if let Some(threads) = self.workers_after_export.take() {
+            process.set_workers(threads);
+            if held {
+                process.apply_workers();
+            }
+        }
         if held {
             self.held = Some(process);
         } else {
@@ -693,6 +774,41 @@ mod tests {
         assert!(wait_until(|| {
             sync.poll();
             sync.telemetry().transport() == TransportState::Stopped
+        }));
+        sync.shutdown();
+    }
+
+    /// WP-65: the stream starts the automatic worker pool; the setting changes it (with the
+    /// engine held, during an export and in the stream) and playback goes on.
+    #[test]
+    fn worker_threads_follow_the_setting() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let status = sync.worker_status().expect("prepared at stream start");
+        assert_eq!(status.threads, auto_workers());
+        assert_eq!(status.priority, Some(DEFAULT_WORKER_PRIORITY));
+        let status = sync.set_workers(Some(2)).unwrap().unwrap();
+        assert_eq!(status.threads, 2);
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        sync.send(Command::Play);
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.worker_stats().worker_jobs() > 0
+        }));
+        assert_eq!(sync.set_workers(Some(0)).unwrap().unwrap().threads, 0);
+        // Held engine: applied at once.
+        sync.hold_engine().unwrap();
+        assert_eq!(sync.set_workers(Some(1)).unwrap().unwrap().threads, 1);
+        sync.release_engine();
+        // During an export: applied when the engine comes back.
+        let detached = sync.detach().unwrap();
+        assert_eq!(sync.set_workers(Some(3)).unwrap(), None);
+        sync.attach(detached);
+        assert!(wait_until(|| sync.worker_status().is_some_and(|s| s.threads == 3)));
+        let before = sync.playhead();
+        assert!(wait_until(|| {
+            sync.poll();
+            sync.playhead() > before
         }));
         sync.shutdown();
     }
