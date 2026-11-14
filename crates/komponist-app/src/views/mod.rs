@@ -22,6 +22,7 @@
 pub mod arrangement;
 pub mod browser;
 pub mod devices;
+pub mod grid;
 pub mod inspector;
 pub mod late;
 pub mod mixer;
@@ -65,6 +66,10 @@ pub struct ViewCtx<'a> {
     /// This session's WAV exports of the project, oldest first (WP-53b): the browser lists them
     /// under Projekt › Exporte.
     pub exports: &'a [std::path::PathBuf],
+    /// MIDI keys held live by the computer keyboard right now: the piano roll's keyboard lights
+    /// them like the prototype's `app.held`. (Notes from a MIDI input reach only the audio
+    /// thread; lighting those needs engine telemetry.)
+    pub held_notes: Vec<u8>,
     actions: &'a mut Vec<Action>,
 }
 
@@ -73,6 +78,11 @@ pub struct ViewCtx<'a> {
 pub struct Requests {
     /// Ctrl F: the browser puts the keyboard focus into its search field.
     pub focus_browser_search: bool,
+    /// Z with the piano roll focused: fit the open clip into the view.
+    pub fit_piano_roll: bool,
+    /// Horizontal zoom steps (> 0 zooms in) of the keys plus and minus with the piano roll
+    /// focused, around the pointer or the playhead; only the view knows the grid it zooms.
+    pub piano_roll_zoom: i32,
 }
 
 impl<'a> ViewCtx<'a> {
@@ -95,6 +105,7 @@ impl<'a> ViewCtx<'a> {
             requests: Requests::default(),
             recording: None,
             exports: &[],
+            held_notes: Vec::new(),
             actions,
         }
     }

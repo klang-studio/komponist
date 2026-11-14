@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use komponist_model::format::note_name;
-use komponist_model::{Clip, Grid, Meter, Note, NoteId, Tick};
+use komponist_model::{Clip, Meter, Note, NoteId, Tick};
 
 use super::geometry::Geometry;
 use super::metrics;
@@ -253,35 +253,6 @@ fn gcd(mut a: i64, mut b: i64) -> i64 {
         (a, b) = (b, a % b);
     }
     a
-}
-
-/// The grids of the "Raster" dropdown, in its order.
-pub const GRIDS: [Grid; 9] = [
-    Grid::Bar,
-    Grid::Half,
-    Grid::Quarter,
-    Grid::Eighth,
-    Grid::Sixteenth,
-    Grid::ThirtySecond,
-    Grid::QuarterTriplet,
-    Grid::EighthTriplet,
-    Grid::SixteenthTriplet,
-];
-
-/// The label of a grid as the design writes it ("1 Takt" in the arrangement header, "1/16",
-/// "1/16 Triole" in the design system's dropdown).
-pub fn grid_label(grid: Grid) -> &'static str {
-    match grid {
-        Grid::Bar => "1 Takt",
-        Grid::Half => "1/2",
-        Grid::Quarter => "1/4",
-        Grid::Eighth => "1/8",
-        Grid::Sixteenth => "1/16",
-        Grid::ThirtySecond => "1/32",
-        Grid::QuarterTriplet => "1/4 Triole",
-        Grid::EighthTriplet => "1/8 Triole",
-        Grid::SixteenthTriplet => "1/16 Triole",
-    }
 }
 
 /// The selection info of the toolbar: "2 Noten" / "1 Note" selected, else all notes of the clip
@@ -539,8 +510,6 @@ mod tests {
         assert_eq!(selection_text(2, 17), "2 Noten");
         assert_eq!(selection_text(1, 17), "1 Note");
         assert_eq!(selection_text(0, 17), "17 Noten");
-        assert_eq!(grid_label(Grid::Sixteenth), "1/16");
-        assert_eq!(GRIDS.len(), 9);
         assert_eq!(key_name(69), "A4");
     }
 }

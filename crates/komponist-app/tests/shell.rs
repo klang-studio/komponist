@@ -525,6 +525,90 @@ fn the_menu_opens_the_export_dialog() {
     assert!(h.state().ui().dialog.is_none());
 }
 
+/// WP-47a: Esc during any open gesture (a mixer fader here, which no canvas handles itself)
+/// cancels it: `CancelGesture` through the app's remap, the selection stays.
+#[test]
+fn esc_cancels_an_open_gesture_for_every_canvas() {
+    use komponist_app::EditAction;
+    use komponist_model::edits::{ChannelProp, TrackProp};
+    let mut h = harness(demo());
+    let track = h.state().project().tracks[1].id;
+    let before = h.state().project().tracks[1].channel.volume_db;
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::BeginGesture {
+            label: "Lautstärke".to_owned(),
+        }));
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::SetTrackProp {
+            tracks: vec![track],
+            prop: TrackProp::Channel(ChannelProp::VolumeDb(before - 3.0)),
+        }));
+    assert_eq!(
+        h.state().project().tracks[1].channel.volume_db,
+        before - 3.0
+    );
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().project().tracks[1].channel.volume_db, before);
+    assert!(!h.state().doc().in_gesture());
+}
+
+/// WP-47a: the Esc that ends a text entry is not the shortcut's: the frame after a text field
+/// lost the keyboard focus skips Esc, so the selection stays.
+#[test]
+fn the_esc_after_a_text_field_lost_focus_is_not_a_shortcut() {
+    use komponist_app::actions::{SelectMode, SelectionChange};
+    let mut h = harness(demo());
+    let clip = h.state().project().tracks[2].clips[0].id;
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+            clips: vec![clip],
+            mode: SelectMode::Replace,
+        })));
+    // Ctrl F puts the focus into the browser's search field.
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::F);
+    h.run_steps(3);
+    assert!(
+        h.ctx.egui_wants_keyboard_input(),
+        "the search field has the focus"
+    );
+    // The field loses the focus (a click elsewhere) in the frame whose input has the Esc.
+    h.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    h.event(Event::Key {
+        key: egui::Key::Escape,
+        physical_key: Some(egui::Key::Escape),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.event(Event::Key {
+        key: egui::Key::Escape,
+        physical_key: Some(egui::Key::Escape),
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    assert!(
+        h.state().ui().selection.clips.contains(&clip),
+        "that Esc did not clear the selection"
+    );
+    assert!(
+        !h.ctx.egui_wants_keyboard_input(),
+        "the field stayed unfocused"
+    );
+    // The next Esc does (in the arrangement; the browser has its own use of Esc).
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Focus(FocusArea::Arrangement)));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().ui().selection.clips.is_empty());
+}
+
 #[test]
 fn a_missing_bridge_executable_is_reported_in_the_status_bar() {
     let mut app = App::headless(komponist_model::fixtures::demo_project());

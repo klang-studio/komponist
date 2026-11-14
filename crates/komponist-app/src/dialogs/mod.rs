@@ -40,11 +40,10 @@ use egui::{
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{Icon, color, radius, shadow};
-use komponist_ui::state::{self, State};
 use komponist_ui::theme::{corner_radius, egui_shadow};
-use komponist_ui::widgets::button::{self, Appearance, Button, Kind};
-use komponist_ui::widgets::{self as w, metrics as wm};
-use komponist_ui::{focus, fonts, px};
+use komponist_ui::widgets::button::{Button, Height, Kind, Trailing};
+use komponist_ui::widgets::{self as w};
+use komponist_ui::{fonts, px};
 
 use crate::ui_state::FocusArea;
 
@@ -293,8 +292,8 @@ pub(crate) fn dot(ui: &Ui, center: egui::Pos2, d: f32, color: Color32) {
     ui.painter().circle_filled(c, d / 2.0, color);
 }
 
-/// A button of the dialogs and the start screen, sized by the screen markup rather than the
-/// design system's 24 px button (`height:28px; padding:0 12px` in S06, 32 px on the start screen).
+/// A button of the dialogs and the start screen: the design system's [`Button`] in its taller
+/// sizes (28 px in S06, 32 px on the start screen), resting on `ground`.
 pub(crate) struct ActionButton<'a> {
     /// Text.
     pub label: &'a str,
@@ -303,15 +302,10 @@ pub(crate) struct ActionButton<'a> {
     /// Surface the button rests on: a secondary button is one step lighter (S06 on `surface.3`
     /// is `surface.4`).
     pub ground: usize,
-    /// Height.
-    pub height: f32,
-    /// Horizontal padding.
-    pub padding_x: f32,
-    /// Font of the label.
-    pub font: FontId,
-    /// Text after the label: a shortcut ("Strg N") or a hint ("Beat-Skizze"), and its colour
-    /// (`None` = the label's).
-    pub trailing: Option<(&'a str, FontId, Option<Color32>)>,
+    /// Height (and with it the padding and the text style).
+    pub height: Height,
+    /// Text after the label: a shortcut ("Strg N") or a hint ("Beat-Skizze").
+    pub trailing: Option<Trailing<'a>>,
     /// Fixed width with the trailing text at the right edge (start screen), else as wide as the
     /// text.
     pub width: Option<f32>,
@@ -320,86 +314,43 @@ pub(crate) struct ActionButton<'a> {
 impl<'a> ActionButton<'a> {
     /// A 28 px dialog button in `type.ui` (secondary 500, primary 600).
     pub fn dialog(label: &'a str, kind: Kind, ground: usize) -> Self {
-        let font = match kind {
-            Kind::Primary => w::font_at(&typography::UI, wm::SEMIBOLD),
-            Kind::Secondary => w::font_at(&typography::UI, wm::MEDIUM),
-        };
         ActionButton {
             label,
             kind,
             ground,
-            height: m::BUTTON_HEIGHT,
-            padding_x: m::BUTTON_PADDING_X,
-            font,
+            height: Height::Dialog,
             trailing: None,
             width: None,
         }
     }
 
+    /// The [`Button`] this stands for.
+    pub fn button(&self) -> Button<'a> {
+        let mut b = match self.kind {
+            Kind::Primary => Button::primary(self.label),
+            Kind::Secondary => Button::new(self.label),
+        }
+        .ground(self.ground);
+        b = match self.height {
+            Height::Control => b,
+            Height::Compact => b.compact(),
+            Height::Dialog => b.dialog(),
+            Height::Large => b.large(),
+        };
+        b = match self.trailing {
+            Some(Trailing::Chip(t)) => b.chip(t),
+            Some(Trailing::Hint(t)) => b.hint(t),
+            None => b,
+        };
+        match self.width {
+            Some(w) => b.width(w),
+            None => b,
+        }
+    }
+
     /// Adds the button at the cursor.
     pub fn show(self, ui: &mut Ui) -> Response {
-        let ppp = ui.pixels_per_point();
-        let line = typography::UI.line_height;
-        let text = galley(
-            ui,
-            self.label,
-            self.font.clone(),
-            line,
-            Color32::PLACEHOLDER,
-            None,
-        );
-        let trailing = self.trailing.as_ref().map(|(t, f, c)| {
-            (
-                galley(ui, t, f.clone(), line, Color32::PLACEHOLDER, None),
-                *c,
-            )
-        });
-        let natural = text.size().x.ceil()
-            + trailing
-                .as_ref()
-                .map_or(0.0, |(g, _)| wm::SHORTCUT_GAP + g.size().x.ceil())
-            + 2.0 * self.padding_x;
-        let width = self.width.unwrap_or(natural);
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(width, self.height), w::sense(ui, Sense::click()));
-        let label = self.label;
-        response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), label));
-        let st = State::of(ui, &response);
-        let look = button::look(
-            Appearance {
-                kind: self.kind,
-                ..Appearance::default()
-            },
-            st,
-        );
-        let (fill, ink) = match self.kind {
-            Kind::Primary => (look.fill, look.text),
-            Kind::Secondary if st.disabled => (look.fill, look.text),
-            Kind::Secondary => (
-                Some(state::surface_for(self.ground + 1, st)),
-                state::text_for(color::TEXT_1, st),
-            ),
-        };
-        let painter = ui.painter();
-        if let Some(fill) = fill {
-            px::fill(painter, rect, radius::M, fill);
-        }
-        let pos = w::text_pos(rect, &text, rect.left() + self.padding_x, ppp);
-        let text_right = pos.x + text.size().x;
-        painter.galley(pos, text, ink);
-        if let Some((g, c)) = trailing {
-            let x = if self.width.is_some() {
-                rect.right() - self.padding_x - g.size().x
-            } else {
-                text_right + wm::SHORTCUT_GAP
-            };
-            let pos = w::text_pos(rect, &g, x, ppp);
-            painter.galley(pos, g, c.unwrap_or(ink));
-        }
-        if look.focus_ring {
-            focus::paint_ring(painter, rect, radius::M);
-        }
-        response
+        ui.add(self.button())
     }
 }
 

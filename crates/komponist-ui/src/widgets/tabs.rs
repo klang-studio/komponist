@@ -18,6 +18,9 @@
 //! [`Segmented::equal_width`] stretches the box over the available width and gives every segment
 //! the same width (the S01 browser: `grid-template-columns: repeat(4, 1fr)`).
 //!
+//! [`Segmented::tips`] gives each segment a tooltip (name and shortcut, as the toolbars' tool
+//! switch shows them).
+//!
 //! Keys: only the active tab or segment takes focus (Tab key); ← → then choose the neighbour
 //! (skipping disabled ones) and keep the focus on it. Ctrl Tab (next tab in the focused area) is
 //! an app shortcut; [`step`] computes the target.
@@ -38,6 +41,7 @@ use komponist_tokens::typography;
 use komponist_tokens::{color, radius, size, space};
 
 use super::metrics;
+use super::tooltip::Tip;
 use crate::state::{self, State};
 use crate::theme::corner_radius;
 use crate::{focus, fonts, px};
@@ -458,6 +462,7 @@ fn show_entries(
     extras: &[TabExtra<'_>],
     accent_line: bool,
     width: Option<f32>,
+    tips: &[Tip<'_>],
 ) -> (Option<usize>, bool) {
     let mut chosen = None;
     let mut focus_to = None;
@@ -479,6 +484,11 @@ fn show_entries(
             deco,
         );
         ring |= st.focused;
+        if !super::is_still(ui)
+            && let Some(tip) = tips.get(i)
+        {
+            tip.attach(&r);
+        }
         if r.clicked() && it.enabled && !active {
             chosen = Some(i);
         }
@@ -550,6 +560,7 @@ impl Widget for TabBar<'_> {
                     self.extras,
                     self.accent_line,
                     None,
+                    &[],
                 )
             })
             .inner
@@ -571,6 +582,7 @@ pub struct Segmented<'a> {
     selected: &'a mut usize,
     items: &'a [Item<'a>],
     equal_width: bool,
+    tips: &'a [Tip<'a>],
 }
 
 impl<'a> Segmented<'a> {
@@ -581,7 +593,15 @@ impl<'a> Segmented<'a> {
             selected,
             items,
             equal_width: false,
+            tips: &[],
         }
+    }
+
+    /// A tooltip per segment, by index ("Zeiger" with its shortcut "1"); missing entries have
+    /// none.
+    pub fn tips(mut self, tips: &'a [Tip<'a>]) -> Self {
+        self.tips = tips;
+        self
     }
 
     /// The box fills the available width and the segments share it equally (the browser's
@@ -605,7 +625,7 @@ impl Widget for Segmented<'_> {
         let segment_width = self
             .equal_width
             .then(|| equal_segment_width(ui.available_width(), self.items.len()));
-        let (items, selected) = (self.items, self.selected);
+        let (items, selected, tips) = (self.items, self.selected, self.tips);
         let r = segmented_frame(
             ui,
             self.name,
@@ -620,6 +640,7 @@ impl Widget for Segmented<'_> {
                     &[],
                     false,
                     segment_width,
+                    tips,
                 )
             },
         );
@@ -732,7 +753,12 @@ pub fn gallery(ui: &mut Ui) {
             Item::new("Stift"),
             Item::new("Radierer"),
         ];
-        ui.add(Segmented::new("Werkzeug", &mut tool, &tools));
+        let tips = [
+            Tip::new("Zeiger").shortcut("1"),
+            Tip::new("Stift").shortcut("2"),
+            Tip::new("Radierer").shortcut("3"),
+        ];
+        ui.add(Segmented::new("Werkzeug", &mut tool, &tools).tips(&tips));
         super::caption_text(ui, "live");
     });
     ui.data_mut(|d| d.insert_temp(id, (tab_i, tool)));

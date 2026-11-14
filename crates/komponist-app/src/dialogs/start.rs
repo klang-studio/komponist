@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use egui::{Color32, Key, Modifiers, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, radius, size, typography};
-use komponist_ui::widgets::button::Kind;
+use komponist_ui::widgets::button::{Height, Kind, Trailing};
 use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, px, state};
@@ -257,27 +257,20 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
     super::paint_text(&mut col, g, &model.version);
     col.add_space(m::LEFT_GAP);
 
-    let label_font = |kind: Kind| match kind {
-        Kind::Primary => w::font_at(&typography::TRACK, wm::SEMIBOLD),
-        Kind::Secondary => w::font_at(&typography::TRACK, wm::MEDIUM),
-    };
     let button = |label, kind, trailing| ActionButton {
         label,
         kind,
         ground: 2,
-        height: m::BUTTON_HEIGHT,
-        padding_x: m::BUTTON_PADDING_X,
-        font: label_font(kind),
+        height: Height::Large,
         trailing: Some(trailing),
         width: Some(m::BUTTON_WIDTH),
     };
-    let mono = |weight| w::font_at(&typography::VALUE_S, weight);
     let buttons = [
         (
             button(
                 names::NEW,
                 Kind::Primary,
-                (model.new_shortcut.as_str(), mono(wm::MEDIUM), None),
+                Trailing::Chip(model.new_shortcut.as_str()),
             ),
             Output::New,
         ),
@@ -285,11 +278,7 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
             button(
                 names::OPEN,
                 Kind::Secondary,
-                (
-                    model.open_shortcut.as_str(),
-                    mono(typography::VALUE_S.weight),
-                    Some(color32(color::TEXT_3)),
-                ),
+                Trailing::Chip(model.open_shortcut.as_str()),
             ),
             Output::Open,
         ),
@@ -297,11 +286,7 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
             button(
                 names::TEMPLATE,
                 Kind::Secondary,
-                (
-                    super::new_project::names::TEMPLATE,
-                    fonts::font_id(&typography::UI),
-                    Some(color32(color::TEXT_3)),
-                ),
+                Trailing::Hint(super::new_project::names::TEMPLATE),
             ),
             Output::Template,
         ),

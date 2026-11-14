@@ -27,7 +27,6 @@
 //! (selected = the step cursor); row headers are buttons "Zeile Kick"; the toolbar fields are
 //! spin buttons; lane bars are sliders ("Vel Step 5").
 
-pub mod field;
 pub mod grid;
 pub mod lane;
 pub mod metrics;
@@ -40,6 +39,7 @@ use egui::{Event, Key, Rect, Ui, pos2};
 use komponist_model::{ClipContent, ClipId, Project, StepClip, TrackId};
 use komponist_tokens::{TrackPalette, line};
 
+use crate::actions::{Action, EditAction, UiAction};
 use crate::step_rows;
 use crate::ui_state::StepCursor;
 use crate::views::{View, ViewCtx, centered_text};
@@ -263,6 +263,29 @@ impl View for StepSequencer {
         toolbar::show(ui, areas.toolbar, &open, ctx, &mut self.toolbar);
         grid::show(ui, &areas, &open, ctx, &mut self.grid, palette);
         lane::show(ui, areas.lane, &open, ctx, &mut self.lane, palette);
+    }
+}
+
+/// Sends `SetStep` and announces a velocity, probability or ratchet change in the status bar
+/// (prototype: "Velocity 52", "Ratchet ×3").
+pub(super) fn send_step(
+    ctx: &mut ViewCtx<'_>,
+    clip: komponist_model::ClipId,
+    row: usize,
+    step: usize,
+    prop: komponist_model::edits::StepProp,
+) {
+    ctx.send(Action::Edit(EditAction::SetStep {
+        clip,
+        row,
+        step,
+        prop,
+    }));
+    if let Some(text) = pattern::status_text(prop) {
+        ctx.send(Action::Ui(UiAction::ShowStatus {
+            text,
+            kind: crate::ui_state::StatusKind::Info,
+        }));
     }
 }
 

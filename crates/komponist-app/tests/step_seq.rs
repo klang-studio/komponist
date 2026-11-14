@@ -426,6 +426,70 @@ fn shift_click_cycles_the_ratchet() {
     );
 }
 
+/// WP-47a: a header click keeps the step column of the cursor (prototype `onHdr` sets only
+/// `sel.row`), so the toolbar shows the same step of the new row.
+#[test]
+fn a_header_click_keeps_the_step_column() {
+    let mut h = harness(opened());
+    let (_, clip) = beat_b(h.state());
+    h.get_by_label_contains(&step_label("Hat zu", 10))
+        .click_modifiers(Modifiers::SHIFT);
+    h.run_steps(2);
+    let cursor = h.state().ui().selection.step.unwrap();
+    assert_eq!((cursor.row, cursor.step), (3, Some(10)));
+    h.get_by_role_and_label(Role::Button, "Zeile Snare").click();
+    h.run_steps(2);
+    let cursor = h.state().ui().selection.step.unwrap();
+    assert_eq!((cursor.clip, cursor.row, cursor.step), (clip, 1, Some(10)));
+    h.get_by_label("Step 11 · Snare");
+}
+
+/// WP-47a: velocity, probability and ratchet changes from the grid are announced in the status
+/// bar like the prototype's `app.status`.
+#[test]
+fn step_edits_are_announced_in_the_status_bar() {
+    let mut h = harness(opened());
+    h.get_by_label_contains(&step_label("Kick", 0))
+        .click_modifiers(Modifiers::SHIFT);
+    h.run_steps(2);
+    let status = h.state().ui().status.clone().expect("status");
+    assert_eq!(status.text, "Ratchet ×2");
+    h.get_by_label_contains(&step_label("Kick", 0))
+        .click_modifiers(Modifiers::ALT);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().ui().status.clone().unwrap().text,
+        "Wahrscheinlichkeit 75 %"
+    );
+}
+
+/// WP-47a: the toolbar fields are the design system's number field: a double-click opens the
+/// text entry, which starts right of the key.
+#[test]
+fn a_toolbar_field_takes_typed_values() {
+    let mut h = harness(opened());
+    let (_, clip) = beat_b(h.state());
+    let field = in_dock(&h, Role::SpinButton, names::LENGTH);
+    let at = field.rect().center();
+    h.run_steps(30);
+    h.event(Event::PointerMoved(at));
+    for pressed in [true, false, true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run_steps(2);
+    let entry = h.get_by_label("Länge Eingabe");
+    assert!(entry.is_focused());
+    h.event(Event::Text("8".to_owned()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(pattern(h.state(), clip).length_steps, 8);
+}
+
 /// "Zeilen-Header: Klick spielt das Pad an und wählt die Zeile; Reihenfolge wie klopfer-Pads."
 #[test]
 fn a_row_header_sounds_its_pad_and_selects_the_row() {

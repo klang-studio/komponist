@@ -46,7 +46,7 @@ mod toolbar;
 use std::sync::Arc;
 
 use egui::{Key, Pos2, Rect, Ui, UiBuilder};
-use komponist_model::{ClipId, Grid, PluginRef, Project, Tick, TrackId};
+use komponist_model::{ClipId, PluginRef, Project, Tick, TrackId};
 
 use self::cache::{Palettes, PreviewCache};
 use self::geometry::Geometry;
@@ -141,27 +141,6 @@ pub mod names {
             format!("{n} Clips ausgewählt")
         }
     }
-}
-
-/// The grids of the "Raster" dropdown with their labels ("1 Takt", "1/16", "1/8 Triole").
-pub const GRIDS: [(Grid, &str); 9] = [
-    (Grid::Bar, "1 Takt"),
-    (Grid::Half, "1/2"),
-    (Grid::Quarter, "1/4"),
-    (Grid::Eighth, "1/8"),
-    (Grid::Sixteenth, "1/16"),
-    (Grid::ThirtySecond, "1/32"),
-    (Grid::QuarterTriplet, "1/4 Triole"),
-    (Grid::EighthTriplet, "1/8 Triole"),
-    (Grid::SixteenthTriplet, "1/16 Triole"),
-];
-
-/// The label of `grid` ("1 Takt", "1/16").
-pub fn grid_label(grid: Grid) -> &'static str {
-    GRIDS
-        .iter()
-        .find(|(g, _)| *g == grid)
-        .map_or("", |(_, l)| l)
 }
 
 /// What the pointer is dragging.
@@ -643,8 +622,6 @@ mod tests {
         assert_eq!(names::track_count(0), "0 Spuren");
         assert_eq!(names::track_count(1), "1 Spur");
         assert_eq!(names::clips_selected(2), "2 Clips ausgewählt");
-        assert_eq!(grid_label(Grid::Bar), "1 Takt");
-        assert_eq!(grid_label(Grid::EighthTriplet), "1/8 Triole");
         assert_eq!(names::missing("Vital"), "⚠ Plugin fehlt: Vital");
     }
 }

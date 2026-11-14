@@ -371,3 +371,50 @@ fn replacing_and_closing_dialogs_twice_keeps_the_focus() {
     a.dispatch(ui(UiAction::CloseDialog));
     assert_eq!(a.ui().focus, FocusArea::Browser);
 }
+
+/// WP-47a: grid and snap actions name their editor instead of following the focus.
+#[test]
+fn grid_and_snap_actions_name_their_editor() {
+    use komponist_app::actions::GridTarget;
+    use komponist_model::Grid;
+    let mut a = app();
+    a.dispatch(ui(UiAction::Focus(FocusArea::PianoRoll)));
+    let (arr_grid, arr_snap) = (a.ui().arrangement.grid, a.ui().arrangement.snap);
+    a.dispatch(ui(UiAction::SetGrid {
+        target: GridTarget::Arrangement,
+        grid: Grid::Quarter,
+    }));
+    assert_eq!(a.ui().arrangement.grid, Grid::Quarter);
+    assert_ne!(arr_grid, Grid::Quarter);
+    a.dispatch(ui(UiAction::ToggleSnap(GridTarget::Arrangement)));
+    assert_eq!(a.ui().arrangement.snap, !arr_snap);
+    let pr = (a.ui().piano_roll.grid, a.ui().piano_roll.snap);
+    assert_eq!(
+        pr,
+        (Grid::Sixteenth, true),
+        "the piano roll was not touched"
+    );
+    a.dispatch(ui(UiAction::SetGrid {
+        target: GridTarget::PianoRoll,
+        grid: Grid::Half,
+    }));
+    a.dispatch(ui(UiAction::ToggleSnap(GridTarget::PianoRoll)));
+    assert_eq!(a.ui().piano_roll.grid, Grid::Half);
+    assert!(!a.ui().piano_roll.snap);
+}
+
+/// WP-47a: views post transient status texts.
+#[test]
+fn a_view_can_post_a_status_message() {
+    use komponist_app::ui_state::StatusKind;
+    let mut a = app();
+    a.dispatch(ui(UiAction::ShowStatus {
+        text: "Ratchet ×3".to_owned(),
+        kind: StatusKind::Info,
+    }));
+    let status = a.ui().status.clone().unwrap();
+    assert_eq!(
+        (status.text.as_str(), status.kind),
+        ("Ratchet ×3", StatusKind::Info)
+    );
+}

@@ -4,27 +4,89 @@
 //! Länge · Auflösung ▾ · Swing │ "STEP 11 · HAT ZU" · Vel · Wahr. · Ratch. … Als MIDI-Clip
 //!
 //! "Länge" (1–32 steps), "Swing" (0–75 %) and the step's "Vel" (1–127), "Wahr." (0–100 %) and
-//! "Ratch." (1–4) are value fields ([`super::field`]); a drag on one is one undo step. The step
+//! "Ratch." (1–4) are the design system's [`NumberField`] with the key inside; a drag on one is
+//! one undo step. "Auflösung" is a [`Dropdown`] with a label. The step
 //! info and its fields show the step under the cursor while it is set (`fields` is empty for an
 //! off step); with only a row selected the info shows the row's name.
 
-use egui::epaint::CornerRadius;
-use egui::{Align, Layout, Rect, Role, Sense, Shape, Ui, UiBuilder, WidgetInfo, pos2, vec2};
+use egui::{Align, Layout, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::edits::{StepClipProp, StepProp};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{color, line, radius, size, space, typography};
+use komponist_tokens::{color, line, typography};
 use komponist_ui::widgets::button::Button;
-use komponist_ui::widgets::dropdown::{self, Dropdown, Item};
+use komponist_ui::widgets::dropdown::{Dropdown, Item};
+use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::tooltip::Tip;
-use komponist_ui::widgets::{self, floating};
-use komponist_ui::{State, px};
+use komponist_ui::{px, widgets};
 
-use super::field::{self, Spec};
 use super::metrics as m;
 use super::pattern::{self, RESOLUTIONS};
 use super::{Open, names};
 use crate::actions::{Action, EditAction};
 use crate::views::ViewCtx;
+
+/// One field: what it shows and its range.
+#[derive(Debug, Clone, Copy)]
+struct Spec<'a> {
+    /// The key shown inside ("Länge").
+    key: &'a str,
+    /// The accessible name ("Länge", "Wahrscheinlichkeit").
+    name: &'a str,
+    /// The value.
+    value: f64,
+    /// Lowest value.
+    min: f64,
+    /// Highest value.
+    max: f64,
+    /// Alt-click value.
+    default: f64,
+    /// Unit after the value ("Steps", "%"), `""` for none.
+    unit: &'a str,
+    /// Width in points.
+    width: f32,
+}
+
+/// What a field did in this pass. Values are whole numbers within the range.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Out {
+    /// A drag started (the caller opens a gesture).
+    drag_started: bool,
+    /// The value while dragging.
+    dragging: Option<f64>,
+    /// The drag ended (the caller closes the gesture).
+    drag_stopped: bool,
+    /// A single change: wheel, ↑ ↓, Alt-click, text entry, AccessKit.
+    set: Option<f64>,
+}
+
+/// Adds the field to `ui` and reports what the user did.
+fn field(ui: &mut Ui, spec: Spec<'_>) -> Out {
+    let mut value = spec.value;
+    let response = ui.add(
+        NumberField::new(&mut value, spec.name)
+            .key(spec.key)
+            .unit(spec.unit)
+            .range(spec.min..=spec.max)
+            .step(1.0)
+            .decimals(0)
+            .default_value(spec.default)
+            .width(spec.width),
+    );
+    let mut out = Out {
+        drag_started: response.drag_started(),
+        drag_stopped: response.drag_stopped(),
+        ..Out::default()
+    };
+    if response.changed() {
+        let v = value.round().clamp(spec.min, spec.max);
+        if response.dragged() || response.drag_started() {
+            out.dragging = Some(v);
+        } else {
+            out.set = Some(v);
+        }
+    }
+    out
+}
 
 /// A value field of the toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +164,7 @@ pub fn show(
         unit: names::STEPS,
         width: m::FIELD_LENGTH_WIDTH,
     };
-    let out = field::show(&mut row, spec);
+    let out = field(&mut row, spec);
     handle(Field::Length, out, spec.value, ctx, state, |v| {
         Action::Edit(EditAction::SetStepClipProp {
             clip,
@@ -124,7 +186,7 @@ pub fn show(
         unit: names::PERCENT,
         width: m::FIELD_SWING_WIDTH,
     };
-    let out = field::show(&mut row, spec);
+    let out = field(&mut row, spec);
     handle(Field::Swing, out, spec.value, ctx, state, |v| {
         Action::Edit(EditAction::SetStepClipProp {
             clip,
@@ -241,7 +303,7 @@ fn step_fields(
         ),
     ];
     for (f, spec) in specs {
-        let out = field::show(row, spec);
+        let out = field(row, spec);
         handle(f, out, spec.value, ctx, state, |v| {
             let v = v as u8;
             set(match f {
@@ -257,7 +319,7 @@ fn step_fields(
 /// each. `current` is the value in the document; unchanged values send nothing.
 fn handle(
     f: Field,
-    out: field::Out,
+    out: Out,
     current: f64,
     ctx: &mut ViewCtx<'_>,
     state: &mut ToolbarState,
@@ -298,48 +360,19 @@ fn end_drag(ctx: &mut ViewCtx<'_>, state: &mut ToolbarState) {
     state.cancelled = false;
 }
 
-/// "Auflösung ▾": the key inside the dropdown's box (`gap:10px`), as the screen draws it; the
-/// box follows the dropdown's state.
+/// "Auflösung ▾": the dropdown with its key inside the box (`gap:10px`, S03).
 fn resolution(row: &mut Ui, open: &Open<'_>, ctx: &mut ViewCtx<'_>) {
     let clip = open.clip;
-    row.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let ppp = ui.pixels_per_point();
-        let key = widgets::styled_galley(ui, names::RESOLUTION, &typography::SMALL);
-        let key_w = space::SPACE_2 + key.size().x + (m::RESOLUTION_GAP - space::SPACE_2);
-        let (key_rect, _) = ui.allocate_exact_size(vec2(key_w, size::CONTROL), Sense::hover());
-        let background = ui.painter().add(Shape::Noop);
-        let items: Vec<Item<'_>> = RESOLUTIONS.iter().map(|(_, l)| Item::new(l)).collect();
-        let mut selected = pattern::resolution_index(open.pattern.resolution);
-        let response = ui.add(Dropdown::new(names::RESOLUTION, &mut selected, &items));
-        if response.changed()
-            && let Some((res, _)) = RESOLUTIONS.get(selected)
-        {
-            ctx.send(Action::Edit(EditAction::SetStepClipProp {
-                clip,
-                prop: StepClipProp::Resolution(*res),
-            }));
-        }
-        let list_open = floating::is_open(ui.ctx(), response.id.with("list"));
-        let look = dropdown::field_look(list_open, State::of(ui, &response));
-        // Under the dropdown's rounded left corners too.
-        let bg = px::snap_rect(
-            Rect::from_min_max(
-                key_rect.min,
-                pos2(key_rect.right() + radius::M, key_rect.bottom()),
-            ),
-            ppp,
-        );
-        let rad = radius::M.round() as u8;
-        let corners = CornerRadius {
-            nw: rad,
-            sw: rad,
-            ne: 0,
-            se: 0,
-        };
-        ui.painter()
-            .set(background, Shape::rect_filled(bg, corners, look.fill));
-        let pos = widgets::text_pos(key_rect, &key, key_rect.left() + space::SPACE_2, ppp);
-        ui.painter().galley(pos, key, color32(color::TEXT_3));
-    });
+    let items: Vec<Item<'_>> = RESOLUTIONS.iter().map(|(_, l)| Item::new(l)).collect();
+    let mut selected = pattern::resolution_index(open.pattern.resolution);
+    let response =
+        row.add(Dropdown::new(names::RESOLUTION, &mut selected, &items).label(names::RESOLUTION));
+    if response.changed()
+        && let Some((res, _)) = RESOLUTIONS.get(selected)
+    {
+        ctx.send(Action::Edit(EditAction::SetStepClipProp {
+            clip,
+            prop: StepClipProp::Resolution(*res),
+        }));
+    }
 }

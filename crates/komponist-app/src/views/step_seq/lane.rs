@@ -174,7 +174,7 @@ pub fn show(
         if let Some(t) = target {
             let p = prop(lane, t);
             if changes(step, p) {
-                ctx.send(set_step(open.clip, row, i, p));
+                super::send_step(ctx, open.clip, row, i, p);
             }
         }
     }
@@ -212,7 +212,7 @@ pub fn show(
         if step.on {
             let p = pattern::lane_prop(lane, (base_top - pos.y) / max_h);
             if changes(step, p) {
-                ctx.send(set_step(open.clip, row, i, p));
+                super::send_step(ctx, open.clip, row, i, p);
             }
             if selected != Some(i) {
                 ctx.send(Action::Ui(UiAction::Select(SelectionChange::Step {
@@ -229,15 +229,6 @@ pub fn show(
         }
         state.pressed = false;
     }
-}
-
-fn set_step(clip: ClipId, row: usize, step: usize, prop: StepProp) -> Action {
-    Action::Edit(EditAction::SetStep {
-        clip,
-        row,
-        step,
-        prop,
-    })
 }
 
 /// The left column: `surface.2` with its right edge, the lane tabs and "Zeile …" below them

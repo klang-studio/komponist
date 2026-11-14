@@ -6,33 +6,39 @@ use egui::{Align, Layout, Role, Sense, Ui, WidgetInfo, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, typography};
 use komponist_ui::widgets::button::Button;
-use komponist_ui::widgets::dropdown::{Dropdown, Item};
+use komponist_ui::widgets::dropdown::Dropdown;
 use komponist_ui::{px, widgets as w};
 
-use super::{GRIDS, metrics, names};
-use crate::actions::{Action, UiAction};
-use crate::views::ViewCtx;
+use super::{metrics, names};
+use crate::actions::{Action, GridTarget, UiAction};
+use crate::views::{ViewCtx, grid};
 
 /// The tools, laid out left to right in `ui` (the header right of the title column).
 pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
     ui.spacing_mut().item_spacing = vec2(metrics::TOOL_GAP, 0.0);
     let view = ctx.ui.arrangement;
 
-    caption(ui, names::GRID, color::TEXT_3);
-    let items: Vec<Item<'_>> = GRIDS.iter().map(|(_, l)| Item::new(l)).collect();
-    let current = GRIDS.iter().position(|(g, _)| *g == view.grid).unwrap_or(0);
+    let items = grid::items();
+    let current = grid::index(view.grid);
     let mut selected = current;
     if ui
-        .add(Dropdown::new(names::GRID, &mut selected, &items))
+        .add(
+            Dropdown::new(names::GRID, &mut selected, &items)
+                .label(names::GRID)
+                .compact(),
+        )
         .changed()
         && selected != current
     {
-        ctx.send(Action::Ui(UiAction::SetGrid(GRIDS[selected].0)));
+        ctx.send(Action::Ui(UiAction::SetGrid {
+            target: GridTarget::Arrangement,
+            grid: grid::GRIDS[selected].0,
+        }));
     }
 
-    let snap = Button::new(names::SNAP).on(view.snap).compact();
+    let snap = Button::new(names::SNAP).on(view.snap).compact().small();
     if ui.add(snap).clicked() {
-        ctx.send(Action::Ui(UiAction::ToggleSnap));
+        ctx.send(Action::Ui(UiAction::ToggleSnap(GridTarget::Arrangement)));
     }
 
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -85,17 +91,6 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
             info(ui, &names::clips_selected(n));
         }
     });
-}
-
-/// A caption in `type.ui` and `color` ("Raster", `text.3`).
-fn caption(ui: &mut Ui, text: &str, c: [u8; 4]) {
-    let style = typography::UI;
-    let galley = w::styled_galley(ui, text, &style);
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(galley.size().x, ui.available_height()), Sense::hover());
-    let pos = w::text_pos(rect, &galley, rect.left(), ui.pixels_per_point());
-    ui.painter().galley(pos, galley, color32(c));
-    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
 }
 
 /// The selection info (`value.s`, `text.3`); AccessKit reads it as a status.

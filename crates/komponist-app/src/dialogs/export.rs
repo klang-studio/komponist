@@ -28,14 +28,14 @@ use egui::{
 use komponist_model::format::{fmt_db, fmt_time};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, space, typography};
-use komponist_ui::widgets::button::{Button, Kind};
+use komponist_ui::px;
+use komponist_ui::widgets::button::{Button, Kind, Trailing};
 use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tabs::Segmented;
 use komponist_ui::widgets::text_field::TextField;
-use komponist_ui::widgets::{self as w, metrics as wm};
-use komponist_ui::{fonts, px};
+use komponist_ui::widgets::{self as w};
 
 use super::metrics::MONO_SMALL;
 use super::metrics::dialog as d;
@@ -365,11 +365,7 @@ fn settings_dialog(ctx: &Context, model: &Model, view: &SettingsView) -> Vec<Out
             );
             child.spacing_mut().item_spacing.x = d::BUTTON_GAP;
             let mut export = ActionButton::dialog(names::EXPORT, Kind::Primary, 2);
-            export.trailing = Some((
-                names::ENTER,
-                w::font_at(&typography::VALUE_S, wm::MEDIUM),
-                None,
-            ));
+            export.trailing = Some(Trailing::Chip(names::ENTER));
             let can = view.can_export;
             if child
                 .add_enabled_ui(can, |ui| export.show(ui))
@@ -714,11 +710,7 @@ fn small_dialog(
 /// "Abbrechen  Esc" (`background:#303236`, the shortcut in Mono 10, `text.3`).
 fn cancel_button(ui: &mut Ui) -> Response {
     let mut cancel = ActionButton::dialog(names::CANCEL, Kind::Secondary, 3);
-    cancel.trailing = Some((
-        names::ESC,
-        fonts::font_id(&typography::VALUE_S),
-        Some(color32(color::TEXT_3)),
-    ));
+    cancel.trailing = Some(Trailing::Chip(names::ESC));
     cancel.show(ui)
 }
 

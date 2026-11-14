@@ -4,30 +4,32 @@
 //! Zeiger · Stift · Radierer (segmented) · Raster ▾ · Snap · Quantisieren │ "2 NOTEN" · Vel ·
 //! Länge · Note … − +
 //!
-//! The fields show the selection (average velocity, length and key of the first selected note)
-//! and change it: drag ↕ (1 px = 1 step, Shift fine, Ctrl coarse; one undo step per drag), mouse
-//! wheel, ↑ ↓ when focused, AccessKit increment and decrement. Velocity moves all selected notes
-//! by the same amount, Länge changes their lengths by whole grid steps, Note transposes them.
+//! The fields are the design system's [`NumberField`] with the key inside ("Vel 66"). They show
+//! the selection (average velocity, length and key of the first selected note) and change it:
+//! drag ↕ (1 px = 1 step, Shift fine, Ctrl coarse; one undo step per drag), mouse wheel, ↑ ↓ when
+//! focused, AccessKit increment and decrement; Vel also takes typed values. Velocity moves all
+//! selected notes by the same amount, Länge changes their lengths by whole grid steps, Note
+//! transposes them. The fields hold no value of their own: each change becomes an offset from
+//! the value at the start of the drag.
 
-use egui::accesskit::Action as AkAction;
-use egui::{Align, Key, Layout, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
+use egui::{Align, Event, Key, Layout, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::edits::VelocityChange;
 use komponist_model::{ClipId, NoteId, Tick};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{Icon, color, radius, size, space, typography};
+use komponist_tokens::{Icon, color, typography};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::dropdown::{Dropdown, Item};
-use komponist_ui::widgets::number_field;
+use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::tabs::Segmented;
 use komponist_ui::widgets::tooltip::Tip;
-use komponist_ui::{State, drag, focus, fonts, px, widgets};
+use komponist_ui::{px, widgets};
 
-use super::edit::{self, GRIDS};
+use super::edit;
 use super::metrics as m;
 use super::names;
-use crate::actions::{Action, EditAction, UiAction};
+use crate::actions::{Action, EditAction, GridTarget, UiAction};
 use crate::ui_state::Tool;
-use crate::views::ViewCtx;
+use crate::views::{ViewCtx, grid};
 
 /// What the toolbar shows about the open clip.
 pub struct Info {
@@ -50,10 +52,14 @@ pub struct Info {
 }
 
 /// A drag on a field in progress: the field and the steps sent last.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FieldDrag {
     field: Field,
+    /// The value when the drag started.
+    start: f64,
     steps: i64,
+    /// Esc cancelled the gesture (the app restored the document): nothing more is sent.
+    cancelled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,33 +108,53 @@ pub fn show(
     ];
     let pr = ctx.ui.piano_roll;
     let mut tool = tools.iter().position(|t| *t == pr.tool).unwrap_or(0);
+    let tool_tips: Vec<(String, Option<String>)> = tools
+        .iter()
+        .zip(&items)
+        .map(|(t, item)| {
+            (
+                item.label.to_owned(),
+                ctx.keymap.label_for(&Action::Ui(UiAction::SetTool(*t))),
+            )
+        })
+        .collect();
+    let tips: Vec<Tip<'_>> = tool_tips
+        .iter()
+        .map(|(name, sc)| match sc {
+            Some(sc) => Tip::new(name).shortcut(sc),
+            None => Tip::new(name),
+        })
+        .collect();
     if row
-        .add(Segmented::new(names::TOOLS, &mut tool, &items))
+        .add(Segmented::new(names::TOOLS, &mut tool, &items).tips(&tips))
         .changed()
     {
         ctx.send(Action::Ui(UiAction::SetTool(tools[tool])));
     }
 
     // Grid, snap, quantise.
-    let labels: Vec<Item<'_>> = GRIDS
-        .iter()
-        .map(|g| Item::new(edit::grid_label(*g)))
-        .collect();
-    let mut grid = GRIDS.iter().position(|g| *g == pr.grid).unwrap_or(4);
+    let labels = grid::items();
+    let mut selected = grid::index(pr.grid);
     if row
-        .add(Dropdown::new(names::GRID, &mut grid, &labels))
+        .add(Dropdown::new(names::GRID, &mut selected, &labels).label(names::GRID))
         .changed()
     {
-        ctx.send(Action::Ui(UiAction::SetGrid(GRIDS[grid])));
+        ctx.send(Action::Ui(UiAction::SetGrid {
+            target: GridTarget::PianoRoll,
+            grid: grid::GRIDS[selected].0,
+        }));
     }
-    if row.add(Button::new(names::SNAP).on(pr.snap)).clicked() {
-        ctx.send(Action::Ui(UiAction::ToggleSnap));
+    if row
+        .add(Button::new(names::SNAP).on(pr.snap).small())
+        .clicked()
+    {
+        ctx.send(Action::Ui(UiAction::ToggleSnap(GridTarget::PianoRoll)));
     }
     let quantize = Action::Edit(EditAction::QuantizeSelection);
     let shortcut = ctx.keymap.label_for(&quantize).unwrap_or_default();
     let mut button = Button::new(names::QUANTIZE);
     if !shortcut.is_empty() {
-        button = button.shortcut(&shortcut);
+        button = button.chip(&shortcut);
     }
     if row.add(button).clicked() {
         ctx.send(quantize);
@@ -190,64 +216,129 @@ pub fn show(
 }
 
 fn fields(row: &mut Ui, ctx: &mut ViewCtx<'_>, info: &Info, drag: &mut Option<FieldDrag>) {
-    let specs = [
-        (
-            Field::Velocity,
-            names::VELOCITY_KEY,
-            names::VELOCITY_FIELD,
-            info.velocity.to_string(),
-            f64::from(info.velocity),
-            m::FIELD_VELOCITY_WIDTH,
-        ),
-        (
-            Field::Length,
-            names::LENGTH_FIELD,
-            names::LENGTH_FIELD,
-            edit::fmt_note_length(info.length, ctx.project.meter),
-            info.length.0 as f64,
-            m::FIELD_LENGTH_WIDTH,
-        ),
-        (
-            Field::Note,
-            names::NOTE_FIELD,
-            names::NOTE_FIELD,
-            edit::key_name(info.pitch),
-            f64::from(info.pitch),
-            m::FIELD_NOTE_WIDTH,
-        ),
-    ];
-    for (field, key, name, text, value, width) in specs {
-        let out = key_field(row, key, name, &text, value, width);
+    let meter = ctx.project.meter;
+    let grid = info.grid.0.max(1) as f64;
+    let esc = escape_pressed(row);
+    for field in [Field::Velocity, Field::Length, Field::Note] {
+        // The value shown, its step in the field's own unit, and its range.
+        let (value, step, range) = match field {
+            Field::Velocity => (f64::from(info.velocity), 1.0, 0.0..=127.0),
+            Field::Length => (info.length.0 as f64, grid, grid..=grid * 4096.0),
+            Field::Note => (f64::from(info.pitch), 1.0, 0.0..=127.0),
+        };
+        let mut shown = value;
+        let widget = NumberField::new(&mut shown, field.name())
+            .key(field.key())
+            .range(range)
+            .step(step)
+            .default_value(value)
+            .width(field.width());
+        let widget = match field {
+            Field::Velocity => widget,
+            Field::Length => widget
+                .format(move |v| edit::fmt_note_length(Tick(v as i64), meter))
+                .no_text_entry(),
+            Field::Note => widget.format(|v| edit::key_name(v as u8)).no_text_entry(),
+        };
+        let response = row.add(widget);
         let dragging = drag.is_some_and(|d| d.field == field);
-        if out.drag_started && !dragging {
+        if response.drag_started() && !dragging {
             ctx.send(Action::Edit(EditAction::BeginGesture {
                 label: field.label().to_owned(),
             }));
-            *drag = Some(FieldDrag { field, steps: 0 });
+            *drag = Some(FieldDrag {
+                field,
+                start: value,
+                steps: 0,
+                cancelled: false,
+            });
         }
-        if let (Some(steps), Some(d)) = (out.drag_steps, drag.as_mut())
-            && d.field == field
-            && steps != d.steps
+        if dragging
+            && esc
+            && let Some(d) = drag.as_mut()
+            && !d.cancelled
         {
-            d.steps = steps;
-            ctx.send(field.action(info, steps));
+            // The focused field has the keyboard, so the app's Esc shortcut does not run:
+            // cancel the gesture here; the field sends nothing more.
+            d.cancelled = true;
+            ctx.send(Action::Edit(EditAction::CancelGesture));
         }
-        if out.drag_stopped && drag.is_some_and(|d| d.field == field) {
-            let moved = drag.is_some_and(|d| d.steps != 0);
-            ctx.send(Action::Edit(if moved {
-                EditAction::EndGesture
-            } else {
-                EditAction::CancelGesture
-            }));
+        if response.changed() {
+            let base = match drag {
+                Some(d) if d.field == field => d.start,
+                _ => value,
+            };
+            let steps = ((shown - base) / step).round() as i64;
+            match drag {
+                Some(d) if d.field == field => {
+                    if !d.cancelled && steps != d.steps {
+                        d.steps = steps;
+                        ctx.send(field.action(info, steps));
+                    }
+                }
+                _ if steps != 0 => ctx.send(field.action(info, steps)),
+                _ => {}
+            }
+        }
+        if response.drag_stopped()
+            && let Some(d) = drag.filter(|d| d.field == field)
+        {
+            if !d.cancelled {
+                ctx.send(Action::Edit(if d.steps != 0 {
+                    EditAction::EndGesture
+                } else {
+                    EditAction::CancelGesture
+                }));
+            }
             *drag = None;
-        }
-        if out.steps != 0 && drag.is_none() {
-            ctx.send(field.action(info, out.steps));
         }
     }
 }
 
+/// Esc pressed in this frame's raw input (the app maps it to `CancelGesture` before the views).
+fn escape_pressed(ui: &Ui) -> bool {
+    ui.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Key {
+                    key: Key::Escape,
+                    pressed: true,
+                    ..
+                }
+            )
+        })
+    })
+}
+
 impl Field {
+    /// The key shown inside the field.
+    fn key(self) -> &'static str {
+        match self {
+            Field::Velocity => names::VELOCITY_KEY,
+            Field::Length => names::LENGTH_FIELD,
+            Field::Note => names::NOTE_FIELD,
+        }
+    }
+
+    /// The accessible name of the field.
+    fn name(self) -> &'static str {
+        match self {
+            Field::Velocity => names::VELOCITY_FIELD,
+            Field::Length => names::LENGTH_FIELD,
+            Field::Note => names::NOTE_FIELD,
+        }
+    }
+
+    /// The width of the field.
+    fn width(self) -> f32 {
+        match self {
+            Field::Velocity => m::FIELD_VELOCITY_WIDTH,
+            Field::Length => m::FIELD_LENGTH_WIDTH,
+            Field::Note => m::FIELD_NOTE_WIDTH,
+        }
+    }
+
     /// Undo label of a drag on the field.
     fn label(self) -> &'static str {
         match self {
@@ -280,101 +371,4 @@ impl Field {
             },
         })
     }
-}
-
-/// What a [`key_field`] did this frame.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct FieldOut {
-    /// A drag started.
-    drag_started: bool,
-    /// Steps since the drag start (while dragging).
-    drag_steps: Option<i64>,
-    /// The drag ended.
-    drag_stopped: bool,
-    /// Single steps: wheel, ↑ ↓, AccessKit.
-    steps: i64,
-}
-
-/// A value field as the screens' toolbar draws it (`fs()`): `surface.2`, 24 high, `radius.m`,
-/// padding 0 8, the key left (`type.value.s`, `text.3`) and the value right (`type.value.m`).
-/// Looks and states are the number field's ([`number_field::look`]); it has no text entry.
-fn key_field(ui: &mut Ui, key: &str, name: &str, text: &str, value: f64, width: f32) -> FieldOut {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(width, size::CONTROL), Sense::click_and_drag());
-    let id = response.id;
-    let mut out = FieldOut::default();
-    let speed = ui.input(|i| drag::speed(i.modifiers));
-    let acc_id = id.with("komponist_piano_roll_field_px");
-    if response.drag_started() {
-        out.drag_started = true;
-        // egui reports the drag after the pointer moved a few points: count those too.
-        let moved = ui.input(
-            |i| match (i.pointer.press_origin(), i.pointer.latest_pos()) {
-                (Some(o), Some(p)) => f64::from(o.y - p.y),
-                _ => 0.0,
-            },
-        );
-        let acc = moved * speed / drag::NUMBER_PX_PER_STEP;
-        ui.data_mut(|d| d.insert_temp(acc_id, acc));
-        out.drag_steps = Some(acc.trunc() as i64);
-    } else if response.dragged() {
-        let mut acc: f64 = ui.data(|d| d.get_temp(acc_id)).unwrap_or(0.0);
-        acc += -f64::from(response.drag_delta().y) * speed / drag::NUMBER_PX_PER_STEP;
-        ui.data_mut(|d| d.insert_temp(acc_id, acc));
-        out.drag_steps = Some(acc.trunc() as i64);
-    }
-    if response.drag_stopped() {
-        out.drag_stopped = true;
-    }
-    if response.hovered() || response.dragged() {
-        ui.set_cursor_icon(egui::CursorIcon::ResizeVertical);
-        if response.hovered() {
-            out.steps += i64::from(widgets::wheel_steps(ui, id));
-        }
-    }
-    if response.has_focus() {
-        ui.input(|i| {
-            out.steps += i64::from(i.key_pressed(Key::ArrowUp));
-            out.steps -= i64::from(i.key_pressed(Key::ArrowDown));
-        });
-    }
-    out.steps += ui.input(|i| {
-        i.num_accesskit_action_requests(id, AkAction::Increment) as i64
-            - i.num_accesskit_action_requests(id, AkAction::Decrement) as i64
-    });
-
-    let st = State::of(ui, &response);
-    let look = number_field::look(st, false);
-    let painter = ui.painter();
-    let ppp = ui.pixels_per_point();
-    px::fill(painter, rect, radius::M, look.fill);
-    let pad = space::SPACE_2;
-    let k = painter.layout_job(fonts::layout_job(
-        key,
-        &typography::VALUE_S,
-        egui::Color32::PLACEHOLDER,
-    ));
-    let pos = widgets::text_pos(rect, &k, rect.left() + pad, ppp);
-    painter.galley(pos, k, look.unit);
-    let v = painter.layout_job(fonts::layout_job(
-        text,
-        &typography::VALUE_M,
-        egui::Color32::PLACEHOLDER,
-    ));
-    let pos = widgets::text_pos(rect, &v, rect.right() - pad - v.size().x, ppp);
-    painter.galley(pos, v, look.value);
-    if look.focus_ring {
-        focus::paint_ring(painter, rect, radius::M);
-    }
-    response.widget_info(|| {
-        let mut w = WidgetInfo::labeled(Role::SpinButton, true, name);
-        w.value = Some(value);
-        w.current_text_value = Some(text.to_owned());
-        w
-    });
-    widgets::accesskit(&response, |n| {
-        n.add_action(AkAction::Increment);
-        n.add_action(AkAction::Decrement);
-    });
-    out
 }
