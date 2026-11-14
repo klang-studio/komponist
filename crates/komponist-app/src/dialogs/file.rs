@@ -119,7 +119,7 @@ impl FileBrowser {
             entries: Vec::new(),
             selected: None,
             name,
-            location: dir.display().to_string(),
+            location: super::format::tilde(&dir),
             replace: None,
             message: None,
             focus_name: purpose == Purpose::Save,
@@ -161,7 +161,7 @@ impl FileBrowser {
                 self.message = Some(format!("{} lässt sich nicht lesen: {e}", dir.display()));
             }
         }
-        self.location = self.dir.display().to_string();
+        self.location = super::format::tilde(&self.dir);
     }
 
     /// "‹": the parent folder.
@@ -237,6 +237,17 @@ impl FileBrowser {
                 let path = with_extension(&self.dir.join(name));
                 if path.is_dir() {
                     self.go(path);
+                    return None;
+                }
+                // A name with folders in it must name folders that exist; none are created.
+                if let Some(parent) = path.parent()
+                    && !parent.is_dir()
+                {
+                    self.message = Some(format!(
+                        "Den Ordner {} gibt es nicht",
+                        super::format::tilde(parent)
+                    ));
+                    self.replace = None;
                     return None;
                 }
                 if path.exists() && self.replace.as_ref() != Some(&path) {
@@ -393,7 +404,7 @@ fn location_row(ui: &mut Ui, b: &mut FileBrowser) -> Option<Output> {
             .min_size(vec2(0.0, size::CONTROL))
             .align(egui::Align2::LEFT_CENTER)
             .margin(egui::Margin::symmetric(space::SPACE_2 as i8, 0));
-        let r = ui.add(edit).labelled_by(label.id);
+        let r = super::text_field(ui, edit).labelled_by(label.id);
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             out = b.go_to_location();
         }
@@ -541,7 +552,7 @@ fn name_row(ui: &mut Ui, b: &mut FileBrowser) -> bool {
             .min_size(vec2(0.0, size::CONTROL))
             .align(egui::Align2::LEFT_CENTER)
             .margin(egui::Margin::symmetric(space::SPACE_2 as i8, 0));
-        let r = ui.add(edit).labelled_by(label.id);
+        let r = super::text_field(ui, edit).labelled_by(label.id);
         if b.focus_name {
             r.request_focus();
             b.focus_name = false;
@@ -642,6 +653,11 @@ mod tests {
         b.name = "  ".into();
         b.replace = None;
         assert_eq!(b.confirm(), None);
+        // A name with folders that do not exist: nothing is created, the dialog says why.
+        b.name = "Unbenannt.komponist/tmp/neu/Lied".into();
+        assert_eq!(b.confirm(), None);
+        assert!(b.message.as_deref().unwrap().starts_with("Den Ordner "));
+        assert!(!dir.join("Unbenannt.komponist").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

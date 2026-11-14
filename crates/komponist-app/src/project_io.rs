@@ -90,16 +90,18 @@ pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
     persist::from_json(&text).map_err(|e| ProjectIoError::Format(path.to_owned(), e))
 }
 
-/// Writes `project` to `path` through a temporary file next to it and a rename.
+/// Writes `project` to `path` through a temporary file next to it and a rename. The folder must
+/// exist: saving never creates folders (a mistyped name must not leave folders behind).
 pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError> {
     let json = persist::to_json(project).map_err(|e| ProjectIoError::Format(path.to_owned(), e))?;
-    write_atomic(path, &json)
+    write_atomic(path, &json, false)
 }
 
-/// Writes `text` to `path` via `<path>.tmp` and a rename, creating the folder.
-fn write_atomic(path: &Path, text: &str) -> Result<(), ProjectIoError> {
+/// Writes `text` to `path` via `<path>.tmp` and a rename; `create_dir` creates the folder first
+/// (the config folder of the recent list).
+fn write_atomic(path: &Path, text: &str, create_dir: bool) -> Result<(), ProjectIoError> {
     let io = |e| ProjectIoError::Io(path.to_owned(), e);
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+    if create_dir && let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
     let mut tmp = path.as_os_str().to_owned();
@@ -163,7 +165,7 @@ impl RecentList {
     pub fn save(&self, path: &Path) -> Result<(), ProjectIoError> {
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| ProjectIoError::Recent(path.to_owned(), e))?;
-        write_atomic(path, &text)
+        write_atomic(path, &text, true)
     }
 
     /// Puts `path` at the front (once), keeping [`RECENT_LIMIT`] entries.
@@ -357,14 +359,23 @@ impl App {
         {
             self.store_state(device, &state);
         }
-        if self.project_path.as_deref() != Some(path.as_path())
-            && let Some(name) = name_from_path(&path)
-            && name != self.project().name
-        {
-            self.untracked(ProjectProp::Name(name));
-        }
-        match save_project(&path, self.project()) {
+        // A new file renames the project after it; the rename happens only if writing works.
+        let rename = name_from_path(&path).filter(|name| {
+            self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
+        });
+        let written = match &rename {
+            Some(name) => {
+                let mut renamed = Project::clone(self.project());
+                renamed.name = name.clone();
+                save_project(&path, &renamed)
+            }
+            None => save_project(&path, self.project()),
+        };
+        match written {
             Ok(()) => {
+                if let Some(name) = rename {
+                    self.untracked(ProjectProp::Name(name));
+                }
                 self.doc.mark_saved();
                 self.project_path = Some(path.clone());
                 self.set_status(
@@ -536,6 +547,13 @@ mod tests {
         let dir = scratch("round-trip");
         let path = dir.join("sub/Nachtfahrt.komponist");
         let project = demo_project();
+        // Saving never creates folders.
+        assert!(matches!(
+            save_project(&path, &project),
+            Err(ProjectIoError::Io(..))
+        ));
+        assert!(!dir.join("sub").exists());
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
         save_project(&path, &project).unwrap();
         assert!(!dir.join("sub/Nachtfahrt.komponist.tmp").exists());
         assert_eq!(load_project(&path).unwrap(), project);
