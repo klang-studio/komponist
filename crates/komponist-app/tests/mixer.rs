@@ -226,19 +226,26 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     h.key_press(egui::Key::Tab);
     h.run_steps(2);
     assert!(h.state().ui().layout.dock_maximized);
-    // Every track, the master, and the reserved sends.
+    // Every track and the master; the empty sends stay hidden until busses exist (owner
+    // decision 2026-11-14).
     for name in ["Drums", "Bass", "Lead", "Pad", "Keys", "Arp", "Master"] {
         strip(&h, &names::strip(name));
     }
     let lead = names::strip("Lead");
-    strip(&h, &lead).get_by_role_and_label(Role::Label, names::SENDS);
+    assert!(
+        strip(&h, &lead)
+            .query_by_role_and_label(Role::Label, names::SENDS)
+            .is_none()
+    );
     strip(&h, &lead).get_by_role_and_label(Role::Label, names::INSERTS);
+    strip(&h, &lead).get_by_role_and_label(Role::Slider, &names::pan("Lead"));
     h.key_press(egui::Key::Tab);
     h.run_steps(2);
     assert!(!h.state().ui().layout.dock_maximized);
     assert!(h.query_by_role_and_label(Role::Group, &lead).is_none());
 
-    // The mixer tab in the normal dock: no sends, no insert rows, the controls stay.
+    // The mixer tab in the normal dock: the lean strip shows name, M S R, fader and values; no
+    // sends, inserts, instrument line or pan knob (pan stays in the maximised mixer).
     h.state_mut()
         .dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
     h.run_steps(2);
@@ -249,14 +256,23 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
             .is_none()
     );
     s.get_by_role_and_label(Role::Slider, &names::volume("Lead"));
-    s.get_by_role_and_label(Role::Slider, &names::pan("Lead"));
+    assert!(
+        s.query_by_role_and_label(Role::Slider, &names::pan("Lead"))
+            .is_none()
+    );
     s.get_by_role_and_label(Role::Button, "Mute · Lead");
-    // One insert row would only repeat the instrument line: the inserts give way to the fader.
+    s.get_by_role_and_label(Role::Button, "Solo · Lead");
     assert!(
         s.query_by_role_and_label(Role::Button, &names::insert("pisynth"))
             .is_none()
     );
-    s.get_by_role_and_label(Role::Label, "pisynth");
+    // The instrument line is gone; the name carries it as its AccessKit description.
+    assert!(s.query_by_role_and_label(Role::Label, "pisynth").is_none());
+    let name = s.get_by_role_and_label(Role::Button, "Lead");
+    assert_eq!(
+        name.accesskit_node().description().as_deref(),
+        Some("pisynth")
+    );
     let fader = s
         .get_by_role_and_label(Role::Slider, &names::volume("Lead"))
         .rect();
@@ -291,8 +307,9 @@ fn a_strip_click_selects_the_track_in_sync_with_the_arrangement() {
     );
     // Strg-click on the strip's empty background adds Keys.
     let keys_strip = strip(&h, &names::strip("Keys")).rect();
-    let line = in_strip(&h, "Keys", Role::Label, "Dexed");
-    let below_name = pos2(keys_strip.center().x, line.bottom() + 4.0);
+    // The lean strip of the normal dock: the gap right below the name row.
+    let name = in_strip(&h, "Keys", Role::Button, "Keys");
+    let below_name = pos2(keys_strip.center().x, name.bottom() + 2.0);
     click_with(&mut h, below_name, Modifiers::COMMAND);
     let sel: Vec<TrackId> = h.state().ui().selection.tracks.iter().copied().collect();
     assert_eq!(sel, [bass, keys]);
@@ -681,22 +698,17 @@ fn peak_value_and_led_reset_alt_for_all() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// S04 "Sends": the place is reserved, nothing to click yet.
+// S04 "Sends": hidden until busses exist (owner decision 2026-11-14, ARCHITECTURE §13.7).
 
 #[test]
-fn sends_are_reserved_and_empty() {
+fn sends_stay_hidden_until_busses_exist() {
     let h = harness(s04());
     let lead = names::strip("Lead");
     let s = strip(&h, &lead);
-    let sends = s.get_by_role_and_label(Role::Label, names::SENDS).rect();
-    // Nothing interactive in the sends area.
-    for node in s.get_all_by_role(Role::Button) {
-        assert!(
-            !node.rect().intersects(sends),
-            "{:?}",
-            node.accesskit_node().label()
-        );
-    }
+    assert!(
+        s.query_by_role_and_label(Role::Label, names::SENDS)
+            .is_none()
+    );
 }
 
 // ------------------------------------------------------------------------------------------------

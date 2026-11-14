@@ -6,7 +6,13 @@
 //! reserved "Sends", the pan knob with its value, M S R, the fader with the meter next to it,
 //! and the level and peak values. The fader takes the height that is left, so the strip fills
 //! the maximised dock (S04). In the normal dock there is less height than the design's strip
-//! needs; [`Tier`] drops the reserved sends first, then the section labels and insert rows.
+//! needs; [`Tier`] switches to the lean strip.
+//!
+//! Deviation from S04 (owner decision 2026-11-14, ARCHITECTURE §13): faders must be tall. The
+//! paddings are tighter, the pan value stands right of the knob, the empty reserved sends are
+//! hidden until busses exist, and the normal dock's lean strip shows only name, M S R, fader and
+//! values (no instrument line, no inserts, no pan; the instrument is the name's tooltip and
+//! AccessKit description, pan stays in the maximised mixer and the inspector).
 
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{line, size, space};
@@ -36,14 +42,15 @@ pub const STRIP_GAP: f32 = line::WIDTH;
 pub const COLOR_BAR: f32 = 3.0;
 /// Horizontal padding of the strip's rows (`padding:'… 6px'`).
 pub const PAD_X: f32 = space::SPACE_1_5;
-/// Padding above the name (`nameS` `padding:'8px 6px 0'`).
-pub const NAME_TOP: f32 = space::SPACE_2;
+/// Padding above the name (design `padding:'8px 6px 0'`; tightened to 4 px, the bar already
+/// separates the name from the strip's edge).
+pub const NAME_TOP: f32 = space::SPACE_1;
 /// Padding below the name (`nameS` `paddingBottom:2`).
 pub const NAME_BOTTOM: f32 = space::SPACE_0_5;
 /// Padding above the instrument line (`instS` `padding:'2px 6px 0'`).
 pub const INSTRUMENT_TOP: f32 = space::SPACE_0_5;
-/// Padding above "Inserts" (`padding:8px 6px 4px`).
-pub const INSERTS_LABEL_TOP: f32 = space::SPACE_2;
+/// Padding above "Inserts" (design `padding:8px 6px 4px`; tightened to 4 px).
+pub const INSERTS_LABEL_TOP: f32 = space::SPACE_1;
 /// Padding below a section label ("Inserts", "Sends": `… 4px`).
 pub const LABEL_BOTTOM: f32 = space::SPACE_1;
 /// Height of the insert box (`height:88px; overflow:hidden`): three slots and "+".
@@ -63,27 +70,29 @@ pub const DASH: [f32; 2] = [3.0, 2.0];
 pub const SENDS_LABEL_TOP: f32 = space::SPACE_2 + space::SPACE_0_5;
 /// The two reserved send rows (`height:20px` each).
 pub const SEND_ROWS: usize = 2;
-/// Padding above the pan knob (`padding:12px 0 6px`).
-pub const PAN_TOP: f32 = space::SPACE_3;
-/// Gap between the knob and its value (`gap:2px`).
-pub const PAN_GAP: f32 = space::SPACE_0_5;
-/// Padding below the pan value.
-pub const PAN_BOTTOM: f32 = space::SPACE_1_5;
+/// Padding above the pan knob (design `padding:12px 0 6px`; tightened to 4 px).
+pub const PAN_TOP: f32 = space::SPACE_1;
+/// Gap between the knob and its value, which now stands right of the knob (design: below it,
+/// `gap:2px`).
+pub const PAN_GAP: f32 = space::SPACE_1;
+/// Padding below the pan row.
+pub const PAN_BOTTOM: f32 = space::SPACE_1;
 /// The M S R toggles of a strip (`tgl(k, …, 22, 18)`).
 pub const TOGGLE: [f32; 2] = [22.0, 18.0];
 /// Gap between the toggles (`gap:2px`).
 pub const TOGGLE_GAP: f32 = space::SPACE_0_5;
-/// Padding below the toggles (`padding-bottom:8px`).
-pub const TOGGLES_BOTTOM: f32 = space::SPACE_2;
+/// Padding below the toggles (design `padding-bottom:8px`; tightened to 4 px).
+pub const TOGGLES_BOTTOM: f32 = space::SPACE_1;
 /// Gap between the fader column and the meter (`gap:6px`).
 pub const FADER_METER_GAP: f32 = space::SPACE_1_5;
-/// Padding above the values row (`padding:8px 6px 10px`).
-pub const VALUES_TOP: f32 = space::SPACE_2;
-/// Padding below the values row.
-pub const VALUES_BOTTOM: f32 = space::SPACE_2 + space::SPACE_0_5;
-/// The least height of the fader area: the thumb and some track (not in the design, which only
-/// shows the maximised mixer).
-pub const FADER_AREA_MIN: f32 = 96.0;
+/// Padding above the values row (design `padding:8px 6px 10px`; tightened to 4 px).
+pub const VALUES_TOP: f32 = space::SPACE_1;
+/// Padding below the values row (tightened to 6 px).
+pub const VALUES_BOTTOM: f32 = space::SPACE_1_5;
+/// The least height of the fader area before the strip drops secondary parts: the thumb (44)
+/// and a track of 156 px, about 2 px per 0.5 dB between 0 and −6 dB. Not in the design, which
+/// only shows the maximised mixer (was 96 until 2026-11-14).
+pub const FADER_AREA_MIN: f32 = 200.0;
 
 /// The fewest insert rows a strip shows when it shows any (instrument and one more).
 pub const MIN_INSERT_ROWS: usize = 2;
@@ -102,6 +111,8 @@ pub struct Tier {
     pub insert_rows: usize,
     /// The reserved "Sends".
     pub sends: bool,
+    /// Name, M S R, fader and values only. No instrument line, no pan knob.
+    pub lean: bool,
 }
 
 impl Tier {
@@ -109,37 +120,26 @@ impl Tier {
     pub const FULL: Tier = Tier {
         inserts_label: true,
         insert_rows: 4,
-        sends: true,
+        // The two empty reserved send rows (68 px) wait until busses exist.
+        sends: false,
+        lean: false,
+    };
+    /// The normal dock's strip: the secondary parts give way to the fader.
+    pub const LEAN: Tier = Tier {
+        inserts_label: false,
+        insert_rows: 0,
+        sends: false,
+        lean: true,
     };
 
     /// What fits into a strip `height` high: the full strip if its fader area keeps
-    /// [`FADER_AREA_MIN`]; else without the sends; else also without the section label and with
-    /// as many insert rows as fit, none below [`MIN_INSERT_ROWS`].
+    /// [`FADER_AREA_MIN`]; else the lean strip, in which the fader takes what the inserts, the
+    /// instrument line and the pan knob leave.
     pub fn for_height(height: f32) -> Tier {
         if height - fixed_height(Tier::FULL) >= FADER_AREA_MIN {
-            return Tier::FULL;
-        }
-        let no_sends = Tier {
-            sends: false,
-            ..Tier::FULL
-        };
-        if height - fixed_height(no_sends) >= FADER_AREA_MIN {
-            return no_sends;
-        }
-        let bare = Tier {
-            inserts_label: false,
-            insert_rows: 0,
-            sends: false,
-        };
-        let room = height - fixed_height(bare) - FADER_AREA_MIN;
-        let rows = ((room + SLOT_GAP) / (SLOT_HEIGHT + SLOT_GAP))
-            .floor()
-            .max(0.0) as usize;
-        // One row would only repeat the instrument of the line above: then none.
-        let rows = if rows < MIN_INSERT_ROWS { 0 } else { rows };
-        Tier {
-            insert_rows: rows.min(Tier::FULL.insert_rows),
-            ..bare
+            Tier::FULL
+        } else {
+            Tier::LEAN
         }
     }
 
@@ -165,8 +165,17 @@ pub fn rows_height(n: usize) -> f32 {
 /// Height of a strip without its fader area, given the line heights of the text styles: name
 /// `type.ui` (16), instrument and labels `type.small` / `type.label`, pan value and values.
 pub fn fixed_height(tier: Tier) -> f32 {
-    use komponist_tokens::typography::{LABEL, UI, VALUE_M, VALUE_S};
+    use komponist_tokens::typography::{LABEL, UI, VALUE_M};
     let mut h = COLOR_BAR + NAME_TOP + UI.line_height + NAME_BOTTOM;
+    if tier.lean {
+        return h
+            + INSERTS_LABEL_TOP
+            + TOGGLE[1]
+            + TOGGLES_BOTTOM
+            + VALUES_TOP
+            + VALUE_M.line_height
+            + VALUES_BOTTOM;
+    }
     h += INSTRUMENT_TOP + TEXT_10.line_height;
     if tier.inserts_label {
         h += INSERTS_LABEL_TOP + LABEL.line_height + LABEL_BOTTOM;
@@ -177,7 +186,7 @@ pub fn fixed_height(tier: Tier) -> f32 {
     if tier.sends {
         h += SENDS_LABEL_TOP + LABEL.line_height + LABEL_BOTTOM + rows_height(SEND_ROWS);
     }
-    h += PAN_TOP + size::KNOB + PAN_GAP + VALUE_S.line_height + PAN_BOTTOM;
+    h += PAN_TOP + size::KNOB + PAN_BOTTOM;
     h += TOGGLE[1] + TOGGLES_BOTTOM;
     h += VALUES_TOP + VALUE_M.line_height + VALUES_BOTTOM;
     h
@@ -220,19 +229,15 @@ mod tests {
     }
 
     #[test]
-    fn the_normal_dock_drops_the_sends_then_insert_rows() {
-        let full = fixed_height(Tier::FULL) + FADER_AREA_MIN;
-        let no_sends = Tier::for_height(full - 1.0);
-        assert!(!no_sends.sends && no_sends.inserts_label);
-        // The default dock: 320 − the 28 px tab strip.
+    fn the_normal_dock_gives_way_to_the_fader() {
+        // No reserved sends any more; the normal dock (320 − the 28 px tab strip)
+        // gets the lean strip, which keeps FADER_AREA_MIN and more.
         let t = Tier::for_height(292.0);
-        assert!(!t.sends && !t.inserts_label);
-        // A single row would repeat the instrument: none.
-        assert_eq!(t.insert_rows, 0);
+        assert_eq!(t, Tier::LEAN);
         assert!(292.0 - fixed_height(t) >= FADER_AREA_MIN);
-        assert_eq!(Tier::for_height(10.0).insert_rows, 0);
-        let taller = Tier::for_height(fixed_height(t) + FADER_AREA_MIN + rows_height(2));
-        assert_eq!(taller.insert_rows, 2);
+        let full = fixed_height(Tier::FULL) + FADER_AREA_MIN;
+        assert_eq!(Tier::for_height(full), Tier::FULL);
+        assert_eq!(Tier::for_height(full - 1.0), Tier::LEAN);
     }
 
     #[test]
