@@ -429,6 +429,8 @@ pub enum SettingsAction {
     RescanPlugins,
     /// UI scale override; `None` = follow the display (1× / 2×).
     SetUiScale(Option<f32>),
+    /// The star of a browser row: make the plugin a favourite, or remove it from the favourites.
+    ToggleFavorite(PluginRef),
 }
 
 /// View actions.

@@ -17,6 +17,7 @@ use komponist_tokens::size;
 
 use crate::actions::{Action, ExportSettings};
 use crate::metrics;
+use crate::settings::Favorites;
 
 /// Which panel has keyboard focus. Shortcuts are looked up per area (`Keymap::lookup`); the focused
 /// panel shows a 1 px accent line at the top of its header.
@@ -416,8 +417,12 @@ pub struct BrowserView {
     pub query: String,
     /// Keyboard-highlighted row in the current list (↑ ↓, Enter adds to the selected track).
     pub highlighted: Option<usize>,
-    /// Collapsed category rows ("EQ und Filter", …), by their label.
+    /// Collapsed folder rows by section and label ("Effekte/EQ und Filter",
+    /// `views::browser::model::folder_key`); the browser closes all folders when it first shows.
     pub collapsed: BTreeSet<String>,
+    /// The favourites (starred rows), mirrored from [`crate::settings::Settings::favorites`];
+    /// changed through `SettingsAction::ToggleFavorite`.
+    pub favorites: Favorites,
 }
 
 /// Inspector sections.
