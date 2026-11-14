@@ -573,9 +573,10 @@ impl App {
     /// answers to a state request come after them (module docs, step 4).
     fn bridges_reactivated(&mut self) {
         self.drain_events();
-        for (device, state) in self.engine.host_mut().snapshot_states(SNAPSHOT_TIMEOUT) {
-            self.store_state(device, &state);
-        }
+        // Only the answers matter here, not the states: storing them would mark the project
+        // changed by an export (a plugin's state differs from none stored). A state the user
+        // changed reaches the document through the plugin's own debounced snapshot.
+        let _ = self.engine.host_mut().snapshot_states(SNAPSHOT_TIMEOUT);
         if let Some(Run {
             phase: Phase::Running(worker),
             ..
