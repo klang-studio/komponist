@@ -2,6 +2,7 @@
 name = "kp-test-slow"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "Test plugin for komponist: sleeps 50 ms inside process on note 126"
 

@@ -2,6 +2,7 @@
 name = "kp-test-fx"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "Test effect for komponist: stereo gain that delays by and reports 64 samples latency"
 

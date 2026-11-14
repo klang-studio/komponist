@@ -2,6 +2,7 @@
 name = "kp-test-crash"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "Test plugin for komponist: segfaults on note 127 or when its crash param rises past 0.9"
 
