@@ -245,7 +245,7 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     assert!(h.query_by_role_and_label(Role::Group, &lead).is_none());
 
     // The mixer tab in the normal dock: the lean strip shows name, M S R, fader and values; no
-    // sends, inserts or instrument line; a small pan knob stands in the name row (Q8).
+    // sends, inserts or instrument line; a small pan knob stands in the values row (Q8).
     h.state_mut()
         .dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
     h.run_steps(2);
@@ -289,9 +289,26 @@ fn the_lean_dock_strip_has_a_pan_knob_that_costs_the_fader_no_height() {
     let knob = in_strip(&h, "Bass", Role::Slider, &name);
     let diameter = komponist_tokens::size::KNOB_SMALL;
     assert_eq!((knob.width(), knob.height()), (diameter, diameter));
-    // It sits in the name row, above the toggles.
+    // It sits in the values row, right of the level and at the end of the row; the name row
+    // gives the name its full width, and there is no peak readout in the lean strip.
     let toggles = in_strip(&h, "Bass", Role::Button, "Mute · Bass");
-    assert!(knob.bottom() <= toggles.top());
+    let level = in_strip(&h, "Bass", Role::SpinButton, &names::volume_value("Bass"));
+    assert!(knob.top() > toggles.bottom());
+    assert!(knob.left() >= level.right(), "{knob:?} {level:?}");
+    assert!((knob.center().y - level.center().y).abs() < 1.0);
+    let strip_rect = strip(&h, &names::strip("Bass")).rect();
+    assert!(
+        (strip_rect.right() - komponist_app::views::mixer::metrics::PAD_X - knob.right()).abs()
+            < 1.0
+    );
+    assert!(
+        strip(&h, &names::strip("Bass"))
+            .query_by_role_and_label(Role::Button, &names::peak("Bass"))
+            .is_none()
+    );
+    // Nothing of the knob stands in the name row any more.
+    let name_row = in_strip(&h, "Bass", Role::Button, "Bass");
+    assert!(knob.top() > name_row.bottom());
     // The fader keeps the height it had before the knob (215 px of track + thumb at 1x).
     let fader = in_strip(&h, "Bass", Role::Slider, &names::volume("Bass"));
     assert!(fader.height() >= 215.0 - 0.5, "fader {}", fader.height());
@@ -634,6 +651,33 @@ fn plus_opens_the_browser_on_effects_and_a_dropped_effect_is_inserted() {
         .map(|d| d.plugin.name.clone())
         .collect();
     assert_eq!(names_now, ["pisynth", "LSP Para EQ x8", "LSP Delay"]);
+}
+
+#[test]
+fn the_lean_strip_meter_click_resets_the_peak() {
+    let mut app = App::headless(demo_project());
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
+    let mut h = harness(app);
+    let meter = names::meter("Bass");
+    click_in(&mut h, "Bass", Role::Meter, &meter, Modifiers::NONE);
+    let bass = h.state().project().tracks[1].id;
+    assert!(h.state().dispatched().any(|a| *a
+        == Action::Ui(UiAction::ResetMeters {
+            track: Some(bass),
+            all: false
+        })));
+    click_in(
+        &mut h,
+        "Master",
+        Role::Meter,
+        &names::meter("Master"),
+        Modifiers::ALT,
+    );
+    assert!(h.state().dispatched().any(|a| *a
+        == Action::Ui(UiAction::ResetMeters {
+            track: None,
+            all: true
+        })));
 }
 
 // ------------------------------------------------------------------------------------------------

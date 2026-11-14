@@ -731,7 +731,7 @@ These need a decision (the handoff says: report contradictions; the design syste
    strip's paddings are tighter (4 px) and the pan value stands right of the knob; the empty reserved
    sends are hidden until busses exist; the normal dock shows a lean strip (name, M S R, fader,
    values; no instrument line or inserts). The instrument is the name's tooltip and AccessKit
-   description; pan is a small knob in the lean strip's name row (item 9, Q8). Fader area:
+   description; pan is a small knob in the lean strip's values row (item 9, Q8). Fader area:
    maximised 641 → 753 px, normal dock 121 → 215 px (`views/mixer/metrics.rs`).
 8. **Track toggles R and I: symbols, own group (decided 2026-11-14).** Wherever the M S R I buttons
    appear (arrangement track header; the mixer strip has M S R, the master only M; the inspector and
@@ -751,7 +751,9 @@ These need a decision (the handoff says: report contradictions; the design syste
    failure is „lädt nicht“ (card and frame keep „Lässt sich nicht laden“). Q6 transport toggles
    keep the design system (Sans 12 / padding 10). Q7 monitoring on stays `state.play` (green);
    `design/README.md` documents it (C3). Q8 the lean dock strips get a small pan knob (Ø 20) at
-   the right end of the name row, so the fader keeps its height (item 7). Q9 Tab leaves the
+   the right end of the values row, right of the dB level where the peak value stood (the lean
+   strip shows no peak value; the meter LED carries peak and clip), so the fader keeps its
+   height and the name its full width (item 7). Q9 Tab leaves the
    maximised mixer always, even over a focus ring (Shift Tab and arrows still move between
    widgets; dialogs and text fields are unchanged, item 1). Q10 the plugin-frame position is saved
    on close only.

@@ -56,8 +56,8 @@ pub struct Rows {
     pub inserts: Rect,
     /// "Sends" and the two reserved rows, if shown.
     pub sends: Option<(Rect, Rect)>,
-    /// The pan knob (28 × 28 right of the pan value; Ø 20 at the end of the name row in the lean
-    /// strip).
+    /// The pan knob (28 × 28 right of the pan value; Ø 20 at the right end of the values row in
+    /// the lean strip).
     pub knob: Rect,
     /// The pan value next to the knob (empty in the lean strip).
     pub pan_value: Rect,
@@ -65,7 +65,7 @@ pub struct Rows {
     pub toggles: Rect,
     /// The fader area (fader and meter).
     pub fader: Rect,
-    /// The values row (level left, peak right).
+    /// The values row (level left; peak right, or the pan knob in the lean strip).
     pub values: Rect,
 }
 
@@ -141,8 +141,6 @@ impl Rows {
         let l = rect.left();
         let r = rect.right();
         let d = size::KNOB_SMALL;
-        let knob =
-            Rect::from_center_size(pos2(r - m::PAD_X - d / 2.0, name.center().y), vec2(d, d));
         let nothing = Rect::from_min_size(
             pos2(l + m::PAD_X, name.bottom()),
             vec2(rect.width() - 2.0 * m::PAD_X, 0.0),
@@ -158,6 +156,10 @@ impl Rows {
             rect.bottom() - values_h + m::VALUES_TOP
                 ..=rect.bottom() - values_h + m::VALUES_TOP + VALUE_M.line_height,
         );
+        // The knob (Ø 20) is centred on the values row (16 px) and reaches into the paddings above
+        // and below it, so it costs the fader no height.
+        let knob =
+            Rect::from_center_size(pos2(r - m::PAD_X - d / 2.0, values.center().y), vec2(d, d));
         let fader_top = toggles.bottom() + m::TOGGLES_BOTTOM;
         let fader_bottom = (rect.bottom() - values_h).max(fader_top);
         Rows {
@@ -344,7 +346,7 @@ pub(super) fn show(
     pan(ui, ctx, s, &rows, tier);
     let events = toggles(ui, ctx, s, rows.toggles);
     fader_and_meter(ui, ctx, s, rows.fader, mods);
-    values(ui, ctx, s, rows.values, mods);
+    values(ui, ctx, s, rows.values, mods, tier);
     events
 }
 
@@ -380,9 +382,8 @@ fn name_and_line(
     tier: Tier,
 ) {
     let style = typography::UI;
-    // The lean strip's pan knob takes the right end of the name row.
     let text_x = if tier.lean {
-        rows.name.left() + m::PAD_X..=rows.knob.left() - m::LEAN_PAN_GAP
+        rows.name.left() + m::PAD_X..=rows.name.right() - m::PAD_X
     } else {
         rows.line.x_range().into()
     };
@@ -811,8 +812,9 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
 }
 
 /// The level (double-click: text entry, Alt-click: 0 dB, click: clears the clip indicator) and
-/// the peak value (click resets peak and clip, Alt-click all strips), red after clipping.
-fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers) {
+/// the peak value (click resets peak and clip, Alt-click all strips), red after clipping. The
+/// lean strip has the level only.
+fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers, tier: Tier) {
     let mut db = s.volume_db;
     let name = names::volume_value(&s.name);
     // The level stands left in the row (S04 `justify-content:space-between`).
@@ -837,6 +839,11 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
         }));
     }
 
+    // The lean strip shows no peak value (the meter LED carries peak and clip; its click resets
+    // them) and puts the pan knob at the end of the row instead.
+    if tier.lean {
+        return;
+    }
     let (peak, clipped) = {
         let state = match s.track() {
             Some(t) => ctx.meters.track(t),
@@ -910,10 +917,12 @@ mod tests {
             Tier::for_height(292.0),
         );
         assert!(small.sends.is_none() && small.inserts_label.is_none());
-        // The lean strip's pan knob sits in the name row and adds no height.
+        // The lean strip's pan knob sits at the end of the values row and adds no height.
         assert_eq!(small.knob.size(), vec2(size::KNOB_SMALL, size::KNOB_SMALL));
-        assert!(small.name.contains_rect(small.knob));
-        assert!(small.knob.left() > small.name.left() + 40.0);
+        assert_eq!(small.knob.center().y, small.values.center().y);
+        assert_eq!(small.knob.right(), small.values.right());
+        assert!(small.knob.top() >= small.fader.bottom());
+        assert!(small.knob.bottom() <= 292.0);
         assert!(small.fader.height() >= m::FADER_AREA_MIN - 0.5);
     }
 
