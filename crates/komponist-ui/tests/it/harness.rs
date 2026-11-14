@@ -148,7 +148,7 @@ fn gallery_is_named_and_navigates() {
         .build_ui_state(|ui, g| g.show(ui), Gallery::designsystem());
     h.run();
     h.check_accessibility();
-    assert_eq!(h.state().sections().len(), 7);
+    assert_eq!(h.state().sections().len(), 8);
     let first = h.render().expect("render");
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     first.save(out.join("gallery-top.png")).unwrap();

@@ -273,6 +273,7 @@ pub fn designsystem() -> Vec<Section> {
                 .owner("WP-20"),
         ])),
         tokens::shortcuts_and_icons(),
+        crate::widgets::device::gallery::section(),
     ]
 }
 
