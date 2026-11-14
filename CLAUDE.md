@@ -9,14 +9,17 @@ design handoff still says "klang-studio" where it means the DAW; read it as "kom
 
 ## Worktrees
 
-The workspace depends on siblings by relative path (`../klang-dsp`, `../pisynth`, `../klopfer`).
-A worktree must therefore sit **exactly one level below `<workspace>/`**. Do **not**
-use the Agent tool's `isolation: "worktree"` (it nests the worktree deeper and breaks the paths).
-Instead:
+All worktrees live in **`<workspace>/.claude/worktrees/`** (owner's rule, 2026-11-14).
+The workspace depends on siblings by relative path (`../klang-dsp`, `../pisynth`, `../klopfer`, the
+handoffs). That folder therefore holds symlinks to every sibling (`klang-dsp`, `pisynth`, `klopfer`,
+`komponist`, `klang-studio-handoff`, `klang-studio-geraete-handoff`, `daw-design-briefing.md`), so
+`../klang-dsp` resolves inside a worktree there. A new sibling project needs a new symlink. Do **not**
+use the Agent tool's `isolation: "worktree"` (it puts the worktree where the symlinks are missing).
 
 ```bash
 cd <workspace>/komponist
-git worktree add ../kp-wt-WP-23 -b wp/WP-23 main     # → <workspace>/kp-wt-WP-23
+git worktree add ../.claude/worktrees/kp-wt-WP-60 -b wp/WP-60 main
+#   → <workspace>/.claude/worktrees/kp-wt-WP-60
 ```
 
 Each worktree builds into its own `target/`. The first build of egui/wgpu takes a few minutes.
