@@ -23,6 +23,9 @@ pub type Statuses = Arc<Mutex<HashMap<DeviceId, DeviceStatus>>>;
 /// Recorded `set_param` calls.
 pub type SetLog = Arc<Mutex<Vec<(DeviceId, u32, f64)>>>;
 
+/// Late-block counts the test can raise while the app runs.
+pub type LateBlocks = Arc<Mutex<HashMap<DeviceId, u64>>>;
+
 #[derive(Default)]
 pub struct FakeHost {
     builtin: BuiltinHost,
@@ -33,6 +36,7 @@ pub struct FakeHost {
     warnings: HashMap<DeviceId, String>,
     gui: HashSet<DeviceId>,
     pub set: SetLog,
+    pub late: LateBlocks,
 }
 
 /// A scanned CLAP plugin (format CLAP, id = `id`).
@@ -255,5 +259,9 @@ impl DeviceHost for FakeHost {
 
     fn has_gui(&self, device: DeviceId) -> bool {
         self.gui.contains(&device)
+    }
+
+    fn late_blocks(&self, device: DeviceId) -> u64 {
+        self.late.lock().unwrap().get(&device).copied().unwrap_or(0)
     }
 }

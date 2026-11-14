@@ -1,0 +1,249 @@
+//! Layout metrics of the mixer (`Screens.dc.html` `mixer()`, `mxScale` and the `isMixer` markup;
+//! `ks-view.js` `mixView`). Sums of spacing tokens are written that way; the rest are the design's
+//! numbers.
+//!
+//! A strip, top to bottom: colour bar, name, instrument, "Inserts" with the insert slots, the
+//! reserved "Sends", the pan knob with its value, M S R, the fader with the meter next to it,
+//! and the level and peak values. The fader takes the height that is left, so the strip fills
+//! the maximised dock (S04). In the normal dock there is less height than the design's strip
+//! needs; [`Tier`] drops the reserved sends first, then the section labels and insert rows.
+
+use komponist_tokens::typography::{self, TypeStyle};
+use komponist_tokens::{line, size, space};
+use komponist_ui::widgets::fader::FaderSize;
+use komponist_ui::widgets::meter::Style as MeterStyle;
+use komponist_ui::widgets::metrics::meter as meter_metrics;
+
+/// The design's 10 px texts of a strip (instrument line `instS`, insert slots: `fontSize:10`)
+/// have no type token; this is `type.label` (Sans 10/12) without its case and tracking, at
+/// regular weight (insert slots of instruments use semibold).
+pub const TEXT_10: TypeStyle = TypeStyle {
+    weight: 400,
+    emphasis_weight: None,
+    uppercase: false,
+    tracking_em: 0.0,
+    color: None,
+    ..typography::LABEL
+};
+
+/// Width of a track strip (`size.mixer-strip`, `width:80`).
+pub const STRIP_WIDTH: f32 = size::MIXER_STRIP;
+/// Width of the master strip (`width:isM?96:80`).
+pub const MASTER_WIDTH: f32 = 96.0;
+/// Gap between the strips, in which `surface.0` shows (`gap:1px; background:#111214`).
+pub const STRIP_GAP: f32 = line::WIDTH;
+/// Height of the colour bar at the top (`bar:{height:3}`).
+pub const COLOR_BAR: f32 = 3.0;
+/// Horizontal padding of the strip's rows (`padding:'… 6px'`).
+pub const PAD_X: f32 = space::SPACE_1_5;
+/// Padding above the name (`nameS` `padding:'8px 6px 0'`).
+pub const NAME_TOP: f32 = space::SPACE_2;
+/// Padding below the name (`nameS` `paddingBottom:2`).
+pub const NAME_BOTTOM: f32 = space::SPACE_0_5;
+/// Padding above the instrument line (`instS` `padding:'2px 6px 0'`).
+pub const INSTRUMENT_TOP: f32 = space::SPACE_0_5;
+/// Padding above "Inserts" (`padding:8px 6px 4px`).
+pub const INSERTS_LABEL_TOP: f32 = space::SPACE_2;
+/// Padding below a section label ("Inserts", "Sends": `… 4px`).
+pub const LABEL_BOTTOM: f32 = space::SPACE_1;
+/// Height of the insert box (`height:88px; overflow:hidden`): three slots and "+".
+pub const INSERTS_HEIGHT: f32 = 88.0;
+/// Height of an insert slot and of a send placeholder (`height:20`).
+pub const SLOT_HEIGHT: f32 = size::CONTROL_COMPACT;
+/// Gap between the slots (`gap:2px`).
+pub const SLOT_GAP: f32 = space::SPACE_0_5;
+/// Horizontal padding of the text in a slot (`padding:'0 6px'`).
+pub const SLOT_PAD_X: f32 = space::SPACE_1_5;
+/// Thickness of the insert line while a slot or a plugin is dragged over the inserts (S05 notes
+/// "blaue 2-px-Linie zeigt die Einfügestelle").
+pub const INSERT_LINE: f32 = 2.0;
+/// Dashes of the "+" slot's and the sends' border (`1px dashed`): dash and gap.
+pub const DASH: [f32; 2] = [3.0, 2.0];
+/// Padding above "Sends" (`padding:10px 6px 4px`).
+pub const SENDS_LABEL_TOP: f32 = space::SPACE_2 + space::SPACE_0_5;
+/// The two reserved send rows (`height:20px` each).
+pub const SEND_ROWS: usize = 2;
+/// Padding above the pan knob (`padding:12px 0 6px`).
+pub const PAN_TOP: f32 = space::SPACE_3;
+/// Gap between the knob and its value (`gap:2px`).
+pub const PAN_GAP: f32 = space::SPACE_0_5;
+/// Padding below the pan value.
+pub const PAN_BOTTOM: f32 = space::SPACE_1_5;
+/// The M S R toggles of a strip (`tgl(k, …, 22, 18)`).
+pub const TOGGLE: [f32; 2] = [22.0, 18.0];
+/// Gap between the toggles (`gap:2px`).
+pub const TOGGLE_GAP: f32 = space::SPACE_0_5;
+/// Padding below the toggles (`padding-bottom:8px`).
+pub const TOGGLES_BOTTOM: f32 = space::SPACE_2;
+/// Gap between the fader column and the meter (`gap:6px`).
+pub const FADER_METER_GAP: f32 = space::SPACE_1_5;
+/// Padding above the values row (`padding:8px 6px 10px`).
+pub const VALUES_TOP: f32 = space::SPACE_2;
+/// Padding below the values row.
+pub const VALUES_BOTTOM: f32 = space::SPACE_2 + space::SPACE_0_5;
+/// The least height of the fader area: the thumb and some track (not in the design, which only
+/// shows the maximised mixer).
+pub const FADER_AREA_MIN: f32 = 96.0;
+
+/// The fewest insert rows a strip shows when it shows any (instrument and one more).
+pub const MIN_INSERT_ROWS: usize = 2;
+
+/// The fader of a strip: normal thumb (32 × 44) with the scale on the left.
+pub const FADER: FaderSize = FaderSize::Normal;
+/// The meter of a strip: the mixer meter (2 × 4, LED).
+pub const METER: MeterStyle = MeterStyle::MIXER;
+
+/// What a strip shows at a given height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tier {
+    /// The "Inserts" label.
+    pub inserts_label: bool,
+    /// Rows of the insert box (slots and "+").
+    pub insert_rows: usize,
+    /// The reserved "Sends".
+    pub sends: bool,
+}
+
+impl Tier {
+    /// The design's strip: everything, insert box 88 high.
+    pub const FULL: Tier = Tier {
+        inserts_label: true,
+        insert_rows: 4,
+        sends: true,
+    };
+
+    /// What fits into a strip `height` high: the full strip if its fader area keeps
+    /// [`FADER_AREA_MIN`]; else without the sends; else also without the section label and with
+    /// as many insert rows as fit, none below [`MIN_INSERT_ROWS`].
+    pub fn for_height(height: f32) -> Tier {
+        if height - fixed_height(Tier::FULL) >= FADER_AREA_MIN {
+            return Tier::FULL;
+        }
+        let no_sends = Tier {
+            sends: false,
+            ..Tier::FULL
+        };
+        if height - fixed_height(no_sends) >= FADER_AREA_MIN {
+            return no_sends;
+        }
+        let bare = Tier {
+            inserts_label: false,
+            insert_rows: 0,
+            sends: false,
+        };
+        let room = height - fixed_height(bare) - FADER_AREA_MIN;
+        let rows = ((room + SLOT_GAP) / (SLOT_HEIGHT + SLOT_GAP))
+            .floor()
+            .max(0.0) as usize;
+        // One row would only repeat the instrument of the line above: then none.
+        let rows = if rows < MIN_INSERT_ROWS { 0 } else { rows };
+        Tier {
+            insert_rows: rows.min(Tier::FULL.insert_rows),
+            ..bare
+        }
+    }
+
+    /// Height of the insert box.
+    pub fn inserts_height(self) -> f32 {
+        if self.insert_rows >= Tier::FULL.insert_rows {
+            INSERTS_HEIGHT
+        } else {
+            rows_height(self.insert_rows)
+        }
+    }
+}
+
+/// Height of `n` slot rows with their gaps.
+pub fn rows_height(n: usize) -> f32 {
+    if n == 0 {
+        0.0
+    } else {
+        n as f32 * SLOT_HEIGHT + (n - 1) as f32 * SLOT_GAP
+    }
+}
+
+/// Height of a strip without its fader area, given the line heights of the text styles: name
+/// `type.ui` (16), instrument and labels `type.small` / `type.label`, pan value and values.
+pub fn fixed_height(tier: Tier) -> f32 {
+    use komponist_tokens::typography::{LABEL, UI, VALUE_M, VALUE_S};
+    let mut h = COLOR_BAR + NAME_TOP + UI.line_height + NAME_BOTTOM;
+    h += INSTRUMENT_TOP + TEXT_10.line_height;
+    if tier.inserts_label {
+        h += INSERTS_LABEL_TOP + LABEL.line_height + LABEL_BOTTOM;
+    } else {
+        h += INSERTS_LABEL_TOP;
+    }
+    h += tier.inserts_height();
+    if tier.sends {
+        h += SENDS_LABEL_TOP + LABEL.line_height + LABEL_BOTTOM + rows_height(SEND_ROWS);
+    }
+    h += PAN_TOP + size::KNOB + PAN_GAP + VALUE_S.line_height + PAN_BOTTOM;
+    h += TOGGLE[1] + TOGGLES_BOTTOM;
+    h += VALUES_TOP + VALUE_M.line_height + VALUES_BOTTOM;
+    h
+}
+
+/// Width of the fader column (with or without the scale) and the meter next to it.
+pub fn fader_group_width(scale: bool) -> f32 {
+    komponist_ui::widgets::fader::Layout::desired_size(FADER, scale, 0.0).x
+        + FADER_METER_GAP
+        + METER.thickness()
+}
+
+/// Whether the fader's scale labels fit a track `length` long without overlapping: the closest
+/// taper points (`DBT`) are a label's line height apart at least. A short fader in the normal
+/// dock goes without its scale.
+pub fn scale_fits(length: f32) -> bool {
+    use komponist_ui::widgets::fader::DBT;
+    let step = DBT
+        .windows(2)
+        .map(|w| w[1].1 - w[0].1)
+        .fold(f32::MAX, f32::min);
+    length * step >= komponist_ui::widgets::fader::SCALE_TEXT.line_height
+}
+
+/// Where the meter's LED sits above the fader's track: the bars span the track, so the meter
+/// reads on the fader's scale.
+pub const METER_LED: f32 = meter_metrics::LED_HEIGHT + meter_metrics::LED_GAP;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_maximised_dock_shows_everything() {
+        // S04: 1080 − transport 44 − tab 28 − status bar 22 − frame lines.
+        assert_eq!(Tier::for_height(980.0), Tier::FULL);
+        assert_eq!(Tier::FULL.inserts_height(), INSERTS_HEIGHT);
+        // The fader area takes the rest.
+        assert!(980.0 - fixed_height(Tier::FULL) > 500.0);
+    }
+
+    #[test]
+    fn the_normal_dock_drops_the_sends_then_insert_rows() {
+        let full = fixed_height(Tier::FULL) + FADER_AREA_MIN;
+        let no_sends = Tier::for_height(full - 1.0);
+        assert!(!no_sends.sends && no_sends.inserts_label);
+        // The default dock: 320 − the 28 px tab strip.
+        let t = Tier::for_height(292.0);
+        assert!(!t.sends && !t.inserts_label);
+        // A single row would repeat the instrument: none.
+        assert_eq!(t.insert_rows, 0);
+        assert!(292.0 - fixed_height(t) >= FADER_AREA_MIN);
+        assert_eq!(Tier::for_height(10.0).insert_rows, 0);
+        let taller = Tier::for_height(fixed_height(t) + FADER_AREA_MIN + rows_height(2));
+        assert_eq!(taller.insert_rows, 2);
+    }
+
+    #[test]
+    fn the_fader_group_fits_the_strip() {
+        // Fader 54 (scale 20, gap 2, thumb 32), gap 6, meter 9.
+        assert_eq!(fader_group_width(true), 69.0);
+        assert!(fader_group_width(true) <= STRIP_WIDTH);
+        assert_eq!(fader_group_width(false), 47.0);
+        // The taper's closest points are 0.14 apart, the labels 12 high.
+        assert!(scale_fits(200.0) && scale_fits(86.0));
+        assert!(!scale_fits(73.0));
+        assert_eq!(rows_height(4), 86.0);
+    }
+}

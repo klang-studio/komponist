@@ -22,6 +22,8 @@
 pub mod arrangement;
 pub mod browser;
 pub mod devices;
+pub mod inspector;
+pub mod mixer;
 pub mod piano_roll;
 pub mod step_seq;
 
@@ -229,14 +231,14 @@ pub struct Views {
 }
 
 impl Views {
-    /// The views of this build: placeholders until WP-40 … WP-44 replace them here.
+    /// The views of this build (WP-40 … WP-44).
     pub fn new() -> Views {
         Views {
             arrangement: Box::new(arrangement::Arrangement::new()),
             piano_roll: Box::new(piano_roll::PianoRoll::new()),
             step_seq: Box::new(step_seq::StepSequencer::new()),
-            mixer: Box::new(Placeholder::new("Mixer")),
-            inspector: Box::new(Placeholder::new("Inspector")),
+            mixer: Box::new(mixer::Mixer::new()),
+            inspector: Box::new(inspector::Inspector::new()),
             browser: Box::new(browser::Browser::new()),
             devices: Box::new(devices::Devices::new()),
         }

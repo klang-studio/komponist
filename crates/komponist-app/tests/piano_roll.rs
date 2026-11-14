@@ -55,6 +55,15 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
+/// The toolbar's field `label`: the inspector (WP-43) shows the clip's fields under the same
+/// names, so take the one left of it.
+fn toolbar_field<'h>(h: &'h Harness<'_, App>, label: &'h str) -> egui_kittest::Node<'h> {
+    let inspector = W - h.state().ui().layout.inspector_width;
+    h.query_all_by_role_and_label(Role::SpinButton, label)
+        .find(|n| n.rect().right() <= inspector)
+        .unwrap_or_else(|| panic!("no toolbar field {label}"))
+}
+
 /// Dock height of the interaction tests: 30 key rows, so all of Lead A (G3 … C5) and some room
 /// above are visible.
 const TEST_DOCK: f32 = 500.0;
@@ -501,10 +510,10 @@ fn toolbar_fields_change_the_selection() {
     let n = notes_of(&app, clip)[2]; // G4, velocity 100, 2 steps
     select(&mut app, vec![n.id]);
     let mut h = harness(app);
-    let field = h.get_by_role_and_label(Role::SpinButton, names::VELOCITY_FIELD);
+    let field = toolbar_field(&h, names::VELOCITY_FIELD);
     assert_eq!(field.value().as_deref(), Some("100"));
-    h.get_by_role_and_label(Role::SpinButton, names::LENGTH_FIELD);
-    let note = h.get_by_role_and_label(Role::SpinButton, names::NOTE_FIELD);
+    toolbar_field(&h, names::LENGTH_FIELD);
+    let note = toolbar_field(&h, names::NOTE_FIELD);
     assert_eq!(note.value().as_deref(), Some("G4"));
     note.increment_accesskit();
     h.run_steps(2);
@@ -515,14 +524,11 @@ fn toolbar_fields_change_the_selection() {
             .unwrap()
     };
     assert_eq!(get(&h).pitch, n.pitch + 1);
-    h.get_by_role_and_label(Role::SpinButton, names::LENGTH_FIELD)
-        .increment_accesskit();
+    toolbar_field(&h, names::LENGTH_FIELD).increment_accesskit();
     h.run_steps(2);
     assert_eq!(get(&h).length, n.length + Tick(240));
     // Drag ↑ on Vel: 10 px = +10, one undo step.
-    let r = h
-        .get_by_role_and_label(Role::SpinButton, names::VELOCITY_FIELD)
-        .rect();
+    let r = toolbar_field(&h, names::VELOCITY_FIELD).rect();
     drag(
         &mut h,
         r.center(),

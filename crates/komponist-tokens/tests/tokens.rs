@@ -49,6 +49,8 @@ fn komponist_colours() {
     assert_eq!(a, (0.16_f64 * 255.0).round() as u8);
     // `#222326`: every other group of four steps in the step sequencer.
     assert_eq!(color::CANVAS_STEP_GROUP_ALT, [0x22, 0x23, 0x26, 0xff]);
+    // `#1a1f26`: the mixer strip of the selected track.
+    assert_eq!(color::CANVAS_STRIP_SELECTED, [0x1a, 0x1f, 0x26, 0xff]);
     // `#2c1c1e`: surface of error notices ("Kein Audio-Gerät", S07 device notice).
     assert_eq!(color::STATE_ERROR_SURFACE, [0x2c, 0x1c, 0x1e, 0xff]);
     // `rgba(8,9,10,0.62)`: the scrim behind a dialog.
