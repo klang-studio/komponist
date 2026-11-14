@@ -99,6 +99,8 @@ icons! {
     Metronome => "metronome",
     /// `repeat`: loop toggle in the transport bar.
     Repeat => "repeat",
+    /// `volume-2`: the track toggle "Monitoring" (I).
+    Volume2 => "volume-2",
 }
 
 /// Licence of the icons (Lucide ISC, plus MIT for the icons derived from Feather), for an about or
@@ -136,7 +138,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 26);
+        assert_eq!(Icon::ALL.len(), 27);
     }
 
     #[test]

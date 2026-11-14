@@ -141,12 +141,12 @@ pub fn header_layout(rect: Rect) -> HeaderLayout {
     // Toggles: size.toggle each, space.0.5 between, space.1 before the meter.
     let [tw, th] = size::TOGGLE;
     let n = ToggleKind::ALL.len() as f32;
-    let toggles_w = n * tw + (n - 1.0) * space::SPACE_0_5;
+    let toggles_w = n * tw + (n - 1.0) * space::SPACE_0_5 + widgets::metrics::TOGGLE_GROUP_GAP;
     let toggles_right = meter_area.min.x - space::SPACE_1;
     let toggles_left = toggles_right - toggles_w;
     let ty = body.center().y - th / 2.0;
     let toggles = std::array::from_fn(|i| {
-        let x = toggles_left + i as f32 * (tw + space::SPACE_0_5);
+        let x = toggles_left + ToggleKind::row_offset(i, tw, space::SPACE_0_5);
         Rect::from_min_size(pos2(x, ty), vec2(tw, th))
     });
 
@@ -283,6 +283,9 @@ pub fn paint_toggle(painter: &Painter, rect: Rect, kind: ToggleKind, on: bool, i
             StrokeKind::Inside,
         );
     }
+    if toggle::paint_symbol(painter, r, kind, look.text) {
+        return;
+    }
     let style = typography::VALUE_S;
     let galley = painter.layout_job(LayoutJob::single_section(
         kind.letter().to_owned(),
@@ -337,13 +340,16 @@ mod tests {
         // Toggles: 18 × 16, gap 2, gap 4 before the meter.
         assert_eq!(l.toggles[3].max.x, l.meter_area.min.x - 4.0);
         assert_eq!(l.toggles[1].min.x - l.toggles[0].max.x, 2.0);
+        // R and I stand apart from M and S by the extra group gap (ARCHITECTURE §13 item 8).
+        assert_eq!(l.toggles[2].min.x - l.toggles[1].max.x, 2.0 + 4.0);
+        assert_eq!(l.toggles[3].min.x - l.toggles[2].max.x, 2.0);
         for t in l.toggles {
             assert_eq!(t.size(), vec2(18.0, 16.0));
             assert_eq!(t.center().y, l.body.center().y);
         }
-        // Text: bar 3 + gap 4 + padding 6; 110 − 6 = 104 wide.
+        // Text: bar 3 + gap 4 + padding 6; 104 − 4 (group gap) = 100 wide.
         assert_eq!(l.text.min.x, 10.0 + 13.0);
-        assert_eq!(l.text.width(), 104.0);
+        assert_eq!(l.text.width(), 100.0);
     }
 
     #[test]

@@ -57,6 +57,7 @@ table maps each one to a Lucide icon. Play, Stop and Record stay geometric shape
 | `Eraser` | `eraser` | tool "Radierer" | piano roll toolbar (S01, S02; Designsystem §06) |
 | `Metronome` | `metronome` | "Metronom" | transport bar (S01–S08, S10) |
 | `Repeat` | `repeat` | "Loop" | transport bar (S01–S08, S10); looped clip (Designsystem §05) |
+| `Volume2` | `volume-2` | track toggle "Monitoring" (I) | arrangement track header (owner decision 2026-11-14: icon instead of the letter, ARCHITECTURE §13 item 8) |
 
 ## Updating
 

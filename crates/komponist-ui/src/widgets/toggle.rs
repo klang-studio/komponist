@@ -6,7 +6,12 @@
 //! | M Mute | surface.4, text.2 | surface.5, text.1 | state.mute (text.2), surface.0 |
 //! | S Solo | | | state.solo, surface.0 |
 //! | R Record-Arm | | | state.record, text.1 |
-//! | I Monitoring | | | accent, accent.ink |
+//! | I Monitoring | | | state.play, surface.0 |
+//!
+//! R and I show a symbol instead of the letter (owner decision 2026-11-14, like Reaper): R a
+//! filled record circle, I the Lucide `volume-2` speaker; M and S keep their letters. In a row
+//! the toggles R and I stand [`metrics::TOGGLE_GROUP_GAP`] apart from M and S. Monitoring is
+//! green (the design system has it accent blue).
 //!
 //! "Stumm durch Solo" (M implied by a solo elsewhere): surface.2 with a 1 px text.3 contour,
 //! letter text.2. It is no click target of its own; M stays clickable. Disabled: surface.2 and
@@ -21,11 +26,13 @@
 //! Track toggles take no keyboard focus: M · S · R act on the selected tracks when the
 //! arrangement is focused (app keymap). AccessKit can click them.
 
-use egui::{Color32, Id, PointerButton, Pos2, Response, Role, Sense, Ui, Vec2, WidgetInfo};
+use egui::{Color32, Id, PointerButton, Pos2, Response, Role, Sense, Ui, Vec2, WidgetInfo, pos2};
+use komponist_tokens::Icon;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{Srgba, color, radius, size, space};
 
+use super::metrics;
 use super::tooltip::Tip;
 use crate::state::{self, State};
 use crate::{focus, px};
@@ -57,6 +64,22 @@ impl ToggleKind {
         }
     }
 
+    /// `true` for the toggles drawn with a symbol instead of a letter (R and I).
+    pub const fn has_symbol(self) -> bool {
+        matches!(self, Self::Arm | Self::Monitor)
+    }
+
+    /// The x offset of toggle `index` of [`Self::ALL`] in a row with `gap` between toggles and
+    /// the extra group gap before R: `index × (width + gap)`, plus the group gap from R on.
+    pub fn row_offset(index: usize, width: f32, gap: f32) -> f32 {
+        let extra = if index >= 2 {
+            metrics::TOGGLE_GROUP_GAP
+        } else {
+            0.0
+        };
+        index as f32 * (width + gap) + extra
+    }
+
     /// The German name ("Mute", "Solo", "Record-Arm", "Monitoring"), as in the design system.
     pub const fn name(self) -> &'static str {
         match self {
@@ -73,7 +96,7 @@ impl ToggleKind {
             Self::Mute => (color::STATE_MUTE, color::SURFACE_0),
             Self::Solo => (color::STATE_SOLO, color::SURFACE_0),
             Self::Arm => (color::STATE_RECORD, color::TEXT_1),
-            Self::Monitor => (color::ACCENT, color::ACCENT_INK),
+            Self::Monitor => (color::STATE_PLAY, color::SURFACE_0),
         }
     }
 
@@ -145,6 +168,45 @@ pub fn look(kind: ToggleKind, on: bool, implied: bool, state: State) -> ToggleLo
         text,
         contour,
         focus_ring,
+    }
+}
+
+/// Paints the symbol of an R or I toggle centred in `rect` in `ink`: the record circle or the
+/// speaker. Returns `false` (and paints nothing) for M and S.
+pub fn paint_symbol(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    kind: ToggleKind,
+    ink: Color32,
+) -> bool {
+    let ppp = painter.pixels_per_point();
+    match kind {
+        ToggleKind::Arm => {
+            let d = metrics::TOGGLE_RECORD_DOT;
+            let c = pos2(
+                px::snap(rect.center().x - d / 2.0, ppp) + d / 2.0,
+                px::snap(rect.center().y - d / 2.0, ppp) + d / 2.0,
+            );
+            crate::icons::paint_record(
+                painter,
+                egui::Rect::from_center_size(c, Vec2::splat(d)),
+                ink,
+            );
+            true
+        }
+        ToggleKind::Monitor => {
+            let s = metrics::TOGGLE_MONITOR_ICON;
+            let r = egui::Rect::from_min_size(
+                pos2(
+                    px::snap(rect.center().x - s / 2.0, ppp),
+                    px::snap(rect.center().y - s / 2.0, ppp),
+                ),
+                Vec2::splat(s),
+            );
+            crate::timeline::paint_icon(painter, r, Icon::Volume2, ink);
+            true
+        }
+        ToggleKind::Mute | ToggleKind::Solo => false,
     }
 }
 
@@ -268,14 +330,16 @@ impl<'a> TrackToggle<'a> {
                     egui::StrokeKind::Inside,
                 );
             }
-            let galley = super::galley(
-                ui,
-                self.kind.letter(),
-                super::toggle_letter_font(),
-                typography::VALUE_S.line_height,
-            );
-            let pos = super::text_pos_centered(rect, &galley, ui.pixels_per_point());
-            painter.galley(pos, galley, l.text);
+            if !paint_symbol(painter, rect, self.kind, l.text) {
+                let galley = super::galley(
+                    ui,
+                    self.kind.letter(),
+                    super::toggle_letter_font(),
+                    typography::VALUE_S.line_height,
+                );
+                let pos = super::text_pos_centered(rect, &galley, ui.pixels_per_point());
+                painter.galley(pos, galley, l.text);
+            }
             if l.focus_ring {
                 focus::paint_ring(painter, rect, radius::S);
             }
@@ -392,6 +456,9 @@ fn live_row(ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SPACE_0_5;
         for (i, kind) in ToggleKind::ALL.into_iter().enumerate() {
+            if i == 2 {
+                ui.add_space(metrics::TOGGLE_GROUP_GAP);
+            }
             let r = TrackToggle::new(kind, flags[i]).track("Lead").show(ui);
             if let Some(ToggleEvent::Set { value, exclusive }) = r.event {
                 flags[i] = value;
@@ -452,8 +519,17 @@ mod tests {
         );
         assert_eq!(
             look(Monitor, true, false, State::REST).fill,
-            color32(color::ACCENT)
+            color32(color::STATE_PLAY)
         );
+        assert_eq!(
+            look(Monitor, true, false, State::REST).text,
+            color32(color::SURFACE_0)
+        );
+        assert!(Arm.has_symbol() && Monitor.has_symbol());
+        assert!(!Mute.has_symbol() && !Solo.has_symbol());
+        // R and I stand one group gap further right than a plain row.
+        assert_eq!(ToggleKind::row_offset(1, 18.0, 2.0), 20.0);
+        assert_eq!(ToggleKind::row_offset(2, 18.0, 2.0), 44.0);
         let implied = look(Mute, false, true, State::REST);
         assert_eq!(implied.fill, color32(color::SURFACE_2));
         assert_eq!(implied.contour, Some(color32(color::TEXT_3)));
