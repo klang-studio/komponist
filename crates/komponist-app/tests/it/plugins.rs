@@ -229,8 +229,11 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     };
     assert!(bridged.iter().all(loading), "{events:?}");
     assert!(app.engine().host().needs_polling());
-    // pisynth and the four fixtures.
-    assert_eq!(app.engine().host().catalog().entries().len(), 1 + 4);
+    // pisynth, the internal devices (WP-85) and the four fixtures.
+    assert_eq!(
+        app.engine().host().catalog().entries().len(),
+        1 + komponist_builtin::internal::Internal::ALL.len() + 4
+    );
 
     // Latencies recompile the program. Lead is the longest chain (pisynth and two 64-frame
     // effects; the third is bypassed), Pad has two effects after a synth without latency, Keys
