@@ -131,7 +131,7 @@ impl App {
         } else if l.arrangement.is_some_and(|r| r.contains(pos)) {
             Some(FocusArea::Arrangement)
         } else if l.dock.contains(pos) && self.ui.layout.dock_open {
-            Some(self.ui.dock_area(self.doc.project()))
+            Some(self.dock_area())
         } else {
             None
         };
@@ -159,6 +159,7 @@ impl App {
         );
         ctx.focused = focused;
         ctx.requests = self.shell.requests;
+        ctx.recording = self.recording.as_ref();
         f(&mut self.views, &mut ctx)
     }
 
@@ -313,6 +314,8 @@ impl App {
     fn dock_body(&self) -> DockBody {
         let p = self.doc.project();
         match self.ui.layout.dock_tab {
+            // While recording, the editor shows the take (S02 "Piano Roll · live").
+            DockTab::Editor if self.recording.is_some() => DockBody::PianoRoll,
             DockTab::Editor => match self.ui.editor_area(p) {
                 _ if self.ui.editor.clip.and_then(|c| p.find_clip(c)).is_none() => DockBody::NoClip,
                 FocusArea::StepSequencer => DockBody::StepSeq,
@@ -347,6 +350,7 @@ impl App {
             strip,
             self.doc.project(),
             &self.ui,
+            self.recording.is_some(),
             &self.keymap,
             &mut self.queue,
         );
@@ -362,7 +366,7 @@ impl App {
                 .layout(Layout::top_down(Align::Min)),
         );
         body_ui.set_clip_rect(body);
-        let area = self.ui.dock_area(self.doc.project());
+        let area = self.dock_area();
         match self.dock_body() {
             DockBody::NoClip => centered_text(
                 &mut body_ui,
