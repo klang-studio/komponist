@@ -78,10 +78,6 @@ pub const PAN_TOP: f32 = space::SPACE_1;
 pub const PAN_GAP: f32 = space::SPACE_1;
 /// Padding below the pan row.
 pub const PAN_BOTTOM: f32 = space::SPACE_1;
-/// Gap between the lean strip's name and its small pan knob. The knob (Ø 20, `size.knob-small`)
-/// stands at the right end of the name row, which is 22 px high (4 + 16 + 2), so the pan control
-/// costs the fader no height (owner decision Q8, 2026-11-14); the name gets 24 px less width.
-pub const LEAN_PAN_GAP: f32 = space::SPACE_1;
 /// The M S R toggles of a strip (`tgl(k, …, 22, 18)`).
 pub const TOGGLE: [f32; 2] = [22.0, 18.0];
 /// Gap between the toggles (`gap:2px`).
