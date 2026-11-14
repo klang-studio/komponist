@@ -551,7 +551,6 @@ impl<'a> Segmented<'a> {
 
     /// The box fills the available width and the segments share it equally (the browser's
     /// "Alle · Instr. · Effekte · Dateien"), instead of each being as wide as its text.
-    #[must_use]
     pub fn equal_width(mut self) -> Self {
         self.equal_width = true;
         self
