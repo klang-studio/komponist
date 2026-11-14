@@ -96,6 +96,9 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
 6. **Tests first-class:** every WP ships tests. Before reporting, `scripts/check.sh` must pass
    (fmt, clippy `-D warnings`, tests). Run it once at the end, in the background (it waits for the
    shared build lock); iterate with crate-level `cargo check`/`cargo test` before that.
+   Tests with real plugins **skip silently** when the test plugins are not built in your worktree: if
+   you touch the catalog, plugins, devices, browser or engine, run `scripts/build-test-plugins.sh` once
+   before the final `check.sh` (a fresh worktree has none; WP-85 missed a broken test that way).
 7. **UI work:** render your component/view to PNG with `egui_kittest`, **look at the PNG** (Read
    tool) and compare it with the reference before you report. Once a binary shows your work (gallery
    from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb if
