@@ -103,13 +103,20 @@ pub fn layout(topology: &Topology<'_>, size: egui::Vec2) -> Layout {
     }
     let carriers: Vec<usize> = (0..n).filter(|&o| topology.is_carrier(o)).collect();
     let per_row = carriers.len().max(1) as f32;
-    bw = bw.min(((size.x - 8.0) / per_row - 2.0).max(10.0));
+    bw = bw.min(((size.x - 6.0) / per_row - 2.0).max(10.0));
     let xs_for = |count: usize| -> Vec<f32> {
         match count {
             0 => Vec::new(),
             1 => vec![0.5 * size.x],
-            c => (0..c)
+            // Up to three carriers at 20 / 50 / 80 % as the design; more spread edge to edge.
+            c if c <= 3 => (0..c)
                 .map(|i| size.x * (0.2 + 0.6 * i as f32 / (c as f32 - 1.0)))
+                .collect(),
+            c => (0..c)
+                .map(|i| {
+                    let edge = bw / 2.0 + 3.0;
+                    edge + i as f32 * (size.x - 2.0 * edge) / (c as f32 - 1.0)
+                })
                 .collect(),
         }
     };
