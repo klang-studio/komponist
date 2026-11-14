@@ -104,6 +104,7 @@ impl View for Browser {
         };
         let layout = layout(ui, foot_text);
         let catalog = ctx.engine.host().catalog();
+        let exports = model::export_names(ctx.exports);
         let rows = model::rows(&Input {
             catalog,
             favorites: &ctx.ui.browser.favorites,
@@ -111,6 +112,7 @@ impl View for Browser {
             query: &self.query,
             collapsed: &ctx.ui.browser.collapsed,
             project: ctx.project,
+            exports: &exports,
         });
         self.keys(ui, ctx, &rows, search_focused);
         self.search_field(ui, ctx, layout.search);

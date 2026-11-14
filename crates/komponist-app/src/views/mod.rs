@@ -59,6 +59,9 @@ pub struct ViewCtx<'a> {
     pub requests: Requests,
     /// The take being recorded (WP-51): the arrangement and the piano roll draw it.
     pub recording: Option<&'a Recording>,
+    /// This session's WAV exports of the project, oldest first (WP-53b): the browser lists them
+    /// under Projekt › Exporte.
+    pub exports: &'a [std::path::PathBuf],
     actions: &'a mut Vec<Action>,
 }
 
@@ -88,6 +91,7 @@ impl<'a> ViewCtx<'a> {
             focused: false,
             requests: Requests::default(),
             recording: None,
+            exports: &[],
             actions,
         }
     }
