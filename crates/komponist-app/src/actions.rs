@@ -49,12 +49,14 @@ pub enum Action {
 /// Transport actions (transport bar, global shortcuts).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransportAction {
-    /// Space: play / stop (stopping while recording finishes the take).
+    /// Space: play / stop (stopping while recording finishes the take; during the count-in it
+    /// cancels the recording like R).
     TogglePlay,
     /// Stop button: stop; when already stopped, jump to the loop start (loop on) or tick 0.
     Stop,
     /// R: start recording on all armed tracks after the count-in (arming the selected track if none
-    /// is armed), or finish the running recording.
+    /// is armed), or finish the running recording (punch-out: playback goes on). During the
+    /// count-in it cancels the recording, stops and returns to the recording's start.
     ToggleRecord,
     /// Esc while recording: discard the running take, playback continues.
     DiscardTake,

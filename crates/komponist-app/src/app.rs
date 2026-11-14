@@ -139,6 +139,8 @@ pub(crate) struct ShellState {
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
+    /// Where the last recording started (or starts after its count-in).
+    record_from: Option<Tick>,
 }
 
 impl App {
@@ -852,7 +854,11 @@ impl App {
 
     fn transport_action(&mut self, action: TransportAction) {
         let playing = self.transport() != TransportState::Stopped;
+        let count_in = self.transport() == TransportState::CountIn;
         match action {
+            TransportAction::TogglePlay | TransportAction::Stop if count_in => {
+                self.cancel_count_in();
+            }
             TransportAction::TogglePlay => {
                 if playing {
                     self.commit_take();
@@ -942,11 +948,13 @@ impl App {
     }
 
     /// R: records on all armed tracks after the count-in (arming the selected track if none is
-    /// armed); while recording, ends the take (playback goes on). The take itself is
-    /// [`Recording`], built from the engine's events.
+    /// armed); while recording, ends the take (punch-out: playback goes on); during the count-in,
+    /// cancels the recording and stops (prototype `toggleRec` → `finishRec` with `recPend`). The
+    /// take itself is [`Recording`], built from the engine's events.
     fn toggle_record(&mut self) {
         match self.transport() {
-            TransportState::Recording | TransportState::CountIn => {
+            TransportState::CountIn => self.cancel_count_in(),
+            TransportState::Recording => {
                 self.commit_take();
                 self.engine.send(Command::StopRecording);
             }
@@ -972,8 +980,22 @@ impl App {
                 } else {
                     Tick(at)
                 };
+                self.shell.record_from = Some(from);
                 self.engine.send(Command::Record { from });
             }
+        }
+    }
+
+    /// R, Leertaste or Stop during the count-in: no take, the transport stops and the playhead
+    /// goes back to where the recording would have started (prototype `finishRec`: `recPend` →
+    /// `pos = recAt`).
+    fn cancel_count_in(&mut self) {
+        // A count-in that just ended may have started its take; it goes.
+        self.drain_events();
+        self.recording = None;
+        self.engine.send(Command::Stop);
+        if let Some(from) = self.shell.record_from {
+            self.engine.send(Command::Locate(from));
         }
     }
 
