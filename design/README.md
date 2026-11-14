@@ -7,7 +7,7 @@
 
 ## komponist additions to the handoff tokens
 
-Colours, one shadow and one type style the design data uses but the handoff's `tokens.json` lacks. Each value is copied from
+Colours, one shadow and five type styles the design data uses but the handoff's `tokens.json` lacks. Each value is copied from
 the design data, not chosen; existing tokens are unchanged. Paths are relative to
 `../klang-studio-handoff/reference/`; the name after the file is the script variable or function
 in its `<script>` block.
@@ -30,16 +30,20 @@ in its `<script>` block.
 | `color.overlay.scrim` | `#08090a9e` | `Screens.dc.html` markup `ovDim` (`background:rgba(8,9,10,0.62)`) | Scrim behind a modal dialog: 0.62 × 255 = 158.1 → 158 = `0x9e` (WP-52) |
 | `type.body` | Sans 13 / 20, 400 | `Screens.dc.html` markup of S10 (empty-project text `font-size:13px; line-height:1.55`) and S06 (dialog text, same style); 13 × 1.55 = 20.15 → 20 | Body text of hints and dialogs: the S10 empty-project hint (WP-47a), the S06 text; `type.track`'s size at regular weight |
 | `shadow.dialog` | `0 12px 32px rgba(0,0,0,0.5)` | `Screens.dc.html` markup of S06, S07, S08 (`box-shadow:0 0 0 1px #111214, 0 12px 32px rgba(0,0,0,0.5)`; the 1 px part is `shadow.edge`) | Shadow of dialogs and plugin windows (WP-52) |
+| `type.device-label` | Sans 10 / 12, 400, `text.2` | `geraete_page_generator.py` `lbl()` (`font-size:10px;line-height:12px`, colour `text.2` per `device-tokens.json` `widget.label`) | Name above or below a device widget (WP-83) |
+| `type.graph-title` | Sans 9 / 12, 600, caps, +0.08 em, `text.2` | `geraete_page_generator.py` `display()` (`font-size:9px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase`); `widget.graph.title`; line 12 as `lbl()` | Title of a graph or display (WP-83, WP-84) |
+| `type.mono-xs` | Mono 8 / 10, 400, `text.2` | `device-tokens.json` `widget.graph.axis_labels` / `handle.number_font` ("mono 8 text.2"); line 10 is not given (own choice, one line of the 8 px text) | Axis labels and handle numbers of the graph (WP-84) |
+| `type.mono-xxs` | Mono 9 / 12, 400, `text.2` | `geraete_page_generator.py` `W_num` (`font-size:9px`, `text.2`), `W_pads` (`font-size:9px`); line 12 as `lbl()` | Unit in a number field, note in a pad, label of a meter bar (WP-83) |
 
 In Rust: `TrackPalette::{key_playing, note_muted, clip_handle}` (formulas in
 `komponist_tokens::track::formula`), `color::STATE_RECORD_INK`, `color::LINE_0` (with
 `color::LINE`, the line scale as an array), `color::CANVAS_*`, `color::STATE_ERROR_SURFACE`,
-`color::OVERLAY_SCRIM`, `shadow::DIALOG` and `typography::BODY`. The three formulas have no
+`color::OVERLAY_SCRIM`, `shadow::DIALOG` and `typography::{BODY, DEVICE_LABEL, GRAPH_TITLE, MONO_XS, MONO_XXS}`. The three formulas have no
 precomputed entries in `track.colors`; `komponist-tokens` checks `TrackPalette` against the output
 of the prototype's `hex()` for all 14 hues instead (`added_formulas_match_the_prototype` in
 `crates/komponist-tokens/src/track.rs`).
 
-The handoff's type styles are unchanged; `type.body` is the one added style. IBM Plex Mono SemiBold (600), which the design data uses for the
+The handoff's type styles are unchanged; `type.body` and the four device styles are the added ones. IBM Plex Mono SemiBold (600), which the design data uses for the
 track toggle letters (`tgl`: Mono 10, `fontWeight: 600`), is bundled as a font face, not as a
 type token (`assets/fonts/README.md`).
 

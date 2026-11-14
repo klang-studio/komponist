@@ -87,6 +87,31 @@ mod tests {
         assert!(ALL.iter().any(|(name, _)| *name == "body"));
     }
 
+    /// The four device styles are komponist additions (`design/README.md`, owner decision
+    /// 2026-11-14: 8 and 9 px text accepted): the device handoff's `lbl`, graph title and the two
+    /// small mono sizes of axis labels, handle numbers and units.
+    #[test]
+    fn device_styles_are_the_handoffs_small_texts() {
+        assert_eq!(
+            (DEVICE_LABEL.family, DEVICE_LABEL.weight),
+            (Family::Sans, 400)
+        );
+        assert_eq!((DEVICE_LABEL.size, DEVICE_LABEL.line_height), (10.0, 12.0));
+        assert_eq!(DEVICE_LABEL.color, Some(color::TEXT_2));
+        assert_eq!((GRAPH_TITLE.size, GRAPH_TITLE.weight), (9.0, 600));
+        assert!(GRAPH_TITLE.uppercase);
+        assert_eq!(GRAPH_TITLE.tracking_em, 0.08);
+        assert_eq!(GRAPH_TITLE.color, Some(color::TEXT_2));
+        assert_eq!((MONO_XS.family, MONO_XS.size), (Family::Mono, 8.0));
+        assert_eq!((MONO_XXS.family, MONO_XXS.size), (Family::Mono, 9.0));
+        for style in [MONO_XS, MONO_XXS] {
+            assert_eq!((style.weight, style.color), (400, Some(color::TEXT_2)));
+        }
+        for name in ["device-label", "graph-title", "mono-xs", "mono-xxs"] {
+            assert!(ALL.iter().any(|(n, _)| *n == name), "{name}");
+        }
+    }
+
     #[test]
     fn every_style_has_a_bundled_face() {
         for (name, style) in ALL {
