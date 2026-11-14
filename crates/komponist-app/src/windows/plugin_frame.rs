@@ -28,9 +28,10 @@
 //!    under it. Esc in the main window leaves the frames open. Opening another project closes
 //!    every frame before `EngineSync::reset` releases the bridges.
 //!
-//! Without native viewports (`egui_kittest`, `Context::embed_viewports`) frames are embedded egui
-//! windows without X11; the plugin view shows the prototype's placeholder. Tests never open a
-//! window on a desktop.
+//! Without native viewports (`egui_kittest`, `Context::embed_viewports`) frames run without X11 and
+//! are not drawn, so other views' snapshots stay as they are; frame tests turn on
+//! [`App::show_embedded_plugin_frames`] to get them as embedded egui windows, where the plugin view
+//! shows the prototype's placeholder. Tests never open a window on a desktop.
 //!
 //! # Keys and focus (X11)
 //!
@@ -113,6 +114,8 @@ pub struct PluginFrames {
     parked: Vec<Parked>,
     x11: X11State,
     counter: u64,
+    /// Draw frames as embedded egui windows where there are no native viewports (frame tests).
+    embedded: bool,
     /// Last X focus logged (`KOMPONIST_LOG_KEYS`).
     logged_focus: Option<u32>,
 }
@@ -237,6 +240,12 @@ impl PluginFrames {
 // ------------------------------------------------------------------------------------------------
 
 impl App {
+    /// Without native viewports (`egui_kittest`): draw the frames as embedded egui windows over the
+    /// main window (off by default, so other views' snapshots do not show them).
+    pub fn show_embedded_plugin_frames(&mut self, on: bool) {
+        self.frames.embedded = on;
+    }
+
     /// The frame of `device`'s plugin window, if one is open.
     pub fn plugin_frame(&self, device: DeviceId) -> Option<FrameInfo> {
         let f = self.frames.frames.iter().find(|f| f.device == device)?;
@@ -411,8 +420,10 @@ impl App {
             self.update_models(i, ctx, native);
         }
         self.expire_parked(now);
-        for frame in &self.frames.frames {
-            show_viewport(ctx, frame, native);
+        if native || self.frames.embedded {
+            for frame in &self.frames.frames {
+                show_viewport(ctx, frame, native);
+            }
         }
         if busy {
             ctx.request_repaint_after(X11_POLL);

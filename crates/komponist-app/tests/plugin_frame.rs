@@ -510,7 +510,8 @@ fn app() -> (App, Rc<RefCell<Script>>, DeviceId) {
     (app, script, surge)
 }
 
-fn harness(app: App) -> Harness<'static, App> {
+fn harness(mut app: App) -> Harness<'static, App> {
+    app.show_embedded_plugin_frames(true);
     let mut h = komponist_ui::snapshot::builder::<App>(1.0)
         .with_size(vec2(1920.0, 1080.0))
         .with_max_steps(64)
