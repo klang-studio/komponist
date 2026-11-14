@@ -3,7 +3,7 @@
 
 #[allow(dead_code)]
 #[path = "../../build/codegen.rs"]
-mod codegen;
+mod generator;
 
 use serde_json::{Value, json};
 
@@ -16,12 +16,12 @@ fn tokens() -> Value {
 fn error_after(edit: impl FnOnce(&mut Value)) -> String {
     let mut t = tokens();
     edit(&mut t);
-    codegen::generate(&t).expect_err("generator accepted a broken token file")
+    generator::generate(&t).expect_err("generator accepted a broken token file")
 }
 
 #[test]
 fn real_tokens_generate() {
-    let generated = codegen::generate(&tokens()).unwrap();
+    let generated = generator::generate(&tokens()).unwrap();
     assert_eq!(generated.icon_size, 16.0);
     let names: Vec<_> = generated.files.keys().copied().collect();
     assert_eq!(
@@ -109,7 +109,7 @@ fn unknown_or_changed_formula_fails() {
 
 #[test]
 fn komponist_additions_generate() {
-    let generated = codegen::generate(&tokens()).unwrap();
+    let generated = generator::generate(&tokens()).unwrap();
     let track = &generated.files["track.rs"];
     for line in [
         "pub const KEY_PLAYING: LightnessChroma = LightnessChroma { l: 0.82, c: 0.1 };",
@@ -178,7 +178,7 @@ fn meta_units_are_checked() {
 fn shadow_parsing() {
     let mut t = tokens();
     t["shadow"]["test"] = json!("1px -2px 3px 4px #102030");
-    let generated = codegen::generate(&t).unwrap();
+    let generated = generator::generate(&t).unwrap();
     let shadow = &generated.files["shadow.rs"];
     assert!(
         shadow.contains(
@@ -200,14 +200,14 @@ fn prepare_icon_rewrites_the_root_attributes() {
     let svg = "<!-- c -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" \
                viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">\
                <path d=\"M1 1h2\" /></svg>";
-    let out = codegen::prepare_icon(svg, 16.0, 1.5, false).unwrap();
+    let out = generator::prepare_icon(svg, 16.0, 1.5, false).unwrap();
     assert_eq!(
         out,
         "<!-- c -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" \
          viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2.25\">\
          <path d=\"M1 1h2\" /></svg>"
     );
-    let filled = codegen::prepare_icon(svg, 16.0, 1.5, true).unwrap();
+    let filled = generator::prepare_icon(svg, 16.0, 1.5, true).unwrap();
     assert!(filled.contains("fill=\"#ffffff\""), "{filled}");
 }
 
@@ -215,7 +215,7 @@ fn prepare_icon_rewrites_the_root_attributes() {
 fn prepare_icon_rejects_unexpected_files() {
     let base = "<svg width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" \
                 stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M1 1\" /></svg>";
-    assert!(codegen::prepare_icon(base, 16.0, 1.5, false).is_ok());
+    assert!(generator::prepare_icon(base, 16.0, 1.5, false).is_ok());
     for broken in [
         base.replace("viewBox=\"0 0 24 24\"", "viewBox=\"0 0 16 16\""),
         base.replace("stroke-width=\"2\"", "stroke-width=\"1.5\""),
@@ -224,7 +224,7 @@ fn prepare_icon_rejects_unexpected_files() {
         "<g />".to_string(),
     ] {
         assert!(
-            codegen::prepare_icon(&broken, 16.0, 1.5, false).is_err(),
+            generator::prepare_icon(&broken, 16.0, 1.5, false).is_err(),
             "{broken}"
         );
     }
@@ -256,7 +256,7 @@ fn leaves(value: &Value, path: &str, out: &mut Vec<String>) {
 #[test]
 fn every_device_token_is_generated() {
     let t = device_tokens();
-    let files = codegen::generate_devices(&t).unwrap();
+    let files = generator::generate_devices(&t).unwrap();
     assert_eq!(
         files.keys().copied().collect::<Vec<_>>(),
         ["device.rs", "widget.rs"]
@@ -281,7 +281,7 @@ fn every_device_token_is_generated() {
 
 #[test]
 fn device_tokens_values_are_written_as_is() {
-    let files = codegen::generate_devices(&device_tokens()).unwrap();
+    let files = generator::generate_devices(&device_tokens()).unwrap();
     let device = &files["device.rs"];
     assert!(device.contains("pub const CELL: [f32; 2] = [56.0, 64.0];"));
     assert!(device.contains("pub const TOTAL_H: f32 = 244.0;"));
@@ -296,7 +296,7 @@ fn bad_device_tokens_fail() {
     let error = |edit: fn(&mut Value)| {
         let mut t = device_tokens();
         edit(&mut t);
-        codegen::generate_devices(&t).expect_err("generator accepted a broken file")
+        generator::generate_devices(&t).expect_err("generator accepted a broken file")
     };
     let e = error(|t| t["colours"] = json!({}));
     assert!(e.contains("unknown device token group `colours`"), "{e}");
