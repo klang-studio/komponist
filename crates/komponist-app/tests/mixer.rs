@@ -778,6 +778,34 @@ fn a_track_selected_elsewhere_is_scrolled_into_view() {
 }
 
 #[test]
+fn tab_in_the_maximised_mixer_moves_the_widget_focus_while_a_ring_shows() {
+    // WP-30's shell rule, checked for the mixer (WP-43 note): a widget reached with Tab (focus
+    // ring visible) keeps Tab; with no focused widget Tab leaves the mixer.
+    let mut h = harness(s04());
+    let pan = names::pan("Lead");
+    click_in(&mut h, "Lead", Role::Slider, &pan, Modifiers::NONE);
+    h.run_steps(2);
+    komponist_ui::focus::set_visible(&h.ctx, true);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(h.state().ui().layout.dock_maximized, "Tab moved the focus");
+    // Tab keeps walking the widgets (keyboard access to every knob and fader) …
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(h.state().ui().layout.dock_maximized, "still in the mixer");
+    // … until no widget has the focus.
+    h.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    komponist_ui::focus::set_visible(&h.ctx, false);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(!h.state().ui().layout.dock_maximized, "Tab left the mixer");
+}
+
+#[test]
 fn scroll_to_strip_is_the_least_change() {
     use komponist_app::views::mixer::model::scroll_to_strip;
     // Strips 81 apart, 80 wide, an area of 400.
