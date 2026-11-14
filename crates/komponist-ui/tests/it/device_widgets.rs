@@ -91,7 +91,7 @@ mod behaviour {
             modulates: &[0, 1],
             feedback: None,
         };
-        let mut h = harness(
+        let h = harness(
             (0.5_f64, 0.3_f64, 8_i32, 0_usize, true, 0_usize),
             move |ui, s| {
                 ui.add(KnobCell::new(&mut s.0, "Cutoff"));

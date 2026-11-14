@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn every_widget_kind_draws_and_has_a_name() {
-        let mut h = harness();
+        let h = harness();
         h.check_accessibility();
         h.get_by_role_and_label(Role::SpinButton, "Stimmen");
         h.get_by_role_and_label(Role::RadioButton, "Typ: Gl.");
