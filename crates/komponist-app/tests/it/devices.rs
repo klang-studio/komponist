@@ -701,7 +701,11 @@ fn a_plugin_with_many_parameters_shows_the_rows_that_fit() {
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    assert_eq!(knobs.len(), 12, "the auto-layout: 3 rows of 4 fit the 216 px body");
+    assert_eq!(
+        knobs.len(),
+        12,
+        "the auto-layout: 3 rows of 4 fit the 216 px body"
+    );
     assert_eq!(
         (knobs[0].as_str(), knobs[11].as_str()),
         ("Regler 1", "Regler 12")

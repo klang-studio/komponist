@@ -655,9 +655,50 @@ mod tests {
         assert_eq!(reveal_scroll(span, Reveal::Center, 400.0, 0.0, 10.0), 322.0);
         assert_eq!(reveal_scroll(span, Reveal::Start, 400.0, 0.0, 10.0), 296.0);
         // Visible: unchanged when it fits, else the nearest edge.
-        assert_eq!(reveal_scroll((10.0, 262.0), Reveal::Visible, 400.0, 0.0, 10.0), 0.0);
-        assert_eq!(reveal_scroll(span, Reveal::Visible, 400.0, 0.0, 10.0), 348.0);
-        assert_eq!(reveal_scroll((10.0, 262.0), Reveal::Visible, 400.0, 100.0, 10.0), 0.0);
+        assert_eq!(
+            reveal_scroll((10.0, 262.0), Reveal::Visible, 400.0, 0.0, 10.0),
+            0.0
+        );
+        assert_eq!(
+            reveal_scroll(span, Reveal::Visible, 400.0, 0.0, 10.0),
+            348.0
+        );
+        assert_eq!(
+            reveal_scroll((10.0, 262.0), Reveal::Visible, 400.0, 100.0, 10.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn a_frame_is_as_wide_as_the_columns_of_its_page() {
+        use super::layout::Page;
+        let project = demo_project();
+        let mut card = card(
+            &project.tracks[2].channel.devices[0],
+            &BuiltinHost::new(),
+            &[],
+        );
+        card.state = CardState::Ok;
+        let page = |name: &str, cols| Page {
+            name: name.into(),
+            cols,
+            cells: Vec::new(),
+            dividers: Vec::new(),
+        };
+        card.layout = DeviceLayout {
+            pages: vec![page("Operatoren", 10), page("Hüllkurven", 8)],
+        };
+        assert_eq!(card.frame_width(0.0), 612.0);
+        card.page = 1;
+        assert_eq!(
+            card.frame_width(0.0),
+            492.0,
+            "the chain moves up with the page"
+        );
+        // The head widens a frame that is too narrow for it; collapsed is 28 whatever the page.
+        assert_eq!(card.frame_width(700.0), 700.0);
+        card.collapsed = true;
+        assert_eq!(card.frame_width(700.0), 28.0);
     }
 
     #[test]

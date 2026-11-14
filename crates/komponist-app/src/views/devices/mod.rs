@@ -143,8 +143,9 @@ impl View for Devices {
         if let Some((device, mode)) = request
             && let Some(i) = cards.iter().position(|c| c.device == device)
         {
-            scroll_x = model::reveal_scroll(spans[i], mode, body.width(), scroll_x, metrics::BODY_PAD)
-                .clamp(0.0, max_x);
+            scroll_x =
+                model::reveal_scroll(spans[i], mode, body.width(), scroll_x, metrics::BODY_PAD)
+                    .clamp(0.0, max_x);
         }
         let vertical = model::scrolls_vertically(rect.height());
         let content_h = 2.0 * metrics::BODY_PAD + device::frame::TOTAL_H;
@@ -228,7 +229,12 @@ fn header_row(
     );
     x = mark.right() + metrics::HEADER_GAP;
     let style = typography::UI;
-    let g = w::galley(ui, &track.name, w::font_at(&style, wm::SEMIBOLD), style.line_height);
+    let g = w::galley(
+        ui,
+        &track.name,
+        w::font_at(&style, wm::SEMIBOLD),
+        style.line_height,
+    );
     let pos = w::text_pos(rect, &g, x, ppp);
     let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
     r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &track.name));
@@ -236,7 +242,12 @@ fn header_row(
     ui.painter().galley(pos, g, color32(color::TEXT_1));
 
     let button_width = {
-        let g = w::galley(ui, names::ADD, fonts::emphasis_font_id(&style), style.line_height);
+        let g = w::galley(
+            ui,
+            names::ADD,
+            fonts::emphasis_font_id(&style),
+            style.line_height,
+        );
         g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X
     };
     let right_edge = rect.right() - metrics::HEADER_PAD_X - button_width;
@@ -264,18 +275,27 @@ fn header_row(
     let mut cu = ui.new_child(UiBuilder::new().max_rect(chain_area));
     cu.set_clip_rect(chain_area.intersect(ui.clip_rect()));
     let small = typography::UI;
-    let sep = w::galley(&cu, metrics::CHAIN_SEPARATOR, fonts::font_id(&small), small.line_height);
+    let sep = w::galley(
+        &cu,
+        metrics::CHAIN_SEPARATOR,
+        fonts::font_id(&small),
+        small.line_height,
+    );
     for (i, card) in cards.iter().enumerate() {
         if i > 0 {
             x += metrics::CHAIN_SEPARATOR_GAP;
             let pos = w::text_pos(rect, &sep, x, ppp);
-            cu.painter().galley(pos, sep.clone(), color32(color::TEXT_3));
+            cu.painter()
+                .galley(pos, sep.clone(), color32(color::TEXT_3));
             x += sep.size().x + metrics::CHAIN_SEPARATOR_GAP;
         }
         let g = w::galley(&cu, &card.name, fonts::font_id(&small), small.line_height);
         let chip = Rect::from_min_size(
             pos2(x, rect.center().y - size::CONTROL_COMPACT / 2.0),
-            vec2(g.size().x + 2.0 * metrics::CHIP_PAD_X, size::CONTROL_COMPACT),
+            vec2(
+                g.size().x + 2.0 * metrics::CHIP_PAD_X,
+                size::CONTROL_COMPACT,
+            ),
         );
         let r = cu.interact(
             chip.intersect(chain_area),
@@ -406,8 +426,22 @@ fn chain(
         }
     }
 
-    let sx = scrollbar(&mut cu, body, false, view.content, view.scroll_x, view.max_x);
-    let sy = scrollbar(&mut cu, body, true, view.content_h, view.scroll_y, view.max_y);
+    let sx = scrollbar(
+        &mut cu,
+        body,
+        false,
+        view.content,
+        view.scroll_x,
+        view.max_x,
+    );
+    let sy = scrollbar(
+        &mut cu,
+        body,
+        true,
+        view.content_h,
+        view.scroll_y,
+        view.max_y,
+    );
     (sx, sy)
 }
 
@@ -419,10 +453,18 @@ fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32,
     }
     let ppp = ui.pixels_per_point();
     let thickness = metrics::SCROLLBAR;
-    let view = if vertical { body.height() } else { body.width() };
+    let view = if vertical {
+        body.height()
+    } else {
+        body.width()
+    };
     let thumb_len = (view * view / content).clamp(thickness * 4.0, view);
     let travel = view - thumb_len;
-    let at = if max > 0.0 { scroll / max * travel } else { 0.0 };
+    let at = if max > 0.0 {
+        scroll / max * travel
+    } else {
+        0.0
+    };
     let thumb = if vertical {
         Rect::from_min_size(
             pos2(body.right() - thickness, body.top() + at),
@@ -434,23 +476,33 @@ fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32,
             vec2(thumb_len, thickness),
         )
     };
-    let id = ui
-        .scope_id()
-        .with(("komponist_device_scrollbar", vertical));
+    let id = ui.scope_id().with(("komponist_device_scrollbar", vertical));
     let r = ui.interact(thumb, id, Sense::drag());
     r.widget_info(|| {
         WidgetInfo::labeled(
             Role::ScrollBar,
             true,
-            if vertical { names::SCROLL_V } else { names::SCROLL_H },
+            if vertical {
+                names::SCROLL_V
+            } else {
+                names::SCROLL_H
+            },
         )
     });
     let mut scroll = scroll;
     if r.dragged() && travel > 0.0 {
-        let d = if vertical { r.drag_delta().y } else { r.drag_delta().x };
+        let d = if vertical {
+            r.drag_delta().y
+        } else {
+            r.drag_delta().x
+        };
         scroll = (scroll + d / travel * max).clamp(0.0, max);
     }
-    let fill = if r.dragged() { color::SURFACE_5 } else { color::SURFACE_4 };
+    let fill = if r.dragged() {
+        color::SURFACE_5
+    } else {
+        color::SURFACE_4
+    };
     let _ = ppp;
     px::fill(ui.painter(), thumb, thickness / 2.0, color32(fill));
     scroll

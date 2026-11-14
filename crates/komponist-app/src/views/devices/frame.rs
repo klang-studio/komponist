@@ -82,7 +82,8 @@ pub(super) fn show(
         expanded(&mut cu, ctx, card, rect, at)
     };
     if at.selected {
-        state::paint_select_ring(cu.painter(), rect, radius::M);
+        // `0 0 0 1px accent` lies outside the frame: paint with the chain's clip, not the frame's.
+        state::paint_select_ring(ui.painter(), rect, radius::M);
     }
     response
 }
@@ -120,15 +121,27 @@ fn collapsed(
     );
     power_switch(cu, ctx, card, power);
     let style = typography::UI;
-    let g = w::galley(cu, &card.name, w::font_at(&style, wm::SEMIBOLD), style.line_height);
+    let g = w::galley(
+        cu,
+        &card.name,
+        w::font_at(&style, wm::SEMIBOLD),
+        style.line_height,
+    );
     let start = pos2(
         px::snap(rect.center().x - g.size().y / 2.0, ppp),
         px::snap(power.bottom() + metrics::COLLAPSED_GAP + g.size().x, ppp),
     );
-    let text = Rect::from_min_size(pos2(start.x, start.y - g.size().x), vec2(g.size().y, g.size().x));
+    let text = Rect::from_min_size(
+        pos2(start.x, start.y - g.size().x),
+        vec2(g.size().y, g.size().x),
+    );
     cu.allocate_rect(text, Sense::hover())
         .widget_info(|| WidgetInfo::labeled(Role::Label, true, &card.name));
-    let ink = if card.bypass { color::TEXT_3 } else { color::TEXT_1 };
+    let ink = if card.bypass {
+        color::TEXT_3
+    } else {
+        color::TEXT_1
+    };
     cu.painter().add(Shape::Text(
         TextShape::new(start, g, color32(ink)).with_angle(-std::f32::consts::FRAC_PI_2),
     ));
@@ -276,7 +289,11 @@ fn bypassed(cu: &mut Ui, add: impl FnOnce(&mut Ui)) {
 fn grey(c: Color32, amount: f32) -> Color32 {
     let [r, g, b, a] = c.to_array();
     let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
-    let mix = |v: u8| (luma + (f32::from(v) - luma) * amount).round().clamp(0.0, 255.0) as u8;
+    let mix = |v: u8| {
+        (luma + (f32::from(v) - luma) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     Color32::from_rgba_premultiplied(mix(r), mix(g), mix(b), a)
 }
 
@@ -336,15 +353,24 @@ pub(super) fn head_width(ui: &Ui, card: &Card) -> f32 {
     if card.presets {
         width += gap + device::frame::preset_dropdown::MIN_W;
     } else {
-        let tag = w::styled_galley(ui, card.tag, &typography::VALUE_S).size().x
+        let tag = w::styled_galley(ui, card.tag, &typography::VALUE_S)
+            .size()
+            .x
             + 2.0 * metrics::TAG_PAD_X;
         width += gap + tag.ceil();
         if let Some(label) = card.open_label() {
-            let g = w::galley(ui, label, fonts::emphasis_font_id(&style), style.line_height);
+            let g = w::galley(
+                ui,
+                label,
+                fonts::emphasis_font_id(&style),
+                style.line_height,
+            );
             width += gap + g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X;
         }
     }
-    if let Some(pages) = (card.layout.pages.len() > 1).then(|| page_switch_width(ui, &card.layout.pages)) {
+    if let Some(pages) =
+        (card.layout.pages.len() > 1).then(|| page_switch_width(ui, &card.layout.pages))
+    {
         width += gap + pages;
     }
     width
@@ -369,7 +395,10 @@ fn page_switch_width(ui: &Ui, pages: &[Page]) -> f32 {
 /// The on/off square: `state.play` on, `surface.4` with a 1 px `text.3` edge off. A switch for
 /// AccessKit; the hit area is [`metrics::POWER_HIT`] wide.
 fn power_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, square: Rect) {
-    let hit = Rect::from_center_size(square.center(), vec2(metrics::POWER_HIT, metrics::POWER_HIT));
+    let hit = Rect::from_center_size(
+        square.center(),
+        vec2(metrics::POWER_HIT, metrics::POWER_HIT),
+    );
     let id = cu.scope_id().with("power");
     let r = cu.interact(hit, id, Sense::click());
     let on = !card.bypass;
@@ -444,7 +473,10 @@ fn head_controls(
     let mut x = power.right() + metrics::HEAD_GAP;
     if card.instrument {
         let [bw, bh] = device::frame::TRACK_BAR;
-        let bar = Rect::from_min_size(pos2(x, px::snap(head.center().y - bh / 2.0, ppp)), vec2(bw, bh));
+        let bar = Rect::from_min_size(
+            pos2(x, px::snap(head.center().y - bh / 2.0, ppp)),
+            vec2(bw, bh),
+        );
         px::fill(
             cu.painter(),
             bar,
@@ -464,10 +496,8 @@ fn head_controls(
         style.line_height,
         room,
     );
-    let name_rect = Rect::from_min_size(
-        pos2(x, head.center().y - name.size().y / 2.0),
-        name.size(),
-    );
+    let name_rect =
+        Rect::from_min_size(pos2(x, head.center().y - name.size().y / 2.0), name.size());
     cu.allocate_rect(name_rect, Sense::hover())
         .widget_info(|| WidgetInfo::labeled(Role::Label, true, &card.name));
     let ink = if card.bypass || card.state == CardState::Loading {
@@ -498,13 +528,27 @@ fn more_button(row: &mut Ui) -> Response {
     Tip::new(names::MORE).attach(&r);
     let hovered = r.hovered() || r.is_pointer_button_down_on();
     if hovered {
-        px::fill(row.painter(), rect, metrics::HEAD_RADIUS, color32(color::SURFACE_4));
+        px::fill(
+            row.painter(),
+            rect,
+            metrics::HEAD_RADIUS,
+            color32(color::SURFACE_4),
+        );
     }
     if r.has_focus() {
         focus::paint_ring(row.painter(), rect, metrics::HEAD_RADIUS);
     }
-    let ink = if hovered { color::TEXT_1 } else { color::TEXT_2 };
-    komponist_ui::icons::paint(row, rect, komponist_tokens::icon::Icon::Ellipsis, color32(ink));
+    let ink = if hovered {
+        color::TEXT_1
+    } else {
+        color::TEXT_2
+    };
+    komponist_ui::icons::paint(
+        row,
+        rect,
+        komponist_tokens::icon::Icon::Ellipsis,
+        color32(ink),
+    );
     r
 }
 
@@ -590,11 +634,25 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
         focus::paint_ring(row.painter(), rect, metrics::HEAD_RADIUS);
     }
     let text_room = rect.width() - 2.0 * metrics::PRESET_PAD_X - metrics::HEAD_GAP - CARET_WIDTH;
-    let g = elided_galley(row, current, fonts::font_id(&style), style.line_height, text_room);
-    let pos = w::text_pos(rect, &g, rect.left() + metrics::PRESET_PAD_X, row.pixels_per_point());
+    let g = elided_galley(
+        row,
+        current,
+        fonts::font_id(&style),
+        style.line_height,
+        text_room,
+    );
+    let pos = w::text_pos(
+        rect,
+        &g,
+        rect.left() + metrics::PRESET_PAD_X,
+        row.pixels_per_point(),
+    );
     row.painter().galley(pos, g, color32(color::TEXT_1));
     let caret_rect = Rect::from_center_size(
-        pos2(rect.right() - metrics::PRESET_PAD_X - CARET_WIDTH / 2.0, rect.center().y),
+        pos2(
+            rect.right() - metrics::PRESET_PAD_X - CARET_WIDTH / 2.0,
+            rect.center().y,
+        ),
         vec2(CARET_WIDTH, CARET_HEIGHT),
     );
     komponist_ui::icons::paint_caret(
@@ -649,12 +707,22 @@ fn page_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect) {
             .accessibility_label(names::PAGES),
     );
     group_bounds(&group, rect);
-    px::fill(group.painter(), rect, metrics::HEAD_RADIUS, color32(color::SURFACE_1));
+    px::fill(
+        group.painter(),
+        rect,
+        metrics::HEAD_RADIUS,
+        color32(color::SURFACE_1),
+    );
     let style = typography::SMALL;
     let mut x = rect.left() + metrics::PAGES_PAD;
     let shown = card.page.min(card.layout.pages.len().saturating_sub(1));
     for (i, page) in card.layout.pages.iter().enumerate() {
-        let g = w::galley(&group, &page.name, fonts::font_id(&style), style.line_height);
+        let g = w::galley(
+            &group,
+            &page.name,
+            fonts::font_id(&style),
+            style.line_height,
+        );
         let seg_w = g.size().x.ceil() + 2.0 * komponist_tokens::widget::pages::SEG_PADDING_X;
         let seg = Rect::from_min_size(
             pos2(x, rect.top() + metrics::PAGES_PAD),
@@ -665,9 +733,19 @@ fn page_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect) {
         let on = i == shown;
         r.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, on, &page.name));
         if on {
-            px::fill(group.painter(), seg, metrics::PAGE_SEGMENT_RADIUS, color32(color::SURFACE_4));
+            px::fill(
+                group.painter(),
+                seg,
+                metrics::PAGE_SEGMENT_RADIUS,
+                color32(color::SURFACE_4),
+            );
         } else if r.hovered() {
-            px::fill(group.painter(), seg, metrics::PAGE_SEGMENT_RADIUS, color32(color::SURFACE_3));
+            px::fill(
+                group.painter(),
+                seg,
+                metrics::PAGE_SEGMENT_RADIUS,
+                color32(color::SURFACE_3),
+            );
         }
         if r.has_focus() {
             focus::paint_ring(group.painter(), seg, metrics::PAGE_SEGMENT_RADIUS);
@@ -797,14 +875,7 @@ fn draw_cell(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, cell: &Cell, rect:
 
 /// A knob cell: the knob at the top (`padding-top:2px`), name and value below, centred; a large
 /// knob has them to its right.
-fn knob_cell(
-    cu: &mut Ui,
-    ctx: &mut ViewCtx<'_>,
-    card: &Card,
-    cell: &Cell,
-    p: &Param,
-    rect: Rect,
-) {
+fn knob_cell(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, cell: &Cell, p: &Param, rect: Rect) {
     let ppp = cu.pixels_per_point();
     let name_style = typography::LABEL;
     let value_style = typography::VALUE_S;
@@ -836,23 +907,33 @@ fn knob_cell(
     let name_font = w::font_at(&name_style, 400);
     let texts = [
         (p.name(), name_font, &name_style, name_color),
-        (&p.text, fonts::font_id(&value_style), &value_style, value_color),
+        (
+            &p.text,
+            fonts::font_id(&value_style),
+            &value_style,
+            value_color,
+        ),
     ];
     if large {
         let x = knob.right() + 2.0 * metrics::CELL_GAP * 4.0;
         let room = rect.right() - x;
-        let total: f32 = texts.iter().map(|(_, _, s, _)| s.line_height).sum::<f32>() + metrics::CELL_GAP;
+        let total: f32 =
+            texts.iter().map(|(_, _, s, _)| s.line_height).sum::<f32>() + metrics::CELL_GAP;
         let mut y = rect.center().y - total / 2.0;
         for (text, font, style, color) in texts {
             let g = elided_galley(cu, text, font, style.line_height, room);
-            cu.painter().galley(pos2(px::snap(x, ppp), px::snap(y, ppp)), g, color32(color));
+            cu.painter()
+                .galley(pos2(px::snap(x, ppp), px::snap(y, ppp)), g, color32(color));
             y += style.line_height + metrics::CELL_GAP;
         }
     } else {
         let mut y = knob_center.y + komponist_tokens::widget::knob::SVG / 2.0 + metrics::CELL_GAP;
         for (text, font, style, color) in texts {
             let g = elided_galley(cu, text, font, style.line_height, rect.width());
-            let pos = pos2(px::snap(rect.center().x - g.size().x / 2.0, ppp), px::snap(y, ppp));
+            let pos = pos2(
+                px::snap(rect.center().x - g.size().x / 2.0, ppp),
+                px::snap(y, ppp),
+            );
             cu.painter().galley(pos, g, color32(color));
             y += style.line_height + metrics::CELL_GAP;
         }
@@ -947,4 +1028,3 @@ fn knob_ui(cu: &mut Ui, p: &Param, rect: Rect) -> Option<f64> {
     let snapped = info.to_plain(value);
     (r.changed() && snapped != p.value).then_some(snapped)
 }
-

@@ -9,7 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use komponist_model::{ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId};
+use komponist_model::{
+    ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId,
+};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::size;
 

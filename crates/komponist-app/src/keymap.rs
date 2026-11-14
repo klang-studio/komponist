@@ -465,11 +465,7 @@ impl Keymap {
             (KeyChord::ctrl(Key::A), arrangement, u(UiAction::SelectAll)),
             // Device chain: the selected devices.
             (KeyChord::ctrl(Key::C), devices, u(UiAction::CopyDevices)),
-            (
-                KeyChord::ctrl(Key::V),
-                devices,
-                e(EditAction::PasteDevices),
-            ),
+            (KeyChord::ctrl(Key::V), devices, e(EditAction::PasteDevices)),
             (
                 KeyChord::ctrl(Key::D),
                 devices,

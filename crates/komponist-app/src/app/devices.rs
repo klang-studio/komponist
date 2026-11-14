@@ -21,12 +21,7 @@ impl App {
     /// The selected track's chain, if exactly the first selected track exists.
     fn selected_chain(&self) -> Option<(TrackId, Vec<DeviceId>)> {
         let p = self.project();
-        let track = self
-            .ui
-            .selection
-            .tracks
-            .iter()
-            .find_map(|t| p.track(*t))?;
+        let track = self.ui.selection.tracks.iter().find_map(|t| p.track(*t))?;
         Some((
             track.id,
             track.channel.devices.iter().map(|d| d.id).collect(),
@@ -34,7 +29,13 @@ impl App {
     }
 
     /// Inserts copies of `specs` from `index` on, as one undo step; selects them.
-    fn insert_copies(&mut self, label: &str, channel: ChannelRef, index: usize, specs: Vec<NewDevice>) {
+    fn insert_copies(
+        &mut self,
+        label: &str,
+        channel: ChannelRef,
+        index: usize,
+        specs: Vec<NewDevice>,
+    ) {
         if specs.is_empty() {
             return;
         }
@@ -160,9 +161,7 @@ impl App {
                 .track(t)
                 .map(|t| t.channel.devices.iter().map(|d| d.id).collect())
                 .unwrap_or_default(),
-            Some((ChannelRef::Master, _, _)) => {
-                p.master.devices.iter().map(|d| d.id).collect()
-            }
+            Some((ChannelRef::Master, _, _)) => p.master.devices.iter().map(|d| d.id).collect(),
             None => Vec::new(),
         }
     }

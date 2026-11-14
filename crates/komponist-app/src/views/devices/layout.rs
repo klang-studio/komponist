@@ -110,7 +110,14 @@ impl Cell {
     }
 
     /// A widget over `cols × rows` full cells.
-    pub fn span(col: u8, row: u8, cols: u8, rows: u8, widget: WidgetKind, param: CellParam) -> Cell {
+    pub fn span(
+        col: u8,
+        row: u8,
+        cols: u8,
+        rows: u8,
+        widget: WidgetKind,
+        param: CellParam,
+    ) -> Cell {
         Cell {
             col,
             row,
@@ -123,7 +130,14 @@ impl Cell {
     }
 
     /// A widget in a half cell.
-    pub fn half(col: u8, row: u8, cols: u8, half: Half, widget: WidgetKind, param: CellParam) -> Cell {
+    pub fn half(
+        col: u8,
+        row: u8,
+        cols: u8,
+        half: Half,
+        widget: WidgetKind,
+        param: CellParam,
+    ) -> Cell {
         Cell {
             col,
             row,
@@ -228,7 +242,13 @@ impl DeviceLayout {
             .into_iter()
             .take(usize::from(cols) * usize::from(ROWS))
             .enumerate()
-            .map(|(i, id)| Cell::knob((i % usize::from(cols)) as u8, (i / usize::from(cols)) as u8, id))
+            .map(|(i, id)| {
+                Cell::knob(
+                    (i % usize::from(cols)) as u8,
+                    (i / usize::from(cols)) as u8,
+                    id,
+                )
+            })
             .collect();
         DeviceLayout::single(Page {
             name: String::new(),
@@ -304,7 +324,10 @@ impl fmt::Display for LayoutError {
             LayoutError::TooManyPages(n) => write!(f, "{n} pages (at most {MAX_PAGES})"),
             LayoutError::NoColumns { page } => write!(f, "page {page} has no columns"),
             LayoutError::BadCell { page, cell } => {
-                write!(f, "page {page}, cell {cell}: outside the grid or without size")
+                write!(
+                    f,
+                    "page {page}, cell {cell}: outside the grid or without size"
+                )
             }
             LayoutError::Overlap { page, a, b } => {
                 write!(f, "page {page}: cells {a} and {b} overlap")
@@ -313,7 +336,11 @@ impl fmt::Display for LayoutError {
                 write!(f, "page {page}, cell {cell}: {error}")
             }
             LayoutError::UnknownParam { page, cell, id } => {
-                write!(f, "page {page}, cell {cell}: unknown parameter `{}`", id.as_str())
+                write!(
+                    f,
+                    "page {page}, cell {cell}: unknown parameter `{}`",
+                    id.as_str()
+                )
             }
             LayoutError::BadDivider { page } => write!(f, "page {page}: divider outside the page"),
         }
@@ -431,7 +458,10 @@ mod tests {
     #[test]
     fn cells_sit_on_the_grid() {
         let k = Cell::knob(2, 1, id("a"));
-        assert_eq!(k.rect(), Rect::from_min_size(pos2(128.0, 76.0), vec2(56.0, 64.0)));
+        assert_eq!(
+            k.rect(),
+            Rect::from_min_size(pos2(128.0, 76.0), vec2(56.0, 64.0))
+        );
         let top = Cell::half(0, 2, 2, Half::Top, WidgetKind::Number, CellParam::None);
         let bottom = Cell::half(0, 2, 2, Half::Bottom, WidgetKind::Segment, CellParam::None);
         assert_eq!(top.rect().min.y, 144.0);
@@ -448,8 +478,22 @@ mod tests {
             vec![
                 Cell::knob(0, 0, id("a")),
                 Cell::knob(1, 0, id("b")),
-                Cell::half(2, 0, 1, Half::Top, WidgetKind::Number, CellParam::Id(id("c"))),
-                Cell::half(2, 0, 1, Half::Bottom, WidgetKind::ToggleButton, CellParam::Id(id("d"))),
+                Cell::half(
+                    2,
+                    0,
+                    1,
+                    Half::Top,
+                    WidgetKind::Number,
+                    CellParam::Id(id("c")),
+                ),
+                Cell::half(
+                    2,
+                    0,
+                    1,
+                    Half::Bottom,
+                    WidgetKind::ToggleButton,
+                    CellParam::Id(id("d")),
+                ),
                 Cell::span(0, 1, 4, 2, WidgetKind::Graph, CellParam::None),
             ],
         );
@@ -473,9 +517,21 @@ mod tests {
         assert_eq!(
             errors,
             vec![
-                LayoutError::Overlap { page: 0, a: 0, b: 1 },
-                LayoutError::Overlap { page: 0, a: 2, b: 3 },
-                LayoutError::Overlap { page: 0, a: 4, b: 5 },
+                LayoutError::Overlap {
+                    page: 0,
+                    a: 0,
+                    b: 1
+                },
+                LayoutError::Overlap {
+                    page: 0,
+                    a: 2,
+                    b: 3
+                },
+                LayoutError::Overlap {
+                    page: 0,
+                    a: 4,
+                    b: 5
+                },
             ]
         );
     }
@@ -493,7 +549,11 @@ mod tests {
         );
         let errors = validate(&l, &ParamContext::new(), &all);
         assert_eq!(errors.len(), 4);
-        assert!(errors.iter().all(|e| matches!(e, LayoutError::BadCell { .. })));
+        assert!(
+            errors
+                .iter()
+                .all(|e| matches!(e, LayoutError::BadCell { .. }))
+        );
         let many = DeviceLayout {
             pages: (0..5)
                 .map(|i| Page {
@@ -534,13 +594,21 @@ mod tests {
         let ctx = ParamContext::new().with(ENV_OP, 2);
         assert_eq!(
             validate(&l, &ctx, &exists),
-            vec![LayoutError::UnknownParam { page: 0, cell: 1, id: id("missing") }]
+            vec![LayoutError::UnknownParam {
+                page: 0,
+                cell: 1,
+                id: id("missing")
+            }]
         );
         // Placeholder without a value, and a resolved id the device lacks.
         let errors = validate(&l, &ParamContext::new(), &exists);
         assert!(matches!(
             errors.last(),
-            Some(LayoutError::Unresolved { cell: 2, error: ResolveError::Missing(_), .. })
+            Some(LayoutError::Unresolved {
+                cell: 2,
+                error: ResolveError::Missing(_),
+                ..
+            })
         ));
         let nine = ParamContext::new().with(ENV_OP, 9);
         assert!(matches!(
@@ -558,7 +626,11 @@ mod tests {
         assert_eq!((page.cells[5].col, page.cells[5].row), (1, 1));
         assert_eq!(validate(&l, &ParamContext::new(), &all), vec![]);
         let two = DeviceLayout::knob_grid([id("a"), id("b")], 4);
-        assert_eq!(two.pages[0].width(), 252.0, "a short row keeps the frame's width");
+        assert_eq!(
+            two.pages[0].width(),
+            252.0,
+            "a short row keeps the frame's width"
+        );
     }
 
     impl Cell {
