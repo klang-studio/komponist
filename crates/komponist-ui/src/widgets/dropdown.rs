@@ -224,6 +224,7 @@ pub struct Dropdown<'a> {
     still_open: Option<Option<usize>>,
     label: Option<&'a str>,
     compact: bool,
+    device: bool,
 }
 
 impl<'a> Dropdown<'a> {
@@ -238,6 +239,7 @@ impl<'a> Dropdown<'a> {
             still_open: None,
             label: None,
             compact: false,
+            device: false,
         }
     }
 
@@ -254,9 +256,32 @@ impl<'a> Dropdown<'a> {
         self
     }
 
+    /// The dropdown of a device cell (`W_drop`): 18 high (`widget.dropdown.h`), `type.small`
+    /// text, 6 px padding, a 6 × 4 caret; the list is the same menu.
+    pub fn device(mut self) -> Self {
+        self.device = true;
+        self
+    }
+
+    fn pad_x(&self) -> f32 {
+        if self.device {
+            super::metrics::device::DROPDOWN_PADDING_X
+        } else {
+            space::SPACE_2
+        }
+    }
+
+    fn caret_size(&self) -> [f32; 2] {
+        if self.device {
+            super::metrics::device::DROPDOWN_CARET
+        } else {
+            metrics::CARET
+        }
+    }
+
     /// The text style of the field.
     fn field_style(&self) -> typography::TypeStyle {
-        if self.label.is_some() || self.compact {
+        if self.label.is_some() || self.compact || self.device {
             typography::SMALL
         } else {
             typography::UI
@@ -264,7 +289,9 @@ impl<'a> Dropdown<'a> {
     }
 
     fn height(&self) -> f32 {
-        if self.compact {
+        if self.device {
+            komponist_tokens::widget::dropdown::H
+        } else if self.compact {
             size::CONTROL_COMPACT
         } else {
             size::CONTROL
@@ -338,7 +365,7 @@ impl<'a> Dropdown<'a> {
         let painter = ui.painter();
         let ppp = ui.pixels_per_point();
         px::fill(painter, rect, radius::M, l.fill);
-        let mut x = rect.left() + space::SPACE_2;
+        let mut x = rect.left() + self.pad_x();
         if let Some(label) = self.label {
             let galley = super::galley(ui, label, fonts::font_id(&style), style.line_height);
             let pos = super::text_pos(rect, &galley, x, ppp);
@@ -357,11 +384,22 @@ impl<'a> Dropdown<'a> {
             style.line_height,
         );
         let pos = super::text_pos(rect, &galley, x, ppp);
-        painter.galley(pos, galley, l.text);
-        let [w, h] = metrics::CARET;
+        if self.device {
+            // Long values are cut before the caret.
+            let room = rect.right() - self.pad_x() - self.caret_size()[0] - space::SPACE_1 - x;
+            painter
+                .with_clip_rect(Rect::from_min_max(
+                    egui::pos2(x, rect.top()),
+                    egui::pos2(x + room.max(0.0), rect.bottom()),
+                ))
+                .galley(pos, galley, l.text);
+        } else {
+            painter.galley(pos, galley, l.text);
+        }
+        let [w, h] = self.caret_size();
         let caret = px::snap_rect(
             Rect::from_min_size(
-                egui::pos2(rect.right() - space::SPACE_2 - w, rect.center().y - h / 2.0),
+                egui::pos2(rect.right() - self.pad_x() - w, rect.center().y - h / 2.0),
                 vec2(w, h),
             ),
             ppp,

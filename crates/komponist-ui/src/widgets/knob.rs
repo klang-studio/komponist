@@ -56,6 +56,8 @@ pub enum KnobSize {
     Normal,
     /// Ø 20 (`size.knob-small`).
     Small,
+    /// Ø 44 (`widget.knob_large.diameter`): the large knob of a device cell.
+    Large,
 }
 
 impl KnobSize {
@@ -64,6 +66,7 @@ impl KnobSize {
         match self {
             Self::Normal => size::KNOB,
             Self::Small => size::KNOB_SMALL,
+            Self::Large => komponist_tokens::widget::knob_large::DIAMETER,
         }
     }
 }
@@ -82,6 +85,20 @@ pub struct Knob<'a> {
     format: Option<Formatter<'a>>,
     parse: Option<Parser<'a>>,
     bypassed: bool,
+    modulation: Option<ModArc>,
+}
+
+/// The modulation arc outside the track (`knob_svg` `mod`, `widget.knob.mod_ring`): the range a
+/// modulation moves the value through, as offsets in the 0–1 fraction of the range, in the
+/// track's colour. **Prepared, unused** (owner decision 2026-11-14: modulation is not built yet).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModArc {
+    /// Offset of the low end from the value (usually negative), as a fraction of the range.
+    pub low: f32,
+    /// Offset of the high end from the value, as a fraction of the range.
+    pub high: f32,
+    /// Colour (`track.base`).
+    pub color: Color32,
 }
 
 impl<'a> Knob<'a> {
@@ -97,6 +114,7 @@ impl<'a> Knob<'a> {
             format: None,
             parse: None,
             bypassed: false,
+            modulation: None,
         }
     }
 
@@ -149,6 +167,13 @@ impl<'a> Knob<'a> {
     #[must_use]
     pub fn bypassed(mut self, bypassed: bool) -> Self {
         self.bypassed = bypassed;
+        self
+    }
+
+    /// Shows the modulation arc ([`ModArc`]); prepared, unused.
+    #[must_use]
+    pub fn modulation(mut self, arc: Option<ModArc>) -> Self {
+        self.modulation = arc;
         self
     }
 
@@ -270,6 +295,19 @@ pub fn arc_points(center: Pos2, radius: f32, from: f32, to: f32) -> Vec<Pos2> {
 /// Paints a knob into the square `rect` at `fraction` (0–1) of its range; `bipolar` arcs start at
 /// the centre (0°).
 pub fn paint(painter: &Painter, rect: Rect, look: &Look, fraction: f32, bipolar: bool) {
+    paint_with(painter, rect, look, fraction, bipolar, None);
+}
+
+/// [`paint`] with the optional modulation arc: `mod_ring.r_offset` outside the track, between
+/// `fraction + low` and `fraction + high` (each clamped to 0–1), `mod_ring.stroke` wide.
+pub fn paint_with(
+    painter: &Painter,
+    rect: Rect,
+    look: &Look,
+    fraction: f32,
+    bipolar: bool,
+    modulation: Option<&ModArc>,
+) {
     let ppp = painter.pixels_per_point();
     let rect = px::snap_rect(rect, ppp);
     let c = rect.center();
@@ -282,6 +320,18 @@ pub fn paint(painter: &Painter, rect: Rect, look: &Look, fraction: f32, bipolar:
         arc_points(c, r, start, angle(1.0)),
         stroke(look.track),
     ));
+    if let Some(m) = modulation {
+        use komponist_tokens::widget::knob::mod_ring;
+        let pts = arc_points(
+            c,
+            r + mod_ring::R_OFFSET,
+            angle((fraction + m.low).max(0.0)),
+            angle((fraction + m.high).min(1.0)),
+        );
+        if !pts.is_empty() {
+            painter.add(Shape::line(pts, PathStroke::new(mod_ring::STROKE, m.color)));
+        }
+    }
     let from = if bipolar { 0.0 } else { start };
     let value = arc_points(c, r, from, a);
     if !value.is_empty() {
@@ -363,12 +413,13 @@ impl Widget for Knob<'_> {
         let value_now = clamp_finite(value, min, max, old);
 
         let st = State::of(ui, &response);
-        paint(
+        paint_with(
             ui.painter(),
             rect,
             &look(st),
             normalized(value_now, min, max) as f32,
             self.bipolar,
+            self.modulation.as_ref(),
         );
         if live && entry::is_open(&ctx, id) {
             let min_w = ENTRY_MIN_WIDTH;

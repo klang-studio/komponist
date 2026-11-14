@@ -24,6 +24,7 @@
 
 pub mod button;
 pub mod context_menu;
+pub mod device;
 pub mod dropdown;
 pub mod fader;
 pub mod knob;
@@ -152,6 +153,105 @@ pub mod metrics {
         pub const GROOVES_COMPACT: [(f32, f32); 1] = [(7.0, 6.0)];
         /// Gap between the sample columns of the card (`gap: 28px`).
         pub const SAMPLE_GAP: f32 = space::SPACE_6 + space::SPACE_1;
+    }
+
+    /// Device widgets (WP-83): what `device-tokens.json` does not give, from the generator
+    /// `geraete_page_generator.py` (`W_*`) of the device handoff.
+    pub mod device {
+        use komponist_tokens::{radius, space};
+
+        /// Height of a device label line (`lbl()`: `line-height:12px`; token `widget.number.label_h`).
+        pub const LABEL_H: f32 = komponist_tokens::widget::number::LABEL_H;
+        /// Corner radius of fields, segment tracks, toggle buttons, displays (`border-radius:3px`).
+        pub const FIELD_RADIUS: f32 = radius::M;
+        /// Corner radius of one segment (`W_seg` `border-radius:2px`).
+        pub const SEGMENT_RADIUS: f32 = radius::S;
+        /// Horizontal padding of a dropdown field (`W_drop` `padding:0 6px`).
+        pub const DROPDOWN_PADDING_X: f32 = space::SPACE_1_5;
+        /// The dropdown caret (`W_drop`: CSS borders 3 / 3 / 4): width and height.
+        pub const DROPDOWN_CARET: [f32; 2] = [6.0, 4.0];
+        /// Space above the knob in a knob cell (`W_knob` `padding-top:2px`).
+        pub const KNOB_CELL_PAD_TOP: f32 = space::SPACE_0_5;
+        /// Gap between knob, name and value in a knob cell (`gap:2px`).
+        pub const KNOB_CELL_GAP: f32 = space::SPACE_0_5;
+        /// Room kept left and right of a knob name (`max-width:52px` in 56).
+        pub const KNOB_CELL_NAME_INSET: f32 = space::SPACE_0_5;
+        /// Gap between the automation dot and the name (`gap:3px`).
+        pub const KNOB_CELL_DOT_GAP: f32 = 3.0;
+        /// Horizontal padding of a toggle button's text (`padding` of `W_tbtn` is 0; the text is
+        /// only cut before it touches the edge).
+        pub const BUTTON_PADDING_X: f32 = space::SPACE_1;
+        /// Stroke of a wave icon (`wave_icon` `stroke-width="1.3"`).
+        pub const GLYPH_STROKE: f32 = 1.3;
+        /// Gap between knob and text of the large knob (`W_knobL` `gap:8px`, token layout).
+        pub const KNOB_LARGE_GAP: f32 = space::SPACE_2;
+        /// Left padding of the large knob (`W_knobL` `padding-left:2px`).
+        pub const KNOB_LARGE_PAD_LEFT: f32 = space::SPACE_0_5;
+        /// Gap between the lines of the large knob's text (`gap:2px`).
+        pub const KNOB_LARGE_TEXT_GAP: f32 = space::SPACE_0_5;
+
+        /// Mini fader (`W_fader`).
+        pub mod mini_fader {
+            /// Top of the thumb's travel (`trackT = 4`).
+            pub const TRACK_TOP: f32 = 4.0;
+            /// Gap between the name and the value under the fader (`gap:1px`).
+            pub const TEXT_GAP: f32 = 1.0;
+        }
+
+        /// Gain-reduction meter (`W_gr`).
+        pub mod meter_gr {
+            /// Left of the first bar (`x = 6 + i * 16`) and top of all bars (`top:6px`).
+            pub const PAD: f32 = 6.0;
+            /// Height kept free below the bars for names and read-out (`bh = h - 34`).
+            pub const BELOW: f32 = 34.0;
+            /// Top of a bar name below the bar (`top: bh + 10`).
+            pub const NAME_GAP: f32 = 10.0;
+            /// Width of a bar name's box (`width:14px`).
+            pub const NAME_W: f32 = 14.0;
+            /// Distance of the read-out from the bottom (`bottom:2px`).
+            pub const READOUT_BOTTOM: f32 = 2.0;
+            /// Where the meter turns `meter.loud` (`okh = min(l, .75)`).
+            pub const LOUD_FROM: f32 = 0.75;
+            /// Corner radius of a bar (`border-radius:1px`).
+            pub const BAR_RADIUS: f32 = 1.0;
+            /// The window of the held maximum reduction (handoff §4: "letzten 1,5 s").
+            pub const HOLD_SECONDS: f64 = 1.5;
+        }
+
+        /// Pad grid (`W_pads`).
+        pub mod pad_grid {
+            use komponist_tokens::space;
+            /// Padding of a pad (`padding:5px 6px`): vertical and horizontal.
+            pub const PADDING: [f32; 2] = [5.0, space::SPACE_1_5];
+            /// Height of the track-colour bar at the top (`height:3px`).
+            pub const BAR_H: f32 = 3.0;
+            /// Corner radius of the bar (`border-radius:1px`).
+            pub const BAR_RADIUS: f32 = 1.0;
+            /// Gap between name and note (`gap:1px`).
+            pub const TEXT_GAP: f32 = 1.0;
+            /// Opacity of the note (`opacity:.8`).
+            pub const NOTE_OPACITY: f32 = 0.8;
+            /// Lightness and chroma of a playing pad (`okl(.92, .06, hue)`, `widget.pad_grid.playing`).
+            pub const PLAYING_LC: (f64, f64) = (0.92, 0.06);
+        }
+
+        /// FM algorithm display (`W_alg`).
+        pub mod fm {
+            /// Operator box (`bw, bh = 22, 18`).
+            pub const NODE: [f32; 2] = [22.0, 18.0];
+            /// Corner radius of a box (`rx="2"`).
+            pub const NODE_RADIUS: f32 = 2.0;
+            /// Distance of the carriers' baseline from the bottom (`h - 6`).
+            pub const BASELINE: f32 = 6.0;
+            /// Top of the carrier row above the bottom (`yc = h - 28`).
+            pub const CARRIER_Y: f32 = 28.0;
+            /// Distance between two rows (`yc - ym = 42`).
+            pub const ROW_STEP: f32 = 42.0;
+            /// The feedback loop (`h6 v-16 h-(bw/2+6) v7`): reach right of the box, rise, drop.
+            pub const FEEDBACK: [f32; 3] = [6.0, 16.0, 7.0];
+            /// Room kept free at the top for the title.
+            pub const TITLE_ROOM: f32 = 18.0;
+        }
     }
 
     /// Timeline elements: track header, clip, note, ruler (WP-22).
@@ -436,6 +536,11 @@ pub fn sample<R>(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui) -> R) -> 
         r
     })
     .inner
+}
+
+/// The style of captions in the gallery (`type.value.s`).
+pub fn knob_caption_style() -> TypeStyle {
+    typography::VALUE_S
 }
 
 /// A caption in `type.value.s` (Mono 10, `text.3`).
