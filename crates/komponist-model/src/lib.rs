@@ -11,6 +11,7 @@
 //! - [`document`]: [`Document`] with undo, redo and gestures.
 //! - [`edits`]: every change as a pure function.
 //! - [`format`](mod@format): display strings (`10.2.120`, `−3.2`, `L 12`, `C4`).
+//! - [`params`]: the parameter model (`ParamInfo`, scales, units, context placeholders).
 //! - [`persist`]: the `*.komponist` JSON file.
 //! - [`fixtures`]: the demo project "Nachtfahrt" and the empty project.
 //!
@@ -22,6 +23,7 @@ pub mod edits;
 pub mod fixtures;
 pub mod format;
 pub mod ids;
+pub mod params;
 pub mod persist;
 pub mod project;
 pub mod time;

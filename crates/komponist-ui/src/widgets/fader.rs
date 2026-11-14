@@ -43,50 +43,8 @@ use crate::{focus, fonts, px, tooltip};
 // ---------------------------------------------------------------------------------------------
 // Taper
 
-/// The fader taper (`DBT` in `ks-engine.js`): dB → position from the top, 0 at +6 dB, 1 at the
-/// bottom (−70 dB = −∞), linear between the points. The scale labels sit on these points.
-pub const DBT: [(f32, f32); 7] = [
-    (6.0, 0.0),
-    (0.0, 0.14),
-    (-6.0, 0.30),
-    (-12.0, 0.45),
-    (-24.0, 0.65),
-    (-48.0, 0.85),
-    (-70.0, 1.0),
-];
-
-/// Positions at or below this are −∞ (`pToDb`: `p >= .995`).
-pub const SILENCE_POSITION: f32 = 0.995;
-
-/// dB → fader position from the top, 0–1 (`dbToP`): ≤ −70 dB (and NaN) → 1, above +6 dB → 0.
-pub fn db_to_p(db: f32) -> f32 {
-    if db.is_nan() || db <= VOLUME_DB_MIN {
-        return 1.0;
-    }
-    for w in DBT.windows(2) {
-        let ((a, pa), (b, pb)) = (w[0], w[1]);
-        if db <= a && db >= b {
-            return pa + (a - db) / (a - b) * (pb - pa);
-        }
-    }
-    0.0
-}
-
-/// Fader position from the top → dB (`pToDb`): `f32::NEG_INFINITY` from [`SILENCE_POSITION`]
-/// on, +6 dB at the top; the position is clamped to 0–1.
-pub fn p_to_db(p: f32) -> f32 {
-    let p = if p.is_nan() { 1.0 } else { p.clamp(0.0, 1.0) };
-    if p >= SILENCE_POSITION {
-        return f32::NEG_INFINITY;
-    }
-    for w in DBT.windows(2) {
-        let ((a, pa), (b, pb)) = (w[0], w[1]);
-        if p >= pa && p <= pb {
-            return a + (p - pa) / (pb - pa) * (b - a);
-        }
-    }
-    VOLUME_DB_MAX
-}
+// The taper itself lives in the parameter model (`Scale::Db` shares it).
+pub use komponist_model::params::{DBT, SILENCE_POSITION, db_to_p, p_to_db};
 
 /// A dB value as the project stores it: −∞ becomes [`VOLUME_DB_MIN`], the rest is clamped to
 /// −70 … +6 and rounded to 0.1 dB (what [`fmt_db`] shows).
