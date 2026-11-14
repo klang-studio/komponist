@@ -101,6 +101,20 @@ fn track_color(hue: u16, f: komponist_tokens::track::LightnessChroma) -> komponi
     komponist_tokens::oklch_to_srgb(f.l, f.c, f64::from(hue))
 }
 
+/// The scroll that shows strip `index` whole in an area `width` wide (strips `pitch` apart, each
+/// `strip` wide), starting from `scroll`: the least change.
+pub fn scroll_to_strip(index: usize, pitch: f32, strip: f32, width: f32, scroll: f32) -> f32 {
+    let left = index as f32 * pitch;
+    let right = left + strip;
+    if right - scroll > width {
+        right - width
+    } else if left < scroll {
+        left
+    } else {
+        scroll
+    }
+}
+
 /// The runtime state an insert slot shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotState {

@@ -73,6 +73,8 @@ pub struct Mixer {
     toggle_gesture: bool,
     /// The "zu spät" state of the inserts.
     late: LateTracker,
+    /// The selection of the last frame: a track selected elsewhere is scrolled into view.
+    last_selection: std::collections::BTreeSet<TrackId>,
 }
 
 impl Mixer {
@@ -177,7 +179,19 @@ impl View for Mixer {
         let pitch = STRIP_WIDTH + STRIP_GAP;
         let content = tracks.len() as f32 * pitch - STRIP_GAP;
         let max_scroll = (content - area.width()).max(0.0);
-        let scroll = ctx.ui.mixer.scroll_x.clamp(0.0, max_scroll);
+        let mut scroll = ctx.ui.mixer.scroll_x.clamp(0.0, max_scroll);
+        if self.last_selection != ctx.ui.selection.tracks {
+            // A track selected in the arrangement, inspector or by keys comes into view; the
+            // strip the user clicked here is visible already.
+            let first = tracks
+                .iter()
+                .position(|s| s.track().is_some_and(|t| ctx.ui.selection.tracks.contains(&t)));
+            if let Some(i) = first {
+                scroll = model::scroll_to_strip(i, pitch, STRIP_WIDTH, area.width(), scroll)
+                    .clamp(0.0, max_scroll);
+            }
+            self.last_selection.clone_from(&ctx.ui.selection.tracks);
+        }
         ctx.ui.mixer.scroll_x = scroll;
 
         let spans: Vec<(TrackId, Rangef)> = tracks

@@ -747,6 +747,46 @@ fn many_strips_scroll_sideways_and_the_master_stays() {
     assert_eq!(strip(&h, &names::strip("Master")).rect(), master);
 }
 
+#[test]
+fn a_track_selected_elsewhere_is_scrolled_into_view() {
+    let mut p = demo_project();
+    for i in 0..14 {
+        let spec = komponist_model::edits::NewTrack {
+            name: Some(format!("Spur {}", i + 7)),
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        };
+        p = edits::add_track(&p, spec).unwrap().0;
+    }
+    let last = p.tracks.last().unwrap().id;
+    let mut app = App::headless(p);
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    assert_eq!(h.state().ui().mixer.scroll_x, 0.0);
+    // Selected in the arrangement or inspector, not in the mixer.
+    select(h.state_mut(), last);
+    h.run_steps(3);
+    assert!(h.state().ui().mixer.scroll_x > 0.0);
+    strip(&h, &names::strip("Spur 20"));
+    // Selecting a visible track back scrolls only as far as needed.
+    let first = h.state().project().tracks[0].id;
+    select(h.state_mut(), first);
+    h.run_steps(3);
+    assert_eq!(h.state().ui().mixer.scroll_x, 0.0);
+}
+
+#[test]
+fn scroll_to_strip_is_the_least_change() {
+    use komponist_app::views::mixer::model::scroll_to_strip;
+    // Strips 81 apart, 80 wide, an area of 400.
+    assert_eq!(scroll_to_strip(1, 81.0, 80.0, 400.0, 0.0), 0.0);
+    assert_eq!(scroll_to_strip(10, 81.0, 80.0, 400.0, 0.0), 810.0 + 80.0 - 400.0);
+    assert_eq!(scroll_to_strip(2, 81.0, 80.0, 400.0, 500.0), 162.0);
+    assert_eq!(scroll_to_strip(7, 81.0, 80.0, 400.0, 300.0), 300.0);
+}
+
 // ------------------------------------------------------------------------------------------------
 // Insert status: loading, crashed, missing (accessible text and tooltip detail).
 
