@@ -33,6 +33,7 @@ use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tabs::Segmented;
+use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
@@ -603,15 +604,11 @@ fn settings_body(
     divider_row(ui, width);
 
     let enter = grid_row(ui, width, names::FILE, control, |ui| {
-        let edit = egui::TextEdit::singleline(&mut s.file_name)
-            .id(egui::Id::unique("komponist_export_file"))
-            .font(fonts::font_id(&typography::UI))
-            .desired_width(field_width)
-            .min_size(vec2(field_width, control))
-            .align(egui::Align2::LEFT_CENTER)
-            .margin(Margin::symmetric(space::SPACE_2 as i8, 0));
-        let r = super::text_field(ui, edit);
-        r.widget_info(|| WidgetInfo::labeled(Role::TextInput, true, names::FILE));
+        let r = ui.add(
+            TextField::new(&mut s.file_name, names::FILE)
+                .id(egui::Id::unique("komponist_export_file"))
+                .width(field_width),
+        );
         r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
     });
 

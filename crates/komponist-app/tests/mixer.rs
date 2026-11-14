@@ -747,6 +747,77 @@ fn many_strips_scroll_sideways_and_the_master_stays() {
     assert_eq!(strip(&h, &names::strip("Master")).rect(), master);
 }
 
+#[test]
+fn a_track_selected_elsewhere_is_scrolled_into_view() {
+    let mut p = demo_project();
+    for i in 0..14 {
+        let spec = komponist_model::edits::NewTrack {
+            name: Some(format!("Spur {}", i + 7)),
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        };
+        p = edits::add_track(&p, spec).unwrap().0;
+    }
+    let last = p.tracks.last().unwrap().id;
+    let mut app = App::headless(p);
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    assert_eq!(h.state().ui().mixer.scroll_x, 0.0);
+    // Selected in the arrangement or inspector, not in the mixer.
+    select(h.state_mut(), last);
+    h.run_steps(3);
+    assert!(h.state().ui().mixer.scroll_x > 0.0);
+    strip(&h, &names::strip("Spur 20"));
+    // Selecting a visible track back scrolls only as far as needed.
+    let first = h.state().project().tracks[0].id;
+    select(h.state_mut(), first);
+    h.run_steps(3);
+    assert_eq!(h.state().ui().mixer.scroll_x, 0.0);
+}
+
+#[test]
+fn tab_in_the_maximised_mixer_moves_the_widget_focus_while_a_ring_shows() {
+    // WP-30's shell rule, checked for the mixer (WP-43 note): a widget reached with Tab (focus
+    // ring visible) keeps Tab; with no focused widget Tab leaves the mixer.
+    let mut h = harness(s04());
+    let pan = names::pan("Lead");
+    click_in(&mut h, "Lead", Role::Slider, &pan, Modifiers::NONE);
+    h.run_steps(2);
+    komponist_ui::focus::set_visible(&h.ctx, true);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(h.state().ui().layout.dock_maximized, "Tab moved the focus");
+    // Tab keeps walking the widgets (keyboard access to every knob and fader) …
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(h.state().ui().layout.dock_maximized, "still in the mixer");
+    // … until no widget has the focus.
+    h.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    komponist_ui::focus::set_visible(&h.ctx, false);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(!h.state().ui().layout.dock_maximized, "Tab left the mixer");
+}
+
+#[test]
+fn scroll_to_strip_is_the_least_change() {
+    use komponist_app::views::mixer::model::scroll_to_strip;
+    // Strips 81 apart, 80 wide, an area of 400.
+    assert_eq!(scroll_to_strip(1, 81.0, 80.0, 400.0, 0.0), 0.0);
+    assert_eq!(
+        scroll_to_strip(10, 81.0, 80.0, 400.0, 0.0),
+        810.0 + 80.0 - 400.0
+    );
+    assert_eq!(scroll_to_strip(2, 81.0, 80.0, 400.0, 500.0), 162.0);
+    assert_eq!(scroll_to_strip(7, 81.0, 80.0, 400.0, 300.0), 300.0);
+}
+
 // ------------------------------------------------------------------------------------------------
 // Insert status: loading, crashed, missing (accessible text and tooltip detail).
 
@@ -825,4 +896,28 @@ fn snapshots_next_to_s04() {
     h.snapshot("mixer-dock-1x");
     results.extend_harness(&mut h);
     results.unwrap();
+}
+
+#[test]
+fn an_insert_whose_blocks_arrive_late_reads_zu_spaet_for_a_while() {
+    let p = s04_project();
+    let surge = p.tracks[3].channel.devices[0].id;
+    let host = FakeHost::new();
+    let late = host.late.clone();
+    let mut app = App::headless(p).with_device_host(Box::new(host));
+    let lead = track(&app, 2);
+    select(&mut app, lead);
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    let slot = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Button, &names::insert("Surge XT"))
+            .accesskit_node()
+            .value()
+    };
+    assert_eq!(slot(&h), None);
+    late.lock().unwrap().insert(surge, 3);
+    h.run_steps(2);
+    assert_eq!(slot(&h).as_deref(), Some("zu spät"));
+    h.run_steps(150);
+    assert_eq!(slot(&h), None, "the indicator goes out after its hold time");
 }

@@ -11,7 +11,7 @@ use egui::{
     Vec2, pos2, vec2,
 };
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use komponist_ui::State;
 use komponist_ui::snapshot;
 use komponist_ui::widgets::fader::{self, DbValue, Fader, FaderSize};
@@ -132,6 +132,11 @@ fn gallery_cards() {
         number_field::gallery,
     );
     shots.add("knob-gallery", Some(vec2(720.0, 220.0)), knob::gallery);
+    shots.add(
+        "text-field-gallery",
+        Some(vec2(860.0, 90.0)),
+        komponist_ui::widgets::text_field::gallery,
+    );
     shots.add("fader-gallery", Some(vec2(720.0, 640.0)), fader::gallery);
     shots.finish();
 }
@@ -449,6 +454,27 @@ fn knob_drag_is_200_px_for_the_range() {
 }
 
 #[test]
+fn a_bypassed_knob_takes_no_input_and_reads_as_disabled() {
+    let mut h = harness(
+        Knobs {
+            cutoff: 0.25,
+            pan: 0.0,
+        },
+        |ui, s| {
+            ui.add(Knob::new(&mut s.cutoff, "Cutoff").bypassed(true));
+        },
+    );
+    let node = h.get_by_label("Cutoff");
+    assert_eq!(node.accesskit_node().role(), egui::accesskit::Role::Slider);
+    assert!(node.accesskit_node().is_disabled());
+    assert_eq!(node.accesskit_node().numeric_value(), Some(0.25));
+    let c = center(&h, "Cutoff");
+    drag(&mut h, c, vec2(0.0, -100.0), 20, Modifiers::NONE);
+    drag(&mut h, c, vec2(0.0, 0.0), 1, Modifiers::ALT);
+    assert_eq!(h.state().cutoff, 0.25);
+}
+
+#[test]
 fn knob_shows_the_value_tooltip_while_dragging() {
     let mut h = knob_harness(0.25, 0.0);
     let c = center(&h, "Cutoff");
@@ -664,4 +690,19 @@ fn meter_falls_after_the_hold() {
         h.step();
     }
     assert!(h.state().state.held_db(0) < held - 15.0);
+}
+
+#[test]
+fn a_text_field_is_a_named_text_input_that_edits() {
+    use komponist_ui::widgets::text_field::TextField;
+    let mut h = harness(String::new(), |ui, s| {
+        ui.add(TextField::new(s, "Filter").hint("Filter").width(160.0));
+    });
+    let node = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Filter");
+    node.focus();
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Filter")
+        .type_text("Abc");
+    h.run();
+    assert_eq!(h.state(), "Abc");
 }

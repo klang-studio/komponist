@@ -356,6 +356,69 @@ fn the_count_in_shows_in_the_position_display() {
 }
 
 #[test]
+fn r_during_the_count_in_cancels_and_stops_at_the_recording_start() {
+    let (mut h, track) = rig(true);
+    h.state_mut()
+        .dispatch(Action::Transport(TransportAction::Locate(Tick(BAR + 500))));
+    run(&mut h, 1, &[]);
+    press(&mut h, egui::Key::R);
+    run(&mut h, 1000, &[]);
+    assert_eq!(h.state().transport(), TransportState::CountIn);
+    // Prototype `toggleRec` with `recPend`: no take, stopped, back at `recAt` (bar 2).
+    press(&mut h, egui::Key::R);
+    run(&mut h, 10, &[]);
+    assert_eq!(h.state().transport(), TransportState::Stopped);
+    assert!(h.state().recording().is_none());
+    assert_eq!(h.state().engine().playhead(), Tick(BAR));
+    assert!(h.state().project().track(track).unwrap().clips.is_empty());
+    // Leertaste during the count-in does the same.
+    press(&mut h, egui::Key::R);
+    run(&mut h, 1000, &[]);
+    assert_eq!(h.state().transport(), TransportState::CountIn);
+    press(&mut h, egui::Key::Space);
+    run(&mut h, 10, &[]);
+    assert_eq!(h.state().transport(), TransportState::Stopped);
+    assert_eq!(h.state().engine().playhead(), Tick(BAR));
+    assert!(h.state().project().track(track).unwrap().clips.is_empty());
+}
+
+#[test]
+fn r_while_recording_punches_out_and_playback_goes_on() {
+    let (mut h, track) = rig(false);
+    press(&mut h, egui::Key::R);
+    run(&mut h, 40, &[]);
+    run(&mut h, 500, &[(100, on(60, 100)), (300, off(60))]);
+    press(&mut h, egui::Key::R);
+    run(&mut h, 100, &[]);
+    assert_eq!(h.state().transport(), TransportState::Playing);
+    assert!(h.state().recording().is_none());
+    assert!(h.state().engine().playhead() > Tick(540));
+    let clips = &h.state().project().track(track).unwrap().clips;
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].name, "Take 1");
+}
+
+#[test]
+fn a_recording_without_notes_keeps_an_empty_clip() {
+    let (mut h, track) = rig(false);
+    press(&mut h, egui::Key::R);
+    run(&mut h, 40, &[]);
+    run(&mut h, 2000, &[]);
+    press(&mut h, egui::Key::Space);
+    run(&mut h, 10, &[]);
+    let p = h.state().project().clone();
+    let clips = &p.track(track).unwrap().clips;
+    assert_eq!(clips.len(), 1, "unlike the prototype, no demo phrase");
+    assert_eq!(clips[0].name, "Take 1");
+    assert_eq!((clips[0].start, clips[0].length), (Tick::ZERO, Tick(BAR)));
+    assert!(take_notes(&p, track, 0, 0).is_empty());
+    assert_eq!(
+        status_left(&h),
+        "Take 1 aufgenommen · 0 Noten · Q quantisiert"
+    );
+}
+
+#[test]
 fn r_arms_the_selected_track_with_monitoring_or_asks_for_one() {
     let mut h = held(demo_project());
     press(&mut h, egui::Key::R);

@@ -390,8 +390,6 @@ pub struct MixerView {
 pub struct DevicesView {
     /// Horizontal scroll in design px.
     pub scroll_x: f32,
-    /// Devices shown with the generic parameter grid instead of macros ("auf Wunsch").
-    pub generic_params: BTreeSet<DeviceId>,
 }
 
 /// Browser segments ("Alle · Instr. · Effekte · Dateien").
@@ -490,6 +488,20 @@ pub struct ExportDialog {
     pub settings: ExportSettings,
     /// Progress while rendering, `None` while configuring.
     pub progress: Option<ExportProgress>,
+    /// Where the export is: configuring, waiting for devices, rendering.
+    pub stage: ExportStage,
+}
+
+/// The stage of the export the dialog shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportStage {
+    /// Configuring ("Exportieren" not pressed yet).
+    #[default]
+    Settings,
+    /// Waiting until every device of the project runs, or "Ohne sie exportieren".
+    Devices,
+    /// The worker renders the file.
+    Rendering,
 }
 
 /// Progress of a running export.
@@ -521,6 +533,30 @@ pub struct PluginWindow {
     pub width: u32,
     /// Height of the plugin area, physical px.
     pub height: u32,
+    /// "Oben halten": the frame stays above the main window.
+    pub keep_on_top: bool,
+    /// Where the frame opens (outer position in points), from the last time this plugin's frame
+    /// closed.
+    pub pos: Option<(i32, i32)>,
+}
+
+impl PluginWindow {
+    /// A window for `device` showing `view`, with the plugin's remembered "Oben halten" and
+    /// position.
+    pub fn new(
+        device: DeviceId,
+        view: PluginView,
+        memory: Option<&crate::settings::FrameMemory>,
+    ) -> Self {
+        PluginWindow {
+            device,
+            view,
+            width: 0,
+            height: 0,
+            keep_on_top: memory.is_some_and(|m| m.keep_on_top),
+            pos: memory.and_then(|m| m.pos),
+        }
+    }
 }
 
 /// Kind of a status bar message.

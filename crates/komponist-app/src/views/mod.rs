@@ -23,6 +23,7 @@ pub mod arrangement;
 pub mod browser;
 pub mod devices;
 pub mod inspector;
+pub mod late;
 pub mod mixer;
 pub mod piano_roll;
 pub mod step_seq;

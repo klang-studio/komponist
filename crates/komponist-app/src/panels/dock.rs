@@ -5,7 +5,7 @@
 //! "Maximieren" / "Maximiert" (Ctrl ↑) and the caret that collapses the dock to this strip or
 //! opens it again (Ctrl 3). The editor tab is titled with the open clip's name, its editor kind
 //! as secondary text and the track colour as mark ("■ Lead A  Piano Roll"), else "Kein Clip";
-//! while recording "Aufnahme  Piano Roll · live" with a `state.record` mark (S02). A
+//! while recording "● Aufnahme  Piano Roll · live" with a `state.record` mark (S02). A
 //! click on a tab of a collapsed dock opens it. The active tab carries the accent line while
 //! the dock has the focus.
 

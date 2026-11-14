@@ -291,7 +291,8 @@ fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
     assert!(app.ui().dialog.is_none());
     assert_eq!(app.transport(), TransportState::Stopped);
     assert_eq!(app.exported(), std::slice::from_ref(&path));
-    app.show_export_folder();
+    let link = app.ui().status.as_ref().and_then(|s| s.link.clone());
+    app.dispatch(*link.expect("the status message carries the link").1);
     assert_eq!(*opened.lock().unwrap(), [dir.join("out")]);
     // And the engine plays again.
     assert!(!app.engine().is_detached());
@@ -469,6 +470,38 @@ fn the_export_waits_for_loading_devices() {
     step_until(&mut app, "end of the export", |a| !a.is_exporting());
     assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"]);
     assert_eq!(status(&app).1, StatusKind::Success);
+}
+
+#[test]
+fn another_dialog_waits_while_the_export_dialog_runs() {
+    use komponist_app::UiAction;
+    use komponist_app::ui_state::SettingsSection;
+    let dir = scratch("queue");
+    let mut project = one_bar_song();
+    project.loop_range = TickRange::new(Tick::ZERO, Tick(BAR / 2));
+    let surge = fake_host::plugin(&fake_host::screens_catalog(), "hall");
+    let (project, hall) = with_effect(project, surge);
+    let host = FakeHost::new().status(hall, DeviceStatus::Loading);
+    let (mut app, _) = app_with(&dir, project, Box::new(host));
+    app.step();
+    let settings = ExportSettings {
+        tail_seconds: 0.0,
+        ..export_settings(&dir, ExportRange::Loop)
+    };
+    app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    for _ in 0..5 {
+        app.step();
+    }
+    assert!(app.is_exporting());
+    assert!(matches!(&app.ui().dialog, Some(Dialog::Export(d))
+        if d.stage == komponist_app::ui_state::ExportStage::Devices));
+    // Strg , while the export waits: the export dialog stays on top.
+    app.dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Audio)));
+    assert!(matches!(app.ui().dialog, Some(Dialog::Export(_))));
+    // Cancelling closes it; the queued dialog opens in its place.
+    app.dispatch(Action::Project(ProjectAction::CancelExport));
+    step_until(&mut app, "end of the export", |a| !a.is_exporting());
+    assert!(matches!(app.ui().dialog, Some(Dialog::Settings(_))));
 }
 
 fn harness(app: App) -> Harness<'static, App> {

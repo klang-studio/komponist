@@ -294,22 +294,10 @@ pub(super) fn devices_section(
 }
 
 impl Inspector {
-    /// The late-block count of a running device and whether it grew within
-    /// [`m::LATE_HOLD_S`]: then the row shows "zu spät".
+    /// The late-block count of a running device while it shows "zu spät".
     fn late_state(&mut self, ctx: &ViewCtx<'_>, row: &DeviceRow, now: f64) -> Option<u64> {
-        let n = ctx.engine.host().late_blocks(row.device);
-        let entry = self
-            .late
-            .entry(row.device)
-            .or_insert((n, f64::NEG_INFINITY));
-        if n > entry.0 {
-            *entry = (n, now);
-        } else if n < entry.0 {
-            // The bridge restarted ("Neu laden"): its count starts again.
-            *entry = (n, f64::NEG_INFINITY);
-        }
-        let fresh = now - entry.1 < m::LATE_HOLD_S;
-        (row.status == RowStatus::Ok && n > 0 && fresh).then_some(n)
+        let running = row.status == RowStatus::Ok;
+        self.late.state(ctx.engine.host(), row.device, running, now)
     }
 }
 
@@ -427,7 +415,6 @@ fn device_row(
         ctx.send(Action::Plugin(PluginAction::OpenWindow(row.device)));
     }
     if late.is_some() {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_secs_f64(m::LATE_HOLD_S));
+        crate::views::late::repaint_when_expired(ui.ctx());
     }
 }

@@ -71,9 +71,10 @@ use self::body::{BodyEvent, BodyModel, ParamGrid};
 use self::header::{HeaderEvent, HeaderModel, Mark};
 use self::sizing::{Chrome, Effect, Px, Sizing};
 use self::x11::X11;
-use crate::actions::{Action, EditAction, PluginAction};
+use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
+use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
 use crate::views::devices::model::{Param, format_value, pisynth_params};
 
@@ -168,6 +169,8 @@ struct Frame {
     /// Header width last used for the frame's minimum, physical px.
     min_width: u32,
     keep_on_top: bool,
+    /// Where the frame opens (outer position, points), if remembered.
+    pos: Option<(i32, i32)>,
     /// The view the window was last sized for.
     sized_for: Option<PluginView>,
     /// The user picked the view (the frame no longer switches it to "Plugin" by itself).
@@ -200,6 +203,8 @@ struct Seen {
     ppp: f32,
     inner: Option<Vec2>,
     header_width: f32,
+    /// The frame's outer position in points (a native frame only).
+    outer: Option<(i32, i32)>,
 }
 
 /// What happened in a frame window.
@@ -282,6 +287,50 @@ impl App {
         }
     }
 
+    /// `UiAction::SetPluginView`: the window shows `view`; the user's pick, so the frame no longer
+    /// switches it by itself.
+    pub(crate) fn set_plugin_view(&mut self, device: DeviceId, view: PluginView) {
+        if let Some(w) = self
+            .ui
+            .plugin_windows
+            .iter_mut()
+            .find(|w| w.device == device)
+        {
+            w.view = view;
+        }
+        if let Some(f) = self.frames.frame_mut(device) {
+            f.user_view = true;
+            f.params_dirty = true;
+        }
+    }
+
+    /// `UiAction::SetPluginKeepOnTop`: "Oben halten" of the window, remembered for the plugin.
+    pub(crate) fn set_keep_on_top(&mut self, device: DeviceId, on: bool) {
+        if let Some(w) = self
+            .ui
+            .plugin_windows
+            .iter_mut()
+            .find(|w| w.device == device)
+        {
+            w.keep_on_top = on;
+        }
+        self.remember_frame(device, |m| m.keep_on_top = on);
+    }
+
+    /// Updates what is remembered for `device`'s plugin and saves the settings when it changed.
+    fn remember_frame(&mut self, device: DeviceId, change: impl FnOnce(&mut FrameMemory)) {
+        let Some(plugin) = self
+            .project()
+            .find_device(device)
+            .map(|(_, _, d)| d.plugin.clone())
+        else {
+            return;
+        };
+        if self.settings.update_frame_memory(&plugin, change) {
+            self.save_settings();
+        }
+    }
+
     /// `PluginAction::CloseWindow`: closes the frame of `device` (module docs, step 5).
     pub(crate) fn close_plugin_window(&mut self, device: DeviceId) {
         let Some(index) = self
@@ -307,6 +356,9 @@ impl App {
     /// Closes the GUI of a frame that goes away and parks or destroys its child.
     fn retire_frame(&mut self, frame: Frame) {
         let device = frame.device;
+        if let Some(pos) = lock(&frame.shared).seen.outer {
+            self.remember_frame(device, |m| m.pos = Some(pos));
+        }
         let open = matches!(frame.gui, Gui::Opening | Gui::Open);
         if open {
             // A state snapshot follows.
@@ -471,7 +523,8 @@ impl App {
                 sizing: Sizing::new(),
                 frame_px: None,
                 min_width: 0,
-                keep_on_top: false,
+                keep_on_top: window.keep_on_top,
+                pos: window.pos,
                 sized_for: if native { None } else { Some(window.view) },
                 user_view: false,
                 had_gui: false,
@@ -509,23 +562,12 @@ impl App {
                 }
                 HeaderEvent::Preset(i) => self.apply_preset(device, i),
                 HeaderEvent::View(view) => {
-                    if let Some(w) = self
-                        .ui
-                        .plugin_windows
-                        .iter_mut()
-                        .find(|w| w.device == device)
-                    {
-                        w.view = view;
-                    }
-                    if let Some(f) = self.frames.frame_mut(device) {
-                        f.user_view = true;
-                        f.params_dirty = true;
-                    }
+                    self.queue
+                        .push(Action::Ui(UiAction::SetPluginView { device, view }));
                 }
                 HeaderEvent::KeepOnTop(on) => {
-                    if let Some(f) = self.frames.frame_mut(device) {
-                        f.keep_on_top = on;
-                    }
+                    self.queue
+                        .push(Action::Ui(UiAction::SetPluginKeepOnTop { device, on }));
                 }
                 HeaderEvent::Close => {
                     self.queue
@@ -986,6 +1028,7 @@ impl App {
             return;
         };
         self.update_pisynth_state(i);
+        self.frames.frames[i].keep_on_top = window.keep_on_top;
         let f = &self.frames.frames[i];
         let header = self.header_model(
             device,
@@ -999,7 +1042,7 @@ impl App {
         let name = self.plugin_name(device);
         let body = match status {
             DeviceStatus::Loading => Some(BodyModel::Loading),
-            DeviceStatus::Crashed(_) => Some(BodyModel::Crashed),
+            DeviceStatus::Crashed(reason) => Some(BodyModel::Crashed(reason)),
             DeviceStatus::Missing => Some(BodyModel::Missing { name }),
             DeviceStatus::Ok => match window.view {
                 PluginView::Gui => Some(BodyModel::Gui { native, name }),
@@ -1313,10 +1356,13 @@ fn show_viewport(ctx: &Context, frame: &Frame, native: bool) {
     } else {
         WindowLevel::Normal
     };
-    let builder = ViewportBuilder::default()
+    let mut builder = ViewportBuilder::default()
         .with_title(title)
         .with_inner_size(frame.initial)
         .with_window_level(level);
+    if let Some((x, y)) = frame.pos {
+        builder = builder.with_position(egui::pos2(x as f32, y as f32));
+    }
     let shared = Arc::clone(&frame.shared);
     let initial = frame.initial;
     ctx.show_viewport_deferred(frame.viewport, builder, move |ui, class| {
@@ -1331,6 +1377,13 @@ fn frame_ui(ui: &mut egui::Ui, class: ViewportClass, shared: &Mutex<Shared>, ini
     let mut s = lock(shared);
     let mut wake_root = false;
     s.seen.ppp = ctx.pixels_per_point();
+    if !embedded {
+        s.seen.outer = ctx.input(|i| {
+            i.viewport()
+                .outer_rect
+                .map(|r| (r.min.x.round() as i32, r.min.y.round() as i32))
+        });
+    }
     let inner = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
     if inner != s.seen.inner {
         s.seen.inner = inner;

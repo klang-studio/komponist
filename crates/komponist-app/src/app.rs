@@ -139,6 +139,8 @@ pub(crate) struct ShellState {
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
+    /// Where the last recording started (or starts after its count-in).
+    record_from: Option<Tick>,
 }
 
 impl App {
@@ -277,6 +279,11 @@ impl App {
         &self.settings
     }
 
+    /// The settings, for tests that prepare what a session remembers.
+    pub fn settings_mut(&mut self) -> &mut Settings {
+        &mut self.settings
+    }
+
     /// The file the project was opened from or saved to.
     pub fn project_path(&self) -> Option<&Path> {
         self.project_path.as_deref()
@@ -320,6 +327,19 @@ impl App {
             since: Instant::now(),
             link: None,
         });
+    }
+
+    /// Tells in the status bar that the bridge executable is missing, so plugins other than
+    /// pisynth cannot load (owner test 2026-11-14: only stderr said so).
+    pub fn report_missing_bridge(&mut self, exe: &std::path::Path) {
+        let name = exe.file_name().map_or_else(
+            || exe.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        self.set_status(
+            format!("{name} fehlt · Plugins außer pisynth lassen sich nicht laden"),
+            StatusKind::Error,
+        );
     }
 
     /// The device host's events polled at the start of this frame, after the app handled them:
@@ -852,7 +872,11 @@ impl App {
 
     fn transport_action(&mut self, action: TransportAction) {
         let playing = self.transport() != TransportState::Stopped;
+        let count_in = self.transport() == TransportState::CountIn;
         match action {
+            TransportAction::TogglePlay | TransportAction::Stop if count_in => {
+                self.cancel_count_in();
+            }
             TransportAction::TogglePlay => {
                 if playing {
                     self.commit_take();
@@ -942,11 +966,13 @@ impl App {
     }
 
     /// R: records on all armed tracks after the count-in (arming the selected track if none is
-    /// armed); while recording, ends the take (playback goes on). The take itself is
-    /// [`Recording`], built from the engine's events.
+    /// armed); while recording, ends the take (punch-out: playback goes on); during the count-in,
+    /// cancels the recording and stops (prototype `toggleRec` → `finishRec` with `recPend`). The
+    /// take itself is [`Recording`], built from the engine's events.
     fn toggle_record(&mut self) {
         match self.transport() {
-            TransportState::Recording | TransportState::CountIn => {
+            TransportState::CountIn => self.cancel_count_in(),
+            TransportState::Recording => {
                 self.commit_take();
                 self.engine.send(Command::StopRecording);
             }
@@ -972,8 +998,22 @@ impl App {
                 } else {
                     Tick(at)
                 };
+                self.shell.record_from = Some(from);
                 self.engine.send(Command::Record { from });
             }
+        }
+    }
+
+    /// R, Leertaste or Stop during the count-in: no take, the transport stops and the playhead
+    /// goes back to where the recording would have started (prototype `finishRec`: `recPend` →
+    /// `pos = recAt`).
+    fn cancel_count_in(&mut self) {
+        // A count-in that just ended may have started its take; it goes.
+        self.drain_events();
+        self.recording = None;
+        self.engine.send(Command::Stop);
+        if let Some(from) = self.shell.record_from {
+            self.engine.send(Command::Locate(from));
         }
     }
 
@@ -1641,6 +1681,8 @@ impl App {
                 self.ui.browser.highlighted = None;
             }
             UiAction::OpenSettings(section) => self.open_dialog(Dialog::Settings(section)),
+            UiAction::SetPluginView { device, view } => self.set_plugin_view(device, view),
+            UiAction::SetPluginKeepOnTop { device, on } => self.set_keep_on_top(device, on),
             UiAction::CloseDialog => {
                 // The file browser or the unsaved-changes prompt closes first.
                 if self.close_overlay() {
@@ -1660,6 +1702,9 @@ impl App {
                     .focus_before_dialog
                     .take()
                     .unwrap_or(FocusArea::Arrangement);
+                if let Some(next) = self.dialogs.queued.take() {
+                    self.open_dialog(next);
+                }
             }
             UiAction::ToggleKeyboardMidi => self.ui.keyboard_midi = !self.ui.keyboard_midi,
             UiAction::ResetMeters { track, all } => self.meters.reset(track, all),
@@ -1760,6 +1805,14 @@ impl App {
     }
 
     pub(crate) fn open_dialog(&mut self, dialog: Dialog) {
+        // The export dialog shows the progress and Esc cancels: another dialog (S06 after a late
+        // scan, Strg , settings) waits until it closes.
+        if self.export.is_active() && matches!(self.ui.dialog, Some(Dialog::Export(_))) {
+            if !matches!(dialog, Dialog::Export(_)) {
+                self.dialogs.queued = Some(dialog);
+            }
+            return;
+        }
         if self.ui.dialog.is_none() {
             self.shell.focus_before_dialog = Some(self.ui.focus);
         }
@@ -1881,6 +1934,19 @@ impl App {
                     self.engine.reload_device(self.doc.project(), device);
                 }
             }
+            PluginAction::NewPisynthTrack { preset } => {
+                self.dispatch(Action::Edit(EditAction::BeginGesture {
+                    label: "Preset laden".to_owned(),
+                }));
+                self.new_midi_track(None, pisynth_ref());
+                let track = self.ui.selection.tracks.iter().next().copied();
+                if let Some(device) =
+                    crate::views::browser::model::pisynth_of(self.project(), track)
+                {
+                    self.plugin_action(PluginAction::ApplyPisynthPreset { device, preset });
+                }
+                self.dispatch(Action::Edit(EditAction::EndGesture));
+            }
             PluginAction::OpenWindow(device) => {
                 if !self.ui.plugin_windows.iter().any(|w| w.device == device) {
                     // The plugin's own GUI if it has one (the frame opens it, WP-50), else the
@@ -1890,12 +1956,14 @@ impl App {
                     } else {
                         PluginView::Params
                     };
-                    self.ui.plugin_windows.push(PluginWindow {
-                        device,
-                        view,
-                        width: 0,
-                        height: 0,
-                    });
+                    let memory = self
+                        .project()
+                        .find_device(device)
+                        .and_then(|(_, _, d)| self.settings.frame_memory(&d.plugin))
+                        .cloned();
+                    self.ui
+                        .plugin_windows
+                        .push(PluginWindow::new(device, view, memory.as_ref()));
                 }
             }
             // Closes the plugin's GUI if it is open; a state snapshot follows (`StateSnapshot`).
@@ -1980,12 +2048,14 @@ impl App {
             | ProjectAction::OpenPath(_)
             | ProjectAction::Save
             | ProjectAction::SaveAs
+            | ProjectAction::ShowStartScreen
             | ProjectAction::ContinueWithMissing
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
             // The export (WP-53b): `crate::export`.
             ProjectAction::OpenExportDialog => self.open_export_dialog(),
             ProjectAction::StartExport(export) => self.start_export(export),
             ProjectAction::CancelExport => self.cancel_export(),
+            ProjectAction::ShowInFolder(folder) => self.show_in_folder(&folder),
         }
     }
 
