@@ -25,7 +25,7 @@
 //! and sends what waited.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,6 +67,15 @@ pub struct EngineProcess {
     workers: usize,
     /// Outcome of the last worker start, for the UI thread (only touched outside the callback).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
+    /// Set by a worker start that ran without realtime priority; the app takes it once
+    /// ([`EngineSync::take_worker_notice`]).
+    worker_notice: Arc<AtomicBool>,
+}
+
+/// Whether a worker start deserves a status bar notice: workers run, but without the realtime
+/// priority that was asked for. Workers off or none started: nothing to say (single-threaded).
+pub fn lacks_realtime(status: &WorkerStatus) -> bool {
+    status.threads > 0 && status.realtime_error.is_some()
 }
 
 impl EngineProcess {
@@ -81,6 +90,7 @@ impl EngineProcess {
             rate,
             workers: auto_workers(),
             worker_status: Arc::default(),
+            worker_notice: Arc::default(),
         }
     }
 
@@ -95,6 +105,8 @@ impl EngineProcess {
         let status = self
             .engine
             .set_workers(self.workers, Some(DEFAULT_WORKER_PRIORITY));
+        self.worker_notice
+            .store(lacks_realtime(&status), Ordering::Relaxed);
         *self.worker_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
     }
 }
@@ -200,6 +212,8 @@ pub struct EngineSync {
     workers_after_export: Option<usize>,
     /// Outcome of the engine's last worker start ([`EngineProcess`] writes it in `prepare`).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
+    /// See [`EngineProcess`]'s `worker_notice`.
+    worker_notice: Arc<AtomicBool>,
     worker_stats: Arc<WorkerStats>,
 }
 
@@ -250,6 +264,7 @@ impl EngineSync {
         let worker_stats = engine.worker_stats();
         let process = EngineProcess::new(engine, Arc::clone(&rate));
         let worker_status = Arc::clone(&process.worker_status);
+        let worker_notice = Arc::clone(&process.worker_notice);
         let telemetry = Arc::clone(handle.telemetry());
         let mut sync = EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
@@ -267,6 +282,7 @@ impl EngineSync {
             frozen: None,
             workers_after_export: None,
             worker_status,
+            worker_notice,
             worker_stats,
         };
         let started = sync.audio.start(config);
@@ -446,6 +462,12 @@ impl EngineSync {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// True once per stream start whose workers run without realtime priority (the status bar
+    /// says so; [`lacks_realtime`]).
+    pub fn take_worker_notice(&self) -> bool {
+        self.worker_notice.swap(false, Ordering::Relaxed)
     }
 
     /// The engine's worker pool counters (batches, jobs on workers, late waits).
@@ -813,6 +835,20 @@ mod tests {
             sync.playhead() > before
         }));
         sync.shutdown();
+    }
+
+    #[test]
+    fn realtime_notice_only_for_running_workers_without_priority() {
+        let status = |threads, realtime_error: Option<&str>| WorkerStatus {
+            threads,
+            priority: Some(DEFAULT_WORKER_PRIORITY),
+            realtime_error: realtime_error.map(str::to_owned),
+            spawn_error: None,
+        };
+        assert!(lacks_realtime(&status(3, Some("Operation not permitted"))));
+        assert!(!lacks_realtime(&status(3, None)));
+        assert!(!lacks_realtime(&status(0, Some("Operation not permitted"))));
+        assert!(!lacks_realtime(&WorkerStatus::default()));
     }
 
     #[test]

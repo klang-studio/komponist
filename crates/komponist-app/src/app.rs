@@ -365,6 +365,15 @@ impl App {
         );
     }
 
+    /// Tells in the status bar that the engine's worker threads run without realtime priority
+    /// (same kind as the bridge's hint, `handle_device_event`). Once per stream start.
+    pub fn report_workers_without_realtime(&mut self) {
+        self.set_status(
+            "Audio-Threads laufen ohne Echtzeit-Priorität",
+            StatusKind::Info,
+        );
+    }
+
     /// The device host's events polled at the start of this frame, after the app handled them:
     /// views and plugin windows react to what concerns them (`GuiOpened`, `GuiSizeRequest`,
     /// `GuiClosed` for the frame windows; `ParamsChanged`, `NoteNamesChanged`, …). Replaced at
@@ -467,6 +476,9 @@ impl App {
     /// frame's.
     pub(crate) fn drain_events(&mut self) {
         let events = self.engine.poll();
+        if self.engine.take_worker_notice() {
+            self.report_workers_without_realtime();
+        }
         // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
         let mut recompile = false;
