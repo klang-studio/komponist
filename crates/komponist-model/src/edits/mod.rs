@@ -294,7 +294,8 @@ pub enum StepRowProp {
 /// A device to insert; the id is allocated by the edit, bypass starts off.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewDevice {
-    /// Instrument (only at index 0 of a track chain) or effect.
+    /// MIDI effect (track chains only, before the instrument), instrument (right behind the MIDI
+    /// effects) or audio effect.
     pub role: DeviceRole,
     /// The plugin.
     pub plugin: PluginRef,
@@ -1067,36 +1068,39 @@ pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
 // Devices
 // ------------------------------------------------------------------------------------------------
 
-/// Inserts a device into a chain at `index` (clamped to the chain length). An instrument may only
-/// go to index 0 of a track chain that has no instrument; an effect never goes before a track's
-/// instrument (index raised to 1). Master chains take effects only.
+/// Inserts a device into a chain at `index` (clamped to the chain length). The chain keeps its
+/// order `[MIDI effects…] → instrument → [effects…]`: a MIDI effect goes into the MIDI part (index
+/// clamped to it), an instrument right behind the MIDI effects (only when the track has none), an
+/// audio effect behind the instrument. Master chains take audio effects only.
 pub fn insert_device(
     project: &Project,
     channel: ChannelRef,
     index: usize,
     spec: NewDevice,
 ) -> Result<(Project, DeviceId), EditError> {
-    let chain: &[Arc<Device>] = match channel {
-        ChannelRef::Track(id) => &project.tracks[locate_track(project, id)?].channel.devices,
+    let chain: &Channel = match channel {
+        ChannelRef::Track(id) => &project.tracks[locate_track(project, id)?].channel,
         ChannelRef::Master => {
-            if spec.role == DeviceRole::Instrument {
+            if spec.role != DeviceRole::Effect {
                 return Err(EditError::Invalid("the master takes effects only"));
             }
-            &project.master.devices
+            &project.master
         }
     };
-    let has_instrument = has_instrument(chain);
-    let index = index.min(chain.len());
+    let midi = chain.midi_effect_count();
+    let index = index.min(chain.devices.len());
     let index = match spec.role {
-        DeviceRole::Instrument if has_instrument => {
+        DeviceRole::MidiEffect => index.min(midi),
+        DeviceRole::Instrument if chain.instrument().is_some() => {
             return Err(EditError::Invalid("the track already has an instrument"));
         }
-        DeviceRole::Instrument if index != 0 => {
-            return Err(EditError::Invalid("an instrument goes first in the chain"));
+        DeviceRole::Instrument if index != midi => {
+            return Err(EditError::Invalid(
+                "an instrument goes right behind the MIDI effects",
+            ));
         }
-        DeviceRole::Instrument => 0,
-        DeviceRole::Effect if has_instrument => index.max(1),
-        DeviceRole::Effect => index,
+        DeviceRole::Instrument => midi,
+        DeviceRole::Effect => index.max(chain.first_effect_index()),
     };
     let mut p = project.clone();
     let id = DeviceId(p.alloc_id());
@@ -1114,7 +1118,7 @@ pub fn insert_device(
 }
 
 /// Puts `plugin` as the instrument of `track` (browser drop on a track): replaces the existing
-/// instrument (new device id, state `None`) or inserts one at index 0.
+/// instrument (new device id, state `None`) or inserts one behind the MIDI effects.
 pub fn replace_instrument(
     project: &Project,
     track: TrackId,
@@ -1130,11 +1134,13 @@ pub fn replace_instrument(
         bypass: false,
         state: None,
     });
-    let chain = &mut track_mut(&mut p, track_index).channel.devices;
-    if has_instrument(chain) {
-        chain[0] = device;
-    } else {
-        chain.insert(0, device);
+    let channel = &mut track_mut(&mut p, track_index).channel;
+    match channel.instrument() {
+        Some((index, _)) => channel.devices[index] = device,
+        None => {
+            let index = channel.midi_effect_count();
+            channel.devices.insert(index, device);
+        }
     }
     Ok((p, id))
 }
@@ -1149,8 +1155,9 @@ pub fn remove_device(project: &Project, device: DeviceId) -> EditResult {
     Ok(p)
 }
 
-/// Moves an effect within its chain to `to_index` of the chain without it (drag reorder). An
-/// instrument cannot move, and no effect can move before it (`Invalid`).
+/// Moves a MIDI effect or an audio effect within its part of the chain to `to_index` of the chain
+/// without it (drag reorder). An instrument cannot move; an effect cannot go before the instrument
+/// and a MIDI effect cannot go behind it (`Invalid`).
 pub fn move_device(project: &Project, device: DeviceId, to_index: usize) -> EditResult {
     let (channel, index, found) = project
         .find_device(device)
@@ -1158,16 +1165,25 @@ pub fn move_device(project: &Project, device: DeviceId, to_index: usize) -> Edit
     if found.role == DeviceRole::Instrument {
         return Err(EditError::Invalid("an instrument cannot move"));
     }
+    let role = found.role;
     let mut p = project.clone();
-    let chain = &mut channel_mut(&mut p, channel)?.devices;
-    let moved = chain.remove(index);
-    let to_index = to_index.min(chain.len());
-    if to_index == 0 && has_instrument(chain) {
-        return Err(EditError::Invalid(
-            "an effect cannot go before the instrument",
-        ));
+    let channel = channel_mut(&mut p, channel)?;
+    let moved = channel.devices.remove(index);
+    let to_index = to_index.min(channel.devices.len());
+    match role {
+        DeviceRole::MidiEffect if to_index > channel.midi_effect_count() => {
+            return Err(EditError::Invalid(
+                "a MIDI effect cannot go behind the instrument",
+            ));
+        }
+        DeviceRole::Effect if to_index < channel.first_effect_index() => {
+            return Err(EditError::Invalid(
+                "an effect cannot go before the instrument",
+            ));
+        }
+        _ => {}
     }
-    chain.insert(to_index, moved);
+    channel.devices.insert(to_index, moved);
     Ok(p)
 }
 
@@ -1263,13 +1279,6 @@ pub(crate) fn valid_meter(meter: Meter) -> bool {
 /// Whether `plugin` is the built-in klopfer.
 fn is_klopfer(plugin: &PluginRef) -> bool {
     plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_KLOPFER
-}
-
-/// Whether a chain starts with an instrument.
-fn has_instrument(chain: &[Arc<Device>]) -> bool {
-    chain
-        .first()
-        .is_some_and(|d| d.role == DeviceRole::Instrument)
 }
 
 /// `ids` without repetitions, in first-seen order.

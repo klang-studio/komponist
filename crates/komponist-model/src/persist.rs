@@ -379,6 +379,36 @@ mod tests {
         );
     }
 
+    /// WP-88: a MIDI effect is one more device role in the same chain list. A file saved before it
+    /// existed has none and loads and saves unchanged; one with MIDI effects round-trips.
+    #[test]
+    fn midi_effects_are_part_of_the_chain_and_old_files_load() {
+        use crate::{DeviceRole, edits::NewDevice};
+        let project = demo_project();
+        let old_text = to_json(&project).unwrap();
+        assert!(!old_text.contains("midieffect"));
+        let old = from_json(&old_text).unwrap();
+        assert_eq!(old.tracks[0].channel.midi_effect_count(), 0);
+        assert_eq!(to_json(&old).unwrap(), old_text);
+
+        let track = project.tracks[0].id;
+        let spec = NewDevice {
+            role: DeviceRole::MidiEffect,
+            plugin: project.tracks[0].channel.devices[0].plugin.clone(),
+            state: Some(Arc::from(&b"{}"[..])),
+        };
+        let (with, id) =
+            edits::insert_device(&project, crate::ChannelRef::Track(track), 0, spec).unwrap();
+        let text = to_json(&with).unwrap();
+        assert!(text.contains(r#""role": "midieffect""#), "{text}");
+        let back = from_json(&text).unwrap();
+        assert_eq!(back, with);
+        let channel = &back.tracks[0].channel;
+        assert_eq!(channel.midi_effect_count(), 1);
+        assert_eq!(channel.devices[0].id, id);
+        assert_eq!(channel.instrument().unwrap().0, 1);
+    }
+
     #[test]
     fn rejects_foreign_and_broken_files() {
         let not_a_project = [
