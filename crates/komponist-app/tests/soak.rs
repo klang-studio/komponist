@@ -90,6 +90,7 @@ fn soak_project() -> Project {
         name: "pisynth".into(),
         vendor: "klang-studio".into(),
         version: "0.1.0".into(),
+        module: Box::default(),
     };
     let builtin =
         |d: &Device| d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_PISYNTH;

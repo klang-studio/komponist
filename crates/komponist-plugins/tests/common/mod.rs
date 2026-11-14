@@ -188,6 +188,7 @@ pub fn clap_plugin(id: &str) -> PluginRef {
         name: id.rsplit('.').next().unwrap().into(),
         vendor: "klang-studio".into(),
         version: "0.1.0".into(),
+        module: Box::default(),
     }
 }
 
@@ -198,6 +199,7 @@ pub fn klopfer() -> PluginRef {
         name: "klopfer".into(),
         vendor: "Klopfer".into(),
         version: "0.1.0".into(),
+        module: Box::default(),
     }
 }
 

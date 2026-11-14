@@ -123,6 +123,7 @@ pub fn unknown(id: &str, name: &str) -> PluginRef {
         name: name.into(),
         vendor: "Test".into(),
         version: "1.0".into(),
+        module: Box::default(),
     }
 }
 

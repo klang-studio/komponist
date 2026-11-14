@@ -383,6 +383,14 @@ pub struct PluginRef {
     pub vendor: String,
     /// Version string at the time the device was added (informational).
     pub version: String,
+    /// File name of the plugin module at the time the device was added ("Vital.vst3",
+    /// "Surge XT.clap"); shown in the missing-plugins list (S06). Empty for built-ins and for
+    /// projects saved before this field existed; not written then, so such files stay unchanged.
+    ///
+    /// A `Box<str>`, not a `String`: it keeps `PluginRef` (and `PluginError`, which holds one)
+    /// under clippy's `result_large_err` limit.
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub module: Box<str>,
 }
 
 /// Plugin format of a [`PluginRef`]. Shown as the format tag "INTERN" / "CLAP" / "VST3".

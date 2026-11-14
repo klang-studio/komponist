@@ -366,6 +366,7 @@ fn bridges_in_series_share_the_callback_deadline() {
         name: "probe".into(),
         vendor: String::new(),
         version: String::new(),
+        module: Box::default(),
     };
     let tracks = (1..=2)
         .map(|t| {

@@ -227,6 +227,7 @@ fn plugin(n: u8) -> PluginRef {
         name: name.to_owned(),
         vendor: "Test".to_owned(),
         version: "1".to_owned(),
+        module: Box::default(),
     }
 }
 

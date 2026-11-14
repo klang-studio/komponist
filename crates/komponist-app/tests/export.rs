@@ -658,6 +658,7 @@ fn a_device_that_drops_out_of_the_render_is_named() {
         name: "Kaputt-Hall".into(),
         vendor: "Test".into(),
         version: "1.0".into(),
+        module: Box::default(),
     };
     let (project, _) = with_effect(project, kaputt);
     let host = FailingHost {

@@ -105,6 +105,7 @@ fn plugin(name: &str) -> PluginRef {
         name: name.to_owned(),
         vendor: "Test".to_owned(),
         version: "1.0".to_owned(),
+        module: Box::default(),
     }
 }
 
@@ -115,6 +116,7 @@ fn klopfer() -> PluginRef {
         name: "klopfer".to_owned(),
         vendor: "Klopfer".to_owned(),
         version: "0.1.0".to_owned(),
+        module: Box::default(),
     }
 }
 

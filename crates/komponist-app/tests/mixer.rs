@@ -245,7 +245,7 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     assert!(h.query_by_role_and_label(Role::Group, &lead).is_none());
 
     // The mixer tab in the normal dock: the lean strip shows name, M S R, fader and values; no
-    // sends, inserts, instrument line or pan knob (pan stays in the maximised mixer).
+    // sends, inserts or instrument line; a small pan knob stands in the name row (Q8).
     h.state_mut()
         .dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
     h.run_steps(2);
@@ -256,10 +256,7 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
             .is_none()
     );
     s.get_by_role_and_label(Role::Slider, &names::volume("Lead"));
-    assert!(
-        s.query_by_role_and_label(Role::Slider, &names::pan("Lead"))
-            .is_none()
-    );
+    s.get_by_role_and_label(Role::Slider, &names::pan("Lead"));
     s.get_by_role_and_label(Role::Button, "Mute · Lead");
     s.get_by_role_and_label(Role::Button, "Solo · Lead");
     assert!(
@@ -279,6 +276,37 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     assert!(fader.height() >= komponist_app::views::mixer::metrics::FADER_AREA_MIN - 1.0);
     // The arrangement stays above it.
     header(&h, "Lead");
+}
+
+#[test]
+fn the_lean_dock_strip_has_a_pan_knob_that_costs_the_fader_no_height() {
+    // Owner decision Q8 (2026-11-14): drag, Alt-click and text entry like the maximised strip.
+    let mut app = App::headless(demo_project());
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
+    let mut h = harness(app);
+    assert!(!h.state().ui().layout.dock_maximized);
+    let name = names::pan("Bass");
+    let knob = in_strip(&h, "Bass", Role::Slider, &name);
+    let diameter = komponist_tokens::size::KNOB_SMALL;
+    assert_eq!((knob.width(), knob.height()), (diameter, diameter));
+    // It sits in the name row, above the toggles.
+    let toggles = in_strip(&h, "Bass", Role::Button, "Mute · Bass");
+    assert!(knob.bottom() <= toggles.top());
+    // The fader keeps the height it had before the knob (215 px of track + thumb at 1x).
+    let fader = in_strip(&h, "Bass", Role::Slider, &names::volume("Bass"));
+    assert!(fader.height() >= 215.0 - 0.5, "fader {}", fader.height());
+    drag(&mut h, knob.center(), knob.center() - vec2(0.0, 50.0));
+    let pan = h.state().project().tracks[1].channel.pan;
+    assert!(pan > 0.3, "{pan}");
+    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_PAN));
+    click_with(&mut h, knob.center(), Modifiers::ALT);
+    assert_eq!(h.state().project().tracks[1].channel.pan, 0.0);
+    double_click(&mut h, knob.center());
+    h.get_by_role_and_label(Role::TextInput, &format!("{name} Eingabe"))
+        .type_text("L 20");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!((h.state().project().tracks[1].channel.pan + 0.4).abs() < 1e-6);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -790,31 +818,32 @@ fn a_track_selected_elsewhere_is_scrolled_into_view() {
 }
 
 #[test]
-fn tab_in_the_maximised_mixer_moves_the_widget_focus_while_a_ring_shows() {
-    // WP-30's shell rule, checked for the mixer (WP-43 note): a widget reached with Tab (focus
-    // ring visible) keeps Tab; with no focused widget Tab leaves the mixer.
+fn tab_always_leaves_the_maximised_mixer_even_over_a_focus_ring() {
+    // Owner decision Q9 (2026-11-14): one key back to the arrangement, whatever has the focus.
     let mut h = harness(s04());
     let pan = names::pan("Lead");
     click_in(&mut h, "Lead", Role::Slider, &pan, Modifiers::NONE);
     h.run_steps(2);
     komponist_ui::focus::set_visible(&h.ctx, true);
-    h.key_press(egui::Key::Tab);
-    h.run_steps(2);
-    assert!(h.state().ui().layout.dock_maximized, "Tab moved the focus");
-    // Tab keeps walking the widgets (keyboard access to every knob and fader) …
-    h.key_press(egui::Key::Tab);
-    h.run_steps(2);
-    assert!(h.state().ui().layout.dock_maximized, "still in the mixer");
-    // … until no widget has the focus.
-    h.ctx.memory_mut(|m| {
-        if let Some(id) = m.focused() {
-            m.surrender_focus(id);
-        }
-    });
-    komponist_ui::focus::set_visible(&h.ctx, false);
+    assert!(h.ctx.memory(|m| m.focused().is_some()));
     h.key_press(egui::Key::Tab);
     h.run_steps(2);
     assert!(!h.state().ui().layout.dock_maximized, "Tab left the mixer");
+}
+
+#[test]
+fn shift_tab_still_moves_the_widget_focus_in_the_maximised_mixer() {
+    let mut h = harness(s04());
+    let pan = names::pan("Lead");
+    click_in(&mut h, "Lead", Role::Slider, &pan, Modifiers::NONE);
+    h.run_steps(2);
+    komponist_ui::focus::set_visible(&h.ctx, true);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::Tab);
+    h.run_steps(2);
+    assert!(
+        h.state().ui().layout.dock_maximized,
+        "Shift Tab moves the focus"
+    );
 }
 
 #[test]

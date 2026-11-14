@@ -364,6 +364,7 @@ mod tests {
             name: "Surge XT".into(),
             vendor: String::new(),
             version: String::new(),
+            module: Box::default(),
         };
         let b = PluginRef {
             id: "vital".into(),
@@ -411,6 +412,7 @@ mod tests {
             name: "Reverb".into(),
             vendor: "Example".into(),
             version: "1.0".into(),
+            module: Box::default(),
         });
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -479,6 +481,7 @@ mod tests {
             name: "pisynth".into(),
             vendor: String::new(),
             version: "9".into(),
+            module: Box::default(),
         };
         assert!(f.contains(&pisynth));
         f.toggle(&pisynth);

@@ -55,6 +55,7 @@ pub fn device(id: u64, role: DeviceRole, name: &str) -> Arc<Device> {
             name: name.to_owned(),
             vendor: "Test".to_owned(),
             version: "1".to_owned(),
+            module: Box::default(),
         },
         bypass: false,
         state: None,

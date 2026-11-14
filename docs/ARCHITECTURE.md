@@ -730,8 +730,8 @@ These need a decision (the handoff says: report contradictions; the design syste
    and M S R above the fader, which leaves 121 px in the normal dock. Deviation, owner decision: the
    strip's paddings are tighter (4 px) and the pan value stands right of the knob; the empty reserved
    sends are hidden until busses exist; the normal dock shows a lean strip (name, M S R, fader,
-   values; no instrument line, inserts or pan). The instrument is the name's tooltip and AccessKit
-   description; pan stays in the maximised mixer and the inspector's Kanal section. Fader area:
+   values; no instrument line or inserts). The instrument is the name's tooltip and AccessKit
+   description; pan is a small knob in the lean strip's name row (item 9, Q8). Fader area:
    maximised 641 → 753 px, normal dock 121 → 215 px (`views/mixer/metrics.rs`).
 8. **Track toggles R and I: symbols, own group (decided 2026-11-14).** Wherever the M S R I buttons
    appear (arrangement track header; the mixer strip has M S R, the master only M; the inspector and
@@ -741,6 +741,20 @@ These need a decision (the handoff says: report contradictions; the design syste
    keep their letters. Armed R is `state.record`; monitoring on is `state.play` (green) instead of the
    design system's accent blue. Size, hit area, tooltips and German AccessKit names ("Record-Arm",
    "Monitoring") are unchanged.
+
+9. **Owner UI decisions 2026-11-14** (WP-62 questions Q1–Q10, `docs/OWNER-QUESTIONS.md`):
+   Q1 every bar line stays `line.2`. Q2 no „Falten“ button. Q3 dialogs stay vertically centred.
+   Q4 the missing-plugins list (S06) shows the module file name („Vital.vst3“) under a plugin;
+   `PluginRef.module` stores it (filled from the scan, `#[serde(default)]`, not written when
+   empty, so no format version bump: old files load, new files still load in older builds); old
+   projects show nothing there (a CLAP keeps its readable id). Q5 the inspector row tag for a load
+   failure is „lädt nicht“ (card and frame keep „Lässt sich nicht laden“). Q6 transport toggles
+   keep the design system (Sans 12 / padding 10). Q7 monitoring on stays `state.play` (green);
+   `design/README.md` documents it (C3). Q8 the lean dock strips get a small pan knob (Ø 20) at
+   the right end of the name row, so the fader keeps its height (item 7). Q9 Tab leaves the
+   maximised mixer always, even over a focus ring (Shift Tab and arrows still move between
+   widgets; dialogs and text fields are unchanged, item 1). Q10 the plugin-frame position is saved
+   on close only.
 
 ---
 

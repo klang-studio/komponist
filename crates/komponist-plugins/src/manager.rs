@@ -174,10 +174,11 @@ pub struct MissingPlugin {
 /// Why a plugin manager call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginError {
-    /// The plugin is not in the catalog (device status becomes `Missing`).
-    NotInstalled(PluginRef),
+    /// The plugin is not in the catalog (device status becomes `Missing`). Boxed to keep the error
+    /// small (clippy `result_large_err`).
+    NotInstalled(Box<PluginRef>),
     /// The plugin is built in and runs in process; the app creates its processor.
-    InProcess(PluginRef),
+    InProcess(Box<PluginRef>),
     /// No bridge for this device.
     UnknownDevice(DeviceId),
     /// The bridge process could not be started.
@@ -394,11 +395,11 @@ impl PluginManager {
         let Some(entry) = self.catalog.resolve(&device.plugin) else {
             self.retire(device.id, false);
             self.set_status(device.id, DeviceStatus::Missing);
-            return Err(PluginError::NotInstalled(device.plugin.clone()));
+            return Err(PluginError::NotInstalled(Box::new(device.plugin.clone())));
         };
         let (format, bundle, plugin_id) = match &entry.location {
             PluginLocation::InProcess(_) => {
-                return Err(PluginError::InProcess(device.plugin.clone()));
+                return Err(PluginError::InProcess(Box::new(device.plugin.clone())));
             }
             PluginLocation::Bundle {
                 format,

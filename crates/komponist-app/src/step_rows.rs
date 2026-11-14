@@ -115,6 +115,7 @@ mod tests {
             name: id.into(),
             vendor: String::new(),
             version: String::new(),
+            module: Box::default(),
         }
     }
 

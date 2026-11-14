@@ -211,6 +211,11 @@ fn scanned_entry(d: &PluginDescriptor) -> CatalogEntry {
             name: d.name.clone(),
             vendor: d.vendor.clone(),
             version: d.version.clone(),
+            module: d
+                .bundle
+                .file_name()
+                .map(|n| n.to_string_lossy().into())
+                .unwrap_or_default(),
         },
         kind: d.kind,
         category: (d.kind == PluginKind::Effect)
@@ -441,6 +446,28 @@ mod tests {
     }
 
     #[test]
+    fn scanned_entries_carry_the_module_file_name() {
+        let mut catalog = Catalog::builtin(None);
+        let mut vst3 = descriptor("0123ABCD", "Vital", PluginKind::Instrument, &[]);
+        vst3.format = BundleFormat::Vst3;
+        vst3.bundle = "/home/u/.vst3/Vital.vst3".into();
+        catalog.set_scanned(&[
+            descriptor("org.surge", "Surge XT", PluginKind::Instrument, &[]),
+            vst3,
+        ]);
+        let module = |name: &str| {
+            catalog
+                .entries()
+                .iter()
+                .find(|e| e.plugin.name == name)
+                .map(|e| e.plugin.module.clone())
+        };
+        assert_eq!(module("Surge XT").as_deref(), Some("Surge XT.clap"));
+        assert_eq!(module("Vital").as_deref(), Some("Vital.vst3"));
+        assert_eq!(module("pisynth").as_deref(), Some(""));
+    }
+
+    #[test]
     fn scanned_entries_are_sorted_filtered_and_resolved() {
         let mut catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
         let mut vst3 = descriptor("0123ABCD", "dexed", PluginKind::Instrument, &["instrument"]);
@@ -489,6 +516,7 @@ mod tests {
             name: "renamed".into(),
             vendor: String::new(),
             version: String::new(),
+            module: Box::default(),
         };
         assert_eq!(catalog.resolve(&surge).unwrap().plugin.name, "Surge XT");
         let as_vst3 = PluginRef {
@@ -524,6 +552,7 @@ mod tests {
             name: "Klopfer".into(),
             vendor: "Klopfer".into(),
             version: "0.1.0".into(),
+            module: Box::default(),
         };
         // Listed once (as the built-in), still found for a project that names the CLAP plugin.
         assert_eq!(catalog.entries().len(), 2);

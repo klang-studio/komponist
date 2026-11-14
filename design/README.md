@@ -52,3 +52,18 @@ by a contract change when those need them:
   `ks-view.js` `arrView`). G2 decided the arrangement grid stays `line.2` (design system);
   recheck in WP-62.
 - `#34363b`, `#4d5056`, `#5a5d63`: fader thumb greys (WP-21 maps them to the nearest tokens).
+
+## Track toggles M S R I (owner decision 2026-11-14, contract change request C3)
+
+The design system's toggle table lets "monitoring on" use the accent blue. The owner decided
+(question Q7) that monitoring on stays green. The table now reads:
+
+| Toggle | Off | On: fill | On: ink |
+|---|---|---|---|
+| M (mute) | `surface.3` | `state.mute` | `surface.0` |
+| S (solo) | `surface.3` | `state.solo` | `surface.0` |
+| R (record arm) | `surface.3` | `state.record` | `text.1` |
+| I (monitoring) | `surface.3` | `state.play` (green, not `accent`) | `surface.0` |
+
+Green separates I from mute (yellow), solo and record (red); accent blue would equal Snap and Loop.
+Symbols and spacing of R and I: `docs/ARCHITECTURE.md` §13 item 8.

@@ -49,6 +49,7 @@ fn pisynth() -> PluginRef {
         name: "pisynth".into(),
         vendor: "klang-studio".into(),
         version: "0.1.0".into(),
+        module: Box::default(),
     }
 }
 
