@@ -126,6 +126,8 @@ struct Sequence {
     logs: HashMap<u32, (EventLog, Checker)>,
     seen: Seen,
     seed: u32,
+    /// Hash of every output sample's bits so far (FNV-1a over the words).
+    digest: u64,
 }
 
 impl Sequence {
@@ -148,6 +150,7 @@ impl Sequence {
             logs: HashMap::new(),
             seen: HashSet::new(),
             seed,
+            digest: 0xcbf2_9ce4_8422_2325,
         };
         for slot in 1..=INSTRUMENTS {
             s.insert_sine(slot);
@@ -345,6 +348,9 @@ impl Sequence {
                 self.seed
             );
         }
+        for x in self.rig.l.iter().chain(&self.rig.r) {
+            self.digest = (self.digest ^ u64::from(x.to_bits())).wrapping_mul(0x0100_0000_01b3);
+        }
         self.rig.l.clear();
         self.rig.r.clear();
         self.rig.events.clear();
@@ -357,7 +363,12 @@ impl Sequence {
     }
 
     /// Runs the sequence; returns the number of note-ons played.
-    fn run(mut self, steps: usize) -> usize {
+    fn run(self, steps: usize) -> usize {
+        self.run_digest(steps).0
+    }
+
+    /// Runs the sequence; returns the number of note-ons played and the output's digest.
+    fn run_digest(mut self, steps: usize) -> (usize, u64) {
         let first = self.program();
         self.rig.send(Command::SetProgram(Box::new(first)));
         for _ in 0..steps {
@@ -380,7 +391,7 @@ impl Sequence {
                 );
             }
         }
-        self.seen.len()
+        (self.seen.len(), self.digest)
     }
 }
 
@@ -420,6 +431,28 @@ fn random_command_sequences_2() {
 #[test]
 fn random_command_sequences_3() {
     sequences(750..1000);
+}
+
+/// WP-65: the same sequences with 1–3 worker threads give bit-exact the same output (and pass
+/// the same checks).
+#[test]
+fn random_command_sequences_with_workers_are_bit_exact() {
+    let (mut batches, mut worker_jobs) = (0, 0);
+    for seed in 0..120 {
+        let single = Sequence::new(seed).run_digest(24);
+        let mut s = Sequence::new(seed);
+        s.rig.engine.set_workers(1 + seed as usize % 3, None);
+        let stats = s.rig.engine.worker_stats();
+        let parallel = s.run_digest(24);
+        assert_eq!(single, parallel, "seed {seed}");
+        batches += stats.batches();
+        worker_jobs += stats.worker_jobs();
+    }
+    // Not vacuous: the pool ran batches, and workers took jobs.
+    assert!(
+        batches > 500 && worker_jobs > 100,
+        "{batches} {worker_jobs}"
+    );
 }
 
 #[test]

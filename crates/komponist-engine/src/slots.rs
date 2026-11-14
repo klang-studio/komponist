@@ -91,6 +91,72 @@ impl Slot {
     }
 }
 
+/// Access to slots by index, for [`run_chain`]: the engine's whole table on the calling thread, or
+/// a [`SharedSlots`] view in a parallel job.
+pub(crate) trait SlotTable {
+    /// The slot at `index`, if the table has one.
+    fn slot_mut(&mut self, index: usize) -> Option<&mut Slot>;
+}
+
+impl SlotTable for [Slot] {
+    fn slot_mut(&mut self, index: usize) -> Option<&mut Slot> {
+        self.get_mut(index)
+    }
+}
+
+/// The engine's slot table seen by several parallel jobs at once (WP-65). Each job may only touch
+/// the slots of its own chain; the engine checks when it installs a program that no slot appears
+/// in two track chains ([`chains_exclusive`]) and runs the tracks one after another otherwise.
+#[derive(Clone, Copy)]
+pub(crate) struct SharedSlots {
+    ptr: *mut Slot,
+    len: usize,
+}
+
+// SAFETY: a `SharedSlots` is only created by `SharedSlots::new`, whose contract makes the slots a
+// job reaches through it disjoint from every other job's; `Slot` is `Send`.
+unsafe impl Send for SharedSlots {}
+// SAFETY: as above.
+unsafe impl Sync for SharedSlots {}
+
+impl SharedSlots {
+    /// # Safety
+    /// While the view is used, `slots` must not be accessed otherwise, and every slot must be
+    /// reached through at most one thread at a time (each parallel job only uses the slots of its
+    /// own chain, and no slot is in two chains).
+    pub(crate) unsafe fn new(slots: &mut [Slot]) -> SharedSlots {
+        SharedSlots {
+            ptr: slots.as_mut_ptr(),
+            len: slots.len(),
+        }
+    }
+}
+
+impl SlotTable for SharedSlots {
+    fn slot_mut(&mut self, index: usize) -> Option<&mut Slot> {
+        // SAFETY: in bounds; exclusive per the contract of `SharedSlots::new`.
+        (index < self.len).then(|| unsafe { &mut *self.ptr.add(index) })
+    }
+}
+
+/// Whether no slot appears twice in the chains of `chains` (within one chain or across chains):
+/// then their chains can run in parallel. Slots outside the table are ignored (never run).
+pub(crate) fn chains_exclusive<'a>(chains: impl Iterator<Item = &'a [ChainSlot]>) -> bool {
+    let mut seen = [0u64; crate::MAX_SLOTS / 64];
+    for device in chains.flatten() {
+        let index = device.slot.0 as usize;
+        if index >= crate::MAX_SLOTS {
+            continue;
+        }
+        let (word, bit) = (index / 64, 1u64 << (index % 64));
+        if seen[word] & bit != 0 {
+            return false;
+        }
+        seen[word] |= bit;
+    }
+    true
+}
+
 /// Which ping-pong buffer holds a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Buf {
@@ -139,9 +205,9 @@ impl Bufs {
 /// `instrument_events`. Every other device is an effect and gets its own pending `AllNotesOff` and
 /// parameters as events.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_chain(
+pub(crate) fn run_chain<T: SlotTable + ?Sized>(
     chain: &[ChainSlot],
-    slots: &mut [Slot],
+    slots: &mut T,
     ctx: &ProcessContext,
     instrument_events: &[Event],
     fx_events: &mut EventList,
@@ -152,7 +218,7 @@ pub(crate) fn run_chain(
     let mut current = Buf::A;
     let mut failed = false;
     for (index, device) in chain.iter().enumerate() {
-        let Some(slot) = slots.get_mut(device.slot.0 as usize) else {
+        let Some(slot) = slots.slot_mut(device.slot.0 as usize) else {
             continue;
         };
         let instrument = track && index == 0 && device.role == DeviceRole::Instrument;
@@ -201,6 +267,29 @@ pub(crate) fn run_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::program::SlotId;
+
+    fn chain(slots: &[u32]) -> Vec<ChainSlot> {
+        slots
+            .iter()
+            .map(|&s| ChainSlot {
+                device: komponist_model::DeviceId(u64::from(s)),
+                slot: SlotId(s),
+                role: DeviceRole::Effect,
+                bypass: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exclusive_chains() {
+        let (a, b) = (chain(&[0, 5, 1023]), chain(&[6, 70, 5000, 5000]));
+        assert!(chains_exclusive([&a[..], &b[..]].into_iter()));
+        let c = chain(&[7, 70]);
+        assert!(!chains_exclusive([&a[..], &b[..], &c[..]].into_iter()));
+        let d = chain(&[3, 3]);
+        assert!(!chains_exclusive([&d[..]].into_iter()));
+    }
 
     #[test]
     fn params_coalesce_per_id_and_wait_for_room() {

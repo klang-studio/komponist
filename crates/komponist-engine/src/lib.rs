@@ -14,14 +14,17 @@
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
 //! - [`export`]: WAV export of a frame range ([`export::export`]): render, normalise, dither, write.
 //! - [`testing`]: test processors ([`testing::TestSine`], [`testing::TestGain`]).
+//! - [`workers`]: the worker pool for parallel track processing ([`Engine::set_workers`]).
 //!
 //! Engine internals: `transport` (position, loop, count-in), `sequencer` (active notes,
 //! probability, live input), `slots` (processor table, chains), `mixer` (fader, balance, solo,
-//! delay compensation), `metronome`, `garbage` (event queue with the garbage holding list).
+//! delay compensation), `metronome`, `garbage` (event queue with the garbage holding list), `sys`
+//! (futex, floating-point mode and `SCHED_FIFO` for the workers).
 //!
 //! Threads: `Engine` lives on the audio thread (or a render worker); `EngineHandle`, the compiler
 //! and processor creation run on the UI thread. Everything crossing between them goes through the
-//! rtrb queues of [`api`] or atomics.
+//! rtrb queues of [`api`] or atomics. With workers ([`Engine::set_workers`]), the track chains of
+//! a segment also run on the engine's worker threads (see [`workers`]).
 
 pub mod api;
 pub mod compile;
@@ -34,8 +37,10 @@ pub mod processor;
 pub mod program;
 mod sequencer;
 mod slots;
+mod sys;
 pub mod testing;
 mod transport;
+pub mod workers;
 
 // Unit tests run RT paths inside `assert_no_alloc`, which needs its allocator (debug builds only;
 // in release builds `assert_no_alloc` is a no-op).

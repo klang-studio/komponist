@@ -15,6 +15,7 @@ mod export;
 mod export_demo;
 mod live;
 mod mixing;
+mod parallel;
 mod random;
 mod swap;
 mod timing;

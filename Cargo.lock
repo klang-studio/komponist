@@ -2491,6 +2491,7 @@ dependencies = [
  "komponist-builtin",
  "komponist-model",
  "rtrb",
+ "rustix 1.1.6",
 ]
 
 [[package]]

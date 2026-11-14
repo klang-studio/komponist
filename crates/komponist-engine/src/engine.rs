@@ -59,15 +59,24 @@ use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, Transpo
 use crate::garbage::Outbox;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
-use crate::processor::{DEADLINE_SHARE, EventKind, ProcessContext, ProcessorError};
-use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId};
+use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
+use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
-use crate::slots::{Buf, Bufs, Slot, run_chain};
+use crate::slots::{Bufs, SharedSlots, Slot, chains_exclusive, run_chain};
 use crate::transport::{Song, Transport};
+use crate::workers::{MAX_WORKERS, Pool, WorkerStats, WorkerStatus};
 use crate::{
     COMMAND_CAPACITY, EVENT_CAPACITY, MAX_BLOCK, MAX_COMMANDS_PER_BLOCK, MAX_EVENTS_PER_BLOCK,
     MAX_SLOTS, MAX_TRACKS,
 };
+
+/// Shortest segment whose tracks go to the worker pool: below it (tiny segments at a loop end, an
+/// odd callback size) waking the workers costs more than the work.
+const PARALLEL_MIN_FRAMES: usize = 32;
+
+/// How long the dispatching thread of an offline render waits for running track jobs before it
+/// looks again (offline renders have no deadline; nothing is counted as late).
+const OFFLINE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Engine settings fixed at creation (the sample rate can change later with
 /// [`Engine::set_sample_rate`]).
@@ -164,6 +173,11 @@ impl Engine {
             unreported: false,
             dropped: 0,
             held_input: 0,
+            lanes: vec![Lane::new()].into_boxed_slice(),
+            pool: None,
+            order: vec![0; MAX_TRACKS].into_boxed_slice(),
+            exclusive: true,
+            stats: Arc::new(WorkerStats::default()),
         };
         let engine = Box::new(Engine {
             core,
@@ -222,6 +236,45 @@ impl Engine {
         }
     }
 
+    /// Non-RT (engine out of the audio callback). Processes tracks in parallel from now on: starts
+    /// `threads` worker threads (at most [`MAX_WORKERS`]; 0 = none, every track on the calling
+    /// thread) at `SCHED_FIFO` `priority` (`None`: normal scheduling), replacing the running pool
+    /// (whose threads are joined). Keeps the pool if it already has that many threads and that
+    /// priority. If no thread can start, the engine stays single-threaded; the status says so.
+    ///
+    /// The output does not change: it is bit-exact with the single-threaded engine (see
+    /// [`crate::workers`]). The app starts the pool when a stream starts; export uses it too.
+    pub fn set_workers(&mut self, threads: usize, priority: Option<i32>) -> WorkerStatus {
+        let core = &mut self.core;
+        let threads = threads.min(MAX_WORKERS);
+        if let Some(pool) = &core.pool
+            && pool.threads() == threads
+            && pool.status().priority == priority
+        {
+            return pool.status().clone();
+        }
+        core.pool = None;
+        if threads == 0 {
+            core.lanes = vec![Lane::new()].into_boxed_slice();
+            return WorkerStatus::default();
+        }
+        let (pool, status) = Pool::start(threads, priority, Arc::clone(&core.stats));
+        let lanes = pool.as_ref().map_or(0, Pool::threads) + 1;
+        core.lanes = (0..lanes).map(|_| Lane::new()).collect();
+        core.pool = pool;
+        status
+    }
+
+    /// Worker threads running (0: single-threaded).
+    pub fn workers(&self) -> usize {
+        self.core.pool.as_ref().map_or(0, Pool::threads)
+    }
+
+    /// The worker pool's counters (shared; they survive [`Engine::set_workers`]).
+    pub fn worker_stats(&self) -> Arc<WorkerStats> {
+        Arc::clone(&self.core.stats)
+    }
+
     /// RT. Renders `out_l.len()` frames (any length; `out_l` and `out_r` have equal length) of the
     /// master output into the two planar buffers, overwriting them. `input` carries this callback's
     /// live MIDI.
@@ -269,6 +322,13 @@ struct TrackState {
     mute: Option<bool>,
     solo: Option<bool>,
     pdc: DelayLine,
+    /// The instrument's events of the current segment (capacity `MAX_EVENTS_PER_BLOCK`).
+    events: Vec<Event>,
+    /// The track's output of the current segment (after fader, balance and delay compensation),
+    /// left and right, summed into the master bus in track order.
+    out: [Box<[f32]>; 2],
+    /// A processor of the chain failed in the current segment.
+    failed: bool,
 }
 
 impl TrackState {
@@ -282,6 +342,12 @@ impl TrackState {
             mute: None,
             solo: None,
             pdc: DelayLine::new(),
+            events: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
+            out: [
+                vec![0.0; MAX_BLOCK].into_boxed_slice(),
+                vec![0.0; MAX_BLOCK].into_boxed_slice(),
+            ],
+            failed: false,
         }
     }
 
@@ -327,6 +393,97 @@ struct Core {
     dropped: u32,
     /// Keys held on the MIDI inputs (bit = key), published as [`Telemetry::held_input_keys`].
     held_input: u128,
+    /// Scratch of the threads that run track chains: lane 0 for the calling thread, lane `w` for
+    /// worker `w`.
+    lanes: Box<[Lane]>,
+    /// The worker pool, if any ([`Engine::set_workers`]).
+    pool: Option<Pool>,
+    /// Order in which the track jobs of a segment are claimed (program track indices).
+    order: Box<[u16]>,
+    /// No slot appears in two track chains of the program, so the chains may run in parallel.
+    exclusive: bool,
+    stats: Arc<WorkerStats>,
+}
+
+/// Scratch buffers of one thread that runs track chains.
+struct Lane {
+    bufs: Bufs,
+    fx_events: EventList,
+}
+
+impl Lane {
+    /// Non-RT.
+    fn new() -> Lane {
+        Lane {
+            bufs: Bufs::new(),
+            fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
+        }
+    }
+}
+
+/// One segment's track jobs (chain, fader, balance, meter, delay compensation into the track's
+/// `out`), shared by the threads that run them. Job `j` processes program track `order[j]`.
+struct TrackJobs<'a> {
+    tracks: &'a [Arc<TrackProgram>],
+    map: &'a [u16],
+    order: &'a [u16],
+    states: *mut TrackState,
+    slots: SharedSlots,
+    lanes: *mut Lane,
+    lane_count: usize,
+    ctx: &'a ProcessContext,
+    any_solo: bool,
+    n: usize,
+}
+
+// SAFETY: the raw pointers are only dereferenced in `TrackJobs::run`, whose contract keeps the
+// track states, slots and lanes of concurrent jobs disjoint; everything else is shared read-only
+// (`TrackProgram` and `ProcessContext` are `Sync`).
+unsafe impl Sync for TrackJobs<'_> {}
+
+impl TrackJobs<'_> {
+    /// RT. Runs job `j` on `lane`.
+    ///
+    /// # Safety
+    /// No other thread uses `lane` meanwhile, each job runs at most once per segment, nothing
+    /// else touches the track states, slots and lanes while jobs run, and the program's track
+    /// chains are slot-exclusive if jobs run concurrently.
+    unsafe fn run(&self, j: usize, lane: usize) {
+        let index = usize::from(self.order[j]);
+        let track = &*self.tracks[index];
+        let state = usize::from(self.map[index]);
+        assert!(state < MAX_TRACKS && lane < self.lane_count);
+        // SAFETY: `map` is injective (one state per program track) and every job runs once, so
+        // no other job reaches this state; the lane belongs to the calling thread.
+        let (state, lane) = unsafe { (&mut *self.states.add(state), &mut *self.lanes.add(lane)) };
+        let n = self.n;
+        let Lane { bufs, fx_events } = lane;
+        bufs.a[0][..n].fill(0.0);
+        bufs.a[1][..n].fill(0.0);
+        let mut slots = self.slots;
+        let (result, failed) = run_chain(
+            &track.chain,
+            &mut slots,
+            self.ctx,
+            &state.events,
+            fx_events,
+            bufs,
+            n,
+            true,
+        );
+        state.failed = failed;
+        let gain = state.gain.unwrap_or(track.gain);
+        let pan = state.pan.unwrap_or(track.pan);
+        let mute = state.mute.unwrap_or(track.mute);
+        let solo = state.solo.unwrap_or(track.solo);
+        let target = targets(gain, pan, audible(mute, solo, self.any_solo));
+        let (l, r) = bufs.pair(result, n);
+        state.fader.apply(l, r, target);
+        track.meter.record(peak(l), peak(r));
+        state.pdc.process(l, r, track.pdc_delay);
+        state.out[0][..n].copy_from_slice(l);
+        state.out[1][..n].copy_from_slice(r);
+    }
 }
 
 /// Whether a command retires an object (and therefore needs room in the garbage holding list).
@@ -727,6 +884,7 @@ impl Core {
             }
         }
         self.map[..count].copy_from_slice(&map[..count]);
+        self.exclusive = chains_exclusive(program.tracks[..count].iter().map(|t| &t.chain[..]));
         // A device whose bypass turns on is reset once.
         for device in Core::program_slots(&program) {
             if let Some(slot) = self.slots.get_mut(device.slot.0 as usize) {
@@ -835,6 +993,10 @@ impl Core {
             metronome,
             unreported,
             dropped,
+            lanes,
+            pool,
+            order,
+            exclusive,
             ..
         } = self;
 
@@ -851,7 +1013,12 @@ impl Core {
                     .iter()
                     .zip(&map[..count])
                     .any(|(t, &s)| tracks[usize::from(s)].solo.unwrap_or(t.solo));
-                for (track, &state) in program.tracks[..count].iter().zip(&map[..count]) {
+                // 1. Every track's events, on this thread in track order (note ids, probability
+                // rolls and captured input stay deterministic). A bridge instrument at the head of
+                // a chain starts at once (`Processor::begin`), so it works while the chains run.
+                let mut kicked = [false; MAX_TRACKS];
+                let tracks_and_states = program.tracks[..count].iter().zip(&map[..count]);
+                for (index, (track, &state)) in tracks_and_states.enumerate() {
                     let state = &mut tracks[usize::from(state)];
                     // Live input of this track.
                     live.clear();
@@ -938,44 +1105,81 @@ impl Core {
                             outbox.send(event, telemetry);
                         },
                     );
-                    // Chain, fader, balance, meter, delay compensation, bus.
-                    bufs.a[0][..n].fill(0.0);
-                    bufs.a[1][..n].fill(0.0);
-                    let (result, failed) = run_chain(
-                        &track.chain,
-                        slots,
-                        &ctx,
-                        events.finish(),
-                        fx_events,
-                        bufs,
-                        n,
-                        true,
-                    );
-                    *unreported |= failed;
-                    let gain = state.gain.unwrap_or(track.gain);
-                    let pan = state.pan.unwrap_or(track.pan);
-                    let mute = state.mute.unwrap_or(track.mute);
-                    let solo = state.solo.unwrap_or(track.solo);
-                    let target = targets(gain, pan, audible(mute, solo, any_solo));
-                    let Bufs { a, b, bus, .. } = &mut *bufs;
-                    let [l, r] = match result {
-                        Buf::A => a,
-                        Buf::B => b,
-                    };
-                    let (l, r) = (&mut l[..n], &mut r[..n]);
-                    state.fader.apply(l, r, target);
-                    track.meter.record(peak(l), peak(r));
-                    state.pdc.process(l, r, track.pdc_delay);
-                    add(&mut bus[0][..n], l);
-                    add(&mut bus[1][..n], r);
+                    state.events.clear();
+                    state.events.extend_from_slice(events.finish());
+                    if let Some(slot) = instrument
+                        && let Some(processor) = slots
+                            .get_mut(slot.0 as usize)
+                            .and_then(|s| s.processor.as_mut())
+                    {
+                        let silence = &bufs.silence[..n];
+                        kicked[index] = processor.begin(&ctx, &state.events, [silence, silence]);
+                    }
+                }
+                // 2. The chains (fader, balance, meter, delay compensation into each track's
+                // `out`): on the worker pool if there is one, no slot is in two chains and the
+                // segment is not tiny, else here. Kicked tracks go last: their bridges work
+                // meanwhile.
+                let mut next = 0;
+                for late in [false, true] {
+                    for (index, _) in kicked[..count].iter().enumerate().filter(|k| *k.1 == late) {
+                        order[next] = index as u16;
+                        next += 1;
+                    }
+                }
+                let jobs = TrackJobs {
+                    tracks: &program.tracks[..count],
+                    map: &map[..count],
+                    order: &order[..count],
+                    states: tracks.as_mut_ptr(),
+                    // SAFETY: the slots are only reached through `jobs` until the jobs are done;
+                    // concurrent jobs only when the chains are exclusive (checked below).
+                    slots: unsafe { SharedSlots::new(slots) },
+                    lanes: lanes.as_mut_ptr(),
+                    lane_count: lanes.len(),
+                    ctx: &ctx,
+                    any_solo,
+                    n,
+                };
+                // SAFETY: `Pool::run` gives every thread its own lane (0 here, 1 ..= threads for
+                // the workers, all < `lanes.len()`) and claims every job once; the chains are
+                // exclusive when it runs; nothing else touches the states, slots and lanes until
+                // it returns. The serial loop runs one job at a time on lane 0.
+                let job = |j: usize, lane: usize| unsafe { jobs.run(j, lane) };
+                match pool.as_mut() {
+                    Some(pool) if *exclusive && count > 1 && n >= PARALLEL_MIN_FRAMES => {
+                        // Waits for running jobs in slices of one period (counted when exceeded).
+                        let period = if deadline.is_some() {
+                            std::time::Duration::from_secs_f64(n as f64 / rate)
+                        } else {
+                            OFFLINE_WAIT
+                        };
+                        pool.run(count, &job, period);
+                    }
+                    _ => (0..count).for_each(|j| job(j, 0)),
+                }
+                // 3. The master bus: tracks summed in track order, whichever thread ran them.
+                for &state in &map[..count] {
+                    let state = &tracks[usize::from(state)];
+                    *unreported |= state.failed;
+                    add(&mut bufs.bus[0][..n], &state.out[0][..n]);
+                    add(&mut bufs.bus[1][..n], &state.out[1][..n]);
                 }
                 // Master inserts, fader, meter, output.
                 let Bufs { a, bus, .. } = &mut *bufs;
                 a[0][..n].copy_from_slice(&bus[0][..n]);
                 a[1][..n].copy_from_slice(&bus[1][..n]);
                 let master = &program.master;
-                let (result, failed) =
-                    run_chain(&master.chain, slots, &ctx, &[], fx_events, bufs, n, false);
+                let (result, failed) = run_chain(
+                    &master.chain,
+                    &mut **slots,
+                    &ctx,
+                    &[],
+                    fx_events,
+                    bufs,
+                    n,
+                    false,
+                );
                 *unreported |= failed;
                 let (l, r) = bufs.pair(result, n);
                 let gain = master_gain.unwrap_or(master.gain);
@@ -994,8 +1198,13 @@ impl Core {
     }
 }
 
-// The engine moves into the audio callback.
+// The engine moves into the audio callback; track jobs share the program and the context.
 const _: fn() = || {
     fn send<T: Send>() {}
+    fn sync<T: Sync>() {}
     send::<Engine>();
+    send::<TrackState>();
+    send::<Slot>();
+    sync::<TrackProgram>();
+    sync::<ProcessContext>();
 };

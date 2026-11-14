@@ -24,8 +24,9 @@ pub const DEADLINE_SHARE: f64 = 0.6;
 /// One device in a chain, driven by the engine.
 ///
 /// `Send` because it is created on the UI thread and moved to the audio thread. Methods marked RT
-/// run on the audio thread and must not allocate, free, lock, log, do IO or block (CLAUDE.md
-/// rule 4). Tests wrap them in `assert_no_alloc`.
+/// run on the audio thread or on one of the engine's worker threads (never on two threads at
+/// once) and must not allocate, free, lock, log, do IO or block (CLAUDE.md rule 4). Tests wrap
+/// them in `assert_no_alloc`.
 pub trait Processor: Send {
     /// Non-RT. Prepares for `sample_rate` Hz and calls of at most `max_block` frames
     /// (≤ [`crate::MAX_BLOCK`]). Called before the processor goes into the engine and again after
@@ -47,6 +48,21 @@ pub trait Processor: Send {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus;
+
+    /// RT, optional (WP-65). Starts the next [`Processor::process`] call early, for processors
+    /// whose work runs elsewhere (a bridge process): the engine calls it for the instrument at the
+    /// head of a track chain as soon as the track's events are known, before it processes any
+    /// chain of the segment, so the bridge works while the engine runs the other tracks.
+    ///
+    /// `ctx`, `events` and `input` (silence, `ctx.frames` samples each) are exactly what the
+    /// following `process` call gets; the engine calls `process` in the same segment, possibly on
+    /// another thread. Returns whether the call was started: `process` then completes it (waits
+    /// for the result or writes the fallback) instead of starting it. The default does nothing
+    /// and returns `false`.
+    fn begin(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> bool {
+        let _ = (ctx, events, input);
+        false
+    }
 
     /// RT-safe and cheap (a cached value). Latency the processor adds, in frames at the active
     /// sample rate. The app passes the same value to the compiler for delay compensation

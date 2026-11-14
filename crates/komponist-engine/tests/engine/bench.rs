@@ -4,6 +4,10 @@
 //! constant (the engine's own cost: sequencer, event lists, chains, fader, balance, meters, PDC,
 //! mixing) and once with pisynth (presets E-Piano, Strings, Supersaw, Init in turn).
 //!
+//! Each runs once per worker count (WP-65; `KOMPONIST_BENCH_WORKERS`, default `0,4`); workers ask
+//! for `SCHED_FIFO` 80 like the app's. The time is the wall time of `process` on the calling
+//! thread.
+//!
 //! ```text
 //! cargo test --release -p komponist-engine --test engine bench -- --ignored --nocapture
 //! ```
@@ -24,7 +28,7 @@ const BLOCK: usize = 256;
 /// 20 s of audio.
 const BLOCKS: usize = 20 * 48_000 / BLOCK;
 
-fn material(track: u32) -> Vec<SeqNote> {
+pub fn material(track: u32) -> Vec<SeqNote> {
     let mut notes = Vec::new();
     for half in 0..8i64 {
         let root = 48 + ((half as u32 * 5 + track) % 12) as u8;
@@ -81,9 +85,16 @@ impl Processor for Idle {
     fn reset(&mut self) {}
 }
 
-/// Mean and worst time of one 256-frame `process` call over 20 s of playback.
-fn run(make: impl Fn(u32) -> Box<dyn Processor>) -> (Duration, Duration) {
+/// Mean and worst time of one 256-frame `process` call over 20 s of playback, with `workers`
+/// worker threads.
+fn run(workers: usize, make: impl Fn(u32) -> Box<dyn Processor>) -> (Duration, Duration) {
     let mut rig = Rig::new(RATE, BLOCK);
+    let status = rig
+        .engine
+        .set_workers(workers, Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY));
+    if let Some(e) = status.realtime_error {
+        eprintln!("workers without SCHED_FIFO: {e}");
+    }
     let tracks = (0..TRACKS)
         .map(|i| track(u64::from(i) + 1, i, material(i)))
         .collect();
@@ -118,25 +129,31 @@ fn run(make: impl Fn(u32) -> Box<dyn Processor>) -> (Duration, Duration) {
 fn bench_engine_16_tracks() {
     let period = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
     let share = |d: Duration| d.as_secs_f64() / period.as_secs_f64() * 100.0;
-    let (mean, worst) = run(|_| Box::new(Idle(0)));
-    eprintln!(
-        "engine alone (16 idle instruments): mean {mean:.1?} ({:.2} %), worst {worst:.1?} ({:.1} %) per {BLOCK} frames",
-        share(mean),
-        share(worst)
-    );
-    let names = ["E-Piano", "Strings", "Supersaw", "Init"];
-    let (mean, worst) = run(|i| {
-        let index = presets()
-            .find(|x| x.name == names[i as usize % 4])
-            .unwrap()
-            .index;
-        let mut p = PisynthProcessor::new(preset_patch(index).unwrap());
-        p.activate(RATE, BLOCK).unwrap();
-        Box::new(p)
-    });
-    eprintln!(
-        "engine + 16 pisynth: mean {mean:.1?} ({:.1} %), worst {worst:.1?} ({:.1} %) per {BLOCK} frames",
-        share(mean),
-        share(worst)
-    );
+    let counts: Vec<usize> = std::env::var("KOMPONIST_BENCH_WORKERS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|w| w.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![0, 4]);
+    for workers in counts {
+        let (mean, worst) = run(workers, |_| Box::new(Idle(0)));
+        eprintln!(
+            "engine alone (16 idle instruments), {workers} workers: mean {mean:.1?} ({:.2} %), worst {worst:.1?} ({:.1} %) per {BLOCK} frames",
+            share(mean),
+            share(worst)
+        );
+        let names = ["E-Piano", "Strings", "Supersaw", "Init"];
+        let (mean, worst) = run(workers, |i| {
+            let index = presets()
+                .find(|x| x.name == names[i as usize % 4])
+                .unwrap()
+                .index;
+            let mut p = PisynthProcessor::new(preset_patch(index).unwrap());
+            p.activate(RATE, BLOCK).unwrap();
+            Box::new(p)
+        });
+        eprintln!(
+            "engine + 16 pisynth, {workers} workers: mean {mean:.1?} ({:.1} %), worst {worst:.1?} ({:.1} %) per {BLOCK} frames",
+            share(mean),
+            share(worst)
+        );
+    }
 }
