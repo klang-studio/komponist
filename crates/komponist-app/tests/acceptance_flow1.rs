@@ -47,7 +47,10 @@ fn new_project_then_ctrl_t_and_a_dragged_instrument_make_two_tracks() {
     let p = h.state().project();
     assert_eq!(p.tracks.len(), 2);
     assert_eq!(p.tracks[1].channel.devices[0].plugin.name, "pisynth");
-    assert!(p.tracks[1].arm, "the new track is armed, the old one is not");
+    assert!(
+        p.tracks[1].arm,
+        "the new track is armed, the old one is not"
+    );
     assert!(!p.tracks[0].arm);
     assert!(h.state().doc().is_dirty());
 

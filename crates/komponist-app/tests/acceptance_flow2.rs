@@ -67,7 +67,9 @@ fn rig() -> (Harness<'static, App>, TestMidiSource) {
 
 fn start_recording(h: &mut Harness<'_, App>) {
     key(h, Key::R);
-    wait_for(h, "recording", |a| a.transport() == TransportState::Recording);
+    wait_for(h, "recording", |a| {
+        a.transport() == TransportState::Recording
+    });
 }
 
 fn stop_recording(h: &mut Harness<'_, App>) -> ClipId {
@@ -141,7 +143,10 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
     let clip = stop_recording(&mut h);
     assert_recorded(h.state().project(), clip, [60, 64]);
     assert_eq!(h.state().doc().undo_label(), Some("Take 1"));
-    let velocities: Vec<u8> = notes_of(h.state(), clip).iter().map(|n| n.velocity).collect();
+    let velocities: Vec<u8> = notes_of(h.state(), clip)
+        .iter()
+        .map(|n| n.velocity)
+        .collect();
     assert!(velocities.contains(&100) && velocities.contains(&90));
 
     // --- Edit in the piano roll (the take is open in the editor)
@@ -159,9 +164,18 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
     let e4 = note(h.state(), clip, 64);
     let r = g.note_rect(e4.start, e4.length, 64);
     let edge = pos2(r.right() - 2.0, r.center().y);
-    drag(&mut h, edge, edge - vec2(g.axis.width(Tick(240)) * 1.0, 0.0));
+    drag(
+        &mut h,
+        edge,
+        edge - vec2(g.axis.width(Tick(240)) * 1.0, 0.0),
+    );
     let shorter = note(h.state(), clip, 64);
-    assert!(shorter.length < e4.length, "{:?} → {:?}", e4.length, shorter.length);
+    assert!(
+        shorter.length < e4.length,
+        "{:?} → {:?}",
+        e4.length,
+        shorter.length
+    );
     assert_eq!(shorter.start, e4.start);
 
     // Q: select all, quantize; every start sits on the grid afterwards.

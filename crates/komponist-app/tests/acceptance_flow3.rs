@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use acceptance_support::{double_click, harness, click_at, key};
+use acceptance_support::{click_at, double_click, harness, key};
 use common::{
     PATIENCE, SYNTH, app_with, clap_plugin, config, fixture_dirs, scratch, step_for, step_until,
 };
@@ -21,10 +21,10 @@ use egui::Key;
 use egui::accesskit::Role;
 use egui::pos2;
 use egui_kittest::kittest::Queryable as _;
-use komponist_app::step_rows;
-use komponist_app::{Action, EditAction, UiAction};
 use komponist_app::device_host::{DeviceHost as _, PluginHost};
+use komponist_app::step_rows;
 use komponist_app::views::arrangement::names as arrangement_names;
+use komponist_app::{Action, EditAction, UiAction};
 use komponist_engine::TransportState;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
 use komponist_model::project::{BUILTIN_KLOPFER, DEFAULT_PROJECT_NAME};
@@ -231,7 +231,10 @@ fn a_drum_beat_built_in_the_step_sequencer_plays() {
         peak = peak.max(l).max(r);
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(h.state().engine().playhead() > Tick(BAR / 2), "the playhead runs");
+    assert!(
+        h.state().engine().playhead() > Tick(BAR / 2),
+        "the playhead runs"
+    );
     assert!(peak > 0.01, "the drums sound (peak {peak})");
     key(&mut h, Key::Space);
     let until = std::time::Instant::now() + PATIENCE;
