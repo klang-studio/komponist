@@ -515,3 +515,24 @@ fn saving_snapshots_the_states_and_exit_shuts_the_host_down() {
     assert!(script.borrow().shut_down);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// WP-65 follow-up: workers without realtime priority say so in the status bar, in the same kind
+/// as the bridge's hint, and the notice is shown once (a later frame leaves the status alone).
+#[test]
+fn workers_without_realtime_priority_reach_the_status_bar() {
+    let (mut app, _script) = app();
+    // Whatever the null stream's own worker start left behind is not under test.
+    app.ui_mut().status = None;
+    app.engine().take_worker_notice();
+    app.report_workers_without_realtime();
+    assert_eq!(
+        status_text(&app),
+        Some((
+            "Audio-Threads laufen ohne Echtzeit-Priorität".to_owned(),
+            StatusKind::Info
+        ))
+    );
+    app.ui_mut().status = None;
+    app.step();
+    assert_eq!(status_text(&app), None);
+}
