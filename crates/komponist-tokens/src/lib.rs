@@ -100,3 +100,16 @@ pub mod shadow {
 pub mod size {
     include!(concat!(env!("OUT_DIR"), "/size.rs"));
 }
+
+/// Device frame and grid (`device.*` of `design/device-tokens.json`, device handoff 2026-11-14).
+/// Numbers are `f32` px, number arrays `[f32; N]`; strings are design text (colour references,
+/// formulas) kept for the widget code. Sub-objects are modules (`device::frame::HEAD_H`).
+pub mod device {
+    include!(concat!(env!("OUT_DIR"), "/device.rs"));
+}
+
+/// Metrics of the device widgets (`widget.*` of `design/device-tokens.json`), same shape as
+/// [`device`] (`widget::knob::DIAMETER`, `widget::knob::mod_ring::STROKE`).
+pub mod widget {
+    include!(concat!(env!("OUT_DIR"), "/widget.rs"));
+}

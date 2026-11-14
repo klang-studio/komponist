@@ -1,0 +1,37 @@
+{
+  "$meta": { "source": "klang-studio · Seite Geräte (Entwurf v0.1)", "units": "px @1x", "extends": "design/tokens.json aus dem ersten Handoff" },
+  "device": {
+    "grid": { "cell": [56, 64], "gap": 4, "padding": 8, "rows": 3, "half_cell_h": 30, "half_offset_bottom": 34,
+      "col_x": "8 + col * 60", "row_y": "8 + row * 68", "span_w": "n * 56 + (n - 1) * 4", "span_h": "m * 64 + (m - 1) * 4",
+      "device_w": "16 + 60 * cols - 4", "body_h": 216 },
+    "frame": { "head_h": 28, "body_h": 216, "total_h": 244, "radius": "radius.m", "body_bg": "surface.2",
+      "head_bg_instrument": "surface.3", "head_bg_effect": "surface.2", "head_border_bottom": "1px surface.1",
+      "head_padding": [0, 4, 0, 8], "head_gap": 8, "power": [10, 10], "power_on": "state.play", "power_off": "surface.4 + inset 1px text.3",
+      "track_bar": [3, 14], "name": "type.ui 600", "preset_dropdown": { "h": 20, "min_w": 96, "max_w": 150 },
+      "menu_button": [20, 20], "pages_segment_h": 20, "collapsed_w": 28,
+      "selected": "0 0 0 1px accent", "bypass_body": "saturate(0.15) + opacity 0.5, bleibt bedienbar",
+      "divider": "1px line.1 mittig in der Spaltenlücke, volle Rasterhöhe" },
+    "chain": { "gap": 8, "padding": 10, "header_h": 28, "drop_slot_w": 120, "scrollbar_h": 4 }
+  },
+  "widget": {
+    "label": { "font": "sans 10/12", "color": "text.2" },
+    "value": { "font": "mono 10/12 tnum", "color": "text.1" },
+    "knob": { "cell": [1, 1], "svg": 32, "diameter": 28, "track_r": 12, "stroke": 2, "cap_r": 9, "indicator": 1.5, "sweep": 270,
+      "mod_ring": { "r_offset": 2.5, "stroke": 1.5, "color": "track.base" },
+      "automation_dot": { "size": 5, "color": "track.base" }, "learn": "accent.surface + inset 1px accent" },
+    "knob_large": { "cell": [2, 1], "diameter": 44, "value_font": "mono 12/16", "layout": "Regler links, Name und Wert rechts, gap 8" },
+    "number": { "cell": [1, 0.5], "label_h": 12, "field_h": 18, "bg": "surface.3", "bg_hover": "surface.4", "bg_edit": "surface.0 + inset 1px accent", "padding_x": 5, "unit_font": "mono 9 text.2" },
+    "segment": { "cell": ["n", 0.5], "track_h": 18, "track_bg": "surface.1", "padding": 1, "seg_h": 16, "seg_on": "surface.5 / text.1", "seg_off": "transparent / text.2", "icon": [14, 12] },
+    "toggle_button": { "cell": ["n", 0.5], "h": 18, "on": "text.1 bg / surface.0 text, 10px 600", "off": "surface.3 / text.2" },
+    "dropdown": { "cell": [2, 0.5], "h": 18, "bg": "surface.3", "font": "sans 11", "menu": "Kontextmenü aus Designsystem" },
+    "mini_fader": { "cell": [1, "2|3"], "track_w": 4, "thumb": [24, 28], "fill": "track.base (Träger) | text.2", "label_area_h": 30 },
+    "graph": { "cell": ["min 2", "min 1"], "bg": "surface.1", "radius": "radius.m", "grid": "line.1, Hauptlinien line.2",
+      "title": "9px 600 caps +0.08em text.2, Position 6/4", "curve": { "stroke": 1.5, "color": "track.base", "fill_opacity": 0.14 },
+      "data": { "fill": "surface.3 (Spektrum) | track.base (Sample)" }, "region_outside": "surface.1 @ 75 %",
+      "handle": { "r": 5, "fill": "surface.0", "stroke": "1.5 text.1", "selected": "2 accent", "number_font": "mono 8" },
+      "marker": { "playhead": "1px text.1 dash 2 2", "point": "r 3 text.1" }, "axis_labels": "mono 8 text.2" },
+    "meter_gr": { "cell": [1, 3], "bar_w": 6, "bar_gap": 10, "ok": "meter.ok", "loud": "meter.loud ab 75 %", "gr": "meter.loud von oben", "readout": "mono 10" },
+    "pad_grid": { "pad": [56, 64], "gap": 4, "bg": "track.body", "text": "track.ink", "bar": "3px track.base oben", "playing": "oklch(0.92 0.06 h) / surface.0 text", "selected": "0 0 0 1px accent" },
+    "pages": { "h": 20, "seg_h": 18, "seg_padding_x": 7, "on": "surface.4 / text.1", "max_pages": 4 }
+  }
+}

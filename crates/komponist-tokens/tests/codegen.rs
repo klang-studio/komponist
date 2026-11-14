@@ -229,3 +229,85 @@ fn prepare_icon_rejects_unexpected_files() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Device tokens (`design/device-tokens.json`)
+
+fn device_tokens() -> Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../design/device-tokens.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// Paths of all leaves (numbers, strings, arrays) below `value`.
+fn leaves(value: &Value, path: &str, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map {
+                leaves(v, &format!("{path}.{key}"), out);
+            }
+        }
+        _ => out.push(path.to_string()),
+    }
+}
+
+#[test]
+fn every_device_token_is_generated() {
+    let t = device_tokens();
+    let files = codegen::generate_devices(&t).unwrap();
+    assert_eq!(
+        files.keys().copied().collect::<Vec<_>>(),
+        ["device.rs", "widget.rs"]
+    );
+    let mut total = 0;
+    for (group, file) in [("device", "device.rs"), ("widget", "widget.rs")] {
+        let mut paths = Vec::new();
+        leaves(&t[group], group, &mut paths);
+        let source = &files[file];
+        for path in &paths {
+            assert!(
+                source.contains(&format!("/// `{path}` ")),
+                "{path} is not in {file}"
+            );
+        }
+        let consts = source.matches("pub const ").count();
+        assert_eq!(consts, paths.len(), "{file}: one constant per token");
+        total += paths.len();
+    }
+    assert!(total > 100, "suspiciously few device tokens: {total}");
+}
+
+#[test]
+fn device_tokens_values_are_written_as_is() {
+    let files = codegen::generate_devices(&device_tokens()).unwrap();
+    let device = &files["device.rs"];
+    assert!(device.contains("pub const CELL: [f32; 2] = [56.0, 64.0];"));
+    assert!(device.contains("pub const TOTAL_H: f32 = 244.0;"));
+    assert!(device.contains("pub const COL_X: &str = \"8 + col * 60\";"));
+    let widget = &files["widget.rs"];
+    assert!(widget.contains("pub mod mod_ring {"));
+    assert!(widget.contains("pub const CELL: [&str; 2] = [\"n\", \"0.5\"];"));
+}
+
+#[test]
+fn bad_device_tokens_fail() {
+    let error = |edit: fn(&mut Value)| {
+        let mut t = device_tokens();
+        edit(&mut t);
+        codegen::generate_devices(&t).expect_err("generator accepted a broken file")
+    };
+    let e = error(|t| t["colours"] = json!({}));
+    assert!(e.contains("unknown device token group `colours`"), "{e}");
+    let e = error(|t| {
+        t.as_object_mut().unwrap().remove("widget");
+    });
+    assert!(e.contains("`widget` is missing"), "{e}");
+    let e = error(|t| t["device"]["frame"]["head_h"] = json!(true));
+    assert!(e.contains("device.frame.head_h"), "{e}");
+    let e = error(|t| t["device"]["frame"]["head h"] = json!(1));
+    assert!(e.contains("head h"), "{e}");
+    let e = error(|t| t["$meta"]["units"] = json!("rem"));
+    assert!(e.contains("$meta.units"), "{e}");
+}
