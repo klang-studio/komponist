@@ -15,7 +15,7 @@
 //!   ```
 //!
 //! Crash isolation (`kp-test-crash`) is tested through the bridge binary only
-//! (`komponist-bridge/tests/instance.rs`), never in this process.
+//! (`komponist-bridge/tests/it/instance.rs`), never in this process.
 
 mod fixtures;
 mod gui;

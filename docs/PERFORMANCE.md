@@ -54,7 +54,7 @@ are checked:
 | `Engine::process` / `render`: commands, transport, count-in, loop wrap, sequencer, **note chasing**, probability, live MIDI, `LiveNote`, recording capture, fast paths, program swap, processor insert/remove (garbage), panic, PDC, mixer, meters, metronome | `komponist-engine` `tests/engine` (every call via `Rig`), incl. 1 000 random command sequences (`random.rs`) and `chase.rs` (10 000-note scan) |
 | Held MIDI-input keys (telemetry) | `live.rs` `held_input_keys_…` |
 | pisynth `PisynthProcessor::process` / `reset` / parameter events | `komponist-builtin` `tests/pisynth` |
-| `ExternalProcessor::process` (bridge client: wire events, stash, futex wait, fallbacks) | `komponist-plugins` `tests/engine.rs` (`call` and `Rig`) |
+| `ExternalProcessor::process` (bridge client: wire events, stash, futex wait, fallbacks) | `komponist-plugins` `tests/it/engine.rs` (`call` and `Rig`) |
 | IPC `begin_block` / `wait_done` / output events | `komponist-ipc` `tests/bridge_process.rs` (10 000 checked blocks) |
 | Bridge RT loop | `komponist-bridge` `rt.rs` runs its loop inside `assert_no_alloc` in debug builds |
 | Audio callback: backend → `EngineSlot` (attach/detach mailbox) → `EngineProcess` (MIDI → frames) → engine | `komponist-audio` `StreamCallback::run` wraps every callback; every app test on the null backend runs it (acceptance flows, soak) |
@@ -217,7 +217,7 @@ all ports and channels merge, whether or not a track listens). The shell merges 
 ```bash
 # UI frame (16 tracks, 200 clips, 10 000 notes; idle, all selected, playing)
 cargo test --release -p komponist-app --test arrangement_perf -- --ignored --nocapture
-cargo test --release -p komponist-app --test piano_roll ten_thousand -- --nocapture
+cargo test --release -p komponist-app --test it piano_roll::ten_thousand -- --nocapture
 cargo bench -p komponist-ui --bench timeline
 
 # Engine CPU: engine alone and + 16 pisynth, and the real callback path (+ 8 bridges; needs
@@ -243,7 +243,7 @@ KOMPONIST_SOAK_SEED=<seed> …   # replays a run
 KOMPONIST_SOAK_WORKERS=0 …     # single-threaded engine (default: the app's automatic count)
 
 # klopfer cold start (needs scripts/build-klopfer.sh and klopfer's test kit)
-cargo test --release -p komponist-plugins --test installed klopfer_cold_start -- --ignored --nocapture
+cargo test --release -p komponist-plugins --test it installed::klopfer_cold_start -- --ignored --nocapture
 
 # Audio device enumeration (talks to the audio servers, opens no stream)
 cargo test --release -p komponist-audio device_enumeration_time -- --ignored --nocapture

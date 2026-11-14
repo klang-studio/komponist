@@ -1,7 +1,7 @@
 //! Code generation for `komponist-tokens`.
 //!
 //! Turns `design/tokens.json` into Rust source (one file per token module) and prepares the Lucide
-//! SVGs for egui. Used by `build.rs`; `tests/codegen.rs` includes this file too, so the generator
+//! SVGs for egui. Used by `build.rs`; `tests/it/codegen.rs` includes this file too, so the generator
 //! can be tested with broken token files.
 //!
 //! The generator is strict on purpose: a token group, key or value shape it does not know is an
