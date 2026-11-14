@@ -450,6 +450,10 @@ mod tests {
         let job = |_: usize, lane: usize| {
             if lane != 0 {
                 std::thread::sleep(Duration::from_millis(30));
+            } else {
+                // Keep the caller busy so the worker can claim the other job even when the
+                // machine is loaded (the caller took both jobs under parallel builds).
+                std::thread::sleep(Duration::from_millis(5));
             }
             done.fetch_add(1, Ordering::Relaxed);
         };
