@@ -1,0 +1,291 @@
+//! The step sequencer in the dock's editor tab (WP-42; S03, `Screens.dc.html` `stepSeq()`,
+//! `PADS`, the dock markup for `isStep`; `ks-view.js` `stepView`; `Prototyp.dc.html` `stepDown`,
+//! `stepEnter`, `stepLane`).
+//!
+//! From top to bottom:
+//!
+//! - toolbar ([`toolbar`]): "Länge", "Auflösung", "Swing" │ "STEP n · Zeile", "Vel", "Wahr.",
+//!   "Ratch." of the selected step … "Als MIDI-Clip";
+//! - step numbers, the current step brighter while playing ([`grid`]);
+//! - one row per pad: header (colour chip, name, note, M S; a press sounds the pad and selects
+//!   the row) and up to 32 steps whose brightness follows the velocity ([`grid`], gestures in
+//!   [`pattern`]);
+//! - the lane of the selected row with the tabs Vel / Wahr. / Ratch. ([`lane`]).
+//!
+//! The running light: while the transport plays the open clip, the column of the current step
+//! brightens (`surface.4`) and set steps in it glow (`TrackPalette::play`) with a `text.1`
+//! contour. Row names come from the instrument's note names when it reports them
+//! (`DeviceHost::note_names`), else from the model.
+//!
+//! The view never changes the document: steps, rows and pattern properties change through
+//! [`EditAction::SetStep`](crate::actions::EditAction::SetStep), `SetStepRow`,
+//! `SetStepClipProp` and `StepClipToMidi`; a drag is one gesture (one undo step), Esc during
+//! a drag cancels it. Rows sound through `TransportAction::LiveNote` on the clip's track.
+//!
+//! AccessKit: every visible step is a check box named like "Step 5, Kick, an, Velocity 100"
+//! (selected = the step cursor); row headers are buttons "Zeile Kick"; the toolbar fields are
+//! spin buttons; lane bars are sliders ("Vel Step 5").
+
+pub mod field;
+pub mod grid;
+pub mod lane;
+pub mod metrics;
+pub mod pattern;
+pub mod toolbar;
+
+use std::sync::Arc;
+
+use egui::{Event, Key, Rect, Ui, pos2};
+use komponist_model::{ClipContent, ClipId, Project, StepClip, TrackId};
+use komponist_tokens::{TrackPalette, line};
+
+use crate::ui_state::StepCursor;
+use crate::views::{View, ViewCtx, centered_text};
+use metrics as m;
+
+/// UI texts (verbatim from the screens) and accessible names.
+pub mod names {
+    /// Toolbar: pattern length key (`Länge 16 Steps`).
+    pub const LENGTH: &str = "Länge";
+    /// Unit of the pattern length.
+    pub const STEPS: &str = "Steps";
+    /// Toolbar: resolution dropdown.
+    pub const RESOLUTION: &str = "Auflösung";
+    /// Toolbar: swing key.
+    pub const SWING: &str = "Swing";
+    /// Unit of swing and probability.
+    pub const PERCENT: &str = "%";
+    /// Step info: velocity key.
+    pub const VELOCITY_KEY: &str = "Vel";
+    /// Its accessible name.
+    pub const VELOCITY: &str = "Velocity";
+    /// Step info: probability key (the screens write "Wahr.").
+    pub const PROBABILITY_KEY: &str = "Wahr.";
+    /// Its accessible name.
+    pub const PROBABILITY: &str = "Wahrscheinlichkeit";
+    /// Step info: ratchet key.
+    pub const RATCHET_KEY: &str = "Ratch.";
+    /// Its accessible name.
+    pub const RATCHET: &str = "Ratchet";
+    /// The button that turns the pattern into a MIDI clip.
+    pub const TO_MIDI: &str = "Als MIDI-Clip";
+    /// Its tooltip (S03 notes).
+    pub const TO_MIDI_DETAIL: &str = "Wandelt das Pattern in einen normalen MIDI-Clip um.";
+    /// The lane tabs' accessible name.
+    pub const LANE: &str = "Lane";
+    /// Without an open step clip (the shell normally shows its own empty state).
+    pub const NO_CLIP: &str = "Kein Clip geöffnet";
+
+    /// "Zeile Kick": the lane's row and a row header's accessible name.
+    pub fn row(name: &str) -> String {
+        format!("Zeile {name}")
+    }
+
+    /// "Step 11 · Hat zu": the step info (shown in `type.label` capitals).
+    pub fn step_info(step: usize, row: &str) -> String {
+        format!("Step {} · {row}", step + 1)
+    }
+}
+
+/// The open step clip as the parts of the view need it.
+pub struct Open<'p> {
+    /// The clip.
+    pub clip: ClipId,
+    /// Its track (live notes).
+    pub track: TrackId,
+    /// The pattern.
+    pub pattern: &'p StepClip,
+    /// Row names shown: the instrument's note names where it has one, else the model's.
+    pub names: Vec<String>,
+    /// The step cursor, if it is in this clip.
+    pub cursor: Option<StepCursor>,
+    /// The row the lane shows: the cursor's, else the first.
+    pub lane_row: usize,
+    /// The pattern index of the running light, while playing.
+    pub current: Option<usize>,
+}
+
+impl<'p> Open<'p> {
+    /// The open step clip of `ctx` in `project`, if the editor shows one.
+    pub fn of(project: &'p Project, ctx: &ViewCtx<'_>) -> Option<Open<'p>> {
+        let id = ctx.ui.editor.clip?;
+        let (track, clip) = project.find_clip(id)?;
+        let ClipContent::Step(pattern) = &clip.content else {
+            return None;
+        };
+        let host = ctx.engine.host();
+        let note_names = track
+            .channel
+            .devices
+            .first()
+            .map(|d| host.note_names(d.id))
+            .unwrap_or_default();
+        let names = pattern
+            .rows
+            .iter()
+            .map(|r| {
+                note_names
+                    .iter()
+                    .find(|n| n.key == r.note)
+                    .map_or_else(|| r.name.clone(), |n| n.name.clone())
+            })
+            .collect();
+        let cursor = ctx
+            .ui
+            .selection
+            .step
+            .filter(|c| c.clip == id && c.row < pattern.rows.len());
+        let lane_row = cursor.map_or(0, |c| c.row);
+        let telemetry = ctx.engine.telemetry();
+        let current = pattern::current_step(
+            pattern,
+            clip.start,
+            clip.length,
+            ctx.engine.playhead(),
+            telemetry.transport(),
+        );
+        Some(Open {
+            clip: id,
+            track: track.id,
+            pattern,
+            names,
+            cursor,
+            lane_row,
+            current,
+        })
+    }
+
+    /// Number of steps shown (the pattern length, 1 ..= 32).
+    pub fn steps(&self) -> usize {
+        usize::from(self.pattern.length_steps).clamp(1, komponist_model::project::MAX_STEPS)
+    }
+
+    /// The selected step of row `row`, if the cursor is on one.
+    pub fn selected_step(&self, row: usize) -> Option<usize> {
+        self.cursor.filter(|c| c.row == row).and_then(|c| c.step)
+    }
+}
+
+/// The vertical split of the view: toolbar, step numbers, rows, lane (all with their lines).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Areas {
+    /// Toolbar (28, its line below).
+    pub toolbar: Rect,
+    /// Step numbers (18, line below).
+    pub numbers: Rect,
+    /// Visible part of the rows (each row 26 + line).
+    pub rows: Rect,
+    /// The lane: the rest, at least [`metrics::LANE_MIN_HEIGHT`].
+    pub lane: Rect,
+}
+
+impl Areas {
+    /// The split of `rect` for `rows` rows.
+    pub fn of(rect: Rect, rows: usize) -> Areas {
+        let lw = line::WIDTH;
+        let toolbar =
+            Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + m::TOOLBAR_HEIGHT));
+        let numbers_top = toolbar.bottom() + lw;
+        let numbers = Rect::from_min_max(
+            pos2(rect.left(), numbers_top),
+            pos2(rect.right(), numbers_top + m::NUMBERS_HEIGHT),
+        );
+        let rows_top = numbers.bottom() + lw;
+        let content = rows as f32 * row_pitch();
+        let room = (rect.bottom() - rows_top - m::LANE_MIN_HEIGHT).max(0.0);
+        let rows_rect = Rect::from_min_max(
+            pos2(rect.left(), rows_top),
+            pos2(rect.right(), rows_top + content.min(room)),
+        );
+        let lane = Rect::from_min_max(
+            pos2(rect.left(), rows_rect.bottom()),
+            pos2(rect.right(), rect.bottom().max(rows_rect.bottom())),
+        );
+        Areas {
+            toolbar,
+            numbers,
+            rows: rows_rect,
+            lane,
+        }
+    }
+}
+
+/// Whether Esc went down in this pass. The app's keymap consumes Esc (`ClearSelection`, or
+/// `CancelGesture` during a drag) before the views run, so this looks at the raw events.
+pub fn escape_pressed(ui: &Ui) -> bool {
+    ui.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Key {
+                    key: Key::Escape,
+                    pressed: true,
+                    ..
+                }
+            )
+        })
+    })
+}
+
+/// Height of a row with its line.
+pub fn row_pitch() -> f32 {
+    m::ROW_HEIGHT + line::WIDTH
+}
+
+/// The step sequencer view.
+#[derive(Default)]
+pub struct StepSequencer {
+    palette: Option<TrackPalette>,
+    toolbar: toolbar::ToolbarState,
+    grid: grid::GridState,
+    lane: lane::LaneState,
+}
+
+impl StepSequencer {
+    /// A step sequencer without gestures, scrolled to the top.
+    pub fn new() -> StepSequencer {
+        StepSequencer::default()
+    }
+}
+
+impl View for StepSequencer {
+    fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
+        let rect = ui.max_rect();
+        let project: Arc<Project> = Arc::clone(ctx.project);
+        let Some(open) = Open::of(&project, ctx) else {
+            self.grid.abandon(ctx);
+            centered_text(ui, rect, names::NO_CLIP, None);
+            return;
+        };
+        let hue = project.track(open.track).map_or(0, |t| t.hue.0);
+        if self.palette.as_ref().is_none_or(|p| p.hue != hue) {
+            self.palette = None;
+        }
+        let palette = self.palette.get_or_insert_with(|| TrackPalette::new(hue));
+        let areas = Areas::of(rect, open.pattern.rows.len());
+        toolbar::show(ui, areas.toolbar, &open, ctx, &mut self.toolbar);
+        grid::show(ui, &areas, &open, ctx, &mut self.grid, palette);
+        lane::show(ui, areas.lane, &open, ctx, &mut self.lane, palette);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_take_what_the_lane_leaves() {
+        // The dock body at the default height: 320 − 28 tab strip.
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 292.0));
+        let a = Areas::of(rect, 8);
+        assert_eq!(a.toolbar.height(), 28.0);
+        assert_eq!(a.numbers.top(), 29.0);
+        assert_eq!(a.rows.top(), 48.0);
+        assert_eq!(a.rows.height(), 8.0 * 27.0);
+        assert_eq!(a.lane.height(), 292.0 - 48.0 - 216.0);
+        // 16 rows do not fit: the lane keeps its minimum, the rows scroll.
+        let a = Areas::of(rect, 16);
+        assert_eq!(a.lane.height(), m::LANE_MIN_HEIGHT);
+        assert_eq!(a.rows.bottom(), a.lane.top());
+    }
+}

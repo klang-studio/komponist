@@ -21,6 +21,7 @@
 
 pub mod arrangement;
 pub mod piano_roll;
+pub mod step_seq;
 
 use std::sync::Arc;
 
@@ -186,7 +187,7 @@ impl Views {
         Views {
             arrangement: Box::new(arrangement::Arrangement::new()),
             piano_roll: Box::new(piano_roll::PianoRoll::new()),
-            step_seq: Box::new(Placeholder::new("Step Sequencer")),
+            step_seq: Box::new(step_seq::StepSequencer::new()),
             mixer: Box::new(Placeholder::new("Mixer")),
             inspector: Box::new(Placeholder::new("Inspector")),
             browser: Box::new(Placeholder::new("Browser")),

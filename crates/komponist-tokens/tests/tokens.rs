@@ -47,6 +47,8 @@ fn komponist_colours() {
     let [r, g, b, a] = color::CANVAS_CLIP_EDGE_SELECTED;
     assert_eq!([r, g, b, 0xff], color::TEXT_1);
     assert_eq!(a, (0.16_f64 * 255.0).round() as u8);
+    // `#222326`: every other group of four steps in the step sequencer.
+    assert_eq!(color::CANVAS_STEP_GROUP_ALT, [0x22, 0x23, 0x26, 0xff]);
 }
 
 #[test]
