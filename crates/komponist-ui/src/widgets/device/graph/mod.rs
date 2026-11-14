@@ -1428,7 +1428,7 @@ fn paint_readout(
                 .iter()
                 .flat_map(|h| h.binds())
                 .find(|b| b.slot == slot)
-                .map_or("", |b| b.label)
+                .map_or("", |b| b.label.as_str())
         };
         let [dx, dy] = m::READOUT_INSET;
         for (slot, right_bottom) in [(*y, false), (*x, true)] {

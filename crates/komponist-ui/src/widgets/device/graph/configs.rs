@@ -357,7 +357,7 @@ pub fn waveform(length_s: f64) -> GraphSpec {
 
 /// `graph::xy`: the two parameters' own axes; the crosshair and one puck, ↔↕, Shift locks the axis
 /// that moved less; `x_name` and `y_name` are the parameter names (accessible names, readout).
-pub fn xy(x: Axis, y: Axis, x_name: &'static str, y_name: &'static str) -> GraphSpec {
+pub fn xy(x: Axis, y: Axis, x_name: &str, y_name: &str) -> GraphSpec {
     let (px, py) = m::pad::XY;
     let mut spec = GraphSpec::new(
         "",

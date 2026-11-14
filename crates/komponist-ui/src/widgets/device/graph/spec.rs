@@ -352,7 +352,7 @@ pub struct Bind {
     /// The slot it writes.
     pub slot: usize,
     /// German word for what it is, in the accessible name: „Frequenz“, „Gain“, „Q“.
-    pub label: &'static str,
+    pub label: String,
     /// How it moves.
     pub mode: Mode,
     /// Axis units per slot unit (`Mode::Axis`): 1 if the slot is in axis units.
@@ -367,10 +367,10 @@ pub struct Bind {
 
 impl Bind {
     /// A binding along the axis; the slot is in axis units.
-    pub fn axis(slot: usize, label: &'static str) -> Self {
+    pub fn axis(slot: usize, label: impl Into<String>) -> Self {
         Self {
             slot,
-            label,
+            label: label.into(),
             mode: Mode::Axis,
             scale: 1.0,
             base: Vec::new(),
@@ -380,7 +380,7 @@ impl Bind {
     }
 
     /// A knob-like binding.
-    pub fn knob(slot: usize, label: &'static str, log: bool) -> Self {
+    pub fn knob(slot: usize, label: impl Into<String>, log: bool) -> Self {
         Self {
             mode: Mode::Knob { log },
             ..Self::axis(slot, label)

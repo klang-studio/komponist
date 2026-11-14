@@ -20,8 +20,7 @@ pub const ROWS: u8 = 3;
 /// Most pages a device has (`widget.pages.max_pages`).
 pub const MAX_PAGES: usize = widget::pages::MAX_PAGES as usize;
 
-/// The widget a cell shows (WP-83 builds them in `komponist_ui::widgets::device`; the graph, WP-84,
-/// is a labelled placeholder until it exists).
+/// The widget a cell shows (WP-83 and WP-84 build them in `komponist_ui::widgets::device`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetKind {
     /// `knob`, 1 × 1.
@@ -44,15 +43,8 @@ pub enum WidgetKind {
     PadGrid,
     /// `fm_algorithm`.
     FmAlgorithm,
-    /// `graph` (WP-84).
+    /// `graph` (WP-84), bound by [`CellParam::Graph`].
     Graph,
-}
-
-impl WidgetKind {
-    /// Whether the frame draws a control for it today (else a placeholder).
-    pub fn is_built(self) -> bool {
-        self != WidgetKind::Graph
-    }
 }
 
 /// Which half of a row a half cell takes.
@@ -72,8 +64,95 @@ pub enum CellParam {
     /// An id with context placeholders (`op{env_op}_attack`), resolved with the view's
     /// [`ParamContext`] ([`context::resolve`]).
     Template(String),
-    /// A widget that edits no single parameter (a graph with its own handles, a label).
+    /// A graph: a configuration and the parameters its slots edit.
+    Graph(GraphBinding),
+    /// A widget that edits no single parameter (a label, a meter).
     None,
+}
+
+/// The configurations of the graph (`komponist_ui::widgets::device::graph::configs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphConfig {
+    /// `graph::envelope`.
+    Envelope,
+    /// `graph::eq` with this many bands.
+    Eq {
+        /// Bands.
+        bands: u8,
+    },
+    /// `graph::filter`.
+    Filter,
+    /// `graph::transfer`.
+    Transfer,
+    /// `graph::waveform`.
+    Waveform,
+    /// `graph::xy`.
+    Xy,
+    /// `graph::lfo` with this many points.
+    Lfo {
+        /// Points.
+        points: u8,
+    },
+}
+
+/// What a graph cell shows and edits: the configuration, its title, and for every slot of the
+/// configuration (by name: `attack`, `b1_freq`, …) the parameter id or template behind it. A slot
+/// without a parameter keeps a fixed value and cannot be edited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphBinding {
+    /// The configuration.
+    pub config: GraphConfig,
+    /// The title (a template: `Op {env_op} · Amplitude`); empty keeps the configuration's own.
+    pub title: String,
+    /// Slot name → parameter id template.
+    pub bind: Vec<(String, String)>,
+    /// A context placeholder the selected handle sets: `band` for the EQ (handle `n` is band `n + 1`).
+    pub select: Option<&'static str>,
+}
+
+impl GraphBinding {
+    /// A binding of `config` without title, parameters or selection.
+    pub fn new(config: GraphConfig) -> Self {
+        Self {
+            config,
+            title: String::new(),
+            bind: Vec::new(),
+            select: None,
+        }
+    }
+
+    /// With the title template `title`.
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    /// Binds slot `slot` to the parameter (template) `param`.
+    #[must_use]
+    pub fn bind(mut self, slot: impl Into<String>, param: impl Into<String>) -> Self {
+        self.bind.push((slot.into(), param.into()));
+        self
+    }
+
+    /// The selected handle sets context placeholder `key`.
+    #[must_use]
+    pub fn selecting(mut self, key: &'static str) -> Self {
+        self.select = Some(key);
+        self
+    }
+
+    /// The parameter id behind slot `slot` under `context`: `None` for an unbound slot.
+    pub fn resolved(
+        &self,
+        slot: &str,
+        context: &ParamContext,
+    ) -> Result<Option<ParamId>, ResolveError> {
+        match self.bind.iter().find(|(s, _)| s == slot) {
+            Some((_, template)) => resolve(template, context).map(Some),
+            None => Ok(None),
+        }
+    }
 }
 
 /// One cell of a page.
@@ -127,6 +206,18 @@ impl Cell {
             widget,
             param,
         }
+    }
+
+    /// A graph over `cols × rows` full cells.
+    pub fn graph(col: u8, row: u8, cols: u8, rows: u8, binding: GraphBinding) -> Cell {
+        Cell::span(
+            col,
+            row,
+            cols,
+            rows,
+            WidgetKind::Graph,
+            CellParam::Graph(binding),
+        )
     }
 
     /// A widget in a half cell.
@@ -185,7 +276,7 @@ impl Cell {
         match &self.param {
             CellParam::Id(id) => Ok(Some(id.clone())),
             CellParam::Template(t) => resolve(t, context).map(Some),
-            CellParam::None => Ok(None),
+            CellParam::Graph(_) | CellParam::None => Ok(None),
         }
     }
 }
@@ -418,6 +509,23 @@ pub fn validate(
                 }),
                 _ => {}
             }
+            if let CellParam::Graph(binding) = &cell.param {
+                for (slot, _) in &binding.bind {
+                    match binding.resolved(slot, context) {
+                        Ok(Some(id)) if !exists(&id) => errors.push(LayoutError::UnknownParam {
+                            page: p,
+                            cell: c,
+                            id,
+                        }),
+                        Err(error) => errors.push(LayoutError::Unresolved {
+                            page: p,
+                            cell: c,
+                            error,
+                        }),
+                        _ => {}
+                    }
+                }
+            }
         }
     }
     errors
@@ -494,7 +602,13 @@ mod tests {
                     WidgetKind::ToggleButton,
                     CellParam::Id(id("d")),
                 ),
-                Cell::span(0, 1, 4, 2, WidgetKind::Graph, CellParam::None),
+                Cell::graph(
+                    0,
+                    1,
+                    4,
+                    2,
+                    GraphBinding::new(GraphConfig::Transfer).bind("ratio", "a"),
+                ),
             ],
         );
         assert_eq!(validate(&l, &ParamContext::new(), &all), vec![]);
@@ -638,5 +752,26 @@ mod tests {
             self.rows = rows;
             self
         }
+    }
+
+    #[test]
+    fn a_graph_binding_is_checked_slot_by_slot() {
+        let binding = GraphBinding::new(GraphConfig::Envelope)
+            .bind("attack", "op{env_op}_attack")
+            .bind("decay", "op{env_op}_missing")
+            .bind("release", "{nothing}_r");
+        let l = page(6, vec![Cell::graph(0, 0, 6, 2, binding)]);
+        let exists = |p: &ParamId| p.as_str() != "op2_missing";
+        let ctx = ParamContext::new().with(ENV_OP, 2);
+        let errors = validate(&l, &ctx, &exists);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(
+            matches!(&errors[0], LayoutError::UnknownParam { id, .. } if id.as_str() == "op2_missing")
+        );
+        assert!(matches!(&errors[1], LayoutError::Unresolved { .. }));
+        // A slot without a parameter is fine and resolves to nothing.
+        let b = GraphBinding::new(GraphConfig::Envelope).bind("attack", "a");
+        assert_eq!(b.resolved("curve", &ctx), Ok(None));
+        assert_eq!(b.resolved("attack", &ctx), Ok(Some(id("a"))));
     }
 }
