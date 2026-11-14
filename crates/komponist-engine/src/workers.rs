@@ -500,8 +500,10 @@ mod tests {
         let job = |_: usize, lane: usize| {
             if lane != 0 {
                 seen.store(sys::fp_state() | 1 << 63, Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(2));
             }
+            // Every lane sleeps, so a loaded machine cannot let the caller take all jobs before a
+            // worker wakes (it did under parallel builds).
+            std::thread::sleep(Duration::from_millis(2));
         };
         for _ in 0..200 {
             pool.run(3, &job, Duration::from_secs(1));
