@@ -392,6 +392,12 @@ impl DemoPlugin {
             name: self.name.to_owned(),
             vendor: self.vendor.to_owned(),
             version: self.version.to_owned(),
+            // The demo plugins stand in for "<name>.<format>" bundles.
+            module: match self.format {
+                PluginFormat::Builtin => Box::default(),
+                PluginFormat::Clap => format!("{}.clap", self.name).into(),
+                PluginFormat::Vst3 => format!("{}.vst3", self.name).into(),
+            },
         }
     }
 }

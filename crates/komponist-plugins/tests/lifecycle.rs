@@ -187,6 +187,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
         name: "Vital".into(),
         vendor: "Vital Audio".into(),
         version: "1.5.5".into(),
+        module: Box::default(),
     };
     let original = project(vec![
         track(
@@ -237,7 +238,7 @@ fn missing_plugin_keeps_its_state_byte_identical_through_a_save() {
     let placeholder = find_device(&loaded, DeviceId(10)).clone();
     assert_eq!(
         rig.manager.create_processor(&placeholder, SETUP).err(),
-        Some(PluginError::NotInstalled(gone))
+        Some(PluginError::NotInstalled(Box::new(gone)))
     );
     rig.wait_status(30, DeviceStatus::Ok);
     rig.wait_status(11, DeviceStatus::Ok);
@@ -473,6 +474,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
             name: "pisynth".into(),
             vendor: "klang-studio".into(),
             version: "0.1.0".into(),
+            module: Box::default(),
         },
         ..device(9, DeviceRole::Instrument, clap_plugin(SYNTH), None)
     };

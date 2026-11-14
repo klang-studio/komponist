@@ -2,12 +2,12 @@
 //! (`Screens.dc.html` `ovMissing`, `missing`; notes `S06`).
 //!
 //! The dialog lists every missing device with its plugin name, format, place ("Spur Arp ·
-//! Instrument", "Spur Pad · Effekt 4") and plugin id. "Ohne diese Plugins fortfahren" (Enter, Esc)
+//! Instrument", "Spur Pad · Effekt 4") and module file name. "Ohne diese Plugins fortfahren" (Enter, Esc)
 //! keeps them as placeholders with their state; "Plugin-Ordner prüfen" opens the settings at
 //! "Plugins" and rescans.
 
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
-use komponist_model::{ChannelRef, DeviceRole, PluginFormat, Project};
+use komponist_model::{ChannelRef, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, typography};
@@ -37,8 +37,8 @@ pub struct Row {
     pub format: &'static str,
     /// Where it sits ("Spur Arp · Instrument").
     pub place: String,
-    /// Plugin id ("audio.vital.synth").
-    pub id: String,
+    /// Module file name ("Vital.vst3", "Surge XT.clap"); empty when the project does not know it.
+    pub module: String,
 }
 
 /// What the dialog shows.
@@ -101,13 +101,25 @@ pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
                 name: mp.plugin.name.clone(),
                 format: format_label(mp.plugin.format),
                 place: format!("{owner} · {role}"),
-                id: mp.plugin.id.clone(),
+                module: module_label(&mp.plugin),
             }
         })
         .collect();
     Model {
         project: project.name.clone(),
         rows,
+    }
+}
+
+/// The line under the place: the module file name. A CLAP plugin from an old project falls back to
+/// its readable id; a VST3 hex class id is never shown.
+fn module_label(plugin: &PluginRef) -> String {
+    if !plugin.module.is_empty() {
+        plugin.module.to_string()
+    } else if plugin.format == PluginFormat::Clap {
+        plugin.id.clone()
+    } else {
+        String::new()
     }
 }
 
@@ -232,7 +244,7 @@ fn title_row(ui: &mut Ui, title: &str) {
     label_node(ui, text_rect, title, Role::Label);
 }
 
-/// One row: name and format chip, place and plugin id (`gap:4px 12px`, `padding:10px 12px`).
+/// One row: name and format chip, place and module file name (`gap:4px 12px`, `padding:10px 12px`).
 fn missing_row(ui: &mut Ui, width: f32, row: &Row) {
     let ppp = ui.pixels_per_point();
     let name = galley(
@@ -259,7 +271,7 @@ fn missing_row(ui: &mut Ui, width: f32, row: &Row) {
     );
     let id = styled(
         ui,
-        &row.id,
+        &row.module,
         &typography::VALUE_S,
         color32(color::TEXT_3),
         None,
@@ -314,7 +326,11 @@ fn missing_row(ui: &mut Ui, width: f32, row: &Row) {
         id,
         Color32::PLACEHOLDER,
     );
-    let label = format!("{} {}, {}, {}", row.name, row.format, row.place, row.id);
+    let label = if row.module.is_empty() {
+        format!("{} {}, {}", row.name, row.format, row.place)
+    } else {
+        format!("{} {}, {}, {}", row.name, row.format, row.place, row.module)
+    };
     label_node(ui, rect, &label, Role::ListItem);
 }
 
@@ -363,12 +379,41 @@ mod tests {
                 name: "TAL-Reverb-4".into(),
                 vendor: "TAL".into(),
                 version: "1".into(),
+                module: Box::default(),
             },
         };
         let row = &model(&project, &[master]).rows[0];
         assert_eq!(row.place, "Master · Effekt 1");
         assert_eq!(row.format, "VST3");
-        assert_eq!(row.id, "com.tal.reverb4");
+        // An old project without a module name: a VST3 shows nothing, never the class id.
+        assert_eq!(row.module, "");
+    }
+
+    #[test]
+    fn module_file_name_replaces_the_class_id() {
+        let project = demo_project();
+        let vst3 = |module: &str| MissingPlugin {
+            track: None,
+            device: DeviceId(999),
+            role: DeviceRole::Effect,
+            index: 0,
+            plugin: PluginRef {
+                format: PluginFormat::Vst3,
+                id: "ABCDEF0123456789ABCDEF0123456789".into(),
+                name: "Vital".into(),
+                vendor: "Vital Audio".into(),
+                version: "1".into(),
+                module: module.into(),
+            },
+        };
+        assert_eq!(
+            model(&project, &[vst3("Vital.vst3")]).rows[0].module,
+            "Vital.vst3"
+        );
+        assert_eq!(model(&project, &[vst3("")]).rows[0].module, "");
+        // The demo's CLAP devices carry their module name.
+        let rows = model(&project, &[missing(&project, 3, 0)]).rows;
+        assert_eq!(rows[0].module, "Surge XT.clap");
     }
 
     #[test]

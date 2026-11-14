@@ -256,6 +256,7 @@ mod tests {
             name: "klopfer".into(),
             vendor: "Klopfer".into(),
             version: "0.1.0".into(),
+            module: Box::default(),
         };
         let p = template(Some(klopfer), crate::app::pisynth_ref());
         let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {

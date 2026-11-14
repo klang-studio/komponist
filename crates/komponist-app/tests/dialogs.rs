@@ -431,6 +431,7 @@ fn nonexistent_plugin() -> PluginRef {
         name: "Gibt es nicht".into(),
         vendor: "Niemand".into(),
         version: "1.0".into(),
+        module: Box::default(),
     }
 }
 
@@ -790,6 +791,11 @@ fn s06() -> (Project, Vec<MissingPlugin>) {
         name: name.into(),
         vendor: "TAL".into(),
         version: "1.0".into(),
+        module: match format {
+            PluginFormat::Vst3 => format!("{name}.vst3"),
+            _ => format!("{name}.clap"),
+        }
+        .into(),
     };
     let mut p = demo_project();
     let pad = p.tracks.iter().find(|t| t.name == "Pad").unwrap().id;
@@ -834,6 +840,35 @@ fn s06() -> (Project, Vec<MissingPlugin>) {
         },
     ];
     (p, missing)
+}
+
+/// The dialog shows the module file name; a VST3 from an old project (no module name) shows no
+/// line, in particular not the hex class id.
+#[test]
+fn s06_shows_the_module_file_name_and_never_the_class_id() {
+    let hex = "56535456697461766974616C00000000";
+    let (project, missing) = s06();
+    let show = |project: Project, missing: Vec<MissingPlugin>| {
+        let mut app = App::headless(project);
+        app.ui_mut().dialog = Some(Dialog::MissingPlugins(missing));
+        app.ui_mut().focus = FocusArea::Dialog;
+        let mut h = harness_at(app, 1.0);
+        h.run_steps(3);
+        h
+    };
+    let h = show(project.clone(), missing.clone());
+    h.get_by_label_contains("Vital VST3, Spur Arp · Instrument, Vital.vst3");
+    assert!(h.query_by_label_contains(hex).is_none());
+    // The same project as an old file: no "module" anywhere.
+    let old = project;
+    let mut old_missing = missing;
+    for m in &mut old_missing {
+        m.plugin.module = Box::default();
+    }
+    let h = show(old, old_missing);
+    h.get_by_label_contains("Vital VST3, Spur Arp · Instrument");
+    assert!(h.query_by_label_contains("Vital.vst3").is_none());
+    assert!(h.query_by_label_contains(hex).is_none());
 }
 
 #[test]
@@ -1137,8 +1172,9 @@ fn s06_texts_match_the_screen() {
     let (project, missing) = s06();
     let model = missing_plugins::model(&project, &missing);
     assert_eq!(model.rows[0].name, "Vital");
-    // The demo stores Vital's VST3 class id; S06's "audio.vital.synth" is a mock-up id.
-    assert_eq!(model.rows[0].id, "56535456697461766974616C00000000");
+    // Under the name stands the module file name (owner decision Q4, 2026-11-14), not the VST3
+    // class id and not S06's mock-up id "audio.vital.synth".
+    assert_eq!(model.rows[0].module, "Vital.vst3");
     assert_eq!(model.rows[0].place, "Spur Arp · Instrument");
     assert_eq!(model.rows[0].format, "VST3");
     assert_eq!(model.rows[1].place, "Spur Pad · Effekt 4");

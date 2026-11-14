@@ -74,6 +74,7 @@ fn klopfer_sound(dir: &Path) -> Option<Sound> {
             name: "klopfer".into(),
             vendor: "Klopfer".into(),
             version: "0.1.0".into(),
+            module: Box::default(),
         },
         state: Some(klopfer_kit_state(&kit).expect("kit state")),
         config: PluginManagerConfig {

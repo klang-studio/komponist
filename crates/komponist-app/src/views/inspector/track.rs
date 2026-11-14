@@ -247,6 +247,7 @@ fn no_instrument() -> PluginRef {
         name: names::NO_INSTRUMENT.to_owned(),
         vendor: String::new(),
         version: String::new(),
+        module: Box::default(),
     }
 }
 

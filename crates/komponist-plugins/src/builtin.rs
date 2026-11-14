@@ -74,6 +74,7 @@ fn builtin_ref(id: &str, name: &str, vendor: &str) -> PluginRef {
         name: name.into(),
         vendor: vendor.into(),
         version: env!("CARGO_PKG_VERSION").into(),
+        module: Box::default(),
     }
 }
 

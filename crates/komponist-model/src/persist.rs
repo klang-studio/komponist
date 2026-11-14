@@ -352,6 +352,34 @@ mod tests {
     }
 
     #[test]
+    fn plugin_module_name_round_trips_and_is_optional() {
+        // The demo's Surge XT carries its module file name through save and load.
+        let project = demo_project();
+        let dev = &project.tracks[3].channel.devices[0];
+        assert_eq!(&*dev.plugin.module, "Surge XT.clap");
+        let back = from_json(&to_json(&project).unwrap()).unwrap();
+        assert_eq!(
+            &*back.tracks[3].channel.devices[0].plugin.module,
+            "Surge XT.clap"
+        );
+        // An old file has no "module": it loads with an empty name, and saving writes none.
+        let mut v = demo_value();
+        let plugin = v["tracks"][3]["channel"]["devices"][0]["plugin"]
+            .as_object_mut()
+            .unwrap();
+        assert_eq!(plugin.remove("module").unwrap(), "Surge XT.clap");
+        let old = from_json(&file(v)).unwrap();
+        assert_eq!(&*old.tracks[3].channel.devices[0].plugin.module, "");
+        let text = to_json(&old).unwrap();
+        let again: Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            again["project"]["tracks"][3]["channel"]["devices"][0]["plugin"]
+                .get("module")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn rejects_foreign_and_broken_files() {
         let not_a_project = [
             "[]",
