@@ -284,21 +284,19 @@ fn act(
             None => return None,
         },
         // Mixer and project.
-        66..=73 => match track {
-            Some(track) => {
-                let prop = match rng.below(4) {
-                    0 => ChannelProp::VolumeDb(-(rng.below(30) as f32)),
-                    1 => ChannelProp::Pan(rng.below(201) as f32 / 100.0 - 1.0),
-                    2 => ChannelProp::Mute(rng.chance(30)),
-                    _ => ChannelProp::Solo(rng.chance(20)),
-                };
-                Action::Edit(EditAction::SetTrackProp {
-                    tracks: vec![track],
-                    prop: TrackProp::Channel(prop),
-                })
-            }
-            None => return None,
-        },
+        66..=73 => {
+            let track = track?;
+            let prop = match rng.below(4) {
+                0 => ChannelProp::VolumeDb(-(rng.below(30) as f32)),
+                1 => ChannelProp::Pan(rng.below(201) as f32 / 100.0 - 1.0),
+                2 => ChannelProp::Mute(rng.chance(30)),
+                _ => ChannelProp::Solo(rng.chance(20)),
+            };
+            Action::Edit(EditAction::SetTrackProp {
+                tracks: vec![track],
+                prop: TrackProp::Channel(prop),
+            })
+        }
         74..=75 => Action::Edit(EditAction::SetProjectProp(ProjectProp::Tempo(Tempo::new(
             70.0 + rng.below(110) as f64,
         )))),
@@ -321,13 +319,10 @@ fn act(
                 let d = t.channel.devices.first()?;
                 komponist_app::device_host::is_pisynth(d).then_some(d.id)
             });
-            match device {
-                Some(device) => Action::Plugin(PluginAction::ApplyPisynthPreset {
-                    device,
-                    preset: rng.below(8),
-                }),
-                None => return None,
-            }
+            Action::Plugin(PluginAction::ApplyPisynthPreset {
+                device: device?,
+                preset: rng.below(8),
+            })
         }
         81..=82 => {
             let device = track.and_then(|t| {
@@ -335,13 +330,11 @@ fn act(
                 let t = p.tracks.iter().find(|x| x.id == t)?;
                 Some(t.channel.devices.first()?.clone())
             });
-            match device {
-                Some(d) => Action::Edit(EditAction::SetDeviceBypass {
-                    device: d.id,
-                    bypass: !d.bypass,
-                }),
-                None => return None,
-            }
+            let d = device?;
+            Action::Edit(EditAction::SetDeviceBypass {
+                device: d.id,
+                bypass: !d.bypass,
+            })
         }
         // History.
         83..=88 => Action::Edit(EditAction::Undo),
