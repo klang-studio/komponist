@@ -5,6 +5,8 @@
 //! bridge from the engine.
 //!
 //! Module map (ARCHITECTURE §8):
+//! - [`builtin`]: the built-in entries (pisynth, klopfer · INTERN), klopfer's bundle lookup, pads
+//!   and kit state.
 //! - [`catalog`]: [`Catalog`], [`CatalogEntry`], [`PluginDirs`], scan cache and report.
 //! - [`manager`]: [`PluginManager`], [`DeviceStatus`], [`PluginManagerEvent`], [`MissingPlugin`].
 //! - [`external`]: [`ExternalProcessor`], the engine's `Processor` for a bridge.
@@ -15,6 +17,7 @@
 //! (bundle discovery and scan processes).
 
 mod bridge;
+pub mod builtin;
 pub mod catalog;
 pub mod external;
 pub mod manager;
