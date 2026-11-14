@@ -118,8 +118,7 @@ pub mod names {
     pub const CRASHED: &str = "abgestürzt";
     /// Status of a missing device (by analogy, S06 „Plugin fehlt“).
     pub const MISSING: &str = "fehlt";
-    /// A device whose blocks recently missed their deadline (not in the design).
-    pub const LATE: &str = "zu spät";
+    pub use crate::views::late::{LATE, late_blocks};
     /// Undo label of a clip field drag.
     pub const UNDO_CLIP: &str = "Clip ändern";
     /// Undo label of a tempo drag.
@@ -140,15 +139,6 @@ pub mod names {
     /// „Gerät LSP Para EQ x8“: a device row.
     pub fn device(name: &str) -> String {
         format!("Gerät {name}")
-    }
-
-    /// „3 Blöcke zu spät“: the tooltip of the late indicator.
-    pub fn late_blocks(n: u64) -> String {
-        if n == 1 {
-            "1 Block zu spät".to_owned()
-        } else {
-            format!("{n} Blöcke zu spät")
-        }
     }
 
     /// „14 Noten“: the notes of a take.

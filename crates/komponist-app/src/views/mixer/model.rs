@@ -138,6 +138,8 @@ pub struct Insert {
     pub bypass: bool,
     /// Runtime state.
     pub state: SlotState,
+    /// Blocks that missed their deadline, while the slot shows "zu spät" (set by the view).
+    pub late: Option<u64>,
 }
 
 impl Insert {
@@ -214,6 +216,7 @@ fn inserts(channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
             instrument: d.role == DeviceRole::Instrument,
             bypass: d.bypass,
             state: SlotState::from(&host.status(d.id)),
+            late: None,
         })
         .collect()
 }

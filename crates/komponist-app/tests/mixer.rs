@@ -826,3 +826,27 @@ fn snapshots_next_to_s04() {
     results.extend_harness(&mut h);
     results.unwrap();
 }
+
+#[test]
+fn an_insert_whose_blocks_arrive_late_reads_zu_spaet_for_a_while() {
+    let p = s04_project();
+    let surge = p.tracks[3].channel.devices[0].id;
+    let host = FakeHost::new();
+    let late = host.late.clone();
+    let mut app = App::headless(p).with_device_host(Box::new(host));
+    let lead = track(&app, 2);
+    select(&mut app, lead);
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    let slot = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Button, &names::insert("Surge XT"))
+            .accesskit_node()
+            .value()
+    };
+    assert_eq!(slot(&h), None);
+    late.lock().unwrap().insert(surge, 3);
+    h.run_steps(2);
+    assert_eq!(slot(&h).as_deref(), Some("zu spät"));
+    h.run_steps(150);
+    assert_eq!(slot(&h), None, "the indicator goes out after its hold time");
+}

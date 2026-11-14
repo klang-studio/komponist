@@ -154,6 +154,19 @@ fn s05_host(c: &Chain) -> FakeHost {
 
 /// S05: Pad selected, the dock on "Geräte", Surge's window open, the browser searching "hall" in
 /// Effekte.
+fn s05_with_late() -> (App, Chain, fake_host::LateBlocks) {
+    let (p, c) = s05_project();
+    let host = s05_host(&c);
+    let late = host.late.clone();
+    let mut app = App::headless(p).with_device_host(Box::new(host));
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![c.pad],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    (app, c, late)
+}
+
 fn s05() -> (App, Chain, fake_host::Statuses, fake_host::SetLog) {
     let (p, c) = s05_project();
     let host = s05_host(&c);
@@ -814,4 +827,31 @@ fn snapshots_next_to_s05() {
         results.extend_harness(&mut h);
     }
     results.unwrap();
+}
+
+#[test]
+fn a_card_whose_blocks_arrive_late_reads_zu_spaet_for_a_while() {
+    let (app, c, late) = s05_with_late();
+    let mut h = harness(app);
+    let label = names::card("Surge XT");
+    assert!(card(&h, &label).query_by_label("zu spät").is_none());
+    late.lock().unwrap().insert(c.surge, 2);
+    h.run_steps(2);
+    card(&h, &label).get_by_role_and_label(Role::Label, "zu spät");
+    h.run_steps(150);
+    assert!(card(&h, &label).query_by_label("zu spät").is_none());
+}
+
+#[test]
+fn a_card_that_appears_is_scrolled_into_view() {
+    use komponist_app::views::devices::scroll_to_card;
+    let (p, c) = s05_project();
+    let track = p.track(c.pad).unwrap();
+    let cards = komponist_app::views::devices::model::cards(track, &FakeHost::new(), &[]);
+    let last = cards.last().unwrap().device;
+    // A narrow body: the last card lies right of it; the first is already visible.
+    assert!(scroll_to_card(&cards, last, 600.0, 0.0) > 0.0);
+    assert_eq!(scroll_to_card(&cards, cards[0].device, 600.0, 0.0), 0.0);
+    // Scrolled far right, the first card comes back.
+    assert!(scroll_to_card(&cards, cards[0].device, 600.0, 900.0) < 900.0);
 }

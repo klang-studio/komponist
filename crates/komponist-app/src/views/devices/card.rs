@@ -23,6 +23,7 @@ use komponist_ui::{fonts, px, state};
 use super::metrics;
 use super::model::{Card, CardState, Param, failure_texts, format_value, names};
 use crate::actions::{Action, EditAction, PluginAction};
+use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The card's context menu.
@@ -253,21 +254,33 @@ fn head_controls(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, head: Rect) {
     let missing = card.state == CardState::Missing;
     let ppp = row.pixels_per_point();
 
-    // Format tag on `surface.1` (`padding:1px 4px`); Mono 9 has no token: `value.s`.
-    let tag = w::styled_galley(&row, card.tag, &typography::VALUE_S);
+    // Format tag on `surface.1` (`padding:1px 4px`); Mono 9 has no token: `value.s`. While a
+    // device is late it reads "zu spät" instead.
+    let tag_text = if card.late.is_some() {
+        late::LATE
+    } else {
+        card.tag
+    };
+    let tag = w::styled_galley(&row, tag_text, &typography::VALUE_S);
     let tag_size = vec2(
         tag.size().x + 2.0 * metrics::TAG_PAD_X,
         tag.size().y + 2.0 * metrics::TAG_PAD_Y,
     );
     let (tag_rect, tag_r) = row.allocate_exact_size(tag_size, Sense::hover());
-    tag_r.widget_info(|| WidgetInfo::labeled(Role::Label, true, card.tag));
+    tag_r.widget_info(|| WidgetInfo::labeled(Role::Label, true, tag_text));
+    if let Some(n) = card.late {
+        Tip::new(tag_text).detail(&late::late_blocks(n)).attach(&tag_r);
+        late::repaint_when_expired(row.ctx());
+    }
     px::fill(
         row.painter(),
         tag_rect,
         radius::S,
         color32(color::SURFACE_1),
     );
-    let tag_color = if missing {
+    let tag_color = if card.late.is_some() {
+        color::METER_LOUD
+    } else if missing {
         color::STATE_ERROR
     } else {
         color::TEXT_3

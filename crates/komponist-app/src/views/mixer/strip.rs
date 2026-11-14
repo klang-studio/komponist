@@ -20,6 +20,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics::{self as m, Tier};
+use crate::views::late;
 use super::model::{Insert, SlotState, Strip, move_target, names, slot_at};
 use super::send_gesture;
 use crate::actions::{
@@ -421,6 +422,7 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     let ink = match insert.state {
         SlotState::Crashed | SlotState::Missing => color::STATE_ERROR,
         SlotState::Loading => color::TEXT_3,
+        SlotState::Ok if insert.late.is_some() => color::METER_LOUD,
         SlotState::Ok if insert.bypass || s.dim => color::TEXT_3,
         SlotState::Ok => color::TEXT_1,
     };
@@ -446,12 +448,19 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     let bypass = insert.bypass;
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(Role::Button, true, &name);
-        info.current_text_value = bypass.then(|| names::BYPASS.to_owned());
+        info.current_text_value = match insert.late {
+            Some(_) => Some(late::LATE.to_owned()),
+            None => bypass.then(|| names::BYPASS.to_owned()),
+        };
         info
     });
+    let late_text = insert.late.map(late::late_blocks);
     Tip::new(&insert.name)
-        .detail(insert.detail())
+        .detail(late_text.as_deref().unwrap_or(insert.detail()))
         .attach(&response);
+    if insert.late.is_some() {
+        late::repaint_when_expired(ui.ctx());
+    }
     if response.hovered() || response.dragged() {
         ui.ctx().set_cursor_icon(if response.dragged() {
             egui::CursorIcon::Grabbing

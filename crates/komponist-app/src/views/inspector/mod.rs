@@ -22,7 +22,6 @@ pub mod model;
 mod project;
 mod track;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use egui::text::CCursorRange;
@@ -40,6 +39,7 @@ use komponist_ui::{fonts, px};
 
 use self::metrics as m;
 use self::model::{ClipSection, Sections};
+use crate::views::late::LateTracker;
 use crate::views::{View, ViewCtx, elided_galley, group_bounds};
 
 /// What is being renamed in the inspector.
@@ -69,7 +69,7 @@ pub struct Inspector {
     content_height: f32,
     rename: Option<Rename>,
     /// Per device: the late-block count last seen and when it last grew (egui time).
-    late: HashMap<DeviceId, (u64, f64)>,
+    late: LateTracker,
 }
 
 impl Inspector {
@@ -138,7 +138,7 @@ impl View for Inspector {
             .iter()
             .flat_map(|t| t.channel.devices.iter().map(|d| d.id))
             .collect();
-        self.late.retain(|d, _| live.contains(d));
+        self.late.retain(&live);
     }
 }
 

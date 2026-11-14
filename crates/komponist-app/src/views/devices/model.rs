@@ -181,6 +181,8 @@ pub struct Card {
     pub columns: usize,
     /// The knobs are pisynth's macros (their text comes from `Macro::text`).
     pub macros: bool,
+    /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
+    pub late: Option<u64>,
 }
 
 impl Card {
@@ -242,6 +244,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         width,
         columns: if narrow { n } else { metrics::COLUMNS },
         macros,
+        late: None,
         state,
     }
 }

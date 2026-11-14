@@ -40,6 +40,7 @@ use self::metrics::{MASTER_WIDTH, STRIP_GAP, STRIP_WIDTH, Tier};
 use self::strip::toggle_prop;
 pub use self::strip::{Rows, SlotDrag};
 use crate::actions::{Action, EditAction};
+use crate::views::late::LateTracker;
 use crate::views::{View, ViewCtx};
 
 /// Sends the change of a continuous control (fader, knob, number field) as an undo step:
@@ -70,6 +71,8 @@ pub fn send_gesture(
 pub struct Mixer {
     /// A press on M S R opened a gesture (ended on release).
     toggle_gesture: bool,
+    /// The "zu spät" state of the inserts.
+    late: LateTracker,
 }
 
 impl Mixer {
@@ -144,7 +147,21 @@ impl Mixer {
 impl View for Mixer {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         let project = Arc::clone(ctx.project);
-        let strips = model::strips(&project, &ctx.ui.selection.tracks, ctx.engine.host());
+        let mut strips = model::strips(&project, &ctx.ui.selection.tracks, ctx.engine.host());
+        let now = ui.input(|i| i.time);
+        for s in &mut strips {
+            for insert in &mut s.inserts {
+                let running = insert.state == model::SlotState::Ok;
+                insert.late = self
+                    .late
+                    .state(ctx.engine.host(), insert.device, running, now);
+            }
+        }
+        let live: Vec<_> = strips
+            .iter()
+            .flat_map(|s| s.inserts.iter().map(|i| i.device))
+            .collect();
+        self.late.retain(&live);
         let body = ui.max_rect();
         px::fill(ui.painter(), body, 0.0, color32(color::SURFACE_0));
         let tier = Tier::for_height(body.height());

@@ -65,5 +65,3 @@ pub const PAN_KEY_GAP: f32 = space::SPACE_0_5;
 pub const TOGGLE: [f32; 2] = [28.0, 20.0];
 /// Gap between them (`gap:4px`).
 pub const TOGGLE_GAP: f32 = space::SPACE_1;
-/// How long a device row shows "zu spät" after a block missed its deadline (not in the design).
-pub const LATE_HOLD_S: f64 = 2.0;

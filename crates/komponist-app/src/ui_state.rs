@@ -390,8 +390,6 @@ pub struct MixerView {
 pub struct DevicesView {
     /// Horizontal scroll in design px.
     pub scroll_x: f32,
-    /// Devices shown with the generic parameter grid instead of macros ("auf Wunsch").
-    pub generic_params: BTreeSet<DeviceId>,
 }
 
 /// Browser segments ("Alle · Instr. · Effekte · Dateien").
