@@ -364,7 +364,7 @@ mod tests {
     fn the_plugins_text_is_shown_only_for_its_value() {
         let p = param(-60.0, 0.0, 0, -12.0, "-12.0 dB");
         assert_eq!(text_for(&p, false, -12.0), "-12.0 dB");
-        assert_eq!(text_for(&p, false, -6.0), "-6.00");
+        assert_eq!(text_for(&p, false, -6.0), "\u{2212}6.00");
         let p = param(0.0, 1.0, 0, 0.5, "");
         assert_eq!(text_for(&p, false, 0.25), "25 %");
         assert_eq!(text_for(&param(0.0, 8.0, 8, 0.0, ""), false, 3.0), "3");
