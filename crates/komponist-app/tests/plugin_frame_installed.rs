@@ -1,7 +1,7 @@
 //! Plugin frames as real X11 windows with the plugins installed on this machine (WP-50):
 //! Klopfer (fixed size, Space from the focused plugin, bridge killed → "Neu laden", close and
 //! reopen), Surge XT as CLAP and VST3 (resizable: user resizes the frame, the plugin adjusts, the
-//! frame follows), Dexed (fixed size), and two frames at once.
+//! frame follows), Dexed (fixed size, parameter view and back), and two frames at once.
 //!
 //! `#[ignore]`, and only with `KP_GUI_TESTS=1` under Xvfb (`frame_gui` module docs):
 //!
@@ -100,6 +100,7 @@ fn installed_plugins_in_real_frames() {
     steps.push(gui_shown("dexed"));
     steps.extend(shot("dexed-open"));
     steps.extend(fixed_size_checks("dexed"));
+    steps.extend(view_switch("dexed", "dexed"));
     steps.extend(closed("dexed"));
 
     // Two frames at once.

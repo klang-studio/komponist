@@ -162,6 +162,15 @@ impl TestX {
             .unwrap_or_default()
     }
 
+    /// Whether `w` is mapped.
+    pub fn mapped(&self, w: Window) -> bool {
+        self.conn
+            .get_window_attributes(w)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|a| a.map_state != x11rb::protocol::xproto::MapState::UNMAPPED)
+    }
+
     pub fn exists(&self, w: Window) -> bool {
         self.conn
             .get_geometry(w)
@@ -888,4 +897,68 @@ pub fn closed(name: &str) -> Vec<Step> {
             }
         }),
     ]
+}
+
+/// Switches `name`'s frame to the parameter view and back (what the header's "Ansicht" does): the
+/// plugin area hides, the frame becomes resizable with the knob grid, then the plugin returns at
+/// its size (locked again if it is fixed).
+pub fn view_switch(name: &str, shot_name: &str) -> Vec<Step> {
+    let n1 = name.to_owned();
+    let n2 = name.to_owned();
+    let n3 = name.to_owned();
+    let n4 = name.to_owned();
+    let set_view = |w: &mut World<'_>, name: &str, view: komponist_app::ui_state::PluginView| {
+        let device = w.device(name);
+        if let Some(win) = w
+            .app
+            .ui_mut()
+            .plugin_windows
+            .iter_mut()
+            .find(|win| win.device == device)
+        {
+            win.view = view;
+        }
+    };
+    let mut steps = vec![
+        once(format!("{n1}: parameter view"), move |w| {
+            set_view(w, &n1, komponist_app::ui_state::PluginView::Params);
+        }),
+        step(
+            format!("{n2}: plugin area hidden, frame resizable"),
+            move |w| {
+                let f = w.frame(&n2).ok_or("no frame")?;
+                let (Some(window), Some(child)) = (f.window, f.child) else {
+                    return Err("no window or child".into());
+                };
+                let (min, max) = w.x.size_hints(window);
+                if w.x.mapped(child) || (min.is_some() && min == max) {
+                    return Ok(Poll::Pending);
+                }
+                w.note(format!(
+                    "{n2}: parameter view: child hidden, hints min {min:?} max {max:?}"
+                ));
+                Ok(Poll::Done)
+            },
+        ),
+    ];
+    steps.extend(shot(&format!("{shot_name}-params")));
+    steps.push(once(format!("{n3}: plugin view"), move |w| {
+        set_view(w, &n3, komponist_app::ui_state::PluginView::Gui);
+    }));
+    steps.push(step(format!("{n4}: plugin back at its size"), move |w| {
+        let f = w.frame(&n4).ok_or("no frame")?;
+        let child = f.child.ok_or("no child")?;
+        if !w.x.mapped(child) || !frame_settled(w.x, &f) {
+            return Ok(Poll::Pending);
+        }
+        if !f.resizable {
+            let (min, max) = w.x.size_hints(f.window.ok_or("no window")?);
+            if min.is_none() || min != max {
+                return Ok(Poll::Pending);
+            }
+        }
+        Ok(Poll::Done)
+    }));
+    steps.extend(shot(&format!("{shot_name}-back")));
+    steps
 }
