@@ -718,6 +718,13 @@ These need a decision (the handoff says: report contradictions; the design syste
    shows "komponist" wherever the screens mean the DAW (wordmark, window title, start screen, plugin
    frame). Everything else is taken verbatim. Open: does the wordmark keep the style of the design
    (lowercase, same type token)? Assumption: yes.
+7. **Mixer strip: tall faders (decided 2026-11-14).** S04 stacks name, instrument, inserts, sends, pan
+   and M S R above the fader, which leaves 121 px in the normal dock. Deviation, owner decision: the
+   strip's paddings are tighter (4 px) and the pan value stands right of the knob; the empty reserved
+   sends are hidden until busses exist; the normal dock shows a lean strip (name, M S R, fader,
+   values; no instrument line, inserts or pan). The instrument is the name's tooltip and AccessKit
+   description; pan stays in the maximised mixer and the inspector's Kanal section. Fader area:
+   maximised 641 → 753 px, normal dock 121 → 215 px (`views/mixer/metrics.rs`).
 
 ---
 

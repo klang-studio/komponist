@@ -78,6 +78,9 @@ impl Rows {
         let full = |top: f32, h: f32| Rect::from_x_y_ranges(l..=r, top..=top + h);
         let bar = full(rect.top(), m::COLOR_BAR);
         let name = full(bar.bottom(), m::NAME_TOP + UI.line_height + m::NAME_BOTTOM);
+        if tier.lean {
+            return Rows::lean(rect, bar, name);
+        }
         let line = inner(name.bottom() + m::INSTRUMENT_TOP, m::TEXT_10.line_height);
         let mut y = line.bottom() + m::INSERTS_LABEL_TOP;
         let inserts_label = tier.inserts_label.then(|| {
@@ -96,12 +99,17 @@ impl Rows {
             y = rows.bottom();
             (label, rows)
         });
-        let knob = Rect::from_center_size(
-            pos2(rect.center().x, y + m::PAN_TOP + size::KNOB / 2.0),
+        // The pan value stands right of the knob, the pair spans the inner width.
+        let knob = Rect::from_min_size(
+            pos2(l + m::PAD_X, y + m::PAN_TOP),
             vec2(size::KNOB, size::KNOB),
         );
-        let pan_value = full(knob.bottom() + m::PAN_GAP, VALUE_S.line_height);
-        let toggles = full(pan_value.bottom() + m::PAN_BOTTOM, m::TOGGLE[1]);
+        let pan_value = Rect::from_x_y_ranges(
+            knob.right() + m::PAN_GAP..=r - m::PAD_X,
+            knob.center().y - VALUE_S.line_height / 2.0
+                ..=knob.center().y + VALUE_S.line_height / 2.0,
+        );
+        let toggles = full(knob.bottom() + m::PAN_BOTTOM, m::TOGGLE[1]);
         let values_h = m::VALUES_TOP + VALUE_M.line_height + m::VALUES_BOTTOM;
         let values = inner(
             rect.bottom() - values_h + m::VALUES_TOP,
@@ -121,6 +129,44 @@ impl Rows {
             pan_value,
             toggles,
             fader,
+            values,
+        }
+    }
+
+    /// Name, toggles, the fader down to the values row; the parts left out are
+    /// empty rects at the name's foot.
+    fn lean(rect: Rect, bar: Rect, name: Rect) -> Rows {
+        use typography::VALUE_M;
+        let l = rect.left();
+        let r = rect.right();
+        let nothing = Rect::from_min_size(
+            pos2(l + m::PAD_X, name.bottom()),
+            vec2(rect.width() - 2.0 * m::PAD_X, 0.0),
+        );
+        let toggles = Rect::from_x_y_ranges(
+            l..=r,
+            name.bottom() + m::INSERTS_LABEL_TOP
+                ..=name.bottom() + m::INSERTS_LABEL_TOP + m::TOGGLE[1],
+        );
+        let values_h = m::VALUES_TOP + VALUE_M.line_height + m::VALUES_BOTTOM;
+        let values = Rect::from_x_y_ranges(
+            l + m::PAD_X..=r - m::PAD_X,
+            rect.bottom() - values_h + m::VALUES_TOP
+                ..=rect.bottom() - values_h + m::VALUES_TOP + VALUE_M.line_height,
+        );
+        let fader_top = toggles.bottom() + m::TOGGLES_BOTTOM;
+        let fader_bottom = (rect.bottom() - values_h).max(fader_top);
+        Rows {
+            bar,
+            name,
+            line: nothing,
+            inserts_label: None,
+            inserts: nothing,
+            sends: None,
+            knob: nothing,
+            pan_value: nothing,
+            toggles,
+            fader: Rect::from_x_y_ranges(l..=r, fader_top..=fader_bottom),
             values,
         }
     }
@@ -278,7 +324,7 @@ pub(super) fn show(
         select(ctx, s, mods);
     }
     paint_frame(ui, s, &rows, rect);
-    name_and_line(ui, ctx, s, &rows, mods);
+    name_and_line(ui, ctx, s, &rows, mods, tier);
     if let Some(label) = rows.inserts_label {
         let g = w::styled_galley(ui, names::INSERTS, &typography::LABEL);
         let pos = w::text_pos(label, &g, label.left(), ui.pixels_per_point());
@@ -291,7 +337,9 @@ pub(super) fn show(
     if let Some((label, sends)) = rows.sends {
         sends_area(ui, label, sends);
     }
-    pan(ui, ctx, s, &rows);
+    if !tier.lean {
+        pan(ui, ctx, s, &rows);
+    }
     let events = toggles(ui, ctx, s, rows.toggles);
     fader_and_meter(ui, ctx, s, rows.fader, mods);
     values(ui, ctx, s, rows.values, mods);
@@ -321,7 +369,14 @@ fn paint_frame(ui: &Ui, s: &Strip, rows: &Rows, rect: Rect) {
 }
 
 /// Name (a button that selects the track) and the instrument line.
-fn name_and_line(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, mods: Modifiers) {
+fn name_and_line(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    s: &Strip,
+    rows: &Rows,
+    mods: Modifiers,
+    tier: Tier,
+) {
     let style = typography::UI;
     let line_rect = Rect::from_x_y_ranges(
         rows.line.x_range(),
@@ -347,8 +402,16 @@ fn name_and_line(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, mod
             select(ctx, s, mods);
         }
     }
+    // The lean strip has no instrument line (owner decision 2026-11-14): the name's tooltip and
+    // its AccessKit description carry it.
+    if tier.lean && !s.line.is_empty() {
+        Tip::new(&s.line).attach(&r);
+        let line = s.line.clone();
+        ui.ctx()
+            .accesskit_node_builder(r.id, |n| n.set_description(line));
+    }
     let small = m::TEXT_10;
-    if !s.line.is_empty() {
+    if !s.line.is_empty() && !tier.lean {
         text(
             ui,
             rows.line,
@@ -811,15 +874,16 @@ mod tests {
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 980.0));
         let r = Rows::new(rect, Tier::FULL);
         assert_eq!(r.bar.height(), 3.0);
-        // Name: padding 8, line 16, padding 2.
-        assert_eq!(r.name.height(), 26.0);
+        // Name: padding 4 (tightened, owner decision 2026-11-14), line 16, padding 2.
+        assert_eq!(r.name.height(), 22.0);
         assert_eq!(r.line.left(), 6.0);
         assert_eq!(r.inserts.height(), m::INSERTS_HEIGHT);
-        assert!(r.sends.is_some());
+        // The reserved sends are hidden until busses exist.
+        assert!(r.sends.is_none());
         assert_eq!(r.knob.size(), vec2(28.0, 28.0));
-        assert_eq!(r.knob.center().x, 40.0);
-        // The fader takes the rest; the values row ends 10 above the bottom.
-        assert_eq!(r.values.bottom(), 970.0);
+        assert_eq!(r.knob.center().x, 20.0);
+        // The fader takes the rest; the values row ends 6 above the bottom.
+        assert_eq!(r.values.bottom(), 974.0);
         assert!(r.fader.height() > 500.0);
         assert_eq!(r.fader.bottom(), r.values.top() - m::VALUES_TOP);
         // The normal dock: no sends.
@@ -828,6 +892,7 @@ mod tests {
             Tier::for_height(292.0),
         );
         assert!(small.sends.is_none() && small.inserts_label.is_none());
+        assert_eq!(small.knob.height(), 0.0);
         assert!(small.fader.height() >= m::FADER_AREA_MIN - 0.5);
     }
 
