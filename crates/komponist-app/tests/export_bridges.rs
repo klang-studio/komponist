@@ -104,7 +104,15 @@ fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
         assert!(!app.engine().is_detached(), "waits for the bridges");
     }
     step_until(&mut app, "end of the export", |a| !a.is_exporting());
-    assert!(all_ok(&app), "{:?}", statuses(&app));
+    // Back at 48 kHz the bridges re-activate again: `Loading` until they run at it (WP-61), so a
+    // second export right away waits for them instead of rendering their silent fallback.
+    assert!(
+        bridged
+            .iter()
+            .any(|&d| app.engine().device_status(d) == DeviceStatus::Loading),
+        "{:?}",
+        statuses(&app)
+    );
 
     for (rate, name) in [(44_100, "44k.wav"), (48_000, "48k.wav")] {
         if rate == 48_000 {
@@ -139,8 +147,7 @@ fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
 
     // Back in the stream at 48 kHz with the bridges running: it plays.
     assert_eq!(app.engine().sample_rate(), 48_000);
-    step_for(&mut app, Duration::from_millis(200));
-    assert!(all_ok(&app), "{:?}", statuses(&app));
+    step_until(&mut app, "bridges back at 48 kHz", all_ok);
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
     step_until(&mut app, "playback", |a| {
         a.transport() == TransportState::Playing && a.engine().playhead() > Tick::ZERO

@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use komponist_ipc::control::{PROTOCOL_VERSION, socket_pair};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMonitor, BridgeMsg, ChannelError, ControlMsg, ErrorContext,
-    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, ShmRegion,
+    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
     WireEventKind,
 };
 use komponist_model::{DeviceId, DeviceRole};
@@ -57,6 +57,9 @@ pub(crate) struct Timing {
     pub long_call_timeout: Duration,
     /// Debounce of state snapshots after "state dirty" or a parameter change.
     pub snapshot_debounce: Duration,
+    /// How long a device stays `Loading` after its bridge reported it active (also after a
+    /// re-activation), see [`crate::WARM_UP`].
+    pub warm_up: Duration,
 }
 
 impl Default for Timing {
@@ -69,6 +72,7 @@ impl Default for Timing {
             // A cold Surge XT loads in up to 7 s (WP-31); sample libraries take longer.
             long_call_timeout: Duration::from_secs(60),
             snapshot_debounce: Duration::from_secs(1),
+            warm_up: crate::WARM_UP,
         }
     }
 }
@@ -123,6 +127,8 @@ pub(crate) struct Bridge {
     last_ping: Instant,
     /// A `Ping` sent after a re-activation: its `Pong` means the bridge runs with the new setup.
     sync_ping: Option<u32>,
+    /// Active, but `Loading` until then (warm-up after `Activated` or a re-activation).
+    ready_at: Option<Instant>,
     stop_deadline: Option<Instant>,
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<(u32, StatePurpose)>,
@@ -259,6 +265,7 @@ impl Bridge {
             ping_waiting: None,
             last_ping: now,
             sync_ping: None,
+            ready_at: None,
             stop_deadline: None,
             state_requests: VecDeque::new(),
             snapshot_due: None,
@@ -286,9 +293,14 @@ impl Bridge {
         self.watcher.pid()
     }
 
-    /// The device status.
-    pub(crate) fn status(&self) -> &DeviceStatus {
-        &self.status
+    /// The device status. A re-activation the processor asked for (`Processor::activate` with a
+    /// new rate, on another thread) counts as `Loading` at once, before the next poll takes it.
+    pub(crate) fn status(&self) -> DeviceStatus {
+        if self.phase == Phase::Running && self.shared.reactivating.load(Ordering::Acquire) {
+            DeviceStatus::Loading
+        } else {
+            self.status.clone()
+        }
     }
 
     /// Whether the bridge runs (loaded and active).
@@ -312,6 +324,25 @@ impl Bridge {
             && let Some(writer) = &self.writer
         {
             let _ = writer.send(msg);
+        }
+    }
+
+    /// Switches realtime/offline processing. The bridge deactivates and re-activates the plugin
+    /// for it, so a running device is `Loading` (fallback audio) until the bridge confirms, like a
+    /// re-activation for another rate.
+    pub(crate) fn set_render_mode(
+        &mut self,
+        mode: RenderMode,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        self.send(ControlMsg::SetRenderMode(mode));
+        if self.phase == Phase::Running {
+            self.shared.reactivating.store(true, Ordering::Release);
+            let seq = self.seq();
+            self.sync_ping = Some(seq);
+            self.send(ControlMsg::Ping { seq });
+            self.ready_at = None;
+            self.set_status(DeviceStatus::Loading, events);
         }
     }
 
@@ -437,8 +468,9 @@ impl Bridge {
         }
     }
 
-    /// Takes a re-activation the processor asked for (`Processor::activate` with a new rate).
-    fn take_reactivation(&mut self) {
+    /// Takes a re-activation the processor asked for (`Processor::activate` with a new rate). The
+    /// device is `Loading` until the bridge confirms it and the warm-up passed.
+    fn take_reactivation(&mut self, events: &mut Vec<PluginManagerEvent>) {
         let request = match self.shared.reactivate.try_lock() {
             Ok(mut guard) => guard.take(),
             Err(_) => None,
@@ -456,6 +488,20 @@ impl Bridge {
         let seq = self.seq();
         self.sync_ping = Some(seq);
         self.send(ControlMsg::Ping { seq });
+        self.ready_at = None;
+        self.set_status(DeviceStatus::Loading, events);
+    }
+
+    /// Ends the warm-up: `Ok` once it passed (and no re-activation runs).
+    fn check_ready(&mut self, now: Instant, events: &mut Vec<PluginManagerEvent>) {
+        if let Some(at) = self.ready_at
+            && now >= at
+            && self.phase == Phase::Running
+            && !self.shared.reactivating.load(Ordering::Acquire)
+        {
+            self.ready_at = None;
+            self.set_status(DeviceStatus::Ok, events);
+        }
     }
 
     /// Non-blocking: reads messages and plugin output events, checks the process and the
@@ -471,8 +517,9 @@ impl Bridge {
         if self.exited {
             return;
         }
-        self.take_reactivation();
+        self.take_reactivation(events);
         let now = Instant::now();
+        self.check_ready(now, events);
         if let Some(deadline) = self.stop_deadline
             && now >= deadline
         {
@@ -557,7 +604,9 @@ impl Bridge {
                     self.long_call_since = (self.gui_requests > 0).then(Instant::now);
                     self.last_ping = Instant::now();
                     self.shared.run.store(RUN_ACTIVE, Ordering::Release);
-                    self.set_status(DeviceStatus::Ok, events);
+                    // Audio flows from now on; the status follows after the warm-up.
+                    self.ready_at = Some(Instant::now() + self.timing.warm_up);
+                    self.check_ready(Instant::now(), events);
                 }
             }
             BridgeMsg::State { request, state } => {
@@ -639,6 +688,8 @@ impl Bridge {
                     self.sync_ping = None;
                     if self.phase == Phase::Running {
                         self.shared.reactivating.store(false, Ordering::Release);
+                        self.ready_at = Some(Instant::now() + self.timing.warm_up);
+                        self.check_ready(Instant::now(), events);
                     }
                 }
             }

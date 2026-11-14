@@ -27,9 +27,14 @@
 //! - Set the export rate with [`Engine::set_sample_rate`] when it differs from the device rate
 //!   ([`ExportJob::sample_rate`] must equal the engine's rate; this re-activates every processor).
 //! - Wait until every external device reports `Ok` again (after the re-activation, and after a
-//!   project load): a device still loading renders silence (PLAN WP-45). Show which devices are
+//!   project load): a device still loading renders silence (PLAN WP-45). `komponist-plugins`
+//!   reports a bridge `Loading` from the moment `set_sample_rate` asked it to re-activate until it
+//!   runs at the new rate and its warm-up passed (`komponist_plugins::WARM_UP`), so this one
+//!   status wait covers both; no state round trip as a barrier is needed. Show which devices are
 //!   missing or crashed instead of exporting without them. Bridges use their offline deadline
 //!   (2 s per block) because render calls carry no [`crate::ProcessContext::deadline`].
+//! - A range that starts inside a long note renders it from the first frame: `Play` chases the
+//!   notes sounding at the range start (see [`crate::engine`]).
 //! - Pass the program the engine plays now (the app's last compiled program).
 //!
 //! **After** [`export`] (on success, cancel and error alike):
