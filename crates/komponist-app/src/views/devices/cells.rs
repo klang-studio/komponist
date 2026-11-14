@@ -42,7 +42,7 @@ fn context_id(device: DeviceId) -> Id {
 
 /// The placeholders a device's layout resolves with until a view sets them: operator 1, band 1,
 /// pad 1.
-fn default_context() -> ParamContext {
+pub(super) fn default_context() -> ParamContext {
     ParamContext::new()
         .with(ENV_OP, 1)
         .with(BAND, 1)

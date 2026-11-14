@@ -754,7 +754,11 @@ mod tests {
             klopfer_bundle: None,
             parallel_scans: 1,
         });
-        assert_eq!(manager.catalog().entries().len(), 1);
+        assert_eq!(
+            manager.catalog().entries().len(),
+            5,
+            "pisynth and the four internal effects"
+        );
         assert!(!manager.is_scanning());
         assert_eq!(manager.last_scan(), None);
         assert_eq!(manager.status(DeviceId(1)), DeviceStatus::Ok);

@@ -12,7 +12,7 @@
 //!   (klopfer, scanned CLAP and VST3 plugins) in a bridge process of the
 //!   [`PluginManager`] (ARCHITECTURE §8).
 //! - [`BuiltinHost`], for tests and as the fallback: pisynth in process
-//!   ([`PisynthProcessor`]); every other device gets no processor, so the engine passes an
+//!   ([`PisynthProcessor`]) and the internal effects ([`Internal`]); every other device gets no processor, so the engine passes an
 //!   effect's input through and an instrument stays silent, and its status is
 //!   [`DeviceStatus::Missing`].
 //!
@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use komponist_builtin::PisynthProcessor;
+use komponist_builtin::{Internal, PisynthProcessor};
 use komponist_engine::Processor;
 use komponist_ipc::{GuiSize, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
 use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
@@ -217,6 +217,16 @@ pub fn is_pisynth(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_PISYNTH
 }
 
+/// The internal effect `device` is (EQ, Delay, Hall, Limiter), if it is one.
+pub fn internal_kind(device: &Device) -> Option<Internal> {
+    Internal::from_plugin(&device.plugin)
+}
+
+/// Whether `device` runs in process: pisynth or an internal effect.
+pub fn is_in_process(device: &Device) -> bool {
+    is_pisynth(device) || internal_kind(device).is_some()
+}
+
 /// Devices of `project` whose plugin `catalog` does not resolve, in document order (master last).
 fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
     let chains = project
@@ -245,7 +255,7 @@ fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
 // BuiltinHost
 // ------------------------------------------------------------------------------------------------
 
-/// pisynth in process, everything else without processor (`Missing`).
+/// pisynth and the internal effects in process, everything else without processor (`Missing`).
 #[derive(Debug)]
 pub struct BuiltinHost {
     devices: HashMap<DeviceId, Known>,
@@ -294,18 +304,23 @@ impl DeviceHost for BuiltinHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        if !is_pisynth(device) {
+        // A state that does not load plays "Init" (pisynth) or the defaults (internal effects)
+        // rather than nothing; the state stays in the document untouched.
+        let mut processor: Box<dyn Processor> = if is_pisynth(device) {
+            Box::new(
+                PisynthProcessor::from_state(device.state.as_deref())
+                    .unwrap_or_else(|_| PisynthProcessor::new(komponist_builtin::default_patch())),
+            )
+        } else if let Some(kind) = internal_kind(device) {
+            Box::new(kind.processor_from_state(device.state.as_deref()))
+        } else {
             self.set(device.id, DeviceStatus::Missing, 0);
             return None;
-        }
-        // A state that is not a pisynth patch plays "Init" rather than nothing; the state stays
-        // in the document untouched.
-        let mut processor = PisynthProcessor::from_state(device.state.as_deref())
-            .unwrap_or_else(|_| PisynthProcessor::new(komponist_builtin::default_patch()));
+        };
         match processor.activate(setup.sample_rate, setup.max_block) {
             Ok(()) => {
                 self.set(device.id, DeviceStatus::Ok, processor.latency());
-                Some(Box::new(processor))
+                Some(processor)
             }
             Err(e) => {
                 self.set(
@@ -337,8 +352,13 @@ impl DeviceHost for BuiltinHost {
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        // The built-ins are instruments; everything else needs the plugin manager's catalog.
-        is_builtin_instrument(plugin).then_some(DeviceRole::Instrument)
+        // The built-in instruments and the internal effects; everything else needs the plugin
+        // manager's catalog.
+        if is_builtin_instrument(plugin) {
+            Some(DeviceRole::Instrument)
+        } else {
+            Internal::from_plugin(plugin).map(|_| DeviceRole::Effect)
+        }
     }
 
     fn catalog(&self) -> &Catalog {
@@ -395,7 +415,7 @@ impl DeviceHost for PluginHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        if is_pisynth(device) {
+        if is_in_process(device) {
             return self.builtin.create_processor(device, setup);
         }
         // A device seen before ("Neu laden", found by a scan) starts a fresh bridge with its last
@@ -591,7 +611,7 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(names, ["pisynth"]);
+        assert_eq!(names, ["pisynth", "EQ", "Delay", "Hall", "Limiter"]);
         let missing = host.missing_plugins(&project);
         let pisynths = project
             .tracks

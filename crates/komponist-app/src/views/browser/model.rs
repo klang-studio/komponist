@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(rows[1].tag, "INTERN");
         // Category folders with counts, collapsed; the uncategorised effect after them.
         let eq = rows.iter().find(|r| r.name == "EQ und Filter").unwrap();
-        assert_eq!(eq.tag, "1");
+        assert_eq!(eq.tag, "2", "the internal EQ and LSP Para EQ");
         assert!(matches!(
             eq.kind,
             RowKind::Folder {
@@ -723,7 +723,7 @@ mod tests {
             }
         ));
         let hall = rows.iter().find(|r| r.name == "Hall und Delay").unwrap();
-        assert_eq!(hall.tag, "3");
+        assert_eq!(hall.tag, "5", "Delay and Hall (INTERN) and three scanned");
         assert!(n.contains(&"kp-test-fx"));
         assert!(!n.contains(&"Dragonfly Hall Reverb"));
         // Projekt: Takes and Exporte folders.
@@ -743,14 +743,17 @@ mod tests {
             .position(|r| r.name == "Hall und Delay")
             .unwrap();
         assert_eq!(
-            names_of(&rows[i + 1..i + 4]),
+            names_of(&rows[i + 1..i + 6]),
             [
+                "Delay",
+                "Hall",
                 "Dragonfly Hall Reverb",
                 "Dragonfly Plate Reverb",
                 "LSP Delay"
             ]
         );
-        assert!(rows[i + 1..i + 4].iter().all(|r| r.level == 1));
+        assert!(rows[i + 1..i + 6].iter().all(|r| r.level == 1));
+        assert_eq!(rows[i + 1].tag, "INTERN");
         assert_eq!(rows.last().unwrap().name, names::NO_EXPORTS);
     }
 
@@ -780,9 +783,9 @@ mod tests {
             [
                 "Effekte",
                 "EQ und Filter",
+                "EQ",
                 "LSP Para EQ x8",
-                "Dynamik",
-                "LSP Compressor"
+                "Dynamik"
             ]
         );
         assert_eq!(fx[1].kind, RowKind::Plain);
@@ -844,15 +847,15 @@ mod tests {
             BrowserSegment::Effects,
             "hall",
         ));
-        assert_eq!(rows[0].name, "1 Treffer für „hall“");
-        assert_eq!(rows[1].name, "Dragonfly Hall Reverb");
+        assert_eq!(rows[0].name, "2 Treffer für „hall“");
+        assert_eq!(names_of(&rows[1..3]), ["Hall", "Dragonfly Hall Reverb"]);
         let k = rows
             .iter()
             .position(|r| r.name == "Kategorie Hall und Delay")
             .unwrap();
         assert_eq!(
             names_of(&rows[k + 1..]),
-            ["Dragonfly Plate Reverb", "LSP Delay"]
+            ["Delay", "Dragonfly Plate Reverb", "LSP Delay"]
         );
         assert_eq!(effective_highlight(&rows, None, "hall"), Some(1));
         assert_eq!(effective_highlight(&rows, Some(k + 1), "hall"), Some(k + 1));
@@ -908,7 +911,11 @@ mod tests {
         let mut f = Favorites(Vec::new());
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "");
         assert_eq!(rows[0].name, "Instrumente", "no favourites, no section");
-        let hall = c.entries().iter().find(|e| e.plugin.id == "hall").unwrap();
+        let hall = c
+            .entries()
+            .iter()
+            .find(|e| e.plugin.id == "hall" && !e.is_builtin())
+            .unwrap();
         f.toggle(&hall.plugin);
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "");
         assert_eq!(names_of(&rows[..2]), ["Favoriten", "Dragonfly Hall Reverb"]);

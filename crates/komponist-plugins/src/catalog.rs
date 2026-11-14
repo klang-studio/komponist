@@ -31,6 +31,8 @@ pub enum BuiltinKind {
     Pisynth,
     /// klopfer, drum sampler, the bundled `Klopfer.clap` run through the bridge (D5).
     Klopfer,
+    /// An internal effect of `komponist-builtin`, in process (WP-85).
+    Internal(komponist_builtin::Internal),
 }
 
 /// Where a catalog entry's code comes from.
@@ -418,7 +420,12 @@ mod tests {
     #[test]
     fn builtins_come_first_and_klopfer_only_with_a_bundle() {
         let catalog = Catalog::builtin(None);
-        assert_eq!(catalog.entries().len(), 1);
+        let names: Vec<&str> = catalog
+            .entries()
+            .iter()
+            .map(|e| e.plugin.name.as_str())
+            .collect();
+        assert_eq!(names, ["pisynth", "EQ", "Delay", "Hall", "Limiter"]);
         let pisynth = &catalog.entries()[0];
         assert!(pisynth.is_builtin());
         assert_eq!(pisynth.plugin.id, BUILTIN_PISYNTH);
@@ -428,6 +435,27 @@ mod tests {
             pisynth.location,
             PluginLocation::InProcess(BuiltinKind::Pisynth)
         );
+
+        // The internal effects: in process, effects with a browser category, resolvable.
+        let eq = &catalog.entries()[1];
+        assert!(eq.is_builtin());
+        assert_eq!(eq.kind, PluginKind::Effect);
+        assert_eq!(eq.category, Some(EffectCategory::EqFilter));
+        assert_eq!(
+            eq.location,
+            PluginLocation::InProcess(BuiltinKind::Internal(komponist_builtin::Internal::Eq))
+        );
+        let categories: Vec<_> = catalog.entries()[1..].iter().map(|e| e.category).collect();
+        assert_eq!(
+            categories,
+            [
+                Some(EffectCategory::EqFilter),
+                Some(EffectCategory::ReverbDelay),
+                Some(EffectCategory::ReverbDelay),
+                Some(EffectCategory::Dynamics)
+            ]
+        );
+        assert_eq!(catalog.resolve(&eq.plugin), Some(eq));
 
         let catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
         let klopfer = &catalog.entries()[1];
@@ -499,16 +527,19 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["pisynth", "klopfer", "Big Hall", "dexed", "Surge XT"]
+            [
+                "pisynth", "klopfer", "EQ", "Delay", "Hall", "Limiter", "Big Hall", "dexed",
+                "Surge XT"
+            ]
         );
-        let hall = &catalog.entries()[2];
+        let hall = &catalog.entries()[6];
         assert_eq!(hall.category, Some(EffectCategory::ReverbDelay));
         assert_eq!(hall.plugin.format, komponist_model::PluginFormat::Clap);
         assert_eq!(
-            catalog.entries()[3].plugin.format,
+            catalog.entries()[7].plugin.format,
             komponist_model::PluginFormat::Vst3
         );
-        assert_eq!(catalog.entries()[4].category, None);
+        assert_eq!(catalog.entries()[8].category, None);
 
         let surge = PluginRef {
             format: komponist_model::PluginFormat::Clap,
@@ -534,7 +565,10 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(names, ["pisynth", "Klopfer"]);
+        assert_eq!(
+            names,
+            ["pisynth", "EQ", "Delay", "Hall", "Limiter", "Klopfer"]
+        );
     }
 
     #[test]
@@ -555,7 +589,7 @@ mod tests {
             module: Box::default(),
         };
         // Listed once (as the built-in), still found for a project that names the CLAP plugin.
-        assert_eq!(catalog.entries().len(), 2);
+        assert_eq!(catalog.entries().len(), 6);
         let entry = catalog.resolve(&as_clap).unwrap();
         assert!(entry.is_builtin());
         assert_eq!(entry.plugin.id, BUILTIN_KLOPFER);
@@ -601,8 +635,13 @@ mod tests {
                 .map(|e| e.plugin.name.clone())
                 .collect()
         };
-        assert_eq!(names(""), ["pisynth", "Big Hall", "Squash"]);
-        assert_eq!(names("HALL"), ["Big Hall"]);
+        assert_eq!(
+            names(""),
+            [
+                "pisynth", "EQ", "Delay", "Hall", "Limiter", "Big Hall", "Squash"
+            ]
+        );
+        assert_eq!(names("HALL"), ["Hall", "Big Hall"]);
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
         assert_eq!(names("compress"), ["Squash"]);
         assert_eq!(names("synth"), ["pisynth"]);
