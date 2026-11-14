@@ -29,11 +29,14 @@ fn finish_scan(manager: &mut PluginManager) -> ScanReport {
     .0
 }
 
+/// The catalog's names: pisynth and the scanned plugins. The internal devices (WP-85, WP-88) are
+/// built-ins like pisynth but not what these tests are about, so they are left out.
 fn names(manager: &PluginManager) -> Vec<String> {
     manager
         .catalog()
         .entries()
         .iter()
+        .filter(|e| !e.is_builtin() || e.plugin.name == "pisynth")
         .map(|e| e.plugin.name.clone())
         .collect()
 }

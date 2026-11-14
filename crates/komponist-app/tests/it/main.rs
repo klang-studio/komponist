@@ -33,6 +33,7 @@ mod klopfer;
 mod mixer;
 mod params_project;
 mod piano_roll;
+mod pisynth_device;
 mod plugin_frame;
 mod plugins;
 mod record;

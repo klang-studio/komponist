@@ -17,9 +17,9 @@ use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::{BrowserSegment, DockTab, PluginView, PluginWindow};
 use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, EditAction, PluginAction, SettingsAction, UiAction};
-use komponist_builtin::Macro;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
+use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugins::{DeviceStatus, FailReason};
 
@@ -310,7 +310,7 @@ fn a_card_has_switch_name_format_open_and_knobs() {
 }
 
 #[test]
-fn pisynth_shows_its_eight_macros_and_turning_one_is_saved() {
+fn pisynth_shows_its_card_and_turning_a_knob_is_saved() {
     let dir = std::env::temp_dir().join(format!("komponist-wp44-macro-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -345,37 +345,48 @@ fn pisynth_shows_its_eight_macros_and_turning_one_is_saved() {
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    let expected: Vec<&str> = Macro::ALL.iter().map(|m| m.name()).collect();
-    assert_eq!(names, expected);
+    // The first page, "Operatoren": a ratio knob per operator and the global knobs.
+    for name in [
+        "Ratio 1",
+        "Ratio 6",
+        "Feedback",
+        "Lautstärke",
+        "Glide",
+        "Tune",
+        "Spread",
+    ] {
+        assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
+    }
+    let glide = komponist_builtin::device::param(&ParamId::new("glide")).unwrap();
 
-    // Drag "Sustain" up: the engine gets SetParam and the device state the new value.
-    let before = Macro::Sustain.get(&patch_of(h.state(), device));
+    // Drag "Glide" up: the engine gets SetParam and the device state the new value.
+    let before = glide.field.get(&patch_of(h.state(), device));
     let knob = card(&h, &label)
-        .get_by_role_and_label(Role::Slider, "Sustain")
+        .get_by_role_and_label(Role::Slider, "Glide")
         .rect();
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
-    let after = Macro::Sustain.get(&patch_of(h.state(), device));
+    let after = glide.field.get(&patch_of(h.state(), device));
     assert!(after > before + 0.1, "{before} → {after}");
     assert!(h.state().dispatched().any(|a| matches!(
         a,
         Action::Plugin(PluginAction::SetParam { device: d, id, .. })
-            if *d == device && *id == Macro::Sustain.id()
+            if *d == device && *id == glide.wire
     )));
     // The value text follows.
     let text = card(&h, &label)
-        .get_by_role_and_label(Role::Slider, "Sustain")
+        .get_by_role_and_label(Role::Slider, "Glide")
         .value()
         .unwrap();
-    assert_eq!(text, Macro::Sustain.text(after));
+    assert_eq!(text, glide.info.format(after));
 
-    // Saved and loaded again: the macro value is in the file.
+    // Saved and loaded again: the value is in the file.
     h.state_mut()
         .dispatch(Action::Project(komponist_app::ProjectAction::Save));
     let loaded =
         komponist_model::persist::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let (_, _, d) = loaded.find_device(device).unwrap();
     let patch = komponist_builtin::decode_state(d.state.as_deref()).unwrap();
-    assert!((Macro::Sustain.get(&patch) - after).abs() < 1e-6);
+    assert!((glide.field.get(&patch) - after).abs() < 1e-6);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
