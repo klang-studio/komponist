@@ -33,6 +33,10 @@
 //! | Strg A | piano roll, arrangement | `Ui(SelectAll)` |
 //! | 1 / 2 / 3 | piano roll | `Ui(SetTool(Pointer / Pencil / Eraser))` |
 //! | Rücktaste | arrangement, piano roll | `Edit(DeleteSelection)` (prototype `key()`) |
+//! | Strg C / Strg D | device chain | `Ui(CopyDevices)` / `Edit(DuplicateDevices)` |
+//! | Strg V | device chain | `Edit(PasteDevices)` |
+//! | Entf, Rücktaste | device chain | `Edit(DeleteDevices)` |
+//! | ← → | device chain | `Ui(SelectAdjacentDevice(∓1))` |
 //! | Esc | dialog | `Ui(CloseDialog)` |
 //!
 //! Computer keyboard MIDI is a separate layer ([`NOTE_KEYS`], [`note_for`]) checked before the
@@ -314,6 +318,7 @@ impl Keymap {
         use KeyScope::{Area, Canvases, Global};
         let arrangement = Area(FocusArea::Arrangement);
         let piano_roll = Area(FocusArea::PianoRoll);
+        let devices = Area(FocusArea::Devices);
         let t = Action::Transport;
         let e = Action::Edit;
         let u = Action::Ui;
@@ -458,6 +463,38 @@ impl Keymap {
                 e(EditAction::DeleteSelection),
             ),
             (KeyChord::ctrl(Key::A), arrangement, u(UiAction::SelectAll)),
+            // Device chain: the selected devices.
+            (KeyChord::ctrl(Key::C), devices, u(UiAction::CopyDevices)),
+            (
+                KeyChord::ctrl(Key::V),
+                devices,
+                e(EditAction::PasteDevices),
+            ),
+            (
+                KeyChord::ctrl(Key::D),
+                devices,
+                e(EditAction::DuplicateDevices),
+            ),
+            (
+                KeyChord::plain(Key::Delete),
+                devices,
+                e(EditAction::DeleteDevices),
+            ),
+            (
+                KeyChord::plain(Key::Backspace),
+                devices,
+                e(EditAction::DeleteDevices),
+            ),
+            (
+                KeyChord::plain(Key::ArrowLeft),
+                devices,
+                u(UiAction::SelectAdjacentDevice(-1)),
+            ),
+            (
+                KeyChord::plain(Key::ArrowRight),
+                devices,
+                u(UiAction::SelectAdjacentDevice(1)),
+            ),
             // Piano roll: notes and tools.
             (
                 KeyChord::plain(Key::Delete),

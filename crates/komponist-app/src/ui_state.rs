@@ -6,10 +6,10 @@
 //!
 //! Thread: UI thread only.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use komponist_model::{ClipContent, ClipId, DeviceId, Grid, NoteId, Project, TickRange, TrackId};
+use komponist_model::{ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::size;
 
@@ -386,6 +386,35 @@ pub struct MixerView {
 pub struct DevicesView {
     /// Horizontal scroll in design px.
     pub scroll_x: f32,
+    /// Vertical scroll in design px (only while the dock is lower than the chain, WP-82).
+    pub scroll_y: f32,
+    /// Collapsed devices (28 px wide strip, double-click on the head).
+    pub collapsed: BTreeSet<DeviceId>,
+    /// The page each device shows (default 0).
+    pub pages: BTreeMap<DeviceId, usize>,
+    /// A scroll the next frame performs: the mixer jump centres the device, ← → and the chain head
+    /// bring it into view.
+    pub reveal: Option<(DeviceId, Reveal)>,
+    /// Ctrl C: the copied devices (Ctrl V inserts them behind the selected device).
+    pub clipboard: Vec<Device>,
+}
+
+/// How a requested scroll places a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reveal {
+    /// In the middle of the chain area (mixer insert click).
+    Center,
+    /// The least scroll that shows it whole (← →, a new device).
+    Visible,
+    /// Its left edge at the chain's padding (click in the chain head).
+    Start,
+}
+
+impl DevicesView {
+    /// The page `device` shows.
+    pub fn page(&self, device: DeviceId) -> usize {
+        self.pages.get(&device).copied().unwrap_or(0)
+    }
 }
 
 /// Browser segments ("Alle · Instr. · Effekte · Dateien").
