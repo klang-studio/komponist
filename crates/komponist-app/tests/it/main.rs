@@ -6,12 +6,12 @@
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+#[path = "../acceptance_support/mod.rs"]
+mod acceptance_support;
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "../fake_host/mod.rs"]
 mod fake_host;
-#[path = "../acceptance_support/mod.rs"]
-mod acceptance_support;
 
 mod acceptance_flow1;
 mod acceptance_flow2;
