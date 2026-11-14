@@ -116,8 +116,9 @@ pub mod names {
     pub const LOADING: &str = "lädt";
     /// Status of a crashed device (S05 `D('Airwindows Cons.','abgestürzt',{err:1})`).
     pub const CRASHED: &str = "abgestürzt";
-    /// Status of a device that failed to load (as the card's „Lässt sich nicht laden“).
-    pub const LOAD_FAILED: &str = "lässt sich nicht laden";
+    /// Status of a device that failed to load. Short on purpose (owner decision Q5, 2026-11-14), so
+    /// the name stays readable; the card and the plugin frame keep „Lässt sich nicht laden“.
+    pub const LOAD_FAILED: &str = "lädt nicht";
     /// Status of a device that stopped answering (as the card's „Hängt“).
     pub const UNRESPONSIVE: &str = "hängt";
     /// Status of a missing device (by analogy, S06 „Plugin fehlt“).
@@ -240,7 +241,7 @@ pub enum RowStatus {
     Loading,
     /// Crashed: red name and "abgestürzt".
     Crashed,
-    /// Loading failed: red name and "lässt sich nicht laden" (not a crash).
+    /// Loading failed: red name and "lädt nicht" (not a crash).
     LoadFailed,
     /// Stopped answering: red name and "hängt" (not a crash).
     Unresponsive,
@@ -431,10 +432,7 @@ mod tests {
             status,
         };
         assert_eq!(row(RowStatus::Crashed).tag("CLAP"), "abgestürzt");
-        assert_eq!(
-            row(RowStatus::LoadFailed).tag("CLAP"),
-            "lässt sich nicht laden"
-        );
+        assert_eq!(row(RowStatus::LoadFailed).tag("CLAP"), "lädt nicht");
         assert_eq!(row(RowStatus::Unresponsive).tag("CLAP"), "hängt");
         assert_eq!(row(RowStatus::Ok).tag("CLAP"), "CLAP");
     }
