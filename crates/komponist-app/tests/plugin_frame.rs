@@ -18,12 +18,13 @@ use egui::accesskit::Role;
 use egui::{Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{EditAction, PluginAction};
+use komponist_app::actions::{EditAction, PluginAction, ProjectAction};
 use komponist_app::device_host::DeviceHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
-use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, ParamRow};
+use komponist_app::views::devices::model::pisynth_params;
+use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, ParamGrid};
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
 use komponist_app::{Action, App};
@@ -77,21 +78,19 @@ fn pisynth_header() -> HeaderModel {
     }
 }
 
-fn macro_rows() -> Vec<ParamRow> {
-    let patch = komponist_builtin::default_patch();
-    komponist_builtin::Macro::ALL
+/// pisynth's macros as the frame shows them (WP-44's model, read from the device state).
+fn macro_grid() -> ParamGrid {
+    let project = demo_project();
+    let pisynth = project
+        .tracks
         .iter()
-        .map(|m| ParamRow {
-            id: m.id(),
-            name: m.name().to_owned(),
-            min: m.min(),
-            max: m.max(),
-            default: m.default_value(),
-            step_count: m.step_count(),
-            value: m.get(&patch),
-            text: m.text(m.get(&patch)),
-        })
-        .collect()
+        .flat_map(|t| t.channel.devices.iter())
+        .find(|d| d.plugin.name == "pisynth")
+        .unwrap();
+    ParamGrid {
+        params: pisynth_params(pisynth),
+        macros: true,
+    }
 }
 
 /// What a frame harness shows and collects.
@@ -194,7 +193,7 @@ fn frame_states_next_to_s05() {
         ),
         (
             "plugin-frame-params",
-            frame(pisynth_header(), BodyModel::Params(macro_rows())),
+            frame(pisynth_header(), BodyModel::Params(macro_grid())),
             params_size,
         ),
     ];
@@ -283,7 +282,7 @@ fn header_controls_report_what_the_user_did() {
 #[test]
 fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
     let mut h = frame_harness(
-        frame(pisynth_header(), BodyModel::Params(macro_rows())),
+        frame(pisynth_header(), BodyModel::Params(macro_grid())),
         [900.0, 300.0],
         1.0,
     );
@@ -307,7 +306,7 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
 #[test]
 fn knobs_report_plain_values_on_the_step_grid() {
     let mut h = frame_harness(
-        frame(pisynth_header(), BodyModel::Params(macro_rows())),
+        frame(pisynth_header(), BodyModel::Params(macro_grid())),
         [900.0, 300.0],
         1.0,
     );
@@ -426,6 +425,10 @@ impl DeviceHost for FakeHost {
         self.known(device).then(|| self.values.get(&id)).flatten()
     }
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        // pisynth goes through the engine (and into the document), as with the real host.
+        if !self.known(device) {
+            return false;
+        }
         self.script.borrow_mut().set.push((device, id, value));
         true
     }
@@ -658,10 +661,40 @@ fn pisynth_opens_its_parameters_and_steps_through_its_presets() {
     let name = komponist_builtin::presets().nth(preset).unwrap().name;
     let field = h.get_by_role_and_label(Role::ComboBox, header::names::PRESET);
     assert_eq!(field.value().as_deref(), Some(name));
+
+    // A knob writes into the device state (WP-44); the frame reads it back from there and marks
+    // the preset as changed.
+    let attack = komponist_builtin::Macro::Attack;
+    let knob = h
+        .get_by_role_and_label(Role::Slider, attack.name())
+        .rect()
+        .center();
+    h.drag_at(knob);
+    h.run();
+    h.hover_at(knob - vec2(0.0, 30.0));
+    h.run();
+    h.drop_at(knob - vec2(0.0, 30.0));
+    h.run_steps(3);
+    let state = h
+        .state()
+        .project()
+        .find_device(lead)
+        .unwrap()
+        .2
+        .state
+        .clone();
+    let patch = komponist_builtin::decode_state(state.as_deref()).unwrap();
+    let stored = attack.get(&patch);
+    let preset_value = attack.get(&komponist_builtin::preset_patch(preset).unwrap());
+    assert!(stored > preset_value, "{stored} > {preset_value}");
+    let shown = h.get_by_role_and_label(Role::Slider, attack.name());
+    assert_eq!(shown.value().as_deref(), Some(attack.text(stored).as_str()));
+    let field = h.get_by_role_and_label(Role::ComboBox, header::names::PRESET);
+    assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
 }
 
 #[test]
-fn a_missing_plugin_says_so_and_esc_in_the_main_window_closes_the_frame() {
+fn a_missing_plugin_says_so_and_esc_in_the_main_window_leaves_the_frame_open() {
     let (app, _script, _) = app();
     let mut h = harness(app);
     let dexed = device_named(h.state(), "Dexed");
@@ -669,8 +702,30 @@ fn a_missing_plugin_says_so_and_esc_in_the_main_window_closes_the_frame() {
         .dispatch(Action::Plugin(PluginAction::OpenWindow(dexed)));
     h.run_steps(3);
     assert!(h.query_by_label(&body::names::missing("Dexed")).is_some());
+    // Frames are windows of their own: Esc in the main window only clears the selection.
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
+    assert_eq!(h.state().ui().plugin_windows.len(), 1);
+    assert!(h.state().plugin_frame(dexed).is_some());
+}
+
+#[test]
+fn another_project_closes_every_plugin_frame() {
+    let (app, script, surge) = app();
+    let mut h = harness(app);
+    let pisynth = device_named(h.state(), "pisynth");
+    for device in [surge, pisynth] {
+        h.state_mut()
+            .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));
+    }
+    h.run_steps(3);
+    assert!(h.state().plugin_frame(surge).is_some() && h.state().plugin_frame(pisynth).is_some());
+    h.state_mut().dispatch(Action::Project(ProjectAction::New));
+    h.run_steps(3);
     assert!(h.state().ui().plugin_windows.is_empty());
-    assert!(h.state().plugin_frame(dexed).is_none());
+    assert!(h.state().plugin_frame(surge).is_none());
+    assert!(h.state().plugin_frame(pisynth).is_none());
+    assert!(h.query_by_label(header::names::CLOSE).is_none());
+    // No GUI was open (no X11 here), so none had to close.
+    assert!(script.borrow().closed.is_empty());
 }

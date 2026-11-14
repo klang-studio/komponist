@@ -447,6 +447,11 @@ impl Driver {
             eprintln!("FAILED: {f}");
             self.x.shot("failure");
         }
+        // Closing asks first with unsaved changes (WP-52): save into the scratch file.
+        if self.app.doc().is_dirty() && self.app.project_path().is_some() {
+            self.app
+                .dispatch(Action::Project(komponist_app::actions::ProjectAction::Save));
+        }
         let mut o = self.outcome.lock().unwrap();
         o.finished = failure.is_none();
         o.failure = failure;
@@ -454,6 +459,17 @@ impl Driver {
         self.closing = true;
         ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
     }
+}
+
+/// Opens an empty project from a scratch file in `dir`, so that "Speichern" needs no dialog (the
+/// driver saves before it closes the window, which asks first with unsaved changes).
+pub fn open_scratch_project(app: &mut App, dir: &Path) {
+    let file = dir.join("Frames.komponist");
+    let project = komponist_model::fixtures::empty_project();
+    komponist_app::project_io::save_project(&file, &project).unwrap();
+    app.dispatch(Action::Project(
+        komponist_app::actions::ProjectAction::OpenPath(file),
+    ));
 }
 
 /// Runs `steps` on `app` in a real eframe window (X11, any thread) and returns how it ended.

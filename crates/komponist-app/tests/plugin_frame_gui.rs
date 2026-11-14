@@ -1,7 +1,7 @@
 //! Plugin frames as real X11 windows with the WP-27 test plugins (WP-50): kp-test-synth as CLAP
 //! (open, fixed size, Space from the focused plugin, close, reopen) and as VST3 (bridge killed →
 //! "Abgestürzt" without the child → "Neu laden"), kp-test-crash in the parameter view crashing
-//! from its knob.
+//! from its knob, and a new project closing an open frame.
 //!
 //! `#[ignore]`, and only with `KP_GUI_TESTS=1` under Xvfb (`frame_gui` module docs):
 //!
@@ -18,14 +18,15 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 mod common;
 mod frame_gui;
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use common::{CRASH, SYNTH, app_with, config, scratch};
+use common::{CRASH, SYNTH, app_with, bridge_children, config, scratch};
 use frame_gui::*;
 use komponist_app::Action;
-use komponist_app::actions::PluginAction;
+use komponist_app::actions::{PluginAction, ProjectAction};
 use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::PluginView;
+use komponist_app::windows::plugin_frame::FrameInfo;
 use komponist_model::PluginFormat;
 use komponist_model::fixtures::empty_project;
 use komponist_plugins::{DeviceStatus, PluginDirs};
@@ -53,6 +54,7 @@ fn test_plugins_in_real_frames() {
     };
     let dir = scratch("frame-gui");
     let mut app = app_with(empty_project(), PluginHost::new(config(&dir)));
+    open_scratch_project(&mut app, &dir);
     app.engine_mut().host_mut().start_scan(&dirs);
 
     let mut steps = vec![
@@ -122,7 +124,40 @@ fn test_plugins_in_real_frames() {
         matches!(w.status("crash"), DeviceStatus::Crashed(_))
     }));
     steps.extend(shot("kp-test-crash-crashed"));
-    steps.push(wait(Duration::from_millis(200)));
+
+    // Another project closes every frame: the GUI closes in its bridge before the reset releases
+    // the bridges, the frame window and the plugin area go, no bridge of the old project remains.
+    steps.push(open("synth-clap"));
+    steps.push(gui_shown("synth-clap"));
+    let before: Arc<Mutex<Option<FrameInfo>>> = Arc::default();
+    let remembered = Arc::clone(&before);
+    steps.push(once("save, then a new project", move |w| {
+        *remembered.lock().unwrap() = w.frame("synth-clap");
+        w.app.dispatch(Action::Project(ProjectAction::Save));
+        assert!(!w.app.doc().is_dirty(), "saved without a dialog");
+        w.app.dispatch(Action::Project(ProjectAction::New));
+    }));
+    steps.push(step("frames, plugin areas and bridges gone", move |w| {
+        let f = before
+            .lock()
+            .unwrap()
+            .expect("frame before the new project");
+        if !w.app.ui().plugin_windows.is_empty() || !w.app.project().tracks.is_empty() {
+            return Err("the new project still has windows or tracks".into());
+        }
+        let window_gone = f.window.is_none_or(|win| !w.x.exists(win));
+        let child_gone = f.child.is_none_or(|c| !w.x.exists(c));
+        let bridges = bridge_children();
+        if !(window_gone && child_gone && bridges.is_empty()) {
+            return Ok(Poll::Pending);
+        }
+        w.note(format!(
+            "new project: frame window and plugin area gone, no bridge left ({:.1?})",
+            w.elapsed
+        ));
+        Ok(Poll::Done)
+    }));
+    steps.extend(shot("new-project"));
 
     let outcome = run(app, steps);
     eprintln!("--- notes");
