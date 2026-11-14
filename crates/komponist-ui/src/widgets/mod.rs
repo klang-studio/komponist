@@ -60,6 +60,9 @@ pub mod metrics {
     pub const CARET: [f32; 2] = [8.0, 5.0];
     /// Horizontal padding of buttons and segments ("px 10").
     pub const BUTTON_PADDING_X: f32 = space::SPACE_2 + space::SPACE_0_5;
+    /// Horizontal padding of a 24 px button in `type.small` (the piano roll toolbar's "Snap" and
+    /// "Falten": `height:24px; padding:0 9px; font-size:11px`, S01).
+    pub const SMALL_BUTTON_PADDING_X: f32 = 9.0;
     /// Horizontal padding of a tab (`padding: 0 14px`).
     pub const TAB_PADDING_X: f32 = space::SPACE_3 + space::SPACE_0_5;
     /// Width of the ✓ column in dropdown lists and menus.
@@ -82,6 +85,16 @@ pub mod metrics {
     pub const LARGE_BUTTON_HEIGHT: f32 = space::SPACE_8;
     /// Horizontal padding of dialog and start-screen buttons (`padding:0 12px`).
     pub const DIALOG_BUTTON_PADDING_X: f32 = space::SPACE_3;
+    /// Extra gap before R in a row of track toggles, so M S and R I read as two groups (owner
+    /// decision 2026-11-14, ARCHITECTURE §13 item 8; a step of the 4 px grid).
+    pub const TOGGLE_GROUP_GAP: f32 = space::SPACE_1;
+    /// Diameter of the filled record circle that replaces the letter R on the arm toggle.
+    pub const TOGGLE_RECORD_DOT: f32 = 8.0;
+    /// Box of the speaker icon that replaces the letter I on the monitoring toggle (the
+    /// 18 × 16 toggle leaves no room for the 16 px icon).
+    pub const TOGGLE_MONITOR_ICON: f32 = 12.0;
+    /// CSS weight of IBM Plex regular.
+    pub const REGULAR: u16 = 400;
     /// CSS weight of IBM Plex medium (bundled for Sans and Mono).
     pub const MEDIUM: u16 = 500;
     /// CSS weight of IBM Plex semibold (bundled for Sans and Mono).

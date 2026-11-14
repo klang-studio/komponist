@@ -483,7 +483,10 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     let base = if insert.instrument { 3 } else { 2 };
     px::fill(ui.painter(), rect, radius::S, state::surface_for(base, st));
     let ink = match insert.state {
-        SlotState::Crashed | SlotState::Missing => color::STATE_ERROR,
+        SlotState::Crashed
+        | SlotState::LoadFailed
+        | SlotState::Unresponsive
+        | SlotState::Missing => color::STATE_ERROR,
         SlotState::Loading => color::TEXT_3,
         SlotState::Ok if insert.late.is_some() => color::METER_LOUD,
         SlotState::Ok if insert.bypass || s.dim => color::TEXT_3,
@@ -710,13 +713,14 @@ fn toggles(
         &[ToggleKind::Mute, ToggleKind::Solo, ToggleKind::Arm]
     };
     let [tw, th] = m::TOGGLE;
-    let total = kinds.len() as f32 * tw + (kinds.len() - 1) as f32 * m::TOGGLE_GAP;
+    // M S, then R apart from them by the group gap (owner decision 2026-11-14).
+    let offset = |i: usize| ToggleKind::row_offset(i, tw, m::TOGGLE_GAP);
+    let total = offset(kinds.len() - 1) + tw;
     let ppp = ui.pixels_per_point();
-    let mut x = px::snap(row.center().x - total / 2.0, ppp);
+    let left = px::snap(row.center().x - total / 2.0, ppp);
     let mut out = Vec::new();
-    for &kind in kinds {
-        let r = Rect::from_min_size(pos2(x, row.top()), vec2(tw, th));
-        x += tw + m::TOGGLE_GAP;
+    for (i, &kind) in kinds.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(left + offset(i), row.top()), vec2(tw, th));
         let on = match kind {
             ToggleKind::Mute => s.mute,
             ToggleKind::Solo => s.solo,

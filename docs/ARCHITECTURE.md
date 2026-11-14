@@ -725,6 +725,14 @@ These need a decision (the handoff says: report contradictions; the design syste
    values; no instrument line, inserts or pan). The instrument is the name's tooltip and AccessKit
    description; pan stays in the maximised mixer and the inspector's Kanal section. Fader area:
    maximised 641 → 753 px, normal dock 121 → 215 px (`views/mixer/metrics.rs`).
+8. **Track toggles R and I: symbols, own group (decided 2026-11-14).** Wherever the M S R I buttons
+   appear (arrangement track header; the mixer strip has M S R, the master only M; the inspector and
+   the step sequencer show M S only), R (record arm) and I (input monitoring) stand apart from M and S
+   by one extra 4 px gap (`widgets::metrics::TOGGLE_GROUP_GAP`) and show a symbol instead of the
+   letter, like Reaper: R a filled record circle (8 px), I the Lucide `volume-2` speaker (12 px). M and S
+   keep their letters. Armed R is `state.record`; monitoring on is `state.play` (green) instead of the
+   design system's accent blue. Size, hit area, tooltips and German AccessKit names ("Record-Arm",
+   "Monitoring") are unchanged.
 
 ---
 

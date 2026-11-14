@@ -145,7 +145,15 @@ pub fn tab_strip(
             names::MAXIMIZE
         };
         let shortcut = keymap.label_for(&max);
-        let mut button = Button::new(label).on(maximized).compact().frameless(0);
+        let mut button = Button::new(label)
+            .on(maximized)
+            .compact()
+            .small()
+            .frameless(0);
+        if !maximized {
+            // `maxS`: text.2, regular, 11 px while off; accent while on.
+            button = button.quiet();
+        }
         if let Some(sc) = shortcut.as_deref() {
             button = button.shortcut(sc);
         }

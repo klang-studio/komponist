@@ -109,8 +109,12 @@ pub mod names {
     pub const LOADING: &str = "lädt …";
     /// A device whose plugin is not installed.
     pub const MISSING: &str = "fehlt";
-    /// A device whose bridge crashed or failed to load.
+    /// A device whose bridge crashed.
     pub const CRASHED: &str = "abgestürzt";
+    /// A device that failed to load (as the device card's „Lässt sich nicht laden“).
+    pub const LOAD_FAILED: &str = "lässt sich nicht laden";
+    /// A device that stopped answering (as the card's „Hängt“).
+    pub const UNRESPONSIVE: &str = "hängt";
     /// Go on without the devices that are not ready.
     pub const WITHOUT: &str = "Ohne sie exportieren";
     /// The link of the status bar message (S08 "fertig · Statuszeile").
@@ -235,8 +239,12 @@ pub enum DeviceState {
     Loading,
     /// Not installed ("fehlt").
     Missing,
-    /// Crashed or failed to load ("abgestürzt").
+    /// The plugin process ended ("abgestürzt").
     Crashed,
+    /// Loading failed ("lässt sich nicht laden").
+    LoadFailed,
+    /// The plugin stopped answering ("hängt").
+    Unresponsive,
 }
 
 /// A device in the wait list.
@@ -893,6 +901,8 @@ fn device_rows(ui: &mut Ui, width: f32, rows: &[DeviceRow]) {
             DeviceState::Loading => (names::LOADING, color::TEXT_2),
             DeviceState::Missing => (names::MISSING, color::STATE_ERROR),
             DeviceState::Crashed => (names::CRASHED, color::STATE_ERROR),
+            DeviceState::LoadFailed => (names::LOAD_FAILED, color::STATE_ERROR),
+            DeviceState::Unresponsive => (names::UNRESPONSIVE, color::STATE_ERROR),
         };
         let st = styled(ui, state, &typography::UI, color32(ink), None);
         let st_pos = w::text_pos(inner, &st, inner.right() - st.size().x, ppp);

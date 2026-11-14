@@ -24,6 +24,14 @@ pub fn image(icon: Icon, tint: Color32) -> Image<'static> {
         .fit_to_exact_size(Vec2::splat(size::ICON))
 }
 
+/// Paints `icon` filling `rect` (for the few glyph-sized icons of the screens, e.g. the browser's
+/// 10 px star), tinted with `tint`.
+pub fn paint_in(ui: &egui::Ui, rect: Rect, icon: Icon, tint: Color32) {
+    image(icon, tint)
+        .fit_to_exact_size(rect.size())
+        .paint_at(ui, rect);
+}
+
 /// Paints `icon` centred in `rect` at `size.icon`, tinted with `tint`.
 pub fn paint(ui: &egui::Ui, rect: Rect, icon: Icon, tint: Color32) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(size::ICON));

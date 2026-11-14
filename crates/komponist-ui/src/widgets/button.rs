@@ -52,6 +52,9 @@ pub struct Appearance {
     pub frameless: Option<usize>,
     /// Shows an icon (text.2 at rest) instead of text (text.1).
     pub icon: bool,
+    /// A text button that rests in text.2 and regular weight like a hint ("Maximieren" in the
+    /// dock header, `maxS`); hover and press are as for any button.
+    pub quiet: bool,
 }
 
 /// Colours of a button in a state.
@@ -67,7 +70,7 @@ pub struct ButtonLook {
 
 /// The [`ButtonLook`] of a button of `appearance` in `state` (table in the module docs).
 pub fn look(appearance: Appearance, state: State) -> ButtonLook {
-    let base_text = if appearance.icon {
+    let base_text = if appearance.icon || appearance.quiet {
         color::TEXT_2
     } else {
         color::TEXT_1
@@ -272,6 +275,12 @@ impl<'a> Button<'a> {
         self
     }
 
+    /// Text.2 and regular weight at rest (see [`Appearance::quiet`]).
+    pub fn quiet(mut self) -> Self {
+        self.appearance.quiet = true;
+        self
+    }
+
     /// `size.control-compact` (20) high instead of `size.control` (24); icon buttons stay 24 wide
     /// (panel-header actions).
     pub fn compact(mut self) -> Self {
@@ -399,6 +408,8 @@ impl Widget for Button<'_> {
         let height = self.height.points();
         let padding = if self.small && self.height == Height::Compact {
             space::SPACE_2
+        } else if self.small && self.height == Height::Control {
+            metrics::SMALL_BUTTON_PADDING_X
         } else {
             self.height.padding_x()
         };
@@ -408,6 +419,8 @@ impl Widget for Button<'_> {
             Content::Text(text) => {
                 let weight = if primary {
                     metrics::SEMIBOLD
+                } else if self.appearance.quiet {
+                    metrics::REGULAR
                 } else {
                     metrics::MEDIUM
                 };
