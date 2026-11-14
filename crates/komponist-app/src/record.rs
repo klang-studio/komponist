@@ -263,7 +263,7 @@ impl Recording {
             let mut notes: Vec<Note> = lane.laps[lap]
                 .iter()
                 .enumerate()
-                .map(|(i, n)| {
+                .filter_map(|(i, n)| {
                     // A held note reaches the head (inclusive, so it lights up as playing).
                     let note_end = n.end.unwrap_or(playhead + Tick(1));
                     local_note(NoteId(i as u64), n, note_end, self.start)
@@ -309,16 +309,16 @@ impl Recording {
                 let lap_end = self.laps[lap].end;
                 let notes: Vec<NewNote> = lane.laps[lap]
                     .iter()
-                    .map(|n| {
+                    .filter_map(|n| {
                         let note_end = n.end.unwrap_or_else(|| close(n.start, head, lap_end));
                         last = last.max(note_end);
-                        let note = local_note(NoteId(0), n, note_end, self.start);
-                        NewNote {
+                        let note = local_note(NoteId(0), n, note_end, self.start)?;
+                        Some(NewNote {
                             start: note.start,
                             length: note.length,
                             pitch: note.pitch,
                             velocity: note.velocity,
-                        }
+                        })
                     })
                     .collect();
                 takes.push((names::take(*number), notes));
@@ -457,16 +457,20 @@ fn close(start: Tick, tick: Tick, lap_end: Option<Tick>) -> Tick {
     end.max(start + Tick(1))
 }
 
-/// `n` ending at `end` as a note of a clip starting at `clip_start` (cut at the clip start).
-fn local_note(id: NoteId, n: &Captured, end: Tick, clip_start: Tick) -> Note {
+/// `n` ending at `end` as a note of a clip starting at `clip_start`: cut at the clip start, gone
+/// if it ended before (the playhead was moved back while recording).
+fn local_note(id: NoteId, n: &Captured, end: Tick, clip_start: Tick) -> Option<Note> {
+    if end <= clip_start {
+        return None;
+    }
     let start = n.start.max(clip_start);
-    Note {
+    Some(Note {
         id,
         start: start - clip_start,
         length: (end - start).max(Tick(1)),
         pitch: n.pitch.min(127),
         velocity: n.velocity.clamp(1, 127),
-    }
+    })
 }
 
 /// An empty clip until the first [`Recording::update`].
@@ -691,12 +695,15 @@ mod tests {
     }
 
     #[test]
-    fn notes_before_the_clip_start_are_cut() {
+    fn notes_before_the_clip_start_are_cut_or_dropped() {
         let (p, a, _) = project();
         let mut r = Recording::new(&p, Tick(BAR));
         // Latency correction put it 20 ticks before the capture start.
         r.handle(&on(a, BAR - 20, 60), Tick(BAR), &p);
         r.handle(&off(a, BAR + 100, 60), Tick(BAR + 100), &p);
+        // Played after a jump back before the clip: gone.
+        r.handle(&on(a, 100, 62), Tick(100), &p);
+        r.handle(&off(a, 200, 62), Tick(200), &p);
         let (q, ids) = r.commit(&p, Tick(BAR + 200)).unwrap().apply(&p).unwrap();
         assert_eq!(notes(&q, ids[0], 0), [(0, 100, 60)]);
     }
