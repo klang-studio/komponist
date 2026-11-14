@@ -462,7 +462,7 @@ fn right_column(
         .min_size(vec2(m::FILTER_WIDTH, size::CONTROL))
         .align(egui::Align2::LEFT_CENTER)
         .margin(egui::Margin::symmetric(space::SPACE_2 as i8, 0));
-    let filter = field_ui.add(edit);
+    let filter = super::text_field(&mut field_ui, edit);
     w::accesskit(&filter, |n| n.set_label(names::FILTER));
     if filter.changed() {
         view.selected = 0;
@@ -571,12 +571,12 @@ fn recent_row_ui(ui: &mut Ui, width: f32, row: &RecentRow, selected: bool) -> eg
         color32(name_color),
         None,
     );
-    let path_g = styled(
+    let path_g = super::styled_line(
         ui,
         &row.path_label,
         &MONO_SMALL,
         color32(color::TEXT_3),
-        None,
+        text_right - text_x,
     );
     let block = name_g.size().y + m::NAME_GAP + path_g.size().y;
     let top = px::snap(inner.center().y - block / 2.0, ppp);

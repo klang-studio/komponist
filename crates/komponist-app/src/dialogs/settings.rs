@@ -1087,12 +1087,12 @@ fn dir_row(ui: &mut Ui, width: f32, row: &DirRow, out: &mut Vec<Output>) {
         Color32::PLACEHOLDER,
     );
     let path_x = inner.left() + m::DIR_FORMAT_COLUMN + m::DIR_GAP;
-    let g = styled(
+    let g = super::styled_line(
         ui,
         &row.label,
         &typography::VALUE_M,
         color32(color::TEXT_1),
-        None,
+        count_x - m::DIR_GAP - path_x,
     );
     let clip = Rect::from_x_y_ranges(path_x..=count_x - m::DIR_GAP, rect.y_range());
     ui.painter().with_clip_rect(clip).galley(

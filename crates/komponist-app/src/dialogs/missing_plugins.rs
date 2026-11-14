@@ -172,7 +172,7 @@ pub fn show(ctx: &Context, model: &Model) -> Option<Output> {
                     }
                 });
         });
-        ui.add_space(m::FOOTER_PADDING_TOP);
+        ui.add_space(m::LIST_MARGIN_Y + m::FOOTER_PADDING_TOP);
         indented(ui, dm::PADDING, |ui| {
             let primary = if n == 1 {
                 names::CONTINUE_ONE
