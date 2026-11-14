@@ -192,12 +192,6 @@ impl EngineSync {
         midi: MidiSetup,
         host: Box<dyn DeviceHost>,
     ) -> (EngineSync, Result<(), AudioError>) {
-        let (engine, handle) = Engine::new(EngineConfig {
-            sample_rate: config.sample_rate as f32,
-            ..EngineConfig::default()
-        });
-        let rate = Arc::new(AtomicU32::new(config.sample_rate));
-        let process = EngineProcess::new(engine, Arc::clone(&rate));
         let (hub, receiver) = match midi {
             MidiSetup::System => match MidiInputHub::new() {
                 Ok((mut hub, receiver)) => {
@@ -208,6 +202,23 @@ impl EngineSync {
             },
             MidiSetup::None => (None, MidiReceiver::disconnected()),
         };
+        EngineSync::with_receiver(config, hub, receiver, host)
+    }
+
+    /// [`EngineSync::new`] with the MIDI queue's receiver given (no hub): a
+    /// [`komponist_audio::TestMidiSource`] feeds it in tests.
+    pub fn with_receiver(
+        config: &StreamConfig,
+        hub: Option<MidiInputHub>,
+        receiver: MidiReceiver,
+        host: Box<dyn DeviceHost>,
+    ) -> (EngineSync, Result<(), AudioError>) {
+        let (engine, handle) = Engine::new(EngineConfig {
+            sample_rate: config.sample_rate as f32,
+            ..EngineConfig::default()
+        });
+        let rate = Arc::new(AtomicU32::new(config.sample_rate));
+        let process = EngineProcess::new(engine, Arc::clone(&rate));
         let telemetry = Arc::clone(handle.telemetry());
         let mut sync = EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
@@ -230,11 +241,16 @@ impl EngineSync {
 
     /// The null backend at 48 kHz / 256 frames, no MIDI: for tests and `--null-audio`.
     pub fn null(host: Box<dyn DeviceHost>) -> EngineSync {
+        EngineSync::null_with_midi(host, MidiReceiver::disconnected())
+    }
+
+    /// [`EngineSync::null`] with a MIDI queue (tests: [`komponist_audio::TestMidiSource`]).
+    pub fn null_with_midi(host: Box<dyn DeviceHost>, midi: MidiReceiver) -> EngineSync {
         let config = StreamConfig {
             host: HostKind::Null,
             ..StreamConfig::default()
         };
-        let (sync, started) = EngineSync::new(&config, MidiSetup::None, host);
+        let (sync, started) = EngineSync::with_receiver(&config, None, midi, host);
         // The null backend only fails on an invalid configuration, and this one is valid.
         debug_assert!(started.is_ok(), "{started:?}");
         sync

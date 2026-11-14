@@ -32,7 +32,9 @@ mod testing;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-pub use midi::{MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, MidiStamped};
+pub use midi::{
+    MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, MidiStamped, TestMidiSource,
+};
 pub use process::{AudioProcess, CallbackInfo, MidiIn, OutputBuffer, StreamParams};
 pub use slot::{EngineSlot, SlotHandle};
 pub use system::{

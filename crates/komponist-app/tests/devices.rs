@@ -782,9 +782,14 @@ fn a_test_plugin_added_from_the_browser_loads_and_shows_its_parameters() {
     h.step();
     assert_eq!(h.state().ui().layout.dock_tab, DockTab::Devices);
     let device = *chain_of(h.state(), lead).last().unwrap();
-    assert_eq!(
-        h.state().engine().device_status(device),
-        DeviceStatus::Loading
+    // On a fast machine the bridge is already up one frame later.
+    assert!(
+        matches!(
+            h.state().engine().device_status(device),
+            DeviceStatus::Loading | DeviceStatus::Ok
+        ),
+        "{:?}",
+        h.state().engine().device_status(device)
     );
     // The test plugin loads within a frame or two, so the Lädt card itself is checked with the
     // fake host (`loading_shows_progress_then_the_knobs`) and live with Surge XT.

@@ -95,7 +95,14 @@ fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
     ))));
     app.step();
     assert!(app.is_exporting());
-    assert!(!app.engine().is_detached(), "waits for the bridges");
+    // A bridge that finished loading since the last frame lets the export start at once; only
+    // while one still loads must the export wait.
+    if bridged
+        .iter()
+        .any(|&d| app.engine().device_status(d) == DeviceStatus::Loading)
+    {
+        assert!(!app.engine().is_detached(), "waits for the bridges");
+    }
     step_until(&mut app, "end of the export", |a| !a.is_exporting());
     assert!(all_ok(&app), "{:?}", statuses(&app));
 

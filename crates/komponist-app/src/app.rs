@@ -144,6 +144,11 @@ pub(crate) struct ShellState {
     keyboard_wanted: bool,
     /// Where the last recording started (or starts after its count-in).
     record_from: Option<Tick>,
+    /// A `Command::Record` was sent and its `CountInDone` has not arrived: only then does the
+    /// event start a take. Cleared by everything that ends the recording attempt (cancel, discard,
+    /// project open), so a count-in that ends in the audio block running while that happens
+    /// cannot start a take in the wrong place.
+    take_expected: bool,
 }
 
 impl App {
@@ -200,7 +205,12 @@ impl App {
     /// as the engine runs), nothing persisted, and only the null driver in S07: for tests (and
     /// `--null-audio`).
     pub fn headless(project: Project) -> App {
-        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+        App::headless_with_midi(project, komponist_audio::MidiReceiver::disconnected())
+    }
+
+    /// [`App::headless`] with a MIDI queue that a [`komponist_audio::TestMidiSource`] feeds.
+    pub fn headless_with_midi(project: Project, midi: komponist_audio::MidiReceiver) -> App {
+        let engine = EngineSync::null_with_midi(Box::new(BuiltinHost::new()), midi);
         let mut settings = Settings::default();
         settings.audio.host = komponist_audio::HostKind::Null;
         let mut app = App::new(Document::new(project), engine, settings, None);
@@ -472,7 +482,11 @@ impl App {
     /// notes and loop wraps go into it.
     fn engine_event(&mut self, event: &EngineEvent, playhead: Tick) {
         match *event {
-            EngineEvent::CountInDone { at } => self.begin_take(at),
+            EngineEvent::CountInDone { at } => {
+                if std::mem::take(&mut self.shell.take_expected) {
+                    self.begin_take(at);
+                }
+            }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
             _ => {
@@ -531,6 +545,7 @@ impl App {
         // A count-in that just ended still starts its take; it goes too.
         self.drain_events();
         self.recording = None;
+        self.shell.take_expected = false;
         self.engine.send(Command::StopRecording);
     }
 
@@ -1006,6 +1021,7 @@ impl App {
                     Tick(at)
                 };
                 self.shell.record_from = Some(from);
+                self.shell.take_expected = true;
                 self.engine.send(Command::Record { from });
             }
         }
@@ -1018,6 +1034,7 @@ impl App {
         // A count-in that just ended may have started its take; it goes.
         self.drain_events();
         self.recording = None;
+        self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         if let Some(from) = self.shell.record_from {
             self.engine.send(Command::Locate(from));
@@ -2094,8 +2111,10 @@ impl App {
     pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
         // Plugin GUIs close in their bridges before the reset releases the bridges.
         self.close_all_plugin_frames();
-        // A take of the old project does not go into the new one.
+        // A take of the old project does not go into the new one, nor does a count-in that ends
+        // while the project opens.
         self.recording = None;
+        self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
         self.engine.reset();
@@ -2343,5 +2362,49 @@ pub fn key_to_egui(key: Key) -> egui::Key {
         Key::OpenBracket => E::OpenBracket,
         Key::CloseBracket => E::CloseBracket,
         Key::Comma => E::Comma,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_model::fixtures::empty_project;
+
+    fn recording_app() -> App {
+        let mut app = App::headless(empty_project());
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        app
+    }
+
+    /// A count-in whose end is still in flight while a project opens (the audio block ends it
+    /// after the UI drained the queue in `EngineSync::reset`) must not start a take in the new
+    /// project.
+    #[test]
+    fn count_in_ending_during_project_open_starts_no_take() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.shell.take_expected);
+        app.open_document(Document::new(empty_project()), None);
+        assert!(!app.shell.take_expected);
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        assert!(app.recording().is_none());
+    }
+
+    #[test]
+    fn count_in_ending_after_cancel_or_discard_starts_no_take() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.cancel_count_in();
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        assert!(app.recording().is_none());
+    }
+
+    #[test]
+    fn count_in_ending_after_a_record_starts_the_take() {
+        let mut app = recording_app();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
+        assert!(app.recording().is_some());
+        assert!(!app.shell.take_expected);
     }
 }
