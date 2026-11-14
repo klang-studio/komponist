@@ -1,7 +1,7 @@
 //! Draws layout 2a: transport bar, browser, arrangement, dock, inspector, status bar, the
 //! collapsed rails, the resize edges, the focus areas with their accent line; or the start screen
 //! (S09). The views fill the panels ([`crate::views`]); the dialogs come from
-//! [`crate::dialogs`] (the export dialog is still a placeholder here until WP-53b).
+//! [`crate::dialogs`] (the export dialog through [`crate::export`]).
 
 use std::time::Instant;
 
@@ -12,7 +12,6 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, size, space, typography};
 use komponist_ui::icons::{self, Caret};
 use komponist_ui::state::{self, State};
-use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::panel_header::PanelHeader;
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
@@ -23,7 +22,7 @@ use crate::app::App;
 use crate::layout::{self, Edge, Side};
 use crate::metrics::layout::RAIL_CARET_TOP;
 use crate::panels::{dock, statusbar, transport};
-use crate::ui_state::{Dialog, DockTab, FocusArea, Panel, Screen};
+use crate::ui_state::{DockTab, FocusArea, Panel, Screen};
 use crate::views::{View, ViewCtx, centered_text};
 
 /// Names of the shell's own controls and areas (AccessKit, tests).
@@ -79,7 +78,7 @@ impl App {
         let model = transport::TransportModel {
             project: self.doc.project(),
             dirty: self.doc.is_dirty(),
-            state: self.engine.telemetry().transport(),
+            state: self.engine.transport(),
             playhead: self.engine.playhead(),
             cpu: self.engine.stats().cpu_load(),
             audio: self.engine.audio_state(),
@@ -101,12 +100,14 @@ impl App {
         self.dock(ui, l.dock);
 
         let status = statusbar::model(self, Instant::now());
-        statusbar::show(ui, l.status, &status);
+        if statusbar::show(ui, l.status, &status) {
+            self.show_export_folder();
+        }
 
         for edge in &l.edges {
             self.edge(ui, edge, screen);
         }
-        self.dialog(ui);
+        self.draw_export(&ui.ctx().clone());
         self.draw_dialogs(&ui.ctx().clone());
     }
 
@@ -162,6 +163,7 @@ impl App {
         ctx.focused = focused;
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
+        ctx.exports = &self.export.done;
         f(&mut self.views, &mut ctx)
     }
 
@@ -433,26 +435,6 @@ impl App {
                     size,
                 }));
             }
-        }
-    }
-
-    /// The export dialog's placeholder until WP-53b: its title and a close button; Esc closes.
-    fn dialog(&mut self, ui: &mut Ui) {
-        let Some(Dialog::Export(_)) = &self.ui.dialog else {
-            return;
-        };
-        let title = "WAV exportieren";
-        let frame = w::menu_frame().inner_margin(egui::Margin::same(space::SPACE_4 as i8));
-        let modal = egui::Modal::new(Id::unique("komponist_dialog"))
-            .frame(frame)
-            .show(ui.ctx(), |ui| {
-                ui.set_min_width(size::MENU_WIDTH);
-                ui.spacing_mut().item_spacing.y = space::SPACE_3;
-                ui.label(komponist_ui::fonts::rich_text(title, &typography::TITLE));
-                ui.add(Button::new("Schließen")).clicked()
-            });
-        if modal.inner || modal.should_close() {
-            self.queue.push(Action::Ui(UiAction::CloseDialog));
         }
     }
 }

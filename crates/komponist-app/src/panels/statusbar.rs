@@ -4,9 +4,11 @@
 //! error); next to it the hint for the current context (`text.3`); right: the audio output
 //! ("PipeWire · 48 kHz · 256 Samples · 5.3 ms", `type.value.s`; "· ohne Echtzeit-Priorität" in the
 //! warning colour when the audio thread got none). A status message
-//! ([`crate::ui_state::StatusMessage`]) replaces the left text for 7 s. Texts are verbatim from
-//! the screens and the prototype; a leading "● " (recording) is painted as a dot in the text
-//! colour, the fonts have no ● (`ks-view.js` `statusView` `dotS`).
+//! ([`crate::ui_state::StatusMessage`]) replaces the left text for 7 s; a finished export's
+//! message carries the link „Im Ordner zeigen“ right after it, in `accent` (S08 "fertig ·
+//! Statuszeile", prototype `linkS`). Texts are verbatim from the screens and the prototype; a
+//! leading "● " (recording) is painted as a dot in the text colour, the fonts have no ●
+//! (`ks-view.js` `statusView` `dotS`).
 
 use std::time::Instant;
 
@@ -34,6 +36,8 @@ pub struct StatusModel {
     pub left_color: Srgba,
     /// A green dot before the left text (a success message).
     pub ok_dot: bool,
+    /// A link after the left text ("Im Ordner zeigen"); [`show`] reports a click.
+    pub link: Option<String>,
     /// The hint next to it.
     pub mid: String,
     /// The audio output, right-aligned.
@@ -83,6 +87,7 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
         left: String::new(),
         left_color: color::TEXT_2,
         ok_dot: false,
+        link: None,
         mid: String::new(),
         right: String::new(),
         right_color: color::TEXT_3,
@@ -110,6 +115,7 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
     {
         s.left = msg.text.clone();
         s.ok_dot = msg.kind == StatusKind::Success;
+        s.link = app.status_link().map(str::to_owned);
         s.left_color = match msg.kind {
             StatusKind::Error => color::STATE_ERROR,
             StatusKind::Success | StatusKind::Info => color::TEXT_2,
@@ -226,8 +232,8 @@ fn context(app: &App, s: &mut StatusModel) {
     }
 }
 
-/// Draws the status bar into `rect`.
-pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) {
+/// Draws the status bar into `rect`; returns whether the link was clicked.
+pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) -> bool {
     let painter = ui.painter().clone();
     let ppp = ui.pixels_per_point();
     px::fill(&painter, rect, 0.0, color32(color::SURFACE_1));
@@ -255,14 +261,20 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) {
         inner.y_range(),
     ));
     let mut parts: Vec<(Rect, &str)> = Vec::new();
-    for (text, col) in [
+    let mut link_rect = None;
+    let link = model.link.as_deref().unwrap_or("");
+    for (i, (text, col)) in [
         (model.left.as_str(), model.left_color),
+        (link, color::ACCENT),
         (model.mid.as_str(), color::TEXT_3),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         if text.is_empty() {
             continue;
         }
-        let shown = if text == model.left {
+        let shown = if i == 0 {
             rec_text.unwrap_or(text)
         } else {
             text
@@ -272,7 +284,11 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) {
         let r = Rect::from_min_size(pos, g.size());
         x += g.size().x + space::SPACE_4;
         text_clip.galley(pos, g, color32(col));
-        parts.push((r.intersect(inner), text));
+        if i == 1 {
+            link_rect = Some(r.intersect(inner));
+        } else {
+            parts.push((r.intersect(inner), text));
+        }
     }
     clip.galley(right_rect.min, right, color32(model.right_color));
     parts.push((right_rect, model.right.as_str()));
@@ -284,6 +300,15 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) {
         let response = ui.interact(r, id, Sense::hover());
         response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
     }
+    let Some(r) = link_rect.filter(|r| r.width() > 0.0) else {
+        return false;
+    };
+    let id = ui.scope_id().with("komponist_status_link");
+    let response = ui
+        .interact(r, id, Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| WidgetInfo::labeled(Role::Link, true, link));
+    response.clicked()
 }
 
 #[cfg(test)]
