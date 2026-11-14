@@ -14,6 +14,10 @@
 //! The engine runs inside [`EngineProcess`], the app's [`AudioProcess`]: it maps live MIDI to
 //! engine input and writes the engine's planar output into the device buffer. Garbage the engine
 //! retires is dropped here, on the UI thread, when [`EngineSync::poll`] drains the event queue.
+//!
+//! Tests that need exact positions take the engine out of the stream ([`EngineSync::hold_engine`])
+//! and run it themselves with simulated MIDI input ([`EngineSync::run_held`]): time then passes
+//! only there.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -36,6 +40,13 @@ use crate::device_host::DeviceHost;
 
 /// How long [`EngineSync::shutdown`] lets the engine drain its last commands.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(30);
+
+/// How long [`EngineSync::hold_engine`] waits for the stream to hand the engine over.
+const HOLD_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Frames per `Engine::process` call of [`EngineSync::run_held`]: the null backend's default
+/// buffer, so commands take effect at the same granularity as in the running app.
+const HELD_BLOCK: usize = 256;
 
 /// The engine as the stream's [`AudioProcess`].
 pub struct EngineProcess {
@@ -149,6 +160,8 @@ pub struct EngineSync {
     pending: VecDeque<Command>,
     rate: Arc<AtomicU32>,
     telemetry: Arc<Telemetry>,
+    /// The engine taken out of the stream ([`EngineSync::hold_engine`]).
+    held: Option<Box<EngineProcess>>,
 }
 
 impl core::fmt::Debug for EngineSync {
@@ -197,6 +210,7 @@ impl EngineSync {
             pending: VecDeque::new(),
             rate,
             telemetry,
+            held: None,
         };
         let started = sync.audio.start(config);
         (sync, started)
@@ -423,6 +437,59 @@ impl EngineSync {
     /// Commands waiting for room in the engine's queue (diagnostics, tests).
     pub fn pending_commands(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Tests: takes the engine out of the stream (which goes on outputting silence), so that it
+    /// runs only in [`EngineSync::run_held`] and positions are exact. Waits for the stream to hand
+    /// it over.
+    pub fn hold_engine(&mut self) -> Result<(), AudioError> {
+        if self.held.is_none() {
+            self.held = Some(self.audio.detach(HOLD_TIMEOUT)?);
+        }
+        Ok(())
+    }
+
+    /// Tests: runs the held engine for `frames` frames in blocks of 256, with live `midi` (frames
+    /// counted from the start of this call, sorted) heard `output_latency` frames late, as a
+    /// stream would. Returns `false` if no engine is held.
+    pub fn run_held(&mut self, frames: usize, midi: &[MidiInEvent], output_latency: u32) -> bool {
+        let Some(process) = self.held.as_mut() else {
+            return false;
+        };
+        let mut block_midi = Vec::with_capacity(midi.len());
+        let mut done = 0;
+        while done < frames {
+            let n = HELD_BLOCK.min(frames - done).min(process.left.len());
+            block_midi.clear();
+            block_midi.extend(
+                midi.iter()
+                    .filter(|m| (done..done + n).contains(&(m.frame as usize)))
+                    .map(|m| MidiInEvent {
+                        frame: m.frame - done as u32,
+                        ..*m
+                    }),
+            );
+            let input = LiveInput {
+                midi: &block_midi,
+                output_latency,
+            };
+            let EngineProcess {
+                engine,
+                left,
+                right,
+                ..
+            } = &mut **process;
+            engine.process(&mut left[..n], &mut right[..n], &input);
+            done += n;
+        }
+        true
+    }
+
+    /// Tests: gives the held engine back to the stream.
+    pub fn release_engine(&mut self) {
+        if let Some(process) = self.held.take() {
+            self.audio.attach(process);
+        }
     }
 }
 
