@@ -116,7 +116,7 @@ pub struct App {
     /// Where the recent list is saved (`None`: never).
     pub(crate) recent_path: Option<PathBuf>,
     /// Drivers and devices for S07.
-    pub(crate) audio_devices: Box<dyn AudioDevices>,
+    pub(crate) audio_devices: Arc<dyn AudioDevices>,
     /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
     pub(crate) recording: Option<Recording>,
     /// The plugin frame windows (WP-50).
@@ -204,7 +204,7 @@ impl App {
             dialogs: DialogState::default(),
             recent,
             recent_path,
-            audio_devices: Box::new(SystemDevices),
+            audio_devices: Arc::new(SystemDevices),
             recording: None,
             frames: PluginFrames::default(),
             export: Default::default(),
@@ -224,7 +224,7 @@ impl App {
         let mut settings = Settings::default();
         settings.audio.host = komponist_audio::HostKind::Null;
         let mut app = App::new(Document::new(project), engine, settings, None);
-        app.audio_devices = Box::new(FixedDevices {
+        app.audio_devices = Arc::new(FixedDevices {
             hosts: vec![komponist_audio::HostKind::Null],
             devices: Vec::new(),
         });
@@ -233,7 +233,7 @@ impl App {
 
     /// Replaces where S07 gets drivers and devices from (tests).
     pub fn with_audio_devices(mut self, devices: Box<dyn AudioDevices>) -> App {
-        self.audio_devices = devices;
+        self.audio_devices = Arc::from(devices);
         self
     }
 

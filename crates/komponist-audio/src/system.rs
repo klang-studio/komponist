@@ -1049,6 +1049,29 @@ mod tests {
         assert!(!system.is_retrying());
     }
 
+    /// How long S07's enumeration takes on this machine (WP-52 note, WP-61): `available_hosts`
+    /// (the JACK probe opens a client) and `devices` per host. Opens no stream, plays nothing.
+    ///
+    /// ```text
+    /// cargo test --release -p komponist-audio device_enumeration_time -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "talks to the machine's audio servers; run with --ignored"]
+    fn device_enumeration_time() {
+        for round in 0..3 {
+            let t0 = Instant::now();
+            let hosts = AudioSystem::<TestEngine>::available_hosts();
+            let probe = t0.elapsed();
+            let mut line = format!("round {round}: available_hosts {probe:.1?}");
+            for host in hosts {
+                let t0 = Instant::now();
+                let n = AudioSystem::<TestEngine>::devices(host).map_or(0, |d| d.len());
+                line += &format!(", {host:?} {:.1?} ({n} devices)", t0.elapsed());
+            }
+            eprintln!("{line}");
+        }
+    }
+
     #[test]
     fn realtime_denial_is_reported_per_stream() {
         let (mut system, _probe, _sender) = system(0.0);
