@@ -183,8 +183,8 @@ impl PanelSettings {
     }
 }
 
-/// The default export settings (S08): whole song, 2 s tail, 48 kHz, 24 bit, normalise and dither
-/// on, into `folder` as `<project>.wav`.
+/// The default export settings (S08): whole song, 2 s tail, 48 kHz, 24 bit, normalise on, dither
+/// off (as S08 shows it), into `folder` as `<project>.wav`.
 pub fn default_export(project_name: &str, folder: PathBuf) -> ExportSettings {
     ExportSettings {
         range: ExportRange::Song,
@@ -192,7 +192,7 @@ pub fn default_export(project_name: &str, folder: PathBuf) -> ExportSettings {
         sample_rate: 48_000,
         bit_depth: BitDepth::Int24,
         normalize: true,
-        dither: true,
+        dither: false,
         folder,
         file_name: format!("{project_name}.wav"),
     }

@@ -1,5 +1,6 @@
 //! A small file browser for "Projekt öffnen" (Ctrl O), "Speichern" (Ctrl S the first time, "Speichern
-//! unter") and "+ Ordner" in S07 (why not native dialogs: `dialogs` module docs).
+//! unter"), "+ Ordner" in S07 and the export folder in S08 ("Ändern"; why not native dialogs:
+//! `dialogs` module docs).
 //!
 //! The screens have no file dialog; this one follows the other dialogs: header with title and ×,
 //! a `surface.1` body, a footer with "Abbrechen" and the primary action. The body has the folder
@@ -65,6 +66,15 @@ pub enum Purpose {
     Save,
     /// Choose a folder (S07 "+ Ordner").
     Folder,
+    /// Choose the export folder (S08 "Ändern").
+    ExportFolder,
+}
+
+impl Purpose {
+    /// Whether a folder is chosen (the list shows folders only).
+    pub fn is_folder(self) -> bool {
+        matches!(self, Purpose::Folder | Purpose::ExportFolder)
+    }
 }
 
 /// One row of the list.
@@ -134,6 +144,7 @@ impl FileBrowser {
             Purpose::Open => names::OPEN_TITLE,
             Purpose::Save => names::SAVE_TITLE,
             Purpose::Folder => names::FOLDER_TITLE,
+            Purpose::ExportFolder => super::export::names::FOLDER_TITLE,
         }
     }
 
@@ -143,7 +154,7 @@ impl FileBrowser {
             Purpose::Open => names::OPEN,
             Purpose::Save if self.replace.is_some() => names::REPLACE,
             Purpose::Save => names::SAVE,
-            Purpose::Folder => names::CHOOSE_FOLDER,
+            Purpose::Folder | Purpose::ExportFolder => names::CHOOSE_FOLDER,
         }
     }
 
@@ -210,7 +221,7 @@ impl FileBrowser {
                 self.name = entry.name;
                 self.confirm()
             }
-            Purpose::Folder => None,
+            Purpose::Folder | Purpose::ExportFolder => None,
         }
     }
 
@@ -221,7 +232,7 @@ impl FileBrowser {
                 let i = self.selected?;
                 self.activate(i)
             }
-            Purpose::Folder => {
+            Purpose::Folder | Purpose::ExportFolder => {
                 let chosen = self
                     .selected
                     .and_then(|i| self.entries.get(i))
@@ -304,7 +315,7 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
         let is_dir = path.is_dir();
         if is_dir {
             dirs.push(Entry { name, path, is_dir });
-        } else if purpose != Purpose::Folder && is_project_file(&path) {
+        } else if !purpose.is_folder() && is_project_file(&path) {
             files.push(Entry { name, path, is_dir });
         }
     }
@@ -465,7 +476,7 @@ fn file_list(ui: &mut Ui, b: &mut FileBrowser, width: f32) -> Option<Output> {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if b.entries.is_empty() {
                         let text = match b.purpose {
-                            Purpose::Folder => names::NO_FOLDERS,
+                            Purpose::Folder | Purpose::ExportFolder => names::NO_FOLDERS,
                             _ => names::NO_PROJECTS,
                         };
                         let g = styled(ui, text, &typography::SMALL, color32(color::TEXT_3), None);

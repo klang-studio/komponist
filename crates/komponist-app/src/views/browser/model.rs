@@ -57,6 +57,8 @@ pub mod names {
     pub const NO_EXPORTS: &str = "Noch keine Exporte";
     /// Tag of a take row.
     pub const TAKE_TAG: &str = "MIDI";
+    /// Tag of an export row (`browserView`: `plain(n,'WAV')`).
+    pub const EXPORT_TAG: &str = "WAV";
     /// Footer without search (`br()` `foot`, S01).
     pub const FOOT: &str =
         "Auf eine Spur ziehen lädt das Instrument. Auf leere Fläche ziehen legt eine neue Spur an.";
@@ -209,6 +211,21 @@ pub struct Input<'a> {
     pub collapsed: &'a BTreeSet<String>,
     /// The project (takes).
     pub project: &'a Project,
+    /// The file names of this session's exports, oldest first.
+    pub exports: &'a [String],
+}
+
+/// The file names of `exports` for [`Input::exports`].
+pub fn export_names(exports: &[std::path::PathBuf]) -> Vec<String> {
+    exports
+        .iter()
+        .map(|p| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |f| f.to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
 }
 
 /// The folder key of `label` in `section`.
@@ -324,8 +341,15 @@ fn browse(input: &Input<'_>) -> Vec<Row> {
         if folder(input, names::PROJECT, names::TAKES, takes.len(), &mut rows) {
             push_or_empty(&mut rows, takes, names::NO_TAKES, 1);
         }
-        if folder(input, names::PROJECT, names::EXPORTS, 0, &mut rows) {
-            rows.push(Row::plain(names::NO_EXPORTS, 1));
+        let exports = exports(input, "");
+        if folder(
+            input,
+            names::PROJECT,
+            names::EXPORTS,
+            exports.len(),
+            &mut rows,
+        ) {
+            push_or_empty(&mut rows, exports, names::NO_EXPORTS, 1);
         }
     }
     rows
@@ -434,9 +458,23 @@ fn files(input: &Input<'_>, query: &str) -> Vec<Row> {
         0,
     );
     rows.push(Row::section(names::EXPORTS));
-    // Nothing records exports yet (the export dialog is WP-53b).
-    rows.push(Row::plain(names::NO_EXPORTS, 0));
+    push_or_empty(
+        &mut rows,
+        exports(input, &query.to_lowercase()),
+        names::NO_EXPORTS,
+        0,
+    );
     rows
+}
+
+/// The exports whose name contains `query` (lower case), oldest first.
+fn exports(input: &Input<'_>, query: &str) -> Vec<Row> {
+    input
+        .exports
+        .iter()
+        .filter(|name| name.to_lowercase().contains(query))
+        .map(|name| Row::new(RowKind::Plain, name.as_str(), names::EXPORT_TAG, 0))
+        .collect()
 }
 
 fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
@@ -637,6 +675,7 @@ mod tests {
             query,
             collapsed,
             project,
+            exports: &[],
         }
     }
 
@@ -759,6 +798,39 @@ mod tests {
                 "Noch keine Exporte"
             ]
         );
+    }
+
+    #[test]
+    fn exports_are_listed_with_their_tag_and_filtered() {
+        let (c, f, p) = (catalog(), Favorites::default(), demo_project());
+        let collapsed = BTreeSet::new();
+        let paths = [
+            std::path::PathBuf::from("/out/Nachtfahrt.wav"),
+            std::path::PathBuf::from("/out/Loop.wav"),
+        ];
+        let exports = export_names(&paths);
+        assert_eq!(exports, ["Nachtfahrt.wav", "Loop.wav"]);
+        let with = |segment, query| {
+            rows(&Input {
+                exports: &exports,
+                ..input(&c, &f, &collapsed, &p, segment, query)
+            })
+        };
+        let files = with(BrowserSegment::Files, "");
+        assert_eq!(
+            names_of(&files[2..]),
+            ["Exporte", "Nachtfahrt.wav", "Loop.wav"]
+        );
+        assert_eq!(files[3].tag, names::EXPORT_TAG);
+        assert_eq!(files[3].kind, RowKind::Plain);
+        let hits = with(BrowserSegment::Files, "loop");
+        assert_eq!(names_of(&hits[2..]), ["Exporte", "Loop.wav"]);
+        // Alle: the folder counts them and lists them inside.
+        let all = with(BrowserSegment::All, "");
+        let folder = all.iter().position(|r| r.name == "Exporte").unwrap();
+        assert_eq!(all[folder].tag, "2");
+        assert_eq!(all[folder + 1].name, "Nachtfahrt.wav");
+        assert_eq!(all[folder + 1].level, 1);
     }
 
     #[test]

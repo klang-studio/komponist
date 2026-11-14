@@ -59,10 +59,10 @@ use crate::meters::Meters;
 use crate::metrics;
 use crate::project_io::{self, RecentList};
 use crate::record::{self, Recording};
-use crate::settings::{self, PanelSettings, Settings};
+use crate::settings::{PanelSettings, Settings};
 use crate::ui_state::{
-    Dialog, DockTab, ExportDialog, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind,
-    StatusMessage, Tool, UiState,
+    Dialog, DockTab, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind, StatusMessage,
+    Tool, UiState,
 };
 use crate::views::{Requests, Views};
 use crate::windows::plugin_frame::{self, PluginFrames};
@@ -114,6 +114,8 @@ pub struct App {
     pub(crate) recording: Option<Recording>,
     /// The plugin frame windows (WP-50).
     pub(crate) frames: PluginFrames,
+    /// The WAV export in progress and this session's exports (WP-53b, [`crate::export`]).
+    pub(crate) export: crate::export::Exports,
 }
 
 /// Per-session state of the shell that is not view state.
@@ -185,6 +187,7 @@ impl App {
             audio_devices: Box::new(SystemDevices),
             recording: None,
             frames: PluginFrames::default(),
+            export: Default::default(),
         }
     }
 
@@ -299,9 +302,9 @@ impl App {
         self.recording.as_ref()
     }
 
-    /// Transport state from the engine.
+    /// Transport state from the engine (`Stopped` during an export).
     pub fn transport(&self) -> TransportState {
-        self.engine.telemetry().transport()
+        self.engine.transport()
     }
 
     /// Whether play and record are possible (an audio device or the null backend runs).
@@ -338,6 +341,7 @@ impl App {
     /// actions, sync. Meters are not advanced.
     pub fn step(&mut self) {
         self.poll_events();
+        self.poll_export();
         self.flush_queue();
         self.engine.sync(&self.doc);
     }
@@ -360,6 +364,7 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_engine(ctx.input(|i| i.time));
+        self.poll_export();
         self.handle_keys(&ctx);
         // The whole window, whatever frame the host put around `ui` (kittest adds a margin).
         let screen = ctx.content_rect();
@@ -400,7 +405,10 @@ impl App {
 
     fn poll_engine(&mut self, now: f64) {
         self.poll_events();
-        self.meters.update(&self.engine, now);
+        // The meters do not show an export's render.
+        if !self.engine.is_detached() {
+            self.meters.update(&self.engine, now);
+        }
     }
 
     /// Drains the engine's and the device host's events and handles them (this frame's).
@@ -411,7 +419,7 @@ impl App {
 
     /// Handles the events that arrived since the last drain; the device events are added to this
     /// frame's.
-    fn drain_events(&mut self) {
+    pub(crate) fn drain_events(&mut self) {
         let events = self.engine.poll();
         // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
@@ -442,6 +450,8 @@ impl App {
     fn engine_event(&mut self, event: &EngineEvent, playhead: Tick) {
         match *event {
             EngineEvent::CountInDone { at } => self.begin_take(at),
+            // A device that dropped out of an export's render (its status says the rest).
+            EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
             _ => {
                 if let Some(rec) = &mut self.recording {
                     rec.handle(event, playhead, self.doc.project());
@@ -659,8 +669,10 @@ impl App {
         }
     }
 
-    /// Stops the engine, shuts the plugin bridges down and saves the settings (window closed).
+    /// Stops the engine, shuts the plugin bridges down and saves the settings (window closed). A
+    /// running export is cancelled first, so the engine is back.
     pub fn shutdown(&mut self) {
+        self.shutdown_export();
         self.persist_panels();
         self.shutdown_plugin_frames();
         self.engine.shutdown();
@@ -1634,6 +1646,11 @@ impl App {
                 if self.close_overlay() {
                     return;
                 }
+                // Esc during an export cancels it; the dialog closes when the engine is back.
+                if self.export.is_active() {
+                    self.cancel_export();
+                    return;
+                }
                 // Esc reaches both the keymap and the modal; the second close changes nothing.
                 if self.ui.dialog.take().is_none() {
                     return;
@@ -1965,34 +1982,10 @@ impl App {
             | ProjectAction::SaveAs
             | ProjectAction::ContinueWithMissing
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
-            ProjectAction::OpenExportDialog => {
-                if self.transport() != TransportState::Stopped {
-                    self.commit_take();
-                    self.engine.send(Command::Stop);
-                }
-                let folder = self
-                    .project_path
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                let mut export = self
-                    .settings
-                    .export
-                    .clone()
-                    .unwrap_or_else(|| settings::default_export(&self.project().name, folder));
-                export.file_name = format!("{}.wav", self.project().name);
-                self.open_dialog(Dialog::Export(ExportDialog {
-                    settings: export,
-                    progress: None,
-                }));
-            }
-            // The export itself: WP-53.
-            ProjectAction::StartExport(export) => {
-                self.settings.export = Some(export);
-                self.save_settings();
-            }
-            ProjectAction::CancelExport => {}
+            // The export (WP-53b): `crate::export`.
+            ProjectAction::OpenExportDialog => self.open_export_dialog(),
+            ProjectAction::StartExport(export) => self.start_export(export),
+            ProjectAction::CancelExport => self.cancel_export(),
         }
     }
 
@@ -2010,6 +2003,7 @@ impl App {
         self.doc = doc;
         self.project_path = path;
         self.meters = Meters::new();
+        self.export.forget();
         self.ui.selection = Default::default();
         self.ui.editor = Default::default();
         self.ui.plugin_windows.clear();

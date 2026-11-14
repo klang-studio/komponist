@@ -520,10 +520,7 @@ impl App {
         let pending = self.dialogs.pending.take();
         self.close_overlay();
         // The next file browser starts where this file is.
-        let folder = match purpose {
-            Purpose::Folder => path.parent(),
-            Purpose::Open | Purpose::Save => path.parent(),
-        };
+        let folder = path.parent();
         self.dialogs.last_dir = folder.map(Path::to_path_buf);
         match purpose {
             Purpose::Open => self.open_path(path),
@@ -534,6 +531,7 @@ impl App {
                     self.proceed(next);
                 }
             }
+            Purpose::ExportFolder => self.export_folder_chosen(path),
             Purpose::Folder => {
                 let (clap, vst3) = crate::dialogs::settings::folder_formats(&path);
                 for (is_clap, add) in [(true, clap), (false, vst3)] {

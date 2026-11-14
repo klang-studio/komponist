@@ -280,7 +280,7 @@ impl View for PianoRoll {
 
         let playhead = ctx.engine.playhead();
         let running = matches!(
-            ctx.engine.telemetry().transport(),
+            ctx.engine.transport(),
             TransportState::Playing | TransportState::Recording
         );
         let (t0, t1) = geo.visible_local_ticks();

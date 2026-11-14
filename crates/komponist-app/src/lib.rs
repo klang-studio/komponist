@@ -32,12 +32,17 @@
 //! - [`dialogs`]: S06 missing plugins, S07 settings, S09 start screen, new projects (S10) and the
 //!   unsaved-changes prompt, the file browser.
 //! - [`project_io`]: `.komponist` files, the recent list, new / open / save / save as.
+//!
+//! WAV export (WP-53b):
+//! - [`export`]: the flow from "Exportieren" to the status bar message (engine detached, worker
+//!   thread, devices, cancel); the S08 dialog is [`dialogs::export`].
 
 pub mod actions;
 pub mod app;
 pub mod device_host;
 pub mod dialogs;
 pub mod engine_sync;
+pub mod export;
 pub mod keymap;
 pub mod layout;
 pub mod meters;
