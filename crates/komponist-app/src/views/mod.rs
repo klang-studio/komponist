@@ -79,8 +79,8 @@ pub struct Requests {
     pub focus_browser_search: bool,
     /// Z with the piano roll focused: fit the open clip into the view.
     pub fit_piano_roll: bool,
-    /// + / − with the piano roll focused: horizontal zoom steps (> 0 zooms in), around the
-    /// pointer or the playhead; only the view knows the grid it zooms.
+    /// Horizontal zoom steps (> 0 zooms in) of the keys plus and minus with the piano roll
+    /// focused, around the pointer or the playhead; only the view knows the grid it zooms.
     pub piano_roll_zoom: i32,
 }
 

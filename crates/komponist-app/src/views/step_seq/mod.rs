@@ -269,27 +269,6 @@ impl View for StepSequencer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rows_take_what_the_lane_leaves() {
-        // The dock body at the default height: 320 − 28 tab strip.
-        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 292.0));
-        let a = Areas::of(rect, 8);
-        assert_eq!(a.toolbar.height(), 28.0);
-        assert_eq!(a.numbers.top(), 29.0);
-        assert_eq!(a.rows.top(), 48.0);
-        assert_eq!(a.rows.height(), 8.0 * 27.0);
-        assert_eq!(a.lane.height(), 292.0 - 48.0 - 216.0);
-        // 16 rows do not fit: the lane keeps its minimum, the rows scroll.
-        let a = Areas::of(rect, 16);
-        assert_eq!(a.lane.height(), m::LANE_MIN_HEIGHT);
-        assert_eq!(a.rows.bottom(), a.lane.top());
-    }
-}
-
 /// Sends `SetStep` and announces a velocity, probability or ratchet change in the status bar
 /// (prototype: "Velocity 52", "Ratchet ×3").
 pub(super) fn send_step(
@@ -310,5 +289,26 @@ pub(super) fn send_step(
             text,
             kind: crate::ui_state::StatusKind::Info,
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_take_what_the_lane_leaves() {
+        // The dock body at the default height: 320 − 28 tab strip.
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 292.0));
+        let a = Areas::of(rect, 8);
+        assert_eq!(a.toolbar.height(), 28.0);
+        assert_eq!(a.numbers.top(), 29.0);
+        assert_eq!(a.rows.top(), 48.0);
+        assert_eq!(a.rows.height(), 8.0 * 27.0);
+        assert_eq!(a.lane.height(), 292.0 - 48.0 - 216.0);
+        // 16 rows do not fit: the lane keeps its minimum, the rows scroll.
+        let a = Areas::of(rect, 16);
+        assert_eq!(a.lane.height(), m::LANE_MIN_HEIGHT);
+        assert_eq!(a.rows.bottom(), a.lane.top());
     }
 }
