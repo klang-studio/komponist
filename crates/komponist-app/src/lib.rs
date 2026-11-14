@@ -27,16 +27,23 @@
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 //! - [`windows`]: windows besides the main one; [`windows::plugin_frame`], the S05 plugin frame
 //!   around a plugin's own GUI (WP-50).
+//!
+//! Dialogs and the project lifecycle (WP-52):
+//! - [`dialogs`]: S06 missing plugins, S07 settings, S09 start screen, new projects (S10) and the
+//!   unsaved-changes prompt, the file browser.
+//! - [`project_io`]: `.komponist` files, the recent list, new / open / save / save as.
 
 pub mod actions;
 pub mod app;
 pub mod device_host;
+pub mod dialogs;
 pub mod engine_sync;
 pub mod keymap;
 pub mod layout;
 pub mod meters;
 pub mod metrics;
 pub mod panels;
+pub mod project_io;
 pub mod record;
 pub mod settings;
 mod shell;

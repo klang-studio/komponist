@@ -510,6 +510,16 @@ table of CLAP features / VST3 subcategories.
   window is focused. WP-50 defines the policy (which shortcuts the frame forwards, how focus returns).
 - Requirement: the app runs on X11 or XWayland (`with_x11()` in eframe's `event_loop_builder`). Native
   Wayland embedding is not part of v0.1.
+- As built (WP-50): header 28 px (S05's markup draws 36; the design-system height wins), controls are the
+  24 px design-system ones. Fixed-size plugins get a non-resizable frame; user resizes of resizable plugins move
+  the child at once and tell the plugin 100 ms after the drag rests, following its own adjustment without
+  answering again. On close the child is parked (moved out and hidden) until `GuiClosed`, so the frame disappears
+  at once. Key policy while the plugin has the focus: a synchronous X11 key grab per frame decides each press on a
+  dedicated thread — Strg S always goes to komponist; Leertaste, Esc, Strg Z, Strg Shift Z go to komponist unless
+  the user is typing in the plugin (heuristic: text keys start a typing session, Enter/Tab/Esc or 5 s idle end it);
+  everything else goes to the plugin. `KOMPONIST_LOG_KEYS=1` logs keys, grab decisions and focus changes.
+  `komponist --open-plugin NAME` opens a frame directly (for checks). Presets work for pisynth only until a
+  CLAP/VST3 preset API exists (post v0.1).
 
 ### 8.5 Built-in instruments
 

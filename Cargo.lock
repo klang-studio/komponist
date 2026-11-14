@@ -2437,6 +2437,7 @@ dependencies = [
  "komponist-plugins",
  "komponist-tokens",
  "komponist-ui",
+ "libc",
  "serde",
  "serde_json",
  "winit",

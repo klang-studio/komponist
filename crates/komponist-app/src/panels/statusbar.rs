@@ -2,7 +2,8 @@
 //!
 //! Left: what is selected or happening (`type.small`, `text.2`; red while recording or on an
 //! error); next to it the hint for the current context (`text.3`); right: the audio output
-//! ("PipeWire · 48 kHz · 256 Samples · 5.3 ms", `type.value.s`). A status message
+//! ("PipeWire · 48 kHz · 256 Samples · 5.3 ms", `type.value.s`; "· ohne Echtzeit-Priorität" in the
+//! warning colour when the audio thread got none). A status message
 //! ([`crate::ui_state::StatusMessage`]) replaces the left text for 7 s. Texts are verbatim from
 //! the screens and the prototype; a leading "● " (recording) is painted as a dot in the text
 //! colour, the fonts have no ● (`ks-view.js` `statusView` `dotS`).
@@ -20,6 +21,9 @@ use komponist_ui::{px, widgets as w};
 use crate::app::{App, STATUS_DURATION};
 use crate::metrics::transport::ERROR_DOT;
 use crate::ui_state::{FocusArea, StatusKind};
+
+/// Appended to the audio output when the audio thread got no real-time priority.
+pub const NO_REALTIME: &str = "ohne Echtzeit-Priorität";
 
 /// The three texts of the status bar and their colours.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +88,12 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
         right_color: color::TEXT_3,
     };
     match app.engine().audio_state() {
+        // Without real-time priority dropouts are likely: said at the right, in the warning
+        // colour (S07 explains it).
+        AudioState::Running { config, .. } if app.engine().stats().realtime_denied() => {
+            s.right = format!("{} · {NO_REALTIME}", fmt_output(config));
+            s.right_color = color::METER_LOUD;
+        }
         AudioState::Running { config, .. } => s.right = fmt_output(config),
         AudioState::NoDevice { .. } => {
             s.left = "Kein Audio-Gerät".to_owned();

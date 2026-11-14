@@ -41,7 +41,7 @@ use komponist_model::edits::{
 use komponist_model::project::{BUILTIN_PISYNTH, VOLUME_DB_MIN};
 use komponist_model::{
     ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat, PluginRef,
-    Project, Tick, TickRange, TrackId, fixtures, persist,
+    Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
@@ -51,15 +51,18 @@ use crate::actions::{
     SettingsAction, TransportAction, UiAction,
 };
 use crate::device_host::{BuiltinHost, DeviceHost};
+use crate::dialogs::DialogState;
+use crate::dialogs::settings::{AudioDevices, FixedDevices, SystemDevices};
 use crate::engine_sync::{EngineSync, SyncEvent};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
+use crate::project_io::{self, RecentList};
 use crate::record::{self, Recording};
 use crate::settings::{self, PanelSettings, Settings};
 use crate::ui_state::{
-    Dialog, DockTab, ExportDialog, FocusArea, Panel, PluginView, PluginWindow, Screen,
-    SettingsSection, StatusKind, StatusMessage, Tool, UiState,
+    Dialog, DockTab, ExportDialog, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind,
+    StatusMessage, Tool, UiState,
 };
 use crate::views::{Requests, Views};
 use crate::windows::plugin_frame::{self, PluginFrames};
@@ -94,11 +97,19 @@ pub struct App {
     pub(crate) meters: Meters,
     pub(crate) settings: Settings,
     settings_path: Option<PathBuf>,
-    project_path: Option<PathBuf>,
+    pub(crate) project_path: Option<PathBuf>,
     /// Actions queued by the shell and the views during this frame.
     pub(crate) queue: Vec<Action>,
     log: VecDeque<Action>,
     pub(crate) shell: ShellState,
+    /// Overlays, pending steps and caches of the dialogs and the start screen (WP-52).
+    pub(crate) dialogs: DialogState,
+    /// Recent projects (`recent.json` next to the settings file).
+    pub(crate) recent: RecentList,
+    /// Where the recent list is saved (`None`: never).
+    pub(crate) recent_path: Option<PathBuf>,
+    /// Drivers and devices for S07.
+    pub(crate) audio_devices: Box<dyn AudioDevices>,
     /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
     pub(crate) recording: Option<Recording>,
     /// The plugin frame windows (WP-50).
@@ -129,8 +140,9 @@ pub(crate) struct ShellState {
 }
 
 impl App {
-    /// The app on `engine` with `doc` open (screen `Project`). `settings` are applied (panel
-    /// sizes); `settings_path` is where changes are saved (`None`: never).
+    /// The app on `engine` with `doc` open (screen `Project`; [`App::show_start_screen`] for S09).
+    /// `settings` are applied (panel sizes); `settings_path` is where changes are saved (`None`:
+    /// never), and the recent list lives next to it (`recent.json`).
     pub fn new(
         doc: Document,
         engine: EngineSync,
@@ -140,7 +152,17 @@ impl App {
         let mut ui = UiState::new();
         ui.screen = Screen::Project;
         settings.panels.apply_to(&mut ui.layout);
+        ui.browser.favorites = settings.favorites.clone();
         let saved_panels = Some(settings.panels);
+        let recent_path = settings_path.as_deref().map(project_io::recent_path);
+        let recent = match recent_path.as_deref().map(RecentList::load) {
+            Some(Ok(list)) => list,
+            Some(Err(e)) => {
+                eprintln!("komponist: recent projects not loaded: {e}");
+                RecentList::default()
+            }
+            None => RecentList::default(),
+        };
         App {
             doc,
             ui,
@@ -157,16 +179,46 @@ impl App {
                 saved_panels,
                 ..ShellState::default()
             },
+            dialogs: DialogState::default(),
+            recent,
+            recent_path,
+            audio_devices: Box::new(SystemDevices),
             recording: None,
             frames: PluginFrames::default(),
         }
     }
 
-    /// The app on the null backend with `project` open, default settings, nothing persisted: for
-    /// tests (and `--null-audio`).
+    /// The app on the null backend with `project` open, default settings (with the null driver,
+    /// as the engine runs), nothing persisted, and only the null driver in S07: for tests (and
+    /// `--null-audio`).
     pub fn headless(project: Project) -> App {
         let engine = EngineSync::null(Box::new(BuiltinHost::new()));
-        App::new(Document::new(project), engine, Settings::default(), None)
+        let mut settings = Settings::default();
+        settings.audio.host = komponist_audio::HostKind::Null;
+        let mut app = App::new(Document::new(project), engine, settings, None);
+        app.audio_devices = Box::new(FixedDevices {
+            hosts: vec![komponist_audio::HostKind::Null],
+            devices: Vec::new(),
+        });
+        app
+    }
+
+    /// Replaces where S07 gets drivers and devices from (tests).
+    pub fn with_audio_devices(mut self, devices: Box<dyn AudioDevices>) -> App {
+        self.audio_devices = devices;
+        self
+    }
+
+    /// Shows the start screen (S09) instead of the open document (no project argument).
+    pub fn show_start_screen(&mut self) {
+        self.ui.screen = Screen::Start;
+        self.ui.focus = FocusArea::default();
+        self.ui.start.selected = 0;
+    }
+
+    /// The recent projects, newest first.
+    pub fn recent(&self) -> &[PathBuf] {
+        &self.recent.projects
     }
 
     /// Replaces the device host (`main` plugs in [`crate::device_host::PluginHost`]; tests may
@@ -300,6 +352,13 @@ impl App {
         if let Some(scale) = self.shell.pending_scale.take() {
             ctx.set_pixels_per_point(scale.unwrap_or(1.0));
         }
+        // Closing the window with unsaved changes asks first (`App::close_requested`).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_requested() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        if self.take_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         self.poll_engine(ctx.input(|i| i.time));
         self.handle_keys(&ctx);
         // The whole window, whatever frame the host put around `ui` (kittest adds a margin).
@@ -316,9 +375,14 @@ impl App {
         self.schedule_repaint(&ctx);
     }
 
-    /// The window title follows the project name ("komponist · Nachtfahrt").
+    /// The window title follows the project name ("komponist · Nachtfahrt"); the start screen
+    /// shows the wordmark alone.
     fn update_title(&mut self, ctx: &Context) {
-        let title = window_title(&self.project().name);
+        let title = if self.ui.screen == Screen::Start {
+            crate::panels::transport::WORDMARK.to_owned()
+        } else {
+            window_title(&self.project().name)
+        };
         if self.shell.title.as_ref() != Some(&title) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.shell.title = Some(title);
@@ -460,7 +524,12 @@ impl App {
                 };
                 self.set_status(text, StatusKind::Error);
             }
-            PluginManagerEvent::ScanFinished(_) => self.load_found_devices(),
+            PluginManagerEvent::ScanFinished(_) => {
+                self.load_found_devices();
+                if self.dialogs.missing_check {
+                    self.check_missing_plugins();
+                }
+            }
             PluginManagerEvent::Log {
                 device,
                 level: level @ (LogLevel::Warning | LogLevel::Error),
@@ -491,7 +560,7 @@ impl App {
     /// Stores a plugin's state snapshot in the document, outside the history: a plugin's own
     /// state is not an undo step, and undo must not revert it. An unchanged state is skipped, so
     /// closing a GUI without edits leaves the document clean.
-    fn store_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+    pub(crate) fn store_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         let unchanged = self
             .project()
             .find_device(device)
@@ -502,6 +571,26 @@ impl App {
         let _ = self
             .doc
             .apply_untracked(|p| edits::set_device_state(p, device, Some(Arc::clone(state))));
+    }
+
+    /// A pisynth macro turned on the device card: the same `Macro::set` the processor applies goes
+    /// into the device state in the document, outside the history like every plugin state, so the
+    /// card shows the value and saving keeps it (`komponist_builtin::macros` module docs).
+    fn store_macro(&mut self, device: DeviceId, id: u32, value: f64) {
+        let Some(m) = komponist_builtin::Macro::from_id(id) else {
+            return;
+        };
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        if !crate::device_host::is_pisynth(d) {
+            return;
+        }
+        let mut patch = komponist_builtin::decode_state(d.state.as_deref())
+            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        m.set(&mut patch, value);
+        let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
+        self.store_state(device, &state);
     }
 
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
@@ -587,15 +676,19 @@ impl App {
     pub fn keyboard_midi_active(&self) -> bool {
         self.ui.screen == Screen::Project
             && self.ui.dialog.is_none()
+            && self.dialogs.overlay.is_none()
             && (self.ui.keyboard_midi || self.project().tracks.iter().any(|t| t.arm))
     }
 
     /// Turns this frame's key events into actions and dispatches them (module docs). Keys that
     /// trigger something are consumed, so widgets do not see them.
     fn handle_keys(&mut self, ctx: &Context) {
-        if self.ui.screen != Screen::Project || ctx.egui_wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() {
             return;
         }
+        let start = self.ui.screen == Screen::Start;
+        // An open dropdown list or menu takes Esc and the arrows itself.
+        let floating = komponist_ui::widgets::floating::current(ctx).is_some();
         let events = ctx.input(|i| i.events.clone());
         // A widget reached with Tab (focus ring visible) takes Space, Enter, arrows and Tab.
         let widget_keys =
@@ -659,6 +752,12 @@ impl App {
             let Some(action) = self.keymap.lookup(chord, self.ui.focus).cloned() else {
                 continue;
             };
+            if (floating && k == Key::Escape)
+                || (self.dialogs.overlay.is_some() && !closes_dialog(&action))
+                || (start && !on_start_screen(&action))
+            {
+                continue;
+            }
             ctx.input_mut(|i| i.consume_key(modifiers, key));
             if k == Key::Tab {
                 // The canvas takes Tab; egui must not move the widget focus.
@@ -676,6 +775,11 @@ impl App {
     /// during a drag cancels its gesture (the selection stays).
     fn remap(&self, action: Action) -> Action {
         match action {
+            Action::Ui(UiAction::ClearSelection)
+                if self.dialogs.overlay.is_some() || self.ui.screen == Screen::Start =>
+            {
+                Action::Ui(UiAction::CloseDialog)
+            }
             Action::Ui(UiAction::ClearSelection)
                 if self.recording.is_some()
                     || matches!(
@@ -742,6 +846,11 @@ impl App {
                     self.commit_take();
                     self.engine.send(Command::Stop);
                 } else if self.audio_ok() {
+                    // Play the document as it is now: changes dispatched before Play in the same
+                    // frame (a loop range, an edit) reach the engine before Play, not at the end
+                    // of the frame. Otherwise playback can start with the old loop and pass the
+                    // new loop end before the program arrives, and then it never wraps.
+                    self.engine.sync(&self.doc);
                     self.engine.send(Command::Play);
                 }
             }
@@ -857,7 +966,7 @@ impl App {
     }
 
     /// Applies a transport setting outside the history (`Document::apply_untracked`).
-    fn untracked(&mut self, prop: ProjectProp) {
+    pub(crate) fn untracked(&mut self, prop: ProjectProp) {
         if let Err(e) = self
             .doc
             .apply_untracked(|p| edits::set_project_prop(p, prop.clone()))
@@ -1437,7 +1546,7 @@ impl App {
             UiAction::SetDockTab(tab) => self.set_dock_tab(tab),
             UiAction::NextTab => self.next_tab(),
             UiAction::Focus(area) => {
-                if self.ui.dialog.is_none() {
+                if self.ui.dialog.is_none() && self.dialogs.overlay.is_none() {
                     self.ui.focus = area;
                 }
             }
@@ -1479,7 +1588,7 @@ impl App {
                 }
             }
             UiAction::ClearSelection => {
-                if self.ui.dialog.is_some() {
+                if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
                     self.ui_action(UiAction::CloseDialog);
                 } else if let Some(window) = self.ui.plugin_windows.last() {
                     // The frame opened last (prototype: Esc closes the plugin window).
@@ -1523,6 +1632,10 @@ impl App {
             }
             UiAction::OpenSettings(section) => self.open_dialog(Dialog::Settings(section)),
             UiAction::CloseDialog => {
+                // The file browser or the unsaved-changes prompt closes first.
+                if self.close_overlay() {
+                    return;
+                }
                 // Esc reaches both the keymap and the modal; the second close changes nothing.
                 if self.ui.dialog.take().is_none() {
                     return;
@@ -1631,7 +1744,7 @@ impl App {
         }
     }
 
-    fn open_dialog(&mut self, dialog: Dialog) {
+    pub(crate) fn open_dialog(&mut self, dialog: Dialog) {
         if self.ui.dialog.is_none() {
             self.shell.focus_before_dialog = Some(self.ui.focus);
         }
@@ -1784,6 +1897,7 @@ impl App {
                 if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
                     self.engine.send(Command::SetParam { slot, id, value });
                 }
+                self.store_macro(device, id, value);
             }
         }
     }
@@ -1816,7 +1930,11 @@ impl App {
                 let (channel, index) = match target {
                     DropTarget::NewTrack { .. } => match selected {
                         Some(t) => (ChannelRef::Track(t), None),
-                        None => return,
+                        None => {
+                            // Prototype `dropNew`.
+                            self.set_status("Effekte brauchen eine Spur", StatusKind::Error);
+                            return;
+                        }
                     },
                     DropTarget::Track(t) => (ChannelRef::Track(t), None),
                     DropTarget::Chain { channel, index } => (channel, Some(index)),
@@ -1841,25 +1959,14 @@ impl App {
 
     fn project_action(&mut self, action: ProjectAction) {
         match action {
-            ProjectAction::New => {
-                self.open_document(Document::new(fixtures::empty_project()), None);
-            }
-            ProjectAction::OpenPath(path) => match load_project(&path) {
-                Ok(project) => {
-                    self.open_document(Document::new(project), Some(path.clone()));
-                    self.settings.add_recent(path);
-                    self.save_settings();
-                }
-                Err(e) => self.set_status(e, StatusKind::Error),
-            },
-            // Without a path the file dialog asks for one (WP-52).
-            ProjectAction::Save => {
-                if let Some(path) = self.project_path.clone() {
-                    self.save_to(&path);
-                }
-            }
-            // File dialogs: WP-52.
-            ProjectAction::Open | ProjectAction::SaveAs => {}
+            // The project lifecycle (WP-52): `project_io`.
+            ProjectAction::New
+            | ProjectAction::Open
+            | ProjectAction::OpenPath(_)
+            | ProjectAction::Save
+            | ProjectAction::SaveAs
+            | ProjectAction::ContinueWithMissing
+            | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
             ProjectAction::OpenExportDialog => {
                 if self.transport() != TransportState::Stopped {
                     self.commit_take();
@@ -1888,44 +1995,30 @@ impl App {
                 self.save_settings();
             }
             ProjectAction::CancelExport => {}
-            ProjectAction::ContinueWithMissing => self.ui_action(UiAction::CloseDialog),
-            // S06 → S07: the settings replace the dialog; the focus to return to stays.
-            ProjectAction::CheckPluginFolders => {
-                self.open_dialog(Dialog::Settings(SettingsSection::Plugins));
-            }
         }
     }
 
-    /// Makes `doc` the open document: fresh selection and editor, transport stopped at 0.
-    fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
+    /// Makes `doc` the open document: transport stopped at 0, the engine reset (device ids restart
+    /// at 1 in every project, [`EngineSync::reset`]), fresh selection, editor, plugin windows,
+    /// meters and scroll position.
+    pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
         // A take of the old project does not go into the new one.
         self.recording = None;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
+        self.engine.reset();
         self.doc = doc;
         self.project_path = path;
+        self.meters = Meters::new();
         self.ui.selection = Default::default();
         self.ui.editor = Default::default();
+        self.ui.plugin_windows.clear();
+        self.ui.arrangement.scroll_tick = 0.0;
+        self.ui.arrangement.scroll_y = 0.0;
         self.ui.screen = Screen::Project;
         self.ui.dialog = None;
+        self.shell.focus_before_dialog = None;
         self.ui.focus = FocusArea::Arrangement;
-    }
-
-    fn save_to(&mut self, path: &Path) {
-        // The bridged plugins' current states go into the file (blocking, bounded).
-        for (device, state) in self.engine.host_mut().snapshot_states(SNAPSHOT_TIMEOUT) {
-            self.store_state(device, &state);
-        }
-        let result = persist::to_json(self.project())
-            .map_err(|e| e.to_string())
-            .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
-        match result {
-            Ok(()) => {
-                self.doc.mark_saved();
-                self.project_path = Some(path.to_path_buf());
-            }
-            Err(e) => self.set_status(e, StatusKind::Error),
-        }
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
@@ -1938,6 +2031,8 @@ impl App {
             SettingsAction::RetryAudio => {
                 let config = self.settings.audio.clone();
                 let _ = self.engine.set_audio(&config);
+                // The device list may have changed too.
+                self.dialogs.settings.devices_host = None;
             }
             SettingsAction::SetMidiInput { name, enabled } => {
                 if let Some(hub) = self.engine.midi_mut() {
@@ -1968,6 +2063,11 @@ impl App {
                 self.shell.pending_scale = Some(scale);
                 self.save_settings();
             }
+            SettingsAction::ToggleFavorite(plugin) => {
+                self.settings.favorites.toggle(&plugin);
+                self.ui.browser.favorites = self.settings.favorites.clone();
+                self.save_settings();
+            }
         }
     }
 
@@ -1983,6 +2083,24 @@ impl App {
 /// The window title for a project: "komponist · Nachtfahrt" (ARCHITECTURE §13.6).
 pub fn window_title(project_name: &str) -> String {
     format!("{} · {project_name}", crate::panels::transport::WORDMARK)
+}
+
+/// Whether `action` closes a dialog (the only keys an overlay leaves to the keymap).
+fn closes_dialog(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Ui(UiAction::CloseDialog | UiAction::ClearSelection)
+    )
+}
+
+/// Whether a shortcut works on the start screen (S09): new, open, settings, Esc in dialogs.
+fn on_start_screen(action: &Action) -> bool {
+    closes_dialog(action)
+        || matches!(
+            action,
+            Action::Project(ProjectAction::New | ProjectAction::Open)
+                | Action::Ui(UiAction::OpenSettings(_))
+        )
 }
 
 /// Whether a held key may repeat `action` (zoom, transpose, nudge).
@@ -2012,11 +2130,6 @@ pub fn pisynth_ref() -> PluginRef {
         vendor: "klang-studio".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }
-}
-
-fn load_project(path: &Path) -> Result<Project, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    persist::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The keymap's key for an egui key (`=` and `+` are both [`Key::Plus`]).

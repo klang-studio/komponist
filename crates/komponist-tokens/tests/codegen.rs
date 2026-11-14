@@ -132,6 +132,9 @@ fn komponist_additions_generate() {
         // rgba(232,233,235,0.16): alpha 0.16 × 255 = 40.8 → 41.
         "pub const CANVAS_CLIP_EDGE_SELECTED: Srgba = [0xe8, 0xe9, 0xeb, 0x29];",
         "pub const CANVAS_STEP_GROUP_ALT: Srgba = [0x22, 0x23, 0x26, 0xff];",
+        "pub const STATE_ERROR_SURFACE: Srgba = [0x2c, 0x1c, 0x1e, 0xff];",
+        // rgba(8,9,10,0.62): alpha 0.62 × 255 = 158.1 → 158.
+        "pub const OVERLAY_SCRIM: Srgba = [0x08, 0x09, 0x0a, 0x9e];",
     ] {
         assert!(color.contains(line), "{line} missing in {color}");
     }

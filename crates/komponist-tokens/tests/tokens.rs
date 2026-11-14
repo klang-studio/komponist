@@ -49,6 +49,12 @@ fn komponist_colours() {
     assert_eq!(a, (0.16_f64 * 255.0).round() as u8);
     // `#222326`: every other group of four steps in the step sequencer.
     assert_eq!(color::CANVAS_STEP_GROUP_ALT, [0x22, 0x23, 0x26, 0xff]);
+    // `#2c1c1e`: surface of error notices ("Kein Audio-Gerät", S07 device notice).
+    assert_eq!(color::STATE_ERROR_SURFACE, [0x2c, 0x1c, 0x1e, 0xff]);
+    // `rgba(8,9,10,0.62)`: the scrim behind a dialog.
+    let [r, g, b, a] = color::OVERLAY_SCRIM;
+    assert_eq!([r, g, b], [8, 9, 10]);
+    assert_eq!(a, (0.62_f64 * 255.0).round() as u8);
 }
 
 #[test]
@@ -104,6 +110,16 @@ fn focus_select_shadow() {
             blur: 0.0,
             spread: 1.0,
             color: color::SURFACE_0
+        }
+    );
+    // "0 12px 32px rgba(0,0,0,0.5)": alpha 0.5 × 255 = 127.5 → 128.
+    assert_eq!(
+        shadow::DIALOG,
+        BoxShadow {
+            offset: [0.0, 12.0],
+            blur: 32.0,
+            spread: 0.0,
+            color: [0, 0, 0, 128]
         }
     );
 }
