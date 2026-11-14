@@ -58,6 +58,9 @@ pub(crate) struct DialogState {
     pub(crate) overlay_focus: Option<FocusArea>,
     /// What continues after the unsaved-changes prompt or the save dialog it opened.
     pub(crate) pending: Option<Pending>,
+    /// A dialog that arrived while an export ran: it opens when the export dialog closes
+    /// (the export dialog stays on top while it renders).
+    pub(crate) queued: Option<crate::ui_state::Dialog>,
     /// The S06 check waits for the running plugin scan.
     pub(crate) missing_check: bool,
     /// Closing the window was confirmed (saved or discarded): the next close request passes.
@@ -92,6 +95,8 @@ pub(crate) enum Pending {
     Open,
     /// Open this file.
     OpenPath(PathBuf),
+    /// "⋯" › "Zum Startbildschirm".
+    StartScreen,
     /// Close the window (the window's close button).
     Quit,
 }
@@ -248,17 +253,6 @@ pub(crate) fn styled_line(
         overflow_character: Some('…'),
     };
     ui.painter().layout_job(job)
-}
-
-/// Adds a single-line text field with the accent ring while it has the focus (the browser search's
-/// active state in S05: `inset 0 0 0 1px accent`).
-pub(crate) fn text_field(ui: &mut Ui, edit: egui::TextEdit<'_>) -> Response {
-    ui.scope(|ui| {
-        ui.visuals_mut().selection.stroke =
-            Stroke::new(komponist_tokens::line::WIDTH, color32(color::ACCENT));
-        ui.add(edit)
-    })
-    .inner
 }
 
 /// Allocates and paints `galley` at the cursor (a label with an AccessKit node).

@@ -13,6 +13,10 @@
 //!
 //! Keyboard focus shows as an accent value arc, as the design's "fokus" sample does, not as a
 //! ring. AccessKit: role `Slider`, the caller's German name, value as number and text.
+//!
+//! [`Knob::bypassed`] shows the knob of a bypassed device (S05 `card()` with `byp`): still, in
+//! [`bypassed_look`], and disabled for AccessKit. Unlike the design system's disabled knob, whose
+//! `surface.2` track would vanish on a device card's `surface.2`, the track stays visible.
 
 use std::ops::RangeInclusive;
 
@@ -77,6 +81,7 @@ pub struct Knob<'a> {
     size: KnobSize,
     format: Option<Formatter<'a>>,
     parse: Option<Parser<'a>>,
+    bypassed: bool,
 }
 
 impl<'a> Knob<'a> {
@@ -91,6 +96,7 @@ impl<'a> Knob<'a> {
             size: KnobSize::Normal,
             format: None,
             parse: None,
+            bypassed: false,
         }
     }
 
@@ -137,6 +143,13 @@ impl<'a> Knob<'a> {
     #[must_use]
     pub fn small(self) -> Self {
         self.size(KnobSize::Small)
+    }
+
+    /// The knob of a bypassed device: [`bypassed_look`], no input, disabled for AccessKit.
+    #[must_use]
+    pub fn bypassed(mut self, bypassed: bool) -> Self {
+        self.bypassed = bypassed;
+        self
     }
 
     /// The text of a value for tooltip, text entry and AccessKit ("2.4 kHz").
@@ -217,6 +230,17 @@ pub fn look(state: State) -> Look {
     }
 }
 
+/// The look of a bypassed device's knob (`card()` with `byp`): arc `text.4`, indicator `text.3`,
+/// cap `surface.3`, track `surface.4`.
+pub fn bypassed_look() -> Look {
+    Look {
+        track: color32(color::SURFACE_4),
+        arc: color32(color::TEXT_4),
+        cap: color32(color::SURFACE_3),
+        indicator: color32(color::TEXT_3),
+    }
+}
+
 /// The angle of a value at `fraction` (0–1) of the range, in degrees from up, clockwise:
 /// −135° … +135°.
 pub fn angle(fraction: f32) -> f32 {
@@ -272,8 +296,36 @@ pub fn paint(painter: &Painter, rect: Rect, look: &Look, fraction: f32, bipolar:
     painter.circle_filled(tip, w / 2.0, look.indicator);
 }
 
+impl Knob<'_> {
+    /// [`Knob::bypassed`]: a still knob in [`bypassed_look`], a disabled slider for AccessKit.
+    fn bypassed_ui(mut self, ui: &mut Ui) -> Response {
+        let (min, max) = range_bounds(&self.range);
+        let d = self.size.diameter();
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(d), Sense::hover());
+        let value = (self.get_set)(None);
+        let fraction = normalized(value, min, max) as f32;
+        paint(ui.painter(), rect, &bypassed_look(), fraction, self.bipolar);
+        let text = self.text(value);
+        response.widget_info(|| {
+            let mut info = WidgetInfo::labeled(Role::Slider, false, &self.name);
+            info.value = Some(value);
+            info.current_text_value = Some(text.clone());
+            info
+        });
+        response.ctx.accesskit_node_builder(response.id, |node| {
+            node.set_min_numeric_value(min);
+            node.set_max_numeric_value(max);
+            node.set_disabled();
+        });
+        response
+    }
+}
+
 impl Widget for Knob<'_> {
     fn ui(mut self, ui: &mut Ui) -> Response {
+        if self.bypassed {
+            return self.bypassed_ui(ui);
+        }
         let (min, max) = range_bounds(&self.range);
         let d = self.size.diameter();
         let (rect, mut response) =
@@ -380,7 +432,7 @@ fn still_tooltip(ui: &mut Ui, text: &str) {
 }
 
 /// The samples of the design (`knobs`): name, label, state, fraction, bipolar, size, tooltip.
-const SAMPLES: [(&str, &str, State, f32, bool, KnobSize, &str); 8] = [
+const SAMPLES: [(&str, &str, State, f32, bool, KnobSize, &str); 9] = [
     (
         "Cutoff",
         "standard",
@@ -445,6 +497,16 @@ const SAMPLES: [(&str, &str, State, f32, bool, KnobSize, &str); 8] = [
         KnobSize::Normal,
         "",
     ),
+    // Not a design-system sample: the device card's bypassed knob (S05 `card()` with `byp`).
+    (
+        "Cutoff",
+        "bypass",
+        State::REST,
+        0.35,
+        false,
+        KnobSize::Normal,
+        "",
+    ),
 ];
 
 /// One sample column (`min-width: 56`, items centred, `space.1.5` apart): tooltip slot, a cell
@@ -490,14 +552,14 @@ pub fn gallery(ui: &mut Ui) {
     sample_row(ui, space::SPACE_6, |ui| {
         for (name, label, st, fraction, bipolar, size, tip) in SAMPLES {
             sample_column(ui, name, label, tip, size, |ui, rect| {
-                still(
-                    ui,
-                    rect,
-                    &format!("{name} · {label}"),
-                    st,
-                    fraction,
-                    bipolar,
-                );
+                let name = format!("{name} · {label}");
+                if label == "bypass" {
+                    let r = ui.allocate_rect(rect, Sense::hover());
+                    r.widget_info(|| WidgetInfo::labeled(Role::Image, false, &name));
+                    paint(ui.painter(), rect, &bypassed_look(), fraction, bipolar);
+                } else {
+                    still(ui, rect, &name, st, fraction, bipolar);
+                }
             });
         }
     });
@@ -646,6 +708,21 @@ mod tests {
                 color32(color::TEXT_4)
             )
         );
+    }
+
+    #[test]
+    fn the_bypassed_look_keeps_the_track_visible() {
+        let b = bypassed_look();
+        assert_eq!(
+            (b.track, b.arc, b.cap, b.indicator),
+            (
+                color32(color::SURFACE_4),
+                color32(color::TEXT_4),
+                color32(color::SURFACE_3),
+                color32(color::TEXT_3)
+            )
+        );
+        assert_ne!(b.track, look(State::DISABLED).track);
     }
 
     #[test]

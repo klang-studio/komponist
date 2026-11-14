@@ -51,6 +51,60 @@ pub struct Settings {
     pub export: Option<ExportSettings>,
     /// The browser's favourites (the star of a browser row).
     pub favorites: Favorites,
+    /// "Oben halten" and the position of each plugin's frame, by plugin.
+    pub plugin_frames: Vec<FrameMemory>,
+}
+
+/// What a plugin's frame window remembers between sessions (WP-50): "Oben halten" and where it
+/// stood when it closed. Keyed by plugin (format and id), because device ids restart in every
+/// project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameMemory {
+    /// Plugin format.
+    pub format: PluginFormat,
+    /// Format-specific id.
+    pub id: String,
+    /// "Oben halten".
+    pub keep_on_top: bool,
+    /// Outer position in points.
+    pub pos: Option<(i32, i32)>,
+}
+
+impl Settings {
+    /// The frame memory of `plugin`.
+    pub fn frame_memory(&self, plugin: &PluginRef) -> Option<&FrameMemory> {
+        self.plugin_frames
+            .iter()
+            .find(|m| m.format == plugin.format && m.id == plugin.id)
+    }
+
+    /// Changes the frame memory of `plugin` with `change`, creating it if needed; `true` if it
+    /// differs afterwards.
+    pub fn update_frame_memory(
+        &mut self,
+        plugin: &PluginRef,
+        change: impl FnOnce(&mut FrameMemory),
+    ) -> bool {
+        let at = match self
+            .plugin_frames
+            .iter()
+            .position(|m| m.format == plugin.format && m.id == plugin.id)
+        {
+            Some(i) => i,
+            None => {
+                self.plugin_frames.push(FrameMemory {
+                    format: plugin.format,
+                    id: plugin.id.clone(),
+                    keep_on_top: false,
+                    pos: None,
+                });
+                self.plugin_frames.len() - 1
+            }
+        };
+        let before = self.plugin_frames[at].clone();
+        change(&mut self.plugin_frames[at]);
+        self.plugin_frames[at] != before
+    }
 }
 
 /// A browser favourite: a plugin by format and id, the way `Catalog::resolve` matches devices
@@ -300,6 +354,34 @@ mod tests {
             std::env::temp_dir().join(format!("komponist-settings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn frame_memory_is_kept_per_plugin_and_round_trips() {
+        let a = PluginRef {
+            format: PluginFormat::Clap,
+            id: "surge".into(),
+            name: "Surge XT".into(),
+            vendor: String::new(),
+            version: String::new(),
+        };
+        let b = PluginRef {
+            id: "vital".into(),
+            ..a.clone()
+        };
+        let mut s = Settings::default();
+        assert!(s.update_frame_memory(&a, |m| m.keep_on_top = true));
+        assert!(s.update_frame_memory(&a, |m| m.pos = Some((10, 20))));
+        assert!(
+            !s.update_frame_memory(&a, |m| m.pos = Some((10, 20))),
+            "no change"
+        );
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        let m = back.frame_memory(&a).unwrap();
+        assert!(m.keep_on_top);
+        assert_eq!(m.pos, Some((10, 20)));
+        assert!(back.frame_memory(&b).is_none());
     }
 
     #[test]

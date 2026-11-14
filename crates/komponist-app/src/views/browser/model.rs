@@ -571,14 +571,13 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
                 target: DropTarget::NewTrack { index: None },
             })],
         },
-        RowKind::Preset(preset) => pisynth_of(project, track)
-            .map(|device| {
-                vec![Action::Plugin(PluginAction::ApplyPisynthPreset {
-                    device,
-                    preset: *preset,
-                })]
-            })
-            .unwrap_or_default(),
+        RowKind::Preset(preset) => vec![Action::Plugin(match pisynth_of(project, track) {
+            Some(device) => PluginAction::ApplyPisynthPreset {
+                device,
+                preset: *preset,
+            },
+            None => PluginAction::NewPisynthTrack { preset: *preset },
+        })],
         RowKind::Take { clip, take } => vec![
             Action::Edit(EditAction::SelectTake {
                 clip: *clip,
@@ -964,7 +963,10 @@ mod tests {
                 preset: 3
             })]
         );
-        assert!(activate(&preset, &p, Some(p.tracks[3].id)).is_empty());
+        // No pisynth on the selected track (or no track): a new pisynth track with the preset.
+        let new = [Action::Plugin(PluginAction::NewPisynthTrack { preset: 3 })];
+        assert_eq!(activate(&preset, &p, Some(p.tracks[3].id)), new);
+        assert_eq!(activate(&preset, &p, None), new);
         let mut sel = BTreeSet::new();
         sel.insert(p.tracks[4].id);
         sel.insert(p.tracks[1].id);

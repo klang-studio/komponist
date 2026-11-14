@@ -14,16 +14,15 @@ use serde::{Deserialize, Serialize};
 
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::PluginRef;
-use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
+use komponist_model::project::BUILTIN_KLOPFER;
+
+pub use crate::builtin::KLOPFER_CLAP_ID;
 
 /// Time one bundle scan may take before its process is killed and the bundle skipped.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// File name of the scan cache inside the cache directory (`~/.cache/komponist/`).
 pub const SCAN_CACHE_FILE: &str = "plugins.json";
-
-/// CLAP id of klopfer (`../klopfer/src/lib.rs`), loaded from the bundled `Klopfer.clap`.
-pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
 
 /// Which built-in a catalog entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -130,31 +129,12 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Only the built-ins: pisynth always; klopfer if `klopfer_bundle` is `Some` (dev path from
-    /// `scripts/build-klopfer.sh`, or `<prefix>/lib/komponist/plugins/Klopfer.clap`; WP-54).
+    /// Only the built-ins ([`crate::builtin`]): pisynth always; klopfer if `klopfer_bundle` is
+    /// `Some` (from [`crate::builtin::find_klopfer_bundle`]).
     pub fn builtin(klopfer_bundle: Option<PathBuf>) -> Catalog {
-        let mut entries = vec![CatalogEntry {
-            plugin: builtin_ref(BUILTIN_PISYNTH, "pisynth", "klang-studio"),
-            kind: PluginKind::Instrument,
-            category: None,
-            features: vec!["instrument".into(), "synthesizer".into()],
-            location: PluginLocation::InProcess(BuiltinKind::Pisynth),
-        }];
-        if let Some(path) = klopfer_bundle {
-            entries.push(CatalogEntry {
-                // klopfer's CLAP vendor (`../klopfer/src/lib.rs`), as in the demo project.
-                plugin: builtin_ref(BUILTIN_KLOPFER, "klopfer", "Klopfer"),
-                kind: PluginKind::Instrument,
-                category: None,
-                features: vec!["instrument".into(), "drum".into(), "sampler".into()],
-                location: PluginLocation::Bundle {
-                    format: BundleFormat::Clap,
-                    path,
-                    plugin_id: KLOPFER_CLAP_ID.into(),
-                },
-            });
+        Catalog {
+            entries: crate::builtin::entries(klopfer_bundle),
         }
-        Catalog { entries }
     }
 
     /// All entries: built-ins first, then scanned plugins sorted by name (case-insensitive).
@@ -163,10 +143,21 @@ impl Catalog {
     }
 
     /// The entry for a device's plugin reference (same format and id), if installed.
+    ///
+    /// A reference to klopfer as a CLAP plugin (a project made with a scanned `Klopfer.clap`)
+    /// resolves to the built-in klopfer when that is installed: the scanned duplicate is not
+    /// listed ([`Catalog::set_scanned`]), and both load the same CLAP plugin with the same state.
     pub fn resolve(&self, plugin: &PluginRef) -> Option<&CatalogEntry> {
-        self.entries
-            .iter()
-            .find(|e| e.plugin.format == plugin.format && e.plugin.id == plugin.id)
+        let same = |e: &&CatalogEntry| e.plugin.format == plugin.format && e.plugin.id == plugin.id;
+        self.entries.iter().find(same).or_else(|| {
+            (plugin.format == komponist_model::PluginFormat::Clap && plugin.id == KLOPFER_CLAP_ID)
+                .then(|| {
+                    self.entries
+                        .iter()
+                        .find(|e| e.plugin.id == BUILTIN_KLOPFER && e.is_builtin())
+                })
+                .flatten()
+        })
     }
 
     /// Replaces all scanned entries with `descriptors` (built-ins stay). Descriptors of kind
@@ -204,17 +195,6 @@ impl Catalog {
                     || e.features.iter().any(|f| hit(f))
             })
             .collect()
-    }
-}
-
-/// The reference of a built-in ("INTERN").
-fn builtin_ref(id: &str, name: &str, vendor: &str) -> PluginRef {
-    PluginRef {
-        format: komponist_model::PluginFormat::Builtin,
-        id: id.into(),
-        name: name.into(),
-        vendor: vendor.into(),
-        version: env!("CARGO_PKG_VERSION").into(),
     }
 }
 
@@ -381,6 +361,7 @@ pub struct ScanReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use komponist_model::project::BUILTIN_PISYNTH;
 
     fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> PluginDescriptor {
         PluginDescriptor {
@@ -526,6 +507,45 @@ mod tests {
             .map(|e| e.plugin.name.as_str())
             .collect();
         assert_eq!(names, ["pisynth", "Klopfer"]);
+    }
+
+    #[test]
+    fn a_clap_klopfer_reference_resolves_to_the_builtin() {
+        let mut catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
+        catalog.set_scanned(&[descriptor(
+            KLOPFER_CLAP_ID,
+            "Klopfer",
+            PluginKind::Instrument,
+            &["instrument"],
+        )]);
+        let as_clap = PluginRef {
+            format: komponist_model::PluginFormat::Clap,
+            id: KLOPFER_CLAP_ID.into(),
+            name: "Klopfer".into(),
+            vendor: "Klopfer".into(),
+            version: "0.1.0".into(),
+        };
+        // Listed once (as the built-in), still found for a project that names the CLAP plugin.
+        assert_eq!(catalog.entries().len(), 2);
+        let entry = catalog.resolve(&as_clap).unwrap();
+        assert!(entry.is_builtin());
+        assert_eq!(entry.plugin.id, BUILTIN_KLOPFER);
+        // Without the built-in, the scanned CLAP entry itself.
+        let mut catalog = Catalog::builtin(None);
+        catalog.set_scanned(&[descriptor(
+            KLOPFER_CLAP_ID,
+            "Klopfer",
+            PluginKind::Instrument,
+            &[],
+        )]);
+        let entry = catalog.resolve(&as_clap).unwrap();
+        assert!(!entry.is_builtin());
+        // Other CLAP plugins do not fall back.
+        let other = PluginRef {
+            id: "x.other".into(),
+            ..as_clap
+        };
+        assert_eq!(catalog.resolve(&other), None);
     }
 
     #[test]

@@ -173,7 +173,7 @@ fn frame_states_next_to_s05() {
         ),
         (
             "plugin-frame-crashed",
-            frame(crashed.clone(), BodyModel::Crashed),
+            frame(crashed.clone(), BodyModel::Crashed(exited())),
             gui_size,
         ),
         (
@@ -330,10 +330,45 @@ fn knobs_report_plain_values_on_the_step_grid() {
     }
 }
 
+fn exited() -> FailReason {
+    FailReason::Exited {
+        code: None,
+        signal: Some(11),
+    }
+}
+
+#[test]
+fn a_failed_load_or_a_hang_does_not_read_abgestuerzt() {
+    use komponist_app::views::devices::model::names as card;
+    for (reason, title, detail) in [
+        (
+            FailReason::LoadFailed("bridge missing".into()),
+            card::LOAD_FAILED,
+            "bridge missing",
+        ),
+        (
+            FailReason::Unresponsive,
+            card::UNRESPONSIVE,
+            card::UNRESPONSIVE_TEXT,
+        ),
+    ] {
+        let mut h = frame_harness(
+            frame(surge_header(), BodyModel::Crashed(reason)),
+            [820.0, 400.0],
+            1.0,
+        );
+        h.run();
+        assert!(h.query_by_label(body::names::CRASHED).is_none());
+        assert!(h.query_by_label(title).is_some(), "{title}");
+        assert!(h.query_by_label_contains(detail).is_some(), "{detail}");
+        assert!(h.query_by_label(body::names::RELOAD).is_some());
+    }
+}
+
 #[test]
 fn the_crashed_body_offers_neu_laden() {
     let mut h = frame_harness(
-        frame(surge_header(), BodyModel::Crashed),
+        frame(surge_header(), BodyModel::Crashed(exited())),
         [820.0, 400.0],
         1.0,
     );
@@ -548,6 +583,11 @@ fn a_plugin_window_switches_views_sets_parameters_and_closes() {
         .click();
     h.run_steps(3);
     assert_eq!(h.state().ui().plugin_windows[0].view, PluginView::Params);
+    assert!(h.state().dispatched().any(|a| *a
+        == Action::Ui(komponist_app::UiAction::SetPluginView {
+            device: surge,
+            view: PluginView::Params
+        })));
     assert!(h.query_by_role_and_label(Role::Slider, "Cutoff").is_some());
     assert!(h.query_by_label("Versteckt").is_none());
     assert!(h.query_by_label("250 Hz").is_some());
@@ -583,6 +623,56 @@ fn a_plugin_window_switches_views_sets_parameters_and_closes() {
     assert!(h.state().ui().plugin_windows.is_empty());
     assert!(h.state().plugin_frame(surge).is_none());
     assert!(h.query_by_label(header::names::CLOSE).is_none());
+}
+
+#[test]
+fn oben_halten_and_the_position_are_remembered_per_plugin() {
+    let (app, _, surge) = app();
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(3);
+    assert!(!h.state().ui().plugin_windows[0].keep_on_top);
+    h.get_by_label(header::names::KEEP_ON_TOP).click();
+    h.run_steps(3);
+    assert!(h.state().ui().plugin_windows[0].keep_on_top);
+    assert!(h.state().plugin_frame(surge).unwrap().keep_on_top);
+    // The frame stood at (120, 80) when it closed.
+    let plugin = h
+        .state()
+        .project()
+        .find_device(surge)
+        .unwrap()
+        .2
+        .plugin
+        .clone();
+    h.state_mut()
+        .settings_mut()
+        .update_frame_memory(&plugin, |m| m.pos = Some((120, 80)));
+    h.get_by_label(header::names::CLOSE).click();
+    h.run_steps(3);
+    assert!(h.state().ui().plugin_windows.is_empty());
+    // Opened again, it comes back on top and where it stood.
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(3);
+    let w = h.state().ui().plugin_windows[0];
+    assert!(w.keep_on_top);
+    assert_eq!(w.pos, Some((120, 80)));
+    // Another plugin has no memory.
+    let other = device_named(h.state(), "pisynth");
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(other)));
+    h.run_steps(3);
+    let w = h
+        .state()
+        .ui()
+        .plugin_windows
+        .iter()
+        .find(|w| w.device == other)
+        .copied()
+        .unwrap();
+    assert!(!w.keep_on_top && w.pos.is_none());
 }
 
 #[test]

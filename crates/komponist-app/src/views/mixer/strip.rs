@@ -27,6 +27,7 @@ use crate::actions::{
 };
 use crate::meters::Meters;
 use crate::ui_state::BrowserSegment;
+use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The drag payload of an insert slot being reordered.
@@ -421,6 +422,7 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     let ink = match insert.state {
         SlotState::Crashed | SlotState::Missing => color::STATE_ERROR,
         SlotState::Loading => color::TEXT_3,
+        SlotState::Ok if insert.late.is_some() => color::METER_LOUD,
         SlotState::Ok if insert.bypass || s.dim => color::TEXT_3,
         SlotState::Ok => color::TEXT_1,
     };
@@ -446,12 +448,19 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     let bypass = insert.bypass;
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(Role::Button, true, &name);
-        info.current_text_value = bypass.then(|| names::BYPASS.to_owned());
+        info.current_text_value = match insert.late {
+            Some(_) => Some(late::LATE.to_owned()),
+            None => bypass.then(|| names::BYPASS.to_owned()),
+        };
         info
     });
+    let late_text = insert.late.map(late::late_blocks);
     Tip::new(&insert.name)
-        .detail(insert.detail())
+        .detail(late_text.as_deref().unwrap_or(insert.detail()))
         .attach(&response);
+    if insert.late.is_some() {
+        late::repaint_when_expired(ui.ctx());
+    }
     if response.hovered() || response.dragged() {
         ui.ctx().set_cursor_icon(if response.dragged() {
             egui::CursorIcon::Grabbing
@@ -687,6 +696,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
             Fader::new(&mut db, name)
                 .size(m::FADER)
                 .scale(scale)
+                .selected(s.selected)
                 .track_length(length),
         )
     });
@@ -724,8 +734,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
 fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers) {
     let mut db = s.volume_db;
     let name = names::volume_value(&s.name);
-    // The level stands left in the row (S04 `justify-content:space-between`): `DbValue` centres
-    // its text in a box as wide as "−48.0", so the box starts left of the row by the difference.
+    // The level stands left in the row (S04 `justify-content:space-between`).
     let value = komponist_ui::widgets::fader::VALUE_TEXT;
     let text_w = |t: &str| {
         w::galley(ui, t, fonts::font_id(&value), value.line_height)
@@ -734,13 +743,9 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
     };
     let widest = format!("{}48.0", komponist_model::format::MINUS);
     let box_w = text_w(&widest) + 2.0 * komponist_tokens::space::SPACE_1;
-    let shift = (box_w - text_w(&fmt_db(db))) / 2.0;
-    let level = Rect::from_min_size(
-        pos2(row.left() - shift, row.top()),
-        vec2(box_w, row.height()),
-    );
+    let level = Rect::from_min_size(row.min, vec2(box_w, row.height()));
     let response = place(ui, level, "level", |ui| {
-        ui.add(DbValue::new(&mut db, name).width(box_w))
+        ui.add(DbValue::new(&mut db, name).width(box_w).align_left(true))
     });
     if response.changed() {
         ctx.send(channel_edit(s, ChannelProp::VolumeDb(db)));

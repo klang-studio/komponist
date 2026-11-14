@@ -32,6 +32,7 @@ pub mod number_field;
 pub mod panel_header;
 pub mod switch;
 pub mod tabs;
+pub mod text_field;
 pub mod toggle;
 pub mod tooltip;
 

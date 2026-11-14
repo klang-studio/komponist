@@ -40,6 +40,7 @@ use crate::actions::{
 };
 use crate::ui_state::BrowserSegment;
 use crate::views::browser::model::selected_track;
+use crate::views::late::LateTracker;
 use crate::views::{View, ViewCtx, group_bounds};
 
 /// The drag payload of a card being reordered.
@@ -64,12 +65,17 @@ enum Drop {
 
 /// The device chain view. Its view state is [`crate::ui_state::DevicesView`] (scroll).
 #[derive(Debug, Default)]
-pub struct Devices;
+pub struct Devices {
+    /// The "zu spät" state of the cards.
+    late: LateTracker,
+    /// The track and devices of the last frame: a card that appears is scrolled into view.
+    seen: Option<(TrackId, Vec<DeviceId>)>,
+}
 
 impl Devices {
     /// The view.
     pub fn new() -> Devices {
-        Devices
+        Devices::default()
     }
 }
 
@@ -86,11 +92,23 @@ impl View for Devices {
             let fit = card::head_width(ui, c).min(metrics::CARD_WIDTH_EFFECT);
             c.width = c.width.max(fit);
         }
+        let now = ui.input(|i| i.time);
+        for c in &mut cards {
+            let running = c.state == model::CardState::Ok;
+            c.late = self.late.state(ctx.engine.host(), c.device, running, now);
+        }
+        let ids: Vec<DeviceId> = cards.iter().map(|c| c.device).collect();
+        self.late.retain(&ids);
+        let reveal = match &self.seen {
+            Some((t, old)) if *t == track.id => ids.iter().find(|d| !old.contains(d)).copied(),
+            _ => None,
+        };
+        self.seen = Some((track.id, ids));
         let rect = ui.max_rect();
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::HEADER_HEIGHT));
         header_row(ui, ctx, header, track, cards.len());
         let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
-        chain(ui, ctx, body, track, &cards);
+        chain(ui, ctx, body, track, &cards, reveal);
     }
 }
 
@@ -150,13 +168,23 @@ fn header_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, cou
 }
 
 /// The cards, the drop area, drag and drop, and the sideways scroll.
-fn chain(ui: &mut Ui, ctx: &mut ViewCtx<'_>, body: Rect, track: &Track, cards: &[Card]) {
+fn chain(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    body: Rect,
+    track: &Track,
+    cards: &[Card],
+    reveal: Option<DeviceId>,
+) {
     let pad = metrics::BODY_PAD;
     let gap = metrics::CARD_GAP;
     let content: f32 =
         2.0 * pad + cards.iter().map(|c| c.width + gap).sum::<f32>() + metrics::DROP_AREA_WIDTH;
     let max_scroll = (content - body.width()).max(0.0);
-    let scroll = ctx.ui.devices.scroll_x.clamp(0.0, max_scroll);
+    let mut scroll = ctx.ui.devices.scroll_x.clamp(0.0, max_scroll);
+    if let Some(device) = reveal {
+        scroll = scroll_to_card(cards, device, body.width(), scroll).clamp(0.0, max_scroll);
+    }
     ctx.ui.devices.scroll_x = scroll;
 
     let mut cu = ui.new_child(
@@ -229,6 +257,27 @@ fn chain(ui: &mut Ui, ctx: &mut ViewCtx<'_>, body: Rect, track: &Track, cards: &
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
         }
     }
+}
+
+/// The scroll that brings the card of `device` into a body `width` wide (a newly added card),
+/// starting from `scroll`: the least change that shows it whole between the paddings.
+pub fn scroll_to_card(cards: &[Card], device: DeviceId, width: f32, scroll: f32) -> f32 {
+    let pad = metrics::BODY_PAD;
+    let mut left = pad;
+    for c in cards {
+        let right = left + c.width;
+        if c.device == device {
+            return if right - scroll > width - pad {
+                right - (width - pad)
+            } else if left - scroll < pad {
+                left - pad
+            } else {
+                scroll
+            };
+        }
+        left = right + metrics::CARD_GAP;
+    }
+    scroll
 }
 
 /// The drop area after the last card: a dashed `surface.4` frame with the hint.

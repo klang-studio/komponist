@@ -128,6 +128,7 @@ fn main() -> eframe::Result {
             plugins.bridge_exe.display()
         );
     }
+    let missing_bridge = (!plugins.bridge_exe.exists()).then(|| plugins.bridge_exe.clone());
     let host = PluginHost::new(plugins);
     let (engine, started) = EngineSync::new(&config, midi, Box::new(host));
     if let Err(e) = started {
@@ -142,6 +143,9 @@ fn main() -> eframe::Result {
     let mut options = RunOptions::new(WORDMARK, title);
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(first), engine, settings, settings_path);
+    if let Some(exe) = &missing_bridge {
+        app.report_missing_bridge(exe);
+    }
     app.scan_plugins();
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {

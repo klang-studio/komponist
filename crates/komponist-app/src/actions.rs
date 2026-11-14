@@ -28,7 +28,8 @@ use komponist_model::{
 };
 
 use crate::ui_state::{
-    BrowserSegment, DockTab, FocusArea, Panel, SettingsSection, StatusKind, StepLane, Tool,
+    BrowserSegment, DockTab, FocusArea, Panel, PluginView, SettingsSection, StatusKind, StepLane,
+    Tool,
 };
 
 /// One user intention.
@@ -51,12 +52,14 @@ pub enum Action {
 /// Transport actions (transport bar, global shortcuts).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransportAction {
-    /// Space: play / stop (stopping while recording finishes the take).
+    /// Space: play / stop (stopping while recording finishes the take; during the count-in it
+    /// cancels the recording like R).
     TogglePlay,
     /// Stop button: stop; when already stopped, jump to the loop start (loop on) or tick 0.
     Stop,
     /// R: start recording on all armed tracks after the count-in (arming the selected track if none
-    /// is armed), or finish the running recording.
+    /// is armed), or finish the running recording (punch-out: playback goes on). During the
+    /// count-in it cancels the recording, stops and returns to the recording's start.
     ToggleRecord,
     /// Esc while recording: discard the running take, playback continues.
     DiscardTake,
@@ -356,6 +359,12 @@ pub enum PluginAction {
         /// Factory preset index.
         preset: usize,
     },
+    /// A preset double-click without a pisynth on the selected track: a new pisynth track
+    /// with factory preset `preset` (one undo step).
+    NewPisynthTrack {
+        /// Factory preset index.
+        preset: usize,
+    },
     /// "Öffnen" on a device card or insert click: open the plugin window (own GUI, or the generic
     /// parameter view for plugins without one).
     OpenWindow(DeviceId),
@@ -385,10 +394,14 @@ pub enum ProjectAction {
     OpenPath(PathBuf),
     /// Ctrl S: save (file dialog the first time).
     Save,
-    /// Save under a new path (file dialog).
+    /// Ctrl Shift S or "⋯": save under a new path (file dialog).
     SaveAs,
+    /// "⋯" › "Zum Startbildschirm": back to S09, asking to save a dirty project first.
+    ShowStartScreen,
     /// Ctrl Shift E or "⋯": open the export dialog with the last settings.
     OpenExportDialog,
+    /// The status bar's "Im Ordner zeigen": opens this folder in the file manager.
+    ShowInFolder(PathBuf),
     /// "Exportieren" / Enter in the export dialog.
     StartExport(ExportSettings),
     /// Esc during an export: cancel, leave no partial file.
@@ -502,6 +515,20 @@ pub enum UiAction {
     SetBrowserQuery(String),
     /// Ctrl , : open the settings (at a section).
     OpenSettings(SettingsSection),
+    /// The "Ansicht" toggle of a plugin frame: the plugin's own GUI or the parameter grid.
+    SetPluginView {
+        /// The device.
+        device: DeviceId,
+        /// The view.
+        view: PluginView,
+    },
+    /// "Oben halten" of a plugin frame (remembered per plugin).
+    SetPluginKeepOnTop {
+        /// The device.
+        device: DeviceId,
+        /// On or off.
+        on: bool,
+    },
     /// Esc / close in a dialog.
     CloseDialog,
     /// Switch computer-keyboard MIDI on or off (ARCHITECTURE §13.2).

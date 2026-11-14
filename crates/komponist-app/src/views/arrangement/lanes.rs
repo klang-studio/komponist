@@ -5,12 +5,10 @@
 use std::sync::Arc;
 
 use egui::{CornerRadius, CursorIcon, Id, Painter, Pos2, Rangef, Rect, Sense, Ui, pos2};
-use komponist_model::edits::{NewClip, NewClipContent, StepRowSpec};
+use komponist_ipc::NoteName;
+use komponist_model::edits::{NewClip, NewClipContent};
 use komponist_model::format::fmt_length;
-use komponist_model::project::{BUILTIN_KLOPFER, DEFAULT_STEP_ROWS};
-use komponist_model::{
-    ClipContent, ClipId, DeviceRole, Grid, Project, TICKS_PER_STEP, Tick, Track,
-};
+use komponist_model::{ClipContent, ClipId, Grid, Project, TICKS_PER_STEP, Tick, Track};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius};
 use komponist_ui::px;
@@ -27,6 +25,7 @@ use super::{
     select_tracks,
 };
 use crate::actions::{Action, EditAction, SelectMode, UiAction};
+use crate::step_rows;
 use crate::ui_state::ArrangementView;
 use crate::views::ViewCtx;
 
@@ -51,9 +50,16 @@ fn min_length(view: &ArrangementView, free: bool, project: &Project) -> Tick {
 }
 
 /// What a double-click on empty space of `track` at tick `at` creates: a one-bar clip starting on
-/// the grid (prototype `newClip`): a step clip "Pattern n" with klopfer's eight pads (notes 36–43,
-/// ARCHITECTURE §13.3) on a klopfer track, else an empty MIDI clip "MIDI-Clip".
-pub fn new_clip(project: &Project, track: &Track, at: Tick, view: &ArrangementView) -> NewClip {
+/// the grid (prototype `newClip`): a step clip "Pattern n" on a klopfer track, whose rows klopfer
+/// decides ([`crate::step_rows::rows_for`] with the `note_names` it reports now: its eight pads,
+/// notes 36–43, without note names; ARCHITECTURE §13.3), else an empty MIDI clip "MIDI-Clip".
+pub fn new_clip(
+    project: &Project,
+    track: &Track,
+    at: Tick,
+    view: &ArrangementView,
+    note_names: &[NoteName],
+) -> NewClip {
     let meter = project.meter;
     let start = if view.snap {
         view.grid.snap_floor(at, meter)
@@ -62,20 +68,9 @@ pub fn new_clip(project: &Project, track: &Track, at: Tick, view: &ArrangementVi
     }
     .max(Tick::ZERO);
     let length = Grid::Bar.ticks(meter);
-    let klopfer = track
-        .channel
-        .devices
-        .first()
-        .is_some_and(|d| d.role == DeviceRole::Instrument && d.plugin.id == BUILTIN_KLOPFER);
-    if klopfer {
-        let rows = DEFAULT_STEP_ROWS
-            .iter()
-            .zip(36_u8..)
-            .map(|((name, _), note)| StepRowSpec {
-                name: (*name).to_owned(),
-                note,
-            })
-            .collect();
+    if step_rows::is_klopfer_track(track) {
+        let instrument = step_rows::instrument(track).map(|d| &d.plugin);
+        let rows = step_rows::rows_for(instrument, note_names);
         NewClip {
             start,
             length,
@@ -170,7 +165,10 @@ impl Arrangement {
                     if let Some(i) = g.row_at(pos.y) {
                         let track = &project.tracks[i];
                         let at = Tick(g.tick_at(pos.x).max(0.0) as i64);
-                        let clip = new_clip(project, track, at, &ctx.ui.arrangement);
+                        let host = ctx.engine.host();
+                        let note_names =
+                            step_rows::instrument(track).map_or(&[][..], |d| host.note_names(d.id));
+                        let clip = new_clip(project, track, at, &ctx.ui.arrangement, note_names);
                         ctx.send(Action::Edit(EditAction::AddClip {
                             track: track.id,
                             clip,
@@ -604,7 +602,7 @@ mod tests {
         let p = demo_project();
         let v = ArrangementView::default();
         // Drums has klopfer: a step clip with the eight pads from note 36.
-        let c = new_clip(&p, &p.tracks[0], Tick(5 * 3840 + 100), &v);
+        let c = new_clip(&p, &p.tracks[0], Tick(5 * 3840 + 100), &v, &[]);
         assert_eq!(c.start, Tick(5 * 3840));
         assert_eq!(c.length, Tick(3840));
         assert_eq!(c.name, "Pattern 5");
@@ -614,8 +612,23 @@ mod tests {
         assert_eq!(rows.len(), 8);
         assert_eq!((rows[0].name.as_str(), rows[0].note), ("Kick", 36));
         assert_eq!((rows[7].name.as_str(), rows[7].note), ("Perc", 43));
+        // Note names klopfer reports (CLAP note-name) decide the rows instead.
+        let names: Vec<komponist_ipc::NoteName> = [(36, "Bassdrum"), (38, "Clap")]
+            .into_iter()
+            .map(|(key, name)| komponist_ipc::NoteName {
+                key,
+                channel: None,
+                name: name.into(),
+            })
+            .collect();
+        let c = new_clip(&p, &p.tracks[0], Tick(0), &v, &names);
+        let NewClipContent::Step { rows } = &c.content else {
+            panic!("step clip expected");
+        };
+        let rows: Vec<(&str, u8)> = rows.iter().map(|r| (r.name.as_str(), r.note)).collect();
+        assert_eq!(rows, [("Bassdrum", 36), ("Clap", 38)]);
         // Lead has pisynth: an empty MIDI clip.
-        let c = new_clip(&p, &p.tracks[2], Tick(3840 * 2 + 10), &v);
+        let c = new_clip(&p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
         assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));
         assert!(matches!(c.content, NewClipContent::Midi { ref notes, .. } if notes.is_empty()));
     }

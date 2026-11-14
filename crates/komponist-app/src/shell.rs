@@ -100,8 +100,10 @@ impl App {
         self.dock(ui, l.dock);
 
         let status = statusbar::model(self, Instant::now());
-        if statusbar::show(ui, l.status, &status) {
-            self.show_export_folder();
+        if statusbar::show(ui, l.status, &status)
+            && let Some((_, action)) = self.ui.status.as_ref().and_then(|s| s.link.clone())
+        {
+            self.dispatch(*action);
         }
 
         for edge in &l.edges {

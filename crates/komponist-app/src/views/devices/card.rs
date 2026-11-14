@@ -14,15 +14,16 @@ use komponist_tokens::typography;
 use komponist_tokens::{Srgba, color, radius, size};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
-use komponist_ui::widgets::knob::{self, Knob};
+use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px, state};
 
 use super::metrics;
-use super::model::{Card, CardState, Param, format_value, names};
+use super::model::{Card, CardState, Param, failure_texts, format_value, names};
 use crate::actions::{Action, EditAction, PluginAction};
+use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The card's context menu.
@@ -139,18 +140,8 @@ pub(super) fn show(
             r.widget_info(|| WidgetInfo::labeled(Role::ProgressIndicator, true, names::LOADING));
         }
         CardState::Crashed(reason) => {
-            let text = match reason {
-                komponist_plugins::FailReason::LoadFailed(_) => names::LOAD_FAILED_TEXT,
-                _ => names::CRASHED_TEXT,
-            };
-            let y = message(
-                &mut cu,
-                card,
-                body,
-                names::CRASHED,
-                Some(text),
-                color::STATE_ERROR,
-            );
+            let (title, text) = failure_texts(reason);
+            let y = message(&mut cu, card, body, title, Some(&text), color::STATE_ERROR);
             let at = Rect::from_min_size(
                 pos2(body.left() + metrics::MESSAGE_PAD, y),
                 vec2(body.width(), size::CONTROL),
@@ -263,21 +254,35 @@ fn head_controls(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, head: Rect) {
     let missing = card.state == CardState::Missing;
     let ppp = row.pixels_per_point();
 
-    // Format tag on `surface.1` (`padding:1px 4px`); Mono 9 has no token: `value.s`.
-    let tag = w::styled_galley(&row, card.tag, &typography::VALUE_S);
+    // Format tag on `surface.1` (`padding:1px 4px`); Mono 9 has no token: `value.s`. While a
+    // device is late it reads "zu spät" instead.
+    let tag_text = if card.late.is_some() {
+        late::LATE
+    } else {
+        card.tag
+    };
+    let tag = w::styled_galley(&row, tag_text, &typography::VALUE_S);
     let tag_size = vec2(
         tag.size().x + 2.0 * metrics::TAG_PAD_X,
         tag.size().y + 2.0 * metrics::TAG_PAD_Y,
     );
     let (tag_rect, tag_r) = row.allocate_exact_size(tag_size, Sense::hover());
-    tag_r.widget_info(|| WidgetInfo::labeled(Role::Label, true, card.tag));
+    tag_r.widget_info(|| WidgetInfo::labeled(Role::Label, true, tag_text));
+    if let Some(n) = card.late {
+        Tip::new(tag_text)
+            .detail(&late::late_blocks(n))
+            .attach(&tag_r);
+        late::repaint_when_expired(row.ctx());
+    }
     px::fill(
         row.painter(),
         tag_rect,
         radius::S,
         color32(color::SURFACE_1),
     );
-    let tag_color = if missing {
+    let tag_color = if card.late.is_some() {
+        color::METER_LOUD
+    } else if missing {
         color::STATE_ERROR
     } else {
         color::TEXT_3
@@ -463,42 +468,12 @@ fn knob_ui(cu: &mut Ui, card: &Card, p: &Param, rect: Rect) -> Option<f64> {
             format_value(min, max, steps, v)
         }
     };
-    if card.bypass {
-        bypassed_knob(cu, p, rect);
-        return None;
-    }
     let knob = Knob::new(&mut value, p.name.clone())
         .range(min..=max)
         .default_value(p.default)
+        .bypassed(card.bypass)
         .format(format);
     let r = cu.put(rect, knob);
     let snapped = p.snap(value);
     (r.changed() && snapped != current).then_some(snapped)
-}
-
-/// The knob of a bypassed device: still, in the card's bypass colours (`card()` with `byp`: arc
-/// `text.4`, indicator `text.3`, cap `surface.3`, track `surface.4`), not the design system's
-/// disabled knob, whose `surface.2` track would vanish on the card's `surface.2`.
-fn bypassed_knob(cu: &mut Ui, p: &Param, rect: Rect) {
-    let look = knob::Look {
-        track: color32(color::SURFACE_4),
-        arc: color32(color::TEXT_4),
-        cap: color32(color::SURFACE_3),
-        indicator: color32(color::TEXT_3),
-    };
-    let span = p.max - p.min;
-    let fraction = if span > 0.0 {
-        ((p.value - p.min) / span) as f32
-    } else {
-        0.0
-    };
-    knob::paint(cu.painter(), rect, &look, fraction, false);
-    let r = cu.interact(rect, cu.scope_id().with(("bypassed", p.id)), Sense::hover());
-    let (name, text, value) = (p.name.clone(), p.text.clone(), p.value);
-    r.widget_info(|| {
-        let mut info = WidgetInfo::labeled(Role::Slider, false, &name);
-        info.value = Some(value);
-        info.current_text_value = Some(text.clone());
-        info
-    });
 }

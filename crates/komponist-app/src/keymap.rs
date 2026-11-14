@@ -11,6 +11,7 @@
 //! | Tab | canvases | `Ui(ToggleMixer)` (§13.1; elsewhere Tab moves widget focus) |
 //! | Strg T | global | `Edit(NewMidiTrack)` |
 //! | Strg N / O / S | global | `Project(New / Open / Save)` |
+//! | Strg Shift S | global | `Project(SaveAs)` |
 //! | Strg Shift E | global | `Project(OpenExportDialog)` |
 //! | Strg 1 / 2 / 3 | global | `Ui(TogglePanel(Browser / Inspector / Dock))` |
 //! | Strg ↑ | global | `Ui(ToggleDockMaximized)` |
@@ -396,6 +397,11 @@ impl Keymap {
             (KeyChord::ctrl(Key::N), Global, p(ProjectAction::New)),
             (KeyChord::ctrl(Key::O), Global, p(ProjectAction::Open)),
             (KeyChord::ctrl(Key::S), Global, p(ProjectAction::Save)),
+            (
+                KeyChord::ctrl_shift(Key::S),
+                Global,
+                p(ProjectAction::SaveAs),
+            ),
             (
                 KeyChord::ctrl_shift(Key::E),
                 Global,

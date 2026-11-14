@@ -9,14 +9,17 @@ design handoff still says "klang-studio" where it means the DAW; read it as "kom
 
 ## Worktrees
 
-The workspace depends on siblings by relative path (`../klang-dsp`, `../pisynth`, `../klopfer`).
-A worktree must therefore sit **exactly one level below `<workspace>/`**. Do **not**
-use the Agent tool's `isolation: "worktree"` (it nests the worktree deeper and breaks the paths).
-Instead:
+All worktrees live in **`<workspace>/.claude/worktrees/`** (owner's rule, 2026-11-14).
+The workspace depends on siblings by relative path (`../klang-dsp`, `../pisynth`, `../klopfer`, the
+handoffs). That folder therefore holds symlinks to every sibling (`klang-dsp`, `pisynth`, `klopfer`,
+`komponist`, `klang-studio-handoff`, `klang-studio-geraete-handoff`, `daw-design-briefing.md`), so
+`../klang-dsp` resolves inside a worktree there. A new sibling project needs a new symlink. Do **not**
+use the Agent tool's `isolation: "worktree"` (it puts the worktree where the symlinks are missing).
 
 ```bash
 cd <workspace>/komponist
-git worktree add ../kp-wt-WP-23 -b wp/WP-23 main     # → <workspace>/kp-wt-WP-23
+git worktree add ../.claude/worktrees/kp-wt-WP-60 -b wp/WP-60 main
+#   → <workspace>/.claude/worktrees/kp-wt-WP-60
 ```
 
 Each worktree builds into its own `target/`. The first build of egui/wgpu takes a few minutes.
@@ -79,7 +82,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
    (`import -window`) under Xvfb for those.
 8. **Dependencies:** use workspace dependencies. A new crate needs one sentence of justification in
-   the report.
+   the report and a GPL-3.0-compatible licence (komponist is GPL-3.0-or-later, like everything in
+   klang-studio; nothing proprietary or GPL-incompatible such as CDDL or EPL-1.0).
 9. **Commits:** small logical commits on your branch, imperative English subject, ending with the
    attribution line your environment specifies.
 10. **Report** (final message): summary · changed files · how verified (commands + results) ·

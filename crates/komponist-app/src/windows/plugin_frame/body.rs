@@ -16,14 +16,13 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics as m;
-use crate::views::devices::model::{Param, format_value};
+use crate::views::devices::model::{Param, failure_texts, format_value};
+use komponist_plugins::FailReason;
 
 /// Texts of the body (S05 `card()`, `Prototyp.dc.html` `pw.guiT`).
 pub mod names {
     /// Crashed device (`card()` `msg`).
     pub const CRASHED: &str = "Abgestürzt";
-    /// Its explanation (`card()` `msg2`).
-    pub const CRASHED_DETAIL: &str = "Das Plugin wurde beendet, die Spur läuft ohne dieses Gerät weiter. Die letzte Einstellung ist gesichert.";
     /// The crashed device's button (`card()` `btnT`).
     pub const RELOAD: &str = "Neu laden";
     /// Loading device (`card()` `msg`).
@@ -76,8 +75,9 @@ pub enum BodyModel {
     },
     /// The device loads.
     Loading,
-    /// The bridge died or the plugin failed.
-    Crashed,
+    /// The bridge died or the plugin failed: „Abgestürzt“, „Lässt sich nicht laden“ with the
+    /// reason, or „Hängt“.
+    Crashed(FailReason),
     /// The plugin is not installed.
     Missing {
         /// Plugin name.
@@ -121,8 +121,8 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &mut BodyModel) -> Vec<BodyEvent> {
         BodyModel::Loading => {
             message(&mut body, rect, Message::Loading);
         }
-        BodyModel::Crashed => {
-            if message(&mut body, rect, Message::Crashed) {
+        BodyModel::Crashed(reason) => {
+            if message(&mut body, rect, Message::Crashed(reason)) {
                 events.push(BodyEvent::Reload);
             }
         }
@@ -136,7 +136,7 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &mut BodyModel) -> Vec<BodyEvent> {
 
 enum Message<'a> {
     Loading,
-    Crashed,
+    Crashed(&'a FailReason),
     Missing(&'a str),
 }
 
@@ -146,16 +146,16 @@ fn message(ui: &mut Ui, rect: Rect, msg: Message<'_>) -> bool {
         Message::Loading => (
             names::LOADING.to_owned(),
             color::TEXT_1,
-            Some(names::LOADING_DETAIL),
+            Some(names::LOADING_DETAIL.to_owned()),
         ),
-        Message::Crashed => (
-            names::CRASHED.to_owned(),
-            color::STATE_ERROR,
-            Some(names::CRASHED_DETAIL),
-        ),
+        Message::Crashed(reason) => {
+            let (title, text) = failure_texts(reason);
+            (title.to_owned(), color::STATE_ERROR, Some(text))
+        }
         Message::Missing(name) => (names::missing(name), color::STATE_ERROR, None),
     };
-    let crashed = matches!(msg, Message::Crashed);
+    let crashed = matches!(msg, Message::Crashed(_));
+    let detail = detail.as_deref();
     let width = m::MESSAGE_WIDTH.min(rect.width());
     let frame = egui::Frame::new()
         .fill(color32(color::SURFACE_2))

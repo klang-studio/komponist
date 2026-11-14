@@ -250,6 +250,7 @@ impl App {
                 None => self.open_file_browser(Purpose::Save),
             },
             ProjectAction::SaveAs => self.open_file_browser(Purpose::Save),
+            ProjectAction::ShowStartScreen => self.guard(Pending::StartScreen),
             ProjectAction::ContinueWithMissing => {
                 if matches!(self.ui.dialog, Some(Dialog::MissingPlugins(_))) {
                     self.dispatch(Action::Ui(UiAction::CloseDialog));
@@ -292,6 +293,7 @@ impl App {
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }
+            Pending::StartScreen => self.show_start_screen(),
             Pending::Open => self.open_file_browser(Purpose::Open),
             Pending::OpenPath(path) => self.open_path(path),
             Pending::Quit => {
@@ -366,9 +368,10 @@ impl App {
         );
         self.set_status(format!("{name} geöffnet · {n}"), StatusKind::Error);
         // A dialog the user opened meanwhile (a late check after a scan) is not replaced; the
-        // status bar says it.
+        // status bar says it. A running export keeps its dialog on top: S06 waits for it.
+        let exporting = self.is_exporting() && matches!(self.ui.dialog, Some(Dialog::Export(_)));
         if self.ui.screen == Screen::Project
-            && self.ui.dialog.is_none()
+            && (self.ui.dialog.is_none() || exporting)
             && self.dialogs.overlay.is_none()
         {
             self.open_dialog(Dialog::MissingPlugins(missing));

@@ -34,6 +34,12 @@ pub mod names {
     /// The text when loading failed (the status bar's „… lässt sich nicht laden“ plus the rest
     /// of `msg2`).
     pub const LOAD_FAILED_TEXT: &str = "Das Plugin lässt sich nicht laden, die Spur läuft ohne dieses Gerät weiter. Die letzte Einstellung ist gesichert.";
+    /// The title when loading failed (the status bar's „… lässt sich nicht laden“; not in S05).
+    pub const LOAD_FAILED: &str = "Lässt sich nicht laden";
+    /// The title of a plugin that stopped answering („hängt“ as in the status bar; not in S05).
+    pub const UNRESPONSIVE: &str = "Hängt";
+    /// Its text.
+    pub const UNRESPONSIVE_TEXT: &str = "Das Plugin antwortet nicht mehr, die Spur läuft ohne dieses Gerät weiter. Die letzte Einstellung ist gesichert.";
     /// "Neu laden" (`btnT`).
     pub const RELOAD: &str = "Neu laden";
     /// A missing plugin (S06 label „Plugin fehlt“).
@@ -91,6 +97,25 @@ impl From<DeviceStatus> for CardState {
             DeviceStatus::Crashed(reason) => CardState::Crashed(reason),
             DeviceStatus::Missing => CardState::Missing,
         }
+    }
+}
+
+/// The title and text of a failed device's card, and of the S05 frame's body: a crash reads
+/// „Abgestürzt“; a plugin that cannot load or does not answer must not (owner test 2026-11-14),
+/// it reads „Lässt sich nicht laden“ with the reason, or „Hängt“.
+pub fn failure_texts(reason: &FailReason) -> (&'static str, String) {
+    match reason {
+        FailReason::Exited { .. } => (names::CRASHED, names::CRASHED_TEXT.to_owned()),
+        FailReason::LoadFailed(why) => {
+            let why = why.trim();
+            let text = if why.is_empty() {
+                names::LOAD_FAILED_TEXT.to_owned()
+            } else {
+                format!("{} ({why})", names::LOAD_FAILED_TEXT)
+            };
+            (names::LOAD_FAILED, text)
+        }
+        FailReason::Unresponsive => (names::UNRESPONSIVE, names::UNRESPONSIVE_TEXT.to_owned()),
     }
 }
 
@@ -156,6 +181,8 @@ pub struct Card {
     pub columns: usize,
     /// The knobs are pisynth's macros (their text comes from `Macro::text`).
     pub macros: bool,
+    /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
+    pub late: Option<u64>,
 }
 
 impl Card {
@@ -217,6 +244,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         width,
         columns: if narrow { n } else { metrics::COLUMNS },
         macros,
+        late: None,
         state,
     }
 }

@@ -218,7 +218,8 @@ impl PluginManagerConfig {
     /// in `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`), klopfer from the first of
     /// `<exe>/../lib/komponist/plugins/Klopfer.clap` (installed), the sibling checkout's
     /// `../klopfer/target/bundled/Klopfer.clap` (development, `scripts/build-klopfer.sh`) and
-    /// `~/.clap/Klopfer.clap` that exists, and half the CPU cores (1 ..= 8) for scans.
+    /// `~/.clap/Klopfer.clap` that exists ([`crate::builtin::find_klopfer_bundle`]), and half the
+    /// CPU cores (1 ..= 8) for scans.
     pub fn defaults() -> PluginManagerConfig {
         let exe_dir = std::env::current_exe()
             .ok()
@@ -230,16 +231,7 @@ impl PluginManagerConfig {
             .filter(|d| d.is_absolute())
             .or_else(|| home.as_ref().map(|h| h.join(".cache")))
             .unwrap_or_else(std::env::temp_dir);
-        let dev_klopfer = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../klopfer/target/bundled/Klopfer.clap");
-        let klopfer_bundle = [
-            Some(exe_dir.join("../lib/komponist/plugins/Klopfer.clap")),
-            Some(dev_klopfer),
-            home.map(|h| h.join(".clap/Klopfer.clap")),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|p| std::fs::canonicalize(p).ok());
+        let klopfer_bundle = crate::builtin::find_klopfer_bundle(&exe_dir, home.as_deref());
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         PluginManagerConfig {
             bridge_exe: exe_dir.join("komponist-bridge"),

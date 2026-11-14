@@ -29,7 +29,8 @@
 //! can carry [`TabExtra`]s, a colour mark before the label (8 × 8, `radius.s`, the track colour
 //! of the open clip) and secondary text after it in `type.ui` `text.3` ("■ Lead A  Piano
 //! Roll"), 8 px apart. With [`TabBar::accent_line`] the active tab shows the focused-panel
-//! accent line (1 px `accent` at its top).
+//! accent line (1 px `accent` at its top). A label starting with „● “ (S02 „● Aufnahme“) gets
+//! the ● as a circle in the text colour ([`record_dot_label`]); IBM Plex has no U+25CF.
 
 use egui::{
     Color32, EventFilter, Frame, Id, InnerResponse, Key, Margin, Modifiers, Response, Role, Sense,
@@ -57,6 +58,18 @@ pub mod dock_metrics {
     pub const MARK: f32 = 8.0;
     /// Gap between mark, label and secondary text: `gap:8px`.
     pub const GAP: f32 = space::SPACE_2;
+    /// The ● of a label like S02's „● Aufnahme“ (`editorTabs('● Aufnahme', …)`), drawn as a
+    /// circle because IBM Plex has no U+25CF: its diameter as the browser's fallback glyph shows
+    /// it at `type.ui` in `Screens-02.png`.
+    pub const RECORD_DOT: f32 = 5.0;
+    /// Gap between that ● and the label: the space after the glyph.
+    pub const RECORD_DOT_GAP: f32 = space::SPACE_1;
+}
+
+/// A label's leading „● “ (S02 „● Aufnahme“), which the tab draws as a circle: the rest of the
+/// label, or `None` without one.
+pub fn record_dot_label(label: &str) -> Option<&str> {
+    label.strip_prefix('●').map(str::trim_start)
 }
 
 /// Extras of a tab in a [`TabBar`]: the dock's colour mark and secondary text.
@@ -238,10 +251,18 @@ fn item_deco(
     deco: Deco<'_>,
 ) -> (Response, State) {
     let style = shape.style();
-    let regular = super::galley(ui, label, fonts::font_id(&style), style.line_height);
+    // A leading ● is a circle in the text colour, the rest of the label text.
+    let dotted = record_dot_label(label);
+    let text = dotted.unwrap_or(label);
+    let dot_w = if dotted.is_some() {
+        dock_metrics::RECORD_DOT + dock_metrics::RECORD_DOT_GAP
+    } else {
+        0.0
+    };
+    let regular = super::galley(ui, text, fonts::font_id(&style), style.line_height);
     let medium = super::galley(
         ui,
-        label,
+        text,
         super::font_at(&style, metrics::MEDIUM),
         style.line_height,
     );
@@ -250,7 +271,7 @@ fn item_deco(
         dock_metrics::MARK + dock_metrics::GAP
     } else {
         0.0
-    };
+    } + dot_w;
     let secondary = (!extra.secondary.is_empty()).then(|| {
         super::galley(
             ui,
@@ -279,7 +300,8 @@ fn item_deco(
         st.disabled = true;
     }
     let is_enabled = enabled && ui.is_enabled() && !st.disabled;
-    let name = extra.accessible_name(label);
+    // Like a recording clip's node, the name leaves the drawn ● out.
+    let name = extra.accessible_name(text);
     response.widget_info(|| WidgetInfo::selected(shape.role(), is_enabled, active, &name));
     super::accesskit(&response, |n| n.set_selected(active));
     if ui.is_rect_visible(rect) {
@@ -291,11 +313,15 @@ fn item_deco(
         let ppp = ui.pixels_per_point();
         let medium_w = medium.size().x.ceil();
         let galley = if l.medium { medium } else { regular };
-        if extra.is_empty() {
+        if extra.is_empty() && dotted.is_none() {
             let pos = super::text_pos_centered(rect, &galley, ppp);
             painter.galley(pos, galley, l.text);
         } else {
-            let mut x = rect.left() + shape.padding();
+            let mut x = if extra.is_empty() {
+                rect.center().x - (dot_w + medium_w) / 2.0
+            } else {
+                rect.left() + shape.padding()
+            };
             if let Some(mark) = extra.mark {
                 let r = egui::Rect::from_min_size(
                     egui::pos2(x, rect.center().y - dock_metrics::MARK / 2.0),
@@ -303,6 +329,15 @@ fn item_deco(
                 );
                 px::fill(painter, r, radius::S, mark);
                 x += dock_metrics::MARK + dock_metrics::GAP;
+            }
+            if dotted.is_some() {
+                let d = dock_metrics::RECORD_DOT;
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(x, rect.center().y - d / 2.0),
+                    egui::Vec2::splat(d),
+                );
+                crate::icons::paint_record(painter, r, l.text);
+                x += dot_w;
             }
             painter.galley(super::text_pos(rect, &galley, x, ppp), galley, l.text);
             if let Some(sec) = secondary {
@@ -780,6 +815,18 @@ mod tests {
                 });
             });
         }
+        // S02: the take being recorded, its ● drawn as a circle in the text colour.
+        s.add_state("tab-dock-recording", State::REST, None, |ui| {
+            let rec = color32(color::STATE_RECORD);
+            tab_with(
+                ui,
+                "● Aufnahme",
+                TabExtra::new(Some(rec), "Piano Roll · live"),
+                true,
+                true,
+                true,
+            );
+        });
         s.add_state("tab-dock-inactive", State::HOVERED, None, |ui| {
             tab_with(
                 ui,
@@ -814,6 +861,25 @@ mod tests {
             "Lead A · Piano Roll"
         );
         assert_eq!(TabExtra::default().accessible_name("Mixer"), "Mixer");
+    }
+
+    #[test]
+    fn a_leading_record_dot_is_drawn_not_typed() {
+        assert_eq!(record_dot_label("● Aufnahme"), Some("Aufnahme"));
+        assert_eq!(record_dot_label("Aufnahme"), None);
+        let ctx = egui::Context::default();
+        crate::install(&ctx);
+        let mut widths = (0.0, 0.0);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            widths = (
+                tab(ui, "Aufnahme", true, true).rect.width(),
+                tab(ui, "● Aufnahme", true, true).rect.width(),
+            );
+        })
+        .textures_delta
+        .clear();
+        let dot = dock_metrics::RECORD_DOT + dock_metrics::RECORD_DOT_GAP;
+        assert!((widths.1 - widths.0 - dot).abs() < 0.5, "{widths:?}");
     }
 
     #[test]
