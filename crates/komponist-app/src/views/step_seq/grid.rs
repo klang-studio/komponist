@@ -1,5 +1,5 @@
-//! The step numbers and the rows: row headers (colour chip, name, note, M S) and the step cells
-//! (`Screens.dc.html` `stepSeq()` `nums`, `rows`, `cells`; `ks-view.js` `stepView`).
+//! The step numbers and the rows: row headers (colour chip, name, pad or note, M S) and the step
+//! cells (`Screens.dc.html` `stepSeq()` `nums`, `rows`, `cells`; `ks-view.js` `stepView`).
 //!
 //! A cell that is off is `surface.2`, in every other group of four `canvas.step-group-alt`; a
 //! set cell has the note colour of its velocity (`TrackPalette::note`). Ratchet `n` splits it
@@ -17,7 +17,6 @@ use egui::{
     UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_model::edits::{StepProp, StepRowProp};
-use komponist_model::format::note_name;
 use komponist_model::{ClipId, Step, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, line, radius, typography};
@@ -467,7 +466,7 @@ fn header(
         vec2(tw, th),
     );
     let mute_rect = solo_rect.translate(vec2(-(tw + m::HEADER_GAP), 0.0));
-    let note = widgets::styled_galley(ui, &note_name(model.note), &typography::VALUE_S);
+    let note = widgets::styled_galley(ui, &open.labels[r], &typography::VALUE_S);
     let note_x = mute_rect.left() - m::HEADER_GAP - note.size().x;
     ui.painter().galley(
         widgets::text_pos(rect, &note, note_x, ppp),

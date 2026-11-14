@@ -3,7 +3,9 @@
 //! - Ctrl N / "Neues Projekt": an empty project "Unbenannt" at 120 BPM, 4/4 (S10; the arrangement
 //!   shows the "Leeres Projekt" hint).
 //! - "Aus Vorlage · Beat-Skizze" (S09): three tracks to start a beat: "Drums" with klopfer (pisynth
-//!   if klopfer is not installed) and a one-bar step pattern, "Bass" and "Keys" with pisynth.
+//!   if klopfer is not installed) and a one-bar step pattern whose rows the drum instrument decides
+//!   ([`crate::step_rows::rows_for`]: klopfer's pads 1–8, else the General MIDI rows), "Bass" and
+//!   "Keys" with pisynth.
 //! - A project with unsaved changes asks first: "Speichern" (Enter), "Nicht speichern",
 //!   "Abbrechen" (Esc). The screens have no such dialog; its texts are komponist's own.
 
@@ -18,6 +20,7 @@ use komponist_ui::widgets::{self as w};
 
 use super::metrics::dialog as m;
 use super::{ActionButton, button_row, galley, header, modal};
+use crate::step_rows;
 
 /// Texts of the prompt and the template.
 pub mod names {
@@ -156,12 +159,17 @@ pub fn template(klopfer: Option<PluginRef>, pisynth: PluginRef) -> Project {
     let Some(&drums) = tracks.first() else {
         return p;
     };
+    let rows = p
+        .track(drums)
+        .and_then(|t| step_rows::instrument(t))
+        .map(|d| step_rows::rows_for(Some(&d.plugin), &[]))
+        .unwrap_or_default();
     let bar = Tick(PPQ * i64::from(p.meter.num));
     let clip = NewClip {
         start: Tick::ZERO,
         length: bar,
         name: "Beat".to_owned(),
-        content: NewClipContent::Step { rows: Vec::new() },
+        content: NewClipContent::Step { rows },
     };
     let Ok((next, beat)) = edits::add_clip(&p, drums, clip) else {
         return p;
@@ -232,8 +240,37 @@ mod tests {
         };
         assert_eq!(on(0), [0, 4, 8, 12]);
         assert_eq!(on(1), [4, 12]);
+        // pisynth plays the General MIDI rows.
+        let notes: Vec<u8> = steps.rows.iter().map(|r| r.note).collect();
+        assert_eq!(notes, [36, 38, 39, 42, 46, 45, 37, 47]);
         // It saves and loads.
         let json = persist::to_json(&p).unwrap();
         assert_eq!(persist::from_json(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn the_template_beat_plays_klopfers_pads() {
+        let klopfer = PluginRef {
+            format: PluginFormat::Builtin,
+            id: BUILTIN_KLOPFER.into(),
+            name: "klopfer".into(),
+            vendor: "Klopfer".into(),
+            version: "0.1.0".into(),
+        };
+        let p = template(Some(klopfer), crate::app::pisynth_ref());
+        let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
+            panic!("the beat is a step clip");
+        };
+        let rows: Vec<(&str, u8)> = steps
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.note))
+            .collect();
+        assert_eq!(
+            rows[..4],
+            [("Kick", 36), ("Snare", 37), ("Clap", 38), ("Hat zu", 39)]
+        );
+        assert_eq!(rows[7], ("Perc", 43));
+        assert!(steps.rows[0].steps[0].on && steps.rows[3].steps[2].on);
     }
 }
