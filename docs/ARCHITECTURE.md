@@ -292,7 +292,8 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 - `Engine::process` runs inside `assert_no_alloc` in debug builds and tests (this also catches frees).
 - No `Arc` drop can be the last one on the RT thread. Everything the engine retires (old programs,
   removed processors) goes back through a **garbage queue** and is dropped on the UI thread.
-- FTZ/DAZ is set on the audio thread (helper in `komponist-audio`).
+- FTZ/DAZ is set on the audio thread (helper in `komponist-audio`). Worker threads (§6.4) copy the
+  dispatching thread's floating-point mode before every batch.
 - Fixed capacities: max block `MAX_BLOCK = 2048` frames, max events per block, max tracks per program
   (configurable, preallocated when the program is built off-thread).
 
@@ -304,6 +305,8 @@ pub trait Processor: Send {
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError>;
     /// RT. `events` are sorted by `offset` (< frames). Stereo in/out; instruments ignore input.
     fn process(&mut self, ctx: &ProcessContext, events: &[Event], io: &mut StereoIo) -> ProcessStatus;
+    /// RT, optional (WP-65). Start the next `process` early (bridges); default: no-op, `false`.
+    fn begin(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> bool { false }
     fn latency(&self) -> u32;
     /// RT. Silence all voices (stop, loop jump, bypass on).
     fn reset(&mut self);
@@ -351,15 +354,59 @@ crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
    when recording.
 3. Transport: tick range of this block, splitting at the loop end (wrap) and at the end of the
    count-in. Metronome clicks (accent on beat 1).
-4. Per track: sequencer events from the program (`active_notes` table per track, so note-offs come
-   from the table and survive program swaps, loop wraps and stop) + live events → processor chain
-   (instrument → effects; bypass = passthrough plus `reset`) → `klang_dsp::buffer::gain_ramp` (fader)
-   → `klang_dsp::pan::balance` → meter → master bus (with the latency compensation delay, 6.6).
+4. Per track, in three phases (WP-65):
+   1. **Events**, on the audio thread in track order: sequencer events from the program
+      (`active_notes` table per track, so note-offs come from the table and survive program swaps,
+      loop wraps and stop) + live events, into the track's own event list. An instrument at the head
+      of a chain is started at once if it can be (`Processor::begin`: a bridge writes its block and
+      wakes the plugin, which then works while the engine runs the other tracks).
+   2. **Chains**, one job per track: processor chain (instrument → effects; bypass = passthrough plus
+      `reset`) → `klang_dsp::buffer::gain_ramp` (fader) → `klang_dsp::pan::balance` → meter →
+      latency compensation delay (6.6) → the track's output buffer. The jobs run on the worker pool
+      (6.4.1) and the audio thread together, or all on the audio thread. Started (bridge) tracks are
+      claimed last.
+   3. **Sum**, on the audio thread: the track outputs into the master bus in track order.
 5. Master: inserts → master fader → meter → output. The metronome is added after the master fader
    with its own level.
 6. Telemetry, events.
 
 Solo logic: audible = `!mute && (!any_solo || solo)`. "Stumm durch Solo" is a derived UI state.
+
+#### 6.4.1 Worker pool (WP-65)
+
+`komponist_engine::workers`. A fixed pool of worker threads per engine, started outside the audio
+callback by `Engine::set_workers(threads, priority)`; the app calls it from
+`AudioProcess::prepare`, i.e. when a stream starts (and after export re-attach), and keeps the pool
+while the count does not change. Count: settings file `worker_threads` (`null` = automatic: one
+per core minus two, at most 8, 4 on the owner's 6-core machine; `0` = off; S07 has no control yet).
+Workers run at `SCHED_FIFO` 80 (the bridges' priority) when the system allows it; otherwise they run
+normally and `EngineSync::worker_status` / a startup line say so. If no thread starts, the engine
+stays single-threaded.
+
+- **Dispatch, per segment:** the audio thread writes a batch descriptor, publishes it with one
+  release store of a claim word (`epoch << 32 | count << 16 | next`) and wakes as many workers as
+  there are jobs beyond the first (one `FUTEX_WAKE`). Every thread claims jobs by compare-and-swap
+  on that word. No allocation, no lock, no syscall besides the futex wake and wait.
+- **Deadline fallback:** the audio thread claims jobs too, so a worker that wakes late (or not at
+  all) leaves its jobs to the audio thread, which never waits for a worker to *start*. It waits
+  (`FUTEX_WAIT` with a deadline of one segment period, repeated) only for jobs a worker is already
+  running: such a job owns its track's processors and state, so it can be neither redone nor
+  abandoned. Waits past the deadline are counted (`WorkerStats::late`).
+- **Determinism:** a job touches only its own track (state, processors, output buffer) and its
+  thread's scratch lane; note ids, probability rolls and captured input stay in phase 1 on the audio
+  thread; the sum is in track order. The output is bit-exact with the single-threaded engine,
+  realtime and offline (tests: `komponist-engine` `tests/engine/parallel.rs`, the 1 000-sequence
+  random test's parallel variant, `komponist-plugins` `bridged_instruments_with_workers_…`).
+- **Serial fallback per segment:** no pool, fewer than two tracks, segments under 32 frames (wake-up
+  costs more than the work), or a program in which one slot appears in two track chains (checked
+  when the program is installed; the compiler never builds one).
+- **Same path offline:** the export's render thread dispatches to the same pool (`Engine::render`).
+- **RT checks:** workers run their loop inside `assert_no_alloc`; a panicking job is reported to
+  the audio thread, which re-raises it (never a silent hang).
+- **Later (sends, busses):** the three phases become a dependency graph: a bus job may start when
+  the jobs of all its sources are done (a per-job counter of missing inputs, decremented by the
+  finishing source, replaces the single claim word's order). Phase 3 then sums into busses in a
+  fixed order, which keeps the output deterministic. Not built.
 
 Larger device buffers are cut into ≤ `MAX_BLOCK` chunks. Buffer size changes therefore never touch
 processors. Only a sample rate change re-activates them.
@@ -457,9 +504,12 @@ state. State snapshots are taken on save, on GUI close, and debounced on "state 
 `State(bytes)`, `ParamValues(batch, ~30 Hz)`, `GuiSizeRequest`, `LatencyChanged`, `RestartRequested`,
 `StateDirty`, `Log`, `Error`.
 
-**Parallelism:** bridges are separate processes, so tracks in v0.1 are processed one after another
-but each plugin runs on its own core. Later optimisation, only if measurements demand it: start all
-first-in-chain bridges at the beginning of the block and collect them afterwards (fan-out).
+**Parallelism:** bridges are separate processes, so each plugin runs on its own core. Since WP-65 an
+instrument bridge at the head of a chain is started before the engine runs any chain
+(`Processor::begin`: build the wire events, `begin_block`, wake) and collected by whichever thread
+runs its track (`process` then only waits). Its track is claimed last, so the bridge works while the
+in-process tracks run. Bridges later in a chain (effects) start when their input is ready, on the
+thread that runs the track; with workers, several of them wait at once.
 
 ### 8.2 Hosting core (`komponist-hosting`, used only by the bridge)
 

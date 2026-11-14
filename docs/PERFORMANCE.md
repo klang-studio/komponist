@@ -1,6 +1,7 @@
-# komponist – Performance and RT safety (WP-61)
+# komponist – Performance and RT safety (WP-61, WP-65)
 
-Measured 2026-11-14 on the branch `wp/WP-61`. Every number below comes from a test or bench in the
+Measured 2026-11-14 on the branch `wp/WP-61`; parallel track processing on `wp/WP-65`
+([§6](#6-parallel-track-processing-wp-65)). Every number below comes from a test or bench in the
 repository; [§5](#5-how-to-re-run) lists the commands.
 
 ## 1. Machine and conditions
@@ -30,6 +31,7 @@ upper bounds. Re-run on an idle machine before reading the tails as properties o
 | Engine + 16 pisynth tracks, stress material, one thread | no overrun | mean 3.3 ms = 62 % of the period, worst 6–11 ms | **missed under load** (pisynth DSP, see §4.1) |
 | Same in the real callback path (app, null backend) | no overrun | mean 67–69 %, peak 110–120 %, overruns 49–63 of 1 880 callbacks (2.6–3.4 %), xruns 0 | **missed under load** |
 | + 8 kp-test-fx bridges (one per track on 8 tracks) | no late block | mean +2 points (70.7 %), late blocks 12 (SCHED_FIFO) / 95 (SCHED_OTHER) of 15 000 | **missed under load** (follows from the above) |
+| **WP-65:** 16 pisynth, callback path, 4 worker threads (§6) | < 50 % of the period, no overrun in 5 min | mean 17.5–17.7 %, peak 28.5 %, 0 overruns in 56 265 callbacks; + 8 bridges 21.1 %, 0 late blocks | **met** |
 | IPC round trip, back to back, SCHED_FIFO 80 | p99 ≤ 7.6 µs (WP-15 spike) | p50 5.6 µs, **p99 7.0 µs**, max 23 µs | met |
 | IPC round trip, back to back, SCHED_OTHER | — | p50 7.6 µs, p99 10.9 µs, max 1.5 ms | as the spike |
 | IPC round trip, paced like a 256-frame callback, SCHED_FIFO 80 | p99 ≤ 26 µs (spike, idle machine) | p50 13 µs, p99 202 µs, max 448 µs (load average 51) | tail missed under load, see §4.4 |
@@ -201,7 +203,7 @@ all ports and channels merge, whether or not a track listens). The shell merges 
 ### 4.7 Follow-ups (not in WP-61)
 
 - Parallel track processing or bridge fan-out (§4.1): the only way to more than ~60 % of one core
-  of instruments at 256 frames.
+  of instruments at 256 frames. **Done in WP-65 (§6).**
 - Memory locking (`mlockall` or pre-faulted, locked engine memory) against page-fault stalls under
   memory pressure (§3.3).
 - Timeline paint at 2× is at its 4 ms budget (piano roll, 10 000 notes visible); the whole-app frame
@@ -218,10 +220,14 @@ cargo test --release -p komponist-app --test arrangement_perf -- --ignored --noc
 cargo test --release -p komponist-app --test piano_roll ten_thousand -- --nocapture
 cargo bench -p komponist-ui --bench timeline
 
-# Engine CPU: single thread (engine alone, + 16 pisynth) and the real callback path (+ 8 bridges;
-# needs scripts/build-test-plugins.sh). For RT priority run the test binary under chrt -f 70.
+# Engine CPU: engine alone and + 16 pisynth, and the real callback path (+ 8 bridges; needs
+# scripts/build-test-plugins.sh), each with 0 and 4 worker threads (WP-65; KOMPONIST_BENCH_WORKERS /
+# KOMPONIST_PERF_WORKERS take another list, KOMPONIST_PERF_SECS another length). For RT priority
+# run the test binary under chrt -f 70.
 cargo test --release -p komponist-engine --test engine bench -- --ignored --nocapture
 cargo test --release -p komponist-app --test engine_perf -- --ignored --nocapture --test-threads 1
+KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_SECS=300 <engine_perf binary> engine_cpu_16_pisynth_tracks \
+    --exact --ignored --nocapture                                  # the 5-minute stress run
 cargo test --release -p komponist-builtin --test pisynth cpu_per_block -- --ignored --nocapture
 
 # IPC round trip (back to back / paced / spin), RT via chrt on the test binary:
@@ -234,10 +240,59 @@ chrt -f 80 env KOMPONIST_IPC_BLOCKS=10000 KOMPONIST_IPC_PACED_US=5333 KOMPONIST_
 cargo test -p komponist-app --test soak -- --nocapture
 KOMPONIST_SOAK_SECS=1800 cargo test --release -p komponist-app --test soak -- --nocapture
 KOMPONIST_SOAK_SEED=<seed> …   # replays a run
+KOMPONIST_SOAK_WORKERS=0 …     # single-threaded engine (default: the app's automatic count)
 
 # klopfer cold start (needs scripts/build-klopfer.sh and klopfer's test kit)
 cargo test --release -p komponist-plugins --test installed klopfer_cold_start -- --ignored --nocapture
 
 # Audio device enumeration (talks to the audio servers, opens no stream)
 cargo test --release -p komponist-audio device_enumeration_time -- --ignored --nocapture
+```
+
+## 6. Parallel track processing (WP-65)
+
+Measured 2026-11-14 on the branch `wp/WP-65`, same machine as §1, **idle**: no builds running,
+load average 1.5–3.3 (the tail of this branch's own release build at the first runs), 2.0–2.8 during
+the 5-minute runs. Swap held 5.0 of 8 GiB (7.8 GiB at the baseline run) from earlier sessions but
+was not active: `/proc/pressure/io` avg10 0.00 during the runs. All callback-path runs on the null
+backend at 48 kHz / 256 frames (5.33 ms) under `chrt -f 70`; workers at `SCHED_FIFO` 80. Design:
+ARCHITECTURE §6.4.1.
+
+| Run | Before (main, single-threaded) | After, 0 workers | After, 4 workers |
+|---|---|---|---|
+| Engine alone, 16 idle instruments, one thread (`bench`) | 8.4 µs (0.16 %), worst 143 µs | 8.8 µs (0.16 %), worst 142 µs | 10.8 µs (0.20 %), worst 214 µs |
+| Engine + 16 pisynth, stress material, one thread (`bench`) | 3.1 ms (58.6 %), worst 5.1 ms (96 %) | 3.1 ms (58.7 %), worst 5.2 ms (98 %) | **0.89 ms (16.7 %), worst 2.2 ms (42 %)** |
+| 16 pisynth, real callback path, 10 s (`engine_perf`) | mean 63.5 %, peak 94.6 %, 0 overruns | mean 63.4 %, peak 79.7 %, 0 overruns | **mean 17.5 %, peak 27.7 %, 0 overruns** |
+| + 8 kp-test-fx bridges (after pisynth on 8 tracks), 10 s | — | mean 65.0 %, peak 88.6 %, 0 late blocks | **mean 21.1 %, peak 27.9 %, 0 late blocks** |
+| 16 pisynth, callback path, **5 minutes** | — | — | **mean 17.7 %, peak 28.5 %, 0 overruns, 0 xruns in 56 265 callbacks**, 0 late waits |
+| Soak, release, **5 minutes** (demo, random edits, 42 exports) | — | — | **0 overruns, 0 xruns in 56 250 callbacks**, peak 63 %, worst UI frame 7.3 ms; 59 635 batches, 390 397 jobs on workers, 0 late waits |
+| Soak, release, 30 minutes | — | — | **open** (see below); stopped after 6 of 30 minutes by owner decision with 0 overruns, 0 xruns in 67 503 callbacks so far |
+
+**Done-when met:** 16 pisynth stress tracks at 17.5–17.7 % of the period (target < 50 %) with 4
+workers, no overrun in the 5-minute stress run and the 5-minute soak. The 3.5× speed-up on 5
+threads (callback + 4 workers) is close to the ideal for 16 jobs of uneven cost; the remaining time
+is the longest job chain on one thread plus the wake-ups (~10–30 µs per batch). The dispatch costs
+2 µs per block with 16 trivial tracks (idle-instrument bench). The worst single callback of the
+WP-61 baseline (95–98 %) shrinks to 28 % with workers: one slow track no longer adds to 15 others.
+
+Notes:
+- "Before" and "after, 0 workers" agree, so the three-phase segment (events, jobs, ordered sum)
+  costs nothing single-threaded. The bit-exact tests prove they compute the same output.
+- The bridge case puts the kp-test-fx *after* pisynth, so those bridges cannot start early; their
+  waits now overlap on the workers. Instrument bridges at the head of a chain start before any
+  chain runs (`Processor::begin`), checked by `komponist-plugins`
+  `bridged_instruments_with_workers_match_single_threaded` (bit-exact offline, all realtime blocks
+  in time).
+- The soak's peak load (63 % in one callback) is the attach after an export (the soak runs 42 of
+  them); its mean stays at 1–5 %.
+- `WorkerStats::late` (waits for a running job beyond one period) stayed 0 in every run.
+
+**Open: the 30-minute soak with workers.** The done-when of WP-65 is the 5-minute soak; the
+30-minute release soak (with the default 4 workers) is still to be run once before the next
+release, overnight or on an otherwise idle machine (no builds), and its result added to the table
+above:
+
+```bash
+cargo test --release -p komponist-app --test soak --no-run   # prints the binary
+cd crates/komponist-app && KOMPONIST_SOAK_SECS=1800 chrt -f 70 <soak binary> --nocapture
 ```
