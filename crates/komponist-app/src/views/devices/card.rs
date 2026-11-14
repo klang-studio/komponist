@@ -409,7 +409,10 @@ fn params(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect, top: f32)
     } else {
         (color::TEXT_2, color::TEXT_3)
     };
-    for (i, p) in card.params.iter().enumerate() {
+    // Only whole rows that fit the body (until WP-82's 244-high frame): no clipped knobs.
+    let avail = rect.bottom() - y0 - metrics::GRID_PAD_Y;
+    let shown = visible_rows(avail, row_h, metrics::GRID_ROW_GAP) * cols;
+    for (i, p) in card.params.iter().enumerate().take(shown) {
         let (col, row) = (i % cols, i / cols);
         let cell = Rect::from_min_size(
             pos2(
@@ -451,6 +454,11 @@ fn params(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect, top: f32)
     }
 }
 
+/// How many whole rows of height `row_h` with `gap` between them fit into `avail`; at least one.
+pub fn visible_rows(avail: f32, row_h: f32, gap: f32) -> usize {
+    (((avail + gap) / (row_h + gap)).floor().max(1.0)) as usize
+}
+
 /// One knob, driven in normalised space (so log and dB parameters turn evenly); the new plain
 /// value, snapped, if it was turned.
 fn knob_ui(cu: &mut Ui, card: &Card, p: &Param, rect: Rect) -> Option<f64> {
@@ -472,4 +480,20 @@ fn knob_ui(cu: &mut Ui, card: &Card, p: &Param, rect: Rect) -> Option<f64> {
     let r = cu.put(rect, knob);
     let snapped = info.to_plain(value);
     (r.changed() && snapped != p.value).then_some(snapped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_rows;
+
+    #[test]
+    fn only_whole_rows_are_shown() {
+        // Rows of 60 with gaps of 10: 2 rows need 130, 3 need 200.
+        assert_eq!(visible_rows(200.0, 60.0, 10.0), 3);
+        assert_eq!(visible_rows(199.0, 60.0, 10.0), 2);
+        assert_eq!(visible_rows(130.0, 60.0, 10.0), 2);
+        assert_eq!(visible_rows(129.0, 60.0, 10.0), 1);
+        assert_eq!(visible_rows(10.0, 60.0, 10.0), 1, "at least one row");
+        assert_eq!(visible_rows(-5.0, 60.0, 10.0), 1);
+    }
 }

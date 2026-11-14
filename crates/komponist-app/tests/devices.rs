@@ -679,10 +679,10 @@ fn a_state_that_did_not_load_is_shown_on_the_card() {
     results.unwrap();
 }
 
-/// WP-81 auto-layout: a plugin with 20 parameters shows its first 12 (3 rows of 4), the plugin
-/// frame's generic view keeps all of them.
+/// WP-81 auto-layout: a plugin with 20 parameters gets 12 knobs, the card draws the rows that
+/// fit its body (2 until WP-82), the plugin frame's generic view keeps all of them.
 #[test]
-fn a_plugin_with_many_parameters_shows_the_first_twelve() {
+fn a_plugin_with_many_parameters_shows_the_rows_that_fit() {
     let (p, c) = s05_project();
     let infos: Vec<_> = (0..20)
         .map(|i| param(i, &format!("Regler {}", i + 1), 0.5))
@@ -705,16 +705,16 @@ fn a_plugin_with_many_parameters_shows_the_first_twelve() {
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    assert_eq!(knobs.len(), 12);
+    assert_eq!(knobs.len(), 8, "only the rows that fit the card's body");
     assert_eq!(
-        (knobs[0].as_str(), knobs[11].as_str()),
-        ("Regler 1", "Regler 12")
+        (knobs[0].as_str(), knobs[7].as_str()),
+        ("Regler 1", "Regler 8")
     );
     assert_eq!(
-        eq.get_by_role_and_label(Role::Slider, "Regler 12")
+        eq.get_by_role_and_label(Role::Slider, "Regler 8")
             .value()
             .as_deref(),
-        Some("55 %")
+        Some("35 %")
     );
     h.run_steps(1);
     let mut results = SnapshotResults::new();
