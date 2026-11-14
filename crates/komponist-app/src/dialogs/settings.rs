@@ -26,7 +26,7 @@ use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2
 use komponist_audio::{AudioSystem, DeviceInfo, HostKind, StreamConfig};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, typography};
-use komponist_ui::widgets::button::{Button, Kind};
+use komponist_ui::widgets::button::{Button, Height, Kind};
 use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tabs::Segmented;
@@ -883,15 +883,14 @@ fn set_audio(config: StreamConfig) -> Output {
 fn notice(ui: &mut Ui, width: f32, out: &mut Vec<Output>) {
     let [pad_x, pad_y] = m::NOTICE_PADDING;
     let button = ActionButton {
-        height: size::CONTROL,
-        padding_x: wm::BUTTON_PADDING_X,
+        height: Height::Control,
         ..ActionButton::dialog(names::RETRY, Kind::Secondary, 4)
     };
     // The button's width, to wrap the text beside it.
     let button_text = galley(
         ui,
         names::RETRY,
-        button.font.clone(),
+        komponist_ui::fonts::emphasis_font_id(&typography::UI),
         typography::UI.line_height,
         Color32::PLACEHOLDER,
         None,
