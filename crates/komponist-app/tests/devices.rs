@@ -318,6 +318,14 @@ fn pisynth_shows_its_eight_macros_and_turning_one_is_saved() {
     app.dispatch(Action::Project(komponist_app::ProjectAction::OpenPath(
         path.clone(),
     )));
+    // The headless host has only pisynth: S06 lists the demo's other plugins; go on without them.
+    assert!(matches!(
+        app.ui().dialog,
+        Some(komponist_app::ui_state::Dialog::MissingPlugins(_))
+    ));
+    app.dispatch(Action::Project(
+        komponist_app::ProjectAction::ContinueWithMissing,
+    ));
     let lead = app.project().tracks[2].id;
     let device = app.project().tracks[2].channel.devices[0].id;
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {

@@ -27,8 +27,10 @@ klang-dsp.workspace = true
 egui.workspace = true
 eframe.workspace = true
 serde.workspace = true
-# settings.json.
+# settings.json, recent.json.
 serde_json.workspace = true
+# Local time of recent projects and plugin scans (`dialogs::format`).
+libc.workspace = true
 # komponist-play: WAV export.
 hound.workspace = true
 # komponist-play: debug builds abort on any allocation inside the audio callback and the offline

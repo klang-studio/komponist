@@ -1,6 +1,11 @@
 //! App settings (`~/.config/komponist/settings.json`): audio stream, MIDI inputs, plugin folders,
-//! UI scale, panel layout, the last export settings, the recent projects and the browser's
-//! favourites.
+//! UI scale, panel layout, the last export settings and the browser's favourites. The recent
+//! projects have their own file next to it (`recent.json`, [`crate::project_io::RecentList`]).
+//!
+//! Plugin folders (S07 "Plugin-Ordner"): a scan always covers the default folders (ARCHITECTURE
+//! §8.3, `$CLAP_PATH` included) and the folders added in S07. Default folders cannot be removed
+//! (they are where packages install plugins, and a folder that does not exist costs nothing);
+//! added folders can. S07 lists the default folders that exist and every added folder.
 //!
 //! Settings are applied at once and saved when they change (S07 "Änderungen gelten sofort"). A
 //! missing file gives the defaults; an unreadable one is reported and replaced by the defaults
@@ -25,9 +30,6 @@ use crate::ui_state::PanelLayout;
 /// File name inside the config directory.
 pub const FILE_NAME: &str = "settings.json";
 
-/// Most entries kept in [`Settings::recent`].
-pub const RECENT_LIMIT: usize = 12;
-
 /// Everything komponist remembers between sessions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -47,8 +49,6 @@ pub struct Settings {
     pub panels: PanelSettings,
     /// The export dialog's last settings (S08 opens with them).
     pub export: Option<ExportSettings>,
-    /// Recently opened projects, newest first.
-    pub recent: Vec<PathBuf>,
     /// The browser's favourites (the star of a browser row).
     pub favorites: Favorites,
 }
@@ -279,11 +279,14 @@ impl Settings {
         dirs
     }
 
-    /// Puts `path` at the front of the recent list (once), keeping [`RECENT_LIMIT`] entries.
-    pub fn add_recent(&mut self, path: PathBuf) {
-        self.recent.retain(|p| *p != path);
-        self.recent.insert(0, path);
-        self.recent.truncate(RECENT_LIMIT);
+    /// Whether `path` is one of the default plugin folders (S07 offers no "remove" for them).
+    pub fn is_default_plugin_dir(path: &Path) -> bool {
+        let defaults = PluginDirs::defaults();
+        defaults
+            .clap
+            .iter()
+            .chain(&defaults.vst3)
+            .any(|d| d == path)
     }
 }
 
@@ -320,7 +323,6 @@ mod tests {
         s.panels.browser_open = false;
         s.panels.dock_height = 400.0;
         s.export = Some(default_export("Nachtfahrt", dir.clone()));
-        s.add_recent(dir.join("a.komponist"));
         s.favorites.toggle(&PluginRef {
             format: PluginFormat::Clap,
             id: "com.example.reverb".into(),
@@ -406,23 +408,5 @@ mod tests {
         assert_eq!(json, "[]");
         let back: Settings = serde_json::from_str(r#"{"favorites": []}"#).unwrap();
         assert!(back.favorites.0.is_empty());
-    }
-
-    #[test]
-    fn recent_list_is_unique_and_bounded() {
-        let mut s = Settings::default();
-        for i in 0..20 {
-            s.add_recent(PathBuf::from(format!("/p/{i}")));
-        }
-        s.add_recent(PathBuf::from("/p/15"));
-        assert_eq!(s.recent.len(), RECENT_LIMIT);
-        assert_eq!(s.recent[0], PathBuf::from("/p/15"));
-        assert_eq!(
-            s.recent
-                .iter()
-                .filter(|p| p.as_path() == Path::new("/p/15"))
-                .count(),
-            1
-        );
     }
 }
