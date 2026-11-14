@@ -1144,3 +1144,64 @@ fn s06_texts_match_the_screen() {
     assert_eq!(model.rows[1].place, "Spur Pad · Effekt 4");
     assert_eq!(missing_plugins::title(model.rows.len()), "2 Plugins fehlen");
 }
+
+/// Drivers and devices that take long to enumerate, like ALSA's devices (WP-61 measured
+/// 170–200 ms) or the JACK probe; records the threads that asked.
+struct SlowDevices {
+    threads: Arc<Mutex<Vec<String>>>,
+}
+
+impl SlowDevices {
+    fn record(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let name = std::thread::current().name().unwrap_or("").to_owned();
+        self.threads.lock().unwrap().push(name);
+    }
+}
+
+impl settings::AudioDevices for SlowDevices {
+    fn hosts(&self) -> Vec<HostKind> {
+        self.record();
+        vec![HostKind::Null]
+    }
+
+    fn devices(&self, _host: HostKind) -> Vec<komponist_audio::DeviceInfo> {
+        self.record();
+        Vec::new()
+    }
+
+    fn is_slow(&self) -> bool {
+        true
+    }
+}
+
+/// S07 enumerates drivers and devices on a worker thread, so opening it never stalls a frame
+/// (WP-52 note, WP-61).
+#[test]
+fn s07_enumerates_devices_off_the_ui_thread() {
+    let threads = Arc::new(Mutex::new(Vec::new()));
+    let app = App::headless(demo_project()).with_audio_devices(Box::new(SlowDevices {
+        threads: Arc::clone(&threads),
+    }));
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Audio)));
+    let t0 = std::time::Instant::now();
+    h.run_steps(2);
+    assert!(
+        t0.elapsed() < std::time::Duration::from_millis(250),
+        "opening S07 waited for the enumeration: {:?}",
+        t0.elapsed()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while threads.lock().unwrap().len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "enumeration never ran"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        h.run_steps(1);
+    }
+    let threads = threads.lock().unwrap().clone();
+    assert_eq!(threads, ["komponist-audio-devices"; 2]);
+}

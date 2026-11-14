@@ -109,3 +109,70 @@ fn dexed_and_surge_xt_from_a_scan() {
         assert!(level > 0.01, "{id}: silent ({level})");
     }
 }
+
+/// klopfer's cold start (WP-54 note, WP-61): how long after the bridge reports it active (warm-up
+/// switched off) a pad first sounds, over fresh bridges. A note goes in every 2 ms of wall-clock
+/// time; the first block with output marks the readiness. `crate::WARM_UP` must cover it.
+///
+/// ```text
+/// cargo test --release -p komponist-plugins --test installed klopfer_cold_start -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "installed klopfer and its test kit; run with --ignored"]
+fn klopfer_cold_start() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bundle = manifest.join("../../../klopfer/target/bundled/Klopfer.clap");
+    let kit = manifest.join("../../../klopfer/testkit-out/Testkit.klopfer");
+    let (Ok(bundle), Ok(kit)) = (bundle.canonicalize(), kit.canonicalize()) else {
+        eprintln!("skipped: klopfer bundle or test kit missing (scripts/build-klopfer.sh)");
+        return;
+    };
+    let state = komponist_plugins::builtin::klopfer_kit_state(&kit).expect("kit");
+    for offline in [false, true] {
+        cold_start(&bundle, &state, offline);
+    }
+}
+
+fn cold_start(bundle: &std::path::Path, state: &[u8], offline: bool) {
+    let mut times = Vec::new();
+    for run in 0..8 {
+        let dir = scratch(&format!("installed-klopfer-cold-{run}"));
+        let mut config = config(&dir);
+        config.klopfer_bundle = Some(bundle.to_owned());
+        let mut manager = PluginManager::new(config);
+        manager.set_warm_up(std::time::Duration::ZERO);
+        if offline {
+            manager.set_render_mode(komponist_ipc::RenderMode::Offline);
+        }
+        let instrument = device(10, DeviceRole::Instrument, klopfer(), Some(state));
+        let mut rig = Rig::new(manager, project(vec![track(1, vec![instrument])]));
+        rig.wait_status(10, DeviceStatus::Ok);
+        let active = Instant::now();
+        let ready = loop {
+            rig.note(1, 36, 110);
+            let range = if offline {
+                rig.render(BLOCK)
+            } else {
+                rig.process(BLOCK)
+            };
+            rig.note(1, 36, 0);
+            if rig.peak(range) > 1e-4 {
+                break active.elapsed();
+            }
+            assert!(active.elapsed() < PATIENCE, "klopfer never sounded");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        rig.manager.shutdown();
+        times.push(ready);
+    }
+    times.sort();
+    eprintln!(
+        "klopfer cold start ({}): first hit {:.1?} … {:.1?} after `Activated` (median {:.1?}); WARM_UP {:?}",
+        if offline { "offline" } else { "realtime" },
+        times[0],
+        times[times.len() - 1],
+        times[times.len() / 2],
+        komponist_plugins::WARM_UP
+    );
+    assert!(times[times.len() - 1] < komponist_plugins::WARM_UP);
+}

@@ -81,8 +81,6 @@ const PAD_SAMPLES: [&[&str]; 8] = [
 const RATE: u32 = 44_100;
 /// Frames per engine call before the export.
 const BLOCK: usize = 256;
-/// Real time klopfer gets after activation before the export (see `render`).
-const WARM_UP: Duration = Duration::from_secs(1);
 
 // ------------------------------------------------------------------------------------------------
 // 1. Build the beat in the UI
@@ -338,15 +336,8 @@ fn render(project: &Project, klopfer: PathBuf, tail_ms: u64) -> (Vec<f32>, Vec<u
         run(&mut engine, &mut manager);
         std::thread::sleep(Duration::from_millis(2));
     }
-    // klopfer reports active before its pads sound: notes in roughly the first 70 ms (wall clock)
-    // after activation stay silent, however many blocks are processed meanwhile. In the app the
-    // engine plays in real time long before anyone exports; here it runs a second at real-time
-    // pace first.
-    let warm_up = Instant::now();
-    while warm_up.elapsed() < WARM_UP {
-        run(&mut engine, &mut manager);
-        std::thread::sleep(Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE)));
-    }
+    // klopfer reports active before its pads sound (it prepares the kit in the background); the
+    // device stays `Loading` for `komponist_plugins::WARM_UP` after that, so `Ok` means ready.
     assert_eq!(
         manager.state_warning(device.id),
         None,

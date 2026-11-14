@@ -281,23 +281,34 @@ fn sample_rate_change_reactivates_the_bridge() {
     let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
     rig.wait_status(30, DeviceStatus::Ok);
 
-    // The engine re-activates its processors; the bridge follows in the background.
+    // The engine re-activates its processors; the bridge follows in the background. The device
+    // reads `Loading` at once (before any poll) and until the bridge confirmed and warmed up.
+    rig.events.clear();
     rig.engine.set_sample_rate(44_100.0).unwrap();
+    assert_eq!(rig.manager.status(DeviceId(30)), DeviceStatus::Loading);
     let deadline = Instant::now() + PATIENCE;
-    loop {
-        rig.note(1, 69, 127);
-        let range = rig.render(8 * BLOCK);
-        rig.note(1, 69, 0);
-        rig.render(8 * BLOCK);
-        if rig.peak(range.clone()) > 0.1 {
-            let hz = frequency(&rig.l[range], 44_100.0);
-            assert!((430.0..450.0).contains(&hz), "{hz} Hz: still at 48 kHz?");
-            break;
-        }
-        assert!(Instant::now() < deadline, "no sound after the rate change");
-        std::thread::sleep(Duration::from_millis(10));
+    while rig.manager.status(DeviceId(30)) != DeviceStatus::Ok {
+        assert!(Instant::now() < deadline, "no Ok after the rate change");
+        rig.render(BLOCK);
+        std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(rig.manager.status(DeviceId(30)), DeviceStatus::Ok);
+    let statuses: Vec<_> = rig
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            PluginManagerEvent::StatusChanged { status, .. } => Some(status.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(statuses, [DeviceStatus::Loading, DeviceStatus::Ok]);
+    // `Ok` means it runs at the new rate: the first note sounds, at 44.1 kHz.
+    rig.note(1, 69, 127);
+    let range = rig.render(8 * BLOCK);
+    rig.note(1, 69, 0);
+    rig.render(8 * BLOCK);
+    assert!(rig.peak(range.clone()) > 0.1, "silent after Ok");
+    let hz = frequency(&rig.l[range], 44_100.0);
+    assert!((430.0..450.0).contains(&hz), "{hz} Hz: still at 48 kHz?");
 }
 
 /// What a [`DeadlineProbe`] saw in its last call.

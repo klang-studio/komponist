@@ -617,14 +617,18 @@ fn bridge_crashing_mid_block_is_late_and_detected() {
 
 /// Latency numbers like the WP-15 spike (256 frames, deadline 3.2 ms = 60 % of 5.33 ms). Run:
 /// `cargo test --release -p komponist-ipc --test bridge_process -- --ignored --nocapture`, under
-/// `chrt -f 80` for SCHED_FIFO. `KOMPONIST_IPC_BLOCKS` sets the number of blocks.
+/// `chrt -f 80` for SCHED_FIFO. `KOMPONIST_IPC_BLOCKS` sets the number of blocks,
+/// `KOMPONIST_IPC_PACED_US` paces the blocks like a callback (e.g. 5333 for 256 frames at 48 kHz;
+/// default back to back), `KOMPONIST_IPC_SPIN_US` makes the engine side spin up to that long on
+/// `is_idle` before the futex wait (WP-16's optional spin, measured in WP-61).
 #[test]
 #[ignore = "measurement, run by hand"]
 fn latency_report() {
-    let blocks: u64 = std::env::var("KOMPONIST_IPC_BLOCKS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(100_000);
+    let env = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+    let blocks = env("KOMPONIST_IPC_BLOCKS").unwrap_or(100_000);
+    let paced = env("KOMPONIST_IPC_PACED_US").map(Duration::from_micros);
+    let spin = Duration::from_micros(env("KOMPONIST_IPC_SPIN_US").unwrap_or(0));
+    let mut next = Instant::now();
     let mut bridge = TestBridge::start();
     let mut block = Block::new();
     let mut output = Box::new([[0.0f32; MAX_BLOCK]; 2]);
@@ -632,13 +636,24 @@ fn latency_report() {
     let (mut late, mut busy, mut bad) = (0, 0, 0);
     for k in 0..1_000 + blocks {
         block.fill(k, 256, 4);
+        if let Some(period) = paced {
+            next += period;
+            if let Some(wait) = next.checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
         let t0 = Instant::now();
-        let result = round_trip(
-            &mut bridge.client,
-            &block,
-            &mut output,
-            t0 + Duration::from_micros(3_200),
-        );
+        let deadline = t0 + Duration::from_micros(3_200);
+        let client = &mut bridge.client;
+        let [left, right] = &mut *output;
+        let result = assert_no_alloc(|| {
+            let seq = client.begin_block(&block.spec, block.inputs(), &block.events)?;
+            let until = Instant::now() + spin;
+            while !client.is_idle() && Instant::now() < until {
+                std::hint::spin_loop();
+            }
+            client.wait_done(seq, deadline, [left, right])
+        });
         let dt = t0.elapsed();
         match result {
             Ok(_) => bad += output_errors(&block, &output),
@@ -664,7 +679,9 @@ fn latency_report() {
         })
         .unwrap_or("unknown");
     eprintln!(
-        "latency (policy {policy}, 256 frames, 4 events): {} late={late} busy={busy} bad={bad}",
+        "latency (policy {policy}, 256 frames, 4 events, {}, spin {spin:?}): {} late={late} \
+         busy={busy} bad={bad}",
+        paced.map_or("back to back".to_owned(), |p| format!("paced {p:?}")),
         summary(&mut times)
     );
     assert_eq!(bad, 0);

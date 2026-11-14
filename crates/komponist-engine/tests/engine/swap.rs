@@ -175,12 +175,14 @@ fn locate_while_playing_ends_notes_and_plays_on_from_there() {
         .into_iter()
         .map(|n| (n.0, n.1, n.2))
         .collect();
-    // The held note ends at the locate; the note at the new position starts on its first frame.
+    // The held note ends at the locate; the note at the new position starts on its first frame,
+    // and the long note sounding across the new position is chased (it starts again there).
     assert_eq!(
         got,
         [
             (0, "on", 60),
             (10_000, "off", 60),
+            (10_000, "on", 60),
             (10_000, "on", 62),
             (12_500, "off", 62)
         ]

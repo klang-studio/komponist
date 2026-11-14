@@ -51,7 +51,10 @@ pub const STATE_LOG_PREFIX: &str = "state not loaded:";
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DeviceStatus {
     /// Bridge starting or plugin loading ("Lädt"): audio passes through (effect) or is silent
-    /// (instrument).
+    /// (instrument). Also while a running bridge re-activates for another sample rate (export,
+    /// device change; fallback audio meanwhile), and for [`crate::WARM_UP`] after the bridge
+    /// reported the plugin active (audio already flows; some plugins, e.g. klopfer, still load
+    /// in the background). An export waits for `Ok`.
     Loading,
     /// Running.
     Ok,
@@ -480,7 +483,7 @@ impl PluginManager {
     /// Status of a device; `Ok` for devices this manager does not manage (in-process built-ins).
     pub fn status(&self, device: DeviceId) -> DeviceStatus {
         match self.bridges.get(&device) {
-            Some(bridge) => bridge.status().clone(),
+            Some(bridge) => bridge.status(),
             None => self
                 .statuses
                 .get(&device)
@@ -675,8 +678,8 @@ impl PluginManager {
     /// Switches every bridge to realtime or offline processing (around an export).
     pub fn set_render_mode(&mut self, mode: RenderMode) {
         self.render_mode = mode;
-        for bridge in self.bridges.values() {
-            bridge.send(ControlMsg::SetRenderMode(mode));
+        for bridge in self.bridges.values_mut() {
+            bridge.set_render_mode(mode, &mut self.pending);
         }
     }
 
@@ -706,6 +709,12 @@ impl PluginManager {
     pub fn set_watchdog_timing(&mut self, ping_interval: Duration, pong_timeout: Duration) {
         self.timing.ping_interval = ping_interval;
         self.timing.pong_timeout = pong_timeout;
+    }
+
+    /// Sets the warm-up of bridges started (or re-activated) from now on (default
+    /// [`crate::WARM_UP`]); tests and measurements use zero to see the plugin's own readiness.
+    pub fn set_warm_up(&mut self, warm_up: Duration) {
+        self.timing.warm_up = warm_up;
     }
 
     /// Process id of a device's bridge (diagnostics and tests).

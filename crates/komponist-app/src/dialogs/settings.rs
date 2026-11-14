@@ -20,6 +20,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
@@ -126,11 +128,17 @@ const ACTIVITY_HOLD: Duration = Duration::from_millis(150);
 
 /// Where the dialog gets drivers and devices from: the system ([`SystemDevices`]) or a fixed
 /// list (tests, `App::headless`).
-pub trait AudioDevices {
+pub trait AudioDevices: Send + Sync {
     /// Available drivers (`AudioSystem::available_hosts`).
     fn hosts(&self) -> Vec<HostKind>;
     /// Output devices of `host`; empty if it cannot be enumerated.
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo>;
+    /// Whether enumeration may take long enough to stall a frame, so the dialog runs it on a
+    /// worker thread and shows the previous list meanwhile (WP-61 measured 7–10 ms for the
+    /// drivers, whose JACK probe opens a client, and 170–200 ms for ALSA's devices).
+    fn is_slow(&self) -> bool {
+        false
+    }
 }
 
 /// The system's drivers and devices (cpal).
@@ -145,6 +153,34 @@ impl AudioDevices for SystemDevices {
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo> {
         AudioSystem::<EngineProcess>::devices(host).unwrap_or_default()
     }
+
+    fn is_slow(&self) -> bool {
+        true
+    }
+}
+
+/// Runs `f` with `devices` on a worker thread if enumeration is slow, else at once; the result
+/// comes through the receiver.
+fn enumerate<T: Send + 'static>(
+    devices: &Arc<dyn AudioDevices>,
+    f: impl FnOnce(&dyn AudioDevices) -> T + Send + 'static,
+) -> Receiver<T> {
+    let (tx, rx) = mpsc::channel();
+    if devices.is_slow() {
+        let devices = Arc::clone(devices);
+        let spawned = std::thread::Builder::new()
+            .name("komponist-audio-devices".into())
+            .spawn(move || {
+                let _ = tx.send(f(&*devices));
+            });
+        if spawned.is_err() {
+            // No thread: the dialog keeps the list it has.
+            return rx;
+        }
+    } else {
+        let _ = tx.send(f(&**devices));
+    }
+    rx
 }
 
 /// A fixed list of drivers and devices.
@@ -466,6 +502,10 @@ pub(crate) struct Cache {
     pub(crate) devices: Vec<DeviceInfo>,
     /// The driver the device list belongs to.
     pub(crate) devices_host: Option<HostKind>,
+    /// A driver enumeration running on a worker thread.
+    pending_hosts: Option<Receiver<Vec<HostKind>>>,
+    /// A device enumeration running on a worker thread, and its driver.
+    pending_devices: Option<(HostKind, Receiver<Vec<DeviceInfo>>)>,
     /// When each MIDI port (by name) last had activity.
     pub(crate) lit: HashMap<String, Instant>,
     /// Scroll the page to this section in the next frame.
@@ -473,6 +513,36 @@ pub(crate) struct Cache {
 }
 
 impl Cache {
+    /// Whether an enumeration is still running (the dialog repaints until it arrives).
+    pub(crate) fn enumerating(&self) -> bool {
+        self.pending_hosts.is_some() || self.pending_devices.is_some()
+    }
+
+    /// Takes finished enumerations.
+    fn collect(&mut self) {
+        if let Some(rx) = &self.pending_hosts {
+            match rx.try_recv() {
+                Ok(hosts) => {
+                    self.hosts = hosts;
+                    self.pending_hosts = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.pending_hosts = None,
+            }
+        }
+        if let Some((host, rx)) = &self.pending_devices {
+            match rx.try_recv() {
+                Ok(devices) => {
+                    self.devices = devices;
+                    self.devices_host = Some(*host);
+                    self.pending_devices = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.pending_devices = None,
+            }
+        }
+    }
+
     /// Marks the MIDI port `name` active (`now`) or reports whether it still glows.
     pub(crate) fn activity(&mut self, name: &str, active: bool, now: Instant) -> bool {
         if active {
@@ -487,12 +557,14 @@ impl Cache {
 impl crate::App {
     /// The S07 model from the settings, the engine, the MIDI inputs and the device host. Opening
     /// the dialog reads the drivers and refreshes the MIDI inputs; the device list is read again
-    /// when the driver changes or "Erneut suchen" is pressed.
+    /// when the driver changes or "Erneut suchen" is pressed. System enumeration runs on a worker
+    /// thread ([`AudioDevices::is_slow`]); until it arrives the dialog shows the lists it has.
     pub(crate) fn settings_model(&mut self, section: SettingsSection) -> Model {
         let config = self.settings.audio.clone();
         let opening = !self.dialogs.settings.open;
         if opening {
-            self.dialogs.settings.hosts = self.audio_devices.hosts();
+            self.dialogs.settings.pending_hosts =
+                Some(enumerate(&self.audio_devices, |d| d.hosts()));
             self.dialogs.settings.devices_host = None;
             self.dialogs.settings.scroll_to.get_or_insert(section);
             if let Some(hub) = self.engine.midi_mut() {
@@ -500,11 +572,14 @@ impl crate::App {
             }
         }
         self.dialogs.settings.open = true;
-        if self.dialogs.settings.devices_host != Some(config.host) {
-            self.dialogs.settings.devices = self.audio_devices.devices(config.host);
-            self.dialogs.settings.devices_host = Some(config.host);
-        }
         let cache = &mut self.dialogs.settings;
+        let requested = cache.pending_devices.as_ref().map(|(host, _)| *host);
+        if cache.devices_host != Some(config.host) && requested != Some(config.host) {
+            let host = config.host;
+            let rx = enumerate(&self.audio_devices, move |d| d.devices(host));
+            cache.pending_devices = Some((host, rx));
+        }
+        cache.collect();
         let (devices, device) = device_entries(config.host, &cache.devices, &config);
         let rates = rates(config.host, &cache.devices, &devices[device], &config);
         let (no_device, latency) = match self.engine.audio_state() {

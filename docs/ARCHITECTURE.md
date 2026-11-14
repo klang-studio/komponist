@@ -340,7 +340,8 @@ crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
 - **Telemetry** (atomics, read every UI frame): playhead tick, play/record state, CPU load (callback
   time / buffer period, smoothed), xrun count, per-track `TrackMeter` (`Arc` shared with the program:
   peak L/R since the last read, as `AtomicU32` f32 bits, taken with `swap(0)`), master meter,
-  MIDI activity per input. Ballistics (peak hold 1.5 s, 20 dB/s, clip latch) run in the UI with
+  MIDI activity per input, keys held on the MIDI inputs (`Telemetry::held_input_keys`, a 128-bit
+  map in two atomics; the piano roll's keyboard lights them, WP-61). Ballistics (peak hold 1.5 s, 20 dB/s, clip latch) run in the UI with
   `klang_dsp::meter`.
 
 ### 6.4 Block processing order
@@ -371,6 +372,10 @@ processors. Only a sample rate change re-activates them.
 - Swing: delays every second step by `swing × step length / 2` (compile time).
 - Clip loops: repetitions are expanded at compile time (thousands of notes are cheap). Notes that
   reach past the clip end are cut at the clip end.
+- Note chasing (WP-61, like Ableton Live): after a playback start, a locate while playing and a loop
+  wrap, notes that started earlier and still sound at the new position start at once with their
+  remaining length (probability rolls for them too). Program swaps do not chase. Export starts
+  with `Play`, so a range that begins inside a pad renders it.
 - Recording (S02): the engine reports note-ons and note-offs with ticks. The UI builds the take
   live, so notes appear at once. At stop it writes **one** undo step "Take n". During loop
   recording each `LoopWrapped` starts a new take in the same clip. Esc discards the running take.
@@ -540,6 +545,9 @@ table of CLAP features / VST3 subcategories.
 
 `Ok`, `Loading` (passthrough), `Crashed` (red edge, "Neu laden"), `Missing` (placeholder, state
 kept, S06 dialog on open), plus `Bypassed`. Held by `komponist-plugins::PluginManager`, keyed by `DeviceId`.
+`Loading` also covers a running bridge that re-activates (another sample rate, the render-mode
+switch around an export) and a warm-up of `komponist_plugins::WARM_UP` (250 ms) after every
+activation, so `Ok` means "renders real audio now"; the export waits for it (WP-61).
 
 ---
 

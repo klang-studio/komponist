@@ -14,15 +14,14 @@
 //!    worker thread takes engine, program and job.
 //! 4. **Worker**: sets the export rate when it differs from the device's
 //!    (`Engine::set_sample_rate` re-activates every processor), then waits for the UI. A bridge
-//!    re-activates through the plugin manager's poll on the UI thread and renders its silent
-//!    fallback until the bridge confirms, but its status stays `Ok` meanwhile; a render of only
-//!    fallback blocks takes milliseconds, so a whole file could come out silent (also right after
-//!    a previous export at another rate, whose re-activation back to the device rate may still
-//!    run). So the UI polls the host once (the bridges take any pending re-activation) and waits
-//!    for every running bridge to answer a state request (`DeviceHost::snapshot_states`, at most
-//!    [`SNAPSHOT_TIMEOUT`]); a bridge answers in order, so after its re-activation. Then the
-//!    worker runs `export` (progress and peak through shared atomics), restores the device rate
-//!    and sends the engine back.
+//!    re-activates through the plugin manager's poll on the UI thread (and for the switch to
+//!    offline processing in step 3) and renders its silent fallback until the bridge confirms;
+//!    its status is `Loading` from the moment the processor or the render mode asked for it until
+//!    the bridge confirmed and the warm-up (`komponist_plugins::WARM_UP`) passed. A render of only fallback blocks takes milliseconds, so the UI holds the worker
+//!    back, frame by frame without blocking, until no device of the project is `Loading` (also
+//!    right after a previous export at another rate, whose re-activation back to the device rate
+//!    may still run), at most [`READY_TIMEOUT`]. Then the worker runs `export` (progress and peak
+//!    through shared atomics), restores the device rate and sends the engine back.
 //! 5. **Finish** (UI): the engine goes back into the stream (`EngineSync::attach`), the bridges
 //!    back to realtime, the engine's events are drained (a `ProcessorFailed` from the render, or a
 //!    processor that failed to re-activate, names a device that dropped out), the dialog closes
@@ -56,7 +55,7 @@ use komponist_model::{Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
-use crate::app::{App, SNAPSHOT_TIMEOUT};
+use crate::app::App;
 use crate::dialogs::Overlay;
 use crate::dialogs::export::{
     self as view, DeviceRow, DeviceState, Output, ProgressView, SettingsView, Stage, names,
@@ -66,6 +65,10 @@ use crate::engine_sync::DetachedEngine;
 use crate::ui_state::{
     Dialog, ExportDialog, ExportProgress, ExportStage, StatusKind, StatusMessage,
 };
+
+/// How long the export waits for devices re-activating at the export rate before it renders
+/// without them (fallback audio).
+pub const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Opens a folder for "Im Ordner zeigen".
 pub type FolderOpener = Box<dyn FnMut(&Path) -> io::Result<()>>;
@@ -152,6 +155,8 @@ struct Worker {
     messages: Receiver<Message>,
     /// Go on after the re-activation (`true`) or stop (`false`).
     go: Option<Sender<bool>>,
+    /// When the worker reported `Prepared` (the UI waits for re-activating devices).
+    prepared: Option<Instant>,
     cancel: Arc<AtomicBool>,
     progress: Arc<SharedProgress>,
     /// When rendering started (speed, time left).
@@ -476,7 +481,7 @@ impl App {
                 return;
             };
             match worker.messages.try_recv() {
-                Ok(Message::Prepared) => self.bridges_reactivated(),
+                Ok(Message::Prepared) => worker.prepared = Some(Instant::now()),
                 Ok(Message::Done {
                     engine,
                     result,
@@ -485,7 +490,10 @@ impl App {
                     self.finish_export(engine, result, failed);
                     return;
                 }
-                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Empty) => {
+                    self.release_when_ready();
+                    break;
+                }
                 Err(TryRecvError::Disconnected) => {
                     // The worker panicked; the engine is gone with it.
                     self.export.run = None;
@@ -567,6 +575,7 @@ impl App {
                 thread: Some(thread),
                 messages,
                 go: Some(go),
+                prepared: None,
                 cancel,
                 progress,
                 started: Instant::now(),
@@ -575,14 +584,30 @@ impl App {
         self.update_progress();
     }
 
-    /// The worker is ready: pending re-activations of bridges are taken in this poll, and their
-    /// answers to a state request come after them (module docs, step 4).
-    fn bridges_reactivated(&mut self) {
-        self.drain_events();
-        // Only the answers matter here, not the states: storing them would mark the project
-        // changed by an export (a plugin's state differs from none stored). A state the user
-        // changed reaches the document through the plugin's own debounced snapshot.
-        let _ = self.engine.host_mut().snapshot_states(SNAPSHOT_TIMEOUT);
+    /// The worker is ready (`Prepared`): lets it render once no device of the project is
+    /// `Loading` any more (re-activation at the export rate, warm-up), or after
+    /// [`READY_TIMEOUT`] (such a device renders its fallback). Module docs, step 4.
+    fn release_when_ready(&mut self) {
+        let Some(Run {
+            phase: Phase::Running(worker),
+            ..
+        }) = &self.export.run
+        else {
+            return;
+        };
+        let Some(prepared) = worker.prepared else {
+            return;
+        };
+        if worker.go.is_none() {
+            return;
+        }
+        let loading = self
+            .devices_not_ready()
+            .iter()
+            .any(|row| row.state == DeviceState::Loading);
+        if loading && prepared.elapsed() < READY_TIMEOUT {
+            return;
+        }
         if let Some(Run {
             phase: Phase::Running(worker),
             ..

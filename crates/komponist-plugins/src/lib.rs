@@ -33,5 +33,12 @@ pub use manager::{
     PluginManagerEvent, ProcessorSetup,
 };
 
+/// How long a bridged device stays `Loading` after its bridge reported the plugin active (also
+/// after a re-activation for another rate). Audio already flows meanwhile; the time covers plugins
+/// that report active before they can sound: klopfer prepares its kit in the background (WP-54 saw
+/// about 70 ms of silence; WP-61 measured 0.2–1 ms in realtime and 9 ms offline, see
+/// `docs/PERFORMANCE.md`). Exports wait for `Ok`, so they do not miss the first hits.
+pub const WARM_UP: std::time::Duration = std::time::Duration::from_millis(250);
+
 // The shared-memory audio buffers must hold the engine's largest block.
 const _: () = assert!(komponist_ipc::shm::MAX_BLOCK == komponist_engine::MAX_BLOCK);

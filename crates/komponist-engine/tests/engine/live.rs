@@ -306,3 +306,34 @@ fn keys_held_across_a_loop_wrap_end_with_the_lap() {
         "{events:?}"
     );
 }
+
+#[test]
+fn held_input_keys_follow_the_midi_input_without_a_listening_track() {
+    let mut rig = Rig::new(RATE, 512);
+    // No program at all: the telemetry still shows what the keyboard holds.
+    let held = |rig: &Rig| rig.handle.telemetry().held_input_keys();
+    assert_eq!(held(&rig), 0);
+    rig.process_with(
+        256,
+        &[
+            midi(0, 0, [0x90, 60, 100]),
+            midi(10, 1, [0x93, 127, 1]),
+            midi(20, 0, [0x90, 0, 64]),
+            // Velocity 0 is a note-off.
+            midi(30, 0, [0x90, 0, 0]),
+            // Controllers and pitch bend leave the keys alone.
+            midi(40, 0, [0xb0, 1, 64]),
+            midi(50, 0, [0xe0, 0, 64]),
+        ],
+        0,
+    );
+    assert_eq!(held(&rig), 1 << 60 | 1 << 127);
+    // A call without MIDI keeps them.
+    rig.process_with(256, &[], 0);
+    assert_eq!(held(&rig), 1 << 60 | 1 << 127);
+    rig.process_with(256, &[midi(5, 0, [0x80, 60, 0])], 0);
+    assert_eq!(held(&rig), 1 << 127);
+    // "All notes off" from the controller clears everything.
+    rig.process_with(256, &[midi(5, 0, [0xb2, 123, 0])], 0);
+    assert_eq!(held(&rig), 0);
+}
