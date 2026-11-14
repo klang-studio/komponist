@@ -55,7 +55,7 @@ use komponist_model::format::fmt_bar_pos;
 use komponist_model::{Tick, TickRange};
 use komponist_plugins::DeviceStatus;
 
-use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, UiAction};
+use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
 use crate::app::{App, SNAPSHOT_TIMEOUT};
 use crate::dialogs::Overlay;
 use crate::dialogs::export::{
@@ -75,8 +75,6 @@ pub(crate) struct Exports {
     run: Option<Run>,
     /// This session's exports of the open project, oldest first (Projekt › Exporte).
     pub(crate) done: Vec<PathBuf>,
-    /// The folder of the last export and the status message whose link opens it.
-    reveal: Option<(Instant, PathBuf)>,
     /// How "Im Ordner zeigen" opens a folder.
     opener: FolderOpener,
     /// Engine events are being drained after an export: failed slots go into `failed`.
@@ -90,7 +88,6 @@ impl Default for Exports {
         Exports {
             run: None,
             done: Vec::new(),
-            reveal: None,
             opener: Box::new(xdg_open),
             collecting: false,
             failed: Vec::new(),
@@ -114,7 +111,6 @@ impl Exports {
     /// Forgets the exports of the project that was open.
     pub(crate) fn forget(&mut self) {
         self.done.clear();
-        self.reveal = None;
     }
 }
 
@@ -644,15 +640,16 @@ impl App {
                 } else {
                     StatusKind::Error
                 };
-                let since = Instant::now();
+                let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
                 self.ui.status = Some(StatusMessage {
                     text,
                     kind,
-                    since,
-                    link: None,
+                    since: Instant::now(),
+                    link: Some((
+                        names::SHOW_IN_FOLDER.to_owned(),
+                        Box::new(Action::Project(ProjectAction::ShowInFolder(folder))),
+                    )),
                 });
-                let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                self.export.reveal = Some((since, folder));
                 self.export.done.retain(|p| *p != path);
                 self.export.done.push(path);
             }
@@ -690,19 +687,9 @@ impl App {
         }
     }
 
-    /// The link of the current status message, if it is an export's: "Im Ordner zeigen".
-    pub(crate) fn status_link(&self) -> Option<&'static str> {
-        let status = self.ui.status.as_ref()?;
-        let (since, _) = self.export.reveal.as_ref()?;
-        (status.since == *since).then_some(names::SHOW_IN_FOLDER)
-    }
-
-    /// "Im Ordner zeigen": opens the last export's folder.
-    pub fn show_export_folder(&mut self) {
-        let Some((_, folder)) = self.export.reveal.clone() else {
-            return;
-        };
-        if let Err(e) = (self.export.opener)(&folder) {
+    /// `ProjectAction::ShowInFolder`: opens `folder` in the file manager; says why if it fails.
+    pub(crate) fn show_in_folder(&mut self, folder: &Path) {
+        if let Err(e) = (self.export.opener)(folder) {
             self.set_status(names::open_failed(&e.to_string()), StatusKind::Error);
         }
     }

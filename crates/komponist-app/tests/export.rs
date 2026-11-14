@@ -291,7 +291,8 @@ fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
     assert!(app.ui().dialog.is_none());
     assert_eq!(app.transport(), TransportState::Stopped);
     assert_eq!(app.exported(), std::slice::from_ref(&path));
-    app.show_export_folder();
+    let link = app.ui().status.as_ref().and_then(|s| s.link.clone());
+    app.dispatch(*link.expect("the status message carries the link").1);
     assert_eq!(*opened.lock().unwrap(), [dir.join("out")]);
     // And the engine plays again.
     assert!(!app.engine().is_detached());

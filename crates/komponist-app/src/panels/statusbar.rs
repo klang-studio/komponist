@@ -115,7 +115,7 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
     {
         s.left = msg.text.clone();
         s.ok_dot = msg.kind == StatusKind::Success;
-        s.link = app.status_link().map(str::to_owned);
+        s.link = msg.link.as_ref().map(|(label, _)| label.clone());
         s.left_color = match msg.kind {
             StatusKind::Error => color::STATE_ERROR,
             StatusKind::Success | StatusKind::Info => color::TEXT_2,

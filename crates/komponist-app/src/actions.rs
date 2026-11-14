@@ -391,6 +391,8 @@ pub enum ProjectAction {
     ShowStartScreen,
     /// Ctrl Shift E or "⋯": open the export dialog with the last settings.
     OpenExportDialog,
+    /// The status bar's "Im Ordner zeigen": opens this folder in the file manager.
+    ShowInFolder(PathBuf),
     /// "Exportieren" / Enter in the export dialog.
     StartExport(ExportSettings),
     /// Esc during an export: cancel, leave no partial file.

@@ -2022,6 +2022,7 @@ impl App {
             ProjectAction::OpenExportDialog => self.open_export_dialog(),
             ProjectAction::StartExport(export) => self.start_export(export),
             ProjectAction::CancelExport => self.cancel_export(),
+            ProjectAction::ShowInFolder(folder) => self.show_in_folder(&folder),
         }
     }
 
