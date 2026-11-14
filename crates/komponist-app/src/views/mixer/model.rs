@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use komponist_model::{Channel, ChannelRef, Device, DeviceId, DeviceRole, Project, TrackId};
-use komponist_plugins::DeviceStatus;
+use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
 
@@ -45,6 +45,10 @@ pub mod names {
     pub const LOADING: &str = "lädt …";
     /// Status of a crashed insert.
     pub const CRASHED: &str = "abgestürzt";
+    /// Status of an insert that failed to load (as the device card's „Lässt sich nicht laden“).
+    pub const LOAD_FAILED: &str = "lässt sich nicht laden";
+    /// Status of an insert that stopped answering (as the card's „Hängt“).
+    pub const UNRESPONSIVE: &str = "hängt";
     /// Status of a missing insert (S06 „Plugin fehlt“).
     pub const MISSING: &str = "Plugin fehlt";
     /// Status of a bypassed insert.
@@ -122,8 +126,12 @@ pub enum SlotState {
     Ok,
     /// "lädt": passes audio through.
     Loading,
-    /// "abgestürzt".
+    /// "abgestürzt": the plugin process ended.
     Crashed,
+    /// "lässt sich nicht laden": loading failed (not a crash).
+    LoadFailed,
+    /// "hängt": the plugin stopped answering (not a crash).
+    Unresponsive,
     /// "fehlt": placeholder, state kept.
     Missing,
 }
@@ -133,7 +141,9 @@ impl From<&DeviceStatus> for SlotState {
         match status {
             DeviceStatus::Ok => SlotState::Ok,
             DeviceStatus::Loading => SlotState::Loading,
-            DeviceStatus::Crashed(_) => SlotState::Crashed,
+            DeviceStatus::Crashed(FailReason::Exited { .. }) => SlotState::Crashed,
+            DeviceStatus::Crashed(FailReason::LoadFailed(_)) => SlotState::LoadFailed,
+            DeviceStatus::Crashed(FailReason::Unresponsive) => SlotState::Unresponsive,
             DeviceStatus::Missing => SlotState::Missing,
         }
     }
@@ -162,6 +172,8 @@ impl Insert {
         match self.state {
             SlotState::Loading => names::LOADING,
             SlotState::Crashed => names::CRASHED,
+            SlotState::LoadFailed => names::LOAD_FAILED,
+            SlotState::Unresponsive => names::UNRESPONSIVE,
             SlotState::Missing => names::MISSING,
             SlotState::Ok if self.bypass => names::BYPASS,
             SlotState::Ok => names::SLOT_DETAIL,
@@ -305,6 +317,36 @@ pub fn move_target(from: usize, slot: usize, first: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin that cannot load or does not answer is not "abgestürzt" (owner test 2026-11-14).
+    #[test]
+    fn slot_states_tell_failures_apart() {
+        let slot = |reason| SlotState::from(&DeviceStatus::Crashed(reason));
+        let exited = FailReason::Exited {
+            code: None,
+            signal: Some(11),
+        };
+        assert_eq!(slot(exited), SlotState::Crashed);
+        assert_eq!(
+            slot(FailReason::LoadFailed("x".to_owned())),
+            SlotState::LoadFailed
+        );
+        assert_eq!(slot(FailReason::Unresponsive), SlotState::Unresponsive);
+        let detail = |state| {
+            Insert {
+                device: DeviceId(1),
+                name: String::new(),
+                instrument: false,
+                bypass: false,
+                state,
+                late: None,
+            }
+            .detail()
+        };
+        assert_eq!(detail(SlotState::Crashed), "abgestürzt");
+        assert_eq!(detail(SlotState::LoadFailed), "lässt sich nicht laden");
+        assert_eq!(detail(SlotState::Unresponsive), "hängt");
+    }
 
     /// A builtin host that has seen every device of `p` (unknown devices report `Ok`).
     fn host_for(p: &komponist_model::Project) -> BuiltinHost {

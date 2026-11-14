@@ -11,7 +11,7 @@ use egui::{
 };
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
 use komponist_model::{DeviceRole, Project, Track, TrackId};
-use komponist_plugins::DeviceStatus;
+use komponist_plugins::{DeviceStatus, FailReason};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
 use komponist_ui::State;
@@ -48,7 +48,9 @@ pub fn instrument_line(track: &Track, any_solo: bool, engine: &EngineSync) -> (S
     let name = &device.plugin.name;
     match engine.device_status(device.id) {
         DeviceStatus::Missing => (names::missing(name), true),
-        DeviceStatus::Crashed(_) => (names::crashed(name), true),
+        DeviceStatus::Crashed(FailReason::Exited { .. }) => (names::crashed(name), true),
+        DeviceStatus::Crashed(FailReason::LoadFailed(_)) => (names::load_failed(name), true),
+        DeviceStatus::Crashed(FailReason::Unresponsive) => (names::unresponsive(name), true),
         DeviceStatus::Loading => (names::loading(name), false),
         DeviceStatus::Ok if device.bypass => (names::bypassed(name), false),
         DeviceStatus::Ok => (name.clone(), false),

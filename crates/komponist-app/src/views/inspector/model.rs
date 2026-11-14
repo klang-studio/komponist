@@ -9,7 +9,7 @@ use komponist_model::{
     ClipContent, ClipId, Device, DeviceId, DeviceRole, Meter, Project, TICKS_PER_STEP, Tick,
     TrackId,
 };
-use komponist_plugins::DeviceStatus;
+use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
 use crate::ui_state::{DockTab, PanelLayout};
@@ -116,6 +116,10 @@ pub mod names {
     pub const LOADING: &str = "lädt";
     /// Status of a crashed device (S05 `D('Airwindows Cons.','abgestürzt',{err:1})`).
     pub const CRASHED: &str = "abgestürzt";
+    /// Status of a device that failed to load (as the card's „Lässt sich nicht laden“).
+    pub const LOAD_FAILED: &str = "lässt sich nicht laden";
+    /// Status of a device that stopped answering (as the card's „Hängt“).
+    pub const UNRESPONSIVE: &str = "hängt";
     /// Status of a missing device (by analogy, S06 „Plugin fehlt“).
     pub const MISSING: &str = "fehlt";
     pub use crate::views::late::{LATE, late_blocks};
@@ -236,6 +240,10 @@ pub enum RowStatus {
     Loading,
     /// Crashed: red name and "abgestürzt".
     Crashed,
+    /// Loading failed: red name and "lässt sich nicht laden" (not a crash).
+    LoadFailed,
+    /// Stopped answering: red name and "hängt" (not a crash).
+    Unresponsive,
     /// Missing: red name and "fehlt".
     Missing,
 }
@@ -245,6 +253,8 @@ impl DeviceRow {
     pub fn tag(&self, format: &'static str) -> &'static str {
         match self.status {
             RowStatus::Crashed => names::CRASHED,
+            RowStatus::LoadFailed => names::LOAD_FAILED,
+            RowStatus::Unresponsive => names::UNRESPONSIVE,
             RowStatus::Missing => names::MISSING,
             RowStatus::Ok | RowStatus::Loading => format,
         }
@@ -262,7 +272,9 @@ pub fn device_rows(
             let status = match host.status(d.id) {
                 DeviceStatus::Ok => RowStatus::Ok,
                 DeviceStatus::Loading => RowStatus::Loading,
-                DeviceStatus::Crashed(_) => RowStatus::Crashed,
+                DeviceStatus::Crashed(FailReason::Exited { .. }) => RowStatus::Crashed,
+                DeviceStatus::Crashed(FailReason::LoadFailed(_)) => RowStatus::LoadFailed,
+                DeviceStatus::Crashed(FailReason::Unresponsive) => RowStatus::Unresponsive,
                 DeviceStatus::Missing => RowStatus::Missing,
             };
             (
@@ -407,6 +419,25 @@ pub fn from_steps(steps: f64) -> Tick {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The device row names the failure like the device card does.
+    #[test]
+    fn device_rows_tell_failures_apart() {
+        let row = |status| DeviceRow {
+            device: komponist_model::DeviceId(1),
+            name: String::new(),
+            instrument: false,
+            bypass: false,
+            status,
+        };
+        assert_eq!(row(RowStatus::Crashed).tag("CLAP"), "abgestürzt");
+        assert_eq!(
+            row(RowStatus::LoadFailed).tag("CLAP"),
+            "lässt sich nicht laden"
+        );
+        assert_eq!(row(RowStatus::Unresponsive).tag("CLAP"), "hängt");
+        assert_eq!(row(RowStatus::Ok).tag("CLAP"), "CLAP");
+    }
 
     /// A builtin host that has seen every device of `p` (unknown devices report `Ok`).
     fn host_for(p: &komponist_model::Project) -> BuiltinHost {

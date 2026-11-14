@@ -328,7 +328,7 @@ fn device_row(
         pos2(inner.left(), rect.center().y - m::POWER / 2.0),
         vec2(m::POWER, m::POWER),
     );
-    let failed = matches!(row.status, RowStatus::Crashed | RowStatus::Missing);
+    let failed = !matches!(row.status, RowStatus::Ok | RowStatus::Loading);
     let fill = if row.bypass || failed {
         color::SURFACE_4
     } else if row.status == RowStatus::Loading {
@@ -363,8 +363,8 @@ fn device_row(
     let style = typography::VALUE_S;
     let (tag_text, tag_ink) = match (late, row.status) {
         (Some(_), _) => (names::LATE, color::METER_LOUD),
-        (None, RowStatus::Crashed | RowStatus::Missing) => (row.tag(tag), color::STATE_ERROR),
-        (None, _) => (row.tag(tag), color::TEXT_3),
+        (None, RowStatus::Ok | RowStatus::Loading) => (row.tag(tag), color::TEXT_3),
+        (None, _) => (row.tag(tag), color::STATE_ERROR),
     };
     let g = komponist_ui::widgets::galley(ui, tag_text, fonts::font_id(&style), style.line_height);
     let pos = komponist_ui::widgets::text_pos(

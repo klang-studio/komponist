@@ -109,6 +109,16 @@ pub mod names {
         format!("⚠ Plugin abgestürzt: {plugin}")
     }
 
+    /// "⚠ Plugin lässt sich nicht laden: Vital": loading failed, no crash (as the status bar).
+    pub fn load_failed(plugin: &str) -> String {
+        format!("⚠ Plugin lässt sich nicht laden: {plugin}")
+    }
+
+    /// "⚠ Plugin hängt: Vital": the plugin stopped answering, no crash (as the status bar).
+    pub fn unresponsive(plugin: &str) -> String {
+        format!("⚠ Plugin hängt: {plugin}")
+    }
+
     /// "Surge XT · lädt …" (prototype `arrView`).
     pub fn loading(plugin: &str) -> String {
         format!("{plugin} · lädt …")

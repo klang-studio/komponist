@@ -53,7 +53,7 @@ use komponist_engine::{Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
 use komponist_model::format::fmt_bar_pos;
 use komponist_model::{Tick, TickRange};
-use komponist_plugins::DeviceStatus;
+use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
 use crate::app::{App, SNAPSHOT_TIMEOUT};
@@ -421,7 +421,9 @@ impl App {
                     DeviceStatus::Ok => continue,
                     DeviceStatus::Loading => DeviceState::Loading,
                     DeviceStatus::Missing => DeviceState::Missing,
-                    DeviceStatus::Crashed(_) => DeviceState::Crashed,
+                    DeviceStatus::Crashed(FailReason::Exited { .. }) => DeviceState::Crashed,
+                    DeviceStatus::Crashed(FailReason::LoadFailed(_)) => DeviceState::LoadFailed,
+                    DeviceStatus::Crashed(FailReason::Unresponsive) => DeviceState::Unresponsive,
                 };
                 rows.push(DeviceRow {
                     name: d.plugin.name.clone(),
