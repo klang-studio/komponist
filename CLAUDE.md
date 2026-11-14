@@ -28,9 +28,17 @@ build of egui/wgpu takes a few minutes.
 
 **Build load (owner, 2026-11-14):** builds froze the owner's desktop. Therefore: at most **2 agents
 build at the same time**; `.cargo/config.toml` caps cargo at 6 jobs; while working, iterate narrowly
-(`cargo check -p <crate>`, `cargo test -p <crate> --test <name>`) and run `scripts/check.sh` **once**
+(`cargo check -p <crate>`, `cargo test -p <crate> --test it <module>::`) and run `scripts/check.sh` **once**
 before reporting. `check.sh`, `check-gui.sh` and `run.sh` take a shared build lock and run at low CPU/IO
 priority, so the gate may wait for another worktree: start it with `run_in_background`.
+
+**Test binaries (WP-66):** every file in a crate's `tests/` is its own binary that links egui/wgpu again, so
+each crate has **one** integration binary, `tests/it/main.rs`, with one `mod` per topic (shared helpers such as
+`tests/common/` are declared there once with `#[path]`). A new test goes into a module of `it`, not into a new
+`tests/*.rs`. Only tests that need their own process stay separate: winit event loops (`plugin_frame_gui`,
+`acceptance_flow4_gui`, `plugin_frame_installed`, run by `scripts/check-gui.sh`) and the `--release --ignored`
+perf suites that `docs/PERFORMANCE.md` names (`soak`, `engine_perf`, `arrangement_perf`). Run one module:
+`cargo test -p komponist-app --test it piano_roll::`.
 
 ## Commands
 
