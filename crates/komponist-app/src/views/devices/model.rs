@@ -104,7 +104,7 @@ pub mod names {
         format!("{DEVICE} {name} anzeigen")
     }
 
-    /// The placeholder text of a widget kind WP-83 has not built yet (handoff §4 names).
+    /// The name of a widget kind (handoff §4), shown by the placeholder of the graph (WP-84).
     pub fn widget(kind: super::layout::WidgetKind) -> &'static str {
         use super::layout::WidgetKind as K;
         match kind {

@@ -17,20 +17,18 @@ use egui::{
     UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_model::Track;
-use komponist_model::params::{ParamKind, Scale};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{Srgba, TrackPalette, color, device, radius, size};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
-use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, px, state};
 
-use super::layout::{Cell, Page, WidgetKind};
+use super::layout::Page;
 use super::metrics;
-use super::model::{Card, CardState, Param, failure_texts, names};
+use super::model::{Card, CardState, failure_texts, names};
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
@@ -204,9 +202,9 @@ fn expanded(
             }
             let cells = Rect::from_min_max(pos2(body.left(), y.max(body.top())), body.max);
             if card.bypass {
-                bypassed(cu, |cu| cells_body(cu, ctx, card, body, cells));
+                bypassed(cu, |cu| cells_body(cu, ctx, card, at, body, cells));
             } else {
-                cells_body(cu, ctx, card, body, cells);
+                cells_body(cu, ctx, card, at, body, cells);
             }
         }
         CardState::Loading => {
@@ -831,7 +829,14 @@ fn menu(
 }
 
 /// The cells of the current page on the grid, and the dividers between function groups.
-fn cells_body(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, body: Rect, area: Rect) {
+fn cells_body(
+    cu: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    card: &Card,
+    at: &Placed<'_>,
+    body: Rect,
+    area: Rect,
+) {
     let Some(page) = card.current_page() else {
         return;
     };
@@ -850,118 +855,18 @@ fn cells_body(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, body: Rect, area:
     }
     // The state warning above the cells pushes them down; cells that no longer fit are not drawn
     // (no clipped knobs).
+    let palette = TrackPalette::new(at.track.hue.0);
     let origin = pos2(body.left(), area.top());
     for cell in &page.cells {
         let rect = cell.rect().translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {
-            draw_cell(cu, ctx, card, cell, rect);
+            let mut out = Vec::new();
+            super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);
+            for action in out {
+                ctx.send(action);
+            }
         }
     }
-}
-
-/// One cell: a knob with its name and value, or the placeholder of a widget WP-83 builds.
-fn draw_cell(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, cell: &Cell, rect: Rect) {
-    let param = match &cell.param {
-        super::layout::CellParam::Id(id) => card.param(id),
-        _ => None,
-    };
-    match (cell.widget, param) {
-        (WidgetKind::Knob | WidgetKind::KnobLarge, Some(p)) => {
-            knob_cell(cu, ctx, card, cell, p, rect);
-        }
-        _ => placeholder(cu, cell, param, rect),
-    }
-}
-
-/// A knob cell: the knob at the top (`padding-top:2px`), name and value below, centred; a large
-/// knob has them to its right.
-fn knob_cell(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, cell: &Cell, p: &Param, rect: Rect) {
-    let ppp = cu.pixels_per_point();
-    let name_style = typography::LABEL;
-    let value_style = typography::VALUE_S;
-    let large = cell.widget == WidgetKind::KnobLarge;
-    let knob_center = if large {
-        pos2(
-            rect.left() + metrics::CELL_PAD_TOP + size::KNOB / 2.0,
-            rect.center().y,
-        )
-    } else {
-        pos2(
-            rect.center().x,
-            rect.top() + metrics::CELL_PAD_TOP + komponist_tokens::widget::knob::SVG / 2.0,
-        )
-    };
-    let knob = Rect::from_center_size(knob_center, vec2(size::KNOB, size::KNOB));
-    if let Some(v) = knob_ui(cu, p, knob) {
-        ctx.send(Action::Plugin(PluginAction::SetParam {
-            device: card.device,
-            id: p.wire,
-            value: v,
-        }));
-    }
-    let (name_color, value_color) = if card.bypass {
-        (color::TEXT_3, color::TEXT_3)
-    } else {
-        (color::TEXT_2, color::TEXT_3)
-    };
-    let name_font = w::font_at(&name_style, 400);
-    let texts = [
-        (p.name(), name_font, &name_style, name_color),
-        (
-            &p.text,
-            fonts::font_id(&value_style),
-            &value_style,
-            value_color,
-        ),
-    ];
-    if large {
-        let x = knob.right() + 2.0 * metrics::CELL_GAP * 4.0;
-        let room = rect.right() - x;
-        let total: f32 =
-            texts.iter().map(|(_, _, s, _)| s.line_height).sum::<f32>() + metrics::CELL_GAP;
-        let mut y = rect.center().y - total / 2.0;
-        for (text, font, style, color) in texts {
-            let g = elided_galley(cu, text, font, style.line_height, room);
-            cu.painter()
-                .galley(pos2(px::snap(x, ppp), px::snap(y, ppp)), g, color32(color));
-            y += style.line_height + metrics::CELL_GAP;
-        }
-    } else {
-        let mut y = knob_center.y + komponist_tokens::widget::knob::SVG / 2.0 + metrics::CELL_GAP;
-        for (text, font, style, color) in texts {
-            let g = elided_galley(cu, text, font, style.line_height, rect.width());
-            let pos = pos2(
-                px::snap(rect.center().x - g.size().x / 2.0, ppp),
-                px::snap(y, ppp),
-            );
-            cu.painter().galley(pos, g, color32(color));
-            y += style.line_height + metrics::CELL_GAP;
-        }
-    }
-}
-
-/// The placeholder of a widget kind that does not exist yet (WP-83): a `surface.1` box with the
-/// kind's name and the parameter's.
-fn placeholder(cu: &mut Ui, cell: &Cell, param: Option<&Param>, rect: Rect) {
-    let ppp = cu.pixels_per_point();
-    px::fill(cu.painter(), rect, radius::M, color32(color::SURFACE_1));
-    let kind = names::widget(cell.widget);
-    let label = match param {
-        Some(p) => format!("{kind} {}", p.name()),
-        None => kind.to_owned(),
-    };
-    let style = typography::LABEL;
-    let mut job = fonts::layout_job(&label, &style, color32(color::TEXT_3));
-    job.wrap.max_width = rect.width() - 2.0 * metrics::CELL_GAP * 2.0;
-    job.halign = egui::Align::Center;
-    let g = cu.painter().layout_job(job);
-    let pos = pos2(
-        px::snap(rect.center().x, ppp),
-        px::snap(rect.center().y - g.size().y / 2.0, ppp),
-    );
-    let r = cu.allocate_rect(rect, Sense::hover());
-    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &label));
-    cu.painter().galley(pos, g, color32(color::TEXT_3));
 }
 
 /// A message block (`msgS`: padding 12, gap 8): title in `type.ui` semibold `title_color`, the
@@ -1005,26 +910,4 @@ fn place(cu: &mut Ui, g: Arc<Galley>, text: &str, x: f32, y: f32, color: Srgba) 
     let bottom = pos.y + g.size().y;
     cu.painter().galley(pos, g, color32(color));
     bottom
-}
-
-/// One knob, driven in normalised space (so log and dB parameters turn evenly); the new plain
-/// value, snapped, if it was turned.
-fn knob_ui(cu: &mut Ui, p: &Param, rect: Rect) -> Option<f64> {
-    let info = &p.info;
-    let mut value = info.to_normalized(p.value);
-    let format = |n: f64| p.text_at(info.to_plain(n));
-    let knob = Knob::new(&mut value, p.name().to_owned())
-        .range(0.0..=1.0)
-        .default_value(info.default_normalized())
-        .bipolar(matches!(
-            info.kind,
-            ParamKind::Float {
-                scale: Scale::Pan,
-                ..
-            }
-        ))
-        .format(format);
-    let r = cu.put(rect, knob);
-    let snapped = info.to_plain(value);
-    (r.changed() && snapped != p.value).then_some(snapped)
 }

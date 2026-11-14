@@ -27,6 +27,7 @@
 //! | wheel in the body | scrolls up and down while the dock is lower than the chain (< 292 px area) |
 //! | Neu laden | `Reload` |
 
+mod cells;
 pub mod frame;
 pub mod layout;
 pub mod metrics;

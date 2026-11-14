@@ -20,8 +20,8 @@ pub const ROWS: u8 = 3;
 /// Most pages a device has (`widget.pages.max_pages`).
 pub const MAX_PAGES: usize = widget::pages::MAX_PAGES as usize;
 
-/// The widget a cell shows. WP-83 builds the widgets; until then only [`WidgetKind::Knob`] and
-/// [`WidgetKind::KnobLarge`] draw a control, the rest a labelled placeholder.
+/// The widget a cell shows (WP-83 builds them in `komponist_ui::widgets::device`; the graph, WP-84,
+/// is a labelled placeholder until it exists).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetKind {
     /// `knob`, 1 × 1.
@@ -51,7 +51,7 @@ pub enum WidgetKind {
 impl WidgetKind {
     /// Whether the frame draws a control for it today (else a placeholder).
     pub fn is_built(self) -> bool {
-        matches!(self, WidgetKind::Knob | WidgetKind::KnobLarge)
+        self != WidgetKind::Graph
     }
 }
 
