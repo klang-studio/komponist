@@ -529,7 +529,12 @@ fn no_device_chip(ui: &mut Ui) {
     let width = wm::BUTTON_PADDING_X * 2.0 + m::ERROR_DOT + space::SPACE_2 + text.size().x.ceil();
     let (rect, _) = ui.allocate_exact_size(vec2(width, size::CONTROL), Sense::hover());
     let painter = ui.painter();
-    px::fill(painter, rect, radius::M, color32(color::STATE_ERROR_SURFACE));
+    px::fill(
+        painter,
+        rect,
+        radius::M,
+        color32(color::STATE_ERROR_SURFACE),
+    );
     let dot = pos2(
         rect.left() + wm::BUTTON_PADDING_X + m::ERROR_DOT / 2.0,
         rect.center().y,

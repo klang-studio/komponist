@@ -1,6 +1,7 @@
 //! Draws layout 2a: transport bar, browser, arrangement, dock, inspector, status bar, the
-//! collapsed rails, the resize edges, the focus areas with their accent line, and placeholder
-//! dialogs. The views fill the panels ([`crate::views`]).
+//! collapsed rails, the resize edges, the focus areas with their accent line; or the start screen
+//! (S09). The views fill the panels ([`crate::views`]); the dialogs come from
+//! [`crate::dialogs`] (the export dialog is still a placeholder here until WP-53b).
 
 use std::time::Instant;
 
@@ -68,8 +69,8 @@ impl App {
         let screen = ui.max_rect();
         px::fill(ui.painter(), screen, 0.0, color32(color::SURFACE_0));
         if self.ui.screen == Screen::Start {
-            // S09 arrives with WP-52.
-            centered_text(ui, screen, "Startbildschirm", None);
+            self.draw_start(ui, screen);
+            self.draw_dialogs(&ui.ctx().clone());
             return;
         }
         let l = layout::compute(screen, &self.ui.layout);
@@ -106,11 +107,12 @@ impl App {
             self.edge(ui, edge, screen);
         }
         self.dialog(ui);
+        self.draw_dialogs(&ui.ctx().clone());
     }
 
     /// A press inside a panel focuses its area (not while a dialog is open).
     fn focus_on_press(&mut self, ui: &Ui, l: &layout::Layout) {
-        if self.ui.dialog.is_some() {
+        if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
             return;
         }
         let press = ui.input(|i| {
@@ -430,17 +432,12 @@ impl App {
         }
     }
 
-    /// Placeholder dialogs until WP-52 (settings, missing plugins) and WP-53 (export) land:
-    /// the dialog's title and a close button; Esc closes.
+    /// The export dialog's placeholder until WP-53b: its title and a close button; Esc closes.
     fn dialog(&mut self, ui: &mut Ui) {
-        let Some(dialog) = &self.ui.dialog else {
+        let Some(Dialog::Export(_)) = &self.ui.dialog else {
             return;
         };
-        let title = match dialog {
-            Dialog::Settings(_) => "Einstellungen",
-            Dialog::Export(_) => "WAV exportieren",
-            Dialog::MissingPlugins(_) => "Plugins fehlen",
-        };
+        let title = "WAV exportieren";
         let frame = w::menu_frame().inner_margin(egui::Margin::same(space::SPACE_4 as i8));
         let modal = egui::Modal::new(Id::unique("komponist_dialog"))
             .frame(frame)
