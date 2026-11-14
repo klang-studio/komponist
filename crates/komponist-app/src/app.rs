@@ -736,7 +736,18 @@ impl App {
         let wants = ctx.egui_wants_keyboard_input();
         // The Esc that ended a text entry (it surrendered the focus) is not the shortcut's.
         let focus_just_lost = std::mem::replace(&mut self.shell.keyboard_wanted, wants) && !wants;
-        if wants {
+        // Tab always leaves the maximised mixer, even while a widget has the focus (ring) (owner
+        // decision Q9, 2026-11-14); a text field or a dialog keeps its Tab, and every other key
+        // stays with the focused widget.
+        let layout = &self.ui.layout;
+        let tab_only = wants
+            && layout.dock_open
+            && layout.dock_maximized
+            && layout.dock_tab == DockTab::Mixer
+            && self.ui.dialog.is_none()
+            && self.dialogs.overlay.is_none()
+            && !ctx.text_edit_focused();
+        if wants && !tab_only {
             return;
         }
         let start = self.ui.screen == Screen::Start;
@@ -779,6 +790,9 @@ impl App {
             let Some(k) = key_from_egui(key) else {
                 continue;
             };
+            if tab_only && !(k == Key::Tab && !modifiers.shift && !modifiers.alt) {
+                continue;
+            }
             // Shift is part of typing "+" on some layouts.
             let shift = modifiers.shift && !matches!(k, Key::Plus | Key::Minus);
             let chord = KeyChord {
@@ -799,7 +813,7 @@ impl App {
                     | Key::ArrowLeft
                     | Key::ArrowRight
             );
-            if widget_keys && navigation && !ctrl {
+            if widget_keys && navigation && !ctrl && !tab_only {
                 continue;
             }
             let Some(action) = self.keymap.lookup(chord, self.ui.focus).cloned() else {
@@ -2240,6 +2254,7 @@ pub fn pisynth_ref() -> PluginRef {
         id: BUILTIN_PISYNTH.to_owned(),
         name: "pisynth".to_owned(),
         vendor: "klang-studio".to_owned(),
+        module: Box::default(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }
 }
