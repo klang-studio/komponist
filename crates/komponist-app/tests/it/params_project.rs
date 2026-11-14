@@ -2,7 +2,7 @@
 //! Values live in the devices' opaque state; `fixtures/pisynth-macros.komponist` was saved before
 //! the model existed (Algorithmus 5, Ratio 2 = 3.5, Index 0.6, Sustain 0.25).
 
-use komponist_app::views::devices::model::pisynth_params;
+use komponist_app::views::devices::model::pisynth_macro_params;
 use komponist_builtin::Macro;
 use komponist_model::persist;
 
@@ -21,7 +21,7 @@ fn an_old_file_loads_and_its_macros_read_the_saved_values() {
         .flat_map(|t| &t.channel.devices)
         .find(|d| komponist_app::device_host::is_pisynth(d))
         .expect("a pisynth device");
-    let params = pisynth_params(pisynth);
+    let params = pisynth_macro_params(pisynth);
     let value = |m: Macro| params.iter().find(|p| p.wire == m.id()).unwrap().value;
     assert_eq!(value(Macro::Algorithm), 5.0);
     assert_eq!(value(Macro::Ratio2), 3.5);
@@ -32,6 +32,37 @@ fn an_old_file_loads_and_its_macros_read_the_saved_values() {
     assert_eq!(ids[..3], ["algorithm", "ratio2", "index"]);
     assert_eq!(params[0].text, "5");
     assert_eq!(params[1].text, "3.50");
+}
+
+#[test]
+fn an_old_file_shows_on_the_new_card_too() {
+    // WP-86: the card has its own parameters; the macro-era state reads through them.
+    let project = old_project();
+    let pisynth = project
+        .tracks
+        .iter()
+        .flat_map(|t| &t.channel.devices)
+        .find(|d| komponist_app::device_host::is_pisynth(d))
+        .expect("a pisynth device");
+    let params = komponist_app::views::devices::model::pisynth_params(pisynth);
+    let value = |key: &str| {
+        params
+            .iter()
+            .find(|p| p.info.id.as_str() == key)
+            .unwrap_or_else(|| panic!("{key}"))
+            .value
+    };
+    assert_eq!(value("algorithm"), 5.0);
+    assert_eq!(value("op2_ratio"), 3.5);
+    assert!((value("op2_level") - 0.6).abs() < 1e-6);
+    let patch = komponist_builtin::decode_state(pisynth.state.as_deref()).unwrap();
+    let first = patch.operators.iter().position(|o| o.output).unwrap_or(0);
+    assert!((value(&format!("op{}_sustain", first + 1)) - 0.25).abs() < 1e-6);
+    // The first card parameters are the macros that stayed: same keys, same wire ids.
+    assert_eq!(
+        (params[0].info.id.as_str(), params[0].wire),
+        ("algorithm", Macro::Algorithm.id())
+    );
 }
 
 #[test]

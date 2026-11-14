@@ -19,7 +19,7 @@ use komponist_app::device_host::DeviceHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
-use komponist_app::views::devices::model::pisynth_params;
+use komponist_app::views::devices::model::pisynth_macro_params;
 use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, ParamGrid};
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
@@ -84,7 +84,7 @@ fn macro_grid() -> ParamGrid {
         .find(|d| d.plugin.name == "pisynth")
         .unwrap();
     ParamGrid {
-        params: pisynth_params(pisynth),
+        params: pisynth_macro_params(pisynth),
     }
 }
 
