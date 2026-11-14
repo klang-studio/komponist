@@ -1,13 +1,15 @@
 //! `komponist`: a MIDI DAW for Linux.
 //!
 //! ```text
-//! komponist [PROJECT.komponist] [--null-audio] [--scale N] [--settings PATH]
+//! komponist [PROJECT.komponist] [--null-audio] [--scale N] [--settings PATH] [--open-plugin NAME]
 //! ```
 //!
 //! Opens `PROJECT` or, until the start screen (S09, WP-52) exists, the demo project
 //! "Nachtfahrt". The audio output comes from the settings (`~/.config/komponist/settings.json`);
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
-//! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. With
+//! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. `--open-plugin`
+//! opens the plugin window (S05 frame) of the first device whose plugin is called `NAME` (until the
+//! device cards of WP-44 have "Öffnen"; also for checks of the frame). With
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
 //!
 //! Plugins: pisynth runs in process; klopfer and the CLAP/VST3 plugins run in
@@ -37,7 +39,8 @@ usage: komponist [PROJECT.komponist] [options]
 
   --null-audio     no audio or MIDI device: the engine runs on a timer (also KOMPONIST_NULL_AUDIO=1)
   --scale N        UI scale (pixels per point), e.g. 1 or 2
-  --settings PATH  settings file (default ~/.config/komponist/settings.json)";
+  --settings PATH  settings file (default ~/.config/komponist/settings.json)
+  --open-plugin NAME  open the plugin window of the first device whose plugin is NAME";
 
 #[derive(Debug, Default)]
 struct Args {
@@ -45,6 +48,7 @@ struct Args {
     null_audio: bool,
     scale: Option<f32>,
     settings: Option<PathBuf>,
+    open_plugin: Option<String>,
 }
 
 fn parse_args() -> Result<Option<Args>, String> {
@@ -66,6 +70,7 @@ fn parse_args() -> Result<Option<Args>, String> {
                 args.scale = Some(v);
             }
             "--settings" => args.settings = Some(PathBuf::from(value()?)),
+            "--open-plugin" => args.open_plugin = Some(value()?),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if args.project.is_none() => args.project = Some(PathBuf::from(path)),
             extra => return Err(format!("unexpected argument {extra}")),
@@ -144,6 +149,11 @@ fn main() -> eframe::Result {
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(project), engine, settings, settings_path);
     app.scan_plugins();
+    if let Some(name) = &args.open_plugin
+        && !app.open_plugin_named(name)
+    {
+        eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
+    }
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {
             let _ = hub.set_enabled(&name, false);
