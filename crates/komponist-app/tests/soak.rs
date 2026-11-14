@@ -150,7 +150,14 @@ fn random_notes(rng: &mut Rng, max: usize) -> Vec<NewNote> {
 }
 
 /// One random user action (or MIDI input), applied to `app`.
-fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, export: &mut u32) {
+/// Returns what it did (for the overrun diagnostics).
+fn act(
+    app: &mut App,
+    rng: &mut Rng,
+    midi: &TestMidiSource,
+    held: &mut Vec<u8>,
+    export: &mut u32,
+) -> Option<String> {
     let track = rng.pick(&tracks(app));
     let clips = midi_clips(app);
     let clip = rng
@@ -179,13 +186,14 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
             if !held.is_empty() && rng.chance(50) {
                 let key = held.swap_remove(rng.below(held.len()));
                 midi.note_off(MidiPortId(0), key);
+                return Some(format!("MIDI off {key}"));
             } else {
                 let key = 36 + rng.below(48) as u8;
                 if midi.note_on(MidiPortId(0), key, 1 + rng.below(127) as u8) {
                     held.push(key);
                 }
+                return Some(format!("MIDI on {key}"));
             }
-            return;
         }
         24..=27 => Action::Transport(TransportAction::LiveNote {
             track,
@@ -200,7 +208,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     notes: random_notes(rng, 8),
                 })
             }
-            _ => return,
+            _ => return None,
         },
         38..=43 => match clip {
             Some((clip, notes)) if !notes.is_empty() => {
@@ -210,7 +218,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     notes: some,
                 })
             }
-            _ => return,
+            _ => return None,
         },
         44..=49 => match clip {
             Some((clip, notes)) if !notes.is_empty() => Action::Edit(EditAction::MoveNotes {
@@ -219,7 +227,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                 delta: Tick(rng.below(960) as i64 - 480),
                 pitch_delta: rng.below(5) as i32 - 2,
             }),
-            _ => return,
+            _ => return None,
         },
         50..=52 => match clip {
             Some((clip, notes)) if !notes.is_empty() => Action::Edit(EditAction::ResizeNotes {
@@ -227,7 +235,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                 notes: notes.clone(),
                 delta: Tick(rng.below(960) as i64 - 480),
             }),
-            _ => return,
+            _ => return None,
         },
         // Clips.
         53..=56 => match track {
@@ -243,13 +251,13 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     },
                 },
             }),
-            _ => return,
+            _ => return None,
         },
         57..=58 => match clip {
             Some((clip, _)) if clips.len() > 4 => {
                 Action::Edit(EditAction::RemoveClips(vec![*clip]))
             }
-            _ => return,
+            _ => return None,
         },
         59..=61 => match clip {
             Some((clip, _)) => Action::Edit(EditAction::MoveClips {
@@ -257,7 +265,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                 delta: Tick((rng.below(5) as i64 - 2) * BAR / 2),
                 track_delta: 0,
             }),
-            None => return,
+            None => return None,
         },
         62..=63 => match clip {
             Some((clip, _)) if clips.len() < MAX_CLIPS => Action::Edit(EditAction::CopyClips {
@@ -265,7 +273,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                 delta: Tick((1 + rng.below(4) as i64) * BAR),
                 track_delta: 0,
             }),
-            _ => return,
+            _ => return None,
         },
         64..=65 => match clip {
             Some((clip, _)) => Action::Edit(EditAction::SetClipLoop {
@@ -273,7 +281,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                 loop_length: rng.chance(50).then_some(Tick(BAR)),
                 length: Tick((1 + rng.below(4) as i64) * BAR),
             }),
-            None => return,
+            None => return None,
         },
         // Mixer and project.
         66..=73 => match track {
@@ -289,7 +297,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     prop: TrackProp::Channel(prop),
                 })
             }
-            None => return,
+            None => return None,
         },
         74..=75 => Action::Edit(EditAction::SetProjectProp(ProjectProp::Tempo(Tempo::new(
             70.0 + rng.below(110) as f64,
@@ -304,7 +312,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
             Some(track) if tracks(app).len() > 3 => {
                 Action::Edit(EditAction::RemoveTracks(vec![track]))
             }
-            _ => return,
+            _ => return None,
         },
         79..=80 => {
             let device = track.and_then(|t| {
@@ -318,7 +326,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     device,
                     preset: rng.below(8),
                 }),
-                None => return,
+                None => return None,
             }
         }
         81..=82 => {
@@ -332,7 +340,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     device: d.id,
                     bypass: !d.bypass,
                 }),
-                None => return,
+                None => return None,
             }
         }
         // History.
@@ -341,16 +349,19 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
         // Views.
         93..=94 => match clip {
             Some((clip, _)) => Action::Ui(UiAction::OpenClip(*clip)),
-            None => return,
+            None => return None,
         },
         95 => Action::Ui(UiAction::ToggleMixer),
         96 if rng.chance(20) => {
             *export += 1;
             Action::Project(ProjectAction::StartExport(export_settings(*export)))
         }
-        _ => return,
+        _ => return None,
     };
+    let mut what = format!("{action:?}");
+    what.truncate(120);
     app.dispatch(action);
+    Some(what)
 }
 
 fn export_settings(n: u32) -> komponist_app::actions::ExportSettings {
@@ -396,6 +407,8 @@ fn random_edits_during_playback_cause_no_xrun() {
     let mut frames = 0u64;
     let mut worst_frame = Duration::ZERO;
     let mut overrun_at = Vec::new();
+    let mut recent: std::collections::VecDeque<(Duration, String)> = Default::default();
+    let mut last_export = Duration::ZERO;
 
     let started = Instant::now();
     let callbacks0 = app.engine().stats().callbacks();
@@ -410,7 +423,15 @@ fn random_edits_during_playback_cause_no_xrun() {
             app.dispatch(Action::Transport(TransportAction::TogglePlay));
         }
         for _ in 0..rng.below(3) {
-            act(&mut app, &mut rng, &midi, &mut held, &mut exports);
+            if let Some(what) = act(&mut app, &mut rng, &midi, &mut held, &mut exports) {
+                if what.contains("StartExport") {
+                    last_export = started.elapsed();
+                }
+                if recent.len() == 12 {
+                    recent.pop_front();
+                }
+                recent.push_back((started.elapsed(), what));
+            }
         }
         // An export in every run, in its middle.
         if exports == 0 && started.elapsed() > length / 2 {
@@ -428,6 +449,17 @@ fn random_edits_during_playback_cause_no_xrun() {
         let overruns = app.engine().stats().overruns() - overruns0;
         if overruns > overrun_at.len() as u32 && overrun_at.len() < 10 {
             overrun_at.push(started.elapsed());
+            eprintln!(
+                "overrun at {:.3?} (peak load {:.0} %, UI frame {took:.1?}, exporting {}, \
+                 last export started {:.3?}), after:",
+                started.elapsed(),
+                app.engine().stats().take_peak_load() * 100.0,
+                app.is_exporting(),
+                last_export,
+            );
+            for (at, what) in &recent {
+                eprintln!("  {at:.3?} {what}");
+            }
         }
         if started.elapsed() > next_report {
             next_report += Duration::from_secs(60);
