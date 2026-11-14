@@ -533,6 +533,26 @@ pub struct PluginWindow {
     pub width: u32,
     /// Height of the plugin area, physical px.
     pub height: u32,
+    /// "Oben halten": the frame stays above the main window.
+    pub keep_on_top: bool,
+    /// Where the frame opens (outer position in points), from the last time this plugin's frame
+    /// closed.
+    pub pos: Option<(i32, i32)>,
+}
+
+impl PluginWindow {
+    /// A window for `device` showing `view`, with the plugin's remembered "Oben halten" and
+    /// position.
+    pub fn new(device: DeviceId, view: PluginView, memory: Option<&crate::settings::FrameMemory>) -> Self {
+        PluginWindow {
+            device,
+            view,
+            width: 0,
+            height: 0,
+            keep_on_top: memory.is_some_and(|m| m.keep_on_top),
+            pos: memory.and_then(|m| m.pos),
+        }
+    }
 }
 
 /// Kind of a status bar message.

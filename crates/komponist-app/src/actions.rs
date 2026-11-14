@@ -27,7 +27,9 @@ use komponist_model::{
     ChannelRef, ClipId, DeviceId, Grid, NoteId, PluginRef, Tick, TickRange, TrackId,
 };
 
-use crate::ui_state::{BrowserSegment, DockTab, FocusArea, Panel, SettingsSection, StepLane, Tool};
+use crate::ui_state::{
+    BrowserSegment, DockTab, FocusArea, Panel, PluginView, SettingsSection, StepLane, Tool,
+};
 
 /// One user intention.
 #[derive(Debug, Clone, PartialEq)]
@@ -499,6 +501,20 @@ pub enum UiAction {
     SetBrowserQuery(String),
     /// Ctrl , : open the settings (at a section).
     OpenSettings(SettingsSection),
+    /// The "Ansicht" toggle of a plugin frame: the plugin's own GUI or the parameter grid.
+    SetPluginView {
+        /// The device.
+        device: DeviceId,
+        /// The view.
+        view: PluginView,
+    },
+    /// "Oben halten" of a plugin frame (remembered per plugin).
+    SetPluginKeepOnTop {
+        /// The device.
+        device: DeviceId,
+        /// On or off.
+        on: bool,
+    },
     /// Esc / close in a dialog.
     CloseDialog,
     /// Switch computer-keyboard MIDI on or off (ARCHITECTURE §13.2).

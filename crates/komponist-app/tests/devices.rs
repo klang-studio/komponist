@@ -177,12 +177,9 @@ fn s05() -> (App, Chain, fake_host::Statuses, fake_host::SetLog) {
         mode: SelectMode::Replace,
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
-    app.ui_mut().plugin_windows.push(PluginWindow {
-        device: c.surge,
-        view: PluginView::Gui,
-        width: 0,
-        height: 0,
-    });
+    app.ui_mut()
+        .plugin_windows
+        .push(PluginWindow::new(c.surge, PluginView::Gui, None));
     app.dispatch(Action::Ui(UiAction::SetBrowserSegment(
         BrowserSegment::Effects,
     )));

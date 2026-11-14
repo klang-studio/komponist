@@ -279,6 +279,11 @@ impl App {
         &self.settings
     }
 
+    /// The settings, for tests that prepare what a session remembers.
+    pub fn settings_mut(&mut self) -> &mut Settings {
+        &mut self.settings
+    }
+
     /// The file the project was opened from or saved to.
     pub fn project_path(&self) -> Option<&Path> {
         self.project_path.as_deref()
@@ -1676,6 +1681,8 @@ impl App {
                 self.ui.browser.highlighted = None;
             }
             UiAction::OpenSettings(section) => self.open_dialog(Dialog::Settings(section)),
+            UiAction::SetPluginView { device, view } => self.set_plugin_view(device, view),
+            UiAction::SetPluginKeepOnTop { device, on } => self.set_keep_on_top(device, on),
             UiAction::CloseDialog => {
                 // The file browser or the unsaved-changes prompt closes first.
                 if self.close_overlay() {
@@ -1948,12 +1955,14 @@ impl App {
                     } else {
                         PluginView::Params
                     };
-                    self.ui.plugin_windows.push(PluginWindow {
-                        device,
-                        view,
-                        width: 0,
-                        height: 0,
-                    });
+                    let memory = self
+                        .project()
+                        .find_device(device)
+                        .and_then(|(_, _, d)| self.settings.frame_memory(&d.plugin))
+                        .cloned();
+                    self.ui
+                        .plugin_windows
+                        .push(PluginWindow::new(device, view, memory.as_ref()));
                 }
             }
             // Closes the plugin's GUI if it is open; a state snapshot follows (`StateSnapshot`).
