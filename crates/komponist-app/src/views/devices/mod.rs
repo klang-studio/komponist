@@ -81,7 +81,11 @@ impl View for Devices {
         else {
             return;
         };
-        let cards = model::cards(track, ctx.engine.host(), &ctx.ui.plugin_windows);
+        let mut cards = model::cards(track, ctx.engine.host(), &ctx.ui.plugin_windows);
+        for c in &mut cards {
+            let fit = card::head_width(ui, c).min(metrics::CARD_WIDTH_EFFECT);
+            c.width = c.width.max(fit);
+        }
         let rect = ui.max_rect();
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::HEADER_HEIGHT));
         header_row(ui, ctx, header, track, cards.len());

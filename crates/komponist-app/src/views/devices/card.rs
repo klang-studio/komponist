@@ -181,6 +181,44 @@ pub(super) fn show(
     head_response
 }
 
+/// The width the head needs so the name keeps at least [`metrics::NAME_MIN_WIDTH`] (or all of
+/// it, if shorter) next to switch, tag and open button. The design system's switch is wider than
+/// the screen's 10 px square, so a narrow card with "Parameter" would cut a name to "kp…"; such a
+/// card widens by what it lacks.
+pub(super) fn head_width(ui: &Ui, card: &Card) -> f32 {
+    let style = typography::UI;
+    let name = w::galley(
+        ui,
+        &card.name,
+        w::font_at(&style, wm::SEMIBOLD),
+        style.line_height,
+    )
+    .size()
+    .x
+    .ceil();
+    let tag = w::styled_galley(ui, card.tag, &typography::VALUE_S)
+        .size()
+        .x
+        + 2.0 * metrics::TAG_PAD_X;
+    let open = card.open_label().map_or(0.0, |label| {
+        let g = w::galley(
+            ui,
+            label,
+            fonts::emphasis_font_id(&style),
+            style.line_height,
+        );
+        metrics::HEAD_GAP + g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X
+    });
+    metrics::HEAD_PAD_LEFT
+        + size::SWITCH[0]
+        + metrics::HEAD_GAP
+        + name.min(metrics::NAME_MIN_WIDTH)
+        + metrics::HEAD_GAP
+        + tag.ceil()
+        + open
+        + metrics::HEAD_PAD_RIGHT
+}
+
 /// Switch, name, format tag and open button.
 fn head_controls(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, head: Rect) {
     let [sw, sh] = size::SWITCH;

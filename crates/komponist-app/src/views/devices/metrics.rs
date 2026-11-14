@@ -44,6 +44,9 @@ pub const HEAD_PAD_LEFT: f32 = space::SPACE_2;
 pub const HEAD_PAD_RIGHT: f32 = space::SPACE_1;
 /// Gap between the head's parts.
 pub const HEAD_GAP: f32 = space::SPACE_2;
+/// The name keeps at least this much room in a card's head (not in the design: about what S05's
+/// 200 px TAL card leaves for „TAL-Chorus…“ next to its 10 px square); a narrower card widens.
+pub const NAME_MIN_WIDTH: f32 = 64.0;
 /// Format tag padding (`padding:1px 4px`): horizontal …
 pub const TAG_PAD_X: f32 = space::SPACE_1;
 /// … and vertical.
