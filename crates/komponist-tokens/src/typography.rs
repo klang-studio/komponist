@@ -99,7 +99,7 @@ mod tests {
         assert_eq!((DEVICE_LABEL.size, DEVICE_LABEL.line_height), (10.0, 12.0));
         assert_eq!(DEVICE_LABEL.color, Some(color::TEXT_2));
         assert_eq!((GRAPH_TITLE.size, GRAPH_TITLE.weight), (9.0, 600));
-        assert!(GRAPH_TITLE.uppercase);
+        assert!(std::hint::black_box(GRAPH_TITLE).uppercase);
         assert_eq!(GRAPH_TITLE.tracking_em, 0.08);
         assert_eq!(GRAPH_TITLE.color, Some(color::TEXT_2));
         assert_eq!((MONO_XS.family, MONO_XS.size), (Family::Mono, 8.0));
