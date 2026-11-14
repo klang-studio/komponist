@@ -670,24 +670,22 @@ mod tests {
         );
         let pisynth = &cards[0];
         assert!(pisynth.instrument && pisynth.state == CardState::Ok);
-        assert_eq!(pisynth.frame_width(0.0), 252.0, "4 columns");
-        assert_eq!(pisynth.layout.pages[0].cells.len(), 8);
+        // WP-86: ten columns on the first page, eight on the envelope page.
+        assert_eq!(pisynth.frame_width(0.0), 612.0, "10 columns");
+        let pages: Vec<_> = pisynth
+            .layout
+            .pages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(pages, ["Operatoren", "Hüllkurven", "LFO", "Global"]);
         assert!(pisynth.presets);
         assert_eq!(pisynth.tag, "INTERN");
-        let macros: Vec<&str> = pisynth.params.iter().map(|p| p.name()).collect();
         assert_eq!(
-            macros,
-            [
-                "Algorithmus",
-                "Ratio 2",
-                "Index",
-                "Feedback",
-                "Attack",
-                "Decay",
-                "Sustain",
-                "Release"
-            ]
+            pisynth.params.len(),
+            komponist_builtin::device::params().len()
         );
+        assert_eq!(pisynth.params[0].name(), "Algorithmus");
         assert_eq!(pisynth.open_label(), Some(names::PARAMS));
         // Without plugin manager the effects are missing; TAL is bypassed.
         assert_eq!(cards[1].state, CardState::Missing);
