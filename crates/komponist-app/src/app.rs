@@ -1787,16 +1787,24 @@ impl App {
         }
     }
 
-    /// Makes `doc` the open document: fresh selection and editor, transport stopped at 0.
-    fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
+    /// Makes `doc` the open document: transport stopped at 0, the engine reset (device ids restart
+    /// at 1 in every project, [`EngineSync::reset`]), fresh selection, editor, plugin windows,
+    /// meters and scroll position.
+    pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
+        self.engine.reset();
         self.doc = doc;
         self.project_path = path;
+        self.meters = Meters::new();
         self.ui.selection = Default::default();
         self.ui.editor = Default::default();
+        self.ui.plugin_windows.clear();
+        self.ui.arrangement.scroll_tick = 0.0;
+        self.ui.arrangement.scroll_y = 0.0;
         self.ui.screen = Screen::Project;
         self.ui.dialog = None;
+        self.shell.focus_before_dialog = None;
         self.ui.focus = FocusArea::Arrangement;
     }
 

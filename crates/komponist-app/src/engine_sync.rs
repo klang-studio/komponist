@@ -147,6 +147,8 @@ pub struct EngineSync {
     fast: Option<u64>,
     /// Commands the full queue did not take yet, in order.
     pending: VecDeque<Command>,
+    /// Device host events that survived a [`EngineSync::reset`], delivered by the next poll.
+    carried: Vec<PluginManagerEvent>,
     rate: Arc<AtomicU32>,
     telemetry: Arc<Telemetry>,
 }
@@ -195,6 +197,7 @@ impl EngineSync {
             synced: None,
             fast: None,
             pending: VecDeque::new(),
+            carried: Vec::new(),
             rate,
             telemetry,
         };
@@ -317,7 +320,13 @@ impl EngineSync {
                 other => out.push(SyncEvent::Engine(other)),
             }
         }
-        out.extend(self.host.poll().into_iter().map(SyncEvent::Device));
+        let carried = std::mem::take(&mut self.carried);
+        out.extend(
+            carried
+                .into_iter()
+                .chain(self.host.poll())
+                .map(SyncEvent::Device),
+        );
         out
     }
 
@@ -420,6 +429,32 @@ impl EngineSync {
         self.fast = None;
     }
 
+    /// Forgets the project: every processor leaves the engine and the host releases every device
+    /// (bridges end), and the next [`EngineSync::sync`] compiles from scratch. Call it before
+    /// another document becomes the open one (open, new): device ids restart at 1 in every
+    /// project, so the old program's processors would otherwise be reused for the wrong devices.
+    ///
+    /// The host's events that are still queued and name a device belong to the old project and
+    /// are dropped; the others (a finished scan, scan warnings) reach the next
+    /// [`EngineSync::poll`].
+    pub fn reset(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            for &(device, slot) in previous.slots.entries() {
+                self.send(Command::RemoveProcessor { slot });
+                self.host.release(device);
+            }
+        }
+        self.synced = None;
+        self.fast = None;
+        let events = self.host.poll();
+        self.carried.extend(events.into_iter().filter(|e| {
+            matches!(
+                e,
+                PluginManagerEvent::ScanFinished(_) | PluginManagerEvent::Log { device: None, .. }
+            )
+        }));
+    }
+
     /// Commands waiting for room in the engine's queue (diagnostics, tests).
     pub fn pending_commands(&self) -> usize {
         self.pending.len()
@@ -502,6 +537,32 @@ mod tests {
         assert_eq!(sync.device_status(lead_synth), DeviceStatus::Ok);
         let surge = doc.project().tracks[2].channel.devices[0].id;
         assert_eq!(sync.device_status(surge), DeviceStatus::Missing);
+    }
+
+    #[test]
+    fn reset_starts_the_next_project_from_scratch() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let first = Document::new(demo_project());
+        sync.sync(&first);
+        let lead = first.project().tracks[2].channel.devices[0].id;
+        assert!(sync.program().unwrap().slots.slot(lead).is_some());
+        sync.reset();
+        assert!(sync.program().is_none());
+        // Released: the host forgot every device (unknown devices report Ok).
+        let klopfer = first.project().tracks[0].channel.devices[0].id;
+        assert_eq!(sync.device_status(klopfer), DeviceStatus::Ok);
+        // A new document starts at revision 0 like the old one; it is compiled anyway, and its
+        // devices (ids from 1 again) get fresh processors.
+        let second = Document::new(demo_project());
+        assert_eq!(second.revision(), first.revision());
+        sync.sync(&second);
+        let program = sync.program().expect("compiled again");
+        assert_eq!(program.tracks.len(), second.project().tracks.len());
+        assert_eq!(sync.device_status(klopfer), DeviceStatus::Missing);
+        // The same document again without reset: nothing is recompiled.
+        let tracks = Arc::clone(&program.tracks[0]);
+        sync.sync(&second);
+        assert!(Arc::ptr_eq(&tracks, &sync.program().unwrap().tracks[0]));
     }
 
     #[test]
