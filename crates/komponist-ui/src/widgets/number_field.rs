@@ -25,14 +25,13 @@
 //! keyboard and wheel steps, the AccessKit value properties and the gallery sample helpers.
 
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 
 use egui::accesskit::{Action, ActionData};
 use egui::emath::Numeric;
 use egui::text::CCursorRange;
 use egui::{
-    Align, Area, Color32, Context, CornerRadius, CursorIcon, Event, EventFilter, Frame, Galley, Id,
-    Key, Margin, MouseWheelUnit, Order, Painter, Rect, Response, Role, Sense, Stroke, StrokeKind,
+    Align, Area, Color32, Context, CornerRadius, CursorIcon, Event, EventFilter, Frame, Id, Key,
+    Margin, MouseWheelUnit, Order, Painter, Rect, Response, Role, Sense, Stroke, StrokeKind,
     TextEdit, Ui, Vec2, Widget, WidgetInfo, pos2, vec2,
 };
 use komponist_model::format::MINUS;
@@ -40,9 +39,13 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, size, space};
 
+// The helpers every widget shares live in `widgets/mod.rs`; the number field uses them
+// (they were copied here by WP-21 before WP-20 merged).
 use super::metrics::number_field as metrics;
+pub(crate) use super::styled_galley as galley;
+pub(crate) use super::{is_still, sense, text_pos};
 use crate::drag::{self, ClickAction, ValueDrag};
-use crate::state::{self, State};
+use crate::state::State;
 use crate::theme::corner_radius;
 use crate::{focus, fonts, px, tooltip};
 
@@ -362,12 +365,6 @@ pub(crate) fn paint_entry_ring(painter: &Painter, rect: Rect, radius: f32) {
     );
 }
 
-/// The pixel-snapped position that centres `galley` vertically in `rect`, its left edge at `x`.
-pub(crate) fn text_pos(rect: Rect, galley: &Galley, x: f32, ppp: f32) -> egui::Pos2 {
-    let y = rect.center().y - galley.size().y / 2.0;
-    pos2(px::snap(x, ppp), px::snap(y, ppp))
-}
-
 impl Widget for NumberField<'_> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         let (min, max) = range_bounds(&self.range);
@@ -575,23 +572,6 @@ pub(crate) fn snap_to(value: f64, quantum: f64) -> f64 {
     } else {
         value
     }
-}
-
-/// `true` if the controls here are still pictures: a state is forced around them
-/// ([`state::force`]), as in the gallery samples and snapshot scenes.
-pub(crate) fn is_still(ui: &Ui) -> bool {
-    state::forced(ui).is_some()
-}
-
-/// `sense`, or hover only for still pictures ([`is_still`]), so samples take no clicks or focus.
-pub(crate) fn sense(ui: &Ui, sense: Sense) -> Sense {
-    if is_still(ui) { Sense::hover() } else { sense }
-}
-
-/// `text` laid out on one line in `style` (case and letter spacing applied), placeholder colour.
-pub(crate) fn galley(ui: &Ui, text: &str, style: &TypeStyle) -> Arc<Galley> {
-    ui.painter()
-        .layout_job(fonts::layout_job(text, style, Color32::PLACEHOLDER))
 }
 
 fn drag_key(id: Id) -> Id {
