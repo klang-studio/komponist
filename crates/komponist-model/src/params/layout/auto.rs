@@ -1,7 +1,7 @@
 //! The auto-layout of a foreign plugin's device card: 4 columns of knobs, the plugin's macros if
 //! it reports any, else its first 12 parameters.
 
-use super::ParamInfo;
+use crate::params::ParamInfo;
 
 /// Columns of the auto-layout grid.
 pub const AUTO_COLUMNS: usize = 4;

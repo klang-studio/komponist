@@ -709,7 +709,8 @@ mod tests {
                     let page = card.current_page().unwrap().clone();
                     let origin = ui.min_rect().min;
                     for cell in &page.cells {
-                        let rect = cell.rect().translate(origin.to_vec2());
+                        let rect = crate::views::devices::layout::cell_rect(cell)
+                            .translate(origin.to_vec2());
                         draw_cell(ui, out, card, &palette, cell, rect);
                     }
                 },
@@ -863,7 +864,8 @@ mod tests {
                         color32(color::SURFACE_2),
                     );
                     for cell in &page.cells {
-                        let rect = cell.rect().translate(origin.to_vec2());
+                        let rect = crate::views::devices::layout::cell_rect(cell)
+                            .translate(origin.to_vec2());
                         draw_cell(ui, out, card, &palette, cell, rect);
                     }
                 },

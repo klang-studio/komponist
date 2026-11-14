@@ -2524,6 +2524,7 @@ name = "komponist-model"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "komponist-tokens",
  "proptest",
  "serde",
  "serde_json",
