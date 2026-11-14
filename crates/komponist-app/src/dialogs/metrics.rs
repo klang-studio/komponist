@@ -1,5 +1,6 @@
 //! Sizes of the dialogs and the start screen that the handoff gives only in the screen markup
-//! (`Screens.dc.html` S06, S07, S09; `Prototyp.dc.html` start screen), with their source (rule 2).
+//! (`Screens.dc.html` S06, S07, S08, S09; `Prototyp.dc.html` start screen), with their source
+//! (rule 2).
 //! Values that are sums of spacing tokens are written that way.
 //!
 //! Type sizes without a type token (contract change request in the WP-52 report): the start
@@ -130,6 +131,48 @@ pub mod settings {
     pub const DIR_GAP: f32 = space::SPACE_3;
     /// Gap between the "+ Ordner" and "Neu scannen" buttons: `gap:6px`.
     pub const DIR_BUTTON_GAP: f32 = space::SPACE_1_5;
+}
+
+/// S08 "WAV exportieren" (`ovExport` markup: the settings dialog, "danach · Fortschritt").
+pub mod export {
+    use super::space;
+
+    /// The settings dialog: `width:560px`.
+    pub const WIDTH: f32 = super::dialog::WIDTH;
+    /// The progress dialog: `width:440px`.
+    pub const PROGRESS_WIDTH: f32 = 440.0;
+    /// Label column of the body grid: `grid-template-columns:120px minmax(0,1fr)`.
+    pub const LABEL_COLUMN: f32 = 120.0;
+    /// Column gap of the grid: `gap:12px 16px`.
+    pub const COLUMN_GAP: f32 = space::SPACE_4;
+    /// Row gap of the grid.
+    pub const ROW_GAP: f32 = space::SPACE_3;
+    /// The "Von – bis" and "Nachlauf" fields: `width:96px`.
+    pub const FIELD_WIDTH: f32 = 96.0;
+    /// Gap between the "Von – bis" fields, the dash and the length: `gap:8px`.
+    pub const RANGE_GAP: f32 = space::SPACE_2;
+    /// Gap after the "Nachlauf" field and after a switch: `gap:10px`.
+    pub const HINT_GAP: f32 = space::SPACE_2 + space::SPACE_0_5;
+    /// The divider rows: `height:1px; margin:4px 0` (plus the grid's row gaps).
+    pub const DIVIDER_MARGIN: f32 = space::SPACE_1;
+    /// The sample-rate field: `width:160px` (S07's too).
+    pub const RATE_WIDTH: f32 = 160.0;
+    /// Gap between the folder field and "Ändern": `gap:6px`.
+    pub const FOLDER_GAP: f32 = space::SPACE_1_5;
+    /// Gap between the progress dialog's rows: `gap:12px`.
+    pub const PROGRESS_GAP: f32 = space::SPACE_3;
+    /// The progress bar: `height:4px; border-radius:2px`.
+    pub const BAR_HEIGHT: f32 = 4.0;
+    /// Gap of the progress dialog's value grid: `gap:6px 12px`.
+    pub const VALUES_GAP: [f32; 2] = [space::SPACE_3, space::SPACE_1_5];
+    /// Gap between the rows of the device list (no screen; S06's list gap).
+    pub const DEVICE_GAP: f32 = super::missing::LIST_GAP;
+    /// Device rows (no screen; S07's list rows): `height:28px; padding:0 10px`.
+    pub const DEVICE_ROW: f32 = 28.0;
+    /// Their horizontal padding.
+    pub const DEVICE_PADDING_X: f32 = space::SPACE_2 + space::SPACE_0_5;
+    /// Most room the device list takes before it scrolls (S06's list).
+    pub const DEVICE_LIST_MAX_HEIGHT: f32 = super::missing::LIST_MAX_HEIGHT;
 }
 
 /// S09 start screen (`isStart` markup, `S09.recentList`).

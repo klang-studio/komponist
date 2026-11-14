@@ -1,6 +1,6 @@
 //! Dialogs and the start screen (WP-52): S06 missing plugins, S07 settings, S09 start screen,
-//! S10's project creation, the unsaved-changes prompt and a file browser for open, save and
-//! "+ Ordner".
+//! S10's project creation, the unsaved-changes prompt and a file browser for open, save, "+ Ordner"
+//! and the export folder; S08's export dialog ([`export`], WP-53b).
 //!
 //! Each dialog is a pure view: a model (plain data the app computes) goes in, the user's
 //! intentions come out ([`missing_plugins::Output`], [`settings::Output`], [`start::Output`],
@@ -19,6 +19,7 @@
 //! Ctrl O / Ctrl S flows could not be tested. The own browser needs no new dependency, uses the
 //! design tokens and keyboard rules of the other dialogs, and works under Xvfb.
 
+pub mod export;
 pub mod file;
 pub mod format;
 pub mod metrics;
@@ -441,7 +442,7 @@ pub(crate) fn error_surface() -> Color32 {
 const MIDI_REPAINT: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl crate::App {
-    /// Draws the open dialogs (S06, S07; the export dialog is the shell's) and the overlay, and
+    /// Draws the open dialogs (S06, S07; the export dialog is `App::draw_export`) and the overlay, and
     /// applies what the user did: contract actions go into the queue, overlay answers apply at
     /// once.
     pub(crate) fn draw_dialogs(&mut self, ctx: &Context) {
