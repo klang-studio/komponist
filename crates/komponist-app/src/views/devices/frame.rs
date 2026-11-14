@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use egui::epaint::{ColorMode, TextShape};
 use egui::{
-    Align, Color32, CornerRadius, Galley, Layout, Pos2, Rect, Response, Role, Sense, Shape, Ui,
+    Align, Color32, CornerRadius, Galley, Layout, Rect, Response, Role, Sense, Shape, Ui,
     UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_model::Track;
@@ -287,11 +287,7 @@ fn desaturate(shape: &mut Shape, amount: f32) {
             c.fill = grey(c.fill, amount);
             c.stroke.color = grey(c.stroke.color, amount);
         }
-        Shape::LineSegment { stroke, .. } => {
-            if let ColorMode::Solid(c) = &mut stroke.color {
-                *c = grey(*c, amount);
-            }
-        }
+        Shape::LineSegment { stroke, .. } => stroke.color = grey(stroke.color, amount),
         Shape::Path(p) => {
             p.fill = grey(p.fill, amount);
             if let ColorMode::Solid(c) = &mut p.stroke.color {
@@ -507,11 +503,8 @@ fn more_button(row: &mut Ui) -> Response {
     if r.has_focus() {
         focus::paint_ring(row.painter(), rect, metrics::HEAD_RADIUS);
     }
-    let style = typography::UI;
-    let g = w::styled_galley(row, "\u{22ef}", &style);
-    let pos = w::text_pos_centered(rect, &g, row.pixels_per_point());
     let ink = if hovered { color::TEXT_1 } else { color::TEXT_2 };
-    row.painter().galley(pos, g, color32(ink));
+    komponist_ui::icons::paint(row, rect, komponist_tokens::icon::Icon::Ellipsis, color32(ink));
     r
 }
 
@@ -648,7 +641,7 @@ const CARET_HEIGHT: f32 = 4.0;
 /// The page switch (`h 20`, padding 1, `surface.1`, segments `h 18`, `padding:0 7px`, the page
 /// shown `surface.4` / `text.1`, the others `text.2`).
 fn page_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect) {
-    let mut group = cu.new_child(
+    let group = cu.new_child(
         UiBuilder::new()
             .max_rect(rect)
             .id_salt("komponist_device_pages")

@@ -1,56 +1,79 @@
-//! Device chain sizes that the handoff gives only in the design data (`Screens.dc.html` `card()`,
-//! `devicesChain()`, the `isDevices` markup and `dvDrop`; `ks-view.js` `devView`), with their
-//! source. Values equal to a token use the token.
+//! Device chain sizes. The frame, the grid and the chain come from `komponist_tokens::device`
+//! (`design/device-tokens.json`); this module holds what the handoff gives only in its generator
+//! (`geraete_page_generator.py` `frame()`, `collapsed()`, `foreign()`) or in the older chain
+//! design (`Screens.dc.html` `devicesChain()`), with the source. Values equal to a token use it.
 
-use komponist_tokens::{size, space};
+use komponist_tokens::{device, size, space};
 
-/// The chain's header row (`height:28px; padding:0 8px; gap:10px`, 1 px `surface.0` line at the
-/// bottom inside).
-pub const HEADER_HEIGHT: f32 = size::PANEL_HEADER;
-/// Horizontal padding of the header row (`padding:0 8px`).
+/// The chain head's height (`device.chain.header_h`).
+pub const HEADER_HEIGHT: f32 = device::chain::HEADER_H;
+/// Horizontal padding of the chain head (`devicesChain()` `padding:0 8px`).
 pub const HEADER_PAD_X: f32 = space::SPACE_2;
-/// Gap between colour mark, track name and info (`gap:10px`).
+/// Gap between colour mark, track name and the chain (`devicesChain()` `gap:10px`).
 pub const HEADER_GAP: f32 = space::SPACE_2 + space::SPACE_0_5;
-/// The track's colour mark (`width:8px; height:8px; border-radius:2px`).
+/// The track's colour mark (`devicesChain()` `width:8px; height:8px; border-radius:2px`).
 pub const MARK: f32 = space::SPACE_2;
+/// Padding of a name in the chain head (`surface.3` chip behind a visible device; not in the
+/// design, the chip needs some air): horizontal …
+pub const CHIP_PAD_X: f32 = space::SPACE_1_5;
+/// … and the gap around the „›“ between two names.
+pub const CHAIN_SEPARATOR_GAP: f32 = space::SPACE_1_5;
+/// The chain head's name separator (HANDOFF §9 `pisynth › eq › presse`).
+pub const CHAIN_SEPARATOR: &str = "\u{203a}";
 
-/// Padding of the card row (`padding:12px`).
-pub const BODY_PAD: f32 = space::SPACE_3;
-/// Gap between the cards (`gap:8px`).
-pub const CARD_GAP: f32 = space::SPACE_2;
+/// Padding of the chain (`device.chain.padding`).
+pub const BODY_PAD: f32 = device::chain::PADDING;
+/// Gap between the frames (`device.chain.gap`).
+pub const CARD_GAP: f32 = device::chain::GAP;
+/// The drop slot at the end (`device.chain.drop_slot_w`).
+pub const DROP_AREA_WIDTH: f32 = device::chain::DROP_SLOT_W;
+/// The scrollbars' thickness (`device.chain.scrollbar_h`).
+pub const SCROLLBAR: f32 = device::chain::SCROLLBAR_H;
+/// The height below which the chain scrolls vertically: head, padding above and below, frame
+/// (`28 + 2·10 + 244 = 292`; with the dock's tab strip `size.tab` 28 that is the 320 px of the
+/// default dock, HANDOFF §3; owner 2026-11-14: below it the area scrolls).
+pub const CHAIN_MIN_HEIGHT: f32 = HEADER_HEIGHT + 2.0 * BODY_PAD + device::frame::TOTAL_H;
 
-/// An instrument card (`card({…inst:1…, w:280})`; `devView`: `d.inst?280`).
-pub const CARD_WIDTH_INSTRUMENT: f32 = 280.0;
-/// An effect card (`card()`: `w=o.w||250`).
-pub const CARD_WIDTH_EFFECT: f32 = 250.0;
-/// A card with at most [`NARROW_PARAMS`] parameters, and a loading card (`w:200`: TAL-Chorus-LX,
-/// Dragonfly Hall).
-pub const CARD_WIDTH_NARROW: f32 = 200.0;
-/// A crashed or missing card (`w:220`: Airwindows Cons.), room for its message.
-pub const CARD_WIDTH_MESSAGE: f32 = 220.0;
-/// Up to this many parameters make a narrow card with one column each (`cols:3`).
-pub const NARROW_PARAMS: usize = 3;
-/// Parameter columns of a full card (`repeat(${o.cols||4},1fr)`; the auto-layout's columns).
+/// Parameter columns of the auto-layout (`foreign()` `cols=4`; `params::AUTO_COLUMNS`).
 pub const COLUMNS: usize = 4;
+/// Columns of a frame that shows a message (loading, crashed, missing): `foreign()`'s 252 px.
+pub const MESSAGE_COLUMNS: u8 = 4;
 
-/// The card's head (`headS`: `height:28`, `padding:'0 4px 0 8px'`, `gap:8`, 1 px `surface.1` line
-/// at the bottom).
-pub const HEAD_HEIGHT: f32 = size::PANEL_HEADER;
-/// Left padding of the head.
-pub const HEAD_PAD_LEFT: f32 = space::SPACE_2;
+/// Left padding of the head (`device.frame.head_padding` `[0,4,0,8]`).
+pub const HEAD_PAD_LEFT: f32 = device::frame::HEAD_PADDING[3];
 /// Right padding of the head.
-pub const HEAD_PAD_RIGHT: f32 = space::SPACE_1;
-/// Gap between the head's parts.
-pub const HEAD_GAP: f32 = space::SPACE_2;
-/// The name keeps at least this much room in a card's head (not in the design: about what S05's
-/// 200 px TAL card leaves for „TAL-Chorus…“ next to its 10 px square); a narrower card widens.
+pub const HEAD_PAD_RIGHT: f32 = device::frame::HEAD_PADDING[1];
+/// Gap between the head's parts (`device.frame.head_gap`).
+pub const HEAD_GAP: f32 = device::frame::HEAD_GAP;
+/// The power square's hit area (the square is 10 px, too small to hit; not in the design).
+pub const POWER_HIT: f32 = size::CONTROL_COMPACT;
+/// The name keeps at least this much room in the head (not in the design: about what `foreign()`
+/// leaves for a name next to tag and „Öffnen“); a narrow frame widens.
 pub const NAME_MIN_WIDTH: f32 = 64.0;
-/// Format tag padding (`padding:1px 4px`): horizontal …
+/// Format tag padding (`foreign()` `padding:1px 4px`): horizontal …
 pub const TAG_PAD_X: f32 = space::SPACE_1;
 /// … and vertical.
 pub const TAG_PAD_Y: f32 = 1.0;
-/// The red edge of a crashed card (`boxShadow:'inset 0 2px 0 '+C.clip`).
+/// The preset button's text padding (`frame()` `padding:0 6px`).
+pub const PRESET_PAD_X: f32 = space::SPACE_1_5;
+/// The page switch's frame padding (`frame()` `padding:1px`) …
+pub const PAGES_PAD: f32 = 1.0;
+/// … and the gap between its segments (`gap:1px`).
+pub const PAGES_GAP: f32 = 1.0;
+/// Radius of the page switch's frame and of the ⋯ and preset buttons (`border-radius:3px`).
+pub const HEAD_RADIUS: f32 = komponist_tokens::radius::M;
+/// Radius of a page segment (`border-radius:2px`).
+pub const PAGE_SEGMENT_RADIUS: f32 = komponist_tokens::radius::S;
+/// Body opacity of a bypassed device (`filter:saturate(0.15);opacity:0.5`) …
+pub const BYPASS_OPACITY: f32 = 0.5;
+/// … and its saturation.
+pub const BYPASS_SATURATION: f32 = 0.15;
+/// The red edge of a crashed frame (`boxShadow:'inset 0 2px 0 '+C.clip`).
 pub const CRASH_EDGE: f32 = space::SPACE_0_5;
+/// A collapsed frame: padding above the power square (`padding-top:9px`) …
+pub const COLLAPSED_TOP: f32 = 9.0;
+/// … and the gap to the vertical name (`gap:10px`).
+pub const COLLAPSED_GAP: f32 = space::SPACE_2 + space::SPACE_0_5;
 
 /// Padding of the message block ("Lädt …", "Abgestürzt": `msgS` `padding:12`) …
 pub const MESSAGE_PAD: f32 = space::SPACE_3;
@@ -62,22 +85,16 @@ pub const PROGRESS_HEIGHT: f32 = space::SPACE_1;
 /// design's still picture is kept (animations are off).
 pub const PROGRESS_FILL: f32 = 0.4;
 
-/// Parameter grid padding (`paramsS`: `padding:'12px 8px'`): horizontal …
-pub const GRID_PAD_X: f32 = space::SPACE_2;
-/// … and vertical.
-pub const GRID_PAD_Y: f32 = space::SPACE_3;
-/// Gap between grid rows (`gap:'14px 6px'`) …
-pub const GRID_ROW_GAP: f32 = space::SPACE_3 + space::SPACE_0_5;
-/// … and columns.
-pub const GRID_COLUMN_GAP: f32 = space::SPACE_1_5;
-/// Gap between knob, name and value of a parameter (`gap:4px`).
-pub const PARAM_GAP: f32 = space::SPACE_1;
+/// A knob cell: space above the knob (`W_knob` `padding-top:2px`), the gap between knob, name and
+/// value (`gap:2px`).
+pub const CELL_PAD_TOP: f32 = 2.0;
+/// The gap between a knob, its name and its value.
+pub const CELL_GAP: f32 = 2.0;
 
-/// The drop area after the last card (`width:150px`, `border:1px dashed`, `padding:12px`).
-pub const DROP_AREA_WIDTH: f32 = 150.0;
-/// Its padding.
-pub const DROP_AREA_PAD: f32 = space::SPACE_3;
-/// Dash and gap of its 1 px dashed border (Chromium draws CSS `dashed` at 1 px as 3 on, 3 off).
+/// Dash and gap of the drop slot's 1 px dashed border (Chromium draws CSS `dashed` at 1 px as 3
+/// on, 3 off).
 pub const DASH: [f32; 2] = [3.0, 3.0];
-/// The insert line while dragging (`dvDrop`: `width:2`, `top:12`, `bottom:12`, centred in the gap).
+/// Padding of the drop slot's hint (`dvDrop` `padding:12px`).
+pub const DROP_AREA_PAD: f32 = space::SPACE_3;
+/// The insert line while dragging (`dvDrop`: `width:2`, centred in the gap).
 pub const INSERT_LINE: f32 = space::SPACE_0_5;
