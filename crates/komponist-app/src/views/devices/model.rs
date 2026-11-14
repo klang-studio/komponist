@@ -218,6 +218,8 @@ pub struct Card {
     pub tag: &'static str,
     /// The track's instrument (head `surface.3`, not draggable).
     pub instrument: bool,
+    /// A MIDI effect: a note stage left of the instrument (WP-88). Draggable within the MIDI part.
+    pub midi_effect: bool,
     /// Bypassed.
     pub bypass: bool,
     /// Runtime state.
@@ -307,6 +309,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         Vec::new()
     };
     let instrument = device.role == DeviceRole::Instrument;
+    let midi_effect = device.role == DeviceRole::MidiEffect;
     // Internal devices bring their own layout; everything else gets the auto-layout.
     let layout = internal_kind(device).map_or_else(
         || {
@@ -343,6 +346,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         name: device.plugin.name.clone(),
         tag: format_tag(device.plugin.format),
         instrument,
+        midi_effect,
         bypass: device.bypass,
         warning: host.state_warning(device.id).map(str::to_owned),
         params,
@@ -498,15 +502,36 @@ pub fn slot_at(cards: &[(f32, f32)], x: f32) -> usize {
         .unwrap_or(cards.len())
 }
 
-/// The first slot an effect may take: after the instrument, if the chain starts with one.
+/// The number of MIDI effects at the head of the chain: the last insert slot a MIDI effect may take.
+pub fn midi_slots(cards: &[Card]) -> usize {
+    cards.iter().take_while(|c| c.midi_effect).count()
+}
+
+/// The first slot an audio effect may take: behind the MIDI effects and the instrument.
 pub fn first_effect_slot(cards: &[Card]) -> usize {
-    usize::from(cards.first().is_some_and(|c| c.instrument))
+    let midi = midi_slots(cards);
+    midi + usize::from(cards.get(midi).is_some_and(|c| c.instrument))
+}
+
+/// The insert slots `(lo, hi)` the card at `index` may be dropped at: a MIDI effect in front of
+/// the instrument, any other effect behind it.
+pub fn drop_bounds(cards: &[Card], index: usize) -> (usize, usize) {
+    if cards.get(index).is_some_and(|c| c.midi_effect) {
+        (0, midi_slots(cards))
+    } else {
+        (first_effect_slot(cards), usize::MAX)
+    }
 }
 
 /// The `to_index` of `MoveDevice` (the index without the moved card) for the card at `from`
 /// dropped at insert slot `slot`, or `None` when the order stays.
 pub fn move_target(from: usize, slot: usize, first: usize) -> Option<usize> {
-    let slot = slot.max(first);
+    move_target_in(from, slot, first, usize::MAX)
+}
+
+/// [`move_target`] with the slot kept in `lo ..= hi`.
+pub fn move_target_in(from: usize, slot: usize, lo: usize, hi: usize) -> Option<usize> {
+    let slot = slot.clamp(lo, hi.max(lo));
     let to = if slot > from { slot - 1 } else { slot };
     (to != from).then_some(to)
 }

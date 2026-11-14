@@ -160,6 +160,8 @@ pub struct Insert {
     pub name: String,
     /// The track's instrument (`surface.3`, semibold, not draggable).
     pub instrument: bool,
+    /// A MIDI effect: a note stage in front of the instrument (WP-88).
+    pub midi: bool,
     /// Bypassed (`text.3`).
     pub bypass: bool,
     /// Runtime state.
@@ -231,9 +233,15 @@ impl Strip {
         self.channel == ChannelRef::Master
     }
 
-    /// The first slot an effect may take: after the instrument, if the chain starts with one.
+    /// Number of MIDI effects at the head of the chain.
+    pub fn midi_effect_count(&self) -> usize {
+        self.inserts.iter().take_while(|i| i.midi).count()
+    }
+
+    /// The first slot an audio effect may take: after the MIDI effects and the instrument.
     pub fn first_effect_slot(&self) -> usize {
-        usize::from(self.inserts.first().is_some_and(|i| i.instrument))
+        let midi = self.midi_effect_count();
+        midi + usize::from(self.inserts.get(midi).is_some_and(|i| i.instrument))
     }
 }
 
@@ -245,6 +253,7 @@ fn inserts(channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
             device: d.id,
             name: d.plugin.name.clone(),
             instrument: d.role == DeviceRole::Instrument,
+            midi: d.role == DeviceRole::MidiEffect,
             bypass: d.bypass,
             state: SlotState::from(&host.status(d.id)),
             internal: d.plugin.format == PluginFormat::Builtin && !host.has_gui(d.id),
@@ -267,10 +276,8 @@ pub fn strips(
             let ch = &t.channel;
             let implied = any_solo && !ch.solo && !ch.mute;
             let line = ch
-                .devices
-                .first()
-                .filter(|d| d.role == DeviceRole::Instrument)
-                .map(|d| d.plugin.name.clone())
+                .instrument()
+                .map(|(_, d)| d.plugin.name.clone())
                 .unwrap_or_default();
             Strip {
                 channel: ChannelRef::Track(t.id),
@@ -320,6 +327,11 @@ pub fn move_target(from: usize, slot: usize, first: usize) -> Option<usize> {
     crate::views::devices::model::move_target(from, slot, first)
 }
 
+/// [`move_target`] for the insert at `from` of a MIDI effect or an effect: slots `lo ..= hi`.
+pub fn move_target_in(from: usize, slot: usize, lo: usize, hi: usize) -> Option<usize> {
+    crate::views::devices::model::move_target_in(from, slot, lo, hi)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +355,7 @@ mod tests {
                 device: DeviceId(1),
                 name: String::new(),
                 instrument: false,
+                midi: false,
                 bypass: false,
                 state,
                 internal: false,

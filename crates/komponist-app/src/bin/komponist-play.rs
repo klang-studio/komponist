@@ -51,8 +51,7 @@ use komponist_engine::{
 use komponist_model::format::{fmt_db, fmt_pos, fmt_time, note_name};
 use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
 use komponist_model::{
-    ClipContent, Device, DeviceId, DeviceRole, PluginFormat, Project, Tick, TickRange, Track,
-    fixtures, persist,
+    ClipContent, Device, DeviceId, PluginFormat, Project, Tick, TickRange, Track, fixtures, persist,
 };
 
 #[cfg(debug_assertions)]
@@ -278,7 +277,11 @@ fn plan(project: &Project) -> Vec<DevicePlan> {
     let mut plans = Vec::new();
     for track in &project.tracks {
         for (index, device) in track.channel.devices.iter().enumerate() {
-            let stand_in = if index == 0 && device.role == DeviceRole::Instrument {
+            let is_instrument = track
+                .channel
+                .instrument()
+                .is_some_and(|(at, _)| at == index);
+            let stand_in = if is_instrument {
                 instrument_stand_in(track, device)
             } else {
                 StandIn::Bypass
@@ -335,7 +338,7 @@ fn instrument_stand_in(track: &Track, device: &Device) -> StandIn {
 
 /// A track is a drum track if it plays klopfer, has step clips, or says so in its name.
 fn is_drum_track(track: &Track) -> bool {
-    let klopfer = track.channel.devices.first().is_some_and(|d| {
+    let klopfer = track.channel.instrument().is_some_and(|(_, d)| {
         d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_KLOPFER
     });
     let steps = track

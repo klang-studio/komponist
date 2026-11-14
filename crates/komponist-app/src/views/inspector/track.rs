@@ -4,7 +4,7 @@
 use egui::{Rangef, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 use komponist_ipc::PluginKind;
 use komponist_model::edits::TrackProp;
-use komponist_model::{DeviceRole, Hue, MidiChannelSel, MidiInputSel, PluginRef, Project, Track};
+use komponist_model::{Hue, MidiChannelSel, MidiInputSel, PluginRef, Project, Track};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, typography};
 use komponist_ui::state::{self, State};
@@ -120,12 +120,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
     // Instrument: the catalog's instruments; the current one first if it is not among them.
     let (key, field) = row(0);
     super::field_key(ui, key, names::INSTRUMENT);
-    let current = track
-        .channel
-        .devices
-        .first()
-        .filter(|d| d.role == DeviceRole::Instrument)
-        .map(|d| d.plugin.clone());
+    let current = track.channel.instrument().map(|(_, d)| d.plugin.clone());
     let mut plugins: Vec<PluginRef> = ctx
         .engine
         .host()

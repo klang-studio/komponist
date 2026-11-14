@@ -21,7 +21,7 @@
 //! | double-click on the head | collapses or expands; with Alt every device of the chain |
 //! | click on a collapsed strip | expands it |
 //! | drag a head | reorder: a 2 px accent line marks the slot, the drop is `MoveDevice`; with Alt a copy (`CopyDevice`) |
-//! | drop a browser plugin | effect: `Add` at the marked slot; instrument: replaces the instrument |
+//! | drop a browser plugin | effect: `Add` at the marked slot; MIDI effect: `Add` into the MIDI part left of the instrument; instrument: replaces the instrument |
 //! | click on a name in the chain head | scrolls to the device |
 //! | wheel over the chain head, Shift-wheel in the body | scrolls the chain sideways |
 //! | wheel in the body | scrolls up and down while the dock is lower than the chain (< 292 px area) |
@@ -70,8 +70,8 @@ pub struct CardDrag {
 enum Drop {
     /// Insert line at this slot.
     Line(usize),
-    /// Replace the instrument (ring around the first card).
-    Instrument,
+    /// Replace the instrument (ring around its card, at this index).
+    Instrument(usize),
 }
 
 /// The device chain view. Its view state is [`crate::ui_state::DevicesView`] (scroll, collapsed,
@@ -418,8 +418,8 @@ fn chain(
                 );
                 px::fill(cu.painter(), line, 0.0, color32(color::ACCENT));
             }
-            Drop::Instrument => {
-                if let Some((l, r)) = spans.first() {
+            Drop::Instrument(index) => {
+                if let Some((l, r)) = spans.get(index) {
                     let rect = Rect::from_min_max(pos2(*l, top), pos2(*r, bottom));
                     state::paint_select_ring(cu.painter(), rect, radius::M);
                 }
@@ -567,22 +567,26 @@ fn drop_over(
     let released = ui.input(|i| i.pointer.any_released());
     let slot = model::slot_at(spans, pos.x);
     let first = model::first_effect_slot(cards);
+    let midi = model::midi_slots(cards);
     if let Some(drag) = egui::DragAndDrop::payload::<CardDrag>(&dnd) {
         if drag.track != track.id {
             return None;
         }
+        // A MIDI effect goes into the MIDI part, any other effect behind the instrument.
+        let (lo, hi) = model::drop_bounds(cards, drag.from);
+        let at = slot.clamp(lo, hi.max(lo));
         if drag.copy {
             if released {
                 egui::DragAndDrop::clear_payload(&dnd);
                 ctx.send(Action::Edit(EditAction::CopyDevice {
                     device: drag.device,
                     to: ChannelRef::Track(track.id),
-                    index: slot.max(first),
+                    index: at,
                 }));
             }
-            return Some(Drop::Line(slot.max(first)));
+            return Some(Drop::Line(at));
         }
-        let to = model::move_target(drag.from, slot, first)?;
+        let to = model::move_target_in(drag.from, slot, lo, hi)?;
         if released {
             egui::DragAndDrop::clear_payload(&dnd);
             ctx.send(Action::Edit(EditAction::MoveDevice {
@@ -590,13 +594,14 @@ fn drop_over(
                 to_index: to,
             }));
         }
-        return Some(Drop::Line(slot.max(first)));
+        return Some(Drop::Line(at));
     }
     let plugin = egui::DragAndDrop::payload::<PluginRef>(&dnd)?;
     let role = ctx.engine.host().role(&plugin)?;
     let (drop, index) = match role {
-        DeviceRole::Instrument if first == 1 => (Drop::Instrument, 0),
-        DeviceRole::Instrument => (Drop::Line(0), 0),
+        DeviceRole::Instrument if first > midi => (Drop::Instrument(midi), midi),
+        DeviceRole::Instrument => (Drop::Line(midi), midi),
+        DeviceRole::MidiEffect => (Drop::Line(slot.min(midi)), slot.min(midi)),
         DeviceRole::Effect => (Drop::Line(slot.max(first)), slot.max(first)),
     };
     if released {

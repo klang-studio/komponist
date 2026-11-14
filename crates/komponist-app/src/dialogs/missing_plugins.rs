@@ -96,6 +96,15 @@ pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
                         .max(1);
                     format!("Effekt {n}")
                 }
+                DeviceRole::MidiEffect => {
+                    let n = devices
+                        .iter()
+                        .take(mp.index + 1)
+                        .filter(|d| d.role == DeviceRole::MidiEffect)
+                        .count()
+                        .max(1);
+                    format!("MIDI-Effekt {n}")
+                }
             };
             Row {
                 name: mp.plugin.name.clone(),

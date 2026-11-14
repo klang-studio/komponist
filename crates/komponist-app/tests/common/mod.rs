@@ -164,7 +164,7 @@ pub fn demo_with_test_plugins() -> Project {
             let device = Arc::make_mut(device);
             device.plugin = match device.role {
                 DeviceRole::Instrument => clap_plugin(SYNTH),
-                DeviceRole::Effect => clap_plugin(FX),
+                DeviceRole::Effect | DeviceRole::MidiEffect => clap_plugin(FX),
             };
         }
     }

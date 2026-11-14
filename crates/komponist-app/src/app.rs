@@ -2144,6 +2144,33 @@ impl App {
                 });
             }
             (DeviceRole::Instrument, DropTarget::Chain { .. }) => {}
+            (DeviceRole::MidiEffect, target) => {
+                // Prototype `dropNew` again: MIDI effects belong to a track's chain, in front of
+                // the instrument (`insert_device` clamps the index into the MIDI part).
+                let (channel, index) = match target {
+                    DropTarget::NewTrack { .. } => match selected {
+                        Some(t) => (ChannelRef::Track(t), usize::MAX),
+                        None => {
+                            self.set_status("MIDI-Effekte brauchen eine Spur", StatusKind::Error);
+                            return;
+                        }
+                    },
+                    DropTarget::Track(t) => (ChannelRef::Track(t), usize::MAX),
+                    DropTarget::Chain { channel, index } => (channel, index),
+                };
+                if channel == ChannelRef::Master {
+                    self.set_status("MIDI-Effekte brauchen eine Spur", StatusKind::Error);
+                    return;
+                }
+                let spec = NewDevice {
+                    role: DeviceRole::MidiEffect,
+                    plugin,
+                    state: None,
+                };
+                self.apply_with("MIDI-Effekt hinzufügen", |p| {
+                    edits::insert_device(p, channel, index, spec)
+                });
+            }
             (DeviceRole::Effect, target) => {
                 let (channel, index) = match target {
                     DropTarget::NewTrack { .. } => match selected {

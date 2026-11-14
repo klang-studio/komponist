@@ -239,6 +239,7 @@ impl DeviceHost for FakeHost {
         match self.catalog.resolve(plugin)?.kind {
             PluginKind::Instrument => Some(DeviceRole::Instrument),
             PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
             PluginKind::Other => None,
         }
     }

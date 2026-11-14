@@ -357,7 +357,7 @@ impl DeviceHost for BuiltinHost {
         if is_builtin_instrument(plugin) {
             Some(DeviceRole::Instrument)
         } else {
-            Internal::from_plugin(plugin).map(|_| DeviceRole::Effect)
+            Internal::from_plugin(plugin).map(Internal::role)
         }
     }
 
@@ -463,6 +463,7 @@ impl DeviceHost for PluginHost {
         match self.manager.catalog().resolve(plugin)?.kind {
             PluginKind::Instrument => Some(DeviceRole::Instrument),
             PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
             PluginKind::Other => None,
         }
     }
