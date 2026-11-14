@@ -422,6 +422,82 @@ fn a_missing_plugin_opens_s06_and_keeps_its_state() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// pisynth only, with a scan the test finishes by hand.
+struct Scanning {
+    inner: BuiltinHost,
+    scanning: Arc<Mutex<bool>>,
+    finished: bool,
+}
+
+impl DeviceHost for Scanning {
+    fn create_processor(
+        &mut self,
+        device: &Device,
+        setup: ProcessorSetup,
+    ) -> Option<Box<dyn Processor>> {
+        self.inner.create_processor(device, setup)
+    }
+    fn release(&mut self, device: DeviceId) {
+        self.inner.release(device);
+    }
+    fn status(&self, device: DeviceId) -> DeviceStatus {
+        self.inner.status(device)
+    }
+    fn latency(&self, device: DeviceId) -> u32 {
+        self.inner.latency(device)
+    }
+    fn poll(&mut self) -> Vec<PluginManagerEvent> {
+        let mut events = self.inner.poll();
+        if !*self.scanning.lock().unwrap() && !self.finished {
+            self.finished = true;
+            events.push(PluginManagerEvent::ScanFinished(
+                komponist_plugins::ScanReport {
+                    found: 0,
+                    per_dir: Vec::new(),
+                    skipped: Vec::new(),
+                    finished: std::time::SystemTime::now(),
+                },
+            ));
+        }
+        events
+    }
+    fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
+        self.inner.role(plugin)
+    }
+    fn catalog(&self) -> &Catalog {
+        self.inner.catalog()
+    }
+    fn is_scanning(&self) -> bool {
+        *self.scanning.lock().unwrap()
+    }
+}
+
+#[test]
+fn s06_waits_for_the_running_scan() {
+    let dir = scratch("scan");
+    let (project, _) = project_with_missing_plugin();
+    let file = dir.join("Fehlt.komponist");
+    save_and_open(&file, &project);
+    let scanning = Arc::new(Mutex::new(true));
+    let host = Scanning {
+        inner: BuiltinHost::new(),
+        scanning: Arc::clone(&scanning),
+        finished: false,
+    };
+    let mut app = app_in(&dir, new_project::empty_project()).with_device_host(Box::new(host));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
+    // The scan may still find the plugin: no dialog yet.
+    assert!(app.ui().dialog.is_none());
+    assert_eq!(app.ui().status.as_ref().unwrap().text, "Unbenannt geöffnet");
+    app.step();
+    assert!(app.ui().dialog.is_none());
+    // The scan ends without it: now S06.
+    *scanning.lock().unwrap() = false;
+    app.step();
+    assert!(matches!(app.ui().dialog, Some(Dialog::MissingPlugins(ref m)) if m.len() == 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn continuing_closes_s06() {
     let dir = scratch("continue");

@@ -341,7 +341,12 @@ impl App {
             "{} Plugins fehlen",
         );
         self.set_status(format!("{name} geöffnet · {n}"), StatusKind::Error);
-        if self.ui.screen == Screen::Project && self.dialogs.overlay.is_none() {
+        // A dialog the user opened meanwhile (a late check after a scan) is not replaced; the
+        // status bar says it.
+        if self.ui.screen == Screen::Project
+            && self.ui.dialog.is_none()
+            && self.dialogs.overlay.is_none()
+        {
             self.open_dialog(Dialog::MissingPlugins(missing));
         }
     }
