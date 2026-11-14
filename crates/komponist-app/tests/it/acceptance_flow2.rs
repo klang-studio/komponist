@@ -1,14 +1,13 @@
 //! Acceptance flow 2 (HANDOFF §9): record a clip (R, MIDI keyboard or computer keyboard) and edit
 //! it in the piano roll (drag, shorten, Q, pencil, velocity lane).
 //!
-//! The app runs on the null backend in real time. MIDI comes through a `TestMidiSource`, the same
-//! queue a midir port feeds, so the notes take the real input path including `MidiIn::frame_of`.
-//! Positions are therefore wall-clock dependent and asserted within bounds (120 bpm: 1 s is
-//! 1920 ticks); the edits afterwards are exact.
+//! The app runs on the null backend with the engine held by the test (`EngineSync::hold_engine`):
+//! time passes only in `run_held`, and MIDI arrives at exact frames of it, so positions do not
+//! depend on wall-clock time or machine load (48 kHz, 120 bpm: 25 frames per tick, 250 ms is 480
+//! ticks). The real-time input path (`TestMidiSource`, `MidiIn::frame_of`) is covered in
+//! komponist-audio; the edits afterwards are exact.
 
 use crate::acceptance_support;
-
-use std::time::{Duration, Instant};
 
 use acceptance_support::*;
 use egui::accesskit::Role;
@@ -20,37 +19,44 @@ use komponist_app::panels::transport::names as tp;
 use komponist_app::ui_state::Tool;
 use komponist_app::views::piano_roll::geometry::Geometry;
 use komponist_app::views::piano_roll::names as pr;
-use komponist_audio::{MidiPortId, TestMidiSource};
-use komponist_engine::TransportState;
+use komponist_engine::{MidiInEvent, MidiPort, TransportState};
 use komponist_model::fixtures::empty_project;
 use komponist_model::{ClipContent, ClipId, Note, Project, Tick};
 use komponist_tokens::size;
 
-const PORT: MidiPortId = MidiPortId(1);
+const FRAMES_PER_MS: usize = 48;
 
-/// Steps the app for `ms` of wall-clock time (the null stream runs in real time).
-fn wait(h: &mut Harness<'_, App>, ms: u64) {
-    let until = Instant::now() + Duration::from_millis(ms);
-    while Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(5));
-        h.step();
-    }
+fn on(key: u8, velocity: u8) -> [u8; 3] {
+    [0x90, key, velocity]
 }
 
-fn wait_for(h: &mut Harness<'_, App>, what: &str, mut done: impl FnMut(&App) -> bool) {
-    let until = Instant::now() + Duration::from_secs(10);
-    while !done(h.state()) {
-        assert!(Instant::now() < until, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(5));
-        h.step();
-    }
+fn off(key: u8) -> [u8; 3] {
+    [0x80, key, 0]
+}
+
+/// Runs the held engine for `ms` of audio time with `midi` (ms offsets from now, sorted), then
+/// one app frame.
+fn run(h: &mut Harness<'_, App>, ms: usize, midi: &[(usize, [u8; 3])]) {
+    let events: Vec<MidiInEvent> = midi
+        .iter()
+        .map(|&(at, data)| MidiInEvent {
+            frame: (at * FRAMES_PER_MS) as u32,
+            port: MidiPort(1),
+            data,
+        })
+        .collect();
+    assert!(
+        h.state_mut()
+            .engine_mut()
+            .run_held(ms * FRAMES_PER_MS, &events, 0)
+    );
+    h.step();
 }
 
 /// An empty project with an armed pisynth track (Strg T) and the count-in switched off by its
 /// transport button; the dock tall enough for the piano roll tests.
-fn rig() -> (Harness<'static, App>, TestMidiSource) {
-    let (source, receiver) = TestMidiSource::new();
-    let mut app = App::headless_with_midi(empty_project(), receiver);
+fn rig() -> Harness<'static, App> {
+    let mut app = App::headless(empty_project());
     app.ui_mut().layout.dock_height = 500.0;
     let mut h = harness(app);
     ctrl(&mut h, Key::T);
@@ -58,19 +64,23 @@ fn rig() -> (Harness<'static, App>, TestMidiSource) {
     assert_eq!(h.state().project().count_in_bars, 1);
     click(&mut h, Role::Button, tp::COUNT_IN);
     assert_eq!(h.state().project().count_in_bars, 0, "count-in off");
-    (h, source)
+    h.state_mut()
+        .engine_mut()
+        .hold_engine()
+        .expect("engine held");
+    h
 }
 
 fn start_recording(h: &mut Harness<'_, App>) {
     key(h, Key::R);
-    wait_for(h, "recording", |a| {
-        a.transport() == TransportState::Recording
-    });
+    run(h, 40, &[]);
+    assert_eq!(h.state().transport(), TransportState::Recording);
 }
 
 fn stop_recording(h: &mut Harness<'_, App>) -> ClipId {
     key(h, Key::Space);
-    wait_for(h, "stop", |a| a.transport() == TransportState::Stopped);
+    run(h, 10, &[]);
+    assert_eq!(h.state().transport(), TransportState::Stopped);
     assert!(h.state().recording().is_none());
     let p = h.state().project();
     assert_eq!(p.tracks[0].clips.len(), 1, "one clip for the take");
@@ -117,25 +127,22 @@ fn assert_recorded(p: &Project, clip: ClipId, pitches: [u8; 2]) {
     assert_eq!(sorted[0].pitch, pitches[0]);
     assert_eq!(sorted[1].pitch, pitches[1]);
     for n in &sorted {
-        // 250 ms held = about 480 ticks.
-        assert!((300..=900).contains(&n.length.0), "length {:?}", n.length);
+        // 250 ms held = 480 ticks, exactly.
+        assert_eq!(n.length, Tick(480), "length of note {}", n.pitch);
     }
-    assert!(sorted[1].start >= sorted[0].start + sorted[0].length);
+    // The second note starts 350 ms (672 ticks) after the first.
+    assert_eq!(sorted[1].start, sorted[0].start + Tick(672));
 }
 
 #[test]
 fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
-    let (mut h, midi) = rig();
+    let mut h = rig();
     start_recording(&mut h);
-    wait(&mut h, 100);
-    assert!(midi.note_on(PORT, 60, 100));
-    wait(&mut h, 250);
-    assert!(midi.note_off(PORT, 60));
-    wait(&mut h, 100);
-    assert!(midi.note_on(PORT, 64, 90));
-    wait(&mut h, 250);
-    assert!(midi.note_off(PORT, 64));
-    wait(&mut h, 100);
+    run(&mut h, 100, &[]);
+    run(&mut h, 250, &[(0, on(60, 100))]);
+    run(&mut h, 100, &[(0, off(60))]);
+    run(&mut h, 250, &[(0, on(64, 90))]);
+    run(&mut h, 100, &[(0, off(64))]);
     let clip = stop_recording(&mut h);
     assert_recorded(h.state().project(), clip, [60, 64]);
     assert_eq!(h.state().doc().undo_label(), Some("Take 1"));
@@ -204,21 +211,21 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
 
 #[test]
 fn computer_keyboard_records_a_take() {
-    let (mut h, _) = rig();
+    let mut h = rig();
     start_recording(&mut h);
-    wait(&mut h, 100);
+    run(&mut h, 100, &[]);
     h.key_down(Key::A);
     h.step();
-    wait(&mut h, 250);
+    run(&mut h, 250, &[]);
     h.key_up(Key::A);
     h.step();
-    wait(&mut h, 100);
+    run(&mut h, 100, &[]);
     h.key_down(Key::K);
     h.step();
-    wait(&mut h, 250);
+    run(&mut h, 250, &[]);
     h.key_up(Key::K);
     h.step();
-    wait(&mut h, 100);
+    run(&mut h, 100, &[]);
     let clip = stop_recording(&mut h);
     // A is C4 (60), K is C5 (72) like in the recording tests.
     assert_recorded(h.state().project(), clip, [60, 72]);
