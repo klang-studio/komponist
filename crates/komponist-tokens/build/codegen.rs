@@ -698,6 +698,122 @@ fn gen_size(size: &Value) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Device tokens
+
+/// Generates the Rust sources for `design/device-tokens.json` (`device.rs`, `widget.rs`).
+///
+/// Every object becomes a module, every number a `f32` constant, every all-number array a
+/// `[f32; N]`. Strings (colour references such as `surface.2`, CSS-like shadows, font specs) and
+/// mixed arrays (`["n", 0.5]`) become `&str` / `[&str; N]` constants holding the design text, so
+/// a token never disappears silently; they are documentation for the widget code, which maps them
+/// to the colour and type tokens itself. Unknown top-level groups and values of other kinds are
+/// errors.
+pub fn generate_devices(tokens: &Value) -> Result<BTreeMap<&'static str, String>> {
+    let root = obj(tokens, "device-tokens.json")?;
+    for key in root.keys() {
+        if !matches!(key.as_str(), "$meta" | "device" | "widget") {
+            return Err(format!("unknown device token group `{key}`"));
+        }
+    }
+    let meta = root.get("$meta").ok_or("`$meta` is missing")?;
+    for (key, value) in obj(meta, "$meta")? {
+        let path = format!("$meta.{key}");
+        let value = string(value, &path)?;
+        match key.as_str() {
+            "source" | "extends" => {}
+            "units" if value == "px @1x" => {}
+            "units" => return Err(format!("`{path}`: unsupported value `{value}`")),
+            _ => return Err(format!("unknown key `{path}`")),
+        }
+    }
+    let mut files = BTreeMap::new();
+    for (group, file) in [("device", "device.rs"), ("widget", "widget.rs")] {
+        let value = root
+            .get(group)
+            .ok_or_else(|| format!("token group `{group}` is missing"))?;
+        let mut out = String::new();
+        gen_device_object(obj(value, group)?, group, 0, &mut out)?;
+        files.insert(file, out);
+    }
+    Ok(files)
+}
+
+const RUST_KEYWORDS: &[&str] = &[
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
+    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+    "while", "async", "await", "dyn",
+];
+
+fn gen_device_object(
+    entries: &Map<String, Value>,
+    path: &str,
+    depth: usize,
+    out: &mut String,
+) -> Result<()> {
+    let pad = "    ".repeat(depth);
+    let mut idents = Vec::new();
+    for (key, value) in entries {
+        let path = format!("{path}.{key}");
+        let ident = const_ident(key)?;
+        if idents.contains(&ident) {
+            return Err(format!("`{path}`: `{ident}` is generated twice"));
+        }
+        idents.push(ident.clone());
+        let mut emit = |doc_text: String, ty: &str, lit: String| {
+            writeln!(out, "{pad}/// `{path}` {doc_text}").unwrap();
+            writeln!(out, "{pad}pub const {ident}: {ty} = {lit};").unwrap();
+        };
+        match value {
+            Value::Number(_) => {
+                let x = num(value, &path)?;
+                emit(format!("= {x}."), "f32", f32_lit(x));
+            }
+            Value::String(text) => emit(format!("= `{text}`."), "&str", format!("{text:?}")),
+            Value::Array(items) if !items.is_empty() => {
+                let n = items.len();
+                if items.iter().all(Value::is_number) {
+                    let lits: Vec<_> = items
+                        .iter()
+                        .map(|v| num(v, &path).map(f32_lit))
+                        .collect::<Result<_>>()?;
+                    emit(
+                        format!("= `{value}`."),
+                        &format!("[f32; {n}]"),
+                        format!("[{}]", lits.join(", ")),
+                    );
+                } else {
+                    let mut lits = Vec::new();
+                    for item in items {
+                        match item {
+                            Value::Number(x) => lits.push(format!("{:?}", x.to_string())),
+                            Value::String(text) => lits.push(format!("{text:?}")),
+                            _ => return Err(format!("`{path}`: unsupported array item `{item}`")),
+                        }
+                    }
+                    emit(
+                        format!("= `{value}` (design text)."),
+                        &format!("[&str; {n}]"),
+                        format!("[{}]", lits.join(", ")),
+                    );
+                }
+            }
+            Value::Object(sub) => {
+                let name = mod_ident(key)?;
+                if RUST_KEYWORDS.contains(&name.as_str()) {
+                    return Err(format!("`{path}`: `{name}` is a Rust keyword"));
+                }
+                writeln!(out, "{pad}/// `{path}.*`.\n{pad}pub mod {name} {{").unwrap();
+                gen_device_object(sub, &path, depth + 1, out)?;
+                writeln!(out, "{pad}}}").unwrap();
+            }
+            _ => return Err(format!("`{path}`: unsupported value `{value}`")),
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
 // Icons
 
 /// Prepares a Lucide SVG for egui: intrinsic size `size` px, a stroke of `stroke_px` at that size,
