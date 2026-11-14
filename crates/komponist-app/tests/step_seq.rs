@@ -49,6 +49,26 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
+/// Node `role` / `label` in the dock: the inspector (WP-43) shows the step clip's fields under
+/// the same names, so take the one left of it.
+fn in_dock<'h>(h: &'h Harness<'_, App>, role: Role, label: &'h str) -> egui_kittest::Node<'h> {
+    let inspector = W - h.state().ui().layout.inspector_width;
+    h.query_all_by_role_and_label(role, label)
+        .find(|n| n.rect().right() <= inspector)
+        .unwrap_or_else(|| panic!("no {label} in the dock"))
+}
+
+/// The step check boxes ("Step 5, Kick, an, …"); the inspector has check boxes too.
+fn step_boxes(h: &Harness<'_, App>) -> usize {
+    h.get_all_by_role(Role::CheckBox)
+        .filter(|n| {
+            n.accesskit_node()
+                .label()
+                .is_some_and(|l| l.starts_with("Step "))
+        })
+        .count()
+}
+
 fn ui(a: UiAction) -> Action {
     Action::Ui(a)
 }
@@ -542,7 +562,7 @@ fn the_running_light_runs_without_editing() {
     let revision = h.state().doc().revision();
     h.run_steps(10);
     assert_eq!(h.state().doc().revision(), revision);
-    assert_eq!(h.get_all_by_role(Role::CheckBox).count(), 8 * 16);
+    assert_eq!(step_boxes(&h), 8 * 16);
 }
 
 /// "Als MIDI-Clip: Wandelt das Pattern in einen normalen MIDI-Clip um."
@@ -574,22 +594,19 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
     let mut h = harness(opened());
     let (_, clip) = beat_b(h.state());
     // Länge 16 → 17, then 32 (the new steps show up as nodes).
-    h.get_by_role_and_label(Role::SpinButton, names::LENGTH)
-        .increment_accesskit();
+    in_dock(&h, Role::SpinButton, names::LENGTH).increment_accesskit();
     h.run_steps(2);
     assert_eq!(pattern(h.state(), clip).length_steps, 17);
-    h.get_by_role_and_label(Role::SpinButton, names::LENGTH)
-        .set_value_accesskit(32.0);
+    in_dock(&h, Role::SpinButton, names::LENGTH).set_value_accesskit(32.0);
     h.run_steps(2);
     assert_eq!(pattern(h.state(), clip).length_steps, 32);
-    assert_eq!(h.get_all_by_role(Role::CheckBox).count(), 8 * 32);
+    assert_eq!(step_boxes(&h), 8 * 32);
     // Swing 12 %.
-    h.get_by_role_and_label(Role::SpinButton, names::SWING)
-        .set_value_accesskit(12.0);
+    in_dock(&h, Role::SpinButton, names::SWING).set_value_accesskit(12.0);
     h.run_steps(2);
     assert!((pattern(h.state(), clip).swing - 0.12).abs() < 1e-6);
     // Auflösung: 1/8.
-    h.get_by_label(names::RESOLUTION).click();
+    in_dock(&h, Role::ComboBox, names::RESOLUTION).click();
     h.run_steps(3);
     h.get_by_label("1/8").click();
     h.run_steps(3);
@@ -701,7 +718,7 @@ fn esc_cancels_a_drag() {
 #[test]
 fn visible_steps_are_accesskit_check_boxes() {
     let mut h = harness(opened());
-    let boxes = h.get_all_by_role(Role::CheckBox).count();
+    let boxes = step_boxes(&h);
     assert_eq!(boxes, 8 * 16);
     assert_eq!(step_name(&h, "Kick", 4), "Step 5, Kick, an, Velocity 100");
     assert_eq!(step_name(&h, "Kick", 1), "Step 2, Kick, aus");
@@ -710,7 +727,7 @@ fn visible_steps_are_accesskit_check_boxes() {
         size: komponist_tokens::size::dock::MIN,
     }));
     h.run_steps(3);
-    let visible = h.get_all_by_role(Role::CheckBox).count();
+    let visible = step_boxes(&h);
     assert!((16..8 * 16).contains(&visible), "{visible}");
     assert!(h.query_by_label_contains(&step_label("Perc", 0)).is_none());
     let at = h
