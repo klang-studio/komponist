@@ -7,6 +7,7 @@
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod bench;
 mod chase;
 #[allow(dead_code)]
 mod common;
