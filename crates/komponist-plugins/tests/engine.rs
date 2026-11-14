@@ -442,3 +442,73 @@ fn bridges_in_series_share_the_callback_deadline() {
         "{late_before} → {late_after}"
     );
 }
+
+/// WP-65: bridged instruments at the head of a chain start before the engine runs any chain
+/// (`Processor::begin`) and are completed by whichever thread runs their track. Offline, four
+/// synth tracks (each followed by a bridged effect) render bit-exact the same with two worker
+/// threads as single-threaded; in realtime the blocks reach the bridges.
+#[test]
+fn bridged_instruments_with_workers_match_single_threaded() {
+    let play = |workers: usize| -> Option<(Vec<f32>, Vec<f32>, usize)> {
+        let dir = scratch(&format!("engine-workers-{workers}"));
+        let manager = scanned_manager(&dir)?;
+        let tracks = (1..=4)
+            .map(|t| {
+                track(
+                    t,
+                    vec![
+                        device(10 * t, DeviceRole::Instrument, clap_plugin(SYNTH), None),
+                        device(10 * t + 1, DeviceRole::Effect, clap_plugin(FX), None),
+                    ],
+                )
+            })
+            .collect();
+        let mut rig = Rig::new(manager, project(tracks));
+        assert_eq!(rig.engine.set_workers(workers, None).threads, workers);
+        for t in 1..=4 {
+            rig.wait_status(10 * t, DeviceStatus::Ok);
+            rig.wait_status(10 * t + 1, DeviceStatus::Ok);
+        }
+        rig.recompile();
+        rig.render(BLOCK);
+        for t in 1..=4u8 {
+            rig.note(u64::from(t), 57 + 3 * t, 127);
+        }
+        let range = rig.render(16 * BLOCK);
+        let out = (rig.l[range.clone()].to_vec(), rig.r[range].to_vec());
+        for t in 1..=4u8 {
+            rig.note(u64::from(t), 57 + 3 * t, 0);
+        }
+        rig.render(8 * BLOCK);
+        // Realtime: most blocks make the 60 % deadline (the machine may be loaded).
+        for t in 1..=4u8 {
+            rig.note(u64::from(t), 60 + t, 127);
+        }
+        let blocks = 40;
+        let range = rig.run(blocks);
+        let loud = range
+            .step_by(BLOCK)
+            .filter(|&b| rig.peak(b..b + BLOCK) > 0.01)
+            .count();
+        assert!(rig.engine_events.is_empty(), "{:?}", rig.engine_events);
+        Some((out.0, out.1, loud))
+    };
+    let Some(single) = play(0) else {
+        return;
+    };
+    let parallel = play(2).expect("fixtures found once");
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    assert!(single.0.iter().any(|x| x.abs() > 0.01), "silent");
+    assert_eq!(bits(&single.0), bits(&parallel.0), "left");
+    assert_eq!(bits(&single.1), bits(&parallel.1), "right");
+    eprintln!(
+        "realtime: {} (single) and {} (2 workers) of 40 blocks with sound",
+        single.2, parallel.2
+    );
+    assert!(
+        single.2 > 20 && parallel.2 > 20,
+        "{} {}",
+        single.2,
+        parallel.2
+    );
+}

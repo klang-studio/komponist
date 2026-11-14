@@ -3,10 +3,13 @@
 //! Implements `komponist_engine::Processor` on top of `komponist_ipc::BridgeClient`. Per call:
 //! convert the events to `WireEvent`s and the transport to `WireTransport`, `begin_block`, then
 //! `wait_done` until the callback's shared deadline (`ProcessContext::deadline`: 60 % of the
-//! callback period after the callback started, the same for every processor of the callback). Fallbacks (passthrough for effects, silence for instruments):
-//! while the bridge loads (`Loading`), when a block is late or the bridge busy (counted as "late"),
-//! and permanently once the bridge died (then `ProcessStatus::Failed`). Undelivered note-offs are
-//! kept and sent with the next block that reaches the bridge.
+//! callback period after the callback started, the same for every processor of the callback).
+//! The engine may split the two halves (`Processor::begin`, WP-65): for an instrument at the
+//! head of a chain the block starts before the engine runs any chain, and `process` only waits
+//! for it. Fallbacks (passthrough for effects, silence for instruments): while the bridge loads
+//! (`Loading`), when a block is late or the bridge busy (counted as "late"), and permanently once
+//! the bridge died (then `ProcessStatus::Failed`). Undelivered note-offs are kept and sent with
+//! the next block that reaches the bridge.
 //!
 //! Created only by [`crate::PluginManager`]; lives on the audio thread; dropped on the UI thread
 //! (engine garbage).
@@ -95,6 +98,8 @@ pub struct ExternalProcessor {
     pending: Vec<WireEvent>,
     /// An `AllNotesOff` is due (undelivered, or too many pending note-offs).
     pending_all_off: bool,
+    /// A call started by [`Processor::begin`], completed by the next `process`.
+    begun: Option<Started>,
 }
 
 impl ExternalProcessor {
@@ -115,6 +120,7 @@ impl ExternalProcessor {
             wire: Vec::with_capacity(INPUT_EVENT_CAPACITY),
             pending: Vec::with_capacity(PENDING_CAPACITY),
             pending_all_off: false,
+            begun: None,
         }
     }
 
@@ -198,6 +204,105 @@ impl ExternalProcessor {
         self.pending.clear();
         self.pending_all_off = false;
     }
+
+    /// RT. The first half of a call: status checks, wire events and `begin_block`.
+    fn start(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> Started {
+        let entered = Instant::now();
+        let frames = input[0].len();
+        self.steady_time += frames as u64;
+        let outcome = |outcome| Started { frames, outcome };
+        match self.shared.run.load(Ordering::Acquire) {
+            RUN_ACTIVE if !self.shared.reactivating.load(Ordering::Acquire) => {}
+            RUN_DEAD => return outcome(Outcome::Fallback(ProcessStatus::Failed)),
+            _ => {
+                self.forget_pending();
+                return outcome(Outcome::Fallback(ProcessStatus::Continue));
+            }
+        }
+        if frames == 0 || frames > MAX_BLOCK {
+            return outcome(Outcome::Fallback(ProcessStatus::Continue));
+        }
+
+        self.build_wire(events);
+        let mut flags = 0;
+        if self.reset {
+            flags |= BLOCK_FLAG_RESET;
+        }
+        if ctx.offline {
+            flags |= BLOCK_FLAG_OFFLINE;
+        }
+        let spec = BlockSpec {
+            frames: frames as u32,
+            flags,
+            steady_time: self.steady_time - frames as u64,
+            transport: wire_transport(&ctx.transport),
+        };
+        let seq = match self.client.begin_block(&spec, input, &self.wire) {
+            Ok(seq) => seq,
+            Err(error) => {
+                // Nothing reached the bridge: keep what must not get lost.
+                self.stash_wire();
+                if matches!(error, BlockError::Busy | BlockError::TooManyEvents) {
+                    self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
+                }
+                return outcome(Outcome::Fallback(ProcessStatus::Continue));
+            }
+        };
+        self.reset = false;
+        self.wire.clear();
+        let deadline = match ctx.deadline {
+            _ if ctx.offline => entered + OFFLINE_DEADLINE,
+            Some(deadline) => deadline,
+            None => {
+                let period = frames as f64 / f64::from(ctx.sample_rate);
+                entered + Duration::from_secs_f64(period * DEADLINE_SHARE)
+            }
+        };
+        outcome(Outcome::Sent { seq, deadline })
+    }
+
+    /// RT. The second half of a call: wait for the bridge's output, or write the fallback.
+    fn finish(&mut self, started: Started, io: &mut StereoIo<'_>) -> ProcessStatus {
+        match started.outcome {
+            Outcome::Fallback(status) => {
+                self.fallback(io);
+                status
+            }
+            Outcome::Sent { seq, deadline } => {
+                let [left, right] = &mut io.output;
+                match self
+                    .client
+                    .wait_done(seq, deadline, [&mut **left, &mut **right])
+                {
+                    // `PluginError` / `Inactive` results carry the bridge's own fallback in the
+                    // output.
+                    Ok(_) => ProcessStatus::Continue,
+                    Err(_) => {
+                        self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
+                        self.fallback(io);
+                        ProcessStatus::Continue
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A call started by [`ExternalProcessor::start`].
+#[derive(Debug, Clone, Copy)]
+struct Started {
+    /// Frames of the call.
+    frames: usize,
+    outcome: Outcome,
+}
+
+/// What the start of a call did.
+#[derive(Debug, Clone, Copy)]
+enum Outcome {
+    /// The block went to the bridge: wait for `seq` until `deadline`.
+    Sent { seq: u32, deadline: Instant },
+    /// No block went out: write the fallback and return the status.
+    Fallback(ProcessStatus),
 }
 
 impl Processor for ExternalProcessor {
@@ -229,82 +334,28 @@ impl Processor for ExternalProcessor {
         Ok(())
     }
 
-    /// RT: one shared-memory round trip with deadline, or the fallback.
+    /// RT: one shared-memory round trip with deadline, or the fallback. Completes a block started
+    /// by [`Processor::begin`] instead of starting one.
     fn process(
         &mut self,
         ctx: &ProcessContext,
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
-        let entered = Instant::now();
-        let frames = io.frames();
-        self.steady_time += frames as u64;
-        match self.shared.run.load(Ordering::Acquire) {
-            RUN_ACTIVE if !self.shared.reactivating.load(Ordering::Acquire) => {}
-            RUN_DEAD => {
-                self.fallback(io);
-                return ProcessStatus::Failed;
-            }
-            _ => {
-                self.forget_pending();
-                self.fallback(io);
-                return ProcessStatus::Continue;
-            }
-        }
-        if frames == 0 || frames > MAX_BLOCK {
-            self.fallback(io);
-            return ProcessStatus::Continue;
-        }
+        let started = match self.begun.take() {
+            Some(started) if started.frames == io.frames() => started,
+            // Not begun, or (never from the engine) begun for another call: whatever the bridge
+            // does with that block, its result is stale by sequence number.
+            _ => self.start(ctx, events, io.input),
+        };
+        self.finish(started, io)
+    }
 
-        self.build_wire(events);
-        let mut flags = 0;
-        if self.reset {
-            flags |= BLOCK_FLAG_RESET;
-        }
-        if ctx.offline {
-            flags |= BLOCK_FLAG_OFFLINE;
-        }
-        let spec = BlockSpec {
-            frames: frames as u32,
-            flags,
-            steady_time: self.steady_time - frames as u64,
-            transport: wire_transport(&ctx.transport),
-        };
-        let seq = match self.client.begin_block(&spec, io.input, &self.wire) {
-            Ok(seq) => seq,
-            Err(error) => {
-                // Nothing reached the bridge: keep what must not get lost.
-                self.stash_wire();
-                if matches!(error, BlockError::Busy | BlockError::TooManyEvents) {
-                    self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
-                }
-                self.fallback(io);
-                return ProcessStatus::Continue;
-            }
-        };
-        self.reset = false;
-        self.wire.clear();
-        let deadline = match ctx.deadline {
-            _ if ctx.offline => entered + OFFLINE_DEADLINE,
-            Some(deadline) => deadline,
-            None => {
-                let period = frames as f64 / f64::from(ctx.sample_rate);
-                entered + Duration::from_secs_f64(period * DEADLINE_SHARE)
-            }
-        };
-        let [left, right] = &mut io.output;
-        match self
-            .client
-            .wait_done(seq, deadline, [&mut **left, &mut **right])
-        {
-            // `PluginError` / `Inactive` results carry the bridge's own fallback in the output.
-            Ok(_) => ProcessStatus::Continue,
-            Err(_) => {
-                self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
-                self.fallback(io);
-                ProcessStatus::Continue
-            }
-        }
+    /// RT: starts the block (wire events, `begin_block`, futex wake) so that the bridge works
+    /// while the engine processes other tracks; the next `process` call waits for it.
+    fn begin(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> bool {
+        self.begun = Some(self.start(ctx, events, input));
+        true
     }
 
     /// RT: the latency the bridge published in shared memory.
