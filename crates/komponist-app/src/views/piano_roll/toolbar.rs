@@ -45,6 +45,8 @@ pub struct Info {
     pub pitch: u8,
     /// Grid ticks (one "Länge" step).
     pub grid: Tick,
+    /// The editor shows the take being recorded: "LIVE" instead of the note count (S02).
+    pub live: bool,
 }
 
 /// A drag on a field in progress: the field and the steps sent last.
@@ -146,7 +148,11 @@ pub fn show(
         r.y_range(),
         color32(color::LINE_1),
     );
-    let text = edit::selection_text(info.selected.len(), info.total);
+    let text = if info.live {
+        crate::record::names::LIVE.to_owned()
+    } else {
+        edit::selection_text(info.selected.len(), info.total)
+    };
     let galley = widgets::styled_galley(&row, &text, &typography::LABEL);
     let (r, response) = row.allocate_exact_size(galley.size(), Sense::hover());
     row.painter().galley(r.min, galley, color32(color::TEXT_3));

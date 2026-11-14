@@ -80,6 +80,8 @@ pub struct Frame<'a> {
     pub playing: Option<Tick>,
     /// The clip or its track is muted: notes are contours.
     pub muted: bool,
+    /// The take being recorded (WP-51): read-only, the clip range in `state.record`, no hint.
+    pub live: bool,
 }
 
 /// The pointer gesture in progress.
@@ -269,8 +271,18 @@ impl PianoRoll {
             areas.push((Area::Lane, l));
         }
         let p = Pointer::read(ui);
-        self.pointer(ctx, f, &areas, p);
-        self.cursor(ui, f, &grid, &lane, p);
+        if f.live {
+            if self
+                .gesture
+                .as_ref()
+                .is_some_and(|g| *g != Gesture::Cancelled)
+            {
+                self.cancel(ctx);
+            }
+        } else {
+            self.pointer(ctx, f, &areas, p);
+            self.cursor(ui, f, &grid, &lane, p);
+        }
 
         let painter = ui.painter().clone();
         self.paint_ruler(&painter, f);
@@ -952,7 +964,7 @@ impl PianoRoll {
             px::inner_border(&painter, r, color32(color::ACCENT));
         }
         self.paint_playhead(&painter, f, g.grid);
-        if f.notes.is_empty() && !matches!(self.gesture, Some(Gesture::Pencil(_))) {
+        if f.notes.is_empty() && !f.live && !matches!(self.gesture, Some(Gesture::Pencil(_))) {
             let galley = painter.layout_job(fonts::layout_job(
                 names::EMPTY_HINT,
                 &typography::UI,
@@ -1149,7 +1161,7 @@ impl PianoRoll {
                 access.selected,
             );
         }
-        if f.notes.is_empty() {
+        if f.notes.is_empty() && !f.live {
             let galley = notes.painter().layout_job(fonts::layout_job(
                 names::EMPTY_HINT,
                 &typography::UI,
@@ -1222,10 +1234,14 @@ fn ruler_model(f: &Frame<'_>) -> RulerModel {
                 f.clip.start,
                 f.clip.start + edit::content_length(f.clip),
             ),
-            clip_color: color32(f.palette.base),
+            clip_color: color32(if f.live {
+                color::STATE_RECORD
+            } else {
+                f.palette.base
+            }),
         },
         playhead: Some(f.playhead),
-        recording: false,
+        recording: f.live,
     }
 }
 

@@ -1,6 +1,6 @@
 //! The arrangement's tools in its panel header (`Screens.dc.html` shell markup): "Raster" with
-//! the grid dropdown, the Snap toggle, then on the right the selection info, a separator and the
-//! zoom buttons − +.
+//! the grid dropdown, the Snap toggle, then on the right the selection info ("Aufnahme · Lead"
+//! while recording), a separator and the zoom buttons − +.
 
 use egui::{Align, Layout, Role, Sense, Ui, WidgetInfo, vec2};
 use komponist_tokens::egui_support::color32;
@@ -74,7 +74,14 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
             .iter()
             .filter(|c| ctx.project.find_clip(**c).is_some())
             .count();
-        if n > 0 {
+        if let Some(rec) = ctx.recording {
+            let tracks: Vec<&str> = rec
+                .tracks()
+                .filter_map(|t| ctx.project.track(t))
+                .map(|t| t.name.as_str())
+                .collect();
+            info(ui, &crate::record::names::info(&tracks));
+        } else if n > 0 {
             info(ui, &names::clips_selected(n));
         }
     });

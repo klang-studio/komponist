@@ -5,7 +5,8 @@
 //! ("PipeWire · 48 kHz · 256 Samples · 5.3 ms", `type.value.s`; "· ohne Echtzeit-Priorität" in the
 //! warning colour when the audio thread got none). A status message
 //! ([`crate::ui_state::StatusMessage`]) replaces the left text for 7 s. Texts are verbatim from
-//! the screens and the prototype.
+//! the screens and the prototype; a leading "● " (recording) is painted as a dot in the text
+//! colour, the fonts have no ● (`ks-view.js` `statusView` `dotS`).
 
 use std::time::Instant;
 
@@ -131,6 +132,14 @@ fn context(app: &App, s: &mut StatusModel) {
                 .map(|t| t.name.as_str())
                 .collect();
             s.left = format!("● Aufnahme läuft · {}", armed.join(", "));
+            // "· Take 1": the take the editor shows (S02).
+            if let Some(take) = app
+                .recording()
+                .and_then(|r| r.first().and_then(|(track, _)| r.take_name(track)))
+            {
+                s.left.push_str(" · ");
+                s.left.push_str(&take);
+            }
             s.left_color = color::STATE_RECORD;
             s.mid = "R oder Leertaste beendet · Esc verwirft den Take".to_owned();
             return;
@@ -229,9 +238,15 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) {
     let right_x = inner.right() - right.size().x;
     let right_rect = Rect::from_min_size(w::text_pos(inner, &right, right_x, ppp), right.size());
     let mut x = inner.left();
-    if model.ok_dot {
+    let rec_text = model.left.strip_prefix("● ");
+    let dot = if model.ok_dot {
+        Some(color::STATE_PLAY)
+    } else {
+        rec_text.map(|_| model.left_color)
+    };
+    if let Some(dot) = dot {
         let c = pos2(x + ERROR_DOT / 2.0, inner.center().y);
-        clip.circle_filled(c, ERROR_DOT / 2.0, color32(color::STATE_PLAY));
+        clip.circle_filled(c, ERROR_DOT / 2.0, color32(dot));
         x += ERROR_DOT + space::SPACE_2;
     }
     let left_limit = right_rect.left() - space::SPACE_4;
@@ -247,7 +262,12 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) {
         if text.is_empty() {
             continue;
         }
-        let g = w::styled_galley(ui, text, &typography::SMALL);
+        let shown = if text == model.left {
+            rec_text.unwrap_or(text)
+        } else {
+            text
+        };
+        let g = w::styled_galley(ui, shown, &typography::SMALL);
         let pos = w::text_pos(inner, &g, x, ppp);
         let r = Rect::from_min_size(pos, g.size());
         x += g.size().x + space::SPACE_4;

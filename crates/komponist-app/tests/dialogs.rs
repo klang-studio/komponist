@@ -362,6 +362,64 @@ fn opening_a_project_resets_the_engine() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn opening_another_project_drops_a_running_recording() {
+    use komponist_engine::{MidiInEvent, MidiPort, TransportState};
+    use komponist_model::Tick;
+    let dir = scratch("record");
+    let mut other = new_project::empty_project();
+    other.name = "Anderes".into();
+    let file = dir.join("Anderes.komponist");
+    save_and_open(&file, &other);
+    // An armed track, count-in off, the engine held so the test runs it (WP-51 `hold_engine`).
+    let mut app = app_in(&dir, new_project::empty_project());
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    app.dispatch(Action::Transport(
+        komponist_app::TransportAction::ToggleCountIn,
+    ));
+    app.engine_mut().hold_engine().expect("engine held");
+    let mut h = harness(app);
+    let frames = 48_000 / 10;
+    let run = |h: &mut Harness<'_, App>, midi: &[MidiInEvent]| {
+        assert!(h.state_mut().engine_mut().run_held(frames, midi, 0));
+        h.step();
+    };
+    run(&mut h, &[]);
+    press(&mut h, Modifiers::NONE, Key::R);
+    let note = MidiInEvent {
+        frame: 100,
+        port: MidiPort(1),
+        data: [0x90, 60, 100],
+    };
+    run(&mut h, &[note]);
+    run(&mut h, &[]);
+    assert!(h.state().recording().is_some());
+    assert_eq!(h.state().transport(), TransportState::Recording);
+    // Open another project ("Nicht speichern"): the take goes, the engine stops recording.
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(file)));
+    h.run_steps(2);
+    h.get_by_label("Nicht speichern").click();
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "Anderes");
+    assert!(h.state().recording().is_none());
+    // The old capture's note-offs and the stop arrive later; no take starts.
+    run(&mut h, &[]);
+    run(
+        &mut h,
+        &[MidiInEvent {
+            frame: 50,
+            port: MidiPort(1),
+            data: [0x80, 60, 0],
+        }],
+    );
+    assert!(h.state().recording().is_none());
+    assert_eq!(h.state().transport(), TransportState::Stopped);
+    assert_eq!(h.state().engine().playhead(), Tick::ZERO);
+    assert!(h.state().project().tracks.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ------------------------------------------------------------------------------------------------
 // S06: a plugin that does not exist
 // ------------------------------------------------------------------------------------------------

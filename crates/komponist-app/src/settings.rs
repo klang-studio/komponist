@@ -1,6 +1,6 @@
 //! App settings (`~/.config/komponist/settings.json`): audio stream, MIDI inputs, plugin folders,
-//! UI scale, panel layout and the last export settings. The recent projects have their own file
-//! next to it (`recent.json`, [`crate::project_io::RecentList`]).
+//! UI scale, panel layout, the last export settings and the browser's favourites. The recent
+//! projects have their own file next to it (`recent.json`, [`crate::project_io::RecentList`]).
 //!
 //! Plugin folders (S07 "Plugin-Ordner"): a scan always covers the default folders (ARCHITECTURE
 //! §8.3, `$CLAP_PATH` included) and the folders added in S07. Default folders cannot be removed
@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
+use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
+use komponist_model::{PluginFormat, PluginRef};
 use komponist_plugins::PluginDirs;
 use komponist_tokens::size;
 
@@ -47,6 +49,65 @@ pub struct Settings {
     pub panels: PanelSettings,
     /// The export dialog's last settings (S08 opens with them).
     pub export: Option<ExportSettings>,
+    /// The browser's favourites (the star of a browser row).
+    pub favorites: Favorites,
+}
+
+/// A browser favourite: a plugin by format and id, the way `Catalog::resolve` matches devices
+/// (name and version may change with an update).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Favorite {
+    /// Plugin format.
+    pub format: PluginFormat,
+    /// Format-specific id.
+    pub id: String,
+}
+
+impl Favorite {
+    /// The favourite for `plugin`.
+    pub fn of(plugin: &PluginRef) -> Favorite {
+        Favorite {
+            format: plugin.format,
+            id: plugin.id.clone(),
+        }
+    }
+
+    /// Whether `plugin` is this favourite.
+    pub fn matches(&self, plugin: &PluginRef) -> bool {
+        self.format == plugin.format && self.id == plugin.id
+    }
+}
+
+/// The favourites in the order they were starred. A fresh install starts with the two built-in
+/// instruments, pisynth and klopfer (S01 "Favoriten", the prototype's `favs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Favorites(pub Vec<Favorite>);
+
+impl Default for Favorites {
+    fn default() -> Favorites {
+        let builtin = |id: &str| Favorite {
+            format: PluginFormat::Builtin,
+            id: id.to_owned(),
+        };
+        Favorites(vec![builtin(BUILTIN_PISYNTH), builtin(BUILTIN_KLOPFER)])
+    }
+}
+
+impl Favorites {
+    /// Whether `plugin` is a favourite.
+    pub fn contains(&self, plugin: &PluginRef) -> bool {
+        self.0.iter().any(|f| f.matches(plugin))
+    }
+
+    /// Stars `plugin`, or removes its star.
+    pub fn toggle(&mut self, plugin: &PluginRef) {
+        if self.contains(plugin) {
+            self.0.retain(|f| !f.matches(plugin));
+        } else {
+            self.0.push(Favorite::of(plugin));
+        }
+    }
 }
 
 /// The persisted part of [`PanelLayout`]: sizes and which panels are open. Maximise and the
@@ -262,6 +323,13 @@ mod tests {
         s.panels.browser_open = false;
         s.panels.dock_height = 400.0;
         s.export = Some(default_export("Nachtfahrt", dir.clone()));
+        s.favorites.toggle(&PluginRef {
+            format: PluginFormat::Clap,
+            id: "com.example.reverb".into(),
+            name: "Reverb".into(),
+            vendor: "Example".into(),
+            version: "1.0".into(),
+        });
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
         assert!(!path.with_extension("json.tmp").exists());
@@ -315,5 +383,30 @@ mod tests {
         assert_eq!(dirs.clap.last(), Some(&PathBuf::from("/opt/clap")));
         assert_eq!(dirs.vst3.last(), Some(&PathBuf::from("/opt/vst3")));
         assert_eq!(dirs.vst3[..defaults.vst3.len()], defaults.vst3[..]);
+    }
+
+    #[test]
+    fn favourites_start_with_the_builtins_and_toggle() {
+        let s = Settings::default();
+        let ids: Vec<&str> = s.favorites.0.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, [BUILTIN_PISYNTH, BUILTIN_KLOPFER]);
+        let mut f = s.favorites.clone();
+        let pisynth = PluginRef {
+            format: PluginFormat::Builtin,
+            id: BUILTIN_PISYNTH.into(),
+            name: "pisynth".into(),
+            vendor: String::new(),
+            version: "9".into(),
+        };
+        assert!(f.contains(&pisynth));
+        f.toggle(&pisynth);
+        assert!(!f.contains(&pisynth));
+        f.toggle(&pisynth);
+        assert_eq!(f.0.last(), Some(&Favorite::of(&pisynth)));
+        // An empty list stays empty after a save (no defaults come back).
+        let json = serde_json::to_string(&Favorites(Vec::new())).unwrap();
+        assert_eq!(json, "[]");
+        let back: Settings = serde_json::from_str(r#"{"favorites": []}"#).unwrap();
+        assert!(back.favorites.0.is_empty());
     }
 }

@@ -20,6 +20,11 @@
 //! and the warnings the user can act on go to the status bar (all warnings and errors also to
 //! stderr). Saving takes a state snapshot of every bridged device first; [`App::shutdown`] shuts
 //! the bridges down.
+//!
+//! Engine events (step 1) feed the recording ([`crate::record`]): the count-in's end starts a
+//! [`Recording`], captured notes and loop wraps grow it, Stop (Leertaste, Stop, R) commits it as one
+//! undo step and Esc discards it ([`TransportAction::DiscardTake`]); both drain the events still in
+//! flight first.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -28,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, Event, FocusDirection, Ui};
 use komponist_audio::AudioState;
-use komponist_engine::{Command, TransportState};
+use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_ipc::LogLevel;
 use komponist_model::edits::{
     self, ChannelProp, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp, VelocityChange,
@@ -53,6 +58,7 @@ use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
 use crate::project_io::{self, RecentList};
+use crate::record::{self, Recording};
 use crate::settings::{self, PanelSettings, Settings};
 use crate::ui_state::{
     Dialog, DockTab, ExportDialog, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind,
@@ -103,6 +109,8 @@ pub struct App {
     pub(crate) recent_path: Option<PathBuf>,
     /// Drivers and devices for S07.
     pub(crate) audio_devices: Box<dyn AudioDevices>,
+    /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
+    pub(crate) recording: Option<Recording>,
 }
 
 /// Per-session state of the shell that is not view state.
@@ -141,6 +149,7 @@ impl App {
         let mut ui = UiState::new();
         ui.screen = Screen::Project;
         settings.panels.apply_to(&mut ui.layout);
+        ui.browser.favorites = settings.favorites.clone();
         let saved_panels = Some(settings.panels);
         let recent_path = settings_path.as_deref().map(project_io::recent_path);
         let recent = match recent_path.as_deref().map(RecentList::load) {
@@ -171,6 +180,7 @@ impl App {
             recent,
             recent_path,
             audio_devices: Box::new(SystemDevices),
+            recording: None,
         }
     }
 
@@ -280,6 +290,11 @@ impl App {
         self.shell.last_error.as_ref()
     }
 
+    /// The take being recorded, from the end of the count-in until Stop or Esc.
+    pub fn recording(&self) -> Option<&Recording> {
+        self.recording.as_ref()
+    }
+
     /// Transport state from the engine.
     pub fn transport(&self) -> TransportState {
         self.engine.telemetry().transport()
@@ -383,16 +398,24 @@ impl App {
         self.meters.update(&self.engine, now);
     }
 
-    /// Drains the engine's and the device host's events and handles the device events.
+    /// Drains the engine's and the device host's events and handles them (this frame's).
     fn poll_events(&mut self) {
         self.shell.device_events.clear();
+        self.drain_events();
+    }
+
+    /// Handles the events that arrived since the last drain; the device events are added to this
+    /// frame's.
+    fn drain_events(&mut self) {
+        let events = self.engine.poll();
+        // Read after the drain: at least as new as every event drained (`record` docs).
+        let playhead = self.engine.playhead();
         let mut recompile = false;
-        for event in self.engine.poll() {
+        for event in events {
             match event {
-                // Garbage is dropped inside `EngineSync::poll`. The rest has no consumer yet:
-                // recording (WP-51) builds takes from RecordedNoteOn/Off, LoopWrapped and
-                // CountInDone; a failed processor's device reports its own status.
-                SyncEvent::Engine(_) => {}
+                // Garbage is dropped inside `EngineSync::poll`; a failed processor's device
+                // reports its own status.
+                SyncEvent::Engine(event) => self.engine_event(&event, playhead),
                 SyncEvent::Device(event) => {
                     recompile |= matches!(event, PluginManagerEvent::LatencyChanged { .. });
                     self.handle_device_event(&event);
@@ -400,10 +423,77 @@ impl App {
                 }
             }
         }
+        if let Some(rec) = &mut self.recording {
+            rec.update(playhead);
+        }
         if recompile {
             // Delay compensation follows the new latencies; the slots stay as they are.
             self.engine.send_project(self.doc.project());
         }
+    }
+
+    /// The recording's part of an engine event: the count-in's end starts the take, captured
+    /// notes and loop wraps go into it.
+    fn engine_event(&mut self, event: &EngineEvent, playhead: Tick) {
+        match *event {
+            EngineEvent::CountInDone { at } => self.begin_take(at),
+            _ => {
+                if let Some(rec) = &mut self.recording {
+                    rec.handle(event, playhead, self.doc.project());
+                }
+            }
+        }
+    }
+
+    /// Capture started at `at`: the take grows from there, and the editor shows it (prototype
+    /// `startRec`).
+    fn begin_take(&mut self, at: Tick) {
+        // A take still open belongs to an earlier capture; it is kept.
+        self.finish_take();
+        self.recording = Some(Recording::new(self.doc.project(), at));
+        self.set_dock_tab(DockTab::Editor);
+        if self.ui.dialog.is_none() {
+            self.ui.focus = FocusArea::PianoRoll;
+        }
+    }
+
+    /// Stop: writes the running take as one undo step "Take n", selects its clip and opens it in
+    /// the editor (prototype `finishRec`). Events still in flight are drained first.
+    fn commit_take(&mut self) {
+        if self.recording.is_some() {
+            self.drain_events();
+            self.finish_take();
+        }
+    }
+
+    /// [`App::commit_take`] without draining (inside a drain).
+    fn finish_take(&mut self) {
+        let Some(rec) = self.recording.take() else {
+            return;
+        };
+        let Some(commit) = rec.commit(self.doc.project(), self.engine.playhead()) else {
+            return;
+        };
+        // The take is an undo step of its own, also in the middle of a drag.
+        self.doc.end_gesture();
+        let label = commit.label().to_owned();
+        let Some(clips) = self.apply_with(&label, |p| commit.apply(p)) else {
+            return;
+        };
+        if let Some(&first) = clips.first() {
+            self.ui_action(UiAction::OpenClip(first));
+        }
+        if let Some((take, notes)) = commit.summary() {
+            self.set_status(record::names::recorded(take, notes), StatusKind::Success);
+        }
+    }
+
+    /// Esc while recording: the running take is gone, playback goes on.
+    fn discard_take(&mut self) {
+        // A count-in that just ended still starts its take; it goes too.
+        self.drain_events();
+        self.recording = None;
+        self.engine.send(Command::StopRecording);
     }
 
     /// The app's part of a device host event (module docs).
@@ -476,6 +566,26 @@ impl App {
         let _ = self
             .doc
             .apply_untracked(|p| edits::set_device_state(p, device, Some(Arc::clone(state))));
+    }
+
+    /// A pisynth macro turned on the device card: the same `Macro::set` the processor applies goes
+    /// into the device state in the document, outside the history like every plugin state, so the
+    /// card shows the value and saving keeps it (`komponist_builtin::macros` module docs).
+    fn store_macro(&mut self, device: DeviceId, id: u32, value: f64) {
+        let Some(m) = komponist_builtin::Macro::from_id(id) else {
+            return;
+        };
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        if !crate::device_host::is_pisynth(d) {
+            return;
+        }
+        let mut patch = komponist_builtin::decode_state(d.state.as_deref())
+            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        m.set(&mut patch, value);
+        let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
+        self.store_state(device, &state);
     }
 
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
@@ -662,10 +772,11 @@ impl App {
                 Action::Ui(UiAction::CloseDialog)
             }
             Action::Ui(UiAction::ClearSelection)
-                if matches!(
-                    self.transport(),
-                    TransportState::Recording | TransportState::CountIn
-                ) =>
+                if self.recording.is_some()
+                    || matches!(
+                        self.transport(),
+                        TransportState::Recording | TransportState::CountIn
+                    ) =>
             {
                 Action::Transport(TransportAction::DiscardTake)
             }
@@ -723,13 +834,20 @@ impl App {
         match action {
             TransportAction::TogglePlay => {
                 if playing {
+                    self.commit_take();
                     self.engine.send(Command::Stop);
                 } else if self.audio_ok() {
+                    // Play the document as it is now: changes dispatched before Play in the same
+                    // frame (a loop range, an edit) reach the engine before Play, not at the end
+                    // of the frame. Otherwise playback can start with the old loop and pass the
+                    // new loop end before the program arrives, and then it never wraps.
+                    self.engine.sync(&self.doc);
                     self.engine.send(Command::Play);
                 }
             }
             TransportAction::Stop => {
                 if playing {
+                    self.commit_take();
                     self.engine.send(Command::Stop);
                 } else {
                     let start = self.start_tick();
@@ -737,10 +855,7 @@ impl App {
                 }
             }
             TransportAction::ToggleRecord => self.toggle_record(),
-            TransportAction::DiscardTake => {
-                // WP-51 drops the take it builds; the engine stops capturing, playback goes on.
-                self.engine.send(Command::StopRecording);
-            }
+            TransportAction::DiscardTake => self.discard_take(),
             TransportAction::ToggleLoop => {
                 let on = !self.project().loop_on;
                 self.untracked(ProjectProp::LoopOn(on));
@@ -805,18 +920,23 @@ impl App {
             .or_else(|| self.ui.selection.tracks.iter().next().copied())
     }
 
-    /// R: the engine part of recording. Takes are built by WP-51 (`record.rs`) from the engine's
-    /// recorded-note events.
+    /// R: records on all armed tracks after the count-in (arming the selected track if none is
+    /// armed); while recording, ends the take (playback goes on). The take itself is
+    /// [`Recording`], built from the engine's events.
     fn toggle_record(&mut self) {
         match self.transport() {
             TransportState::Recording | TransportState::CountIn => {
+                self.commit_take();
                 self.engine.send(Command::StopRecording);
             }
             _ if !self.audio_ok() => {}
             state => {
-                if !self.project().tracks.iter().any(|t| t.arm)
-                    && let Some(&track) = self.ui.selection.tracks.iter().next()
-                {
+                if !self.project().tracks.iter().any(|t| t.arm) {
+                    let Some(&track) = self.ui.selection.tracks.iter().next() else {
+                        self.set_status(record::names::NO_TRACK, StatusKind::Error);
+                        return;
+                    };
+                    // Arming switches monitoring on (S02 "I").
                     self.apply("Spur scharf schalten", |p| {
                         edits::set_exclusive(p, track, edits::ExclusiveFlag::Arm)
                     });
@@ -893,7 +1013,12 @@ impl App {
         }
     }
 
+    /// The clip open in the editor and whether it is a MIDI clip; `None` while recording (the
+    /// editor shows the take being recorded, not the open clip).
     fn open_clip_notes(&self) -> Option<(komponist_model::ClipId, bool)> {
+        if self.recording.is_some() {
+            return None;
+        }
         let id = self.ui.editor.clip?;
         let (_, clip) = self.project().find_clip(id)?;
         Some((id, matches!(clip.content, ClipContent::Midi(_))))
@@ -1548,7 +1673,7 @@ impl App {
             layout.dock_maximized = maximized;
         }
         if self.ui.focus.in_dock() {
-            self.ui.focus = self.ui.dock_area(self.doc.project());
+            self.ui.focus = self.dock_area();
         }
     }
 
@@ -1563,7 +1688,7 @@ impl App {
                     DockTab::Mixer => DockTab::Editor,
                 };
                 self.set_dock_tab(next);
-                self.ui.focus = self.ui.dock_area(self.doc.project());
+                self.ui.focus = self.dock_area();
             }
             FocusArea::Browser => {
                 let b = &mut self.ui.browser;
@@ -1591,10 +1716,20 @@ impl App {
         };
         if hidden {
             self.ui.focus = if l.dock_open && l.dock_maximized {
-                self.ui.dock_area(self.doc.project())
+                self.dock_area()
             } else {
                 FocusArea::Arrangement
             };
+        }
+    }
+
+    /// The focus area of the dock's active tab: the piano roll while it shows the take being
+    /// recorded, else [`UiState::dock_area`].
+    pub(crate) fn dock_area(&self) -> FocusArea {
+        if self.recording.is_some() && self.ui.layout.dock_tab == DockTab::Editor {
+            FocusArea::PianoRoll
+        } else {
+            self.ui.dock_area(self.doc.project())
         }
     }
 
@@ -1763,6 +1898,7 @@ impl App {
                 if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
                     self.engine.send(Command::SetParam { slot, id, value });
                 }
+                self.store_macro(device, id, value);
             }
         }
     }
@@ -1795,7 +1931,11 @@ impl App {
                 let (channel, index) = match target {
                     DropTarget::NewTrack { .. } => match selected {
                         Some(t) => (ChannelRef::Track(t), None),
-                        None => return,
+                        None => {
+                            // Prototype `dropNew`.
+                            self.set_status("Effekte brauchen eine Spur", StatusKind::Error);
+                            return;
+                        }
                     },
                     DropTarget::Track(t) => (ChannelRef::Track(t), None),
                     DropTarget::Chain { channel, index } => (channel, Some(index)),
@@ -1830,6 +1970,7 @@ impl App {
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
             ProjectAction::OpenExportDialog => {
                 if self.transport() != TransportState::Stopped {
+                    self.commit_take();
                     self.engine.send(Command::Stop);
                 }
                 let folder = self
@@ -1862,6 +2003,8 @@ impl App {
     /// at 1 in every project, [`EngineSync::reset`]), fresh selection, editor, plugin windows,
     /// meters and scroll position.
     pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
+        // A take of the old project does not go into the new one.
+        self.recording = None;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
         self.engine.reset();
@@ -1919,6 +2062,11 @@ impl App {
             SettingsAction::SetUiScale(scale) => {
                 self.settings.ui_scale = scale;
                 self.shell.pending_scale = Some(scale);
+                self.save_settings();
+            }
+            SettingsAction::ToggleFavorite(plugin) => {
+                self.settings.favorites.toggle(&plugin);
+                self.ui.browser.favorites = self.settings.favorites.clone();
                 self.save_settings();
             }
         }
