@@ -177,11 +177,15 @@ fn snapshots_next_to_s03() {
     for a in [
         TransportAction::SetLoopRange(TickRange::new(step5, Tick(step5.0 + 240))),
         TransportAction::Locate(step5),
-        TransportAction::TogglePlay,
     ] {
         app.dispatch(Action::Transport(a));
     }
     let mut h = harness_at(app, 1.0);
+    // Play only once a frame has sent the program with the loop: started before, playback runs
+    // past the one-step loop while the harness starts up (seen under load).
+    h.run_steps(1);
+    h.state_mut()
+        .dispatch(Action::Transport(TransportAction::TogglePlay));
     assert!(step_until(&mut h, |a| a.transport()
         == TransportState::Playing
         && a.engine().playhead() > step5));
