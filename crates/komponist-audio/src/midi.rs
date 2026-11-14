@@ -125,6 +125,38 @@ pub(crate) fn queue(capacity: usize) -> (MidiSender, MidiReceiver) {
     (sender, MidiReceiver { consumer })
 }
 
+/// A MIDI source without hardware: pushes messages into the queue of a [`MidiReceiver`] exactly as
+/// a midir port does (stamped with `Instant::now()`), so tests on the null backend cover the real
+/// input path including [`crate::MidiIn::frame_of`].
+#[derive(Debug, Clone)]
+pub struct TestMidiSource {
+    sender: MidiSender,
+}
+
+impl TestMidiSource {
+    /// A source and the receiver for [`crate::AudioSystem::new`].
+    pub fn new() -> (TestMidiSource, MidiReceiver) {
+        let (sender, receiver) = queue(MIDI_QUEUE_CAPACITY);
+        (TestMidiSource { sender }, receiver)
+    }
+
+    /// Queues the channel message `data` (status, data1, data2) from `port`. `false` if the queue
+    /// is full.
+    pub fn send(&self, port: MidiPortId, data: [u8; 3]) -> bool {
+        self.sender.push(port, data)
+    }
+
+    /// Note on, channel 1.
+    pub fn note_on(&self, port: MidiPortId, key: u8, velocity: u8) -> bool {
+        self.send(port, [0x90, key, velocity])
+    }
+
+    /// Note off, channel 1.
+    pub fn note_off(&self, port: MidiPortId, key: u8) -> bool {
+        self.send(port, [0x80, key, 0])
+    }
+}
+
 /// The channel message at the start of `bytes` as `[status, data1, data2]` (unused bytes 0), or
 /// `None` for SysEx, system common and real-time messages, running status and truncated input.
 pub(crate) fn channel_message(bytes: &[u8]) -> Option<[u8; 3]> {
@@ -390,6 +422,18 @@ mod tests {
 
     use midir::MidiOutput;
     use midir::os::unix::VirtualOutput;
+
+    #[test]
+    fn test_source_feeds_the_receiver_in_order() {
+        let (source, mut receiver) = TestMidiSource::new();
+        assert!(source.note_on(MidiPortId(3), 60, 100));
+        assert!(source.note_off(MidiPortId(3), 60));
+        let later = Instant::now() + Duration::from_millis(1);
+        let on = receiver.pop_before(later).unwrap();
+        assert_eq!((on.port, on.data), (MidiPortId(3), [0x90, 60, 100]));
+        assert_eq!(receiver.pop_before(later).unwrap().data, [0x80, 60, 0]);
+        assert!(receiver.pop_before(later).is_none());
+    }
 
     #[test]
     fn channel_messages_pass_and_system_messages_do_not() {
