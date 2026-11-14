@@ -20,12 +20,15 @@
 //! the placeholder in [`Views::new`] with its own type implementing [`View`].
 
 pub mod arrangement;
+pub mod browser;
+pub mod devices;
 pub mod piano_roll;
 
 use std::sync::Arc;
 
-use egui::{Rect, Ui};
-use komponist_model::Project;
+use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::{Color32, FontId, Galley, Rect, Ui};
+use komponist_model::{PluginFormat, Project};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
 use komponist_ui::{fonts, px, widgets};
@@ -158,6 +161,50 @@ pub fn centered_text(ui: &mut Ui, rect: Rect, title: &str, detail: Option<&str>)
     }
 }
 
+/// The format tag of a plugin: "INTERN" (built-ins), "CLAP", "VST3" (`B()`, `card()`).
+pub fn format_tag(format: PluginFormat) -> &'static str {
+    match format {
+        PluginFormat::Builtin => "INTERN",
+        PluginFormat::Clap => "CLAP",
+        PluginFormat::Vst3 => "VST3",
+    }
+}
+
+/// `text` on one line in `font`, cut with "…" to at most `max_width` (CSS `text-overflow:
+/// ellipsis`); colour [`Color32::PLACEHOLDER`] (the painter's colour applies).
+pub fn elided_galley(
+    ui: &Ui,
+    text: &str,
+    font: FontId,
+    line_height: f32,
+    max_width: f32,
+) -> Arc<Galley> {
+    let mut job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            font_id: font,
+            line_height: Some(line_height),
+            color: Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job.wrap = TextWrapping::truncate_at_width(max_width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// Gives the AccessKit node of the group `ui` the bounds `rect` (egui leaves a `Ui`'s node without
+/// bounds), so tests, the egui MCP server and screen readers can locate it.
+pub fn group_bounds(ui: &Ui, rect: Rect) {
+    ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
+        n.set_bounds(egui::accesskit::Rect {
+            x0: rect.min.x.into(),
+            y0: rect.min.y.into(),
+            x1: rect.max.x.into(),
+            y1: rect.max.y.into(),
+        });
+    });
+}
+
 /// The views of the shell, one slot each (see the module docs).
 pub struct Views {
     /// Centre: arrangement (WP-40).
@@ -185,8 +232,8 @@ impl Views {
             step_seq: Box::new(Placeholder::new("Step Sequencer")),
             mixer: Box::new(Placeholder::new("Mixer")),
             inspector: Box::new(Placeholder::new("Inspector")),
-            browser: Box::new(Placeholder::new("Browser")),
-            devices: Box::new(Placeholder::new("Geräte")),
+            browser: Box::new(browser::Browser::new()),
+            devices: Box::new(devices::Devices::new()),
         }
     }
 }
