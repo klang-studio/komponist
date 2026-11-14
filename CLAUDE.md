@@ -18,17 +18,26 @@ use the Agent tool's `isolation: "worktree"` (it puts the worktree where the sym
 
 ```bash
 cd <workspace>/komponist
-git worktree add ../.claude/worktrees/kp-wt-WP-60 -b wp/WP-60 main
-#   → <workspace>/.claude/worktrees/kp-wt-WP-60
+scripts/worktree.sh add kp-wt-WP-60 wp/WP-60      # → ../.claude/worktrees/kp-wt-WP-60
+scripts/worktree.sh remove kp-wt-WP-60            # after the merge
 ```
 
-Each worktree builds into its own `target/`. The first build of egui/wgpu takes a few minutes.
+Each worktree builds into its own `target/`, which `scripts/worktree.sh` makes a symlink to the NVMe
+(`<build-root>/<name>/`), so build I/O stays off the encrypted system disk. The first
+build of egui/wgpu takes a few minutes.
+
+**Build load (owner, 2026-11-14):** builds froze the owner's desktop. Therefore: at most **2 agents
+build at the same time**; `.cargo/config.toml` caps cargo at 6 jobs; while working, iterate narrowly
+(`cargo check -p <crate>`, `cargo test -p <crate> --test <name>`) and run `scripts/check.sh` **once**
+before reporting. `check.sh`, `check-gui.sh` and `run.sh` take a shared build lock and run at low CPU/IO
+priority, so the gate may wait for another worktree: start it with `run_in_background`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `scripts/run.sh [args]` | Builds `komponist` and `komponist-bridge` (release) and starts komponist with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). Plain `cargo run -p komponist-app` does not build the bridge. |
+| `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
 | `scripts/render-reference.sh` | Renders the handoff `.dc.html` files with headless Chromium into `design/reference/*.png` (needs network for the Google fonts). |
 | `scripts/build-klopfer.sh` | Bundles klopfer in `../klopfer` (`cargo xtask bundle klopfer --release`) and prints the paths of `Klopfer.clap` and `Klopfer.vst3` in `../klopfer/target/bundled/`. Does not touch klopfer's submodules. |
@@ -73,7 +82,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
 5. **Scope:** change only the paths your WP owns. Never touch `../pisynth`, `../klopfer` or
    `../klang-dsp` unless your WP says so.
 6. **Tests first-class:** every WP ships tests. Before reporting, `scripts/check.sh` must pass
-   (fmt, clippy `-D warnings`, tests).
+   (fmt, clippy `-D warnings`, tests). Run it once at the end, in the background (it waits for the
+   shared build lock); iterate with crate-level `cargo check`/`cargo test` before that.
 7. **UI work:** render your component/view to PNG with `egui_kittest`, **look at the PNG** (Read
    tool) and compare it with the reference before you report. Once a binary shows your work (gallery
    from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb if
