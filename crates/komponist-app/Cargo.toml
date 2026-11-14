@@ -42,3 +42,8 @@ x11rb.workspace = true
 # Snapshot and interaction tests of the shell (`tests/`).
 komponist-ui = { workspace = true, features = ["snapshot"] }
 egui_kittest.workspace = true
+# Real-window plugin frame tests under Xvfb (`tests/plugin_frame_gui.rs`): an event loop on the
+# test thread (`with_any_thread`), synthetic input (XTEST) and the bridge owning a plugin window
+# (X-Resource).
+winit.workspace = true
+x11rb = { workspace = true, features = ["xtest", "res"] }
