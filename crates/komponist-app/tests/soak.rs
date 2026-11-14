@@ -17,7 +17,9 @@
 //! KOMPONIST_SOAK_SECS=1800 cargo test --release -p komponist-app --test soak -- --nocapture
 //! ```
 //!
-//! `KOMPONIST_SOAK_SEED` replays a run (the seed is printed).
+//! `KOMPONIST_SOAK_SEED` replays a run (the seed is printed). The engine runs with the app's
+//! default worker threads (WP-65: automatic, 4 on a 6-core machine); `KOMPONIST_SOAK_WORKERS`
+//! sets another count (0 = single-threaded).
 
 mod common;
 
@@ -389,6 +391,15 @@ fn random_edits_during_playback_cause_no_xrun() {
 
     let (midi, receiver) = TestMidiSource::new();
     let mut app = App::headless_with_midi(soak_project(), receiver);
+    if let Some(workers) = std::env::var("KOMPONIST_SOAK_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
+        app.engine_mut()
+            .set_workers(Some(workers))
+            .expect("workers");
+    }
+    eprintln!("soak: workers {:?}", app.engine().worker_status());
     let first = app.project().tracks[0].id;
     app.dispatch(Action::Edit(EditAction::SetTrackProp {
         tracks: vec![first],
@@ -506,6 +517,13 @@ fn random_edits_during_playback_cause_no_xrun() {
         s.take_peak_load() * 100.0,
         app.project().tracks.len(),
         app.engine().telemetry().dropped_events(),
+    );
+    let w = app.engine().worker_stats();
+    eprintln!(
+        "soak workers: {} batches, {} jobs on workers, {} late waits",
+        w.batches(),
+        w.worker_jobs(),
+        w.late()
     );
     assert_eq!(
         app.engine().pending_commands(),

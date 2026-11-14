@@ -4,8 +4,12 @@
 //! from `StreamStats` (smoothed mean, peak of single callbacks, overruns = callbacks longer than
 //! their period). Bridge waits count as callback time: that is what decides an xrun.
 //!
+//! Each case runs once per worker count (WP-65): `KOMPONIST_PERF_WORKERS` (default `0,4`: single
+//! threaded, then 4 worker threads). `KOMPONIST_PERF_SECS` sets the measuring time (default 10 s).
+//!
 //! ```text
 //! cargo test --release -p komponist-app --test engine_perf -- --ignored --nocapture
+//! KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_SECS=300 cargo test --release …   # 5-minute run
 //! ```
 //!
 //! The bridge case needs the WP-27 fixtures (`scripts/build-test-plugins.sh`) and skips without
@@ -40,7 +44,23 @@ const TRACKS: usize = 16;
 /// Tracks that get a kp-test-fx insert (one bridge each) in the second case.
 const BRIDGES: usize = 8;
 const BUFFER: u32 = 256;
-const MEASURE: Duration = Duration::from_secs(10);
+
+/// Measuring time (`KOMPONIST_PERF_SECS`, default 10 s).
+fn measure_time() -> Duration {
+    let secs = std::env::var("KOMPONIST_PERF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    Duration::from_secs(secs)
+}
+
+/// Worker counts to measure (`KOMPONIST_PERF_WORKERS`, default `0,4`).
+fn worker_counts() -> Vec<u32> {
+    std::env::var("KOMPONIST_PERF_WORKERS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|w| w.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![0, 4])
+}
 
 fn pisynth() -> PluginRef {
     PluginRef {
@@ -122,14 +142,16 @@ fn project(bridges: bool) -> Project {
     p
 }
 
-fn app(project: Project, host: Box<dyn DeviceHost>) -> App {
+fn app(project: Project, host: Box<dyn DeviceHost>, workers: u32) -> App {
     let config = StreamConfig {
         host: HostKind::Null,
         buffer_frames: BUFFER,
         ..StreamConfig::default()
     };
-    let (engine, started) = EngineSync::new(&config, MidiSetup::None, host);
+    let (mut engine, started) = EngineSync::new(&config, MidiSetup::None, host);
     started.expect("null backend");
+    let status = engine.set_workers(Some(workers)).expect("workers");
+    eprintln!("workers: {status:?}");
     App::new(Document::new(project), engine, Settings::default(), None)
 }
 
@@ -144,9 +166,12 @@ fn measure(name: &str, app: &mut App) {
     let stats = app.engine().stats();
     let (callbacks, overruns, xruns) = (stats.callbacks(), stats.overruns(), stats.xruns());
     stats.take_peak_load();
+    let worker_stats = app.engine().worker_stats();
+    let (batches, late) = (worker_stats.batches(), worker_stats.late());
     let t0 = Instant::now();
     let mut mean = Vec::new();
-    while t0.elapsed() < MEASURE {
+    let measure = measure_time();
+    while t0.elapsed() < measure {
         step_for(app, Duration::from_millis(100));
         mean.push(app.engine().stats().cpu_load());
     }
@@ -162,6 +187,12 @@ fn measure(name: &str, app: &mut App) {
         stats.overruns() - overruns,
         stats.xruns() - xruns,
     );
+    let worker_stats = app.engine().worker_stats();
+    eprintln!(
+        "{name}: {} batches, {} late waits for workers",
+        worker_stats.batches() - batches,
+        worker_stats.late() - late
+    );
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
     app.step();
 }
@@ -169,9 +200,11 @@ fn measure(name: &str, app: &mut App) {
 #[test]
 #[ignore = "timing: run in release with --ignored --nocapture"]
 fn engine_cpu_16_pisynth_tracks() {
-    let mut app = app(project(false), Box::new(BuiltinHost::new()));
-    measure("16 pisynth tracks", &mut app);
-    app.shutdown();
+    for workers in worker_counts() {
+        let mut app = app(project(false), Box::new(BuiltinHost::new()), workers);
+        measure(&format!("16 pisynth tracks, {workers} workers"), &mut app);
+        app.shutdown();
+    }
 }
 
 #[test]
@@ -180,9 +213,15 @@ fn engine_cpu_16_pisynth_tracks_and_8_bridges() {
     let Some(dirs) = fixture_dirs() else {
         return;
     };
-    let dir = scratch("engine-perf");
+    for workers in worker_counts() {
+        bridges_case(&dirs, workers);
+    }
+}
+
+fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
+    let dir = scratch(&format!("engine-perf-{workers}"));
     let mut host = PluginHost::new(config(&dir));
-    host.start_scan(&dirs);
+    host.start_scan(dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {
         for event in host.poll() {
@@ -193,9 +232,12 @@ fn engine_cpu_16_pisynth_tracks_and_8_bridges() {
         assert!(Instant::now() < deadline, "scan");
         std::thread::sleep(Duration::from_millis(5));
     }
-    let mut app = app(project(true), Box::new(host));
+    let mut app = app(project(true), Box::new(host), workers);
     step_until(&mut app, "bridges", all_ok);
-    measure("16 pisynth tracks + 8 kp-test-fx bridges", &mut app);
+    measure(
+        &format!("16 pisynth tracks + 8 kp-test-fx bridges, {workers} workers"),
+        &mut app,
+    );
     let late: u64 = bridged(app.project())
         .iter()
         .map(|&d| app.engine().host().late_blocks(d))
