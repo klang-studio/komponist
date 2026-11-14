@@ -60,6 +60,10 @@ pub(crate) struct DialogState {
     pub(crate) pending: Option<Pending>,
     /// The S06 check waits for the running plugin scan.
     pub(crate) missing_check: bool,
+    /// Closing the window was confirmed (saved or discarded): the next close request passes.
+    pub(crate) quit_confirmed: bool,
+    /// Close the window in the next frame.
+    pub(crate) close_now: bool,
     /// The folder the file browser showed last.
     pub(crate) last_dir: Option<PathBuf>,
     /// Device lists, MIDI activity and scroll targets of the settings dialog.
@@ -88,6 +92,8 @@ pub(crate) enum Pending {
     Open,
     /// Open this file.
     OpenPath(PathBuf),
+    /// Close the window (the window's close button).
+    Quit,
 }
 
 // ------------------------------------------------------------------------------------------------

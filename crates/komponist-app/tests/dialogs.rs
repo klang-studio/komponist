@@ -215,6 +215,30 @@ fn unsaved_changes_ask_before_a_new_project() {
 }
 
 #[test]
+fn closing_the_window_asks_for_unsaved_changes() {
+    let dir = scratch("quit");
+    let mut app = app_in(&dir, demo_project());
+    // A clean project closes at once.
+    assert!(app.close_requested());
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    assert!(!app.close_requested(), "a dirty project asks first");
+    let mut h = harness(app);
+    h.run_steps(1);
+    h.get_by_value("Änderungen speichern?");
+    // Cancel keeps the window.
+    h.get_by_label("Abbrechen").click();
+    h.run_steps(2);
+    assert!(h.query_by_value("Änderungen speichern?").is_none());
+    assert!(!h.state_mut().close_requested());
+    h.run_steps(2);
+    // "Nicht speichern": the window may close.
+    h.get_by_label("Nicht speichern").click();
+    h.run_steps(2);
+    assert!(h.state_mut().close_requested());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_file_that_cannot_be_read_keeps_the_project() {
     let dir = scratch("broken");
     let broken = dir.join("Kaputt.komponist");

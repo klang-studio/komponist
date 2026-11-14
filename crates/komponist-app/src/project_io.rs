@@ -9,7 +9,8 @@
 //! - Opening or creating a project resets the engine ([`crate::engine_sync::EngineSync::reset`]).
 //!   A project whose plugins are not in the catalog opens the S06 dialog; while a plugin scan
 //!   runs, the check waits for its end, so plugins the scan is about to find are not reported.
-//! - A dirty project asks first (`dialogs::new_project`): save, discard or cancel.
+//! - A dirty project asks first (`dialogs::new_project`): save, discard or cancel; so does
+//!   closing the window ([`App::close_requested`]).
 //! - Saving under a new path renames the project after the file ("Unbenannt" saved as
 //!   `Hafenlicht.komponist` becomes "Hafenlicht"), outside the undo history.
 //!
@@ -293,7 +294,30 @@ impl App {
             }
             Pending::Open => self.open_file_browser(Purpose::Open),
             Pending::OpenPath(path) => self.open_path(path),
+            Pending::Quit => {
+                self.dialogs.quit_confirmed = true;
+                self.dialogs.close_now = true;
+            }
         }
+    }
+
+    /// The window is asked to close (its close button, Alt F4): `true` if it may close now. A
+    /// project with unsaved changes asks first (save, discard, cancel); after "Speichern" or "Nicht
+    /// speichern" the window closes by itself.
+    pub fn close_requested(&mut self) -> bool {
+        if self.dialogs.quit_confirmed || self.ui.screen != Screen::Project || !self.doc.is_dirty()
+        {
+            return true;
+        }
+        if !matches!(self.dialogs.overlay, Some(Overlay::Unsaved)) {
+            self.guard(Pending::Quit);
+        }
+        false
+    }
+
+    /// Whether a confirmed quit wants the window closed now (once).
+    pub(crate) fn take_close(&mut self) -> bool {
+        std::mem::take(&mut self.dialogs.close_now)
     }
 
     /// Opens the project file at `path` (no questions): resets the engine, remembers the file,

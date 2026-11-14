@@ -109,7 +109,7 @@ pub struct App {
 #[derive(Debug, Default)]
 pub(crate) struct ShellState {
     /// Focus to restore when the dialog closes.
-    pub(crate) focus_before_dialog: Option<FocusArea>,
+    focus_before_dialog: Option<FocusArea>,
     /// Computer-keyboard notes held down: key and MIDI note.
     held_notes: Vec<(Key, u8)>,
     /// One-shot requests for the views of the next frame.
@@ -332,6 +332,13 @@ impl App {
         let ctx = ui.ctx().clone();
         if let Some(scale) = self.shell.pending_scale.take() {
             ctx.set_pixels_per_point(scale.unwrap_or(1.0));
+        }
+        // Closing the window with unsaved changes asks first (`App::close_requested`).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_requested() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        if self.take_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_engine(ctx.input(|i| i.time));
         self.handle_keys(&ctx);
