@@ -36,6 +36,10 @@
 //! - Program swap: per-track state (active notes, probability RNG, fader position, fast-path
 //!   values, delay line) follows the track id. Fast-path values end with the swap. A device whose
 //!   bypass turns on gets `reset` once.
+//! - Note chasing: after a playback start (`Play`, `Record` from stop), a `Locate` while playing
+//!   and a loop wrap, notes that started earlier and still sound at the new position start at
+//!   once with their remaining length (see the private `sequencer` module). Export plays through
+//!   the same path, so a range starting inside a pad renders the pad.
 //! - Probability: each track rolls with its own `Rng`, seeded from [`EngineConfig::seed`] and the
 //!   track id at every playback start.
 //! - Live input: MIDI goes to monitored tracks whose input filter accepts it; `LiveNote` goes to
@@ -398,7 +402,9 @@ impl Core {
                 }
                 let count = self.track_count();
                 for &state in &self.map[..count] {
-                    self.tracks[usize::from(state)].seq.flush(false);
+                    let seq = &mut self.tracks[usize::from(state)].seq;
+                    seq.flush(false);
+                    seq.chase();
                 }
                 self.send(EngineEvent::LoopWrapped { to });
             }
@@ -458,6 +464,7 @@ impl Core {
                 if self.transport.playing() {
                     self.close_captures(self.transport.tick(&self.song, rate));
                     self.silence(true);
+                    self.chase();
                 }
                 let tick = tick.max(Tick::ZERO);
                 self.transport.pos = self.song.map.tick_to_sample(tick, rate);
@@ -595,6 +602,15 @@ impl Core {
             if let Some(id) = state.id {
                 state.seq.reseed(track_seed(self.seed, id));
             }
+            state.seq.chase();
+        }
+    }
+
+    /// RT. Every track chases its notes in its next call (playback start, locate, loop wrap).
+    fn chase(&mut self) {
+        let count = self.track_count();
+        for &index in &self.map[..count] {
+            self.tracks[usize::from(index)].seq.chase();
         }
     }
 

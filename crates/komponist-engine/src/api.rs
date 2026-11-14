@@ -19,13 +19,14 @@ use crate::program::{Program, SlotId};
 
 /// A request from the UI to the engine. Applied in send order at the start of a block.
 pub enum Command {
-    /// Start playback from the current position. Ignored while playing.
+    /// Start playback from the current position. Ignored while playing. Notes that started
+    /// earlier and still sound at the position start at once (note chasing).
     Play,
     /// Stop playback and recording. Sounding notes get note-offs; processors are reset. The
     /// position stays (the second Stop's jump to the loop start or 0 is a `Locate` from the UI).
     Stop,
     /// Move the playhead to `Tick` (≥ 0). While playing: note-offs for sounding notes, playback
-    /// continues from there.
+    /// continues from there and chases the notes sounding at `Tick`.
     Locate(Tick),
     /// Start recording on all armed tracks. Stopped: locate to `from − count_in_bars × bar`, play,
     /// and start capturing at `from` (state `CountIn` until then, then `EngineEvent::CountInDone`).

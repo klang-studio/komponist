@@ -6,6 +6,12 @@
 //!    with live input (MIDI from monitored inputs, `LiveNote`),
 //! 3. note-offs of notes whose end falls into the call.
 //!
+//! **Note chasing** (like Ableton Live's "chase MIDI notes"): after a playback start, a locate while
+//! playing and a loop wrap, the first call also starts the notes that began before the position
+//! and still sound there (pads, long bass notes), at offset 0 with their own end. Probability
+//! rolls for them as for any note. Program swaps do not chase: an edit under the playhead does not
+//! start a note in the middle.
+//!
 //! Every note-on goes into the track's **active-notes table** together with the instrument slot
 //! that received it; its note-off comes only from the table. The table belongs to the track, not
 //! to the program, so a program swap neither cuts nor hangs a note. One entry per channel and key:
@@ -200,6 +206,8 @@ pub(crate) struct TrackSeq {
     last_roll: [bool; 128],
     /// Captured keys still down.
     rec_open: u128,
+    /// The next playing call starts the notes that sound across its first frame (note chasing).
+    chase: bool,
 }
 
 impl TrackSeq {
@@ -210,13 +218,20 @@ impl TrackSeq {
             rng: Rng::default(),
             last_roll: [true; 128],
             rec_open: 0,
+            chase: false,
         }
+    }
+
+    /// RT. The next playing call chases notes: playback start, locate while playing, loop wrap.
+    pub(crate) fn chase(&mut self) {
+        self.chase = true;
     }
 
     /// RT. Forgets all notes and captures (the state goes to another track).
     pub(crate) fn clear(&mut self) {
         self.active.clear();
         self.rec_open = 0;
+        self.chase = false;
         self.last_roll = [true; 128];
     }
 
@@ -332,6 +347,9 @@ impl TrackSeq {
             (0, 0)
         };
         let mut dropped = 0;
+        if win.playing && core::mem::take(&mut self.chase) {
+            dropped += self.chase_notes(&notes[..lo], win, instrument, ids, out);
+        }
         let (mut i, mut j) = (lo, 0);
         loop {
             let seq_offset = (i < hi).then(|| (win.sample(notes[i].start) - start) as u32);
@@ -379,6 +397,48 @@ impl TrackSeq {
                     self.active.swap_remove(k);
                 } else {
                     k += 1;
+                }
+            }
+        }
+        dropped
+    }
+
+    /// RT. Note chasing: starts, at offset 0, every note of `before` (the notes that start before
+    /// the call, sorted by start) that still sounds at the call's first frame. Returns the number
+    /// of dropped note-ons.
+    ///
+    /// Cost: one tick comparison per earlier note of the track (10 000 notes ≈ 10 µs), only in the
+    /// first call after a start, locate or wrap.
+    fn chase_notes(
+        &mut self,
+        before: &[SeqNote],
+        win: &Window<'_>,
+        instrument: Option<SlotId>,
+        ids: &mut NoteIds,
+        out: &mut EventList,
+    ) -> u32 {
+        // A note ending at or before this tick cannot sound at `win.start` (tick → sample is
+        // monotonic and `floor` maps back to a sample ≤ `win.start`).
+        let floor = win.map.sample_to_tick(win.start, win.rate);
+        let mut dropped = 0;
+        for note in before {
+            let end = note.start + note.length;
+            if end <= floor || win.sample(end) <= win.start {
+                continue;
+            }
+            if self.roll(note)
+                && let Some(slot) = instrument
+                && note.key <= 127
+            {
+                let on = Pending {
+                    offset: 0,
+                    key: note.key,
+                    velocity: note.velocity.clamp(1, 127),
+                    channel: note.channel & 0x0f,
+                    end: Some(end),
+                };
+                if !self.note_on(on, slot, win, ids, out) {
+                    dropped += 1;
                 }
             }
         }
