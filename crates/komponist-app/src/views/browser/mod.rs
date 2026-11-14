@@ -487,9 +487,9 @@ fn paint_row(
     match &row.kind {
         RowKind::Plugin { favorite, .. } => {
             if *favorite {
-                icons::paint(ui, icon_rect, Icon::StarFilled, color32(color::STATE_SOLO));
+                icons::paint_in(ui, icon_rect, Icon::StarFilled, color32(color::STATE_SOLO));
             } else if hovered || st.selected {
-                icons::paint(ui, icon_rect, Icon::Star, color32(color::TEXT_4));
+                icons::paint_in(ui, icon_rect, Icon::Star, color32(color::TEXT_4));
             }
         }
         RowKind::Folder { expanded, .. } => {
