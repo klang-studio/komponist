@@ -38,8 +38,8 @@ fn params() -> Vec<ParamInfo> {
     ]
 }
 
-/// Four columns: input and ceiling as large knobs, release, lookahead and the gain-reduction
-/// meter on the right.
+/// Four columns: input and ceiling as large knobs, release, the lookahead switch below and the
+/// gain-reduction meter on the right.
 fn layout() -> DeviceLayout {
     single_page(
         4,
@@ -47,7 +47,7 @@ fn layout() -> DeviceLayout {
             knob_large(0, 0, "gain"),
             knob(2, 0, "release"),
             knob_large(0, 1, "ceiling"),
-            toggle(2, 1, 1, Half::Top, CellParam::Id("lookahead".into())),
+            toggle(0, 2, 2, Half::Top, CellParam::Id("lookahead".into())),
             Cell::span(3, 0, 1, 3, WidgetKind::MeterGr, CellParam::None),
         ],
     )
