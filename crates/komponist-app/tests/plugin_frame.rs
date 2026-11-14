@@ -89,7 +89,6 @@ fn macro_grid() -> ParamGrid {
         .unwrap();
     ParamGrid {
         params: pisynth_params(pisynth),
-        macros: true,
     }
 }
 

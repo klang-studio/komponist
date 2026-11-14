@@ -679,6 +679,51 @@ fn a_state_that_did_not_load_is_shown_on_the_card() {
     results.unwrap();
 }
 
+/// WP-81 auto-layout: a plugin with 20 parameters shows its first 12 (3 rows of 4), the plugin
+/// frame's generic view keeps all of them.
+#[test]
+fn a_plugin_with_many_parameters_shows_the_first_twelve() {
+    let (p, c) = s05_project();
+    let infos: Vec<_> = (0..20)
+        .map(|i| param(i, &format!("Regler {}", i + 1), 0.5))
+        .collect();
+    let values: Vec<(f64, String)> = (0..20)
+        .map(|i| (f64::from(i) / 20.0, format!("{} %", i * 5)))
+        .collect();
+    let values: Vec<(f64, &str)> = values.iter().map(|(v, t)| (*v, t.as_str())).collect();
+    let host = s05_host(&c).params(c.eq, infos, &values);
+    let mut app = App::headless(p).with_device_host(Box::new(host));
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![c.pad],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    let mut h = harness(app);
+    let label = names::card("LSP Para EQ x8");
+    let eq = card(&h, &label);
+    let knobs: Vec<String> = eq
+        .get_all_by_role(Role::Slider)
+        .map(|n| n.accesskit_node().label().unwrap_or_default())
+        .collect();
+    assert_eq!(knobs.len(), 12);
+    assert_eq!(
+        (knobs[0].as_str(), knobs[11].as_str()),
+        ("Regler 1", "Regler 12")
+    );
+    assert_eq!(
+        eq.get_by_role_and_label(Role::Slider, "Regler 12")
+            .value()
+            .as_deref(),
+        Some("55 %")
+    );
+    h.run_steps(1);
+    let mut results = SnapshotResults::new();
+    mask_cpu(&mut h);
+    h.snapshot("devices-auto-layout-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}
+
 // ------------------------------------------------------------------------------------------------
 // Header, context menu, selection, scrolling.
 
