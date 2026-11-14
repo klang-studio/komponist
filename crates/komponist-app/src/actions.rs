@@ -319,6 +319,22 @@ pub enum EditAction {
         /// Bypass.
         bypass: bool,
     },
+    /// Alt-drag on a device head: a copy of `device` (plugin, state, bypass) at `index` of `to`.
+    CopyDevice {
+        /// The device to copy.
+        device: DeviceId,
+        /// The chain the copy goes into.
+        to: ChannelRef,
+        /// Insert index (an effect never goes before the instrument).
+        index: usize,
+    },
+    /// Ctrl D on the device chain: each selected effect copied right behind itself.
+    DuplicateDevices,
+    /// Ctrl V on the device chain: the copied devices behind the selected device (else at the end)
+    /// of the selected track.
+    PasteDevices,
+    /// Entf on the device chain: remove the selected devices.
+    DeleteDevices,
 }
 
 /// Where a plugin from the browser goes.
@@ -550,6 +566,29 @@ pub enum UiAction {
     },
     /// Double-click on a panel edge: back to the token default (dock: 320).
     ResetPanelSize(Panel),
+    /// Double-click on a device head: collapse or expand it; with Alt every device of its chain.
+    ToggleDeviceCollapsed {
+        /// The device.
+        device: DeviceId,
+        /// Alt: all devices of the chain follow.
+        all: bool,
+    },
+    /// A click on a device's page switch.
+    SetDevicePage {
+        /// The device.
+        device: DeviceId,
+        /// The page.
+        page: usize,
+    },
+    /// Ctrl C on the device chain: remember the selected devices.
+    CopyDevices,
+    /// ← → on the device chain: select the neighbour of the selected device.
+    SelectAdjacentDevice(i32),
+    /// Click on an insert slot with an internal device: open the Geräte tab on its track and
+    /// scroll the device into the middle.
+    RevealDevice(DeviceId),
+    /// Click on a name in the chain head: scroll to the device.
+    ScrollToDevice(DeviceId),
 }
 
 /// Which editor a grid or snap action is for (the toolbars name theirs, instead of the action

@@ -26,6 +26,8 @@
 //! undo step and Esc discards it ([`TransportAction::DiscardTake`]); both drain the events still in
 //! flight first.
 
+mod devices;
+
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1462,6 +1464,10 @@ impl App {
             EditAction::SetDeviceBypass { device, bypass } => {
                 self.apply("Bypass", |p| edits::set_device_bypass(p, device, bypass));
             }
+            EditAction::CopyDevice { device, to, index } => self.copy_device(device, to, index),
+            EditAction::DuplicateDevices => self.duplicate_devices(),
+            EditAction::PasteDevices => self.paste_devices(),
+            EditAction::DeleteDevices => self.delete_devices(),
         }
     }
 
@@ -1814,6 +1820,9 @@ impl App {
                     panel,
                     size: crate::layout::default_size(panel),
                 });
+            }
+            other => {
+                self.device_ui_action(&other);
             }
         }
     }

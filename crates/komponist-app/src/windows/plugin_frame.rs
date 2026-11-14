@@ -1216,7 +1216,7 @@ impl App {
 // ------------------------------------------------------------------------------------------------
 
 /// pisynth's factory presets as device states, encoded once (preset match per state change).
-fn factory_states() -> &'static [Vec<u8>] {
+pub(crate) fn factory_states() -> &'static [Vec<u8>] {
     static STATES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
     STATES.get_or_init(|| {
         (0..komponist_builtin::PRESET_COUNT)

@@ -21,6 +21,7 @@ mod acceptance_flow5;
 mod arrangement;
 mod browser;
 mod device_events;
+mod device_frame;
 mod devices;
 mod dialogs;
 mod dispatch;

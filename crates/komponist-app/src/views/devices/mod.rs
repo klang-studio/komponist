@@ -1,27 +1,34 @@
-//! The device chain (WP-44): the dock's "Geräte" tab for the selected track (`Screens.dc.html`
-//! `card()`, `devicesChain()`, the `isDevices` markup, `dvDrop`; `ks-view.js` `devView`;
-//! `Prototyp.dc.html` `dropDev`, `devDrag`, `openPlugin`).
+//! The device chain (WP-44, frames and chain WP-82): the dock's "Geräte" tab for the selected track
+//! (device handoff §3 and §9; `Screens.dc.html` `devicesChain()`, `dvDrop`; `ks-view.js` `devView`).
 //!
-//! A header row (track colour, name, "5 Geräte · Signal läuft von links nach rechts", "+ Gerät")
-//! above the cards, left to right in signal order, then the drop area. Each card ([`card`]) has
-//! the bypass switch, name, format and open button in its head and the knobs in its body:
-//! pisynth's 8 macros, or a generic grid of the plugin's first parameters with the plugin's value
-//! text. States: Lädt (progress, passthrough), Abgestürzt (red edge, "Neu laden"), Fehlt (red
-//! placeholder, state kept), bypassed (dim, knobs off), and the warning when the stored state did
-//! not load.
+//! A chain head (track colour, track name, the devices as `a › b › c` with the visible ones on
+//! `surface.3`, „+ Gerät“) above the frames ([`frame`]), left to right in signal order, then the
+//! drop slot. Each frame is 244 high on a 56 × 64 grid ([`layout`]); foreign plugins get the
+//! auto-layout in the same frame. States: Lädt (progress, passthrough), Abgestürzt (red edge,
+//! "Neu laden"), Fehlt (red placeholder, state kept), bypassed (the body desaturated, half
+//! opacity, still operable), collapsed (28 px strip), selected (accent outline), and the warning
+//! when the stored state did not load.
 //!
-//! | Input | What happens (S05 notes) |
+//! | Input | What happens |
 //! |---|---|
-//! | switch | `SetDeviceBypass` |
+//! | on/off square | `SetDeviceBypass` |
 //! | Öffnen / Parameter / Geöffnet | `OpenWindow` / `CloseWindow` |
+//! | page switch | `SetDevicePage` |
+//! | preset button (pisynth) | menu of the factory presets: `ApplyPisynthPreset` |
+//! | ⋯ / right-click on the head | Öffnen, Bypass, Neu laden, Einklappen, Duplizieren, Entfernen |
 //! | knob | `SetParam` (pisynth: also into the device state) |
-//! | drag a card's head | reorder: a 2 px accent line marks the slot, the drop is `MoveDevice` |
+//! | click on the head | selects the device (Strg C / V / D, Entf, ← → act on it) |
+//! | double-click on the head | collapses or expands; with Alt every device of the chain |
+//! | click on a collapsed strip | expands it |
+//! | drag a head | reorder: a 2 px accent line marks the slot, the drop is `MoveDevice`; with Alt a copy (`CopyDevice`) |
 //! | drop a browser plugin | effect: `Add` at the marked slot; instrument: replaces the instrument |
+//! | click on a name in the chain head | scrolls to the device |
+//! | wheel over the chain head, Shift-wheel in the body | scrolls the chain sideways |
+//! | wheel in the body | scrolls up and down while the dock is lower than the chain (< 292 px area) |
 //! | Neu laden | `Reload` |
-//! | click on the head / right-click | selects the device / Öffnen, Bypass, Neu laden, Entfernen |
-//! | wheel | scrolls the row sideways |
 
-mod card;
+pub mod frame;
+pub mod layout;
 pub mod metrics;
 pub mod model;
 
@@ -29,21 +36,22 @@ use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginRef, Track, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
-use komponist_tokens::{TrackPalette, color, radius};
+use komponist_tokens::{TrackPalette, color, device, radius, size};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px, state};
 
+use self::frame::Placed;
 use self::model::{Card, names};
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
-use crate::ui_state::BrowserSegment;
+use crate::ui_state::{BrowserSegment, Reveal};
 use crate::views::browser::model::selected_track;
 use crate::views::late::LateTracker;
 use crate::views::{View, ViewCtx, group_bounds};
 
-/// The drag payload of a card being reordered.
+/// The drag payload of a frame being reordered or copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CardDrag {
     /// The device.
@@ -52,6 +60,8 @@ pub struct CardDrag {
     pub track: TrackId,
     /// Its index in the chain.
     pub from: usize,
+    /// Alt was held when the drag began: the drop copies.
+    pub copy: bool,
 }
 
 /// What a drag over the chain would do.
@@ -63,7 +73,8 @@ enum Drop {
     Instrument,
 }
 
-/// The device chain view. Its view state is [`crate::ui_state::DevicesView`] (scroll).
+/// The device chain view. Its view state is [`crate::ui_state::DevicesView`] (scroll, collapsed,
+/// pages).
 #[derive(Debug, Default)]
 pub struct Devices {
     /// The "zu spät" state of the cards.
@@ -89,8 +100,10 @@ impl View for Devices {
         };
         let mut cards = model::cards(track, ctx.engine.host(), &ctx.ui.plugin_windows);
         for c in &mut cards {
-            let fit = card::head_width(ui, c).min(metrics::CARD_WIDTH_EFFECT);
-            c.width = c.width.max(fit);
+            c.page = ctx.ui.devices.page(c.device);
+            c.collapsed = ctx.ui.devices.collapsed.contains(&c.device);
+            let fit = frame::head_width(ui, c);
+            c.width = c.frame_width(fit);
         }
         let now = ui.input(|i| i.time);
         for c in &mut cards {
@@ -99,21 +112,103 @@ impl View for Devices {
         }
         let ids: Vec<DeviceId> = cards.iter().map(|c| c.device).collect();
         self.late.retain(&ids);
-        let reveal = match &self.seen {
+        let new_card = match &self.seen {
             Some((t, old)) if *t == track.id => ids.iter().find(|d| !old.contains(d)).copied(),
             _ => None,
         };
         self.seen = Some((track.id, ids));
+
         let rect = ui.max_rect();
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::HEADER_HEIGHT));
-        header_row(ui, ctx, header, track, cards.len());
         let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
-        chain(ui, ctx, body, track, &cards, reveal);
+
+        // Geometry and scroll.
+        let widths: Vec<f32> = cards.iter().map(|c| c.width).collect();
+        let spans = model::spans(&widths, metrics::BODY_PAD, metrics::CARD_GAP);
+        let content = model::content_width(
+            &spans,
+            metrics::BODY_PAD,
+            metrics::CARD_GAP,
+            metrics::DROP_AREA_WIDTH,
+        )
+        .max(0.0);
+        let max_x = (content - body.width()).max(0.0);
+        let mut scroll_x = ctx.ui.devices.scroll_x.clamp(0.0, max_x);
+        let request = ctx
+            .ui
+            .devices
+            .reveal
+            .take()
+            .or_else(|| new_card.map(|d| (d, Reveal::Visible)));
+        if let Some((device, mode)) = request
+            && let Some(i) = cards.iter().position(|c| c.device == device)
+        {
+            scroll_x =
+                model::reveal_scroll(spans[i], mode, body.width(), scroll_x, metrics::BODY_PAD)
+                    .clamp(0.0, max_x);
+        }
+        let vertical = model::scrolls_vertically(rect.height());
+        let content_h = 2.0 * metrics::BODY_PAD + device::frame::TOTAL_H;
+        let max_y = if vertical {
+            (content_h - body.height()).max(0.0)
+        } else {
+            0.0
+        };
+        let scroll_y = ctx.ui.devices.scroll_y.clamp(0.0, max_y);
+
+        // The wheel: over the head sideways, in the body sideways with Shift (or a horizontal
+        // wheel) and up and down while the chain scrolls vertically.
+        let (mut scroll_x, mut scroll_y) = (scroll_x, scroll_y);
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        if let Some(pos) = pointer {
+            let delta = ui.input(|i| i.smooth_scroll_delta);
+            if header.contains(pos) && max_x > 0.0 && delta != egui::Vec2::ZERO {
+                scroll_x = (scroll_x - (delta.x + delta.y)).clamp(0.0, max_x);
+                ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            } else if body.contains(pos) {
+                let mut used = egui::Vec2::ZERO;
+                if max_x > 0.0 && delta.x != 0.0 {
+                    scroll_x = (scroll_x - delta.x).clamp(0.0, max_x);
+                    used.x = delta.x;
+                }
+                if max_y > 0.0 && delta.y != 0.0 {
+                    scroll_y = (scroll_y - delta.y).clamp(0.0, max_y);
+                    used.y = delta.y;
+                }
+                if used != egui::Vec2::ZERO {
+                    ui.input_mut(|i| i.smooth_scroll_delta -= used);
+                }
+            }
+        }
+
+        let visible = model::visible(&spans, scroll_x, body.width());
+        header_row(ui, ctx, header, track, &cards, &visible);
+        let view = ChainView {
+            body,
+            scroll_x,
+            scroll_y,
+            max_x,
+            max_y,
+            content,
+            content_h,
+            spans,
+        };
+        let (sx, sy) = chain(ui, ctx, &view, track, &cards);
+        ctx.ui.devices.scroll_x = sx;
+        ctx.ui.devices.scroll_y = sy;
     }
 }
 
-/// The header row: colour mark, track name, info, "+ Gerät" (opens the browser on Effekte).
-fn header_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, count: usize) {
+/// The chain head: colour mark, track name, the devices as `a › b › c` (visible ones on
+/// `surface.3`, a click scrolls there), „+ Gerät“ (opens the browser on Effekte).
+fn header_row(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    rect: Rect,
+    track: &Track,
+    cards: &[Card],
+    visible: &[bool],
+) {
     let ppp = ui.pixels_per_point();
     px::hline(
         ui.painter(),
@@ -134,24 +229,30 @@ fn header_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, cou
     );
     x = mark.right() + metrics::HEADER_GAP;
     let style = typography::UI;
-    let info = names::info(count);
-    for (text, font, color) in [
-        (
-            track.name.as_str(),
-            w::font_at(&style, wm::SEMIBOLD),
-            color::TEXT_1,
-        ),
-        (info.as_str(), fonts::font_id(&style), color::TEXT_3),
-    ] {
-        let g = w::galley(ui, text, font, style.line_height);
-        let pos = w::text_pos(rect, &g, x, ppp);
-        let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
-        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
-        x = pos.x + g.size().x + metrics::HEADER_GAP;
-        ui.painter().galley(pos, g, color32(color));
-    }
+    let g = w::galley(
+        ui,
+        &track.name,
+        w::font_at(&style, wm::SEMIBOLD),
+        style.line_height,
+    );
+    let pos = w::text_pos(rect, &g, x, ppp);
+    let r = ui.allocate_rect(Rect::from_min_size(pos, g.size()), Sense::hover());
+    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &track.name));
+    x = pos.x + g.size().x + metrics::HEADER_GAP;
+    ui.painter().galley(pos, g, color32(color::TEXT_1));
+
+    let button_width = {
+        let g = w::galley(
+            ui,
+            names::ADD,
+            fonts::emphasis_font_id(&style),
+            style.line_height,
+        );
+        g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X
+    };
+    let right_edge = rect.right() - metrics::HEADER_PAD_X - button_width;
     let right = Rect::from_min_max(
-        pos2(x, rect.top()),
+        pos2(right_edge, rect.top()),
         pos2(rect.right() - metrics::HEADER_PAD_X, rect.bottom()),
     );
     let mut row = ui.new_child(
@@ -165,28 +266,86 @@ fn header_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, cou
             BrowserSegment::Effects,
         )));
     }
+
+    // The chain, cut at the button.
+    let chain_area = Rect::from_min_max(
+        pos2(x, rect.top()),
+        pos2(right_edge - metrics::HEADER_GAP, rect.bottom()),
+    );
+    let mut cu = ui.new_child(UiBuilder::new().max_rect(chain_area));
+    cu.set_clip_rect(chain_area.intersect(ui.clip_rect()));
+    let small = typography::UI;
+    let sep = w::galley(
+        &cu,
+        metrics::CHAIN_SEPARATOR,
+        fonts::font_id(&small),
+        small.line_height,
+    );
+    for (i, card) in cards.iter().enumerate() {
+        if i > 0 {
+            x += metrics::CHAIN_SEPARATOR_GAP;
+            let pos = w::text_pos(rect, &sep, x, ppp);
+            cu.painter()
+                .galley(pos, sep.clone(), color32(color::TEXT_3));
+            x += sep.size().x + metrics::CHAIN_SEPARATOR_GAP;
+        }
+        let g = w::galley(&cu, &card.name, fonts::font_id(&small), small.line_height);
+        let chip = Rect::from_min_size(
+            pos2(x, rect.center().y - size::CONTROL_COMPACT / 2.0),
+            vec2(
+                g.size().x + 2.0 * metrics::CHIP_PAD_X,
+                size::CONTROL_COMPACT,
+            ),
+        );
+        let r = cu.interact(
+            chip.intersect(chain_area),
+            cu.scope_id().with(("chain", card.device.0)),
+            Sense::click(),
+        );
+        r.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::reveal(&card.name)));
+        let shown = visible.get(i).copied().unwrap_or(false);
+        if shown {
+            px::fill(cu.painter(), chip, radius::S, color32(color::SURFACE_3));
+        } else if r.hovered() {
+            px::fill(cu.painter(), chip, radius::S, color32(color::SURFACE_2));
+        }
+        let ink = if shown { color::TEXT_1 } else { color::TEXT_2 };
+        let pos = w::text_pos(chip, &g, chip.left() + metrics::CHIP_PAD_X, ppp);
+        cu.painter().galley(pos, g, color32(ink));
+        if r.clicked() {
+            ctx.send(Action::Ui(UiAction::ScrollToDevice(card.device)));
+        }
+        x = chip.right();
+    }
 }
 
-/// The cards, the drop area, drag and drop, and the sideways scroll.
+/// The chain's geometry for one frame.
+struct ChainView {
+    /// The area under the chain head.
+    body: Rect,
+    scroll_x: f32,
+    scroll_y: f32,
+    max_x: f32,
+    max_y: f32,
+    /// Content size.
+    content: f32,
+    content_h: f32,
+    /// `(left, right)` of every frame in the content.
+    spans: Vec<(f32, f32)>,
+}
+
+/// The frames, the drop slot, drag and drop and the scrollbars. Returns the scroll offsets after
+/// dragging a scrollbar.
 fn chain(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
-    body: Rect,
+    view: &ChainView,
     track: &Track,
     cards: &[Card],
-    reveal: Option<DeviceId>,
-) {
+) -> (f32, f32) {
+    let body = view.body;
     let pad = metrics::BODY_PAD;
     let gap = metrics::CARD_GAP;
-    let content: f32 =
-        2.0 * pad + cards.iter().map(|c| c.width + gap).sum::<f32>() + metrics::DROP_AREA_WIDTH;
-    let max_scroll = (content - body.width()).max(0.0);
-    let mut scroll = ctx.ui.devices.scroll_x.clamp(0.0, max_scroll);
-    if let Some(device) = reveal {
-        scroll = scroll_to_card(cards, device, body.width(), scroll).clamp(0.0, max_scroll);
-    }
-    ctx.ui.devices.scroll_x = scroll;
-
     let mut cu = ui.new_child(
         UiBuilder::new()
             .max_rect(body)
@@ -196,30 +355,50 @@ fn chain(
     );
     cu.set_clip_rect(body.intersect(ui.clip_rect()));
     group_bounds(&cu, body);
-    let top = body.top() + pad;
-    let bottom = (body.bottom() - pad).max(top);
-    let mut x = body.left() + pad - scroll;
+    let top = body.top() + pad - view.scroll_y;
+    let bottom = top + device::frame::TOTAL_H;
+    let origin = body.left() - view.scroll_x;
+    let alt = ui.input(|i| i.modifiers.alt);
     let mut spans = Vec::with_capacity(cards.len());
     for (i, card) in cards.iter().enumerate() {
-        let rect = Rect::from_min_max(pos2(x, top), pos2(x + card.width, bottom));
+        let (l, r) = view.spans[i];
+        let rect = Rect::from_min_max(pos2(origin + l, top), pos2(origin + r, bottom));
         let selected = ctx.ui.selection.devices.contains(&card.device);
-        let head = card::show(&mut cu, ctx, card, rect, selected);
+        let at = Placed {
+            track,
+            index: i,
+            selected,
+        };
+        let head = frame::show(&mut cu, ctx, card, rect, &at);
         if head.clicked() {
             ctx.send(Action::Ui(UiAction::Select(SelectionChange::Devices {
                 devices: vec![card.device],
                 mode: SelectMode::Replace,
             })));
+            if card.collapsed {
+                ctx.send(Action::Ui(UiAction::ToggleDeviceCollapsed {
+                    device: card.device,
+                    all: false,
+                }));
+            }
+        }
+        if head.double_clicked() && !card.collapsed {
+            ctx.send(Action::Ui(UiAction::ToggleDeviceCollapsed {
+                device: card.device,
+                all: alt,
+            }));
         }
         if !card.instrument {
             head.dnd_set_drag_payload(CardDrag {
                 device: card.device,
                 track: track.id,
                 from: i,
+                copy: alt,
             });
         }
         spans.push((rect.left(), rect.right()));
-        x = rect.right() + gap;
     }
+    let x = spans.last().map_or(origin + pad, |(_, r)| r + gap);
     let area = Rect::from_min_max(pos2(x, top), pos2(x + metrics::DROP_AREA_WIDTH, bottom));
     drop_area(&mut cu, area);
 
@@ -230,7 +409,7 @@ fn chain(
                     Some((left, _)) => left - gap / 2.0,
                     None => spans
                         .last()
-                        .map_or(body.left() + pad - gap / 2.0, |(_, r)| r + gap / 2.0),
+                        .map_or(origin + pad - gap / 2.0, |(_, r)| r + gap / 2.0),
                 };
                 let line = Rect::from_min_max(
                     pos2(x - metrics::INSERT_LINE / 2.0, top),
@@ -247,36 +426,85 @@ fn chain(
         }
     }
 
-    // The wheel scrolls the row sideways (vertical wheels too: the row has nothing to scroll
-    // up and down).
-    if max_scroll > 0.0 && ui.rect_contains_pointer(body) {
-        let delta = ui.input(|i| i.smooth_scroll_delta);
-        let d = delta.x + delta.y;
-        if d != 0.0 {
-            ctx.ui.devices.scroll_x = (scroll - d).clamp(0.0, max_scroll);
-            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-        }
-    }
+    let sx = scrollbar(
+        &mut cu,
+        body,
+        false,
+        view.content,
+        view.scroll_x,
+        view.max_x,
+    );
+    let sy = scrollbar(
+        &mut cu,
+        body,
+        true,
+        view.content_h,
+        view.scroll_y,
+        view.max_y,
+    );
+    (sx, sy)
 }
 
-/// The scroll that brings the card of `device` into a body `width` wide (a newly added card),
-/// starting from `scroll`: the least change that shows it whole between the paddings.
-pub fn scroll_to_card(cards: &[Card], device: DeviceId, width: f32, scroll: f32) -> f32 {
-    let pad = metrics::BODY_PAD;
-    let mut left = pad;
-    for c in cards {
-        let right = left + c.width;
-        if c.device == device {
-            return if right - scroll > width - pad {
-                right - (width - pad)
-            } else if left - scroll < pad {
-                left - pad
-            } else {
-                scroll
-            };
-        }
-        left = right + metrics::CARD_GAP;
+/// A 4 px scrollbar along the bottom (or right) edge of `body`, shown while there is something
+/// to scroll: a `surface.4` thumb, `surface.5` while dragged. Returns the scroll after dragging.
+fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32, max: f32) -> f32 {
+    if max <= 0.0 {
+        return scroll;
     }
+    let ppp = ui.pixels_per_point();
+    let thickness = metrics::SCROLLBAR;
+    let view = if vertical {
+        body.height()
+    } else {
+        body.width()
+    };
+    let thumb_len = (view * view / content).clamp(thickness * 4.0, view);
+    let travel = view - thumb_len;
+    let at = if max > 0.0 {
+        scroll / max * travel
+    } else {
+        0.0
+    };
+    let thumb = if vertical {
+        Rect::from_min_size(
+            pos2(body.right() - thickness, body.top() + at),
+            vec2(thickness, thumb_len),
+        )
+    } else {
+        Rect::from_min_size(
+            pos2(body.left() + at, body.bottom() - thickness),
+            vec2(thumb_len, thickness),
+        )
+    };
+    let id = ui.scope_id().with(("komponist_device_scrollbar", vertical));
+    let r = ui.interact(thumb, id, Sense::drag());
+    r.widget_info(|| {
+        WidgetInfo::labeled(
+            Role::ScrollBar,
+            true,
+            if vertical {
+                names::SCROLL_V
+            } else {
+                names::SCROLL_H
+            },
+        )
+    });
+    let mut scroll = scroll;
+    if r.dragged() && travel > 0.0 {
+        let d = if vertical {
+            r.drag_delta().y
+        } else {
+            r.drag_delta().x
+        };
+        scroll = (scroll + d / travel * max).clamp(0.0, max);
+    }
+    let fill = if r.dragged() {
+        color::SURFACE_5
+    } else {
+        color::SURFACE_4
+    };
+    let _ = ppp;
+    px::fill(ui.painter(), thumb, thickness / 2.0, color32(fill));
     scroll
 }
 
@@ -341,6 +569,17 @@ fn drop_over(
     if let Some(drag) = egui::DragAndDrop::payload::<CardDrag>(&dnd) {
         if drag.track != track.id {
             return None;
+        }
+        if drag.copy {
+            if released {
+                egui::DragAndDrop::clear_payload(&dnd);
+                ctx.send(Action::Edit(EditAction::CopyDevice {
+                    device: drag.device,
+                    to: ChannelRef::Track(track.id),
+                    index: slot.max(first),
+                }));
+            }
+            return Some(Drop::Line(slot.max(first)));
         }
         let to = model::move_target(drag.from, slot, first)?;
         if released {
