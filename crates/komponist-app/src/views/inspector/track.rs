@@ -153,7 +153,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
         }
         (None, None) => {
             labels.insert(0, names::NO_INSTRUMENT.to_owned());
-            plugins.insert(0, c_none());
+            plugins.insert(0, no_instrument());
             enabled.insert(0, false);
             0
         }
@@ -240,7 +240,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 }
 
 /// A placeholder reference for the disabled "Kein Instrument" entry (never sent).
-fn c_none() -> PluginRef {
+fn no_instrument() -> PluginRef {
     PluginRef {
         format: komponist_model::PluginFormat::Builtin,
         id: String::new(),
