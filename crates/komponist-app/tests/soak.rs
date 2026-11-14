@@ -50,6 +50,11 @@ const SHORT: Duration = Duration::from_secs(6);
 const FRAME: Duration = Duration::from_micros(16_667);
 /// The null backend's period: 256 frames at 48 kHz.
 const PERIOD: Duration = Duration::from_micros(5_333);
+/// The generator keeps the project around the demo's size, so the load stays that of a session
+/// (unbounded growth would only measure pisynth with 100 tracks).
+const MAX_TRACKS: usize = 10;
+const MAX_CLIPS: usize = 40;
+const MAX_NOTES_PER_CLIP: usize = 200;
 
 /// xorshift64*.
 struct Rng(u64);
@@ -189,11 +194,13 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
         }),
         // Notes.
         28..=37 => match clip {
-            Some((clip, _)) => Action::Edit(EditAction::AddNotes {
-                clip: *clip,
-                notes: random_notes(rng, 8),
-            }),
-            None => return,
+            Some((clip, notes)) if notes.len() < MAX_NOTES_PER_CLIP => {
+                Action::Edit(EditAction::AddNotes {
+                    clip: *clip,
+                    notes: random_notes(rng, 8),
+                })
+            }
+            _ => return,
         },
         38..=43 => match clip {
             Some((clip, notes)) if !notes.is_empty() => {
@@ -224,7 +231,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
         },
         // Clips.
         53..=56 => match track {
-            Some(track) => Action::Edit(EditAction::AddClip {
+            Some(track) if clips.len() < MAX_CLIPS => Action::Edit(EditAction::AddClip {
                 track,
                 clip: NewClip {
                     start: Tick(rng.below(8) as i64 * BAR),
@@ -236,7 +243,7 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
                     },
                 },
             }),
-            None => return,
+            _ => return,
         },
         57..=58 => match clip {
             Some((clip, _)) if clips.len() > 4 => {
@@ -253,12 +260,12 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
             None => return,
         },
         62..=63 => match clip {
-            Some((clip, _)) => Action::Edit(EditAction::CopyClips {
+            Some((clip, _)) if clips.len() < MAX_CLIPS => Action::Edit(EditAction::CopyClips {
                 clips: vec![*clip],
                 delta: Tick((1 + rng.below(4) as i64) * BAR),
                 track_delta: 0,
             }),
-            None => return,
+            _ => return,
         },
         64..=65 => match clip {
             Some((clip, _)) => Action::Edit(EditAction::SetClipLoop {
@@ -288,9 +295,11 @@ fn act(app: &mut App, rng: &mut Rng, midi: &TestMidiSource, held: &mut Vec<u8>, 
             70.0 + rng.below(110) as f64,
         )))),
         // Tracks and devices.
-        76..=77 => Action::Plugin(PluginAction::NewPisynthTrack {
-            preset: rng.below(8),
-        }),
+        76..=77 if tracks(app).len() < MAX_TRACKS => {
+            Action::Plugin(PluginAction::NewPisynthTrack {
+                preset: rng.below(8),
+            })
+        }
         78 => match track {
             Some(track) if tracks(app).len() > 3 => {
                 Action::Edit(EditAction::RemoveTracks(vec![track]))
