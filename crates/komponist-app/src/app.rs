@@ -1927,6 +1927,18 @@ impl App {
                     self.engine.reload_device(self.doc.project(), device);
                 }
             }
+            PluginAction::NewPisynthTrack { preset } => {
+                self.dispatch(Action::Edit(EditAction::BeginGesture {
+                    label: "Preset laden".to_owned(),
+                }));
+                self.new_midi_track(None, pisynth_ref());
+                let track = self.ui.selection.tracks.iter().next().copied();
+                if let Some(device) = crate::views::browser::model::pisynth_of(self.project(), track)
+                {
+                    self.plugin_action(PluginAction::ApplyPisynthPreset { device, preset });
+                }
+                self.dispatch(Action::Edit(EditAction::EndGesture));
+            }
             PluginAction::OpenWindow(device) => {
                 if !self.ui.plugin_windows.iter().any(|w| w.device == device) {
                     // The plugin's own GUI if it has one (the frame opens it, WP-50), else the

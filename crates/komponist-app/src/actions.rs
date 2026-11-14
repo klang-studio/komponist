@@ -356,6 +356,12 @@ pub enum PluginAction {
         /// Factory preset index.
         preset: usize,
     },
+    /// A preset double-click without a pisynth on the selected track: a new pisynth track
+    /// with factory preset `preset` (one undo step).
+    NewPisynthTrack {
+        /// Factory preset index.
+        preset: usize,
+    },
     /// "Öffnen" on a device card or insert click: open the plugin window (own GUI, or the generic
     /// parameter view for plugins without one).
     OpenWindow(DeviceId),
