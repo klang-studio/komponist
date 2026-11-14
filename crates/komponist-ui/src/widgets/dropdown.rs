@@ -11,6 +11,10 @@
 //! | open / pressed | surface.5 | text.1 | text.1 |
 //! | disabled | surface.2 | text.4 | text.4 |
 //!
+//! [`Dropdown::label`] puts a key inside the box before the value ("Raster 1/16 ▾", `text.3`,
+//! 10 px gap) as the toolbars draw it; [`Dropdown::compact`] makes the field 20 high for panel
+//! headers. Both set the field text in `type.small` (11 px) and drop the 96 px minimum width.
+//!
 //! The list opens below the field, as wide as the field: `surface.3`, `radius.l`, padding 4,
 //! `shadow.float` with the 1 px edge; rows `size.menu-row` (24), `radius.s`, padding 0 8, a 14 px
 //! ✓ column (`type.small`, text.2) for the current value. The row under the pointer or the

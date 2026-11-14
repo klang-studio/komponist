@@ -139,6 +139,31 @@ fn field_without_text_entry_ignores_double_click_and_enter() {
     assert_eq!(h.get_by_label("Note").value().as_deref(), Some("N4"));
 }
 
+/// egui-mcp and some touch input deliver press and release in one frame: the click must still
+/// give the field the keyboard focus, so ↑ ↓ work afterwards.
+#[test]
+fn a_click_whose_press_and_release_share_a_frame_focuses_the_field() {
+    let mut h = harness(16, |ui, v| {
+        ui.add(length_field(v));
+    });
+    let at = h.get_by_label("Länge").rect().center();
+    pause(&mut h);
+    h.event(Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run();
+    assert!(h.get_by_label("Länge").is_focused());
+    h.key_press(Key::ArrowUp);
+    h.run();
+    assert_eq!(*h.state(), 17);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Dropdown with a label, compact
 

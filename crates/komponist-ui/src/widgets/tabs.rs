@@ -18,6 +18,9 @@
 //! [`Segmented::equal_width`] stretches the box over the available width and gives every segment
 //! the same width (the S01 browser: `grid-template-columns: repeat(4, 1fr)`).
 //!
+//! [`Segmented::tips`] gives each segment a tooltip (name and shortcut, as the toolbars' tool
+//! switch shows them).
+//!
 //! Keys: only the active tab or segment takes focus (Tab key); ← → then choose the neighbour
 //! (skipping disabled ones) and keep the focus on it. Ctrl Tab (next tab in the focused area) is
 //! an app shortcut; [`step`] computes the target.
