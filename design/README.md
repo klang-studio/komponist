@@ -25,10 +25,14 @@ in its `<script>` block.
 | `color.canvas.box-select` | `#4ea7e61a` | `ks-view.js` `prView` `box` (`background:'rgba(78,167,230,0.10)'`, with `boxShadow:'inset 0 0 0 1px '+C.acc`) | Fill of the box selection in the piano roll (WP-41) and the arrangement (WP-40): `accent` at 10 % (0.10 × 255 = 25.5 → 26 = `0x1a`); its 1 px edge is `accent` |
 | `color.canvas.clip-edge-selected` | `#e8e9eb29` | `ks-view.js` `clipView` `edge` (`background: sel ? 'rgba(232,233,235,0.16)' : 'transparent'`, `width:6`, `right:0`) | Right edge of a selected arrangement clip, where the length is dragged: `text.1` at 16 % (0.16 × 255 = 40.8 → 41 = `0x29`) |
 | `color.canvas.step-group-alt` | `#222326` | `Screens.dc.html` `stepSeq()` `cells` (`grp?'#222326':C.f2`); `ks-view.js` `stepView` `off` | Step-sequencer cell that is off, in every other group of four steps (steps 5–8, 13–16, …; the others `surface.2`) (WP-42) |
+| `color.state.error-surface` | `#2c1c1e` | `Screens.dc.html` `tp()` `errS` (`background:'#2c1c1e'`) and the S07 markup (device notice `background:#2c1c1e`) | Surface of error notices: "Kein Audio-Gerät" in the transport bar, the S07 device notice (WP-52) |
+| `color.overlay.scrim` | `#08090a9e` | `Screens.dc.html` markup `ovDim` (`background:rgba(8,9,10,0.62)`) | Scrim behind a modal dialog: 0.62 × 255 = 158.1 → 158 = `0x9e` (WP-52) |
+| `shadow.dialog` | `0 12px 32px rgba(0,0,0,0.5)` | `Screens.dc.html` markup of S06, S07, S08 (`box-shadow:0 0 0 1px #111214, 0 12px 32px rgba(0,0,0,0.5)`; the 1 px part is `shadow.edge`) | Shadow of dialogs and plugin windows (WP-52) |
 
 In Rust: `TrackPalette::{key_playing, note_muted, clip_handle}` (formulas in
 `komponist_tokens::track::formula`), `color::STATE_RECORD_INK`, `color::LINE_0` (with
-`color::LINE`, the line scale as an array) and `color::CANVAS_*`. The three formulas have no
+`color::LINE`, the line scale as an array), `color::CANVAS_*`, `color::STATE_ERROR_SURFACE`,
+`color::OVERLAY_SCRIM` and `shadow::DIALOG`. The three formulas have no
 precomputed entries in `track.colors`; `komponist-tokens` checks `TrackPalette` against the output
 of the prototype's `hex()` for all 14 hues instead (`added_formulas_match_the_prototype` in
 `crates/komponist-tokens/src/track.rs`).
@@ -47,8 +51,4 @@ by a contract change when those need them:
   recheck in WP-62.
 - `#1a1f26`: mixer strip of the selected track (`Screens.dc.html` `mixer()`, `ks-view.js`
   `mixView`).
-- `#2c1c1e`: surface of error messages (`Screens.dc.html` `tp()` `errS` in the transport, and the
-  screen markup).
-- `rgba(8,9,10,0.62)` and `0 12px 32px rgba(0,0,0,0.5)`: scrim behind a dialog and shadow of
-  dialogs and plugin windows (`Screens.dc.html` markup).
 - `#34363b`, `#4d5056`, `#5a5d63`: fader thumb greys (WP-21 maps them to the nearest tokens).

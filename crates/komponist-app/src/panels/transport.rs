@@ -533,7 +533,7 @@ fn no_device_chip(ui: &mut Ui) {
         painter,
         rect,
         radius::M,
-        color32(color::STATE_RECORD_SURFACE),
+        color32(color::STATE_ERROR_SURFACE),
     );
     let dot = pos2(
         rect.left() + wm::BUTTON_PADDING_X + m::ERROR_DOT / 2.0,
