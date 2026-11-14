@@ -7,9 +7,9 @@ publish.workspace = true
 
 [dependencies]
 komponist-engine.workspace = true
+komponist-model.workspace = true
 synth-core.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 assert_no_alloc.workspace = true
-komponist-model.workspace = true

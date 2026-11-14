@@ -134,6 +134,9 @@ pub mod param_flags {
     pub const AUTOMATABLE: u32 = 16;
     /// Enumerated values: show [`super::ParamValue::text`].
     pub const ENUM: u32 = 32;
+    /// The plugin reports the parameter as a macro: the auto-layout shows these first. No host
+    /// sets it yet (neither CLAP nor VST3 has the concept; reserved for plugins that tell).
+    pub const MACRO: u32 = 64;
 }
 
 /// A plugin parameter as the generic parameter view needs it.

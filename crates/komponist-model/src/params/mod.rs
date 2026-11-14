@@ -11,6 +11,7 @@
 //! - Texts per [`Unit`]: [`ParamInfo::format`] (`420 Hz`, `1.2 kHz`, `−4.0 dB`, `L 14`, `C`).
 //! - `automatable` / `modulatable`: only carried, nothing uses them yet (owner decision
 //!   2026-11-14: automation, MIDI learn and modulation are prepared, not built).
+//! - [`layout`]: the auto-layout of foreign plugins (macros or the first 12, 4 columns).
 //! - [`context`]: placeholders such as `op{env_op}_attack` and their resolver.
 //!
 //! Why here: `komponist-model` is the one crate every other crate already depends on (engine,
@@ -24,6 +25,7 @@
 
 pub mod context;
 mod format;
+pub mod layout;
 mod scale;
 
 use std::fmt;
@@ -31,6 +33,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub use context::{ParamContext, ResolveError, placeholders, resolve};
+pub use layout::{AUTO_COLUMNS, AUTO_MAX, auto_layout};
 pub use scale::{DBT, SILENCE_POSITION, db_to_p, p_to_db};
 
 /// The stable id of a parameter, saved in projects (automation, mappings later). Internal devices
