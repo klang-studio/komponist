@@ -22,6 +22,7 @@
 //!   implementations: [`device_host::PluginHost`] (pisynth in process, everything else in bridges
 //!   of the plugin manager) and [`device_host::BuiltinHost`] (pisynth only, tests).
 //! - [`meters`]: meter ballistics fed from the engine once per frame.
+//! - [`record`]: [`record::Recording`], the take that grows while recording (WP-51).
 //! - [`settings`]: the settings file, `~/.config/komponist/settings.json`.
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 
@@ -34,6 +35,7 @@ pub mod layout;
 pub mod meters;
 pub mod metrics;
 pub mod panels;
+pub mod record;
 pub mod settings;
 mod shell;
 pub mod ui_state;
