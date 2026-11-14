@@ -572,7 +572,9 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         ("Neues Projekt", p(ProjectAction::New)),
         ("Projekt öffnen …", p(ProjectAction::Open)),
         ("Speichern", p(ProjectAction::Save)),
+        ("Speichern unter …", p(ProjectAction::SaveAs)),
         ("WAV exportieren …", p(ProjectAction::OpenExportDialog)),
+        ("Zum Startbildschirm", p(ProjectAction::ShowStartScreen)),
     ];
     let labels: Vec<Option<String>> = entries_spec
         .iter()

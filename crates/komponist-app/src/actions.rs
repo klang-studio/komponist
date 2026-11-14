@@ -385,8 +385,10 @@ pub enum ProjectAction {
     OpenPath(PathBuf),
     /// Ctrl S: save (file dialog the first time).
     Save,
-    /// Save under a new path (file dialog).
+    /// Ctrl Shift S or "⋯": save under a new path (file dialog).
     SaveAs,
+    /// "⋯" › "Zum Startbildschirm": back to S09, asking to save a dirty project first.
+    ShowStartScreen,
     /// Ctrl Shift E or "⋯": open the export dialog with the last settings.
     OpenExportDialog,
     /// "Exportieren" / Enter in the export dialog.

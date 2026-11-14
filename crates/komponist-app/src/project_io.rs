@@ -250,6 +250,7 @@ impl App {
                 None => self.open_file_browser(Purpose::Save),
             },
             ProjectAction::SaveAs => self.open_file_browser(Purpose::Save),
+            ProjectAction::ShowStartScreen => self.guard(Pending::StartScreen),
             ProjectAction::ContinueWithMissing => {
                 if matches!(self.ui.dialog, Some(Dialog::MissingPlugins(_))) {
                     self.dispatch(Action::Ui(UiAction::CloseDialog));
@@ -292,6 +293,7 @@ impl App {
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }
+            Pending::StartScreen => self.show_start_screen(),
             Pending::Open => self.open_file_browser(Purpose::Open),
             Pending::OpenPath(path) => self.open_path(path),
             Pending::Quit => {

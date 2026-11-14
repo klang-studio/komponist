@@ -2015,6 +2015,7 @@ impl App {
             | ProjectAction::OpenPath(_)
             | ProjectAction::Save
             | ProjectAction::SaveAs
+            | ProjectAction::ShowStartScreen
             | ProjectAction::ContinueWithMissing
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
             // The export (WP-53b): `crate::export`.

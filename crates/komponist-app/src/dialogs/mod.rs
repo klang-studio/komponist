@@ -93,6 +93,8 @@ pub(crate) enum Pending {
     Open,
     /// Open this file.
     OpenPath(PathBuf),
+    /// "⋯" › "Zum Startbildschirm".
+    StartScreen,
     /// Close the window (the window's close button).
     Quit,
 }
