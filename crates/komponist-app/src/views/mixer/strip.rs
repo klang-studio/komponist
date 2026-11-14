@@ -56,9 +56,10 @@ pub struct Rows {
     pub inserts: Rect,
     /// "Sends" and the two reserved rows, if shown.
     pub sends: Option<(Rect, Rect)>,
-    /// The pan knob (28 × 28, centred).
+    /// The pan knob (28 × 28 right of the pan value; Ø 20 at the end of the name row in the lean
+    /// strip).
     pub knob: Rect,
-    /// The pan value under it.
+    /// The pan value next to the knob (empty in the lean strip).
     pub pan_value: Rect,
     /// The toggles row.
     pub toggles: Rect,
@@ -139,6 +140,9 @@ impl Rows {
         use typography::VALUE_M;
         let l = rect.left();
         let r = rect.right();
+        let d = size::KNOB_SMALL;
+        let knob =
+            Rect::from_center_size(pos2(r - m::PAD_X - d / 2.0, name.center().y), vec2(d, d));
         let nothing = Rect::from_min_size(
             pos2(l + m::PAD_X, name.bottom()),
             vec2(rect.width() - 2.0 * m::PAD_X, 0.0),
@@ -163,7 +167,7 @@ impl Rows {
             inserts_label: None,
             inserts: nothing,
             sends: None,
-            knob: nothing,
+            knob,
             pan_value: nothing,
             toggles,
             fader: Rect::from_x_y_ranges(l..=r, fader_top..=fader_bottom),
@@ -337,9 +341,7 @@ pub(super) fn show(
     if let Some((label, sends)) = rows.sends {
         sends_area(ui, label, sends);
     }
-    if !tier.lean {
-        pan(ui, ctx, s, &rows);
-    }
+    pan(ui, ctx, s, &rows, tier);
     let events = toggles(ui, ctx, s, rows.toggles);
     fader_and_meter(ui, ctx, s, rows.fader, mods);
     values(ui, ctx, s, rows.values, mods);
@@ -378,8 +380,14 @@ fn name_and_line(
     tier: Tier,
 ) {
     let style = typography::UI;
+    // The lean strip's pan knob takes the right end of the name row.
+    let text_x = if tier.lean {
+        rows.name.left() + m::PAD_X..=rows.knob.left() - m::LEAN_PAN_GAP
+    } else {
+        rows.line.x_range().into()
+    };
     let line_rect = Rect::from_x_y_ranges(
-        rows.line.x_range(),
+        text_x,
         rows.name.top() + m::NAME_TOP..=rows.name.top() + m::NAME_TOP + style.line_height,
     );
     let ink = if s.dim { color::TEXT_3 } else { color::TEXT_1 };
@@ -681,13 +689,19 @@ fn sends_area(ui: &mut Ui, label: Rect, rows: Rect) {
 
 /// The pan knob ("Ziehen relativ, Shift fein, Alt-Klick Standard, Doppelklick Texteingabe") and
 /// its value.
-fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows) {
+fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
     let mut pan = s.pan;
     let name = names::pan(&s.name);
-    let response = place(ui, rows.knob, "pan", |ui| ui.add(Knob::pan(&mut pan, name)));
+    let response = place(ui, rows.knob, "pan", |ui| {
+        let knob = Knob::pan(&mut pan, name);
+        ui.add(if tier.lean { knob.small() } else { knob })
+    });
     send_gesture(ctx, &response, names::UNDO_PAN, || {
         channel_edit(s, ChannelProp::Pan(pan))
     });
+    if tier.lean {
+        return;
+    }
     let style = typography::VALUE_S;
     text(
         ui,
@@ -896,7 +910,10 @@ mod tests {
             Tier::for_height(292.0),
         );
         assert!(small.sends.is_none() && small.inserts_label.is_none());
-        assert_eq!(small.knob.height(), 0.0);
+        // The lean strip's pan knob sits in the name row and adds no height.
+        assert_eq!(small.knob.size(), vec2(size::KNOB_SMALL, size::KNOB_SMALL));
+        assert!(small.name.contains_rect(small.knob));
+        assert!(small.knob.left() > small.name.left() + 40.0);
         assert!(small.fader.height() >= m::FADER_AREA_MIN - 0.5);
     }
 
