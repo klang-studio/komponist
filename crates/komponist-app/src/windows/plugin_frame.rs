@@ -20,10 +20,12 @@
 //! 4. The bridge dies or stalls (`Crashed`), or "Neu laden" restarts it (`Loading`): the child is
 //!    destroyed and the body shows the device card's state ("Abgestürzt", "Neu laden"); when the
 //!    device runs again, a new child opens the GUI again.
-//! 5. Closing (×, Esc, the window manager's close button, `PluginAction::CloseWindow`): the GUI
-//!    is closed in the bridge (a state snapshot follows) and the child is parked outside the frame
-//!    until the bridge answers `GuiClosed`, so the frame window disappears at once without
-//!    destroying the plugin's window under it.
+//! 5. Closing (×, Esc inside the frame, the window manager's close button,
+//!    `PluginAction::CloseWindow`, another project): the GUI is closed in the bridge (a state
+//!    snapshot follows) and the child is parked outside the frame until the bridge answers
+//!    `GuiClosed`, so the frame window disappears at once without destroying the plugin's window
+//!    under it. Esc in the main window leaves the frames open. Opening another project closes
+//!    every frame before `EngineSync::reset` releases the bridges.
 //!
 //! Without native viewports (`egui_kittest`, `Context::embed_viewports`) frames are embedded egui
 //! windows without X11; the plugin view shows the prototype's placeholder. Tests never open a
@@ -126,7 +128,9 @@ enum X11State {
 /// A child window waiting for `GuiClosed` after its frame closed.
 #[derive(Debug)]
 struct Parked {
-    device: DeviceId,
+    /// `None` once another project opened: its device ids start again at 1, so a `GuiClosed`
+    /// of the new project must not match; the timeout destroys it.
+    device: Option<DeviceId>,
     child: u32,
     since: Instant,
 }
@@ -310,7 +314,7 @@ impl App {
                 if open {
                     x11.park(child);
                     self.frames.parked.push(Parked {
-                        device,
+                        device: Some(device),
                         child,
                         since: Instant::now(),
                     });
@@ -318,6 +322,22 @@ impl App {
                     x11.destroy(child);
                 }
             }
+        }
+    }
+
+    /// Another project opens (`App::open_document`, before `EngineSync::reset` releases the
+    /// bridges): every frame closes as with ×, and the parked plugin areas no longer belong to a
+    /// device of the new project.
+    pub(crate) fn close_all_plugin_frames(&mut self) {
+        let devices: Vec<DeviceId> = self.ui.plugin_windows.iter().map(|w| w.device).collect();
+        for device in devices {
+            self.close_plugin_window(device);
+        }
+        for frame in std::mem::take(&mut self.frames.frames) {
+            self.retire_frame(frame);
+        }
+        for parked in &mut self.frames.parked {
+            parked.device = None;
         }
     }
 
@@ -659,7 +679,12 @@ impl App {
                 }
             }
             PluginManagerEvent::GuiClosed { device } => {
-                if let Some(at) = self.frames.parked.iter().position(|p| p.device == device) {
+                if let Some(at) = self
+                    .frames
+                    .parked
+                    .iter()
+                    .position(|p| p.device == Some(device))
+                {
                     let parked = self.frames.parked.remove(at);
                     if let Some(x11) = self.frames.x11() {
                         x11.destroy(parked.child);

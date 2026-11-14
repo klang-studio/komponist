@@ -1588,12 +1588,10 @@ impl App {
                 }
             }
             UiAction::ClearSelection => {
+                // Plugin frames are windows of their own: Esc inside one closes it
+                // (`windows::plugin_frame`), Esc here leaves them open.
                 if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
                     self.ui_action(UiAction::CloseDialog);
-                } else if let Some(window) = self.ui.plugin_windows.last() {
-                    // The frame opened last (prototype: Esc closes the plugin window).
-                    let device = window.device;
-                    self.close_plugin_window(device);
                 } else {
                     let sel = &mut self.ui.selection;
                     sel.notes.clear();
@@ -2002,6 +2000,8 @@ impl App {
     /// at 1 in every project, [`EngineSync::reset`]), fresh selection, editor, plugin windows,
     /// meters and scroll position.
     pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
+        // Plugin GUIs close in their bridges before the reset releases the bridges.
+        self.close_all_plugin_frames();
         // A take of the old project does not go into the new one.
         self.recording = None;
         self.engine.send(Command::Stop);

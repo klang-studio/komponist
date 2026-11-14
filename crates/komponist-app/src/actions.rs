@@ -474,7 +474,8 @@ pub enum UiAction {
     Select(SelectionChange),
     /// Ctrl A: all notes of the open clip (editor focused) or all clips.
     SelectAll,
-    /// Esc: close the plugin window or menu if open, else clear the selection.
+    /// Esc: close the dialog if one is open, else clear the selection. (Plugin frames are windows
+    /// of their own and close with Esc inside them.)
     ClearSelection,
     /// Double-click a clip: open it in the editor tab (piano roll or step sequencer).
     OpenClip(ClipId),
