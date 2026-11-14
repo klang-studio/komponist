@@ -15,6 +15,8 @@
 //! **Segmented control** (`Umschalter`): a `surface.2` box, 24 high, `radius.m`, padding and gap
 //! 2; segments 20 high, padding 0 10, `radius.s`, `type.small` size. Active: surface.4, text.1,
 //! medium; hover: surface.3, text.1; inactive: text.2. The focus ring goes around the box.
+//! [`Segmented::equal_width`] stretches the box over the available width and gives every segment
+//! the same width (the S01 browser: `grid-template-columns: repeat(4, 1fr)`).
 //!
 //! Keys: only the active tab or segment takes focus (Tab key); ← → then choose the neighbour
 //! (skipping disabled ones) and keep the focus on it. Ctrl Tab (next tab in the focused area) is
@@ -88,6 +90,8 @@ impl<'a> TabExtra<'a> {
 struct Deco<'a> {
     extra: TabExtra<'a>,
     accent_line: bool,
+    /// A fixed width instead of the text's ([`Segmented::equal_width`]).
+    width: Option<f32>,
 }
 
 /// Colours and weight of a tab or segment.
@@ -255,7 +259,9 @@ fn item_deco(
         .as_ref()
         .map_or(0.0, |g| dock_metrics::GAP + g.size().x.ceil());
     // As wide as the medium text, so the width does not change with the state.
-    let width = mark_w + medium.size().x.ceil() + secondary_w + 2.0 * shape.padding();
+    let width = deco
+        .width
+        .unwrap_or_else(|| mark_w + medium.size().x.ceil() + secondary_w + 2.0 * shape.padding());
     // Only the active entry is a Tab stop; arrows move between entries.
     let sense = if active && enabled {
         Sense::click()
@@ -333,7 +339,11 @@ pub fn tab_with(
     accent_line: bool,
 ) -> Response {
     let id = ui.scope_id().with(("komponist_tab", label));
-    let deco = Deco { extra, accent_line };
+    let deco = Deco {
+        extra,
+        accent_line,
+        width: None,
+    };
     item_deco(ui, id, Shape::Tab, label, active, enabled, deco).0
 }
 
@@ -403,6 +413,7 @@ fn entry_id(bar: Id, i: usize) -> Id {
     bar.with(("komponist_tab", i))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_entries(
     ui: &mut Ui,
     shape: Shape,
@@ -411,6 +422,7 @@ fn show_entries(
     selected: usize,
     extras: &[TabExtra<'_>],
     accent_line: bool,
+    width: Option<f32>,
 ) -> (Option<usize>, bool) {
     let mut chosen = None;
     let mut focus_to = None;
@@ -420,6 +432,7 @@ fn show_entries(
         let deco = Deco {
             extra: extras.get(i).copied().unwrap_or_default(),
             accent_line,
+            width,
         };
         let (r, st) = item_deco(
             ui,
@@ -501,6 +514,7 @@ impl Widget for TabBar<'_> {
                     *self.selected,
                     self.extras,
                     self.accent_line,
+                    None,
                 )
             })
             .inner
@@ -521,6 +535,7 @@ pub struct Segmented<'a> {
     name: &'a str,
     selected: &'a mut usize,
     items: &'a [Item<'a>],
+    equal_width: bool,
 }
 
 impl<'a> Segmented<'a> {
@@ -530,19 +545,48 @@ impl<'a> Segmented<'a> {
             name,
             selected,
             items,
+            equal_width: false,
         }
     }
+
+    /// The box fills the available width and the segments share it equally (the browser's
+    /// "Alle · Instr. · Effekte · Dateien"), instead of each being as wide as its text.
+    pub fn equal_width(mut self) -> Self {
+        self.equal_width = true;
+        self
+    }
+}
+
+/// The width of each of `n` equal segments in a box `outer` wide (padding and gaps 2).
+pub fn equal_segment_width(outer: f32, n: usize) -> f32 {
+    let n = n.max(1) as f32;
+    let inner = outer - 2.0 * space::SPACE_0_5 - (n - 1.0) * space::SPACE_0_5;
+    (inner / n).max(0.0)
 }
 
 impl Widget for Segmented<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let bar = ui.scope_id().with(("komponist_segmented", self.name));
+        let segment_width = self
+            .equal_width
+            .then(|| equal_segment_width(ui.available_width(), self.items.len()));
         let (items, selected) = (self.items, self.selected);
         let r = segmented_frame(
             ui,
             self.name,
             |(_, ring): &(Option<usize>, bool)| *ring,
-            |ui| show_entries(ui, Shape::Segment, bar, items, *selected, &[], false),
+            |ui| {
+                show_entries(
+                    ui,
+                    Shape::Segment,
+                    bar,
+                    items,
+                    *selected,
+                    &[],
+                    false,
+                    segment_width,
+                )
+            },
         );
         let mut response = r.response;
         if let (Some(c), _) = r.inner {

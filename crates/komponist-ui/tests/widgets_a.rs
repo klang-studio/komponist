@@ -126,6 +126,20 @@ fn tab_snapshots() {
             tabs::segment(ui, "Mixer", false, true);
         });
     }
+    // `Segmented::equal_width`: the browser's segments, four equal columns over 244 px
+    // (S01: browser 260 − 2 × 8 padding).
+    s.add_state("segmented-equal-width", State::REST, None, |ui| {
+        ui.set_width(244.0);
+        let mut selected = 0;
+        let items = [
+            tabs::Item::new("Alle"),
+            tabs::Item::new("Instr."),
+            tabs::Item::new("Effekte"),
+            tabs::Item::new("Dateien"),
+        ];
+        ui.add(tabs::Segmented::new("Browser-Filter", &mut selected, &items).equal_width());
+    });
+    assert_eq!(tabs::equal_segment_width(244.0, 4), 58.5);
     for (name, ring) in [("segmented", false), ("segmented-focused", true)] {
         s.add_state(name, State::REST, None, |ui| {
             tabs::segmented_frame(

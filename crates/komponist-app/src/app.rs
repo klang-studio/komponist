@@ -137,6 +137,7 @@ impl App {
         let mut ui = UiState::new();
         ui.screen = Screen::Project;
         settings.panels.apply_to(&mut ui.layout);
+        ui.browser.favorites = settings.favorites.clone();
         let saved_panels = Some(settings.panels);
         App {
             doc,
@@ -497,6 +498,26 @@ impl App {
         let _ = self
             .doc
             .apply_untracked(|p| edits::set_device_state(p, device, Some(Arc::clone(state))));
+    }
+
+    /// A pisynth macro turned on the device card: the same `Macro::set` the processor applies goes
+    /// into the device state in the document, outside the history like every plugin state, so the
+    /// card shows the value and saving keeps it (`komponist_builtin::macros` module docs).
+    fn store_macro(&mut self, device: DeviceId, id: u32, value: f64) {
+        let Some(m) = komponist_builtin::Macro::from_id(id) else {
+            return;
+        };
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        if !crate::device_host::is_pisynth(d) {
+            return;
+        }
+        let mut patch = komponist_builtin::decode_state(d.state.as_deref())
+            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        m.set(&mut patch, value);
+        let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
+        self.store_state(device, &state);
     }
 
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
@@ -1785,6 +1806,7 @@ impl App {
                 if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
                     self.engine.send(Command::SetParam { slot, id, value });
                 }
+                self.store_macro(device, id, value);
             }
         }
     }
@@ -1817,7 +1839,11 @@ impl App {
                 let (channel, index) = match target {
                     DropTarget::NewTrack { .. } => match selected {
                         Some(t) => (ChannelRef::Track(t), None),
-                        None => return,
+                        None => {
+                            // Prototype `dropNew`.
+                            self.set_status("Effekte brauchen eine Spur", StatusKind::Error);
+                            return;
+                        }
                     },
                     DropTarget::Track(t) => (ChannelRef::Track(t), None),
                     DropTarget::Chain { channel, index } => (channel, Some(index)),
@@ -1967,6 +1993,11 @@ impl App {
             SettingsAction::SetUiScale(scale) => {
                 self.settings.ui_scale = scale;
                 self.shell.pending_scale = Some(scale);
+                self.save_settings();
+            }
+            SettingsAction::ToggleFavorite(plugin) => {
+                self.settings.favorites.toggle(&plugin);
+                self.ui.browser.favorites = self.settings.favorites.clone();
                 self.save_settings();
             }
         }
