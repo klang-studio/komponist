@@ -68,7 +68,7 @@ impl Processor for Idle {
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
         self.0 += events.len() as u64;
-        let level = if self.0 % 2 == 0 { 0.01 } else { 0.02 };
+        let level = if self.0.is_multiple_of(2) { 0.01 } else { 0.02 };
         io.output[0].fill(level);
         io.output[1].fill(level);
         ProcessStatus::Continue
