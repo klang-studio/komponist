@@ -354,6 +354,12 @@ fn export_program(program: &Program, end: Tick) -> Program {
     }
 }
 
+/// One `Engine::render` call inside `assert_no_alloc`: the render loop is realtime code on a
+/// worker thread (rule 4), and every binary or test that installs `AllocDisabler` checks it.
+fn render_block(engine: &mut Engine, frames: usize) -> &[f32] {
+    assert_no_alloc::assert_no_alloc(move || engine.render(frames))
+}
+
 /// Renders the pre-roll (discarded), then range + tail. Returns the interleaved samples
 /// (non-finite ones replaced by 0) and their peak.
 fn render(
@@ -376,7 +382,7 @@ fn render(
             return Err(ExportError::Cancelled);
         }
         let n = skip.min(MAX_BLOCK as u64) as usize;
-        engine.render(n);
+        render_block(engine, n);
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
@@ -394,7 +400,7 @@ fn render(
         }
         let n = MAX_BLOCK.min((len - samples.len()) / 2);
         let first = samples.len();
-        samples.extend_from_slice(engine.render(n));
+        samples.extend_from_slice(render_block(engine, n));
         for s in &mut samples[first..] {
             if !s.is_finite() {
                 *s = 0.0;

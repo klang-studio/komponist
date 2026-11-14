@@ -176,6 +176,12 @@ pub struct StreamStats {
     xruns: AtomicU32,
     /// Callbacks run, since the system was created.
     callbacks: AtomicU64,
+    /// Highest load of a single callback since the last [`StreamStats::take_peak_load`], as `f32`
+    /// bits (non-negative floats order like their bits).
+    peak_load: AtomicU32,
+    /// Callbacks whose own work took longer than their buffer period (an xrun the app caused,
+    /// whatever the scheduler did), since the system was created.
+    overruns: AtomicU32,
     /// The backend refused real-time scheduling for the current stream's audio thread.
     realtime_denied: AtomicBool,
 }
@@ -201,12 +207,28 @@ impl StreamStats {
         self.callbacks.load(Ordering::Relaxed)
     }
 
+    /// Highest load of a single callback since the last call (1.0 = the whole buffer period);
+    /// resets it. For measurements and soak tests.
+    pub fn take_peak_load(&self) -> f32 {
+        f32::from_bits(self.peak_load.swap(0, Ordering::Relaxed))
+    }
+
+    /// Callbacks so far whose own work took longer than their buffer period (load above 1.0).
+    /// Unlike [`StreamStats::xruns`] this does not count late wake-ups of the audio thread.
+    pub fn overruns(&self) -> u32 {
+        self.overruns.load(Ordering::Relaxed)
+    }
+
     /// RT. Folds one callback's load (duration / period) into the smoothed value and counts the
-    /// callback.
+    /// callback (and an overrun above 1.0).
     ///
     /// One-pole smoothing per callback (weight 0.05); the first callback sets the value directly.
     pub fn record_callback(&self, load: f32) {
         let load = if load.is_finite() { load.max(0.0) } else { 0.0 };
+        self.peak_load.fetch_max(load.to_bits(), Ordering::Relaxed);
+        if load > 1.0 {
+            self.overruns.fetch_add(1, Ordering::Relaxed);
+        }
         let first = self.callbacks.fetch_add(1, Ordering::Relaxed) == 0;
         let smoothed = if first {
             load
@@ -750,6 +772,22 @@ mod tests {
         assert_eq!(stats.callbacks(), 3);
         stats.record_xrun();
         assert_eq!(stats.xruns(), 1);
+    }
+
+    #[test]
+    fn stats_keep_the_peak_load_and_count_overruns() {
+        let stats = StreamStats::new();
+        assert_eq!(stats.take_peak_load(), 0.0);
+        for load in [0.2, 0.7, 0.1, f32::NAN] {
+            stats.record_callback(load);
+        }
+        assert_eq!(stats.overruns(), 0);
+        assert_eq!(stats.take_peak_load(), 0.7);
+        assert_eq!(stats.take_peak_load(), 0.0, "taken");
+        stats.record_callback(1.5);
+        stats.record_callback(1.0);
+        assert_eq!(stats.overruns(), 1, "only above the whole period");
+        assert_eq!(stats.take_peak_load(), 1.5);
     }
 
     #[test]
