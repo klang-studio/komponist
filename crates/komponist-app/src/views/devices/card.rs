@@ -8,7 +8,7 @@ use egui::{
     Align, CornerRadius, Galley, Layout, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo,
     pos2, vec2,
 };
-use komponist_builtin::Macro;
+use komponist_model::params::{ParamKind, Scale};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{Srgba, color, radius, size};
@@ -21,7 +21,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px, state};
 
 use super::metrics;
-use super::model::{Card, CardState, Param, failure_texts, format_value, names};
+use super::model::{Card, CardState, Param, failure_texts, names};
 use crate::actions::{Action, EditAction, PluginAction};
 use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
@@ -425,14 +425,14 @@ fn params(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect, top: f32)
         if let Some(v) = knob_ui(cu, card, p, knob) {
             ctx.send(Action::Plugin(PluginAction::SetParam {
                 device: card.device,
-                id: p.id,
+                id: p.wire,
                 value: v,
             }));
         }
         let name_font = w::font_at(&name_style, 400);
         let mut y = knob.bottom() + metrics::PARAM_GAP;
         for (text, font, style, color) in [
-            (&p.name, name_font, &name_style, name_color),
+            (p.name(), name_font, &name_style, name_color),
             (
                 &p.text,
                 fonts::font_id(&value_style),
@@ -451,29 +451,25 @@ fn params(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect, top: f32)
     }
 }
 
-/// One knob; the new (snapped) value if it was turned.
+/// One knob, driven in normalised space (so log and dB parameters turn evenly); the new plain
+/// value, snapped, if it was turned.
 fn knob_ui(cu: &mut Ui, card: &Card, p: &Param, rect: Rect) -> Option<f64> {
-    let mut value = p.value;
-    let current = p.value;
-    let text = p.text.clone();
-    let id = p.id;
-    let (min, max, steps) = (p.min, p.max, p.steps);
-    let macros = card.macros;
-    let format = move |v: f64| {
-        if macros && let Some(m) = Macro::from_id(id) {
-            m.text(v)
-        } else if (v - current).abs() < 1e-9 {
-            text.clone()
-        } else {
-            format_value(min, max, steps, v)
-        }
-    };
-    let knob = Knob::new(&mut value, p.name.clone())
-        .range(min..=max)
-        .default_value(p.default)
+    let info = &p.info;
+    let mut value = info.to_normalized(p.value);
+    let format = |n: f64| p.text_at(info.to_plain(n));
+    let knob = Knob::new(&mut value, p.name().to_owned())
+        .range(0.0..=1.0)
+        .default_value(info.default_normalized())
+        .bipolar(matches!(
+            info.kind,
+            ParamKind::Float {
+                scale: Scale::Pan,
+                ..
+            }
+        ))
         .bypassed(card.bypass)
         .format(format);
     let r = cu.put(rect, knob);
-    let snapped = p.snap(value);
-    (r.changed() && snapped != current).then_some(snapped)
+    let snapped = info.to_plain(value);
+    (r.changed() && snapped != p.value).then_some(snapped)
 }

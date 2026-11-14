@@ -3,11 +3,12 @@
 //! tested without pixels.
 
 use komponist_builtin::Macro;
-use komponist_ipc::ParamInfo;
-use komponist_ipc::control::param_flags;
+use komponist_ipc::ParamValue;
+use komponist_ipc::control::ParamInfo as WireInfo;
+use komponist_model::params::{ParamInfo, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
+use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
-use komponist_ui::widgets::number_field::format_number;
 
 use super::metrics;
 use crate::device_host::{DeviceHost, is_pisynth};
@@ -119,36 +120,39 @@ pub fn failure_texts(reason: &FailReason) -> (&'static str, String) {
     }
 }
 
-/// A knob of a card.
+/// A knob of a card: the parameter's description in the parameter model plus its current value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
-    /// Parameter id (pisynth: the macro id).
-    pub id: u32,
-    /// Name under the knob.
-    pub name: String,
+    /// The id the device is addressed by (`Command::SetParam::id`: pisynth's macro id, the
+    /// plugin's own parameter id); the model id is `info.id`.
+    pub wire: u32,
+    /// Name, kind, range, default, unit, flags.
+    pub info: ParamInfo,
     /// Plain value.
     pub value: f64,
-    /// Range.
-    pub min: f64,
-    /// Range.
-    pub max: f64,
-    /// Alt-click value.
-    pub default: f64,
-    /// Steps of a stepped parameter, 0 = continuous.
-    pub steps: u32,
-    /// Text of the value (the plugin's, else formatted here).
+    /// Text of `value` (the plugin's own, else [`ParamInfo::format`]).
     pub text: String,
 }
 
 impl Param {
+    /// Name under the knob.
+    pub fn name(&self) -> &str {
+        &self.info.name
+    }
+
     /// `value` clamped and, for a stepped parameter, on a step.
     pub fn snap(&self, value: f64) -> f64 {
-        let v = value.clamp(self.min.min(self.max), self.max.max(self.min));
-        if self.steps == 0 || self.max <= self.min {
-            return v;
+        self.info.snap(value)
+    }
+
+    /// The text of plain value `v`: the plugin's own while `v` is the value it describes, else
+    /// the model's formatting.
+    pub fn text_at(&self, v: f64) -> String {
+        if (v - self.value).abs() < 1e-9 && !self.text.is_empty() {
+            self.text.clone()
+        } else {
+            self.info.format(v)
         }
-        let step = (self.max - self.min) / f64::from(self.steps);
-        self.min + ((v - self.min) / step).round() * step
     }
 }
 
@@ -179,8 +183,6 @@ pub struct Card {
     pub width: f32,
     /// Columns of the parameter grid.
     pub columns: usize,
-    /// The knobs are pisynth's macros (their text comes from `Macro::text`).
-    pub macros: bool,
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
     pub late: Option<u64>,
 }
@@ -209,9 +211,8 @@ pub fn cards(track: &Track, host: &dyn DeviceHost, windows: &[PluginWindow]) -> 
 
 fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
     let state = CardState::from(host.status(device.id));
-    let macros = is_pisynth(device);
     let params = if state == CardState::Ok {
-        if macros {
+        if is_pisynth(device) {
             pisynth_params(device)
         } else {
             host.params(device.id)
@@ -243,7 +244,6 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         open: windows.iter().any(|w| w.device == device.id),
         width,
         columns: if narrow { n } else { metrics::COLUMNS },
-        macros,
         late: None,
         state,
     }
@@ -258,61 +258,53 @@ pub fn pisynth_params(device: &Device) -> Vec<Param> {
         .map(|m| {
             let value = m.get(&patch);
             Param {
-                id: m.id(),
-                name: m.name().to_owned(),
+                wire: m.id(),
+                info: m.param_info(),
                 value,
-                min: m.min(),
-                max: m.max(),
-                default: m.default_value(),
-                steps: m.step_count(),
                 text: m.text(value),
             }
         })
         .collect()
 }
 
-/// The first [`metrics::MAX_PARAMS`] parameters a generic grid shows (not hidden, not read-only,
-/// not the plugin's own bypass), with their last known value and text.
+/// The knobs of a foreign plugin's card: the auto-layout of the parameters a generic view lists
+/// (not hidden, not read-only, not the plugin's own bypass): its macros if it reports any, else
+/// the first 12, with their last known value and text.
 pub fn plugin_params<'a>(
-    infos: &[ParamInfo],
-    value: impl Fn(u32) -> Option<&'a komponist_ipc::ParamValue>,
+    infos: &[WireInfo],
+    value: impl Fn(u32) -> Option<&'a ParamValue>,
 ) -> Vec<Param> {
-    let hidden = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
-    infos
-        .iter()
-        .filter(|p| p.flags & hidden == 0)
-        .take(metrics::MAX_PARAMS)
-        .map(|p| {
-            let known = value(p.id);
-            let v = known.map_or(p.default, |k| k.value);
-            let text = known
-                .map(|k| k.text.clone())
-                .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| format_value(p.min, p.max, p.step_count, v));
-            Param {
-                id: p.id,
-                name: p.name.clone(),
-                value: v,
-                min: p.min,
-                max: p.max,
-                default: p.default,
-                steps: p.step_count,
-                text,
-            }
-        })
+    let listed: Vec<&WireInfo> = infos.iter().filter(|p| is_listed(p)).collect();
+    let models: Vec<ParamInfo> = listed.iter().map(|p| param_info(p)).collect();
+    auto_layout(&models)
+        .into_iter()
+        .map(|i| plugin_param(listed[i], models[i].clone(), value(listed[i].id)))
         .collect()
 }
 
-/// The text of a value without the plugin's own (values from its GUI during processing, WP-45
-/// note): normalised parameters (VST3, nice-plug's CLAP) as "40 %", stepped ones as integers,
-/// the rest with two decimals.
-pub fn format_value(min: f64, max: f64, steps: u32, value: f64) -> String {
-    if min == 0.0 && max == 1.0 && steps == 0 {
-        format!("{} %", (value * 100.0).round())
-    } else if steps > 0 && max - min == f64::from(steps) {
-        format!("{}", value.round())
-    } else {
-        format_number(value, 2)
+/// Every parameter a generic view lists, for the plugin frame's grid (no auto-layout limit).
+pub fn all_plugin_params<'a>(
+    infos: &[WireInfo],
+    value: impl Fn(u32) -> Option<&'a ParamValue>,
+) -> Vec<Param> {
+    infos
+        .iter()
+        .filter(|p| is_listed(p))
+        .map(|p| plugin_param(p, param_info(p), value(p.id)))
+        .collect()
+}
+
+fn plugin_param(wire: &WireInfo, info: ParamInfo, known: Option<&ParamValue>) -> Param {
+    let value = known.map_or(wire.default, |k| k.value);
+    let text = known
+        .map(|k| k.text.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| info.format(value));
+    Param {
+        wire: wire.id,
+        info,
+        value,
+        text,
     }
 }
 
@@ -345,8 +337,10 @@ mod tests {
     use komponist_ipc::ParamValue;
     use komponist_model::fixtures::demo_project;
 
-    fn info(id: u32, name: &str, flags: u32) -> ParamInfo {
-        ParamInfo {
+    use komponist_ipc::control::param_flags;
+
+    fn info(id: u32, name: &str, flags: u32) -> WireInfo {
+        WireInfo {
             id,
             name: name.into(),
             module: String::new(),
@@ -358,48 +352,81 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_generic_grid_skips_hidden_parameters_and_takes_eight() {
+    fn many(n: u32) -> Vec<WireInfo> {
         let mut infos = vec![
             info(1, "Bypass", param_flags::BYPASS),
             info(2, "Meter", param_flags::READ_ONLY),
             info(3, "Intern", param_flags::HIDDEN),
         ];
-        infos.extend((10..20).map(|i| info(i, &format!("P{i}"), param_flags::AUTOMATABLE)));
+        infos.extend((10..10 + n).map(|i| info(i, &format!("P{i}"), param_flags::AUTOMATABLE)));
+        infos
+    }
+
+    #[test]
+    fn the_auto_layout_skips_hidden_parameters_and_takes_twelve() {
         let values = [ParamValue {
             id: 10,
             value: 0.18,
             text: "80 Hz".into(),
         }];
-        let params = plugin_params(&infos, |id| values.iter().find(|v| v.id == id));
-        assert_eq!(params.len(), metrics::MAX_PARAMS);
-        assert_eq!(params[0].name, "P10");
+        let params = plugin_params(&many(20), |id| values.iter().find(|v| v.id == id));
+        assert_eq!(params.len(), komponist_model::params::AUTO_MAX);
+        assert_eq!(params[0].name(), "P10");
+        assert_eq!((params[0].wire, params[0].info.id.as_str()), (10, "p10"));
         assert_eq!((params[0].value, params[0].text.as_str()), (0.18, "80 Hz"));
         assert_eq!((params[1].value, params[1].text.as_str()), (0.5, "50 %"));
+        assert_eq!(params[11].name(), "P21");
+        // The plugin frame's grid keeps all of them.
+        assert_eq!(all_plugin_params(&many(20), |_| None).len(), 20);
+        assert_eq!(plugin_params(&many(5), |_| None).len(), 5);
     }
 
     #[test]
-    fn values_are_formatted_and_snapped() {
-        assert_eq!(format_value(0.0, 1.0, 0, 0.4), "40 %");
-        assert_eq!(format_value(0.0, 32.0, 32, 7.0), "7");
-        assert_eq!(format_value(-60.0, 0.0, 0, -12.0), "−12.00");
-        let p = Param {
-            id: 0,
-            name: "Algorithmus".into(),
-            value: 0.0,
-            min: 0.0,
-            max: 32.0,
-            default: 0.0,
-            steps: 32,
-            text: String::new(),
+    fn reported_macros_win_over_the_first_twelve() {
+        let mut infos = many(20);
+        for i in [15, 12] {
+            infos[3 + (i - 10)].flags |= param_flags::MACRO;
+        }
+        let names: Vec<_> = plugin_params(&infos, |_| None)
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
+        assert_eq!(names, ["P12", "P15"]);
+    }
+
+    #[test]
+    fn the_card_grid_is_four_columns_like_the_auto_layout() {
+        assert_eq!(metrics::COLUMNS, komponist_model::params::AUTO_COLUMNS);
+    }
+
+    #[test]
+    fn values_are_texted_and_snapped() {
+        let algo = pisynth_params(
+            &komponist_model::fixtures::demo_project().tracks[2]
+                .channel
+                .devices[0],
+        )
+        .remove(0);
+        assert_eq!(algo.name(), "Algorithmus");
+        assert_eq!(algo.snap(7.4), 7.0);
+        assert_eq!(algo.snap(40.0), 32.0);
+        assert_eq!(algo.text_at(0.0), "Frei");
+        let ratio = pisynth_params(
+            &komponist_model::fixtures::demo_project().tracks[2]
+                .channel
+                .devices[0],
+        )
+        .remove(1);
+        assert_eq!(ratio.snap(3.3), 3.5);
+        // The plugin's own text only for the value it describes.
+        let own = ParamValue {
+            id: 1,
+            value: 0.18,
+            text: "-12.0 dB".into(),
         };
-        assert_eq!(p.snap(7.4), 7.0);
-        assert_eq!(p.snap(40.0), 32.0);
-        let half = Param {
-            steps: 64,
-            ..p.clone()
-        };
-        assert_eq!(half.snap(3.3), 3.5);
+        let p = plugin_params(&[info(1, "Gain", 0)], |_| Some(&own)).remove(0);
+        assert_eq!(p.text_at(0.18), "-12.0 dB");
+        assert_eq!(p.text_at(0.25), "25 %");
     }
 
     #[test]
@@ -431,7 +458,7 @@ mod tests {
         assert!(pisynth.instrument && pisynth.state == CardState::Ok);
         assert_eq!(pisynth.width, metrics::CARD_WIDTH_INSTRUMENT);
         assert_eq!(pisynth.tag, "INTERN");
-        let macros: Vec<&str> = pisynth.params.iter().map(|p| p.name.as_str()).collect();
+        let macros: Vec<&str> = pisynth.params.iter().map(|p| p.name()).collect();
         assert_eq!(
             macros,
             [
