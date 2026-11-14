@@ -40,6 +40,7 @@
 //! is not invertible in general (Algorithmus rewrites the routing, proportions collapse at 0):
 //! to restore an earlier patch (undo), load its state.
 
+use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 use synth_core::{EnvelopeParams, MAX_RATIO, MAX_TIME, OPERATORS, Patch, PitchMode};
 
 use crate::algorithms::{self, ALGORITHMS};
@@ -105,6 +106,63 @@ impl Macro {
             Macro::Sustain => "Sustain",
             Macro::Release => "Release",
         }
+    }
+
+    /// Stable key of the macro in the parameter model ([`ParamInfo::id`], saved in projects):
+    /// `algorithm`, `ratio2`, `index`, `feedback`, `attack`, `decay`, `sustain`, `release`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Macro::Algorithm => "algorithm",
+            Macro::Ratio2 => "ratio2",
+            Macro::Index => "index",
+            Macro::Feedback => "feedback",
+            Macro::Attack => "attack",
+            Macro::Decay => "decay",
+            Macro::Sustain => "sustain",
+            Macro::Release => "release",
+        }
+    }
+
+    /// The macro as a [`ParamInfo`] of the parameter model. The plain value stays the macro's
+    /// own (algorithm number, ratio, knob position 0 ..= 1 for the time macros: `Lin`, the
+    /// knob position already is the curve) and the text is [`Macro::text`].
+    pub fn param_info(self) -> ParamInfo {
+        let (kind, unit): (ParamKind, Unit) = match self {
+            Macro::Algorithm => (
+                ParamKind::Int {
+                    min: 0,
+                    max: ALGORITHMS.len() as i32,
+                },
+                Unit::None,
+            ),
+            Macro::Ratio2 => (
+                ParamKind::Float {
+                    min: self.min(),
+                    max: self.max(),
+                    scale: Scale::Lin,
+                    steps: self.step_count(),
+                },
+                Unit::None,
+            ),
+            Macro::Index | Macro::Feedback | Macro::Sustain => {
+                (ParamKind::lin(0.0, 1.0), Unit::Percent)
+            }
+            Macro::Attack | Macro::Decay | Macro::Release => (ParamKind::lin(0.0, 1.0), Unit::S),
+        };
+        let text: fn(f64) -> String = match self {
+            Macro::Algorithm => |v| Macro::Algorithm.text(v),
+            Macro::Ratio2 => |v| Macro::Ratio2.text(v),
+            Macro::Index => |v| Macro::Index.text(v),
+            Macro::Feedback => |v| Macro::Feedback.text(v),
+            Macro::Attack => |v| Macro::Attack.text(v),
+            Macro::Decay => |v| Macro::Decay.text(v),
+            Macro::Sustain => |v| Macro::Sustain.text(v),
+            Macro::Release => |v| Macro::Release.text(v),
+        };
+        ParamInfo::new(self.key(), self.name(), kind, self.default_value())
+            .unit(unit)
+            .formatted(text)
+            .flags(true, self != Macro::Algorithm)
     }
 
     /// Lowest plain value.
@@ -474,6 +532,42 @@ mod tests {
         p.operators[4].envelope.sustain = 0.9;
         Macro::Sustain.set(&mut p, 1.0);
         assert_eq!(p.operators[4].envelope.sustain, 1.0);
+    }
+
+    #[test]
+    fn param_infos_match_the_macros() {
+        let keys: Vec<_> = Macro::ALL.iter().map(|m| m.key()).collect();
+        assert_eq!(
+            keys,
+            [
+                "algorithm",
+                "ratio2",
+                "index",
+                "feedback",
+                "attack",
+                "decay",
+                "sustain",
+                "release"
+            ]
+        );
+        for m in Macro::ALL {
+            let info = m.param_info();
+            assert_eq!(info.id.as_str(), m.key());
+            assert_eq!(info.name, m.name());
+            assert_eq!(info.range(), (m.min(), m.max()), "{m:?}");
+            assert_eq!(info.steps(), m.step_count(), "{m:?}");
+            assert_eq!(info.default, m.default_value());
+            assert_eq!(info.format(0.4), m.text(0.4), "{m:?}");
+            assert!(info.automatable);
+            // Normalising and back keeps the macro's own value.
+            let v = info.snap(0.4);
+            assert!(
+                (info.to_plain(info.to_normalized(v)) - v).abs() < 1e-9,
+                "{m:?}"
+            );
+        }
+        assert_eq!(Macro::Algorithm.param_info().format(0.0), "Frei");
+        assert!(!Macro::Algorithm.param_info().modulatable);
     }
 
     #[test]

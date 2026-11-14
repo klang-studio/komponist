@@ -1,0 +1,106 @@
+{
+  "format": "komponist",
+  "version": 1,
+  "project": {
+    "name": "Nachtfahrt",
+    "tempo": {
+      "bpm": 124.0
+    },
+    "meter": {
+      "num": 4,
+      "den": 4
+    },
+    "loop_range": {
+      "start": 30720,
+      "end": 46080
+    },
+    "loop_on": true,
+    "metronome": false,
+    "count_in_bars": 1,
+    "tracks": [
+      {
+        "id": 93,
+        "name": "Lead",
+        "hue": 150,
+        "kind": "midi",
+        "channel": {
+          "volume_db": -3.0,
+          "pan": 0.0,
+          "mute": false,
+          "solo": false,
+          "devices": [
+            {
+              "id": 94,
+              "role": "instrument",
+              "plugin": {
+                "format": "builtin",
+                "id": "pisynth",
+                "name": "pisynth",
+                "vendor": "klang-studio",
+                "version": "0.1.0"
+              },
+              "bypass": false,
+              "state": "eyJvcGVyYXRvcnMiOlt7IndhdmVmb3JtIjoic2luZSIsIm1vZGUiOiJwaGFzZSIsInBpdGNoX21vZGUiOiJyYXRpbyIsInJhdGlvIjoxLjAsInNlbWl0b25lcyI6MC4wLCJmcmVxdWVuY3kiOjQ0MC4wLCJsZXZlbCI6MS4wLCJmZWVkYmFjayI6MC4wLCJvdXRwdXQiOnRydWUsIm1vZHVsYXRlcyI6W2ZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlXSwiZGVwdGhzIjpbMS4wLDEuMCwxLjAsMS4wLDEuMCwxLjBdLCJlbnZlbG9wZSI6eyJkZWxheSI6MC4wLCJhdHRhY2siOjAuMDA1LCJob2xkIjowLjAsImRlY2F5IjowLjMsInN1c3RhaW4iOjAuMjUsInJlbGVhc2UiOjAuMywiYXR0YWNrX2N1cnZlIjowLjAsImRlY2F5X2N1cnZlIjoxLjAsInJlbGVhc2VfY3VydmUiOjEuMCwibG9vcGluZyI6ZmFsc2V9LCJwYW4iOjAuMCwia2V5X3NjYWxpbmciOnsiYnJlYWtfcG9pbnQiOjYwLjAsImxlZnQiOjAuMCwicmlnaHQiOjAuMCwicmF0ZSI6MC4wfSwiZm9sZCI6MC4wLCJraW5kIjoib3NjaWxsYXRvciIsInJlc29uYW5jZSI6MC4wfSx7IndhdmVmb3JtIjoic2luZSIsIm1vZGUiOiJwaGFzZSIsInBpdGNoX21vZGUiOiJyYXRpbyIsInJhdGlvIjozLjUsInNlbWl0b25lcyI6MC4wLCJmcmVxdWVuY3kiOjQ0MC4wLCJsZXZlbCI6MC42LCJmZWVkYmFjayI6MC4wLCJvdXRwdXQiOmZhbHNlLCJtb2R1bGF0ZXMiOlt0cnVlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlXSwiZGVwdGhzIjpbMS4wLDEuMCwxLjAsMS4wLDEuMCwxLjBdLCJlbnZlbG9wZSI6eyJkZWxheSI6MC4wLCJhdHRhY2siOjAuMDA1LCJob2xkIjowLjAsImRlY2F5IjowLjUsInN1c3RhaW4iOjAuMywicmVsZWFzZSI6MC4zLCJhdHRhY2tfY3VydmUiOjAuMCwiZGVjYXlfY3VydmUiOjEuMCwicmVsZWFzZV9jdXJ2ZSI6MS4wLCJsb29waW5nIjpmYWxzZX0sInBhbiI6MC4wLCJrZXlfc2NhbGluZyI6eyJicmVha19wb2ludCI6NjAuMCwibGVmdCI6MC4wLCJyaWdodCI6MC4wLCJyYXRlIjowLjB9LCJmb2xkIjowLjAsImtpbmQiOiJvc2NpbGxhdG9yIiwicmVzb25hbmNlIjowLjB9LHsid2F2ZWZvcm0iOiJzaW5lIiwibW9kZSI6InBoYXNlIiwicGl0Y2hfbW9kZSI6InJhdGlvIiwicmF0aW8iOjEuMCwic2VtaXRvbmVzIjowLjAsImZyZXF1ZW5jeSI6NDQwLjAsImxldmVsIjowLjAsImZlZWRiYWNrIjowLjAsIm91dHB1dCI6dHJ1ZSwibW9kdWxhdGVzIjpbZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2VdLCJkZXB0aHMiOlsxLjAsMS4wLDEuMCwxLjAsMS4wLDEuMF0sImVudmVsb3BlIjp7ImRlbGF5IjowLjAsImF0dGFjayI6MC4wMDUsImhvbGQiOjAuMCwiZGVjYXkiOjAuMywic3VzdGFpbiI6MC4yNSwicmVsZWFzZSI6MC4zLCJhdHRhY2tfY3VydmUiOjAuMCwiZGVjYXlfY3VydmUiOjEuMCwicmVsZWFzZV9jdXJ2ZSI6MS4wLCJsb29waW5nIjpmYWxzZX0sInBhbiI6MC4wLCJrZXlfc2NhbGluZyI6eyJicmVha19wb2ludCI6NjAuMCwibGVmdCI6MC4wLCJyaWdodCI6MC4wLCJyYXRlIjowLjB9LCJmb2xkIjowLjAsImtpbmQiOiJvc2NpbGxhdG9yIiwicmVzb25hbmNlIjowLjB9LHsid2F2ZWZvcm0iOiJzaW5lIiwibW9kZSI6InBoYXNlIiwicGl0Y2hfbW9kZSI6InJhdGlvIiwicmF0aW8iOjEuMCwic2VtaXRvbmVzIjowLjAsImZyZXF1ZW5jeSI6NDQwLjAsImxldmVsIjowLjAsImZlZWRiYWNrIjowLjAsIm91dHB1dCI6ZmFsc2UsIm1vZHVsYXRlcyI6W2ZhbHNlLGZhbHNlLHRydWUsZmFsc2UsZmFsc2UsZmFsc2VdLCJkZXB0aHMiOlsxLjAsMS4wLDEuMCwxLjAsMS4wLDEuMF0sImVudmVsb3BlIjp7ImRlbGF5IjowLjAsImF0dGFjayI6MC4wMDUsImhvbGQiOjAuMCwiZGVjYXkiOjAuMywic3VzdGFpbiI6MC43LCJyZWxlYXNlIjowLjMsImF0dGFja19jdXJ2ZSI6MC4wLCJkZWNheV9jdXJ2ZSI6MS4wLCJyZWxlYXNlX2N1cnZlIjoxLjAsImxvb3BpbmciOmZhbHNlfSwicGFuIjowLjAsImtleV9zY2FsaW5nIjp7ImJyZWFrX3BvaW50Ijo2MC4wLCJsZWZ0IjowLjAsInJpZ2h0IjowLjAsInJhdGUiOjAuMH0sImZvbGQiOjAuMCwia2luZCI6Im9zY2lsbGF0b3IiLCJyZXNvbmFuY2UiOjAuMH0seyJ3YXZlZm9ybSI6InNpbmUiLCJtb2RlIjoicGhhc2UiLCJwaXRjaF9tb2RlIjoicmF0aW8iLCJyYXRpbyI6MS4wLCJzZW1pdG9uZXMiOjAuMCwiZnJlcXVlbmN5Ijo0NDAuMCwibGV2ZWwiOjAuMCwiZmVlZGJhY2siOjAuMCwib3V0cHV0Ijp0cnVlLCJtb2R1bGF0ZXMiOltmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZV0sImRlcHRocyI6WzEuMCwxLjAsMS4wLDEuMCwxLjAsMS4wXSwiZW52ZWxvcGUiOnsiZGVsYXkiOjAuMCwiYXR0YWNrIjowLjAwNSwiaG9sZCI6MC4wLCJkZWNheSI6MC4zLCJzdXN0YWluIjowLjI1LCJyZWxlYXNlIjowLjMsImF0dGFja19jdXJ2ZSI6MC4wLCJkZWNheV9jdXJ2ZSI6MS4wLCJyZWxlYXNlX2N1cnZlIjoxLjAsImxvb3BpbmciOmZhbHNlfSwicGFuIjowLjAsImtleV9zY2FsaW5nIjp7ImJyZWFrX3BvaW50Ijo2MC4wLCJsZWZ0IjowLjAsInJpZ2h0IjowLjAsInJhdGUiOjAuMH0sImZvbGQiOjAuMCwia2luZCI6Im9zY2lsbGF0b3IiLCJyZXNvbmFuY2UiOjAuMH0seyJ3YXZlZm9ybSI6InNpbmUiLCJtb2RlIjoicGhhc2UiLCJwaXRjaF9tb2RlIjoicmF0aW8iLCJyYXRpbyI6MS4wLCJzZW1pdG9uZXMiOjAuMCwiZnJlcXVlbmN5Ijo0NDAuMCwibGV2ZWwiOjAuMCwiZmVlZGJhY2siOjAuMCwib3V0cHV0IjpmYWxzZSwibW9kdWxhdGVzIjpbZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsdHJ1ZSxmYWxzZV0sImRlcHRocyI6WzEuMCwxLjAsMS4wLDEuMCwxLjAsMS4wXSwiZW52ZWxvcGUiOnsiZGVsYXkiOjAuMCwiYXR0YWNrIjowLjAwNSwiaG9sZCI6MC4wLCJkZWNheSI6MC4zLCJzdXN0YWluIjowLjcsInJlbGVhc2UiOjAuMywiYXR0YWNrX2N1cnZlIjowLjAsImRlY2F5X2N1cnZlIjoxLjAsInJlbGVhc2VfY3VydmUiOjEuMCwibG9vcGluZyI6ZmFsc2V9LCJwYW4iOjAuMCwia2V5X3NjYWxpbmciOnsiYnJlYWtfcG9pbnQiOjYwLjAsImxlZnQiOjAuMCwicmlnaHQiOjAuMCwicmF0ZSI6MC4wfSwiZm9sZCI6MC4wLCJraW5kIjoib3NjaWxsYXRvciIsInJlc29uYW5jZSI6MC4wfV0sInZvbHVtZSI6MC4yNSwiYmFsYW5jZSI6MC4wLCJ0dW5lIjowLjAsImxmb3MiOltdLCJlbnZlbG9wZXMiOltdLCJtb2R1bGF0aW9uIjpbeyJzb3VyY2UiOiJwaXRjaF9iZW5kIiwidGFyZ2V0IjoidHVuZSIsImRlcHRoIjoyLjAsInZpYSI6Im5vbmUifV0sImZpbHRlcnMiOlt7ImtpbmQiOiJvZmYiLCJzbG9wZSI6ImRiMTIiLCJjdXRvZmYiOjUwMDAuMCwicmVzb25hbmNlIjowLjAsImRyaXZlIjowLjAsImtleXRyYWNrIjowLjB9XSwiZWZmZWN0cyI6eyJvcmRlciI6WyJkaXN0b3J0aW9uIiwiYml0Y3J1c2hlciIsImVxIiwiY2hvcnVzIiwiZGVsYXkiLCJyZXZlcmIiXSwiZGlzdG9ydGlvbiI6eyJtaXgiOjAuMCwiZHJpdmUiOjE4LjAsImtpbmQiOiJzb2Z0IiwidG9uZSI6MC4zfSwiYml0Y3J1c2hlciI6eyJtaXgiOjAuMCwiYml0cyI6OC4wLCJyYXRlIjoxMjAwMC4wfSwiZXEiOnsibG93X2dhaW4iOjAuMCwibG93X2ZyZXEiOjE1MC4wLCJtaWRfZ2FpbiI6MC4wLCJtaWRfZnJlcSI6MTAwMC4wLCJtaWRfcSI6MC45LCJoaWdoX2dhaW4iOjAuMCwiaGlnaF9mcmVxIjo2MDAwLjB9LCJjaG9ydXMiOnsibWl4IjowLjAsInJhdGUiOjAuNiwiZGVwdGgiOjAuNSwiZGVsYXkiOjAuMDEyfSwiZGVsYXkiOnsibWl4IjowLjAsInRpbWUiOjAuMzc1LCJmZWVkYmFjayI6MC40LCJkYW1waW5nIjowLjMsInBpbmdfcG9uZyI6ZmFsc2V9LCJyZXZlcmIiOnsibWl4IjowLjAsInRpbWUiOjIuMCwicHJlX2RlbGF5IjowLjAyLCJkYW1waW5nIjowLjN9LCJsZXZlbCI6MS4wfSwidm9pY2VfbW9kZSI6InBvbHkiLCJwb3J0YW1lbnRvIjowLjAsInVuaXNvbiI6MSwiZGV0dW5lIjoyMC4wLCJ1bmlzb25fc3ByZWFkIjoxLjB9"
+            },
+            {
+              "id": 95,
+              "role": "effect",
+              "plugin": {
+                "format": "clap",
+                "id": "in.lsp-plug.para_equalizer_x8_stereo",
+                "name": "LSP Para EQ x8",
+                "vendor": "LSP CLAP",
+                "version": "",
+                "module": "LSP Para EQ x8.clap"
+              },
+              "bypass": false,
+              "state": null
+            },
+            {
+              "id": 96,
+              "role": "effect",
+              "plugin": {
+                "format": "vst3",
+                "id": "56535463484C3174616C2D63686F7275",
+                "name": "TAL-Chorus-LX",
+                "vendor": "TAL-Togu Audio Line",
+                "version": "1.6.3",
+                "module": "TAL-Chorus-LX.vst3"
+              },
+              "bypass": true,
+              "state": null
+            },
+            {
+              "id": 97,
+              "role": "effect",
+              "plugin": {
+                "format": "clap",
+                "id": "michaelwillis.dragonfly.hall",
+                "name": "Dragonfly Hall Reverb",
+                "vendor": "Michael Willis and Rob vd Berg",
+                "version": "",
+                "module": "Dragonfly Hall Reverb.clap"
+              },
+              "bypass": false,
+              "state": null
+            }
+          ]
+        },
+        "arm": false,
+        "monitor": false,
+        "input": "all",
+        "midi_channel": "omni",
+        "height": 56,
+        "clips": []
+      }
+    ],
+    "master": {
+      "volume_db": 0.0,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "devices": []
+    },
+    "next_id": 373
+  }
+}

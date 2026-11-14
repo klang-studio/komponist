@@ -61,7 +61,6 @@ use egui::{
     Context, Event, Rect, Vec2, ViewportBuilder, ViewportClass, ViewportCommand, ViewportId,
     WindowLevel, vec2,
 };
-use komponist_ipc::control::param_flags;
 use komponist_model::project::BUILTIN_PISYNTH;
 use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
@@ -76,7 +75,7 @@ use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
-use crate::views::devices::model::{Param, format_value, pisynth_params};
+use crate::views::devices::model::{all_plugin_params, pisynth_params};
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1164,48 +1163,21 @@ impl App {
     }
 
     /// The knobs of frame `i`: all visible parameters of a bridged plugin (WP-44's filter and
-    /// formatting, without the card's limit of eight), or pisynth's macros from its state in the
+    /// formatting, without the card's auto-layout limit), or pisynth's macros from its state in the
     /// document (WP-44 writes knob changes there).
     fn param_grid(&self, i: usize) -> ParamGrid {
         let device = self.frames.frames[i].device;
         let host = self.engine.host();
         if let Some(infos) = host.params(device) {
-            let hidden = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
-            let params = infos
-                .iter()
-                .filter(|p| p.flags & hidden == 0)
-                .map(|p| {
-                    let known = host.param_value(device, p.id);
-                    let value = known.map_or(p.default, |k| k.value);
-                    let text = known
-                        .map(|k| k.text.clone())
-                        .filter(|t| !t.is_empty())
-                        .unwrap_or_else(|| format_value(p.min, p.max, p.step_count, value));
-                    Param {
-                        id: p.id,
-                        name: p.name.clone(),
-                        value,
-                        min: p.min,
-                        max: p.max,
-                        default: p.default,
-                        steps: p.step_count,
-                        text,
-                    }
-                })
-                .collect();
             return ParamGrid {
-                params,
-                macros: false,
+                params: all_plugin_params(infos, |id| host.param_value(device, id)),
             };
         }
         let params = match self.project().find_device(device) {
             Some((_, _, d)) if is_pisynth(d) => pisynth_params(d),
             _ => Vec::new(),
         };
-        ParamGrid {
-            params,
-            macros: true,
-        }
+        ParamGrid { params }
     }
 
     /// The plugin name of `device` ("Surge XT").

@@ -9,6 +9,7 @@
 //!   and kit state.
 //! - [`catalog`]: [`Catalog`], [`CatalogEntry`], [`PluginDirs`], scan cache and report.
 //! - [`manager`]: [`PluginManager`], [`DeviceStatus`], [`PluginManagerEvent`], [`MissingPlugin`].
+//! - [`params`]: bridged plugin parameters as `komponist_model::params::ParamInfo`.
 //! - [`external`]: [`ExternalProcessor`], the engine's `Processor` for a bridge.
 //!
 //! This crate links no plugin format (only `komponist-bridge` does) and no UI.
@@ -21,6 +22,7 @@ pub mod builtin;
 pub mod catalog;
 pub mod external;
 pub mod manager;
+pub mod params;
 mod scan;
 
 pub use catalog::{

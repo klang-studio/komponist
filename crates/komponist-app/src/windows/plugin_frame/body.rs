@@ -7,7 +7,6 @@
 //! another colour (owner test 2026-11-13).
 
 use egui::{Align, Layout, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, vec2};
-use komponist_builtin::Macro;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, typography};
 use komponist_ui::widgets::button::Button;
@@ -16,7 +15,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics as m;
-use crate::views::devices::model::{Param, failure_texts, format_value};
+use crate::views::devices::model::{Param, failure_texts};
 use komponist_plugins::FailReason;
 
 /// Texts of the body (S05 `card()`, `Prototyp.dc.html` `pw.guiT`).
@@ -41,26 +40,12 @@ pub mod names {
     pub const GUI_PLACEHOLDER_DETAIL: &str = "Rahmen von komponist, Inhalt vom Plugin";
 }
 
-/// The parameter grid: WP-44's knob model ([`Param`]: plain value, range, steps, text) for all
-/// parameters, not just a device card's first eight.
+/// The parameter grid: WP-44's knob model ([`Param`]: the parameter model's description, value
+/// and text) for all parameters, not just a device card's auto-layout.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamGrid {
     /// The knobs.
     pub params: Vec<Param>,
-    /// pisynth's macros: values read as the macros' own texts ("Frei", "5 ms").
-    pub macros: bool,
-}
-
-/// The text of knob `p` at value `v`: a macro's text, the plugin's text while `v` is the value it
-/// describes, else WP-44's formatting ("40 %").
-pub fn text_for(p: &Param, macros: bool, v: f64) -> String {
-    if macros && let Some(m) = Macro::from_id(p.id) {
-        m.text(v)
-    } else if (v - p.value).abs() < 1e-9 {
-        p.text.clone()
-    } else {
-        format_value(p.min, p.max, p.steps, v)
-    }
 }
 
 /// What the body shows.
@@ -291,7 +276,6 @@ fn grid(ui: &mut Ui, rect: Rect, model: &mut ParamGrid, events: &mut Vec<BodyEve
     let columns = m::PARAM_COLUMNS;
     let col_w =
         ((inner_w - (columns - 1) as f32 * m::PARAM_COLUMN_GAP) / columns as f32).max(size::KNOB);
-    let macros = model.macros;
     ScrollArea::vertical()
         .id_salt("komponist_frame_params")
         .auto_shrink([false, false])
@@ -302,7 +286,7 @@ fn grid(ui: &mut Ui, rect: Rect, model: &mut ParamGrid, events: &mut Vec<BodyEve
                 ui.horizontal_top(|ui| {
                     ui.add_space(m::PARAM_PADDING - m::PARAM_COLUMN_GAP);
                     for p in chunk {
-                        cell(ui, col_w, p, macros, events);
+                        cell(ui, col_w, p, events);
                     }
                 });
             }
@@ -310,7 +294,7 @@ fn grid(ui: &mut Ui, rect: Rect, model: &mut ParamGrid, events: &mut Vec<BodyEve
         });
 }
 
-fn cell(ui: &mut Ui, width: f32, p: &mut Param, macros: bool, events: &mut Vec<BodyEvent>) {
+fn cell(ui: &mut Ui, width: f32, p: &mut Param, events: &mut Vec<BodyEvent>) {
     let name_style = typography::SMALL;
     let value_style = typography::VALUE_S;
     let height =
@@ -321,21 +305,22 @@ fn cell(ui: &mut Ui, width: f32, p: &mut Param, macros: bool, events: &mut Vec<B
         |ui| {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = vec2(0.0, m::PARAM_ITEM_GAP);
-            let mut value = p.value;
+            // Driven in normalised space, so log and dB parameters turn evenly.
+            let mut value = p.info.to_normalized(p.value);
             let shown = p.clone();
-            let knob = Knob::new(&mut value, p.name.clone())
-                .range(p.min..=p.max)
-                .default_value(p.default)
-                .format(move |v| text_for(&shown, macros, v));
+            let knob = Knob::new(&mut value, p.name().to_owned())
+                .range(0.0..=1.0)
+                .default_value(p.info.default_normalized())
+                .format(move |n| shown.text_at(shown.info.to_plain(n)));
             if ui.add(knob).changed() {
-                let value = p.snap(value);
+                let value = p.info.to_plain(value);
                 if value != p.value {
-                    p.text = text_for(p, macros, value);
+                    p.text = p.info.format(value);
                     p.value = value;
-                    events.push(BodyEvent::SetParam { id: p.id, value });
+                    events.push(BodyEvent::SetParam { id: p.wire, value });
                 }
             }
-            let name = fonts::rich_text(&p.name, &name_style).color(color32(color::TEXT_2));
+            let name = fonts::rich_text(p.name(), &name_style).color(color32(color::TEXT_2));
             ui.add(egui::Label::new(name).truncate());
             let value_text = fonts::rich_text(&p.text, &value_style).color(color32(color::TEXT_3));
             ui.add(egui::Label::new(value_text).truncate());
@@ -346,16 +331,24 @@ fn cell(ui: &mut Ui, width: f32, p: &mut Param, macros: bool, events: &mut Vec<B
 #[cfg(test)]
 mod tests {
     use super::*;
+    use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
     fn param(min: f64, max: f64, steps: u32, value: f64, text: &str) -> Param {
-        Param {
-            id: 1,
-            name: "Gain".into(),
-            value,
+        let kind = ParamKind::Float {
             min,
             max,
-            default: min,
+            scale: Scale::Lin,
             steps,
+        };
+        let unit = if min == 0.0 && max == 1.0 && steps == 0 {
+            Unit::Percent
+        } else {
+            Unit::None
+        };
+        Param {
+            wire: 1,
+            info: ParamInfo::new("p1", "Gain", kind, min).unit(unit),
+            value,
             text: text.into(),
         }
     }
@@ -363,18 +356,30 @@ mod tests {
     #[test]
     fn the_plugins_text_is_shown_only_for_its_value() {
         let p = param(-60.0, 0.0, 0, -12.0, "-12.0 dB");
-        assert_eq!(text_for(&p, false, -12.0), "-12.0 dB");
-        assert_eq!(text_for(&p, false, -6.0), "\u{2212}6.00");
+        assert_eq!(p.text_at(-12.0), "-12.0 dB");
+        assert_eq!(p.text_at(-6.0), "\u{2212}6.00");
         let p = param(0.0, 1.0, 0, 0.5, "");
-        assert_eq!(text_for(&p, false, 0.25), "25 %");
-        assert_eq!(text_for(&param(0.0, 8.0, 8, 0.0, ""), false, 3.0), "3");
+        assert_eq!(p.text_at(0.25), "25 %");
+        assert_eq!(param(0.0, 8.0, 8, 0.0, "").text_at(3.0), "3.00");
     }
 
     #[test]
-    fn macros_read_as_their_own_texts() {
-        let m = Macro::Attack;
-        let mut p = param(m.min(), m.max(), m.step_count(), 0.0, "");
-        p.id = m.id();
-        assert_eq!(text_for(&p, true, 0.25), m.text(0.25));
+    fn a_knob_turns_in_normalised_space_and_reports_plain_values() {
+        let mut p = Param {
+            wire: 4,
+            info: ParamInfo::new(
+                "p4",
+                "Cutoff",
+                ParamKind::scaled(20.0, 20_000.0, Scale::Log),
+                1000.0,
+            )
+            .unit(Unit::Hz),
+            value: 20.0,
+            text: String::new(),
+        };
+        p.text = p.info.format(p.value);
+        assert_eq!(p.text, "20 Hz");
+        assert!((p.info.to_plain(0.5) - 632.455).abs() < 0.01);
+        assert_eq!(p.text_at(p.info.to_plain(0.5)), "632 Hz");
     }
 }

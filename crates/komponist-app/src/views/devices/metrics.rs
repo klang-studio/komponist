@@ -30,10 +30,8 @@ pub const CARD_WIDTH_NARROW: f32 = 200.0;
 pub const CARD_WIDTH_MESSAGE: f32 = 220.0;
 /// Up to this many parameters make a narrow card with one column each (`cols:3`).
 pub const NARROW_PARAMS: usize = 3;
-/// Parameter columns of a full card (`repeat(${o.cols||4},1fr)`).
+/// Parameter columns of a full card (`repeat(${o.cols||4},1fr)`; the auto-layout's columns).
 pub const COLUMNS: usize = 4;
-/// Parameters a card shows (`devView`: `d.params.slice(0,8)`); the rest is in the plugin window.
-pub const MAX_PARAMS: usize = 8;
 
 /// The card's head (`headS`: `height:28`, `padding:'0 4px 0 8px'`, `gap:8`, 1 px `surface.1` line
 /// at the bottom).
