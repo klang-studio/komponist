@@ -69,6 +69,34 @@ fn play_stop_and_go_to_start_drive_the_engine() {
     assert!(wait_for(&mut a, |a| a.engine().playhead() == start));
 }
 
+/// Play after a change in the same frame plays the changed document: a loop range set just before
+/// Play is in the engine before Play starts. (Before the fix the program went out only at the end
+/// of the frame; playback started with the old loop, passed the new loop's end within a slow
+/// frame, and never wrapped.) The engine is held, so time passes only in `run_held`.
+#[test]
+fn play_starts_with_a_loop_range_set_in_the_same_frame() {
+    let mut a = app();
+    a.engine_mut().hold_engine().expect("engine held");
+    let start = Tick(8 * 3840 + 4 * 240);
+    let end = Tick(start.0 + 240);
+    for t in [
+        TransportAction::SetLoopRange(komponist_model::TickRange::new(start, end)),
+        TransportAction::Locate(start),
+        TransportAction::TogglePlay,
+    ] {
+        a.dispatch(Action::Transport(t));
+    }
+    // Half a second at 124 bpm: about 990 ticks, four times the loop.
+    assert!(a.engine_mut().run_held(24_000, &[], 0));
+    assert_eq!(a.transport(), TransportState::Playing);
+    let p = a.engine().playhead();
+    assert!(
+        p >= start && p < end,
+        "{p:?} outside the loop {start:?}..{end:?}"
+    );
+    a.engine_mut().release_engine();
+}
+
 #[test]
 fn panels_toggle_and_resize_within_their_ranges() {
     let mut a = app();
