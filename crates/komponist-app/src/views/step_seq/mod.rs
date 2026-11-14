@@ -19,8 +19,8 @@
 //!
 //! The view never changes the document: steps, rows and pattern properties change through
 //! [`EditAction::SetStep`](crate::actions::EditAction::SetStep), `SetStepRow`,
-//! `SetStepClipProp` and `StepClipToMidi`; a drag is one gesture (one undo step). Rows sound
-//! through `TransportAction::LiveNote` on the clip's track.
+//! `SetStepClipProp` and `StepClipToMidi`; a drag is one gesture (one undo step), Esc during
+//! a drag cancels it. Rows sound through `TransportAction::LiveNote` on the clip's track.
 //!
 //! AccessKit: every visible step is a check box named like "Step 5, Kick, an, Velocity 100"
 //! (selected = the step cursor); row headers are buttons "Zeile Kick"; the toolbar fields are
@@ -35,7 +35,7 @@ pub mod toolbar;
 
 use std::sync::Arc;
 
-use egui::{Rect, Ui, pos2};
+use egui::{Event, Key, Rect, Ui, pos2};
 use komponist_model::{ClipContent, ClipId, Project, StepClip, TrackId};
 use komponist_tokens::{TrackPalette, line};
 
@@ -208,6 +208,23 @@ impl Areas {
             lane,
         }
     }
+}
+
+/// Whether Esc went down in this pass. The app's keymap consumes Esc (`ClearSelection`, or
+/// `CancelGesture` during a drag) before the views run, so this looks at the raw events.
+pub fn escape_pressed(ui: &Ui) -> bool {
+    ui.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Key {
+                    key: Key::Escape,
+                    pressed: true,
+                    ..
+                }
+            )
+        })
+    })
 }
 
 /// Height of a row with its line.

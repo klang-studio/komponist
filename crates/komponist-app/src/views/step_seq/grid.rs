@@ -61,11 +61,6 @@ impl GridState {
             ctx.send(live_note(track, key, 0));
         }
     }
-
-    /// The gesture in progress, if any (tests, diagnostics).
-    pub fn gesture(&self) -> Option<Gesture> {
-        self.gesture.map(|(_, g)| g)
-    }
 }
 
 /// The step columns right of the row headers: `count` cells of equal width, `gap` apart, inside
@@ -326,6 +321,17 @@ pub fn show(
             rect.bottom(),
             color32(color::SURFACE_0),
         );
+    }
+
+    // Esc during a drag: the document goes back to the press (`CancelGesture`, which the app's
+    // keymap also sends); stop following the pointer. The press still waits for its release
+    // (note off).
+    if super::escape_pressed(ui) && !just_pressed {
+        let steps = state.gesture.take().is_some();
+        let toggles = std::mem::take(&mut state.toggle_gesture);
+        if steps || toggles {
+            ctx.send(Action::Edit(EditAction::CancelGesture));
+        }
     }
 
     // The gesture follows the pointer along its row.

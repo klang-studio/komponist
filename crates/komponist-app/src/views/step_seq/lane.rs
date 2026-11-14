@@ -35,10 +35,12 @@ pub const LANES: [(StepLane, &str); 3] = [
     (StepLane::Ratchet, "Ratch."),
 ];
 
-/// What the lane keeps between frames: the drag in progress (its clip and row).
+/// What the lane keeps between frames: the drag in progress (its clip and row) and whether a
+/// press is held.
 #[derive(Debug, Default)]
 pub struct LaneState {
     drag: Option<(ClipId, usize)>,
+    pressed: bool,
 }
 
 /// The value of `step` in `lane` as a number (velocity, percent, hits).
@@ -177,20 +179,32 @@ pub fn show(
         }
     }
 
-    // Press and drag: the set step under the pointer takes the height.
-    let pressed = ui.input(|i| i.pointer.primary_pressed()) && response.is_pointer_button_down_on();
-    let instant = response.clicked() && state.drag.is_none();
-    if pressed || instant {
+    // Press and drag: the set step under the pointer takes the height. Esc cancels the drag
+    // (the app turns it into `CancelGesture`); the press still waits for its release.
+    let (pressed_now, up, pos) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_released() || !i.pointer.primary_down(),
+            i.pointer.latest_pos(),
+        )
+    });
+    let escape = super::escape_pressed(ui);
+    let held = pressed_now && response.is_pointer_button_down_on();
+    let instant = response.clicked() && !state.pressed;
+    if held || instant {
         ctx.send(Action::Edit(EditAction::BeginGesture {
             label: "Lane".to_owned(),
         }));
         state.drag = Some((open.clip, row));
+        state.pressed = true;
+    }
+    if escape && state.drag.take().is_some() {
+        ctx.send(Action::Edit(EditAction::CancelGesture));
     }
     if let Some((clip, drag_row)) = state.drag
-        && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
+        && let Some(pos) = pos
         && clip == open.clip
         && drag_row == row
-        && (pressed || instant || response.dragged())
         && let Some(i) = cols.at(pos.x)
         && max_h > 0.0
     {
@@ -209,10 +223,11 @@ pub fn show(
             }
         }
     }
-    let up = ui.input(|i| i.pointer.primary_released() || !i.pointer.primary_down());
-    if state.drag.is_some() && (instant || up) {
-        ctx.send(Action::Edit(EditAction::EndGesture));
-        state.drag = None;
+    if state.pressed && (instant || up) {
+        if state.drag.take().is_some() {
+            ctx.send(Action::Edit(EditAction::EndGesture));
+        }
+        state.pressed = false;
     }
 }
 

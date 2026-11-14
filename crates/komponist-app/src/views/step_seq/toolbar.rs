@@ -49,10 +49,12 @@ impl Field {
     }
 }
 
-/// What the toolbar keeps between frames: the field being dragged.
+/// What the toolbar keeps between frames: the field being dragged, and whether Esc cancelled
+/// that drag (the app restores the state from its start; the field sends nothing more).
 #[derive(Debug, Default)]
 pub struct ToolbarState {
     drag: Option<Field>,
+    cancelled: bool,
 }
 
 /// Draws the toolbar into `rect` (28 high; its 1 px `surface.0` line lies below it).
@@ -84,6 +86,10 @@ pub fn show(
     row.spacing_mut().item_spacing = vec2(m::TOOLBAR_GAP, 0.0);
     let clip = open.clip;
     let pattern = open.pattern;
+    if state.drag.is_some() && !state.cancelled && super::escape_pressed(ui) {
+        ctx.send(Action::Edit(EditAction::CancelGesture));
+        state.cancelled = true;
+    }
 
     // Länge.
     let spec = Spec {
@@ -170,8 +176,7 @@ pub fn show(
 
     // A drag whose field went away (its step turned off) still ends.
     if state.drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
-        ctx.send(Action::Edit(EditAction::EndGesture));
-        state.drag = None;
+        end_drag(ctx, state);
     }
 }
 
@@ -260,7 +265,7 @@ fn handle(
 ) {
     if out.drag_started && state.drag != Some(f) {
         if state.drag.is_some() {
-            ctx.send(Action::Edit(EditAction::EndGesture));
+            end_drag(ctx, state);
         }
         ctx.send(Action::Edit(EditAction::BeginGesture {
             label: f.label().to_owned(),
@@ -269,12 +274,12 @@ fn handle(
     }
     if let Some(v) = out.dragging
         && v != current
+        && !state.cancelled
     {
         ctx.send(action(v));
     }
     if out.drag_stopped && state.drag == Some(f) {
-        ctx.send(Action::Edit(EditAction::EndGesture));
-        state.drag = None;
+        end_drag(ctx, state);
     }
     if let Some(v) = out.set
         && v != current
@@ -282,6 +287,15 @@ fn handle(
     {
         ctx.send(action(v));
     }
+}
+
+/// Ends the field drag: one undo step, unless Esc cancelled it.
+fn end_drag(ctx: &mut ViewCtx<'_>, state: &mut ToolbarState) {
+    if !state.cancelled {
+        ctx.send(Action::Edit(EditAction::EndGesture));
+    }
+    state.drag = None;
+    state.cancelled = false;
 }
 
 /// "Auflösung ▾": the key inside the dropdown's box (`gap:10px`), as the screen draws it; the
