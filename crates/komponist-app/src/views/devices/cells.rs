@@ -14,7 +14,7 @@ use komponist_model::DeviceId;
 use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
-use komponist_tokens::{TrackPalette, color, radius};
+use komponist_tokens::{TrackPalette, color, device, radius};
 use komponist_ui::widgets::device::choice::{DropdownCell, Segment, SegmentOption, ToggleButton};
 use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};
 use komponist_ui::widgets::device::graph::configs::{self, band};
@@ -84,6 +84,14 @@ pub(super) fn draw_cell(
     rect: Rect,
 ) {
     let ctx = context(cu.ctx(), card.device);
+    if let CellParam::Select { key, count } = &cell.param {
+        match cell.widget {
+            WidgetKind::Segment => select_segment(cu, card, cell, key, *count, &ctx, rect),
+            WidgetKind::ColumnSelect => column_select(cu, card, cell, key, *count, &ctx, rect),
+            _ => placeholder(cu, cell, None, rect),
+        }
+        return;
+    }
     let param = match &cell.param {
         CellParam::Id(id) => card.param(id),
         CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
@@ -111,7 +119,7 @@ pub(super) fn draw_cell(
             true
         }
         (WidgetKind::FmAlgorithm, p) => {
-            fm(cu, out, card, cell, p, palette, rect);
+            fm(cu, card, cell, p, palette, rect);
             true
         }
         (WidgetKind::Graph, _) => graph(cu, out, card, palette, cell, &ctx, rect),
@@ -324,11 +332,98 @@ fn mini_fader(
     let w = MiniFader::new(&mut value, p.name().to_owned())
         .default_value(info.default_normalized())
         .rows(cell.rows)
-        .fill(Fill::Track(color32(palette.base)))
+        .fill(if carrier(card, cell) {
+            Fill::Track(color32(palette.base))
+        } else {
+            Fill::Neutral
+        })
         .format(|n| p.text_at(info.to_plain(n)));
     let r = cu.put(rect, w);
     if r.changed() {
         set(out, card, p, info.to_plain(value));
+    }
+}
+
+/// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
+/// cell names says so; without one (or while it is unknown) it does.
+fn carrier(card: &Card, cell: &Cell) -> bool {
+    cell.carrier
+        .as_ref()
+        .and_then(|id| card.param(id))
+        .is_none_or(|p| p.value >= 0.5)
+}
+
+/// The selected entry (1-based) of context placeholder `key`, 1 without one.
+fn selected_entry(ctx: &ParamContext, key: &str, count: u8) -> usize {
+    ctx.get(key)
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, usize::from(count.max(1)))
+}
+
+/// A switch of 1 … `count` bound to context placeholder `key` (the operator whose envelope shows).
+fn select_segment(
+    cu: &mut Ui,
+    card: &Card,
+    cell: &Cell,
+    key: &str,
+    count: u8,
+    ctx: &ParamContext,
+    rect: Rect,
+) {
+    let labels: Vec<String> = (1..=count).map(|n| n.to_string()).collect();
+    let options: Vec<SegmentOption<'_>> = labels.iter().map(|n| SegmentOption::text(n)).collect();
+    let mut selected = selected_entry(ctx, key, count) - 1;
+    let r = cu.put(
+        rect,
+        Segment::new(names::OPERATOR, &options, &mut selected).cols(cell.cols),
+    );
+    if r.changed() && set_context(cu.ctx(), card.device, key, selected + 1) {
+        cu.ctx().request_repaint();
+    }
+}
+
+/// The columns of a [`WidgetKind::ColumnSelect`] overlay: a press anywhere in a column (also on
+/// the knob or fader that covers it) selects it in context placeholder `key`; the selected column
+/// has the accent outline. One AccessKit button per column.
+fn column_select(
+    cu: &mut Ui,
+    card: &Card,
+    cell: &Cell,
+    key: &str,
+    count: u8,
+    ctx: &ParamContext,
+    rect: Rect,
+) {
+    let selected = selected_entry(ctx, key, count);
+    let step = device::grid::CELL[0] + device::grid::GAP;
+    let pressed = cu.input(|i| {
+        i.pointer
+            .primary_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    for n in 1..=usize::from(count) {
+        let left = rect.left() + (n - 1) as f32 * step;
+        let column = Rect::from_min_max(
+            egui::pos2(left, rect.top()),
+            egui::pos2(left + device::grid::CELL[0], rect.bottom()),
+        );
+        let name = names::operator(n);
+        let r = cu.interact(
+            column,
+            slot(cu, cell, "column").with(n),
+            komponist_ui::widgets::sense(cu, Sense::click()),
+        );
+        r.widget_info(|| WidgetInfo::selected(Role::Button, true, n == selected, &name));
+        komponist_ui::widgets::accesskit(&r, |node| node.set_selected(n == selected));
+        let hit = r.clicked() || pressed.is_some_and(|p| column.contains(p));
+        if hit && set_context(cu.ctx(), card.device, key, n) {
+            cu.ctx().request_repaint();
+        }
+        if n == selected {
+            komponist_ui::state::paint_select_ring(cu.painter(), column, radius::M);
+        }
     }
 }
 
@@ -371,15 +466,14 @@ fn pads(cu: &mut Ui, cell: &Cell, palette: &TrackPalette, rect: Rect) {
 /// (1 …). Without a parameter it shows algorithm 1.
 fn fm(
     cu: &mut Ui,
-    _out: &mut Vec<Action>,
-    _card: &Card,
+    card: &Card,
     cell: &Cell,
     p: Option<&Param>,
     palette: &TrackPalette,
     rect: Rect,
 ) {
-    let id = slot(cu, cell, "op");
-    let mut selected: usize = cu.data(|d| d.get_temp(id)).unwrap_or(0);
+    let ctx = context(cu.ctx(), card.device);
+    let selected = selected_entry(&ctx, ENV_OP, ALGORITHMS[0].modulates.len() as u8) - 1;
     let number = p.map_or(1, |p| p.value.round().max(1.0) as usize);
     let algo = &ALGORITHMS[(number - 1).min(ALGORITHMS.len() - 1)];
     let topology = Topology {
@@ -394,10 +488,11 @@ fn fm(
                 .show(cu)
         })
         .inner;
-    if let Some(c) = out.clicked {
-        selected = c;
+    if let Some(c) = out.clicked
+        && set_context(cu.ctx(), card.device, ENV_OP, c + 1)
+    {
+        cu.ctx().request_repaint();
     }
-    cu.data_mut(|d| d.insert_temp(id, selected));
 }
 
 /// The value a slot without a parameter holds.

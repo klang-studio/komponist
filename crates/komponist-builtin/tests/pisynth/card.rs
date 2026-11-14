@@ -7,8 +7,8 @@ use komponist_builtin::{
     Macro, PRESET_COUNT, decode_state, default_patch, encode_state, preset_patch,
 };
 use komponist_engine::EventKind;
-use komponist_model::params::layout::validate;
 use komponist_model::params::layout::ENV_OP;
+use komponist_model::params::layout::validate;
 use komponist_model::params::{ParamContext, ParamId};
 
 use crate::common::{activated, note_on, play};
@@ -35,7 +35,10 @@ fn ids_are_unique_wire_ids_round_trip_and_defaults_are_in_range() {
     // 8 macros stay, the card's own start right after them.
     assert_eq!(params[0].wire, Macro::Algorithm.id());
     assert_eq!(params[1].wire, Macro::Feedback.id());
-    assert_eq!(Field::from_wire(device::FIRST_WIRE - 1), Some(Field::Macro(Macro::Release)));
+    assert_eq!(
+        Field::from_wire(device::FIRST_WIRE - 1),
+        Some(Field::Macro(Macro::Release))
+    );
     assert_eq!(Field::from_wire(device::GLOBAL_BASE + 6), None);
     assert_eq!(params.len(), 2 + 6 + 6 * OpField::COUNT);
 }
@@ -50,8 +53,17 @@ fn set_then_get_gives_the_value_and_changes_nothing_else() {
         p.field.set(&mut patch, mid);
         let got = p.field.get(&patch);
         // Times at the bottom of the knob are 0 in the patch; floats go through f32.
-        assert!((got - mid).abs() <= 1e-5 * max.abs().max(1.0), "{}: {mid} → {got}", p.info.id);
-        assert_eq!(patch, patch.sanitized(), "{} keeps the patch sanitized", p.info.id);
+        assert!(
+            (got - mid).abs() <= 1e-5 * max.abs().max(1.0),
+            "{}: {mid} → {got}",
+            p.info.id
+        );
+        assert_eq!(
+            patch,
+            patch.sanitized(),
+            "{} keeps the patch sanitized",
+            p.info.id
+        );
         // Non-finite values are ignored.
         let mut same = patch;
         p.field.set(&mut same, f64::NAN);
@@ -111,7 +123,12 @@ fn old_macro_states_load_and_the_shared_parameters_agree() {
         Macro::Index.set(&mut patch, 0.6);
         Macro::Sustain.set(&mut patch, 0.25);
         let loaded = decode_state(Some(&encode_state(&patch))).unwrap();
-        let get = |key: &str| device::param(&ParamId::new(key)).unwrap().field.get(&loaded);
+        let get = |key: &str| {
+            device::param(&ParamId::new(key))
+                .unwrap()
+                .field
+                .get(&loaded)
+        };
         assert_eq!(get("algorithm"), Macro::Algorithm.get(&loaded));
         assert_eq!(get("feedback"), Macro::Feedback.get(&loaded));
         assert_eq!(get("op2_ratio"), 3.5);
@@ -140,7 +157,13 @@ fn a_card_event_reaches_the_running_patch_like_the_document_side_set() {
     for (i, (key, v)) in changes.iter().enumerate() {
         let p = device::param(&ParamId::new(*key)).unwrap();
         p.field.set(&mut expected, *v);
-        events.push((i * 10, EventKind::Param { id: p.wire, value: *v }));
+        events.push((
+            i * 10,
+            EventKind::Param {
+                id: p.wire,
+                value: *v,
+            },
+        ));
     }
     events.push((100, note_on(60)));
     let mut proc = activated(patch);
@@ -154,8 +177,17 @@ fn the_layout_validates_for_every_operator_and_shows_every_card_parameter() {
     let layout = layout();
     assert_eq!(layout.pages.len(), 4);
     assert_eq!(
-        layout.pages.iter().map(|p| (p.name.as_str(), p.cols)).collect::<Vec<_>>(),
-        [("Operatoren", 10), ("Hüllkurven", 8), ("LFO", 8), ("Global", 8)]
+        layout
+            .pages
+            .iter()
+            .map(|p| (p.name.as_str(), p.cols))
+            .collect::<Vec<_>>(),
+        [
+            ("Operatoren", 10),
+            ("Hüllkurven", 8),
+            ("LFO", 8),
+            ("Global", 8)
+        ]
     );
     for op in 1..=6 {
         let ctx = ParamContext::new().with(ENV_OP, op);
@@ -182,7 +214,11 @@ fn the_layout_validates_for_every_operator_and_shows_every_card_parameter() {
         }
     }
     for p in params() {
-        assert!(shown.contains(p.info.id.as_str()), "{} is not on the card", p.info.id);
+        assert!(
+            shown.contains(p.info.id.as_str()),
+            "{} is not on the card",
+            p.info.id
+        );
     }
 }
 

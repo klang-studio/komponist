@@ -36,7 +36,7 @@
 //! | `op{n}_delay` / `_hold` | Delay n / Hold n | `envelope.delay` / `hold` |
 //! | `op{n}_loop` | Loop n | `envelope.looping` |
 //! | `op{n}_attack_curve` / `_decay_curve` / `_release_curve` | Kurve A/D/R n | `envelope.*_curve`, ±1 |
-//! | `op{n}_key_scale` | Key Scale n | `key_scaling.right`: ±24 dB per octave above the break point |
+//! | `op{n}_key_scale` | Key Scale n | `key_scaling.right`: ±24 dB per octave above the break point (shown in dB) |
 //! | `op{n}_output` | Träger n | `operators[n-1].output` (carrier: heard); on the card only the fill of the level fader |
 //!
 //! Not in the table because `synth-core` has no field for them (only free routes of the modulation
@@ -209,7 +209,10 @@ impl Field {
         }
         let k = wire.checked_sub(FIRST_WIRE)? as usize;
         match k.checked_sub(OPERATORS * OpField::COUNT) {
-            None => Some(Field::Op(k / OpField::COUNT, OpField::ALL[k % OpField::COUNT])),
+            None => Some(Field::Op(
+                k / OpField::COUNT,
+                OpField::ALL[k % OpField::COUNT],
+            )),
             Some(g) => GLOBALS.get(g).copied(),
         }
     }
@@ -393,11 +396,9 @@ impl Field {
                     OpField::AttackCurve | OpField::DecayCurve | OpField::ReleaseCurve => {
                         (name, ParamKind::scaled(min, max, Scale::Pan), Unit::Percent)
                     }
-                    OpField::KeyScale => (
-                        name,
-                        ParamKind::scaled(min, max, Scale::Pan),
-                        Unit::None,
-                    ),
+                    OpField::KeyScale => {
+                        (name, ParamKind::scaled(min, max, Scale::Pan), Unit::None)
+                    }
                 }
             }
         };
@@ -419,9 +420,7 @@ impl Field {
             Field::Op(_, OpField::AttackCurve | OpField::DecayCurve | OpField::ReleaseCurve) => {
                 info.formatted(|v| format!("{} %", signed((v * 100.0).round(), 0)))
             }
-            Field::Op(_, OpField::KeyScale) => {
-                info.formatted(|v| format!("{} dB/Okt", signed(v, 1)))
-            }
+            Field::Op(_, OpField::KeyScale) => info.formatted(|v| format!("{} dB", signed(v, 1))),
             _ => info,
         }
     }
@@ -457,11 +456,14 @@ pub struct CardParam {
 pub fn params() -> &'static [CardParam] {
     static PARAMS: OnceLock<Vec<CardParam>> = OnceLock::new();
     PARAMS.get_or_init(|| {
-        let globals = [Field::Macro(Macro::Algorithm), Field::Macro(Macro::Feedback)]
-            .into_iter()
-            .chain(GLOBALS);
-        let ops = (0..OPERATORS)
-            .flat_map(|op| OpField::ALL.into_iter().map(move |f| Field::Op(op, f)));
+        let globals = [
+            Field::Macro(Macro::Algorithm),
+            Field::Macro(Macro::Feedback),
+        ]
+        .into_iter()
+        .chain(GLOBALS);
+        let ops =
+            (0..OPERATORS).flat_map(|op| OpField::ALL.into_iter().map(move |f| Field::Op(op, f)));
         globals
             .chain(ops)
             .map(|field| CardParam {
@@ -531,7 +533,14 @@ pub fn layout() -> DeviceLayout {
             .carrier(id(&format!("op{op}_output"))),
         );
     }
-    cells.push(Cell::span(6, 0, 2, 2, WidgetKind::FmAlgorithm, CellParam::Id(id("algorithm"))));
+    cells.push(Cell::span(
+        6,
+        0,
+        2,
+        2,
+        WidgetKind::FmAlgorithm,
+        CellParam::Id(id("algorithm")),
+    ));
     cells.push(Cell::half(
         6,
         2,
@@ -541,7 +550,14 @@ pub fn layout() -> DeviceLayout {
         CellParam::Id(id("algorithm")),
     ));
     cells.push(Cell::knob(7, 2, id("feedback")));
-    cells.push(Cell::span(8, 0, 2, 1, WidgetKind::KnobLarge, CellParam::Id(id("volume"))));
+    cells.push(Cell::span(
+        8,
+        0,
+        2,
+        1,
+        WidgetKind::KnobLarge,
+        CellParam::Id(id("volume")),
+    ));
     cells.push(Cell::knob(8, 1, id("glide")));
     cells.push(Cell::half(
         9,
@@ -569,9 +585,8 @@ pub fn layout() -> DeviceLayout {
     };
 
     let env = |key: &str| CellParam::Template(format!("op{{{ENV_OP}}}_{key}"));
-    let tknob = |col: u8, row: u8, key: &str| {
-        Cell::span(col, row, 1, 1, WidgetKind::Knob, env(key))
-    };
+    let tknob =
+        |col: u8, row: u8, key: &str| Cell::span(col, row, 1, 1, WidgetKind::Knob, env(key));
     let mut cells = vec![Cell::graph(
         0,
         0,
@@ -596,8 +611,22 @@ pub fn layout() -> DeviceLayout {
     }
     // The operator switch sits over the right-hand group: the grid has no half-row offset to put
     // it above the graph as the handoff does.
-    cells.push(Cell::half(6, 0, 2, Half::Top, WidgetKind::Segment, select()));
-    cells.push(Cell::half(6, 0, 2, Half::Bottom, WidgetKind::ToggleButton, env("loop")));
+    cells.push(Cell::half(
+        6,
+        0,
+        2,
+        Half::Top,
+        WidgetKind::Segment,
+        select(),
+    ));
+    cells.push(Cell::half(
+        6,
+        0,
+        2,
+        Half::Bottom,
+        WidgetKind::ToggleButton,
+        env("loop"),
+    ));
     cells.push(tknob(6, 1, "delay"));
     cells.push(tknob(7, 1, "hold"));
     cells.push(tknob(6, 2, "decay_curve"));
