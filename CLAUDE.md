@@ -32,6 +32,9 @@ build at the same time**; `.cargo/config.toml` caps cargo at 6 jobs; while worki
 before reporting. `check.sh`, `check-gui.sh` and `run.sh` take a shared build lock and run at low CPU/IO
 priority, so the gate may wait for another worktree: start it with `run_in_background`.
 
+**Never run `cargo clean` in a worktree or in `komponist/`:** it deletes the `target` symlink and the next build lands on
+the system disk again. Remove build output with `scripts/worktree.sh remove` (worktrees) or by deleting the NVMe folder.
+
 **Test binaries (WP-66):** every file in a crate's `tests/` is its own binary that links egui/wgpu again, so
 each crate has **one** integration binary, `tests/it/main.rs`, with one `mod` per topic (shared helpers such as
 `tests/common/` are declared there once with `#[path]`). A new test goes into a module of `it`, not into a new
