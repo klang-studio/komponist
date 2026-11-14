@@ -106,3 +106,37 @@ fn cpu_per_block() {
         started.elapsed().as_secs_f64() * 1e6 / 20.0
     );
 }
+
+/// The first calls of a fresh processor (WP-61 soak: a rare overrun after undo/redo inserted a
+/// new pisynth): `new` + `activate` on the UI thread, then the first and later 256-frame calls
+/// with a chord, each preset.
+#[test]
+#[ignore]
+fn first_calls_of_a_new_processor() {
+    let chord = [48, 52, 55, 59];
+    let events: Vec<Event> = chord
+        .iter()
+        .map(|&k| Event {
+            offset: 0,
+            kind: note_on(k),
+        })
+        .collect();
+    for info in presets().take(8) {
+        let t0 = Instant::now();
+        let mut p = activated(preset_patch(info.index).unwrap());
+        let made = t0.elapsed();
+        let mut out = Out::default();
+        out.l.reserve(256 * 8);
+        out.r.reserve(256 * 8);
+        let mut times = Vec::new();
+        for i in 0..6 {
+            let t = Instant::now();
+            call(&mut p, 256, if i == 0 { &events } else { &[] }, &mut out);
+            times.push(t.elapsed());
+        }
+        println!(
+            "{:10} new+activate {made:>9.1?}, calls {times:.1?}",
+            info.name
+        );
+    }
+}

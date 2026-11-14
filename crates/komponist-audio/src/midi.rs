@@ -7,7 +7,7 @@
 //! change) are forwarded; SysEx and system real-time messages are dropped.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
@@ -226,12 +226,17 @@ struct PortEntry {
     flags: Arc<PortFlags>,
 }
 
+/// Called on a MIDI thread after a channel message was queued (see [`MidiInputHub::set_waker`]).
+type Waker = Box<dyn Fn() + Send + Sync>;
+
 /// Owner of the MIDI input connections. UI thread.
 pub struct MidiInputHub {
     /// The client used for enumeration.
     probe: MidiInput,
     sender: MidiSender,
     ports: Vec<PortEntry>,
+    /// Shared with every connection's callback.
+    waker: Arc<OnceLock<Waker>>,
 }
 
 impl core::fmt::Debug for MidiInputHub {
@@ -252,6 +257,7 @@ impl MidiInputHub {
             probe,
             sender,
             ports: Vec::new(),
+            waker: Arc::new(OnceLock::new()),
         };
         Ok((hub, receiver))
     }
@@ -349,6 +355,13 @@ impl MidiInputHub {
         }
     }
 
+    /// Sets the function every connection calls (on its MIDI thread) after it queued a channel
+    /// message, e.g. a repaint request, so the UI shows held keys and activity while it is idle.
+    /// Only the first call counts.
+    pub fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        let _ = self.waker.set(Box::new(waker));
+    }
+
     /// Whether a message arrived on `port` since the last call (the activity dot in S07 and the
     /// status bar). Resets the flag.
     pub fn take_activity(&self, port: MidiPortId) -> bool {
@@ -375,6 +388,7 @@ impl MidiInputHub {
         let input = open_client()?;
         let sender = self.sender.clone();
         let flags = Arc::clone(&entry.flags);
+        let waker = Arc::clone(&self.waker);
         let id = entry.info.id;
         flags.enabled.store(true, Ordering::Relaxed);
         let callback = move |_stamp: u64, bytes: &[u8], _: &mut ()| {
@@ -385,6 +399,9 @@ impl MidiInputHub {
                 flags.activity.store(true, Ordering::Relaxed);
                 // A full queue means the audio callback is not draining it; drop the message.
                 let _ = sender.push(id, data);
+                if let Some(wake) = waker.get() {
+                    wake();
+                }
             }
         };
         match input.connect(port, "komponist-in", callback, ()) {

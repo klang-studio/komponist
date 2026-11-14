@@ -66,9 +66,9 @@ pub struct ViewCtx<'a> {
     /// This session's WAV exports of the project, oldest first (WP-53b): the browser lists them
     /// under Projekt › Exporte.
     pub exports: &'a [std::path::PathBuf],
-    /// MIDI keys held live by the computer keyboard right now: the piano roll's keyboard lights
-    /// them like the prototype's `app.held`. (Notes from a MIDI input reach only the audio
-    /// thread; lighting those needs engine telemetry.)
+    /// MIDI keys held live right now, by the computer keyboard and on the MIDI inputs (engine
+    /// telemetry, `Telemetry::held_input_keys`): the piano roll's keyboard lights them like the
+    /// prototype's `app.held`.
     pub held_notes: Vec<u8>,
     actions: &'a mut Vec<Action>,
 }

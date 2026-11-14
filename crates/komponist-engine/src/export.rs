@@ -27,9 +27,14 @@
 //! - Set the export rate with [`Engine::set_sample_rate`] when it differs from the device rate
 //!   ([`ExportJob::sample_rate`] must equal the engine's rate; this re-activates every processor).
 //! - Wait until every external device reports `Ok` again (after the re-activation, and after a
-//!   project load): a device still loading renders silence (PLAN WP-45). Show which devices are
+//!   project load): a device still loading renders silence (PLAN WP-45). `komponist-plugins`
+//!   reports a bridge `Loading` from the moment `set_sample_rate` asked it to re-activate until it
+//!   runs at the new rate and its warm-up passed (`komponist_plugins::WARM_UP`), so this one
+//!   status wait covers both; no state round trip as a barrier is needed. Show which devices are
 //!   missing or crashed instead of exporting without them. Bridges use their offline deadline
 //!   (2 s per block) because render calls carry no [`crate::ProcessContext::deadline`].
+//! - A range that starts inside a long note renders it from the first frame: `Play` chases the
+//!   notes sounding at the range start (see [`crate::engine`]).
 //! - Pass the program the engine plays now (the app's last compiled program).
 //!
 //! **After** [`export`] (on success, cancel and error alike):
@@ -349,6 +354,12 @@ fn export_program(program: &Program, end: Tick) -> Program {
     }
 }
 
+/// One `Engine::render` call inside `assert_no_alloc`: the render loop is realtime code on a
+/// worker thread (rule 4), and every binary or test that installs `AllocDisabler` checks it.
+fn render_block(engine: &mut Engine, frames: usize) -> &[f32] {
+    assert_no_alloc::assert_no_alloc(move || engine.render(frames))
+}
+
 /// Renders the pre-roll (discarded), then range + tail. Returns the interleaved samples
 /// (non-finite ones replaced by 0) and their peak.
 fn render(
@@ -371,7 +382,7 @@ fn render(
             return Err(ExportError::Cancelled);
         }
         let n = skip.min(MAX_BLOCK as u64) as usize;
-        engine.render(n);
+        render_block(engine, n);
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
@@ -389,7 +400,7 @@ fn render(
         }
         let n = MAX_BLOCK.min((len - samples.len()) / 2);
         let first = samples.len();
-        samples.extend_from_slice(engine.render(n));
+        samples.extend_from_slice(render_block(engine, n));
         for s in &mut samples[first..] {
             if !s.is_finite() {
                 *s = 0.0;

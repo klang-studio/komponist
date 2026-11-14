@@ -383,6 +383,9 @@ pub(crate) fn error_surface() -> Color32 {
 // The app's side
 // ------------------------------------------------------------------------------------------------
 
+/// Repaint interval while S07 waits for a driver or device enumeration.
+const ENUMERATION_REPAINT: std::time::Duration = std::time::Duration::from_millis(16);
+
 /// Repaint interval while S07 shows MIDI inputs (their activity dots blink).
 const MIDI_REPAINT: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -414,6 +417,9 @@ impl crate::App {
                 }
                 if model.midi.as_ref().is_some_and(|m| !m.is_empty()) {
                     ctx.request_repaint_after(MIDI_REPAINT);
+                }
+                if self.dialogs.settings.enumerating() {
+                    ctx.request_repaint_after(ENUMERATION_REPAINT);
                 }
             }
             Some(Dialog::MissingPlugins(missing)) => {

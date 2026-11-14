@@ -36,6 +36,10 @@
 //! - Program swap: per-track state (active notes, probability RNG, fader position, fast-path
 //!   values, delay line) follows the track id. Fast-path values end with the swap. A device whose
 //!   bypass turns on gets `reset` once.
+//! - Note chasing: after a playback start (`Play`, `Record` from stop), a `Locate` while playing
+//!   and a loop wrap, notes that started earlier and still sound at the new position start at
+//!   once with their remaining length (see the private `sequencer` module). Export plays through
+//!   the same path, so a range starting inside a pad renders the pad.
 //! - Probability: each track rolls with its own `Rng`, seeded from [`EngineConfig::seed`] and the
 //!   track id at every playback start.
 //! - Live input: MIDI goes to monitored tracks whose input filter accepts it; `LiveNote` goes to
@@ -159,6 +163,7 @@ impl Engine {
             note_ids: NoteIds::default(),
             unreported: false,
             dropped: 0,
+            held_input: 0,
         };
         let engine = Box::new(Engine {
             core,
@@ -320,6 +325,8 @@ struct Core {
     unreported: bool,
     /// Events dropped in this block (per-call event lists, full queues inside the engine).
     dropped: u32,
+    /// Keys held on the MIDI inputs (bit = key), published as [`Telemetry::held_input_keys`].
+    held_input: u128,
 }
 
 /// Whether a command retires an object (and therefore needs room in the garbage holding list).
@@ -328,6 +335,20 @@ fn retires(command: &Command) -> bool {
         command,
         Command::SetProgram(_) | Command::InsertProcessor { .. } | Command::RemoveProcessor { .. }
     )
+}
+
+/// The held-keys bitmap after the MIDI message `data`: a note-on sets its key, a note-off (or a
+/// note-on with velocity 0) clears it, "all notes off" / "all sound off" clear everything. All
+/// ports and channels merge into one keyboard.
+fn held_after(held: u128, data: [u8; 3]) -> u128 {
+    let [status, data1, data2] = data;
+    let bit = 1u128 << (data1 & 0x7f);
+    match status & 0xf0 {
+        0x90 if data2 > 0 => held | bit,
+        0x80 | 0x90 => held & !bit,
+        0xb0 if data1 == 120 || data1 == 123 => 0,
+        _ => held,
+    }
 }
 
 /// Whether a track listening with `filter` receives `m`.
@@ -398,7 +419,9 @@ impl Core {
                 }
                 let count = self.track_count();
                 for &state in &self.map[..count] {
-                    self.tracks[usize::from(state)].seq.flush(false);
+                    let seq = &mut self.tracks[usize::from(state)].seq;
+                    seq.flush(false);
+                    seq.chase();
                 }
                 self.send(EngineEvent::LoopWrapped { to });
             }
@@ -410,7 +433,15 @@ impl Core {
         if self.unreported {
             self.report_failures();
         }
+        let held = midi
+            .iter()
+            .fold(self.held_input, |held, m| held_after(held, m.data));
         let t = &self.telemetry;
+        if held != self.held_input {
+            self.held_input = held;
+            t.held_input[0].store(held as u64, Ordering::Relaxed);
+            t.held_input[1].store((held >> 64) as u64, Ordering::Relaxed);
+        }
         let playhead = self.transport.tick(&self.song, rate);
         t.playhead.store(playhead.0, Ordering::Relaxed);
         t.state.store(self.transport.state as u8, Ordering::Relaxed);
@@ -458,6 +489,7 @@ impl Core {
                 if self.transport.playing() {
                     self.close_captures(self.transport.tick(&self.song, rate));
                     self.silence(true);
+                    self.chase();
                 }
                 let tick = tick.max(Tick::ZERO);
                 self.transport.pos = self.song.map.tick_to_sample(tick, rate);
@@ -595,6 +627,15 @@ impl Core {
             if let Some(id) = state.id {
                 state.seq.reseed(track_seed(self.seed, id));
             }
+            state.seq.chase();
+        }
+    }
+
+    /// RT. Every track chases its notes in its next call (playback start, locate, loop wrap).
+    fn chase(&mut self) {
+        let count = self.track_count();
+        for &index in &self.map[..count] {
+            self.tracks[usize::from(index)].seq.chase();
         }
     }
 
