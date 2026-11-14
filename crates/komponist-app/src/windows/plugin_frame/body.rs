@@ -7,6 +7,7 @@
 //! another colour (owner test 2026-11-13).
 
 use egui::{Align, Layout, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, vec2};
+use komponist_builtin::Macro;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, typography};
 use komponist_ui::widgets::button::Button;
@@ -15,6 +16,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics as m;
+use crate::views::devices::model::{Param, format_value};
 
 /// Texts of the body (S05 `card()`, `Prototyp.dc.html` `pw.guiT`).
 pub mod names {
@@ -40,51 +42,25 @@ pub mod names {
     pub const GUI_PLACEHOLDER_DETAIL: &str = "Rahmen von komponist, Inhalt vom Plugin";
 }
 
-/// One knob of the parameter grid.
+/// The parameter grid: WP-44's knob model ([`Param`]: plain value, range, steps, text) for all
+/// parameters, not just a device card's first eight.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParamRow {
-    /// Parameter id.
-    pub id: u32,
-    /// Name ("Cutoff").
-    pub name: String,
-    /// Lowest plain value.
-    pub min: f64,
-    /// Highest plain value.
-    pub max: f64,
-    /// Alt-click value.
-    pub default: f64,
-    /// Steps of a stepped parameter, 0 = continuous.
-    pub step_count: u32,
-    /// Current plain value.
-    pub value: f64,
-    /// The plugin's text for `value`, empty if none.
-    pub text: String,
+pub struct ParamGrid {
+    /// The knobs.
+    pub params: Vec<Param>,
+    /// pisynth's macros: values read as the macros' own texts ("Frei", "5 ms").
+    pub macros: bool,
 }
 
-impl ParamRow {
-    /// `v` on the parameter's step grid, inside its range.
-    pub fn quantize(&self, v: f64) -> f64 {
-        let (lo, hi) = (self.min.min(self.max), self.min.max(self.max));
-        let v = v.clamp(lo, hi);
-        if self.step_count == 0 || hi <= lo {
-            return v;
-        }
-        let steps = f64::from(self.step_count);
-        lo + ((v - lo) / (hi - lo) * steps).round() / steps * (hi - lo)
-    }
-
-    /// Text for `v`: the plugin's own while `v` is the value it describes, else a number.
-    pub fn text_for(&self, v: f64) -> String {
-        if !self.text.is_empty()
-            && (v - self.value).abs() <= f64::EPSILON * self.value.abs().max(1.0)
-        {
-            return self.text.clone();
-        }
-        if self.step_count > 0 {
-            format!("{v:.0}")
-        } else {
-            format!("{v:.2}")
-        }
+/// The text of knob `p` at value `v`: a macro's text, the plugin's text while `v` is the value it
+/// describes, else WP-44's formatting ("40 %").
+pub fn text_for(p: &Param, macros: bool, v: f64) -> String {
+    if macros && let Some(m) = Macro::from_id(p.id) {
+        m.text(v)
+    } else if (v - p.value).abs() < 1e-9 {
+        p.text.clone()
+    } else {
+        format_value(p.min, p.max, p.steps, v)
     }
 }
 
@@ -108,7 +84,7 @@ pub enum BodyModel {
         name: String,
     },
     /// The generic parameter grid.
-    Params(Vec<ParamRow>),
+    Params(ParamGrid),
 }
 
 /// What the user did in the body.
@@ -153,7 +129,7 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &mut BodyModel) -> Vec<BodyEvent> {
         BodyModel::Missing { name } => {
             message(&mut body, rect, Message::Missing(name));
         }
-        BodyModel::Params(rows) => grid(&mut body, rect, rows, &mut events),
+        BodyModel::Params(grid_model) => grid(&mut body, rect, grid_model, &mut events),
     }
     events
 }
@@ -310,22 +286,23 @@ fn placeholder(ui: &mut Ui, rect: Rect, name: &str) {
 }
 
 /// The parameter grid: 4 columns of knob, name and value, scrolling.
-fn grid(ui: &mut Ui, rect: Rect, rows: &mut [ParamRow], events: &mut Vec<BodyEvent>) {
+fn grid(ui: &mut Ui, rect: Rect, model: &mut ParamGrid, events: &mut Vec<BodyEvent>) {
     let inner_w = (rect.width() - 2.0 * m::PARAM_PADDING).max(size::KNOB);
     let columns = m::PARAM_COLUMNS;
     let col_w =
         ((inner_w - (columns - 1) as f32 * m::PARAM_COLUMN_GAP) / columns as f32).max(size::KNOB);
+    let macros = model.macros;
     ScrollArea::vertical()
         .id_salt("komponist_frame_params")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add_space(m::PARAM_PADDING);
             ui.spacing_mut().item_spacing = vec2(m::PARAM_COLUMN_GAP, m::PARAM_ROW_GAP);
-            for chunk in rows.chunks_mut(columns) {
+            for chunk in model.params.chunks_mut(columns) {
                 ui.horizontal_top(|ui| {
                     ui.add_space(m::PARAM_PADDING - m::PARAM_COLUMN_GAP);
-                    for row in chunk {
-                        cell(ui, col_w, row, events);
+                    for p in chunk {
+                        cell(ui, col_w, p, macros, events);
                     }
                 });
             }
@@ -333,7 +310,7 @@ fn grid(ui: &mut Ui, rect: Rect, rows: &mut [ParamRow], events: &mut Vec<BodyEve
         });
 }
 
-fn cell(ui: &mut Ui, width: f32, row: &mut ParamRow, events: &mut Vec<BodyEvent>) {
+fn cell(ui: &mut Ui, width: f32, p: &mut Param, macros: bool, events: &mut Vec<BodyEvent>) {
     let name_style = typography::SMALL;
     let value_style = typography::VALUE_S;
     let height =
@@ -344,24 +321,23 @@ fn cell(ui: &mut Ui, width: f32, row: &mut ParamRow, events: &mut Vec<BodyEvent>
         |ui| {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = vec2(0.0, m::PARAM_ITEM_GAP);
-            let mut value = row.value;
-            let snapshot = row.clone();
-            let knob = Knob::new(&mut value, row.name.clone())
-                .range(row.min..=row.max)
-                .default_value(row.default)
-                .format(move |v| snapshot.text_for(v));
+            let mut value = p.value;
+            let shown = p.clone();
+            let knob = Knob::new(&mut value, p.name.clone())
+                .range(p.min..=p.max)
+                .default_value(p.default)
+                .format(move |v| text_for(&shown, macros, v));
             if ui.add(knob).changed() {
-                let value = row.quantize(value);
-                if value != row.value {
-                    row.value = value;
-                    row.text.clear();
-                    events.push(BodyEvent::SetParam { id: row.id, value });
+                let value = p.snap(value);
+                if value != p.value {
+                    p.text = text_for(p, macros, value);
+                    p.value = value;
+                    events.push(BodyEvent::SetParam { id: p.id, value });
                 }
             }
-            let name = fonts::rich_text(&row.name, &name_style).color(color32(color::TEXT_2));
+            let name = fonts::rich_text(&p.name, &name_style).color(color32(color::TEXT_2));
             ui.add(egui::Label::new(name).truncate());
-            let text = row.text_for(row.value);
-            let value_text = fonts::rich_text(&text, &value_style).color(color32(color::TEXT_3));
+            let value_text = fonts::rich_text(&p.text, &value_style).color(color32(color::TEXT_3));
             ui.add(egui::Label::new(value_text).truncate());
         },
     );
@@ -371,40 +347,34 @@ fn cell(ui: &mut Ui, width: f32, row: &mut ParamRow, events: &mut Vec<BodyEvent>
 mod tests {
     use super::*;
 
-    fn row(min: f64, max: f64, steps: u32) -> ParamRow {
-        ParamRow {
+    fn param(min: f64, max: f64, steps: u32, value: f64, text: &str) -> Param {
+        Param {
             id: 1,
             name: "Gain".into(),
+            value,
             min,
             max,
             default: min,
-            step_count: steps,
-            value: min,
-            text: String::new(),
+            steps,
+            text: text.into(),
         }
     }
 
     #[test]
-    fn stepped_parameters_snap_to_their_steps_and_stay_in_range() {
-        let r = row(0.0, 32.0, 32);
-        assert_eq!(r.quantize(3.4), 3.0);
-        assert_eq!(r.quantize(40.0), 32.0);
-        let r = row(0.0, 1.0, 4);
-        assert_eq!(r.quantize(0.3), 0.25);
-        let r = row(-60.0, 0.0, 0);
-        assert_eq!(r.quantize(-12.3), -12.3);
-        assert_eq!(r.quantize(3.0), 0.0);
+    fn the_plugins_text_is_shown_only_for_its_value() {
+        let p = param(-60.0, 0.0, 0, -12.0, "-12.0 dB");
+        assert_eq!(text_for(&p, false, -12.0), "-12.0 dB");
+        assert_eq!(text_for(&p, false, -6.0), "-6.00");
+        let p = param(0.0, 1.0, 0, 0.5, "");
+        assert_eq!(text_for(&p, false, 0.25), "25 %");
+        assert_eq!(text_for(&param(0.0, 8.0, 8, 0.0, ""), false, 3.0), "3");
     }
 
     #[test]
-    fn the_plugins_text_is_shown_only_for_its_value() {
-        let mut r = row(-60.0, 0.0, 0);
-        r.value = -12.0;
-        r.text = "-12.0 dB".into();
-        assert_eq!(r.text_for(-12.0), "-12.0 dB");
-        assert_eq!(r.text_for(-6.0), "-6.00");
-        r.text.clear();
-        assert_eq!(r.text_for(-12.0), "-12.00");
-        assert_eq!(row(0.0, 8.0, 8).text_for(3.0), "3");
+    fn macros_read_as_their_own_texts() {
+        let m = Macro::Attack;
+        let mut p = param(m.min(), m.max(), m.step_count(), 0.0, "");
+        p.id = m.id();
+        assert_eq!(text_for(&p, true, 0.25), m.text(0.25));
     }
 }

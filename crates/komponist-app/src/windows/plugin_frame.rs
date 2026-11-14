@@ -4,7 +4,8 @@
 //! Each entry of [`UiState::plugin_windows`](crate::ui_state::UiState::plugin_windows) gets a
 //! **frame**: an eframe deferred viewport with the 28 px [`header`] and a [`body`] below it. In
 //! the plugin view the body holds an **X11 child window** that the bridge's plugin GUI attaches
-//! to; in the parameter view it is the generic knob grid.
+//! to; in the parameter view it is the generic knob grid (all parameters, with WP-44's knob model;
+//! pisynth's macros come from its state in the document).
 //!
 //! # Life of a frame (per root pass, [`App::update_plugin_frames`])
 //!
@@ -52,7 +53,6 @@ pub mod metrics;
 pub mod sizing;
 mod x11;
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -60,14 +60,13 @@ use egui::{
     Context, Event, Rect, Vec2, ViewportBuilder, ViewportClass, ViewportCommand, ViewportId,
     WindowLevel, vec2,
 };
-use komponist_builtin::Macro;
 use komponist_ipc::control::param_flags;
 use komponist_model::project::BUILTIN_PISYNTH;
 use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 use komponist_tokens::color;
 
-use self::body::{BodyEvent, BodyModel, ParamRow};
+use self::body::{BodyEvent, BodyModel, ParamGrid};
 use self::header::{HeaderEvent, HeaderModel, Mark};
 use self::sizing::{Chrome, Effect, Px, Sizing};
 use self::x11::X11;
@@ -75,6 +74,7 @@ use crate::actions::{Action, EditAction, PluginAction};
 use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
+use crate::views::devices::model::{Param, format_value, pisynth_params};
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -175,10 +175,7 @@ struct Frame {
     initial: Vec2,
     /// The parameter grid needs rebuilding.
     params_dirty: bool,
-    /// pisynth: knob values set since its state last changed (the engine has them, the document
-    /// does not).
-    overrides: HashMap<u32, f64>,
-    /// pisynth: the state the overrides and the preset match belong to (`None`: not seen yet).
+    /// pisynth: the state the preset match belongs to (`None`: not seen yet).
     state_seen: Option<Option<Arc<[u8]>>>,
     /// pisynth: the preset matching the state, or the last one chosen here.
     preset: Option<usize>,
@@ -469,7 +466,6 @@ impl App {
                 had_gui: false,
                 initial,
                 params_dirty: true,
-                overrides: HashMap::new(),
                 state_seen: None,
                 preset: None,
                 preset_changed: false,
@@ -530,9 +526,6 @@ impl App {
                     .push(Action::Plugin(PluginAction::Reload(device)));
             }
             Output::Body(BodyEvent::SetParam { id, value }) => {
-                if let Some(f) = self.frames.frame_mut(device) {
-                    f.overrides.insert(id, value);
-                }
                 self.queue
                     .push(Action::Plugin(PluginAction::SetParam { device, id, value }));
             }
@@ -558,7 +551,6 @@ impl App {
         if let Some(f) = self.frames.frame_mut(device) {
             f.preset = Some(preset);
             f.preset_changed = false;
-            f.overrides.clear();
             f.params_dirty = true;
         }
         self.queue
@@ -1003,7 +995,7 @@ impl App {
                 PluginView::Params => {
                     let f = &self.frames.frames[i];
                     let shown = matches!(lock(&f.shared).body, BodyModel::Params(_));
-                    (f.params_dirty || !shown).then(|| BodyModel::Params(self.param_rows(i)))
+                    (f.params_dirty || !shown).then(|| BodyModel::Params(self.param_grid(i)))
                 }
             },
         };
@@ -1027,7 +1019,7 @@ impl App {
         }
     }
 
-    /// pisynth: the preset matching its state, and forgetting knob overrides when it changed.
+    /// pisynth: which factory preset its state is (" *" once a knob changed it).
     fn update_pisynth_state(&mut self, i: usize) {
         let device = self.frames.frames[i].device;
         let Some((_, _, d)) = self.project().find_device(device) else {
@@ -1043,27 +1035,20 @@ impl App {
             Some(None) => state.is_none(),
             None => false,
         };
-        if !same {
-            f.state_seen = Some(state.clone());
-            f.overrides.clear();
-            f.params_dirty = true;
-            let patch = komponist_builtin::decode_state(state.as_deref())
-                .unwrap_or_else(|_| komponist_builtin::default_patch());
-            let encoded = komponist_builtin::encode_state(&patch);
-            let matching = (0..komponist_builtin::PRESET_COUNT).find(|&p| {
-                komponist_builtin::preset_patch(p)
-                    .is_some_and(|preset| komponist_builtin::encode_state(&preset) == encoded)
-            });
-            match matching {
-                Some(p) => {
-                    f.preset = Some(p);
-                    f.preset_changed = false;
-                }
-                None => f.preset_changed = f.preset.is_some(),
-            }
+        if same {
+            return;
         }
-        if !f.overrides.is_empty() && f.preset.is_some() {
-            f.preset_changed = true;
+        f.state_seen = Some(state.clone());
+        f.params_dirty = true;
+        let patch = komponist_builtin::decode_state(state.as_deref())
+            .unwrap_or_else(|_| komponist_builtin::default_patch());
+        let encoded = komponist_builtin::encode_state(&patch);
+        match factory_states().iter().position(|p| *p == encoded) {
+            Some(p) => {
+                f.preset = Some(p);
+                f.preset_changed = false;
+            }
+            None => f.preset_changed = f.preset.is_some(),
         }
     }
 
@@ -1124,66 +1109,49 @@ impl App {
         }
     }
 
-    /// The knobs of frame `i`: the plugin's parameters, or pisynth's macros.
-    fn param_rows(&self, i: usize) -> Vec<ParamRow> {
-        let f = &self.frames.frames[i];
-        let device = f.device;
+    /// The knobs of frame `i`: all visible parameters of a bridged plugin (WP-44's filter and
+    /// formatting, without the card's limit of eight), or pisynth's macros from its state in the
+    /// document (WP-44 writes knob changes there).
+    fn param_grid(&self, i: usize) -> ParamGrid {
+        let device = self.frames.frames[i].device;
         let host = self.engine.host();
-        if let Some(params) = host.params(device) {
-            return params
+        if let Some(infos) = host.params(device) {
+            let hidden = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
+            let params = infos
                 .iter()
-                .filter(|p| p.flags & param_flags::HIDDEN == 0)
+                .filter(|p| p.flags & hidden == 0)
                 .map(|p| {
-                    let (value, text) = host
-                        .param_value(device, p.id)
-                        .map_or((p.default, String::new()), |v| (v.value, v.text.clone()));
-                    let value = f
-                        .overrides
-                        .get(&p.id)
-                        .copied()
-                        .filter(|_| text.is_empty())
-                        .unwrap_or(value);
-                    ParamRow {
+                    let known = host.param_value(device, p.id);
+                    let value = known.map_or(p.default, |k| k.value);
+                    let text = known
+                        .map(|k| k.text.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| format_value(p.min, p.max, p.step_count, value));
+                    Param {
                         id: p.id,
                         name: p.name.clone(),
+                        value,
                         min: p.min,
                         max: p.max,
                         default: p.default,
-                        step_count: p.step_count,
-                        value,
+                        steps: p.step_count,
                         text,
                     }
                 })
                 .collect();
+            return ParamGrid {
+                params,
+                macros: false,
+            };
         }
-        let Some((_, _, d)) = self.project().find_device(device) else {
-            return Vec::new();
+        let params = match self.project().find_device(device) {
+            Some((_, _, d)) if is_pisynth(d) => pisynth_params(d),
+            _ => Vec::new(),
         };
-        if !is_pisynth(d) {
-            return Vec::new();
+        ParamGrid {
+            params,
+            macros: true,
         }
-        let patch = komponist_builtin::decode_state(d.state.as_deref())
-            .unwrap_or_else(|_| komponist_builtin::default_patch());
-        Macro::ALL
-            .iter()
-            .map(|m| {
-                let value = f
-                    .overrides
-                    .get(&m.id())
-                    .copied()
-                    .unwrap_or_else(|| m.get(&patch));
-                ParamRow {
-                    id: m.id(),
-                    name: m.name().to_owned(),
-                    min: m.min(),
-                    max: m.max(),
-                    default: m.default_value(),
-                    step_count: m.step_count(),
-                    value,
-                    text: m.text(value),
-                }
-            })
-            .collect()
     }
 
     /// The plugin name of `device` ("Surge XT").
@@ -1220,6 +1188,20 @@ impl App {
 // ------------------------------------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------------------------------------
+
+/// pisynth's factory presets as device states, encoded once (preset match per state change).
+fn factory_states() -> &'static [Vec<u8>] {
+    static STATES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    STATES.get_or_init(|| {
+        (0..komponist_builtin::PRESET_COUNT)
+            .map(|p| {
+                komponist_builtin::preset_patch(p)
+                    .map(|patch| komponist_builtin::encode_state(&patch))
+                    .unwrap_or_default()
+            })
+            .collect()
+    })
+}
 
 fn is_pisynth(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_PISYNTH
