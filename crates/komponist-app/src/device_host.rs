@@ -612,7 +612,18 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(names, ["pisynth", "EQ", "Delay", "Hall", "Limiter"]);
+        assert_eq!(
+            names,
+            [
+                "pisynth",
+                "EQ",
+                "Delay",
+                "Hall",
+                "Limiter",
+                "Arpeggiator",
+                "Tonleiter"
+            ]
+        );
         let missing = host.missing_plugins(&project);
         let pisynths = project
             .tracks

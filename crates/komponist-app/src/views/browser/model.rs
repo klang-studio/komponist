@@ -705,6 +705,7 @@ mod tests {
                 "Favoriten",
                 "Instrumente",
                 "Effekte",
+                "MIDI-Effekte",
                 "Presets · pisynth",
                 "Projekt"
             ]
