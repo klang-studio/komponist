@@ -291,6 +291,12 @@ impl App {
             return;
         };
         let frame = self.frames.frames.remove(at);
+        self.retire_frame(frame);
+    }
+
+    /// Closes the GUI of a frame that goes away and parks or destroys its child.
+    fn retire_frame(&mut self, frame: Frame) {
+        let device = frame.device;
         let open = matches!(frame.gui, Gui::Opening | Gui::Open);
         if open {
             // A state snapshot follows.
@@ -399,9 +405,14 @@ impl App {
     /// Creates frames for new windows; frames of closed windows went in `close_plugin_window`.
     fn sync_frames(&mut self, native: bool) {
         let windows: Vec<PluginWindow> = self.ui.plugin_windows.clone();
-        self.frames
-            .frames
-            .retain(|f| windows.iter().any(|w| w.device == f.device));
+        // Windows that went without `CloseWindow` (a new project).
+        let (keep, gone): (Vec<Frame>, Vec<Frame>) = std::mem::take(&mut self.frames.frames)
+            .into_iter()
+            .partition(|f| windows.iter().any(|w| w.device == f.device));
+        self.frames.frames = keep;
+        for frame in gone {
+            self.retire_frame(frame);
+        }
         for window in windows {
             if self.frames.frames.iter().any(|f| f.device == window.device) {
                 continue;
@@ -1266,7 +1277,17 @@ fn show_viewport(ctx: &Context, frame: &Frame, native: bool) {
         if native && frame.xid.is_none() {
             frame.token.clone()
         } else {
-            format!("{} · {}", s.header.name, crate::panels::transport::WORDMARK)
+            // "Surge XT · Pad · komponist": the header's sub line is "track · format".
+            let track = s
+                .header
+                .sub
+                .rsplit_once(" · ")
+                .map_or(s.header.sub.as_str(), |(track, _)| track);
+            format!(
+                "{} · {track} · {}",
+                s.header.name,
+                crate::panels::transport::WORDMARK
+            )
         }
     };
     let level = if frame.keep_on_top {
