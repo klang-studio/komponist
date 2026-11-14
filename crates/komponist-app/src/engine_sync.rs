@@ -18,6 +18,11 @@
 //! Tests that need exact positions take the engine out of the stream ([`EngineSync::hold_engine`])
 //! and run it themselves with simulated MIDI input ([`EngineSync::run_held`]): time then passes
 //! only there.
+//!
+//! The WAV export (ARCHITECTURE §6.7) takes the engine out of the stream together with its handle
+//! ([`EngineSync::detach`] → [`DetachedEngine`]) and renders on a worker thread. Meanwhile commands
+//! wait in the pending queue and no engine events arrive; [`EngineSync::attach`] gives both back
+//! and sends what waited.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -31,7 +36,7 @@ use komponist_audio::{
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
-    MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, Telemetry, TrackMeter,
+    MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, Telemetry, TrackMeter, TransportState,
 };
 use komponist_model::{Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
@@ -146,7 +151,8 @@ impl CompileEnv for Env<'_> {
 /// Engine, audio stream and program sync. UI thread.
 pub struct EngineSync {
     audio: AudioSystem<EngineProcess>,
-    handle: EngineHandle,
+    /// `None` while an export has the engine ([`EngineSync::detach`]).
+    handle: Option<EngineHandle>,
     midi: Option<MidiInputHub>,
     host: Box<dyn DeviceHost>,
     /// The program last sent to the engine.
@@ -164,6 +170,8 @@ pub struct EngineSync {
     telemetry: Arc<Telemetry>,
     /// The engine taken out of the stream ([`EngineSync::hold_engine`]).
     held: Option<Box<EngineProcess>>,
+    /// The playhead when an export took the engine ([`EngineSync::detach`]): shown meanwhile.
+    frozen: Option<Tick>,
 }
 
 impl core::fmt::Debug for EngineSync {
@@ -203,7 +211,7 @@ impl EngineSync {
         let telemetry = Arc::clone(handle.telemetry());
         let mut sync = EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
-            handle,
+            handle: Some(handle),
             midi: hub,
             host,
             previous: None,
@@ -214,6 +222,7 @@ impl EngineSync {
             rate,
             telemetry,
             held: None,
+            frozen: None,
         };
         let started = sync.audio.start(config);
         (sync, started)
@@ -300,21 +309,24 @@ impl EngineSync {
         self.send(command);
     }
 
-    /// Queues `command`; if the engine's queue is full it is retried at the next
-    /// [`EngineSync::poll`], keeping the order.
+    /// Queues `command`; if the engine's queue is full (or an export has the engine) it is
+    /// retried at the next [`EngineSync::poll`], keeping the order.
     pub fn send(&mut self, command: Command) {
-        if !self.pending.is_empty() {
+        let Some(handle) = self.handle.as_mut().filter(|_| self.pending.is_empty()) else {
             self.pending.push_back(command);
             return;
-        }
-        if let Err(command) = self.handle.send(command) {
+        };
+        if let Err(command) = handle.send(command) {
             self.pending.push_back(command);
         }
     }
 
     fn flush_pending(&mut self) {
+        let Some(handle) = self.handle.as_mut() else {
+            return;
+        };
         while let Some(command) = self.pending.pop_front() {
-            if let Err(command) = self.handle.send(command) {
+            if let Err(command) = handle.send(command) {
                 self.pending.push_front(command);
                 break;
             }
@@ -327,7 +339,7 @@ impl EngineSync {
         self.audio.poll();
         self.flush_pending();
         let mut out = Vec::new();
-        while let Some(event) = self.handle.poll() {
+        while let Some(event) = self.handle.as_mut().and_then(EngineHandle::poll) {
             match event {
                 // Dropped here, on the UI thread.
                 EngineEvent::Retired(garbage) => drop(garbage),
@@ -356,7 +368,7 @@ impl EngineSync {
         self.flush_pending();
         std::thread::sleep(SHUTDOWN_DRAIN);
         self.audio.stop();
-        while self.handle.poll().is_some() {}
+        while self.handle.as_mut().and_then(EngineHandle::poll).is_some() {}
     }
 
     /// Processor setup at the engine's current rate.
@@ -377,9 +389,19 @@ impl EngineSync {
         &self.telemetry
     }
 
-    /// Playhead.
+    /// Playhead. While an export has the engine: the playhead from before (the render moves the
+    /// engine's own, but the transport stops during an export, ARCHITECTURE §6.7).
     pub fn playhead(&self) -> Tick {
-        self.telemetry.playhead()
+        self.frozen.unwrap_or_else(|| self.telemetry.playhead())
+    }
+
+    /// Transport state; `Stopped` while an export has the engine.
+    pub fn transport(&self) -> TransportState {
+        if self.handle.is_none() {
+            TransportState::Stopped
+        } else {
+            self.telemetry.transport()
+        }
     }
 
     /// CPU load and xruns of the stream.
@@ -455,7 +477,7 @@ impl EngineSync {
     pub fn reset(&mut self) {
         self.send(Command::StopRecording);
         // Garbage among them is dropped here, on the UI thread.
-        while self.handle.poll().is_some() {}
+        while self.handle.as_mut().and_then(EngineHandle::poll).is_some() {}
         if let Some(previous) = self.previous.take() {
             for &(device, slot) in previous.slots.entries() {
                 self.send(Command::RemoveProcessor { slot });
@@ -480,8 +502,11 @@ impl EngineSync {
 
     /// Tests: takes the engine out of the stream (which goes on outputting silence), so that it
     /// runs only in [`EngineSync::run_held`] and positions are exact. Waits for the stream to hand
-    /// it over.
+    /// it over. Fails while an export has the engine.
     pub fn hold_engine(&mut self) -> Result<(), AudioError> {
+        if self.handle.is_none() {
+            return Err(AudioError::Detached);
+        }
         if self.held.is_none() {
             self.held = Some(self.audio.detach(HOLD_TIMEOUT)?);
         }
@@ -530,6 +555,83 @@ impl EngineSync {
             self.audio.attach(process);
         }
     }
+
+    /// Export (ARCHITECTURE §6.7): takes the engine out of the stream (which goes on outputting
+    /// silence) together with its handle, for a worker thread. Queued commands are sent first,
+    /// so the engine gets them before the export's own. Until [`EngineSync::attach`], commands
+    /// wait in the pending queue and [`EngineSync::poll`] reports device host events only. A held
+    /// engine ([`EngineSync::hold_engine`]) is taken from the hold and goes back there.
+    pub fn detach(&mut self) -> Result<DetachedEngine, AudioError> {
+        if self.handle.is_none() {
+            return Err(AudioError::Detached);
+        }
+        self.flush_pending();
+        let (process, held) = match self.held.take() {
+            Some(process) => (process, true),
+            None => (self.audio.detach(HOLD_TIMEOUT)?, false),
+        };
+        let handle = self.handle.take().expect("checked above");
+        self.frozen = Some(self.telemetry.playhead());
+        Ok(DetachedEngine {
+            process,
+            handle,
+            held,
+        })
+    }
+
+    /// Gives a [`DetachedEngine`] back: the handle to the UI thread, the engine to the stream
+    /// (which re-activates the processors if the engine's rate differs from the stream's), and
+    /// sends the commands that waited.
+    pub fn attach(&mut self, engine: DetachedEngine) {
+        let DetachedEngine {
+            process,
+            handle,
+            held,
+        } = engine;
+        self.handle = Some(handle);
+        self.frozen = None;
+        if held {
+            self.held = Some(process);
+        } else {
+            self.audio.attach(process);
+        }
+        self.flush_pending();
+    }
+
+    /// Whether an export has the engine ([`EngineSync::detach`]).
+    pub fn is_detached(&self) -> bool {
+        self.handle.is_none()
+    }
+}
+
+/// The engine and its handle out of the stream, for an export on a worker thread
+/// ([`EngineSync::detach`]; `komponist_engine::export` lists what the caller does before and
+/// after). Back with [`EngineSync::attach`].
+pub struct DetachedEngine {
+    process: Box<EngineProcess>,
+    handle: EngineHandle,
+    /// Taken from [`EngineSync::hold_engine`]'s hold.
+    held: bool,
+}
+
+impl DetachedEngine {
+    /// The engine and its handle, as `komponist_engine::export::export` takes them.
+    pub fn parts(&mut self) -> (&mut Engine, &mut EngineHandle) {
+        (&mut self.process.engine, &mut self.handle)
+    }
+
+    /// The engine.
+    pub fn engine(&mut self) -> &mut Engine {
+        &mut self.process.engine
+    }
+}
+
+impl core::fmt::Debug for DetachedEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DetachedEngine")
+            .field("rate", &self.process.engine.sample_rate())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for EngineSync {
@@ -542,7 +644,6 @@ impl Drop for EngineSync {
 mod tests {
     use super::*;
     use crate::device_host::BuiltinHost;
-    use komponist_engine::TransportState;
     use komponist_model::edits::{self, ChannelProp, TrackProp};
     use komponist_model::fixtures::demo_project;
     use std::time::Instant;
