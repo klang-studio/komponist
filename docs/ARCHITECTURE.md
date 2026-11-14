@@ -225,9 +225,9 @@ pub struct Track {
     pub clips: Vec<Arc<Clip>>,
 }
 pub struct Channel { pub volume_db: f32, pub pan: f32, pub mute: bool, pub solo: bool,
-                     pub devices: Vec<Arc<Device>> }       // [0] = instrument on MIDI tracks
+                     pub devices: Vec<Arc<Device>> }       // MIDI track: [MidiEffect…] Instrument? [Effect…]
 pub struct Device {
-    pub id: DeviceId, pub role: DeviceRole,                // Instrument | Effect
+    pub id: DeviceId, pub role: DeviceRole,                // MidiEffect | Instrument | Effect
     pub plugin: PluginRef,                                 // format Builtin|Clap|Vst3, id, name, vendor, version
     pub bypass: bool,
     pub state: Option<Arc<[u8]>>,                          // opaque plugin state, kept when the plugin is missing
@@ -251,6 +251,16 @@ pub struct StepClip {
 }
 pub struct Step { pub on: bool, pub velocity: u8, pub probability: u8 /*0..=100*/, pub ratchet: u8 /*1..=4*/ }
 ```
+
+**Chain order (WP-88).** A MIDI track's chain is `[MIDI effects…] → instrument → [audio effects…]`, in one
+`devices` list, in signal order. `DeviceRole::MidiEffect` (serialised `"midieffect"`) devices come first,
+the instrument (at most one) right behind them, audio effects last; the master holds audio effects only.
+`Channel::midi_effect_count()`, `Channel::instrument()` and `Channel::first_effect_index()` read that
+order; the edits keep it (`insert_device` puts a device into its part whatever the index, `move_device`
+reorders only inside the part, `replace_instrument` replaces in place or inserts behind the MIDI
+effects). Nothing was added to the file format: a project saved before WP-88 has no MIDI effects and
+loads and saves unchanged (`FORMAT_VERSION` stays 1). A project **with** MIDI effects is rejected by a
+build from before WP-88 (unknown role), which is the intended direction of compatibility.
 
 Runtime status of a device (ok / lädt / abgestürzt / fehlt) is **not** part of the document. It lives
 in `komponist-plugins` and is shown by the UI. The document only keeps what must survive a save.
@@ -310,6 +320,15 @@ pub trait Processor: Send {
     fn latency(&self) -> u32;
     /// RT. Silence all voices (stop, loop jump, bypass on).
     fn reset(&mut self);
+    /// RT-safe, cheap (WP-88). `Some` for a MIDI effect: the engine runs its event stage (6.4.2)
+    /// in front of the instrument and never calls `process`. Default: `None`.
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> { None }
+}
+/// WP-88: events in, events out, in front of the instrument (6.4.2).
+pub trait EventProcessor {
+    fn set_param(&mut self, id: u32, value: f64);
+    fn process_events(&mut self, ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>);
+    fn reset(&mut self);                                  // forget held notes and phases, emit nothing
 }
 pub struct Event { pub offset: u32, pub kind: EventKind }
 pub enum EventKind {
@@ -322,9 +341,10 @@ pub enum EventKind {
 pub struct ProcessContext { pub frames: u32, pub sample_rate: f32, pub transport: TransportInfo, pub offline: bool }
 ```
 
-Implementations: `PisynthProcessor` (`komponist-builtin`), `ExternalProcessor` (`komponist-plugins`,
-talks to a bridge), `TestSine` / `TestGain` (public module `komponist_engine::testing`, usable by other
-crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
+Implementations: `PisynthProcessor` (`komponist-builtin`), `InternalProcessor` (`komponist-builtin`, the
+internal audio effects and, with an event stage, the MIDI effects Arpeggiator and Tonleiter),
+`ExternalProcessor` (`komponist-plugins`, talks to a bridge), `TestSine` / `TestGain` / `TestMidiFx`
+(public module `komponist_engine::testing`, usable by other crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
 
 ### 6.3 Program, commands, telemetry
 
@@ -357,11 +377,13 @@ crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
 4. Per track, in three phases (WP-65):
    1. **Events**, on the audio thread in track order: sequencer events from the program
       (`active_notes` table per track, so note-offs come from the table and survive program swaps,
-      loop wraps and stop) + live events, into the track's own event list. An instrument at the head
-      of a chain is started at once if it can be (`Processor::begin`: a bridge writes its block and
-      wakes the plugin, which then works while the engine runs the other tracks).
-   2. **Chains**, one job per track: processor chain (instrument → effects; bypass = passthrough plus
-      `reset`) → `klang_dsp::buffer::gain_ramp` (fader) → `klang_dsp::pan::balance` → meter →
+      loop wraps and stop) + live events, into the track's own event list. On a track without MIDI
+      effects, an instrument at the head of a chain is started at once if it can be
+      (`Processor::begin`: a bridge writes its block and wakes the plugin, which then works while the
+      engine runs the other tracks); with MIDI effects it starts in its job, because its events
+      exist only after the stage (6.4.2).
+   2. **Chains**, one job per track: the MIDI effect stage (6.4.2) → processor chain (instrument →
+      effects; bypass = passthrough plus `reset`) → `klang_dsp::buffer::gain_ramp` (fader) → `klang_dsp::pan::balance` → meter →
       latency compensation delay (6.6) → the track's output buffer. The jobs run on the worker pool
       (6.4.1) and the audio thread together, or all on the audio thread. Started (bridge) tracks are
       claimed last.
@@ -408,6 +430,54 @@ stays single-threaded.
   finishing source, replaces the single claim word's order). Phase 3 then sums into busses in a
   fixed order, which keeps the output deterministic. Not built.
 
+#### 6.4.2 MIDI effect stage (WP-88)
+
+`komponist_engine::stage`. A track chain is `[MIDI effects…] → instrument → [audio effects…]`
+(`TrackProgram::stage_count()`, at most `MAX_STAGES` = 8; the compiler drops MIDI effects anywhere but
+the head of a track chain, and on the master). Per segment, in the track's job (so on a worker thread
+with the pool, never on two threads at once), before the instrument runs:
+
+1. The track's events (phase 1: sequenced notes including chased ones, probability applied, plus live
+   input of monitored inputs) are the **input** of the first active stage. Each active stage
+   (`Processor::event_processor()`, not bypassed, processor present) rewrites them into a
+   preallocated `EventSink` (`MAX_EVENTS_PER_BLOCK`, sorted afterwards: note-offs before note-ons at
+   one offset); the next stage reads that. Queued `SetParam`s of a stage go to
+   `EventProcessor::set_param` before its call, `all_off` (stop, locate, panic) to `reset`.
+   A stage sees the call's `ProcessContext` (tempo, meter, position in ticks at frame 0, playing,
+   loop); a call is one segment, which ends at the loop end and has constant tempo.
+2. The **guard** turns the last stage's output into the instrument's events. It is the track's table of
+   notes the instrument received through the stage (`StageState`, 256 notes): the engine assigns note
+   ids (a per-track counter, so threads cannot change them), a note-off passes only for a note in the
+   table, a note-on for a sounding key first ends the old note, and every note ends with a note-off at
+   offset 0 of the next call on stop, locate and panic (the instrument slot's `all_off`), on bypass
+   or removal or replacement of a stage or the instrument, and when the stage chain changes (see
+   below). A stage can therefore not hang a note, whatever it does; it only has to be musically right.
+3. The instrument's pending parameters and `AllNotesOff` join the guard's output; the instrument and
+   the audio effects run as before.
+
+The sequencer's own `active_notes` table keeps meaning "notes that entered the chain": on a track
+with MIDI effects its notes are tagged with the slot of the first MIDI effect, so their note-offs
+reach the stages. When a program swap changes how a track's events reach its instrument (a stage
+added, removed, bypassed, reordered, or the instrument replaced: the track's `StageSig`), the
+instrument's sounding notes end at once (the guard owns them: notes the sequencer table held for the
+instrument when the first stage appears move to the guard), the stages are reset, and notes held at
+that moment do not start again (program swaps never chase).
+
+**What a MIDI effect sees, recording and chasing.** Live input (when the track monitors it) and
+sequenced notes both go through the stages. **Recording captures the input, not the output**: the
+capture sits in phase 1, in front of the stage, so a take holds the keys the player pressed and an
+arpeggio or a scale does not get baked into the clip (the effect plays again on the take; the
+compiled program also holds the clip's notes, not the stage's output). Note chasing after a start,
+locate or loop wrap puts the chased notes into the stage's input at offset 0, so a held pad restarts
+an arpeggio at the new position; a stage is reset by stop and by locate while playing, but not on a
+loop wrap (the sounding arpeggio note ends where the stage sees the position jump). A bypassed MIDI
+effect passes its input through unchanged; its card stays operable.
+
+Costs: the stage runs on the track's job, adds events × stages of work (microseconds) and allocates
+nothing; stage output is bounded per call and counted in `Telemetry::dropped_events` when it
+overflows. Determinism: a job touches only its own track's state, slots and scratch lists, so the
+output is bit-exact with and without workers (`tests/engine/midi_fx.rs`, including the real devices).
+
 Larger device buffers are cut into ≤ `MAX_BLOCK` chunks. Buffer size changes therefore never touch
 processors. Only a sample rate change re-activates them.
 
@@ -423,7 +493,10 @@ processors. Only a sample rate change re-activates them.
   wrap, notes that started earlier and still sound at the new position start at once with their
   remaining length (probability rolls for them too). Program swaps do not chase. Export starts
   with `Play`, so a range that begins inside a pad renders it.
-- Recording (S02): the engine reports note-ons and note-offs with ticks. The UI builds the take
+- MIDI effects (WP-88): chased notes go through the track's MIDI effect stage like any other note
+  (6.4.2).
+- Recording (S02): the engine reports note-ons and note-offs with ticks, captured from the **input**
+  before the MIDI effect stage (6.4.2). The UI builds the take
   live, so notes appear at once. At stop it writes **one** undo step "Take n". During loop
   recording each `LoopWrapped` starts a new take in the same clip. Esc discards the running take.
   Input timestamps are corrected by the output latency reported by the stream.
@@ -590,6 +663,13 @@ table of CLAP features / VST3 subcategories.
   normal bridge, including crash isolation and its own egui GUI. Step rows: 8 rows. Notes and names
   come from CLAP note-name if klopfer provides it (nice-plug fork), otherwise pads 1–8 = notes 36–43.
   See the open question in §13.
+
+- **Internal devices (WP-85, WP-88):** `komponist-builtin::Internal` is one enum with a `Spec` per device
+  (catalog name, parameters, layout, DSP). The audio effects EQ, Delay, Hall and Limiter have a `Dsp`;
+  the MIDI effects **Arpeggiator** and **Tonleiter** (role `MidiEffect`, catalog kind
+  `PluginKind::MidiEffect`, browser section „MIDI-Effekte“) have an `EventProcessor` stage instead
+  (`internal/arpeggiator.rs`, `internal/tonleiter.rs`; a placeholder pass-through `Dsp` fills the
+  spec). Dropping a MIDI effect into a chain inserts it into the MIDI part, in front of the instrument.
 
 ### 8.6 Device states in the UI
 
