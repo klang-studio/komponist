@@ -48,10 +48,12 @@
 //! more than the same events at one offset. Creating a processor (UI thread) takes ~80 µs.
 
 pub mod algorithms;
+pub mod internal;
 pub mod macros;
 mod processor;
 pub mod state;
 
+pub use internal::{Internal, InternalProcessor};
 pub use macros::Macro;
 pub use processor::{PisynthProcessor, SAMPLE_RATES};
 pub use state::{
