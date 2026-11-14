@@ -14,8 +14,8 @@ use std::time::SystemTime;
 use egui::{Color32, Key, Modifiers, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, radius, size, typography};
-use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::button::Kind;
+use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, px, state};
 

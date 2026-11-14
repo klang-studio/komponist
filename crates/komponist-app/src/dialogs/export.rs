@@ -28,12 +28,12 @@ use egui::{
 use komponist_model::format::{fmt_db, fmt_time};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, space, typography};
-use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::button::{Button, Kind};
 use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tabs::Segmented;
+use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 

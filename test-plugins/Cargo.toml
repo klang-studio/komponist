@@ -33,5 +33,19 @@ nice-assert-no-alloc = "1.0.0"
 # `prctl(PR_SET_DUMPABLE)`: no core dumps from the crash tests' child processes.
 libc = "0.2.191"
 
+# klang-studio's forks of baseview and the nice-plug crates, from klopfer's submodules, so
+# kp-test-synth's embedded GUI draws: the crates.io baseview lacks the X11 Present/MapNotify fix
+# (PLAN WP-27 note, WP-50). Only read, never modified here. All nice-plug crates come from the
+# same checkout, so they share one nice-plug-core; the list is klopfer's `[patch.crates-io]`.
+[patch.crates-io]
+baseview = { path = "../../klopfer/vendor/baseview" }
+egui-baseview = { path = "../../klopfer/vendor/egui-baseview" }
+nice-log = { path = "../../klopfer/vendor/nice-plug/crates/nice-log" }
+nice-plug = { path = "../../klopfer/vendor/nice-plug/crates/nice-plug" }
+nice-plug-core = { path = "../../klopfer/vendor/nice-plug/crates/nice-plug-core" }
+nice-plug-derive = { path = "../../klopfer/vendor/nice-plug/crates/nice-plug-derive" }
+nice-plug-egui = { path = "../../klopfer/vendor/nice-plug/crates/nice-plug-egui" }
+nice-plug-xtask = { path = "../../klopfer/vendor/nice-plug/crates/nice-plug-xtask" }
+
 [profile.release]
 lto = "thin"

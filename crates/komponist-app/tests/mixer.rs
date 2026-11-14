@@ -810,7 +810,10 @@ fn scroll_to_strip_is_the_least_change() {
     use komponist_app::views::mixer::model::scroll_to_strip;
     // Strips 81 apart, 80 wide, an area of 400.
     assert_eq!(scroll_to_strip(1, 81.0, 80.0, 400.0, 0.0), 0.0);
-    assert_eq!(scroll_to_strip(10, 81.0, 80.0, 400.0, 0.0), 810.0 + 80.0 - 400.0);
+    assert_eq!(
+        scroll_to_strip(10, 81.0, 80.0, 400.0, 0.0),
+        810.0 + 80.0 - 400.0
+    );
     assert_eq!(scroll_to_strip(2, 81.0, 80.0, 400.0, 500.0), 162.0);
     assert_eq!(scroll_to_strip(7, 81.0, 80.0, 400.0, 300.0), 300.0);
 }

@@ -543,7 +543,11 @@ pub struct PluginWindow {
 impl PluginWindow {
     /// A window for `device` showing `view`, with the plugin's remembered "Oben halten" and
     /// position.
-    pub fn new(device: DeviceId, view: PluginView, memory: Option<&crate::settings::FrameMemory>) -> Self {
+    pub fn new(
+        device: DeviceId,
+        view: PluginView,
+        memory: Option<&crate::settings::FrameMemory>,
+    ) -> Self {
         PluginWindow {
             device,
             view,

@@ -269,7 +269,9 @@ fn head_controls(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, head: Rect) {
     let (tag_rect, tag_r) = row.allocate_exact_size(tag_size, Sense::hover());
     tag_r.widget_info(|| WidgetInfo::labeled(Role::Label, true, tag_text));
     if let Some(n) = card.late {
-        Tip::new(tag_text).detail(&late::late_blocks(n)).attach(&tag_r);
+        Tip::new(tag_text)
+            .detail(&late::late_blocks(n))
+            .attach(&tag_r);
         late::repaint_when_expired(row.ctx());
     }
     px::fill(

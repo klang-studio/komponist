@@ -183,9 +183,10 @@ impl View for Mixer {
         if self.last_selection != ctx.ui.selection.tracks {
             // A track selected in the arrangement, inspector or by keys comes into view; the
             // strip the user clicked here is visible already.
-            let first = tracks
-                .iter()
-                .position(|s| s.track().is_some_and(|t| ctx.ui.selection.tracks.contains(&t)));
+            let first = tracks.iter().position(|s| {
+                s.track()
+                    .is_some_and(|t| ctx.ui.selection.tracks.contains(&t))
+            });
             if let Some(i) = first {
                 scroll = model::scroll_to_strip(i, pitch, STRIP_WIDTH, area.width(), scroll)
                     .clamp(0.0, max_scroll);

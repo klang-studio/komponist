@@ -20,7 +20,6 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics::{self as m, Tier};
-use crate::views::late;
 use super::model::{Insert, SlotState, Strip, move_target, names, slot_at};
 use super::send_gesture;
 use crate::actions::{
@@ -28,6 +27,7 @@ use crate::actions::{
 };
 use crate::meters::Meters;
 use crate::ui_state::BrowserSegment;
+use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The drag payload of an insert slot being reordered.

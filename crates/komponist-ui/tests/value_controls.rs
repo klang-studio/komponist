@@ -455,9 +455,15 @@ fn knob_drag_is_200_px_for_the_range() {
 
 #[test]
 fn a_bypassed_knob_takes_no_input_and_reads_as_disabled() {
-    let mut h = harness(Knobs { cutoff: 0.25, pan: 0.0 }, |ui, s| {
-        ui.add(Knob::new(&mut s.cutoff, "Cutoff").bypassed(true));
-    });
+    let mut h = harness(
+        Knobs {
+            cutoff: 0.25,
+            pan: 0.0,
+        },
+        |ui, s| {
+            ui.add(Knob::new(&mut s.cutoff, "Cutoff").bypassed(true));
+        },
+    );
     let node = h.get_by_label("Cutoff");
     assert_eq!(node.accesskit_node().role(), egui::accesskit::Role::Slider);
     assert!(node.accesskit_node().is_disabled());

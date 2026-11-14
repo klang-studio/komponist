@@ -804,10 +804,7 @@ fn live_row(ui: &mut Ui) {
 mod tests {
     #[test]
     fn a_selected_thumb_is_surface_5_except_while_dragging_or_disabled() {
-        assert_eq!(
-            selected_look(State::REST).thumb,
-            color32(color::SURFACE_5)
-        );
+        assert_eq!(selected_look(State::REST).thumb, color32(color::SURFACE_5));
         assert_eq!(selected_look(State::REST).edge, look(State::REST).edge);
         assert_eq!(selected_look(State::PRESSED), look(State::PRESSED));
         assert_eq!(selected_look(State::DISABLED), look(State::DISABLED));

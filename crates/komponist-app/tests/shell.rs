@@ -8,12 +8,12 @@ use egui::accesskit::{Role, Toggled};
 use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
+use komponist_app::actions::ProjectAction;
 use komponist_app::app::key_to_egui;
 use komponist_app::keymap::{KeyScope, Keymap};
 use komponist_app::panels::dock::names as dock_names;
 use komponist_app::panels::transport::names as tp;
 use komponist_app::ui_state::{DockTab, FocusArea, Panel, SettingsSection};
-use komponist_app::actions::ProjectAction;
 use komponist_app::{Action, App, UiAction, names};
 use komponist_engine::TransportState;
 use komponist_model::Tick;
@@ -471,13 +471,20 @@ fn the_menu_saves_under_a_new_name_and_goes_to_the_start_screen() {
     open_menu(&mut h);
     h.get_by_label_contains("Speichern unter").click();
     h.run_steps(3);
-    assert!(h.state().dispatched().any(|a| *a == Action::Project(ProjectAction::SaveAs)));
+    assert!(
+        h.state()
+            .dispatched()
+            .any(|a| *a == Action::Project(ProjectAction::SaveAs))
+    );
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     open_menu(&mut h);
     h.get_by_label_contains("Zum Startbildschirm").click();
     h.run_steps(3);
-    assert_eq!(h.state().ui().screen, komponist_app::ui_state::Screen::Start);
+    assert_eq!(
+        h.state().ui().screen,
+        komponist_app::ui_state::Screen::Start
+    );
 }
 
 #[test]
@@ -490,10 +497,16 @@ fn the_start_screen_asks_before_leaving_unsaved_changes() {
         .dispatch(Action::Project(ProjectAction::ShowStartScreen));
     h.run_steps(3);
     h.get_by_value("Änderungen speichern?");
-    assert_eq!(h.state().ui().screen, komponist_app::ui_state::Screen::Project);
+    assert_eq!(
+        h.state().ui().screen,
+        komponist_app::ui_state::Screen::Project
+    );
     h.get_by_label("Nicht speichern").click();
     h.run_steps(3);
-    assert_eq!(h.state().ui().screen, komponist_app::ui_state::Screen::Start);
+    assert_eq!(
+        h.state().ui().screen,
+        komponist_app::ui_state::Screen::Start
+    );
 }
 
 #[test]
@@ -517,6 +530,10 @@ fn a_missing_bridge_executable_is_reported_in_the_status_bar() {
     let mut app = App::headless(komponist_model::fixtures::demo_project());
     app.report_missing_bridge(std::path::Path::new("/nowhere/komponist-bridge"));
     let status = app.ui().status.clone().expect("a status message");
-    assert!(status.text.starts_with("komponist-bridge fehlt"), "{}", status.text);
+    assert!(
+        status.text.starts_with("komponist-bridge fehlt"),
+        "{}",
+        status.text
+    );
     assert_eq!(status.kind, komponist_app::ui_state::StatusKind::Error);
 }

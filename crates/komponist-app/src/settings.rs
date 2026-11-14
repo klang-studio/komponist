@@ -372,7 +372,10 @@ mod tests {
         let mut s = Settings::default();
         assert!(s.update_frame_memory(&a, |m| m.keep_on_top = true));
         assert!(s.update_frame_memory(&a, |m| m.pos = Some((10, 20))));
-        assert!(!s.update_frame_memory(&a, |m| m.pos = Some((10, 20))), "no change");
+        assert!(
+            !s.update_frame_memory(&a, |m| m.pos = Some((10, 20))),
+            "no change"
+        );
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         let m = back.frame_memory(&a).unwrap();

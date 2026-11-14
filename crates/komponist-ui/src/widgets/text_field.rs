@@ -88,7 +88,8 @@ impl Widget for TextField<'_> {
         let response = ui
             .scope(|ui| {
                 // egui draws the focused contour with `selection.stroke`.
-                ui.visuals_mut().selection.stroke = Stroke::new(line::WIDTH, color32(color::ACCENT));
+                ui.visuals_mut().selection.stroke =
+                    Stroke::new(line::WIDTH, color32(color::ACCENT));
                 ui.add(edit)
             })
             .inner;

@@ -638,7 +638,14 @@ fn oben_halten_and_the_position_are_remembered_per_plugin() {
     assert!(h.state().ui().plugin_windows[0].keep_on_top);
     assert!(h.state().plugin_frame(surge).unwrap().keep_on_top);
     // The frame stood at (120, 80) when it closed.
-    let plugin = h.state().project().find_device(surge).unwrap().2.plugin.clone();
+    let plugin = h
+        .state()
+        .project()
+        .find_device(surge)
+        .unwrap()
+        .2
+        .plugin
+        .clone();
     h.state_mut()
         .settings_mut()
         .update_frame_memory(&plugin, |m| m.pos = Some((120, 80)));
@@ -657,7 +664,14 @@ fn oben_halten_and_the_position_are_remembered_per_plugin() {
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(other)));
     h.run_steps(3);
-    let w = h.state().ui().plugin_windows.iter().find(|w| w.device == other).copied().unwrap();
+    let w = h
+        .state()
+        .ui()
+        .plugin_windows
+        .iter()
+        .find(|w| w.device == other)
+        .copied()
+        .unwrap();
     assert!(!w.keep_on_top && w.pos.is_none());
 }
 

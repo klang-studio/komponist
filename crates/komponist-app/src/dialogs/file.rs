@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use egui::{Color32, Context, Id, Key, Modifiers, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
-use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::button::{Button, Kind};
+use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::{self as w};
 use komponist_ui::{icons, px, state};
 
@@ -410,10 +410,7 @@ fn location_row(ui: &mut Ui, b: &mut FileBrowser) -> Option<Output> {
         {
             b.parent();
         }
-        let r = ui.add(
-            TextField::new(&mut b.location, names::FOLDER)
-                .style(typography::VALUE_M),
-        );
+        let r = ui.add(TextField::new(&mut b.location, names::FOLDER).style(typography::VALUE_M));
         let r = r.labelled_by(label.id);
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             out = b.go_to_location();

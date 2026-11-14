@@ -297,8 +297,7 @@ impl Inspector {
     /// The late-block count of a running device while it shows "zu spät".
     fn late_state(&mut self, ctx: &ViewCtx<'_>, row: &DeviceRow, now: f64) -> Option<u64> {
         let running = row.status == RowStatus::Ok;
-        self.late
-            .state(ctx.engine.host(), row.device, running, now)
+        self.late.state(ctx.engine.host(), row.device, running, now)
     }
 }
 

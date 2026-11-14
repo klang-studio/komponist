@@ -100,9 +100,7 @@ impl View for Devices {
         let ids: Vec<DeviceId> = cards.iter().map(|c| c.device).collect();
         self.late.retain(&ids);
         let reveal = match &self.seen {
-            Some((t, old)) if *t == track.id => {
-                ids.iter().find(|d| !old.contains(d)).copied()
-            }
+            Some((t, old)) if *t == track.id => ids.iter().find(|d| !old.contains(d)).copied(),
             _ => None,
         };
         self.seen = Some((track.id, ids));

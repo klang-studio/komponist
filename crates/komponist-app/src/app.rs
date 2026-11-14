@@ -1940,7 +1940,8 @@ impl App {
                 }));
                 self.new_midi_track(None, pisynth_ref());
                 let track = self.ui.selection.tracks.iter().next().copied();
-                if let Some(device) = crate::views::browser::model::pisynth_of(self.project(), track)
+                if let Some(device) =
+                    crate::views::browser::model::pisynth_of(self.project(), track)
                 {
                     self.plugin_action(PluginAction::ApplyPisynthPreset { device, preset });
                 }
