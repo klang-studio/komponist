@@ -168,6 +168,18 @@ impl Row {
         Row::new(RowKind::Plain, name, "", level)
     }
 
+    /// A key unique within its section (egui ids, tests): the same plugin name can come as CLAP
+    /// and VST3 ("Dexed"), so plugins are keyed by format and id.
+    pub fn key(&self) -> String {
+        match &self.kind {
+            RowKind::Plugin { plugin, .. } => format!("plugin:{:?}:{}", plugin.format, plugin.id),
+            RowKind::Folder { key, .. } => format!("folder:{key}"),
+            RowKind::Preset(i) => format!("preset:{i}"),
+            RowKind::Take { clip, take } => format!("take:{}:{take}", clip.0),
+            RowKind::Section | RowKind::Plain => format!("text:{}", self.name),
+        }
+    }
+
     /// Whether ↑ ↓ and a click can highlight it (everything but sections and plain text).
     pub fn selectable(&self) -> bool {
         !matches!(self.kind, RowKind::Section | RowKind::Plain)
@@ -790,6 +802,33 @@ mod tests {
     ) -> Vec<Row> {
         let collapsed = BTreeSet::new();
         rows(&input(c, f, &collapsed, p, segment, q))
+    }
+
+    #[test]
+    fn row_keys_are_unique_within_a_section() {
+        let mut c = catalog();
+        let mut vst3 = descriptor("surge-vst3", "Surge XT", PluginKind::Instrument, &[]);
+        vst3.format = BundleFormat::Vst3;
+        let mut descriptors = vec![vst3];
+        descriptors.push(descriptor("surge", "Surge XT", PluginKind::Instrument, &[]));
+        c.set_scanned(&descriptors);
+        let p = demo_project();
+        let collapsed = BTreeSet::new();
+        let f = Favorites::default();
+        let rows = rows(&input(&c, &f, &collapsed, &p, BrowserSegment::All, ""));
+        let mut seen = std::collections::HashSet::new();
+        let mut section = String::new();
+        for r in &rows {
+            if r.kind == RowKind::Section {
+                section = r.name.clone();
+            }
+            assert!(
+                seen.insert((section.clone(), r.key())),
+                "{section} {}",
+                r.name
+            );
+        }
+        assert_eq!(rows.iter().filter(|r| r.name == "Surge XT").count(), 2);
     }
 
     #[test]

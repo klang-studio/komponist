@@ -232,24 +232,17 @@ impl Browser {
             .font(font)
             .text_color(color32(color::TEXT_1))
             .hint_text(fonts::rich_text(names::SEARCH, &style).color(color32(color::TEXT_3)))
-            .desired_width(field.width());
+            .desired_width(field.width())
+            // ↑ ↓ and Esc belong to the browser while typing (egui would move or drop the focus).
+            .event_filter(egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+                tab: false,
+            });
         let response = ui.put(field, edit);
         ui.ctx()
             .accesskit_node_builder(response.id, |n| n.set_label(names::SEARCH));
-        if response.has_focus() {
-            // ↑ ↓ and Esc belong to the browser while typing (egui would move or drop the focus).
-            ui.memory_mut(|m| {
-                m.set_focus_lock_filter(
-                    search_id(),
-                    egui::EventFilter {
-                        horizontal_arrows: true,
-                        vertical_arrows: true,
-                        escape: true,
-                        tab: false,
-                    },
-                );
-            });
-        }
         if response.changed() {
             ctx.send(Action::Ui(UiAction::SetBrowserQuery(self.query.clone())));
         }
@@ -279,12 +272,9 @@ impl Browser {
                     if row.kind == RowKind::Section {
                         section = &row.name;
                     }
-                    let id = ui.scope_id().with((
-                        "komponist_browser_row",
-                        section,
-                        &row.name,
-                        row.level,
-                    ));
+                    let id = ui
+                        .scope_id()
+                        .with(("komponist_browser_row", section, row.key()));
                     let marked = mark == Some(i);
                     let response = row_ui(ui, ctx, id, row, width, marked);
                     if marked && scroll_to_mark {
