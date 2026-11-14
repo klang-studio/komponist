@@ -104,12 +104,21 @@ pub fn screens_catalog() -> Catalog {
     c
 }
 
-/// The reference of catalog entry `id` in `catalog`.
+/// The reference of catalog entry `id` in `catalog` (not an internal effect: their ids `eq`,
+/// `delay` and `hall` are the same words as the demo plugins').
 pub fn plugin(catalog: &Catalog, id: &str) -> PluginRef {
     catalog
         .entries()
         .iter()
-        .find(|e| e.plugin.id == id)
+        .find(|e| {
+            e.plugin.id == id
+                && !matches!(
+                    e.location,
+                    komponist_plugins::PluginLocation::InProcess(
+                        komponist_plugins::BuiltinKind::Internal(_)
+                    )
+                )
+        })
         .unwrap_or_else(|| panic!("{id} in the catalog"))
         .plugin
         .clone()

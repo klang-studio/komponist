@@ -200,8 +200,10 @@ fn folders_open_and_close() {
     let rows = row_names(&h);
     let i = rows.iter().position(|r| r == "Hall und Delay").unwrap();
     assert_eq!(
-        rows[i + 1..i + 4],
+        rows[i + 1..i + 6],
         [
+            "Delay",
+            "Hall",
             "Dragonfly Early Reflections",
             "Dragonfly Hall Reverb",
             "Dragonfly Plate Reverb"
@@ -238,15 +240,14 @@ fn search_types_filters_moves_and_adds_to_the_selected_track() {
         .type_text("hall");
     h.run_steps(2);
     assert_eq!(h.state().ui().browser.query, "hall");
-    h.get_by_role_and_label(Role::Heading, &names::hits(1, "hall"));
-    // The first hit is marked.
-    let first = h.get_by_role_and_label(Role::ListItem, "Dragonfly Hall Reverb");
+    h.get_by_role_and_label(Role::Heading, &names::hits(2, "hall"));
+    // The first hit is marked: the internal "Hall".
+    let first = h.get_by_role_and_label(Role::ListItem, "Hall");
     assert_eq!(first.accesskit_node().is_selected(), Some(true));
-    // ↓ marks the next row (category "Hall und Delay"), Enter adds it to Pad.
+    // ↓ marks the next hit, Enter adds it to Pad.
     key(&mut h, egui::Key::ArrowDown);
-    let next = h.get_by_role_and_label(Role::ListItem, "Dragonfly Early Reflections");
+    let next = h.get_by_role_and_label(Role::ListItem, "Dragonfly Hall Reverb");
     assert_eq!(next.accesskit_node().is_selected(), Some(true));
-    key(&mut h, egui::Key::ArrowUp);
     key(&mut h, egui::Key::Enter);
     let hall = plugin(&screens_catalog(), "hall");
     assert_eq!(adds(h.state()), [(hall, DropTarget::Track(pad))]);
