@@ -251,17 +251,6 @@ pub(crate) fn styled_line(
     ui.painter().layout_job(job)
 }
 
-/// Adds a single-line text field with the accent ring while it has the focus (the browser search's
-/// active state in S05: `inset 0 0 0 1px accent`).
-pub(crate) fn text_field(ui: &mut Ui, edit: egui::TextEdit<'_>) -> Response {
-    ui.scope(|ui| {
-        ui.visuals_mut().selection.stroke =
-            Stroke::new(komponist_tokens::line::WIDTH, color32(color::ACCENT));
-        ui.add(edit)
-    })
-    .inner
-}
-
 /// Allocates and paints `galley` at the cursor (a label with an AccessKit node).
 pub(crate) fn paint_text(ui: &mut Ui, galley: Arc<Galley>, name: &str) -> Response {
     let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());

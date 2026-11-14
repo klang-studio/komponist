@@ -17,9 +17,10 @@ use std::path::{Path, PathBuf};
 use egui::{Color32, Context, Id, Key, Modifiers, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
+use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::button::{Button, Kind};
 use komponist_ui::widgets::{self as w};
-use komponist_ui::{fonts, icons, px, state};
+use komponist_ui::{icons, px, state};
 
 use super::metrics::dialog as m;
 use super::{ActionButton, button_row, header, label_node, modal, styled};
@@ -409,13 +410,11 @@ fn location_row(ui: &mut Ui, b: &mut FileBrowser) -> Option<Output> {
         {
             b.parent();
         }
-        let edit = egui::TextEdit::singleline(&mut b.location)
-            .font(fonts::font_id(&typography::VALUE_M))
-            .desired_width(ui.available_width())
-            .min_size(vec2(0.0, size::CONTROL))
-            .align(egui::Align2::LEFT_CENTER)
-            .margin(egui::Margin::symmetric(space::SPACE_2 as i8, 0));
-        let r = super::text_field(ui, edit).labelled_by(label.id);
+        let r = ui.add(
+            TextField::new(&mut b.location, names::FOLDER)
+                .style(typography::VALUE_M),
+        );
+        let r = r.labelled_by(label.id);
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             out = b.go_to_location();
         }
@@ -556,14 +555,9 @@ fn name_row(ui: &mut Ui, b: &mut FileBrowser) -> bool {
     ui.horizontal(|ui| {
         let label = field_label(ui, names::FILE_NAME);
         let id = Id::unique("komponist_file_name");
-        let edit = egui::TextEdit::singleline(&mut b.name)
-            .id(id)
-            .font(fonts::font_id(&typography::UI))
-            .desired_width(ui.available_width())
-            .min_size(vec2(0.0, size::CONTROL))
-            .align(egui::Align2::LEFT_CENTER)
-            .margin(egui::Margin::symmetric(space::SPACE_2 as i8, 0));
-        let r = super::text_field(ui, edit).labelled_by(label.id);
+        let r = ui
+            .add(TextField::new(&mut b.name, names::FILE_NAME).id(id))
+            .labelled_by(label.id);
         if b.focus_name {
             r.request_focus();
             b.focus_name = false;

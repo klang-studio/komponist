@@ -132,6 +132,11 @@ fn gallery_cards() {
         number_field::gallery,
     );
     shots.add("knob-gallery", Some(vec2(720.0, 220.0)), knob::gallery);
+    shots.add(
+        "text-field-gallery",
+        Some(vec2(860.0, 90.0)),
+        komponist_ui::widgets::text_field::gallery,
+    );
     shots.add("fader-gallery", Some(vec2(720.0, 640.0)), fader::gallery);
     shots.finish();
 }
@@ -679,4 +684,19 @@ fn meter_falls_after_the_hold() {
         h.step();
     }
     assert!(h.state().state.held_db(0) < held - 15.0);
+}
+
+#[test]
+fn a_text_field_is_a_named_text_input_that_edits() {
+    use komponist_ui::widgets::text_field::TextField;
+    let mut h = harness(String::new(), |ui, s| {
+        ui.add(TextField::new(s, "Filter").hint("Filter").width(160.0));
+    });
+    let node = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Filter");
+    node.focus();
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Filter")
+        .type_text("Abc");
+    h.run();
+    assert_eq!(h.state(), "Abc");
 }

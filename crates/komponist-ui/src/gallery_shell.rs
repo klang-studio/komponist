@@ -208,6 +208,10 @@ pub fn designsystem() -> Vec<Section> {
                 .ix(ix::NUMBER)
                 .content(widgets::number_field::gallery)
                 .owner("WP-21"),
+            Card::new("Textfeld")
+                .spec("h 28 · px 8 · type.ui · Hinweis text.3 · Fokus accent")
+                .content(widgets::text_field::gallery)
+                .owner("WP-47b"),
             Card::new("Drehregler, flach")
                 .spec("Ø 28 (klein 20) · Bogen 270° · Strich 2")
                 .ix(ix::KNOB)

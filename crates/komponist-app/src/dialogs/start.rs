@@ -13,7 +13,8 @@ use std::time::SystemTime;
 
 use egui::{Color32, Key, Modifiers, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{TrackPalette, color, radius, size, space, typography};
+use komponist_tokens::{TrackPalette, color, radius, size, typography};
+use komponist_ui::widgets::text_field::TextField;
 use komponist_ui::widgets::button::Kind;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, px, state};
@@ -450,20 +451,12 @@ fn right_column(
         header.max,
     );
     let mut field_ui = col.new_child(UiBuilder::new().max_rect(field));
-    let edit = egui::TextEdit::singleline(&mut view.filter)
-        .id(filter_id)
-        .hint_text(
-            egui::RichText::new(names::FILTER)
-                .font(fonts::font_id(&typography::UI))
-                .color(color32(color::TEXT_3)),
-        )
-        .font(fonts::font_id(&typography::UI))
-        .desired_width(m::FILTER_WIDTH)
-        .min_size(vec2(m::FILTER_WIDTH, size::CONTROL))
-        .align(egui::Align2::LEFT_CENTER)
-        .margin(egui::Margin::symmetric(space::SPACE_2 as i8, 0));
-    let filter = super::text_field(&mut field_ui, edit);
-    w::accesskit(&filter, |n| n.set_label(names::FILTER));
+    let filter = field_ui.add(
+        TextField::new(&mut view.filter, names::FILTER)
+            .id(filter_id)
+            .hint(names::FILTER)
+            .width(m::FILTER_WIDTH),
+    );
     if filter.changed() {
         view.selected = 0;
     }
