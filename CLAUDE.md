@@ -40,7 +40,8 @@ each crate has **one** integration binary, `tests/it/main.rs`, with one `mod` pe
 `tests/common/` are declared there once with `#[path]`). A new test goes into a module of `it`, not into a new
 `tests/*.rs`. Only tests that need their own process stay separate: winit event loops (`plugin_frame_gui`,
 `acceptance_flow4_gui`, `plugin_frame_installed`, run by `scripts/check-gui.sh`) and the `--release --ignored`
-perf suites that `docs/PERFORMANCE.md` names (`soak`, `engine_perf`, `arrangement_perf`). Run one module:
+perf suites that `docs/PERFORMANCE.md` names (`soak`, `engine_perf`, `arrangement_perf`), and tests that count
+the child processes of the test process (`plugin_exit`). Run one module:
 `cargo test -p komponist-app --test it piano_roll::`.
 
 ## Commands

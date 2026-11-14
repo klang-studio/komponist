@@ -32,7 +32,6 @@ mod klopfer;
 mod mixer;
 mod params_project;
 mod piano_roll;
-mod plugin_exit;
 mod plugin_frame;
 mod plugins;
 mod record;
