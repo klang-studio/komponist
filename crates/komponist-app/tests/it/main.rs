@@ -28,6 +28,7 @@ mod dispatch;
 mod export;
 mod export_bridges;
 mod inspector;
+mod internal_devices;
 mod klopfer;
 mod mixer;
 mod params_project;

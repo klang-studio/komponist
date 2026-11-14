@@ -75,7 +75,7 @@ use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
-use crate::views::devices::model::{all_plugin_params, pisynth_params};
+use crate::views::devices::model::{all_plugin_params, internal_params, pisynth_params};
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1175,7 +1175,10 @@ impl App {
         }
         let params = match self.project().find_device(device) {
             Some((_, _, d)) if is_pisynth(d) => pisynth_params(d),
-            _ => Vec::new(),
+            Some((_, _, d)) => crate::device_host::internal_kind(d)
+                .map(|kind| internal_params(kind, d))
+                .unwrap_or_default(),
+            None => Vec::new(),
         };
         ParamGrid { params }
     }

@@ -2524,6 +2524,7 @@ name = "komponist-model"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "komponist-tokens",
  "proptest",
  "serde",
  "serde_json",
@@ -2534,6 +2535,7 @@ name = "komponist-plugins"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "komponist-builtin",
  "komponist-engine",
  "komponist-ipc",
  "komponist-model",

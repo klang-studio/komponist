@@ -42,7 +42,7 @@ fn context_id(device: DeviceId) -> Id {
 
 /// The placeholders a device's layout resolves with until a view sets them: operator 1, band 1,
 /// pad 1.
-fn default_context() -> ParamContext {
+pub(super) fn default_context() -> ParamContext {
     ParamContext::new()
         .with(ENV_OP, 1)
         .with(BAND, 1)
@@ -709,7 +709,8 @@ mod tests {
                     let page = card.current_page().unwrap().clone();
                     let origin = ui.min_rect().min;
                     for cell in &page.cells {
-                        let rect = cell.rect().translate(origin.to_vec2());
+                        let rect = crate::views::devices::layout::cell_rect(cell)
+                            .translate(origin.to_vec2());
                         draw_cell(ui, out, card, &palette, cell, rect);
                     }
                 },
@@ -863,7 +864,8 @@ mod tests {
                         color32(color::SURFACE_2),
                     );
                     for cell in &page.cells {
-                        let rect = cell.rect().translate(origin.to_vec2());
+                        let rect = crate::views::devices::layout::cell_rect(cell)
+                            .translate(origin.to_vec2());
                         draw_cell(ui, out, card, &palette, cell, rect);
                     }
                 },

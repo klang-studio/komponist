@@ -5,7 +5,7 @@
 use komponist_builtin::Macro;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
-use komponist_model::params::{ParamContext, ParamId, ParamInfo, auto_layout};
+use komponist_model::params::{ParamId, ParamInfo, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
 use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -13,7 +13,7 @@ use komponist_tokens::device;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
-use crate::device_host::{DeviceHost, is_pisynth};
+use crate::device_host::{DeviceHost, internal_kind, is_pisynth};
 use crate::ui_state::{PluginWindow, Reveal};
 use crate::views::format_tag;
 
@@ -296,6 +296,8 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
     let params = if state == CardState::Ok {
         if is_pisynth(device) {
             pisynth_params(device)
+        } else if let Some(kind) = internal_kind(device) {
+            internal_params(kind, device)
         } else {
             host.params(device.id)
                 .map(|infos| plugin_params(infos, |id| host.param_value(device.id, id)))
@@ -305,14 +307,20 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         Vec::new()
     };
     let instrument = device.role == DeviceRole::Instrument;
-    let layout = DeviceLayout::knob_grid(
-        params.iter().map(|p| p.info.id.clone()),
-        metrics::COLUMNS as u8,
+    // Internal devices bring their own layout; everything else gets the auto-layout.
+    let layout = internal_kind(device).map_or_else(
+        || {
+            DeviceLayout::knob_grid(
+                params.iter().map(|p| p.info.id.clone()),
+                metrics::COLUMNS as u8,
+            )
+        },
+        |kind| kind.layout().clone(),
     );
     #[cfg(debug_assertions)]
-    {
+    if state == CardState::Ok {
         let known = |id: &ParamId| params.iter().any(|p| p.info.id == *id);
-        let errors = layout::validate(&layout, &ParamContext::new(), &known);
+        let errors = layout::validate(&layout, &super::cells::default_context(), &known);
         debug_assert!(
             errors.is_empty(),
             "layout of {}: {errors:?}",
@@ -349,6 +357,25 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         late: None,
         state,
     }
+}
+
+/// The parameters of an internal effect with the values in its device state (the defaults for a
+/// state that does not load); the wire id is the index in `kind.params()`.
+pub fn internal_params(kind: komponist_builtin::Internal, device: &Device) -> Vec<Param> {
+    let values = kind
+        .decode_state(device.state.as_deref())
+        .unwrap_or_else(|_| kind.defaults());
+    kind.params()
+        .iter()
+        .zip(values)
+        .enumerate()
+        .map(|(i, (info, value))| Param {
+            wire: i as u32,
+            text: info.format(value),
+            info: info.clone(),
+            value,
+        })
+        .collect()
 }
 
 /// pisynth's 8 macros, read from the patch in the device state.

@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+komponist-builtin.workspace = true
 komponist-model.workspace = true
 komponist-engine.workspace = true
 komponist-ipc.workspace = true

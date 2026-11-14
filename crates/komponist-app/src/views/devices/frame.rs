@@ -858,7 +858,7 @@ fn cells_body(
     let palette = TrackPalette::new(at.track.hue.0);
     let origin = pos2(body.left(), area.top());
     for cell in &page.cells {
-        let rect = cell.rect().translate(origin.to_vec2());
+        let rect = super::layout::cell_rect(cell).translate(origin.to_vec2());
         if rect.bottom() <= body.bottom() {
             let mut out = Vec::new();
             super::cells::draw_cell(cu, &mut out, card, &palette, cell, rect);

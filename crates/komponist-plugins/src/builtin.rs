@@ -19,7 +19,9 @@ use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
 use komponist_model::{PluginFormat, PluginRef};
 use serde_json::{Map, Value};
 
-use crate::catalog::{BuiltinKind, CatalogEntry, PluginLocation};
+use komponist_builtin::Internal;
+
+use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
 
 /// CLAP id of klopfer (`../klopfer/src/lib.rs`), loaded from the bundled `Klopfer.clap`.
 pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
@@ -40,7 +42,8 @@ pub const KLOPFER_FIRST_NOTE: u8 = 36;
 /// Plugin state fields of klopfer that belong to the session, not to a kit (klopfer's `kit.rs`).
 const SESSION_FIELDS: [&str; 2] = ["editor-state", "midi-map"];
 
-/// The built-in entries: pisynth always, klopfer if `klopfer_bundle` is `Some`.
+/// The built-in entries: pisynth always, klopfer if `klopfer_bundle` is `Some`, then the internal
+/// effects (EQ, Delay, Hall, Limiter).
 pub(crate) fn entries(klopfer_bundle: Option<PathBuf>) -> Vec<CatalogEntry> {
     let mut entries = vec![CatalogEntry {
         plugin: builtin_ref(BUILTIN_PISYNTH, "pisynth", "klang-studio"),
@@ -63,7 +66,21 @@ pub(crate) fn entries(klopfer_bundle: Option<PathBuf>) -> Vec<CatalogEntry> {
             },
         });
     }
+    entries.extend(Internal::ALL.into_iter().map(internal_entry));
     entries
+}
+
+/// The catalog entry of an internal effect: name, reference and features come from
+/// `komponist_builtin::Internal` (the one place a device is defined).
+fn internal_entry(kind: Internal) -> CatalogEntry {
+    let features: Vec<String> = kind.features().iter().map(|f| (*f).to_owned()).collect();
+    CatalogEntry {
+        plugin: kind.plugin_ref(),
+        kind: PluginKind::Effect,
+        category: Some(EffectCategory::from_features(&features)),
+        features,
+        location: PluginLocation::InProcess(BuiltinKind::Internal(kind)),
+    }
 }
 
 /// The reference of a built-in ("INTERN").

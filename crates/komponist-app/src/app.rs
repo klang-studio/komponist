@@ -668,6 +668,21 @@ impl App {
         self.store_state(device, &state);
     }
 
+    /// A knob of an internal effect turned: the value goes into the device state in the document,
+    /// outside the history like every device state, so the card shows it and saving keeps it.
+    fn store_internal_param(&mut self, device: DeviceId, wire: u32, value: f64) {
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        let Some(kind) = crate::device_host::internal_kind(d) else {
+            return;
+        };
+        let Some(state) = kind.with_value(d.state.as_deref(), wire, value) else {
+            return;
+        };
+        self.store_state(device, &state.into());
+    }
+
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
     /// processor (into the slot they already have).
     fn load_found_devices(&mut self) {
@@ -2100,6 +2115,7 @@ impl App {
                     self.engine.send(Command::SetParam { slot, id, value });
                 }
                 self.store_macro(device, id, value);
+                self.store_internal_param(device, id, value);
             }
         }
     }
