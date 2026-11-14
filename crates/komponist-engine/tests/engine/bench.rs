@@ -89,9 +89,10 @@ impl Processor for Idle {
 /// worker threads.
 fn run(workers: usize, make: impl Fn(u32) -> Box<dyn Processor>) -> (Duration, Duration) {
     let mut rig = Rig::new(RATE, BLOCK);
-    let status = rig
-        .engine
-        .set_workers(workers, Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY));
+    let status = rig.engine.set_workers(
+        workers,
+        Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY),
+    );
     if let Some(e) = status.realtime_error {
         eprintln!("workers without SCHED_FIFO: {e}");
     }

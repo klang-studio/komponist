@@ -804,7 +804,9 @@ mod tests {
         let detached = sync.detach().unwrap();
         assert_eq!(sync.set_workers(Some(3)).unwrap(), None);
         sync.attach(detached);
-        assert!(wait_until(|| sync.worker_status().is_some_and(|s| s.threads == 3)));
+        assert!(wait_until(|| sync
+            .worker_status()
+            .is_some_and(|s| s.threads == 3)));
         let before = sync.playhead();
         assert!(wait_until(|| {
             sync.poll();
