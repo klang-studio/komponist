@@ -218,7 +218,13 @@ fn macro_events_match_the_document_side_set() {
         .map(|&(m, v)| (100, param(m, v)))
         .collect();
     events.extend(changes[5..].iter().map(|&(m, v)| (300, param(m, v))));
-    events.push((300, EventKind::Param { id: 999, value: 1.0 }));
+    events.push((
+        300,
+        EventKind::Param {
+            id: 999,
+            value: 1.0,
+        },
+    ));
     let _ = play(&mut p, 512, 256, &events);
     assert_eq!(*p.patch(), expected);
     for (m, v) in changes {
