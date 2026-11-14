@@ -13,6 +13,10 @@
 //! | ↑ ↓ (focused), mouse wheel (hovered) | one step, Shift fine, Ctrl coarse |
 //! | Enter (focused) | text entry, for keyboard users |
 //!
+//! [`NumberField::key`] puts the name inside the box, as the editors' toolbars draw their fields
+//! ("Länge 16 Steps", "Vel 66"): the key left in `type.value.s` `text.3`, the value right in
+//! `type.value.m` with its unit after it. Text entry then starts right of the key.
+//!
 //! AccessKit: role `SpinButton`, the German name the caller gives, the value as number and as text
 //! with unit ("124.00 BPM"), range and step; increment, decrement and set-value requests work.
 //!
@@ -79,6 +83,8 @@ pub struct NumberField<'a> {
     width: f32,
     format: Option<Formatter<'a>>,
     parse: Option<Parser<'a>>,
+    key: Option<String>,
+    text_entry: bool,
 }
 
 impl<'a> NumberField<'a> {
@@ -96,7 +102,25 @@ impl<'a> NumberField<'a> {
             width: metrics::WIDTH,
             format: None,
             parse: None,
+            key: None,
+            text_entry: true,
         }
+    }
+
+    /// The key inside the box, left of the value ("Länge"); the value then stands right with its
+    /// unit after it.
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// No text entry (double-click and Enter do nothing), for fields whose text is not a number
+    /// ("1/4", "C4").
+    #[must_use]
+    pub fn no_text_entry(mut self) -> Self {
+        self.text_entry = false;
+        self
     }
 
     /// The unit shown on the right ("BPM", "dB"); typing it in text entry is allowed.
@@ -242,6 +266,34 @@ pub const UNIT_TEXT: TypeStyle = typography::VALUE_S;
 /// paints an empty `value` and shows a text edit instead).
 pub fn paint(painter: &Painter, rect: Rect, look: &Look, value: &str, unit: &str, fraction: f32) {
     let ppp = painter.pixels_per_point();
+    let r = paint_base(painter, rect, look, fraction);
+    let pad = space::SPACE_2;
+    if !unit.is_empty() {
+        let g = painter.layout_job(fonts::layout_job(unit, &UNIT_TEXT, Color32::PLACEHOLDER));
+        let pos = text_pos(r, &g, r.right() - pad - g.size().x, ppp);
+        painter.galley(pos, g, look.unit);
+    }
+    if !value.is_empty() {
+        let g = painter.layout_job(fonts::layout_job(value, &VALUE_TEXT, Color32::PLACEHOLDER));
+        let pos = text_pos(r, &g, r.left() + pad, ppp);
+        if look.editing {
+            // `background: accent.surface; padding: 0 1px` around the preselected value.
+            let sel = Rect::from_min_size(pos, g.size()).expand2(vec2(px::line_width(ppp), 0.0));
+            painter.rect_filled(sel, CornerRadius::ZERO, color32(color::ACCENT_SURFACE));
+        }
+        painter.galley(pos, g, look.value);
+    }
+    if look.editing {
+        paint_entry_ring(painter, r, radius::M);
+    }
+    if look.focus_ring {
+        focus::paint_ring(painter, r, radius::M);
+    }
+}
+
+/// Background and value bar of a field: returns the pixel-snapped rect.
+fn paint_base(painter: &Painter, rect: Rect, look: &Look, fraction: f32) -> Rect {
+    let ppp = painter.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
     px::fill(painter, r, radius::M, look.fill);
     if let Some(bar) = look.bar {
@@ -259,21 +311,37 @@ pub fn paint(painter: &Painter, rect: Rect, look: &Look, value: &str, unit: &str
             painter.rect_filled(bar_rect, cr, bar);
         }
     }
+    r
+}
+
+/// Where the text entry of a keyed field starts: right of the key and a gap of `space.2`.
+fn keyed_entry_left(painter: &Painter, rect: Rect, key: &str) -> f32 {
+    let g = painter.layout_job(fonts::layout_job(key, &UNIT_TEXT, Color32::PLACEHOLDER));
+    rect.left() + space::SPACE_2 + g.size().x + space::SPACE_2
+}
+
+/// Paints a field with its key inside (`Länge 16 Steps`): the key left (`type.value.s`,
+/// `text.3`), `value` (with its unit) right-aligned in `type.value.m`. With `look.editing` and an
+/// empty `value` only the key and the rings are painted, and the text edit goes right of the key
+/// (see [`keyed_entry_left`]).
+pub fn paint_keyed(
+    painter: &Painter,
+    rect: Rect,
+    look: &Look,
+    key: &str,
+    value: &str,
+    fraction: f32,
+) {
+    let ppp = painter.pixels_per_point();
+    let r = paint_base(painter, rect, look, fraction);
     let pad = space::SPACE_2;
-    if !unit.is_empty() {
-        let g = painter.layout_job(fonts::layout_job(unit, &UNIT_TEXT, Color32::PLACEHOLDER));
-        let pos = text_pos(r, &g, r.right() - pad - g.size().x, ppp);
-        painter.galley(pos, g, look.unit);
-    }
+    let k = painter.layout_job(fonts::layout_job(key, &UNIT_TEXT, Color32::PLACEHOLDER));
+    let pos = text_pos(r, &k, r.left() + pad, ppp);
+    painter.galley(pos, k, look.unit);
     if !value.is_empty() {
-        let g = painter.layout_job(fonts::layout_job(value, &VALUE_TEXT, Color32::PLACEHOLDER));
-        let pos = text_pos(r, &g, r.left() + pad, ppp);
-        if look.editing {
-            // `background: accent.surface; padding: 0 1px` around the preselected value.
-            let sel = Rect::from_min_size(pos, g.size()).expand2(vec2(px::line_width(ppp), 0.0));
-            painter.rect_filled(sel, CornerRadius::ZERO, color32(color::ACCENT_SURFACE));
-        }
-        painter.galley(pos, g, look.value);
+        let v = painter.layout_job(fonts::layout_job(value, &VALUE_TEXT, Color32::PLACEHOLDER));
+        let pos = text_pos(r, &v, r.right() - pad - v.size().x, ppp);
+        painter.galley(pos, v, look.value);
     }
     if look.editing {
         paint_entry_ring(painter, r, radius::M);
@@ -315,8 +383,10 @@ impl Widget for NumberField<'_> {
             take_focus_on_press(&response);
             match ClickAction::of(&response) {
                 ClickAction::Reset => value = self.default,
-                ClickAction::TextEntry => entry::open(&ctx, id, self.text(value)),
-                ClickAction::None => {}
+                ClickAction::TextEntry if self.text_entry => {
+                    entry::open(&ctx, id, self.text(value));
+                }
+                ClickAction::TextEntry | ClickAction::None => {}
             }
             let step = self.step;
             let start = || ValueDrag::number(value, min, max, step);
@@ -328,7 +398,7 @@ impl Widget for NumberField<'_> {
             if steps != 0.0 {
                 value = snap_to(value + steps * step, step * drag::FINE);
             }
-            if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            if self.text_entry && response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 entry::open(&ctx, id, self.text(value));
             }
             let (ak_steps, ak_set) = accesskit_requests(ui, id);
@@ -347,22 +417,35 @@ impl Widget for NumberField<'_> {
         let fraction = normalized(value.clamp(min, max), min, max) as f32;
         let text = self.text(value.clamp(min, max));
         let painter = ui.painter();
-        paint(
-            painter,
-            rect,
-            &lk,
-            if editing { "" } else { &text },
-            &self.unit,
-            fraction,
-        );
+        let shown = if editing { "" } else { &text };
+        let keyed_text;
+        if let Some(key) = &self.key {
+            // While typing, the unit alone stays at the right edge.
+            keyed_text = if self.unit.is_empty() || editing {
+                if editing {
+                    self.unit.clone()
+                } else {
+                    shown.to_owned()
+                }
+            } else {
+                format!("{shown} {}", self.unit)
+            };
+            paint_keyed(painter, rect, &lk, key, &keyed_text, fraction);
+        } else {
+            paint(painter, rect, &lk, shown, &self.unit, fraction);
+        }
         if editing {
             let unit_w = if self.unit.is_empty() {
                 0.0
             } else {
                 galley(ui, &self.unit, &UNIT_TEXT).size().x + space::SPACE_1
             };
+            let left = match &self.key {
+                Some(key) => keyed_entry_left(ui.painter(), rect, key),
+                None => rect.left() + space::SPACE_2,
+            };
             let text_rect = Rect::from_min_max(
-                pos2(rect.left() + space::SPACE_2, rect.top()),
+                pos2(left, rect.top()),
                 pos2(rect.right() - space::SPACE_2 - unit_w, rect.bottom()),
             );
             match entry::show(ui, id, text_rect, &self.name) {
@@ -992,6 +1075,7 @@ struct Live {
     tempo: f64,
     volume: f32,
     velocity: i32,
+    length: i32,
 }
 
 impl Default for Live {
@@ -1000,6 +1084,7 @@ impl Default for Live {
             tempo: 124.0,
             volume: -6.0,
             velocity: 100,
+            length: 16,
         }
     }
 }
@@ -1022,6 +1107,14 @@ fn live_row(ui: &mut Ui) {
             NumberField::new(&mut live.velocity, "Velocity")
                 .range(1.0..=127.0)
                 .default_value(100.0),
+        );
+        ui.add(
+            NumberField::new(&mut live.length, "Länge")
+                .key("Länge")
+                .unit("Steps")
+                .range(1.0..=32.0)
+                .default_value(16.0)
+                .width(108.0),
         );
         caption(
             ui,

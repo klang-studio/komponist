@@ -73,6 +73,14 @@ pub mod metrics {
     pub const SWATCH_COLUMNS: usize = 7;
     /// Action button in a panel header: 24 × 20.
     pub const PANEL_ACTION: [f32; 2] = [size::CONTROL, size::CONTROL_COMPACT];
+    /// Gap between a dropdown's label and its value (`gap:10px` in the toolbars' "Raster 1/16").
+    pub const DROPDOWN_LABEL_GAP: f32 = space::SPACE_2 + space::SPACE_0_5;
+    /// Height of dialog buttons (S06 `height:28px`).
+    pub const DIALOG_BUTTON_HEIGHT: f32 = 28.0;
+    /// Height of the start screen's buttons (S09 `height:32px`).
+    pub const LARGE_BUTTON_HEIGHT: f32 = space::SPACE_8;
+    /// Horizontal padding of dialog and start-screen buttons (`padding:0 12px`).
+    pub const DIALOG_BUTTON_PADDING_X: f32 = space::SPACE_3;
     /// CSS weight of IBM Plex medium (bundled for Sans and Mono).
     pub const MEDIUM: u16 = 500;
     /// CSS weight of IBM Plex semibold (bundled for Sans and Mono).

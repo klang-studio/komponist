@@ -218,6 +218,8 @@ pub struct Dropdown<'a> {
     items: &'a [Item<'a>],
     width: Option<f32>,
     still_open: Option<Option<usize>>,
+    label: Option<&'a str>,
+    compact: bool,
 }
 
 impl<'a> Dropdown<'a> {
@@ -230,7 +232,51 @@ impl<'a> Dropdown<'a> {
             items,
             width: None,
             still_open: None,
+            label: None,
+            compact: false,
         }
+    }
+
+    /// A label inside the box before the value ("Raster 1/16 ▾": `text.3`, then 10 px gap), as
+    /// the toolbars draw it. Field text is then `type.small`; the list stays `type.ui`.
+    pub fn label(mut self, label: &'a str) -> Self {
+        self.label = Some(label);
+        self
+    }
+
+    /// `size.control-compact` (20) high with `type.small` text, for panel-header tools.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// The text style of the field.
+    fn field_style(&self) -> typography::TypeStyle {
+        if self.label.is_some() || self.compact {
+            typography::SMALL
+        } else {
+            typography::UI
+        }
+    }
+
+    fn height(&self) -> f32 {
+        if self.compact {
+            size::CONTROL_COMPACT
+        } else {
+            size::CONTROL
+        }
+    }
+
+    /// Width of the label and its gap, 0 without a label.
+    fn label_width(&self, ui: &Ui) -> f32 {
+        self.label.map_or(0.0, |l| {
+            let style = self.field_style();
+            super::galley(ui, l, fonts::font_id(&style), style.line_height)
+                .size()
+                .x
+                .ceil()
+                + metrics::DROPDOWN_LABEL_GAP
+        })
     }
 
     /// A fixed field width instead of the natural one.
@@ -251,20 +297,32 @@ impl<'a> Dropdown<'a> {
     }
 
     fn natural_width(&self, ui: &Ui) -> f32 {
-        let style = typography::UI;
-        let widest = self
-            .items
-            .iter()
-            .map(|it| {
-                super::galley(ui, it.label, fonts::font_id(&style), style.line_height)
-                    .size()
-                    .x
-            })
-            .fold(0.0_f32, f32::max)
-            .ceil();
-        let field = 2.0 * space::SPACE_2 + widest + space::SPACE_3 + metrics::CARET[0];
-        let list = 2.0 * space::SPACE_1 + 2.0 * space::SPACE_2 + metrics::CHECK_COLUMN + widest;
-        field.max(list).max(size::DROPDOWN_MIN_WIDTH)
+        let widest = |style: typography::TypeStyle| {
+            self.items
+                .iter()
+                .map(|it| {
+                    super::galley(ui, it.label, fonts::font_id(&style), style.line_height)
+                        .size()
+                        .x
+                })
+                .fold(0.0_f32, f32::max)
+                .ceil()
+        };
+        let field = 2.0 * space::SPACE_2
+            + self.label_width(ui)
+            + widest(self.field_style())
+            + space::SPACE_3
+            + metrics::CARET[0];
+        let list = 2.0 * space::SPACE_1
+            + 2.0 * space::SPACE_2
+            + metrics::CHECK_COLUMN
+            + widest(typography::UI);
+        if self.label.is_some() || self.compact {
+            // Toolbar fields are as wide as their content, not the 96 px minimum.
+            field.max(list)
+        } else {
+            field.max(list).max(size::DROPDOWN_MIN_WIDTH)
+        }
     }
 
     fn current_label(&self) -> &'a str {
@@ -272,17 +330,29 @@ impl<'a> Dropdown<'a> {
     }
 
     fn paint_field(&self, ui: &Ui, rect: Rect, l: FieldLook) {
-        let style = typography::UI;
+        let style = self.field_style();
         let painter = ui.painter();
         let ppp = ui.pixels_per_point();
         px::fill(painter, rect, radius::M, l.fill);
+        let mut x = rect.left() + space::SPACE_2;
+        if let Some(label) = self.label {
+            let galley = super::galley(ui, label, fonts::font_id(&style), style.line_height);
+            let pos = super::text_pos(rect, &galley, x, ppp);
+            x += galley.size().x.ceil() + metrics::DROPDOWN_LABEL_GAP;
+            let colour = if l.text == color32(color::TEXT_4) {
+                l.text
+            } else {
+                color32(color::TEXT_3)
+            };
+            painter.galley(pos, galley, colour);
+        }
         let galley = super::galley(
             ui,
             self.current_label(),
             fonts::font_id(&style),
             style.line_height,
         );
-        let pos = super::text_pos(rect, &galley, rect.left() + space::SPACE_2, ppp);
+        let pos = super::text_pos(rect, &galley, x, ppp);
         painter.galley(pos, galley, l.text);
         let [w, h] = metrics::CARET;
         let caret = px::snap_rect(
@@ -349,7 +419,7 @@ impl Dropdown<'_> {
     fn field(self, ui: &mut Ui, still_open: bool) -> Response {
         let width = self.width.unwrap_or_else(|| self.natural_width(ui));
         let (rect, mut response) =
-            ui.allocate_exact_size(vec2(width, size::CONTROL), super::sense(ui, Sense::click()));
+            ui.allocate_exact_size(vec2(width, self.height()), super::sense(ui, Sense::click()));
         let id = response.id;
         let list_id = id.with("list");
         let still = super::is_still(ui);
@@ -542,6 +612,17 @@ pub fn gallery(ui: &mut Ui) {
                 });
             });
         }
+    });
+    // The toolbars' variants: a label inside the box, 24 and 20 high.
+    let mut grid = 2;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SPACE_4;
+        ui.add(Dropdown::new("Raster · Werkzeugleiste", &mut grid, &GRID_ITEMS).label("Raster"));
+        ui.add(
+            Dropdown::new("Raster · Kopfleiste", &mut grid, &GRID_ITEMS)
+                .label("Raster")
+                .compact(),
+        );
     });
     let id = Id::unique("komponist_gallery_dropdown_live");
     let mut selected: usize = ui.data(|d| d.get_temp(id)).unwrap_or(2);

@@ -10,10 +10,18 @@
 //! | icon 24 × 24 | surface.3, text.2 | surface.4, text.1 | surface.5, text.1 | surface.2, text.4 |
 //! | without surface | –, text.2 | ground + 2, text.1 | ground + 3, text.1 | –, text.4 |
 //!
+//! Sizes ([`Height`]): `size.control` 24 (default), `size.control-compact` 20 (panel headers;
+//! [`Button::small`] sets its text in `type.small`), and the taller buttons of dialogs and the
+//! start screen: 28 and 32 high, padding 0 12 ([`Button::dialog`], [`Button::large`]). A
+//! [`Button::chip`] adds a shortcut chip after the label ("Quantisieren Q": `gap 8`, Mono 10,
+//! `text.3`); [`Button::hint`] a hint in `type.ui` ("Beat-Skizze"). [`Button::ground`] makes a
+//! secondary button rest one step above the surface it sits on (S06: on `surface.3` it is
+//! `surface.4`).
+//!
 //! Focus: the 1 px ring at 1 px distance, after keyboard input only. Enter or Space clicks a
 //! focused button. The tooltip appears after 600 ms with the shortcut ([`Tip`]).
 
-use egui::{Color32, Response, Role, Sense, Ui, Widget, WidgetInfo, vec2};
+use egui::{Color32, FontId, Response, Role, Sense, Ui, Widget, WidgetInfo, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{Icon, color, radius, size, space};
@@ -101,6 +109,83 @@ pub fn look(appearance: Appearance, state: State) -> ButtonLook {
     }
 }
 
+/// How high a button is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Height {
+    /// `size.control`, 24.
+    #[default]
+    Control,
+    /// `size.control-compact`, 20 (panel-header actions).
+    Compact,
+    /// 28, padding 0 12: the buttons of dialogs (S06 `height:28px`).
+    Dialog,
+    /// 32, padding 0 12: the buttons of the start screen (S09), text in `type.track`.
+    Large,
+}
+
+impl Height {
+    /// The height in points.
+    pub fn points(self) -> f32 {
+        match self {
+            Self::Control => size::CONTROL,
+            Self::Compact => size::CONTROL_COMPACT,
+            Self::Dialog => metrics::DIALOG_BUTTON_HEIGHT,
+            Self::Large => metrics::LARGE_BUTTON_HEIGHT,
+        }
+    }
+
+    /// Gap between the label and a chip or hint: 8 in toolbars (`Quantisieren`'s `gap:8px`), 10
+    /// in dialogs and on the start screen (S06 "Exportieren", `gap:10px`).
+    pub fn chip_gap(self) -> f32 {
+        match self {
+            Self::Control | Self::Compact => space::SPACE_2,
+            Self::Dialog | Self::Large => metrics::SHORTCUT_GAP,
+        }
+    }
+
+    /// Horizontal padding.
+    pub fn padding_x(self) -> f32 {
+        match self {
+            Self::Control | Self::Compact => metrics::BUTTON_PADDING_X,
+            Self::Dialog | Self::Large => metrics::DIALOG_BUTTON_PADDING_X,
+        }
+    }
+}
+
+/// Text after a button's label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trailing<'a> {
+    /// A shortcut chip ("Q", "Strg N"): Mono 10, `text.3` (on a primary button the label's
+    /// colour, medium).
+    Chip(&'a str),
+    /// A hint ("Beat-Skizze"): `type.ui`, `text.3`.
+    Hint(&'a str),
+}
+
+impl Trailing<'_> {
+    /// The text.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Chip(t) | Self::Hint(t) => t,
+        }
+    }
+
+    fn font(&self, primary: bool) -> FontId {
+        match self {
+            Self::Chip(_) if primary => super::font_at(&typography::VALUE_S, metrics::MEDIUM),
+            Self::Chip(_) => fonts::font_id(&typography::VALUE_S),
+            Self::Hint(_) => fonts::font_id(&typography::UI),
+        }
+    }
+
+    fn line_height(&self) -> f32 {
+        match self {
+            Self::Chip(_) => typography::VALUE_S.line_height,
+            Self::Hint(_) => typography::UI.line_height,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Content<'a> {
     Text(&'a str),
@@ -115,7 +200,11 @@ pub struct Button<'a> {
     content: Content<'a>,
     appearance: Appearance,
     toggle: bool,
-    compact: bool,
+    height: Height,
+    small: bool,
+    ground: Option<usize>,
+    trailing: Option<Trailing<'a>>,
+    fixed_width: Option<f32>,
     name: Option<&'a str>,
     shortcut: Option<&'a str>,
     tip: Option<Tip<'a>>,
@@ -127,7 +216,11 @@ impl<'a> Button<'a> {
             content,
             appearance,
             toggle: false,
-            compact: false,
+            height: Height::Control,
+            small: false,
+            ground: None,
+            trailing: None,
+            fixed_width: None,
             name: None,
             shortcut: None,
             tip: None,
@@ -182,7 +275,51 @@ impl<'a> Button<'a> {
     /// `size.control-compact` (20) high instead of `size.control` (24); icon buttons stay 24 wide
     /// (panel-header actions).
     pub fn compact(mut self) -> Self {
-        self.compact = true;
+        self.height = Height::Compact;
+        self
+    }
+
+    /// The text in `type.small` (11 px; the toolbars' "Snap"). With [`Self::compact`] the
+    /// padding is 8, as in the arrangement's panel header.
+    pub fn small(mut self) -> Self {
+        self.small = true;
+        self
+    }
+
+    /// A dialog button: 28 high, padding 0 12.
+    pub fn dialog(mut self) -> Self {
+        self.height = Height::Dialog;
+        self
+    }
+
+    /// A start-screen button: 32 high, padding 0 12, text in `type.track`.
+    pub fn large(mut self) -> Self {
+        self.height = Height::Large;
+        self
+    }
+
+    /// The surface level the button rests on: a secondary button is one step lighter than it
+    /// (S06 on `surface.3` is `surface.4`). Without it the button is `surface.3`.
+    pub fn ground(mut self, ground: usize) -> Self {
+        self.ground = Some(ground);
+        self
+    }
+
+    /// A shortcut chip after the label ("Quantisieren Q").
+    pub fn chip(mut self, chip: &'a str) -> Self {
+        self.trailing = Some(Trailing::Chip(chip));
+        self
+    }
+
+    /// A hint after the label, in `type.ui` `text.3`.
+    pub fn hint(mut self, hint: &'a str) -> Self {
+        self.trailing = Some(Trailing::Hint(hint));
+        self
+    }
+
+    /// A fixed width; the chip or hint then sits at the right edge.
+    pub fn width(mut self, width: f32) -> Self {
+        self.fixed_width = Some(width);
         self
     }
 
@@ -228,27 +365,74 @@ impl<'a> Button<'a> {
     }
 }
 
+impl Button<'_> {
+    /// The text style of the label: `type.ui`; `type.small` for [`Self::small`], `type.track` for
+    /// [`Self::large`].
+    fn style(&self) -> typography::TypeStyle {
+        match (self.height, self.small) {
+            (_, true) => typography::SMALL,
+            (Height::Large, _) => typography::TRACK,
+            _ => typography::UI,
+        }
+    }
+
+    /// The fill and text colours: [`look`], except that a secondary button with a
+    /// [`Self::ground`] rests one step above it.
+    fn colours(&self, st: State) -> ButtonLook {
+        let l = look(self.appearance, st);
+        let plain = self.appearance.kind == Kind::Secondary
+            && !self.appearance.on
+            && !self.appearance.icon
+            && self.appearance.frameless.is_none();
+        match self.ground {
+            Some(ground) if plain && !st.disabled => ButtonLook {
+                fill: Some(state::surface_for(ground + 1, st)),
+                ..l
+            },
+            _ => l,
+        }
+    }
+}
+
 impl Widget for Button<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let height = if self.compact {
-            size::CONTROL_COMPACT
+        let height = self.height.points();
+        let padding = if self.small && self.height == Height::Compact {
+            space::SPACE_2
         } else {
-            size::CONTROL
+            self.height.padding_x()
         };
-        let style = typography::UI;
+        let style = self.style();
+        let primary = self.appearance.kind == Kind::Primary;
         let galley = match self.content {
             Content::Text(text) => {
-                let font = match self.appearance.kind {
-                    Kind::Primary => super::font_at(&style, metrics::SEMIBOLD),
-                    Kind::Secondary => fonts::emphasis_font_id(&style),
+                let weight = if primary {
+                    metrics::SEMIBOLD
+                } else {
+                    metrics::MEDIUM
                 };
+                let font = super::font_at(&style, weight);
                 Some(super::galley(ui, text, font, style.line_height))
             }
             Content::Icon(_) => None,
         };
-        let width = match &galley {
-            Some(g) => g.size().x.ceil() + 2.0 * metrics::BUTTON_PADDING_X,
-            None => size::CONTROL,
+        let trailing = self.trailing.filter(|_| galley.is_some()).map(|t| {
+            (
+                super::galley(ui, t.text(), t.font(primary), t.line_height()),
+                t,
+            )
+        });
+        let gap = self.height.chip_gap();
+        let width = match (&galley, self.fixed_width) {
+            (_, Some(w)) => w,
+            (Some(g), None) => {
+                g.size().x.ceil()
+                    + trailing
+                        .as_ref()
+                        .map_or(0.0, |(t, _)| gap + t.size().x.ceil())
+                    + 2.0 * padding
+            }
+            (None, None) => size::CONTROL,
         };
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, height), super::sense(ui, Sense::click()));
@@ -265,15 +449,38 @@ impl Widget for Button<'_> {
         });
 
         if ui.is_rect_visible(rect) {
-            let l = look(self.appearance, st);
+            let l = self.colours(st);
             let painter = ui.painter();
             if let Some(fill) = l.fill {
                 px::fill(painter, rect, radius::M, fill);
             }
+            let ppp = ui.pixels_per_point();
             match (self.content, galley) {
                 (Content::Text(_), Some(galley)) => {
-                    let pos = super::text_pos_centered(rect, &galley, ui.pixels_per_point());
-                    painter.galley(pos, galley, l.text);
+                    let left_aligned = trailing.is_some()
+                        || self.fixed_width.is_some()
+                        || matches!(self.height, Height::Dialog | Height::Large);
+                    if left_aligned {
+                        let pos = super::text_pos(rect, &galley, rect.left() + padding, ppp);
+                        let text_right = pos.x + galley.size().x;
+                        painter.galley(pos, galley, l.text);
+                        if let Some((t, _)) = trailing {
+                            let x = if self.fixed_width.is_some() {
+                                rect.right() - padding - t.size().x
+                            } else {
+                                text_right + gap
+                            };
+                            let colour = if primary || !enabled {
+                                l.text
+                            } else {
+                                color32(color::TEXT_3)
+                            };
+                            painter.galley(super::text_pos(rect, &t, x, ppp), t, colour);
+                        }
+                    } else {
+                        let pos = super::text_pos_centered(rect, &galley, ppp);
+                        painter.galley(pos, galley, l.text);
+                    }
                 }
                 (Content::Icon(icon), _) => icons::paint(ui, rect, icon, l.text),
                 (Content::Text(_), None) => {}
@@ -312,8 +519,44 @@ pub fn gallery(ui: &mut Ui) {
         ("primär hover", Button::primary("Exportieren"), S::HOVERED),
         ("primär deakt.", Button::primary("Exportieren"), S::DISABLED),
     ];
+    let row3: [(&str, Button<'_>, State); 6] = [
+        ("Kürzel", Button::new("Quantisieren").chip("Q"), S::REST),
+        (
+            "klein 20",
+            Button::new("Snap").compact().small().on(true),
+            S::REST,
+        ),
+        (
+            "Dialog 28",
+            Button::new("Abbrechen").dialog().ground(3),
+            S::REST,
+        ),
+        (
+            "Dialog primär",
+            Button::primary("Exportieren").dialog().chip("Enter"),
+            S::REST,
+        ),
+        (
+            "Start 32",
+            Button::new("Öffnen")
+                .large()
+                .ground(2)
+                .width(180.0)
+                .chip("Strg O"),
+            S::REST,
+        ),
+        (
+            "Hinweis",
+            Button::new("Vorlage")
+                .large()
+                .ground(2)
+                .width(180.0)
+                .hint("Beat"),
+            S::HOVERED,
+        ),
+    ];
     ui.spacing_mut().item_spacing.y = space::SPACE_4;
-    for row in [&row1[..], &row2[..]] {
+    for row in [&row1[..], &row2[..], &row3[..]] {
         super::sample_row(ui, space::SPACE_4, |ui| {
             for (caption, button, st) in row {
                 super::sample(ui, caption, |ui| {
