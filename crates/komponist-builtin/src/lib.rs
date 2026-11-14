@@ -15,15 +15,20 @@
 //! - State: [`encode_state`] / [`decode_state`] (the patch as JSON, see [`state`]).
 //! - Factory presets: [`presets`] (index, name, category; "Presets · pisynth" in the browser),
 //!   [`categories`], [`preset_patch`], [`PRESET_COUNT`].
+//! - [`device`]: the device card (WP-86): the parameters of pisynth's layout ([`device::params`],
+//!   each a view onto a [`Patch`] field, [`device::Field::get`] / [`device::Field::set`]) and the
+//!   four-page layout ([`device::layout`]). The macros keep their wire ids 0–7; the card's own
+//!   start at 8.
 //! - [`algorithms`]: the 32 fixed algorithms the Algorithmus macro writes.
 //!
 //! # How the app drives it
 //!
 //! - **Create:** `PisynthProcessor::from_state(device.state.as_deref())`, activate at the engine
 //!   rate, insert into the device's slot.
-//! - **Macro knob:** `Command::SetParam { slot, id: m.id(), value }` to the engine, and
-//!   `m.set(&mut patch, value)` on the document's copy (state = `encode_state(&patch)`). Both run
-//!   the same function, so the running patch and the document stay equal.
+//! - **Card knob (or macro):** `Command::SetParam { slot, id: field.wire(), value }` to the engine,
+//!   and `field.set(&mut patch, value)` on the document's copy (state = `encode_state(&patch)`),
+//!   with `field = Field::from_wire(id)`. Both run the same function, so the running patch and the
+//!   document stay equal.
 //! - **Preset or any other state change (also undo/redo):** build a new processor from the new
 //!   state and insert it into the same slot; the engine retires the old one. Sounding notes and
 //!   effect tails of the old processor end there. A preset is the state
@@ -48,6 +53,7 @@
 //! more than the same events at one offset. Creating a processor (UI thread) takes ~80 µs.
 
 pub mod algorithms;
+pub mod device;
 pub mod internal;
 pub mod macros;
 mod processor;

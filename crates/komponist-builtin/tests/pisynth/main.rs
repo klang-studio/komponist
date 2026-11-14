@@ -7,6 +7,7 @@
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod bench;
+mod card;
 #[allow(dead_code)]
 mod common;
 mod engine;

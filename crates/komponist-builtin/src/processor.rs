@@ -7,7 +7,7 @@ use synth_core::midi::CC_ALL_NOTES_OFF;
 use synth_core::oversampling::DELAY;
 use synth_core::{MidiMessage, Patch, Synth};
 
-use crate::macros::Macro;
+use crate::device::Field;
 use crate::state::{self, StateError};
 
 /// Sample rate a processor is built for before its first [`Processor::activate`].
@@ -30,7 +30,8 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 /// - `NoteOn` / `NoteOff`: `Synth::note_on` / `note_off` (omni: channel and note id are not
 ///   used; pisynth pairs notes by key).
 /// - `Midi`: `Synth::midi` (sustain pedal, mod wheel, pitch bend, aftertouch, CC 120/123).
-/// - `Param`: a [`Macro`] by id (unknown ids are ignored). Macro changes at one offset are
+/// - `Param`: a [`Field`] by wire id: one of the 8 macros (0–7) or a parameter of the device card
+///   ([`crate::device`]); unknown ids are ignored. Parameter changes at one offset are
 ///   collected on a copy of the patch and applied with one `Synth::set_patch` before the next
 ///   rendered frame or note (pisynth glides ratios, levels and volume over 10 ms).
 /// - `AllNotesOff`: MIDI All Notes Off: every key and the sustain pedal are released, the
@@ -49,7 +50,7 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 pub struct PisynthProcessor {
     synth: Box<Synth<1>>,
     sample_rate: f32,
-    /// The patch with the macro changes of the current offset, while `dirty`.
+    /// The patch with the parameter changes of the current offset, while `dirty`.
     edit: Patch,
     dirty: bool,
 }
@@ -72,7 +73,7 @@ impl PisynthProcessor {
         state::decode_state(state).map(PisynthProcessor::new)
     }
 
-    /// The patch playing now, with all macro changes received so far.
+    /// The patch playing now, with all parameter changes received so far.
     pub fn patch(&self) -> &Patch {
         self.synth.patch()
     }
@@ -98,7 +99,7 @@ impl PisynthProcessor {
         unsafe { Synth::write_new(place, self.sample_rate, patch) };
     }
 
-    /// Applies collected macro changes.
+    /// Applies collected parameter changes.
     fn flush(&mut self) {
         if self.dirty {
             self.dirty = false;
@@ -109,12 +110,12 @@ impl PisynthProcessor {
     /// Applies one event at the current frame.
     fn apply(&mut self, kind: EventKind) {
         if let EventKind::Param { id, value } = kind {
-            if let Some(m) = Macro::from_id(id) {
+            if let Some(field) = Field::from_wire(id) {
                 if !self.dirty {
                     self.edit = *self.synth.patch();
                     self.dirty = true;
                 }
-                m.set(&mut self.edit, value);
+                field.set(&mut self.edit, value);
             }
             return;
         }
