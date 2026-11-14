@@ -229,8 +229,15 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     };
     assert!(bridged.iter().all(loading), "{events:?}");
     assert!(app.engine().host().needs_polling());
-    // pisynth and the four fixtures.
-    assert_eq!(app.engine().host().catalog().entries().len(), 1 + 4);
+    // The four fixtures next to the built-ins (pisynth and the internal devices, whatever their
+    // number).
+    let entries = app.engine().host().catalog().entries();
+    assert_eq!(entries.iter().filter(|e| !e.is_builtin()).count(), 4);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.is_builtin() && e.plugin.name == "pisynth")
+    );
 
     // Latencies recompile the program. Lead is the longest chain (pisynth and two 64-frame
     // effects; the third is bypassed), Pad has two effects after a synth without latency, Keys

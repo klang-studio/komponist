@@ -108,7 +108,13 @@ fn a_frame_is_244_high_and_as_wide_as_its_columns() {
     for name in ["pisynth", "LSP Para EQ x8", "TAL-Chorus-LX"] {
         let f = frame(&h, name);
         assert_eq!(f.height(), device::frame::TOTAL_H, "{name}");
-        assert_eq!(f.width(), 16.0 + 60.0 * 4.0 - 4.0, "{name}: 4 columns");
+        // pisynth's first page has ten columns (WP-86), the others four.
+        let columns = if name == "pisynth" { 10.0 } else { 4.0 };
+        assert_eq!(
+            f.width(),
+            16.0 + 60.0 * columns - 4.0,
+            "{name}: {columns} columns"
+        );
     }
     // Head 28 + body 216 (the head's bottom line is inside the head).
     assert_eq!(

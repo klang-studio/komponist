@@ -277,6 +277,15 @@ fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
     );
 }
 
+/// Masks the CPU readout, which changes from run to run; the rectangle is looked up right before
+/// the snapshot.
+fn mask_cpu(h: &mut Harness<'_, App>) {
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+}
+
 #[test]
 fn snapshot_of_both_pages() {
     let (mut app, device) = app_with_pisynth(1);
@@ -296,10 +305,6 @@ fn snapshot_of_both_pages() {
     page(&mut app, device, 0);
     let mut h = harness(app);
     h.run_steps(2);
-    let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
-        .rect();
-    h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();
     let second = card(&h)
         .get_by_role_and_label(Role::Slider, "Ratio 2")
@@ -308,10 +313,12 @@ fn snapshot_of_both_pages() {
     // Pointer away and settled: no hover or animation in the picture.
     h.hover_at(Pos2::new(900.0, 300.0));
     h.run_steps(30);
+    mask_cpu(&mut h);
     h.snapshot("devices-pisynth-operators-1x");
     results.extend_harness(&mut h);
     page_to(&mut h, device, 1);
     h.run_steps(30);
+    mask_cpu(&mut h);
     h.snapshot("devices-pisynth-envelopes-1x");
     results.extend_harness(&mut h);
     results.unwrap();
