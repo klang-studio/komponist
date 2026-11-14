@@ -6,7 +6,8 @@
 //! engine knows no UI, no IPC, no plugin format and no audio backend.
 //!
 //! Module map (ARCHITECTURE §6):
-//! - [`processor`]: the [`Processor`] trait, events, [`ProcessContext`], [`StereoIo`].
+//! - [`processor`]: the [`Processor`] trait, the [`EventProcessor`] stage of MIDI effects, events,
+//!   [`ProcessContext`], [`StereoIo`].
 //! - [`program`]: the compiled [`Program`] the engine plays.
 //! - [`compile`]: project → program, with processor-slot mapping.
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
@@ -17,7 +18,7 @@
 //! - [`workers`]: the worker pool for parallel track processing ([`Engine::set_workers`]).
 //!
 //! Engine internals: `transport` (position, loop, count-in), `sequencer` (active notes,
-//! probability, live input), `slots` (processor table, chains), `mixer` (fader, balance, solo,
+//! probability, live input), `stage` (MIDI effects and the note guard), `slots` (processor table, chains), `mixer` (fader, balance, solo,
 //! delay compensation), `metronome`, `garbage` (event queue with the garbage holding list), `sys`
 //! (futex, floating-point mode and `SCHED_FIFO` for the workers).
 //!
@@ -37,6 +38,7 @@ pub mod processor;
 pub mod program;
 mod sequencer;
 mod slots;
+mod stage;
 mod sys;
 pub mod testing;
 mod transport;
@@ -51,8 +53,8 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 pub use api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState};
 pub use engine::{Engine, EngineConfig, LiveInput, MidiInEvent};
 pub use processor::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, ProcessStatus, Processor, ProcessorError,
-    StereoIo, TransportInfo,
+    Event, EventBuffer, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,
+    ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,
 };
 pub use program::{MidiPort, Program, SlotId};
 
@@ -63,6 +65,9 @@ pub const MAX_BLOCK: usize = 2048;
 /// Most tracks a program holds; the engine preallocates per-track state (active notes, RNG, PDC
 /// delay, gain ramp) for this many.
 pub const MAX_TRACKS: usize = 128;
+
+/// Most MIDI effects in front of one instrument; the compiler drops further ones.
+pub const MAX_STAGES: usize = 8;
 
 /// Size of the engine's processor slot table ([`SlotId`] `0 .. MAX_SLOTS`).
 pub const MAX_SLOTS: usize = 1024;

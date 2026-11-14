@@ -309,6 +309,7 @@ fn dump_chain(w: &mut String, project: &Project, chain: &[ChainSlot]) {
         let role = match s.role {
             DeviceRole::Instrument => "instrument",
             DeviceRole::Effect => "effect",
+            DeviceRole::MidiEffect => "midi effect",
         };
         let bypass = if s.bypass { ", bypass" } else { "" };
         writeln!(

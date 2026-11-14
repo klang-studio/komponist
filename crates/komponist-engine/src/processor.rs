@@ -73,6 +73,97 @@ pub trait Processor: Send {
     /// deallocating. Called on stop, on locate while playing and when bypass turns on. Not on a loop
     /// wrap: there only the sequenced notes end, so tails keep sounding across the loop.
     fn reset(&mut self);
+
+    /// RT-safe, cheap (WP-88). `Some` for a MIDI effect ([`DeviceRole::MidiEffect`] in the project):
+    /// the engine runs its [`EventProcessor`] stage in front of the instrument and never calls
+    /// [`Processor::process`]. Everything else returns `None` (the default).
+    ///
+    /// [`DeviceRole::MidiEffect`]: komponist_model::DeviceRole::MidiEffect
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
+        None
+    }
+}
+
+/// The event stage of a MIDI effect (WP-88, ARCHITECTURE §6.4.2): events in, events out, in front of
+/// the instrument.
+///
+/// A track chain is `[MIDI effects…] → instrument → [audio effects…]`. Per processor call (segment),
+/// on the track's job (so on a worker thread with the worker pool, never on two threads at once),
+/// the engine feeds the sequencer's and the live input's events through the active stages in chain
+/// order and hands the result to the instrument. A bypassed stage, or one whose slot has no
+/// processor, passes its input through. All methods are RT: no allocation, locks, logging or IO.
+///
+/// What a stage sees: the track's **input** (sequenced notes, including chased ones, and live MIDI
+/// of monitored inputs; recording captures the same input before the stage), sorted by offset with
+/// note-offs before note-ons at one offset. What it need not do: keep notes from hanging. The engine
+/// keeps a table of the notes the instrument received and ends every one on bypass, removal,
+/// reordering, stop, locate and panic, and drops note-offs for notes it never started, so a stage
+/// only has to be musically right.
+pub trait EventProcessor {
+    /// Parameter `id` (the device's wire id) now has plain value `value`. Applied before the next
+    /// [`EventProcessor::process_events`], in send order.
+    fn set_param(&mut self, id: u32, value: f64);
+
+    /// Rewrites one call's events. `input` is sorted (see above) with offsets `< ctx.frames`;
+    /// `ctx.transport` is the state at frame 0 (tempo, meter, position in ticks, playing, loop), and
+    /// the call covers `ctx.frames` samples of constant tempo. Push the output to `out` with offsets
+    /// `< ctx.frames`; pushes beyond the bounded capacity return `false` and are counted as dropped
+    /// events. Output note-ons may carry any note id; the engine assigns the ids the instrument
+    /// sees.
+    fn process_events(&mut self, ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>);
+
+    /// Forget held notes, phases and pending note-offs without emitting anything (stop, locate,
+    /// panic, bypass on). The engine ends the sounding notes itself.
+    fn reset(&mut self);
+}
+
+/// Where an [`EventProcessor`] writes its output. Bounded: [`crate::MAX_EVENTS_PER_BLOCK`] events
+/// per call, of which the engine keeps room for the note-offs of sounding notes.
+#[derive(Debug)]
+pub struct EventSink<'a> {
+    list: &'a mut crate::sequencer::EventList,
+    frames: u32,
+}
+
+impl<'a> EventSink<'a> {
+    pub(crate) fn new(list: &'a mut crate::sequencer::EventList, frames: u32) -> EventSink<'a> {
+        EventSink { list, frames }
+    }
+
+    /// RT. Adds an event at `offset` (clamped to the call). `false` when the output is full.
+    pub fn push(&mut self, offset: u32, kind: EventKind) -> bool {
+        self.list
+            .push(offset.min(self.frames.saturating_sub(1)), kind)
+    }
+
+    /// Events that still fit.
+    pub fn room(&self) -> usize {
+        self.list.room()
+    }
+}
+
+/// A preallocated event buffer for driving an [`EventProcessor`] outside the engine (unit tests of
+/// MIDI effects): [`EventBuffer::sink`], then [`EventBuffer::events`] sorted as the engine sorts.
+#[derive(Debug)]
+pub struct EventBuffer(crate::sequencer::EventList);
+
+impl EventBuffer {
+    /// Non-RT. A buffer for at most `capacity` events.
+    pub fn new(capacity: usize) -> EventBuffer {
+        EventBuffer(crate::sequencer::EventList::new(capacity))
+    }
+
+    /// RT. Empties the buffer and opens a sink for a call of `frames` frames.
+    pub fn sink(&mut self, frames: u32) -> EventSink<'_> {
+        self.0.clear();
+        EventSink::new(&mut self.0, frames)
+    }
+
+    /// RT. The events pushed since [`EventBuffer::sink`], sorted by offset (note-offs before
+    /// note-ons at one offset, otherwise in push order).
+    pub fn events(&mut self) -> &[Event] {
+        self.0.finish()
+    }
 }
 
 /// Why activation failed.
