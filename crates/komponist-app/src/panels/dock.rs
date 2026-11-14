@@ -4,7 +4,8 @@
 //! Tabs Editor · Geräte · Mixer (fixed) and "+" (later views, disabled in v0.1); on the right
 //! "Maximieren" / "Maximiert" (Ctrl ↑) and the caret that collapses the dock to this strip or
 //! opens it again (Ctrl 3). The editor tab is titled with the open clip's name, its editor kind
-//! as secondary text and the track colour as mark ("■ Lead A  Piano Roll"), else "Kein Clip". A
+//! as secondary text and the track colour as mark ("■ Lead A  Piano Roll"), else "Kein Clip";
+//! while recording "Aufnahme  Piano Roll · live" with a `state.record` mark (S02). A
 //! click on a tab of a collapsed dock opens it. The active tab carries the accent line while
 //! the dock has the focus.
 
@@ -68,12 +69,13 @@ pub fn editor_tab(project: &Project, ui: &UiState) -> (String, &'static str, Opt
 
 const TABS: [DockTab; 3] = [DockTab::Editor, DockTab::Devices, DockTab::Mixer];
 
-/// Draws the strip into `rect` (28 high).
+/// Draws the strip into `rect` (28 high); `recording`: the editor shows the take being recorded.
 pub fn tab_strip(
     ui: &mut Ui,
     rect: Rect,
     project: &Project,
     state: &UiState,
+    recording: bool,
     keymap: &Keymap,
     actions: &mut Vec<Action>,
 ) {
@@ -85,7 +87,15 @@ pub fn tab_strip(
             .layout(Layout::left_to_right(Align::Center)),
     );
     row.spacing_mut().item_spacing.x = 0.0;
-    let (title, kind, mark) = editor_tab(project, state);
+    let (title, kind, mark) = if recording {
+        (
+            crate::record::names::TAB.to_owned(),
+            crate::record::names::TAB_KIND,
+            Some(color32(color::STATE_RECORD)),
+        )
+    } else {
+        editor_tab(project, state)
+    };
     let items = [
         Item::new(&title),
         Item::new(names::DEVICES),

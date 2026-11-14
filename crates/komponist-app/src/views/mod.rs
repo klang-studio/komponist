@@ -35,6 +35,7 @@ use crate::actions::Action;
 use crate::engine_sync::EngineSync;
 use crate::keymap::Keymap;
 use crate::meters::Meters;
+use crate::record::Recording;
 use crate::ui_state::UiState;
 
 /// What a view gets for one frame.
@@ -53,6 +54,8 @@ pub struct ViewCtx<'a> {
     pub focused: bool,
     /// One-shot requests from the dispatcher to views.
     pub requests: Requests,
+    /// The take being recorded (WP-51): the arrangement and the piano roll draw it.
+    pub recording: Option<&'a Recording>,
     actions: &'a mut Vec<Action>,
 }
 
@@ -81,6 +84,7 @@ impl<'a> ViewCtx<'a> {
             keymap,
             focused: false,
             requests: Requests::default(),
+            recording: None,
             actions,
         }
     }

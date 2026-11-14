@@ -106,6 +106,8 @@ pub struct PianoRoll {
     palette: Option<TrackPalette>,
     /// Wheel movement not yet turned into whole keys.
     wheel_rows: f32,
+    /// Notes of the live take in the last frame (a new one may scroll the keys).
+    live_notes: usize,
 }
 
 impl PianoRoll {
@@ -160,12 +162,22 @@ impl PianoRoll {
 impl View for PianoRoll {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         let project = Arc::clone(ctx.project);
-        let Some(clip_id) = ctx.ui.editor.clip else {
-            return;
+        // While recording, the take being recorded instead of the open clip ("Piano Roll · live",
+        // S02): read-only, red clip range, following the playhead.
+        let live = ctx
+            .recording
+            .and_then(|r| r.first())
+            .and_then(|(t, c)| Some((project.track(t)?, Arc::clone(c))));
+        let (track, clip) = match &live {
+            Some((track, clip)) => (*track, clip),
+            None => {
+                let Some(found) = ctx.ui.editor.clip.and_then(|id| project.find_clip(id)) else {
+                    return;
+                };
+                found
+            }
         };
-        let Some((track, clip)) = project.find_clip(clip_id) else {
-            return;
-        };
+        let clip_id = clip.id;
         let ClipContent::Midi(midi) = &clip.content else {
             return;
         };
@@ -179,6 +191,7 @@ impl View for PianoRoll {
             self.shown_clip = Some(clip_id);
             self.gesture = None;
             self.field_drag = None;
+            self.live_notes = notes.len();
             let pr = &mut ctx.ui.piano_roll;
             pr.top_key = edit::fit_top_key(notes, geo.full_rows());
             pr.scroll_tick = 0.0;
@@ -189,6 +202,33 @@ impl View for PianoRoll {
         let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
         self.scroll_and_zoom(ui, ctx, &geo);
         let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        if live.is_some() {
+            // The head left the view (it ran on, or the loop wrapped): show its bar at the left.
+            let (t0, t1) = geo.visible_local_ticks();
+            let head = ctx.engine.playhead() - clip.start;
+            if head < t0 || head >= t1 {
+                let bar = meter.ticks_per_bar();
+                ctx.ui.piano_roll.scroll_tick = (head.0.max(0) / bar * bar) as f64;
+            }
+            // A new note outside the visible keys scrolls them just enough to show it.
+            if notes.len() != self.live_notes {
+                self.live_notes = notes.len();
+                let (top, bottom) = (ctx.ui.piano_roll.top_key, geo.bottom_key());
+                if let Some(n) = notes.iter().max_by_key(|n| (n.start, n.id))
+                    && (n.pitch > top || n.pitch < bottom)
+                {
+                    let rows = geo.full_rows() as i32;
+                    let pitch = i32::from(n.pitch);
+                    let new_top = if n.pitch > top {
+                        pitch + metrics::FIT_ABOVE
+                    } else {
+                        pitch + rows - 1 - metrics::FIT_BELOW
+                    };
+                    ctx.ui.piano_roll.top_key = edit::clamp_top_key(new_top, geo.full_rows());
+                }
+            }
+        }
+        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
 
         if self.palette.as_ref().is_none_or(|p| p.hue != track.hue.0) {
             self.palette = Some(TrackPalette::new(track.hue.0));
@@ -198,7 +238,12 @@ impl View for PianoRoll {
             .clone()
             .unwrap_or_else(|| TrackPalette::new(track.hue.0));
 
-        let selection = ctx.ui.selection.notes.clone();
+        // The live take's notes are not selectable.
+        let selection = if live.is_some() {
+            Default::default()
+        } else {
+            ctx.ui.selection.notes.clone()
+        };
         let selected: Vec<NoteId> = if selection.is_empty() {
             Vec::new()
         } else {
@@ -229,6 +274,7 @@ impl View for PianoRoll {
             length: first.map_or(grid, |n| n.length),
             pitch: first.map_or(60, |n| n.pitch),
             grid,
+            live: live.is_some(),
         };
         toolbar::show(ui, geo.toolbar, ctx, &info, &mut self.field_drag);
 
@@ -256,6 +302,7 @@ impl View for PianoRoll {
                 .then(|| edit::local_playhead(clip, playhead))
                 .flatten(),
             muted: clip.mute || track.channel.mute,
+            live: live.is_some(),
         };
         self.canvas(ui, ctx, &frame);
         if self.gesture.is_some() || running {

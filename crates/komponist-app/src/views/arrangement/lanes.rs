@@ -16,7 +16,7 @@ use komponist_tokens::{color, radius};
 use komponist_ui::px;
 use komponist_ui::timeline::clip::body_height;
 use komponist_ui::timeline::{
-    ClipEdge, ClipModel, ClipState, GridSpec, clip_access, grid_lines, paint_clip,
+    ClipEdge, ClipModel, ClipState, GridSpec, PreviewMesh, clip_access, grid_lines, paint_clip,
     paint_clip_ghost, paint_grid, paint_playhead,
 };
 use komponist_ui::tooltip::{self, Placement};
@@ -426,6 +426,31 @@ impl Arrangement {
                 let node = ui.interact(
                     rect.intersect(lanes),
                     Id::unique(("komponist_arrangement_clip", clip.id.0)),
+                    Sense::hover(),
+                );
+                register(&node, &access);
+            }
+            // The take being recorded on this track (S02): red head, growing with the playhead.
+            if let Some(rec) = ctx.recording.and_then(|r| r.clip(track.id))
+                && rec.end() >= t0
+                && rec.start <= t1
+            {
+                let rect = g.clip_rect(i, rec);
+                let preview = PreviewMesh::from_clip(rec, ppt, body_height(rect.height()));
+                let model = ClipModel {
+                    name: &rec.name,
+                    palette,
+                    muted: false,
+                    recording: true,
+                    loop_mark: false,
+                    preview: Some(&preview),
+                };
+                paint_clip(painter, rect, &model, ClipState::REST);
+                let access =
+                    clip_access(&model, rec.start, rec.end(), project.meter, ClipState::REST);
+                let node = ui.interact(
+                    rect.intersect(lanes),
+                    Id::unique(("komponist_arrangement_recording", track.id.0)),
                     Sense::hover(),
                 );
                 register(&node, &access);
