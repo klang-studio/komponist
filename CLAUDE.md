@@ -79,7 +79,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
    (`import -window`) under Xvfb for those.
 8. **Dependencies:** use workspace dependencies. A new crate needs one sentence of justification in
-   the report.
+   the report and a GPL-3.0-compatible licence (komponist is GPL-3.0-or-later, like everything in
+   klang-studio; nothing proprietary or GPL-incompatible such as CDDL or EPL-1.0).
 9. **Commits:** small logical commits on your branch, imperative English subject, ending with the
    attribution line your environment specifies.
 10. **Report** (final message): summary · changed files · how verified (commands + results) ·
