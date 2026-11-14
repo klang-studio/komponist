@@ -1695,6 +1695,9 @@ impl App {
                     .focus_before_dialog
                     .take()
                     .unwrap_or(FocusArea::Arrangement);
+                if let Some(next) = self.dialogs.queued.take() {
+                    self.open_dialog(next);
+                }
             }
             UiAction::ToggleKeyboardMidi => self.ui.keyboard_midi = !self.ui.keyboard_midi,
             UiAction::ResetMeters { track, all } => self.meters.reset(track, all),
@@ -1795,6 +1798,14 @@ impl App {
     }
 
     pub(crate) fn open_dialog(&mut self, dialog: Dialog) {
+        // The export dialog shows the progress and Esc cancels: another dialog (S06 after a late
+        // scan, Strg , settings) waits until it closes.
+        if self.export.is_active() && matches!(self.ui.dialog, Some(Dialog::Export(_))) {
+            if !matches!(dialog, Dialog::Export(_)) {
+                self.dialogs.queued = Some(dialog);
+            }
+            return;
+        }
         if self.ui.dialog.is_none() {
             self.shell.focus_before_dialog = Some(self.ui.focus);
         }

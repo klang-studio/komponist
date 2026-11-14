@@ -59,6 +59,9 @@ pub(crate) struct DialogState {
     pub(crate) overlay_focus: Option<FocusArea>,
     /// What continues after the unsaved-changes prompt or the save dialog it opened.
     pub(crate) pending: Option<Pending>,
+    /// A dialog that arrived while an export ran: it opens when the export dialog closes
+    /// (the export dialog stays on top while it renders).
+    pub(crate) queued: Option<crate::ui_state::Dialog>,
     /// The S06 check waits for the running plugin scan.
     pub(crate) missing_check: bool,
     /// Closing the window was confirmed (saved or discarded): the next close request passes.

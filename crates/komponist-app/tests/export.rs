@@ -472,6 +472,38 @@ fn the_export_waits_for_loading_devices() {
     assert_eq!(status(&app).1, StatusKind::Success);
 }
 
+#[test]
+fn another_dialog_waits_while_the_export_dialog_runs() {
+    use komponist_app::UiAction;
+    use komponist_app::ui_state::SettingsSection;
+    let dir = scratch("queue");
+    let mut project = one_bar_song();
+    project.loop_range = TickRange::new(Tick::ZERO, Tick(BAR / 2));
+    let surge = fake_host::plugin(&fake_host::screens_catalog(), "hall");
+    let (project, hall) = with_effect(project, surge);
+    let host = FakeHost::new().status(hall, DeviceStatus::Loading);
+    let (mut app, _) = app_with(&dir, project, Box::new(host));
+    app.step();
+    let settings = ExportSettings {
+        tail_seconds: 0.0,
+        ..export_settings(&dir, ExportRange::Loop)
+    };
+    app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
+    for _ in 0..5 {
+        app.step();
+    }
+    assert!(app.is_exporting());
+    assert!(matches!(&app.ui().dialog, Some(Dialog::Export(d))
+        if d.stage == komponist_app::ui_state::ExportStage::Devices));
+    // Strg , while the export waits: the export dialog stays on top.
+    app.dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Audio)));
+    assert!(matches!(app.ui().dialog, Some(Dialog::Export(_))));
+    // Cancelling closes it; the queued dialog opens in its place.
+    app.dispatch(Action::Project(ProjectAction::CancelExport));
+    step_until(&mut app, "end of the export", |a| !a.is_exporting());
+    assert!(matches!(app.ui().dialog, Some(Dialog::Settings(_))));
+}
+
 fn harness(app: App) -> Harness<'static, App> {
     harness_at(app, 1.0)
 }

@@ -488,6 +488,20 @@ pub struct ExportDialog {
     pub settings: ExportSettings,
     /// Progress while rendering, `None` while configuring.
     pub progress: Option<ExportProgress>,
+    /// Where the export is: configuring, waiting for devices, rendering.
+    pub stage: ExportStage,
+}
+
+/// The stage of the export the dialog shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportStage {
+    /// Configuring ("Exportieren" not pressed yet).
+    #[default]
+    Settings,
+    /// Waiting until every device of the project runs, or "Ohne sie exportieren".
+    Devices,
+    /// The worker renders the file.
+    Rendering,
 }
 
 /// Progress of a running export.

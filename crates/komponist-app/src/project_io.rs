@@ -368,9 +368,10 @@ impl App {
         );
         self.set_status(format!("{name} geöffnet · {n}"), StatusKind::Error);
         // A dialog the user opened meanwhile (a late check after a scan) is not replaced; the
-        // status bar says it.
+        // status bar says it. A running export keeps its dialog on top: S06 waits for it.
+        let exporting = self.is_exporting() && matches!(self.ui.dialog, Some(Dialog::Export(_)));
         if self.ui.screen == Screen::Project
-            && self.ui.dialog.is_none()
+            && (self.ui.dialog.is_none() || exporting)
             && self.dialogs.overlay.is_none()
         {
             self.open_dialog(Dialog::MissingPlugins(missing));

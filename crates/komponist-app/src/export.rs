@@ -63,7 +63,9 @@ use crate::dialogs::export::{
 };
 use crate::dialogs::file::{FileBrowser, Purpose};
 use crate::engine_sync::DetachedEngine;
-use crate::ui_state::{Dialog, ExportDialog, ExportProgress, StatusKind, StatusMessage};
+use crate::ui_state::{
+    Dialog, ExportDialog, ExportProgress, ExportStage, StatusKind, StatusMessage,
+};
 
 /// Opens a folder for "Im Ordner zeigen".
 pub type FolderOpener = Box<dyn FnMut(&Path) -> io::Result<()>>;
@@ -337,6 +339,7 @@ impl App {
         self.open_dialog(Dialog::Export(ExportDialog {
             settings,
             progress: None,
+            stage: ExportStage::Settings,
         }));
     }
 
@@ -388,10 +391,12 @@ impl App {
             self.open_dialog(Dialog::Export(ExportDialog {
                 settings: settings.clone(),
                 progress: None,
+                stage: ExportStage::Devices,
             }));
         }
         if let Some(Dialog::Export(dialog)) = &mut self.ui.dialog {
             dialog.settings = settings.clone();
+            dialog.stage = ExportStage::Devices;
         }
         self.export.run = Some(Run {
             job,
@@ -552,6 +557,9 @@ impl App {
                 return;
             }
         };
+        if let Some(Dialog::Export(dialog)) = &mut self.ui.dialog {
+            dialog.stage = ExportStage::Rendering;
+        }
         if let Some(run) = &mut self.export.run {
             run.phase = Phase::Running(Worker {
                 thread: Some(thread),
@@ -697,16 +705,16 @@ impl App {
     /// The export dialog's model for this frame.
     fn export_model(&self, dialog: &ExportDialog) -> view::Model {
         let s = &dialog.settings;
-        let stage = match &self.export.run {
-            Some(Run {
-                phase: Phase::Devices,
-                ..
-            }) => Stage::Devices(self.devices_not_ready()),
-            Some(Run {
-                phase: Phase::Running(worker),
-                seconds,
-                ..
-            }) => {
+        let stage = match (dialog.stage, &self.export.run) {
+            (ExportStage::Devices, Some(_)) => Stage::Devices(self.devices_not_ready()),
+            (
+                ExportStage::Rendering,
+                Some(Run {
+                    phase: Phase::Running(worker),
+                    seconds,
+                    ..
+                }),
+            ) => {
                 let p = dialog.progress.unwrap_or(ExportProgress {
                     fraction: 0.0,
                     peak_db: klang_dsp::units::gain_to_db(0.0),
@@ -724,7 +732,7 @@ impl App {
                     cancelling: worker.cancel.load(Ordering::Relaxed),
                 })
             }
-            None => Stage::Settings(self.settings_view(s)),
+            _ => Stage::Settings(self.settings_view(s)),
         };
         view::Model {
             settings: s.clone(),
