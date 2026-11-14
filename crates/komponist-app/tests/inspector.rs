@@ -491,6 +491,7 @@ fn with_nothing_selected_the_project_shows() {
         "124.00 BPM"
     );
     section(&h, p).get_by_role_and_label(Role::Label, "Taktart 4/4");
+    section(&h, p).get_by_role_and_label(Role::Label, "Abtastrate 48 kHz");
     section(&h, p).get_by_role_and_label(Role::Label, "Spuren 6");
     section(&h, p).get_by_role_and_label(Role::Label, "Länge 16 Takte");
     section(&h, names::SELECTION).get_by_role_and_label(Role::Label, names::NOTHING_SELECTED);

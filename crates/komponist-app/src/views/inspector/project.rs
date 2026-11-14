@@ -1,5 +1,7 @@
-//! With nothing selected: the project (`sec({title:'Projekt', name, chip:C.t2, fields:[Tempo,
-//! Taktart, Spuren, Länge]})`, prototype `inspView`) and "Auswahl" with the hint (S10).
+//! With nothing selected: the project (`sec({title:'Projekt', name, chip:C.t2, fields:[…]})`)
+//! and "Auswahl" with the hint (S10). The screens list Tempo, Taktart, Abtastrate, Spuren (S10)
+//! or Tempo, Taktart, Spuren, Länge (S06–S08, prototype `inspView`); the inspector shows all
+//! five.
 
 use egui::{Rangef, Ui};
 use komponist_model::edits::ProjectProp;
@@ -9,13 +11,14 @@ use komponist_tokens::{color, typography};
 use komponist_ui::fonts;
 use komponist_ui::widgets::number_field::NumberField;
 
-use super::model::names;
+use super::model::{self, names};
 use super::{Meta, access_label, field_grid, field_key, frame, place, read_only_field};
 use crate::actions::{Action, EditAction};
 use crate::views::ViewCtx;
 use crate::views::mixer::send_gesture;
 
-/// The project section: name, Tempo (drag, text entry), Taktart, Spuren, Länge in bars.
+/// The project section: name, Tempo (drag, text entry), Taktart, Abtastrate, Spuren, Länge in
+/// bars.
 pub(super) fn section(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
@@ -25,7 +28,7 @@ pub(super) fn section(
 ) {
     frame(ui, x, y, names::PROJECT, Meta::None, |ui, col| {
         super::name_row(ui, col, &project.name, color::TEXT_2, false, false);
-        let cells = field_grid(col, 4);
+        let cells = field_grid(col, 5);
         let (key, field) = cells[0];
         field_key(ui, key, names::TEMPO);
         let mut bpm = project.tempo.bpm;
@@ -52,6 +55,11 @@ pub(super) fn section(
                 names::METER_FIELD,
                 format!("{}/{}", project.meter.num, project.meter.den),
                 "",
+            ),
+            (
+                names::SAMPLE_RATE,
+                model::khz(ctx.engine.sample_rate()),
+                names::KHZ,
             ),
             (names::TRACKS, project.tracks.len().to_string(), ""),
             (names::LENGTH, bars.to_string(), names::BARS),

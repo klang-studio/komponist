@@ -102,6 +102,10 @@ pub mod names {
     pub const BPM: &str = "BPM";
     /// Field "Taktart".
     pub const METER_FIELD: &str = "Taktart";
+    /// Field "Abtastrate" (S10).
+    pub const SAMPLE_RATE: &str = "Abtastrate";
+    /// Its unit.
+    pub const KHZ: &str = "kHz";
     /// Field "Spuren".
     pub const TRACKS: &str = "Spuren";
     /// Unit of the project length.
@@ -390,6 +394,16 @@ pub fn parse_length(text: &str, meter: Meter) -> Option<Tick> {
     ))
 }
 
+/// A sample rate in kHz as S10 shows it: "48", "44.1", "96".
+pub fn khz(rate: u32) -> String {
+    let khz = f64::from(rate) / 1000.0;
+    if khz.fract() == 0.0 {
+        format!("{khz:.0}")
+    } else {
+        format!("{khz}")
+    }
+}
+
 /// Ticks as 1/16 steps (the unit the clip's number fields drag in: 1 px = one 1/16).
 pub fn to_steps(tick: Tick) -> f64 {
     tick.0 as f64 / TICKS_PER_STEP as f64
@@ -564,6 +578,9 @@ mod tests {
             assert_eq!(parse_length(&fmt_length(Tick(t), m), m), Some(Tick(t)));
         }
         assert_eq!(to_steps(Tick(3840)), 16.0);
+        assert_eq!(khz(48_000), "48");
+        assert_eq!(khz(44_100), "44.1");
+        assert_eq!(khz(96_000), "96");
         assert_eq!(from_steps(16.4), Tick(3840));
     }
 }
