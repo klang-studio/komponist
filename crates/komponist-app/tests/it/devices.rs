@@ -552,10 +552,10 @@ fn generic_knobs_set_the_plugin_parameter() {
     let last = set.last().expect("set_param");
     assert_eq!((last.0, last.1), (c.eq, 0));
     assert!(last.2 > 0.18 + 0.1, "{}", last.2);
-    // Bypassed TAL: the knobs are still pictures.
+    // Bypassed TAL: the body is dimmed, but the knobs stay operable (device handoff §3).
     let tal_label = names::card("TAL-Chorus-LX");
     let rate = card(&h, &tal_label).get_by_role_and_label(Role::Slider, "Rate");
-    assert!(rate.accesskit_node().is_disabled());
+    assert!(!rate.accesskit_node().is_disabled());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -570,7 +570,7 @@ fn loading_shows_progress_then_the_knobs() {
     hall.get_by_role_and_label(Role::Label, names::LOADING);
     hall.get_by_role_and_label(Role::ProgressIndicator, names::LOADING);
     assert!(
-        hall.query_by_role(Role::Button).is_none(),
+        hall.query_by_label(names::PARAMS).is_none() && hall.query_by_label(names::OPEN).is_none(),
         "no open button while loading"
     );
     statuses.lock().unwrap().insert(c.hall, DeviceStatus::Ok);
@@ -701,10 +701,10 @@ fn a_plugin_with_many_parameters_shows_the_rows_that_fit() {
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    assert_eq!(knobs.len(), 8, "only the rows that fit the card's body");
+    assert_eq!(knobs.len(), 12, "the auto-layout: 3 rows of 4 fit the 216 px body");
     assert_eq!(
-        (knobs[0].as_str(), knobs[7].as_str()),
-        ("Regler 1", "Regler 8")
+        (knobs[0].as_str(), knobs[11].as_str()),
+        ("Regler 1", "Regler 12")
     );
     assert_eq!(
         eq.get_by_role_and_label(Role::Slider, "Regler 8")
@@ -731,7 +731,10 @@ fn header_shows_the_track_and_opens_the_browser_on_effects() {
     )));
     app.dispatch(Action::Ui(UiAction::SetBrowserSegment(BrowserSegment::All)));
     let mut h = harness(app);
-    h.get_by_role_and_label(Role::Label, &names::info(5));
+    // The chain head lists the devices as `a › b › c`; a name scrolls to its device.
+    for name in ["Surge XT", "LSP Para EQ x8", "Airwindows Consolidated"] {
+        h.get_by_role_and_label(Role::Button, &names::reveal(name));
+    }
     let add = h.get_by_role_and_label(Role::Button, names::ADD).rect();
     click_at(&mut h, add.center());
     let ui = h.state().ui();
@@ -759,7 +762,7 @@ fn click_selects_and_the_context_menu_removes() {
 }
 
 #[test]
-fn the_wheel_scrolls_a_long_chain() {
+fn shift_wheel_in_the_body_scrolls_a_long_chain() {
     // Wide side panels leave the chain less room than its 1364 px.
     let (mut app, ..) = s05();
     app.ui_mut().layout.browser_width = komponist_tokens::size::browser::MAX;
@@ -772,7 +775,7 @@ fn the_wheel_scrolls_a_long_chain() {
     h.event(Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: vec2(0.0, -120.0),
-        modifiers: Modifiers::NONE,
+        modifiers: Modifiers::SHIFT,
         phase: egui::TouchPhase::Move,
         source: egui::MouseWheelSource::Unknown,
     });
@@ -887,14 +890,22 @@ fn a_card_whose_blocks_arrive_late_reads_zu_spaet_for_a_while() {
 
 #[test]
 fn a_card_that_appears_is_scrolled_into_view() {
-    use komponist_app::views::devices::scroll_to_card;
+    use komponist_app::ui_state::Reveal;
+    use komponist_app::views::devices::{metrics, model};
     let (p, c) = s05_project();
     let track = p.track(c.pad).unwrap();
-    let cards = komponist_app::views::devices::model::cards(track, &FakeHost::new(), &[]);
-    let last = cards.last().unwrap().device;
+    let mut cards = model::cards(track, &FakeHost::new(), &[]);
+    for card in &mut cards {
+        card.width = card.frame_width(0.0);
+    }
+    let widths: Vec<f32> = cards.iter().map(|c| c.width).collect();
+    let spans = model::spans(&widths, metrics::BODY_PAD, metrics::CARD_GAP);
+    let scroll = |i: usize, from: f32| {
+        model::reveal_scroll(spans[i], Reveal::Visible, 600.0, from, metrics::BODY_PAD)
+    };
     // A narrow body: the last card lies right of it; the first is already visible.
-    assert!(scroll_to_card(&cards, last, 600.0, 0.0) > 0.0);
-    assert_eq!(scroll_to_card(&cards, cards[0].device, 600.0, 0.0), 0.0);
+    assert!(scroll(cards.len() - 1, 0.0) > 0.0);
+    assert_eq!(scroll(0, 0.0), 0.0);
     // Scrolled far right, the first card comes back.
-    assert!(scroll_to_card(&cards, cards[0].device, 600.0, 900.0) < 900.0);
+    assert!(scroll(0, 900.0) < 900.0);
 }
