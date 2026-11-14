@@ -687,6 +687,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
             Fader::new(&mut db, name)
                 .size(m::FADER)
                 .scale(scale)
+                .selected(s.selected)
                 .track_length(length),
         )
     });
@@ -724,8 +725,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
 fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers) {
     let mut db = s.volume_db;
     let name = names::volume_value(&s.name);
-    // The level stands left in the row (S04 `justify-content:space-between`): `DbValue` centres
-    // its text in a box as wide as "−48.0", so the box starts left of the row by the difference.
+    // The level stands left in the row (S04 `justify-content:space-between`).
     let value = komponist_ui::widgets::fader::VALUE_TEXT;
     let text_w = |t: &str| {
         w::galley(ui, t, fonts::font_id(&value), value.line_height)
@@ -734,13 +734,9 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
     };
     let widest = format!("{}48.0", komponist_model::format::MINUS);
     let box_w = text_w(&widest) + 2.0 * komponist_tokens::space::SPACE_1;
-    let shift = (box_w - text_w(&fmt_db(db))) / 2.0;
-    let level = Rect::from_min_size(
-        pos2(row.left() - shift, row.top()),
-        vec2(box_w, row.height()),
-    );
+    let level = Rect::from_min_size(row.min, vec2(box_w, row.height()));
     let response = place(ui, level, "level", |ui| {
-        ui.add(DbValue::new(&mut db, name).width(box_w))
+        ui.add(DbValue::new(&mut db, name).width(box_w).align_left(true))
     });
     if response.changed() {
         ctx.send(channel_edit(s, ChannelProp::VolumeDb(db)));

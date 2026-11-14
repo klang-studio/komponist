@@ -218,6 +218,16 @@ pub fn look(state: State) -> Look {
     }
 }
 
+/// The look of the fader of a selected strip (S04): like rest, with the thumb in `surface.5`.
+/// Hover, drag and disabled keep their own looks.
+pub fn selected_look(state: State) -> Look {
+    let mut lk = look(state);
+    if !state.disabled && !state.pressed {
+        lk.thumb = color32(color::SURFACE_5);
+    }
+    lk
+}
+
 /// Text style of the scale. The design sets it in Mono 9/10, which has no token; `value.s`
 /// (Mono 10/12, `text.3`) is the nearest (contract change request).
 pub const SCALE_TEXT: TypeStyle = typography::VALUE_S;
@@ -364,6 +374,7 @@ pub struct Fader<'a> {
     size: FaderSize,
     scale: bool,
     length: f32,
+    selected: bool,
 }
 
 impl<'a> Fader<'a> {
@@ -376,7 +387,15 @@ impl<'a> Fader<'a> {
             size: FaderSize::Normal,
             scale: false,
             length: metrics::TRACK_LENGTH,
+            selected: false,
         }
+    }
+
+    /// The fader of a selected strip: thumb in `surface.5` ([`selected_look`]).
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
     }
 
     /// The thumb size.
@@ -465,7 +484,11 @@ impl Widget for Fader<'_> {
         let shown = stored_db(db);
 
         let st = State::of(ui, &response);
-        let lk = look(st);
+        let lk = if self.selected {
+            selected_look(st)
+        } else {
+            look(st)
+        };
         paint(ui.painter(), rect, self.size, self.scale, shown, &lk);
         let thumb = layout.thumb_rect(shown);
         if live && entry::is_open(&ctx, id) {
@@ -512,6 +535,7 @@ pub struct DbValue<'a> {
     name: String,
     color: Color32,
     width: Option<f32>,
+    left: bool,
 }
 
 impl<'a> DbValue<'a> {
@@ -522,7 +546,16 @@ impl<'a> DbValue<'a> {
             name: name.into(),
             color: color32(color::TEXT_1),
             width: None,
+            left: false,
         }
+    }
+
+    /// Aligns the text left in the box, inset by `space.1` as the entry field, instead of
+    /// centring it (S04 values row).
+    #[must_use]
+    pub fn align_left(mut self, left: bool) -> Self {
+        self.left = left;
+        self
     }
 
     /// Text colour (default `text.1`).
@@ -582,7 +615,12 @@ impl Widget for DbValue<'_> {
                 self.color
             };
             let g = galley(ui, &fmt_db(*self.db), &VALUE_TEXT);
-            let pos = text_pos(rect, &g, rect.center().x - g.size().x / 2.0, ppp);
+            let x = if self.left {
+                rect.left()
+            } else {
+                rect.center().x - g.size().x / 2.0
+            };
+            let pos = text_pos(rect, &g, x, ppp);
             painter.galley(pos, g, color);
             if st.focused {
                 focus::paint_ring(painter, rect, radius::S);
@@ -764,6 +802,17 @@ fn live_row(ui: &mut Ui) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_selected_thumb_is_surface_5_except_while_dragging_or_disabled() {
+        assert_eq!(
+            selected_look(State::REST).thumb,
+            color32(color::SURFACE_5)
+        );
+        assert_eq!(selected_look(State::REST).edge, look(State::REST).edge);
+        assert_eq!(selected_look(State::PRESSED), look(State::PRESSED));
+        assert_eq!(selected_look(State::DISABLED), look(State::DISABLED));
+    }
+
     use super::*;
 
     fn near(a: f32, b: f32) -> bool {

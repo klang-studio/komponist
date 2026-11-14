@@ -14,7 +14,7 @@ use komponist_tokens::typography;
 use komponist_tokens::{Srgba, color, radius, size};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
-use komponist_ui::widgets::knob::{self, Knob};
+use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
@@ -463,42 +463,12 @@ fn knob_ui(cu: &mut Ui, card: &Card, p: &Param, rect: Rect) -> Option<f64> {
             format_value(min, max, steps, v)
         }
     };
-    if card.bypass {
-        bypassed_knob(cu, p, rect);
-        return None;
-    }
     let knob = Knob::new(&mut value, p.name.clone())
         .range(min..=max)
         .default_value(p.default)
+        .bypassed(card.bypass)
         .format(format);
     let r = cu.put(rect, knob);
     let snapped = p.snap(value);
     (r.changed() && snapped != current).then_some(snapped)
-}
-
-/// The knob of a bypassed device: still, in the card's bypass colours (`card()` with `byp`: arc
-/// `text.4`, indicator `text.3`, cap `surface.3`, track `surface.4`), not the design system's
-/// disabled knob, whose `surface.2` track would vanish on the card's `surface.2`.
-fn bypassed_knob(cu: &mut Ui, p: &Param, rect: Rect) {
-    let look = knob::Look {
-        track: color32(color::SURFACE_4),
-        arc: color32(color::TEXT_4),
-        cap: color32(color::SURFACE_3),
-        indicator: color32(color::TEXT_3),
-    };
-    let span = p.max - p.min;
-    let fraction = if span > 0.0 {
-        ((p.value - p.min) / span) as f32
-    } else {
-        0.0
-    };
-    knob::paint(cu.painter(), rect, &look, fraction, false);
-    let r = cu.interact(rect, cu.scope_id().with(("bypassed", p.id)), Sense::hover());
-    let (name, text, value) = (p.name.clone(), p.text.clone(), p.value);
-    r.widget_info(|| {
-        let mut info = WidgetInfo::labeled(Role::Slider, false, &name);
-        info.value = Some(value);
-        info.current_text_value = Some(text.clone());
-        info
-    });
 }

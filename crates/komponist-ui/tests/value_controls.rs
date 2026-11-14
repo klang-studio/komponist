@@ -11,7 +11,7 @@ use egui::{
     Vec2, pos2, vec2,
 };
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use komponist_ui::State;
 use komponist_ui::snapshot;
 use komponist_ui::widgets::fader::{self, DbValue, Fader, FaderSize};
@@ -446,6 +446,21 @@ fn knob_drag_is_200_px_for_the_range() {
     drag(&mut h, p, vec2(0.0, 24.0), 12, Modifiers::NONE);
     assert!((h.state().pan + 0.24).abs() < 1e-5, "{}", h.state().pan);
     assert_eq!(h.get_by_label("Pan").value().as_deref(), Some("L 12"));
+}
+
+#[test]
+fn a_bypassed_knob_takes_no_input_and_reads_as_disabled() {
+    let mut h = harness(Knobs { cutoff: 0.25, pan: 0.0 }, |ui, s| {
+        ui.add(Knob::new(&mut s.cutoff, "Cutoff").bypassed(true));
+    });
+    let node = h.get_by_label("Cutoff");
+    assert_eq!(node.accesskit_node().role(), egui::accesskit::Role::Slider);
+    assert!(node.accesskit_node().is_disabled());
+    assert_eq!(node.accesskit_node().numeric_value(), Some(0.25));
+    let c = center(&h, "Cutoff");
+    drag(&mut h, c, vec2(0.0, -100.0), 20, Modifiers::NONE);
+    drag(&mut h, c, vec2(0.0, 0.0), 1, Modifiers::ALT);
+    assert_eq!(h.state().cutoff, 0.25);
 }
 
 #[test]
