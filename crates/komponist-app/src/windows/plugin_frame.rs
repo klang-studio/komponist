@@ -999,7 +999,7 @@ impl App {
         let name = self.plugin_name(device);
         let body = match status {
             DeviceStatus::Loading => Some(BodyModel::Loading),
-            DeviceStatus::Crashed(_) => Some(BodyModel::Crashed),
+            DeviceStatus::Crashed(reason) => Some(BodyModel::Crashed(reason)),
             DeviceStatus::Missing => Some(BodyModel::Missing { name }),
             DeviceStatus::Ok => match window.view {
                 PluginView::Gui => Some(BodyModel::Gui { native, name }),

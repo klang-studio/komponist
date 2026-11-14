@@ -594,6 +594,30 @@ fn crashed_shows_the_red_edge_and_reloads() {
 }
 
 #[test]
+fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
+    let (app, c, statuses, _) = s05();
+    let mut h = harness(app);
+    let label = names::card("Airwindows Consolidated");
+    statuses.lock().unwrap().insert(
+        c.airw,
+        DeviceStatus::Crashed(FailReason::LoadFailed("no such file".into())),
+    );
+    h.run_steps(2);
+    let airw = card(&h, &label);
+    assert!(airw.query_by_label(names::CRASHED).is_none());
+    airw.get_by_role_and_label(Role::Label, names::LOAD_FAILED);
+    assert!(airw.query_by_label_contains("no such file").is_some());
+    statuses
+        .lock()
+        .unwrap()
+        .insert(c.airw, DeviceStatus::Crashed(FailReason::Unresponsive));
+    h.run_steps(2);
+    let airw = card(&h, &label);
+    airw.get_by_role_and_label(Role::Label, names::UNRESPONSIVE);
+    airw.get_by_role_and_label(Role::Button, names::RELOAD);
+}
+
+#[test]
 fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
     // The built-in host knows only pisynth: Lead's effects are missing (S06).
     let mut app = App::headless(demo_project());

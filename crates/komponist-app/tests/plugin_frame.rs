@@ -173,7 +173,7 @@ fn frame_states_next_to_s05() {
         ),
         (
             "plugin-frame-crashed",
-            frame(crashed.clone(), BodyModel::Crashed),
+            frame(crashed.clone(), BodyModel::Crashed(exited())),
             gui_size,
         ),
         (
@@ -330,10 +330,45 @@ fn knobs_report_plain_values_on_the_step_grid() {
     }
 }
 
+fn exited() -> FailReason {
+    FailReason::Exited {
+        code: None,
+        signal: Some(11),
+    }
+}
+
+#[test]
+fn a_failed_load_or_a_hang_does_not_read_abgestuerzt() {
+    use komponist_app::views::devices::model::names as card;
+    for (reason, title, detail) in [
+        (
+            FailReason::LoadFailed("bridge missing".into()),
+            card::LOAD_FAILED,
+            "bridge missing",
+        ),
+        (
+            FailReason::Unresponsive,
+            card::UNRESPONSIVE,
+            card::UNRESPONSIVE_TEXT,
+        ),
+    ] {
+        let mut h = frame_harness(
+            frame(surge_header(), BodyModel::Crashed(reason)),
+            [820.0, 400.0],
+            1.0,
+        );
+        h.run();
+        assert!(h.query_by_label(body::names::CRASHED).is_none());
+        assert!(h.query_by_label(title).is_some(), "{title}");
+        assert!(h.query_by_label_contains(detail).is_some(), "{detail}");
+        assert!(h.query_by_label(body::names::RELOAD).is_some());
+    }
+}
+
 #[test]
 fn the_crashed_body_offers_neu_laden() {
     let mut h = frame_harness(
-        frame(surge_header(), BodyModel::Crashed),
+        frame(surge_header(), BodyModel::Crashed(exited())),
         [820.0, 400.0],
         1.0,
     );

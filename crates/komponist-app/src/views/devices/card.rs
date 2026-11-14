@@ -21,7 +21,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px, state};
 
 use super::metrics;
-use super::model::{Card, CardState, Param, format_value, names};
+use super::model::{Card, CardState, Param, failure_texts, format_value, names};
 use crate::actions::{Action, EditAction, PluginAction};
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
@@ -139,18 +139,8 @@ pub(super) fn show(
             r.widget_info(|| WidgetInfo::labeled(Role::ProgressIndicator, true, names::LOADING));
         }
         CardState::Crashed(reason) => {
-            let text = match reason {
-                komponist_plugins::FailReason::LoadFailed(_) => names::LOAD_FAILED_TEXT,
-                _ => names::CRASHED_TEXT,
-            };
-            let y = message(
-                &mut cu,
-                card,
-                body,
-                names::CRASHED,
-                Some(text),
-                color::STATE_ERROR,
-            );
+            let (title, text) = failure_texts(reason);
+            let y = message(&mut cu, card, body, title, Some(&text), color::STATE_ERROR);
             let at = Rect::from_min_size(
                 pos2(body.left() + metrics::MESSAGE_PAD, y),
                 vec2(body.width(), size::CONTROL),

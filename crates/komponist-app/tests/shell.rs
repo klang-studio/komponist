@@ -475,3 +475,12 @@ fn the_menu_opens_the_export_dialog() {
     h.run_steps(3);
     assert!(h.state().ui().dialog.is_none());
 }
+
+#[test]
+fn a_missing_bridge_executable_is_reported_in_the_status_bar() {
+    let mut app = App::headless(komponist_model::fixtures::demo_project());
+    app.report_missing_bridge(std::path::Path::new("/nowhere/komponist-bridge"));
+    let status = app.ui().status.clone().expect("a status message");
+    assert!(status.text.starts_with("komponist-bridge fehlt"), "{}", status.text);
+    assert_eq!(status.kind, komponist_app::ui_state::StatusKind::Error);
+}

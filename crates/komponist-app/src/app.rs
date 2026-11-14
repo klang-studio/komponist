@@ -324,6 +324,19 @@ impl App {
         });
     }
 
+    /// Tells in the status bar that the bridge executable is missing, so plugins other than
+    /// pisynth cannot load (owner test 2026-11-14: only stderr said so).
+    pub fn report_missing_bridge(&mut self, exe: &std::path::Path) {
+        let name = exe.file_name().map_or_else(
+            || exe.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        self.set_status(
+            format!("{name} fehlt · Plugins außer pisynth lassen sich nicht laden"),
+            StatusKind::Error,
+        );
+    }
+
     /// The device host's events polled at the start of this frame, after the app handled them:
     /// views and plugin windows react to what concerns them (`GuiOpened`, `GuiSizeRequest`,
     /// `GuiClosed` for the frame windows; `ParamsChanged`, `NoteNamesChanged`, …). Replaced at
