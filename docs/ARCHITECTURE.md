@@ -721,3 +721,4 @@ These need a decision (the handoff says: report contradictions; the design syste
 | Tempo changes | `TempoMap` behind the time conversions |
 | Light theme | token names are theme-neutral; `komponist-tokens` can generate a second palette |
 | Undocking dock tabs | windows are managed by the app (same mechanism as plugin frames) |
+| Native Wayland | Main window: eframe/winit/wgpu support Wayland; drop the forced `with_x11()` behind a setting and test HiDPI, IME and AccessKit (small). Plugin GUIs stay X11/XWayland: VST3 on Linux and almost all CLAP plugins only embed into X11, and Wayland forbids cross-process embedding. A native main window therefore needs the plugin frame (header + plugin) to move into the bridge as its own XWayland toplevel, with bypass/presets over IPC and no guaranteed stacking above the main window (medium to large). Only worth it once XWayland causes a concrete problem; the owner's KDE desktop at 125 % works fine via XWayland (WP-15 §6.1). |
