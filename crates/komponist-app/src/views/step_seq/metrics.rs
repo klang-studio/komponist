@@ -28,10 +28,6 @@ pub const FIELD_VELOCITY_WIDTH: f32 = 84.0;
 pub const FIELD_PROBABILITY_WIDTH: f32 = 92.0;
 /// "Ratch." field: `width:84px`.
 pub const FIELD_RATCHET_WIDTH: f32 = 84.0;
-/// Gap between the key and the value of the "Auflösung" dropdown (`gap:10px`); the dropdown's
-/// own left padding (`space.2`) is part of it.
-pub const RESOLUTION_GAP: f32 = space::SPACE_2 + space::SPACE_0_5;
-
 /// Row of step numbers: `height:18px` plus a 1 px `surface.0` line below.
 pub const NUMBERS_HEIGHT: f32 = 18.0;
 

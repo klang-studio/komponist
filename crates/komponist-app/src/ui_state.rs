@@ -9,9 +9,7 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use komponist_model::{
-    ClipContent, ClipId, DeviceId, Grid, NoteId, PPQ, Project, Tick, TickRange, TrackId,
-};
+use komponist_model::{ClipContent, ClipId, DeviceId, Grid, NoteId, Project, TickRange, TrackId};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::size;
 
@@ -188,7 +186,7 @@ impl Default for ArrangementView {
 }
 
 impl Default for PianoRollView {
-    /// Pointer tool, 1/16 grid with snap, keys `size.key` high, new notes 1/8 long, velocity lane
+    /// Pointer tool, 1/16 grid with snap, keys `size.key` high, velocity lane
     /// shown.
     fn default() -> PianoRollView {
         PianoRollView {
@@ -199,7 +197,6 @@ impl Default for PianoRollView {
             scroll_tick: 0.0,
             key_height: size::key::DEFAULT,
             top_key: metrics::piano_roll::TOP_KEY,
-            note_length: Tick(PPQ / 2),
             velocity_lane: true,
         }
     }
@@ -330,7 +327,8 @@ pub enum Tool {
     /// "Zeiger": select, move, resize; double-click adds or deletes.
     #[default]
     Pointer,
-    /// "Stift": click adds a note of [`PianoRollView::note_length`], drag draws its length.
+    /// "Stift": click adds a note of one grid step (the design system's rule; the prototype's
+    /// `lastLen` is not followed), drag draws its length.
     Pencil,
     /// "Radierer": click or drag deletes.
     Eraser,
@@ -353,8 +351,6 @@ pub struct PianoRollView {
     pub key_height: f32,
     /// MIDI key at the top edge.
     pub top_key: u8,
-    /// Length of new pencil notes ("Länge"), default one 1/8 (prototype `lastLen`).
-    pub note_length: Tick,
     /// Velocity lane (64 px) visible.
     pub velocity_lane: bool,
 }

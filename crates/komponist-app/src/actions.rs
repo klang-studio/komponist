@@ -27,7 +27,9 @@ use komponist_model::{
     ChannelRef, ClipId, DeviceId, Grid, NoteId, PluginRef, Tick, TickRange, TrackId,
 };
 
-use crate::ui_state::{BrowserSegment, DockTab, FocusArea, Panel, SettingsSection, StepLane, Tool};
+use crate::ui_state::{
+    BrowserSegment, DockTab, FocusArea, Panel, SettingsSection, StatusKind, StepLane, Tool,
+};
 
 /// One user intention.
 #[derive(Debug, Clone, PartialEq)]
@@ -462,10 +464,23 @@ pub enum UiAction {
     GridFiner,
     /// Ctrl `]`: coarser grid.
     GridCoarser,
-    /// Grid dropdown ("Raster").
-    SetGrid(Grid),
-    /// Snap toggle.
-    ToggleSnap,
+    /// Grid dropdown ("Raster") of the arrangement or of the piano roll.
+    SetGrid {
+        /// Whose grid.
+        target: GridTarget,
+        /// The new grid.
+        grid: Grid,
+    },
+    /// Snap toggle of the arrangement or the piano roll.
+    ToggleSnap(GridTarget),
+    /// A transient message from a view in the status bar ("Ratchet ×3", "Velocity 52"; the
+    /// prototype's `app.status`).
+    ShowStatus {
+        /// German text.
+        text: String,
+        /// Neutral, success or error.
+        kind: StatusKind,
+    },
     /// Piano roll tool (1 Zeiger, 2 Stift, 3 Radierer).
     SetTool(Tool),
     /// Step sequencer lane tab (Vel / Wahrsch. / Ratch).
@@ -508,6 +523,16 @@ pub enum UiAction {
     },
     /// Double-click on a panel edge: back to the token default (dock: 320).
     ResetPanelSize(Panel),
+}
+
+/// Which editor a grid or snap action is for (the toolbars name theirs, instead of the action
+/// depending on the keyboard focus).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GridTarget {
+    /// The arrangement.
+    Arrangement,
+    /// The piano roll.
+    PianoRoll,
 }
 
 /// How a click combines with the existing selection.

@@ -111,6 +111,17 @@ pub fn changes(step: &Step, prop: StepProp) -> bool {
     }
 }
 
+/// The status bar text of a step change the prototype announces: "Velocity 52", "Ratchet ×3",
+/// "Wahrscheinlichkeit 50 %"; none for switching a step on or off.
+pub fn status_text(prop: StepProp) -> Option<String> {
+    match prop {
+        StepProp::On(_) => None,
+        StepProp::Velocity(v) => Some(format!("Velocity {v}")),
+        StepProp::Probability(p) => Some(format!("Wahrscheinlichkeit {p} %")),
+        StepProp::Ratchet(r) => Some(format!("Ratchet ×{r}")),
+    }
+}
+
 /// The accessible name of a step: "Step 5, Kick, an, Velocity 100", with ", Wahrscheinlichkeit
 /// 50 %" and ", Ratchet 3" where they differ from the default; "Step 5, Kick, aus".
 pub fn step_name(index: usize, row: &str, step: &Step) -> String {

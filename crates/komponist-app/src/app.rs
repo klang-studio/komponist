@@ -47,8 +47,8 @@ use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
 
 use crate::actions::{
-    Action, DropTarget, EditAction, PluginAction, ProjectAction, SelectMode, SelectionChange,
-    SettingsAction, TransportAction, UiAction,
+    Action, DropTarget, EditAction, GridTarget, PluginAction, ProjectAction, SelectMode,
+    SelectionChange, SettingsAction, TransportAction, UiAction,
 };
 use crate::device_host::{BuiltinHost, DeviceHost};
 use crate::dialogs::DialogState;
@@ -124,7 +124,7 @@ pub(crate) struct ShellState {
     /// Focus to restore when the dialog closes.
     focus_before_dialog: Option<FocusArea>,
     /// Computer-keyboard notes held down: key and MIDI note.
-    held_notes: Vec<(Key, u8)>,
+    pub(crate) held_notes: Vec<(Key, u8)>,
     /// One-shot requests for the views of the next frame.
     pub(crate) requests: Requests,
     /// A UI scale change to apply at the start of the next frame.
@@ -139,6 +139,9 @@ pub(crate) struct ShellState {
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
+    /// A widget wanted the keyboard (a text field had the focus) at the start of the last
+    /// frame; the frame after it lost the focus must not read Esc as a shortcut.
+    keyboard_wanted: bool,
 }
 
 impl App {
@@ -695,7 +698,10 @@ impl App {
     /// Turns this frame's key events into actions and dispatches them (module docs). Keys that
     /// trigger something are consumed, so widgets do not see them.
     fn handle_keys(&mut self, ctx: &Context) {
-        if ctx.egui_wants_keyboard_input() {
+        let wants = ctx.egui_wants_keyboard_input();
+        // The Esc that ended a text entry (it surrendered the focus) is not the shortcut's.
+        let focus_just_lost = std::mem::replace(&mut self.shell.keyboard_wanted, wants) && !wants;
+        if wants {
             return;
         }
         let start = self.ui.screen == Screen::Start;
@@ -765,6 +771,7 @@ impl App {
                 continue;
             };
             if (floating && k == Key::Escape)
+                || (focus_just_lost && k == Key::Escape)
                 || (self.dialogs.overlay.is_some() && !closes_dialog(&action))
                 || (start && !on_start_screen(&action))
             {
@@ -1566,17 +1573,16 @@ impl App {
             UiAction::ZoomToFit => self.zoom_to_fit(),
             UiAction::GridFiner | UiAction::GridCoarser => {
                 let finer = action == UiAction::GridFiner;
-                let grid = self.grid_mut();
+                let target = self.focused_grid();
+                let grid = self.grid_mut(target);
                 *grid = if finer { grid.finer() } else { grid.coarser() };
             }
-            UiAction::SetGrid(grid) => *self.grid_mut() = grid,
-            UiAction::ToggleSnap => {
-                if self.piano_roll_focused() {
-                    self.ui.piano_roll.snap = !self.ui.piano_roll.snap;
-                } else {
-                    self.ui.arrangement.snap = !self.ui.arrangement.snap;
-                }
-            }
+            UiAction::SetGrid { target, grid } => *self.grid_mut(target) = grid,
+            UiAction::ToggleSnap(target) => match target {
+                GridTarget::PianoRoll => self.ui.piano_roll.snap = !self.ui.piano_roll.snap,
+                GridTarget::Arrangement => self.ui.arrangement.snap = !self.ui.arrangement.snap,
+            },
+            UiAction::ShowStatus { text, kind } => self.set_status(text, kind),
             UiAction::SetTool(tool) => self.ui.piano_roll.tool = tool,
             UiAction::SetStepLane(lane) => self.ui.step_seq.lane = lane,
             UiAction::Select(change) => self.select(change),
@@ -1771,11 +1777,19 @@ impl App {
         self.ui.focus == FocusArea::PianoRoll
     }
 
-    fn grid_mut(&mut self) -> &mut komponist_model::Grid {
+    /// The grid the keyboard (Ctrl [ / Ctrl ]) changes: the piano roll's while it has the focus.
+    fn focused_grid(&self) -> GridTarget {
         if self.piano_roll_focused() {
-            &mut self.ui.piano_roll.grid
+            GridTarget::PianoRoll
         } else {
-            &mut self.ui.arrangement.grid
+            GridTarget::Arrangement
+        }
+    }
+
+    fn grid_mut(&mut self, target: GridTarget) -> &mut komponist_model::Grid {
+        match target {
+            GridTarget::PianoRoll => &mut self.ui.piano_roll.grid,
+            GridTarget::Arrangement => &mut self.ui.arrangement.grid,
         }
     }
 
@@ -1784,14 +1798,24 @@ impl App {
         let factor = ZOOM_STEP.powi(steps);
         match self.ui.focus {
             FocusArea::PianoRoll => {
-                let pr = &mut self.ui.piano_roll;
                 if vertical {
-                    pr.key_height = (pr.key_height * factor).clamp(
-                        komponist_tokens::size::key::MIN,
-                        komponist_tokens::size::key::MAX,
-                    );
+                    // Whole pixels, so the rows and the key labels stay sharp.
+                    let pr = &mut self.ui.piano_roll;
+                    for _ in 0..steps.unsigned_abs() {
+                        let h = pr.key_height.round();
+                        let scaled = (h * ZOOM_STEP.powi(steps.signum())).round();
+                        let next = if scaled == h {
+                            h + steps.signum() as f32
+                        } else {
+                            scaled
+                        };
+                        pr.key_height = next.clamp(
+                            komponist_tokens::size::key::MIN,
+                            komponist_tokens::size::key::MAX,
+                        );
+                    }
                 } else {
-                    pr.px_per_bar = (pr.px_per_bar * factor).max(PX_PER_BAR_MIN);
+                    self.shell.requests.piano_roll_zoom += steps;
                 }
             }
             FocusArea::Arrangement => {
@@ -1809,6 +1833,11 @@ impl App {
     /// Z: the selection's time range (or the whole song) fills the arrangement's timeline.
     fn zoom_to_fit(&mut self) {
         use metrics::arrangement::{PX_PER_BAR_MAX, PX_PER_BAR_MIN};
+        if self.ui.focus == FocusArea::PianoRoll {
+            // The piano roll knows its grid width: it fits the clip in the next frame.
+            self.shell.requests.fit_piano_roll = true;
+            return;
+        }
         if self.ui.focus != FocusArea::Arrangement {
             return;
         }

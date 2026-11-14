@@ -110,7 +110,64 @@ pub struct PianoRoll {
     live_notes: usize,
 }
 
+/// Zooms horizontally by `factor` so that the absolute tick `at` stays at screen x `x`.
+fn zoom_around(
+    view: &mut crate::ui_state::PianoRollView,
+    geo: &Geometry,
+    meter: komponist_model::Meter,
+    factor: f32,
+    x: f32,
+    at: f64,
+) {
+    use crate::metrics::arrangement::{PX_PER_BAR_MAX, PX_PER_BAR_MIN};
+    view.px_per_bar = (view.px_per_bar * factor).clamp(PX_PER_BAR_MIN, PX_PER_BAR_MAX * 8.0);
+    let ppt = f64::from(view.px_per_bar) / meter.ticks_per_bar() as f64;
+    let left = at - f64::from(x - geo.grid.left()) / ppt;
+    view.scroll_tick = (left - geo.clip_start.0 as f64).max(0.0);
+}
+
 impl PianoRoll {
+    /// Z and + / −, which the dispatcher turns into requests (it does not know the grid): Z fits
+    /// the clip's length across the grid and its notes into the visible keys; + / − zoom by
+    /// 1.25 per step around the mouse pointer when it is over the grid, else around the playhead
+    /// when that is visible, else around the left edge.
+    fn apply_requests(
+        &mut self,
+        ui: &Ui,
+        ctx: &mut ViewCtx<'_>,
+        geo: &Geometry,
+        clip: &komponist_model::Clip,
+        notes: &[komponist_model::Note],
+    ) {
+        use crate::metrics::arrangement::{PX_PER_BAR_MAX, PX_PER_BAR_MIN, ZOOM_STEP};
+        let meter = ctx.project.meter;
+        let requests = ctx.requests;
+        if requests.fit_piano_roll {
+            let bars = (clip.length.0 as f64 / meter.ticks_per_bar() as f64).max(1.0 / 16.0);
+            let pr = &mut ctx.ui.piano_roll;
+            pr.px_per_bar = (f64::from(geo.grid.width()) / bars) as f32;
+            pr.px_per_bar = pr
+                .px_per_bar
+                .clamp(PX_PER_BAR_MIN / 4.0, PX_PER_BAR_MAX * 8.0);
+            pr.scroll_tick = 0.0;
+            pr.top_key = edit::fit_top_key(notes, geo.full_rows());
+        }
+        if requests.piano_roll_zoom != 0 {
+            let factor = ZOOM_STEP.powi(requests.piano_roll_zoom);
+            let pointer = ui
+                .input(|i| i.pointer.latest_pos())
+                .filter(|p| geo.grid.contains(*p));
+            let playhead = ctx.engine.playhead();
+            let head_x = geo.axis.x(playhead);
+            let (x, at) = match pointer {
+                Some(p) => (p.x, geo.tick_at(p.x)),
+                None if geo.grid.x_range().contains(head_x) => (head_x, playhead.0 as f64),
+                None => (geo.grid.left(), geo.tick_at(geo.grid.left())),
+            };
+            zoom_around(&mut ctx.ui.piano_roll, geo, meter, factor, x, at);
+        }
+    }
+
     /// A piano roll with nothing open yet.
     pub fn new() -> PianoRoll {
         PianoRoll::default()
@@ -134,11 +191,8 @@ impl PianoRoll {
         if zoom != 1.0
             && let Some(p) = pointer
         {
-            let at = geo.tick_at(p.x.max(geo.grid.left()));
-            pr.px_per_bar = (pr.px_per_bar * zoom).max(crate::metrics::arrangement::PX_PER_BAR_MIN);
-            let ppt = f64::from(pr.px_per_bar) / ctx.project.meter.ticks_per_bar() as f64;
-            let left = at - f64::from(p.x.max(geo.grid.left()) - geo.grid.left()) / ppt;
-            pr.scroll_tick = (left - geo.clip_start.0 as f64).max(0.0);
+            let x = p.x.max(geo.grid.left());
+            zoom_around(pr, geo, ctx.project.meter, zoom, x, geo.tick_at(x));
         }
         if scroll.y != 0.0 {
             self.wheel_rows += scroll.y / geo.key_height;
@@ -199,6 +253,10 @@ impl View for PianoRoll {
         let pr = &mut ctx.ui.piano_roll;
         pr.top_key = edit::clamp_top_key(i32::from(pr.top_key), geo.full_rows());
         pr.scroll_tick = pr.scroll_tick.max(0.0);
+        let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
+        if live.is_none() {
+            self.apply_requests(ui, ctx, &geo, clip, notes);
+        }
         let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
         self.scroll_and_zoom(ui, ctx, &geo);
         let geo = Geometry::new(body, &ctx.ui.piano_roll, clip.start, meter);
@@ -284,7 +342,9 @@ impl View for PianoRoll {
             TransportState::Playing | TransportState::Recording
         );
         let (t0, t1) = geo.visible_local_ticks();
+        let held = ctx.held_notes.clone();
         let frame = Frame {
+            held: &held,
             geo,
             clip,
             track: track.id,

@@ -825,3 +825,222 @@ fn ten_thousand_notes_frame_time() {
         assert!(median < Duration::from_millis(8), "{median:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// WP-47a: editor polish
+
+/// Z fits the clip's length across the grid, from its start, and shows its notes.
+#[test]
+fn z_fits_the_clip() {
+    let (app, clip) = lead_a();
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Focus(FocusArea::PianoRoll)));
+    h.state_mut().ui_mut().piano_roll.scroll_tick = 1000.0;
+    h.state_mut().dispatch(Action::Ui(UiAction::ZoomToFit));
+    h.run_steps(3);
+    let g = geometry(&h, clip);
+    let pr = h.state().ui().piano_roll;
+    assert_eq!(pr.scroll_tick, 0.0);
+    // Lead A is two bars long.
+    let clip_end = g.x_of_local(Tick(2 * BAR));
+    assert!(
+        (clip_end - g.grid.right()).abs() < 1.5,
+        "the clip ends at the right edge of the grid: {clip_end} vs {}",
+        g.grid.right()
+    );
+}
+
+/// + / − zoom around the mouse pointer: the tick under it stays where it is.
+#[test]
+fn zoom_keeps_the_tick_under_the_pointer() {
+    let (app, clip) = lead_a();
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Focus(FocusArea::PianoRoll)));
+    let g = geometry(&h, clip);
+    let x = g.x_of_local(Tick(BAR));
+    let at = pos2(x, g.grid.center().y);
+    let tick = g.tick_at(x);
+    h.hover_at(at);
+    h.run_steps(2);
+    for steps in [1, 1, -1] {
+        h.state_mut().dispatch(Action::Ui(UiAction::Zoom {
+            vertical: false,
+            steps,
+        }));
+        h.run_steps(2);
+        let after = geometry(&h, clip);
+        assert!(
+            (after.tick_at(x) - tick).abs() * f64::from(after.axis.px_per_tick) < 1.0,
+            "the tick under the pointer moved"
+        );
+    }
+    assert!(h.state().ui().piano_roll.px_per_bar > 320.0);
+}
+
+/// Without the pointer over the grid, + / − zoom around the playhead when it is visible.
+#[test]
+fn zoom_without_a_pointer_keeps_the_playhead_in_place() {
+    let (mut app, clip) = lead_a();
+    // Bar 9 + 1 beat: Lead A starts at bar 9, so the playhead is visible at the left.
+    let head = Tick(8 * BAR + 960);
+    app.dispatch(Action::Transport(TransportAction::Locate(head)));
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Focus(FocusArea::PianoRoll)));
+    for _ in 0..200 {
+        h.step();
+        if h.state().engine().playhead() == head {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.state().engine().playhead(), head);
+    h.hover_at(pos2(2.0, 2.0));
+    h.run_steps(2);
+    let g = geometry(&h, clip);
+    let x = g.axis.x(head);
+    h.state_mut().dispatch(Action::Ui(UiAction::Zoom {
+        vertical: false,
+        steps: 1,
+    }));
+    h.run_steps(2);
+    let after = geometry(&h, clip);
+    assert!((after.axis.x(head) - x).abs() < 1.0, "playhead stayed");
+    assert!(h.state().ui().piano_roll.px_per_bar > 320.0);
+}
+
+/// Alt + / Alt − change the key height in whole pixels, within the limits.
+#[test]
+fn key_heights_change_in_whole_pixels() {
+    let (mut app, _) = lead_a();
+    app.dispatch(Action::Ui(UiAction::Focus(FocusArea::PianoRoll)));
+    let mut seen = vec![app.ui().piano_roll.key_height];
+    for _ in 0..5 {
+        app.dispatch(Action::Ui(UiAction::Zoom {
+            vertical: true,
+            steps: 1,
+        }));
+        seen.push(app.ui().piano_roll.key_height);
+    }
+    assert_eq!(seen, [12.0, 15.0, 19.0, 24.0, 24.0, 24.0]);
+    for _ in 0..12 {
+        app.dispatch(Action::Ui(UiAction::Zoom {
+            vertical: true,
+            steps: -1,
+        }));
+        let h = app.ui().piano_roll.key_height;
+        assert_eq!(h, h.round(), "whole pixels");
+    }
+    assert_eq!(app.ui().piano_roll.key_height, size::key::MIN);
+}
+
+/// The toolbar's grid and snap act on the piano roll whatever has the focus.
+#[test]
+fn the_toolbar_names_its_editor_for_grid_and_snap() {
+    let (app, _) = lead_a();
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Focus(FocusArea::Arrangement)));
+    let arrangement = h.state().ui().arrangement.grid;
+    dock_node(&h, Role::ComboBox, names::GRID).click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::ListBoxOption, "1/8").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui().piano_roll.grid, Grid::Eighth);
+    assert_eq!(h.state().ui().arrangement.grid, arrangement, "untouched");
+    let snap = h.state().ui().arrangement.snap;
+    dock_node(&h, Role::Button, names::SNAP).click();
+    h.run_steps(2);
+    assert!(!h.state().ui().piano_roll.snap);
+    assert_eq!(h.state().ui().arrangement.snap, snap, "untouched");
+}
+
+/// A computer keyboard note lights its key like a playing note (prototype `app.held`).
+#[test]
+fn held_keyboard_notes_light_their_keys() {
+    let (mut app, clip) = lead_a();
+    app.dispatch(Action::Ui(UiAction::ToggleKeyboardMidi));
+    let mut h = harness(app);
+    let g = geometry(&h, clip);
+    // C4 is 60; the key row, sampled in the white keys' area.
+    let at = pos2(g.keys.left() + 6.0, g.row(60).center().y);
+    let sample = |h: &mut Harness<'_, App>| {
+        let img = h.render().expect("render");
+        *img.get_pixel(at.x as u32, at.y as u32)
+    };
+    let before = sample(&mut h);
+    // Physical key A plays C4 (`NOTE_KEYS`).
+    h.event(Event::Key {
+        key: egui::Key::A,
+        physical_key: Some(egui::Key::A),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    let held = sample(&mut h);
+    assert_ne!(before, held, "the key lights up while held");
+    h.event(Event::Key {
+        key: egui::Key::A,
+        physical_key: Some(egui::Key::A),
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    assert_eq!(sample(&mut h), before, "and goes dark on release");
+}
+
+/// A drag on a toolbar field is one gesture; Esc restores the notes and the field sends
+/// nothing more.
+#[test]
+fn esc_cancels_a_toolbar_field_drag() {
+    let (mut app, clip) = lead_a();
+    let n = notes_of(&app, clip)[2];
+    select(&mut app, vec![n.id]);
+    let mut h = harness(app);
+    let r = toolbar_field(&h, names::VELOCITY_FIELD).rect();
+    let from = r.center();
+    h.hover_at(from);
+    h.step();
+    press(&mut h, from, Modifiers::NONE, true);
+    h.step();
+    for i in 1..=8 {
+        h.hover_at(from + vec2(0.0, -(i as f32)));
+        h.step();
+    }
+    let velocity = |h: &Harness<'_, App>| {
+        notes_of(h.state(), clip)
+            .iter()
+            .find(|q| q.id == n.id)
+            .unwrap()
+            .velocity
+    };
+    assert_eq!(velocity(&h), n.velocity.saturating_add(8).min(127));
+    h.key_press(egui::Key::Escape);
+    h.step();
+    assert_eq!(velocity(&h), n.velocity, "back at the start");
+    for i in 9..=14 {
+        h.hover_at(from + vec2(0.0, -(i as f32)));
+        h.step();
+    }
+    press(&mut h, from + vec2(0.0, -14.0), Modifiers::NONE, false);
+    h.run_steps(2);
+    assert_eq!(velocity(&h), n.velocity, "nothing changes after Esc");
+}
+
+/// The velocity lane announces its value in the status bar.
+#[test]
+fn the_velocity_lane_announces_the_value() {
+    let (app, clip) = lead_a();
+    let mut h = harness(app);
+    let g = geometry(&h, clip);
+    let lane = g.lane.unwrap();
+    let notes = notes_of(h.state(), clip);
+    let b4 = notes.iter().find(|n| n.start == Tick(4 * 240)).unwrap();
+    let at = pos2(g.x_of_local(b4.start) + 2.0, lane.bottom() - 4.0 - 26.0);
+    click(&mut h, at, Modifiers::NONE);
+    assert_eq!(h.state().ui().status.clone().unwrap().text, "Velocity 64");
+}

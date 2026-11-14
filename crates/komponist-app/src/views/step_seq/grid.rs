@@ -16,7 +16,7 @@ use egui::{
     Color32, Event, FontId, Galley, Id, PointerButton, Pos2, Rangef, Rect, Role, Sense, Ui,
     UiBuilder, WidgetInfo, pos2, vec2,
 };
-use komponist_model::edits::{StepProp, StepRowProp};
+use komponist_model::edits::StepRowProp;
 use komponist_model::format::note_name;
 use komponist_model::{ClipId, Step, TrackId};
 use komponist_tokens::egui_support::color32;
@@ -342,7 +342,7 @@ pub fn show(
     {
         let steps = &row.steps[..open.steps()];
         for (i, prop) in g.moved(steps, cols.at(pos.x), pos.y) {
-            ctx.send(set_step(clip, g.row(), i, prop));
+            super::send_step(ctx, clip, g.row(), i, prop);
         }
         state.gesture = Some((clip, g));
     }
@@ -351,20 +351,11 @@ pub fn show(
     }
 }
 
-fn set_step(clip: ClipId, row: usize, step: usize, prop: StepProp) -> Action {
-    Action::Edit(EditAction::SetStep {
-        clip,
-        row,
-        step,
-        prop,
-    })
-}
-
 /// The release of a press: the gesture's last changes, the end of the undo step, note off.
 fn release(state: &mut GridState, ctx: &mut ViewCtx<'_>) {
     if let Some((clip, g)) = state.gesture.take() {
         for (i, prop) in g.released() {
-            ctx.send(set_step(clip, g.row(), i, prop));
+            super::send_step(ctx, clip, g.row(), i, prop);
         }
         ctx.send(Action::Edit(EditAction::EndGesture));
     }
@@ -427,7 +418,8 @@ fn header_column(ui: &Ui, rect: Rect, fill: Color32) {
     );
 }
 
-/// A row header: paints it, handles the press (sound and select) and M S. Returns `true` if a
+/// A row header: paints it, handles the press (sound and select the row, keeping the step
+/// column) and M S. Returns `true` if a
 /// press started here.
 fn header(
     ui: &mut Ui,
@@ -517,10 +509,16 @@ fn header(
     if state.pressed {
         release(state, ctx);
     }
+    // The step column stays (prototype `onHdr` sets only `sel.row`): the toolbar then shows the
+    // same step of the new row, so rows can be compared step by step.
+    let step = open
+        .cursor
+        .and_then(|c| c.step)
+        .filter(|&i| i < open.steps());
     ctx.send(Action::Ui(UiAction::Select(SelectionChange::Step {
         clip: open.clip,
         row: r,
-        step: None,
+        step,
     })));
     ctx.send(live_note(open.track, model.note, m::AUDITION_VELOCITY));
     if instant {
@@ -676,7 +674,7 @@ fn cells(
             state.gesture = Some((open.clip, g));
         }
         if let Some(prop) = press.edit {
-            ctx.send(set_step(open.clip, r, i, prop));
+            super::send_step(ctx, open.clip, r, i, prop);
         }
         if press.audition {
             ctx.send(live_note(open.track, model.note, step.velocity));

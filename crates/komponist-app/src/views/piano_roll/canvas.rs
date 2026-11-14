@@ -78,6 +78,8 @@ pub struct Frame<'a> {
     pub playhead: Tick,
     /// The clip-local playhead while the transport runs and it is inside the clip.
     pub playing: Option<Tick>,
+    /// Keys held live (computer keyboard): lit like the playing notes.
+    pub held: &'a [u8],
     /// The clip or its track is muted: notes are contours.
     pub muted: bool,
     /// The take being recorded (WP-51): read-only, the clip range in `state.record`, no hint.
@@ -529,6 +531,10 @@ impl PianoRoll {
                         notes: d.notes.clone(),
                         change: VelocityChange::Offset(offset),
                     }));
+                    if let Some(n) = f.notes.iter().find(|n| d.notes.contains(&n.id)) {
+                        let v = (i16::from(n.velocity) + offset).clamp(1, 127);
+                        status(ctx, format!("Velocity {v}"));
+                    }
                 }
             }
             Some(Gesture::Pencil(d)) => {
@@ -578,6 +584,7 @@ impl PianoRoll {
                             notes: next.0.clone(),
                             change: VelocityChange::Set(v),
                         }));
+                        status(ctx, format!("Velocity {v}"));
                         *last = Some(next);
                     }
                 }
@@ -846,10 +853,11 @@ impl PianoRoll {
         px::vline(&painter, right, g.keys.y_range(), color32(color::SURFACE_0));
     }
 
-    /// The keys that light up: notes under the playhead while playing, and the key played by
-    /// clicking.
+    /// The keys that light up: notes under the playhead while playing, the key played by
+    /// clicking and the keys held on the computer keyboard.
     fn playing_keys(&self, f: &Frame<'_>) -> BTreeSet<u8> {
         let mut keys: BTreeSet<u8> = self.audition.map(|(_, k)| k).into_iter().collect();
+        keys.extend(f.held.iter().copied());
         if let Some(at) = f.playing {
             keys.extend(
                 f.notes
@@ -1259,6 +1267,14 @@ fn selected_in_order(f: &Frame<'_>) -> Vec<NoteId> {
 
 fn select(notes: Vec<NoteId>, mode: SelectMode) -> Action {
     Action::Ui(UiAction::Select(SelectionChange::Notes { notes, mode }))
+}
+
+/// A transient message in the status bar ("Velocity 52", the prototype's `app.status`).
+fn status(ctx: &mut ViewCtx<'_>, text: String) {
+    ctx.send(Action::Ui(UiAction::ShowStatus {
+        text,
+        kind: crate::ui_state::StatusKind::Info,
+    }));
 }
 
 fn live(track: TrackId, key: u8, velocity: u8) -> Action {

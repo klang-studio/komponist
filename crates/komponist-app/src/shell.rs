@@ -164,6 +164,12 @@ impl App {
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
         ctx.exports = &self.export.done;
+        ctx.held_notes = self
+            .shell
+            .held_notes
+            .iter()
+            .map(|(_, note)| *note)
+            .collect();
         f(&mut self.views, &mut ctx)
     }
 
