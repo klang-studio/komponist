@@ -1,0 +1,4 @@
+# Applies to every worktree and to rust-analyzer. 12 cores, but 16 GB RAM and one shared disk:
+# more jobs mean more parallel links (egui/wgpu) and swapping. Override with CARGO_BUILD_JOBS.
+[build]
+jobs = 6

@@ -6,6 +6,8 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Before XDG_RUNTIME_DIR is redirected below, so the lock file is the shared one.
+source scripts/build-lock.sh
 
 scripts/build-test-plugins.sh >/dev/null
 
