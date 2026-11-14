@@ -79,8 +79,8 @@ impl Arrangement {
         let mut job = LayoutJob::single_section(
             names::EMPTY_TEXT.to_owned(),
             TextFormat {
-                font_id: w::font_at(&typography::TRACK, metrics::EMPTY_TEXT_WEIGHT),
-                line_height: Some(metrics::EMPTY_TEXT_LINE_HEIGHT),
+                font_id: fonts::font_id(&typography::BODY),
+                line_height: Some(typography::BODY.line_height),
                 color: color32(color::TEXT_2),
                 ..Default::default()
             },

@@ -72,6 +72,21 @@ mod tests {
         assert_eq!((VALUE_M.tracking_em, VALUE_M.color), (0.0, None));
     }
 
+    /// `type.body` is a komponist addition (`design/README.md`): the 13 px regular body text of
+    /// S06 and S10 (`font-size:13px; line-height:1.55` → 20.15, rounded to whole px).
+    #[test]
+    fn body_is_the_13_px_regular_text() {
+        assert_eq!(BODY.family, Family::Sans);
+        assert_eq!(
+            (BODY.size, BODY.line_height, BODY.weight),
+            (13.0, 20.0, 400)
+        );
+        assert_eq!((BODY.size * 1.55).round(), BODY.line_height);
+        assert_eq!(BODY.size, TRACK.size, "the size of type.track, regular");
+        assert_eq!((BODY.emphasis_weight, BODY.color), (None, None));
+        assert!(ALL.iter().any(|(name, _)| *name == "body"));
+    }
+
     #[test]
     fn every_style_has_a_bundled_face() {
         for (name, style) in ALL {

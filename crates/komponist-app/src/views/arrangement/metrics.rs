@@ -39,10 +39,6 @@ pub const EMPTY_BUTTON_HEIGHT: f32 = 28.0;
 pub const EMPTY_BUTTON_PADDING_X: f32 = space::SPACE_3;
 /// S10: gap between "MIDI-Spur hinzufügen" and its shortcut (`gap:10px`).
 pub const EMPTY_SHORTCUT_GAP: f32 = space::SPACE_2 + space::SPACE_0_5;
-/// S10: line height of the text (`font-size:13px; line-height:1.55` → 20.15).
-pub const EMPTY_TEXT_LINE_HEIGHT: f32 = 20.0;
-/// S10: weight of the text (13 px regular; the size is `type.track`'s).
-pub const EMPTY_TEXT_WEIGHT: u16 = 400;
 
 /// Clip: width of the highlighted right edge of a selected clip (`clipView` `edge`: `width:6`).
 pub const CLIP_EDGE_WIDTH: f32 = 6.0;
