@@ -10,7 +10,7 @@
 
 use core::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use komponist_model::{Tick, TrackId};
 
@@ -259,6 +259,8 @@ pub struct Telemetry {
     pub(crate) master: TrackMeter,
     /// Events dropped because a queue or a per-block event buffer was full (diagnostics).
     pub(crate) dropped_events: AtomicU32,
+    /// Keys held on the MIDI inputs: bits 0–63 and 64–127 of [`Telemetry::held_input_keys`].
+    pub(crate) held_input: [AtomicU64; 2],
 }
 
 impl Telemetry {
@@ -269,7 +271,17 @@ impl Telemetry {
             state: AtomicU8::new(TransportState::Stopped as u8),
             master: TrackMeter::new(),
             dropped_events: AtomicU32::new(0),
+            held_input: [AtomicU64::new(0), AtomicU64::new(0)],
         }
+    }
+
+    /// MIDI keys held on the live MIDI inputs right now (bit `k` = key `k`), all ports and
+    /// channels merged, whether or not a track listens. The piano roll's keyboard lights them.
+    /// Updated after every `process` call that carried MIDI.
+    pub fn held_input_keys(&self) -> u128 {
+        let lo = self.held_input[0].load(Ordering::Relaxed);
+        let hi = self.held_input[1].load(Ordering::Relaxed);
+        u128::from(hi) << 64 | u128::from(lo)
     }
 
     /// Current playhead.

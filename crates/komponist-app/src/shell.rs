@@ -166,11 +166,14 @@ impl App {
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
         ctx.exports = &self.export.done;
+        let midi = self.engine.telemetry().held_input_keys();
         ctx.held_notes = self
             .shell
             .held_notes
             .iter()
             .map(|(_, note)| *note)
+            .filter(|note| midi & 1 << note == 0)
+            .chain((0..128u8).filter(|key| midi & 1 << key != 0))
             .collect();
         f(&mut self.views, &mut ctx)
     }

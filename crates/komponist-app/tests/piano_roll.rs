@@ -993,6 +993,42 @@ fn held_keyboard_notes_light_their_keys() {
     assert_eq!(sample(&mut h), before, "and goes dark on release");
 }
 
+/// A key held on a MIDI input lights its key too (engine telemetry `held_input_keys`, WP-61),
+/// whether or not a track listens to the input.
+#[test]
+fn held_midi_input_notes_light_their_keys() {
+    let (source, receiver) = komponist_audio::TestMidiSource::new();
+    let mut app = App::headless_with_midi(demo_project(), receiver);
+    app.ui_mut().layout.dock_height = TEST_DOCK;
+    let clip = app.project().tracks[2].clips[0].id;
+    app.dispatch(Action::Ui(UiAction::OpenClip(clip)));
+    let mut h = harness(app);
+    let g = geometry(&h, clip);
+    let at = pos2(g.keys.left() + 6.0, g.row(60).center().y);
+    let sample = |h: &mut Harness<'_, App>| {
+        let img = h.render().expect("render");
+        *img.get_pixel(at.x as u32, at.y as u32)
+    };
+    let before = sample(&mut h);
+    let port = komponist_audio::MidiPortId(0);
+    // The null backend takes the message within a few callbacks (real time).
+    let wait = |h: &mut Harness<'_, App>, lit: bool, why: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            std::thread::sleep(Duration::from_millis(10));
+            h.run_steps(1);
+            if (sample(h) != before) == lit {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{why}");
+        }
+    };
+    assert!(source.note_on(port, 60, 100));
+    wait(&mut h, true, "the key lights up while held");
+    assert!(source.note_off(port, 60));
+    wait(&mut h, false, "and goes dark on release");
+}
+
 /// A drag on a toolbar field is one gesture; Esc restores the notes and the field sends
 /// nothing more.
 #[test]

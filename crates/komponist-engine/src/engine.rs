@@ -163,6 +163,7 @@ impl Engine {
             note_ids: NoteIds::default(),
             unreported: false,
             dropped: 0,
+            held_input: 0,
         };
         let engine = Box::new(Engine {
             core,
@@ -324,6 +325,8 @@ struct Core {
     unreported: bool,
     /// Events dropped in this block (per-call event lists, full queues inside the engine).
     dropped: u32,
+    /// Keys held on the MIDI inputs (bit = key), published as [`Telemetry::held_input_keys`].
+    held_input: u128,
 }
 
 /// Whether a command retires an object (and therefore needs room in the garbage holding list).
@@ -332,6 +335,20 @@ fn retires(command: &Command) -> bool {
         command,
         Command::SetProgram(_) | Command::InsertProcessor { .. } | Command::RemoveProcessor { .. }
     )
+}
+
+/// The held-keys bitmap after the MIDI message `data`: a note-on sets its key, a note-off (or a
+/// note-on with velocity 0) clears it, "all notes off" / "all sound off" clear everything. All
+/// ports and channels merge into one keyboard.
+fn held_after(held: u128, data: [u8; 3]) -> u128 {
+    let [status, data1, data2] = data;
+    let bit = 1u128 << (data1 & 0x7f);
+    match status & 0xf0 {
+        0x90 if data2 > 0 => held | bit,
+        0x80 | 0x90 => held & !bit,
+        0xb0 if data1 == 120 || data1 == 123 => 0,
+        _ => held,
+    }
 }
 
 /// Whether a track listening with `filter` receives `m`.
@@ -416,7 +433,15 @@ impl Core {
         if self.unreported {
             self.report_failures();
         }
+        let held = midi
+            .iter()
+            .fold(self.held_input, |held, m| held_after(held, m.data));
         let t = &self.telemetry;
+        if held != self.held_input {
+            self.held_input = held;
+            t.held_input[0].store(held as u64, Ordering::Relaxed);
+            t.held_input[1].store((held >> 64) as u64, Ordering::Relaxed);
+        }
         let playhead = self.transport.tick(&self.song, rate);
         t.playhead.store(playhead.0, Ordering::Relaxed);
         t.state.store(self.transport.state as u8, Ordering::Relaxed);

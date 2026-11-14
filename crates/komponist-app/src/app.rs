@@ -29,6 +29,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use egui::{Context, Event, FocusDirection, Ui};
@@ -79,6 +80,12 @@ const KEYBOARD_VELOCITY: u8 = 100;
 /// How often an idle app still polls a device host that has work (bridges loading, running or
 /// crashing, a scan): status changes show up within this time.
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Delay of the frame a MIDI message requests (the audio callback takes the message first).
+const MIDI_REPAINT_DELAY: Duration = Duration::from_millis(10);
+
+/// Frame interval while MIDI input holds keys, or right after a MIDI message.
+const HELD_KEYS_INTERVAL: Duration = Duration::from_millis(30);
 
 /// How long saving waits for the state snapshots of all bridged devices together.
 pub const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -149,6 +156,9 @@ pub(crate) struct ShellState {
     /// project open), so a count-in that ends in the audio block running while that happens
     /// cannot start a take in the wrong place.
     take_expected: bool,
+    /// Set by the MIDI hub's waker (a MIDI thread) when a message arrived; `None` until the
+    /// waker is installed in the first frame.
+    midi_seen: Option<Arc<AtomicBool>>,
 }
 
 impl App {
@@ -395,6 +405,9 @@ impl App {
         }
         if self.take_close() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if self.shell.midi_seen.is_none() {
+            self.install_midi_waker(&ctx);
         }
         self.poll_engine(ctx.input(|i| i.time));
         self.poll_export();
@@ -668,6 +681,21 @@ impl App {
         )
     }
 
+    /// MIDI input wakes the idle UI, so held keys (piano-roll keyboard) and the activity dots
+    /// show without other input: a frame [`MIDI_REPAINT_DELAY`] after a message, when the audio
+    /// callback has usually taken it.
+    fn install_midi_waker(&mut self, ctx: &Context) {
+        let seen = Arc::new(AtomicBool::new(false));
+        if let Some(hub) = self.engine.midi() {
+            let (ctx, seen) = (ctx.clone(), Arc::clone(&seen));
+            hub.set_waker(move || {
+                seen.store(true, Ordering::Relaxed);
+                ctx.request_repaint_after(MIDI_REPAINT_DELAY);
+            });
+        }
+        self.shell.midi_seen = Some(seen);
+    }
+
     fn schedule_repaint(&self, ctx: &Context) {
         if self.transport() != TransportState::Stopped
             || self.meters.is_active()
@@ -675,6 +703,16 @@ impl App {
         {
             ctx.request_repaint();
             return;
+        }
+        // After a MIDI message one more frame (the audio callback may have been slower than the
+        // waker's frame), and frames while keys are held, so their release shows.
+        let midi = self
+            .shell
+            .midi_seen
+            .as_ref()
+            .is_some_and(|seen| seen.swap(false, Ordering::Relaxed));
+        if midi || self.engine.telemetry().held_input_keys() != 0 {
+            ctx.request_repaint_after(HELD_KEYS_INTERVAL);
         }
         if let Some(status) = &self.ui.status {
             let left = STATUS_DURATION.saturating_sub(status.since.elapsed());
