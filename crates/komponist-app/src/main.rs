@@ -34,7 +34,7 @@ use komponist_app::settings::{self, Settings};
 use komponist_app::{Action, App, ProjectAction};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_i18n::Lang;
-use komponist_model::{Document, fixtures};
+use komponist_model::Document;
 use komponist_plugins::{BRIDGE_FLAG, PluginManagerConfig};
 use komponist_ui::RunOptions;
 
@@ -176,7 +176,7 @@ fn run_app() -> eframe::Result {
     }
     let first = if args.demo {
         // The demo's Sampler plays the synthesized test kit (written to the temporary folder).
-        let demo = fixtures::demo_project();
+        let demo = komponist_app::showcase::showcase_project();
         let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
         komponist_app::samples::demo_with_kit(demo.clone(), &kit_dir).unwrap_or_else(|e| {
             eprintln!("komponist: demo kit not written ({e}); the Sampler stays empty");
