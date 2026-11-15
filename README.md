@@ -118,7 +118,7 @@ development packages behind the audio and window crates. On Debian or Ubuntu the
 
 ```bash
 sudo apt install build-essential pkg-config clang libasound2-dev libjack-jackd2-dev libpipewire-0.3-dev \
-    libdbus-1-dev libxkbcommon-dev libx11-dev libwayland-dev
+    libdbus-1-dev libfontconfig1-dev libxkbcommon-dev libx11-dev libwayland-dev
 ```
 
 At runtime you also need a Vulkan driver (wgpu renders with Vulkan) and an X11 or XWayland session. Package names
