@@ -522,6 +522,46 @@ mod tests {
     }
 
     #[test]
+    fn the_eq_curve_is_the_filters_response_at_the_devices_sample_rate() {
+        // A high cut at 12 kHz and a bell at 8 kHz: near Nyquist the response depends on the rate.
+        let p = [
+            1.0,
+            12_000.0,
+            0.0,
+            0.71,
+            band::HIGH_CUT, //
+            1.0,
+            8000.0,
+            6.0,
+            1.0,
+            band::BELL,
+        ];
+        for rate in [44_100.0, 48_000.0, 96_000.0] {
+            let spec = eq_at(2, 18.0, rate);
+            let Some(Layer::Curve(curve)) = spec.layers.get(1) else {
+                panic!("the curve layer");
+            };
+            for hz in [100.0, 8000.0, 12_000.0, 18_000.0] {
+                let want = eq_response_at(&p, 2, hz, rate);
+                assert!((curve.f.at(hz, &p) - want).abs() < 1e-9, "{rate} {hz}");
+            }
+            // The bell reaches its gain at its own frequency whatever the rate (cut: ≈ -1 dB there).
+            let bell = eq_band_response_at(&p, 1, 8000.0, rate);
+            assert!((bell - 6.0).abs() < 1e-6, "{rate}: {bell}");
+        }
+        // 18 kHz is 4.4 dB lower against 44.1 kHz's Nyquist than against 96 kHz's.
+        let (a, b) = (
+            eq_response_at(&p, 2, 18_000.0, 44_100.0),
+            eq_response_at(&p, 2, 18_000.0, 96_000.0),
+        );
+        assert!((a - b).abs() > 1.0, "{a} vs {b}");
+        assert_eq!(
+            eq_response(&p, 2, 5000.0),
+            eq_response_at(&p, 2, 5000.0, 48_000.0)
+        );
+    }
+
+    #[test]
     fn eq_handle_sits_on_the_summed_curve_except_cuts() {
         let spec = eq(2, 18.0);
         let mut p = vec![0.0; 10];

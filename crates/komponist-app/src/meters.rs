@@ -219,4 +219,25 @@ mod tests {
         default.tick((0.0, 6.0, 0.0), 0.0);
         assert!((default.levels().bars[1] - 0.25).abs() < 1e-6);
     }
+    #[test]
+    fn a_hidden_spectrum_costs_nothing_and_a_visible_one_renews_the_taps_lease() {
+        let mut meters = Meters::new();
+        let device = DeviceId(1);
+        assert!(
+            meters.analysis(device, true, 0.0).is_none(),
+            "no tap, no analysis"
+        );
+        let tap = Arc::new(SampleTap::new(16_384));
+        tap.set_rate(44_100.0);
+        meters.taps.insert(device, Arc::clone(&tap));
+        let hidden = meters.analysis(device, false, 0.0).unwrap();
+        assert_eq!((hidden.rate, hidden.spectrum.len()), (44_100.0, 0));
+        assert!(!tap.is_wanted() && meters.spectra.is_empty());
+        let shown = meters.analysis(device, true, 0.1).unwrap();
+        assert_eq!(shown.spectrum.len(), crate::spectrum::POINTS);
+        assert!(tap.is_wanted());
+        // Hiding it again drops the analyzer (the lease runs out by itself).
+        meters.analysis(device, false, 0.2);
+        assert!(meters.spectra.is_empty());
+    }
 }
