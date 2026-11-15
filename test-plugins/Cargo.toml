@@ -9,6 +9,7 @@ members = [
     "kp-test-fx",
     "kp-test-crash",
     "kp-test-slow",
+    "kp-test-sc",
     "fake-host",
     "xtask",
 ]

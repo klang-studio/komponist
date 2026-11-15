@@ -15,7 +15,7 @@ export CARGO_TARGET_DIR="$plugins/target"
 bundled="$CARGO_TARGET_DIR/bundled"
 rm -rf "$out/clap" "$out/vst3"
 mkdir -p "$out/clap" "$out/vst3"
-for name in kp-test-synth kp-test-fx kp-test-crash kp-test-slow; do
+for name in kp-test-synth kp-test-fx kp-test-crash kp-test-slow kp-test-sc; do
     cp -R "$bundled/$name.clap" "$out/clap/"
     cp -R "$bundled/$name.vst3" "$out/vst3/"
     echo "$out/clap/$name.clap"

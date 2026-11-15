@@ -34,13 +34,14 @@ continuous parameters as normalized values in `[0, 1]` (nice-plug's convention).
 | `kp-test-fx` | `de.klang-studio.kp-test-fx` / `kpTestFx00000001` | 2 in, 2 out | `gain`: −60…+12 dB, 0 dB | Output = input delayed by 64 samples × gain. Reports a latency of 64 samples and really has it, so latency compensation lines up. |
 | `kp-test-crash` | `de.klang-studio.kp-test-crash` / `kpTestCrash00001` | 2 in, 2 out (passthrough); note input | `crash`: 0…1, 0 | In `process`, writes through a null pointer (SIGSEGV) on a note-on of key 127, or when `crash` rises past 0.9 (below 0.9 at the previous block or at activation, ≥ 0.9 now). A state with `crash` ≥ 0.9 loaded before activation does not crash; loaded while active, it does. |
 | `kp-test-slow` | `de.klang-studio.kp-test-slow` / `kpTestSlow000001` | 2 in, 2 out (passthrough); note input | none | Sleeps 50 ms inside `process` for every note-on of key 126 (longer than a block of 2048 samples at 48 kHz). |
+| `kp-test-sc` | `de.klang-studio.kp-test-sc` / `kpTestSc00000001` | 2 in, 2 out, plus a stereo sidechain input "Sidechain" (CLAP: a second, non-main input port; VST3: a `kAux` input bus) | `level`: −60…+12 dB, 0 dB | Output = input + sidechain × `level`, no latency. At 0 dB the factor is exactly 1, so the hosting tests (#6) compare the output bit for bit: without a sidechain it is the input, on a track without other signal it is the sidechain. |
 
 The bundles are release builds. Debug builds (`cargo xtask bundle`) abort on allocations inside
 `process` (nice-plug's `assert_process_allocs`).
 
 ## clap-validator 0.4.1
 
-`kp-test-synth` and `kp-test-fx` pass. The expected failures of the other two:
+`kp-test-synth`, `kp-test-fx` and `kp-test-sc` pass. The expected failures of the other two:
 
 - `kp-test-crash` crashes (SIGSEGV) in the ten tests that send random notes (key 127 among them) or
   random/extreme parameter values: `process-audio-denormals`, `process-note-inconsistent`,

@@ -43,12 +43,14 @@ pub const SYNTH: &str = "de.klang-studio.kp-test-synth";
 pub const FX: &str = "de.klang-studio.kp-test-fx";
 pub const CRASH: &str = "de.klang-studio.kp-test-crash";
 pub const SLOW: &str = "de.klang-studio.kp-test-slow";
+pub const SC: &str = "de.klang-studio.kp-test-sc";
 
 /// VST3 class ids of the fixtures (their 16 ASCII bytes in hex, test-plugins/README.md).
 pub const SYNTH_VST3: &str = "6B705465737453796E74683030303031";
 pub const FX_VST3: &str = "6B705465737446783030303030303031";
 pub const CRASH_VST3: &str = "6B705465737443726173683030303031";
 pub const SLOW_VST3: &str = "6B7054657374536C6F77303030303031";
+pub const SC_VST3: &str = "6B705465737453633030303030303031";
 
 /// A WP-27 fixture bundle (`scripts/build-test-plugins.sh`), or `None` with a note on stderr.
 pub fn fixture(name: &str) -> Option<PathBuf> {

@@ -72,10 +72,33 @@ impl<P: Plugin> FakeHost<P> {
         channels: &mut [Vec<f32>],
         events: &[PluginNoteEvent<P>],
     ) -> ProcessStatus {
+        self.process_aux(channels, None, events)
+    }
+
+    /// [`Self::process`] with `sidechain` as the first auxiliary input (same length as the main
+    /// channels).
+    pub fn process_with_sidechain(
+        &mut self,
+        channels: &mut [Vec<f32>],
+        sidechain: &mut [Vec<f32>],
+        events: &[PluginNoteEvent<P>],
+    ) -> ProcessStatus {
+        self.process_aux(channels, Some(sidechain), events)
+    }
+
+    fn process_aux(
+        &mut self,
+        channels: &mut [Vec<f32>],
+        sidechain: Option<&mut [Vec<f32>]>,
+        events: &[PluginNoteEvent<P>],
+    ) -> ProcessStatus {
         let samples = channels.first().map_or(0, Vec::len);
         assert!(samples <= MAX_BLOCK, "block longer than MAX_BLOCK");
         assert!(
-            channels.iter().all(|c| c.len() == samples),
+            channels
+                .iter()
+                .chain(sidechain.iter().flat_map(|s| s.iter()))
+                .all(|c| c.len() == samples),
             "channels differ in length"
         );
 
@@ -86,8 +109,19 @@ impl<P: Plugin> FakeHost<P> {
                 slices.extend(channels.iter_mut().map(Vec::as_mut_slice));
             });
         }
+        let mut inputs: Vec<Buffer> = Vec::new();
+        if let Some(sidechain) = sidechain {
+            let mut side = Buffer::default();
+            // SAFETY: as above, for `sidechain`.
+            unsafe {
+                side.set_slices(samples, |slices| {
+                    slices.extend(sidechain.iter_mut().map(Vec::as_mut_slice));
+                });
+            }
+            inputs.push(side);
+        }
         let mut aux = AuxiliaryBuffers {
-            inputs: &mut [],
+            inputs: &mut inputs,
             outputs: &mut [],
         };
         let mut context = Process::<P> {

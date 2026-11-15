@@ -45,6 +45,7 @@ fn scan_prints_descriptors_as_json() {
         ("kp-test-fx", PluginKind::Effect),
         ("kp-test-crash", PluginKind::Effect),
         ("kp-test-slow", PluginKind::Effect),
+        ("kp-test-sc", PluginKind::Effect),
     ] {
         let Some(bundle) = fixture(name) else {
             continue;
@@ -60,6 +61,7 @@ fn scan_prints_descriptors_as_json() {
         assert_eq!(d.kind, kind, "{d:?}");
         assert_eq!(d.bundle, bundle);
         assert!(!d.features.is_empty());
+        assert_eq!(d.sidechain, name == "kp-test-sc", "{d:?}");
         if name == "kp-test-synth" {
             eprintln!(
                 "scan {name}: {}",
@@ -76,6 +78,7 @@ fn scan_prints_vst3_descriptors_as_json() {
         ("kp-test-fx", FX_VST3, PluginKind::Effect),
         ("kp-test-crash", CRASH_VST3, PluginKind::Effect),
         ("kp-test-slow", SLOW_VST3, PluginKind::Effect),
+        ("kp-test-sc", SC_VST3, PluginKind::Effect),
     ] {
         let Some(bundle) = fixture_in("vst3", name) else {
             continue;
@@ -91,6 +94,7 @@ fn scan_prints_vst3_descriptors_as_json() {
         assert_eq!(d.kind, kind, "{d:?}");
         assert_eq!(d.bundle, bundle);
         assert!(!d.features.is_empty());
+        assert_eq!(d.sidechain, name == "kp-test-sc", "{d:?}");
         if name == "kp-test-synth" {
             eprintln!(
                 "scan {name}.vst3: {}",

@@ -8,11 +8,12 @@
 use std::path::Path;
 
 /// The plugin packages of this workspace.
-const PLUGINS: [&str; 4] = [
+const PLUGINS: [&str; 5] = [
     "kp-test-synth",
     "kp-test-fx",
     "kp-test-crash",
     "kp-test-slow",
+    "kp-test-sc",
 ];
 
 const USAGE: &str = "usage: cargo xtask bundle [-p <package>]... [<cargo build args>]";
