@@ -58,7 +58,7 @@ routing-group-tracks = Group Tracks
 routing-send-to-new-bus = Send to New Bus
 
 # Context menu of a track: the sends submenu, and the title of the popover with the bus list.
-routing-send-to = Send To…
+routing-send-to = Send to…
 
 # Context menu of a track: the output submenu.
 routing-output-to = Output
@@ -154,7 +154,7 @@ routing-popover-title = Routing · { $track }
 
 # Accessible name of a group header; `$state` is `folded` or `unfolded`.
 routing-group-name = Group { $name }, { $state ->
-        [folded] folded
+        [folded] collapsed
        *[unfolded] expanded
     }
 

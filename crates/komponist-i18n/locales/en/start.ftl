@@ -55,7 +55,7 @@ start-audio-none = No audio device
 start-audio-stopped = Audio stopped
 
 # System row MIDI without a port.
-start-midi-none = no MIDI device found
+start-midi-none = No MIDI device found
 
 # System row plugins during a scan; `$shortcut` opens the settings.
 start-plugins-scanning = Scan running · Settings { $shortcut }

@@ -500,7 +500,7 @@ param-volt-vel-filter = Vel → Env
 param-volt-wheel-vib = Wheel → Vib.
 
 # volt: channel pressure to cutoff.
-param-volt-at-cut = Press→Cut
+param-volt-at-cut = Press → Cut
 
 # volt: glide only between legato notes.
 param-volt-glide-legato = Glide Legato

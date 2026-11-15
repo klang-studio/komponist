@@ -174,7 +174,7 @@ undo-remove-send = Remove Send
 undo-send-level = Send Level
 
 # Undo step: fold or unfold a group.
-undo-fold-group = Fold Group
+undo-fold-group = Collapse or Expand Group
 
 ## Labels with a name in them (the name is plugin-provided text).
 
