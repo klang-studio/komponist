@@ -1,4 +1,4 @@
-//! **knurr** (WP-95): a virtual-analog synthesizer, an internal instrument.
+//! **volt** (WP-95): a virtual-analog synthesizer, an internal instrument.
 //!
 //! Variant B „standard“ of the VA-synth proposal (internal notes) (owner decision 2026-11-15): two
 //! oscillators with a sub and noise, a high-pass, one multimode filter, three envelopes, two
@@ -66,7 +66,7 @@ pub mod params;
 pub mod presets;
 mod voice;
 
-pub use engine::{Knurr, MAX_GROUPS, VOICES};
+pub use engine::{MAX_GROUPS, VOICES, Volt};
 pub use params::id;
 
 #[cfg(test)]
@@ -75,11 +75,15 @@ mod bench;
 mod tests;
 
 /// The device's name in the browser and on the card. The only place it is written.
-pub const NAME: &str = "knurr";
+pub const NAME: &str = "volt";
+
+/// The stored id of the device in project files. It keeps the synth's former name "knurr" so existing
+/// projects load; only [`NAME`] is shown to users.
+pub const ID: &str = "knurr";
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
-    id: "knurr",
+    id: ID,
     name: NAME,
     features: &["instrument", "synthesizer", "analog"],
     params,
@@ -94,7 +98,7 @@ fn params() -> Vec<ParamInfo> {
 }
 
 fn dsp() -> Box<dyn Dsp> {
-    Box::new(Knurr::new())
+    Box::new(Volt::new())
 }
 
 fn key(id: &str) -> ParamId {

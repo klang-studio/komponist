@@ -79,7 +79,7 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
             "presse",
             "Arpeggiator",
             "Tonleiter",
-            "knurr"
+            "volt"
         ]
     );
     for kind in Internal::ALL {
@@ -383,7 +383,7 @@ fn the_starter_sets_have_the_agreed_sizes() {
     let count = |k: Internal| k.presets().len();
     assert_eq!(count(Internal::Sampler), 0);
     assert_eq!(count(Internal::Presse), 11);
-    assert_eq!(count(Internal::Knurr), 10);
+    assert_eq!(count(Internal::Volt), 10);
     for kind in [
         Internal::Eq,
         Internal::Delay,

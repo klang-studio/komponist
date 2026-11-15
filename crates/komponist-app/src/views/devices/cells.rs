@@ -11,7 +11,7 @@
 
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_builtin::algorithms::ALGORITHMS;
-use komponist_builtin::internal::knurr;
+use komponist_builtin::internal::volt;
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
@@ -60,9 +60,9 @@ pub(super) fn default_context() -> ParamContext {
         .with(ENV_OP, 1)
         .with(BAND, 1)
         .with(SEL, 1);
-    // knurr's switches start on their first entry (Amp envelope, LFO 1).
-    choose(&mut ctx, ENV_VIEW, knurr::ENVELOPES, 0);
-    choose(&mut ctx, LFO_VIEW, knurr::LFOS, 0);
+    // volt's switches start on their first entry (Amp envelope, LFO 1).
+    choose(&mut ctx, ENV_VIEW, volt::ENVELOPES, 0);
+    choose(&mut ctx, LFO_VIEW, volt::LFOS, 0);
     ctx
 }
 
@@ -996,7 +996,7 @@ fn graph(
     };
     let lookup = |slot: &str| slot_param(card, binding, ctx, slot);
     let mut title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
-    // knurr: the filter names its type, the LFO its number and shape.
+    // volt: the filter names its type, the LFO its number and shape.
     let text_of = |slot: &str| lookup(slot).map(|p| p.text_at(p.value));
     match binding.config {
         GraphConfig::FilterVa => {

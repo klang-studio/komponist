@@ -1,4 +1,4 @@
-//! knurr's parameters: wire ids, ranges, defaults and texts (proposal `va-synth`, variant B).
+//! volt's parameters: wire ids, ranges, defaults and texts (proposal `va-synth`, variant B).
 //!
 //! The wire id is the index in [`params`]; [`id`] names every index. Plain values follow the
 //! model: Hz, seconds, cents, semitones, a choice's index, **fractions** for everything shown as

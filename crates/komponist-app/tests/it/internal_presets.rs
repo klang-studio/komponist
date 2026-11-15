@@ -279,16 +279,16 @@ fn the_dropdown_lists_the_presets_of_its_own_device() {
 }
 
 #[test]
-fn knurr_groups_its_presets_by_category_and_the_sampler_has_no_dropdown() {
-    let (app, _, _) = app_with(Internal::Knurr);
+fn volt_groups_its_presets_by_category_and_the_sampler_has_no_dropdown() {
+    let (app, _, _) = app_with(Internal::Volt);
     let mut h = harness(app);
-    open_menu(&mut h, Internal::Knurr);
+    open_menu(&mut h, Internal::Volt);
     let items: Vec<String> = h
         .query_all_by_role(Role::MenuItem)
         .filter_map(|n| n.accesskit_node().label())
         .collect();
     let mut categories: Vec<&str> = Vec::new();
-    for c in Internal::Knurr.presets().iter().filter_map(|p| p.category) {
+    for c in Internal::Volt.presets().iter().filter_map(|p| p.category) {
         if !categories.contains(&c) {
             categories.push(c);
         }

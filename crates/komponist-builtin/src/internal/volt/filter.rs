@@ -1,4 +1,4 @@
-//! knurr's filters: a ZDF/TPT ladder for "LP 24" and Simper's state-variable filter
+//! volt's filters: a ZDF/TPT ladder for "LP 24" and Simper's state-variable filter
 //! (`klang_dsp::svf`) for the other types, a one-pole high-pass in front, and the soft clipper of
 //! the drive. The transfer functions the graph draws are in `komponist_model::params::va_curve`
 //! (the same damping and compensation).

@@ -177,7 +177,7 @@ pub mod names {
     pub const DETECTOR: &str = "Detektor";
     /// Readout value for [`DETECTOR`]. en draft: "External".
     pub const DETECTOR_EXTERNAL: &str = "Extern";
-    /// The title of knurr's filter graph (followed by the type) and of its LFO graph.
+    /// The title of volt's filter graph (followed by the type) and of its LFO graph.
     pub const FILTER: &str = "Filter";
     /// See [`FILTER`].
     pub const LFO: &str = "LFO";

@@ -1,16 +1,16 @@
-//! knurr (WP-95, `komponist_builtin::internal::knurr`) on the real engine: sequenced and live
+//! volt (WP-95, `komponist_builtin::internal::volt`) on the real engine: sequenced and live
 //! notes, pitch bend, mod wheel and pressure from the live input reach the instrument, and the
 //! output is bit-exact with and without workers (WP-65).
 
 use komponist_builtin::Internal;
-use komponist_builtin::internal::knurr::presets::presets;
+use komponist_builtin::internal::volt::presets::presets;
 use komponist_engine::{Command, MidiInEvent, MidiPort};
 use komponist_model::params::ParamId;
 use komponist_model::{Tick, TickRange};
 
 use crate::common::*;
 
-/// `tracks` knurr tracks (preset `i`), looped, the track `monitored` listens to the live input.
+/// `tracks` volt tracks (preset `i`), looped, the track `monitored` listens to the live input.
 fn rig(workers: usize, tracks: u32, monitored: u32) -> Rig {
     rig_with(workers, tracks, monitored, &[])
 }
@@ -24,14 +24,14 @@ fn rig_with(workers: usize, tracks: u32, monitored: u32, tweak: &[(&str, f64)]) 
         let mut t = track(u64::from(i) + 1, i, crate::bench::material(i));
         t.monitor = i == monitored;
         list.push(t);
-        let mut values = Internal::Knurr
+        let mut values = Internal::Volt
             .preset_values(i as usize % presets().len())
             .unwrap();
         for (key, value) in tweak {
-            let wire = Internal::Knurr.wire(&ParamId::new(*key)).unwrap();
+            let wire = Internal::Volt.wire(&ParamId::new(*key)).unwrap();
             values[wire as usize] = *value;
         }
-        let mut p = Internal::Knurr.processor(&values);
+        let mut p = Internal::Volt.processor(&values);
         komponist_engine::Processor::activate(&mut p, RATE, 256).unwrap();
         rig.insert(i, p);
     }

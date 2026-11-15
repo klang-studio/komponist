@@ -37,7 +37,7 @@
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
 //!
-//! **Instruments (WP-87, WP-95):** the sampler and [`knurr`] are [`Internal`]s whose `Dsp` is an
+//! **Instruments (WP-87, WP-95):** the sampler and [`volt`] are [`Internal`]s whose `Dsp` is an
 //! instrument ([`Dsp::is_instrument`]): the processor hands them the note events at their frame
 //! and, from `EventKind::Midi`, pitch bend, the mod wheel (CC 1) and channel pressure
 //! ([`Dsp::pitch_bend`], [`Dsp::mod_wheel`], [`Dsp::pressure`]).
@@ -63,11 +63,11 @@ pub mod delay;
 pub mod dsp;
 pub mod eq;
 pub mod hall;
-pub mod knurr;
 pub mod limiter;
 pub mod midi;
 pub mod presse;
 pub mod tonleiter;
+pub mod volt;
 
 /// The DSP of an internal device. Created and activated on the UI thread, then used by one thread
 /// at a time on the audio side.
@@ -236,7 +236,7 @@ pub enum Internal {
     /// MIDI effect: forces notes onto a scale (WP-88).
     Tonleiter,
     /// Virtual-analog synthesizer, an instrument (WP-95).
-    Knurr,
+    Volt,
 }
 
 impl Internal {
@@ -250,7 +250,7 @@ impl Internal {
         Internal::Presse,
         Internal::Arpeggiator,
         Internal::Tonleiter,
-        Internal::Knurr,
+        Internal::Volt,
     ];
 
     fn spec(self) -> &'static Spec {
@@ -263,7 +263,7 @@ impl Internal {
             Internal::Presse => &presse::SPEC,
             Internal::Arpeggiator => &arpeggiator::SPEC,
             Internal::Tonleiter => &tonleiter::SPEC,
-            Internal::Knurr => &knurr::SPEC,
+            Internal::Volt => &volt::SPEC,
         }
     }
 
@@ -294,9 +294,9 @@ impl Internal {
         }
     }
 
-    /// Whether this is an instrument (the sampler, knurr): notes in, audio out.
+    /// Whether this is an instrument (the sampler, volt): notes in, audio out.
     pub fn is_instrument(self) -> bool {
-        matches!(self, Internal::Sampler | Internal::Knurr)
+        matches!(self, Internal::Sampler | Internal::Volt)
     }
     fn index(self) -> usize {
         Internal::ALL

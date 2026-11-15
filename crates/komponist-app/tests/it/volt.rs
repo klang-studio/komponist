@@ -1,4 +1,4 @@
-//! knurr (WP-95) in the app: the catalog entry, the three pages with their graphs and switches,
+//! volt (WP-95) in the app: the catalog entry, the three pages with their graphs and switches,
 //! a project round trip, and snapshots of the pages.
 
 use std::path::PathBuf;
@@ -50,11 +50,11 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
     h.run_steps(3);
 }
 
-/// A project with one knurr track and the dock on „Geräte“.
-fn app_with_knurr() -> (App, DeviceId) {
-    let mut app = App::headless(Project::new("knurr"));
+/// A project with one volt track and the dock on „Geräte“.
+fn app_with_volt() -> (App, DeviceId) {
+    let mut app = App::headless(Project::new("volt"));
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: Internal::Knurr.plugin_ref(),
+        plugin: Internal::Volt.plugin_ref(),
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
@@ -68,7 +68,7 @@ fn app_with_knurr() -> (App, DeviceId) {
 }
 
 fn set(app: &mut App, device: DeviceId, key: &str, value: f64) {
-    let id = Internal::Knurr.wire(&ParamId::new(key)).expect(key);
+    let id = Internal::Volt.wire(&ParamId::new(key)).expect(key);
     app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
 }
 
@@ -91,7 +91,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_the_three_pages() {
-    let (mut app, device) = app_with_knurr();
+    let (mut app, device) = app_with_volt();
     // The state of the proposal's mockups: LFO 1 → cutoff, velocity → volume, Hk. 3 → pulse width
     // A, mod wheel → drive; the filter envelope is the second, shorter one.
     for (key, v) in [
@@ -118,19 +118,19 @@ fn snapshot_of_the_three_pages() {
     h.hover_at(Pos2::new(900.0, 300.0));
     h.run_steps(30);
     mask_cpu(&mut h);
-    h.snapshot("knurr-klang-1x");
+    h.snapshot("volt-klang-1x");
     results.extend_harness(&mut h);
     page_to(&mut h, device, 1);
     h.hover_at(Pos2::new(900.0, 300.0));
     h.run_steps(30);
     mask_cpu(&mut h);
-    h.snapshot("knurr-huellkurven-1x");
+    h.snapshot("volt-huellkurven-1x");
     results.extend_harness(&mut h);
     page_to(&mut h, device, 2);
     h.hover_at(Pos2::new(900.0, 300.0));
     h.run_steps(30);
     mask_cpu(&mut h);
-    h.snapshot("knurr-matrix-1x");
+    h.snapshot("volt-matrix-1x");
     results.extend_harness(&mut h);
     let _ = (
         click as fn(&mut Harness<'_, App>, Pos2),
@@ -138,7 +138,7 @@ fn snapshot_of_the_three_pages() {
     );
 }
 
-const CARD: &str = "knurr";
+const CARD: &str = "volt";
 
 fn card<'h>(h: &'h Harness<'_, App>) -> egui_kittest::Node<'h> {
     // The accessible name of the card (`names::card`) lives as long as the harness' tree.
@@ -159,31 +159,31 @@ fn press_label(h: &mut Harness<'_, App>, role: Role, label: &str) {
 }
 
 #[test]
-fn knurr_is_an_instrument_in_the_catalog_and_adding_it_makes_a_track() {
-    let mut app = App::headless(Project::new("knurr"));
+fn volt_is_an_instrument_in_the_catalog_and_adding_it_makes_a_track() {
+    let mut app = App::headless(Project::new("volt"));
     let entry = app
         .engine()
         .host()
         .catalog()
         .entries()
         .iter()
-        .find(|e| e.plugin.name == "knurr")
+        .find(|e| e.plugin.name == "volt")
         .expect("in the catalog")
         .clone();
     assert_eq!(entry.kind, komponist_ipc::PluginKind::Instrument);
-    assert_eq!(entry.plugin, Internal::Knurr.plugin_ref());
+    assert_eq!(entry.plugin, Internal::Volt.plugin_ref());
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: entry.plugin,
         target: DropTarget::NewTrack { index: None },
     }));
     let device = &app.project().tracks[0].channel.devices[0];
-    assert_eq!(device.plugin.name, "knurr");
+    assert_eq!(device.plugin.name, "volt");
     assert_eq!(device.role, DeviceRole::Instrument);
 }
 
 #[test]
 fn the_card_has_three_pages_and_the_switches_choose_the_envelope_and_the_lfo() {
-    let (app, device) = app_with_knurr();
+    let (app, device) = app_with_volt();
     let mut h = harness(app);
     for name in ["Klang", "Hüllkurven", "Matrix"] {
         card(&h).get_by_role_and_label(Role::RadioButton, name);
@@ -215,14 +215,14 @@ fn the_card_has_three_pages_and_the_switches_choose_the_envelope_and_the_lfo() {
     press(&mut h, a.center() - vec2(0.0, 30.0), false);
     h.run_steps(3);
     let values = values(h.state(), device);
-    let get = |k: &str| values[Internal::Knurr.wire(&ParamId::new(k)).unwrap() as usize];
+    let get = |k: &str| values[Internal::Volt.wire(&ParamId::new(k)).unwrap() as usize];
     assert!(get("mod_a") > 0.0011, "{}", get("mod_a"));
     assert_eq!((get("amp_a"), get("filt_a")), (0.003, 0.002));
 }
 
 #[test]
 fn a_synced_lfo_shows_its_divider_instead_of_the_rate() {
-    let (mut app, device) = app_with_knurr();
+    let (mut app, device) = app_with_volt();
     set(&mut app, device, "lfo1_sync", 1.0);
     page(&mut app, device, 1);
     let h = harness(app);
@@ -236,12 +236,12 @@ fn a_synced_lfo_shows_its_divider_instead_of_the_rate() {
 
 fn values(app: &App, device: DeviceId) -> Vec<f64> {
     let (_, _, d) = app.project().find_device(device).unwrap();
-    Internal::Knurr.decode_state(d.state.as_deref()).unwrap()
+    Internal::Volt.decode_state(d.state.as_deref()).unwrap()
 }
 
 #[test]
 fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
-    let (mut app, device) = app_with_knurr();
+    let (mut app, device) = app_with_volt();
     for (key, v) in [
         ("cutoff", 640.0),
         ("mod2_src", 6.0),
@@ -257,23 +257,43 @@ fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
     let json = komponist_model::persist::to_json(app.project()).unwrap();
     let loaded = komponist_model::persist::from_json(&json).unwrap();
     let (_, _, d) = loaded.find_device(device).unwrap();
-    assert_eq!(d.plugin.name, "knurr");
+    assert_eq!(d.plugin.name, "volt");
     let state: serde_json::Value = serde_json::from_slice(d.state.as_deref().unwrap()).unwrap();
     assert_eq!(state["params"]["cutoff"], 640.0);
     assert_eq!(state["params"]["mod2_amt"], -0.25);
     assert_eq!(
-        Internal::Knurr.decode_state(d.state.as_deref()).unwrap(),
+        Internal::Volt.decode_state(d.state.as_deref()).unwrap(),
         before
     );
     // A state written before a parameter existed still loads: the missing ones are defaults.
     let old = br#"{"params": {"cutoff": 500, "osc_a_wave": 1}}"#;
-    let values = Internal::Knurr.decode_state(Some(old)).unwrap();
+    let values = Internal::Volt.decode_state(Some(old)).unwrap();
     assert_eq!(
-        values[Internal::Knurr.wire(&ParamId::new("cutoff")).unwrap() as usize],
+        values[Internal::Volt.wire(&ParamId::new("cutoff")).unwrap() as usize],
         500.0
     );
     assert_eq!(
-        values[Internal::Knurr.wire(&ParamId::new("resonance")).unwrap() as usize],
+        values[Internal::Volt.wire(&ParamId::new("resonance")).unwrap() as usize],
         0.3
+    );
+}
+
+#[test]
+fn an_old_file_that_calls_the_synth_knurr_shows_it_as_volt() {
+    // The fixture stores plugin id and name "knurr". The id stays, the name is shown as volt.
+    const OLD_FILE: &str = include_str!("../fixtures/knurr-project.komponist");
+    assert!(OLD_FILE.contains("\"name\": \"knurr\""));
+    let project = komponist_model::persist::from_json(OLD_FILE).expect("the old file loads");
+    let device = project.tracks[0].channel.devices.first().expect("a device");
+    assert_eq!(device.plugin.id, "knurr");
+    assert_eq!(device.plugin.name, "volt");
+    assert_eq!(Internal::from_id(&device.plugin.id), Some(Internal::Volt));
+    // Saving writes the new name and keeps the id.
+    let saved = komponist_model::persist::to_json(&project).expect("saves");
+    let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    let plugin = &v["project"]["tracks"][0]["channel"]["devices"][0]["plugin"];
+    assert_eq!(
+        (plugin["id"].as_str(), plugin["name"].as_str()),
+        (Some("knurr"), Some("volt"))
     );
 }

@@ -1,4 +1,4 @@
-//! The engine of knurr: the voice pool, the note logic (poly, mono, legato, glide, stealing), the
+//! The engine of volt: the voice pool, the note logic (poly, mono, legato, glide, stealing), the
 //! smoothing and the control-rate step. See the module docs of [`super`] for the signal flow.
 
 use klang_dsp::rng::Rng;
@@ -52,7 +52,7 @@ fn chase(value: &mut f32, target: f32, amount: f32) {
 }
 
 /// The synthesizer.
-pub struct Knurr {
+pub struct Volt {
     rate: f32,
     values: [f64; COUNT],
     voices: Vec<Voice>,
@@ -76,20 +76,20 @@ pub struct Knurr {
     env_gen: u32,
 }
 
-impl Default for Knurr {
+impl Default for Volt {
     fn default() -> Self {
-        Knurr::new()
+        Volt::new()
     }
 }
 
-impl Knurr {
+impl Volt {
     /// A synthesizer with the parameters at their defaults.
-    pub fn new() -> Knurr {
+    pub fn new() -> Volt {
         let mut values = [0.0; COUNT];
         for (v, info) in values.iter_mut().zip(super::params::params()) {
             *v = info.default;
         }
-        let mut k = Knurr {
+        let mut k = Volt {
             rate: 48_000.0,
             values,
             voices: (0..VOICES).map(|_| Voice::new()).collect(),
@@ -496,7 +496,7 @@ fn blank_control() -> Control {
     }
 }
 
-impl Dsp for Knurr {
+impl Dsp for Volt {
     fn activate(&mut self, sample_rate: f32) {
         self.set_rate(sample_rate);
         self.reset();

@@ -568,7 +568,7 @@ pub enum Region {
         scale: f64,
     },
     /// A thin bar under a log frequency axis from `cutoff · 2^lo` to `cutoff · 2^hi`: the
-    /// range the modulation matrix moves the cutoff over (knurr). `cutoff` is the slot of the
+    /// range the modulation matrix moves the cutoff over (volt). `cutoff` is the slot of the
     /// cutoff in Hz, `matrix` the first of the 15 slots `va_curve::cutoff_mod_octaves` reads.
     /// Nothing is drawn while the range is empty.
     CutoffMod {

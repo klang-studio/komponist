@@ -1,7 +1,7 @@
-//! The maths of the virtual-analog synth „knurr“ (WP-95) that its DSP **and** its graphs share, so
+//! The maths of the virtual-analog synth „volt“ (WP-95) that its DSP **and** its graphs share, so
 //! the filter curve, the signal display and the modulation bar cannot drift away from the sound.
 //!
-//! The DSP (`komponist_builtin::internal::knurr`) takes its filter damping, level compensation,
+//! The DSP (`komponist_builtin::internal::volt`) takes its filter damping, level compensation,
 //! matrix units and source/destination lists from here; the graph configurations
 //! (`komponist_ui::widgets::device::graph::configs`) draw the response, the oscillator mix, the LFO
 //! shape and the range the matrix moves the cutoff over, from the same functions.

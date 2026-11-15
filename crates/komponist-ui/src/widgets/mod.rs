@@ -310,7 +310,7 @@ pub mod metrics {
             /// Opacity of the region outside the sample's start–end (token `widget.graph.region_outside`
             /// = `surface.1 @ 75 %`).
             pub const REGION_OPACITY: f32 = 0.75;
-            /// The bar under knurr's filter curve that marks how far the matrix moves the cutoff
+            /// The bar under volt's filter curve that marks how far the matrix moves the cutoff
             /// (VA-synth proposal, `standard-klang` mockup, internal notes: 3 px high, 12 px above the bottom
             /// edge of the graph, the track colour at 45 %).
             pub const MOD_BAR: MetricModBar = MetricModBar {

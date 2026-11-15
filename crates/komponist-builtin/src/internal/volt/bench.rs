@@ -1,5 +1,5 @@
 //! CPU cost, measured in release builds:
-//! `cargo test --release -p komponist-builtin --lib knurr::bench -- --ignored --nocapture`.
+//! `cargo test --release -p komponist-builtin --lib volt::bench -- --ignored --nocapture`.
 //! The numbers go into `docs/PERFORMANCE.md` (§8).
 
 use std::hint::black_box;

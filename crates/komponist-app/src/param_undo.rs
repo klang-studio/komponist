@@ -3,7 +3,7 @@
 //! Every change of a device's state is a tracked edit of the document, so Strg Z reverts a knob,
 //! a sample link or a plugin's own edit like anything else:
 //!
-//! - **hexa and the internal devices** (EQ, Delay, Hall, Limiter, presse, knurr, Arpeggiator,
+//! - **hexa and the internal devices** (EQ, Delay, Hall, Limiter, presse, volt, Arpeggiator,
 //!   Tonleiter, Sampler): `PluginAction::SetParam` writes the value into the device state and
 //!   sends it to the running processor as `Command::SetParam`. The processor already has the
 //!   value, so the app does not run [`EngineSync::sync_device_states`] for it (that would hand

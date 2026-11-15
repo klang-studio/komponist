@@ -317,10 +317,10 @@ def step_sequencer(s):
 
 
 def devices(s):
-    """Device chains: hexa, knurr, Sampler + presse with the SC chip (PNGs)."""
+    """Device chains: hexa, volt, Sampler + presse with the SC chip (PNGs)."""
     s.click(role="Button", label="Browser")  # fold the browser: the dock gets its full width
     open_dock(s, 380)
-    for track, name in (("Lead", "device-hexa"), ("Bass", "device-knurr"), ("Drums", "device-sampler-presse")):
+    for track, name in (("Lead", "device-hexa"), ("Bass", "device-volt"), ("Drums", "device-sampler-presse")):
         open_devices(s, track)
         top = dock_top(s)
         s.shot(name, crop=(26, top + 28, 1612, 300))
