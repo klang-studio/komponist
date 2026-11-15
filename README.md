@@ -81,7 +81,8 @@ The mixer shows every track with its inserts, pan, mute/solo, faders and level m
 ![The mixer with the arrangement above it, playing](docs/media/mixer.png)
 
 - Record MIDI from any connected MIDI input (or the computer keyboard) into a take.
-- Sidechains work today. Buses, sends and a routing view are **in progress**.
+- Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain presse from any
+  track or bus.
 - Every edit is undoable, including parameter changes.
 
 ### Tracks, German and English
@@ -100,9 +101,9 @@ komponist is **early software (v0.1)**. The MIDI workflow works end to end: arra
 export. Expect rough edges and file-format changes.
 
 What works: MIDI and step clips, piano roll, step sequencer, hexa / knurr / Sampler, the built-in effects, sidechains,
-CLAP and VST3 hosting, mixer, recording, undo and redo, project files, export.
+CLAP and VST3 hosting, mixer with groups, buses and sends, recording, undo and redo, project files, export.
 
-What is coming: **audio tracks**, a routing view with buses and sends, automation.
+What is coming: **audio tracks**, automation.
 
 ## Install
 
