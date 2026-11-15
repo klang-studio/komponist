@@ -107,6 +107,8 @@ pub struct SpectrumAnalyzer {
     /// `written` of the tap at the last analysis, and at the start (older samples are stale).
     last_written: u64,
     started_at: u64,
+    /// dB per second a level falls ([`FALL_DB_PER_S`] unless [`SpectrumAnalyzer::with_fall`]).
+    fall_db_per_s: f32,
 }
 
 impl core::fmt::Debug for SpectrumAnalyzer {
@@ -127,6 +129,7 @@ impl Default for SpectrumAnalyzer {
             bins: Vec::new(),
             scratch: Vec::new(),
             power: Vec::new(),
+            fall_db_per_s: FALL_DB_PER_S,
             shown: vec![DB_FLOOR; POINTS],
             target: vec![DB_FLOOR; POINTS],
             out: vec![0.0; POINTS].into(),
@@ -141,6 +144,13 @@ impl SpectrumAnalyzer {
     /// An analyzer showing silence.
     pub fn new() -> SpectrumAnalyzer {
         SpectrumAnalyzer::default()
+    }
+
+    /// The same analyzer whose levels fall by `db_per_s` (the transport display falls faster
+    /// than the EQ's, so Stop shows at once).
+    pub fn with_fall(mut self, db_per_s: f32) -> SpectrumAnalyzer {
+        self.fall_db_per_s = db_per_s;
+        self
     }
 
     /// The spectrum as 0–1 values ([`DB_FLOOR`] to [`DB_CEIL`]), [`POINTS`] of them.
@@ -283,7 +293,7 @@ impl SpectrumAnalyzer {
 
     /// Moves the shown levels towards the targets over `dt` seconds and refreshes the output.
     fn advance(&mut self, dt: f32) {
-        let fall = FALL_DB_PER_S * dt;
+        let fall = self.fall_db_per_s * dt;
         for (shown, target) in self.shown.iter_mut().zip(&self.target) {
             *shown = if target >= shown {
                 *target

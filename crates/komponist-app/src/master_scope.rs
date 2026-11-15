@@ -9,7 +9,7 @@
 //!   stands still. Without a crossing the latest window runs free. The samples are resampled to
 //!   [`WAVE_POINTS`] values in −1 … 1 (full scale fills the height).
 //! - **Spectrum:** the EQ's analysis ([`SpectrumAnalyzer`]: log axis 20 Hz – 20 kHz, dB, instant
-//!   rise and a fall of [`crate::spectrum::FALL_DB_PER_S`]), shown from [`m::SCOPE_DB_FLOOR`] to
+//!   rise and a fall of [`FALL_DB_PER_S`], faster than the EQ's), shown from [`m::SCOPE_DB_FLOOR`] to
 //!   0 dBFS.
 //!
 //! **Silence** is a picture of its own ([`Picture::Silent`], the flat `text.4` line): no fresh
@@ -24,6 +24,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::metrics::transport as m;
 use crate::spectrum::{self, SpectrumAnalyzer};
+
+/// How fast the spectrum falls, dB per second: from full scale to the display's floor
+/// ([`m::SCOPE_DB_FLOOR`], −72 dB) in one second, so Stop shows at once (owner, 2026-11-15; the
+/// EQ keeps the slower [`spectrum::FALL_DB_PER_S`]).
+pub const FALL_DB_PER_S: f32 = -m::SCOPE_DB_FLOOR;
 
 /// Values of the oscilloscope picture: enough for 82 px at 2× (164 device pixels).
 pub const WAVE_POINTS: usize = 256;
@@ -106,7 +111,7 @@ impl Default for MasterScope {
     fn default() -> MasterScope {
         MasterScope {
             tap: None,
-            analyzer: SpectrumAnalyzer::new(),
+            analyzer: SpectrumAnalyzer::new().with_fall(FALL_DB_PER_S),
             shown: None,
             samples: Vec::new(),
             wave: vec![0.0; WAVE_POINTS],
@@ -367,6 +372,32 @@ mod tests {
         assert_eq!(
             scope.update(0.07, MasterDisplay::Oscilloscope),
             Picture::Silent
+        );
+    }
+
+    /// After Stop the spectrum falls to the flat line within about a second (the EQ takes
+    /// over three).
+    #[test]
+    fn the_spectrum_falls_to_the_flat_line_within_a_second() {
+        let tap = tap();
+        let mut scope = MasterScope::new();
+        scope.set_tap(&tap);
+        let mode = MasterDisplay::Spectrum;
+        scope.update(0.0, mode);
+        tap.push(&sine(1000.0, 0, 8192));
+        assert!(matches!(scope.update(0.05, mode), Picture::Spectrum(_)));
+        let mut silent_at = None;
+        for frame in 1..=90 {
+            let now = 0.05 + frame as f64 / 60.0;
+            if scope.update(now, mode) == Picture::Silent {
+                silent_at = Some(now);
+                break;
+            }
+        }
+        let silent_at = silent_at.expect("still showing after 1.5 s");
+        assert!(
+            (0.5..=1.2).contains(&silent_at),
+            "flat after {silent_at:.2} s"
         );
     }
 
