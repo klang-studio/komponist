@@ -12,7 +12,7 @@ use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Widge
 use komponist_model::params::{ParamId, ParamInfo, ParamKind};
 
 use super::midi::PITCH_CLASSES;
-use super::{Spec, midi, single_page};
+use super::{Preset, Spec, midi, single_page};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -22,6 +22,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp: midi::passthrough,
+    presets,
 };
 
 /// Wire ids.
@@ -99,6 +100,19 @@ pub fn map_key(key: u8, root: u8, scale: usize, snap: Snap) -> Option<u8> {
         },
     };
     target.map(|k| k as u8)
+}
+
+/// The factory presets (WP-96): a small starter set.
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 6] = [
+        Preset::new("C-Dur", &[]),
+        Preset::new("A-Moll", &[("root", 9.0), ("scale", 1.0)]),
+        Preset::new("D-Dorisch", &[("root", 2.0), ("scale", 4.0)]),
+        Preset::new("A-Moll-Pentatonik", &[("root", 9.0), ("scale", 10.0)]),
+        Preset::new("C-Blues", &[("scale", 11.0)]),
+        Preset::new("C-Dur filtern", &[("mode", 3.0)]),
+    ];
+    &LIST
 }
 
 fn params() -> Vec<ParamInfo> {

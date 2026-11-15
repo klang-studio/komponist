@@ -20,7 +20,7 @@ use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 use komponist_model::params::eq_curve::{self, Coefs};
 
 use super::dsp::{CONTROL, Glide, db_to_gain, finite, smooth_coeff};
-use super::{Dsp, INITIAL_RATE, Spec, knob, single_page, template};
+use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, single_page, template};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -30,6 +30,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp,
+    presets,
 };
 
 /// Bands of the EQ.
@@ -55,6 +56,54 @@ pub const OUT: usize = 0;
 /// Wire id of the „Analyse“ switch (WP-92): it comes after the bands, so the ids of every parameter
 /// that existed before stay what they were.
 pub const ANALYSE: usize = 1 + BANDS * PER_BAND;
+
+/// The factory presets (WP-96): a small starter set.
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 6] = [
+        Preset::new("Flach", &[]),
+        Preset::new("Low Cut 80 Hz", &[("b1_type", 0.0), ("b1_freq", 80.0)]),
+        Preset::new(
+            "Gesang Präsenz",
+            &[
+                ("b1_type", 0.0),
+                ("b1_freq", 90.0),
+                ("b3_freq", 300.0),
+                ("b3_gain", -2.0),
+                ("b4_freq", 3500.0),
+                ("b4_gain", 3.0),
+                ("b4_q", 1.0),
+                ("b5_type", 3.0),
+                ("b5_freq", 10000.0),
+                ("b5_gain", 2.0),
+            ],
+        ),
+        Preset::new(
+            "Bass Wärme",
+            &[
+                ("b1_type", 1.0),
+                ("b1_freq", 80.0),
+                ("b1_gain", 3.0),
+                ("b2_freq", 250.0),
+                ("b2_gain", -2.5),
+                ("b2_q", 1.2),
+            ],
+        ),
+        Preset::new(
+            "Höhen Glanz",
+            &[("b5_type", 3.0), ("b5_freq", 8000.0), ("b5_gain", 3.0)],
+        ),
+        Preset::new(
+            "Telefon",
+            &[
+                ("b1_type", 0.0),
+                ("b1_freq", 400.0),
+                ("b5_type", 4.0),
+                ("b5_freq", 3400.0),
+            ],
+        ),
+    ];
+    &LIST
+}
 
 fn params() -> Vec<ParamInfo> {
     let mut list = vec![

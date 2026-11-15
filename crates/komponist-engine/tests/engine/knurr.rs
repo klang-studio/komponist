@@ -24,8 +24,9 @@ fn rig_with(workers: usize, tracks: u32, monitored: u32, tweak: &[(&str, f64)]) 
         let mut t = track(u64::from(i) + 1, i, crate::bench::material(i));
         t.monitor = i == monitored;
         list.push(t);
-        let preset = presets()[i as usize % presets().len()];
-        let mut values = preset.values();
+        let mut values = Internal::Knurr
+            .preset_values(i as usize % presets().len())
+            .unwrap();
         for (key, value) in tweak {
             let wire = Internal::Knurr.wire(&ParamId::new(*key)).unwrap();
             values[wire as usize] = *value;

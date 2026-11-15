@@ -441,7 +441,7 @@ fn head_controls(
     );
     row.spacing_mut().item_spacing = vec2(metrics::HEAD_GAP, 0.0);
 
-    // Right side, from the right: ⋯, preset (pisynth) or „Öffnen“ and format tag (foreign).
+    // Right side, from the right: ⋯, preset (pisynth, internal devices with presets) or „Öffnen“ and format tag (foreign).
     let more = more_button(&mut row);
     if card.presets {
         preset_button(&mut row, ctx, card);
@@ -591,13 +591,29 @@ fn format_tag(row: &mut Ui, card: &Card) {
 /// The preset dropdown (`h 20`, `96 … 150` wide, `surface.2` on an instrument's head, `padding:0
 /// 6px`, caret `text.2`): opens a menu of the factory presets by category.
 fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
-    let known = card
-        .preset
-        .and_then(|i| komponist_builtin::presets().nth(i))
-        .map(|p| p.name);
-    let current = known.unwrap_or(names::PRESET);
+    // The current preset's name; „ *“ behind it once a value differs (internal devices).
+    let known: Option<String> = match card.internal_presets {
+        Some(kind) => card
+            .preset
+            .and_then(|i| kind.presets().get(i))
+            .map(|p| p.name.to_owned()),
+        None => card
+            .preset
+            .and_then(|i| komponist_builtin::presets().nth(i))
+            .map(|p| p.name.to_owned()),
+    }
+    .map(|name| {
+        if card.preset_changed {
+            format!("{name}{}", names::CHANGED)
+        } else {
+            name
+        }
+    });
+    let current = known.as_deref().unwrap_or(names::PRESET);
     let style = typography::SMALL;
-    let name = known.map_or_else(|| names::PRESET.to_owned(), names::preset);
+    let name = known
+        .as_deref()
+        .map_or_else(|| names::PRESET.to_owned(), names::preset);
     let natural = w::galley(row, current, fonts::font_id(&style), style.line_height)
         .size()
         .x
@@ -663,30 +679,82 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
         ContextMenu::<usize>::open_at(row.ctx(), r.id, rect.left_bottom() + vec2(0.0, 2.0));
     }
     if open || r.clicked() {
-        let categories: Vec<&str> = komponist_builtin::categories().collect();
-        let presets: Vec<_> = komponist_builtin::presets().collect();
-        let groups: Vec<Vec<Entry<'_, usize>>> = categories
-            .iter()
-            .map(|c| {
-                presets
-                    .iter()
-                    .filter(|p| p.category == *c)
-                    .map(|p| Entry::action(p.name, p.index))
-                    .collect()
-            })
-            .collect();
-        let entries: Vec<Entry<'_, usize>> = categories
-            .iter()
-            .zip(&groups)
-            .map(|(c, g)| Entry::submenu(c, g))
-            .collect();
-        if let Some(preset) = ContextMenu::new(names::PRESET, &entries).show_on(&r) {
-            ctx.send(Action::Plugin(PluginAction::ApplyPisynthPreset {
-                device: card.device,
-                preset,
-            }));
+        let chosen = match card.internal_presets {
+            Some(kind) => internal_preset_menu(&r, kind),
+            None => pisynth_preset_menu(&r),
+        };
+        if let Some(preset) = chosen {
+            let action = match card.internal_presets {
+                Some(_) => PluginAction::ApplyInternalPreset {
+                    device: card.device,
+                    index: preset,
+                },
+                None => PluginAction::ApplyPisynthPreset {
+                    device: card.device,
+                    preset,
+                },
+            };
+            ctx.send(Action::Plugin(action));
         }
     }
+}
+
+/// pisynth's menu: its factory bank by category; the chosen index.
+fn pisynth_preset_menu(r: &Response) -> Option<usize> {
+    let categories: Vec<&str> = komponist_builtin::categories().collect();
+    let presets: Vec<_> = komponist_builtin::presets().collect();
+    let groups: Vec<Vec<Entry<'_, usize>>> = categories
+        .iter()
+        .map(|c| {
+            presets
+                .iter()
+                .filter(|p| p.category == *c)
+                .map(|p| Entry::action(p.name, p.index))
+                .collect()
+        })
+        .collect();
+    let entries: Vec<Entry<'_, usize>> = categories
+        .iter()
+        .zip(&groups)
+        .map(|(c, g)| Entry::submenu(c, g))
+        .collect();
+    ContextMenu::new(names::PRESET, &entries).show_on(r)
+}
+
+/// The menu of an internal device (WP-96): its presets grouped by category if they have one, else
+/// a flat list; the chosen index in [`Internal::presets`](komponist_builtin::Internal::presets).
+fn internal_preset_menu(r: &Response, kind: komponist_builtin::Internal) -> Option<usize> {
+    let presets = kind.presets();
+    let mut categories: Vec<&str> = Vec::new();
+    for c in presets.iter().filter_map(|p| p.category) {
+        if !categories.contains(&c) {
+            categories.push(c);
+        }
+    }
+    let groups: Vec<Vec<Entry<'_, usize>>> = categories
+        .iter()
+        .map(|c| {
+            presets
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.category == Some(*c))
+                .map(|(i, p)| Entry::action(p.name, i))
+                .collect()
+        })
+        .collect();
+    let mut entries: Vec<Entry<'_, usize>> = categories
+        .iter()
+        .zip(&groups)
+        .map(|(c, g)| Entry::submenu(c, g))
+        .collect();
+    entries.extend(
+        presets
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.category.is_none())
+            .map(|(i, p)| Entry::action(p.name, i)),
+    );
+    ContextMenu::new(names::PRESET, &entries).show_on(r)
 }
 
 /// The caret of the preset button (`border-left/right:3px`, `border-top:4px`): 6 × 4.

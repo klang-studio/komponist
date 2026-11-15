@@ -14,7 +14,7 @@
 //! | on/off square | `SetDeviceBypass` |
 //! | Öffnen / Parameter / Geöffnet | `OpenWindow` / `CloseWindow` |
 //! | page switch | `SetDevicePage` |
-//! | preset button (pisynth) | menu of the factory presets: `ApplyPisynthPreset` |
+//! | preset button (pisynth, every internal device with presets; it replaces the tag and „Öffnen“, which stay in the ⋯ menu) | menu of the factory presets: `ApplyPisynthPreset` / `ApplyInternalPreset` (one undo step; the loaded name is saved in the device state and „ *“ follows a changed value) |
 //! | ⋯ / right-click on the head | Öffnen, Bypass, Neu laden, Einklappen, Duplizieren, Entfernen |
 //! | knob | `SetParam` (pisynth: also into the device state) |
 //! | touching a parameter (press, drag, click) | `Ui(TouchParam)`: the inspector's „Parameter“ section and, while dragging, the status line show it |

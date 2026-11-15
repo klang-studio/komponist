@@ -167,6 +167,37 @@ pub struct Spec {
     pub layout: fn() -> DeviceLayout,
     /// The DSP with its parameters at their defaults.
     pub dsp: fn() -> Box<dyn Dsp>,
+    /// The factory presets in menu order (WP-96); none for [`no_presets`].
+    pub presets: fn() -> &'static [Preset],
+}
+
+/// A factory preset of an internal device (WP-96): the parameters that differ from the defaults,
+/// by model id, so a preset keeps working when a parameter is added later (it gets its default).
+#[derive(Clone, Copy, Debug)]
+pub struct Preset {
+    /// Name in the menu; also what a device state stores as its loaded preset, so it stays unique
+    /// in its device and never changes.
+    pub name: &'static str,
+    /// Folder in the menu, `None` for a flat list.
+    pub category: Option<&'static str>,
+    /// The parameters that differ from the defaults: model id, plain value.
+    pub changes: &'static [(&'static str, f64)],
+}
+
+impl Preset {
+    /// A preset without a category.
+    pub const fn new(name: &'static str, changes: &'static [(&'static str, f64)]) -> Preset {
+        Preset {
+            name,
+            category: None,
+            changes,
+        }
+    }
+}
+
+/// `Spec::presets` of a device without presets.
+pub fn no_presets() -> &'static [Preset] {
+    &[]
 }
 
 /// The internal devices.
@@ -309,6 +340,47 @@ impl Internal {
         static CELLS: [OnceLock<DeviceLayout>; Internal::ALL.len()] =
             [const { OnceLock::new() }; Internal::ALL.len()];
         CELLS[self.index()].get_or_init(self.spec().layout)
+    }
+
+    /// The factory presets in menu order (empty: the device has none).
+    pub fn presets(self) -> &'static [Preset] {
+        (self.spec().presets)()
+    }
+
+    /// All plain values (by wire id) of preset `index`: the defaults with the preset's changes
+    /// (snapped). `None` if there is no such preset.
+    pub fn preset_values(self, index: usize) -> Option<Vec<f64>> {
+        let preset = self.presets().get(index)?;
+        let mut values = self.defaults();
+        for (key, value) in preset.changes {
+            let wire = self.wire(&ParamId::new(*key))? as usize;
+            values[wire] = self.params()[wire].snap(*value);
+        }
+        Some(values)
+    }
+
+    /// The device state after loading preset `index` into a device with state `old`: the preset's
+    /// values plus its name under `"preset"`, and the other keys of `old` kept (the sampler's
+    /// links). `None` if there is no such preset.
+    pub fn preset_state(self, old: Option<&[u8]>, index: usize) -> Option<Vec<u8>> {
+        let values = self.preset_values(index)?;
+        let name = self.presets()[index].name;
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&self.encode_state(&values)).expect("an encoded state is JSON");
+        state["preset"] = name.into();
+        let encoded = serde_json::to_vec(&state).expect("a state encodes as JSON");
+        Some(self.keep_extras(old, encoded))
+    }
+
+    /// The preset a device state says it loaded (`"preset"`) and whether the values differ from it
+    /// now („ *“). `None` for a state without a (known) preset, as every project saved before
+    /// WP-96.
+    pub fn loaded_preset(self, state: Option<&[u8]>) -> Option<(usize, bool)> {
+        let value: serde_json::Value = serde_json::from_slice(state?).ok()?;
+        let name = value.get("preset")?.as_str()?;
+        let index = self.presets().iter().position(|p| p.name == name)?;
+        let now = self.decode_state(state).ok()?;
+        Some((index, Some(&now) != self.preset_values(index).as_ref()))
     }
 
     /// The wire id of parameter `id`.

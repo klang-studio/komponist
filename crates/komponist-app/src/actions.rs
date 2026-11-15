@@ -375,6 +375,14 @@ pub enum PluginAction {
         /// Factory preset index.
         preset: usize,
     },
+    /// Load factory preset `index` (in `Internal::presets`) into an internal device (WP-96): all
+    /// its values at once, one undo step, and the engine gets every value.
+    ApplyInternalPreset {
+        /// The internal device.
+        device: DeviceId,
+        /// Index in the device's preset list.
+        index: usize,
+    },
     /// A preset double-click without a pisynth on the selected track: a new pisynth track
     /// with factory preset `preset` (one undo step).
     NewPisynthTrack {

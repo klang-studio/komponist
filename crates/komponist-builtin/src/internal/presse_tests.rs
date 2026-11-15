@@ -480,15 +480,16 @@ fn an_impulse_through_silence_stays_finite_and_the_curve_below_the_threshold_is_
 #[test]
 fn the_presets_are_valid_and_play() {
     let list = KIND.params();
-    assert_eq!(super::presse::PRESETS.len(), 10);
-    for (i, (name, changes)) in super::presse::PRESETS.iter().enumerate() {
-        for (key, _) in *changes {
+    assert_eq!(KIND.presets().len(), 10);
+    for (i, preset) in KIND.presets().iter().enumerate() {
+        let name = preset.name;
+        for (key, _) in preset.changes {
             assert!(
                 list.iter().any(|p| p.id.as_str() == *key),
                 "{name}: unknown parameter {key}"
             );
         }
-        let values = super::presse::preset_values(i).expect("a preset");
+        let values = KIND.preset_values(i).expect("a preset");
         assert_eq!(values.len(), list.len());
         for (v, p) in values.iter().zip(list) {
             let (lo, hi) = p.range();
@@ -505,7 +506,7 @@ fn the_presets_are_valid_and_play() {
             "{name}"
         );
     }
-    assert!(super::presse::preset_values(10).is_none());
+    assert!(KIND.preset_values(10).is_none());
 }
 
 #[test]

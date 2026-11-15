@@ -17,7 +17,7 @@ use komponist_model::params::layout::{
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
 use super::dsp::{CONTROL, Glide, OnePole, Ring, finite, flush, pole, smooth_coeff};
-use super::{Dsp, INITIAL_RATE, Spec, knob, single_page, toggle};
+use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, single_page, toggle};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -27,6 +27,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp,
+    presets,
 };
 
 /// Longest delay time in milliseconds.
@@ -65,6 +66,58 @@ const NOTE: usize = 5;
 const LOW_CUT: usize = 6;
 const HIGH_CUT: usize = 7;
 const WIDTH: usize = 8;
+
+/// The factory presets (WP-96): a small starter set.
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 5] = [
+        Preset::new(
+            "Slapback",
+            &[
+                ("time", 110.0),
+                ("feedback", 0.1),
+                ("ping_pong", 0.0),
+                ("mix", 0.25),
+            ],
+        ),
+        Preset::new(
+            "Achtel Ping-Pong",
+            &[("sync", 1.0), ("note", 5.0), ("feedback", 0.4)],
+        ),
+        Preset::new(
+            "Punktierte Achtel",
+            &[
+                ("sync", 1.0),
+                ("note", 6.0),
+                ("ping_pong", 0.0),
+                ("feedback", 0.45),
+            ],
+        ),
+        Preset::new(
+            "Dub-Echo",
+            &[
+                ("sync", 1.0),
+                ("note", 8.0),
+                ("feedback", 0.7),
+                ("low_cut", 200.0),
+                ("high_cut", 3500.0),
+                ("mix", 0.35),
+            ],
+        ),
+        Preset::new(
+            "Weiches Band",
+            &[
+                ("time", 300.0),
+                ("feedback", 0.35),
+                ("ping_pong", 0.0),
+                ("low_cut", 120.0),
+                ("high_cut", 4500.0),
+                ("mix", 0.2),
+                ("width", 0.6),
+            ],
+        ),
+    ];
+    &LIST
+}
 
 fn params() -> Vec<ParamInfo> {
     vec![

@@ -21,7 +21,7 @@ use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Widge
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
 use super::dsp::{CONTROL, Glide, Ring, SlidingMin, db_to_gain, finite, smooth_coeff};
-use super::{Dsp, INITIAL_RATE, Spec, knob, knob_large, single_page, toggle};
+use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, single_page, toggle};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -31,6 +31,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp,
+    presets,
 };
 
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.
@@ -41,6 +42,23 @@ const GAIN: usize = 0;
 const CEILING: usize = 1;
 const RELEASE: usize = 2;
 const LOOKAHEAD: usize = 3;
+
+/// The factory presets (WP-96): a small starter set.
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 4] = [
+        Preset::new(
+            "Master sanft",
+            &[("gain", 2.0), ("ceiling", -1.0), ("release", 200.0)],
+        ),
+        Preset::new("Master laut", &[("gain", 6.0), ("release", 80.0)]),
+        Preset::new("Spitzenschutz", &[("ceiling", -1.0), ("release", 150.0)]),
+        Preset::new(
+            "Drums hart",
+            &[("gain", 10.0), ("ceiling", -0.1), ("release", 30.0)],
+        ),
+    ];
+    &LIST
+}
 
 fn params() -> Vec<ParamInfo> {
     vec![
