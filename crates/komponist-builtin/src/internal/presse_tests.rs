@@ -584,7 +584,10 @@ fn the_filter_and_listen_work_on_the_sidechain() {
     filtered.push(("sc_hpf", 500.0));
     let soft = play_sc(&mut *plain(&filtered), &audio, &sc, 256);
     let tail = |y: &Stereo| peak(&y[0][12_000..]);
-    assert!(tail(&hard) < 0.5 * tail(&soft), "high-pass lets the audio through");
+    assert!(
+        tail(&hard) < 0.5 * tail(&soft),
+        "high-pass lets the audio through"
+    );
     // Listen: the output is the filtered sidechain, not the audio.
     filtered.push(("sc_listen", 1.0));
     let heard = play_sc(&mut *plain(&filtered), &audio, &sc, 256);

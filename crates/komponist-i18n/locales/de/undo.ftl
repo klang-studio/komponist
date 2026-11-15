@@ -123,6 +123,9 @@ undo-duplicate-devices = Geräte duplizieren
 # Undo step: Bypass.
 undo-bypass = Bypass
 
+# Undo step: Sidechain-Quelle oder -Abgriff eines Geräts setzen.
+undo-set-sidechain = Sidechain setzen
+
 # Undo step: Preset laden.
 undo-load-preset = Preset laden
 

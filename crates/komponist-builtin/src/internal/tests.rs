@@ -461,12 +461,7 @@ fn process_sidechain_does_not_allocate_and_ducks() {
             output: [ol, or],
         };
         assert_no_alloc(|| {
-            p.process_sidechain(
-                &ctx(BLOCK),
-                &events,
-                &mut io,
-                [&sc[0][..], &sc[1][..]],
-            )
+            p.process_sidechain(&ctx(BLOCK), &events, &mut io, [&sc[0][..], &sc[1][..]])
         });
     }
     assert!(out[0].iter().all(|x| x.is_finite()));

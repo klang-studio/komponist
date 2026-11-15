@@ -47,5 +47,6 @@ mod record;
 mod sampler;
 mod shell;
 mod showcase;
+mod sidechain;
 mod state_sync;
 mod step_seq;

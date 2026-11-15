@@ -319,6 +319,14 @@ pub enum EditAction {
         /// Bypass.
         bypass: bool,
     },
+    /// `edits::set_sidechain` (the "SC" popover in a device head): the source and tap of the
+    /// device's sidechain input, `None` for the internal input signal.
+    SetSidechain {
+        /// The device.
+        device: DeviceId,
+        /// The new sidechain.
+        sidechain: Option<komponist_model::Sidechain>,
+    },
     /// Alt-drag on a device head: a copy of `device` (plugin, state, bypass) at `index` of `to`.
     CopyDevice {
         /// The device to copy.

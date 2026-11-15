@@ -707,12 +707,7 @@ impl Dsp for Presse {
 impl Presse {
     /// The block: `sidechain`, when given, feeds the detector in place of `input` (the audio path
     /// and the lookahead stay on `input`).
-    fn run(
-        &mut self,
-        input: [&[f32]; 2],
-        sidechain: Option<[&[f32]; 2]>,
-        output: [&mut [f32]; 2],
-    ) {
+    fn run(&mut self, input: [&[f32]; 2], sidechain: Option<[&[f32]; 2]>, output: [&mut [f32]; 2]) {
         let [il, ir] = input;
         let [ol, or] = output;
         let tapping = self.tap.begin(il.len());
