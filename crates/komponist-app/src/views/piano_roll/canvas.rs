@@ -991,7 +991,7 @@ impl PianoRoll {
     /// Grid lines and the outside-clip veil over `rect` (grid or lane).
     fn paint_lines(&self, painter: &egui::Painter, f: &Frame<'_>, rect: Rect) {
         let g = &f.geo;
-        let spec = GridSpec::editor(f.grid_kind, f.meter);
+        let spec = GridSpec::new(f.grid_kind, m::GRID_MIN_SPACING);
         let lines = grid_lines(&g.axis, f.meter, rect.x_range(), &spec);
         paint_grid(painter, rect, &lines);
         let end = g.x_of_local(edit::content_length(f.clip)).max(rect.left());

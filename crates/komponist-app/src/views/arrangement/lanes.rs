@@ -571,7 +571,8 @@ fn paint_backgrounds(painter: &Painter, ctx: &ViewCtx<'_>, project: &Project, g:
             );
         }
     }
-    let lines = grid_lines(&g.axis, project.meter, g.lane_x, &GridSpec::arrangement());
+    let spec = GridSpec::new(ctx.ui.arrangement.grid, metrics::GRID_MIN_SPACING);
+    let lines = grid_lines(&g.axis, project.meter, g.lane_x, &spec);
     paint_grid(painter, g.lanes(), &lines);
     for i in g.visible_rows() {
         let y = g.rows[i].y.max - px::line_width(painter.pixels_per_point());

@@ -157,14 +157,14 @@ fn grids() {
         let r = area(ui, vec2(16.0 * BAR_W, 56.0));
         ui.painter().rect_filled(r, 0.0, color32(color::SURFACE_1));
         let axis = TimeAxis::per_bar(r.min.x, BAR_W, M);
-        let lines = grid_lines(&axis, M, r.x_range(), &GridSpec::arrangement());
+        let lines = grid_lines(&axis, M, r.x_range(), &GridSpec::new(Grid::Bar, 8.0));
         paint_grid(ui.painter(), r, &lines);
     });
     shots.add("timeline-grid-editor", None, |ui| {
         let r = area(ui, vec2(640.0, 60.0));
         ui.painter().rect_filled(r, 0.0, color32(color::SURFACE_2));
         let axis = TimeAxis::per_step(r.min.x, 20.0);
-        let lines = grid_lines(&axis, M, r.x_range(), &GridSpec::editor(Grid::Sixteenth, M));
+        let lines = grid_lines(&axis, M, r.x_range(), &GridSpec::new(Grid::Sixteenth, 8.0));
         paint_grid(ui.painter(), r, &lines);
     });
     shots.finish();
@@ -229,7 +229,7 @@ fn arrangement(ui: &mut Ui) {
         let hdr = Rect::from_min_size(pos2(r.min.x, top), vec2(size::TRACK_HEADER, lane_h));
         paint_track_header(p, hdr, &model, State::REST.with_selected(selected));
         let lane = Rect::from_min_size(pos2(lanes_x, top), vec2(lane_w, lane_h));
-        let lines = grid_lines(&axis, M, lane.x_range(), &GridSpec::arrangement());
+        let lines = grid_lines(&axis, M, lane.x_range(), &GridSpec::new(Grid::Bar, 8.0));
         paint_grid(p, lane, &lines);
         px::hline(
             p,
@@ -301,7 +301,7 @@ fn piano_roll(ui: &mut Ui) {
         &axis,
         M,
         grid.x_range(),
-        &GridSpec::editor(Grid::Sixteenth, M),
+        &GridSpec::new(Grid::Sixteenth, 8.0),
     );
     paint_grid(p, grid, &lines);
     let ph = playhead();
