@@ -490,8 +490,8 @@ fn the_device_cards_show_english_names_parameters_and_value_words() {
     let mix = reverb.get_by_role_and_label(Role::Slider, "Mix");
     assert_eq!(mix.value().as_deref(), Some("22%"));
     reverb.get_by_role_and_label(Role::Slider, "Pre-Delay");
-    reverb.get_by_role_and_label(Role::RadioGroup, "Room");
-    reverb.get_by_role_and_label(Role::RadioButton, "Room: Chamber");
+    reverb.get_by_role_and_label(Role::RadioGroup, "Space");
+    reverb.get_by_role_and_label(Role::RadioButton, "Space: Room");
     reverb.get_by_role_and_label(Role::Button, "Freeze");
     assert!(reverb.query_by_label("Raum").is_none());
     // The EQ's band types: the five-way segment of the card.

@@ -210,7 +210,7 @@ mod tests {
         let eq = Internal::Eq.params_in(Lang::En);
         assert_eq!(find(eq, "out").name, "Output");
         assert_eq!(find(eq, "b1_on").name, "Band 1 On");
-        assert_eq!(find(eq, "b2_freq").name, "Frequency 2");
+        assert_eq!(find(eq, "b2_freq").name, "Freq 2");
         assert_eq!(find(eq, "analyse").name, "Analysis");
         assert_eq!(
             choices(find(eq, "b3_type")),
@@ -222,7 +222,7 @@ mod tests {
         let hall = Internal::Hall.params_in(Lang::En);
         assert_eq!(find(hall, "damping").name, "Damping");
         assert_eq!(find(hall, "wet_only").name, "Wet Only");
-        assert_eq!(choices(find(hall, "room")), ["Chamber", "Hall", "Church"]);
+        assert_eq!(choices(find(hall, "room")), ["Room", "Hall", "Church"]);
         let limiter = Internal::Limiter.params_in(Lang::En);
         assert_eq!(names(limiter), ["Input", "Ceiling", "Release", "Lookahead"]);
         let presse = Internal::Presse.params_in(Lang::En);

@@ -220,7 +220,7 @@ param-eq-band-on = Band { $n } On
 param-eq-band-type = Type { $n }
 
 # EQ: frequency of a band; `$n` is the band number.
-param-eq-band-freq = Frequency { $n }
+param-eq-band-freq = Freq { $n }
 
 # EQ: gain of a band; `$n` is the band number.
 param-eq-band-gain = Gain { $n }
@@ -266,7 +266,7 @@ param-hall-damping = Damping
 param-hall-modulation = Mod.
 
 # Reverb: the room character.
-param-hall-room = Room
+param-hall-room = Space
 
 # Reverb: freeze switch.
 param-hall-freeze = Freeze
@@ -275,7 +275,7 @@ param-hall-freeze = Freeze
 param-hall-wet-only = Wet Only
 
 # Reverb room: smallest.
-choice-hall-room-chamber = Chamber
+choice-hall-room-chamber = Room
 
 # Reverb room: medium.
 choice-hall-room-hall = Hall
