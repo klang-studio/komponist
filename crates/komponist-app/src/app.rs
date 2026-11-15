@@ -56,14 +56,16 @@ use crate::actions::{
 };
 use crate::device_host::{BuiltinHost, DeviceHost};
 use crate::dialogs::DialogState;
+use crate::dialogs::settings::midi_label;
 use crate::dialogs::settings::{AudioDevices, FixedDevices, SystemDevices};
-use crate::engine_sync::{EngineSync, SyncEvent};
+use crate::engine_sync::{EngineSync, MidiChange, SyncEvent};
 use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
 use crate::project_io::{self, RecentList};
 use crate::record::{self, Recording};
 use crate::settings::{PanelSettings, Settings};
+use crate::shell::names;
 use crate::ui_state::{
     Dialog, DockTab, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind, StatusMessage,
     Tool, UiState,
@@ -382,6 +384,30 @@ impl App {
         );
     }
 
+    /// Tells in the status bar which MIDI inputs appeared or vanished in the last scans
+    /// (`EngineSync::take_midi_changes`), by the name S07 shows. Several changes make one
+    /// message, joined by " · ".
+    pub fn report_midi_changes(&mut self) {
+        let changes = self.engine.take_midi_changes();
+        if changes.is_empty() {
+            return;
+        }
+        let ports = self
+            .engine
+            .midi()
+            .map(|hub| hub.ports())
+            .unwrap_or_default();
+        let all: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
+        let texts: Vec<String> = changes
+            .iter()
+            .map(|change| match change {
+                MidiChange::Appeared(name) => names::midi_connected(&midi_label(name, &all)),
+                MidiChange::Vanished(name) => names::midi_disconnected(&midi_label(name, &all)),
+            })
+            .collect();
+        self.set_status(texts.join(" · "), StatusKind::Info);
+    }
+
     /// The device host's events polled at the start of this frame, after the app handled them:
     /// views and plugin windows react to what concerns them (`GuiOpened`, `GuiSizeRequest`,
     /// `GuiClosed` for the frame windows; `ParamsChanged`, `NoteNamesChanged`, …). Replaced at
@@ -493,6 +519,7 @@ impl App {
         if self.engine.take_worker_notice() {
             self.report_workers_without_realtime();
         }
+        self.report_midi_changes();
         // Read after the drain: at least as new as every event drained (`record` docs).
         let playhead = self.engine.playhead();
         let mut recompile = false;

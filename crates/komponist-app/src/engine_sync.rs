@@ -31,7 +31,8 @@ use std::time::{Duration, Instant};
 
 use komponist_audio::{
     AudioError, AudioProcess, AudioState, AudioSystem, CallbackInfo, HostKind, MidiIn,
-    MidiInputHub, MidiReceiver, OutputBuffer, StreamConfig, StreamParams, StreamStats,
+    MidiInputHub, MidiPortInfo, MidiReceiver, OutputBuffer, StreamConfig, StreamParams,
+    StreamStats,
 };
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::workers::{DEFAULT_WORKER_PRIORITY, WorkerStats, WorkerStatus, auto_workers};
@@ -187,6 +188,33 @@ impl CompileEnv for Env<'_> {
     }
 }
 
+/// A MIDI input device that appeared or vanished between two scans ([`midi_changes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MidiChange {
+    /// The port is listed and connected now, and was not before.
+    Appeared(String),
+    /// The port was present before and is gone (or not connected) now.
+    Vanished(String),
+}
+
+/// The devices that appeared or vanished from `before` to `after`. A device is present when its
+/// port is listed and connected; ports are compared by name (ids and the `enabled` switch do not
+/// matter, a disabled port still counts as plugged in). Order: vanished first, then appeared,
+/// each in port order.
+pub fn midi_changes(before: &[MidiPortInfo], after: &[MidiPortInfo]) -> Vec<MidiChange> {
+    let present =
+        |ports: &[MidiPortInfo], name: &str| ports.iter().any(|p| p.connected && p.name == name);
+    let vanished = before
+        .iter()
+        .filter(|p| p.connected && !present(after, &p.name))
+        .map(|p| MidiChange::Vanished(p.name.clone()));
+    let appeared = after
+        .iter()
+        .filter(|p| p.connected && !present(before, &p.name))
+        .map(|p| MidiChange::Appeared(p.name.clone()));
+    vanished.chain(appeared).collect()
+}
+
 /// Engine, audio stream and program sync. UI thread.
 pub struct EngineSync {
     audio: AudioSystem<EngineProcess>,
@@ -195,6 +223,9 @@ pub struct EngineSync {
     midi: Option<MidiInputHub>,
     /// When [`EngineSync::poll`] scans the MIDI ports next ([`MIDI_SCAN_INTERVAL`]).
     next_midi_scan: Instant,
+    /// Devices that appeared or vanished in scans since the last
+    /// [`EngineSync::take_midi_changes`].
+    midi_changes: Vec<MidiChange>,
     host: Box<dyn DeviceHost>,
     /// The program last sent to the engine.
     previous: Option<Program>,
@@ -276,6 +307,7 @@ impl EngineSync {
             handle: Some(handle),
             midi: hub,
             next_midi_scan: Instant::now() + MIDI_SCAN_INTERVAL,
+            midi_changes: Vec::new(),
             host,
             previous: None,
             synced: None,
@@ -544,12 +576,20 @@ impl EngineSync {
         let before = hub.ports();
         // A port that cannot be connected stays listed; the next scan tries again.
         let _ = hub.refresh();
-        let changed = hub.ports() != before;
+        let after = hub.ports();
+        let changed = after != before;
+        self.midi_changes.extend(midi_changes(&before, &after));
         if changed {
             self.synced = None;
             self.fast = None;
         }
         changed
+    }
+
+    /// The devices that appeared or vanished in scans since the last call (the status bar says
+    /// so). The scan at start-up is not among them: it runs before the first scan.
+    pub fn take_midi_changes(&mut self) -> Vec<MidiChange> {
+        std::mem::take(&mut self.midi_changes)
     }
 
     /// Rebuilds the stream for `config` (S07: driver, device, rate, buffer). The engine survives;
@@ -904,6 +944,48 @@ impl Drop for EngineSync {
 
 #[cfg(test)]
 mod tests {
+    use komponist_audio::MidiPortId;
+
+    fn port(name: &str, connected: bool) -> MidiPortInfo {
+        MidiPortInfo {
+            id: MidiPortId(0),
+            name: name.to_owned(),
+            enabled: true,
+            connected,
+        }
+    }
+
+    #[test]
+    fn midi_changes_compare_present_ports_by_name() {
+        use MidiChange::{Appeared, Vanished};
+        let a = || port("P-125", true);
+        let b = || port("KeyStep", true);
+        assert!(midi_changes(&[], &[]).is_empty());
+        assert!(midi_changes(&[a()], &[a()]).is_empty());
+        assert_eq!(midi_changes(&[], &[a()]), [Appeared("P-125".into())]);
+        assert_eq!(
+            midi_changes(&[a()], &[port("P-125", false)]),
+            [Vanished("P-125".into())]
+        );
+        // A listed but absent port is no device; plugging it in again is an appearance.
+        assert!(midi_changes(&[port("P-125", false)], &[port("P-125", false)]).is_empty());
+        assert_eq!(
+            midi_changes(&[port("P-125", false)], &[a()]),
+            [Appeared("P-125".into())]
+        );
+        // Ids and the enabled switch do not matter.
+        let mut moved = a();
+        moved.id = MidiPortId(7);
+        moved.enabled = false;
+        assert!(midi_changes(&[a()], &[moved.clone()]).is_empty());
+        assert_eq!(midi_changes(&[], &[moved]), [Appeared("P-125".into())]);
+        // Several at once: vanished first.
+        assert_eq!(
+            midi_changes(&[a()], &[port("P-125", false), b()]),
+            [Vanished("P-125".into()), Appeared("KeyStep".into())]
+        );
+    }
+
     use super::*;
     use crate::device_host::BuiltinHost;
     use komponist_model::edits::{self, ChannelProp, TrackProp};

@@ -245,3 +245,51 @@ fn a_port_plugged_in_later_reaches_a_track_that_names_it() {
     assert!(signal_within(&mut h, track, 3), "no signal after hot-plug");
     out.send(&[0x80, 60, 0]).unwrap();
 }
+
+/// Scans the MIDI ports and steps the app until the status bar shows text containing `needle`;
+/// the text, or `None` after `secs`.
+fn status_with(h: &mut Harness<'_, App>, needle: &str, secs: u64) -> Option<String> {
+    let until = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < until {
+        h.state_mut().engine_mut().scan_midi();
+        step_for(h, 50);
+        if let Some(status) = h.state().ui().status.as_ref()
+            && status.text.contains(needle)
+        {
+            return Some(status.text.clone());
+        }
+    }
+    None
+}
+
+/// The status bar names a device that is plugged in or out, once per change (WP midi-notice).
+#[test]
+fn the_status_bar_tells_when_a_midi_device_appears_and_vanishes() {
+    use komponist_app::ui_state::StatusKind;
+
+    let port = unique("notice");
+    if MidiInputHub::new().is_err() {
+        eprintln!("ALSA sequencer unavailable: skipped");
+        return;
+    }
+    let mut h = harness(app_on(&null_config(), &port));
+    // The scan at start-up and a scan without a change say nothing.
+    step_for(&mut h, 100);
+    assert!(!h.state_mut().engine_mut().scan_midi());
+    assert!(h.state_mut().engine_mut().take_midi_changes().is_empty());
+
+    let out = virtual_output(&port).unwrap();
+    let text = status_with(&mut h, "verbunden", 6).expect("no notice for the new port");
+    assert_eq!(text, format!("{} verbunden", port_name(&port)));
+    assert_eq!(
+        h.state().ui().status.as_ref().unwrap().kind,
+        StatusKind::Info
+    );
+    // Nothing changed since: no further change is reported.
+    assert!(!h.state_mut().engine_mut().scan_midi());
+    assert!(h.state_mut().engine_mut().take_midi_changes().is_empty());
+
+    drop(out);
+    let text = status_with(&mut h, "getrennt", 6).expect("no notice for the vanished port");
+    assert_eq!(text, format!("{} getrennt", port_name(&port)));
+}
