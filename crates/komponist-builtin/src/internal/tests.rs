@@ -1,5 +1,5 @@
 //! Tests of the internal devices: catalog data, parameters, layouts, state, and the processors
-//! (pass-through bit-exact, no allocation in `process` and `reset`).
+//! (no allocation in `process` and `reset`); the effects' DSP is tested in `fx_tests`.
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_engine::{Event, EventKind, ProcessContext, Processor, StereoIo, TransportInfo};
@@ -7,6 +7,7 @@ use komponist_model::params::layout::{BAND, SEL, validate};
 use komponist_model::params::{ParamContext, ParamId};
 use komponist_model::{Meter, Tick, TickRange};
 
+use super::dsp::db_to_gain;
 use super::*;
 
 // Debug builds only: in release builds `assert_no_alloc` is a no-op without its allocator.
@@ -62,14 +63,6 @@ fn run(p: &mut InternalProcessor, events: &[Event], input: &[Vec<f32>; 2]) -> [V
     };
     assert_no_alloc(|| p.process(&ctx(frames), events, &mut io));
     out
-}
-
-fn param_event(kind: Internal, key: &str, value: f64, offset: u32) -> Event {
-    let id = kind.wire(&ParamId::new(key)).expect("known parameter");
-    Event {
-        offset,
-        kind: EventKind::Param { id, value },
-    }
 }
 
 #[test]
@@ -226,121 +219,6 @@ fn state_round_trips_and_tolerates_missing_unknown_and_wild_values() {
 }
 
 #[test]
-fn eq_hall_and_a_default_limiter_pass_audio_bit_exact() {
-    let input = signal(BLOCK, 0);
-    for kind in [Internal::Eq, Internal::Hall, Internal::Limiter] {
-        let mut p = activated(kind, &kind.defaults());
-        let out = run(&mut p, &[], &input);
-        assert_eq!(out, input, "{kind:?}");
-    }
-    // Hall ignores every parameter.
-    let mut hall = activated(Internal::Hall, &Internal::Hall.defaults());
-    let events = [param_event(Internal::Hall, "mix", 1.0, 10)];
-    assert_eq!(run(&mut hall, &events, &input), input);
-}
-
-#[test]
-fn the_eq_applies_only_its_output_gain() {
-    let input = signal(BLOCK, 0);
-    let mut p = activated(Internal::Eq, &Internal::Eq.defaults());
-    let events = [param_event(Internal::Eq, "out", -6.0, 100)];
-    let out = run(&mut p, &events, &input);
-    assert_eq!(out[0][..100], input[0][..100]);
-    let gain = db_to_gain(-6.0);
-    for i in 100..BLOCK {
-        assert_eq!(out[0][i], input[0][i] * gain);
-    }
-    // A band's gain does not change the placeholder's audio.
-    let mut p = activated(Internal::Eq, &Internal::Eq.defaults());
-    let events = [param_event(Internal::Eq, "b3_gain", 12.0, 0)];
-    assert_eq!(run(&mut p, &events, &input), input);
-}
-
-#[test]
-fn the_limiter_clips_at_the_ceiling() {
-    let kind = Internal::Limiter;
-    let mut values = kind.defaults();
-    values[kind.wire(&ParamId::new("ceiling")).unwrap() as usize] = -6.0;
-    values[kind.wire(&ParamId::new("gain")).unwrap() as usize] = 12.0;
-    let mut p = activated(kind, &values);
-    let loud = [vec![0.9, -0.9, 0.01, 0.0], vec![0.5, -0.5, 0.0, 0.2]];
-    let out = run(&mut p, &[], &loud);
-    let ceiling = db_to_gain(-6.0);
-    assert_eq!(out[0][0], ceiling);
-    assert_eq!(out[0][1], -ceiling);
-    assert_eq!(out[1][0], ceiling, "0.5 with +12 dB is above the ceiling");
-    assert_eq!(out[0][3], 0.0);
-    assert!(out[0][2] > 0.01 && out[0][2] < ceiling);
-    assert!(out.iter().flatten().all(|s| s.abs() <= ceiling));
-}
-
-#[test]
-fn the_delay_echoes_after_its_time_and_dies_out() {
-    let kind = Internal::Delay;
-    let mut values = kind.defaults();
-    let set = |values: &mut Vec<f64>, key: &str, v: f64| {
-        values[kind.wire(&ParamId::new(key)).unwrap() as usize] = v;
-    };
-    set(&mut values, "time", 10.0);
-    set(&mut values, "mix", 1.0);
-    set(&mut values, "feedback", 0.5);
-    set(&mut values, "ping_pong", 0.0);
-    let mut p = activated(kind, &values);
-    let frames = 2048;
-    let mut input = [vec![0.0; frames], vec![0.0; frames]];
-    input[0][0] = 1.0;
-    let out = run(&mut p, &[], &input);
-    let t = (10.0 * RATE / 1000.0) as usize;
-    assert_eq!(out[0][..t - 1].iter().map(|s| s.abs()).sum::<f32>(), 0.0);
-    assert!((out[0][t] - 1.0).abs() < 1e-6, "{}", out[0][t]);
-    assert!((out[0][2 * t] - 0.5).abs() < 1e-6, "{}", out[0][2 * t]);
-    assert_eq!(out[1].iter().map(|s| s.abs()).sum::<f32>(), 0.0);
-    // Ping-pong sends the repeats to the other side.
-    set(&mut values, "ping_pong", 1.0);
-    let mut p = activated(kind, &values);
-    let out = run(&mut p, &[], &input);
-    assert!((out[0][t] - 1.0).abs() < 1e-6);
-    assert!((out[1][2 * t] - 0.5).abs() < 1e-6, "{}", out[1][2 * t]);
-    assert!(out[0][2 * t].abs() < 1e-6);
-    // The tail is silent after `reset`, and 0 % mix passes the input bit-exact.
-    p.reset();
-    let silent = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
-    assert_eq!(run(&mut p, &[], &silent), silent);
-    let events = [param_event(kind, "mix", 0.0, 0)];
-    let input = signal(BLOCK, 0);
-    assert_eq!(run(&mut p, &events, &input), input);
-}
-
-#[test]
-fn parameter_events_apply_at_their_frame_and_unknown_ones_are_ignored() {
-    let kind = Internal::Limiter;
-    let mut p = activated(kind, &kind.defaults());
-    let ceiling = kind.wire(&ParamId::new("ceiling")).unwrap();
-    let events = [
-        Event {
-            offset: 4,
-            kind: EventKind::Param {
-                id: ceiling,
-                value: -12.0,
-            },
-        },
-        Event {
-            offset: 4,
-            kind: EventKind::Param { id: 99, value: 1.0 },
-        },
-        Event {
-            offset: 6,
-            kind: EventKind::AllNotesOff,
-        },
-    ];
-    let input = [vec![0.99; 8], vec![0.99; 8]];
-    let out = run(&mut p, &events, &input);
-    let (before, after) = (db_to_gain(-0.3), db_to_gain(-12.0));
-    assert!(out[0][..4].iter().all(|s| *s == before));
-    assert!(out[0][4..].iter().all(|s| *s == after));
-}
-
-#[test]
 fn processing_and_reset_do_not_allocate_in_any_device() {
     let input = signal(BLOCK, 0);
     for kind in Internal::ALL {
@@ -382,6 +260,7 @@ fn activation_checks_the_sample_rate_and_the_delay_keeps_its_time() {
     let mut values = Internal::Delay.defaults();
     values[3] = 1.0;
     values[1] = 0.0;
+    values[2] = 0.0;
     let mut p = Internal::Delay.processor(&values);
     p.activate(96_000.0, 40_000).unwrap();
     let frames = input[0].len();
@@ -424,4 +303,34 @@ fn the_meter_feed_reports_input_reduction_and_output_without_allocating() {
     run(&mut e, &[], &quiet);
     let (i, gr, _) = m.take();
     assert_eq!((i, gr), (0.25, 0.0));
+}
+
+#[test]
+fn the_limiter_meter_is_full_at_12_db_and_the_others_keep_24() {
+    let limiter = activated(Internal::Limiter, &Internal::Limiter.defaults());
+    assert_eq!(limiter.meter().gr_range_db(), 12.0);
+    let eq = activated(Internal::Eq, &Internal::Eq.defaults());
+    assert_eq!(eq.meter().gr_range_db(), 24.0);
+}
+
+fn param_event(id: u32, value: f64) -> Event {
+    Event {
+        offset: 0,
+        kind: EventKind::Param { id, value },
+    }
+}
+
+#[test]
+fn a_param_that_changes_the_latency_publishes_it_in_the_meter() {
+    let kind = Internal::Limiter;
+    let mut p = activated(kind, &kind.defaults());
+    let meter = p.meter();
+    let on = meter.latency();
+    assert!(on > 0 && on == p.latency());
+    let wire = kind.wire(&ParamId::new("lookahead")).unwrap();
+    let silence: [Vec<f32>; 2] = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    run(&mut p, &[param_event(wire, 0.0)], &silence);
+    assert_eq!(meter.latency(), 0);
+    run(&mut p, &[param_event(wire, 1.0)], &silence);
+    assert_eq!(meter.latency(), on);
 }

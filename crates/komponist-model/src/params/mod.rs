@@ -24,6 +24,7 @@
 //! normalised value is for knobs, automation lanes and modulation.
 
 pub mod context;
+pub mod eq_curve;
 mod format;
 pub mod layout;
 mod scale;

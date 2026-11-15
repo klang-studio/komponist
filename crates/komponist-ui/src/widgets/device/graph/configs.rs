@@ -18,6 +18,7 @@ use super::spec::{
     HandleLook, Layer, Marker, PosFn, Pred, Region, Tick,
 };
 use crate::widgets::metrics::device::graph as m;
+use komponist_model::params::eq_curve::CURVE_RATE;
 
 /// Slot indices of [`envelope`].
 pub mod env {
@@ -146,32 +147,43 @@ pub fn envelope() -> GraphSpec {
 // ---------------------------------------------------------------------------------------------
 // EQ
 
-/// The response in dB of band `i` at `hz` (`W_eq` `eq_resp`).
+/// The response in dB of band `i` at `hz` (`W_eq` `eq_resp`) at the graph's default sample rate.
 pub fn eq_band_response(p: &[f64], i: usize, hz: f64) -> f64 {
+    eq_band_response_at(p, i, hz, CURVE_RATE)
+}
+
+/// The response in dB of band `i` at `hz` for a device running at `rate`.
+pub fn eq_band_response_at(p: &[f64], i: usize, hz: f64, rate: f64) -> f64 {
     let o = i * EQ_SLOTS;
     if p[o] < 0.5 {
         return 0.0;
     }
     let (fc, gain, q, typ) = (p[o + 1], p[o + 2], p[o + 3], p[o + 4]);
-    let x = (hz / fc).log2();
-    match typ.round() as i32 {
-        0 => -24.0 / (1.0 + (x * 5.0).exp()),
-        1 => gain / (1.0 + (x * 4.0).exp()),
-        3 => gain / (1.0 + (-x * 4.0).exp()),
-        4 => -24.0 / (1.0 + (-x * 5.0).exp()),
-        _ => gain * (-(x * q * 1.4).powi(2)).exp(),
-    }
+    // The real filter's response (WP-90): the device runs the same coefficients.
+    komponist_model::params::eq_curve::band_response_db_at(typ, fc, gain, q, hz, rate)
 }
 
 /// The summed response of `bands` bands at `hz`.
 pub fn eq_response(p: &[f64], bands: usize, hz: f64) -> f64 {
-    (0..bands).map(|i| eq_band_response(p, i, hz)).sum()
+    eq_response_at(p, bands, hz, CURVE_RATE)
+}
+
+/// The summed response of `bands` bands at `hz` for a device running at `rate`.
+pub fn eq_response_at(p: &[f64], bands: usize, hz: f64, rate: f64) -> f64 {
+    (0..bands)
+        .map(|i| eq_band_response_at(p, i, hz, rate))
+        .sum()
 }
 
 /// `graph::eq` for up to `bands` bands and `±range_db`: log x 20 Hz–20 kHz, dB on y, spectrum
 /// data and the summed curve; per band Freq ↔, Gain ↕, Q on the wheel; double-click adds a band
 /// (event), Entf removes the focused one.
 pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
+    eq_at(bands, range_db, CURVE_RATE)
+}
+
+/// [`eq`] for a device running at `rate` Hz: the curve is the real filters' response there.
+pub fn eq_at(bands: usize, range_db: f64, rate: f64) -> GraphSpec {
     let (px, py) = m::pad::EQ;
     let mut spec = GraphSpec::new(
         "",
@@ -187,7 +199,7 @@ pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
     spec.layers = vec![
         Layer::Data(DataKind::Spectrum),
         Layer::Curve(Curve {
-            f: CurveFn::new(move |x, p| eq_response(p, bands, x)),
+            f: CurveFn::new(move |x, p| eq_response_at(p, bands, x, rate)),
             baseline: Some(0.0),
             fill: true,
         }),
@@ -210,7 +222,7 @@ pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
                     let y = if is_cut(p) {
                         -3.0
                     } else {
-                        eq_response(p, bands, p[o + 1])
+                        eq_response_at(p, bands, p[o + 1], rate)
                     };
                     (p[o + 1], y)
                 }))
@@ -507,6 +519,46 @@ mod tests {
         assert!(eq_response(&p, 1, 20.0).abs() < 0.01);
         p[0] = 0.0;
         assert_eq!(eq_response(&p, 1, 1000.0), 0.0);
+    }
+
+    #[test]
+    fn the_eq_curve_is_the_filters_response_at_the_devices_sample_rate() {
+        // A high cut at 12 kHz and a bell at 8 kHz: near Nyquist the response depends on the rate.
+        let p = [
+            1.0,
+            12_000.0,
+            0.0,
+            0.71,
+            band::HIGH_CUT, //
+            1.0,
+            8000.0,
+            6.0,
+            1.0,
+            band::BELL,
+        ];
+        for rate in [44_100.0, 48_000.0, 96_000.0] {
+            let spec = eq_at(2, 18.0, rate);
+            let Some(Layer::Curve(curve)) = spec.layers.get(1) else {
+                panic!("the curve layer");
+            };
+            for hz in [100.0, 8000.0, 12_000.0, 18_000.0] {
+                let want = eq_response_at(&p, 2, hz, rate);
+                assert!((curve.f.at(hz, &p) - want).abs() < 1e-9, "{rate} {hz}");
+            }
+            // The bell reaches its gain at its own frequency whatever the rate (cut: ≈ -1 dB there).
+            let bell = eq_band_response_at(&p, 1, 8000.0, rate);
+            assert!((bell - 6.0).abs() < 1e-6, "{rate}: {bell}");
+        }
+        // 18 kHz is 4.4 dB lower against 44.1 kHz's Nyquist than against 96 kHz's.
+        let (a, b) = (
+            eq_response_at(&p, 2, 18_000.0, 44_100.0),
+            eq_response_at(&p, 2, 18_000.0, 96_000.0),
+        );
+        assert!((a - b).abs() > 1.0, "{a} vs {b}");
+        assert_eq!(
+            eq_response(&p, 2, 5000.0),
+            eq_response_at(&p, 2, 5000.0, 48_000.0)
+        );
     }
 
     #[test]

@@ -445,6 +445,21 @@ impl DeviceHost for BuiltinHost {
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
+        // A parameter can change an internal device's latency (limiter lookahead): its processor
+        // publishes the new value in its meter (RT-safe), and the same event a bridged plugin's
+        // latency change raises makes the app recompile the delay compensation.
+        for (device, meter) in &self.meters {
+            let latency = meter.latency();
+            if let Some(known) = self.devices.get_mut(device)
+                && known.latency != latency
+            {
+                known.latency = latency;
+                self.events.push(PluginManagerEvent::LatencyChanged {
+                    device: *device,
+                    latency,
+                });
+            }
+        }
         let ready: Vec<DeviceId> = self
             .warming
             .iter()

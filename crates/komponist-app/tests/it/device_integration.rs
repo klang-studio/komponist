@@ -455,6 +455,43 @@ fn strg_c_and_v_work_as_copy_and_paste_events_of_the_desktop() {
     assert_eq!(after[2].1, "LSP Para EQ x8", "behind the selected device");
 }
 
+/// The text the frames since the last call put on the system clipboard.
+fn copied_texts(h: &mut Harness<'_, App>, steps: usize) -> Vec<String> {
+    let mut texts = Vec::new();
+    for _ in 0..steps {
+        h.step();
+        texts.extend(
+            h.output()
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                    _ => None,
+                }),
+        );
+    }
+    texts
+}
+
+#[test]
+fn copying_devices_puts_a_marker_on_the_system_clipboard_so_strg_v_arrives() {
+    let (app, track, ids) = lead();
+    let mut h = harness(app);
+    let head = head_point(&h, "LSP Para EQ x8");
+    click(&mut h, head);
+    h.event(Event::Copy);
+    assert_eq!(copied_texts(&mut h, 3), ["komponist: 1 Gerät"]);
+    // The desktop now has text on the clipboard and delivers it with Strg V: that marker.
+    h.event(Event::Paste("komponist: 1 Gerät".into()));
+    h.run_steps(3);
+    assert_eq!(chain(h.state(), track).len(), ids.len() + 1);
+    // Nothing copied, nothing written.
+    h.state_mut().ui_mut().selection.devices.clear();
+    h.event(Event::Copy);
+    assert!(copied_texts(&mut h, 3).is_empty());
+}
+
 // ------------------------------------------------------------------------------------------------
 // The level feed of the Limiter's meter
 
@@ -652,6 +689,58 @@ fn snapshot_of_the_fm_display_with_free_routing() {
     mask_cpu(&mut h);
     let mut results = SnapshotResults::new();
     h.snapshot("devices-fm-free-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}
+
+#[test]
+fn snapshot_of_the_fm_display_with_a_cycle() {
+    use komponist_builtin::{algorithms, default_patch, encode_state};
+    use komponist_model::Hue;
+    let mut patch = default_patch();
+    // 1 and 6 modulate each other and are both heard; 2 → 3 → 4 is a chain on the side.
+    algorithms::apply(&mut patch, 31);
+    patch.operators[0].modulates[5] = true;
+    patch.operators[5].modulates[0] = true;
+    patch.operators[1].modulates[2] = true;
+    patch.operators[2].modulates[3] = true;
+    assert_eq!(algorithms::detect(&patch), None);
+    let pisynth = App::headless(Project::new("x"))
+        .engine()
+        .host()
+        .catalog()
+        .entries()[0]
+        .plugin
+        .clone();
+    let (project, track) = edits::add_track(
+        &Project::new("Frei"),
+        NewTrack {
+            name: Some("FM".into()),
+            hue: Some(Hue::BLUE),
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, _) = edits::insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            role: DeviceRole::Instrument,
+            plugin: pisynth,
+            state: Some(encode_state(&patch).into()),
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(project);
+    select_track(&mut app, track);
+    let mut h = harness(app);
+    h.run_steps(30);
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("devices-fm-cycle-1x");
     results.extend_harness(&mut h);
     results.unwrap();
 }

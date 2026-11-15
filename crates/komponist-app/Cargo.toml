@@ -30,6 +30,8 @@ eframe.workspace = true
 serde.workspace = true
 # settings.json, recent.json.
 serde_json.workspace = true
+# The live spectrum of the EQ (`spectrum`).
+realfft.workspace = true
 # Local time of recent projects and plugin scans (`dialogs::format`).
 libc.workspace = true
 # komponist-play: WAV export.

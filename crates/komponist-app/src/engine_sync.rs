@@ -323,7 +323,7 @@ impl EngineSync {
 
     /// Compiles `project` against the program last sent and sends it (steps of the module docs).
     pub fn send_project(&mut self, project: &Project) {
-        let next = {
+        let mut next = {
             let env = Env {
                 midi: self.midi.as_ref(),
                 host: &*self.host,
@@ -332,13 +332,24 @@ impl EngineSync {
         };
         let changes = compile::slot_changes(self.previous.as_ref(), &next);
         let setup = self.setup();
+        let mut late_latency = false;
         for (device, slot) in changes.added {
             let Some((_, _, device)) = project.find_device(device) else {
                 continue;
             };
             if let Some(processor) = self.host.create_processor(device, setup) {
+                late_latency |= processor.latency() > 0;
                 self.send(Command::InsertProcessor { slot, processor });
             }
+        }
+        if late_latency {
+            // The host knows a new processor's latency only once it exists (WP-91): compile again
+            // so the delay compensation counts it. The slots stay as they are.
+            let env = Env {
+                midi: self.midi.as_ref(),
+                host: &*self.host,
+            };
+            next = compile::build(project, Some(&next), &env);
         }
         self.send(Command::SetProgram(Box::new(next.clone())));
         self.previous = Some(next);

@@ -1,13 +1,26 @@
-//! EQ: parametric, six bands (`graph::eq`). Placeholder DSP: the audio passes through; the output
-//! gain applies (bit-exact at 0 dB). The bands only drive the curve in the graph until WP-90 adds
-//! the biquads.
+//! EQ: parametric, six bands (`graph::eq`) and an output gain (WP-90).
+//!
+//! Each band is one RBJ biquad (low cut and high cut 12 dB/oct with `Q` as resonance, low and high
+//! shelf, bell). The coefficients come from [`komponist_model::params::eq_curve`], the same code the
+//! graph samples for its curve, so the drawn curve is the filter's response. Frequency, gain and Q
+//! glide (log domain, 20 ms) and the coefficients are recomputed every [`CONTROL`] samples, which
+//! is independent of the block size. Filters are direct form I (`klang_dsp::biquad::Df1`),
+//! the form that stays quiet while coefficients move. A band that is switched off or changes type
+//! fades out over about 10 ms first, so neither makes a click; a band with 0 dB gain (bell,
+//! shelf) is bit-exact, and so is a flat EQ.
 
+use std::sync::Arc;
+
+use komponist_engine::{SampleTap, tap};
 use komponist_model::params::layout::{
     Cell, DeviceLayout, GraphBinding, GraphConfig, Half, WidgetKind,
 };
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
-use super::{Dsp, Spec, db_to_gain, knob, single_page, template};
+use komponist_model::params::eq_curve::{self, Coefs};
+
+use super::dsp::{CONTROL, Glide, db_to_gain, finite, smooth_coeff};
+use super::{Dsp, INITIAL_RATE, Spec, knob, single_page, template};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -38,6 +51,10 @@ const PER_BAND: usize = 5;
 
 /// Wire id of the output gain.
 pub const OUT: usize = 0;
+
+/// Wire id of the „Analyse“ switch (WP-92): it comes after the bands, so the ids of every parameter
+/// that existed before stay what they were.
+pub const ANALYSE: usize = 1 + BANDS * PER_BAND;
 
 fn params() -> Vec<ParamInfo> {
     let mut list = vec![
@@ -88,6 +105,9 @@ fn params() -> Vec<ParamInfo> {
             0.71,
         ));
     }
+    // The live spectrum behind the graph (WP-92). On by default, so a project saved before the
+    // parameter existed shows it too.
+    list.push(ParamInfo::new("analyse", "Analyse", ParamKind::Bool, 1.0));
     list
 }
 
@@ -113,7 +133,8 @@ fn layout() -> DeviceLayout {
                 WidgetKind::Segment,
                 template("b{band}_type"),
             ),
-            super::toggle(0, 2, 2, Half::Bottom, template("b{band}_on")),
+            super::toggle(0, 2, 1, Half::Bottom, template("b{band}_on")),
+            super::toggle(1, 2, 1, Half::Bottom, super::param("analyse")),
             Cell::span(2, 2, 1, 1, WidgetKind::Knob, template("b{band}_freq")),
             Cell::span(3, 2, 1, 1, WidgetKind::Knob, template("b{band}_gain")),
             Cell::span(4, 2, 1, 1, WidgetKind::Knob, template("b{band}_q")),
@@ -122,37 +143,300 @@ fn layout() -> DeviceLayout {
     )
 }
 
-/// Pass-through with the output gain.
+/// Seconds the frequency, gain and Q take to cover 63 % of a change.
+const GLIDE: f32 = 0.020;
+/// Seconds of the fade of a band that switches on or off or changes its type.
+const FADE: f32 = 0.004;
+
+/// Direct form I state for one channel, in `f64`: at 40 Hz and 44.1 kHz the poles sit at radius
+/// 0.994, where `f32` coefficients and state are audibly wrong (3 dB off at 40 Hz with an 80 Hz
+/// cut), and `f64` costs nothing at six bands.
+#[derive(Clone, Copy, Debug, Default)]
+struct Df1 {
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
+}
+
+impl Df1 {
+    #[inline]
+    fn tick(&mut self, x: f32, c: &Coefs) -> f32 {
+        let x = f64::from(x);
+        let y =
+            c.b[0] * x + c.b[1] * self.x1 + c.b[2] * self.x2 - c.a[0] * self.y1 - c.a[1] * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y as f32
+    }
+
+    /// Keeps the recursive state out of the subnormal range.
+    fn flush_denormals(&mut self) {
+        for v in [&mut self.y1, &mut self.y2] {
+            if v.abs() < 1e-30 {
+                *v = 0.0;
+            }
+        }
+    }
+}
+
+/// One band: parameters as set, smoothed values and the filter.
+struct Band {
+    on: bool,
+    /// Type as set, and the one the filter runs.
+    want_type: u32,
+    typ: u32,
+    /// `ln(freq)`, gain in dB, `ln(q)`.
+    freq: Glide,
+    gain: Glide,
+    q: Glide,
+    /// How much of the filtered signal is heard: 0 (off) to 1.
+    mix: Glide,
+    coefs: Coefs,
+    state: [Df1; 2],
+    dirty: bool,
+}
+
+impl Band {
+    fn new(n: usize) -> Band {
+        Band {
+            on: false,
+            want_type: eq_curve::BELL,
+            typ: eq_curve::BELL,
+            freq: Glide::new(FREQS[n].ln() as f32),
+            gain: Glide::new(0.0),
+            q: Glide::new(0.71f32.ln()),
+            mix: Glide::new(0.0),
+            coefs: Coefs::IDENTITY,
+            state: [Df1::default(); 2],
+            dirty: true,
+        }
+    }
+
+    /// Whether the filter has to run in this interval.
+    fn running(&self) -> bool {
+        self.on || self.mix.cur > 0.0 || self.mix.next > 0.0
+    }
+
+    fn clear(&mut self) {
+        self.state = [Df1::default(); 2];
+    }
+
+    /// Starts the next control interval: moves the smoothers and updates the coefficients.
+    fn control(&mut self, glide: f32, fade_step: f32, rate: f32) {
+        // A type change fades the band out, switches, and fades it in again.
+        let switching = self.typ != self.want_type;
+        if switching && self.mix.next == 0.0 {
+            self.typ = self.want_type;
+            self.clear();
+            self.dirty = true;
+            self.freq.snap();
+            self.gain.snap();
+            self.q.snap();
+        }
+        let goal = if self.on && self.typ == self.want_type {
+            1.0
+        } else {
+            0.0
+        };
+        let from = self.mix.next;
+        let next = if goal > from {
+            (from + fade_step).min(goal)
+        } else {
+            (from - fade_step).max(goal)
+        };
+        self.mix.start_to(next);
+        if !self.running() {
+            self.clear();
+            return;
+        }
+        let was = (self.freq.next, self.gain.next, self.q.next);
+        self.freq.start(glide, 1e-5);
+        self.gain.start(glide, 1e-4);
+        self.q.start(glide, 1e-5);
+        if self.dirty || was != (self.freq.next, self.gain.next, self.q.next) {
+            self.coefs = self.compute(rate);
+            self.dirty = false;
+        }
+    }
+
+    fn compute(&self, rate: f32) -> Coefs {
+        let gain = f64::from(self.gain.next);
+        let flat = matches!(
+            self.typ,
+            eq_curve::BELL | eq_curve::LOW_SHELF | eq_curve::HIGH_SHELF
+        ) && gain == 0.0;
+        if flat {
+            return Coefs::IDENTITY;
+        }
+        eq_curve::coefs(
+            f64::from(self.typ),
+            f64::from(self.freq.next).exp(),
+            gain,
+            f64::from(self.q.next).exp(),
+            f64::from(rate),
+        )
+    }
+}
+
+/// Six RBJ bands in series and the output gain.
 struct Eq {
-    gain: f32,
+    rate: f32,
+    bands: [Band; BANDS],
+    out: Glide,
+    glide: f32,
+    fade_step: f32,
+    /// Samples until the next control update, and how far into the interval we are.
+    countdown: usize,
+    /// The output for the live spectrum (WP-92); the audio side copies into it only while
+    /// `analyse` is on and the UI looks at it.
+    tap: Arc<SampleTap>,
+    analyse: bool,
 }
 
 fn dsp() -> Box<dyn Dsp> {
-    Box::new(Eq { gain: 1.0 })
+    let mut eq = Eq {
+        rate: INITIAL_RATE,
+        bands: core::array::from_fn(Band::new),
+        out: Glide::new(1.0),
+        glide: 0.0,
+        fade_step: 0.0,
+        countdown: 0,
+        tap: Arc::new(SampleTap::new(tap::DEFAULT_CAPACITY)),
+        analyse: true,
+    };
+    eq.set_rate(INITIAL_RATE);
+    Box::new(eq)
+}
+
+impl Eq {
+    fn set_rate(&mut self, rate: f32) {
+        self.rate = rate;
+        self.tap.set_rate(rate);
+        self.glide = smooth_coeff(GLIDE, CONTROL, rate);
+        self.fade_step = (CONTROL as f32 / (FADE * rate)).min(1.0);
+        for b in &mut self.bands {
+            b.dirty = true;
+        }
+    }
+
+    /// Snaps every smoother onto its target (a fresh or reset EQ has nothing to glide from).
+    fn snap(&mut self) {
+        for b in &mut self.bands {
+            b.freq.snap();
+            b.gain.snap();
+            b.q.snap();
+            b.typ = b.want_type;
+            b.mix.jump(if b.on { 1.0 } else { 0.0 });
+            b.dirty = true;
+            b.clear();
+        }
+        self.out.snap();
+        self.countdown = 0;
+    }
+
+    /// Starts a control interval.
+    fn control(&mut self) {
+        for b in &mut self.bands {
+            b.control(self.glide, self.fade_step, self.rate);
+        }
+        self.out.start(self.glide, 1e-6);
+    }
 }
 
 impl Dsp for Eq {
-    fn activate(&mut self, _sample_rate: f32) {}
+    fn activate(&mut self, sample_rate: f32) {
+        self.set_rate(sample_rate);
+        self.snap();
+    }
 
     fn set_param(&mut self, index: usize, value: f64) {
         if index == OUT {
-            self.gain = db_to_gain(value);
+            self.out.target = db_to_gain(value as f32);
+            return;
+        }
+        if index == ANALYSE {
+            self.analyse = value >= 0.5;
+            return;
+        }
+        let i = index - 1;
+        let Some(band) = self.bands.get_mut(i / PER_BAND) else {
+            return;
+        };
+        match i % PER_BAND {
+            0 => band.on = value >= 0.5,
+            1 => band.want_type = value.round().clamp(0.0, 4.0) as u32,
+            2 => band.freq.target = (value as f32).ln(),
+            3 => band.gain.target = value as f32,
+            _ => band.q.target = (value as f32).ln(),
         }
     }
 
     fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for (i, o) in input.into_iter().zip(output) {
-            if self.gain == 1.0 {
-                o.copy_from_slice(i);
-            } else {
-                for (s, d) in i.iter().zip(o.iter_mut()) {
-                    *d = s * self.gain;
+        let [il, ir] = input;
+        let [ol, or] = output;
+        let mut n = 0;
+        while n < il.len() {
+            if self.countdown == 0 {
+                self.control();
+                self.countdown = CONTROL;
+            }
+            let run = self.countdown.min(il.len() - n);
+            let done = CONTROL - self.countdown;
+            let (left, right) = (&mut ol[n..n + run], &mut or[n..n + run]);
+            // NaN and infinity never reach the filters, whose state would keep them.
+            for (d, s) in left.iter_mut().zip(&il[n..n + run]) {
+                *d = finite(*s);
+            }
+            for (d, s) in right.iter_mut().zip(&ir[n..n + run]) {
+                *d = finite(*s);
+            }
+            for band in &mut self.bands {
+                if !band.running() {
+                    continue;
+                }
+                let steady = band.mix.step == 0.0 && band.mix.cur == 1.0;
+                for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                    let yl = band.state[0].tick(*l, &band.coefs);
+                    let yr = band.state[1].tick(*r, &band.coefs);
+                    if steady {
+                        *l = yl;
+                        *r = yr;
+                    } else {
+                        // Computed from the interval start, not accumulated: the same value
+                        // whatever the block split.
+                        let m = band.mix.at(done + i);
+                        *l += (yl - *l) * m;
+                        *r += (yr - *r) * m;
+                    }
+                }
+                band.state[0].flush_denormals();
+                band.state[1].flush_denormals();
+            }
+            if !(self.out.step == 0.0 && self.out.cur == 1.0) {
+                for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                    let g = self.out.at(done + i);
+                    *l *= g;
+                    *r *= g;
                 }
             }
+            self.countdown -= run;
+            n += run;
+        }
+        if self.analyse && self.tap.begin(il.len()) {
+            self.tap.push_mono(ol, or);
         }
     }
 
-    fn reset(&mut self) {}
+    fn tap(&self) -> Option<Arc<SampleTap>> {
+        Some(Arc::clone(&self.tap))
+    }
+
+    fn reset(&mut self) {
+        self.snap();
+    }
 }
 
 const _: () = assert!(PER_BAND == 5);

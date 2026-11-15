@@ -530,8 +530,12 @@ fn random_edits_during_playback_cause_no_xrun() {
         0,
         "commands left in the queue"
     );
+    // 90 % in release builds; debug builds on a loaded machine (parallel builds in `check.sh`) lose
+    // more callbacks without any stall in the app (seen: 83 % at load average 12), so they get 75 %.
+    // A real lock or stall on the audio thread drops far below either.
+    let min_percent = if cfg!(debug_assertions) { 75 } else { 90 };
     assert!(
-        callbacks * 10 >= expected * 9,
+        callbacks * 100 >= expected * min_percent,
         "the audio thread stalled: {callbacks} of ~{expected} callbacks"
     );
     if cfg!(debug_assertions) {

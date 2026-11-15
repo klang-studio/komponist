@@ -79,6 +79,9 @@ fn targets(patch: &Patch, op: usize) -> u8 {
 pub struct Routing {
     /// Per operator index: bit mask of the operator indices it modulates.
     pub modulates: [u8; OPERATORS],
+    /// Bit mask of the operators that are heard (`output` flag): carriers, including operators that
+    /// also modulate others.
+    pub outputs: u8,
     /// The operator with the most feedback (the lowest number on a tie); `None` without feedback.
     pub feedback: Option<usize>,
 }
@@ -95,6 +98,9 @@ pub fn routing(patch: &Patch) -> Routing {
     }
     Routing {
         modulates: std::array::from_fn(|op| targets(patch, op)),
+        outputs: (0..OPERATORS)
+            .filter(|&op| patch.operators[op].output)
+            .fold(0, |mask, op| mask | (1 << op)),
         feedback,
     }
 }

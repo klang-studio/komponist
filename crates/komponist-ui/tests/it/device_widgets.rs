@@ -92,6 +92,7 @@ mod behaviour {
         let pads = [Pad::new("Kick", "C1"), Pad::new("Snare", "D1")];
         let algo = Topology {
             modulates: &[0, 1],
+            outputs: None,
             feedback: None,
         };
         let h = harness(
@@ -172,6 +173,7 @@ mod behaviour {
         let pal = TrackPalette::new(150);
         let algo = Topology {
             modulates: &[0, 1, 0, 4],
+            outputs: None,
             feedback: Some(3),
         };
         let mut h = harness(None::<usize>, move |ui, s| {

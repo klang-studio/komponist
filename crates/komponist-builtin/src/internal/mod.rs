@@ -31,15 +31,21 @@
 //! engine never calls. Their role in a chain is [`Internal::role`] (`MidiEffect`); the engine runs
 //! them in front of the instrument (ARCHITECTURE §6.4.2) and keeps notes from hanging.
 //!
-//! The DSP of the four effects is a placeholder (EQ, Hall: pass-through, EQ with its output gain;
-//! Delay: a plain stereo delay; Limiter: a hard clip at the ceiling). The real algorithms are
-//! WP-90 (`klang-dsp`).
+//! **Effect DSP (WP-90):** [`eq`] (six RBJ biquad bands), [`delay`] (tempo-synced stereo delay with
+//! filtered feedback), [`hall`] (8-line feedback delay network) and [`limiter`] (lookahead peak
+//! limiter) are written for komponist on top of the small parts in [`dsp`] and `klang-dsp`'s
+//! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
+//! calls, so the output does not depend on how the host splits blocks.
+//!
+//! **Sample tap (WP-92):** a [`Dsp`] can offer a [`komponist_engine::SampleTap`] ([`Dsp::tap`]); the
+//! processor puts it into its [`DeviceMeter`] and the UI reads the latest samples from there (the EQ's
+//! live spectrum). The DSP copies only while the UI looks (`SampleTap::begin`).
 
 use std::sync::{Arc, OnceLock};
 
 use komponist_engine::{
     DeviceMeter, Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, StereoIo,
+    ProcessorError, SampleTap, StereoIo,
 };
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo};
@@ -49,6 +55,7 @@ use crate::SAMPLE_RATES;
 
 pub mod arpeggiator;
 pub mod delay;
+pub mod dsp;
 pub mod eq;
 pub mod hall;
 pub mod limiter;
@@ -73,6 +80,21 @@ pub trait Dsp: Send {
     /// RT-safe, cached. Latency in frames.
     fn latency(&self) -> u32 {
         0
+    }
+
+    /// Non-RT. The reduction in dB at which the device's gain-reduction bar is full.
+    fn gr_range_db(&self) -> f32 {
+        DeviceMeter::DEFAULT_GR_RANGE_DB
+    }
+
+    /// RT. The tempo of the transport in quarter notes per minute, delivered at the start of every
+    /// call (constant within one). Tempo-synced effects follow it; the default ignores it.
+    fn set_tempo(&mut self, _bpm: f64) {}
+
+    /// Non-RT. The tap of the device's output samples for a live display (WP-92), if it has one.
+    /// The DSP copies into it only while the UI looks ([`komponist_engine::SampleTap::begin`]).
+    fn tap(&self) -> Option<Arc<SampleTap>> {
+        None
     }
 
     /// RT. The largest gain reduction in dB (≥ 0) since the last call, then resets it. Only
@@ -350,12 +372,16 @@ impl Internal {
                 stage.set_param(i as u32, values.get(i).copied().unwrap_or(p.default));
             }
         }
+        let meter = Arc::new(DeviceMeter::new());
+        if let Some(tap) = dsp.tap() {
+            meter.set_tap(tap);
+        }
         InternalProcessor {
             params,
             dsp,
             stage,
             sample_rate: INITIAL_RATE,
-            meter: Arc::new(DeviceMeter::new()),
+            meter,
         }
     }
 
@@ -432,15 +458,18 @@ impl Processor for InternalProcessor {
         }
         self.sample_rate = sample_rate;
         self.dsp.activate(sample_rate);
+        self.meter.set_latency(self.dsp.latency());
+        self.meter.set_gr_range_db(self.dsp.gr_range_db());
         Ok(())
     }
 
     fn process(
         &mut self,
-        _ctx: &ProcessContext,
+        ctx: &ProcessContext,
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
+        self.dsp.set_tempo(ctx.transport.tempo_bpm);
         let frames = io.frames();
         let mut done = 0;
         let instrument = self.dsp.is_instrument();
@@ -466,6 +495,9 @@ impl Processor for InternalProcessor {
                 EventKind::Param { id, value } => {
                     if let Some(info) = self.params.get(id as usize) {
                         self.dsp.set_param(id as usize, info.snap(value));
+                        // A parameter can change the latency (limiter lookahead); the UI thread
+                        // reads it from the meter and recompiles the delay compensation.
+                        self.meter.set_latency(self.dsp.latency());
                     }
                 }
                 EventKind::NoteOn { key, velocity, .. } => self.dsp.note_on(key, velocity),
@@ -551,11 +583,10 @@ fn single_page(cols: u8, cells: Vec<Cell>) -> DeviceLayout {
     })
 }
 
-/// `dB` as a linear gain.
-fn db_to_gain(db: f64) -> f32 {
-    10f64.powf(db / 20.0) as f32
-}
-
+#[cfg(test)]
+mod eq_tap_tests;
+#[cfg(test)]
+mod fx_tests;
 #[cfg(test)]
 mod midi_tests;
 #[cfg(test)]

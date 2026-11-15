@@ -15,6 +15,7 @@ use super::layout::{self, DeviceLayout};
 use super::metrics;
 use crate::device_host::{DeviceHost, internal_kind, is_pisynth};
 use crate::meters::DeviceLevels;
+use crate::spectrum::Analysis;
 use crate::ui_state::{PluginWindow, Reveal};
 use crate::views::format_tag;
 
@@ -322,6 +323,9 @@ pub struct Card {
     pub levels: Option<DeviceLevels>,
     /// The sampler's pads (only a running sampler has them).
     pub sampler: Option<SamplerView>,
+    /// The device's sample rate and live spectrum (WP-92, set by the view from `Meters`); `None`
+    /// for a device without a sample tap.
+    pub analysis: Option<Analysis>,
 }
 
 impl Card {
@@ -515,6 +519,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         late: None,
         levels: None,
         sampler: sampler_view(host, device.id),
+        analysis: None,
         routing: presets.then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
@@ -669,6 +674,18 @@ pub fn reveal_scroll(span: (f32, f32), mode: Reveal, width: f32, scroll: f32, pa
             }
         }
     }
+}
+
+/// Whether the card's graph shows a live spectrum when it is on screen: the device runs, is not
+/// bypassed or collapsed and has „Analyse“ on (`analyse` ≥ 0.5; a device without that parameter
+/// has none).
+pub fn shows_spectrum(card: &Card) -> bool {
+    card.state == CardState::Ok
+        && !card.bypass
+        && !card.collapsed
+        && card
+            .param(&ParamId::new("analyse"))
+            .is_some_and(|p| p.value >= 0.5)
 }
 
 /// Which frames show at least partly in a view `width` wide scrolled by `scroll`.
@@ -996,5 +1013,38 @@ mod tests {
             0.0,
         );
         assert_eq!(range_text(&mode), "Auf · Ab");
+    }
+    #[test]
+    fn the_spectrum_shows_only_for_a_running_eq_with_analyse_on() {
+        use komponist_builtin::Internal;
+        let device = |state: Option<Vec<u8>>, bypass| Device {
+            id: DeviceId(1),
+            role: DeviceRole::Effect,
+            plugin: Internal::Eq.plugin_ref(),
+            bypass,
+            state: state.map(Into::into),
+        };
+        let host = BuiltinHost::new();
+        // A project saved before „Analyse“ existed has no such parameter in its state: on.
+        let old = br#"{"params": {"out": 0.0}}"#.to_vec();
+        let on = card(&device(Some(old), false), &host, &[]);
+        assert!(shows_spectrum(&on));
+        let off_state = Internal::Eq.with_value(None, 31, 0.0).unwrap();
+        assert_eq!(Internal::Eq.wire(&ParamId::new("analyse")), Some(31));
+        assert!(!shows_spectrum(&card(
+            &device(Some(off_state), false),
+            &host,
+            &[]
+        )));
+        assert!(!shows_spectrum(&card(&device(None, true), &host, &[])));
+        let mut collapsed = on.clone();
+        collapsed.collapsed = true;
+        assert!(!shows_spectrum(&collapsed));
+        // Devices without the parameter have none.
+        let delay = Device {
+            plugin: Internal::Delay.plugin_ref(),
+            ..device(None, false)
+        };
+        assert!(!shows_spectrum(&card(&delay, &host, &[])));
     }
 }
