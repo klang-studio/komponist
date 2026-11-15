@@ -209,6 +209,7 @@ pub struct Button<'a> {
     trailing: Option<Trailing<'a>>,
     badge: Option<&'a str>,
     badge_shown: bool,
+    badge_room: Option<&'a str>,
     fixed_width: Option<f32>,
     name: Option<&'a str>,
     shortcut: Option<&'a str>,
@@ -227,6 +228,7 @@ impl<'a> Button<'a> {
             trailing: None,
             badge: None,
             badge_shown: true,
+            badge_room: None,
             fixed_width: None,
             name: None,
             shortcut: None,
@@ -336,6 +338,14 @@ impl<'a> Button<'a> {
     /// change its width (count-in: the bar count shows only while the count-in is on).
     pub fn badge_shown(mut self, shown: bool) -> Self {
         self.badge_shown = shown;
+        self
+    }
+
+    /// The widest text the badge can show. The button reserves the larger of this text and the
+    /// badge itself, so a value with more digits (count-in "12") neither overflows nor changes
+    /// the width when the value changes.
+    pub fn badge_room(mut self, widest: &'a str) -> Self {
+        self.badge_room = Some(widest);
         self
     }
 
@@ -466,6 +476,17 @@ impl Widget for Button<'_> {
                     typography::VALUE_S.line_height,
                 )
             });
+        let badge_room = self.badge_room.filter(|_| badge.is_some()).map(|b| {
+            super::galley(
+                ui,
+                b,
+                fonts::font_id(&typography::VALUE_S),
+                typography::VALUE_S.line_height,
+            )
+            .size()
+            .x
+            .ceil()
+        });
         let width = match (&galley, self.fixed_width) {
             (_, Some(w)) => w,
             (Some(g), None) => {
@@ -477,9 +498,9 @@ impl Widget for Button<'_> {
             }
             (None, None) => {
                 size::CONTROL
-                    + badge
-                        .as_ref()
-                        .map_or(0.0, |g| metrics::ICON_BADGE_GAP + g.size().x.ceil())
+                    + badge.as_ref().map_or(0.0, |g| {
+                        metrics::ICON_BADGE_GAP + g.size().x.ceil().max(badge_room.unwrap_or(0.0))
+                    })
             }
         };
         let (rect, response) =

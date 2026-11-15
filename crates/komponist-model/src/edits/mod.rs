@@ -1344,8 +1344,8 @@ pub fn select_take(project: &Project, clip: ClipId, take: usize) -> EditResult {
 
 /// Shortest clip or note length.
 const MIN_LENGTH: Tick = Tick(1);
-/// Longest count-in.
-const MAX_COUNT_IN_BARS: u8 = 4;
+/// Longest count-in in bars (the edit clamps to it).
+pub const MAX_COUNT_IN_BARS: u8 = 4;
 /// Default name of a track with the drum sampler (prototype `addTrack`).
 const DRUMS_TRACK_NAME: &str = "Drums";
 /// Default name of a track without instrument.
