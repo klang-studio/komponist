@@ -382,7 +382,7 @@ fn every_factory_preset_is_valid_for_its_device() {
 fn the_starter_sets_have_the_agreed_sizes() {
     let count = |k: Internal| k.presets().len();
     assert_eq!(count(Internal::Sampler), 0);
-    assert_eq!(count(Internal::Presse), 10);
+    assert_eq!(count(Internal::Presse), 11);
     assert_eq!(count(Internal::Knurr), 10);
     for kind in [
         Internal::Eq,
