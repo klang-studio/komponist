@@ -696,6 +696,63 @@ impl App {
         self.store_state(device, &state.into());
     }
 
+    /// Loads factory preset `index` into an internal device (WP-96): the preset's values and name
+    /// go into the device state as one undo step, and the running processor gets every value as
+    /// a `SetParam`, so tails and sounding notes go on.
+    fn apply_internal_preset(&mut self, device: DeviceId, index: usize) {
+        let Some((_, _, d)) = self.project().find_device(device) else {
+            return;
+        };
+        let Some(kind) = crate::device_host::internal_kind(d) else {
+            return;
+        };
+        let Some(state) = kind.preset_state(d.state.as_deref(), index) else {
+            return;
+        };
+        let Some(values) = kind.preset_values(index) else {
+            return;
+        };
+        let state: Arc<[u8]> = state.into();
+        if !self.apply("Preset laden", |p| {
+            edits::set_device_state(p, device, Some(Arc::clone(&state)))
+        }) {
+            return;
+        }
+        if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
+            for (id, value) in values.into_iter().enumerate() {
+                self.engine.send(Command::SetParam {
+                    slot,
+                    id: id as u32,
+                    value,
+                });
+            }
+        }
+    }
+
+    /// After undo or redo: internal devices with presets whose state changed get a fresh
+    /// processor, so the engine follows the card (a state change is not otherwise sent).
+    fn reload_changed_presets(&mut self, before: &Arc<Project>) {
+        let after = Arc::clone(self.doc.project());
+        let changed: Vec<DeviceId> = after
+            .tracks
+            .iter()
+            .flat_map(|t| t.channel.devices.iter())
+            .chain(after.master.devices.iter())
+            .filter(|d| {
+                crate::device_host::internal_kind(d).is_some_and(|k| !k.presets().is_empty())
+            })
+            .filter(|d| {
+                before
+                    .find_device(d.id)
+                    .is_some_and(|(_, _, old)| old.state != d.state)
+            })
+            .map(|d| d.id)
+            .collect();
+        for device in changed {
+            self.engine.reload_device(&after, device);
+        }
+    }
+
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
     /// processor (into the slot they already have).
     fn load_found_devices(&mut self) {
@@ -1214,10 +1271,14 @@ impl App {
     fn edit_action(&mut self, action: EditAction) {
         match action {
             EditAction::Undo => {
+                let before = Arc::clone(self.doc.project());
                 self.doc.undo();
+                self.reload_changed_presets(&before);
             }
             EditAction::Redo => {
+                let before = Arc::clone(self.doc.project());
                 self.doc.redo();
+                self.reload_changed_presets(&before);
             }
             EditAction::BeginGesture { label } => self.doc.begin_gesture(label),
             EditAction::EndGesture => self.doc.end_gesture(),
@@ -2084,6 +2145,9 @@ impl App {
                 }) {
                     self.engine.reload_device(self.doc.project(), device);
                 }
+            }
+            PluginAction::ApplyInternalPreset { device, index } => {
+                self.apply_internal_preset(device, index);
             }
             PluginAction::NewPisynthTrack { preset } => {
                 self.dispatch(Action::Edit(EditAction::BeginGesture {

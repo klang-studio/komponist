@@ -1212,6 +1212,8 @@ mod tests {
             collapsed: false,
             presets: false,
             preset: None,
+            internal_presets: None,
+            preset_changed: false,
             width: 244.0,
             late: None,
             levels: None,

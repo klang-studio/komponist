@@ -61,6 +61,8 @@ pub mod names {
     pub const MORE: &str = "Weitere Aktionen";
     /// The preset button without a matching factory preset, and the menu's name.
     pub const PRESET: &str = "Preset";
+    /// Marks a loaded preset whose values were changed since (as in the plugin window's header).
+    pub const CHANGED: &str = " *";
     /// The page switch's accessible name.
     pub const PAGES: &str = "Seiten";
     /// The accessible name of the operator switch on pisynth's envelope page.
@@ -316,10 +318,18 @@ pub struct Card {
     pub page: usize,
     /// Shown as the 28 px strip (set by the view).
     pub collapsed: bool,
-    /// The device has factory presets (pisynth): the head shows the preset dropdown.
+    /// The device has factory presets (pisynth, internal devices with a list): the head shows
+    /// the preset dropdown.
     pub presets: bool,
-    /// The factory preset the state is, if any.
+    /// The factory preset the state is (pisynth) or says it loaded (internal devices), if any.
     pub preset: Option<usize>,
+    /// The internal device whose [`Internal::presets`] the dropdown lists (WP-96); `None` for
+    /// pisynth (its bank) and for devices without presets.
+    ///
+    /// [`Internal::presets`]: komponist_builtin::Internal::presets
+    pub internal_presets: Option<komponist_builtin::Internal>,
+    /// The loaded internal preset was changed since („ *“): a value differs from it now.
+    pub preset_changed: bool,
     /// Width in design px (set by the view: page columns, head, collapsed).
     pub width: f32,
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
@@ -499,8 +509,12 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
             device.plugin.name
         );
     }
-    let presets = is_pisynth(device);
-    let preset = presets
+    let pisynth = is_pisynth(device);
+    let internal_presets = internal_kind(device).filter(|k| !k.presets().is_empty());
+    let presets = pisynth || internal_presets.is_some();
+    let loaded = internal_presets.and_then(|k| k.loaded_preset(device.state.as_deref()));
+    let preset_changed = loaded.is_some_and(|(_, changed)| changed);
+    let preset = pisynth
         .then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
@@ -509,7 +523,8 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
                 .iter()
                 .position(|s| *s == encoded)
         })
-        .flatten();
+        .flatten()
+        .or(loaded.map(|(index, _)| index));
     Card {
         device: device.id,
         name: device.plugin.name.clone(),
@@ -526,13 +541,15 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         collapsed: false,
         presets,
         preset,
+        internal_presets,
+        preset_changed,
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
         sampler: sampler_view(host, device.id),
         analysis: None,
         dynamics: None,
-        routing: presets.then(|| {
+        routing: pisynth.then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
             komponist_builtin::algorithms::routing(&patch)

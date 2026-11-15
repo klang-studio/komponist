@@ -33,6 +33,7 @@ mod export_bridges;
 mod hardware_midi;
 mod inspector;
 mod internal_devices;
+mod internal_presets;
 mod knurr;
 mod mixer;
 mod params_project;
