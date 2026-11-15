@@ -17,6 +17,8 @@
 //! | preset button (pisynth) | menu of the factory presets: `ApplyPisynthPreset` |
 //! | ⋯ / right-click on the head | Öffnen, Bypass, Neu laden, Einklappen, Duplizieren, Entfernen |
 //! | knob | `SetParam` (pisynth: also into the device state) |
+//! | touching a parameter (press, drag, click) | `Ui(TouchParam)`: the inspector's „Parameter“ section and, while dragging, the status line show it |
+//! | right-click on a parameter | „Auf Standard“ (the Alt-click) and „Wert eingeben“ (text entry; not for choices and switches); no automation, MIDI learn or macro entries (prepared, not built) |
 //! | click on the head | selects the device (Strg C / V / D, Entf, ← → act on it) |
 //! | double-click on the head | collapses or expands; with Alt every device of the chain |
 //! | click on a collapsed strip | expands it |
@@ -25,6 +27,7 @@
 //! | drop a browser plugin | effect: `Add` at the marked slot; MIDI effect: `Add` into the MIDI part left of the instrument; instrument: replaces the instrument |
 //! | click on a name in the chain head | scrolls to the device |
 //! | wheel over the chain head, Shift-wheel in the body | scrolls the chain sideways |
+//! | dock maximised | the frames stay 244 high at the top of the chain area; the space below stays empty and reserved for the automation of a later wave |
 //! | wheel in the body | scrolls up and down while the dock is lower than the chain (< 292 px area) |
 //! | Neu laden | `Reload` |
 

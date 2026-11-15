@@ -9,7 +9,7 @@ use std::time::Instant;
 use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use egui_kittest::{Harness, SnapshotOptions};
+use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::panels::statusbar;
 use komponist_app::ui_state::DockTab;
@@ -578,4 +578,80 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
     assert_eq!(routing.modulates[0] & 0b100000, 0b100000);
     assert_eq!(routing.modulates[5] & 0b000001, 0b000001);
     assert_ne!(routing.modulates, algorithms::ALGORITHMS[0].modulates);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Snapshots
+
+fn mask_cpu(h: &mut Harness<'_, App>) {
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+}
+
+#[test]
+fn snapshot_of_a_touched_parameter_with_its_context_menu() {
+    let (app, _, _) = app_with_hall();
+    let mut h = harness(app);
+    h.run_steps(30);
+    let decay = knob(&h, "Decay");
+    click(&mut h, decay.center());
+    right_click(&mut h, decay.center());
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("devices-parameter-touched-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}
+
+#[test]
+fn snapshot_of_the_fm_display_with_free_routing() {
+    use komponist_builtin::{algorithms, default_patch, encode_state};
+    use komponist_model::Hue;
+    let mut patch = default_patch();
+    // All carriers, then 2 and 3 modulate 1 and 4 modulates 5: no table algorithm has that.
+    algorithms::apply(&mut patch, 31);
+    patch.operators[1].modulates[0] = true;
+    patch.operators[2].modulates[0] = true;
+    patch.operators[3].modulates[4] = true;
+    assert_eq!(algorithms::detect(&patch), None);
+    let pisynth = App::headless(Project::new("x"))
+        .engine()
+        .host()
+        .catalog()
+        .entries()[0]
+        .plugin
+        .clone();
+    let (project, track) = edits::add_track(
+        &Project::new("Frei"),
+        NewTrack {
+            name: Some("FM".into()),
+            hue: Some(Hue::BLUE),
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, _) = edits::insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            role: DeviceRole::Instrument,
+            plugin: pisynth,
+            state: Some(encode_state(&patch).into()),
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(project);
+    select_track(&mut app, track);
+    let mut h = harness(app);
+    h.run_steps(30);
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("devices-fm-free-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
 }
