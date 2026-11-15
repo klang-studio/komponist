@@ -509,7 +509,9 @@ impl crate::App {
                 };
                 match new_track::show(ctx, state, &view) {
                     Some(new_track::Output::Create(spec)) => {
-                        self.dialogs.last_instrument = Some(spec.instrument.clone());
+                        if !spec.bus {
+                            self.dialogs.last_instrument = Some(spec.instrument.clone());
+                        }
                         self.close_overlay();
                         self.create_tracks(&spec);
                     }

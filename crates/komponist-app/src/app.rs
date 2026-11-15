@@ -1721,6 +1721,9 @@ impl App {
     /// step, all selected, the last one armed. One track is exactly what an instrument drop onto
     /// the "Neue Spur" box makes.
     pub(crate) fn create_tracks(&mut self, spec: &crate::dialogs::new_track::Spec) {
+        if spec.bus {
+            return self.create_buses(spec);
+        }
         let tracks = spec.tracks();
         let label = if tracks.len() > 1 {
             "undo-add-tracks"
@@ -1732,6 +1735,38 @@ impl App {
             let mut ids = Vec::with_capacity(tracks.len());
             for spec in tracks {
                 let (next, id) = edits::add_track(&p, spec)?;
+                p = next;
+                ids.push(id);
+            }
+            Ok((p, ids))
+        });
+        if let Some(ids) = made {
+            self.select_tracks(ids, SelectMode::Replace);
+        }
+    }
+
+    /// "Anlegen" with the type „Bus“: effect buses (no group, no senders, no members) after the
+    /// last track, one undo step, the last one selected.
+    fn create_buses(&mut self, spec: &crate::dialogs::new_track::Spec) {
+        let count = spec.count;
+        let made = self.apply_with("undo-add-bus", |p| {
+            let mut p = p.clone();
+            let mut ids = Vec::with_capacity(count);
+            for i in 1..=count {
+                let name = spec.name.as_ref().map(|n| {
+                    if count == 1 {
+                        n.clone()
+                    } else {
+                        format!("{n} {i}")
+                    }
+                });
+                let (next, id) = edits::add_bus(
+                    &p,
+                    edits::NewBus {
+                        name,
+                        ..edits::NewBus::default()
+                    },
+                )?;
                 p = next;
                 ids.push(id);
             }

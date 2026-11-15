@@ -23,6 +23,7 @@ pub mod metrics;
 pub mod model;
 mod param;
 mod project;
+mod routing;
 mod track;
 
 use std::sync::Arc;
@@ -132,6 +133,9 @@ impl View for Inspector {
             }
             if sections.channel {
                 channel::section(ui, ctx, x, &mut y, track);
+            }
+            if routing::shown(&project) {
+                routing::section(ui, ctx, &project, x, &mut y, track);
             }
         }
         if sections.is_empty() {
