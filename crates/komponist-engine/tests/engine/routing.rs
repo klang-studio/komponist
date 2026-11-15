@@ -959,6 +959,9 @@ fn bench_run(song: &Song, workers: usize) -> (std::time::Duration, std::time::Du
     (total / BLOCKS as u32, worst)
 }
 
+/// Makes the instrument of track `i`.
+type Instrument = fn(u32) -> Dev;
+
 /// CPU per block of 16 tracks + 4 buses + sends + a sidechain against the same 16 tracks without
 /// routing (ARCHITECTURE §6.8.4, PERFORMANCE §9). Release build:
 ///
@@ -974,7 +977,7 @@ fn bench_routing_16_tracks_4_buses() {
         .ok()
         .map(|s| s.split(',').filter_map(|w| w.trim().parse().ok()).collect())
         .unwrap_or_else(|| vec![0, 4]);
-    let loads: [(&str, fn(u32) -> Dev); 2] = [
+    let loads: [(&str, Instrument); 2] = [
         ("constant instruments", |_| Dev::Dc(0.01)),
         ("busy instruments", |i| Dev::Busy(i + 1)),
     ];
