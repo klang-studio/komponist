@@ -886,6 +886,19 @@ fn a_test_plugin_added_from_the_browser_loads_and_shows_its_parameters() {
     h.state_mut().shutdown();
 }
 
+/// The same screen in English (#5): "Hall" shows as "Reverb", the parameters have English names.
+#[test]
+fn snapshot_next_to_s05_in_english() {
+    let (app, ..) = s05();
+    let mut h = harness_at(app.with_lang(komponist_i18n::Lang::En), 1.0);
+    h.run_steps(4);
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_i18n::en::TRANSPORT_CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    h.snapshot("devices-s05-en-1x");
+}
+
 #[test]
 fn snapshots_next_to_s05() {
     let mut results = SnapshotResults::new();

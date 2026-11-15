@@ -156,7 +156,7 @@ pub fn show(
 
     // Länge.
     let spec = Spec {
-        key: t.step_seq_length(),
+        key: t.step_seq_length_key(),
         name: t.step_seq_length(),
         value: f64::from(pattern.length_steps),
         min: 1.0,

@@ -237,6 +237,19 @@ fn snapshot_of_the_demo_next_to_s01() {
     results.unwrap();
 }
 
+/// The same screen in English (#5): the UI texts are English, the demo's names are content.
+#[test]
+fn snapshot_of_the_demo_next_to_s01_in_english() {
+    let mut h = harness_at(s01().with_lang(komponist_i18n::Lang::En), 1.0);
+    assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(36_000)));
+    h.run_steps(2);
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_i18n::en::TRANSPORT_CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    h.snapshot("arrangement-s01-en-1x");
+}
+
 // ------------------------------------------------------------------------------------------------
 // ix.header
 

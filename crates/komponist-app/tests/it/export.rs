@@ -1048,6 +1048,26 @@ fn s08_settings() -> ExportSettings {
     settings::default_export("Nachtfahrt", home.join("Musik/Exporte"))
 }
 
+/// The settings dialog in English (#5).
+#[test]
+fn snapshot_next_to_s08_in_english() {
+    let settings = Settings {
+        export: Some(s08_settings()),
+        ..Settings::default()
+    };
+    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let mut app = App::new(Document::new(demo_project()), engine, settings, None)
+        .with_lang(komponist_i18n::Lang::En);
+    app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
+    let mut h = harness_at(app, 1.0);
+    h.run_steps(3);
+    if let Some(cpu) = h.query_by_role_and_label(Role::Status, komponist_i18n::en::TRANSPORT_CPU) {
+        let rect = cpu.rect();
+        h.mask(rect.expand(2.0));
+    }
+    h.snapshot("export-s08-en-1x");
+}
+
 #[test]
 fn snapshots_next_to_s08() {
     let mut results = SnapshotResults::new();

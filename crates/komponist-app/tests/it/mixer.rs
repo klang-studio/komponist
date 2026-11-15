@@ -1168,7 +1168,10 @@ fn insert_slots_show_the_device_status() {
 /// S04 with sound: the demo plays from 10.1.1 (Bass and Lead are hexa and sound; the other
 /// instruments are fakes), so the meters and peak values show.
 fn s04_playing(ppp: f32) -> Harness<'static, App> {
-    let mut app = s04();
+    s04_playing_in(s04(), ppp)
+}
+
+fn s04_playing_in(mut app: App, ppp: f32) -> Harness<'static, App> {
     app.engine_mut().hold_engine().expect("engine held");
     let mut h = harness_at(app, ppp);
     h.run_steps(2);
@@ -1182,6 +1185,17 @@ fn s04_playing(ppp: f32) -> Harness<'static, App> {
         h.step();
     }
     h
+}
+
+/// The same screen in English (#5).
+#[test]
+fn snapshot_next_to_s04_in_english() {
+    let mut h = s04_playing_in(s04().with_lang(komponist_i18n::Lang::En), 1.0);
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_i18n::en::TRANSPORT_CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    h.snapshot("mixer-s04-en-1x");
 }
 
 #[test]
