@@ -53,9 +53,9 @@ pub fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> 
     }
 }
 
-/// pisynth, klopfer and the plugins of S01/S05.
+/// pisynth, the sampler and the plugins of S01/S05.
 pub fn screens_catalog() -> Catalog {
-    let mut c = Catalog::builtin(Some("/plugins/Klopfer.clap".into()));
+    let mut c = Catalog::builtin();
     c.set_scanned(&[
         descriptor(
             "surge",

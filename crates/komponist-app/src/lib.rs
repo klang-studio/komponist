@@ -24,7 +24,7 @@
 //! - [`meters`]: meter ballistics fed from the engine once per frame.
 //! - [`record`]: [`record::Recording`], the take that grows while recording (WP-51).
 //! - [`step_rows`]: which rows a new step clip gets per instrument and how rows are labelled
-//!   (klopfer pads "P1…", note names elsewhere; WP-54).
+//!   (sampler pads "P1…", note names elsewhere; WP-54, WP-87).
 //! - [`settings`]: the settings file, `~/.config/komponist/settings.json`.
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 //! - [`windows`]: windows besides the main one; [`windows::plugin_frame`], the S05 plugin frame
@@ -52,6 +52,7 @@ pub mod metrics;
 pub mod panels;
 pub mod project_io;
 pub mod record;
+pub mod samples;
 pub mod settings;
 mod shell;
 pub mod spectrum;

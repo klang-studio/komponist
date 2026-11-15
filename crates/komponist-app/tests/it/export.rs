@@ -528,8 +528,8 @@ fn run_until(h: &mut Harness<'_, App>, what: &str, mut done: impl FnMut(&App) ->
 #[test]
 fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all() {
     let dir = scratch("missing");
-    // The plain demo on the builtin host: klopfer, Surge XT, Dexed, Vital and the effects are
-    // missing.
+    // The plain demo on the builtin host: Surge XT, Dexed, Vital and the third-party effects are
+    // missing (the Sampler and pisynth run in process).
     let mut project = demo_project();
     project.loop_range = TickRange::new(Tick(8 * BAR), Tick(8 * BAR + BAR / 2));
     let (app, _) = app_in(&dir, project);
@@ -545,7 +545,7 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     h.run_steps(3);
     h.get_by_label(&names::exporting("Nachtfahrt.wav"));
     h.get_by_label(names::WAITING);
-    h.get_by_role_and_label(Role::ListItem, "klopfer · Drums · fehlt");
+    h.get_by_role_and_label(Role::ListItem, "LSP Compressor · Drums · fehlt");
     h.get_by_role_and_label(Role::ListItem, "Vital · Arp · fehlt");
     assert!(!h.state().engine().is_detached());
     // "Abbrechen": nothing written.

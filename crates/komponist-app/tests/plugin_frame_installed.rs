@@ -24,7 +24,7 @@ use frame_gui::*;
 use komponist_app::device_host::PluginHost;
 use komponist_model::PluginFormat;
 use komponist_model::fixtures::empty_project;
-use komponist_plugins::{PluginDirs, PluginManagerConfig};
+use komponist_plugins::PluginDirs;
 
 #[test]
 #[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1; needs Klopfer, Surge XT and Dexed"]
@@ -33,13 +33,7 @@ fn installed_plugins_in_real_frames() {
         return;
     }
     let dir = scratch("frame-installed");
-    let Some(klopfer) = PluginManagerConfig::defaults().klopfer_bundle else {
-        panic!("Klopfer.clap not found (scripts/build-klopfer.sh)");
-    };
-    let config = PluginManagerConfig {
-        klopfer_bundle: Some(klopfer),
-        ..config(&dir)
-    };
+    let config = config(&dir);
     let mut app = app_with(empty_project(), PluginHost::new(config));
     open_scratch_project(&mut app, &dir);
     app.engine_mut()
@@ -48,7 +42,7 @@ fn installed_plugins_in_real_frames() {
 
     let mut steps = vec![
         add("klopfer", |p| {
-            p.format == PluginFormat::Builtin && p.name == "klopfer"
+            p.format == PluginFormat::Clap && p.name == "Klopfer"
         }),
         add("surge-clap", |p| {
             p.format == PluginFormat::Clap && p.name == "Surge XT"

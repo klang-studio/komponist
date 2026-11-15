@@ -14,7 +14,7 @@
 //! opened project (checks of the frame without clicking). With
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
 //!
-//! Plugins: pisynth runs in process; klopfer and the CLAP/VST3 plugins run in
+//! Plugins: pisynth, the Sampler and the internal devices run in process; the CLAP/VST3 plugins run in
 //! `komponist-bridge` processes next to this executable (`cargo build` builds both). At start a
 //! background scan covers the default plugin folders plus those in the settings; devices whose
 //! plugin it finds load when it ends. Closing the window shuts every bridge down.
@@ -148,7 +148,13 @@ fn main() -> eframe::Result {
         }
     }
     let first = if args.demo {
-        fixtures::demo_project()
+        // The demo's Sampler plays the synthesized test kit (written to the temporary folder).
+        let demo = fixtures::demo_project();
+        let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
+        komponist_app::samples::demo_with_kit(demo.clone(), &kit_dir).unwrap_or_else(|e| {
+            eprintln!("komponist: demo kit not written ({e}); the Sampler stays empty");
+            demo
+        })
     } else {
         new_project::empty_project()
     };

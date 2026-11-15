@@ -103,6 +103,31 @@ pub trait Dsp: Send {
     fn take_reduction_db(&mut self) -> f32 {
         0.0
     }
+
+    /// Whether the device is an instrument: it ignores its input, overwrites the output and gets
+    /// the note events ([`Dsp::note_on`] …) at their frame (the sampler, WP-87).
+    fn is_instrument(&self) -> bool {
+        false
+    }
+
+    /// RT, instruments only. A note starts: `key` 0 ..= 127, `velocity` 1 ..= 127.
+    fn note_on(&mut self, key: u8, velocity: u8) {
+        let _ = (key, velocity);
+    }
+
+    /// RT, instruments only. A note ends.
+    fn note_off(&mut self, key: u8) {
+        let _ = key;
+    }
+
+    /// RT, instruments only. Every sounding note ends now.
+    fn all_notes_off(&mut self) {}
+
+    /// The sampler's UI side (loading samples, what the pads show); `None` for every other
+    /// device. Not RT.
+    fn sampler(&self) -> Option<crate::sampler::SamplerHandle> {
+        None
+    }
 }
 
 /// What defines an internal device (see the module docs).
@@ -124,6 +149,8 @@ pub struct Spec {
 /// The internal devices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Internal {
+    /// Drum sampler: eight pads, an instrument (WP-87).
+    Sampler,
     /// Parametric EQ.
     Eq,
     /// Stereo delay.
@@ -140,7 +167,8 @@ pub enum Internal {
 
 impl Internal {
     /// All devices, in browser order.
-    pub const ALL: [Internal; 6] = [
+    pub const ALL: [Internal; 7] = [
+        Internal::Sampler,
         Internal::Eq,
         Internal::Delay,
         Internal::Hall,
@@ -151,6 +179,7 @@ impl Internal {
 
     fn spec(self) -> &'static Spec {
         match self {
+            Internal::Sampler => &crate::sampler::SPEC,
             Internal::Eq => &eq::SPEC,
             Internal::Delay => &delay::SPEC,
             Internal::Hall => &hall::SPEC,
@@ -180,9 +209,16 @@ impl Internal {
     pub fn role(self) -> komponist_model::DeviceRole {
         if self.is_midi_effect() {
             komponist_model::DeviceRole::MidiEffect
+        } else if self.is_instrument() {
+            komponist_model::DeviceRole::Instrument
         } else {
             komponist_model::DeviceRole::Effect
         }
+    }
+
+    /// Whether this is an instrument (the sampler): notes in, audio out.
+    pub fn is_instrument(self) -> bool {
+        matches!(self, Internal::Sampler)
     }
     fn index(self) -> usize {
         Internal::ALL
@@ -302,7 +338,24 @@ impl Internal {
         let info = self.params().get(wire as usize)?;
         let mut values = self.decode_state(state).unwrap_or_else(|_| self.defaults());
         values[wire as usize] = info.snap(value);
-        Some(self.encode_state(&values))
+        Some(self.keep_extras(state, self.encode_state(&values)))
+    }
+
+    /// `encoded` (a state of just parameters) plus every other top-level key of `old` (the
+    /// sampler's sample links), so a knob turn does not lose them.
+    pub fn keep_extras(self, old: Option<&[u8]>, encoded: Vec<u8>) -> Vec<u8> {
+        let Some(serde_json::Value::Object(extras)) =
+            old.and_then(|s| serde_json::from_slice(s).ok())
+        else {
+            return encoded;
+        };
+        let Ok(serde_json::Value::Object(mut new)) = serde_json::from_slice(&encoded) else {
+            return encoded;
+        };
+        for (key, value) in extras {
+            new.entry(key).or_insert(value);
+        }
+        serde_json::to_vec(&new).unwrap_or(encoded)
     }
 
     /// A processor with the plain `values` (by wire id). Allocates; not RT-safe. Call
@@ -390,6 +443,12 @@ impl InternalProcessor {
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
     }
+
+    /// The sampler's UI side: load samples into pads, read what they show; `None` for any other
+    /// device.
+    pub fn sampler(&self) -> Option<crate::sampler::SamplerHandle> {
+        self.dsp.sampler()
+    }
 }
 
 impl Processor for InternalProcessor {
@@ -413,22 +472,39 @@ impl Processor for InternalProcessor {
         self.dsp.set_tempo(ctx.transport.tempo_bpm);
         let frames = io.frames();
         let mut done = 0;
+        let instrument = self.dsp.is_instrument();
         for event in events {
-            let EventKind::Param { id, value } = event.kind else {
+            // Parameters for every device; notes only reach an instrument.
+            if !matches!(event.kind, EventKind::Param { .. })
+                && !(instrument
+                    && matches!(
+                        event.kind,
+                        EventKind::NoteOn { .. }
+                            | EventKind::NoteOff { .. }
+                            | EventKind::AllNotesOff
+                    ))
+            {
                 continue;
-            };
-            let Some(info) = self.params.get(id as usize) else {
-                continue;
-            };
+            }
             let at = (event.offset as usize).clamp(done, frames);
             if at > done {
                 self.render(io, done, at);
                 done = at;
             }
-            self.dsp.set_param(id as usize, info.snap(value));
-            // A parameter can change the latency (limiter lookahead); the UI thread reads it
-            // from the meter and recompiles the delay compensation.
-            self.meter.set_latency(self.dsp.latency());
+            match event.kind {
+                EventKind::Param { id, value } => {
+                    if let Some(info) = self.params.get(id as usize) {
+                        self.dsp.set_param(id as usize, info.snap(value));
+                        // A parameter can change the latency (limiter lookahead); the UI thread
+                        // reads it from the meter and recompiles the delay compensation.
+                        self.meter.set_latency(self.dsp.latency());
+                    }
+                }
+                EventKind::NoteOn { key, velocity, .. } => self.dsp.note_on(key, velocity),
+                EventKind::NoteOff { key, .. } => self.dsp.note_off(key),
+                EventKind::AllNotesOff => self.dsp.all_notes_off(),
+                _ => {}
+            }
         }
         if done < frames {
             self.render(io, done, frames);

@@ -20,6 +20,8 @@
 //!   four-page layout ([`device::layout`]). The macros keep their wire ids 0–7; the card's own
 //!   start at 8.
 //! - [`algorithms`]: the 32 fixed algorithms the Algorithmus macro writes.
+//! - [`sampler`]: the drum sampler (WP-87), an internal instrument ([`Internal::Sampler`]) on
+//!   `klopfer_dsp`'s engine, with sample links in its state, a loader thread and a test kit.
 //!
 //! # How the app drives it
 //!
@@ -57,6 +59,7 @@ pub mod device;
 pub mod internal;
 pub mod macros;
 mod processor;
+pub mod sampler;
 pub mod state;
 
 pub use internal::{Internal, InternalProcessor};

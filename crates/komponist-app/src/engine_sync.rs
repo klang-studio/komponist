@@ -902,8 +902,8 @@ mod tests {
         sync.reset();
         assert!(sync.program().is_none());
         // Released: the host forgot every device (unknown devices report Ok).
-        let klopfer = first.project().tracks[0].channel.devices[0].id;
-        assert_eq!(sync.device_status(klopfer), DeviceStatus::Ok);
+        let drums = first.project().tracks[0].channel.devices[0].id;
+        assert_eq!(sync.device_status(drums), DeviceStatus::Ok);
         // A new document starts at revision 0 like the old one; it is compiled anyway, and its
         // devices (ids from 1 again) get fresh processors.
         let second = Document::new(demo_project());
@@ -911,7 +911,11 @@ mod tests {
         sync.sync(&second);
         let program = sync.program().expect("compiled again");
         assert_eq!(program.tracks.len(), second.project().tracks.len());
-        assert_eq!(sync.device_status(klopfer), DeviceStatus::Missing);
+        // The Sampler runs in process.
+        assert_eq!(sync.device_status(drums), DeviceStatus::Ok);
+        // The compressor behind it is not installed: it stays missing.
+        let compressor = second.project().tracks[0].channel.devices[1].id;
+        assert_eq!(sync.device_status(compressor), DeviceStatus::Missing);
         // The same document again without reset: nothing is recompiled.
         let tracks = Arc::clone(&program.tracks[0]);
         sync.sync(&second);

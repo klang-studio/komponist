@@ -318,7 +318,7 @@ fn double_click_on_the_name_renames_enter_applies_esc_discards() {
 fn dragging_a_header_reorders_tracks() {
     let mut h = harness(demo());
     let ids: Vec<TrackId> = (0..6).map(|i| track_id(&h, i)).collect();
-    let drums = header_rect(&h, "Spur Drums, Plugin fehlt: klopfer");
+    let drums = header_rect(&h, "Spur Drums, Sampler");
     // Lead above Drums: the insert line at the top of the first row.
     drag(
         on_header(lead_header(&h)),

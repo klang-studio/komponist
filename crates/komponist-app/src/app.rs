@@ -435,6 +435,8 @@ impl App {
         if let Some(text) = self.shell.pending_clipboard_text.take() {
             ctx.copy_text(text);
         }
+        self.sync_pads(&ctx);
+        self.release_auditions(&ctx);
         self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
         self.persist_panels();
@@ -2060,7 +2062,7 @@ impl App {
         }
     }
 
-    fn plugin_action(&mut self, action: PluginAction) {
+    pub(crate) fn plugin_action(&mut self, action: PluginAction) {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
             PluginAction::ApplyPisynthPreset { device, preset } => {
@@ -2110,6 +2112,12 @@ impl App {
             PluginAction::CloseWindow(device) => self.close_plugin_window(device),
             PluginAction::Reload(device) => {
                 self.engine.reload_device(self.doc.project(), device);
+            }
+            PluginAction::LoadSample { .. }
+            | PluginAction::ClearSample { .. }
+            | PluginAction::PickSample { .. }
+            | PluginAction::AuditionPad { .. } => {
+                self.sampler_action(&action);
             }
             PluginAction::SetParam { device, id, value } => {
                 // Bridged devices take parameters over their control socket; pisynth through the
@@ -2216,6 +2224,7 @@ impl App {
             | ProjectAction::OpenPath(_)
             | ProjectAction::Save
             | ProjectAction::SaveAs
+            | ProjectAction::CollectAndSave
             | ProjectAction::ShowStartScreen
             | ProjectAction::ContinueWithMissing
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
@@ -2242,6 +2251,10 @@ impl App {
         self.engine.reset();
         self.doc = doc;
         self.project_path = path;
+        // Relative sample paths resolve against the project file's folder, before the devices of
+        // the project get their processors.
+        let dir = self.project_dir();
+        self.engine.host_mut().set_project_dir(dir);
         self.meters = Meters::new();
         self.export.forget();
         self.ui.selection = Default::default();

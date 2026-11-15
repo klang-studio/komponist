@@ -1,5 +1,6 @@
 //! Installed third-party plugins through the plugin manager and the engine (`#[ignore]`):
-//! klopfer as the built-in "INTERN" entry, Dexed and Surge XT from a scan of `/usr/lib/clap`.
+//! klopfer from a scan of `~/.clap` (it is an ordinary CLAP plugin since the sampler, WP-87), Dexed
+//! and Surge XT from a scan of `/usr/lib/clap`.
 //!
 //! ```text
 //! cargo test -p komponist-plugins --test it installed:: -- --ignored --nocapture
@@ -54,18 +55,33 @@ fn load_and_play(manager: PluginManager, plugin: komponist_model::PluginRef, key
 
 #[test]
 #[ignore = "installed third-party plugins; run with --ignored"]
-fn klopfer_as_builtin() {
-    let Some(bundle) = installed("~/.clap/Klopfer.clap") else {
+fn klopfer_as_a_scanned_plugin() {
+    let Some(folder) = installed("~/.clap") else {
         return;
     };
     let dir = scratch("installed-klopfer");
-    let mut config = config(&dir);
-    config.klopfer_bundle = Some(bundle);
-    let manager = PluginManager::new(config);
-    let entry = manager.catalog().resolve(&klopfer()).unwrap();
-    assert!(entry.is_builtin());
+    let mut manager = PluginManager::new(config(&dir));
+    manager.start_scan(&PluginDirs {
+        clap: vec![folder],
+        vst3: Vec::new(),
+    });
+    wait_for(&mut manager, "ScanFinished", |e| match e {
+        PluginManagerEvent::ScanFinished(r) => Some(r.clone()),
+        _ => None,
+    });
+    let Some(entry) = manager
+        .catalog()
+        .resolve(&clap_plugin("com.klopfer.drum-sampler"))
+    else {
+        eprintln!("skipped: Klopfer.clap not found in ~/.clap");
+        return;
+    };
+    assert!(!entry.is_builtin());
+    // A project saved with the old built-in entry finds the same plugin.
+    assert_eq!(manager.catalog().resolve(&klopfer()), Some(entry));
+    let plugin = entry.plugin.clone();
     // Pad 1 = note 36; the default kit may be empty, so only loading is required.
-    load_and_play(manager, klopfer(), 36);
+    load_and_play(manager, plugin, 36);
 }
 
 #[test]
@@ -104,71 +120,4 @@ fn dexed_and_surge_xt_from_a_scan() {
         let level = load_and_play(manager, plugin, key);
         assert!(level > 0.01, "{id}: silent ({level})");
     }
-}
-
-/// klopfer's cold start (WP-54 note, WP-61): how long after the bridge reports it active (warm-up
-/// switched off) a pad first sounds, over fresh bridges. A note goes in every 2 ms of wall-clock
-/// time; the first block with output marks the readiness. `crate::WARM_UP` must cover it.
-///
-/// ```text
-/// cargo test --release -p komponist-plugins --test it installed::klopfer_cold_start -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "installed klopfer and its test kit; run with --ignored"]
-fn klopfer_cold_start() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let bundle = manifest.join("../../../klopfer/target/bundled/Klopfer.clap");
-    let kit = manifest.join("../../../klopfer/testkit-out/Testkit.klopfer");
-    let (Ok(bundle), Ok(kit)) = (bundle.canonicalize(), kit.canonicalize()) else {
-        eprintln!("skipped: klopfer bundle or test kit missing (scripts/build-klopfer.sh)");
-        return;
-    };
-    let state = komponist_plugins::builtin::klopfer_kit_state(&kit).expect("kit");
-    for offline in [false, true] {
-        cold_start(&bundle, &state, offline);
-    }
-}
-
-fn cold_start(bundle: &std::path::Path, state: &[u8], offline: bool) {
-    let mut times = Vec::new();
-    for run in 0..8 {
-        let dir = scratch(&format!("installed-klopfer-cold-{run}"));
-        let mut config = config(&dir);
-        config.klopfer_bundle = Some(bundle.to_owned());
-        let mut manager = PluginManager::new(config);
-        manager.set_warm_up(std::time::Duration::ZERO);
-        if offline {
-            manager.set_render_mode(komponist_ipc::RenderMode::Offline);
-        }
-        let instrument = device(10, DeviceRole::Instrument, klopfer(), Some(state));
-        let mut rig = Rig::new(manager, project(vec![track(1, vec![instrument])]));
-        rig.wait_status(10, DeviceStatus::Ok);
-        let active = Instant::now();
-        let ready = loop {
-            rig.note(1, 36, 110);
-            let range = if offline {
-                rig.render(BLOCK)
-            } else {
-                rig.process(BLOCK)
-            };
-            rig.note(1, 36, 0);
-            if rig.peak(range) > 1e-4 {
-                break active.elapsed();
-            }
-            assert!(active.elapsed() < PATIENCE, "klopfer never sounded");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        };
-        rig.manager.shutdown();
-        times.push(ready);
-    }
-    times.sort();
-    eprintln!(
-        "klopfer cold start ({}): first hit {:.1?} … {:.1?} after `Activated` (median {:.1?}); WARM_UP {:?}",
-        if offline { "offline" } else { "realtime" },
-        times[0],
-        times[times.len() - 1],
-        times[times.len() / 2],
-        komponist_plugins::WARM_UP
-    );
-    assert!(times[times.len() - 1] < komponist_plugins::WARM_UP);
 }

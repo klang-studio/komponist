@@ -1,12 +1,11 @@
 //! The app side of plugin hosting in komponist.
 //!
-//! The catalog (built-in pisynth and klopfer entries plus scanned CLAP and VST3 plugins), the scan
+//! The catalog (built-in pisynth and internal devices plus scanned CLAP and VST3 plugins), the scan
 //! cache, the lifecycle of bridge processes, device status and the `ExternalProcessor` that feeds a
 //! bridge from the engine.
 //!
 //! Module map (ARCHITECTURE §8):
-//! - [`builtin`]: the built-in entries (pisynth, klopfer · INTERN), klopfer's bundle lookup, pads
-//!   and kit state.
+//! - [`builtin`]: the built-in entries (pisynth and the internal devices, among them the Sampler).
 //! - [`catalog`]: [`Catalog`], [`CatalogEntry`], [`PluginDirs`], scan cache and report.
 //! - [`manager`]: [`PluginManager`], [`DeviceStatus`], [`PluginManagerEvent`], [`MissingPlugin`].
 //! - [`params`]: bridged plugin parameters as `komponist_model::params::ParamInfo`.

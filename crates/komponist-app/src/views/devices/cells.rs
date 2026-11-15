@@ -36,6 +36,8 @@ use super::layout::{BAND, Cell, CellParam, ENV_OP, GraphBinding, GraphConfig, SE
 use super::metrics;
 use super::model::{Card, Param, names};
 use crate::actions::{Action, PluginAction, UiAction};
+use komponist_builtin::sampler::PadStatus;
+use komponist_model::format::note_name;
 
 /// The memory slot of the context placeholders (`{band}`, `{env_op}`, `{sel}`) of a device.
 fn context_id(device: DeviceId) -> Id {
@@ -55,6 +57,16 @@ pub(super) fn default_context() -> ParamContext {
 pub(super) fn context(ctx: &egui::Context, device: DeviceId) -> ParamContext {
     ctx.data(|d| d.get_temp::<ParamContext>(context_id(device)))
         .unwrap_or_else(default_context)
+}
+
+/// The pad (0-based) the sampler `device` has selected (`{sel}`).
+pub(crate) fn selected_pad(ctx: &egui::Context, device: DeviceId) -> usize {
+    selected_entry(&context(ctx, device), SEL, 255).saturating_sub(1)
+}
+
+/// Selects pad `pad` (0-based) of the sampler `device`.
+pub(crate) fn select_pad(ctx: &egui::Context, device: DeviceId, pad: usize) {
+    set_context(ctx, device, SEL, pad + 1);
 }
 
 /// Sets placeholder `key` of `device`'s context (the selected EQ band, the operator whose envelope
@@ -117,7 +129,7 @@ pub(super) fn draw_cell(
             true
         }
         (WidgetKind::PadGrid, _) => {
-            pads(cu, cell, palette, rect);
+            pads(cu, out, card, cell, palette, rect);
             true
         }
         (WidgetKind::FmAlgorithm, p) => {
@@ -512,25 +524,116 @@ fn meter(cu: &mut Ui, card: &Card, cell: &Cell, rect: Rect) {
     cu.data_mut(|d| d.insert_temp(id, hold));
 }
 
-/// The pad grid: one pad per grid cell, numbered; the selected pad is kept here until the sampler
-/// (WP-87) owns the pads.
-fn pads(cu: &mut Ui, cell: &Cell, palette: &TrackPalette, rect: Rect) {
-    let id = slot(cu, cell, "pad");
-    let mut selected: usize = cu.data(|d| d.get_temp(id)).unwrap_or(0);
+/// What a pad's context menu offers.
+#[derive(Clone, Copy)]
+enum PadMenu {
+    /// "Sample laden …" (or "Suchen …" for a missing one): the file browser.
+    Pick,
+    /// "Sample entfernen".
+    Clear,
+}
+
+/// The pad grid: one pad per grid cell. The sampler's pads (WP-87) show the sample's name and the
+/// note (or "fehlt" / "Lädt …"), light up while their voice plays, and are the selection `{sel}`
+/// of the device's context (a click selects the pad and plays it, a sample file dropped on a pad
+/// loads it, the right-click menu loads, searches and removes). Any other device with a pad grid
+/// numbers its pads and keeps the selection in its context too.
+fn pads(
+    cu: &mut Ui,
+    out: &mut Vec<Action>,
+    card: &Card,
+    cell: &Cell,
+    palette: &TrackPalette,
+    rect: Rect,
+) {
     let count = usize::from(cell.cols) * usize::from(cell.rows);
-    let labels: Vec<String> = (1..=count).map(|n| n.to_string()).collect();
-    let pads: Vec<Pad<'_>> = labels.iter().map(|l| Pad::new(l, "")).collect();
-    let out = cu
+    let ctx = context(cu.ctx(), card.device);
+    let selected = selected_entry(&ctx, SEL, count.min(255) as u8) - 1;
+    let sampler = card.sampler.as_ref();
+    let views = |i: usize| sampler.and_then(|s| s.pads.get(i));
+    let names: Vec<String> = (0..count)
+        .map(|i| match views(i).filter(|v| !v.name.trim().is_empty()) {
+            Some(v) => v.name.clone(),
+            None if sampler.is_some() => names::pad(i + 1),
+            None => (i + 1).to_string(),
+        })
+        .collect();
+    let notes: Vec<String> = (0..count)
+        .map(|i| match (sampler, views(i).map(|v| &v.status)) {
+            (None, _) => String::new(),
+            (_, Some(PadStatus::Missing)) => names::PAD_MISSING.to_owned(),
+            (_, Some(PadStatus::Loading)) => names::PAD_LOADING.to_owned(),
+            (_, Some(PadStatus::Failed(_))) => names::PAD_FAILED.to_owned(),
+            _ => note_name(komponist_builtin::sampler::note_of_pad(i)),
+        })
+        .collect();
+    let pad_list: Vec<Pad<'_>> = names
+        .iter()
+        .zip(&notes)
+        .map(|(n, note)| Pad::new(n, note))
+        .collect();
+    let playing: Vec<usize> = sampler.map_or_else(Vec::new, |s| {
+        s.playheads
+            .iter()
+            .enumerate()
+            .filter_map(|(i, h)| h.map(|_| i))
+            .collect()
+    });
+    let mut dropped: Vec<(usize, std::path::PathBuf)> = Vec::new();
+    let shown = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |cu| {
-            PadGrid::new(&pads, cell.cols, palette)
+            let mut grid = PadGrid::new(&pad_list, cell.cols, palette)
                 .selected(Some(selected))
-                .show(cu)
+                .playing(&playing);
+            if sampler.is_some() {
+                grid = grid.on_drop(|pad, file| dropped.push((pad, file.path().to_path_buf())));
+            }
+            grid.show(cu)
         })
         .inner;
-    if let Some(c) = out.clicked {
-        selected = c;
+    if let Some(c) = shown.clicked {
+        if set_context(cu.ctx(), card.device, SEL, c + 1) {
+            cu.ctx().request_repaint();
+        }
+        if sampler.is_some() {
+            out.push(Action::Plugin(PluginAction::AuditionPad {
+                device: card.device,
+                pad: c,
+            }));
+        }
     }
-    cu.data_mut(|d| d.insert_temp(id, selected));
+    let Some(sampler) = sampler else { return };
+    for (pad, path) in dropped {
+        set_context(cu.ctx(), card.device, SEL, pad + 1);
+        out.push(Action::Plugin(PluginAction::LoadSample {
+            device: card.device,
+            pad,
+            path,
+        }));
+    }
+    for (i, response) in shown.pads.iter().enumerate() {
+        let status = sampler.pads.get(i).map(|v| &v.status);
+        let pick = match status {
+            Some(PadStatus::Missing) => names::SEARCH,
+            _ => names::LOAD_SAMPLE,
+        };
+        let mut clear = Entry::action(names::REMOVE_SAMPLE, PadMenu::Clear);
+        if matches!(status, None | Some(PadStatus::Empty)) {
+            clear = clear.disabled();
+        }
+        let entries = [Entry::action(pick, PadMenu::Pick), clear];
+        match ContextMenu::new(&names::pad_menu(&names[i]), &entries).show_on(response) {
+            Some(PadMenu::Pick) => out.push(Action::Plugin(PluginAction::PickSample {
+                device: card.device,
+                pad: i,
+            })),
+            Some(PadMenu::Clear) => out.push(Action::Plugin(PluginAction::ClearSample {
+                device: card.device,
+                pad: i,
+            })),
+            None => {}
+        }
+    }
 }
 
 /// The FM algorithm display of pisynth's algorithm table; the parameter is the algorithm number
@@ -606,6 +709,13 @@ fn axis_of(p: &Param) -> Axis {
     Axis::new(if log { AxisKind::Log } else { AxisKind::Lin }, min, max)
 }
 
+/// The status of the pad `sample` is about.
+fn v_status(
+    sample: Option<(&komponist_builtin::sampler::PadView, Option<f32>)>,
+) -> Option<&PadStatus> {
+    sample.map(|(v, _)| &v.status)
+}
+
 /// The parameter of `card` behind slot `slot` of `binding` under `ctx`.
 fn slot_param<'c>(
     card: &'c Card,
@@ -624,6 +734,7 @@ fn spec_of<'c>(
     title: &str,
     rate: Option<f32>,
     lookup: &dyn Fn(&str) -> Option<&'c Param>,
+    sample_length: Option<f64>,
 ) -> Option<GraphSpec> {
     let spec = match binding.config {
         GraphConfig::Envelope => configs::envelope(),
@@ -639,10 +750,13 @@ fn spec_of<'c>(
         }
         GraphConfig::Filter => configs::filter(),
         GraphConfig::Transfer => configs::transfer(),
-        // Start and end are in milliseconds; the axis spans the range of the end.
-        GraphConfig::Waveform => {
-            configs::waveform(lookup("end").map_or(1.0, |p| p.info.range().1 / 1000.0))
-        }
+        // Start and end are in milliseconds; the axis spans the sample's real length when the
+        // device knows it (the sampler), else the range of the end.
+        GraphConfig::Waveform => configs::waveform(
+            sample_length
+                .filter(|l| *l > 0.0)
+                .unwrap_or_else(|| lookup("end").map_or(1.0, |p| p.info.range().1 / 1000.0)),
+        ),
         GraphConfig::Xy => {
             let (x, y) = (lookup("x")?, lookup("y")?);
             configs::xy(axis_of(x), axis_of(y), x.name(), y.name())
@@ -674,9 +788,21 @@ fn graph(
         return false;
     };
     let lookup = |slot: &str| slot_param(card, binding, ctx, slot);
-    let title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
+    let mut title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
+    // The sampler's waveform: the selected pad's real sample (length, peaks, playhead).
+    let pad = selected_entry(ctx, SEL, 255) - 1;
+    let sample = (binding.config == GraphConfig::Waveform)
+        .then_some(card.sampler.as_ref())
+        .flatten()
+        .and_then(|s| Some((s.pads.get(pad)?, s.playheads.get(pad).copied().flatten())));
+    if let Some((view, _)) = sample {
+        title = names::waveform_title(pad + 1, &view.name);
+    }
+    let length = sample
+        .map(|(v, _)| v.length_s)
+        .filter(|l| *l > 0.0 && matches!(v_status(sample), Some(PadStatus::Ready)));
     let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
-    let Some(spec) = spec_of(binding, &title, rate, &lookup) else {
+    let Some(spec) = spec_of(binding, &title, rate, &lookup, length) else {
         return false;
     };
     let normalized = binding.config == GraphConfig::Envelope;
@@ -699,6 +825,24 @@ fn graph(
             }
         }
     }
+    // An end beyond the sample (the maximum means "to the end") shows at the sample's end, a start
+    // never behind it.
+    if let Some(len) = length {
+        let max_ms = len * 1000.0;
+        for (i, name) in spec.slots.iter().enumerate() {
+            if name == "end" || name == "start" {
+                values[i] = values[i].min(max_ms);
+            }
+        }
+    }
+    // The live spectrum; empty while hidden, bypassed or switched off.
+    let spectrum: &[f32] = card.analysis.as_ref().map_or(&[], |a| &a.spectrum);
+    // The sampler's waveform shows the sample's peaks, the EQ its live spectrum.
+    let peaks: &[f32] = sample.map_or(spectrum, |(v, _)| &v.peaks);
+    let playhead = sample
+        .and_then(|(_, head)| head)
+        .zip(length)
+        .map(|(h, len)| f64::from(h) * len);
     let look = if card.bypass {
         Look::Bypass
     } else {
@@ -706,14 +850,13 @@ fn graph(
     };
     let id = slot(cu, cell, "graph");
     let size = rect.size();
-    // The live spectrum; empty while hidden, bypassed or switched off.
-    let data: &[f32] = card.analysis.as_ref().map_or(&[], |a| &a.spectrum);
     let shown = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |gu| {
             Graph::new(&spec, &mut values, &infos, size)
-                .data(data)
                 .track(color32(palette.base))
                 .look(look)
+                .data(peaks)
+                .playhead(playhead)
                 .id(id)
                 .show(gu)
         })
@@ -859,6 +1002,7 @@ mod tests {
             Cell::span(0, 2, 2, 1, WidgetKind::KnobLarge, CellParam::Id(id(5))),
         ];
         Card {
+            sampler: None,
             device: DeviceId(7),
             name: "Test".into(),
             tag: "INTERN",

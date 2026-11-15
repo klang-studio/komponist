@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
-use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
+use komponist_model::project::{BUILTIN_PISYNTH, BUILTIN_SAMPLER};
 use komponist_model::{PluginFormat, PluginRef};
 use komponist_plugins::PluginDirs;
 use komponist_tokens::size;
@@ -137,7 +137,7 @@ impl Favorite {
 }
 
 /// The favourites in the order they were starred. A fresh install starts with the two built-in
-/// instruments, pisynth and klopfer (S01 "Favoriten", the prototype's `favs`).
+/// instruments, pisynth and the sampler (S01 "Favoriten", the prototype's `favs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Favorites(pub Vec<Favorite>);
@@ -148,7 +148,7 @@ impl Default for Favorites {
             format: PluginFormat::Builtin,
             id: id.to_owned(),
         };
-        Favorites(vec![builtin(BUILTIN_PISYNTH), builtin(BUILTIN_KLOPFER)])
+        Favorites(vec![builtin(BUILTIN_PISYNTH), builtin(BUILTIN_SAMPLER)])
     }
 }
 
@@ -486,7 +486,7 @@ mod tests {
     fn favourites_start_with_the_builtins_and_toggle() {
         let s = Settings::default();
         let ids: Vec<&str> = s.favorites.0.iter().map(|f| f.id.as_str()).collect();
-        assert_eq!(ids, [BUILTIN_PISYNTH, BUILTIN_KLOPFER]);
+        assert_eq!(ids, [BUILTIN_PISYNTH, BUILTIN_SAMPLER]);
         let mut f = s.favorites.clone();
         let pisynth = PluginRef {
             format: PluginFormat::Builtin,

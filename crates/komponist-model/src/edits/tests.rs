@@ -123,12 +123,12 @@ fn plugin(name: &str) -> PluginRef {
     }
 }
 
-fn klopfer() -> PluginRef {
+fn sampler() -> PluginRef {
     PluginRef {
         format: PluginFormat::Builtin,
-        id: BUILTIN_KLOPFER.to_owned(),
-        name: "klopfer".to_owned(),
-        vendor: "Klopfer".to_owned(),
+        id: BUILTIN_SAMPLER.to_owned(),
+        name: "Sampler".to_owned(),
+        vendor: "komponist".to_owned(),
         version: "0.1.0".to_owned(),
         module: Box::default(),
     }
@@ -494,7 +494,7 @@ fn add_track_names() {
             .name
             .clone()
     };
-    assert_eq!(named(Some(klopfer())), "Drums 2");
+    assert_eq!(named(Some(sampler())), "Drums 2");
     assert_eq!(named(None), "MIDI");
     assert_eq!(named(Some(plugin(" "))), "MIDI");
     let (q, _) = ok_with(add_track(&p, new_track("  Bass ", None)));
@@ -1619,12 +1619,12 @@ fn midi_effects_stay_in_front_of_the_instrument() {
 fn replace_or_insert_the_instrument() {
     let f = fixture();
     let p = ok(set_device_state(&f.p, f.synth, Some(Arc::from(&b"x"[..]))));
-    let (p, id) = ok_with(replace_instrument(&p, f.a, klopfer()));
+    let (p, id) = ok_with(replace_instrument(&p, f.a, sampler()));
     assert_ne!(id, f.synth);
     let d = &track(&p, f.a).channel.devices[0];
     assert_eq!(
         (d.id, d.plugin.name.as_str(), d.state.clone()),
-        (id, "klopfer", None)
+        (id, "Sampler", None)
     );
     assert_eq!(track(&p, f.a).channel.devices.len(), 2);
     let (p, _) = ok_with(insert_device(
@@ -1646,7 +1646,7 @@ fn replace_or_insert_the_instrument() {
         ]
     );
     assert_eq!(track(&p, f.b).channel.devices[0].id, id);
-    assert!(replace_instrument(&p, TrackId(999), klopfer()).is_err());
+    assert!(replace_instrument(&p, TrackId(999), sampler()).is_err());
 }
 
 #[test]

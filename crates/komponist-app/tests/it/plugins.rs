@@ -21,9 +21,7 @@ use komponist_app::{Action, App};
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{Command, Engine, EngineConfig, MAX_BLOCK, MidiPort, Program};
 use komponist_model::{DeviceId, DeviceRole, Project, Tick, TrackId, persist};
-use komponist_plugins::{
-    DeviceStatus, FailReason, PluginDirs, PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
-};
+use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
 
 const RATE: f32 = 48_000.0;
 
@@ -342,26 +340,19 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     app.shutdown();
 }
 
-/// The demo with the plugins installed on this machine: klopfer, Surge XT and Dexed load (the
+/// The demo with the plugins installed on this machine: the Sampler, Surge XT and Dexed load (the
 /// latter two sound), the others (Vital, LSP, Dragonfly, TAL) stay `Missing` with their state.
 /// Run with `cargo test -p komponist-app --test it plugins:: -- --ignored` (scans the default folders
 /// into a scratch cache; Surge XT may take seconds to load).
 #[test]
-#[ignore = "needs Klopfer.clap, Surge XT and Dexed installed"]
+#[ignore = "needs Surge XT and Dexed installed"]
 fn the_demo_plays_the_installed_plugins() {
     let dir = scratch("installed");
-    let defaults = PluginManagerConfig::defaults();
-    let Some(klopfer) = defaults.klopfer_bundle else {
-        panic!("Klopfer.clap not found (scripts/build-klopfer.sh)");
-    };
-    let config = PluginManagerConfig {
-        klopfer_bundle: Some(klopfer),
-        ..config(&dir)
-    };
+    let config = config(&dir);
     let mut project = komponist_model::fixtures::demo_project();
     // A state blob for every device that is not installed here, to see it kept.
     let blob: Arc<[u8]> = Arc::from(&b"komponist test state \x00\x01\x02"[..]);
-    let installed = ["pisynth", "klopfer", "Surge XT", "Dexed"];
+    let installed = ["pisynth", "Sampler", "Surge XT", "Dexed"];
     for track in &mut project.tracks {
         for device in &mut Arc::make_mut(track).channel.devices {
             if !installed.contains(&device.plugin.name.as_str()) {
@@ -400,8 +391,8 @@ fn the_demo_plays_the_installed_plugins() {
 
     app.dispatch(Action::Transport(TransportAction::Locate(bar_5())));
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
-    // Surge XT and Dexed play; klopfer without a stored kit has empty pads and stays silent
-    // (kits: WP-54), so Drums only has to be `Ok`.
+    // Surge XT and Dexed play; the Sampler without samples stays silent, so Drums only has to be
+    // `Ok`.
     let pad = track_named(app.project(), "Pad");
     let pad_level = level(&mut app, pad, Duration::from_secs(2));
     let keys = track_named(app.project(), "Keys");

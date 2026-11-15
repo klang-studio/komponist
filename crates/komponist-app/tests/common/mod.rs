@@ -129,12 +129,11 @@ pub fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// A plugin manager setup with its own (empty) scan cache in `dir` and no klopfer bundle.
+/// A plugin manager setup with its own (empty) scan cache in `dir`.
 pub fn config(dir: &Path) -> PluginManagerConfig {
     PluginManagerConfig {
         bridge_exe: bridge_exe(),
         cache_file: dir.join("cache/plugins.json"),
-        klopfer_bundle: None,
         parallel_scans: 4,
     }
 }
