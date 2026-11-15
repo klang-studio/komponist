@@ -7,10 +7,13 @@
 # defaults. If the first CI run fails on snapshots, look at the "snapshot-diffs" artifact first.
 name: CI
 
+# Documentation and README media changes need no build.
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**.md"]
 
 permissions:
   contents: read
@@ -62,6 +65,8 @@ jobs:
           workspaces: |
             . -> target
             test-plugins -> target
+          # Save the dependency builds of a red run too, so a failing test does not make the next run cold.
+          cache-on-failure: true
 
       - name: Format
         run: cargo fmt --all --check

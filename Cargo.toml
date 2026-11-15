@@ -84,3 +84,14 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The DSP crates render audio in their tests (hexa-core's preset tests took 3 minutes unoptimised on CI,
+# 2026-11-15). Optimised, they also keep debug builds of the app usable. Applies to `cargo test` too.
+[profile.dev.package.hexa-core]
+opt-level = 2
+
+[profile.dev.package.sampler-core]
+opt-level = 2
+
+[profile.dev.package.klang-dsp]
+opt-level = 2
