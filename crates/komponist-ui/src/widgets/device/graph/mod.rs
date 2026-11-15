@@ -428,6 +428,7 @@ pub struct Graph<'a> {
     trace: &'a [f32],
     playhead: Option<f64>,
     level: Option<f64>,
+    note: Option<(&'a str, &'a str)>,
     selected: Option<Option<usize>>,
     salt: Option<Id>,
 }
@@ -451,6 +452,7 @@ impl<'a> Graph<'a> {
             trace: &[],
             playhead: None,
             level: None,
+            note: None,
             selected: None,
             salt: None,
         }
@@ -498,6 +500,15 @@ impl<'a> Graph<'a> {
         self
     }
 
+    /// A one-line readout (name, value) in the bottom right corner of a plot with [`Marker::Levels`],
+    /// styled like the XY readouts (presse: „Detektor“ / „Extern“ while an external sidechain
+    /// source is set). Without that marker nothing is drawn.
+    #[must_use]
+    pub fn levels_note(mut self, note: Option<(&'a str, &'a str)>) -> Self {
+        self.note = note;
+        self
+    }
+
     /// Shows handle `selected` as selected, whatever the user clicked (stills and tests).
     #[must_use]
     pub fn selected(mut self, selected: Option<usize>) -> Self {
@@ -526,6 +537,7 @@ impl<'a> Graph<'a> {
             trace,
             playhead,
             level,
+            note,
             selected: forced_selection,
             salt,
         } = self;
@@ -794,6 +806,14 @@ impl<'a> Graph<'a> {
                     paint_marker(&painter, &plot, spec, *mk, values, playhead, level, ppp)
                 }
             }
+        }
+        if let Some((name, value)) = note
+            && spec
+                .layers
+                .iter()
+                .any(|l| matches!(l, Layer::Marker(Marker::Levels)))
+        {
+            paint_levels_note(&painter, &plot, name, value);
         }
         let st_focus = |i: usize| focused == Some(i) && focus::is_visible(&ctx);
         for (i, h) in spec.handles.iter().enumerate() {
@@ -1487,6 +1507,34 @@ fn paint_levels(
         let g = text_galley(painter, &text, &typography::MONO_XS, color32(col));
         painter.galley(pos2(left, top + h), g, color32(col));
     }
+}
+
+/// The note readout in the bottom right corner of the plot area (inside the axes), laid out like the XY readouts (name,
+/// gap, value; `READOUT_INSET` from the corner), so the card's layout stays as it is.
+fn paint_levels_note(painter: &Painter, plot: &Plot, name: &str, value: &str) {
+    let name = text_galley(
+        painter,
+        name,
+        &typography::DEVICE_LABEL,
+        color32(color::TEXT_2),
+    );
+    let value = text_galley(painter, value, &typography::MONO_XXS, color32(color::TEXT_1));
+    let [dx, dy] = m::READOUT_INSET;
+    let w = name.size().x + m::READOUT_GAP + value.size().x;
+    let h = name.size().y.max(value.size().y);
+    let origin = pos2(plot.xs.1 - dx - w, plot.ys.0 - dy - h);
+    let name_w = name.size().x;
+    let (nh, vh) = (name.size().y, value.size().y);
+    painter.galley(
+        pos2(origin.x, origin.y + (h - nh) / 2.0),
+        name,
+        color32(color::TEXT_2),
+    );
+    painter.galley(
+        pos2(origin.x + name_w + m::READOUT_GAP, origin.y + (h - vh) / 2.0),
+        value,
+        color32(color::TEXT_1),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

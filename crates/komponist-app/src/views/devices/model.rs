@@ -172,6 +172,11 @@ pub mod names {
         }
     }
 
+    /// Readout name in the compressor graph's strip while an external sidechain source is set
+    /// (shown over [`DETECTOR_EXTERNAL`]; reads „Detektor: Extern“). en draft: "Detector: External".
+    pub const DETECTOR: &str = "Detektor";
+    /// Readout value for [`DETECTOR`]. en draft: "External".
+    pub const DETECTOR_EXTERNAL: &str = "Extern";
     /// The title of knurr's filter graph (followed by the type) and of its LFO graph.
     pub const FILTER: &str = "Filter";
     /// See [`FILTER`].
