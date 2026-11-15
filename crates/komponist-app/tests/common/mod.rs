@@ -90,7 +90,7 @@ pub fn clap_plugin(id: &str) -> PluginRef {
     }
 }
 
-/// The demo project "Nachtfahrt" with kp-test-synth for every external instrument (klopfer,
+/// The demo project "Night Drive" with kp-test-synth for every external instrument (klopfer,
 /// Surge XT, Dexed, Vital) and kp-test-fx for every effect (LSP, TAL, Dragonfly); hexa stays.
 pub fn demo_with_test_plugins() -> Project {
     let mut project = demo_project();

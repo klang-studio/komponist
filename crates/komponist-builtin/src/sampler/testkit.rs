@@ -2,7 +2,7 @@
 //! the demo project and the acceptance flows have something to play without any recorded (and
 //! possibly copyrighted) sample. Deterministic: the same bytes every time.
 //!
-//! The names are the demo's step rows (`Kick`, `Snare`, `Clap`, `Hat zu`, `Hat offen`, `Tom`,
+//! The names are the demo's step rows (`Kick`, `Snare`, `Clap`, `Closed Hat`, `Open Hat`, `Tom`,
 //! `Rim`, `Perc`), in pad order, so a sampler loaded with the kit shows exactly those rows.
 
 use std::f32::consts::TAU;
@@ -17,8 +17,8 @@ pub const NAMES: [&str; 8] = [
     "Kick",
     "Snare",
     "Clap",
-    "Hat zu",
-    "Hat offen",
+    "Closed Hat",
+    "Open Hat",
     "Tom",
     "Rim",
     "Perc",

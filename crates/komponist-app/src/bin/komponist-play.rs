@@ -1,6 +1,6 @@
 //! `komponist-play`: the headless demo player (WP-28, gate G3).
 //!
-//! Plays the demo project "Nachtfahrt" (or a `.komponist` file) through the real engine and
+//! Plays the demo project "Night Drive" (or a `.komponist` file) through the real engine and
 //! hexa, before any UI exists:
 //!
 //! ```text
@@ -152,7 +152,7 @@ fn load_project(path: Option<&std::path::Path>) -> Result<Project, String> {
 const USAGE: &str = "\
 usage: komponist-play [PROJECT.komponist] [options]
 
-Plays the demo project \"Nachtfahrt\" (or PROJECT) through the engine and hexa.
+Plays the demo project \"Night Drive\" (or PROJECT) through the engine and hexa.
 
 play (default): default output device, from bar 1, looping the project loop (or the whole song)
   --seconds N      stop after N seconds (default: on Enter or Ctrl-C)
@@ -1298,8 +1298,8 @@ mod tests {
                 ("Kick", 36, "Bass Drum", 36, false),
                 ("Snare", 37, "Snare", 55, false),
                 ("Clap", 38, "Clap", 60, false),
-                ("Hat zu", 39, "Hi-Hat", 60, false),
-                ("Hat offen", 40, "Hi-Hat", 60, true),
+                ("Closed Hat", 39, "Hi-Hat", 60, false),
+                ("Open Hat", 40, "Hi-Hat", 60, true),
                 ("Tom", 41, "Tom", 45, false),
             ]
         );
@@ -1432,7 +1432,7 @@ mod tests {
     #[test]
     fn the_open_hat_rings_longer_than_the_closed_one() {
         let closed = PadPlan {
-            name: "Hat zu".to_owned(),
+            name: "Closed Hat".to_owned(),
             note: 42,
             preset: "Hi-Hat",
             key: 60,

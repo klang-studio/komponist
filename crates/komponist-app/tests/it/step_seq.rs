@@ -101,7 +101,7 @@ fn opened() -> App {
 }
 
 /// The S03 state in `project` (the demo): "Beat B" with the pattern of `Screens.dc.html`
-/// `PADS`, `prob`, `ratch` and swing 12 %, the cursor on step 11 of "Hat zu", the dock 380 high
+/// `PADS`, `prob`, `ratch` and swing 12 %, the cursor on step 11 of "Closed Hat", the dock 380 high
 /// as in the screens, playhead at 10.2.120.
 fn s03_in(project: Project) -> App {
     let mut app = opened_in(project);
@@ -334,10 +334,10 @@ fn click_and_sideways_drag_paint_steps_in_one_row() {
     h.state_mut().dispatch(edit(EditAction::Redo));
     h.run_steps(2);
 
-    // Drag ↔ from a set step paints off: Hat zu steps 1 and 3 are set, 2 is not.
+    // Drag ↔ from a set step paints off: Closed Hat steps 1 and 3 are set, 2 is not.
     assert!(step_of(h.state(), clip, 3, 0).on && step_of(h.state(), clip, 3, 2).on);
-    let from = step_pos(&h, "Hat zu", 0);
-    let path = [step_pos(&h, "Hat zu", 1), step_pos(&h, "Hat zu", 2)];
+    let from = step_pos(&h, "Closed Hat", 0);
+    let path = [step_pos(&h, "Closed Hat", 1), step_pos(&h, "Closed Hat", 2)];
     drag(&mut h, from, &path, Modifiers::NONE);
     let hat = pattern(h.state(), clip).rows[3].steps;
     assert!(!hat[0].on && !hat[1].on && !hat[2].on);
@@ -442,7 +442,7 @@ fn shift_click_cycles_the_ratchet() {
 fn a_header_click_keeps_the_step_column() {
     let mut h = harness(opened());
     let (_, clip) = beat_b(h.state());
-    h.get_by_label_contains(&step_label("Hat zu", 10))
+    h.get_by_label_contains(&step_label("Closed Hat", 10))
         .click_modifiers(Modifiers::SHIFT);
     h.run_steps(2);
     let cursor = h.state().ui().selection.step.unwrap();
@@ -557,8 +557,8 @@ fn a_row_header_sounds_its_pad_and_selects_the_row() {
         "Kick",
         "Snare",
         "Clap",
-        "Hat zu",
-        "Hat offen",
+        "Closed Hat",
+        "Open Hat",
         "Tom",
         "Rim",
         "Perc",
@@ -589,7 +589,7 @@ fn row_mute_and_solo() {
     h.get_by_label("Mute · Kick").click();
     h.run_steps(2);
     assert!(pattern(h.state(), clip).rows[0].mute);
-    h.get_by_label("Solo · Hat zu").click();
+    h.get_by_label("Solo · Closed Hat").click();
     h.run_steps(2);
     h.get_by_label("Solo · Snare")
         .click_modifiers(Modifiers::ALT);
@@ -691,11 +691,11 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
 
     // No step selected: no step fields.
     assert!(h.query_by_label(de::STEP_SEQ_VELOCITY).is_none());
-    // Select Hat zu step 11 (set): "Step 11 · Hat zu", Vel 52, Wahr. 100 %, Ratch. 1.
-    h.get_by_label_contains(&step_label("Hat zu", 10))
+    // Select Closed Hat step 11 (set): "Step 11 · Closed Hat", Vel 52, Wahr. 100 %, Ratch. 1.
+    h.get_by_label_contains(&step_label("Closed Hat", 10))
         .click_modifiers(Modifiers::SHIFT);
     h.run_steps(2);
-    h.get_by_label("Step 11 · Hat zu");
+    h.get_by_label("Step 11 · Closed Hat");
     let vel = h.get_by_role_and_label(Role::SpinButton, de::STEP_SEQ_VELOCITY);
     assert_eq!(vel.accesskit_node().numeric_value(), Some(52.0));
     vel.increment_accesskit();
@@ -711,7 +711,7 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
     h.run_steps(2);
     assert_eq!(step_of(h.state(), clip, 3, 10).ratchet, 1);
     // An off step under the cursor: the fields go away.
-    h.get_by_label_contains(&step_label("Hat zu", 10)).click();
+    h.get_by_label_contains(&step_label("Closed Hat", 10)).click();
     h.run_steps(2);
     assert!(!step_of(h.state(), clip, 3, 10).on);
     assert!(h.query_by_label(de::STEP_SEQ_VELOCITY).is_none());

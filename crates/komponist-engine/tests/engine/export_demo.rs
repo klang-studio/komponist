@@ -1,4 +1,4 @@
-//! The demo project "Nachtfahrt" exported through `HexaProcessor` (every instrument is a
+//! The demo project "Night Drive" exported through `HexaProcessor` (every instrument is a
 //! hexa with its stored state or "Init"; effects have no processor and pass audio through).
 
 use std::sync::atomic::AtomicBool;
@@ -45,7 +45,7 @@ fn the_demo_project_exports_through_hexa() {
     let range = ExportJob::frames_of(&program.tempo_map, ticks, 48_000);
     let tail = ExportJob::tail_frames(1.0, 48_000);
     let dir = dir("demo");
-    let path = dir.join("Nachtfahrt.wav");
+    let path = dir.join("Night Drive.wav");
     let job = ExportJob {
         path: path.clone(),
         sample_rate: 48_000,
@@ -66,7 +66,7 @@ fn the_demo_project_exports_through_hexa() {
         |p| fractions.push(p.fraction),
     )
     .unwrap();
-    assert_eq!(files(&dir), ["Nachtfahrt.wav"]);
+    assert_eq!(files(&dir), ["Night Drive.wav"]);
     assert_eq!(fractions.last(), Some(&1.0));
 
     let wav = read(&path);

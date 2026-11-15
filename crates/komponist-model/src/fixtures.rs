@@ -11,9 +11,9 @@ use crate::project::{
 use crate::time::{StepResolution, Tempo, Tick, TickRange};
 
 /// Name of the demo project.
-pub const DEMO_PROJECT_NAME: &str = "Nachtfahrt";
+pub const DEMO_PROJECT_NAME: &str = "Night Drive";
 
-/// The demo project "Nachtfahrt", ported 1:1 from `demoProject()` in `ks-engine.js`.
+/// The demo project "Night Drive", ported 1:1 from `demoProject()` in `ks-engine.js`.
 ///
 /// 124 bpm, 4/4, loop on over bars 9–13 (prototype `loopS = 128`, `loopE = 192` steps → ticks
 /// 30720 .. 46080), metronome off, count-in 1 bar. Six tracks in this order, with the prototype's
@@ -52,7 +52,7 @@ pub fn demo_project() -> Project {
     project
 }
 
-/// The song "Nachtfahrt" of [`demo_project`] without any device and with the Arp track unmuted:
+/// The song "Night Drive" of [`demo_project`] without any device and with the Arp track unmuted:
 /// the same tempo, loop, tracks (order, names, hues, volumes, pans) and clips with their notes.
 /// The app's showcase demo adds its own device chains. Ids continue after the song's (`next_id`).
 pub fn demo_song() -> Project {
@@ -205,8 +205,8 @@ const DRUM_ROWS: [&str; 8] = [
     "Kick",
     "Snare",
     "Clap",
-    "Hat zu",
-    "Hat offen",
+    "Closed Hat",
+    "Open Hat",
     "Tom",
     "Rim",
     "Perc",
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn demo_project_settings() {
         let p = demo_project();
-        assert_eq!(p.name, "Nachtfahrt");
+        assert_eq!(p.name, "Night Drive");
         assert_eq!(p.tempo, Tempo::new(124.0));
         assert_eq!(p.meter, crate::time::Meter::FOUR_FOUR);
         assert_eq!(p.loop_range, TickRange::new(Tick(30_720), Tick(46_080)));
@@ -686,8 +686,8 @@ mod tests {
                 ("Kick", 36),
                 ("Snare", 37),
                 ("Clap", 38),
-                ("Hat zu", 39),
-                ("Hat offen", 40),
+                ("Closed Hat", 39),
+                ("Open Hat", 40),
                 ("Tom", 41),
                 ("Rim", 42),
                 ("Perc", 43),

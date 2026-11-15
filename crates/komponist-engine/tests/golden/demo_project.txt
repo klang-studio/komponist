@@ -1,4 +1,4 @@
-# The demo project "Nachtfahrt" (fixtures::demo_project)
+# The demo project "Night Drive" (fixtures::demo_project)
 # Golden fixture of compile::build (WP-24). Regenerate with
 # UPDATE_GOLDEN=1 cargo test -p komponist-engine --test compile
 

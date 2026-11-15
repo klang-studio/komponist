@@ -6,7 +6,7 @@
 //! ```
 //!
 //! Opens `PROJECT`, or shows the start screen (S09) with the recent projects
-//! (`recent.json` next to the settings file). `--demo` opens the demo project "Nachtfahrt". The
+//! (`recent.json` next to the settings file). `--demo` opens the demo project "Night Drive". The
 //! audio output comes from the settings (`~/.config/komponist/settings.json`);
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
 //! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. `--lang` overrides
@@ -48,7 +48,7 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 const USAGE: &str = "\
 usage: komponist [PROJECT.komponist] [options]
 
-  --demo           open the demo project Nachtfahrt instead of the start screen
+  --demo           open the demo project Night Drive instead of the start screen
   --null-audio     no audio or MIDI device: the engine runs on a timer (also KOMPONIST_NULL_AUDIO=1)
   --scale N        UI scale (pixels per point), e.g. 1 or 2
   --settings PATH  settings file (default ~/.config/komponist/settings.json)

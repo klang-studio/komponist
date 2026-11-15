@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn projects_round_trip_through_files() {
         let dir = scratch("round-trip");
-        let path = dir.join("sub/Nachtfahrt.komponist");
+        let path = dir.join("sub/Night Drive.komponist");
         let project = demo_project();
         // Saving never creates folders.
         assert!(matches!(
@@ -599,10 +599,10 @@ mod tests {
         assert!(!dir.join("sub").exists());
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         save_project(&path, &project).unwrap();
-        assert!(!dir.join("sub/Nachtfahrt.komponist.tmp").exists());
+        assert!(!dir.join("sub/Night Drive.komponist.tmp").exists());
         assert_eq!(load_project(&path).unwrap(), project);
         let summary = ProjectSummary::read(&path).unwrap();
-        assert_eq!(summary.name, "Nachtfahrt");
+        assert_eq!(summary.name, "Night Drive");
         assert_eq!(summary.tracks, project.tracks.len());
         assert_eq!(summary.hues[0], project.tracks[0].hue.0);
         assert_eq!(summary.meta(komponist_i18n::Lang::De), "124 BPM · 6 Spuren");

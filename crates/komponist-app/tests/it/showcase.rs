@@ -69,7 +69,7 @@ fn every_device_is_built_in_and_resolves_in_the_catalog() {
                 || Internal::from_plugin(&device.plugin) == Some(Internal::Sampler)
         );
     }
-    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, the Hall bus 1, the master 1.
+    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, the Reverb bus 1, the master 1.
     assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 1 + 1);
     // The Arp's MIDI effects come first, the Limiter is on the master.
     let arp = &track_named(&project, "Arp").channel.devices;
@@ -121,7 +121,7 @@ fn the_song_is_the_design_fixtures_song() {
     assert_eq!(showcase.tempo, fixture.tempo);
     assert_eq!(showcase.loop_range, fixture.loop_range);
     assert_eq!(showcase.loop_on, fixture.loop_on);
-    // The two buses (group and Hall) are the showcase's own; the tracks are the song's.
+    // The two buses (group and Reverb) are the showcase's own; the tracks are the song's.
     let songs: Vec<&Arc<Track>> = showcase.tracks.iter().filter(|t| !t.is_bus()).collect();
     assert_eq!(songs.len(), fixture.tracks.len());
     assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 2);
@@ -176,7 +176,7 @@ fn the_song_is_the_design_fixtures_song() {
 #[test]
 fn the_demo_shows_group_effect_bus_and_sidechain() {
     let project = showcase_project();
-    let rhythm = track_named(&project, "Rhythmus");
+    let rhythm = track_named(&project, "Rhythm");
     assert!(rhythm.is_bus() && rhythm.folder);
     assert_eq!(rhythm.output, TrackOutput::Master);
     let (drums, bass) = (
@@ -188,7 +188,7 @@ fn the_demo_shows_group_effect_bus_and_sidechain() {
     let members = komponist_model::routing::group_members(&project, rhythm.id);
     assert_eq!(members, [drums.id, bass.id]);
 
-    let hall = track_named(&project, "Hall");
+    let hall = track_named(&project, "Reverb");
     assert!(hall.is_bus() && !hall.folder);
     assert_eq!(hall.channel.devices.len(), 1);
     assert_eq!(
@@ -199,7 +199,7 @@ fn the_demo_shows_group_effect_bus_and_sidechain() {
         let track = track_named(&project, name);
         let send = track
             .send_to(hall.id)
-            .unwrap_or_else(|| panic!("{name} sends to Hall"));
+            .unwrap_or_else(|| panic!("{name} sends to Reverb"));
         assert!(send.enabled && send.tap == Tap::Post);
         assert!(
             (-12.0..=-8.0).contains(&send.level_db),

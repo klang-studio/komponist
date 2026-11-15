@@ -15,7 +15,7 @@
 //! - [`persist`]: the `*.komponist` JSON file.
 //! - [`routing`]: the routing graph (outputs, sends, sidechains, groups): checks, valid targets,
 //!   topological order, solo and mute gates (ARCHITECTURE §6.8).
-//! - [`fixtures`]: the demo project "Nachtfahrt" and the empty project.
+//! - [`fixtures`]: the demo project "Night Drive" and the empty project.
 //!
 //! Threads: everything here is plain data and pure functions, used on the UI thread and on workers.
 //! Nothing in this crate runs on the audio thread.

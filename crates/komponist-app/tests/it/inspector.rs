@@ -647,7 +647,7 @@ fn the_compact_channel_strip_controls_the_track() {
 fn with_nothing_selected_the_project_shows() {
     let mut h = harness(App::headless(demo_project()));
     let p = de::INSPECTOR_SECTION_PROJECT;
-    section(&h, p).get_by_role_and_label(Role::Label, "Nachtfahrt");
+    section(&h, p).get_by_role_and_label(Role::Label, "Night Drive");
     assert_eq!(
         value_in(&h, p, Role::SpinButton, de::INSPECTOR_PROJECT_TEMPO),
         "124.00 BPM"

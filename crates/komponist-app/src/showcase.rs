@@ -1,4 +1,4 @@
-//! The app's demo project (`komponist --demo`): "Nachtfahrt" with built-in devices only.
+//! The app's demo project (`komponist --demo`): "Night Drive" with built-in devices only.
 //!
 //! The song is [`komponist_model::fixtures::demo_song`], the same tempo, loop, tracks, clips and
 //! notes as the design fixture `demo_project()` (which keeps its third-party plugins for the
@@ -7,11 +7,11 @@
 //!
 //! | Track | Volume | Chain (preset) |
 //! |---|---|---|
-//! | Rhythmus | 0 dB | group (folder) of Drums and Bass, outputs to the master |
+//! | Rhythm | 0 dB | group (folder) of Drums and Bass, outputs to the master |
 //! | Drums | see `VOLUMES_DB` | Sampler (test kit), presse („Tight Drums“) |
 //! | Bass | see `VOLUMES_DB` | volt („Fat Saw“), EQ („Warm Bass“), presse („Ducking“, gentler: ratio 3, −20 dB, 120 ms; sidechain: Drums, pre-fader) |
-//! | Lead | see `VOLUMES_DB` | hexa („Saw Lead“), EQ („Low Cut 80 Hz“), Delay („Dotted Eighths“); post-fader send to Hall |
-//! | Pad | see `VOLUMES_DB` | volt („Wide Pad“), EQ („Low Cut 80 Hz“); post-fader send to Hall |
+//! | Lead | see `VOLUMES_DB` | hexa („Saw Lead“), EQ („Low Cut 80 Hz“), Delay („Dotted Eighths“); post-fader send to Reverb |
+//! | Pad | see `VOLUMES_DB` | volt („Wide Pad“), EQ („Low Cut 80 Hz“); post-fader send to Reverb |
 //! | Keys | −8 dB | hexa („E-Piano“), Delay („Soft Tape“) |
 //! | Arp | −10 dB | Tonleiter („A Minor Pentatonic“), Arpeggiator („Sixteenths Up/Down“), hexa („Synth Pluck“), Delay („Eighth Ping-Pong“) |
 //! | Hall | 0 dB | effect bus: Hall („Large Hall“), fed by the sends of Lead and Pad |
@@ -41,9 +41,9 @@ const VOLUMES_DB: [f32; 6] = [-16.0, -6.0, 0.0, -10.0, 0.0, 0.0];
 const BASS_DUCKING: &[(&str, f64)] = &[("ratio", 3.0), ("threshold", -20.0), ("release", 120.0)];
 
 /// Name of the group of Drums and Bass.
-pub const GROUP_NAME: &str = "Rhythmus";
+pub const GROUP_NAME: &str = "Rhythm";
 /// Name of the effect bus that carries the reverb.
-pub const HALL_BUS_NAME: &str = "Hall";
+pub const REVERB_BUS_NAME: &str = "Reverb";
 /// Levels in dB of the post-fader sends of Lead and Pad to the Hall bus.
 const HALL_SENDS_DB: [f32; 2] = [-12.0, -8.0];
 
@@ -239,15 +239,15 @@ fn add_routing(project: &mut Project) {
     let (drums, bass) = (id_of(project, "Drums"), id_of(project, "Bass"));
     let (lead, pad) = (id_of(project, "Lead"), id_of(project, "Pad"));
 
-    // Drums and Bass output to the group „Rhythmus“, which takes the place of Drums.
+    // Drums and Bass output to the group „Rhythm“, which takes the place of Drums.
     let mut spec = NewBus::group(vec![drums, bass]);
     spec.name = Some(GROUP_NAME.to_owned());
     let (p, _) = edits::add_bus(project, spec).expect("the demo routing is valid: group");
     *project = p;
 
-    // The effect bus „Hall“ with the reverb; Lead and Pad send to it, post-fader.
+    // The effect bus „Reverb“ with the reverb; Lead and Pad send to it, post-fader.
     let mut spec = NewBus::effect(vec![lead, pad]);
-    spec.name = Some(HALL_BUS_NAME.to_owned());
+    spec.name = Some(REVERB_BUS_NAME.to_owned());
     let (mut p, hall) = edits::add_bus(project, spec).expect("the demo routing is valid: bus");
     for (track, db) in [lead, pad].into_iter().zip(HALL_SENDS_DB) {
         let send = p
