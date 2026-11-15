@@ -1220,8 +1220,11 @@ fn s07_enumerates_devices_off_the_ui_thread() {
         .dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Audio)));
     let t0 = std::time::Instant::now();
     h.run_steps(2);
+    // On the UI thread the two enumerations would take at least 600 ms (2 × 300 ms); two
+    // debug-build frames on a loaded machine took up to 475 ms (2026-11-15). The thread names
+    // below are the exact check.
     assert!(
-        t0.elapsed() < std::time::Duration::from_millis(250),
+        t0.elapsed() < std::time::Duration::from_millis(590),
         "opening S07 waited for the enumeration: {:?}",
         t0.elapsed()
     );
