@@ -11,6 +11,7 @@
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_builtin::algorithms::ALGORITHMS;
 use komponist_model::DeviceId;
+use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
@@ -621,6 +622,7 @@ fn slot_param<'c>(
 fn spec_of<'c>(
     binding: &GraphBinding,
     title: &str,
+    rate: Option<f32>,
     lookup: &dyn Fn(&str) -> Option<&'c Param>,
 ) -> Option<GraphSpec> {
     let spec = match binding.config {
@@ -628,7 +630,12 @@ fn spec_of<'c>(
         GraphConfig::Eq { bands } => {
             // ±12 or ±24 dB, from the range of the gain parameters.
             let range = lookup("b1_gain").map_or(18.0, |p| p.info.range().1.abs());
-            configs::eq(usize::from(bands), range)
+            // The curve is the filters' response at the device's sample rate (WP-92).
+            configs::eq_at(
+                usize::from(bands),
+                range,
+                rate.map_or(CURVE_RATE, f64::from),
+            )
         }
         GraphConfig::Filter => configs::filter(),
         GraphConfig::Transfer => configs::transfer(),
@@ -668,7 +675,8 @@ fn graph(
     };
     let lookup = |slot: &str| slot_param(card, binding, ctx, slot);
     let title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
-    let Some(spec) = spec_of(binding, &title, &lookup) else {
+    let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
+    let Some(spec) = spec_of(binding, &title, rate, &lookup) else {
         return false;
     };
     let normalized = binding.config == GraphConfig::Envelope;
@@ -698,9 +706,12 @@ fn graph(
     };
     let id = slot(cu, cell, "graph");
     let size = rect.size();
+    // The live spectrum; empty while hidden, bypassed or switched off.
+    let data: &[f32] = card.analysis.as_ref().map_or(&[], |a| &a.spectrum);
     let shown = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |gu| {
             Graph::new(&spec, &mut values, &infos, size)
+                .data(data)
                 .track(color32(palette.base))
                 .look(look)
                 .id(id)
@@ -890,6 +901,7 @@ mod tests {
             width: 244.0,
             late: None,
             levels: None,
+            analysis: None,
             routing: None,
         }
     }

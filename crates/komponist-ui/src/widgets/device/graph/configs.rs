@@ -18,6 +18,7 @@ use super::spec::{
     HandleLook, Layer, Marker, PosFn, Pred, Region, Tick,
 };
 use crate::widgets::metrics::device::graph as m;
+use komponist_model::params::eq_curve::CURVE_RATE;
 
 /// Slot indices of [`envelope`].
 pub mod env {
@@ -146,26 +147,43 @@ pub fn envelope() -> GraphSpec {
 // ---------------------------------------------------------------------------------------------
 // EQ
 
-/// The response in dB of band `i` at `hz` (`W_eq` `eq_resp`).
+/// The response in dB of band `i` at `hz` (`W_eq` `eq_resp`) at the graph's default sample rate.
 pub fn eq_band_response(p: &[f64], i: usize, hz: f64) -> f64 {
+    eq_band_response_at(p, i, hz, CURVE_RATE)
+}
+
+/// The response in dB of band `i` at `hz` for a device running at `rate`.
+pub fn eq_band_response_at(p: &[f64], i: usize, hz: f64, rate: f64) -> f64 {
     let o = i * EQ_SLOTS;
     if p[o] < 0.5 {
         return 0.0;
     }
     let (fc, gain, q, typ) = (p[o + 1], p[o + 2], p[o + 3], p[o + 4]);
     // The real filter's response (WP-90): the device runs the same coefficients.
-    komponist_model::params::eq_curve::band_response_db(typ, fc, gain, q, hz)
+    komponist_model::params::eq_curve::band_response_db_at(typ, fc, gain, q, hz, rate)
 }
 
 /// The summed response of `bands` bands at `hz`.
 pub fn eq_response(p: &[f64], bands: usize, hz: f64) -> f64 {
-    (0..bands).map(|i| eq_band_response(p, i, hz)).sum()
+    eq_response_at(p, bands, hz, CURVE_RATE)
+}
+
+/// The summed response of `bands` bands at `hz` for a device running at `rate`.
+pub fn eq_response_at(p: &[f64], bands: usize, hz: f64, rate: f64) -> f64 {
+    (0..bands)
+        .map(|i| eq_band_response_at(p, i, hz, rate))
+        .sum()
 }
 
 /// `graph::eq` for up to `bands` bands and `±range_db`: log x 20 Hz–20 kHz, dB on y, spectrum
 /// data and the summed curve; per band Freq ↔, Gain ↕, Q on the wheel; double-click adds a band
 /// (event), Entf removes the focused one.
 pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
+    eq_at(bands, range_db, CURVE_RATE)
+}
+
+/// [`eq`] for a device running at `rate` Hz: the curve is the real filters' response there.
+pub fn eq_at(bands: usize, range_db: f64, rate: f64) -> GraphSpec {
     let (px, py) = m::pad::EQ;
     let mut spec = GraphSpec::new(
         "",
@@ -181,7 +199,7 @@ pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
     spec.layers = vec![
         Layer::Data(DataKind::Spectrum),
         Layer::Curve(Curve {
-            f: CurveFn::new(move |x, p| eq_response(p, bands, x)),
+            f: CurveFn::new(move |x, p| eq_response_at(p, bands, x, rate)),
             baseline: Some(0.0),
             fill: true,
         }),
@@ -204,7 +222,7 @@ pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
                     let y = if is_cut(p) {
                         -3.0
                     } else {
-                        eq_response(p, bands, p[o + 1])
+                        eq_response_at(p, bands, p[o + 1], rate)
                     };
                     (p[o + 1], y)
                 }))

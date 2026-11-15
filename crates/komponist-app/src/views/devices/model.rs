@@ -15,6 +15,7 @@ use super::layout::{self, DeviceLayout};
 use super::metrics;
 use crate::device_host::{DeviceHost, internal_kind, is_pisynth};
 use crate::meters::DeviceLevels;
+use crate::spectrum::Analysis;
 use crate::ui_state::{PluginWindow, Reveal};
 use crate::views::format_tag;
 
@@ -276,6 +277,9 @@ pub struct Card {
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
+    /// The device's sample rate and live spectrum (WP-92, set by the view from `Meters`); `None`
+    /// for a device without a sample tap.
+    pub analysis: Option<Analysis>,
 }
 
 impl Card {
@@ -468,6 +472,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
+        analysis: None,
         routing: presets.then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
@@ -611,6 +616,18 @@ pub fn reveal_scroll(span: (f32, f32), mode: Reveal, width: f32, scroll: f32, pa
             }
         }
     }
+}
+
+/// Whether the card's graph shows a live spectrum when it is on screen: the device runs, is not
+/// bypassed or collapsed and has „Analyse“ on (`analyse` ≥ 0.5; a device without that parameter
+/// has none).
+pub fn shows_spectrum(card: &Card) -> bool {
+    card.state == CardState::Ok
+        && !card.bypass
+        && !card.collapsed
+        && card
+            .param(&ParamId::new("analyse"))
+            .is_some_and(|p| p.value >= 0.5)
 }
 
 /// Which frames show at least partly in a view `width` wide scrolled by `scroll`.

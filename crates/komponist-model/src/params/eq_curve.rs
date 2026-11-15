@@ -18,7 +18,8 @@ pub const HIGH_SHELF: u32 = 3;
 /// Band type: high cut (12 dB/oct low-pass, `q` is its resonance).
 pub const HIGH_CUT: u32 = 4;
 
-/// Sample rate the graph assumes when it draws a curve (the filters adapt to the real rate).
+/// Sample rate the graph assumes when it draws a curve and knows no other (the filters adapt to the
+/// real rate; the device card passes it, see [`band_response_db_at`]).
 pub const CURVE_RATE: f64 = 48_000.0;
 
 /// Biquad coefficients normalized to `a0 = 1`, `y = b0·x + b1·x₁ + b2·x₂ − a1·y₁ − a2·y₂`.
@@ -126,7 +127,13 @@ pub fn magnitude_db(c: &Coefs, hz: f64, rate: f64) -> f64 {
 
 /// Response in dB of one band at `hz` at the graph's sample rate.
 pub fn band_response_db(typ: f64, freq: f64, gain_db: f64, q: f64, hz: f64) -> f64 {
-    magnitude_db(&coefs(typ, freq, gain_db, q, CURVE_RATE), hz, CURVE_RATE)
+    band_response_db_at(typ, freq, gain_db, q, hz, CURVE_RATE)
+}
+
+/// Response in dB of one band at `hz` for a device running at `rate` (the filters near Nyquist
+/// differ between 44.1, 48 and 96 kHz, so the graph uses the device's real rate, WP-92).
+pub fn band_response_db_at(typ: f64, freq: f64, gain_db: f64, q: f64, hz: f64, rate: f64) -> f64 {
+    magnitude_db(&coefs(typ, freq, gain_db, q, rate), hz, rate)
 }
 
 #[cfg(test)]
