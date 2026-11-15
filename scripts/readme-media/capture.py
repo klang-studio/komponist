@@ -397,26 +397,7 @@ def add_device(s):
     s.gif("add-device", (DOCK_X + 300, top, 1340, 330), 1040, fps=12, trim=(0.4, None))
 
 
-def new_track(s):
-    """New-track dialog (PNG) and dragging an instrument onto the "Neue Spur" box (GIF)."""
-    s.click(role="Button", contains="Neue Spur")
-    s.pause(0.8)
-    s.shot("new-track-dialog", crop=(620, 290, 680, 500))
-    s.click(role="Button", label="Abbrechen")
-    s.pause(0.6)
-    box = s.center(role="Button", contains="Neue Spur")
-    src = s.center(role="ListItem", label="knurr")
-    s.hover(role="Button", contains="Neue Spur")
-    s.pause(0.5)
-    s.shot("new-track-box", crop=(261, 400, 700, 110))
-    s.rec_start()
-    s.pause(0.6)
-    s.drag(src, box, steps=25)
-    s.pause(1.6)
-    s.gif("new-track", (0, 270, 720, 260), 720, fps=12, trim=(0.3, None))
-
-
-SCENARIOS = [hero, arrangement, piano_roll, step_sequencer, devices, sidechain, eq_spectrum, mixer, add_device, new_track]
+SCENARIOS = [hero, arrangement, piano_roll, step_sequencer, devices, sidechain, eq_spectrum, mixer, add_device]
 
 
 def main():
