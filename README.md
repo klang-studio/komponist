@@ -12,7 +12,7 @@
   <a href="https://github.com/klang-studio/komponist/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/klang-studio/komponist/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue"></a>
   <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-informational">
-  <img alt="Status: early, v0.1" src="https://img.shields.io/badge/status-early%20(v0.1)-orange">
+  <img alt="Status: early, v0.2" src="https://img.shields.io/badge/status-early%20(v0.2)-orange">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
@@ -84,8 +84,8 @@ does not take your project down with it. Plugin windows open as native X11 windo
 ### Mixer, routing, recording
 
 - Record MIDI from any connected MIDI input (or the computer keyboard) into a take.
-- Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain presse from any
-  track or bus.
+- Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain presse, or a CLAP or
+  VST3 plugin with a sidechain input, from any track or bus.
 - Every edit is undoable, including parameter changes.
 - The transport bar shows the master output as an oscilloscope or a spectrum; a click switches between them.
 
@@ -95,18 +95,20 @@ The mixer shows every track with its inserts, sends, pan, mute/solo, faders and 
 
 ## Status
 
-komponist is **early software (v0.1)**. The MIDI workflow works end to end: arrange, edit, play, record, mix, save,
+komponist is **early software (v0.2)**. The MIDI workflow works end to end: arrange, edit, play, record, mix, save,
 export. Expect rough edges and file-format changes.
 
-What works: MIDI and step clips, piano roll, step sequencer, hexa / volt / Sampler, the built-in effects, sidechains,
-CLAP and VST3 hosting, mixer with groups, buses and sends, recording, undo and redo, project files, export.
+What works: MIDI and step clips, piano roll, step sequencer, hexa / volt / Sampler, the built-in effects, sidechains
+(also into CLAP and VST3 plugins with a sidechain input), CLAP and VST3 hosting, mixer with groups, buses and sends, recording, undo and redo, project files, export.
 
 What is coming: **audio tracks**, automation.
 
 ## Install
 
-Prebuilt packages do not exist yet. Build from source, see [docs/INSTALL.md](docs/INSTALL.md) for the details
-(executable, icon, desktop entry, working on klang-dsp together with komponist).
+Every [release](https://github.com/klang-studio/komponist/releases) has a Linux x86_64 archive (built on Ubuntu 24.04):
+unpack it, run `./komponist --demo`, and `scripts/install-desktop.sh` adds the menu entry and icon. Or build from source,
+see [docs/INSTALL.md](docs/INSTALL.md) for the details (executable, icon, desktop entry, working on klang-dsp together
+with komponist).
 
 ```bash
 git clone https://github.com/klang-studio/komponist
