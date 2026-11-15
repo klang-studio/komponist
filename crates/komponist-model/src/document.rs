@@ -372,6 +372,42 @@ mod tests {
     }
 
     #[test]
+    fn amend_joins_the_newest_step_only_while_it_is_the_newest() {
+        let mut doc = Document::new(Project::new("A"));
+        assert_eq!(doc.top_step(), None);
+        assert_eq!(doc.amend(1, rename("X")), Ok(false), "no step yet");
+        doc.apply("1", rename("B")).unwrap();
+        let first = doc.top_step().unwrap();
+        // Amending replaces the root without a new step; undo goes back to before the step.
+        assert_eq!(doc.amend(first, rename("C")), Ok(true));
+        assert_eq!(doc.amend(first, rename("D")), Ok(true));
+        assert_eq!(name(&doc), "D");
+        assert_eq!(doc.top_step(), Some(first));
+        // Another step makes the first one history; a gesture or a redo stack refuses too.
+        doc.apply("2", rename("E")).unwrap();
+        assert_eq!(doc.amend(first, rename("F")), Ok(false));
+        let second = doc.top_step().unwrap();
+        assert_ne!(first, second);
+        doc.begin_gesture("g");
+        assert_eq!(doc.amend(second, rename("G")), Ok(false));
+        doc.end_gesture();
+        doc.undo();
+        assert_eq!(
+            doc.amend(first, rename("H")),
+            Ok(false),
+            "redo is not empty"
+        );
+        doc.redo();
+        assert_eq!(doc.amend(second, fail), Err(EditError::Invalid("test")));
+        assert_eq!(name(&doc), "E");
+        // One undo goes back to the root before the first step.
+        doc.undo();
+        doc.undo();
+        assert_eq!(name(&doc), "A");
+        assert!(!doc.undo());
+    }
+
+    #[test]
     fn errors_change_nothing() {
         let mut doc = Document::new(Project::new("A"));
         let root = Arc::clone(doc.project());

@@ -580,7 +580,10 @@ impl App {
             }
             Output::Body(BodyEvent::BeginGesture { id }) => {
                 self.queue
-                    .push(Action::Plugin(PluginAction::BeginParamGesture { device, id }));
+                    .push(Action::Plugin(PluginAction::BeginParamGesture {
+                        device,
+                        id,
+                    }));
             }
             Output::Body(BodyEvent::EndGesture) => {
                 self.queue.push(Action::Edit(EditAction::EndGesture));

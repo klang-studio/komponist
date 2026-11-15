@@ -171,6 +171,21 @@ pub struct GraphOutput {
     pub selected_slot: Option<usize>,
     /// Requests the host acts on.
     pub events: Vec<GraphEvent>,
+    /// What the user is doing with the handles: the host brackets it into one undo gesture.
+    pub touch: GraphTouch,
+}
+
+/// The pointer's work on the handles in one pass of [`Graph::show`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GraphTouch {
+    /// A drag of a handle started.
+    pub drag_started: bool,
+    /// A handle is being dragged.
+    pub dragging: bool,
+    /// A drag of a handle ended.
+    pub drag_stopped: bool,
+    /// The wheel moved a handle's wheel binding.
+    pub wheel: bool,
 }
 
 /// Which binding of a handle.
@@ -541,6 +556,7 @@ impl<'a> Graph<'a> {
         let mut focused: Option<usize> = None;
         let mut hits: Vec<(usize, Rect, Id)> = Vec::new();
         let mut hot: Vec<(usize, bool, bool)> = Vec::new();
+        let mut touch = GraphTouch::default();
         for (i, h) in spec.handles.iter().enumerate() {
             if !is_visible(h, values) {
                 continue;
@@ -580,6 +596,9 @@ impl<'a> Graph<'a> {
                 continue;
             }
             hot.push((i, r.hovered() || r.dragged(), r.dragged()));
+            touch.drag_started |= r.drag_started();
+            touch.dragging |= r.dragged();
+            touch.drag_stopped |= r.drag_stopped();
             if r.has_focus() {
                 focused = Some(i);
             }
@@ -665,6 +684,7 @@ impl<'a> Graph<'a> {
                         if v != values[slot] {
                             values[slot] = v;
                             changed.push((slot, v));
+                            touch.wheel = true;
                             last = Some((i, Which::Wheel));
                             selected = Some(i);
                             tips.push((
@@ -841,6 +861,7 @@ impl<'a> Graph<'a> {
             selected,
             selected_slot,
             events,
+            touch,
         }
     }
 }

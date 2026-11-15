@@ -281,6 +281,19 @@ IDs are `u64` from `Project::next_id`, so they stay stable across undo and redo.
   unit-tested, also used by the acceptance tests.
 - Change detection for the engine: `Arc::ptr_eq` per track, clip and device (see 6.3).
 - Selection, focus, zoom and open panels are UI state (`komponist-app`) and are not undone.
+- **Device parameters and plugin states are tracked** (owner decision 2026-11-15). A knob, fader,
+  XY or graph-handle drag is one gesture, a wheel burst is one gesture, a click, key step, text
+  entry, reset or dropdown choice is one step; a sample load, replace or clear is one step. The
+  value goes into the device state (`edits::set_device_state`) and, for pisynth and the internal
+  devices, to the running processor as `SetParam` on the engine's fast path: the app does **not**
+  run `EngineSync::sync_device_states` for it (that hands pisynth a fresh processor), so a drag
+  neither clicks nor recompiles per frame. Undo, redo, a cancelled gesture, presets and pastes do
+  follow the document that way. A bridged plugin's own edits and card parameters arrive as state
+  snapshots; they are tracked too, **coalesced** per device (snapshots within 1 s amend one step,
+  `Document::amend`), named „<Parameter> ändern“ or „<Plugin>: Zustand ändern“, and a snapshot
+  equal to the stored state is skipped. Only transport settings, sample paths rewritten on save
+  and the echo of an undo (a plugin answering `SetState` with other bytes) stay outside the
+  history (`Document::apply_untracked`). Details: `komponist-app/src/param_undo.rs`.
 
 ### 5.4 Formatting (pure, tested)
 

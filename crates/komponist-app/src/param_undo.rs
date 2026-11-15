@@ -26,6 +26,10 @@
 //!   during a card gesture of the same device joins the gesture's step; one that arrives during
 //!   another gesture (a fader drag, a recording) waits for its end. A snapshot equal to the stored
 //!   state is skipped, so closing a GUI without edits leaves the document clean.
+//! - **Baseline:** a bridged device that comes up without a state in the document is asked for
+//!   one ([`App::device_up`]); the answer is kept aside, not stored. Undoing the first edit goes
+//!   back to "no state", and the plugin then gets the baseline; a snapshot equal to it is not an
+//!   edit.
 //! - **Echo of an undo:** undo, redo or a preset hands a bridged plugin its state (`SetState`),
 //!   and a plugin may answer with a snapshot whose bytes differ though nothing changed. Snapshots
 //!   of that device within [`ECHO_QUIET`] after such a hand-over are stored outside the history
@@ -51,6 +55,9 @@ pub const COALESCE: Duration = Duration::from_secs(1);
 /// Snapshots of a bridged device within this time after the document handed it a state are the
 /// plugin's echo and stay out of the history.
 pub const ECHO_QUIET: Duration = Duration::from_secs(2);
+
+/// Added to the window after a card gesture: the bridge's debounced snapshot of its last turns.
+const SNAPSHOT_SLACK: Duration = Duration::from_millis(500);
 
 /// A card parameter turned this long ago still names the snapshot step that follows it.
 const TURN_LABEL: Duration = Duration::from_secs(5);
@@ -157,7 +164,11 @@ impl App {
             match self.doc.top_step() {
                 // The snapshot that came during the drag made the step; the last one amends it.
                 Some(step) if pushed => {
-                    self.param_undo.steps.insert(device, (step, now));
+                    // The plugin's own debounce (1 s after the last turn) may still fire after
+                    // the immediate answer: the window starts a little later.
+                    self.param_undo
+                        .steps
+                        .insert(device, (step, now + SNAPSHOT_SLACK));
                 }
                 _ => {
                     self.param_undo.steps.remove(&device);
@@ -228,11 +239,7 @@ impl App {
             None => false,
         };
         let after = self.doc.revision();
-        let Some(slot) = self
-            .engine
-            .program()
-            .and_then(|p| p.slots.slot(device))
-        else {
+        let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) else {
             return;
         };
         let command = Command::SetParam { slot, id, value };
@@ -338,6 +345,20 @@ impl App {
             self.param_undo.baseline.insert(device, Arc::clone(state));
             return;
         }
+        // A device without state in the document that still holds what it came up with is
+        // unchanged too (a GUI opened and closed).
+        let untouched = self
+            .param_undo
+            .baseline
+            .get(&device)
+            .is_some_and(|b| **b == **state)
+            && self
+                .project()
+                .find_device(device)
+                .is_some_and(|(_, _, d)| d.state.is_none());
+        if untouched {
+            return;
+        }
         let now = Instant::now();
         if self.param_undo.echo.get(&device).is_some_and(|&t| now < t) {
             self.store_state_untracked(device, state);
@@ -385,12 +406,9 @@ impl App {
     /// A bridged device came up (`DeviceStatus::Ok`) without a state in the document: asks the
     /// plugin what it holds, so undoing the first edit has something to hand back.
     pub(crate) fn device_up(&mut self, device: DeviceId) {
-        let bridged = self
-            .project()
-            .find_device(device)
-            .is_some_and(|(_, _, d)| {
-                d.state.is_none() && !is_pisynth(d) && internal_kind(d).is_none()
-            });
+        let bridged = self.project().find_device(device).is_some_and(|(_, _, d)| {
+            d.state.is_none() && !is_pisynth(d) && internal_kind(d).is_none()
+        });
         if bridged
             && !self.param_undo.baseline.contains_key(&device)
             && self.param_undo.awaiting.insert(device)

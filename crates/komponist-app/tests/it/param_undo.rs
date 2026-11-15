@@ -144,7 +144,9 @@ fn patch_of(app: &App, device: DeviceId) -> Patch {
 }
 
 fn wire(key: &str) -> u32 {
-    device::param(&ParamId::new(key)).expect("a pisynth parameter").wire
+    device::param(&ParamId::new(key))
+        .expect("a pisynth parameter")
+        .wire
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -229,7 +231,11 @@ fn a_parameter_without_a_gesture_is_a_step_of_its_own_and_a_preset_then_a_knob_u
 
     undo(&mut app);
     undo(&mut app);
-    assert_eq!(state_of(&app, synth), preset_state, "the knob steps are gone");
+    assert_eq!(
+        state_of(&app, synth),
+        preset_state,
+        "the knob steps are gone"
+    );
     assert_eq!(note_peak(&mut app, track, 60), preset_peak);
     undo(&mut app);
     assert_eq!(state_of(&app, synth), original, "back before the preset");
@@ -265,7 +271,12 @@ fn a_drag_that_changes_nothing_leaves_no_step() {
     let start = depth(&mut app);
     let value = Field::Macro(komponist_builtin::Macro::Feedback).get(&patch_of(&app, synth));
     drag_param(&mut app, synth, wire("volume"), &[]);
-    set(&mut app, synth, Field::Macro(komponist_builtin::Macro::Feedback).wire(), value);
+    set(
+        &mut app,
+        synth,
+        Field::Macro(komponist_builtin::Macro::Feedback).wire(),
+        value,
+    );
     app.step();
     assert_eq!(depth(&mut app), start);
 }
@@ -358,7 +369,11 @@ fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
     let tuned = patch_of(h.state(), synth);
     wheel(&mut h, tune.center(), &[1.0, 1.0, 1.0]);
     h.run_steps(60);
-    assert_ne!(patch_of(h.state(), synth), tuned, "the wheel turned the knob");
+    assert_ne!(
+        patch_of(h.state(), synth),
+        tuned,
+        "the wheel turned the knob"
+    );
     assert_eq!(h.state().doc().undo_label(), Some("Tune ändern"));
     assert_eq!(depth(h.state_mut()), start + 2, "the burst is one step");
 
@@ -422,9 +437,15 @@ fn an_internal_devices_drag_is_one_step_and_undo_redo_restore_the_sound() {
 
     undo(&mut app);
     assert_eq!(state_of(&app, limiter), before);
-    assert!(note_peak(&mut app, track, 60) > quiet * 1.5, "undo: the old ceiling");
+    assert!(
+        note_peak(&mut app, track, 60) > quiet * 1.5,
+        "undo: the old ceiling"
+    );
     redo(&mut app);
-    assert!(note_peak(&mut app, track, 60) <= 0.26, "redo: the new ceiling");
+    assert!(
+        note_peak(&mut app, track, 60) <= 0.26,
+        "redo: the new ceiling"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -465,7 +486,11 @@ fn a_sampler_pad_param_drag_is_one_step_and_undo_restores_the_pads_level() {
     assert_eq!(state_of(&app, drums), before);
     assert_eq!(note_peak(&mut app, track, key), full, "undo: the old level");
     redo(&mut app);
-    assert_eq!(note_peak(&mut app, track, key), quiet, "redo: the new level");
+    assert_eq!(
+        note_peak(&mut app, track, key),
+        quiet,
+        "redo: the new level"
+    );
 }
 
 #[test]
@@ -497,11 +522,17 @@ fn clearing_and_relinking_a_sample_are_one_step_each_and_undo_reaches_the_sample
     }));
     app.step();
     assert_eq!(app.doc().undo_label(), Some("Sample laden"));
-    assert_eq!(pad_names(&app, drums)[0], SampleLink::new(&other, None).name);
+    assert_eq!(
+        pad_names(&app, drums)[0],
+        SampleLink::new(&other, None).name
+    );
     assert_eq!(depth(&mut app), start + 3, "clear, start, load");
 
     undo(&mut app);
-    assert!(pad_names(&app, drums)[0].is_empty(), "undo: the pad is empty");
+    assert!(
+        pad_names(&app, drums)[0].is_empty(),
+        "undo: the pad is empty"
+    );
     let start_value = |app: &App| {
         Internal::Sampler
             .decode_state(state_of(app, drums).as_deref())
@@ -510,7 +541,11 @@ fn clearing_and_relinking_a_sample_are_one_step_each_and_undo_reaches_the_sample
     assert_eq!(start_value(&app), 50.0, "and its start is back");
     undo(&mut app);
     undo(&mut app);
-    assert_eq!(pad_names(&app, drums), names, "undo: the first sample is back");
+    assert_eq!(
+        pad_names(&app, drums),
+        names,
+        "undo: the first sample is back"
+    );
     redo(&mut app);
     assert!(pad_names(&app, drums)[0].is_empty(), "redo: empty again");
 }
@@ -574,16 +609,20 @@ fn a_bridged_plugins_card_drag_is_one_step_and_undo_restores_the_plugin() {
     let Some((mut app, synth, gain)) = bridged_app("param-undo-bridge") else {
         return;
     };
-    // The baseline snapshot, and the plugin's debounce quiet.
+    // The plugin's baseline snapshot (asked for when it came up) and its debounce quiet; its
+    // gain starts at the default, -12 dB (value 0.8).
     step_for(&mut app, Duration::from_millis(1300));
     let baseline = plugin_state(&mut app, synth);
-    assert!(state_of(&app, synth).is_none(), "nothing in the document yet");
+    assert!(
+        state_of(&app, synth).is_none(),
+        "nothing in the document yet"
+    );
     let start = depth(&mut app);
 
     // A drag: a gesture with a few turns; the step arrives with the plugin's snapshot, which the
     // end of the gesture asks for.
     begin(&mut app, synth, gain);
-    for v in [0.2, 0.4, 0.6, 0.8] {
+    for v in [0.9, 0.7, 0.6, 0.5] {
         set(&mut app, synth, gain, v);
         step_for(&mut app, Duration::from_millis(20));
     }
@@ -597,17 +636,29 @@ fn a_bridged_plugins_card_drag_is_one_step_and_undo_restores_the_plugin() {
     assert_eq!(app.doc().undo_label(), Some("Gain ändern"));
     let turned = state_of(&app, synth).unwrap();
     assert_ne!(*turned, *baseline);
-    assert_eq!(plugin_state(&mut app, synth), turned, "the document has what the plugin holds");
+    assert_eq!(
+        plugin_state(&mut app, synth),
+        turned,
+        "the document has what the plugin holds"
+    );
 
     // Undo: the plugin is back at what it held before the drag.
     undo(&mut app);
     assert!(state_of(&app, synth).is_none());
     step_for(&mut app, Duration::from_millis(100));
-    assert_eq!(plugin_state(&mut app, synth), baseline, "undo: the plugin follows");
+    assert_eq!(
+        plugin_state(&mut app, synth),
+        baseline,
+        "undo: the plugin follows"
+    );
     redo(&mut app);
     step_for(&mut app, Duration::from_millis(100));
     assert_eq!(state_of(&app, synth).unwrap(), turned);
-    assert_eq!(plugin_state(&mut app, synth), turned, "redo: the plugin follows");
+    assert_eq!(
+        plugin_state(&mut app, synth),
+        turned,
+        "redo: the plugin follows"
+    );
     // The echoes of undo and redo made no steps.
     step_for(&mut app, Duration::from_millis(1500));
     assert_eq!(depth(&mut app), start + 1);

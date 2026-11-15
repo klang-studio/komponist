@@ -339,7 +339,12 @@ fn cell(ui: &mut Ui, width: f32, p: &mut Param, events: &mut Vec<BodyEvent>) {
             gesture_actions(
                 &r,
                 moved,
-                || Action::Plugin(PluginAction::BeginParamGesture { device: DeviceId(0), id }),
+                || {
+                    Action::Plugin(PluginAction::BeginParamGesture {
+                        device: DeviceId(0),
+                        id,
+                    })
+                },
                 &mut actions,
                 |_| {},
             );

@@ -83,15 +83,59 @@ pub fn gesture_actions(
     out: &mut Vec<Action>,
     change: impl FnOnce(&mut Vec<Action>),
 ) {
-    if response.drag_started() {
+    let input = Touch {
+        drag_started: response.drag_started(),
+        dragged: response.dragged(),
+        drag_stopped: response.drag_stopped(),
+        wheel: !response.dragged() && wheel_turned(response),
+        hovered: response.hovered(),
+    };
+    gesture_touch(
+        &response.ctx,
+        response.id,
+        input,
+        changed,
+        begin,
+        out,
+        change,
+    );
+}
+
+/// What the pointer did to one control in a frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Touch {
+    /// A drag started.
+    pub drag_started: bool,
+    /// A drag is going on.
+    pub dragged: bool,
+    /// A drag ended.
+    pub drag_stopped: bool,
+    /// A wheel notch turned the control.
+    pub wheel: bool,
+    /// The pointer is over the control.
+    pub hovered: bool,
+}
+
+/// [`gesture_actions`] for a control whose several parts have no response of their own to ask
+/// (the device graph's handles): `id` keeps the wheel burst's state.
+pub fn gesture_touch(
+    ctx: &egui::Context,
+    id: egui::Id,
+    touch: Touch,
+    changed: bool,
+    begin: impl Fn() -> Action,
+    out: &mut Vec<Action>,
+    change: impl FnOnce(&mut Vec<Action>),
+) {
+    if touch.drag_started {
         out.push(begin());
     }
     // A burst of wheel notches is one gesture: it opens with the first notch and closes after
     // [`WHEEL_GESTURE_IDLE`] without one, or when the pointer leaves the control.
-    let wheel = response.id.with("komponist_wheel_gesture");
-    let turned = !response.dragged() && wheel_turned(response);
-    let now = response.ctx.input(|i| i.time);
-    let mut open: Option<f64> = response.ctx.data(|d| d.get_temp(wheel));
+    let wheel = id.with("komponist_wheel_gesture");
+    let turned = !touch.dragged && touch.wheel;
+    let now = ctx.input(|i| i.time);
+    let mut open: Option<f64> = ctx.data(|d| d.get_temp(wheel));
     if turned {
         if open.is_none() {
             out.push(begin());
@@ -101,20 +145,18 @@ pub fn gesture_actions(
     if changed {
         change(out);
     }
-    if response.drag_stopped() {
+    if touch.drag_stopped {
         out.push(Action::Edit(EditAction::EndGesture));
     }
     if let Some(last) = open {
-        if !turned && (now - last >= WHEEL_GESTURE_IDLE || !response.hovered()) {
+        if !turned && (now - last >= WHEEL_GESTURE_IDLE || !touch.hovered) {
             out.push(Action::Edit(EditAction::EndGesture));
             open = None;
         } else if !turned {
-            response
-                .ctx
-                .request_repaint_after_secs((WHEEL_GESTURE_IDLE - (now - last)).max(0.0) as f32);
+            ctx.request_repaint_after_secs((WHEEL_GESTURE_IDLE - (now - last)).max(0.0) as f32);
         }
     }
-    response.ctx.data_mut(|d| match open {
+    ctx.data_mut(|d| match open {
         Some(t) => {
             d.insert_temp(wheel, t);
         }

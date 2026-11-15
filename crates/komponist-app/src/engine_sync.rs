@@ -480,11 +480,9 @@ impl EngineSync {
         } else if let Some(kind) = internal_kind(device) {
             // A state with only sample links has no `params`: its values are the defaults (as
             // the processor made from it has them).
-            let values = |d: &komponist_model::Device| {
-                match kind.decode_state(d.state.as_deref()) {
-                    Err(komponist_builtin::internal::StateError::NoParams) => Ok(kind.defaults()),
-                    other => other,
-                }
+            let values = |d: &komponist_model::Device| match kind.decode_state(d.state.as_deref()) {
+                Err(komponist_builtin::internal::StateError::NoParams) => Ok(kind.defaults()),
+                other => other,
             };
             let (Ok(was), Ok(now)) = (values(old), values(device)) else {
                 self.reload_device(project, device.id);
