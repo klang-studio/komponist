@@ -57,6 +57,7 @@ pub mod device;
 pub mod internal;
 pub mod macros;
 mod processor;
+pub mod sampler;
 pub mod state;
 
 pub use internal::{Internal, InternalProcessor};

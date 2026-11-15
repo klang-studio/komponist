@@ -26,6 +26,8 @@ komponist-ui = { path = "crates/komponist-ui" }
 # one level below <workspace>/ (PLAN §1.2).
 klang-dsp = { path = "../klang-dsp" }
 synth-core = { path = "../pisynth/crates/synth-core", features = ["alloc", "serde"] }
+# klopfer's RT sampler engine (voices, pads, envelopes, interpolation), GPL-3.0-or-later like komponist (WP-87).
+klopfer_dsp = { path = "../klopfer/dsp" }
 
 # UI (egui/eframe 0.37 family; versions must move together).
 egui = "0.37.0"
