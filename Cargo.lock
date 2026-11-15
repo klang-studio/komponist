@@ -2068,7 +2068,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 name = "hexa-core"
 version = "0.1.0"
 dependencies = [
- "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
+ "klang-dsp",
  "libm",
  "postcard",
  "serde",
@@ -2435,23 +2435,9 @@ dependencies = [
 [[package]]
 name = "klang-dsp"
 version = "0.1.0"
-dependencies = [
- "libm",
-]
-
-[[package]]
-name = "klang-dsp"
-version = "0.1.0"
 source = "git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f#e1737fbf04ba42a3501d14521c5d5125c9f09c2f"
 dependencies = [
  "libm",
-]
-
-[[package]]
-name = "klopfer_dsp"
-version = "0.1.0"
-dependencies = [
- "klang-dsp 0.1.0",
 ]
 
 [[package]]
@@ -2463,7 +2449,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "hound",
- "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
+ "klang-dsp",
  "komponist-audio",
  "komponist-bridge",
  "komponist-builtin",
@@ -2490,7 +2476,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "cpal",
- "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
+ "klang-dsp",
  "midir",
  "rtrb",
  "serde",
@@ -2517,11 +2503,11 @@ dependencies = [
  "assert_no_alloc",
  "hexa-core",
  "hound",
- "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
- "klopfer_dsp",
+ "klang-dsp",
  "komponist-engine",
  "komponist-model",
  "rtrb",
+ "sampler-core",
  "serde_json",
 ]
 
@@ -2531,7 +2517,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "hound",
- "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
+ "klang-dsp",
  "komponist-builtin",
  "komponist-model",
  "rtrb",
@@ -2614,7 +2600,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
- "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
+ "klang-dsp",
  "komponist-i18n",
  "komponist-model",
  "komponist-tokens",
@@ -4247,6 +4233,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "sampler-core"
+version = "0.1.0"
+dependencies = [
+ "klang-dsp",
 ]
 
 [[package]]

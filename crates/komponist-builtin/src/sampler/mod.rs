@@ -6,15 +6,14 @@
 //! [`NAME`] (one place, here); it is an [`Internal`](crate::Internal) like the effects, with
 //! role instrument.
 //!
-//! # Engine: `klopfer_dsp` by path
+//! # Engine: `sampler-core`
 //!
-//! The voices are klopfer's (`../klopfer/dsp`, read-only, GPL-3.0-or-later like komponist): its
+//! The voices are `sampler-core`'s, vendored from klopfer's `dsp` crate (see its README): its
 //! `Engine` has fixed-size voice and pad arrays, takes samples as `Arc<Sample>` slots it only reads
 //! and allocates nothing in `note_on` / `render_frame`, which is what an RT instrument needs. The
 //! pad's start/end, tune, drive, pan, gain, amp envelope and choke group are its `PadSettings`;
 //! the interpolation is Hermite and resamples any sample rate. What the sampler does not use
-//! (filter, LFO, modulation slots, layers, slicing, stretch) stays off. Copying it would only fork
-//! it, so it is a path dependency like `hexa-core`.
+//! (filter, LFO, modulation slots, layers, slicing, stretch) stays off.
 //!
 //! # Parameters
 //!

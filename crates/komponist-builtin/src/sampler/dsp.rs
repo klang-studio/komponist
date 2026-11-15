@@ -1,4 +1,4 @@
-//! The sampler's DSP: `klopfer_dsp`'s engine behind the [`Dsp`] trait of the internal devices.
+//! The sampler's DSP: `sampler_core`'s engine behind the [`Dsp`] trait of the internal devices.
 //!
 //! Realtime: `note_on`, `note_off`, `process` and `reset` allocate, lock and free nothing. A sample
 //! arrives from the loader as `Arc<Sample>` through a wait-free queue (drained at the start of
@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use klopfer_dsp::{
+use sampler_core::{
     Engine, EnvParams, NUM_OUTPUTS, NUM_PADS, NUM_SAMPLE_SLOTS, PadLayers, PadParams, PadSettings,
     Sample, slot_index,
 };
