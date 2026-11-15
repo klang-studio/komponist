@@ -18,6 +18,8 @@ pub const BAND: &str = "band";
 pub const SEL: &str = "sel";
 /// The envelope a device with several shows, e.g. `amp` or `filt` (`{env_view}_a`).
 pub const ENV_VIEW: &str = "env_view";
+/// The LFO a device with several shows, `1` or `2` (`lfo{lfo_view}_rate`).
+pub const LFO_VIEW: &str = "lfo_view";
 
 /// The values of the placeholders a view currently has.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

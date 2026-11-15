@@ -83,6 +83,15 @@ pub enum CellParam {
         /// How many entries there are (operators).
         count: u8,
     },
+    /// Like [`CellParam::Select`] with named entries (WP-95): a segment switch whose entries are
+    /// `(value, label)` pairs. The selected `value` is the context placeholder `key`, and its
+    /// `label` is placeholder `{key}_label` (so a graph title can say "Filter-Hk.").
+    Choice {
+        /// The placeholder (`ENV_VIEW`).
+        key: &'static str,
+        /// `(context value, label)` per entry; the first is the default.
+        options: &'static [(&'static str, &'static str)],
+    },
     /// A widget that edits no single parameter (a label, a meter).
     None,
 }
@@ -110,6 +119,14 @@ pub enum GraphConfig {
         /// Points.
         points: u8,
     },
+    /// The response of knurr's filter (WP-95): slots `cutoff`, `resonance`, `type`, `mod1_src` …
+    /// `mod4_amt`, `at_cut`, `lfo1_uni`, `lfo2_uni`; the bar under the curve is the range the
+    /// matrix moves the cutoff over.
+    FilterVa,
+    /// The mix of knurr's oscillators over two periods (WP-95), display only.
+    Signal,
+    /// One cycle of an LFO shape (WP-95), display only; slot `shape`.
+    LfoShape,
 }
 
 /// What a graph cell shows and edits: the configuration, its title, and for every slot of the
@@ -243,6 +260,22 @@ impl Cell {
         )
     }
 
+    /// A graph over `cols` columns and `rows` rows **and the top half of the row below** (the
+    /// "4 × 1.5" of the device handoff: the half cells of that row stay free in the bottom
+    /// half). `rows` counts the full rows; a graph of one full row and a half is `rows = 1`.
+    pub fn graph_half(col: u8, row: u8, cols: u8, rows: u8, binding: GraphBinding) -> Cell {
+        Cell {
+            col,
+            row,
+            cols,
+            rows: rows.saturating_add(1),
+            half: Some(Half::Top),
+            widget: WidgetKind::Graph,
+            param: CellParam::Graph(binding),
+            carrier: None,
+        }
+    }
+
     /// A widget in a half cell.
     pub fn half(
         col: u8,
@@ -281,6 +314,11 @@ impl Cell {
         let mut y = pad + f32::from(self.row) * (ch + gap);
         let (w, h) = (span(cw, self.cols), span(ch, self.rows));
         let h = match self.half {
+            // A half cell over several rows (`graph_half`): the full rows above it and the top
+            // half of the last one.
+            Some(Half::Top) if self.rows > 1 => {
+                span(ch, self.rows - 1) + gap + device::grid::HALF_CELL_H
+            }
             Some(half) => {
                 if half == Half::Bottom {
                     y += device::grid::HALF_OFFSET_BOTTOM;
@@ -299,8 +337,11 @@ impl Cell {
             Some(Half::Top) => Part::Top,
             Some(Half::Bottom) => Part::Bottom,
         };
+        // The rows above the last one of a half cell over several rows are taken whole.
+        let last = self.row.saturating_add(self.rows).saturating_sub(1);
         (self.col..self.col.saturating_add(self.cols)).flat_map(move |c| {
-            (self.row..self.row.saturating_add(self.rows)).map(move |r| (c, r, part))
+            (self.row..self.row.saturating_add(self.rows))
+                .map(move |r| (c, r, if r < last { Part::Full } else { part }))
         })
     }
 
@@ -309,7 +350,10 @@ impl Cell {
         match &self.param {
             CellParam::Id(id) => Ok(Some(id.clone())),
             CellParam::Template(t) => resolve(t, context).map(Some),
-            CellParam::Graph(_) | CellParam::Select { .. } | CellParam::None => Ok(None),
+            CellParam::Graph(_)
+            | CellParam::Select { .. }
+            | CellParam::Choice { .. }
+            | CellParam::None => Ok(None),
         }
     }
 }
@@ -508,7 +552,9 @@ pub fn validate(
                 && cell.rows >= 1
                 && cell.col.saturating_add(cell.cols) <= page.cols
                 && cell.row.saturating_add(cell.rows) <= ROWS
-                && (cell.half.is_none() || cell.rows == 1);
+                && (cell.half.is_none()
+                    || cell.rows == 1
+                    || (cell.half == Some(Half::Top) && cell.widget == WidgetKind::Graph));
             if !inside {
                 errors.push(LayoutError::BadCell { page: p, cell: c });
                 continue;
@@ -576,7 +622,7 @@ pub fn validate(
 }
 
 /// The placeholder names of the layouts the editors know (re-exported for layout authors).
-pub use super::context::{BAND, ENV_OP, ENV_VIEW, SEL};
+pub use super::context::{BAND, ENV_OP, ENV_VIEW, LFO_VIEW, SEL};
 
 #[cfg(test)]
 mod tests {
@@ -689,6 +735,35 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_graph_of_one_and_a_half_rows_leaves_the_bottom_half_of_its_last_row() {
+        let graph = || Cell::graph_half(0, 0, 4, 1, GraphBinding::new(GraphConfig::FilterVa));
+        assert_eq!(graph().bounds(), [8.0, 8.0, 236.0, 98.0]);
+        let free = page(
+            4,
+            vec![
+                graph(),
+                Cell::half(0, 1, 2, Half::Bottom, WidgetKind::Dropdown, CellParam::None),
+                Cell::knob(0, 2, id("a")),
+            ],
+        );
+        assert_eq!(validate(&free, &ParamContext::new(), &all), vec![]);
+        for taken in [
+            Cell::half(0, 1, 2, Half::Top, WidgetKind::Dropdown, CellParam::None),
+            Cell::knob(1, 1, id("a")),
+        ] {
+            let l = page(4, vec![graph(), taken]);
+            assert_eq!(
+                validate(&l, &ParamContext::new(), &all),
+                vec![LayoutError::Overlap {
+                    page: 0,
+                    a: 0,
+                    b: 1
+                }]
+            );
+        }
     }
 
     #[test]
