@@ -146,7 +146,7 @@ pub fn show(
         }));
     }
     if row
-        .add(Button::new(names::SNAP).on(pr.snap).small())
+        .add(Button::icon(Icon::Magnet, names::SNAP).on(pr.snap))
         .clicked()
     {
         ctx.send(Action::Ui(UiAction::ToggleSnap(GridTarget::PianoRoll)));
