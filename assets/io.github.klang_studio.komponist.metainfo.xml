@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>komponist</id>
+  <id>io.github.klang_studio.komponist</id>
   <name>komponist</name>
   <summary>MIDI DAW with CLAP and VST3 plugin hosting</summary>
   <summary xml:lang="de">MIDI-DAW mit CLAP- und VST3-Plugins</summary>
+  <url type="homepage">https://github.com/klang-studio/komponist</url>
+  <developer id="io.github.klang_studio">
+    <name>klang-studio</name>
+  </developer>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <description>
     <p>komponist is a digital audio workstation for Linux. You arrange MIDI clips on tracks, edit notes in the piano roll and the step grid, and play them through built-in instruments and CLAP and VST3 plugins. Plugins run in their own bridge processes, so a crashing plugin does not take your project down.</p>
     <p xml:lang="de">komponist ist eine Digital Audio Workstation für Linux. Du arrangierst MIDI-Clips auf Spuren, bearbeitest Noten im Piano Roll und im Step-Grid und spielst sie über eingebaute Instrumente sowie CLAP- und VST3-Plugins ab. Plugins laufen in eigenen Bridge-Prozessen, ein abstürzendes Plugin reißt dein Projekt also nicht mit.</p>
   </description>
-  <launchable type="desktop-id">komponist.desktop</launchable>
+  <launchable type="desktop-id">io.github.klang_studio.komponist.desktop</launchable>
   <icon type="stock">komponist</icon>
   <categories>
     <category>AudioVideo</category>

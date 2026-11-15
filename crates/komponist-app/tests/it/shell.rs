@@ -469,6 +469,42 @@ fn the_count_in_button_shows_no_digit_while_off() {
     results.unwrap();
 }
 
+/// A project that carries a count-in of 12 bars (the edit limits new values, a loaded project may
+/// not): the badge shows both digits and the button grows for them, on or off alike.
+#[test]
+fn the_count_in_button_has_room_for_two_digits() {
+    use komponist_app::TransportAction;
+    let width_of = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Button, de::TRANSPORT_COUNT_IN)
+            .rect()
+            .width()
+    };
+    let one = {
+        let mut h = harness_at(demo(), 1.0);
+        h.run_steps(3);
+        width_of(&h)
+    };
+    let mut project = demo_project();
+    project.count_in_bars = 12;
+    let mut app = App::headless(project);
+    for panel in [Panel::Browser, Panel::Inspector, Panel::Dock] {
+        app.dispatch(Action::Ui(UiAction::TogglePanel(panel)));
+    }
+    let mut h = harness_at(app, 2.0);
+    h.run_steps(3);
+    mask_cpu(&mut h);
+    let twelve = width_of(&h);
+    assert!(twelve > one, "two digits need more room: {twelve} vs {one}");
+    h.snapshot("shell-count-in-12-bars-2x");
+    let mut results = SnapshotResults::new();
+    results.extend_harness(&mut h);
+    h.state_mut()
+        .dispatch(Action::Transport(TransportAction::ToggleCountIn));
+    h.run_steps(3);
+    assert_eq!(width_of(&h), one, "off, the count of 1 bar is shown again");
+    results.unwrap();
+}
+
 #[test]
 fn an_armed_track_turns_letters_into_notes() {
     use komponist_app::{EditAction, TransportAction};

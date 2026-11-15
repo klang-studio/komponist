@@ -52,20 +52,27 @@ pub struct Document {
     redo: Vec<UndoStep>,
     gesture: Option<Gesture>,
     revision: u64,
-    saved_revision: u64,
+    /// The root at the last save, if undo or redo can still reach it (compared by pointer: undo
+    /// and redo swap the very same `Arc`s). `None` once an edit after an undo dropped it from
+    /// the history, or the undo limit did; the document is then dirty until the next save.
+    saved: Option<Arc<Project>>,
+    /// An untracked edit changed the root since the save: not undoable, so undo cannot clear it.
+    untracked_dirty: bool,
     next_step: u64,
 }
 
 impl Document {
     /// A document with `project` as its root, empty history, not dirty.
     pub fn new(project: Project) -> Document {
+        let current = Arc::new(project);
         Document {
-            current: Arc::new(project),
+            saved: Some(Arc::clone(&current)),
+            current,
             undo: Vec::new(),
             redo: Vec::new(),
             gesture: None,
             revision: 0,
-            saved_revision: 0,
+            untracked_dirty: false,
             next_step: 0,
         }
     }
@@ -117,12 +124,21 @@ impl Document {
     /// (loop on/off, metronome, count-in), the loop range set from the ruler, sample paths
     /// rewritten for the file being saved and the plugin state snapshots that merely echo an undo
     /// (`edits::set_device_state`). Device parameters and a plugin's own edits are tracked, not
-    /// untracked. Marks the document dirty.
+    /// untracked. An edit that changes the root marks the document dirty until the next save
+    /// (undo cannot clear that); one that changes nothing leaves the dirty state alone.
     pub fn apply_untracked(
         &mut self,
         edit: impl Fn(&Project) -> Result<Project, EditError>,
     ) -> Result<(), EditError> {
-        let next = Arc::new(edit(&self.current)?);
+        let edited = edit(&self.current)?;
+        // An edit that changes nothing (a plugin state that merely echoes an undo) keeps the root
+        // and the clean state.
+        let changed = edited != *self.current;
+        let next = if changed {
+            Arc::new(edited)
+        } else {
+            Arc::clone(&self.current)
+        };
         let rebase = |snapshot: &mut Arc<Project>| {
             if let Ok(p) = edit(snapshot) {
                 *snapshot = Arc::new(p);
@@ -139,6 +155,7 @@ impl Document {
             }
         }
         self.current = next;
+        self.untracked_dirty |= changed;
         self.revision += 1;
         Ok(())
     }
@@ -276,15 +293,22 @@ impl Document {
         self.redo.last().map(|s| s.label.as_str())
     }
 
-    /// Whether the root changed since the last [`Document::mark_saved`] (or creation). Shown as the
-    /// dot after the project name in the transport bar.
+    /// Whether the root differs from the last [`Document::mark_saved`] (or creation). Shown as the
+    /// dot after the project name in the transport bar and asked about before closing. Undo or
+    /// redo back to the saved root clears it; any other edit sets it, and an edit after undoing
+    /// past the saved root makes that root unreachable until the next save.
     pub fn is_dirty(&self) -> bool {
-        self.revision != self.saved_revision
+        self.untracked_dirty
+            || !self
+                .saved
+                .as_ref()
+                .is_some_and(|saved| Arc::ptr_eq(saved, &self.current))
     }
 
     /// Marks the current root as saved.
     pub fn mark_saved(&mut self) {
-        self.saved_revision = self.revision;
+        self.saved = Some(Arc::clone(&self.current));
+        self.untracked_dirty = false;
     }
 
     /// Pushes a new undo step: clears the redo stack and drops the oldest step beyond
@@ -634,5 +658,101 @@ mod tests {
         assert!(!doc.is_dirty());
         doc.undo();
         assert!(doc.is_dirty());
+    }
+
+    #[test]
+    fn undo_back_to_the_saved_state_is_clean_and_redo_is_dirty() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.apply("1", rename("B")).unwrap();
+        doc.mark_saved();
+        doc.apply("2", rename("C")).unwrap();
+        doc.apply("3", rename("D")).unwrap();
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert!(!doc.is_dirty(), "back at the saved root");
+        doc.redo();
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert!(!doc.is_dirty());
+        // Before the saved root is dirty too, and redo to it is clean again.
+        doc.undo();
+        assert!(doc.is_dirty());
+        doc.redo();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn an_edit_after_undoing_past_the_saved_state_makes_it_unreachable() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.apply("1", rename("B")).unwrap();
+        doc.mark_saved();
+        doc.undo();
+        doc.apply("2", rename("B")).unwrap();
+        assert!(doc.is_dirty(), "an equal root is not the saved one");
+        doc.undo();
+        doc.redo();
+        assert!(doc.is_dirty());
+        doc.mark_saved();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn an_edit_on_the_saved_state_and_its_undo_cancel_out() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.mark_saved();
+        doc.apply("1", rename("B")).unwrap();
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn gestures_follow_the_saved_state() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.begin_gesture("drag");
+        doc.apply("", rename("B")).unwrap();
+        assert!(doc.is_dirty());
+        doc.cancel_gesture();
+        assert!(!doc.is_dirty(), "cancel restores the saved root");
+        doc.begin_gesture("drag");
+        doc.apply("", rename("B")).unwrap();
+        doc.end_gesture();
+        doc.undo();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn an_untracked_change_stays_dirty_through_undo_until_saved() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.apply("1", rename("B")).unwrap();
+        doc.mark_saved();
+        doc.apply_untracked(|p| {
+            let mut p = p.clone();
+            p.loop_on = !p.loop_on;
+            Ok(p)
+        })
+        .unwrap();
+        assert!(doc.is_dirty());
+        doc.undo();
+        doc.redo();
+        assert!(doc.is_dirty());
+        doc.mark_saved();
+        assert!(!doc.is_dirty());
+        // An untracked edit that changes nothing does not dirty the document.
+        doc.apply_untracked(|p| Ok(p.clone())).unwrap();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn the_undo_limit_can_drop_the_saved_state() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.mark_saved();
+        for i in 0..=UNDO_LIMIT {
+            doc.apply("e", rename(&format!("n{i}"))).unwrap();
+        }
+        while doc.undo() {}
+        assert!(doc.is_dirty(), "the saved root fell off the history");
     }
 }

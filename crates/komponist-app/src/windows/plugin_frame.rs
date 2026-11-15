@@ -1341,7 +1341,7 @@ fn show_viewport(ctx: &Context, frame: &Frame, native: bool) {
     };
     let mut builder = ViewportBuilder::default()
         .with_title(title)
-        .with_app_id(crate::panels::transport::WORDMARK)
+        .with_app_id(crate::APP_ID)
         .with_icon(komponist_ui::app_icon())
         .with_inner_size(frame.initial)
         .with_window_level(level);

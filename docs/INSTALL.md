@@ -46,8 +46,9 @@ The plugin bridge is part of the executable (`komponist --bridge`), so nothing e
 
 ## Icon, desktop entry, mime type, metainfo
 
-The app id is **`komponist`**: icon name, desktop file name, `StartupWMClass`, and the window's
-Wayland app id / X11 `WM_CLASS` (`panels::transport::WORDMARK`). Icons come from
+The app id is **`io.github.klang_studio.komponist`** (`komponist_app::APP_ID`): desktop file name,
+metainfo file name and `<id>`, `StartupWMClass`, and the window's Wayland app id / X11 `WM_CLASS`.
+The icon name stays `komponist`. Icons come from
 `assets/icons/hicolor/` (generated from the icon design sources, which are kept with the maintainers' notes).
 
 ```bash
@@ -63,9 +64,9 @@ for n in 16 24 32 48 64 128 256 512; do
 done
 install -Dm644 assets/icons/hicolor/scalable/apps/komponist.svg $PREFIX/share/icons/hicolor/scalable/apps/komponist.svg
 install -Dm644 assets/icons/hicolor/symbolic/apps/komponist-symbolic.svg $PREFIX/share/icons/hicolor/symbolic/apps/komponist-symbolic.svg
-install -Dm644 assets/komponist.desktop $PREFIX/share/applications/komponist.desktop
+install -Dm644 assets/io.github.klang_studio.komponist.desktop $PREFIX/share/applications/io.github.klang_studio.komponist.desktop
 install -Dm644 assets/komponist-mime.xml $PREFIX/share/mime/packages/komponist.xml
-install -Dm644 assets/komponist.metainfo.xml $PREFIX/share/metainfo/komponist.metainfo.xml
+install -Dm644 assets/io.github.klang_studio.komponist.metainfo.xml $PREFIX/share/metainfo/io.github.klang_studio.komponist.metainfo.xml
 gtk-update-icon-cache -f -t $PREFIX/share/icons/hicolor
 update-desktop-database $PREFIX/share/applications
 update-mime-database $PREFIX/share/mime
@@ -75,5 +76,5 @@ update-mime-database $PREFIX/share/mime
 (embedded 256 px PNG); the files are for launchers, task bars matching the desktop entry, and
 `.komponist` file associations.
 
-Validate: `desktop-file-validate assets/komponist.desktop`,
-`appstreamcli validate --no-net assets/komponist.metainfo.xml`.
+Validate: `desktop-file-validate assets/io.github.klang_studio.komponist.desktop`,
+`appstreamcli validate --no-net assets/io.github.klang_studio.komponist.metainfo.xml`.

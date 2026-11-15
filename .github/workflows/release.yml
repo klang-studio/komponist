@@ -58,7 +58,7 @@ jobs:
           mkdir -p "dist/$name/scripts" "dist/$name/assets/icons"
           install -m755 target/release/komponist "dist/$name/komponist"
           cp -R assets/icons/hicolor "dist/$name/assets/icons/"
-          cp assets/komponist.desktop assets/komponist.metainfo.xml assets/komponist-mime.xml "dist/$name/assets/"
+          cp assets/io.github.klang_studio.komponist.desktop assets/io.github.klang_studio.komponist.metainfo.xml assets/komponist-mime.xml "dist/$name/assets/"
           install -m755 scripts/install-desktop.sh "dist/$name/scripts/"
           cp LICENSE README.md "dist/$name/"
           tar -C dist -czf "$name.tar.gz" "$name"
@@ -73,7 +73,7 @@ jobs:
           mkdir unpacked
           tar -C unpacked -xzf "$NAME.tar.gz"
           (cd "unpacked/$NAME" && PREFIX="$RUNNER_TEMP/prefix" scripts/install-desktop.sh)
-          test -f "$RUNNER_TEMP/prefix/share/applications/komponist.desktop"
+          test -f "$RUNNER_TEMP/prefix/share/applications/io.github.klang_studio.komponist.desktop"
 
       # Headless start: killed by the timeout (124) after 10 s = still running = fine; any other exit = crash.
       - name: Smoke start

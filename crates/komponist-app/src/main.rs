@@ -33,7 +33,7 @@ use komponist_app::dialogs::new_project;
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::panels::transport::WORDMARK;
 use komponist_app::settings::{self, Settings};
-use komponist_app::{Action, App, ProjectAction};
+use komponist_app::{APP_ID, Action, App, ProjectAction};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_i18n::Lang;
 use komponist_model::Document;
@@ -200,6 +200,7 @@ fn run_app() -> eframe::Result {
     };
     let title = komponist_app::app::window_title(&first.name);
     let mut options = RunOptions::new(WORDMARK, title);
+    options.app_id = APP_ID.to_owned();
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
     if !args.no_plugin_scan {
