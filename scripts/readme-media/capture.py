@@ -209,7 +209,14 @@ def open_dock(s, y=DOCK_Y):
 
 
 def select_track(s, name):
-    s.click(role="Row", contains=f"Spur {name},")
+    """Selects a track by its header (AccessKit row "Spur <name>, <instrument>").
+
+    The row's centre is not safe: tracks inside a group are indented and the centre then lands on the M/S
+    toggles (it muted Bass and never selected it). Click on the name, 36 px right of the row's left edge.
+    """
+    b = s.bounds(role="Row", contains=f"Spur {name},")
+    s.click_pos({"x": b["x"] + 36, "y": b["y"] + b["h"] / 2})
+    s.pause(0.3)
 
 
 def open_devices(s, track):
@@ -294,7 +301,7 @@ def piano_roll(s):
     s.pause(1.0)
     top = dock_top(s)
     s.gif("piano-roll", (DOCK_X, top, 1040, 300), 1040, fps=12, trim=(0.3, None))
-    s.shot("piano-roll", crop=(DOCK_X, top, 1379, 300))
+    s.shot("piano-roll", crop=(DOCK_X, top, 1379, 296))
 
 
 def step_sequencer(s):
@@ -303,7 +310,7 @@ def step_sequencer(s):
     open_dock(s, 380)
     s.pause(0.6)
     top = dock_top(s)
-    s.shot("step-sequencer", crop=(DOCK_X, top, 1379, 330))
+    s.shot("step-sequencer", crop=(DOCK_X, top, 1379, 320))
     s.rec_start()
     play(s)
     s.pause(0.8)
@@ -313,7 +320,7 @@ def step_sequencer(s):
             s.pause(0.3)
     s.pause(1.5)
     stop(s)
-    s.gif("step-sequencer", (DOCK_X, top, 1379, 330), 1040, fps=12, trim=(0.3, None))
+    s.gif("step-sequencer", (DOCK_X, top, 1379, 320), 1040, fps=12, trim=(0.3, None))
 
 
 def devices(s):
@@ -327,31 +334,30 @@ def devices(s):
 
 
 def sidechain(s):
-    """Sidechain: add presse to the bass, key it from the drums, play (GIF + PNG)."""
+    """Sidechain: presse on the bass keyed by the drums (SC popover PNG), then play and record the pumping (GIF)."""
+    s.click(role="Button", label="Browser")  # fold the browser: the whole presse fits in the dock
     open_dock(s, 380)
     open_devices(s, "Bass")
     top = dock_top(s)
-    s.click_pos({"x": 790, "y": 83})  # ruler, bar 5: drums and bass play
+    s.pause(0.4)
+    # The demo already has presse on the Bass, keyed by the Drums (pre-fader): open the SC chip's popover briefly.
+    s.click(role="Button", label="Sidechain: Drums")
+    s.wait_for(role="Menu", label="Sidechain-Quelle")
+    s.pause(0.5)
+    chip = s.bounds(role="Button", label="Sidechain: Drums")
+    s.shot("presse-sidechain", crop=(int(chip["x"]) - 330, top + 28, 560, 410))
+    s.key("Escape")
+    s.pause(0.5)
+    s.click_pos({"x": 553, "y": 83})  # ruler, bar 5 (browser folded): drums and bass play
+    s.pause(0.3)
     s.rec_start()
-    s.pause(0.5)
-    s.click(role="Button", label="+ Gerät")
-    s.pause(0.5)
-    for ch in "pre":
-        s.type(ch)
-        s.pause(0.2)
-    s.pause(0.5)
-    s.click(role="ListBoxOption", label="presse")
-    s.pause(0.6)
-    s.click(role="Button", label="Sidechain: aus")
-    s.pause(0.8)
-    s.shot("presse-sidechain", crop=(DOCK_X + 560, top + 28, 820, 430))
-    s.click(role="MenuItemRadio", label="Drums")
-    s.pause(0.6)
+    s.pause(0.4)
     play(s)
-    s.pause(1.8)
-    s.shot("presse-ducking", crop=(DOCK_X, top + 28, 1379, 300))
+    s.pause(1.5)
+    s.shot("presse-ducking", crop=(650, top + 28, 880, 300))
+    s.pause(4.0)
     stop(s)
-    s.gif("sidechain", (DOCK_X, top + 28, 1379, 300), 1040, fps=12, trim=(0.4, 8.0))
+    s.gif("sidechain", (650, top + 28, 880, 300), 880, fps=12, trim=(0.5, 6.0))
 
 
 def eq_spectrum(s):

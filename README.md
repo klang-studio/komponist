@@ -15,7 +15,7 @@
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
-![komponist with the demo project "Nachtfahrt": arrangement, piano roll and mixer meters while the transport plays](docs/media/hero.png)
+![komponist with the demo project "Nachtfahrt": arrangement, piano roll and track meters while the transport plays](docs/media/hero.png)
 
 komponist is a MIDI DAW written in Rust with [egui](https://github.com/emilk/egui). You arrange clips, edit notes and
 steps, shape sounds with built-in instruments and effects, host CLAP and VST3 plugins, and mix it all on the same
@@ -47,14 +47,14 @@ devices behind it:
 
 ![hexa (FM synth) with the EQ, Delay and Hall devices behind it](docs/media/device-hexa.png)
 
-**volt** is a subtractive synth with two oscillators, a filter and a sub oscillator:
+**volt** is a subtractive synth with two oscillators, a filter and a sub oscillator. Here on the bass, with an EQ and a presse keyed by the drums:
 
-![volt, a subtractive synth, with an EQ](docs/media/device-volt.png)
+![volt, a subtractive synth, with an EQ and presse](docs/media/device-volt.png)
 
 The **Sampler** is a pad sampler with layers, envelopes, filters and slicing. The demo kit is synthesized, so it needs
-no sample files. Next to it, the presse compressor with its sidechain chip:
+no sample files. Next to it, the presse compressor:
 
-![Sampler with its pads, and the presse compressor with its sidechain chip](docs/media/device-sampler-presse.png)
+![Sampler with its pads, and the presse compressor](docs/media/device-sampler-presse.png)
 
 ### Built-in effects
 
@@ -72,7 +72,7 @@ Add a device from the search menu in the dock, or drag it from the browser onto 
 Key presse from another track's signal: choose the source in the **SC** chip of the device. Here, presse on the bass is
 keyed by the drums:
 
-![Adding presse to the bass, choosing the drums as sidechain source and watching the gain reduction](docs/media/sidechain.gif)
+![presse on the bass, keyed by the drums: the gain reduction pumps with the kick](docs/media/sidechain.gif)
 
 ### CLAP and VST3 plugins
 
@@ -86,7 +86,7 @@ does not take your project down with it. Plugin windows open as native X11 windo
   track or bus.
 - Every edit is undoable, including parameter changes.
 
-The mixer shows every track with its inserts, pan, mute/solo, faders and level meters, next to the master channel:
+The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (Rhythmus) and the effect bus (Hall) have strips of their own on the right, next to the master channel:
 
 ![The mixer with the arrangement above it, playing](docs/media/mixer.png)
 
