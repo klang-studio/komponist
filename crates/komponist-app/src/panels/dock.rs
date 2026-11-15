@@ -130,7 +130,7 @@ pub fn tab_strip(
             (Icon::Maximize2, t.dock_maximize(), t.dock_maximize_tip())
         };
         let shortcut = keymap.label_for(&max, t);
-        let mut tip = Tip::new(&tip);
+        let mut tip = Tip::new(tip);
         if let Some(sc) = shortcut.as_deref() {
             tip = tip.shortcut(sc);
         }
