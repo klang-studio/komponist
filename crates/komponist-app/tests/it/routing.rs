@@ -316,6 +316,44 @@ fn ctrl_g_groups_the_selected_tracks_in_one_undo_step() {
 }
 
 #[test]
+fn ctrl_g_keeps_no_pending_rename_while_the_arrangement_is_hidden() {
+    let p = demo_project();
+    let (drums, bass) = (id_of(&p, "Drums"), id_of(&p, "Bass"));
+    let mut app = mixer_app(p);
+    select_many(&mut app, &[drums, bass]);
+    let mut h = harness(app);
+    let l = &h.state().ui().layout;
+    assert!(
+        l.dock_open && l.dock_maximized,
+        "the mixer hides the arrangement"
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.run_steps(3);
+    let p = h.state().project();
+    let group = p.tracks.iter().find(|t| t.is_group()).expect("a group");
+    assert_eq!(group.name, "Gruppe 1", "the automatic name stays");
+    assert_eq!(h.state().ui().arrangement.rename_request, None);
+    // Back in the arrangement no name field opens late.
+    h.state_mut().dispatch(Action::Ui(UiAction::ToggleMixer));
+    h.run_steps(3);
+    assert!(!h.state().ui().layout.dock_maximized);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Spurname")
+            .is_none(),
+        "no stale rename"
+    );
+    assert!(has_header_of_group(&h, "Gruppe 1"));
+}
+
+fn has_header_of_group(h: &Harness<'_, App>, name: &str) -> bool {
+    h.get_all_by_role(Role::Row).any(|n| {
+        n.accesskit_node().label().is_some_and(|l| {
+            l.starts_with(&names::group(name, false)) || l.starts_with(&names::group(name, true))
+        })
+    })
+}
+
+#[test]
 fn send_to_new_bus_creates_a_bus_and_a_send_at_minus_6_post() {
     let mut app = app_with(demo_project());
     let lead = id_of(app.project(), "Lead");
