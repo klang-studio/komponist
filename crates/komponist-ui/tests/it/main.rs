@@ -4,6 +4,7 @@
 mod device_widgets;
 mod graph;
 mod harness;
+mod i18n;
 mod timeline;
 mod value_controls;
 mod widget_variants;

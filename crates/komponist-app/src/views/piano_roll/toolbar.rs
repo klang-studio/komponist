@@ -114,7 +114,8 @@ pub fn show(
         .map(|(t, item)| {
             (
                 item.label.to_owned(),
-                ctx.keymap.label_for(&Action::Ui(UiAction::SetTool(*t))),
+                ctx.keymap
+                    .label_for(&Action::Ui(UiAction::SetTool(*t)), ctx.lang),
             )
         })
         .collect();
@@ -151,7 +152,10 @@ pub fn show(
         ctx.send(Action::Ui(UiAction::ToggleSnap(GridTarget::PianoRoll)));
     }
     let quantize = Action::Edit(EditAction::QuantizeSelection);
-    let shortcut = ctx.keymap.label_for(&quantize).unwrap_or_default();
+    let shortcut = ctx
+        .keymap
+        .label_for(&quantize, ctx.lang)
+        .unwrap_or_default();
     let mut button = Button::new(names::QUANTIZE);
     if !shortcut.is_empty() {
         button = button.chip(&shortcut);
@@ -202,7 +206,7 @@ pub fn show(
                 vertical: false,
                 steps,
             });
-            let shortcut = ctx.keymap.label_for(&action);
+            let shortcut = ctx.keymap.label_for(&action, ctx.lang);
             let tip = match shortcut.as_deref() {
                 Some(sc) => Tip::new(name).shortcut(sc),
                 None => Tip::new(name),

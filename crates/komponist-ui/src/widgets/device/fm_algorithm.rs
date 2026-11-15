@@ -22,6 +22,7 @@ use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, radius};
 
 use super::{cell_height, cell_width, elided_galley};
+use crate::Lang;
 use crate::state::{self, State};
 use crate::widgets::metrics::{self as wm, device::FIELD_RADIUS, device::fm as metrics};
 use crate::widgets::{accesskit, sense};
@@ -203,13 +204,12 @@ pub fn layout(topology: &Topology<'_>, size: egui::Vec2) -> Layout {
 }
 
 /// The accessible name of operator `op` (0-based): „Operator 3, Träger“.
-pub fn operator_name(topology: &Topology<'_>, op: usize) -> String {
-    let role = if topology.is_carrier(op) {
-        "Träger"
+pub fn operator_name(t: Lang, topology: &Topology<'_>, op: usize) -> String {
+    if topology.is_carrier(op) {
+        t.ui_fm_carrier(op + 1)
     } else {
-        "Modulator"
-    };
-    format!("Operator {}, {role}", op + 1)
+        t.ui_fm_modulator(op + 1)
+    }
 }
 
 /// What the display did.
@@ -270,10 +270,10 @@ impl<'a> FmAlgorithm<'a> {
     }
 
     /// The title: „Algorithmus 5“.
-    pub fn title(&self) -> String {
+    pub fn title(&self, t: Lang) -> String {
         self.title
             .clone()
-            .unwrap_or_else(|| format!("Algorithmus {}", self.number))
+            .unwrap_or_else(|| t.ui_fm_algorithm(self.number))
     }
 
     /// Draws the display and handles clicks on the operators.
@@ -281,7 +281,8 @@ impl<'a> FmAlgorithm<'a> {
         let size = vec2(cell_width(self.cols), cell_height(self.rows));
         let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
         let lay = layout(&self.topology, size);
-        let title = self.title();
+        let t = crate::lang(ui.ctx());
+        let title = self.title(t);
         response.widget_info(|| WidgetInfo::labeled(Role::Group, true, &title));
         let painter = ui.painter().clone();
         px::fill(&painter, rect, FIELD_RADIUS, color32(color::SURFACE_1));
@@ -298,7 +299,7 @@ impl<'a> FmAlgorithm<'a> {
             );
             let st = State::of(ui, &r);
             let on = self.selected == Some(op);
-            let name = operator_name(&self.topology, op);
+            let name = operator_name(t, &self.topology, op);
             r.widget_info(|| WidgetInfo::selected(Role::Button, true, on, &name));
             accesskit(&r, |n| n.set_selected(on));
             if !still && r.clicked() {
@@ -441,8 +442,8 @@ mod tests {
         assert_eq!(ALGO_1.depth(1), 1);
         // 6 → 5 → 4 → 3: three rows above carrier 3.
         assert_eq!(ALGO_1.depth(5), 3);
-        assert_eq!(operator_name(&ALGO_1, 2), "Operator 3, Träger");
-        assert_eq!(operator_name(&ALGO_1, 3), "Operator 4, Modulator");
+        assert_eq!(operator_name(Lang::De, &ALGO_1, 2), "Operator 3, Träger");
+        assert_eq!(operator_name(Lang::De, &ALGO_1, 3), "Operator 4, Modulator");
     }
 
     #[test]
@@ -510,6 +511,6 @@ mod tests {
             feedback: None,
         };
         assert!(mixed.is_carrier(0) && !mixed.is_carrier(1));
-        assert_eq!(operator_name(&mixed, 0), "Operator 1, Träger");
+        assert_eq!(operator_name(Lang::De, &mixed, 0), "Operator 1, Träger");
     }
 }

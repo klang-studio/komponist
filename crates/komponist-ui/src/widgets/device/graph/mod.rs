@@ -1636,6 +1636,7 @@ fn paint_title(ui: &Ui, painter: &Painter, spec: &GraphSpec, rect: Rect) {
 mod tests {
     use super::configs::{self, band, env};
     use super::*;
+    use crate::Lang;
 
     fn infos(spec: &GraphSpec, ranges: &[(f64, f64, f64)]) -> Vec<SlotInfo<'static>> {
         assert_eq!(spec.slots.len(), ranges.len());
@@ -1651,7 +1652,7 @@ mod tests {
 
     #[test]
     fn plot_maps_axes_with_padding() {
-        let spec = configs::envelope();
+        let spec = configs::envelope(Lang::De);
         let p = plot(&spec);
         // x 8 … 228, y: 0 at 90, 1 at 18 (W_env: pad 8, top 18, bot h − 8).
         assert_eq!(p.x(&spec.x, 0.0), 8.0);
@@ -1664,7 +1665,7 @@ mod tests {
 
     #[test]
     fn eq_geometry_is_the_generators() {
-        let spec = configs::eq(5, 18.0);
+        let spec = configs::eq(Lang::De, 5, 18.0);
         let p = plot(&spec);
         // W_eq: gy(g) = h/2 − g/rng · (h/2 − 10).
         let gy = |g: f64| 98.0 / 2.0 - g / 18.0 * (98.0 / 2.0 - 10.0);
@@ -1679,12 +1680,12 @@ mod tests {
 
     #[test]
     fn waveform_and_lfo_geometry_are_the_generators() {
-        let w = configs::waveform(1.0);
+        let w = configs::waveform(Lang::De, 1.0);
         let p = plot(&w);
         // W_wave: mid = h/2 + 4, amplitude h/2 − 12.
         assert_eq!(p.y(&w.y, 0.0), 98.0 / 2.0 + 4.0);
         assert_eq!(p.y(&w.y, 1.0), 98.0 / 2.0 + 4.0 - (98.0 / 2.0 - 12.0));
-        let l = configs::lfo(2);
+        let l = configs::lfo(Lang::De, 2);
         let p = plot(&l);
         // W_lfo: X = 8 + t(w − 16), Y = h/2 + 4 − v(h/2 − 16).
         assert_eq!(p.x(&l.x, 0.5), 8.0 + 0.5 * (236.0 - 16.0));
@@ -1693,7 +1694,7 @@ mod tests {
 
     #[test]
     fn dragging_an_eq_handle_changes_frequency_and_gain() {
-        let spec = configs::eq(1, 18.0);
+        let spec = configs::eq(Lang::De, 1, 18.0);
         let ranges = [
             (0.0, 1.0, 1.0),
             (20.0, 20000.0, 1000.0),
@@ -1728,7 +1729,7 @@ mod tests {
 
     #[test]
     fn limits_hold_at_the_ends() {
-        let spec = configs::eq(1, 18.0);
+        let spec = configs::eq(Lang::De, 1, 18.0);
         let ranges = [
             (0.0, 1.0, 1.0),
             (20.0, 20000.0, 1000.0),
@@ -1756,7 +1757,7 @@ mod tests {
 
     #[test]
     fn a_cut_band_has_no_gain_and_a_locked_slot_does_not_move() {
-        let spec = configs::eq(1, 18.0);
+        let spec = configs::eq(Lang::De, 1, 18.0);
         let ranges = [
             (0.0, 1.0, 1.0),
             (20.0, 20000.0, 1000.0),
@@ -1775,7 +1776,7 @@ mod tests {
 
     #[test]
     fn envelope_points_do_not_overtake() {
-        let spec = configs::envelope();
+        let spec = configs::envelope(Lang::De);
         let ranges = [(0.0, 1.0, 0.2); 5];
         let infos = infos(&spec, &ranges);
         let start = vec![0.3, 0.2, 0.5, 0.3, 0.5];
@@ -1800,7 +1801,7 @@ mod tests {
 
     #[test]
     fn lfo_points_stay_between_their_neighbours() {
-        let spec = configs::lfo(3);
+        let spec = configs::lfo(Lang::De, 3);
         let ranges = [
             (0.0, 1.0, 0.0),
             (-1.0, 1.0, 0.0),
@@ -1830,7 +1831,7 @@ mod tests {
 
     #[test]
     fn waveform_start_and_end_keep_their_order() {
-        let spec = configs::waveform(1.0);
+        let spec = configs::waveform(Lang::De, 1.0);
         let ranges = [(0.0, 1000.0, 0.0), (0.0, 1000.0, 900.0)];
         let infos = infos(&spec, &ranges);
         let start = vec![100.0, 900.0];
@@ -1849,7 +1850,7 @@ mod tests {
 
     #[test]
     fn transfer_handle_edits_threshold_and_ratio() {
-        let spec = configs::transfer();
+        let spec = configs::transfer(Lang::De);
         let ranges = [(-60.0, 0.0, -18.0), (1.0, 20.0, 4.0), (0.0, 1.0, 1.0)];
         let infos = infos(&spec, &ranges);
         let start = vec![-18.0, 4.0, 1.0];
@@ -1863,7 +1864,7 @@ mod tests {
 
     #[test]
     fn accessible_names_are_german_and_name_the_parameter() {
-        let spec = configs::eq(2, 18.0);
+        let spec = configs::eq(Lang::De, 2, 18.0);
         assert_eq!(
             accessible_name(&spec.handles[1], Which::X),
             "Band 2 Frequenz"

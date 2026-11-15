@@ -22,6 +22,7 @@ use super::spec::{
     AreaAction, Axis, AxisKind, Bind, Curve, CurveFn, DataKind, GraphSpec, Grid, Guide, Handle,
     HandleLook, Layer, Marker, PosFn, Pred, Region, Tick,
 };
+use crate::Lang;
 use crate::widgets::metrics::device::graph as m;
 use komponist_model::params::comp_curve;
 use komponist_model::params::eq_curve::CURVE_RATE;
@@ -110,10 +111,10 @@ pub fn envelope_level(x: f64, p: &[f64]) -> f64 {
 /// `graph::envelope`: time on x (segments proportional), 0–1 on y; curve from the segments,
 /// playhead; handles A ↔, D ↔↕ (decay and sustain level), S ↕, R ↔, wheel on D and R bends the
 /// curve.
-pub fn envelope() -> GraphSpec {
+pub fn envelope(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::ENVELOPE;
     let mut spec = GraphSpec::new(
-        "Hüllkurve",
+        t.ui_graph_envelope(),
         padded(Axis::new(AxisKind::Lin, 0.0, 1.0), px).grid(Grid::Divisions(8)),
         padded(Axis::new(AxisKind::Lin, 0.0, 1.0), py).grid(Grid::None),
     );
@@ -127,22 +128,22 @@ pub fn envelope() -> GraphSpec {
         }),
         Layer::Marker(Marker::Playhead),
     ];
-    let bend = || Bind::knob(env::CURVE, "Krümmung", false);
+    let bend = || Bind::knob(env::CURVE, t.ui_graph_curve(), false);
     spec.handles = vec![
-        Handle::dot("Attack")
-            .x(Bind::axis(env::ATTACK, "Zeit").scaled(k))
+        Handle::dot(t.ui_graph_attack())
+            .x(Bind::axis(env::ATTACK, t.ui_graph_time()).scaled(k))
             .at(PosFn::new(|p| (envelope_points(p)[0], 1.0))),
-        Handle::dot("Decay")
-            .x(Bind::axis(env::DECAY, "Zeit")
+        Handle::dot(t.ui_graph_decay())
+            .x(Bind::axis(env::DECAY, t.ui_graph_time())
                 .scaled(k)
                 .after(&[env::ATTACK], 0.0))
-            .y(Bind::axis(env::SUSTAIN, "Sustain-Pegel"))
+            .y(Bind::axis(env::SUSTAIN, t.ui_graph_sustain_level()))
             .wheel(bend()),
-        Handle::dot("Sustain")
-            .y(Bind::axis(env::SUSTAIN, "Pegel"))
+        Handle::dot(t.ui_graph_sustain())
+            .y(Bind::axis(env::SUSTAIN, t.ui_graph_level()))
             .at(PosFn::new(|p| (envelope_points(p)[2], p[env::SUSTAIN]))),
-        Handle::dot("Release")
-            .x(Bind::axis(env::RELEASE, "Zeit")
+        Handle::dot(t.ui_graph_release())
+            .x(Bind::axis(env::RELEASE, t.ui_graph_time())
                 .scaled(k)
                 .after(&[env::ATTACK, env::DECAY], m::ENVELOPE_HOLD))
             .wheel(bend())
@@ -185,12 +186,12 @@ pub fn eq_response_at(p: &[f64], bands: usize, hz: f64, rate: f64) -> f64 {
 /// `graph::eq` for up to `bands` bands and `±range_db`: log x 20 Hz–20 kHz, dB on y, spectrum
 /// data and the summed curve; per band Freq ↔, Gain ↕, Q on the wheel; double-click adds a band
 /// (event), Entf removes the focused one.
-pub fn eq(bands: usize, range_db: f64) -> GraphSpec {
-    eq_at(bands, range_db, CURVE_RATE)
+pub fn eq(t: Lang, bands: usize, range_db: f64) -> GraphSpec {
+    eq_at(t, bands, range_db, CURVE_RATE)
 }
 
 /// [`eq`] for a device running at `rate` Hz: the curve is the real filters' response there.
-pub fn eq_at(bands: usize, range_db: f64, rate: f64) -> GraphSpec {
+pub fn eq_at(t: Lang, bands: usize, range_db: f64, rate: f64) -> GraphSpec {
     let (px, py) = m::pad::EQ;
     let mut spec = GraphSpec::new(
         "",
@@ -202,7 +203,7 @@ pub fn eq_at(bands: usize, range_db: f64, rate: f64) -> GraphSpec {
             spec.slots.push(format!("b{n}_{what}"));
         }
     }
-    spec.name = "Parametrischer EQ".to_owned();
+    spec.name = t.ui_graph_eq().to_owned();
     spec.layers = vec![
         Layer::Data(DataKind::Spectrum),
         Layer::Curve(Curve {
@@ -220,11 +221,11 @@ pub fn eq_at(bands: usize, range_db: f64, rate: f64) -> GraphSpec {
             t == band::LOW_CUT || t == band::HIGH_CUT
         };
         spec.handles.push(
-            Handle::dot(format!("Band {}", i + 1))
+            Handle::dot(t.ui_graph_band(i + 1))
                 .numbered(i as u32 + 1)
-                .x(Bind::axis(o + 1, "Frequenz"))
-                .y(Bind::axis(o + 2, "Gain").only_if(Pred::new(move |p| !is_cut(p))))
-                .wheel(Bind::knob(o + 3, "Q", true))
+                .x(Bind::axis(o + 1, t.ui_graph_frequency()))
+                .y(Bind::axis(o + 2, t.ui_graph_gain()).only_if(Pred::new(move |p| !is_cut(p))))
+                .wheel(Bind::knob(o + 3, t.ui_graph_q(), true))
                 .at(PosFn::new(move |p| {
                     let y = if is_cut(p) {
                         -3.0
@@ -266,10 +267,10 @@ pub fn filter_response(hz: f64, cutoff: f64, resonance: f64, typ: f64) -> f64 {
 
 /// `graph::filter`: log x 20 Hz–20 kHz, dB −36…+12 on y, the curve of the filter; one handle,
 /// Cutoff ↔ and Resonanz ↕.
-pub fn filter() -> GraphSpec {
+pub fn filter(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::EQ;
     let mut spec = GraphSpec::new(
-        "Filter",
+        t.ui_graph_filter(),
         padded(Axis::new(AxisKind::Log, 20.0, 20_000.0), px).labelled(),
         padded(Axis::new(AxisKind::Db, -36.0, 12.0), py),
     );
@@ -280,10 +281,10 @@ pub fn filter() -> GraphSpec {
         fill: true,
     })];
     spec.handles = vec![
-        Handle::dot("Filter")
+        Handle::dot(t.ui_graph_filter())
             .numbered(1)
-            .x(Bind::axis(0, "Cutoff"))
-            .y(Bind::knob(1, "Resonanz", false))
+            .x(Bind::axis(0, t.ui_graph_cutoff()))
+            .y(Bind::knob(1, t.ui_graph_resonance(), false))
             .at(PosFn::new(|p| {
                 (p[0], filter_response(p[0], p[0], p[1], p[2]))
             })),
@@ -310,10 +311,10 @@ pub fn transfer_level(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 {
 
 /// `graph::transfer`: input dB −60…0 on x, output dB on y; the diagonal and the threshold as
 /// guides, the curve, the level point; handle at the knee: Threshold ↔, Ratio ↕.
-pub fn transfer() -> GraphSpec {
+pub fn transfer(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::TRANSFER;
     let axis = |pad| padded(Axis::new(AxisKind::Db, -60.0, 0.0), pad).grid(Grid::Divisions(4));
-    let mut spec = GraphSpec::new("Kennlinie", axis(px), axis(py));
+    let mut spec = GraphSpec::new(t.ui_graph_transfer(), axis(px), axis(py));
     spec.slots = slots(&["threshold", "ratio", "knee"]);
     spec.layers = vec![
         Layer::Guide(Guide::Diagonal),
@@ -326,9 +327,9 @@ pub fn transfer() -> GraphSpec {
         Layer::Marker(Marker::Level),
     ];
     spec.handles = vec![
-        Handle::dot("Knie")
-            .x(Bind::axis(0, "Threshold"))
-            .y(Bind::knob(1, "Ratio", true))
+        Handle::dot(t.ui_graph_knee())
+            .x(Bind::axis(0, t.ui_graph_threshold()))
+            .y(Bind::knob(1, t.ui_graph_ratio(), true))
             .at(PosFn::new(|p| (p[0], p[0]))),
     ];
     spec
@@ -348,7 +349,7 @@ pub fn compressor_level(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 {
 /// diagonal and the threshold as guides, the curve with the soft knee of `knee` dB and the level
 /// point; to the right of the plot IN, OUT and GR of the live level
 /// ([`Marker::Levels`]). Handle at the knee: Threshold ↔, Ratio ↕.
-pub fn compressor() -> GraphSpec {
+pub fn compressor(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::COMPRESSOR;
     let labels = |step: f64| {
         let mut t = Vec::new();
@@ -370,7 +371,7 @@ pub fn compressor() -> GraphSpec {
     let y = Axis::new(AxisKind::Db, -60.0, 0.0)
         .padding(py)
         .grid(Grid::Divisions(5));
-    let mut spec = GraphSpec::new("Kennlinie", x, y);
+    let mut spec = GraphSpec::new(t.ui_graph_transfer(), x, y);
     spec.grid_inside = true;
     spec.slots = slots(&["threshold", "ratio", "knee"]);
     spec.layers = vec![
@@ -385,9 +386,9 @@ pub fn compressor() -> GraphSpec {
         Layer::Marker(Marker::Levels),
     ];
     spec.handles = vec![
-        Handle::dot("Knie")
-            .x(Bind::axis(0, "Threshold"))
-            .y(Bind::knob(1, "Ratio", true))
+        Handle::dot(t.ui_graph_knee())
+            .x(Bind::axis(0, t.ui_graph_threshold()))
+            .y(Bind::knob(1, t.ui_graph_ratio(), true))
             .at(PosFn::new(|p| (p[0], p[0]))),
     ];
     spec
@@ -401,7 +402,7 @@ pub const GR_HISTORY_DB: f64 = 24.0;
 /// `graph::gr_history` (WP-93): time 0…4 s on x, 0 … −24 dB on y (the reduction hangs from the
 /// top); the input level as the `Data` layer (`surface.3`), the reduction as the `Trace` layer in
 /// the track colour, the playhead at the right edge (now). Display only: no slots, no handles.
-pub fn gr_history() -> GraphSpec {
+pub fn gr_history(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::GR_HISTORY;
     let y = Axis::new(AxisKind::Db, -GR_HISTORY_DB, 0.0)
         .padding(py)
@@ -412,7 +413,7 @@ pub fn gr_history() -> GraphSpec {
         ]))
         .labelled();
     let mut spec = GraphSpec::new(
-        "Reduktion \u{b7} 4 s",
+        t.ui_graph_gr_history(),
         Axis::new(AxisKind::Time, 0.0, GR_HISTORY_SECONDS)
             .padding(px)
             .grid(Grid::None),
@@ -433,14 +434,14 @@ pub fn gr_history() -> GraphSpec {
 /// `graph::waveform` for a sample of `length_s` seconds: time on x, bipolar on y; sample data,
 /// the region outside start–end darkened, playhead; S and E as lines, ↔ only. Start and end are
 /// in milliseconds.
-pub fn waveform(length_s: f64) -> GraphSpec {
+pub fn waveform(t: Lang, length_s: f64) -> GraphSpec {
     let (px, py) = m::pad::WAVEFORM;
     let mut spec = GraphSpec::new(
         "",
         padded(Axis::new(AxisKind::Time, 0.0, length_s), px).grid(Grid::None),
         padded(Axis::new(AxisKind::Lin, -1.0, 1.0), py).grid(Grid::Ticks(vec![Tick::minor(0.0)])),
     );
-    spec.name = "Wellenform".to_owned();
+    spec.name = t.ui_graph_waveform().to_owned();
     spec.slots = slots(&["start", "end"]);
     spec.layers = vec![
         Layer::Data(DataKind::Sample),
@@ -452,13 +453,13 @@ pub fn waveform(length_s: f64) -> GraphSpec {
         Layer::Marker(Marker::Playhead),
     ];
     spec.handles = vec![
-        Handle::dot("Sample-Start")
+        Handle::dot(t.ui_graph_sample_start())
             .look(HandleLook::Edge { flag_left: false })
-            .x(Bind::axis(0, "Position").scaled(0.001))
+            .x(Bind::axis(0, t.ui_graph_position()).scaled(0.001))
             .between(None, Some(1)),
-        Handle::dot("Sample-Ende")
+        Handle::dot(t.ui_graph_sample_end())
             .look(HandleLook::Edge { flag_left: true })
-            .x(Bind::axis(1, "Position").scaled(0.001))
+            .x(Bind::axis(1, t.ui_graph_position()).scaled(0.001))
             .between(Some(0), None),
     ];
     spec
@@ -469,21 +470,21 @@ pub fn waveform(length_s: f64) -> GraphSpec {
 
 /// `graph::xy`: the two parameters' own axes; the crosshair and one puck, ↔↕, Shift locks the axis
 /// that moved less; `x_name` and `y_name` are the parameter names (accessible names, readout).
-pub fn xy(x: Axis, y: Axis, x_name: &str, y_name: &str) -> GraphSpec {
+pub fn xy(t: Lang, x: Axis, y: Axis, x_name: &str, y_name: &str) -> GraphSpec {
     let (px, py) = m::pad::XY;
     let mut spec = GraphSpec::new(
         "",
         padded(x, px).grid(Grid::Divisions(4)),
         padded(y, py).grid(Grid::Divisions(4)),
     );
-    spec.name = "XY-Feld".to_owned();
+    spec.name = t.ui_graph_xy().to_owned();
     spec.slots = slots(&["x", "y"]);
     spec.layers = vec![
         Layer::Guide(Guide::Crosshair { x: 0, y: 1 }),
         Layer::Marker(Marker::Readout { x: 0, y: 1 }),
     ];
     spec.handles = vec![
-        Handle::dot("XY-Feld")
+        Handle::dot(t.ui_graph_xy())
             .look(HandleLook::Puck)
             .x(Bind::axis(0, x_name))
             .y(Bind::axis(1, y_name)),
@@ -520,10 +521,10 @@ pub fn lfo_level(x: f64, p: &[f64]) -> f64 {
 /// `graph::lfo` with `points` points: phase 0–1 on x (grid by quarter), bipolar on y; the curve
 /// through the points, playhead; each point ↔↕ between its neighbours; double-click adds a point
 /// (event), Entf deletes the focused one.
-pub fn lfo(points: usize) -> GraphSpec {
+pub fn lfo(t: Lang, points: usize) -> GraphSpec {
     let (px, py) = m::pad::LFO;
     let mut spec = GraphSpec::new(
-        "LFO · Form",
+        t.ui_graph_lfo_shape(),
         padded(Axis::new(AxisKind::Lin, 0.0, 1.0), px).grid(Grid::Divisions(4)),
         padded(Axis::new(AxisKind::Lin, -1.0, 1.0), py).grid(Grid::Divisions(2)),
     );
@@ -543,9 +544,9 @@ pub fn lfo(points: usize) -> GraphSpec {
     spec.deletable = true;
     spec.handles = (0..points)
         .map(|i| {
-            Handle::dot(format!("Punkt {}", i + 1))
-                .x(Bind::axis(2 * i, "Phase"))
-                .y(Bind::axis(2 * i + 1, "Wert"))
+            Handle::dot(t.ui_graph_point(i + 1))
+                .x(Bind::axis(2 * i, t.ui_graph_phase()))
+                .y(Bind::axis(2 * i + 1, t.ui_graph_value()))
                 .between(i.checked_sub(1), (i + 1 < points).then_some(i + 1))
         })
         .collect();
@@ -565,10 +566,10 @@ const VA_RATE: f64 = 48_000.0;
 /// Slots: `cutoff` (Hz), `resonance` (0–1), `type` (index of `va_curve::FILTER_TYPES`), then
 /// `mod1_src`, `mod1_dst`, `mod1_amt` … `mod4_amt`, `at_cut`, `lfo1_uni`, `lfo2_uni` (what
 /// `va_curve::cutoff_mod_octaves` reads, from slot 3).
-pub fn filter_va() -> GraphSpec {
+pub fn filter_va(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::EQ;
     let mut spec = GraphSpec::new(
-        "Filter",
+        t.ui_graph_filter(),
         padded(Axis::new(AxisKind::Log, 20.0, 20_000.0), px).labelled(),
         padded(Axis::new(AxisKind::Db, -36.0, 12.0), py),
     );
@@ -596,9 +597,9 @@ pub fn filter_va() -> GraphSpec {
         }),
     ];
     spec.handles = vec![
-        Handle::dot("Filter")
-            .x(Bind::axis(0, "Cutoff"))
-            .y(Bind::knob(1, "Resonanz", false))
+        Handle::dot(t.ui_graph_filter())
+            .x(Bind::axis(0, t.ui_graph_cutoff()))
+            .y(Bind::knob(1, t.ui_graph_resonance(), false))
             .at(PosFn::new(move |p| (p[0], response(p[0], p)))),
     ];
     spec
@@ -606,10 +607,10 @@ pub fn filter_va() -> GraphSpec {
 
 /// The oscillator mix over two periods of oscillator A, display only. Slots: `wave_a`,
 /// `wave_b`, `pw_a`, `pw_b`, `b_oct`, `b_fine`, `mix`, `sub` (what `va_curve::signal_at` reads).
-pub fn signal() -> GraphSpec {
+pub fn signal(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::WAVEFORM;
     let mut spec = GraphSpec::new(
-        "Signal",
+        t.ui_graph_signal(),
         padded(Axis::new(AxisKind::Lin, 0.0, va_curve::SIGNAL_PERIODS), px)
             .grid(Grid::Divisions(2)),
         padded(Axis::new(AxisKind::Lin, -1.0, 1.0), py).grid(Grid::Ticks(vec![Tick::minor(0.0)])),
@@ -627,10 +628,10 @@ pub fn signal() -> GraphSpec {
 
 /// One cycle of the LFO shape in slot `shape` (an index of `va_curve::LFO_SHAPES`), display
 /// only.
-pub fn lfo_shape() -> GraphSpec {
+pub fn lfo_shape(t: Lang) -> GraphSpec {
     let (px, py) = m::pad::LFO;
     let mut spec = GraphSpec::new(
-        "LFO · Form",
+        t.ui_graph_lfo_shape(),
         padded(Axis::new(AxisKind::Lin, 0.0, 1.0), px).grid(Grid::Divisions(4)),
         padded(Axis::new(AxisKind::Lin, -1.0, 1.0), py).grid(Grid::Divisions(2)),
     );
@@ -653,14 +654,15 @@ mod tests {
 
     #[test]
     fn slot_names_and_counts() {
-        assert_eq!(envelope().slots.len(), 5);
-        assert_eq!(eq(8, 18.0).slots.len(), 40);
-        assert_eq!(eq(2, 18.0).slots[5], "b2_on");
-        assert_eq!(filter().slot("resonance"), Some(1));
-        assert_eq!(transfer().slot("knee"), Some(2));
-        assert_eq!(waveform(1.0).slots, ["start", "end"]);
-        assert_eq!(lfo(3).slots.len(), 6);
+        assert_eq!(envelope(Lang::De).slots.len(), 5);
+        assert_eq!(eq(Lang::De, 8, 18.0).slots.len(), 40);
+        assert_eq!(eq(Lang::De, 2, 18.0).slots[5], "b2_on");
+        assert_eq!(filter(Lang::De).slot("resonance"), Some(1));
+        assert_eq!(transfer(Lang::De).slot("knee"), Some(2));
+        assert_eq!(waveform(Lang::De, 1.0).slots, ["start", "end"]);
+        assert_eq!(lfo(Lang::De, 3).slots.len(), 6);
         let xy = xy(
+            Lang::De,
             Axis::new(AxisKind::Lin, 0.0, 1.0),
             Axis::new(AxisKind::Lin, 0.0, 1.0),
             "Zeit",
@@ -672,12 +674,12 @@ mod tests {
     #[test]
     fn handles_bind_at_most_three_slots_inside_the_slot_list() {
         for spec in [
-            envelope(),
-            eq(8, 18.0),
-            filter(),
-            transfer(),
-            waveform(1.0),
-            lfo(4),
+            envelope(Lang::De),
+            eq(Lang::De, 8, 18.0),
+            filter(Lang::De),
+            transfer(Lang::De),
+            waveform(Lang::De, 1.0),
+            lfo(Lang::De, 4),
         ] {
             for h in &spec.handles {
                 assert!(h.binds().count() <= 3, "{}", h.name);
@@ -728,7 +730,7 @@ mod tests {
             band::BELL,
         ];
         for rate in [44_100.0, 48_000.0, 96_000.0] {
-            let spec = eq_at(2, 18.0, rate);
+            let spec = eq_at(Lang::De, 2, 18.0, rate);
             let Some(Layer::Curve(curve)) = spec.layers.get(1) else {
                 panic!("the curve layer");
             };
@@ -754,7 +756,7 @@ mod tests {
 
     #[test]
     fn eq_handle_sits_on_the_summed_curve_except_cuts() {
-        let spec = eq(2, 18.0);
+        let spec = eq(Lang::De, 2, 18.0);
         let mut p = vec![0.0; 10];
         p[..5].copy_from_slice(&[1.0, 100.0, 0.0, 1.0, band::LOW_CUT]);
         p[5..].copy_from_slice(&[1.0, 1000.0, 5.0, 1.0, band::BELL]);
@@ -804,7 +806,7 @@ mod tests {
 
     #[test]
     fn waveform_edges_keep_their_order() {
-        let spec = waveform(1.0);
+        let spec = waveform(Lang::De, 1.0);
         assert_eq!(spec.handles[0].between, [None, Some(1)]);
         assert_eq!(spec.handles[1].between, [Some(0), None]);
     }

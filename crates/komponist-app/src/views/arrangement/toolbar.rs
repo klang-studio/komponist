@@ -54,7 +54,7 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
             (Icon::Minus, names::ZOOM_OUT, -1),
         ] {
             let action = zoom(steps);
-            let shortcut = ctx.keymap.label_for(&action);
+            let shortcut = ctx.keymap.label_for(&action, ctx.lang);
             let mut button = Button::icon(icon, name).compact();
             if let Some(sc) = shortcut.as_deref() {
                 button = button.shortcut(sc);

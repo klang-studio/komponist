@@ -206,7 +206,7 @@ impl Browser {
         }
         let hint = if self.query.is_empty() {
             ctx.keymap
-                .label_for(&Action::Ui(UiAction::FocusBrowserSearch))
+                .label_for(&Action::Ui(UiAction::FocusBrowserSearch), ctx.lang)
                 .unwrap_or_default()
         } else {
             names::SEARCH_CLEAR.to_owned()

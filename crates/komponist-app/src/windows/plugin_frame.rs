@@ -61,6 +61,7 @@ use egui::{
     Context, Event, Rect, Vec2, ViewportBuilder, ViewportClass, ViewportCommand, ViewportId,
     WindowLevel, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::project::BUILTIN_PISYNTH;
 use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
@@ -614,7 +615,11 @@ impl App {
 
     /// A key the key thread took back from the plugin in frame `device` ([`keys`]).
     fn grabbed_key(&mut self, device: DeviceId, chord: KeyChord) {
-        keys::log(format!("frame {} (grab): {}", device.0, chord.label()));
+        keys::log(format!(
+            "frame {} (grab): {}",
+            device.0,
+            chord.label(Lang::En)
+        ));
         self.frame_chord(device, chord, false);
     }
 
@@ -1158,7 +1163,8 @@ impl App {
             view,
             has_gui: host.has_gui(device) || had_gui,
             keep_on_top,
-            close_shortcut: KeyChord::plain(Key::Escape).label(),
+            // "Esc" is the same in every language; this window migrates with its own WP.
+            close_shortcut: KeyChord::plain(Key::Escape).label(Lang::De),
         }
     }
 

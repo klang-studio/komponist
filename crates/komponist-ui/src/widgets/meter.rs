@@ -37,6 +37,7 @@ use komponist_tokens::{space, typography};
 use super::fader;
 use super::metrics::meter as metrics;
 use super::number_field::{caption, column, is_still, sense, text_width, value_label};
+use crate::Lang;
 use crate::px;
 
 /// Peak hold time in seconds ("hält 1,5 s").
@@ -402,12 +403,12 @@ impl<'a> Meter<'a> {
 }
 
 /// The value AccessKit reads for a meter: the held peak ("−14.2 dB"), with ", Clip" when clipped.
-pub fn value_text(state: &MeterState) -> String {
-    let mut text = format!("{} dB", fmt_db(state.peak_db()));
+pub fn value_text(t: Lang, state: &MeterState) -> String {
     if state.clipped() {
-        text.push_str(", Clip");
+        t.ui_meter_value_clipped(fmt_db(state.peak_db()))
+    } else {
+        format!("{} dB", fmt_db(state.peak_db()))
     }
-    text
 }
 
 impl Widget for Meter<'_> {
@@ -427,7 +428,7 @@ impl Widget for Meter<'_> {
         }
         paint(ui.painter(), rect, self.state, &self.style);
         let peak = self.state.peak_db().clamp(VOLUME_DB_MIN, VOLUME_DB_MAX);
-        let text = value_text(self.state);
+        let text = value_text(crate::lang(ui.ctx()), self.state);
         response.widget_info(|| {
             let mut info = WidgetInfo::labeled(Role::Meter, true, &self.name);
             info.value = Some(f64::from(peak));
@@ -570,10 +571,13 @@ mod tests {
         assert!(MeterState::frozen([0.8, 0.5], [0.8, 0.6]).clipped());
         assert!(!MeterState::frozen([-120.0; 2], [-120.0; 2]).is_active());
         assert_eq!(
-            value_text(&MeterState::frozen([0.8, 0.5], [0.8, 0.6])),
+            value_text(Lang::De, &MeterState::frozen([0.8, 0.5], [0.8, 0.6])),
             "+0.8 dB, Clip"
         );
-        assert_eq!(value_text(&MeterState::new()), "\u{2212}\u{221e} dB");
+        assert_eq!(
+            value_text(Lang::De, &MeterState::new()),
+            "\u{2212}\u{221e} dB"
+        );
     }
 
     #[test]

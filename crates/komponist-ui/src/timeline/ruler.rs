@@ -24,6 +24,7 @@ use komponist_tokens::{Srgba, color, space};
 
 use super::mesh::Quads;
 use super::{Access, TimeAxis};
+use crate::Lang;
 use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
 
@@ -208,8 +209,8 @@ pub fn paint_playhead(painter: &Painter, x: f32, y: Rangef) {
 
 /// Accessible name and role of the ruler: `Lineal` (role slider) with the playhead position as
 /// value (`10.2.120`).
-pub fn ruler_access(model: &RulerModel) -> Access {
-    let a = Access::new(Role::Slider, "Lineal");
+pub fn ruler_access(t: Lang, model: &RulerModel) -> Access {
+    let a = Access::new(Role::Slider, t.a11y_ruler());
     match model.playhead {
         Some(t) => a.with_value(fmt_pos(t, model.meter)),
         None => a,
@@ -252,7 +253,7 @@ mod tests {
             playhead: Some(Tick(9 * 3840 + 960 + 480)),
             recording: false,
         };
-        let a = ruler_access(&m);
+        let a = ruler_access(Lang::De, &m);
         assert_eq!(a.name, "Lineal");
         assert_eq!(a.value.as_deref(), Some("10.2.120"));
     }

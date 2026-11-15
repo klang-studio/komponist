@@ -11,6 +11,7 @@
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_builtin::algorithms::ALGORITHMS;
 use komponist_builtin::internal::knurr;
+use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
@@ -858,6 +859,7 @@ fn slot_param<'c>(
 /// The configuration `binding` asks for; `None` if a parameter it needs is missing (the XY field
 /// takes its axes from its two parameters).
 fn spec_of<'c>(
+    t: Lang,
     binding: &GraphBinding,
     title: &str,
     rate: Option<f32>,
@@ -865,36 +867,38 @@ fn spec_of<'c>(
     sample_length: Option<f64>,
 ) -> Option<GraphSpec> {
     let spec = match binding.config {
-        GraphConfig::Envelope => configs::envelope(),
+        GraphConfig::Envelope => configs::envelope(t),
         GraphConfig::Eq { bands } => {
             // ±12 or ±24 dB, from the range of the gain parameters.
             let range = lookup("b1_gain").map_or(18.0, |p| p.info.range().1.abs());
             // The curve is the filters' response at the device's sample rate (WP-92).
             configs::eq_at(
+                t,
                 usize::from(bands),
                 range,
                 rate.map_or(CURVE_RATE, f64::from),
             )
         }
-        GraphConfig::Filter => configs::filter(),
-        GraphConfig::Transfer => configs::transfer(),
-        GraphConfig::Compressor => configs::compressor(),
-        GraphConfig::GrHistory => configs::gr_history(),
+        GraphConfig::Filter => configs::filter(t),
+        GraphConfig::Transfer => configs::transfer(t),
+        GraphConfig::Compressor => configs::compressor(t),
+        GraphConfig::GrHistory => configs::gr_history(t),
         // Start and end are in milliseconds; the axis spans the sample's real length when the
         // device knows it (the sampler), else the range of the end.
         GraphConfig::Waveform => configs::waveform(
+            t,
             sample_length
                 .filter(|l| *l > 0.0)
                 .unwrap_or_else(|| lookup("end").map_or(1.0, |p| p.info.range().1 / 1000.0)),
         ),
         GraphConfig::Xy => {
             let (x, y) = (lookup("x")?, lookup("y")?);
-            configs::xy(axis_of(x), axis_of(y), x.name(), y.name())
+            configs::xy(t, axis_of(x), axis_of(y), x.name(), y.name())
         }
-        GraphConfig::Lfo { points } => configs::lfo(usize::from(points)),
-        GraphConfig::FilterVa => configs::filter_va(),
-        GraphConfig::Signal => configs::signal(),
-        GraphConfig::LfoShape => configs::lfo_shape(),
+        GraphConfig::Lfo { points } => configs::lfo(t, usize::from(points)),
+        GraphConfig::FilterVa => configs::filter_va(t),
+        GraphConfig::Signal => configs::signal(t),
+        GraphConfig::LfoShape => configs::lfo_shape(t),
     };
     Some(if title.is_empty() {
         spec
@@ -950,7 +954,14 @@ fn graph(
         .map(|(v, _)| v.length_s)
         .filter(|l| *l > 0.0 && matches!(v_status(sample), Some(PadStatus::Ready)));
     let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
-    let Some(spec) = spec_of(binding, &title, rate, &lookup, length) else {
+    let Some(spec) = spec_of(
+        komponist_ui::lang(cu.ctx()),
+        binding,
+        &title,
+        rate,
+        &lookup,
+        length,
+    ) else {
         return false;
     };
     let normalized = binding.config == GraphConfig::Envelope;

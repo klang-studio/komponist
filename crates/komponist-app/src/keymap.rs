@@ -45,6 +45,8 @@
 //! app (`App::show`) applies the table: the Esc binding means `Transport(DiscardTake)` while
 //! recording, and a widget reached with Tab keeps Space, Enter, arrows and Tab.
 
+use komponist_i18n::Lang;
+
 use crate::actions::{Action, EditAction, ProjectAction, TransportAction, UiAction};
 use crate::ui_state::{FocusArea, Panel, SettingsSection, Tool};
 
@@ -132,21 +134,22 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
-    /// The German label shown in tooltips and context menus ("Strg Shift E", "Leertaste", "Pos1",
-    /// "Entf", "Strg ↑"), as written in `HANDOFF.md` §7.
-    pub fn label(&self) -> String {
+    /// The label shown in tooltips and context menus, in `t`: German "Strg Shift E", "Leertaste",
+    /// "Pos1", "Entf", "Strg ↑" (as written in `HANDOFF.md` §7), English "Ctrl+Shift+E", "Space",
+    /// "Home", "Del", "Ctrl+↑". The `key-*` messages hold the names and the separator.
+    pub fn label(&self, t: Lang) -> String {
         let mut parts: Vec<&str> = Vec::with_capacity(4);
         if self.mods.ctrl {
-            parts.push("Strg");
+            parts.push(t.key_ctrl());
         }
         if self.mods.shift {
-            parts.push("Shift");
+            parts.push(t.key_shift());
         }
         if self.mods.alt {
-            parts.push("Alt");
+            parts.push(t.key_alt());
         }
-        parts.push(self.key.label());
-        parts.join(" ")
+        parts.push(self.key.label(t));
+        parts.join(t.key_separator())
     }
 
     /// `key` without modifiers.
@@ -219,8 +222,9 @@ impl Modifiers {
 }
 
 impl Key {
-    /// The German key name as `HANDOFF.md` §7 writes it ("Leertaste", "Pos1", "Entf", "↑", "−").
-    pub const fn label(self) -> &'static str {
+    /// The key name in `t`; German as `HANDOFF.md` §7 writes it ("Leertaste", "Pos1", "Entf",
+    /// "↑", "−"). Letters, digits, arrows and symbols are the same in every language.
+    pub fn label(self, t: Lang) -> &'static str {
         match self {
             Key::A => "A",
             Key::B => "B",
@@ -258,14 +262,14 @@ impl Key {
             Key::Num7 => "7",
             Key::Num8 => "8",
             Key::Num9 => "9",
-            Key::Space => "Leertaste",
-            Key::Tab => "Tab",
-            Key::Enter => "Enter",
-            Key::Escape => "Esc",
-            Key::Delete => "Entf",
-            Key::Backspace => "Rücktaste",
-            Key::Home => "Pos1",
-            Key::End => "Ende",
+            Key::Space => t.key_space(),
+            Key::Tab => t.key_tab(),
+            Key::Enter => t.key_enter(),
+            Key::Escape => t.key_escape(),
+            Key::Delete => t.key_delete(),
+            Key::Backspace => t.key_backspace(),
+            Key::Home => t.key_home(),
+            Key::End => t.key_end(),
             Key::ArrowUp => "↑",
             Key::ArrowDown => "↓",
             Key::ArrowLeft => "←",
@@ -608,9 +612,9 @@ impl Keymap {
             .map(|b| b.chord)
     }
 
-    /// The label of [`Keymap::chord_for`] ("Strg 3"), for tooltips and menus.
-    pub fn label_for(&self, action: &Action) -> Option<String> {
-        self.chord_for(action).map(|c| c.label())
+    /// The label of [`Keymap::chord_for`] in `t` ("Strg 3"), for tooltips and menus.
+    pub fn label_for(&self, action: &Action, t: Lang) -> Option<String> {
+        self.chord_for(action).map(|c| c.label(t))
     }
 }
 
@@ -693,7 +697,7 @@ mod tests {
 
     #[test]
     fn labels_follow_the_handoff() {
-        let label = |c: KeyChord| c.label();
+        let label = |c: KeyChord| c.label(Lang::De);
         assert_eq!(label(KeyChord::plain(Key::Space)), "Leertaste");
         assert_eq!(label(KeyChord::ctrl_shift(Key::E)), "Strg Shift E");
         assert_eq!(label(KeyChord::plain(Key::Home)), "Pos1");
@@ -703,6 +707,25 @@ mod tests {
         assert_eq!(label(KeyChord::ctrl(Key::Comma)), "Strg ,");
         assert_eq!(label(KeyChord::ctrl(Key::Num3)), "Strg 3");
         assert_eq!(label(KeyChord::shift(Key::ArrowDown)), "Shift ↓");
+    }
+
+    #[test]
+    fn english_labels_use_plus_and_english_key_names() {
+        let label = |c: KeyChord| c.label(Lang::En);
+        assert_eq!(label(KeyChord::ctrl_shift(Key::E)), "Ctrl+Shift+E");
+        assert_eq!(label(KeyChord::plain(Key::Space)), "Space");
+        assert_eq!(label(KeyChord::plain(Key::Delete)), "Del");
+        assert_eq!(label(KeyChord::plain(Key::Backspace)), "Backspace");
+        assert_eq!(label(KeyChord::plain(Key::Home)), "Home");
+        assert_eq!(label(KeyChord::plain(Key::End)), "End");
+        assert_eq!(label(KeyChord::ctrl(Key::ArrowUp)), "Ctrl+↑");
+        assert_eq!(label(KeyChord::alt(Key::Minus)), "Alt+\u{2212}");
+        let k = Keymap::default_bindings();
+        let export = Action::Project(ProjectAction::OpenExportDialog);
+        assert_eq!(
+            k.label_for(&export, Lang::En).as_deref(),
+            Some("Ctrl+Shift+E")
+        );
     }
 
     #[test]
@@ -753,9 +776,12 @@ mod tests {
         let mut k = Keymap::default_bindings();
         let play = Action::Transport(TransportAction::TogglePlay);
         assert_eq!(k.chord_for(&play), Some(KeyChord::plain(Key::Space)));
-        assert_eq!(k.label_for(&play).as_deref(), Some("Leertaste"));
+        assert_eq!(k.label_for(&play, Lang::De).as_deref(), Some("Leertaste"));
         let export = Action::Project(ProjectAction::OpenExportDialog);
-        assert_eq!(k.label_for(&export).as_deref(), Some("Strg Shift E"));
+        assert_eq!(
+            k.label_for(&export, Lang::De).as_deref(),
+            Some("Strg Shift E")
+        );
         k.bind(Binding {
             chord: KeyChord::plain(Key::Space),
             scope: KeyScope::Global,
@@ -809,7 +835,11 @@ mod tests {
             (KeyChord::plain(Key::Q), FocusArea::PianoRoll),
         ];
         for (chord, area) in global {
-            assert!(k.lookup(chord, area).is_some(), "{} unbound", chord.label());
+            assert!(
+                k.lookup(chord, area).is_some(),
+                "{} unbound",
+                chord.label(Lang::De)
+            );
         }
     }
 

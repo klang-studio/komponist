@@ -295,7 +295,7 @@ impl PianoRoll {
         self.tooltips(ui, f);
 
         let model = ruler_model(f);
-        ruler.widget_info(|| ruler_access(&model).widget_info());
+        ruler.widget_info(|| ruler_access(komponist_ui::lang(ui.ctx()), &model).widget_info());
         self.access(ui, f, &visible);
     }
 
@@ -1159,7 +1159,13 @@ impl PianoRoll {
         group_bounds(&notes, g.grid);
         for (i, rect, state) in visible.iter().take(m::MAX_NOTE_NODES) {
             let n = &f.notes[*i];
-            let access = note_access(n.pitch, f.clip.start + n.start, f.meter, *state);
+            let access = note_access(
+                komponist_ui::lang(ui.ctx()),
+                n.pitch,
+                f.clip.start + n.start,
+                f.meter,
+                *state,
+            );
             node(
                 &mut notes,
                 base_id("note").with(n.id.0),

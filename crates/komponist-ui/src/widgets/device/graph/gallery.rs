@@ -11,6 +11,7 @@ use komponist_tokens::egui_support::color32;
 use super::configs::{self, band};
 use super::spec::{Axis, AxisKind, GraphSpec, Layer};
 use super::{Graph, GraphOutput, Look, SlotInfo};
+use crate::Lang;
 use crate::gallery_shell::Card;
 use crate::widgets::device::cell_width;
 use crate::widgets::device::gallery::{demo, live_caption, live_state, sample};
@@ -113,7 +114,7 @@ fn envelope() -> Demo {
         )
     };
     Demo {
-        spec: configs::envelope().titled("Amplitude"),
+        spec: configs::envelope(Lang::De).titled("Amplitude"),
         // Attack 8 ms, decay 0.8 s, sustain 55 %, release 4.5 s, curve in the middle.
         values: vec![0.23, 0.85, 0.55, 1.0, 0.5],
         infos: vec![
@@ -181,7 +182,7 @@ fn eq_demo(size: Vec2) -> Demo {
         values.extend([1.0, f, g, q, t]);
     }
     Demo {
-        spec: configs::eq(5, 18.0),
+        spec: configs::eq(Lang::De, 5, 18.0),
         values,
         infos,
         data: spectrum(),
@@ -196,7 +197,7 @@ fn eq_demo(size: Vec2) -> Demo {
 
 fn filter(kind: f64) -> Demo {
     Demo {
-        spec: configs::filter(),
+        spec: configs::filter(Lang::De),
         values: vec![900.0, 0.45, kind],
         infos: vec![
             SlotInfo::from_param(
@@ -234,7 +235,7 @@ fn filter(kind: f64) -> Demo {
 
 fn transfer() -> Demo {
     Demo {
-        spec: configs::transfer(),
+        spec: configs::transfer(Lang::De),
         values: vec![-18.0, 4.0, 0.0],
         infos: vec![
             SlotInfo::from_param(
@@ -273,7 +274,7 @@ fn transfer() -> Demo {
 /// level point at −9 dB.
 fn compressor() -> Demo {
     let mut d = transfer();
-    d.spec = configs::compressor();
+    d.spec = configs::compressor(Lang::De);
     d.values = vec![-18.0, 4.0, 6.0];
     d.infos[2] = SlotInfo::from_param(
         &param("knee", "Knie", ParamKind::lin(0.0, 24.0), 6.0, Unit::Db),
@@ -300,7 +301,7 @@ fn gr_history() -> Demo {
         })
         .collect();
     Demo {
-        spec: configs::gr_history(),
+        spec: configs::gr_history(Lang::De),
         values: Vec::new(),
         infos: Vec::new(),
         data: level,
@@ -315,7 +316,7 @@ fn gr_history() -> Demo {
 
 fn waveform() -> Demo {
     Demo {
-        spec: configs::waveform(0.5).titled("kick_dry_04.wav"),
+        spec: configs::waveform(Lang::De, 0.5).titled("kick_dry_04.wav"),
         values: vec![20.0, 450.0],
         infos: vec![
             SlotInfo::from_param(
@@ -340,7 +341,7 @@ fn waveform() -> Demo {
 fn xy() -> Demo {
     let unit = |lo: f64, hi: f64| Axis::new(AxisKind::Lin, lo, hi);
     Demo {
-        spec: configs::xy(unit(0.0, 1.0), unit(0.0, 1.0), "Zeit", "Feedback"),
+        spec: configs::xy(Lang::De, unit(0.0, 1.0), unit(0.0, 1.0), "Zeit", "Feedback"),
         values: vec![0.5, 0.42],
         infos: vec![
             SlotInfo::new(0.0, 1.0, 0.5).format(|_| "1/8 P".to_owned()),
@@ -376,7 +377,7 @@ fn lfo() -> Demo {
         infos.push(SlotInfo::new(-1.0, 1.0, 0.0));
     }
     Demo {
-        spec: configs::lfo(4).titled("LFO 1 · Form"),
+        spec: configs::lfo(Lang::De, 4).titled("LFO 1 · Form"),
         values,
         infos,
         data: Vec::new(),

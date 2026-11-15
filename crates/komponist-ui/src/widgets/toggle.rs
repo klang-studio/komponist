@@ -37,11 +37,9 @@ use komponist_tokens::{Srgba, color, radius, size, space};
 
 use super::metrics;
 use super::tooltip::Tip;
+use crate::Lang;
 use crate::state::{self, State};
 use crate::{focus, px};
-
-/// The AccessKit value of an I toggle that is off but monitors because the track is armed.
-pub const IMPLIED_MONITOR_VALUE: &str = "überwacht durch Record-Arm";
 
 /// Which flag a track toggle switches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -86,13 +84,13 @@ impl ToggleKind {
         index as f32 * (width + gap) + extra
     }
 
-    /// The German name ("Mute", "Solo", "Record-Arm", "Monitoring"), as in the design system.
-    pub const fn name(self) -> &'static str {
+    /// The name in `t` ("Mute", "Solo", "Record-Arm", "Monitoring"), as in the design system.
+    pub fn name(self, t: Lang) -> &'static str {
         match self {
-            Self::Mute => "Mute",
-            Self::Solo => "Solo",
-            Self::Arm => "Record-Arm",
-            Self::Monitor => "Monitoring",
+            Self::Mute => t.ui_toggle_mute(),
+            Self::Solo => t.ui_toggle_solo(),
+            Self::Arm => t.ui_toggle_arm(),
+            Self::Monitor => t.ui_toggle_monitor(),
         }
     }
 
@@ -111,19 +109,22 @@ impl ToggleKind {
         matches!(self, Self::Solo | Self::Arm)
     }
 
-    /// The tooltip. `implied` adds "stumm durch Solo" to Mute.
-    pub fn tip(self, implied: bool) -> Tip<'static> {
+    /// The tooltip in `t`. `implied` adds "stumm durch Solo" to Mute.
+    pub fn tip(self, t: Lang, implied: bool) -> Tip<'static> {
+        let name = self.name(t);
         match self {
-            Self::Mute if implied => Tip::new("Mute").shortcut("M").detail("stumm durch Solo"),
-            Self::Mute => Tip::new("Mute").shortcut("M"),
-            Self::Solo => Tip::new("Solo")
+            Self::Mute if implied => Tip::new(name)
+                .shortcut("M")
+                .detail(t.ui_toggle_mute_implied()),
+            Self::Mute => Tip::new(name).shortcut("M"),
+            Self::Solo => Tip::new(name)
                 .shortcut("S")
-                .detail("Alt-Klick: nur diese Spur solo"),
-            Self::Arm => Tip::new("Record-Arm")
+                .detail(t.ui_toggle_solo_detail()),
+            Self::Arm => Tip::new(name)
                 .shortcut("R")
-                .detail("Alt-Klick exklusiv"),
-            Self::Monitor if implied => Tip::new("Monitoring").detail("durch Record-Arm"),
-            Self::Monitor => Tip::new("Monitoring"),
+                .detail(t.ui_toggle_arm_detail()),
+            Self::Monitor if implied => Tip::new(name).detail(t.ui_toggle_monitor_implied()),
+            Self::Monitor => Tip::new(name),
         }
     }
 }
@@ -299,11 +300,11 @@ impl<'a> TrackToggle<'a> {
         self
     }
 
-    /// The accessible name: the kind's name, with the track's after " · ".
-    pub fn accessible_name(&self) -> String {
+    /// The accessible name in `t`: the kind's name, with the track's after " · ".
+    pub fn accessible_name(&self, t: Lang) -> String {
         match self.track {
-            Some(track) => format!("{} · {track}", self.kind.name()),
-            None => self.kind.name().to_owned(),
+            Some(track) => format!("{} · {track}", self.kind.name(t)),
+            None => self.kind.name(t).to_owned(),
         }
     }
 
@@ -314,14 +315,15 @@ impl<'a> TrackToggle<'a> {
             ui.allocate_exact_size(self.size, super::sense(ui, Sense::CLICK | Sense::DRAG));
         let st = State::of(ui, &response);
         let enabled = ui.is_enabled() && !st.disabled;
-        let name = self.accessible_name();
+        let t = crate::lang(ui.ctx());
+        let name = self.accessible_name(t);
         let on = self.on;
         // An I that only monitors because the track is armed says so in its value.
         let implied_monitor = self.implied && !on && self.kind == ToggleKind::Monitor;
         response.widget_info(|| {
             let mut info = WidgetInfo::selected(Role::Button, enabled, on, &name);
             if implied_monitor {
-                info.current_text_value = Some(IMPLIED_MONITOR_VALUE.to_owned());
+                info.current_text_value = Some(t.ui_toggle_monitor_implied_value().to_owned());
             }
             info
         });
@@ -360,7 +362,7 @@ impl<'a> TrackToggle<'a> {
             }
         }
         if !still {
-            self.kind.tip(self.implied && !self.on).attach(&response);
+            self.kind.tip(t, self.implied && !self.on).attach(&response);
         }
         ToggleResponse { response, event }
     }
@@ -435,7 +437,7 @@ pub fn gallery(ui: &mut Ui) {
             ui.end_row();
             for kind in ToggleKind::ALL {
                 ui.label(
-                    crate::fonts::rich_text(kind.name(), &typography::UI)
+                    crate::fonts::rich_text(kind.name(Lang::De), &typography::UI)
                         .color(color32(color::TEXT_2)),
                 );
                 for (on, st) in [
@@ -564,9 +566,14 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(TrackToggle::new(Solo, false).accessible_name(), "Solo");
         assert_eq!(
-            TrackToggle::new(Arm, false).track("Lead").accessible_name(),
+            TrackToggle::new(Solo, false).accessible_name(Lang::De),
+            "Solo"
+        );
+        assert_eq!(
+            TrackToggle::new(Arm, false)
+                .track("Lead")
+                .accessible_name(Lang::De),
             "Record-Arm · Lead"
         );
         assert!(Solo.alt_exclusive() && Arm.alt_exclusive());

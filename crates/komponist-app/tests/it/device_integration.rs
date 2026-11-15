@@ -589,13 +589,10 @@ fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
     let mut h = harness(app);
     h.run_steps(2);
     let readout = |h: &Harness<'_, App>| {
-        h.get_by_role_and_label(
-            Role::Meter,
-            komponist_ui::widgets::device::meter_gr::ACCESSIBLE_NAME,
-        )
-        .accesskit_node()
-        .value()
-        .unwrap_or_default()
+        h.get_by_role_and_label(Role::Meter, komponist_i18n::de::UI_METER_GR_NAME)
+            .accesskit_node()
+            .value()
+            .unwrap_or_default()
     };
     assert!(
         readout(&h).contains(" 0.0 dB"),

@@ -27,6 +27,7 @@ use komponist_tokens::{TrackPalette, color, radius, size, space};
 
 use super::mesh::Quads;
 use super::{Access, bar_span};
+use crate::Lang;
 use crate::icons::{self, Caret};
 use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
@@ -551,20 +552,20 @@ pub fn paint_clip_ghost(painter: &Painter, rect: Rect) {
 /// Accessible name and role of a clip: `Clip Beat A, Takt 1–4` (a leading ● of a recording clip's
 /// name is dropped; muted clips add `, stumm`), role grid cell, selectable.
 pub fn clip_access(
+    t: Lang,
     model: &ClipModel<'_>,
     start: Tick,
     end: Tick,
     meter: Meter,
     state: ClipState,
 ) -> Access {
-    let mut s = format!(
-        "Clip {}, {}",
-        clip_name(model.name),
-        bar_span(start, end, meter)
-    );
-    if model.muted {
-        s.push_str(", stumm");
-    }
+    let name = clip_name(model.name);
+    let span = bar_span(t, start, end, meter);
+    let s = if model.muted {
+        t.a11y_clip_muted(name, span)
+    } else {
+        t.a11y_clip(name, span)
+    };
     Access::selectable(Role::GridCell, s, state.selected)
 }
 
@@ -673,6 +674,7 @@ mod tests {
         let p = TrackPalette::new(45);
         let m = ClipModel::new("Beat A", &p);
         let a = clip_access(
+            Lang::De,
             &m,
             Tick(0),
             Tick(4 * 3840),
@@ -684,6 +686,7 @@ mod tests {
         let mut rec = ClipModel::new("● Aufnahme · Take 1", &p);
         rec.recording = true;
         let a = clip_access(
+            Lang::De,
             &rec,
             Tick(12 * 3840),
             Tick(13 * 3840 + 100),
@@ -694,6 +697,7 @@ mod tests {
         let mut muted = ClipModel::new("Arp", &p);
         muted.muted = true;
         let a = clip_access(
+            Lang::De,
             &muted,
             Tick(0),
             Tick(3840),

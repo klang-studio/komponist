@@ -1,5 +1,5 @@
 //! The right-click menu of a knob or fader outside the device cards: „Auf Standard“ and „Wert
-//! eingeben“ (owner decision 2026-11-15: a double-click resets, so text entry has this menu and
+//! eingeben“ (texts: `ui-value-*` in the language of the egui context; owner decision 2026-11-15: a double-click resets, so text entry has this menu and
 //! Enter). The device cards build the same menu themselves, because their entries also report
 //! the touched parameter.
 //!
@@ -15,17 +15,6 @@ use egui::Response;
 use super::context_menu::{ContextMenu, Entry};
 use super::number_field::open_value_entry;
 
-/// Accessible name of the menu.
-pub const MENU: &str = "Wert";
-/// Entry: back to the default value.
-pub const TO_DEFAULT: &str = "Auf Standard";
-/// Its shortcut column.
-pub const TO_DEFAULT_SHORTCUT: &str = "Doppelklick";
-/// Entry: open the text entry.
-pub const ENTER_VALUE: &str = "Wert eingeben";
-/// Its shortcut column.
-pub const ENTER_VALUE_SHORTCUT: &str = "Enter";
-
 /// What the menu chose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Choice {
@@ -37,11 +26,13 @@ enum Choice {
 /// control's text entry with `entry_text` selected; "Auf Standard" returns `true`: the caller sets
 /// the default value and applies it (one undo step, like an Alt-click).
 pub fn show(target: &Response, entry_text: impl FnOnce() -> String) -> bool {
+    let t = crate::lang(&target.ctx);
     let entries = [
-        Entry::action(TO_DEFAULT, Choice::Default).shortcut(TO_DEFAULT_SHORTCUT),
-        Entry::action(ENTER_VALUE, Choice::Enter).shortcut(ENTER_VALUE_SHORTCUT),
+        Entry::action(t.ui_value_to_default(), Choice::Default)
+            .shortcut(t.ui_value_to_default_shortcut()),
+        Entry::action(t.ui_value_enter(), Choice::Enter).shortcut(t.key_enter()),
     ];
-    match ContextMenu::new(MENU, &entries).show_on(target) {
+    match ContextMenu::new(t.ui_value_menu(), &entries).show_on(target) {
         Some(Choice::Default) => true,
         Some(Choice::Enter) => {
             open_value_entry(&target.ctx, target.id, entry_text());

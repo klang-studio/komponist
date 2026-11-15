@@ -337,7 +337,8 @@ fn shape_button(
 }
 
 fn transport_buttons(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
-    let label = |a: TransportAction| model.keymap.label_for(&Action::Transport(a));
+    let lang = komponist_ui::lang(ui.ctx());
+    let label = |a: TransportAction| model.keymap.label_for(&Action::Transport(a), lang);
     if shape_button(
         ui,
         Shape::Play,
@@ -382,7 +383,9 @@ fn toggles(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     ];
     for (name, on, action) in items {
         let action = Action::Transport(action);
-        let shortcut = model.keymap.label_for(&action);
+        let shortcut = model
+            .keymap
+            .label_for(&action, komponist_ui::lang(ui.ctx()));
         let mut button = Button::new(name).on(on);
         if let Some(sc) = shortcut.as_deref() {
             button = button.shortcut(sc);
@@ -579,7 +582,7 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     ];
     let labels: Vec<Option<String>> = entries_spec
         .iter()
-        .map(|(_, a)| model.keymap.label_for(a))
+        .map(|(_, a)| model.keymap.label_for(a, komponist_ui::lang(ui.ctx())))
         .collect();
     let entries: Vec<Entry<'_, Action>> = entries_spec
         .iter()

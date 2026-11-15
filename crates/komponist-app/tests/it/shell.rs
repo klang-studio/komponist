@@ -93,7 +93,7 @@ fn every_shortcut_dispatches_its_action() {
         assert!(
             got.contains(&&binding.action),
             "{} ({:?}) should dispatch {:?}, got {got:?}",
-            chord.label(),
+            chord.label(Lang::De),
             binding.scope,
             binding.action
         );

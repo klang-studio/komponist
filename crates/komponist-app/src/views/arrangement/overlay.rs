@@ -28,7 +28,7 @@ impl Arrangement {
         let [pad_x, pad_y] = metrics::NEW_TRACK_PADDING;
         let shortcut = ctx
             .keymap
-            .label_for(&Action::Edit(EditAction::NewMidiTrack))
+            .label_for(&Action::Edit(EditAction::NewMidiTrack), ctx.lang)
             .unwrap_or_default();
         let hint = format!("{} {shortcut}", names::NEW_TRACK_HINT);
         let x = px::snap(left.left() + pad_x, ppp);
@@ -113,7 +113,7 @@ impl Arrangement {
 
         let shortcut = ctx
             .keymap
-            .label_for(&Action::Edit(EditAction::NewMidiTrack));
+            .label_for(&Action::Edit(EditAction::NewMidiTrack), ctx.lang);
         let add = hint_button(
             ui,
             pos2(x, y),

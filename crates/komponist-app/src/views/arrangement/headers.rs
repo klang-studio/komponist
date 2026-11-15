@@ -151,7 +151,7 @@ impl Arrangement {
             meter: None,
         };
         paint_track_header(ui.painter(), rect, &model, state);
-        let access = header_access(&model, state);
+        let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
         register(&response, &access);
 
         // Select, rename, reorder.
