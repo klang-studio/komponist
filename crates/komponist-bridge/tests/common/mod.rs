@@ -133,6 +133,8 @@ pub struct Bridge {
     /// Messages `expect` passed over (logs, values), in order.
     pub seen: Vec<BridgeMsg>,
     pub input: [Vec<f32>; 2],
+    /// The sidechain sent with every block (`None`: none, #6).
+    pub sidechain: Option<[Vec<f32>; 2]>,
     pub output: [Vec<f32>; 2],
     pub steady_time: u64,
     /// `BLOCK_FLAG_*` bits for the next block only.
@@ -198,6 +200,7 @@ impl Bridge {
             monitor: BridgeMonitor::new(region),
             seen: Vec::new(),
             input: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
+            sidechain: None,
             output: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
             steady_time: 0,
             next_flags: 0,
@@ -396,6 +399,9 @@ impl Bridge {
         let seq = self.client.begin_block(
             &spec,
             [&self.input[0][..BLOCK], &self.input[1][..BLOCK]],
+            self.sidechain
+                .as_ref()
+                .map(|[l, r]| [&l[..BLOCK], &r[..BLOCK]]),
             events,
         )?;
         self.steady_time += BLOCK as u64;

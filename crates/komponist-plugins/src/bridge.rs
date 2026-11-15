@@ -140,6 +140,8 @@ pub(crate) struct Bridge {
     pub values: BTreeMap<u32, ParamValue>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
+    /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
+    pub sidechain: bool,
     pub latency: u32,
     gui_open: bool,
     gui_closing: bool,
@@ -169,6 +171,8 @@ pub(crate) struct SpawnSetup<'a> {
     pub state: Option<Arc<[u8]>>,
     pub setup: ProcessorSetup,
     pub timing: Timing,
+    /// The catalog says the plugin has a sidechain input.
+    pub sidechain: bool,
 }
 
 impl Bridge {
@@ -278,6 +282,7 @@ impl Bridge {
             values: BTreeMap::new(),
             note_names: Vec::new(),
             has_gui: false,
+            sidechain: s.sidechain,
             latency: 0,
             gui_open: false,
             gui_closing: false,
@@ -609,6 +614,7 @@ impl Bridge {
                 self.values = info.values.into_iter().map(|v| (v.id, v)).collect();
                 self.note_names = info.note_names;
                 self.has_gui = info.has_gui;
+                self.sidechain = info.descriptor.sidechain;
                 events.push(PluginManagerEvent::ParamsChanged { device });
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
                 if !self.note_names.is_empty() {

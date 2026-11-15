@@ -682,6 +682,7 @@ mod tests {
             kind,
             features: features.iter().map(|f| (*f).into()).collect(),
             bundle: format!("/plugins/{id}.clap").into(),
+            sidechain: false,
         }
     }
 

@@ -27,6 +27,7 @@ pub(crate) fn entries() -> Vec<CatalogEntry> {
         category: None,
         features: vec!["instrument".into(), "synthesizer".into()],
         location: PluginLocation::InProcess(BuiltinKind::Hexa),
+        sidechain: false,
     }];
     entries.extend(Internal::ALL.into_iter().map(internal_entry));
     entries
@@ -47,6 +48,7 @@ fn internal_entry(kind: Internal) -> CatalogEntry {
             .then(|| EffectCategory::from_features(&features)),
         features,
         location: PluginLocation::InProcess(BuiltinKind::Internal(kind)),
+        sidechain: kind.has_sidechain(),
     }
 }
 

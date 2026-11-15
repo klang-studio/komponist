@@ -4,7 +4,9 @@
 //!
 //! - **Input:** the main input port (the first port flagged main, else port 0) gets the stereo
 //!   input; a mono port gets `(L + R) / 2`, a port with more than two channels gets L and R in its
-//!   first two channels and silence in the rest. Every other input port (sidechains) is silent.
+//!   first two channels and silence in the rest. The sidechain port (the first other input port
+//!   with channels, #6) gets the block's sidechain the same way, or silence without one. Every
+//!   further input port is silent.
 //! - **Output:** the main output port is read back; a mono port goes to both channels, a port with
 //!   more channels contributes its first two. Other output ports are rendered and discarded. A
 //!   plugin without output ports passes the input through.
@@ -37,6 +39,9 @@ const ALL_NOTES_OFF_ROOM: usize = 16 * 128;
 pub(crate) struct PortLayout {
     pub(crate) channels: Vec<u32>,
     pub(crate) main: Option<usize>,
+    /// Inputs only: the sidechain port, the first port besides the main one with at least one
+    /// channel (#6). CLAP has no sidechain flag; hosts (Bitwig, Reaper) take the non-main input.
+    pub(crate) sidechain: Option<usize>,
 }
 
 impl PortLayout {
@@ -63,7 +68,15 @@ impl PortLayout {
         if layout.main.is_none() && !layout.channels.is_empty() {
             layout.main = Some(0);
         }
+        if is_input {
+            layout.sidechain = layout.sidechain_port();
+        }
         layout
+    }
+
+    /// The first port besides the main one with at least one channel.
+    fn sidechain_port(&self) -> Option<usize> {
+        (0..self.channels.len()).find(|&p| Some(p) != self.main && self.channels[p] > 0)
     }
 
     fn total_channels(&self) -> usize {
@@ -113,8 +126,9 @@ struct PortBuffers {
     ports: AudioPorts,
     channels: Vec<u32>,
     main: Option<usize>,
-    /// Index of the main port's first channel in `data` (in channels).
-    main_first: usize,
+    sidechain: Option<usize>,
+    /// Per port: the index of its first channel in `data` (in channels).
+    firsts: Vec<usize>,
     stride: usize,
     data: Vec<f32>,
 }
@@ -122,15 +136,21 @@ struct PortBuffers {
 impl PortBuffers {
     fn new(layout: &PortLayout, max_frames: usize) -> PortBuffers {
         let total = layout.total_channels();
-        let main_first = layout
-            .main
-            .map(|m| layout.channels[..m].iter().map(|&c| c as usize).sum())
-            .unwrap_or(0);
+        let firsts = layout
+            .channels
+            .iter()
+            .scan(0usize, |first, &count| {
+                let this = *first;
+                *first += count as usize;
+                Some(this)
+            })
+            .collect();
         PortBuffers {
             ports: AudioPorts::with_capacity(total, layout.channels.len()),
             channels: layout.channels.clone(),
             main: layout.main,
-            main_first,
+            sidechain: layout.sidechain,
+            firsts,
             stride: max_frames,
             data: vec![0.0; total * max_frames],
         }
@@ -140,10 +160,36 @@ impl PortBuffers {
         self.main.map_or(0, |m| self.channels[m] as usize)
     }
 
+    /// Channel `ch` of port `port`, `frames` long.
+    fn port_channel(&mut self, port: usize, ch: usize, frames: usize) -> &mut [f32] {
+        let start = (self.firsts[port] + ch) * self.stride;
+        &mut self.data[start..start + frames]
+    }
+
     /// Channel `ch` of the main port, `frames` long.
     fn main_channel(&mut self, ch: usize, frames: usize) -> &mut [f32] {
-        let start = (self.main_first + ch) * self.stride;
-        &mut self.data[start..start + frames]
+        let main = self.main.expect("a main port");
+        self.port_channel(main, ch, frames)
+    }
+
+    /// Writes the stereo `src` into `port`, adapted to its channel count: a mono port gets the
+    /// mid signal, a port with more channels L and R and (already) silence in the rest.
+    fn write_stereo(&mut self, port: usize, src: [&[f32]; 2], frames: usize) {
+        match self.channels[port] {
+            0 => {}
+            1 => {
+                let mono = self.port_channel(port, 0, frames);
+                for ((m, l), r) in mono.iter_mut().zip(src[0]).zip(src[1]) {
+                    *m = 0.5 * (l + r);
+                }
+            }
+            _ => {
+                for (ch, samples) in src.iter().enumerate() {
+                    self.port_channel(port, ch, frames)
+                        .copy_from_slice(&samples[..frames]);
+                }
+            }
+        }
     }
 
     /// Zeroes the first `frames` of every channel.
@@ -153,24 +199,20 @@ impl PortBuffers {
         }
     }
 
-    /// Input side: silences every port, then writes the stereo `input` into the main port, adapted
-    /// to its channel count (mono gets the mid signal).
-    fn fill_from_stereo(&mut self, input: [&[f32]; 2], frames: usize) {
+    /// Input side: silences every port, then writes the stereo `input` into the main port and the
+    /// `sidechain` (if any) into the sidechain port, adapted to their channel counts.
+    fn fill_from_stereo(
+        &mut self,
+        input: [&[f32]; 2],
+        sidechain: Option<[&[f32]; 2]>,
+        frames: usize,
+    ) {
         self.clear(frames);
-        match self.main_channels() {
-            0 => {}
-            1 => {
-                let mono = self.main_channel(0, frames);
-                for ((m, l), r) in mono.iter_mut().zip(input[0]).zip(input[1]) {
-                    *m = 0.5 * (l + r);
-                }
-            }
-            _ => {
-                for (ch, src) in input.iter().enumerate() {
-                    self.main_channel(ch, frames)
-                        .copy_from_slice(&src[..frames]);
-                }
-            }
+        if let Some(main) = self.main {
+            self.write_stereo(main, input, frames);
+        }
+        if let (Some(port), Some(sidechain)) = (self.sidechain, sidechain) {
+            self.write_stereo(port, sidechain, frames);
         }
     }
 
@@ -392,6 +434,9 @@ impl HostedProcessor for ClapProcessor {
         if block.frames == 0
             || block.frames > self.max_frames
             || block.input.iter().any(|c| c.len() < frames)
+            || block
+                .sidechain
+                .is_some_and(|sc| sc.iter().any(|c| c.len() < frames))
             || block.output.iter().any(|c| c.len() < frames)
         {
             return ProcessStatus::Error;
@@ -401,7 +446,8 @@ impl HostedProcessor for ClapProcessor {
         }
 
         self.convert_events(block);
-        self.inputs.fill_from_stereo(block.input, frames);
+        self.inputs
+            .fill_from_stereo(block.input, block.sidechain, frames);
         self.outputs.clear(frames);
         let transport = transport_event(block.transport);
 
@@ -497,10 +543,45 @@ mod tests {
     }
 
     fn layout(channels: &[u32], main: Option<usize>) -> PortLayout {
-        PortLayout {
+        let mut layout = PortLayout {
             channels: channels.to_vec(),
             main,
-        }
+            sidechain: None,
+        };
+        layout.sidechain = layout.sidechain_port();
+        layout
+    }
+
+    #[test]
+    fn the_sidechain_port_is_the_first_other_input_with_channels() {
+        assert_eq!(layout(&[2], Some(0)).sidechain, None);
+        assert_eq!(layout(&[2, 2], Some(0)).sidechain, Some(1));
+        assert_eq!(layout(&[2, 1], Some(1)).sidechain, Some(0));
+        assert_eq!(layout(&[2, 0, 1], Some(0)).sidechain, Some(2));
+        assert_eq!(layout(&[], None).sidechain, None);
+    }
+
+    #[test]
+    fn the_sidechain_goes_into_its_port_or_silence() {
+        let left = [1.0, 2.0, 3.0];
+        let right = [3.0, 4.0, 5.0];
+        let sc = [[0.5f32; 3], [-0.5f32; 3]];
+        // Main stereo, a stereo sidechain port, a mono third port.
+        let mut ports = PortBuffers::new(&layout(&[2, 2, 1], Some(0)), 4);
+        ports.data.fill(9.0);
+        ports.fill_from_stereo([&left, &right], Some([&sc[0], &sc[1]]), 3);
+        assert_eq!(ports.main_channel(1, 3), &right);
+        assert_eq!(ports.port_channel(1, 0, 3), &sc[0]);
+        assert_eq!(ports.port_channel(1, 1, 3), &sc[1]);
+        assert_eq!(ports.port_channel(2, 0, 3), &[0.0; 3]);
+        // No sidechain this block: the port is silent again.
+        ports.fill_from_stereo([&left, &right], None, 3);
+        assert_eq!(ports.port_channel(1, 0, 3), &[0.0; 3]);
+        assert_eq!(ports.port_channel(1, 1, 3), &[0.0; 3]);
+        // A mono sidechain port gets the mid signal.
+        let mut ports = PortBuffers::new(&layout(&[2, 1], Some(0)), 3);
+        ports.fill_from_stereo([&left, &right], Some([&left, &right]), 3);
+        assert_eq!(ports.port_channel(1, 0, 3), &[2.0, 3.0, 4.0]);
     }
 
     #[test]
@@ -510,13 +591,13 @@ mod tests {
         // Sidechain (2 ch) first, mono main second: main gets the mid signal, the rest is silent.
         let mut ports = PortBuffers::new(&layout(&[2, 1], Some(1)), 4);
         ports.data.fill(9.0);
-        ports.fill_from_stereo([&left, &right], 3);
+        ports.fill_from_stereo([&left, &right], None, 3);
         assert_eq!(ports.main_channel(0, 3), &[2.0, 3.0, 4.0]);
         assert_eq!(&ports.data[0..3], &[0.0; 3]);
         assert_eq!(&ports.data[4..7], &[0.0; 3]);
         // Four channels: L and R, then silence.
         let mut ports = PortBuffers::new(&layout(&[4], Some(0)), 3);
-        ports.fill_from_stereo([&left, &right], 3);
+        ports.fill_from_stereo([&left, &right], None, 3);
         assert_eq!(ports.main_channel(0, 3), &left);
         assert_eq!(ports.main_channel(1, 3), &right);
         assert_eq!(ports.main_channel(3, 3), &[0.0; 3]);

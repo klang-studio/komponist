@@ -511,6 +511,7 @@ fn app() -> (App, Rc<RefCell<Script>>, DeviceId) {
         kind: PluginKind::Instrument,
         features: Vec::new(),
         bundle: "/usr/lib/clap/Surge XT.clap".into(),
+        sidechain: false,
     }]);
     let script = Rc::new(RefCell::new(Script::default()));
     let params = vec![

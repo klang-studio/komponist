@@ -115,7 +115,9 @@ pub trait DeviceHost {
 
     /// Whether `device` has a sidechain input the "SC" chip in its head can set (WP-104). Internal
     /// devices answer through [`Internal::has_sidechain`](komponist_builtin::Internal::has_sidechain)
-    /// without the host; a host reports it for plugins with a sidechain port (WP-105).
+    /// without the host; a host reports it for plugins with a sidechain port (#6: the
+    /// [`PluginHost`] for bridged CLAP and VST3 plugins whose catalog entry or loaded instance
+    /// has one).
     fn has_sidechain(&self, device: DeviceId) -> bool {
         let _ = device;
         false
@@ -686,6 +688,12 @@ impl DeviceHost for PluginHost {
 
     fn has_gui(&self, device: DeviceId) -> bool {
         self.manager.has_gui(device)
+    }
+
+    fn has_sidechain(&self, device: DeviceId) -> bool {
+        // Internal devices answer from their spec before the host is asked (`Card`); the
+        // manager knows the bridged ones (#6).
+        self.is_external(device) && self.manager.has_sidechain(device)
     }
 
     fn open_gui(

@@ -102,6 +102,8 @@ pub(super) fn param_id(plugin: &dyn HostedPlugin, name: &str) -> u32 {
 /// `assert_no_alloc`.
 pub(crate) struct Blocks {
     pub(crate) input: [Vec<f32>; 2],
+    /// The sidechain of every block (`None`: none).
+    pub(crate) sidechain: Option<[Vec<f32>; 2]>,
     pub(crate) output: [Vec<f32>; 2],
     pub(crate) events_out: Vec<WireEvent>,
     pub(crate) out_count: usize,
@@ -113,6 +115,7 @@ impl Blocks {
     pub(crate) fn new() -> Blocks {
         Blocks {
             input: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
+            sidechain: None,
             output: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
             events_out: vec![WireEvent::default(); OUTPUT_EVENT_CAPACITY],
             out_count: 0,
@@ -136,6 +139,7 @@ impl Blocks {
         let mut block = ProcessBlock {
             frames: BLOCK as u32,
             input: [in_l, in_r],
+            sidechain: self.sidechain.as_ref().map(|[l, r]| [&l[..], &r[..]]),
             output: [out_l, out_r],
             events_in: events,
             events_out: EventOut::new(&mut self.events_out),

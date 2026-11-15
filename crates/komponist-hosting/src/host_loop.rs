@@ -629,6 +629,7 @@ mod tests {
                     kind: PluginKind::Other,
                     features: Vec::new(),
                     bundle: "/fake.clap".into(),
+                    sidechain: false,
                 },
                 calls: Vec::new(),
                 on_call: None,

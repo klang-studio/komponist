@@ -6,7 +6,10 @@
 //! callback period after the callback started, the same for every processor of the callback).
 //! The engine may split the two halves (`Processor::begin`, WP-65): for an instrument at the
 //! head of a chain the block starts before the engine runs any chain, and `process` only waits
-//! for it. Fallbacks (passthrough for effects, silence for instruments): while the bridge loads
+//! for it. A device whose sidechain is set gets `Processor::process_sidechain` instead (#6): the
+//! sidechain travels in the block's extra shared-memory channels into the plugin's sidechain port;
+//! a plain `process` sends none, so the port gets silence. Fallbacks (passthrough for effects,
+//! silence for instruments): while the bridge loads
 //! (`Loading`), when a block is late or the bridge busy (counted as "late"), and permanently once
 //! the bridge died (then `ProcessStatus::Failed`). Undelivered note-offs are kept and sent with
 //! the next block that reaches the bridge.
@@ -206,8 +209,15 @@ impl ExternalProcessor {
         self.pending_all_off = false;
     }
 
-    /// RT. The first half of a call: status checks, wire events and `begin_block`.
-    fn start(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> Started {
+    /// RT. The first half of a call: status checks, wire events and `begin_block` (with the
+    /// `sidechain`, if any).
+    fn start(
+        &mut self,
+        ctx: &ProcessContext,
+        events: &[Event],
+        input: [&[f32]; 2],
+        sidechain: Option<[&[f32]; 2]>,
+    ) -> Started {
         let entered = Instant::now();
         let frames = input[0].len();
         self.steady_time += frames as u64;
@@ -220,7 +230,11 @@ impl ExternalProcessor {
                 return outcome(Outcome::Fallback(ProcessStatus::Continue));
             }
         }
-        if frames == 0 || frames > MAX_BLOCK {
+        if frames == 0
+            || frames > MAX_BLOCK
+            || input[1].len() < frames
+            || sidechain.is_some_and(|sc| sc.iter().any(|c| c.len() < frames))
+        {
             return outcome(Outcome::Fallback(ProcessStatus::Continue));
         }
 
@@ -238,7 +252,7 @@ impl ExternalProcessor {
             steady_time: self.steady_time - frames as u64,
             transport: wire_transport(&ctx.transport),
         };
-        let seq = match self.client.begin_block(&spec, input, &self.wire) {
+        let seq = match self.client.begin_block(&spec, input, sidechain, &self.wire) {
             Ok(seq) => seq,
             Err(error) => {
                 // Nothing reached the bridge: keep what must not get lost.
@@ -347,15 +361,32 @@ impl Processor for ExternalProcessor {
             Some(started) if started.frames == io.frames() => started,
             // Not begun, or (never from the engine) begun for another call: whatever the bridge
             // does with that block, its result is stale by sequence number.
-            _ => self.start(ctx, events, io.input),
+            _ => self.start(ctx, events, io.input, None),
         };
+        self.finish(started, io)
+    }
+
+    /// RT: [`Processor::process`] with the device's sidechain, which goes into the plugin's
+    /// sidechain port through the block's extra channels (#6). The engine never starts such a
+    /// device early ([`Processor::begin`]): its sidechain exists only once its source ran.
+    fn process_sidechain(
+        &mut self,
+        ctx: &ProcessContext,
+        events: &[Event],
+        io: &mut StereoIo<'_>,
+        sidechain: [&[f32]; 2],
+    ) -> ProcessStatus {
+        // A block begun without the sidechain (never from the engine) is stale by sequence
+        // number once this one goes out.
+        self.begun = None;
+        let started = self.start(ctx, events, io.input, Some(sidechain));
         self.finish(started, io)
     }
 
     /// RT: starts the block (wire events, `begin_block`, futex wake) so that the bridge works
     /// while the engine processes other tracks; the next `process` call waits for it.
     fn begin(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> bool {
-        self.begun = Some(self.start(ctx, events, input));
+        self.begun = Some(self.start(ctx, events, input, None));
         true
     }
 
