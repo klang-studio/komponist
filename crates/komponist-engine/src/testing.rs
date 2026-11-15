@@ -8,8 +8,11 @@
 //!   (swallows note-offs) to prove that the engine ends every note it started anyway.
 //! - [`TestGain`]: an effect multiplying by a gain (parameter [`TEST_GAIN_PARAM`]), optionally
 //!   delaying by a fixed latency (for delay compensation tests).
+//! - [`TestSidechain`]: an effect that reads its sidechain input (WP-102): it outputs the
+//!   sidechain, or the main input on the left and the sidechain on the right, so tests see what
+//!   arrived and when. Counts the calls that carried a sidechain.
 //!
-//! Both are RT-safe: `process` and `reset` never allocate (the log is a preallocated rtrb queue).
+//! All are RT-safe: `process` and `reset` never allocate (the log is a preallocated rtrb queue).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -574,4 +577,103 @@ mod tests {
         let out = run(&mut gain, &[1.0, 1.0, 1.0], &[]);
         assert_eq!(out, [0.0, 0.0, 2.0]);
     }
+}
+
+/// What a [`TestSidechain`] outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestSidechainMode {
+    /// The sidechain on both channels (silence in calls without one).
+    Replace,
+    /// The main input's left channel on the left, the sidechain's left channel on the right
+    /// (silence there in calls without one): main and sidechain side by side, to compare timing.
+    Split,
+}
+
+/// An effect for tests that reads its sidechain input (see the module docs).
+#[derive(Debug)]
+pub struct TestSidechain {
+    mode: TestSidechainMode,
+    latency: u32,
+    calls: Arc<AtomicU32>,
+}
+
+impl TestSidechain {
+    /// Outputs per `mode`, no latency.
+    pub fn new(mode: TestSidechainMode) -> TestSidechain {
+        TestSidechain {
+            mode,
+            latency: 0,
+            calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Reports `latency` frames (without delaying anything), so a test can move the alignment.
+    pub fn reporting_latency(mode: TestSidechainMode, latency: u32) -> TestSidechain {
+        TestSidechain {
+            latency,
+            ..TestSidechain::new(mode)
+        }
+    }
+
+    /// Number of calls that carried a sidechain input so far.
+    pub fn sidechain_calls(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.calls)
+    }
+
+    fn write(&self, io: &mut StereoIo<'_>, sidechain: Option<[&[f32]; 2]>) {
+        let n = io.frames();
+        let StereoIo { input, output } = io;
+        let [out_l, out_r] = output;
+        match (self.mode, sidechain) {
+            (TestSidechainMode::Replace, Some([l, r])) => {
+                out_l.copy_from_slice(&l[..n]);
+                out_r.copy_from_slice(&r[..n]);
+            }
+            (TestSidechainMode::Replace, None) => {
+                out_l.fill(0.0);
+                out_r.fill(0.0);
+            }
+            (TestSidechainMode::Split, sidechain) => {
+                out_l.copy_from_slice(&input[0][..n]);
+                match sidechain {
+                    Some([l, _]) => out_r.copy_from_slice(&l[..n]),
+                    None => out_r.fill(0.0),
+                }
+            }
+        }
+    }
+}
+
+impl Processor for TestSidechain {
+    fn activate(&mut self, _sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        _ctx: &ProcessContext,
+        _events: &[Event],
+        io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        self.write(io, None);
+        ProcessStatus::Continue
+    }
+
+    fn process_sidechain(
+        &mut self,
+        _ctx: &ProcessContext,
+        _events: &[Event],
+        io: &mut StereoIo<'_>,
+        sidechain: [&[f32]; 2],
+    ) -> ProcessStatus {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.write(io, Some(sidechain));
+        ProcessStatus::Continue
+    }
+
+    fn latency(&self) -> u32 {
+        self.latency
+    }
+
+    fn reset(&mut self) {}
 }

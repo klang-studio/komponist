@@ -604,7 +604,11 @@ impl ChainHook for Hook<'_> {
             .find(|s| usize::from(s.device) == index)?;
         // SAFETY: the source is another node whose job is done (it is an input of this one, or
         // every job is done for the master); nobody writes it until the next segment.
-        let source = unsafe { &*self.states.add(usize::from(self.map[usize::from(route.from)])) };
+        let source = unsafe {
+            &*self
+                .states
+                .add(usize::from(self.map[usize::from(route.from)]))
+        };
         let tap = match route.tap {
             Tap::Pre => &source.pre,
             Tap::Post => &source.post,
@@ -743,8 +747,11 @@ impl TrackJobs<'_> {
         let [bl, br] = b;
         for input in self.routing.inputs(route.inputs) {
             // SAFETY: an input's job is done before this one runs; nobody writes it meanwhile.
-            let source =
-                unsafe { &*self.states.add(usize::from(self.map[usize::from(input.from)])) };
+            let source = unsafe {
+                &*self
+                    .states
+                    .add(usize::from(self.map[usize::from(input.from)]))
+            };
             let Some(send) = input.send else {
                 add(&mut al[..n], &source.out[0][..n]);
                 add(&mut ar[..n], &source.out[1][..n]);
@@ -1272,9 +1279,8 @@ impl Core {
         self.exclusive = chains_exclusive(program.tracks[..count].iter().map(|t| &t.chain[..]));
         // The routing graph, if it fits the program (the compiler always makes one that does).
         let routing = &*program.routing;
-        self.routed = !routing.is_flat()
-            && routing.order.len() == count
-            && routing.nodes.len() == count;
+        self.routed =
+            !routing.is_flat() && routing.order.len() == count && routing.nodes.len() == count;
         self.gates = None;
         // Edges keep their delay lines and gains across the swap; a line that changed hands
         // starts over.
@@ -1580,11 +1586,7 @@ impl Core {
                 let mut ready = 0u128;
                 for j in 0..count {
                     let index = usize::from(order[j]);
-                    let waits = if routed {
-                        routing.node(index).waits
-                    } else {
-                        0
-                    };
+                    let waits = if routed { routing.node(index).waits } else { 0 };
                     missing[index].store(waits, Ordering::Relaxed);
                     if waits == 0 {
                         ready |= 1 << j;

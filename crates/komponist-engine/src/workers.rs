@@ -341,7 +341,12 @@ impl Pool {
         job: &F,
         period: Duration,
     ) {
-        self.run_graph(count, all_jobs(count), &|j, lane, _: &Publisher<'_>| job(j, lane), period);
+        self.run_graph(
+            count,
+            all_jobs(count),
+            &|j, lane, _: &Publisher<'_>| job(j, lane),
+            period,
+        );
     }
 
     /// RT. Runs a batch of `count` jobs (≤ [`MAX_JOBS`]) with dependencies: `ready` are the jobs

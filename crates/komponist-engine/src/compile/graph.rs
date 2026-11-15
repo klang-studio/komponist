@@ -126,11 +126,8 @@ pub(super) fn compile(
         routing: Arc::new(Routing::default()),
         delays: flat_delays(&latencies),
     };
-    let index: HashMap<TrackId, usize> = tracks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.id, i))
-        .collect();
+    let index: HashMap<TrackId, usize> =
+        tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
     let bus = |id: TrackId, from: usize| {
         index
             .get(&id)
@@ -331,26 +328,34 @@ pub(super) fn compile(
         let mut list: Vec<(usize, u8, RouteInput)> = Vec::new();
         for (u, o) in outputs.iter().enumerate() {
             if *o == consumer {
-                list.push((pos[u], 0, RouteInput {
-                    from: u as u16,
-                    send: None,
-                }));
+                list.push((
+                    pos[u],
+                    0,
+                    RouteInput {
+                        from: u as u16,
+                        send: None,
+                    },
+                ));
             }
         }
         if let Some(v) = consumer {
             for s in sends.iter().filter(|s| s.to == v) {
-                list.push((pos[s.from], 1, RouteInput {
-                    from: s.from as u16,
-                    send: Some(SendRoute {
-                        gate: s.gate,
-                        gain: s.gain,
-                        tap: s.tap,
-                        delay: Delay {
-                            line: s.line,
-                            frames: delay_frames(lat_in[v].saturating_sub(lat_out[s.from])),
-                        },
-                    }),
-                }));
+                list.push((
+                    pos[s.from],
+                    1,
+                    RouteInput {
+                        from: s.from as u16,
+                        send: Some(SendRoute {
+                            gate: s.gate,
+                            gain: s.gain,
+                            tap: s.tap,
+                            delay: Delay {
+                                line: s.line,
+                                frames: delay_frames(lat_in[v].saturating_sub(lat_out[s.from])),
+                            },
+                        }),
+                    },
+                ));
             }
         }
         list.sort_by_key(|&(p, kind, _)| (p, kind));
@@ -460,11 +465,7 @@ pub(super) fn compile(
 
 /// The gate table of `project` for a program whose tracks are `tracks` (by program index) and
 /// whose sends are `sends` (by gate index).
-pub(super) fn gate_table(
-    project: &Project,
-    tracks: &[TrackId],
-    sends: &[SendId],
-) -> GateTable {
+pub(super) fn gate_table(project: &Project, tracks: &[TrackId], sends: &[SendId]) -> GateTable {
     let gates = model_gates(project);
     let mut table = GateTable::default();
     for (i, &id) in tracks.iter().enumerate() {
