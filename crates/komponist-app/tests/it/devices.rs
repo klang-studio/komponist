@@ -924,3 +924,341 @@ fn a_card_that_appears_is_scrolled_into_view() {
     // Scrolled far right, the first card comes back.
     assert!(scroll(0, 900.0) < 900.0);
 }
+
+// ------------------------------------------------------------------------------------------------
+// The drop slot is an add button: a menu with a search field (owner request 2026-11-15).
+
+mod add_menu {
+    use super::*;
+    use egui::Key;
+    use komponist_app::views::devices::model::{Placement, place_plugin};
+    use komponist_builtin::Internal;
+
+    /// A project with one pisynth track, the dock on „Geräte“; the built-in catalog.
+    fn app_with_track() -> (App, TrackId) {
+        let mut app = App::headless(Project::new("Menü"));
+        let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+        app.dispatch(Action::Plugin(PluginAction::Add {
+            plugin: pisynth,
+            target: DropTarget::NewTrack { index: None },
+        }));
+        let track = app.project().tracks[0].id;
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+        (app, track)
+    }
+
+    fn names_of(app: &App, track: TrackId) -> Vec<String> {
+        app.project()
+            .track(track)
+            .unwrap()
+            .channel
+            .devices
+            .iter()
+            .map(|d| d.plugin.name.clone())
+            .collect()
+    }
+
+    fn slot<'h>(h: &'h Harness<'_, App>) -> Node<'h> {
+        h.get_by_role_and_label(Role::Button, names::ADD_DEVICE)
+    }
+
+    fn search<'h>(h: &'h Harness<'_, App>) -> Option<Node<'h>> {
+        h.query_by_role_and_label(Role::TextInput, names::ADD_SEARCH)
+    }
+
+    fn option_names(h: &Harness<'_, App>) -> Vec<String> {
+        h.query_all_by_role(Role::ListBoxOption)
+            .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .collect()
+    }
+
+    fn open_by_click(h: &mut Harness<'_, App>) {
+        let at = slot(h).rect().center();
+        click_at(h, at);
+        h.run_steps(3);
+    }
+
+    fn type_text(h: &mut Harness<'_, App>, text: &str) {
+        h.event(Event::Text(text.into()));
+        h.run_steps(2);
+    }
+
+    fn key(h: &mut Harness<'_, App>, key: Key) {
+        h.key_press(key);
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn a_click_on_the_slot_opens_the_menu_with_the_search_field_focused() {
+        let (app, _) = app_with_track();
+        let mut h = harness(app);
+        assert!(search(&h).is_none());
+        open_by_click(&mut h);
+        let field = search(&h).expect("the search field");
+        assert!(field.accesskit_node().is_focused(), "focused right away");
+        let listed = option_names(&h);
+        for name in ["pisynth", Internal::Eq.name(), Internal::Arpeggiator.name()] {
+            assert!(listed.iter().any(|n| n == name), "{name} in {listed:?}");
+        }
+    }
+
+    #[test]
+    fn enter_and_space_on_the_focused_slot_open_the_menu() {
+        for key_ in [Key::Enter, Key::Space] {
+            let (app, _) = app_with_track();
+            let mut h = harness(app);
+            slot(&h).focus();
+            h.run_steps(2);
+            key(&mut h, key_);
+            assert!(search(&h).is_some(), "{key_:?} opens it");
+        }
+    }
+
+    #[test]
+    fn typing_filters_with_the_browsers_matching_and_enter_adds_the_first_hit() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        // „delay“ is Delay's name and a feature of Hall, as in the browser's search.
+        type_text(&mut h, "delay");
+        assert_eq!(
+            option_names(&h),
+            [Internal::Delay.name(), Internal::Hall.name()]
+        );
+        key(&mut h, Key::Enter);
+        assert!(search(&h).is_none(), "the menu closes");
+        assert_eq!(
+            names_of(h.state(), track),
+            ["pisynth", Internal::Delay.name()]
+        );
+    }
+
+    #[test]
+    fn no_match_shows_a_hint_and_enter_adds_nothing() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, "zzzz");
+        assert!(option_names(&h).is_empty());
+        h.get_by_role_and_label(Role::Label, names::ADD_NO_MATCH);
+        key(&mut h, Key::Enter);
+        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+    }
+
+    #[test]
+    fn the_arrow_keys_move_the_selection() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, "delay");
+        let selected = |h: &Harness<'_, App>| {
+            h.query_all_by_role(Role::ListBoxOption)
+                .find(|n| n.accesskit_node().is_selected() == Some(true))
+                .and_then(|n| n.accesskit_node().label().map(|l| l.to_string()))
+        };
+        assert_eq!(selected(&h).as_deref(), Some(Internal::Delay.name()));
+        key(&mut h, Key::ArrowDown);
+        assert_eq!(selected(&h).as_deref(), Some(Internal::Hall.name()));
+        key(&mut h, Key::ArrowDown);
+        assert_eq!(
+            selected(&h).as_deref(),
+            Some(Internal::Hall.name()),
+            "stops at the end"
+        );
+        key(&mut h, Key::ArrowUp);
+        key(&mut h, Key::ArrowDown);
+        key(&mut h, Key::Enter);
+        assert_eq!(
+            names_of(h.state(), track),
+            ["pisynth", Internal::Hall.name()]
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_device_adds_it() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        let at = h
+            .get_by_role_and_label(Role::ListBoxOption, Internal::Limiter.name())
+            .rect()
+            .center();
+        click_at(&mut h, at);
+        assert!(search(&h).is_none());
+        assert_eq!(
+            names_of(h.state(), track),
+            ["pisynth", Internal::Limiter.name()]
+        );
+    }
+
+    #[test]
+    fn a_midi_effect_goes_in_front_of_the_instrument() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, Internal::Arpeggiator.name());
+        key(&mut h, Key::Enter);
+        assert_eq!(
+            names_of(h.state(), track),
+            [Internal::Arpeggiator.name(), "pisynth"]
+        );
+    }
+
+    #[test]
+    fn an_instrument_replaces_the_instrument_or_fills_a_track_without_one() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, Internal::Sampler.name());
+        key(&mut h, Key::Enter);
+        assert_eq!(names_of(h.state(), track), [Internal::Sampler.name()]);
+        // Without an instrument: an EQ is there, the instrument comes in front of it.
+        let (mut app, track) = app_with_track();
+        let pisynth = app.project().track(track).unwrap().channel.devices[0].id;
+        app.dispatch(Action::Plugin(PluginAction::Add {
+            plugin: Internal::Eq.plugin_ref(),
+            target: DropTarget::Track(track),
+        }));
+        app.dispatch(Action::Edit(EditAction::RemoveDevice(pisynth)));
+        assert_eq!(names_of(&app, track), [Internal::Eq.name()]);
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, Internal::Sampler.name());
+        key(&mut h, Key::Enter);
+        assert_eq!(
+            names_of(h.state(), track),
+            [Internal::Sampler.name(), Internal::Eq.name()]
+        );
+    }
+
+    #[test]
+    fn the_rule_is_the_one_of_the_drop_and_the_master_takes_effects_only() {
+        // `place_plugin(role, master, slot, first, midi)`: a track with `midi` MIDI effects, an
+        // instrument and the slot at the end of 5 devices.
+        let at_end = |role, master, first, midi| place_plugin(role, master, 5, first, midi);
+        assert_eq!(
+            at_end(DeviceRole::Effect, false, 3, 2),
+            Some(Placement::Line(5))
+        );
+        assert_eq!(
+            at_end(DeviceRole::MidiEffect, false, 3, 2),
+            Some(Placement::Line(2))
+        );
+        assert_eq!(
+            at_end(DeviceRole::Instrument, false, 3, 2),
+            Some(Placement::Instrument(2))
+        );
+        // No instrument: it goes in front of the audio effects.
+        assert_eq!(
+            at_end(DeviceRole::Instrument, false, 2, 2),
+            Some(Placement::Line(2))
+        );
+        // The master chain: audio effects at the end, nothing else.
+        assert_eq!(
+            at_end(DeviceRole::Effect, true, 0, 0),
+            Some(Placement::Line(5))
+        );
+        assert_eq!(at_end(DeviceRole::MidiEffect, true, 0, 0), None);
+        assert_eq!(at_end(DeviceRole::Instrument, true, 0, 0), None);
+    }
+
+    #[test]
+    fn escape_and_a_click_outside_close_the_menu_without_a_change() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, "delay");
+        key(&mut h, Key::Escape);
+        assert!(search(&h).is_none());
+        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        open_by_click(&mut h);
+        assert!(search(&h).is_some());
+        click_at(&mut h, pos2(60.0, 300.0));
+        assert!(search(&h).is_none());
+        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+    }
+
+    #[test]
+    fn one_undo_reverts_the_add() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, "dela");
+        key(&mut h, Key::Enter);
+        assert_eq!(names_of(h.state(), track).len(), 2);
+        h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+    }
+
+    #[test]
+    fn the_add_goes_through_the_action_of_the_browser_drop() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, "dela");
+        key(&mut h, Key::Enter);
+        assert!(h.state().dispatched().any(|a| matches!(
+            a,
+            Action::Plugin(PluginAction::Add {
+                target: DropTarget::Chain {
+                    channel: ChannelRef::Track(t),
+                    index: 1,
+                },
+                ..
+            }) if *t == track
+        )));
+    }
+
+    #[test]
+    fn a_browser_drag_onto_the_slot_still_drops() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        let slot_rect = slot(&h).rect();
+        let eq = Internal::Eq.plugin_ref();
+        let from = pos2(100.0, 600.0);
+        h.hover_at(from);
+        h.step();
+        press(&mut h, from, PointerButton::Primary, true);
+        h.step();
+        egui::DragAndDrop::set_payload(&h.ctx, eq);
+        for i in 1..=4 {
+            h.hover_at(from + (slot_rect.center() - from) * (i as f32 / 4.0));
+            h.step();
+        }
+        press(&mut h, slot_rect.center(), PointerButton::Primary, false);
+        h.run_steps(3);
+        assert!(search(&h).is_none(), "a drop is not a click");
+        assert_eq!(names_of(h.state(), track), ["pisynth", Internal::Eq.name()]);
+    }
+
+    #[test]
+    fn snapshot_of_the_open_menu() {
+        let (app, _) = app_with_track();
+        let mut h = harness(app);
+        open_by_click(&mut h);
+        type_text(&mut h, "e");
+        mask_cpu(&mut h);
+        let mut results = SnapshotResults::new();
+        h.snapshot("devices-add-menu-1x");
+        results.extend_harness(&mut h);
+        results.unwrap();
+    }
+
+    #[test]
+    fn snapshot_of_the_hovered_slot() {
+        let (app, _) = app_with_track();
+        let mut h = harness(app);
+        let at = slot(&h).rect().center();
+        h.hover_at(at);
+        h.run_steps(3);
+        mask_cpu(&mut h);
+        let mut results = SnapshotResults::new();
+        h.snapshot("devices-add-slot-hover-1x");
+        results.extend_harness(&mut h);
+        results.unwrap();
+    }
+}
