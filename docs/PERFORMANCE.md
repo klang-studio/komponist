@@ -292,9 +292,9 @@ Notes:
 - `WorkerStats::late` (waits for a running job beyond one period) stayed 0 in every run.
 
 **Open: the 30-minute soak with workers.** The done-when of WP-65 is the 5-minute soak; the
-30-minute release soak (with the default 4 workers) is still to be run once before the next
-release, overnight or on an otherwise idle machine (no builds), and its result added to the table
-above:
+30-minute release soak (with the default 4 workers) is still to be run once, overnight or on an
+otherwise idle machine (no builds), and its result added to the table above. v0.2 was released
+without it (owner decision, 2026-11-15); run it before v0.3:
 
 ```bash
 cargo test --release -p komponist-app --test soak --no-run   # prints the binary
