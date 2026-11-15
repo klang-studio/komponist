@@ -17,6 +17,7 @@ use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
 
 use super::{cell_height, cell_width, elided_galley};
+use crate::Lang;
 use crate::state::{self, State};
 use crate::widgets::metrics::{self as wm, device::pad_grid as metrics};
 use crate::widgets::{accesskit, sense};
@@ -38,8 +39,8 @@ impl<'a> Pad<'a> {
     }
 
     /// The accessible name: „Pad Kick“.
-    pub fn accessible_name(&self) -> String {
-        format!("Pad {}", self.name)
+    pub fn accessible_name(&self, t: Lang) -> String {
+        t.ui_pad_name(self.name)
     }
 }
 
@@ -219,6 +220,7 @@ impl<'a> PadGrid<'a> {
             )
         });
         let mut clicked = None;
+        let t = crate::lang(ui.ctx());
         let mut responses = Vec::with_capacity(self.pads.len());
         for (i, pad) in self.pads.iter().enumerate() {
             let rect = pad_rect(area.min, self.cols, i);
@@ -229,12 +231,12 @@ impl<'a> PadGrid<'a> {
             );
             let st = State::of(ui, &r);
             let on = self.selected == Some(i);
-            let name = pad.accessible_name();
+            let name = pad.accessible_name(t);
             r.widget_info(|| WidgetInfo::selected(Role::Button, !st.disabled, on, &name));
             accesskit(&r, |n| {
                 n.set_selected(on);
                 if !pad.note.is_empty() {
-                    n.set_description(format!("Note {}", pad.note));
+                    n.set_description(t.ui_pad_note(pad.note));
                 }
             });
             if !still && r.clicked() {

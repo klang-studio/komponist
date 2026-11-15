@@ -19,6 +19,7 @@ use super::clip::{ClipEdge, ClipModel, ClipState, PreviewMesh, PreviewSpec};
 use super::note::{NoteBatch, NoteState, note_access};
 use super::track_header::HeaderModel;
 use super::{clip, track_header};
+use crate::Lang;
 use crate::state::State;
 use crate::widgets::fader;
 use crate::widgets::meter::MeterState;
@@ -359,7 +360,7 @@ pub fn paint_header_demo(ui: &Ui, rect: Rect, demo: &HeaderDemo) {
             ui,
             Id::unique(("timeline-header", demo.slug, i)),
             hr,
-            track_header::header_access(&model, r.state),
+            track_header::header_access(Lang::De, &model, r.state),
         );
     }
 }
@@ -656,7 +657,7 @@ pub fn paint_clip_demo(ui: &Ui, rect: Rect, demo: &ClipDemo) {
             ui,
             Id::unique(("timeline-clip", demo.slug, i)),
             r,
-            clip::clip_access(&model, start, end, METER, c.state),
+            clip::clip_access(Lang::De, &model, start, end, METER, c.state),
         );
     }
     label(ui, pos2(rect.min.x + space::SPACE_1, label_top), demo.label);
@@ -920,7 +921,7 @@ pub fn paint_note_demo(ui: &Ui, rect: Rect, demo: &NoteDemo) {
                 ui,
                 Id::unique(("timeline-note", demo.slug, i)),
                 r,
-                note_access(note.pitch, start, METER, note.state),
+                note_access(Lang::De, note.pitch, start, METER, note.state),
             );
         }
     }

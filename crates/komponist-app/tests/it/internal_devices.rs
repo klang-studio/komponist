@@ -821,10 +821,7 @@ fn the_presse_meter_shows_the_reduction_the_engine_measured() {
     });
     assert_eq!(range, Some(24.0), "24 dB range");
     let text = h
-        .get_by_role_and_label(
-            Role::Meter,
-            komponist_ui::widgets::device::meter_gr::ACCESSIBLE_NAME,
-        )
+        .get_by_role_and_label(Role::Meter, komponist_i18n::de::UI_METER_GR_NAME)
         .accesskit_node()
         .value()
         .unwrap_or_default();

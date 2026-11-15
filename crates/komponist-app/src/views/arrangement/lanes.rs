@@ -420,7 +420,14 @@ impl Arrangement {
                 if selected {
                     paint_selected_edge(painter, rect);
                 }
-                let access = clip_access(&model, clip.start, clip.end(), project.meter, state);
+                let access = clip_access(
+                    komponist_ui::lang(ui.ctx()),
+                    &model,
+                    clip.start,
+                    clip.end(),
+                    project.meter,
+                    state,
+                );
                 let node = ui.interact(
                     rect.intersect(lanes),
                     Id::unique(("komponist_arrangement_clip", clip.id.0)),
@@ -444,8 +451,14 @@ impl Arrangement {
                     preview: Some(&preview),
                 };
                 paint_clip(painter, rect, &model, ClipState::REST);
-                let access =
-                    clip_access(&model, rec.start, rec.end(), project.meter, ClipState::REST);
+                let access = clip_access(
+                    komponist_ui::lang(ui.ctx()),
+                    &model,
+                    rec.start,
+                    rec.end(),
+                    project.meter,
+                    ClipState::REST,
+                );
                 let node = ui.interact(
                     rect.intersect(lanes),
                     Id::unique(("komponist_arrangement_recording", track.id.0)),

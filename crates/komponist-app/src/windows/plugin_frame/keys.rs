@@ -38,6 +38,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -420,7 +421,7 @@ fn press(
         if plugin_focused { "plugin" } else { "frame" },
         typing.active(now),
         match verdict {
-            Verdict::Take(c) => format!("komponist ({})", c.label()),
+            Verdict::Take(c) => format!("komponist ({})", c.label(Lang::En)),
             Verdict::Pass => "pass".to_owned(),
         }
     ));

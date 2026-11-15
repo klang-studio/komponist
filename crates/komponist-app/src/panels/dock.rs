@@ -116,7 +116,7 @@ pub fn tab_strip(
         } else {
             (t.dock_expand(), Caret::Right)
         };
-        let shortcut = keymap.label_for(&toggle);
+        let shortcut = keymap.label_for(&toggle, t);
         if caret_button(ui, name, caret, layout.dock_open, shortcut.as_deref()).clicked() {
             actions.push(toggle);
         }
@@ -127,7 +127,7 @@ pub fn tab_strip(
         } else {
             t.dock_maximize()
         };
-        let shortcut = keymap.label_for(&max);
+        let shortcut = keymap.label_for(&max, t);
         let mut button = Button::new(label)
             .on(maximized)
             .compact()

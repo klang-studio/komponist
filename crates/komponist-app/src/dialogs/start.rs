@@ -590,7 +590,9 @@ impl crate::App {
     pub(crate) fn start_model(&mut self) -> Model {
         use crate::actions::{Action, ProjectAction, UiAction};
         use komponist_audio::{AudioState, HostKind};
-        let label = |app: &Self, action: Action| app.keymap.label_for(&action).unwrap_or_default();
+        let label = |app: &Self, action: Action| {
+            app.keymap.label_for(&action, app.lang).unwrap_or_default()
+        };
         let new_shortcut = label(self, Action::Project(ProjectAction::New));
         let open_shortcut = label(self, Action::Project(ProjectAction::Open));
         let settings_shortcut = label(

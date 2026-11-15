@@ -20,6 +20,7 @@ use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{Icon, TrackPalette, color, line, radius, size, space};
 
 use super::Access;
+use crate::Lang;
 use crate::state::{self, State};
 use crate::widgets::meter::{self, MeterState};
 use crate::widgets::metrics::timeline as metrics;
@@ -310,12 +311,12 @@ pub fn paint_toggle(painter: &Painter, rect: Rect, kind: ToggleKind, on: bool, i
 
 /// Accessible name and role of a header: `Spur Lead, pisynth`, `Spur Strings, Plugin fehlt:
 /// Vital` (role row, selectable).
-pub fn header_access(model: &HeaderModel<'_>, state: State) -> Access {
+pub fn header_access(t: Lang, model: &HeaderModel<'_>, state: State) -> Access {
     let instrument = instrument_text(model);
     let name = if instrument.is_empty() {
-        format!("Spur {}", model.name)
+        t.a11y_track(model.name)
     } else {
-        format!("Spur {}, {instrument}", model.name)
+        t.a11y_track_instrument(model.name, instrument)
     };
     Access::selectable(Role::Row, name, state.selected)
 }
@@ -383,16 +384,16 @@ mod tests {
     fn access_names() {
         let p = TrackPalette::new(150);
         let m = HeaderModel::new("Lead", "pisynth", &p);
-        let a = header_access(&m, State::SELECTED);
+        let a = header_access(Lang::De, &m, State::SELECTED);
         assert_eq!(a.name, "Spur Lead, pisynth");
         assert_eq!(a.role, Role::Row);
         assert_eq!(a.selected, Some(true));
         let m = HeaderModel::new("MIDI 3", "", &p);
-        assert_eq!(header_access(&m, State::REST).name, "Spur MIDI 3");
+        assert_eq!(header_access(Lang::De, &m, State::REST).name, "Spur MIDI 3");
         let mut m = HeaderModel::new("Strings", "⚠ Plugin fehlt: Vital", &p);
         m.instrument_error = true;
         assert_eq!(
-            header_access(&m, State::REST).name,
+            header_access(Lang::De, &m, State::REST).name,
             "Spur Strings, Plugin fehlt: Vital"
         );
     }

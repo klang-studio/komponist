@@ -40,6 +40,8 @@ use egui::{Color32, Painter, Rangef, Rect, Role, TextureOptions, WidgetInfo, acc
 use komponist_model::{Meter, Tick};
 use komponist_tokens::Icon;
 
+use crate::Lang;
+
 pub use clip::{
     ClipEdge, ClipModel, ClipState, PreviewMesh, clip_access, clip_rect, paint_clip,
     paint_clip_ghost,
@@ -118,7 +120,7 @@ impl TimeAxis {
 pub struct Access {
     /// AccessKit role.
     pub role: Role,
-    /// German accessible name, e.g. `Clip Beat A, Takt 1–4`.
+    /// Accessible name in the UI language, e.g. `Clip Beat A, Takt 1–4` (German).
     pub name: String,
     /// Selection state for selectable objects (clips, notes, tracks), `None` otherwise.
     pub selected: Option<bool>,
@@ -199,15 +201,16 @@ pub(crate) fn strip_symbol(text: &str, symbol: char) -> &str {
     text.strip_prefix(symbol).map_or(text, str::trim_start)
 }
 
-/// `Takt 9` or `Takt 1–4` (en dash): the bars a tick range touches, 1-based.
-pub fn bar_span(start: Tick, end: Tick, meter: Meter) -> String {
+/// `Takt 9` or `Takt 1–4` (en dash; "bar 9", "bars 1–4" in English): the bars a tick range
+/// touches, 1-based.
+pub fn bar_span(t: Lang, start: Tick, end: Tick, meter: Meter) -> String {
     let per_bar = meter.ticks_per_bar();
     let first = start.0.div_euclid(per_bar) + 1;
     let last = (end.0 - 1).max(start.0).div_euclid(per_bar) + 1;
     if last > first {
-        format!("Takt {first}\u{2013}{last}")
+        t.a11y_bars(first, last)
     } else {
-        format!("Takt {first}")
+        t.a11y_bar(first)
     }
 }
 
@@ -241,10 +244,22 @@ mod tests {
     #[test]
     fn bar_spans() {
         let m = Meter::FOUR_FOUR;
-        assert_eq!(bar_span(Tick(0), Tick(4 * 3840), m), "Takt 1\u{2013}4");
-        assert_eq!(bar_span(Tick(8 * 3840), Tick(9 * 3840), m), "Takt 9");
-        assert_eq!(bar_span(Tick(8 * 3840), Tick(8 * 3840 + 10), m), "Takt 9");
-        assert_eq!(bar_span(Tick(3000), Tick(4000), m), "Takt 1\u{2013}2");
+        assert_eq!(
+            bar_span(Lang::De, Tick(0), Tick(4 * 3840), m),
+            "Takt 1\u{2013}4"
+        );
+        assert_eq!(
+            bar_span(Lang::De, Tick(8 * 3840), Tick(9 * 3840), m),
+            "Takt 9"
+        );
+        assert_eq!(
+            bar_span(Lang::De, Tick(8 * 3840), Tick(8 * 3840 + 10), m),
+            "Takt 9"
+        );
+        assert_eq!(
+            bar_span(Lang::De, Tick(3000), Tick(4000), m),
+            "Takt 1\u{2013}2"
+        );
     }
 
     #[test]

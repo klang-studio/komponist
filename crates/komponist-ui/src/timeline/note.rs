@@ -23,6 +23,7 @@ use komponist_tokens::{TrackPalette, color, radius};
 
 use super::mesh::Quads;
 use super::{Access, TimeAxis};
+use crate::Lang;
 use crate::widgets::metrics::timeline as metrics;
 use crate::{fonts, px};
 
@@ -302,11 +303,13 @@ fn paint_label(painter: &Painter, rect: Rect, pitch: u8) {
 
 /// Accessible name and role of a note: `Note C4, 9.1.000` (pitch name, absolute position in
 /// `Takt.Schlag.Tick`), role grid cell, selectable.
-pub fn note_access(pitch: u8, start: Tick, meter: Meter, state: NoteState) -> Access {
-    let mut name = format!("Note {}, {}", note_name(pitch), fmt_pos(start, meter));
-    if state.muted {
-        name.push_str(", stumm");
-    }
+pub fn note_access(t: Lang, pitch: u8, start: Tick, meter: Meter, state: NoteState) -> Access {
+    let (pitch, pos) = (note_name(pitch), fmt_pos(start, meter));
+    let name = if state.muted {
+        t.a11y_note_muted(pitch, pos)
+    } else {
+        t.a11y_note(pitch, pos)
+    };
     Access::selectable(Role::GridCell, name, state.selected)
 }
 
@@ -421,11 +424,18 @@ mod tests {
 
     #[test]
     fn access_names() {
-        let a = note_access(60, Tick(8 * 3840), Meter::FOUR_FOUR, NoteState::REST);
+        let a = note_access(
+            Lang::De,
+            60,
+            Tick(8 * 3840),
+            Meter::FOUR_FOUR,
+            NoteState::REST,
+        );
         assert_eq!(a.name, "Note C4, 9.1.000");
         assert_eq!(a.role, Role::GridCell);
         assert_eq!(a.selected, Some(false));
         let a = note_access(
+            Lang::De,
             61,
             Tick(960 + 480),
             Meter::FOUR_FOUR,

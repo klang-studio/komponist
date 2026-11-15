@@ -20,8 +20,6 @@ use crate::widgets::{accesskit, sense};
 
 /// The bar names, left to right.
 pub const NAMES: [&str; 3] = ["In", "GR", "Out"];
-/// The accessible name.
-pub const ACCESSIBLE_NAME: &str = "Pegel und Gain Reduction";
 
 /// The largest gain reduction of the last [`metrics::HOLD_SECONDS`] seconds.
 #[derive(Clone, Debug, Default)]
@@ -169,19 +167,20 @@ impl Widget for MeterGr<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let size = vec2(cell_width(1), cell_height(self.rows));
         let (rect, response) = ui.allocate_exact_size(size, sense(ui, Sense::click()));
+        let t = crate::lang(ui.ctx());
         let spoken = if self.readout.is_empty() {
             String::new()
         } else {
-            format!("größte Reduktion {} dB", self.readout)
+            t.ui_meter_gr_value(self.readout)
         };
         response.widget_info(|| {
-            let mut info = egui::WidgetInfo::labeled(Role::Meter, true, ACCESSIBLE_NAME);
+            let mut info = egui::WidgetInfo::labeled(Role::Meter, true, t.ui_meter_gr_name());
             info.current_text_value = Some(spoken.clone());
             info
         });
         accesskit(&response, |n| {
             n.add_action(egui::accesskit::Action::Click);
-            n.set_description("Klick setzt die Anzeige zurück");
+            n.set_description(t.ui_meter_gr_hint());
         });
         paint(ui.painter(), rect, self.levels, self.readout);
         if response.hovered() && !crate::widgets::is_still(ui) {

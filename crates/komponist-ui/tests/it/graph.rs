@@ -6,6 +6,7 @@ use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use komponist_ui::Lang;
 use komponist_ui::snapshot;
 use komponist_ui::widgets::device::graph::configs::{self, band};
 use komponist_ui::widgets::device::graph::{Graph, GraphEvent, GraphSpec, Look, SlotInfo};
@@ -86,7 +87,7 @@ fn harness(
 }
 
 fn eq_harness(look: Look) -> Harness<'static, World> {
-    harness(configs::eq(2, 18.0), eq_infos, look, eq_values())
+    harness(configs::eq(Lang::De, 2, 18.0), eq_infos, look, eq_values())
 }
 
 fn pause(h: &mut Harness<'_, World>) {
@@ -167,7 +168,12 @@ fn the_graph_is_a_group_and_every_parameter_of_a_handle_a_slider() {
 fn a_band_that_is_off_has_no_handle() {
     let mut values = eq_values();
     values[5] = 0.0;
-    let h = harness(configs::eq(2, 18.0), eq_infos, Look::Normal, values);
+    let h = harness(
+        configs::eq(Lang::De, 2, 18.0),
+        eq_infos,
+        Look::Normal,
+        values,
+    );
     h.get_by_role_and_label(Role::Slider, "Band 1 Frequenz");
     assert!(
         h.query_by_role_and_label(Role::Slider, "Band 2 Frequenz")
@@ -327,7 +333,7 @@ fn bypass_stays_operable_and_disabled_does_not() {
 
 fn envelope_harness() -> Harness<'static, World> {
     harness(
-        configs::envelope(),
+        configs::envelope(Lang::De),
         || {
             vec![
                 SlotInfo::new(0.0, 1.0, 0.0),
@@ -364,7 +370,7 @@ fn xy_shift_locks_the_axis_that_moved_less() {
     use komponist_ui::widgets::device::graph::{Axis, AxisKind};
     let ax = || Axis::new(AxisKind::Lin, 0.0, 1.0);
     let mut h = harness(
-        configs::xy(ax(), ax(), "Zeit", "Feedback"),
+        configs::xy(Lang::De, ax(), ax(), "Zeit", "Feedback"),
         || vec![SlotInfo::new(0.0, 1.0, 0.5), SlotInfo::new(0.0, 1.0, 0.5)],
         Look::Normal,
         vec![0.5, 0.5],

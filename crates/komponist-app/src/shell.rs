@@ -185,7 +185,10 @@ impl App {
             _ => (names::INSPECTOR, FocusArea::Inspector),
         };
         let toggle = Action::Ui(UiAction::TogglePanel(panel));
-        let shortcut = self.keymap.label_for(&toggle).unwrap_or_default();
+        let shortcut = self
+            .keymap
+            .label_for(&toggle, self.lang)
+            .unwrap_or_default();
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).id_salt(title));
         child.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let mut open = true;
@@ -254,7 +257,7 @@ impl App {
         response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
         w::accesskit(&response, |n| n.set_expanded(false));
         let toggle = Action::Ui(UiAction::TogglePanel(panel));
-        let shortcut = self.keymap.label_for(&toggle);
+        let shortcut = self.keymap.label_for(&toggle, self.lang);
         let tip = match shortcut.as_deref() {
             Some(sc) => Tip::new(name).shortcut(sc),
             None => Tip::new(name),

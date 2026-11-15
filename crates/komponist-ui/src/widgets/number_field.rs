@@ -975,7 +975,7 @@ pub(crate) mod entry {
         fresh: bool,
         name: &str,
     ) -> Outcome {
-        let label = format!("{name} Eingabe");
+        let label = crate::lang(ctx).ui_number_entry(name);
         ctx.accesskit_node_builder(response.id, |n| n.set_label(label));
         if fresh {
             // Focus now, after the text edit exists: the double-click that opened the entry
