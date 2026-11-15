@@ -222,7 +222,7 @@ pub mod names {
     /// Hint under the tap while it is „Vor Fader“.
     pub const SC_PRE_HINT: &str = "Vor Fader: Mute der Quelle ändert nichts";
     /// Hint under the tap while it is „Nach Fader“.
-    pub const SC_POST_HINT: &str = "Nach Fader: folgt Fader und Mute der Quelle";
+    pub const SC_POST_HINT: &str = "Nach Fader: folgt Fader und Stumm, nicht Solo";
     /// Context menu of the chip: back to the internal input.
     pub const SC_REMOVE: &str = "Quelle entfernen";
     /// „Bass (diese Spur)“: the track that holds the device.

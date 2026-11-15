@@ -331,5 +331,15 @@ fn snapshots_of_the_head_with_the_chip_off_on_and_the_popover_open() {
     mask(&mut h);
     h.snapshot("devices-sidechain-popover-1x");
     results.extend_harness(&mut h);
+
+    // The post-fader tap shows its hint: it follows fader and mute, not solo.
+    let post = h
+        .get_by_role_and_label(Role::RadioButton, names::SC_POST)
+        .rect();
+    click(&mut h, post.center());
+    h.run_steps(3);
+    mask(&mut h);
+    h.snapshot("devices-sidechain-popover-post-1x");
+    results.extend_harness(&mut h);
     results.unwrap();
 }

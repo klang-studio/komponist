@@ -495,12 +495,18 @@ fn tap_section(ui: &mut Ui, current: Option<Sidechain>) -> Option<Tap> {
     } else {
         names::SC_POST_HINT
     };
-    let galley = w::galley(
-        ui,
-        hint,
-        fonts::font_id(&typography::SMALL),
-        typography::SMALL.line_height,
+    // The hint wraps inside the menu width (the post-fader hint is longer than one line).
+    let mut job = egui::text::LayoutJob::single_section(
+        hint.to_owned(),
+        egui::TextFormat {
+            font_id: fonts::font_id(&typography::SMALL),
+            line_height: Some(typography::SMALL.line_height),
+            color: egui::Color32::PLACEHOLDER,
+            ..Default::default()
+        },
     );
+    job.wrap.max_width = size::MENU_WIDTH - 2.0 * space::SPACE_1_5;
+    let galley = ui.painter().layout_job(job);
     let (rect, _) = ui.allocate_exact_size(
         vec2(size::MENU_WIDTH, galley.size().y + 2.0 * space::SPACE_1),
         Sense::hover(),

@@ -1518,7 +1518,12 @@ fn paint_levels_note(painter: &Painter, plot: &Plot, name: &str, value: &str) {
         &typography::DEVICE_LABEL,
         color32(color::TEXT_2),
     );
-    let value = text_galley(painter, value, &typography::MONO_XXS, color32(color::TEXT_1));
+    let value = text_galley(
+        painter,
+        value,
+        &typography::MONO_XXS,
+        color32(color::TEXT_1),
+    );
     let [dx, dy] = m::READOUT_INSET;
     let w = name.size().x + m::READOUT_GAP + value.size().x;
     let h = name.size().y.max(value.size().y);
@@ -1531,7 +1536,10 @@ fn paint_levels_note(painter: &Painter, plot: &Plot, name: &str, value: &str) {
         color32(color::TEXT_2),
     );
     painter.galley(
-        pos2(origin.x + name_w + m::READOUT_GAP, origin.y + (h - vh) / 2.0),
+        pos2(
+            origin.x + name_w + m::READOUT_GAP,
+            origin.y + (h - vh) / 2.0,
+        ),
         value,
         color32(color::TEXT_1),
     );
