@@ -8,7 +8,9 @@ use komponist_app::actions::{BitDepth, ExportRange};
 use komponist_app::showcase::showcase_project;
 use komponist_builtin::Internal;
 use komponist_model::fixtures::{demo_project, demo_song};
-use komponist_model::{ClipContent, Device, DeviceRole, PluginFormat, Project};
+use komponist_model::{
+    ClipContent, Device, DeviceRole, PluginFormat, Project, Tap, Track, TrackOutput,
+};
 use komponist_plugins::Catalog;
 
 use crate::export::{app_in, export, export_settings, peak_db, read, scratch};
@@ -19,6 +21,14 @@ fn all_devices(project: &Project) -> impl Iterator<Item = &Arc<Device>> {
         .iter()
         .flat_map(|t| t.channel.devices.iter())
         .chain(project.master.devices.iter())
+}
+
+fn track_named<'a>(project: &'a Project, name: &str) -> &'a Track {
+    project
+        .tracks
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("no track {name}"))
 }
 
 fn notes_of(project: &Project, track: usize) -> Vec<Vec<(i64, i64, u8, u8)>> {
@@ -59,9 +69,10 @@ fn every_device_is_built_in_and_resolves_in_the_catalog() {
                 || Internal::from_plugin(&device.plugin) == Some(Internal::Sampler)
         );
     }
-    assert_eq!(count, 2 + 2 + 4 + 3 + 2 + 4 + 1);
+    // Drums 2, Bass 3, Lead 3, Pad 2, Keys 2, Arp 4, the Hall bus 1, the master 1.
+    assert_eq!(count, 2 + 3 + 3 + 2 + 2 + 4 + 1 + 1);
     // The Arp's MIDI effects come first, the Limiter is on the master.
-    let arp = &project.tracks[5].channel.devices;
+    let arp = &track_named(&project, "Arp").channel.devices;
     let roles: Vec<_> = arp.iter().map(|d| d.role).collect();
     assert_eq!(
         roles,
@@ -76,7 +87,7 @@ fn every_device_is_built_in_and_resolves_in_the_catalog() {
         Internal::from_plugin(&project.master.devices[0].plugin),
         Some(Internal::Limiter)
     );
-    assert!(!project.tracks[5].channel.mute);
+    assert!(!track_named(&project, "Arp").channel.mute);
 }
 
 #[test]
@@ -92,7 +103,13 @@ fn internal_devices_show_their_preset_names() {
         let (index, changed) = kind
             .loaded_preset(device.state.as_deref())
             .unwrap_or_else(|| panic!("{} has no loaded preset", kind.name()));
-        assert!(!changed, "{} {}", kind.name(), kind.presets()[index].name);
+        // presse on the Bass is „Ducking“ with a gentler setting; every other device is a factory preset.
+        assert!(
+            !changed || kind == Internal::Presse,
+            "{} {}",
+            kind.name(),
+            kind.presets()[index].name
+        );
     }
 }
 
@@ -104,8 +121,11 @@ fn the_song_is_the_design_fixtures_song() {
     assert_eq!(showcase.tempo, fixture.tempo);
     assert_eq!(showcase.loop_range, fixture.loop_range);
     assert_eq!(showcase.loop_on, fixture.loop_on);
-    assert_eq!(showcase.tracks.len(), fixture.tracks.len());
-    for (i, (a, b)) in showcase.tracks.iter().zip(&fixture.tracks).enumerate() {
+    // The two buses (group and Hall) are the showcase's own; the tracks are the song's.
+    let songs: Vec<&Arc<Track>> = showcase.tracks.iter().filter(|t| !t.is_bus()).collect();
+    assert_eq!(songs.len(), fixture.tracks.len());
+    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 2);
+    for (i, (a, b)) in songs.iter().zip(&fixture.tracks).enumerate() {
         assert_eq!(
             (&a.name, a.hue, a.channel.pan),
             (&b.name, b.hue, b.channel.pan)
@@ -117,8 +137,17 @@ fn the_song_is_the_design_fixtures_song() {
                 (&cb.name, cb.start, cb.length)
             );
         }
-        if i != 5 {
-            assert_eq!(notes_of(&showcase, i), notes_of(&fixture, i), "track {i}");
+        if b.name != "Arp" {
+            let notes = |p: &Project| {
+                notes_of(
+                    p,
+                    p.tracks
+                        .iter()
+                        .position(|t| t.id == a.id || t.name == b.name)
+                        .unwrap(),
+                )
+            };
+            assert_eq!(notes(&showcase), notes(&fixture), "track {i}");
         }
     }
     // The fixture's own Arp clip is the song's.
@@ -127,6 +156,7 @@ fn the_song_is_the_design_fixtures_song() {
     let mut ids = Vec::new();
     for t in &showcase.tracks {
         ids.push(t.id.0);
+        ids.extend(t.sends.iter().map(|s| s.id.0));
         ids.extend(t.channel.devices.iter().map(|d| d.id.0));
         for c in &t.clips {
             ids.push(c.id.0);
@@ -141,6 +171,72 @@ fn the_song_is_the_design_fixtures_song() {
     ids.dedup();
     assert_eq!(ids.len(), n, "ids are unique");
     assert!(ids.iter().all(|&i| i < showcase.next_id));
+}
+
+#[test]
+fn the_demo_shows_group_effect_bus_and_sidechain() {
+    let project = showcase_project();
+    let rhythm = track_named(&project, "Rhythmus");
+    assert!(rhythm.is_bus() && rhythm.folder);
+    assert_eq!(rhythm.output, TrackOutput::Master);
+    let (drums, bass) = (
+        track_named(&project, "Drums"),
+        track_named(&project, "Bass"),
+    );
+    assert_eq!(drums.output, TrackOutput::Bus(rhythm.id));
+    assert_eq!(bass.output, TrackOutput::Bus(rhythm.id));
+    let members = komponist_model::routing::group_members(&project, rhythm.id);
+    assert_eq!(members, [drums.id, bass.id]);
+
+    let hall = track_named(&project, "Hall");
+    assert!(hall.is_bus() && !hall.folder);
+    assert_eq!(hall.channel.devices.len(), 1);
+    assert_eq!(
+        Internal::from_plugin(&hall.channel.devices[0].plugin),
+        Some(Internal::Hall)
+    );
+    for name in ["Lead", "Pad"] {
+        let track = track_named(&project, name);
+        let send = track
+            .send_to(hall.id)
+            .unwrap_or_else(|| panic!("{name} sends to Hall"));
+        assert!(send.enabled && send.tap == Tap::Post);
+        assert!(
+            (-12.0..=-8.0).contains(&send.level_db),
+            "{name} {}",
+            send.level_db
+        );
+        // The reverb moved to the bus: no Hall insert is left on the track.
+        assert!(
+            track
+                .channel
+                .devices
+                .iter()
+                .all(|d| Internal::from_plugin(&d.plugin) != Some(Internal::Hall))
+        );
+    }
+    // The Lead keeps its Delay as an insert.
+    assert!(
+        track_named(&project, "Lead")
+            .channel
+            .devices
+            .iter()
+            .any(|d| Internal::from_plugin(&d.plugin) == Some(Internal::Delay))
+    );
+
+    // presse on the Bass is keyed by the Drums, pre-fader; the Drums' own presse has no sidechain.
+    let keyed: Vec<_> = all_devices(&project)
+        .filter(|d| d.sidechain.is_some())
+        .collect();
+    assert_eq!(keyed.len(), 1);
+    assert_eq!(
+        Internal::from_plugin(&keyed[0].plugin),
+        Some(Internal::Presse)
+    );
+    assert!(bass.channel.devices.iter().any(|d| d.id == keyed[0].id));
+    let sc = keyed[0].sidechain.unwrap();
+    assert_eq!((sc.source, sc.tap), (drums.id, Tap::Pre));
+    assert_eq!(komponist_model::routing::check(&project), Ok(()));
 }
 
 /// Levels of the demo: renders every track alone and the master with and without the Limiter,
@@ -182,14 +278,37 @@ fn render_levels() {
         );
     };
     let base = komponist_app::samples::demo_with_kit(showcase_project(), &out.join("kit")).unwrap();
-    for i in 0..base.tracks.len() {
+    // Each track alone with its routing (the buses stay, they are silent without input), so the
+    // level of Lead and Pad includes their Hall send. A sidechain whose source is gone is cleared.
+    for keep in base.tracks.iter().filter(|t| !t.is_bus()) {
         let mut p = base.clone();
-        let keep = p.tracks[i].clone();
-        p.tracks = vec![keep];
+        p.tracks.retain(|t| t.is_bus() || t.id == keep.id);
+        let ids: Vec<_> = p.tracks.iter().map(|t| t.id).collect();
+        for t in &mut p.tracks {
+            for d in &mut Arc::make_mut(t).channel.devices {
+                if d.sidechain.is_some_and(|sc| !ids.contains(&sc.source)) {
+                    Arc::make_mut(d).sidechain = None;
+                }
+            }
+        }
         Arc::make_mut(&mut p.master).devices.clear();
-        let name = format!("track-{}", base.tracks[i].name.to_lowercase());
+        let name = format!("track-{}", keep.name.to_lowercase());
         measure(p, &name, BitDepth::Float32);
     }
+    // The Bass keyed by the Drums, whose fader is pulled down (the tap is pre-fader): the Bass as
+    // it sits in the mix, ducked by the kick, without the kick itself.
+    let mut keyed = base.clone();
+    let drums = track_named(&keyed, "Drums").id;
+    keyed
+        .tracks
+        .retain(|t| t.is_bus() || t.name == "Bass" || t.id == drums);
+    for t in &mut keyed.tracks {
+        if t.id == drums {
+            Arc::make_mut(t).channel.volume_db = -90.0;
+        }
+    }
+    Arc::make_mut(&mut keyed.master).devices.clear();
+    measure(keyed, "track-bass-keyed", BitDepth::Float32);
     let mut no_limiter = base.clone();
     Arc::make_mut(&mut no_limiter.master).devices.clear();
     measure(no_limiter, "master-no-limiter", BitDepth::Float32);

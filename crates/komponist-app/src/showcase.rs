@@ -7,13 +7,18 @@
 //!
 //! | Track | Volume | Chain (preset) |
 //! |---|---|---|
-//! | Drums | −6 dB | Sampler (test kit), presse („Drums fest“) |
-//! | Bass | −4 dB | volt („Fette Säge“), EQ („Bass Wärme“) |
-//! | Lead | −3 dB | hexa („Saw-Lead“), EQ („Low Cut 80 Hz“), Delay („Punktierte Achtel“), Hall („Studio-Platte“) |
-//! | Pad | −9 dB | volt („Breiter Pad“), EQ („Low Cut 80 Hz“), Hall („Große Halle“) |
+//! | Rhythmus | 0 dB | group (folder) of Drums and Bass, outputs to the master |
+//! | Drums | see `VOLUMES_DB` | Sampler (test kit), presse („Drums fest“) |
+//! | Bass | see `VOLUMES_DB` | volt („Fette Säge“), EQ („Bass Wärme“), presse („Ducking“, gentler: ratio 3, −20 dB, 120 ms; sidechain: Drums, pre-fader) |
+//! | Lead | see `VOLUMES_DB` | hexa („Saw-Lead“), EQ („Low Cut 80 Hz“), Delay („Punktierte Achtel“); post-fader send to Hall |
+//! | Pad | see `VOLUMES_DB` | volt („Breiter Pad“), EQ („Low Cut 80 Hz“); post-fader send to Hall |
 //! | Keys | −8 dB | hexa („E-Piano“), Delay („Weiches Band“) |
 //! | Arp | −10 dB | Tonleiter („A-Moll-Pentatonik“), Arpeggiator („Sechzehntel Auf/Ab“), hexa („Synth-Pluck“), Delay („Achtel Ping-Pong“) |
+//! | Hall | 0 dB | effect bus: Hall („Große Halle“), fed by the sends of Lead and Pad |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
+//!
+//! The routing is built with the model's edits (`add_bus`, `add_send`, `set_send`, `set_sidechain`),
+//! so the demo holds exactly what the UI creates: a group, an effect bus with sends and a sidechain.
 //!
 //! Device states are written like the presets of the UI do: `{"params": …, "preset": "<name>"}`
 //! ([`Internal::preset_state`]); hexa's state is the factory patch.
@@ -21,14 +26,26 @@
 use std::sync::Arc;
 
 use komponist_builtin::{Internal, encode_state, preset_patch, presets as hexa_presets};
+use komponist_model::edits::{self, NewBus, SendProp};
 use komponist_model::fixtures::demo_song;
 use komponist_model::{
-    ClipContent, Device, DeviceId, DeviceRole, MidiClip, Note, NoteId, Project, Take, Tick,
+    ClipContent, Device, DeviceId, DeviceRole, MidiClip, Note, NoteId, Project, Sidechain, Take,
+    Tap, Tick,
 };
 
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
 /// render analysis: the built-in instruments are louder than the old plugin chain's.
-const VOLUMES_DB: [f32; 6] = [-16.0, -9.0, 0.0, -10.0, 0.0, 0.0];
+const VOLUMES_DB: [f32; 6] = [-16.0, -6.0, 0.0, -10.0, 0.0, 0.0];
+
+/// „Ducking“, gentler: the kick moves the bass down a few dB and it comes back before the next beat.
+const BASS_DUCKING: &[(&str, f64)] = &[("ratio", 3.0), ("threshold", -20.0), ("release", 120.0)];
+
+/// Name of the group of Drums and Bass.
+pub const GROUP_NAME: &str = "Rhythmus";
+/// Name of the effect bus that carries the reverb.
+pub const HALL_BUS_NAME: &str = "Hall";
+/// Levels in dB of the post-fader sends of Lead and Pad to the Hall bus.
+const HALL_SENDS_DB: [f32; 2] = [-12.0, -8.0];
 
 /// The chords of the Arp clip, one per bar: C, C, Am, F, C, C, Am, G (MIDI pitches).
 const CHORDS: [[u8; 3]; 8] = [
@@ -66,6 +83,29 @@ impl Devices {
             .unwrap_or_else(|| panic!("{} has no preset {preset}", kind.name()));
         let state = kind.preset_state(None, index).expect("the preset exists");
         self.with_state(kind, state)
+    }
+
+    /// An internal device with factory preset `preset`, then `changes` on top (the device shows
+    /// the preset name with the „ *“ mark).
+    fn tuned(&mut self, kind: Internal, preset: &str, changes: &[(&str, f64)]) -> Arc<Device> {
+        let device = self.internal(kind, preset);
+        let mut state = device
+            .state
+            .as_deref()
+            .expect("a preset has state")
+            .to_vec();
+        for (key, value) in changes {
+            let wire = kind
+                .wire(&komponist_model::params::ParamId::new(*key))
+                .unwrap_or_else(|| panic!("{} has no parameter {key}", kind.name()));
+            state = kind
+                .with_value(Some(&state), wire, *value)
+                .expect("a known wire id");
+        }
+        Arc::new(Device {
+            state: Some(state.into()),
+            ..Device::clone(&device)
+        })
     }
 
     /// An internal device with its default parameters (no preset name).
@@ -133,17 +173,16 @@ pub fn showcase_project() -> Project {
         vec![
             d.internal(Internal::Volt, "Fette Säge"),
             d.internal(Internal::Eq, "Bass Wärme"),
+            d.tuned(Internal::Presse, "Ducking", BASS_DUCKING),
         ],
         vec![
             d.hexa("Saw-Lead"),
             d.internal(Internal::Eq, "Low Cut 80 Hz"),
             d.internal(Internal::Delay, "Punktierte Achtel"),
-            d.internal(Internal::Hall, "Studio-Platte"),
         ],
         vec![
             d.internal(Internal::Volt, "Breiter Pad"),
             d.internal(Internal::Eq, "Low Cut 80 Hz"),
-            d.internal(Internal::Hall, "Große Halle"),
         ],
         vec![
             d.hexa("E-Piano"),
@@ -187,5 +226,61 @@ pub fn showcase_project() -> Project {
         active_take: 0,
     });
     project.next_id = d.next;
+    add_routing(&mut project);
     project
+}
+
+/// Group, effect bus, sends and sidechain, through the model's routing edits.
+fn add_routing(project: &mut Project) {
+    let id_of = |p: &Project, name: &str| {
+        p.tracks
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no track {name}"))
+            .id
+    };
+    let (drums, bass) = (id_of(project, "Drums"), id_of(project, "Bass"));
+    let (lead, pad) = (id_of(project, "Lead"), id_of(project, "Pad"));
+    let routing = |what: &str| format!("the demo routing is valid: {what}");
+
+    // Drums and Bass output to the group „Rhythmus“, which takes the place of Drums.
+    let mut spec = NewBus::group(vec![drums, bass]);
+    spec.name = Some(GROUP_NAME.to_owned());
+    let (p, _) = edits::add_bus(project, spec).expect(&routing("group"));
+    *project = p;
+
+    // The effect bus „Hall“ with the reverb; Lead and Pad send to it, post-fader.
+    let mut spec = NewBus::effect(vec![lead, pad]);
+    spec.name = Some(HALL_BUS_NAME.to_owned());
+    let (mut p, hall) = edits::add_bus(project, spec).expect(&routing("bus"));
+    for (track, db) in [lead, pad].into_iter().zip(HALL_SENDS_DB) {
+        let send = p
+            .track(track)
+            .and_then(|t| t.send_to(hall))
+            .expect("the send exists")
+            .id;
+        p = edits::set_send(&p, send, SendProp::LevelDb(db)).expect(&routing("level"));
+        p = edits::set_send(&p, send, SendProp::Tap(Tap::Post)).expect(&routing("tap"));
+    }
+    let mut d = Devices { next: p.next_id };
+    let reverb = d.internal(Internal::Hall, "Große Halle");
+    p.next_id = d.next;
+    let bus = p
+        .tracks
+        .iter()
+        .position(|t| t.id == hall)
+        .expect("the bus exists");
+    Arc::make_mut(&mut p.tracks[bus]).channel.devices = vec![reverb];
+
+    // The kick ducks the bass: presse on the Bass, keyed by Drums before its fader.
+    let presse = p
+        .track(bass)
+        .and_then(|t| t.channel.devices.last())
+        .expect("the Bass chain ends with presse")
+        .id;
+    let sidechain = Sidechain {
+        source: drums,
+        tap: Tap::Pre,
+    };
+    *project = edits::set_sidechain(&p, presse, Some(sidechain)).expect(&routing("sidechain"));
 }
