@@ -1,12 +1,18 @@
 # komponist
 
 A MIDI DAW for Linux in Rust (egui/eframe, cpal, CLAP and VST3 hosting in bridge processes).
-Architecture: `docs/ARCHITECTURE.md`. Work packages and orchestration: `../.claude/komponist/PLAN.md`.
+Architecture: `docs/ARCHITECTURE.md`.
+
+**Work items live on the GitHub board** (owner, 2026-11-15): https://github.com/orgs/klang-studio/projects/2, backed by
+issues in `klang-studio/komponist` (labels `area: …`, `epic`; epics have sub-issues). An agent's brief names its issue;
+the branch is `wp/<issue-number>-<slug>`, and the merge commit says `Closes #<n>`. Status moves Backlog → Ready →
+In progress → In review → Done. Questions to the owner are draft items on the board. The old `PLAN.md` / `PROGRESS.md`
+in the internal notes are an archive only.
 
 **Internal notes live outside the repo (owner, 2026-11-15):** paths like `../.claude/komponist/` are relative to the
-repo root and resolve in worktrees too (`.claude/worktrees/.claude` links back to `.claude/`). plans, progress, proposals (with mockups), owner
-questions, evaluations, spikes and reviews go to the internal notes folder `../.claude/komponist/` next to the repo (`PLAN.md`,
-`PROGRESS.md`, `proposals/<topic>/`, …), never into `docs/`. `docs/` holds only public documentation
+repo root and resolve in worktrees too (`.claude/worktrees/.claude` links back to `.claude/`). proposals (with mockups), evaluations,
+spikes and reviews go to the internal notes folder `../.claude/komponist/` next to the repo (`proposals/<topic>/`, …),
+never into `docs/`. `docs/` holds only public documentation
 (`ARCHITECTURE.md`, `I18N.md`, `INSTALL.md`, `PERFORMANCE.md`). In code and public docs, cite such notes without a
 `docs/` path, e.g. „fader-thumb proposal, variant D (internal notes)“.
 
@@ -89,7 +95,7 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
 
 ## Rules for all agents
 
-From `PLAN.md` §2 (internal notes). `HS/` = `../klang-studio-handoff/`.
+`HS/` = `../klang-studio-handoff/`.
 
 1. **Language:** code, comments, docs, commits in English. UI texts are German and are taken
    **verbatim** from the screens (`HS/reference/Screens.dc.html`), including typographic characters
