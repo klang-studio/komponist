@@ -57,12 +57,15 @@ fn layout() -> DeviceLayout {
 struct Limiter {
     gain: f32,
     ceiling: f32,
+    /// The largest `|sample| × gain` since the last [`Dsp::take_reduction_db`].
+    peak: f32,
 }
 
 fn dsp() -> Box<dyn Dsp> {
     Box::new(Limiter {
         gain: 1.0,
         ceiling: db_to_gain(-0.3),
+        peak: 0.0,
     })
 }
 
@@ -81,10 +84,24 @@ impl Dsp for Limiter {
         let (gain, ceiling) = (self.gain, self.ceiling);
         for (i, o) in input.into_iter().zip(output) {
             for (s, d) in i.iter().zip(o.iter_mut()) {
-                *d = (s * gain).clamp(-ceiling, ceiling);
+                let x = s * gain;
+                self.peak = self.peak.max(x.abs());
+                *d = x.clamp(-ceiling, ceiling);
             }
         }
     }
 
-    fn reset(&mut self) {}
+    /// How far the loudest sample was above the ceiling, in dB.
+    fn take_reduction_db(&mut self) -> f32 {
+        let peak = std::mem::take(&mut self.peak);
+        if peak > self.ceiling && self.ceiling > 0.0 {
+            20.0 * (peak / self.ceiling).log10()
+        } else {
+            0.0
+        }
+    }
+
+    fn reset(&mut self) {
+        self.peak = 0.0;
+    }
 }
