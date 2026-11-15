@@ -576,7 +576,7 @@ fn clamp_scroll(v: &mut ArrangementView, project: &Project, body: Rect) {
 
 /// Whether Esc was pressed in this frame. Read from the raw input: the app's keymap consumes Esc
 /// (as `ClearSelection`, or `CancelGesture` during a drag) before the views run.
-fn escape_pressed(ui: &Ui) -> bool {
+pub(crate) fn escape_pressed(ui: &Ui) -> bool {
     ui.input(|i| {
         i.raw.events.iter().any(|e| {
             matches!(

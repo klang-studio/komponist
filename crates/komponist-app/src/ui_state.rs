@@ -386,6 +386,9 @@ pub struct StepSeqView {
 pub struct MixerView {
     /// Horizontal scroll in design px.
     pub scroll_x: f32,
+    /// F2: the strip of this track opens its name field (taken by the mixer when it shows the
+    /// strip). Only set while the mixer is visible.
+    pub rename_request: Option<TrackId>,
 }
 
 /// Device chain view.

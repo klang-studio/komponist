@@ -1,17 +1,19 @@
 //! One channel strip: painted top to bottom ([`Rows`]), with the WP-20/21 widgets (knob,
 //! toggles, fader, meter, level value) on their places, the insert slots and the reserved sends.
 
+use egui::text::CCursorRange;
 use egui::{
-    Align, Layout, Modifiers, Pos2, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2,
-    vec2,
+    Align, Frame, Layout, Margin, Modifiers, Pos2, Rect, Response, Role, Sense, TextEdit, Ui,
+    UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_i18n::Lang;
 use komponist_model::edits::{ChannelProp, TrackProp};
 use komponist_model::format::{fmt_db, fmt_pan};
 use komponist_model::{ChannelRef, DeviceId, PluginRef};
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{color, radius, size, typography};
+use komponist_tokens::{color, radius, size, space, typography};
 use komponist_ui::state::{self, State};
+use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
 use komponist_ui::widgets::fader::{DbValue, Fader};
 use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::meter::{Meter, MeterState};
@@ -23,11 +25,12 @@ use komponist_ui::{fonts, px};
 
 use super::metrics::{self as m, Tier};
 use super::model::{Insert, SlotState, Strip, move_target_in, slot_at};
-use super::send_gesture;
+use super::{Rename, send_gesture};
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
 use crate::meters::Meters;
+use crate::views::arrangement::escape_pressed;
 use crate::views::devices::add_menu;
 use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
@@ -329,6 +332,7 @@ pub(super) fn show(
     rect: Rect,
     clip: Rect,
     tier: Tier,
+    rename: &mut Option<Rename>,
 ) -> Vec<(ToggleKind, ToggleEvent)> {
     let key = match s.channel {
         ChannelRef::Track(t) => t.0,
@@ -360,7 +364,7 @@ pub(super) fn show(
         select(ctx, s, mods);
     }
     paint_frame(ui, s, &rows, rect);
-    name_and_line(ui, ctx, s, &rows, mods, tier);
+    name_and_line(ui, ctx, s, &rows, mods, tier, rename);
     if let Some(label) = rows.inserts_label {
         let g = w::styled_galley(ui, ctx.lang.mixer_inserts(), &typography::LABEL);
         let pos = w::text_pos(label, &g, label.left(), ui.pixels_per_point());
@@ -417,6 +421,7 @@ fn name_and_line(
     rows: &Rows,
     mods: Modifiers,
     tier: Tier,
+    rename: &mut Option<Rename>,
 ) {
     let style = typography::UI;
     // The lean (dock) strip's routing chip stands at the right end of the name row.
@@ -468,6 +473,7 @@ fn name_and_line(
             select(ctx, s, mods);
         }
         if let Some(track) = s.track() {
+            name_rename(ui, ctx, s, track, &r, line_rect, rename);
             // Dragged onto a bus strip it sets the track's output (`bus_drop`).
             let tracks = if selected {
                 ctx.project
@@ -510,6 +516,102 @@ fn name_and_line(
         );
         let r = ui.interact(rows.line, ui.scope_id().with("line"), Sense::hover());
         r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &s.line));
+    }
+}
+
+/// Rename in place (double-click on the name, "Umbenennen" in the name's context menu, F2) of a
+/// track or bus strip: the text field over the name while `rename` is `track`'s.
+fn name_rename(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    s: &Strip,
+    track: komponist_model::TrackId,
+    name: &Response,
+    rect: Rect,
+    rename: &mut Option<Rename>,
+) {
+    let t = ctx.lang;
+    if name.double_clicked() {
+        *rename = Some(Rename {
+            track,
+            text: s.name.clone(),
+            fresh: true,
+        });
+    }
+    let entries = [Entry::action(t.routing_rename(), ())];
+    let menu = if s.is_bus() {
+        t.routing_kind_bus()
+    } else {
+        t.arrangement_track_menu()
+    };
+    if ContextMenu::new(menu, &entries).show_on(name).is_some() {
+        *rename = Some(Rename {
+            track,
+            text: s.name.clone(),
+            fresh: true,
+        });
+    }
+    if rename.as_ref().is_some_and(|r| r.track == track) {
+        rename_field(ui, ctx, s, track, rect, rename);
+    }
+}
+
+/// The text field of a strip being renamed: over the name, `surface.0` with an accent ring; Enter
+/// (or a click elsewhere) applies the trimmed name unless it is empty or unchanged, Esc discards
+/// (the same rules and the same edit as the header's and the inspector's field).
+fn rename_field(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    s: &Strip,
+    track: komponist_model::TrackId,
+    rect: Rect,
+    rename: &mut Option<Rename>,
+) {
+    let Some(state) = rename.as_mut() else {
+        return;
+    };
+    let style = typography::UI;
+    let field = rect.expand2(vec2(space::SPACE_1, 0.0));
+    px::fill(ui.painter(), field, radius::S, color32(color::SURFACE_0));
+    px::outline(ui.painter(), field, radius::S, 0.0, color32(color::ACCENT));
+    let mut text = state.text.clone();
+    let response = ui.put(
+        rect,
+        TextEdit::singleline(&mut text)
+            .id(ui.scope_id().with("rename"))
+            .frame(Frame::NONE)
+            .margin(Margin::ZERO)
+            .font(w::font_at(&style, wm::SEMIBOLD))
+            .text_color(color32(color::TEXT_1))
+            .desired_width(rect.width()),
+    );
+    let label = ctx.lang.arrangement_rename();
+    ui.ctx()
+        .accesskit_node_builder(response.id, |n| n.set_label(label));
+    if state.fresh {
+        // Focus after the field exists: the double-click that opened it would otherwise count
+        // as a click elsewhere.
+        let mut st = TextEdit::load_state(ui.ctx(), response.id).unwrap_or_default();
+        st.cursor
+            .set_char_range(Some(CCursorRange::select_all_str(&text)));
+        TextEdit::store_state(ui.ctx(), response.id, st);
+        response.request_focus();
+        state.fresh = false;
+        state.text = text;
+    } else if response.lost_focus() {
+        let name = text.trim();
+        if !escape_pressed(ui) && !name.is_empty() && name != s.name {
+            ctx.send(Action::Edit(EditAction::SetTrackProp {
+                tracks: vec![track],
+                prop: TrackProp::Name(name.to_owned()),
+            }));
+        }
+        *rename = None;
+    } else if !response.has_focus() {
+        // The mixer was not shown for a while: the field lost its focus unseen.
+        *rename = None;
+    } else {
+        state.text = text;
     }
 }
 
