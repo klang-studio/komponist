@@ -21,7 +21,7 @@ fn phrase(p: &mut HexaProcessor) -> Out {
 #[test]
 fn preset_switch_by_state() {
     let piano = presets().find(|p| p.name == "E-Piano").unwrap();
-    let bass = presets().find(|p| p.name == "FM-Bass").unwrap();
+    let bass = presets().find(|p| p.name == "FM Bass").unwrap();
     assert_eq!((piano.category, bass.category), ("Tasten", "Bass"));
 
     // The device starts with E-Piano …
@@ -31,14 +31,14 @@ fn preset_switch_by_state() {
     let before = phrase(&mut device);
     assert_eq!(*device.patch(), preset_patch(piano.index).unwrap());
 
-    // … and switches to FM-Bass: a new processor from the new state replaces it.
+    // … and switches to FM Bass: a new processor from the new state replaces it.
     let state = encode_state(&preset_patch(bass.index).unwrap());
     let mut device = HexaProcessor::from_state(Some(&state)).unwrap();
     device.activate(RATE, MAX_BLOCK).unwrap();
     assert_eq!(*device.patch(), preset_patch(bass.index).unwrap());
     let after = phrase(&mut device);
 
-    // It sounds like FM-Bass, not like E-Piano.
+    // It sounds like FM Bass, not like E-Piano.
     let reference = phrase(&mut activated(preset_patch(bass.index).unwrap()));
     assert_eq!(after, reference);
     assert!(after.peak(0..after.len()) > 0.05);

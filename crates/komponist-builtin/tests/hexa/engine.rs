@@ -207,7 +207,7 @@ fn sequenced_notes_sound_on_their_samples() {
 fn replacing_the_processor_switches_the_preset() {
     let p = program(120.0, vec![note(0, 480, 60), note(BAR, 480, 60)]);
     let second = sample(&p, BAR);
-    // The same program once with E-Piano throughout and once switching to FM-Bass before the
+    // The same program once with E-Piano throughout and once switching to FM Bass before the
     // second note.
     let mut piano = Rig::new(512);
     piano.send(Command::InsertProcessor {
@@ -234,7 +234,7 @@ fn replacing_the_processor_switches_the_preset() {
 
     // The old processor came back to this thread.
     assert_eq!(switched.garbage, 1);
-    // Identical (silent) until the second note, which is FM-Bass.
+    // Identical (silent) until the second note, which is FM Bass.
     assert_eq!(piano.out.first_difference(&switched.out), Some(second));
     let range = second..second + 24_000;
     assert!(switched.out.peak(range.clone()) > 0.05);

@@ -5,7 +5,7 @@ use komponist_engine::{EventKind, Processor, ProcessorError};
 
 use crate::common::*;
 
-/// Init, E-Piano (stereo, six operators), FM-Bass.
+/// Init, E-Piano (stereo, six operators), FM Bass.
 fn patches() -> [Patch; 3] {
     [0, 1, 35].map(|i| preset_patch(i).unwrap())
 }
