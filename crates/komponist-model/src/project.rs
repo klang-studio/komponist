@@ -191,7 +191,8 @@ pub struct Track {
     /// `[MIDI effects…] → instrument → [audio effects…]` ([`Channel::midi_effect_count`],
     /// [`Channel::instrument`]); a track may have no instrument (silent).
     pub channel: Channel,
-    /// Record arm ("R"). Arming also switches [`Track::monitor`] on (S02).
+    /// Record arm ("R"). Arming also switches [`Track::monitor`] on (S02), and an armed track
+    /// monitors live input even with I off (auto-monitoring, owner decision 2026-11-15).
     pub arm: bool,
     /// Input monitoring ("I"): live MIDI input reaches the instrument.
     pub monitor: bool,

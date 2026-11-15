@@ -237,6 +237,9 @@ pub struct MidiInputHub {
     ports: Vec<PortEntry>,
     /// Shared with every connection's callback.
     waker: Arc<OnceLock<Waker>>,
+    /// Tests: only ports whose name starts with this start enabled (see
+    /// [`MidiInputHub::only_connect_to`]).
+    only: Option<String>,
 }
 
 impl core::fmt::Debug for MidiInputHub {
@@ -258,8 +261,16 @@ impl MidiInputHub {
             sender,
             ports: Vec::new(),
             waker: Arc::new(OnceLock::new()),
+            only: None,
         };
         Ok((hub, receiver))
+    }
+
+    /// Tests: from now on a newly seen port starts enabled only if its name starts with `prefix`,
+    /// so a test never subscribes to the hardware ports of the machine it runs on. Call before
+    /// [`MidiInputHub::refresh`].
+    pub fn only_connect_to(&mut self, prefix: &str) {
+        self.only = Some(prefix.to_owned());
     }
 
     /// Re-enumerates the input ports, connects enabled ones that appeared and marks vanished ones
@@ -296,7 +307,8 @@ impl MidiInputHub {
                 Some(index) => index,
                 None => {
                     let id = MidiPortId(self.ports.len() as u16);
-                    let enabled = !name.starts_with("Midi Through");
+                    let enabled = !name.starts_with("Midi Through")
+                        && self.only.as_deref().is_none_or(|p| name.starts_with(p));
                     self.ports.push(PortEntry {
                         info: MidiPortInfo {
                             id,
@@ -531,6 +543,8 @@ mod tests {
             eprintln!("ALSA sequencer unavailable: skipped");
             return;
         };
+        // Never subscribe to the machine's real devices.
+        hub.only_connect_to("komponist-test:");
         let port = format!("probe-{}", std::process::id());
         let name = format!("komponist-test:{port}");
         let mut out = virtual_output(&port);
