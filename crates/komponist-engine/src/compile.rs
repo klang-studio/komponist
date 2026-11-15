@@ -78,6 +78,10 @@ impl CompileEnv for NoEnv {
 /// but at the head of a track chain, instruments on the master, and devices that
 /// find no free slot below [`crate::MAX_SLOTS`].
 pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv) -> Program {
+    // WP-102: routing (wave 9, ARCHITECTURE §6.8) is not compiled yet. A bus
+    // (`TrackKind::Bus`) compiles like a track without clips and instrument: its effects run on
+    // silence and it sums into the master. Outputs to buses, sends and sidechains are ignored, so
+    // every track still plays straight into the master, as in every project from before wave 9.
     let mut track_ids = HashSet::new();
     let tracks: Vec<&Arc<Track>> = project
         .tracks

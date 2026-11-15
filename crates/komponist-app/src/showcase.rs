@@ -89,6 +89,7 @@ impl Devices {
             plugin: kind.plugin_ref(),
             bypass: false,
             state: Some(state.into()),
+            sidechain: None,
         })
     }
 
@@ -100,6 +101,7 @@ impl Devices {
             plugin: Internal::Sampler.plugin_ref(),
             bypass: false,
             state: None,
+            sidechain: None,
         })
     }
 
@@ -115,6 +117,7 @@ impl Devices {
             plugin: crate::app::pisynth_ref(),
             bypass: false,
             state: Some(encode_state(&patch).into()),
+            sidechain: None,
         })
     }
 }

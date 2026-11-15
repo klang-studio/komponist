@@ -220,12 +220,15 @@ pub struct Project {
 }
 pub struct Track {
     pub id: TrackId, pub name: String, pub hue: Hue,       // Hue = one of the 14 token hues
-    pub kind: TrackKind,                                   // Midi only in v0.1 (Audio later)
+    pub kind: TrackKind,                                   // Midi | Bus (wave 9); Audio in wave 10
     pub channel: Channel,                                  // volume_db, pan (-1..1), mute, solo, devices
     pub arm: bool, pub monitor: bool,                      // R, I
     pub input: MidiInputSel, pub midi_channel: MidiChannelSel, // "Alle MIDI-Eingänge", "Omni"
     pub height: u16,                                       // 32..=160, part of the project
-    pub clips: Vec<Arc<Clip>>,
+    pub clips: Vec<Arc<Clip>>,                             // empty on a bus
+    pub output: TrackOutput,                               // Master | Bus(id)       (routing, §6.8)
+    pub sends: Vec<TrackSend>,                             // to buses, pre/post     (§6.8)
+    pub folder: bool, pub folded: bool,                    // bus shown as a group   (§6.8.1)
 }
 pub struct Channel { pub volume_db: f32, pub pan: f32, pub mute: bool, pub solo: bool,
                      pub devices: Vec<Arc<Device>> }       // MIDI track: [MidiEffect…] Instrument? [Effect…]
@@ -234,6 +237,7 @@ pub struct Device {
     pub plugin: PluginRef,                                 // format Builtin|Clap|Vst3, id, name, vendor, version
     pub bypass: bool,
     pub state: Option<Arc<[u8]>>,                          // opaque plugin state, kept when the plugin is missing
+    pub sidechain: Option<Sidechain>,                      // source track/bus + tap (§6.8)
 }
 pub struct Clip {
     pub id: ClipId, pub name: String,
@@ -268,7 +272,10 @@ build from before WP-88 (unknown role), which is the intended direction of compa
 Runtime status of a device (ok / lädt / abgestürzt / fehlt) is **not** part of the document. It lives
 in `komponist-plugins` and is shown by the UI. The document only keeps what must survive a save.
 
-IDs are `u64` from `Project::next_id`, so they stay stable across undo and redo.
+IDs are `u64` from `Project::next_id`, so they stay stable across undo and redo (sends have ids too, `SendId`).
+
+**Routing (wave 9).** Buses, outputs, sends and sidechains, their invariants, edits and file format: §6.8. A project
+without buses has every track's output on the master and no sends, which is the pre-wave-9 behaviour.
 
 ### 5.3 Edits and undo (D8)
 
@@ -278,7 +285,8 @@ IDs are `u64` from `Project::next_id`, so they stay stable across undo and redo.
   *gesture*: `begin_gesture` takes the snapshot, intermediate updates replace `current` without
   pushing, `end_gesture` pushes once.
 - Every edit is a function `fn(&Project, args) -> Result<Project, EditError>` in `edits/`. Pure,
-  unit-tested, also used by the acceptance tests.
+  unit-tested, also used by the acceptance tests. Routing edits (`edits/routes.rs`, §6.8.3) reject a cycle;
+  deleting a track or bus repairs every routing reference to it in the same undo step.
 - Change detection for the engine: `Arc::ptr_eq` per track, clip and device (see 6.3).
 - Selection, focus, zoom and open panels are UI state (`komponist-app`) and are not undone.
 - **Device parameters and plugin states are tracked** (owner decision 2026-11-15). A knob, fader,
@@ -302,9 +310,10 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 
 ### 5.5 Persistence (D7)
 
-- `*.komponist`: JSON `{ "format": "komponist", "version": 1, "project": … }`. Plugin states are base64.
+- `*.komponist`: JSON `{ "format": "komponist", "version": 2, "project": … }`. Plugin states are base64.
   A missing plugin keeps its state unchanged (S06).
-- Migrations: `version` → `migrate_vN_to_vN+1` functions, with a test per version.
+- Migrations: `version` → `migrate_vN_to_vN+1` functions, with a test per version. Version 2 (WP-101) adds the
+  routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master.
 - Settings: `~/.config/komponist/settings.json` (driver, device, rate, buffer, MIDI inputs, plugin
   folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`.
   Plugin scan cache: `~/.cache/komponist/plugins.json`.
@@ -404,11 +413,14 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
       (6.4.1) and the audio thread together, or all on the audio thread. Started (bridge) tracks are
       claimed last.
    3. **Sum**, on the audio thread: the track outputs into the master bus in track order.
+   With routing (§6.8.4, WP-102) phases 2 and 3 become one job graph in topological order: buses are jobs that sum
+   their inputs first, and the master sums what outputs to it.
 5. Master: inserts → master fader → meter → output. The metronome is added after the master fader
    with its own level.
 6. Telemetry, events.
 
-Solo logic: audible = `!mute && (!any_solo || solo)`. "Stumm durch Solo" is a derived UI state.
+Solo logic: audible = `!mute && (!any_solo || solo)`. "Stumm durch Solo" is a derived UI state. With buses, solo
+follows the signal path (`routing::gates`, §6.8.6); without buses that rule reduces to this one.
 
 #### 6.4.1 Worker pool (WP-65)
 
@@ -444,7 +456,7 @@ stays single-threaded.
 - **Later (sends, busses):** the three phases become a dependency graph: a bus job may start when
   the jobs of all its sources are done (a per-job counter of missing inputs, decremented by the
   finishing source, replaces the single claim word's order). Phase 3 then sums into busses in a
-  fixed order, which keeps the output deterministic. Not built.
+  fixed order, which keeps the output deterministic. Designed in §6.8.4, built by WP-102.
 
 #### 6.4.2 MIDI effect stage (WP-88)
 
@@ -522,6 +534,8 @@ processors. Only a sample rate change re-activates them.
 Each chain reports `Σ latency`. The program keeps per-track delay lines (allocated off-thread,
 length = max chain latency − own chain latency) before the master bus. Small, but needed as soon as
 a lookahead plugin is in use. It can move behind v0.1 if time is short (WP-23 marks it optional).
+With buses, sends and sidechains the alignment runs over the whole graph (§6.8.5); this per-track delay is its
+special case.
 
 ### 6.7 Offline render and export (S08)
 
@@ -535,6 +549,228 @@ a lookahead plugin is in use. It can move behind v0.1 if time is short (WP-23 ma
   normalisation to −1 dBFS → TPDF dither for 16/24 bit → `hound`. The progress dialog shows the
   peak level. Tail 2 s. Range: song (up to the end of the last clip), loop, selection.
 - Dither and PCM quantisation stay in `komponist-engine::export` (only one user, see §10).
+
+### 6.8 Routing: buses, sends, sidechains (wave 9)
+
+Designed by WP-101 (model, this section), built in the engine by WP-102, shown by WP-103 to WP-105. Owner
+decisions on WP-100 (2026-11-15, `docs/proposals/routing/README.md`, numbered there): one bus kind with two ways to
+make one (1 C), sends post-fader at −6 dB (8 B, 9 A), sidechains tapped pre-fader (10 A), no sends on buses in v1
+(11 A), solo follows the signal path without a solo-safe flag (12 A), deleting a group dissolves it (13 A), bus
+colours from the palette (14 A). Model code: `komponist_model::routing` (pure queries) and
+`komponist_model::edits` (`add_bus`, `set_output`, `add_send`, `set_send`, `remove_send`, `set_sidechain`,
+`duplicate_tracks`, and `remove_tracks` for deleting).
+
+#### 6.8.1 The graph, track kinds and the UI
+
+One graph for everything. **Nodes:** every track (`TrackKind::Midi`, `TrackKind::Bus`, later `Audio`) and the
+master. **Edges:**
+
+| Edge | From → to | Model | Carries |
+|---|---|---|---|
+| Output | track or bus → master or bus | `Track::output: TrackOutput` (`Master` \| `Bus(TrackId)`) | the node's signal after fader, pan and mute |
+| Send | MIDI track → bus | `Track::sends: Vec<TrackSend>` (`id: SendId`, `target`, `level_db`, `tap: Pre \| Post`, `enabled`) | a copy at the tap, scaled by the send level |
+| Sidechain | track or bus → the node holding the device | `Device::sidechain: Option<Sidechain>` (`source: TrackId`, `tap`) | the source's signal at the tap into the device's sidechain input; nothing into the mix |
+
+```rust
+pub enum TrackKind { #[default] Midi, Bus }            // Audio reserved for wave 10 (WP-111)
+pub struct Track { /* … as in 5.2 … */
+    pub output: TrackOutput,                            // required from file version 2
+    pub sends: Vec<TrackSend>,                          // empty on buses (11 A)
+    pub folder: bool,                                   // bus shown as a group (Strg G)
+    pub folded: bool,                                   // group folded in the arrangement
+}
+pub enum TrackOutput { #[default] Master, Bus(TrackId) }
+pub struct TrackSend { pub id: SendId, pub target: TrackId, pub level_db: f32, pub tap: Tap, pub enabled: bool }
+pub struct Sidechain { pub source: TrackId, pub tap: Tap }   // on Device; Sidechain::new → Tap::Pre
+pub enum Tap { Pre, Post }
+```
+
+A **bus** sums everything that outputs or sends to it, runs audio effects, and has fader, pan, mute, solo, meter and
+an output. It holds no clips, no instrument and no MIDI effects, is never armed, and in v1 has no sends. Kinds are
+separate; there are no hybrid tracks (owner).
+
+**UI mapping (variant C, chosen).** Both ways of making a bus give the same `TrackKind::Bus`; only `Track::folder`
+differs, and it changes nothing in the routing:
+
+- **Group** (Strg G „In Gruppe zusammenfassen“, `NewBus::group(members)`): a bus with `folder = true`, placed where
+  the topmost selected track was; the selected tracks output to it. Its **members are the tracks that output to
+  it**: membership is the routing, there is no second tree. The arrangement shows a group as a foldable folder
+  (`folded`) and the members indented below it; the model keeps every group's members directly behind it in display
+  order as one block (`routing::normalized_order`, applied by every edit), so routing a track to a group moves it
+  into the block (WP-100: dragging a track onto a group sets its output) and routing it elsewhere moves it right
+  behind the block. A group inside a group is a group bus that outputs to the outer group.
+- **Effect bus** („Send zu neuem Bus“, `NewBus::effect(senders)`): a bus with `folder = false`, fed by a send from
+  each selected track (−6 dB, post-fader), listed in the arrangement's „Busse“ section. Tracks may also output to
+  an effect bus; it does not become a folder then.
+- The mixer shows all buses right before the master (3 A); that is a view order, not the model's track order.
+
+For the record, the two rejected variants would have mapped onto the same model without changes: **A** (return
+and group as two kinds) = a group is a `folder` bus, a return is a non-folder bus that only sends feed (the UI hides
+it from output menus); **B** (generic bus, no folders) = every bus has `folder = false`.
+
+#### 6.8.2 Signal flow of a node and the tap points
+
+```
+MIDI track:  events → MIDI effects → instrument → audio effects ─┬─▶ [Pre tap] ─▶ pre sends, pre sidechains
+Bus:         Σ inputs (outputs + sends, PDC-aligned) → effects ──┘
+             ─▶ fader → pan → mute ─┬─▶ meter
+                                    ├─▶ [Post tap] ─▶ post sends, post sidechains
+                                    └─▶ output (master or bus)
+```
+
+- **Pre** („Vor Fader“): behind the device chain, before fader, pan and mute. **Post** („Nach Fader“): behind fader,
+  pan and mute, the same signal the output carries.
+- Sends are gated as audible signal (6.8.6): a muted or solo-muted track's sends are silent, pre or post.
+- Sidechain taps are control signals: a **pre** tap ignores the source's fader, mute and solo (ducking keeps
+  working with a muted ghost kick, 10 A); a **post** tap follows fader and mute but never solo.
+- A disabled send (`enabled = false`) keeps its level and feeds nothing.
+
+#### 6.8.3 Invariants, edits and the file
+
+Invariants (`routing::check`, asserted after every edit in the property tests):
+
+1. The graph over outputs, sends **and sidechains** is acyclic, and no node outputs, sends or taps into itself.
+   Sidechain edges count because they impose processing order: the source must be done before the holder runs.
+   Consequence: a device cannot take its own track (pre or post), nor a bus its track feeds.
+2. The master is the only sink: it has no outgoing edge and is never a sidechain source. Every node reaches it.
+3. Output and send targets are buses; a track sends at most once to a bus; buses have no sends (edits, 11 A).
+4. Groups: `folder` only on buses, `folded` only on groups, members directly behind their group (6.8.1).
+5. A bus holds no clips, no instrument, no MIDI effects, is not armed and not monitoring.
+
+**Queries for the UI** (grey out what would close a cycle, WP-100 §7): `routing::output_targets(track)` (master
+first, then every bus that is not upstream of the track), `send_targets(track)` (the same buses minus those it
+already sends to), `sidechain_sources(device)` (every track and bus not downstream of the holder; a device on the
+master takes all), `would_create_cycle(from, to)`, `group_of`, `group_members`, `group_ancestors`.
+
+**Edits** (each one undo step; each validates, normalises the group blocks and rejects a cycle with
+`EditError::RoutingCycle`, a non-bus target with `NotABus`):
+
+- `add_bus(NewBus)`: name „Gruppe n“ / „Bus n“ (first free n from 1), hue from the palette; a group of members
+  outputs where all its members did (so a group made inside a group nests), else to the master.
+- `set_output(tracks, output)` (also joins and leaves groups), `add_send(track, bus)`, `set_send(id, SendProp)`
+  (level, tap, enabled, target), `remove_send(id)`, `set_sidechain(device, Option<Sidechain>)`,
+  `TrackProp::Folded`.
+- `remove_tracks` (Entf on tracks or buses) repairs every reference in the same step: outputs to a removed bus go
+  where that bus went (transitively; for a group this is „Gruppe auflösen“, its members join the enclosing group
+  or the top level), sends to it are removed, sidechains from a removed track or bus are cleared (master chain
+  too). „Mit Spuren löschen“ is the UI passing the members as well. Untouched tracks keep their `Arc`.
+- `duplicate_tracks` (new, Ctrl D on tracks): copies keep output, sends (new `SendId`s) and sidechains; references
+  between the listed tracks point at the copies (a duplicated group with its members gets member copies, a
+  duplicated kick feeds the duplicated compressor).
+- Existing edits: `add_track` before a group member joins that group; `move_tracks` keeps membership (a group
+  moves with its block); clips cannot be added, moved or copied onto a bus; a bus takes audio effects only; arm and
+  monitor are ignored on buses. Device copy and paste (`NewDevice`) start without a sidechain.
+
+**File (format version 2, 5.5).** Every track writes `"output": "master"` or `{"bus": id}`; `sends`, `folder`,
+`folded` and a device's `sidechain` are written only when set; kind `"bus"`. `migrate_v1_to_v2` gives every track
+of a version-1 file `"output": "master"`, so an old project loads unchanged (no sends, no buses). Loading repairs
+dangling or invalid references (output to the master, sends and sidechains dropped, flags cleared, group order) and
+rejects a cycle or a bus with clips or an instrument as malformed. A build from before wave 9 refuses version 2
+(„newer“), which is the intended direction.
+
+#### 6.8.4 Engine: compiling and scheduling the graph (WP-102)
+
+`compile::build` turns the project into a **job graph**:
+
+- **Order:** `routing::topo_order` (Kahn's algorithm; among ready nodes the higher track first, the master last).
+  Without buses it is the display order, so today's programs compile to the same order and the same output.
+- **Jobs:** one per node except the master. A MIDI track job is today's chain job (6.4 phase 2: MIDI effect stage,
+  instrument, effects) plus fader, pan, mute, meter, taps and its input delays. A **bus job** first sums its inputs
+  (a join node), then runs its effects and strip the same way. The master stays on the audio thread after all jobs.
+- **Buffers, all preallocated in the program at compile time** (UI thread), each `MAX_BLOCK` stereo frames:
+  per node an output buffer (post tap = what the output carries); a separate pre-tap buffer only for nodes with a
+  pre send or pre sidechain; per bus a sum buffer. Sends and outputs are not buffers of their own: the consuming
+  bus job reads the source's pre or post buffer, applies send level or delay, and adds. Sidechain inputs are read
+  from the source's tap buffer by the holder's job (internal devices get it as `Dsp` aux input in WP-104, plugins
+  through the bridge's extra channels in WP-105).
+- **Determinism:** a job writes only its own buffers and state; a bus sums its inputs in topological order of the
+  sources (fixed per program), so the output stays bit-exact with and without workers, like 6.4.1.
+- **Worker pool as a DAG scheduler** (6.4.1 "later" made concrete): each job has a counter of missing inputs
+  (output, send and sidechain edges into it), set from the program at dispatch. A finishing job decrements the
+  counters of its targets (release) and publishes those that reach zero to the ready set; threads claim ready jobs
+  by CAS as today. Independent branches (all MIDI tracks into the master, the normal case) are all ready at once,
+  so a project without buses schedules exactly like WP-65. The audio thread keeps the deadline fallback: it claims
+  every ready job no worker has started and waits (futex with deadline) only for jobs a worker is running, now also
+  when a job it needs next depends on them. Bridged instruments still start early (`Processor::begin`) in phase 1.
+- **Serial fallback** stays per segment (no pool, fewer than two jobs, segments under 32 frames).
+- **Solo and mute fast path:** solo now depends on the graph (6.8.6), so `SetTrackSolo` can no longer be decided per
+  track on the audio thread. The UI thread computes `routing::gates` and sends a gate table (one bit per output and
+  send, fixed capacity) through a fast-path command; the faders keep ramping as today.
+
+#### 6.8.5 Latency compensation across the graph
+
+Generalises 6.6 (today: one delay per track before the master, `max chain latency − own chain latency`). With
+`chain(v)` = Σ latency of v's active devices, computed in topological order:
+
+- `in(v)` = latency at which v's inputs are aligned = max over its incoming outputs and sends `e: u → v` of
+  `out(u)`, and over the sidechain edges into v (see below); 0 for a MIDI track (live input latency is handled
+  apart, 6.5).
+- `out(v) = in(v) + chain(v)`; pre and post taps both have latency `out(v)` (fader, pan and mute add none).
+- **Every input edge gets its own delay line** of `in(v) − out(u)` frames (outputs and sends alike; a send's delay
+  sits on the send). The master is one more join node; the project latency is `out(master)`, the maximum over all
+  paths.
+- **Sidechains** are aligned with the signal they act on: a device at chain position k of holder h sees the main
+  signal at `in(h) + chain(h)[..k]`. A tap from s arrives at `out(s)`. If it arrives early it is delayed by the
+  difference; if it would arrive late, `in(h)` is raised so that it is not (a sidechain may delay its holder, never
+  the reverse). This is the extra term in `in(v)` above.
+- Delay lines are preallocated at compile time (`MAX_PDC_FRAMES` each, 6.1) and clamped there (a warning in the UI
+  when a path exceeds it). Path latencies are recomputed on every compile; `EngineSync` already recompiles when a
+  plugin reports a new latency.
+
+#### 6.8.6 Mute, solo, meters
+
+`routing::gates(&Project)` decides which outputs and sends carry signal (unit and property tests pin it):
+
+- **Mute** closes the node's output and all its sends. Muting a bus silences its output only; the sends and
+  outputs of its sources stay as they are (WP-100 §7), and its effects keep running (tails stay consistent).
+- **Solo** follows the signal path (12 A, „Mitsolo“). Let S be the soloed tracks and buses (solo on the master is
+  ignored) and S* = S plus everything that reaches S through outputs only (soloing a group solos its members). An
+  output or send u → v stays open when u lies on or behind S* (the soloed track's bus path, the buses it sends to,
+  the master) or when v leads into S* (sends into a soloed effect bus keep feeding it, so you hear only its wet
+  signal). Everything else is solo-muted. Without buses this is exactly the old rule
+  `audible = !mute && (!any_solo || solo)`. The UI shows a bus kept audible this way with a dashed „S“
+  (WP-100 §7); `Gate::solo_muted` is the „stumm durch Solo“ state.
+- No solo-safe flag: buses behind a soloed track stay audible by the rule above (12 A).
+- **Meters:** every node meters after fader, pan and mute, as tracks do today (`TrackMeter` per job; buses get one
+  too). The master meter is unchanged. Send levels have no meters in v1.
+
+#### 6.8.7 Export
+
+Offline render runs the same program and job graph through `Engine::render` (6.7, same worker pool), so buses,
+sends, sidechains and PDC render exactly as they play; the export's latency compensation uses `out(master)`.
+Per-bus stems later are one more output: copy a node's post buffer into a second render target.
+
+#### 6.8.8 Realtime constraints
+
+- The program carries the job graph (topological order, per-job input lists, edge delays, gain targets) in boxed
+  slices built on the UI thread. Capacities are fixed: `MAX_TRACKS` nodes (buses count), a fixed maximum of sends
+  per track and of edges per job; the compiler drops what does not fit, like devices beyond `MAX_SLOTS` today.
+- **No allocation on program swap:** `SetProgram` swaps one pointer; the old program returns through the garbage
+  queue. State that must survive a swap (PDC delay lines, bus sum history for tails, meters, fader ramps) lives in
+  engine-owned tables indexed by node, preallocated when the engine is created (like processor slots), and the
+  program refers to it by index; a recompile that keeps a node keeps its delay line contents, so no click.
+- Nothing in the audio thread walks the `Project` or computes the graph: order, counters, gates and delays all come
+  precomputed.
+
+#### 6.8.9 Audio tracks (wave 10)
+
+An audio track (`TrackKind::Audio`, WP-111) is one more source node: clip playback (and live input) replaces
+sequencer and instrument at the head of the chain; output, sends, sidechain taps, groups, mute, solo and PDC are
+the same, so nothing in this section changes. „Bus aufnehmen“ (16 A) creates an audio track whose **input** is a
+bus: that adds an input edge bus → audio track, which counts for the cycle check like a sidechain (the audio track
+must not output back into that bus).
+
+#### 6.8.10 Open questions
+
+1. **Bus sends later (11 A says not in v1).** The graph and file allow them; only the edits refuse. Enabling them is
+   a one-line change plus UI.
+2. **Send pan.** Not modelled (Ableton has none, Reaper has). A field with a serde default can come later without a
+   migration.
+3. **Sidechain tap „Pre FX“** (Ableton: before the source's effects). Not offered; would be a third `Tap` variant.
+4. **Pre send and mute.** Here mute silences pre sends too (as Ableton's track activator does); some consoles keep
+   pre-fader sends alive. Confirm with the owner when WP-103 shows it.
+5. **Device copy and paste with a sidechain** start without one today (`NewDevice` has no field). WP-104 can carry
+   it with `set_sidechain` after the insert in the same undo step.
 
 ---
 
@@ -947,7 +1183,7 @@ These need a decision (the handoff says: report contradictions; the design syste
 |---|---|
 | Audio tracks, audio pool | `TrackKind`, `ClipContent` are enums; project file has a version; disk streaming would be a new worker type |
 | Automation, CC lanes | `EventKind::Param` / `Midi` already reach every processor sample-accurately |
-| Buses and sends | `Channel` is its own type; program order becomes a topological order over channels |
+| Buses and sends | Designed in §6.8 (wave 9): model in WP-101, engine WP-102 |
 | Tempo changes | `TempoMap` behind the time conversions |
 | Light theme | token names are theme-neutral; `komponist-tokens` can generate a second palette |
 | Undocking dock tabs | windows are managed by the app (same mechanism as plugin frames) |

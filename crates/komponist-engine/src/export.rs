@@ -833,6 +833,10 @@ mod tests {
             midi_channel: MidiChannelSel::Omni,
             height: 56,
             clips: Vec::new(),
+            output: komponist_model::TrackOutput::Master,
+            sends: Vec::new(),
+            folder: false,
+            folded: false,
         });
         let track = |notes: Vec<SeqNote>| {
             Arc::new(TrackProgram {

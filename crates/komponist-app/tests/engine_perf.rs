@@ -132,6 +132,7 @@ fn project(bridges: bool) -> Project {
             plugin: clap_plugin(FX),
             bypass: false,
             state: None,
+            sidechain: None,
         });
         let t = Arc::make_mut(&mut p.tracks[i]);
         Arc::make_mut(&mut t.channel.devices[0]).state = Some(state);

@@ -1142,6 +1142,7 @@ mod tests {
             plugin: Internal::Eq.plugin_ref(),
             bypass,
             state: state.map(Into::into),
+            sidechain: None,
         };
         let host = BuiltinHost::new();
         // A project saved before „Analyse“ existed has no such parameter in its state: on.

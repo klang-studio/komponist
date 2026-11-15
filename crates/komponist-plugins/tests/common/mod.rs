@@ -211,6 +211,7 @@ pub fn device(id: u64, role: DeviceRole, plugin: PluginRef, state: Option<&[u8]>
         plugin,
         bypass: false,
         state: state.map(Arc::from),
+        sidechain: None,
     }
 }
 
@@ -231,6 +232,10 @@ pub fn track(id: u64, devices: Vec<Device>) -> Track {
         midi_channel: MidiChannelSel::Omni,
         height: 56,
         clips: Vec::new(),
+        output: komponist_model::TrackOutput::Master,
+        sends: Vec::new(),
+        folder: false,
+        folded: false,
     }
 }
 
