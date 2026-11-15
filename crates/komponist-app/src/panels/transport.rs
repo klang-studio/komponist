@@ -539,7 +539,7 @@ fn cpu(ui: &mut Ui, model: &TransportModel<'_>) {
 }
 
 /// The master display (#34; master-scope proposal, variant A „Fenster“, internal notes): a
-/// `size.control` high box on `surface.0` with a 1 px `line.1` frame (`line.2` on hover) and
+/// [`m::SCOPE_HEIGHT`] high box on `surface.0` with a 1 px `line.1` frame (`line.2` on hover) and
 /// `radius.m`, the picture [`m::SCOPE_INSET`] inside. A click, or Space / Enter while it has
 /// focus, switches between oscilloscope and spectrum. AccessKit: a button named after the picture
 /// („Master-Anzeige: Oszilloskop“) whose description, the tooltip, says how to switch; the curve
@@ -552,7 +552,7 @@ fn master_scope(
 ) {
     let (t, mode) = (model.lang, model.master_display);
     let (rect, response) =
-        ui.allocate_exact_size(vec2(m::SCOPE_WIDTH, size::CONTROL), Sense::click());
+        ui.allocate_exact_size(vec2(m::SCOPE_WIDTH, m::SCOPE_HEIGHT), Sense::click());
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
     let st = State::of(ui, &response);
     let now = ui.input(|i| i.time);

@@ -209,7 +209,7 @@ fn snapshots_of_the_master_display_with_a_known_signal() {
         let cpu = h
             .get_by_role_and_label(Role::Status, de::TRANSPORT_CPU)
             .rect();
-        assert_eq!(display.size(), vec2(m::SCOPE_WIDTH, size::CONTROL));
+        assert_eq!(display.size(), vec2(m::SCOPE_WIDTH, m::SCOPE_HEIGHT));
         assert_eq!(
             cpu.left() - display.right(),
             space::SPACE_4,

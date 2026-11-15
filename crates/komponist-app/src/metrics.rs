@@ -45,13 +45,15 @@ pub mod transport {
     pub const MASTER_METER_LENGTH: f32 = 72.0;
 
     // The master display left of the CPU readout (#34): master-scope proposal, variant A
-    // „Fenster“ (internal notes), chosen by the owner on 2026-11-15. Its height is
-    // `size.control` (24), its gap to the CPU label `space.4` (the bar's item spacing).
+    // „Fenster“ (internal notes), chosen by the owner on 2026-11-15. Its gap to the CPU label is
+    // `space.4` (the bar's item spacing).
 
     /// Width of the master display: „88 × 24 (`size.control`)“.
     pub const SCOPE_WIDTH: f32 = 88.0;
-    /// Inset of the picture inside the 1 px frame: „Innenfläche 82 × 18 (Abstand 3 px zum
-    /// Rahmen)“.
+    /// Height of the master display: the bar's height less `space.1` above and below (36), taller
+    /// than the bar's controls (owner, 2026-11-15: it need not keep their margins).
+    pub const SCOPE_HEIGHT: f32 = size::TRANSPORT - 2.0 * space::SPACE_1;
+    /// Inset of the picture inside the 1 px frame: „Abstand 3 px zum Rahmen“.
     pub const SCOPE_INSET: f32 = 3.0;
     /// Length of the oscilloscope window in seconds: „Fenster 30 ms, Trigger auf steigenden
     /// Nulldurchgang“.
