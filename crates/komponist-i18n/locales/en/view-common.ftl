@@ -7,10 +7,10 @@ view-grid = Grid
 view-snap = Snap
 
 # The "−" of the arrangement header and the piano roll toolbar.
-view-zoom-out = Zoom out
+view-zoom-out = Zoom Out
 
 # The "+" of the arrangement header and the piano roll toolbar.
-view-zoom-in = Zoom in
+view-zoom-in = Zoom In
 
 ## Grid dropdown entries
 
