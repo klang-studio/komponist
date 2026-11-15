@@ -154,6 +154,13 @@ fn the_card_shows_the_pads_the_waveform_and_the_knobs_of_the_selected_pad() {
     h.get_by_role_and_label(Role::Group, "Pad 1 · Kick");
     h.get_by_role_and_label(Role::Slider, "Tune 1");
     h.get_by_role_and_label(Role::Slider, "Sample-Start Position");
+    // The snapshot is taken before any click: a click sounds the pad, and its glow and playhead
+    // depend on timing.
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("sampler-card-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
     // A click selects pad 2 (and sounds it).
     let snare = h
         .get_by_role_and_label(Role::Button, "Pad Snare")
@@ -168,11 +175,6 @@ fn the_card_shows_the_pads_the_waveform_and_the_knobs_of_the_selected_pad() {
             .dispatched()
             .any(|a| matches!(a, Action::Plugin(PluginAction::AuditionPad { pad: 1, .. })))
     );
-    mask_cpu(&mut h);
-    let mut results = SnapshotResults::new();
-    h.snapshot("sampler-card-1x");
-    results.extend_harness(&mut h);
-    results.unwrap();
 }
 
 #[test]
