@@ -169,7 +169,7 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
     assert!(touch.dragging);
     let status = statusbar::model(h.state(), Instant::now());
     assert!(status.left.starts_with("Decay · "), "{}", status.left);
-    assert_eq!(status.mid, statusbar::PARAM_HINT);
+    assert_eq!(status.mid, komponist_i18n::de::STATUS_PARAM_HINT);
     release(&mut h, decay.center() - vec2(0.0, 30.0), Modifiers::NONE);
     assert!(!h.state().ui().devices.touched.as_ref().unwrap().dragging);
     let status = statusbar::model(h.state(), Instant::now());
@@ -680,7 +680,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
 
 fn mask_cpu(h: &mut Harness<'_, App>) {
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
 }

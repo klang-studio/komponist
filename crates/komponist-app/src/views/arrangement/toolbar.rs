@@ -86,7 +86,7 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
                 .filter_map(|t| ctx.project.track(t))
                 .map(|t| t.name.as_str())
                 .collect();
-            info(ui, &crate::record::names::info(&tracks));
+            info(ui, &ctx.lang.record_info(tracks.join(", ")));
         } else if n > 0 {
             info(ui, &names::clips_selected(n));
         }

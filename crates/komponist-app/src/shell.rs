@@ -25,40 +25,6 @@ use crate::panels::{dock, statusbar, transport};
 use crate::ui_state::{DockTab, FocusArea, Panel, Screen};
 use crate::views::{View, ViewCtx, centered_text};
 
-/// Names of the shell's own controls and areas (AccessKit, tests).
-pub mod names {
-    /// Status bar: a MIDI input device appeared (`name` as S07 shows it).
-    pub fn midi_connected(name: &str) -> String {
-        format!("{name} verbunden")
-    }
-    /// Status bar: a MIDI input device vanished.
-    pub fn midi_disconnected(name: &str) -> String {
-        format!("{name} getrennt")
-    }
-    /// Arrangement panel title.
-    pub const ARRANGEMENT: &str = "Arrangement";
-    /// Browser panel title.
-    pub const BROWSER: &str = "Browser";
-    /// Inspector panel title.
-    pub const INSPECTOR: &str = "Inspector";
-    /// Resize edge of the browser.
-    pub const BROWSER_EDGE: &str = "Browser-Breite";
-    /// Resize edge of the inspector.
-    pub const INSPECTOR_EDGE: &str = "Inspector-Breite";
-    /// Resize edge of the dock.
-    pub const DOCK_EDGE: &str = "Dock-Höhe";
-    /// Empty editor tab (`Screens.dc.html`, dock `isEmpty`).
-    pub const NO_CLIP_OPEN: &str = "Kein Clip geöffnet";
-    /// Its hint.
-    pub const NO_CLIP_HINT: &str =
-        "Doppelklick auf einen Clip öffnet ihn hier, als Piano Roll oder Step Sequencer.";
-    /// Devices tab without a selected track (`ks-view.js` `dockView`).
-    pub const NO_TRACK: &str = "Keine Spur ausgewählt";
-    /// Its hint.
-    pub const NO_TRACK_HINT: &str =
-        "Spur-Header anklicken, dann zeigt dieser Tab ihre Geräte-Kette.";
-}
-
 /// Which view fills the dock body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DockBody {
@@ -91,6 +57,7 @@ impl App {
             cpu: self.engine.stats().cpu_load(),
             audio: self.engine.audio_state(),
             keymap: &self.keymap,
+            lang: self.lang,
         };
         transport::show(ui, l.transport, &model, &mut self.meters, &mut self.queue);
 
@@ -188,9 +155,10 @@ impl App {
     }
 
     fn side_panel(&mut self, ui: &mut Ui, rect: Rect, panel: Panel) {
+        let t = self.lang;
         let (title, area) = match panel {
-            Panel::Browser => (names::BROWSER, FocusArea::Browser),
-            _ => (names::INSPECTOR, FocusArea::Inspector),
+            Panel::Browser => (t.shell_browser(), FocusArea::Browser),
+            _ => (t.shell_inspector(), FocusArea::Inspector),
         };
         let toggle = Action::Ui(UiAction::TogglePanel(panel));
         let shortcut = self
@@ -234,8 +202,8 @@ impl App {
     /// A collapsed side panel: a 24 px rail with ▸ (browser) or ◂ (inspector); a click opens it.
     fn rail(&mut self, ui: &mut Ui, rect: Rect, panel: Panel) {
         let name = match panel {
-            Panel::Browser => names::BROWSER,
-            _ => names::INSPECTOR,
+            Panel::Browser => self.lang.shell_browser(),
+            _ => self.lang.shell_inspector(),
         };
         let id = Id::unique(("komponist_rail", name));
         let response = ui.interact(rect, id, Sense::click());
@@ -296,7 +264,8 @@ impl App {
         } else {
             color::TEXT_2
         };
-        let title = w::styled_galley(ui, names::ARRANGEMENT, &typography::LABEL);
+        let t = self.lang;
+        let title = w::styled_galley(ui, t.shell_arrangement(), &typography::LABEL);
         let x = header.left() + space::SPACE_2;
         let pos = w::text_pos(header, &title, x, ui.pixels_per_point());
         let title_rect = Rect::from_min_size(pos, title.size());
@@ -306,7 +275,7 @@ impl App {
             Id::unique("komponist_arrangement_title"),
             Sense::hover(),
         );
-        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::ARRANGEMENT));
+        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, t.shell_arrangement()));
 
         // The view's toolbar right of the 208 px title column (`width:208px` + gap 8).
         let tools = Rect::from_min_max(
@@ -399,14 +368,14 @@ impl App {
             DockBody::NoClip => centered_text(
                 &mut body_ui,
                 body,
-                names::NO_CLIP_OPEN,
-                Some(names::NO_CLIP_HINT),
+                self.lang.shell_no_clip_open(),
+                Some(self.lang.shell_no_clip_hint()),
             ),
             DockBody::NoTrack => centered_text(
                 &mut body_ui,
                 body,
-                names::NO_TRACK,
-                Some(names::NO_TRACK_HINT),
+                self.lang.shell_no_track(),
+                Some(self.lang.shell_no_track_hint()),
             ),
             kind => self.with_view(area, |views, ctx| {
                 let view: &mut dyn View = match kind {
@@ -423,9 +392,9 @@ impl App {
     /// A resize edge: drag resizes within the token range, double-click resets.
     fn edge(&mut self, ui: &mut Ui, edge: &Edge, screen: Rect) {
         let name = match edge.panel {
-            Panel::Browser => names::BROWSER_EDGE,
-            Panel::Inspector => names::INSPECTOR_EDGE,
-            Panel::Dock => names::DOCK_EDGE,
+            Panel::Browser => self.lang.shell_browser_edge(),
+            Panel::Inspector => self.lang.shell_inspector_edge(),
+            Panel::Dock => self.lang.shell_dock_edge(),
         };
         let id = Id::unique(("komponist_edge", name));
         let response = ui.interact(edge.grab, id, Sense::click_and_drag());

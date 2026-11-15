@@ -34,7 +34,6 @@ use crate::actions::PluginAction;
 use crate::app::App;
 use crate::dialogs::file::Purpose;
 use crate::dialogs::missing_plugins::missing_samples;
-use crate::param_undo::names;
 use crate::step_rows;
 use crate::ui_state::{StatusKind, StepCursor};
 
@@ -152,7 +151,7 @@ impl App {
         if pad >= sampler::PADS {
             return;
         }
-        self.in_one_step(names::SAMPLE_LOAD, |app| app.link_sample(device, pad, path));
+        self.in_one_step("undo-sample-load", |app| app.link_sample(device, pad, path));
     }
 
     fn link_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
@@ -180,17 +179,17 @@ impl App {
         }
         let state = self.sampler_state(device).flatten();
         let new: Arc<[u8]> = links::write(state.as_deref(), pad, Some(&link)).into();
-        self.store_param_state(device, &new, names::SAMPLE_LOAD);
+        self.store_param_state(device, &new, "undo-sample-load");
         if let Some(handle) = self.engine.host().sampler(device) {
             handle.load_link(pad, link.clone(), dir);
         }
         let name = if link.name.is_empty() {
-            "Sample"
+            self.lang.status_sample_unnamed()
         } else {
             &link.name
         };
         self.set_status(
-            format!("„{name}“ liegt auf Pad {}", pad + 1),
+            self.lang.status_sample_on_pad(name, pad + 1),
             StatusKind::Info,
         );
     }
@@ -200,7 +199,7 @@ impl App {
             return;
         };
         let new: Arc<[u8]> = links::write(state.as_deref(), pad, None).into();
-        self.store_param_state(device, &new, names::SAMPLE_CLEAR);
+        self.store_param_state(device, &new, "undo-sample-clear");
         if let Some(handle) = self.engine.host().sampler(device) {
             handle.clear(pad);
         }
@@ -266,7 +265,7 @@ impl App {
             Vec::new()
         };
         // The chosen sample and the ones it finds with it are one undo step.
-        self.in_one_step(names::SAMPLE_LOAD, |app| {
+        self.in_one_step("undo-sample-load", |app| {
             app.load_sample(device, pad, &path);
             let Some(folder) = path.parent() else { return };
             for other in others {
@@ -312,16 +311,15 @@ impl App {
                     let copied = collector.log.iter().filter(|c| c.copied).count();
                     let folder = sampler::links::samples_folder_name(&file);
                     let text = match copied {
-                        0 => format!("Gespeichert · keine Samples zu sammeln ({folder})"),
-                        1 => format!("Gesammelt und gespeichert · 1 Sample in „{folder}“"),
-                        n => format!("Gesammelt und gespeichert · {n} Samples in „{folder}“"),
+                        0 => self.lang.status_collected_none(&folder),
+                        n => self.lang.status_collected(n, &folder),
                     };
                     self.set_status(text, StatusKind::Success);
                 }
             }
             Err(e) => {
                 eprintln!("komponist: collecting samples failed: {e}");
-                self.set_status(format!("Sammeln fehlgeschlagen: {e}"), StatusKind::Error);
+                self.set_status(self.lang.status_collect_failed(e), StatusKind::Error);
             }
         }
     }

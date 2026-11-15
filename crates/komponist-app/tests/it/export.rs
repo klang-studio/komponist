@@ -28,6 +28,7 @@ use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
 use komponist_engine::{
     Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo, TransportState,
 };
+use komponist_i18n::de;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{
@@ -866,8 +867,7 @@ fn esc_and_the_cancel_button_end_a_running_export() {
 
 /// The CPU readout depends on the machine; masked in the snapshots.
 fn mask_cpu(h: &mut Harness<'_, App>) {
-    use komponist_app::panels::transport::names as tp;
-    if let Some(cpu) = h.query_by_role_and_label(Role::Status, tp::CPU) {
+    if let Some(cpu) = h.query_by_role_and_label(Role::Status, de::TRANSPORT_CPU) {
         let rect = cpu.rect();
         h.mask(rect.expand(2.0));
     }

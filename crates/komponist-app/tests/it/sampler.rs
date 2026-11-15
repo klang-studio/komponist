@@ -44,7 +44,7 @@ fn harness(app: App) -> Harness<'static, App> {
 /// The CPU read-out changes from run to run.
 fn mask_cpu(h: &mut Harness<'_, App>) {
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
 }

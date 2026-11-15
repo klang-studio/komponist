@@ -13,11 +13,10 @@ use egui::{Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::panels::statusbar;
-use komponist_app::panels::transport::names as tp;
-use komponist_app::record::names;
 use komponist_app::ui_state::{DockTab, FocusArea};
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::{MidiInEvent, MidiPort, TransportState};
+use komponist_i18n::{Lang, de};
 use komponist_model::edits::{ChannelProp, TrackProp};
 use komponist_model::fixtures::{demo_project, empty_project};
 use komponist_model::{ClipContent, Project, Tick, TickRange, TrackId};
@@ -149,7 +148,7 @@ fn midi_input_becomes_take_1_in_one_undo_step() {
     assert!(h.state().project().track(track).unwrap().clips.is_empty());
     h.step();
     let all = labels(&h);
-    let info = names::info(&[h.state().project().tracks[0].name.as_str()]);
+    let info = Lang::De.record_info(&h.state().project().tracks[0].name);
     for want in [
         "Clip Aufnahme · Take 1, Takt 2",
         "Aufnahme · Piano Roll · live",
@@ -159,7 +158,7 @@ fn midi_input_becomes_take_1_in_one_undo_step() {
     ] {
         assert!(all.iter().any(|l| l.starts_with(want)), "{want}: {all:?}");
     }
-    assert!(all.iter().any(|l| l == names::LIVE), "{all:?}");
+    assert!(all.iter().any(|l| l == de::RECORD_LIVE), "{all:?}");
     assert!(status_left(&h).starts_with("● Aufnahme läuft · "));
     assert!(status_left(&h).ends_with(" · Take 1"));
     assert_eq!(h.state().ui().focus, FocusArea::PianoRoll);
@@ -185,7 +184,7 @@ fn midi_input_becomes_take_1_in_one_undo_step() {
     assert_eq!(ui.editor.clip, Some(clip.id));
     assert!(ui.selection.clips.contains(&clip.id) && ui.selection.clips.len() == 1);
     assert_eq!(ui.focus, FocusArea::PianoRoll);
-    assert_eq!(h.state().doc().undo_label(), Some("Take 1"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Take 1"));
     assert_eq!(
         status_left(&h),
         "Take 1 aufgenommen · 2 Noten · Q quantisiert"
@@ -202,7 +201,7 @@ fn midi_input_becomes_take_1_in_one_undo_step() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
     h.step();
     assert!(h.state().project().track(track).unwrap().clips.is_empty());
-    assert_eq!(h.state().doc().undo_label(), Some("Neue MIDI-Spur"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Neue MIDI-Spur"));
 }
 
 #[test]
@@ -278,7 +277,7 @@ fn loop_recording_makes_a_take_per_lap() {
     assert_eq!(take_notes(&p, track, 0, 1), [(1440, 480, 64, 80)]);
     // The clip is named after the take that plays.
     assert_eq!(clips[0].name, "Take 2");
-    assert_eq!(h.state().doc().undo_label(), Some("Take 2"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Take 2"));
     assert_eq!(
         status_left(&h),
         "Take 2 aufgenommen · 1 Note · Q quantisiert"
@@ -315,12 +314,12 @@ fn esc_discards_the_take_and_playback_goes_on() {
         "playback goes on"
     );
     assert!(h.state().project().track(track).unwrap().clips.is_empty());
-    assert_eq!(h.state().doc().undo_label(), Some("Neue MIDI-Spur"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Neue MIDI-Spur"));
     // Stopping afterwards writes nothing either.
     press(&mut h, egui::Key::Space);
     run(&mut h, 10, &[]);
     assert!(h.state().project().track(track).unwrap().clips.is_empty());
-    assert_eq!(h.state().doc().undo_label(), Some("Neue MIDI-Spur"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Neue MIDI-Spur"));
 }
 
 #[test]
@@ -335,13 +334,13 @@ fn the_count_in_shows_in_the_position_display() {
         "no take before the count-in ends"
     );
     let position = |h: &Harness<'_, App>| {
-        h.get_by_role_and_label(Role::Status, tp::POSITION)
+        h.get_by_role_and_label(Role::Status, de::TRANSPORT_POSITION)
             .value()
             .unwrap_or_default()
     };
     assert_eq!(position(&h), "Vorzähler");
     assert_eq!(status_left(&h), "Vorzähler …");
-    let record = h.get_by_role_and_label(Role::Button, tp::RECORD);
+    let record = h.get_by_role_and_label(Role::Button, de::TRANSPORT_RECORD);
     assert_eq!(record.accesskit_node().toggled(), Some(Toggled::True));
     // After one bar the take starts at 1.1.000.
     run(&mut h, BAR - 1000 + 100, &[]);
@@ -420,7 +419,7 @@ fn r_arms_the_selected_track_with_monitoring_or_asks_for_one() {
     press(&mut h, egui::Key::R);
     run(&mut h, 10, &[]);
     assert_eq!(h.state().transport(), TransportState::Stopped);
-    assert_eq!(status_left(&h), names::NO_TRACK);
+    assert_eq!(status_left(&h), de::RECORD_NO_TRACK);
 
     let lead = h.state().project().tracks[2].id;
     h.state_mut().dispatch(Action::Ui(UiAction::Select(
@@ -477,7 +476,7 @@ fn edits_and_undo_go_on_while_recording_and_deleted_tracks_drop_their_take() {
     run(&mut h, 10, &[]);
     let p = h.state().project().clone();
     assert_eq!(take_notes(&p, track, 0, 0), [(100, 200, 60, 100)]);
-    assert_eq!(h.state().doc().undo_label(), Some("Take 1"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Take 1"));
 
     // The recorded track is deleted while recording: its take goes with it.
     press(&mut h, egui::Key::R);
@@ -488,7 +487,7 @@ fn edits_and_undo_go_on_while_recording_and_deleted_tracks_drop_their_take() {
     press(&mut h, egui::Key::Space);
     run(&mut h, 10, &[]);
     assert!(h.state().recording().is_none());
-    assert_eq!(h.state().doc().undo_label(), Some("Spuren löschen"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Spuren löschen"));
 }
 
 /// S02: Lead armed and recording from bar 13 in the demo, the S02 phrase played in, the
@@ -551,7 +550,9 @@ fn snapshot_next_to_s02() {
     run(&mut h, BAR + head, &midi);
     h.run_steps(2);
     assert_eq!(h.state().transport(), TransportState::Recording);
-    let cpu = h.get_by_role_and_label(Role::Status, tp::CPU).rect();
+    let cpu = h
+        .get_by_role_and_label(Role::Status, de::TRANSPORT_CPU)
+        .rect();
     h.mask(cpu.expand(2.0));
     h.snapshot("record-s02-1x");
 }

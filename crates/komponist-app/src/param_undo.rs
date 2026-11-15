@@ -48,6 +48,7 @@ use komponist_model::{DeviceId, Project};
 
 use crate::app::App;
 use crate::device_host::{internal_kind, is_pisynth};
+use crate::undo_label;
 
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
 pub const COALESCE: Duration = Duration::from_secs(1);
@@ -61,29 +62,6 @@ const SNAPSHOT_SLACK: Duration = Duration::from_millis(500);
 
 /// A card parameter turned this long ago still names the snapshot step that follows it.
 const TURN_LABEL: Duration = Duration::from_secs(5);
-
-/// Undo labels (German, short).
-pub mod names {
-    /// „Cutoff ändern“.
-    pub fn param(name: &str) -> String {
-        format!("{name} ändern")
-    }
-
-    /// A parameter without a name: „pisynth: Parameter ändern“.
-    pub fn device_param(plugin: &str) -> String {
-        format!("{plugin}: Parameter ändern")
-    }
-
-    /// A state the plugin reports on its own (its GUI): „Surge XT: Zustand ändern“.
-    pub fn state(plugin: &str) -> String {
-        format!("{plugin}: Zustand ändern")
-    }
-
-    /// A sample linked to a pad.
-    pub const SAMPLE_LOAD: &str = "Sample laden";
-    /// A pad emptied.
-    pub const SAMPLE_CLEAR: &str = "Sample entfernen";
-}
 
 /// What the app remembers to group device changes into undo steps (module docs).
 #[derive(Debug)]
@@ -270,8 +248,8 @@ impl App {
     /// The undo label of a change of parameter `id`: „Cutoff ändern“.
     fn param_label(&self, device: DeviceId, id: u32) -> String {
         match self.param_name(device, id) {
-            Some(name) => names::param(&name),
-            None => names::device_param(&self.device_name(device)),
+            Some(name) => undo_label::param(&name),
+            None => undo_label::device_param(&self.device_name(device)),
         }
     }
 
@@ -382,7 +360,7 @@ impl App {
         }
         let label = match self.param_undo.turned.get(&device) {
             Some((label, at)) if now.duration_since(*at) < TURN_LABEL => label.clone(),
-            _ => names::state(&self.device_name(device)),
+            _ => undo_label::plugin_state(&self.device_name(device)),
         };
         if self.doc.apply(label, set).is_ok()
             && !in_gesture

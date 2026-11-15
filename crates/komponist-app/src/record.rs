@@ -26,44 +26,11 @@
 use std::sync::Arc;
 
 use komponist_engine::EngineEvent;
+use komponist_i18n::Lang;
 use komponist_model::edits::{self, EditError, NewClip, NewClipContent, NewNote};
 use komponist_model::{
     Clip, ClipContent, ClipId, MidiClip, Note, NoteId, Project, Take, Tick, TrackId,
 };
-
-/// German texts of the recording (`Screens.dc.html` S02, `Prototyp.dc.html`).
-pub mod names {
-    /// The piano roll's selection info while recording (`selT:'live'`).
-    pub const LIVE: &str = "live";
-    /// R without an armed or selected track (`toggleRec`).
-    pub const NO_TRACK: &str = "Keine Spur scharfgeschaltet · R im Spur-Header";
-
-    /// "Take 3".
-    pub fn take(number: u32) -> String {
-        format!("Take {number}")
-    }
-
-    /// The clip being recorded: "● Aufnahme · Take 1" (S02 `mc(…, '● Aufnahme · Take 1', …)`).
-    pub fn clip(take: &str) -> String {
-        format!("● Aufnahme · {take}")
-    }
-
-    /// The arrangement's info while recording: "Aufnahme · Lead" (S02 `info`).
-    pub fn info(tracks: &[&str]) -> String {
-        format!("Aufnahme · {}", tracks.join(", "))
-    }
-
-    /// Status after Stop: "Take 1 aufgenommen · 14 Noten · Q quantisiert" (`finishRec`; one note:
-    /// "1 Note").
-    pub fn recorded(take: &str, notes: usize) -> String {
-        let notes = if notes == 1 {
-            "1 Note".to_owned()
-        } else {
-            format!("{notes} Noten")
-        };
-        format!("{take} aufgenommen · {notes} · Q quantisiert")
-    }
-}
 
 /// `finishRec`: a take shorter than a whole bar by less than this share of a bar does not get
 /// another bar (`Math.ceil((pos − recAt)/16 − 0.05)`).
@@ -124,11 +91,14 @@ pub struct Recording {
     laps: Vec<Lap>,
     /// The playhead of the last [`Recording::update`].
     head: Tick,
+    /// The language of the names it gives ("Take 1", "● Recording · Take 1").
+    lang: Lang,
 }
 
 impl Recording {
-    /// A recording that captures from `at` on the armed tracks of `project`.
-    pub fn new(project: &Project, at: Tick) -> Recording {
+    /// A recording that captures from `at` on the armed tracks of `project`; `lang` names the
+    /// takes and the clip being recorded.
+    pub fn new(project: &Project, at: Tick, lang: Lang) -> Recording {
         let at = at.max(Tick::ZERO);
         let beat = project.meter.ticks_per_beat().max(1);
         let start = Tick(at.0 - at.0.rem_euclid(beat));
@@ -139,6 +109,7 @@ impl Recording {
             lanes: Vec::new(),
             laps: vec![Lap { end: None }],
             head: at,
+            lang,
         };
         for track in project.tracks.iter().filter(|t| t.arm) {
             rec.lane_mut(track.id);
@@ -182,7 +153,7 @@ impl Recording {
         let lane = self.lanes.iter().position(|l| l.track == track)?;
         let numbers = self.numbers(self.base, true);
         let lap = self.laps.len() - 1;
-        numbers[lane][lap].map(names::take)
+        numbers[lane][lap].map(|n| self.lang.record_take(n))
     }
 
     /// Handles a captured note or a loop wrap. `playhead` is the engine's position after the event
@@ -254,7 +225,9 @@ impl Recording {
         let lap = self.laps.len() - 1;
         let numbers = self.numbers(self.base, true);
         for (index, lane) in self.lanes.iter_mut().enumerate() {
-            let take = numbers[index][lap].map(names::take).unwrap_or_default();
+            let take = numbers[index][lap]
+                .map(|n| self.lang.record_take(n))
+                .unwrap_or_default();
             let mut notes: Vec<Note> = lane.laps[lap]
                 .iter()
                 .enumerate()
@@ -267,7 +240,7 @@ impl Recording {
             notes.sort_by_key(|n| (n.start, n.pitch, n.id));
             lane.live = Arc::new(Clip {
                 id: live_clip_id(index),
-                name: names::clip(&take),
+                name: self.lang.record_clip(&take),
                 start: self.start,
                 length: (end - self.start).max(Tick(1)),
                 loop_length: None,
@@ -316,7 +289,7 @@ impl Recording {
                         })
                     })
                     .collect();
-                takes.push((names::take(*number), notes));
+                takes.push((self.lang.record_take(number), notes));
             }
             let span = (end.max(last) - self.start).0.max(0) as f64 / self.bar as f64;
             let bars = (span - BAR_TOLERANCE).ceil().max(1.0) as i64;
@@ -550,7 +523,7 @@ mod tests {
     #[test]
     fn the_clip_starts_on_the_beat_and_grows_with_the_head() {
         let (p, a, b) = project();
-        let mut r = Recording::new(&p, Tick(BAR + 1000));
+        let mut r = Recording::new(&p, Tick(BAR + 1000), Lang::De);
         assert_eq!(r.start(), Tick(BAR + 960));
         assert_eq!(r.tracks().collect::<Vec<_>>(), [a]);
         assert!(r.clip(b).is_none());
@@ -572,7 +545,7 @@ mod tests {
     #[test]
     fn stop_writes_one_take_with_whole_bars() {
         let (p, a, _) = project();
-        let mut r = Recording::new(&p, Tick(BAR));
+        let mut r = Recording::new(&p, Tick(BAR), Lang::De);
         r.handle(&on(a, BAR + 100, 60), Tick(BAR + 100), &p);
         r.handle(&off(a, BAR + 580, 60), Tick(BAR + 580), &p);
         r.handle(&on(a, BAR + 960, 64), Tick(BAR + 960), &p);
@@ -600,7 +573,7 @@ mod tests {
         let (mut p, a, _) = project();
         p.loop_on = true;
         p.loop_range = TickRange::new(Tick::ZERO, Tick(BAR));
-        let mut r = Recording::new(&p, Tick::ZERO);
+        let mut r = Recording::new(&p, Tick::ZERO, Lang::De);
         r.handle(&on(a, 480, 60), Tick(480), &p);
         r.handle(&off(a, 960, 60), Tick(960), &p);
         // Held across the wrap: the engine ends it at the loop end.
@@ -643,7 +616,7 @@ mod tests {
         p.loop_on = true;
         p.loop_range = TickRange::new(Tick::ZERO, Tick(BAR));
         p = edits::set_track_prop(&p, &[b], edits::TrackProp::Arm(true)).unwrap();
-        let mut r = Recording::new(&p, Tick::ZERO);
+        let mut r = Recording::new(&p, Tick::ZERO, Lang::De);
         assert_eq!(r.tracks().collect::<Vec<_>>(), [a, b]);
         // Lap 1: only a; lap 2: nothing; lap 3: a again.
         r.handle(&on(a, 100, 60), Tick(100), &p);
@@ -675,7 +648,7 @@ mod tests {
     #[test]
     fn deleted_tracks_drop_their_take_and_new_ones_join() {
         let (p, a, b) = project();
-        let mut r = Recording::new(&p, Tick::ZERO);
+        let mut r = Recording::new(&p, Tick::ZERO, Lang::De);
         // b was armed meanwhile; its first note brings it in.
         r.handle(&on(b, 100, 60), Tick(100), &p);
         r.handle(&off(b, 200, 60), Tick(200), &p);
@@ -692,7 +665,7 @@ mod tests {
     #[test]
     fn notes_before_the_clip_start_are_cut_or_dropped() {
         let (p, a, _) = project();
-        let mut r = Recording::new(&p, Tick(BAR));
+        let mut r = Recording::new(&p, Tick(BAR), Lang::De);
         // Latency correction put it 20 ticks before the capture start.
         r.handle(&on(a, BAR - 20, 60), Tick(BAR), &p);
         r.handle(&off(a, BAR + 100, 60), Tick(BAR + 100), &p);

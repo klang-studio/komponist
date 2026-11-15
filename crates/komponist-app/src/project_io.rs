@@ -22,6 +22,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use komponist_i18n::Lang;
 use komponist_model::edits::ProjectProp;
 use komponist_model::persist::{self, FILE_EXTENSION, PersistError};
 use komponist_model::{Document, Project};
@@ -63,24 +64,29 @@ impl core::fmt::Display for ProjectIoError {
 impl std::error::Error for ProjectIoError {}
 
 impl ProjectIoError {
-    /// The reason in German for the status bar ("Datei nicht gefunden").
-    pub fn reason(&self) -> String {
+    /// The reason for the status bar in `t`'s language ("Datei nicht gefunden"). The system's own
+    /// text is not shown (it is English); [`App`] logs the error itself.
+    pub fn reason(&self, t: Lang) -> String {
         match self {
             ProjectIoError::Io(_, e) if e.kind() == std::io::ErrorKind::NotFound => {
-                "Datei nicht gefunden".to_owned()
+                t.project_reason_not_found().to_owned()
             }
             ProjectIoError::Io(_, e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                "keine Berechtigung".to_owned()
+                t.project_reason_denied().to_owned()
             }
-            ProjectIoError::Io(_, e) => e.to_string(),
+            ProjectIoError::Io(..) => t.project_reason_io().to_owned(),
             ProjectIoError::Format(_, PersistError::NotAProject) => {
-                "keine komponist-Projektdatei".to_owned()
+                t.project_reason_not_project().to_owned()
             }
             ProjectIoError::Format(_, PersistError::TooNew { found }) => {
-                format!("Dateiversion {found} ist neuer als dieses komponist")
+                t.project_reason_too_new(found)
             }
-            ProjectIoError::Format(_, e) => e.to_string(),
-            ProjectIoError::Recent(_, e) => e.to_string(),
+            ProjectIoError::Format(_, PersistError::Migration { .. }) => {
+                t.project_reason_migration().to_owned()
+            }
+            ProjectIoError::Format(..) | ProjectIoError::Recent(..) => {
+                t.project_reason_damaged().to_owned()
+            }
         }
     }
 }
@@ -283,10 +289,7 @@ impl App {
         match next {
             Pending::New => {
                 self.open_document(Document::new(new_project::empty_project()), None);
-                self.set_status(
-                    "Neues Projekt angelegt · Strg T legt eine MIDI-Spur an",
-                    StatusKind::Info,
-                );
+                self.set_status(self.lang.project_new_created(), StatusKind::Info);
             }
             Pending::Template => {
                 let project = new_project::template(crate::app::pisynth_ref());
@@ -336,7 +339,7 @@ impl App {
                 let file = file_name(&path);
                 eprintln!("komponist: {e}");
                 self.set_status(
-                    format!("„{file}“ lässt sich nicht öffnen: {}", e.reason()),
+                    self.lang.project_open_failed(&file, e.reason(self.lang)),
                     StatusKind::Error,
                 );
             }
@@ -349,7 +352,7 @@ impl App {
         let name = self.project().name.clone();
         if self.engine.host().is_scanning() {
             self.dialogs.missing_check = true;
-            self.set_status(format!("{name} geöffnet"), StatusKind::Info);
+            self.set_status(self.lang.project_opened(&name), StatusKind::Info);
             return;
         }
         self.dialogs.missing_check = false;
@@ -360,14 +363,14 @@ impl App {
         )
         .len();
         if missing.is_empty() && samples == 0 {
-            self.set_status(
-                format!("{name} geöffnet · Leertaste spielt"),
-                StatusKind::Info,
-            );
+            self.set_status(self.lang.project_opened_ready(&name), StatusKind::Info);
             return;
         }
         let n = crate::dialogs::missing_plugins::title_for(missing.len(), samples);
-        self.set_status(format!("{name} geöffnet · {n}"), StatusKind::Error);
+        self.set_status(
+            self.lang.project_opened_problems(&name, n),
+            StatusKind::Error,
+        );
         // A dialog the user opened meanwhile (a late check after a scan) is not replaced; the
         // status bar says it. A running export keeps its dialog on top: S06 waits for it.
         let exporting = self.is_exporting() && matches!(self.ui.dialog, Some(Dialog::Export(_)));
@@ -416,7 +419,8 @@ impl App {
                 let dir = self.project_dir();
                 self.engine.host_mut().set_project_dir(dir);
                 self.set_status(
-                    format!("Gespeichert · {}", crate::dialogs::format::tilde(&path)),
+                    self.lang
+                        .project_saved(crate::dialogs::format::tilde(&path)),
                     StatusKind::Success,
                 );
                 self.remember(path);
@@ -425,7 +429,7 @@ impl App {
             Err(e) => {
                 eprintln!("komponist: {e}");
                 self.set_status(
-                    format!("Speichern fehlgeschlagen: {}", e.reason()),
+                    self.lang.project_save_failed(e.reason(self.lang)),
                     StatusKind::Error,
                 );
                 false
@@ -610,11 +614,12 @@ mod tests {
         let dir = scratch("errors");
         std::fs::create_dir_all(&dir).unwrap();
         let missing = load_project(&dir.join("fehlt.komponist")).unwrap_err();
-        assert_eq!(missing.reason(), "Datei nicht gefunden");
+        assert_eq!(missing.reason(Lang::De), "Datei nicht gefunden");
+        assert_eq!(missing.reason(Lang::En), "file not found");
         let other = dir.join("notiz.komponist");
         std::fs::write(&other, r#"{"format":"anders"}"#).unwrap();
         assert_eq!(
-            load_project(&other).unwrap_err().reason(),
+            load_project(&other).unwrap_err().reason(Lang::De),
             "keine komponist-Projektdatei"
         );
         let _ = std::fs::remove_dir_all(&dir);

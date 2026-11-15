@@ -61,6 +61,7 @@ pub mod showcase;
 pub mod spectrum;
 pub mod step_rows;
 pub mod ui_state;
+pub mod undo_label;
 pub mod views;
 pub mod windows;
 
@@ -69,7 +70,6 @@ pub use actions::{
 };
 pub use app::App;
 pub use keymap::{Key, KeyChord, Keymap, Modifiers};
-pub use shell::names;
 pub use ui_state::{FocusArea, UiState};
 
 // Unit tests of the engine wiring run the audio callback, which `komponist-audio` wraps in

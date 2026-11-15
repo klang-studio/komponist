@@ -6,7 +6,8 @@
 //! warning colour when the audio thread got none). A status message
 //! ([`crate::ui_state::StatusMessage`]) replaces the left text for 7 s; a finished export's
 //! message carries the link „Im Ordner zeigen“ right after it, in `accent` (S08 "fertig ·
-//! Statuszeile", prototype `linkS`). Texts are verbatim from the screens and the prototype; a
+//! Statuszeile", prototype `linkS`). Texts come from `locales/*/status.ftl` (`docs/I18N.md`), verbatim from the screens in German;
+//! a
 //! leading "● " (recording) is painted as a dot in the text colour, the fonts have no ●
 //! (`ks-view.js` `statusView` `dotS`).
 
@@ -15,6 +16,7 @@ use std::time::Instant;
 use egui::{Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 use komponist_audio::{AudioState, HostKind, StreamConfig};
 use komponist_engine::TransportState;
+use komponist_i18n::Lang;
 use komponist_model::ClipContent;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Srgba, color, space, typography};
@@ -23,12 +25,6 @@ use komponist_ui::{px, widgets as w};
 use crate::app::{App, STATUS_DURATION};
 use crate::metrics::transport::ERROR_DOT;
 use crate::ui_state::{FocusArea, StatusKind};
-
-/// Appended to the audio output when the audio thread got no real-time priority.
-pub const NO_REALTIME: &str = "ohne Echtzeit-Priorität";
-
-/// The hint while a device parameter is dragged.
-pub const PARAM_HINT: &str = "Alt-Klick: Standard · Rechtsklick: Wert eingeben";
 
 /// The three texts of the status bar and their colours.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,31 +57,25 @@ pub fn fmt_rate(rate: u32) -> String {
 
 /// The audio output as the status bar shows it: driver, rate, buffer and its latency
 /// (`buffer / rate`): "PipeWire · 48 kHz · 256 Samples · 5.3 ms".
-pub fn fmt_output(config: &StreamConfig) -> String {
+pub fn fmt_output(config: &StreamConfig, t: Lang) -> String {
     let host = match config.host {
         HostKind::PipeWire => "PipeWire",
         HostKind::Jack => "JACK",
         HostKind::Alsa => "ALSA",
-        HostKind::Null => "Kein Audio-Gerät",
+        HostKind::Null => t.transport_no_device(),
     };
     let ms = f64::from(config.buffer_frames) * 1000.0 / f64::from(config.sample_rate.max(1));
-    format!(
-        "{host} · {} · {} Samples · {ms:.1} ms",
+    t.status_output(
+        host,
         fmt_rate(config.sample_rate),
-        config.buffer_frames
+        config.buffer_frames,
+        format!("{ms:.1}"),
     )
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
-    }
 }
 
 /// What the status bar shows for `app` at `now`.
 pub fn model(app: &App, now: Instant) -> StatusModel {
+    let t = app.lang();
     let mut s = StatusModel {
         left: String::new(),
         left_color: color::TEXT_2,
@@ -99,18 +89,18 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
         // Without real-time priority dropouts are likely: said at the right, in the warning
         // colour (S07 explains it).
         AudioState::Running { config, .. } if app.engine().stats().realtime_denied() => {
-            s.right = format!("{} · {NO_REALTIME}", fmt_output(config));
+            s.right = format!("{} · {}", fmt_output(config, t), t.status_no_realtime());
             s.right_color = color::METER_LOUD;
         }
-        AudioState::Running { config, .. } => s.right = fmt_output(config),
+        AudioState::Running { config, .. } => s.right = fmt_output(config, t),
         AudioState::NoDevice { .. } => {
-            s.left = "Kein Audio-Gerät".to_owned();
+            s.left = t.transport_no_device().to_owned();
             s.left_color = color::STATE_ERROR;
-            s.right = "Audio angehalten".to_owned();
+            s.right = t.status_audio_stopped().to_owned();
             s.right_color = color::STATE_ERROR;
             return s;
         }
-        AudioState::Stopped => s.right = "Audio angehalten".to_owned(),
+        AudioState::Stopped => s.right = t.status_audio_stopped().to_owned(),
     }
     context(app, &mut s);
     if let Some(msg) = &app.ui().status
@@ -129,6 +119,7 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
 
 /// Left and middle text from the transport, focus and selection.
 fn context(app: &App, s: &mut StatusModel) {
+    let t = app.lang();
     let p = app.project();
     let ui = app.ui();
     let sel = &ui.selection;
@@ -140,7 +131,7 @@ fn context(app: &App, s: &mut StatusModel) {
                 .filter(|t| t.arm)
                 .map(|t| t.name.as_str())
                 .collect();
-            s.left = format!("● Aufnahme läuft · {}", armed.join(", "));
+            s.left = t.status_recording(armed.join(", "));
             // "· Take 1": the take the editor shows (S02).
             if let Some(take) = app
                 .recording()
@@ -150,11 +141,11 @@ fn context(app: &App, s: &mut StatusModel) {
                 s.left.push_str(&take);
             }
             s.left_color = color::STATE_RECORD;
-            s.mid = "R oder Leertaste beendet · Esc verwirft den Take".to_owned();
+            s.mid = t.status_recording_hint().to_owned();
             return;
         }
         TransportState::CountIn => {
-            s.left = "Vorzähler …".to_owned();
+            s.left = t.status_count_in().to_owned();
             s.left_color = color::STATE_RECORD;
             return;
         }
@@ -166,7 +157,7 @@ fn context(app: &App, s: &mut StatusModel) {
             crate::views::devices::model::touched(p, app.engine().host(), &ui.plugin_windows, touch)
     {
         s.left = format!("{} · {}", param.name, param.value);
-        s.mid = PARAM_HINT.to_owned();
+        s.mid = t.status_param_hint().to_owned();
         return;
     }
     let open = ui.editor.clip.and_then(|c| p.find_clip(c));
@@ -175,12 +166,8 @@ fn context(app: &App, s: &mut StatusModel) {
         (FocusArea::PianoRoll, Some((_, clip))) => {
             if let ClipContent::Midi(midi) = &clip.content {
                 let total = midi.active().notes.len();
-                s.left = format!(
-                    "{} · {} von {total} Noten ausgewählt",
-                    clip.name,
-                    sel.notes.len()
-                );
-                s.mid = "Strg-Ziehen auf Note: Velocity · Alt-Ziehen: Kopie".to_owned();
+                s.left = t.status_notes_selected(&clip.name, sel.notes.len(), total);
+                s.mid = t.status_notes_hint().to_owned();
                 return;
             }
         }
@@ -189,10 +176,8 @@ fn context(app: &App, s: &mut StatusModel) {
                 let len = usize::from(steps.length_steps);
                 match sel.step.and_then(|c| c.step) {
                     Some(step) => {
-                        s.left = format!("{} · Step {} von {len}", clip.name, step + 1);
-                        s.mid = "Klick setzt Step · Ziehen ↕ auf Step: Velocity · Alt-Klick: \
-                                 Wahrscheinlichkeit"
-                            .to_owned();
+                        s.left = t.status_step_selected(&clip.name, step + 1, len);
+                        s.mid = t.status_step_hint().to_owned();
                     }
                     None => {
                         let set: usize = steps
@@ -200,46 +185,43 @@ fn context(app: &App, s: &mut StatusModel) {
                             .iter()
                             .map(|r| r.steps.iter().take(len).filter(|st| st.on).count())
                             .sum();
-                        s.left = format!("{} · {set} Steps gesetzt", clip.name);
-                        s.mid = "Leertaste spielt das Pattern".to_owned();
+                        s.left = t.status_steps_set(&clip.name, set);
+                        s.mid = t.status_steps_hint().to_owned();
                     }
                 }
                 return;
             }
         }
         (FocusArea::Mixer, _) if ui.layout.dock_maximized => {
-            if let Some(t) = track {
-                s.left = format!("{} ausgewählt", t.name);
+            if let Some(tr) = track {
+                s.left = t.status_track_selected(&tr.name);
             }
-            s.mid = "Tab: zurück zum Arrangement · Klick auf rote Anzeige setzt zurück".to_owned();
+            s.mid = t.status_mixer_hint().to_owned();
             return;
         }
         (FocusArea::Devices, _) => {
-            if let Some(t) = track {
-                let n = t.channel.devices.len();
-                s.left = format!("{} · {}", t.name, plural(n, "Gerät", "Geräte"));
-                s.mid = "Gerät ziehen: umsortieren · Alt-Klick auf Schalter: Bypass".to_owned();
+            if let Some(tr) = track {
+                s.left = t.status_devices(&tr.name, tr.channel.devices.len());
+                s.mid = t.status_devices_hint().to_owned();
                 return;
             }
         }
         _ => {}
     }
     if !sel.clips.is_empty() {
-        s.left = format!("{} ausgewählt", plural(sel.clips.len(), "Clip", "Clips"));
-        s.mid = "Ziehen verschiebt · Alt-Ziehen kopiert · rechte Kante kürzt · Strg D dupliziert \
-                 · Entf löscht"
-            .to_owned();
-    } else if let Some(t) = track {
-        s.left = format!("{} ausgewählt", t.name);
-        s.mid = "Doppelklick in die Spur legt einen Clip an · R nimmt auf".to_owned();
+        s.left = t.status_clips_selected(sel.clips.len());
+        s.mid = t.status_clips_hint().to_owned();
+    } else if let Some(tr) = track {
+        s.left = t.status_track_selected(&tr.name);
+        s.mid = t.status_track_hint().to_owned();
     } else {
         s.left = if app.project_path().is_none() || app.doc().is_dirty() {
-            format!("{} · nicht gespeichert", p.name)
+            t.status_project_unsaved(&p.name)
         } else {
             p.name.clone()
         };
         if p.tracks.is_empty() {
-            s.mid = "Strg T: MIDI-Spur · Strg S: speichern".to_owned();
+            s.mid = t.status_empty_hint().to_owned();
         }
     }
 }
@@ -331,8 +313,12 @@ mod tests {
     fn output_text_matches_s01() {
         let config = StreamConfig::default();
         assert_eq!(
-            fmt_output(&config),
+            fmt_output(&config, Lang::De),
             "PipeWire · 48 kHz · 256 Samples · 5.3 ms"
+        );
+        assert_eq!(
+            fmt_output(&config, Lang::En),
+            "PipeWire · 48 kHz · 256 samples · 5.3 ms"
         );
         assert_eq!(fmt_rate(44_100), "44.1 kHz");
         assert_eq!(fmt_rate(96_000), "96 kHz");
@@ -340,7 +326,9 @@ mod tests {
 
     #[test]
     fn plurals() {
-        assert_eq!(plural(1, "Clip", "Clips"), "1 Clip");
-        assert_eq!(plural(3, "Clip", "Clips"), "3 Clips");
+        assert_eq!(Lang::De.status_clips_selected(1), "1 Clip ausgewählt");
+        assert_eq!(Lang::De.status_clips_selected(3), "3 Clips ausgewählt");
+        assert_eq!(Lang::En.status_clips_selected(1), "1 clip selected");
+        assert_eq!(Lang::En.status_clips_selected(3), "3 clips selected");
     }
 }

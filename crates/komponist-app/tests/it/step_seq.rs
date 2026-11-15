@@ -9,11 +9,11 @@ use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SelectionChange;
-use komponist_app::panels::transport::names as tp;
 use komponist_app::ui_state::{FocusArea, Panel, StepLane};
 use komponist_app::views::step_seq::names;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::TransportState;
+use komponist_i18n::de;
 use komponist_model::edits::{StepClipProp, StepProp};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipContent, ClipId, Project, StepClip, Tick, TickRange, TrackId};
@@ -156,7 +156,9 @@ fn s03() -> App {
 
 /// The CPU readout depends on the machine; masked in the snapshots.
 fn mask_cpu(h: &mut Harness<'_, App>) {
-    let cpu = h.get_by_role_and_label(Role::Status, tp::CPU).rect();
+    let cpu = h
+        .get_by_role_and_label(Role::Status, de::TRANSPORT_CPU)
+        .rect();
     h.mask(cpu.expand(2.0));
 }
 

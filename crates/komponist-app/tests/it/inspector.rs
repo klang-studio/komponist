@@ -60,7 +60,7 @@ fn s01() -> (App, ClipId, TrackId) {
 
 fn mask_cpu(h: &mut Harness<'_, App>) {
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
 }
@@ -487,7 +487,7 @@ fn the_compact_channel_strip_controls_the_track() {
     drag(&mut h, fader.center(), fader.center() + vec2(0.0, 30.0));
     let db = h.state().project().track(lead).unwrap().channel.volume_db;
     assert!(db < -3.5, "{db}");
-    assert_eq!(h.state().doc().undo_label(), Some("Lautstärke"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Lautstärke"));
     section(&h, k).get_by_role_and_label(
         Role::Label,
         &format!("Lautstärke {}", komponist_ui::widgets::fader::db_text(db)),

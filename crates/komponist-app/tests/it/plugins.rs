@@ -334,7 +334,7 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
         app.project().tracks[3].channel.devices[0].state.is_some()
     });
     assert_ne!(app.doc().undo_label().map(str::to_owned), undo);
-    assert_eq!(app.doc().undo_label(), Some("Gain ändern"));
+    assert_eq!(app.undo_text().as_deref(), Some("Gain ändern"));
     assert!(app.doc().is_dirty());
 
     // Saving snapshots every bridged device into the file.

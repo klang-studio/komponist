@@ -31,6 +31,7 @@ mod dispatch;
 mod export;
 mod export_bridges;
 mod hardware_midi;
+mod i18n;
 mod inspector;
 mod internal_devices;
 mod internal_presets;

@@ -11,9 +11,8 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::ProjectAction;
 use komponist_app::app::key_to_egui;
 use komponist_app::keymap::{KeyScope, Keymap};
-use komponist_app::panels::transport::names as tp;
 use komponist_app::ui_state::{DockTab, FocusArea, Panel, SettingsSection};
-use komponist_app::{Action, App, UiAction, names};
+use komponist_app::{Action, App, UiAction};
 use komponist_engine::TransportState;
 use komponist_i18n::{Lang, de, en};
 use komponist_model::Tick;
@@ -176,12 +175,12 @@ fn panels_collapse_and_open_again() {
     h.run_steps(2);
     assert!(!h.state().ui().layout.browser_open);
     // The rail opens it again.
-    h.get_by_role_and_label(Role::Button, names::BROWSER)
+    h.get_by_role_and_label(Role::Button, de::SHELL_BROWSER)
         .click();
     h.run_steps(2);
     assert!(h.state().ui().layout.browser_open);
     // The inspector's header collapses it.
-    h.get_by_role_and_label(Role::Button, names::INSPECTOR)
+    h.get_by_role_and_label(Role::Button, de::SHELL_INSPECTOR)
         .click();
     h.run_steps(2);
     assert!(!h.state().ui().layout.inspector_open);
@@ -248,7 +247,11 @@ fn edges_resize_panels_and_double_click_resets() {
     double_click_at(&mut h, pos2(900.0, 1057.0 - H * 0.7 - 0.5));
     assert_eq!(h.state().ui().layout.dock_height, size::dock::DEFAULT);
     // The edges are splitters with names.
-    for name in [names::BROWSER_EDGE, names::INSPECTOR_EDGE, names::DOCK_EDGE] {
+    for name in [
+        de::SHELL_BROWSER_EDGE,
+        de::SHELL_INSPECTOR_EDGE,
+        de::SHELL_DOCK_EDGE,
+    ] {
         h.get_by_role_and_label(Role::Splitter, name);
     }
 }
@@ -257,7 +260,7 @@ fn edges_resize_panels_and_double_click_resets() {
 fn space_plays_the_demo_through_the_null_backend() {
     let mut h = harness(demo());
     let position = |h: &Harness<'_, App>| {
-        h.get_by_role_and_label(Role::Status, tp::POSITION)
+        h.get_by_role_and_label(Role::Status, de::TRANSPORT_POSITION)
             .value()
             .unwrap_or_default()
     };
@@ -267,7 +270,7 @@ fn space_plays_the_demo_through_the_null_backend() {
     assert_eq!(h.state().transport(), TransportState::Playing);
     h.step();
     assert_ne!(position(&h), "1.1.000", "the position advances");
-    let play = h.get_by_role_and_label(Role::Button, tp::PLAY);
+    let play = h.get_by_role_and_label(Role::Button, de::TRANSPORT_PLAY);
     assert_eq!(play.accesskit_node().toggled(), Some(Toggled::True));
     h.key_press(egui::Key::Space);
     assert!(step_until(&mut h, |a| a.transport() == TransportState::Stopped));
@@ -328,18 +331,18 @@ fn every_interactive_node_has_a_german_name() {
     }
     assert!(seen >= 15, "only {seen} interactive nodes");
     for name in [
-        tp::PLAY,
-        tp::STOP,
-        tp::RECORD,
-        tp::LOOP,
-        tp::METRONOME,
-        tp::COUNT_IN,
-        tp::MENU,
+        de::TRANSPORT_PLAY,
+        de::TRANSPORT_STOP,
+        de::TRANSPORT_RECORD,
+        de::TRANSPORT_LOOP,
+        de::TRANSPORT_METRONOME,
+        de::TRANSPORT_COUNT_IN,
+        de::TRANSPORT_MENU,
     ] {
         h.get_by_role_and_label(Role::Button, name);
     }
-    h.get_by_role_and_label(Role::SpinButton, tp::TEMPO);
-    h.get_by_role_and_label(Role::Meter, tp::MASTER);
+    h.get_by_role_and_label(Role::SpinButton, de::TRANSPORT_TEMPO);
+    h.get_by_role_and_label(Role::Meter, de::TRANSPORT_MASTER);
 }
 
 #[test]
@@ -383,7 +386,9 @@ fn s01() -> App {
 /// The CPU readout depends on the machine; masked in the snapshots.
 fn mask_cpu(h: &mut Harness<'_, App>) {
     // Label, bar and value.
-    let cpu = h.get_by_role_and_label(Role::Status, tp::CPU).rect();
+    let cpu = h
+        .get_by_role_and_label(Role::Status, de::TRANSPORT_CPU)
+        .rect();
     h.mask(cpu.expand(2.0));
 }
 
@@ -461,7 +466,7 @@ fn an_armed_track_turns_letters_into_notes() {
 /// Opens the "⋯" menu as egui-mcp clicks: move, press and release in one batch.
 fn open_menu(h: &mut Harness<'_, App>) {
     let at = h
-        .get_by_role_and_label(Role::Button, tp::MENU)
+        .get_by_role_and_label(Role::Button, de::TRANSPORT_MENU)
         .rect()
         .center();
     h.event(Event::PointerMoved(at));

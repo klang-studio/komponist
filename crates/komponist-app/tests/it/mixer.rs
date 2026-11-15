@@ -83,7 +83,7 @@ fn s04() -> App {
 
 fn mask_cpu(h: &mut Harness<'_, App>) {
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
 }
@@ -487,7 +487,7 @@ fn fader_and_pan_take_alt_click_and_text_entry() {
     let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
     click_with(&mut h, fader.center(), Modifiers::ALT);
     assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
-    assert_eq!(h.state().doc().undo_label(), Some("Spur ändern"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Spur ändern"));
     // Double-click on the level under the fader: type −12.
     let value = in_strip(&h, "Drums", Role::SpinButton, &names::volume_value("Drums"));
     double_click(&mut h, value.center());
@@ -541,7 +541,7 @@ fn double_click_resets_fader_and_pan_in_one_undo_step() {
     let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
     double_click(&mut h, fader.center());
     assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
-    assert_eq!(h.state().doc().undo_label(), Some("Spur ändern"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Spur ändern"));
     assert!(
         h.query_by_label(&format!("{} Eingabe", names::volume("Drums")))
             .is_none()
@@ -569,7 +569,7 @@ fn fader_menu_and_enter_reset_and_enter_values() {
     let fader = in_strip(&h, "Drums", Role::Slider, &name);
     menu_choice(&mut h, fader.center(), "Auf Standard");
     assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
-    assert_eq!(h.state().doc().undo_label(), Some("Spur ändern"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Spur ändern"));
     menu_choice(&mut h, fader.center(), "Wert eingeben");
     h.get_by_role_and_label(Role::TextInput, &format!("{name} Eingabe"))
         .type_text("-9");

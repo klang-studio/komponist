@@ -312,7 +312,7 @@ fn snapshot_of_the_four_effect_frames() {
     let mut h = harness(app);
     h.run_steps(2);
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();
@@ -534,7 +534,7 @@ fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
         .collect();
     assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();
@@ -832,7 +832,7 @@ fn the_presse_meter_shows_the_reduction_the_engine_measured() {
 fn snapshot_of_the_presse_frame_while_playing() {
     let (mut h, _) = playing_presse();
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();

@@ -192,7 +192,7 @@ fn pencil_click_sets_a_grid_note_and_drag_pulls_its_length() {
     assert_eq!((new.start, new.length), (Tick(BAR + 240), Tick(240)));
     assert_eq!(new.velocity, 100);
     assert_eq!(h.state().ui().selection.notes, [new.id].into());
-    assert_eq!(h.state().doc().undo_label(), Some("Noten hinzufügen"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Noten hinzufügen"));
     // Drag from an empty spot: the length follows in grid steps.
     let from = pos2(g.x_of_local(Tick(0)) + 2.0, g.row_top(76) + 4.0);
     let to = pos2(g.x_of_local(Tick(4 * 240)) + 3.0, from.y);
@@ -246,7 +246,7 @@ fn dragging_moves_in_time_and_pitch() {
         .unwrap();
     assert_eq!(moved.start, n.start + Tick(480));
     assert_eq!(moved.pitch, n.pitch + 2);
-    assert_eq!(h.state().doc().undo_label(), Some("Noten verschieben"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Noten verschieben"));
     undo(&mut h);
     assert_eq!(notes_of(h.state(), clip)[2], n, "one undo step");
 
@@ -282,7 +282,7 @@ fn dragging_moves_in_time_and_pitch() {
         .find(|q| q.pitch == n.pitch && q.start == n.start + Tick(960))
         .expect("copy one beat later");
     assert_eq!(h.state().ui().selection.notes, [copy.id].into());
-    assert_eq!(h.state().doc().undo_label(), Some("Noten kopieren"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Noten kopieren"));
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn edge_drag_resizes_all_selected() {
     let get = |id| after.iter().find(|n| n.id == id).unwrap();
     assert_eq!(get(a.id).length, a.length - Tick(480));
     assert_eq!(get(b.id).length, b.length - Tick(480));
-    assert_eq!(h.state().doc().undo_label(), Some("Noten-Länge"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Noten-Länge"));
 }
 
 /// "Strg-Ziehen ↕ auf Note — Velocity ändern, Wert im Tooltip."
@@ -353,7 +353,7 @@ fn ctrl_drag_changes_velocity() {
         .unwrap();
     assert_eq!(after.velocity, n.velocity + 10);
     assert_eq!((after.start, after.pitch), (n.start, n.pitch));
-    assert_eq!(h.state().doc().undo_label(), Some("Velocity"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Velocity"));
 }
 
 /// "↑ ↓ / Shift ↑ ↓ — Halbton / Oktave." and "← → / Q — Ein Rasterschritt / quantisieren."
@@ -399,7 +399,7 @@ fn arrows_transpose_and_nudge_q_quantizes() {
     h.get_by_role_and_label(Role::Button, names::QUANTIZE)
         .click();
     h.run_steps(2);
-    assert_eq!(h.state().doc().undo_label(), Some("Quantisieren"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Quantisieren"));
 }
 
 /// "Strg A / Entf — Alle wählen / löschen."
@@ -532,7 +532,7 @@ fn toolbar_fields_change_the_selection() {
         Modifiers::NONE,
     );
     assert_eq!(get(&h).velocity, 110);
-    assert_eq!(h.state().doc().undo_label(), Some("Velocity"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Velocity"));
 }
 
 #[test]
@@ -577,7 +577,7 @@ fn velocity_lane_sets_the_nearest_start() {
     click(&mut h, at, Modifiers::NONE);
     let after = notes_of(h.state(), clip);
     assert_eq!(after.iter().find(|n| n.id == b4.id).unwrap().velocity, 64);
-    assert_eq!(h.state().doc().undo_label(), Some("Velocity"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Velocity"));
 }
 
 #[test]
@@ -722,7 +722,7 @@ fn s01() -> App {
 
 fn mask_cpu(h: &mut Harness<'_, App>) {
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
 }
@@ -777,7 +777,7 @@ fn render_without_grid_labels(h: &mut Harness<'_, App>, label: &str) -> Vec<u8> 
         .map(|n| n.rect())
         .collect();
     rects.push(
-        h.get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        h.get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
             .rect(),
     );
     let img = h.render().expect("render");

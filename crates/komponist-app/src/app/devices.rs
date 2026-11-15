@@ -70,7 +70,7 @@ impl App {
                 .map_or(index, |t| t.channel.midi_effect_count()),
             _ => index,
         };
-        self.insert_copies("Gerät kopieren", to, index, specs);
+        self.insert_copies("undo-copy-device", to, index, specs);
     }
 
     /// Ctrl D: every selected effect copied behind itself.
@@ -91,7 +91,7 @@ impl App {
         if chosen.is_empty() {
             return;
         }
-        let ids = self.apply_with("Geräte duplizieren", |p| {
+        let ids = self.apply_with("undo-duplicate-devices", |p| {
             let mut p = p.clone();
             let mut ids = Vec::new();
             // Back to front, so the earlier indices stay valid.
@@ -140,7 +140,7 @@ impl App {
             .iter()
             .rposition(|id| self.ui.selection.devices.contains(id))
             .map_or(chain.len(), |i| i + 1);
-        self.insert_copies("Geräte einfügen", ChannelRef::Track(track), index, specs);
+        self.insert_copies("undo-paste-devices", ChannelRef::Track(track), index, specs);
     }
 
     /// Entf: remove the selected devices of the chain.
@@ -155,7 +155,7 @@ impl App {
         if doomed.is_empty() {
             return;
         }
-        let ok = self.apply("Geräte entfernen", |p| {
+        let ok = self.apply("undo-remove-devices", |p| {
             let mut p = p.clone();
             for id in &doomed {
                 p = edits::remove_device(&p, *id)?;
