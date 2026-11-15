@@ -471,6 +471,21 @@ fn toggles_switch_alt_is_exclusive_and_solo_mutes_the_others() {
         &mut h,
     );
     assert!(!h.state().project().tracks[3].monitor);
+    // Armed with I off, the track still monitors (auto-monitoring): I shows the implied look and
+    // says why in its value; a track that is not armed says nothing.
+    h.run();
+    let pad = h.get_by_role_and_label(Role::Button, "Monitoring · Pad");
+    assert_eq!(
+        pad.value().as_deref(),
+        Some("überwacht durch Record-Arm"),
+        "armed, I off"
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Monitoring · Lead")
+            .value()
+            .is_none(),
+        "not armed"
+    );
 }
 
 #[test]

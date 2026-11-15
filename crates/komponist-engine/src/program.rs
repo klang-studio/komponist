@@ -95,7 +95,7 @@ pub struct TrackProgram {
     pub solo: bool,
     /// Record arm: live input is captured while recording.
     pub arm: bool,
-    /// Monitoring: live input reaches the chain.
+    /// Monitoring (I): live input reaches the chain. An armed track monitors as well.
     pub monitor: bool,
     /// Which live MIDI input the track listens to.
     pub input: InputFilter,

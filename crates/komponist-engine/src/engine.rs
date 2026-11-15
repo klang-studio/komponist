@@ -43,7 +43,9 @@
 //! - Probability: each track rolls with its own `Rng`, seeded from [`EngineConfig::seed`] and the
 //!   track id at every playback start.
 //! - Live input: MIDI goes to monitored tracks whose input filter accepts it; `LiveNote` goes to
-//!   its track regardless of monitoring. Armed tracks capture while recording. Captured keys
+//!   its track regardless of monitoring. A track monitors when I is on **or it is armed** (R,
+//!   auto-monitoring, owner decision 2026-11-15); an armed track also captures while
+//!   recording. Captured keys
 //!   still down get their `RecordedNoteOff` at the playhead on `Stop`, `StopRecording` and
 //!   `Locate`, and at the loop end when the loop wraps (each lap is a take of its own).
 //! - Instruments get note, MIDI, parameter and `AllNotesOff` events; effects get their parameters
@@ -1128,7 +1130,10 @@ impl Core {
                             }
                         }
                     }
-                    if track.monitor || capture {
+                    // An armed track monitors on its own ("Auto", owner decision 2026-11-15); I
+                    // monitors without arming.
+                    let play = track.monitor || track.arm;
+                    if play || capture {
                         for m in midi.iter().filter(|m| accepts(&track.input, m)) {
                             if live.len() == live.capacity() {
                                 *dropped += 1;
@@ -1138,7 +1143,7 @@ impl Core {
                             live.push(LiveMsg {
                                 offset: (frame - frame0) as u32,
                                 data: m.data,
-                                play: track.monitor,
+                                play,
                                 capture,
                             });
                         }

@@ -58,3 +58,5 @@ egui_kittest.workspace = true
 # (X-Resource).
 winit.workspace = true
 x11rb = { workspace = true, features = ["xtest", "res"] }
+# Virtual MIDI output port for the hardware-input test (`tests/it/hardware_midi.rs`).
+midir.workspace = true

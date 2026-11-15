@@ -85,9 +85,14 @@ impl<'a> HeaderModel<'a> {
         }
     }
 
-    /// Whether toggle `kind` shows "stumm durch Solo" (M only).
+    /// Whether toggle `kind` shows its implied look: M muted by a solo elsewhere, I off on an
+    /// armed track (which monitors anyway).
     pub fn is_implied(&self, kind: ToggleKind) -> bool {
-        kind == ToggleKind::Mute && self.implied_mute
+        match kind {
+            ToggleKind::Mute => self.implied_mute,
+            ToggleKind::Monitor => self.arm && !self.monitor,
+            ToggleKind::Solo | ToggleKind::Arm => false,
+        }
     }
 }
 
@@ -365,6 +370,13 @@ mod tests {
         m.arm = true;
         assert!(m.is_on(ToggleKind::Mute) && m.is_on(ToggleKind::Arm));
         assert!(!m.is_on(ToggleKind::Monitor));
+        // Armed with I off: I is implied (auto-monitoring); with I on, or unarmed, it is not.
+        assert!(m.is_implied(ToggleKind::Monitor));
+        m.monitor = true;
+        assert!(!m.is_implied(ToggleKind::Monitor));
+        m.monitor = false;
+        m.arm = false;
+        assert!(!m.is_implied(ToggleKind::Monitor));
     }
 
     #[test]

@@ -337,3 +337,68 @@ fn held_input_keys_follow_the_midi_input_without_a_listening_track() {
     rig.process_with(256, &[midi(5, 0, [0xb2, 123, 0])], 0);
     assert_eq!(held(&rig), 0);
 }
+
+/// Auto-monitoring (owner decision 2026-11-15): an armed track plays live input without I; I
+/// plays it without arming; a track with neither stays silent.
+#[test]
+fn an_armed_track_monitors_without_i_and_i_monitors_without_arming() {
+    let mut armed = track(1, 0, vec![]);
+    (armed.arm, armed.monitor) = (true, false);
+    let mut i_only = track(2, 1, vec![]);
+    (i_only.arm, i_only.monitor) = (false, true);
+    let mut neither = track(3, 2, vec![]);
+    (neither.arm, neither.monitor) = (false, false);
+    let p = program(120.0, vec![armed, i_only, neither]);
+    let mut rig = Rig::new(RATE, 512);
+    let mut logs = Vec::new();
+    for slot in 0..3 {
+        let (sine, log) = TestSine::logged(1 << 12);
+        rig.insert(slot, sine);
+        logs.push(log);
+    }
+    rig.set_program(&p);
+    rig.process_with(
+        1000,
+        &[midi(10, 1, [0x90, 60, 100]), midi(20, 1, [0x80, 60, 0])],
+        0,
+    );
+    let got: Vec<_> = logs.iter_mut().map(|l| events(&drain(l))).collect();
+    for played in &got[..2] {
+        assert_eq!(played.len(), 2, "{played:?}");
+        assert!(on(60, 100, 0)(&played[0].1) && off(60, 0)(&played[1].1));
+    }
+    assert!(got[2].is_empty(), "{:?}", got[2]);
+}
+
+/// Recording captures the armed track's input whether or not I is on, and the armed track is
+/// heard meanwhile.
+#[test]
+fn capture_is_unchanged_by_auto_monitoring() {
+    let mut armed = track(1, 0, vec![]);
+    (armed.arm, armed.monitor) = (true, false);
+    let p = program(120.0, vec![armed]);
+    let mut rig = Rig::new(RATE, 2048);
+    let (sine, mut log) = TestSine::logged(1 << 12);
+    rig.insert(0, sine);
+    rig.set_program(&p);
+    rig.send(Command::Record { from: Tick(BAR) });
+    // The count-in (one bar, 96 000 samples) plays but does not capture.
+    rig.process(97_000, 1000);
+    rig.process(9_000, 1000);
+    rig.process_with(1000, &[midi(0, 1, [0x90, 60, 100])], 0);
+    rig.process(1000, 1000);
+    rig.send(Command::StopRecording);
+    rig.process(1, 1);
+    let recorded = rig
+        .take_events()
+        .iter()
+        .filter(|e| matches!(e, EngineEvent::RecordedNoteOn { key: 60, .. }))
+        .count();
+    assert_eq!(recorded, 1);
+    assert!(
+        events(&drain(&mut log))
+            .iter()
+            .any(|(_, k)| on(60, 100, 0)(k)),
+        "the armed track sounds while recording"
+    );
+}

@@ -765,6 +765,10 @@ impl App {
         if self.engine.host().needs_polling() {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         }
+        // A frame now and then looks for MIDI devices that were plugged in meanwhile.
+        if self.engine.midi().is_some() {
+            ctx.request_repaint_after(crate::engine_sync::MIDI_SCAN_INTERVAL);
+        }
     }
 
     fn persist_panels(&mut self) {
