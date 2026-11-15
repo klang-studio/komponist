@@ -32,8 +32,8 @@
 //! them in front of the instrument (ARCHITECTURE §6.4.2) and keeps notes from hanging.
 //!
 //! **Effect DSP (WP-90):** [`eq`] (six RBJ biquad bands), [`delay`] (tempo-synced stereo delay with
-//! filtered feedback), [`hall`] (8-line feedback delay network) and [`limiter`] (lookahead peak
-//! limiter) are written for komponist on top of the small parts in [`dsp`] and `klang-dsp`'s
+//! filtered feedback), [`hall`] (8-line feedback delay network), [`limiter`] (lookahead peak
+//! limiter) and [`presse`] (compressor, WP-93) are written for komponist on top of the small parts in [`dsp`] and `klang-dsp`'s
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
 //!
@@ -66,6 +66,7 @@ pub mod hall;
 pub mod knurr;
 pub mod limiter;
 pub mod midi;
+pub mod presse;
 pub mod tonleiter;
 
 /// The DSP of an internal device. Created and activated on the UI thread, then used by one thread
@@ -181,6 +182,8 @@ pub enum Internal {
     Hall,
     /// Peak limiter; an ordinary device, also for the master chain.
     Limiter,
+    /// Compressor „presse“ (WP-93).
+    Presse,
     /// MIDI effect: held notes as a pattern in time with the song (WP-88).
     Arpeggiator,
     /// MIDI effect: forces notes onto a scale (WP-88).
@@ -191,12 +194,13 @@ pub enum Internal {
 
 impl Internal {
     /// All devices, in browser order.
-    pub const ALL: [Internal; 8] = [
+    pub const ALL: [Internal; 9] = [
         Internal::Sampler,
         Internal::Eq,
         Internal::Delay,
         Internal::Hall,
         Internal::Limiter,
+        Internal::Presse,
         Internal::Arpeggiator,
         Internal::Tonleiter,
         Internal::Knurr,
@@ -209,6 +213,7 @@ impl Internal {
             Internal::Delay => &delay::SPEC,
             Internal::Hall => &hall::SPEC,
             Internal::Limiter => &limiter::SPEC,
+            Internal::Presse => &presse::SPEC,
             Internal::Arpeggiator => &arpeggiator::SPEC,
             Internal::Tonleiter => &tonleiter::SPEC,
             Internal::Knurr => &knurr::SPEC,
@@ -636,5 +641,7 @@ mod eq_tap_tests;
 mod fx_tests;
 #[cfg(test)]
 mod midi_tests;
+#[cfg(test)]
+mod presse_tests;
 #[cfg(test)]
 mod tests;

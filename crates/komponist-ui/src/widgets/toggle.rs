@@ -13,6 +13,9 @@
 //! the toggles R and I stand [`metrics::TOGGLE_GROUP_GAP`] apart from M and S. Monitoring is
 //! green (the design system has it accent blue).
 //!
+//! I off on an armed track (it monitors anyway, auto-monitoring) shows the same implied look,
+//! with "durch Record-Arm" in the tooltip and as AccessKit value.
+//!
 //! "Stumm durch Solo" (M implied by a solo elsewhere): surface.2 with a 1 px text.3 contour,
 //! letter text.2. It is no click target of its own; M stays clickable. Disabled: surface.2 and
 //! text.4 when off; an "on" toggle keeps its colours, so the value stays readable.
@@ -36,6 +39,9 @@ use super::metrics;
 use super::tooltip::Tip;
 use crate::state::{self, State};
 use crate::{focus, px};
+
+/// The AccessKit value of an I toggle that is off but monitors because the track is armed.
+pub const IMPLIED_MONITOR_VALUE: &str = "überwacht durch Record-Arm";
 
 /// Which flag a track toggle switches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -116,6 +122,7 @@ impl ToggleKind {
             Self::Arm => Tip::new("Record-Arm")
                 .shortcut("R")
                 .detail("Alt-Klick exklusiv"),
+            Self::Monitor if implied => Tip::new("Monitoring").detail("durch Record-Arm"),
             Self::Monitor => Tip::new("Monitoring"),
         }
     }
@@ -309,7 +316,15 @@ impl<'a> TrackToggle<'a> {
         let enabled = ui.is_enabled() && !st.disabled;
         let name = self.accessible_name();
         let on = self.on;
-        response.widget_info(|| WidgetInfo::selected(Role::Button, enabled, on, &name));
+        // An I that only monitors because the track is armed says so in its value.
+        let implied_monitor = self.implied && !on && self.kind == ToggleKind::Monitor;
+        response.widget_info(|| {
+            let mut info = WidgetInfo::selected(Role::Button, enabled, on, &name);
+            if implied_monitor {
+                info.current_text_value = Some(IMPLIED_MONITOR_VALUE.to_owned());
+            }
+            info
+        });
 
         let event = if still || !enabled {
             None

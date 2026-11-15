@@ -604,6 +604,45 @@ mod tests {
         assert_eq!(infos[0].output_latency, latency);
     }
 
+    /// The device backends (PipeWire, JACK, ALSA) all run `StreamCallback::run`, which takes its
+    /// time base from `Instant::now()` like the MIDI stamps (the same clock): an event stamped
+    /// just before a callback is released by it, exactly once, inside the callback's frames, also
+    /// when the callback is cut into several pieces and the device reports a latency.
+    #[test]
+    fn a_device_callback_releases_events_stamped_just_before_it() {
+        for (max_frames, total) in [(256u32, 256usize), (64, 200), (256, 1024), (256, 100)] {
+            let (engine, probe) = TestEngine::boxed(0.0);
+            let (sender, receiver) = crate::midi::queue(8);
+            let (slot, _handle) = EngineSlot::new(engine, receiver, Arc::new(StreamStats::new()));
+            let params = StreamParams {
+                sample_rate: 48_000,
+                max_frames,
+                channels: 2,
+            };
+            let mut cb = StreamCallback::new(slot, params, Arc::new(StreamShared::default()));
+            let mut data = vec![0.0f32; total * 2];
+            assert!(sender.push(crate::midi::MidiPortId(1), [0x90, 60, 100]));
+            std::thread::sleep(Duration::from_millis(1));
+            cb.run(&mut data, Duration::from_millis(5));
+            assert_eq!(
+                probe.events.load(Ordering::SeqCst),
+                1,
+                "{max_frames}/{total}"
+            );
+            let frame = probe.last_event_frame.load(Ordering::SeqCst);
+            assert!(frame < max_frames, "{max_frames}/{total}: frame {frame}");
+            // Events from later callbacks keep coming through.
+            assert!(sender.push(crate::midi::MidiPortId(1), [0x80, 60, 0]));
+            std::thread::sleep(Duration::from_millis(1));
+            cb.run(&mut data, Duration::from_millis(5));
+            assert_eq!(
+                probe.events.load(Ordering::SeqCst),
+                2,
+                "{max_frames}/{total}"
+            );
+        }
+    }
+
     #[test]
     fn samples_are_converted_to_the_device_format() {
         let (mut cb, _handle) = callback(0.5, 32, 2);

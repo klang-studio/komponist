@@ -625,7 +625,8 @@ mod tests {
         assert_eq!(names(""), all);
         assert_eq!(names("HALL"), ["Hall", "Big Hall"]);
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
-        assert_eq!(names("compress"), ["Squash"]);
+        // The built-in compressor matches by its feature (WP-93).
+        assert_eq!(names("compress"), ["presse", "Squash"]);
         assert_eq!(names("synth"), ["pisynth", "knurr"]);
         assert!(names("nothing like this").is_empty());
     }

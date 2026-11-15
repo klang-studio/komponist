@@ -373,8 +373,8 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
 ### 6.4 Block processing order
 
 1. Drain commands (bounded per block).
-2. Read MIDI input (timestamped) → monitored tracks (I on) get live events, and recording capture
-   when recording.
+2. Read MIDI input (timestamped) → monitored tracks (I on, or armed: §13 item 11) get live events,
+   and recording capture when recording.
 3. Transport: tick range of this block, splitting at the loop end (wrap) and at the end of the
    count-in. Metronome clicks (accent on beat 1).
 4. Per track, in three phases (WP-65):
@@ -918,6 +918,13 @@ These need a decision (the handoff says: report contradictions; the design syste
     not with Shift; it still scrolls over its head and outside controls). Hints and gallery texts
     follow; the status-bar hint while dragging a device parameter reads „Alt-Klick: Standard ·
     Rechtsklick: Wert eingeben“, true for every control.
+
+11. **Auto-monitoring (owner decision 2026-11-15).** An armed track (R) monitors live MIDI input
+    automatically, so you hear what you play (like Ableton's "Auto"); I stays an explicit switch
+    that monitors without arming. The engine plays live input when `track.monitor || track.arm`;
+    capture while recording is unchanged. When a track is armed but I is off, the I toggle shows
+    the implied look (the one of "stumm durch Solo") and its tooltip and AccessKit value say
+    "durch Record-Arm".
 
 ---
 

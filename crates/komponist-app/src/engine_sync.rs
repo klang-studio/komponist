@@ -27,7 +27,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use komponist_audio::{
     AudioError, AudioProcess, AudioState, AudioSystem, CallbackInfo, HostKind, MidiIn,
@@ -46,6 +46,9 @@ use crate::device_host::DeviceHost;
 
 /// How long [`EngineSync::shutdown`] lets the engine drain its last commands.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(30);
+
+/// How often [`EngineSync::poll`] looks for MIDI devices that appeared or vanished (hot-plug).
+pub const MIDI_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How long [`EngineSync::hold_engine`] waits for the stream to hand the engine over.
 const HOLD_TIMEOUT: Duration = Duration::from_secs(2);
@@ -190,6 +193,8 @@ pub struct EngineSync {
     /// `None` while an export has the engine ([`EngineSync::detach`]).
     handle: Option<EngineHandle>,
     midi: Option<MidiInputHub>,
+    /// When [`EngineSync::poll`] scans the MIDI ports next ([`MIDI_SCAN_INTERVAL`]).
+    next_midi_scan: Instant,
     host: Box<dyn DeviceHost>,
     /// The program last sent to the engine.
     previous: Option<Program>,
@@ -270,6 +275,7 @@ impl EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
             handle: Some(handle),
             midi: hub,
+            next_midi_scan: Instant::now() + MIDI_SCAN_INTERVAL,
             host,
             previous: None,
             synced: None,
@@ -414,6 +420,9 @@ impl EngineSync {
     /// events (dropping garbage here) and the device host's events.
     pub fn poll(&mut self) -> Vec<SyncEvent> {
         self.audio.poll();
+        if self.midi.is_some() && Instant::now() >= self.next_midi_scan {
+            self.scan_midi();
+        }
         self.flush_pending();
         let mut out = Vec::new();
         while let Some(event) = self.handle.as_mut().and_then(EngineHandle::poll) {
@@ -431,6 +440,26 @@ impl EngineSync {
                 .map(SyncEvent::Device),
         );
         out
+    }
+
+    /// Looks for MIDI devices that appeared or vanished and connects new ones (hot-plug), then
+    /// restarts the [`MIDI_SCAN_INTERVAL`] timer. Returns whether the port list changed; the next
+    /// [`EngineSync::sync`] then compiles the project again, because a track that names a device
+    /// resolves it to a port at compile time (a device that was absent then receives nothing).
+    pub fn scan_midi(&mut self) -> bool {
+        self.next_midi_scan = Instant::now() + MIDI_SCAN_INTERVAL;
+        let Some(hub) = self.midi.as_mut() else {
+            return false;
+        };
+        let before = hub.ports();
+        // A port that cannot be connected stays listed; the next scan tries again.
+        let _ = hub.refresh();
+        let changed = hub.ports() != before;
+        if changed {
+            self.synced = None;
+            self.fast = None;
+        }
+        changed
     }
 
     /// Rebuilds the stream for `config` (S07: driver, device, rate, buffer). The engine survives;

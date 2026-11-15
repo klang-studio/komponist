@@ -617,6 +617,10 @@ pub enum Marker {
     Playhead,
     /// The level point (`Graph::level`): r 3 `text.1` on the first curve at the level's x.
     Level,
+    /// IN, OUT and GR of the live level point as three lines of name and value in the strip right
+    /// of the plot (the compressor: the strip is the x axis' high padding). IN is the level
+    /// ([`super::Graph::level`]), OUT the first curve at that level, GR their difference.
+    Levels,
     /// The readout of two slots in the corners: y name and value top left, x name and value
     /// bottom right (the XY field).
     Readout {
@@ -640,6 +644,12 @@ pub enum Layer {
     Guide(Guide),
     /// A marker.
     Marker(Marker),
+    /// A history line (display only): the values of [`super::Graph::trace`] are y values spread
+    /// evenly over the x axis, drawn like a curve (1.5 px, filled 14 % down to `baseline`).
+    Trace {
+        /// The y value the fill runs to.
+        baseline: f64,
+    },
 }
 
 impl Layer {
@@ -648,7 +658,7 @@ impl Layer {
         match self {
             Layer::Data(_) => 1,
             Layer::Region(_) => 2,
-            Layer::Curve(_) => 3,
+            Layer::Curve(_) | Layer::Trace { .. } => 3,
             Layer::Guide(_) => 4,
             Layer::Marker(_) => 5,
         }
@@ -689,6 +699,12 @@ pub struct GraphSpec {
     pub shift_locks_axis: bool,
     /// Entf deletes the focused handle (reported as an event).
     pub deletable: bool,
+    /// The grid lines stop at the plot area (the axis paddings) instead of running to the edges
+    /// of the widget, for a padded plot beside readouts (the compressor).
+    pub grid_inside: bool,
+    /// The title sits in the bottom right corner instead of the top left, where a curve hanging
+    /// from the top would cover it (the reduction history).
+    pub title_bottom_right: bool,
 }
 
 impl GraphSpec {
@@ -706,6 +722,8 @@ impl GraphSpec {
             on_double_click: AreaAction::None,
             shift_locks_axis: false,
             deletable: false,
+            grid_inside: false,
+            title_bottom_right: false,
         }
     }
 

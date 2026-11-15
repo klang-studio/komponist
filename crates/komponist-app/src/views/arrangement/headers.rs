@@ -227,7 +227,11 @@ impl Arrangement {
                     .layout(Layout::left_to_right(Align::Min)),
             );
             let out = TrackToggle::new(kind, toggle_on(track, kind))
-                .implied(kind == ToggleKind::Mute && implied_mute)
+                .implied(match kind {
+                    ToggleKind::Mute => implied_mute,
+                    ToggleKind::Monitor => track.arm && !track.monitor,
+                    ToggleKind::Solo | ToggleKind::Arm => false,
+                })
                 .track(&track.name)
                 .show(&mut child);
             match out.event {

@@ -70,6 +70,12 @@ fn toggle_snapshots() {
             .implied(true)
             .show(ui);
     });
+    // I off on an armed track (it monitors anyway): the same implied look.
+    s.add_state("toggle-implied-monitor", State::REST, None, |ui| {
+        let _ = TrackToggle::new(ToggleKind::Monitor, false)
+            .implied(true)
+            .show(ui);
+    });
     s.finish();
 }
 

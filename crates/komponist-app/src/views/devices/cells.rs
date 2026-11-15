@@ -18,6 +18,7 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
+use komponist_ui::widgets::device::KnobCellOptions;
 use komponist_ui::widgets::device::choice::{
     DropdownCell, Glyph, Segment, SegmentOption, ToggleButton, Wave,
 };
@@ -287,6 +288,18 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
         .format(|n| p.text_at(info.to_plain(n)));
     if cell.widget == WidgetKind::KnobLarge {
         w = w.large();
+    }
+    // A knob whose value is not used while a switch is on (makeup under auto-makeup).
+    let unused = cell
+        .disabled_by
+        .as_ref()
+        .and_then(|id| card.param(id))
+        .is_some_and(|flag| flag.value >= 0.5);
+    if unused {
+        w = w.options(KnobCellOptions {
+            disabled: true,
+            ..KnobCellOptions::default()
+        });
     }
     let r = cu.put(rect, w);
     if r.changed() {
@@ -865,6 +878,8 @@ fn spec_of<'c>(
         }
         GraphConfig::Filter => configs::filter(),
         GraphConfig::Transfer => configs::transfer(),
+        GraphConfig::Compressor => configs::compressor(),
+        GraphConfig::GrHistory => configs::gr_history(),
         // Start and end are in milliseconds; the axis spans the sample's real length when the
         // device knows it (the sampler), else the range of the end.
         GraphConfig::Waveform => configs::waveform(
@@ -972,10 +987,29 @@ fn graph(
     let spectrum: &[f32] = card.analysis.as_ref().map_or(&[], |a| &a.spectrum);
     // The sampler's waveform shows the sample's peaks, the EQ its live spectrum.
     let peaks: &[f32] = sample.map_or(spectrum, |(v, _)| &v.peaks);
-    let playhead = sample
+    let mut playhead = sample
         .and_then(|(_, head)| head)
         .zip(length)
         .map(|(h, len)| f64::from(h) * len);
+    // The compressor (WP-93): its live level on the transfer curve, and the history of the input
+    // level and the reduction, with „now“ at the right edge.
+    let dynamics = card.dynamics.as_ref();
+    let (mut peaks, mut trace, mut level): (&[f32], &[f32], Option<f64>) = (peaks, &[], None);
+    match binding.config {
+        GraphConfig::Compressor => {
+            level = dynamics
+                .and_then(|d| d.level_db)
+                .map(|db| f64::from(db).clamp(spec.x.min, spec.x.max));
+        }
+        GraphConfig::GrHistory => {
+            if let Some(d) = dynamics {
+                peaks = &d.input;
+                trace = &d.reduction;
+                playhead = Some(configs::GR_HISTORY_SECONDS);
+            }
+        }
+        _ => {}
+    }
     let look = if card.bypass {
         Look::Bypass
     } else {
@@ -989,6 +1023,8 @@ fn graph(
                 .track(color32(palette.base))
                 .look(look)
                 .data(peaks)
+                .trace(trace)
+                .level(level)
                 .playhead(playhead)
                 .id(id)
                 .show(gu)
@@ -1087,6 +1123,7 @@ mod tests {
     use super::*;
     use crate::views::devices::layout::{DeviceLayout, Half, Page};
     use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
     use egui_kittest::kittest::Queryable as _;
     use komponist_model::DeviceId;
     use komponist_model::params::{ParamId, ParamInfo};
@@ -1179,6 +1216,7 @@ mod tests {
             late: None,
             levels: None,
             analysis: None,
+            dynamics: None,
             routing: None,
         }
     }
@@ -1669,5 +1707,128 @@ mod tests {
             image(with_spectrum(48_000.0, true)) == bypassed_plain,
             "bypass hides the data"
         );
+    }
+    // --- The compressor card (WP-93) ----------------------------------------------------------
+
+    /// The card of `presse` with its real layout and the parameters at `set` (by id) over the
+    /// defaults, and the live data `dynamics`.
+    fn presse_card(set: &[(&str, f64)], dynamics: Option<crate::gain_trace::Dynamics>) -> Card {
+        let kind = komponist_builtin::Internal::Presse;
+        let mut card = graph_card();
+        card.params = kind
+            .params()
+            .iter()
+            .enumerate()
+            .map(|(i, info)| {
+                let value = set
+                    .iter()
+                    .find(|(k, _)| *k == info.id.as_str())
+                    .map_or(info.default, |(_, v)| *v);
+                Param {
+                    wire: i as u32,
+                    text: info.format(value),
+                    info: info.clone(),
+                    value,
+                }
+            })
+            .collect();
+        card.layout = kind.layout().clone();
+        card.dynamics = dynamics;
+        card
+    }
+
+    /// Four seconds of a loud passage in the middle: input level bumps and a reduction that dips.
+    fn some_dynamics(level_db: Option<f32>) -> crate::gain_trace::Dynamics {
+        let n = crate::gain_trace::POINTS;
+        let input: Vec<f32> = (0..n)
+            .map(|i| 0.05 + 0.3 * ((i as f32 * 0.37).sin().abs()))
+            .collect();
+        let reduction: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / n as f32;
+                -(12.0 * (t * 6.0).sin().powi(2) * t).min(18.0)
+            })
+            .collect();
+        crate::gain_trace::Dynamics {
+            level_db,
+            input: input.into(),
+            reduction: reduction.into(),
+        }
+    }
+
+    fn presse_harness(card: Card) -> egui_kittest::Harness<'static, (Card, Vec<Action>)> {
+        // The device body: 8 columns, 3 rows (`device_width(8)` × `frame::BODY_H`).
+        graph_harness_sized(card, egui::vec2(492.0, 212.0))
+    }
+
+    #[test]
+    fn the_compressor_card_has_both_graphs_and_a_makeup_that_auto_makeup_dims() {
+        let h = presse_harness(presse_card(&[], Some(some_dynamics(Some(-9.0)))));
+        h.check_accessibility();
+        h.get_by_role_and_label(Role::Group, "Kennlinie");
+        h.get_by_role_and_label(Role::Group, "Reduktion \u{b7} 4 s");
+        for name in [
+            "Threshold",
+            "Ratio",
+            "Knie",
+            "Attack",
+            "Release",
+            "Makeup",
+            "Mix",
+            "Link",
+            "SC-HP",
+        ] {
+            h.get_by_role_and_label(Role::Slider, name);
+        }
+        for name in ["Lookahead", "Auto-Rel.", "Auto-Mkp.", "SC h\u{f6}ren"] {
+            h.get_by_role_and_label(Role::Button, name);
+        }
+        assert!(
+            !h.get_by_role_and_label(Role::Slider, "Makeup")
+                .accesskit_node()
+                .is_disabled(),
+            "manual makeup is live"
+        );
+        let auto = presse_harness(presse_card(&[("auto_makeup", 1.0)], None));
+        assert!(
+            auto.get_by_role_and_label(Role::Slider, "Makeup")
+                .accesskit_node()
+                .is_disabled(),
+            "makeup is dimmed under auto-makeup"
+        );
+        assert!(
+            !auto
+                .get_by_role_and_label(Role::Slider, "Threshold")
+                .accesskit_node()
+                .is_disabled()
+        );
+    }
+
+    #[test]
+    fn live_data_changes_both_compressor_graphs_and_a_bypassed_card_shows_none() {
+        let image = |card: Card| presse_harness(card).render().unwrap();
+        let idle = image(presse_card(&[], None));
+        let playing = image(presse_card(&[], Some(some_dynamics(Some(-9.0)))));
+        assert!(
+            playing != idle,
+            "level point, readouts and history are drawn"
+        );
+        let no_level = image(presse_card(&[], Some(some_dynamics(None))));
+        assert!(no_level != playing, "the level point is the live part");
+        // The level changes the readouts and the point, so a different level is a different picture.
+        let louder = image(presse_card(&[], Some(some_dynamics(Some(-3.0)))));
+        assert!(louder != playing);
+    }
+
+    #[test]
+    fn the_compressor_card_snapshot() {
+        let mut results = egui_kittest::SnapshotResults::new();
+        let mut h = presse_harness(presse_card(
+            &[("detector", 1.0), ("auto_makeup", 1.0), ("sc_hpf", 80.0)],
+            Some(some_dynamics(Some(-9.0))),
+        ));
+        h.snapshot_options("device-presse-1x", &egui_kittest::SnapshotOptions::new());
+        results.extend_harness(&mut h);
+        results.unwrap();
     }
 }

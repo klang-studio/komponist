@@ -30,6 +30,7 @@ mod dialogs;
 mod dispatch;
 mod export;
 mod export_bridges;
+mod hardware_midi;
 mod inspector;
 mod internal_devices;
 mod knurr;

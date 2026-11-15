@@ -12,10 +12,10 @@ use komponist_model::params::eq_curve;
 use super::dsp::db_to_gain;
 use super::*;
 
-const RATE: f32 = 48_000.0;
+pub(super) const RATE: f32 = 48_000.0;
 
 /// A DSP of `kind` at `rate` with all parameters at their defaults except `set`, activated.
-fn make(kind: Internal, rate: f32, set: &[(&str, f64)]) -> Box<dyn Dsp> {
+pub(super) fn make(kind: Internal, rate: f32, set: &[(&str, f64)]) -> Box<dyn Dsp> {
     let mut d = (kind.spec().dsp)();
     for (i, p) in kind.params().iter().enumerate() {
         d.set_param(i, p.default);
@@ -30,16 +30,21 @@ fn make(kind: Internal, rate: f32, set: &[(&str, f64)]) -> Box<dyn Dsp> {
     d
 }
 
-fn wire(kind: Internal, key: &str) -> usize {
+pub(super) fn wire(kind: Internal, key: &str) -> usize {
     kind.wire(&ParamId::new(key)).expect("known parameter") as usize
 }
 
-type Stereo = [Vec<f32>; 2];
+pub(super) type Stereo = [Vec<f32>; 2];
 
 /// Runs `input` through `d` in calls of `chunk` frames, inside `assert_no_alloc`. `changes` are
 /// parameter changes `(frame, wire, value)` applied at their frame (calls are split there, like
 /// `InternalProcessor` does).
-fn play(d: &mut dyn Dsp, input: &Stereo, chunk: usize, changes: &[(usize, usize, f64)]) -> Stereo {
+pub(super) fn play(
+    d: &mut dyn Dsp,
+    input: &Stereo,
+    chunk: usize,
+    changes: &[(usize, usize, f64)],
+) -> Stereo {
     let frames = input[0].len();
     let mut out = [vec![0.0; frames], vec![0.0; frames]];
     let mut cuts: Vec<usize> = changes.iter().map(|c| c.0).collect();
@@ -63,18 +68,18 @@ fn play(d: &mut dyn Dsp, input: &Stereo, chunk: usize, changes: &[(usize, usize,
     out
 }
 
-fn sine(freq: f32, amp: f32, frames: usize, rate: f32) -> Stereo {
+pub(super) fn sine(freq: f32, amp: f32, frames: usize, rate: f32) -> Stereo {
     let v: Vec<f32> = (0..frames)
         .map(|i| amp * (std::f32::consts::TAU * freq * i as f32 / rate).sin())
         .collect();
     [v.clone(), v]
 }
 
-fn silence(frames: usize) -> Stereo {
+pub(super) fn silence(frames: usize) -> Stereo {
     [vec![0.0; frames], vec![0.0; frames]]
 }
 
-fn impulse(frames: usize) -> Stereo {
+pub(super) fn impulse(frames: usize) -> Stereo {
     let mut s = silence(frames);
     s[0][0] = 1.0;
     s[1][0] = 1.0;
@@ -82,7 +87,7 @@ fn impulse(frames: usize) -> Stereo {
 }
 
 /// Deterministic noise in −1 ..= 1 (xorshift).
-fn noise(frames: usize, seed: u32) -> Stereo {
+pub(super) fn noise(frames: usize, seed: u32) -> Stereo {
     let mut x = seed.max(1);
     let mut next = || {
         x ^= x << 13;
@@ -96,20 +101,20 @@ fn noise(frames: usize, seed: u32) -> Stereo {
     ]
 }
 
-fn rms(x: &[f32]) -> f32 {
+pub(super) fn rms(x: &[f32]) -> f32 {
     (x.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / x.len() as f64).sqrt() as f32
 }
 
-fn peak(x: &[f32]) -> f32 {
+pub(super) fn peak(x: &[f32]) -> f32 {
     x.iter().fold(0.0, |m, s| m.max(s.abs()))
 }
 
-fn bits(s: &Stereo) -> Vec<u32> {
+pub(super) fn bits(s: &Stereo) -> Vec<u32> {
     s[0].iter().chain(&s[1]).map(|x| x.to_bits()).collect()
 }
 
 /// Asserts two outputs are bit-identical, naming the first difference instead of printing both.
-fn assert_same(a: &Stereo, b: &Stereo, what: &str) {
+pub(super) fn assert_same(a: &Stereo, b: &Stereo, what: &str) {
     let (x, y) = (bits(a), bits(b));
     assert_eq!(x.len(), y.len(), "{what}: length");
     if let Some(i) = x.iter().zip(&y).position(|(p, q)| p != q) {
@@ -688,6 +693,7 @@ fn the_tail_never_goes_subnormal() {
         Internal::Delay,
         Internal::Eq,
         Internal::Limiter,
+        Internal::Presse,
     ] {
         let mut d = make(kind, RATE, &[("mix", 1.0)]);
         let _ = play(&mut *d, &noise(4800, 11), 256, &[]);
@@ -879,6 +885,7 @@ fn the_output_does_not_depend_on_how_the_host_splits_the_blocks() {
         Internal::Delay,
         Internal::Hall,
         Internal::Limiter,
+        Internal::Presse,
     ] {
         let x = noise(30_000, 41);
         let reference = {
@@ -916,6 +923,7 @@ fn nan_and_infinity_in_never_come_out_and_do_not_poison_the_state() {
         Internal::Delay,
         Internal::Hall,
         Internal::Limiter,
+        Internal::Presse,
     ] {
         let mut d = make(kind, RATE, &[("mix", 1.0), ("feedback", 0.9)]);
         let mut x = noise(2000, 51);
@@ -944,6 +952,7 @@ fn extreme_parameter_values_stay_finite_and_bounded() {
         Internal::Delay,
         Internal::Hall,
         Internal::Limiter,
+        Internal::Presse,
     ] {
         for pick in [0usize, 1] {
             let mut d = make(kind, RATE, &[]);
@@ -972,6 +981,7 @@ fn sample_rates_from_8_to_192_khz_work() {
             Internal::Delay,
             Internal::Hall,
             Internal::Limiter,
+            Internal::Presse,
         ] {
             let mut d = make(kind, rate, &[("mix", 0.5)]);
             let x = noise(rate as usize / 2, 71);
@@ -1040,7 +1050,7 @@ fn through_the_processor_the_tempo_and_the_latency_arrive() {
 
 /// Mean and worst time of one 256-frame call in microseconds for `instances` instances of `kind`
 /// (called one after the other, as a single thread of the engine would), over 10 s of noise.
-fn cpu_us(kind: Internal, instances: usize, set: &[(&str, f64)]) -> (f64, f64) {
+pub(super) fn cpu_us(kind: Internal, instances: usize, set: &[(&str, f64)]) -> (f64, f64) {
     let mut dsps: Vec<Box<dyn Dsp>> = (0..instances).map(|_| make(kind, RATE, set)).collect();
     let x = noise(48_000 * 10, 77);
     let blocks = x[0].len() / 256;
@@ -1080,7 +1090,7 @@ fn cpu_per_effect() {
         })
         .collect();
     let eq_all: Vec<(&str, f64)> = eq_all.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let cases: [(&str, Internal, &[(&str, f64)]); 5] = [
+    let cases: [(&str, Internal, &[(&str, f64)]); 8] = [
         ("EQ, 6 bands active", Internal::Eq, &eq_all),
         (
             "Delay, ping-pong, feedback 0.6",
@@ -1094,6 +1104,27 @@ fn cpu_per_effect() {
             &[("room", 2.0), ("modulation", 1.0)],
         ),
         ("Limiter, lookahead", Internal::Limiter, &[("gain", 12.0)]),
+        (
+            "presse, RMS, link 100 %, defaults",
+            Internal::Presse,
+            &[("threshold", -30.0)],
+        ),
+        (
+            "presse, Peak, link 0 %, lookahead, SC-HP 120 Hz, auto-release",
+            Internal::Presse,
+            &[
+                ("threshold", -30.0),
+                ("detector", 0.0),
+                ("link", 0.0),
+                ("lookahead", 1.0),
+                ("sc_hpf", 120.0),
+            ],
+        ),
+        (
+            "presse, mix 50 %",
+            Internal::Presse,
+            &[("threshold", -30.0), ("mix", 0.5)],
+        ),
     ];
     for (name, kind, set) in cases {
         let (one, one_worst) = cpu_us(kind, 1, set);

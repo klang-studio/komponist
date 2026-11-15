@@ -180,8 +180,9 @@ pub mod metrics {
         /// Gap between the automation dot and the name (`gap:3px`).
         pub const KNOB_CELL_DOT_GAP: f32 = 3.0;
         /// Horizontal padding of a toggle button's text (`padding` of `W_tbtn` is 0; the text is
-        /// only cut before it touches the edge).
-        pub const BUTTON_PADDING_X: f32 = space::SPACE_1;
+        /// only cut before it touches the edge). 2 px, so „Lookahead“ and „Auto-Mkp.“ (51 and 49 px
+        /// in `type.device-label` semibold) fit the 56 px of one column (WP-93).
+        pub const BUTTON_PADDING_X: f32 = space::SPACE_0_5;
         /// Stroke of a wave icon (`wave_icon` `stroke-width="1.3"`).
         pub const GLYPH_STROKE: f32 = 1.3;
         /// Gap between knob and text of the large knob (`W_knobL` `gap:8px`, token layout).
@@ -315,6 +316,14 @@ pub mod metrics {
             pub const READOUT_GAP: f32 = 3.0;
             /// Distance of the XY readouts from the corners (`right:5px;bottom:3px`, `left:5px;top:3px`).
             pub const READOUT_INSET: [f32; 2] = [5.0, 3.0];
+            /// The compressor graph: width of the strip right of the plot that holds the IN, OUT and
+            /// GR readouts (`standard-1.svg`: 62 of the 184 px of a 3-column graph).
+            pub const LEVELS_STRIP_W: f32 = 62.0;
+            /// Gap between the plot and the readout strip, and the distance of the first readout
+            /// from the top (`standard-1.svg`).
+            pub const LEVELS_INSET: [f32; 2] = [8.0, 18.0];
+            /// Vertical distance from one readout's name to the next one's.
+            pub const LEVELS_PITCH: f32 = 30.0;
             /// Opacity of the XY crosshair (`stroke-opacity="0.5"`).
             pub const CROSSHAIR_OPACITY: f32 = 0.5;
             /// The flag of an edge handle (`W_wave`: `width 6, height 8` at `y = 14`).
@@ -336,6 +345,12 @@ pub mod metrics {
                 pub const XY: ([f32; 2], [f32; 2]) = ([8.0, 8.0], [8.0, 8.0]);
                 /// `W_transfer`: the full area.
                 pub const TRANSFER: ([f32; 2], [f32; 2]) = ([0.0, 0.0], [0.0, 0.0]);
+                /// `graph::compressor` (`standard-1.svg`): 4 px left of the plot, the readout strip
+                /// ([`super::LEVELS_STRIP_W`]) right of it; 14 px below for the x labels, 4 above.
+                pub const COMPRESSOR: ([f32; 2], [f32; 2]) = ([4.0, 62.0], [14.0, 4.0]);
+                /// `graph::gr_history`: the time axis over the full width, 4 px above and below the
+                /// dB range (`standard-1.svg`).
+                pub const GR_HISTORY: ([f32; 2], [f32; 2]) = ([0.0, 0.0], [4.0, 4.0]);
             }
 
             /// The envelope (`W_env`): the sustain hold between decay and release is `.22` of the

@@ -2457,6 +2457,7 @@ dependencies = [
  "komponist-tokens",
  "komponist-ui",
  "libc",
+ "midir",
  "realfft",
  "serde",
  "serde_json",

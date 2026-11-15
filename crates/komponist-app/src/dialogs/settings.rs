@@ -567,9 +567,7 @@ impl crate::App {
                 Some(enumerate(&self.audio_devices, |d| d.hosts()));
             self.dialogs.settings.devices_host = None;
             self.dialogs.settings.scroll_to.get_or_insert(section);
-            if let Some(hub) = self.engine.midi_mut() {
-                let _ = hub.refresh();
-            }
+            self.engine.scan_midi();
         }
         self.dialogs.settings.open = true;
         let cache = &mut self.dialogs.settings;
