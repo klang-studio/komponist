@@ -401,6 +401,60 @@ fn another_sample_rate_renders_at_it_and_the_device_rate_comes_back() {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Project latency
+// ------------------------------------------------------------------------------------------------
+
+/// The first frame of `wav` with a sample above the noise floor.
+fn onset(wav: &Wav) -> usize {
+    wav.samples
+        .chunks(2)
+        .position(|f| f.iter().any(|s| s.abs() > 1e-6))
+        .expect("the file has sound")
+}
+
+#[test]
+fn the_export_is_aligned_with_the_song_despite_the_project_latency() {
+    let dir = scratch("latency");
+    let float = |name: &str| ExportSettings {
+        bit_depth: BitDepth::Float32,
+        normalize: false,
+        tail_seconds: 0.25,
+        file_name: name.into(),
+        ..export_settings(&dir, ExportRange::Song)
+    };
+    // The same song with a presse on one track: once without lookahead (no latency), once with
+    // its 3 ms lookahead (144 frames at 48 kHz) that the delay compensation puts on every path.
+    let presse = komponist_builtin::Internal::Presse;
+    let lookahead = presse.wire(&komponist_model::params::ParamId::new("lookahead"));
+    let mut files = Vec::new();
+    for (name, on) in [("plain.wav", false), ("lookahead.wav", true)] {
+        let (project, device) = with_effect(one_bar_song(), presse.plugin_ref());
+        let (mut app, _) = app_in(&dir, project);
+        app.step();
+        if on {
+            let id = lookahead.expect("known parameter");
+            app.dispatch(Action::Plugin(komponist_app::PluginAction::SetParam {
+                device,
+                id,
+                value: 1.0,
+            }));
+            // The processor publishes its latency when it applies the parameter on the engine.
+            step_until(&mut app, "the latency", |a| {
+                a.engine().host().latency(device) == 144
+            });
+        }
+        export(&mut app, float(name));
+        files.push(read(&dir.join("out").join(name)));
+    }
+    let [plain, late] = &files[..] else { panic!() };
+    // Same length (song + tail), and the sound starts on the same frame: the latency is gone
+    // from the file's start instead of delaying the whole song.
+    assert_eq!(plain.frames, late.frames);
+    assert_eq!(onset(late), onset(plain));
+    assert!(onset(plain) < 48, "the song starts at frame 0 (± a few)");
+}
+
+// ------------------------------------------------------------------------------------------------
 // Cancel
 // ------------------------------------------------------------------------------------------------
 

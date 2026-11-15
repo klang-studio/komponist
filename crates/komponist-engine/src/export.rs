@@ -13,7 +13,10 @@
 //!    meters do not see the export).
 //! 2. Renders with [`Engine::render`] (`offline = true`, no deadline) into an in-memory f32
 //!    buffer: first a pre-roll of less than one tick when the range start lies between two ticks
-//!    (`Locate` takes ticks; the pre-roll is discarded), then range + tail. After every render
+//!    (`Locate` takes ticks), plus the project latency ([`Engine::project_latency`]: lookahead
+//!    of presse or Limiter, plugin latency, delay compensation), all of it discarded, so the sound
+//!    of song frame `f` is file frame `f − range.start`; then range + tail. A project without
+//!    latency renders exactly as without that skip. After every render
 //!    call it reports [`Progress`]; before every call it checks the cancel flag.
 //! 3. Peak → optional normalisation ([`normalize_gain`]) → TPDF dither ([`tpdf`], 16 and 24 bit
 //!    only; float is never dithered) → quantisation ([`quantize`]) → WAV. The file is written as
@@ -253,6 +256,9 @@ pub fn export(
     let map = &program.tempo_map;
     let rate = f64::from(job.sample_rate);
     let (from, preroll) = locate_point(map, rate, job.range.start);
+    // The sound of song frame f leaves the master at f + latency: skip that many more frames, so
+    // the file lines up with the song timeline and the delayed tail is rendered in full.
+    let preroll = preroll + engine.project_latency(program);
     let end = end_tick(map, rate, job.range.end);
     let playhead = handle.telemetry().playhead();
     send_all(

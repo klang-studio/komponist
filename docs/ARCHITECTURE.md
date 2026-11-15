@@ -553,6 +553,12 @@ special case.
 - Render into an in-memory f32 buffer (≈ 23 MB per stereo minute at 48 kHz) → peak → optional
   normalisation to −1 dBFS → TPDF dither for 16/24 bit → `hound`. The progress dialog shows the
   peak level. Tail 2 s. Range: song (up to the end of the last clip), loop, selection.
+- **The file is aligned with the song timeline.** Lookahead devices (presse, Limiter) and plugin latency delay
+  the whole mix by the project latency `out(master)` (6.8.5). The export renders that many frames more and drops
+  the first ones, so the sound of song frame `f` is file frame `f − range.start` and the tail is complete
+  (`Engine::project_latency`: `Routing::latency()` with a routing graph, else the longest track chain, plus the
+  master's active effects). Projects without latency export exactly as before. The export rate must equal the
+  rate the program was compiled at for a routing graph's latency to be exact (see 6.8.10 item 8).
 - Dither and PCM quantisation stay in `komponist-engine::export` (only one user, see §10).
 
 ### 6.8 Routing: buses, sends, sidechains (wave 9)
@@ -778,9 +784,9 @@ Generalises 6.6 (today: one delay per track before the master, `max chain latenc
 
 Offline render runs the same program and job graph through `Engine::render` (6.7, same worker pool), so buses,
 sends, sidechains and PDC render exactly as they play (tested bit-exact against realtime processing). As built, the
-export does not shift by the project latency (`Routing::latency()`, `out(master)`), as it did not before wave 9
-either: projects without buses export exactly as before. Compensating it (discard the first `out(master)` frames,
-render as many more) is an open question (6.8.10).
+export compensates the project latency (6.7): it drops the first `out(master)` frames and renders as many more at
+the end, so the file is aligned with the song and the tail is complete. Projects without latency export bit-identically
+to before.
 Per-bus stems later are one more output: copy a node's post buffer into a second render target.
 
 #### 6.8.8 Realtime constraints
@@ -815,11 +821,14 @@ must not output back into that bus).
    pre-fader sends alive. Confirm with the owner when WP-103 shows it.
 5. **Device copy and paste with a sidechain** start without one today (`NewDevice` has no field). WP-104 can carry
    it with `set_sidechain` after the insert in the same undo step.
-6. **Export and the project latency** (WP-102): should the export discard the first `out(master)` frames so the
-   file starts on time? It would change the export of projects without buses that have latency (today the whole
-   file is late by the longest chain latency).
+6. **Export and the project latency** (WP-102): resolved (owner, 2026-11-15). The export drops the first
+   `out(master)` frames and renders as many more (6.7), so the file starts on time.
 7. **Send level fast path** (WP-102): a send level drag recompiles every frame (cheap, and the gain ramps, so no
    click). A `SetSendGain` fast path like `SetTrackGain` can come with WP-103 if it is needed.
+8. **Export at another rate and the routing latency.** With a routing graph `Routing::latency()` (and the delay
+   compensation itself) holds frames of the rate the program was compiled at; an export at another rate re-activates
+   the processors but does not recompile, so the skipped latency is off by the rate ratio there. Flat programs read
+   the live processor latencies and are exact. A recompile after `set_sample_rate` in the export worker would fix both.
 
 ---
 
