@@ -27,6 +27,14 @@ use crate::views::{View, ViewCtx, centered_text};
 
 /// Names of the shell's own controls and areas (AccessKit, tests).
 pub mod names {
+    /// Status bar: a MIDI input device appeared (`name` as S07 shows it).
+    pub fn midi_connected(name: &str) -> String {
+        format!("{name} verbunden")
+    }
+    /// Status bar: a MIDI input device vanished.
+    pub fn midi_disconnected(name: &str) -> String {
+        format!("{name} getrennt")
+    }
     /// Arrangement panel title.
     pub const ARRANGEMENT: &str = "Arrangement";
     /// Browser panel title.
