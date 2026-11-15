@@ -767,7 +767,8 @@ mod tests {
                 "Limiter",
                 "presse",
                 "Arpeggiator",
-                "Tonleiter"
+                "Tonleiter",
+                "knurr"
             ]
         );
         let missing = host.missing_plugins(&project);
