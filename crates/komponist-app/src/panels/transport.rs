@@ -617,11 +617,18 @@ fn paint_master_scope(
             }
             match picture {
                 Picture::Spectrum(values) => {
-                    let last = (values.len().max(2) - 1) as f32;
-                    let points: Vec<_> = values
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| pos2(x_at(i as f32 / last), bottom - v * (bottom - top)))
+                    // One point per device pixel column, the highest value it covers: the
+                    // 256 points are about three per pixel at 1×, which would zigzag.
+                    let columns = ((inner.width() * ppp).round() as usize).clamp(2, values.len());
+                    let points: Vec<_> = (0..columns)
+                        .map(|c| {
+                            let from = c * values.len() / columns;
+                            let to = ((c + 1) * values.len() / columns).max(from + 1);
+                            let v = values[from..to].iter().fold(0.0_f32, |m, v| m.max(*v));
+                            // At the centre frequency of the points it covers.
+                            let f = (from + to - 1) as f32 / 2.0 / (values.len() - 1) as f32;
+                            pos2(x_at(f), bottom - v * (bottom - top))
+                        })
                         .collect();
                     // The fill as a strip of quads down to the floor (the curve is not convex).
                     let fill = color32(color::ACCENT_SURFACE);
