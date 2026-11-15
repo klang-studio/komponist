@@ -120,6 +120,12 @@ impl App {
             .filter(|d| d.role != DeviceRole::Instrument)
             .collect();
         if !copied.is_empty() {
+            // egui-winit sends `Event::Paste` for Strg V only while the system clipboard holds
+            // text: put a short marker there; the devices stay in the app's own clipboard.
+            self.shell.pending_clipboard_text = Some(match copied.len() {
+                1 => "komponist: 1 Gerät".to_owned(),
+                n => format!("komponist: {n} Geräte"),
+            });
             self.ui.devices.clipboard = copied;
         }
     }

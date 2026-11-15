@@ -455,6 +455,43 @@ fn strg_c_and_v_work_as_copy_and_paste_events_of_the_desktop() {
     assert_eq!(after[2].1, "LSP Para EQ x8", "behind the selected device");
 }
 
+/// The text the frames since the last call put on the system clipboard.
+fn copied_texts(h: &mut Harness<'_, App>, steps: usize) -> Vec<String> {
+    let mut texts = Vec::new();
+    for _ in 0..steps {
+        h.step();
+        texts.extend(
+            h.output()
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                    _ => None,
+                }),
+        );
+    }
+    texts
+}
+
+#[test]
+fn copying_devices_puts_a_marker_on_the_system_clipboard_so_strg_v_arrives() {
+    let (app, track, ids) = lead();
+    let mut h = harness(app);
+    let head = head_point(&h, "LSP Para EQ x8");
+    click(&mut h, head);
+    h.event(Event::Copy);
+    assert_eq!(copied_texts(&mut h, 3), ["komponist: 1 Gerät"]);
+    // The desktop now has text on the clipboard and delivers it with Strg V: that marker.
+    h.event(Event::Paste("komponist: 1 Gerät".into()));
+    h.run_steps(3);
+    assert_eq!(chain(h.state(), track).len(), ids.len() + 1);
+    // Nothing copied, nothing written.
+    h.state_mut().ui_mut().selection.devices.clear();
+    h.event(Event::Copy);
+    assert!(copied_texts(&mut h, 3).is_empty());
+}
+
 // ------------------------------------------------------------------------------------------------
 // The level feed of the Limiter's meter
 

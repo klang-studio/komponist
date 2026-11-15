@@ -138,6 +138,8 @@ pub(crate) struct ShellState {
     pub(crate) requests: Requests,
     /// A UI scale change to apply at the start of the next frame.
     pending_scale: Option<Option<f32>>,
+    /// Text for the system clipboard, written at the end of the frame (`ctx.copy_text`).
+    pub(crate) pending_clipboard_text: Option<String>,
     /// Width of the arrangement's timeline in the last frame (for "Z: einpassen").
     pub(crate) timeline_width: f32,
     /// The panel settings last written to the settings file.
@@ -430,6 +432,9 @@ impl App {
         self.draw_shell(&mut root);
         self.shell.requests = Requests::default();
         self.flush_queue();
+        if let Some(text) = self.shell.pending_clipboard_text.take() {
+            ctx.copy_text(text);
+        }
         self.update_plugin_frames(&ctx);
         self.engine.sync(&self.doc);
         self.persist_panels();
