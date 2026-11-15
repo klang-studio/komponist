@@ -140,7 +140,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 27);
+        assert_eq!(Icon::ALL.len(), 28);
     }
 
     #[test]
