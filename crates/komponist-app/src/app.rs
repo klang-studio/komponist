@@ -56,6 +56,7 @@ use crate::actions::{
 };
 use crate::device_host::{BuiltinHost, DeviceHost};
 use crate::dialogs::DialogState;
+use crate::dialogs::new_track::default_names;
 use crate::dialogs::settings::midi_label;
 use crate::dialogs::settings::{AudioDevices, FixedDevices, SystemDevices};
 use crate::engine_sync::{EngineSync, MidiChange, SyncEvent};
@@ -736,7 +737,11 @@ impl App {
     pub(crate) fn device_name(&self, device: DeviceId) -> String {
         self.project().find_device(device).map_or_else(
             || self.lang.status_device_unnamed(device.0),
-            |(_, _, d)| d.plugin.name.clone(),
+            |(_, _, d)| {
+                // A built-in device shows its name in the UI language ("Hall" is "Reverb").
+                komponist_builtin::device_name(self.lang, &d.plugin)
+                    .map_or_else(|| d.plugin.name.clone(), str::to_owned)
+            },
         )
     }
 
@@ -1369,7 +1374,10 @@ impl App {
                 }
             }
             EditAction::AddTrack(spec) => {
-                if let Some(id) = self.apply_with("undo-add-track", |p| edits::add_track(p, spec)) {
+                let names = default_names(self.lang);
+                if let Some(id) =
+                    self.apply_with("undo-add-track", |p| edits::add_track_in(p, spec, &names))
+                {
                     self.select_tracks(vec![id], SelectMode::Replace);
                 }
             }
@@ -1554,15 +1562,19 @@ impl App {
             }
             EditAction::GroupTracks(tracks) => self.group_tracks(tracks),
             EditAction::SendToNewBus(senders) => {
+                let names = default_names(self.lang);
                 if let Some(id) = self.apply_with("undo-send-to-new-bus", |p| {
-                    edits::add_bus(p, edits::NewBus::effect(senders))
+                    edits::add_bus_in(p, edits::NewBus::effect(senders), &names)
                 }) {
                     self.select_tracks(vec![id], SelectMode::Replace);
                     self.request_rename(id);
                 }
             }
             EditAction::AddBus(spec) => {
-                if let Some(id) = self.apply_with("undo-add-bus", |p| edits::add_bus(p, spec)) {
+                let names = default_names(self.lang);
+                if let Some(id) =
+                    self.apply_with("undo-add-bus", |p| edits::add_bus_in(p, spec, &names))
+                {
                     self.select_tracks(vec![id], SelectMode::Replace);
                 }
             }
@@ -1635,8 +1647,9 @@ impl App {
         if tracks.is_empty() {
             return;
         }
+        let names = default_names(self.lang);
         if let Some(id) = self.apply_with("undo-group-tracks", |p| {
-            edits::add_bus(p, edits::NewBus::group(tracks))
+            edits::add_bus_in(p, edits::NewBus::group(tracks), &names)
         }) {
             self.select_tracks(vec![id], SelectMode::Replace);
             self.request_rename(id);
@@ -1721,7 +1734,10 @@ impl App {
             index,
             arm_exclusive: true,
         };
-        if let Some(id) = self.apply_with("undo-new-midi-track", |p| edits::add_track(p, spec)) {
+        let names = default_names(self.lang);
+        if let Some(id) = self.apply_with("undo-new-midi-track", |p| {
+            edits::add_track_in(p, spec, &names)
+        }) {
             self.select_tracks(vec![id], SelectMode::Replace);
         }
     }
@@ -1739,11 +1755,12 @@ impl App {
         } else {
             "undo-new-midi-track"
         };
+        let names = default_names(self.lang);
         let made = self.apply_with(label, |p| {
             let mut p = p.clone();
             let mut ids = Vec::with_capacity(tracks.len());
             for spec in tracks {
-                let (next, id) = edits::add_track(&p, spec)?;
+                let (next, id) = edits::add_track_in(&p, spec, &names)?;
                 p = next;
                 ids.push(id);
             }
@@ -1758,6 +1775,7 @@ impl App {
     /// last track, one undo step, the last one selected.
     fn create_buses(&mut self, spec: &crate::dialogs::new_track::Spec) {
         let count = spec.count;
+        let names = default_names(self.lang);
         let made = self.apply_with("undo-add-bus", |p| {
             let mut p = p.clone();
             let mut ids = Vec::with_capacity(count);
@@ -1769,12 +1787,13 @@ impl App {
                         format!("{n} {i}")
                     }
                 });
-                let (next, id) = edits::add_bus(
+                let (next, id) = edits::add_bus_in(
                     &p,
                     edits::NewBus {
                         name,
                         ..edits::NewBus::default()
                     },
+                    &names,
                 )?;
                 p = next;
                 ids.push(id);

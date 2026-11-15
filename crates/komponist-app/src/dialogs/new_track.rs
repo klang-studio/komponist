@@ -13,7 +13,7 @@
 
 use egui::{Color32, Context, Id, Key, Modifiers, Role, Sense, Ui, UiBuilder, WidgetInfo, vec2};
 use komponist_i18n::Lang;
-use komponist_model::edits::{self, NewTrack};
+use komponist_model::edits::{self, DefaultNames, NewTrack};
 use komponist_model::{PluginRef, Project};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, space, typography};
@@ -147,13 +147,24 @@ pub struct View<'a> {
     pub instruments: &'a dyn Fn(&str) -> Vec<Row>,
 }
 
-/// The name a new bus gets when none is given: „Bus 1“, „Bus 2“, … (`edits::add_bus`).
-pub fn auto_bus_name(project: &Project) -> String {
-    edits::numbered_track_name(project, edits::DEFAULT_BUS_NAME)
+/// The words default names are made of in `t` (`MIDI`, `Drums`, `Bus`, `Gruppe` / `Group`): what
+/// `edits::add_track_in` and `edits::add_bus_in` take for a track or bus without a name.
+pub fn default_names(t: Lang) -> DefaultNames {
+    DefaultNames {
+        track: t.default_name_track(),
+        drums: t.default_name_drums(),
+        bus: t.default_name_bus(),
+        group: t.default_name_group(),
+    }
 }
 
-/// The name a new track with `instrument` gets when none is given (`edits::add_track`).
-pub fn auto_name(project: &Project, instrument: Option<&PluginRef>) -> String {
+/// The name a new bus gets when none is given: „Bus 1“, „Bus 2“, … (`edits::add_bus_in`).
+pub fn auto_bus_name(t: Lang, project: &Project) -> String {
+    edits::numbered_track_name(project, default_names(t).bus)
+}
+
+/// The name a new track with `instrument` gets when none is given (`edits::add_track_in`).
+pub fn auto_name(t: Lang, project: &Project, instrument: Option<&PluginRef>) -> String {
     let spec = NewTrack {
         name: None,
         hue: None,
@@ -161,7 +172,7 @@ pub fn auto_name(project: &Project, instrument: Option<&PluginRef>) -> String {
         index: None,
         arm_exclusive: false,
     };
-    edits::add_track(project, spec)
+    edits::add_track_in(project, spec, &default_names(t))
         .ok()
         .and_then(|(p, id)| p.track(id).map(|t| t.name.clone()))
         .unwrap_or_default()
@@ -240,9 +251,9 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                 }
                 row(ui, t.new_track_name(), |ui| {
                     let hint = if s.kind == KIND_BUS {
-                        auto_bus_name(view.project)
+                        auto_bus_name(t, view.project)
                     } else {
-                        auto_name(view.project, s.instrument.as_ref())
+                        auto_name(t, view.project, s.instrument.as_ref())
                     };
                     if !s.name_touched {
                         s.name.clone_from(&hint);
@@ -473,13 +484,15 @@ mod tests {
         let spec = s.spec();
         assert!(spec.bus && spec.instrument.is_none());
         let p = Project::new("x");
-        assert_eq!(auto_bus_name(&p), "Bus 1");
+        assert_eq!(auto_bus_name(Lang::De, &p), "Bus 1");
+        assert_eq!(auto_bus_name(Lang::En, &p), "Bus 1");
     }
 
     #[test]
     fn the_automatic_name_is_the_one_add_track_gives() {
         let p = Project::new("x");
-        assert_eq!(auto_name(&p, None), "MIDI");
+        assert_eq!(auto_name(Lang::De, &p, None), "MIDI");
+        assert_eq!(auto_name(Lang::En, &p, None), "MIDI");
         let (p, _) = edits::add_track(
             &p,
             NewTrack {
@@ -491,6 +504,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(auto_name(&p, None), "MIDI 2");
+        assert_eq!(auto_name(Lang::De, &p, None), "MIDI 2");
+        assert_eq!(auto_name(Lang::En, &p, None), "MIDI 2");
     }
 }

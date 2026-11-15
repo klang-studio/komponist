@@ -148,7 +148,7 @@ pub fn template(t: Lang, hexa: PluginRef) -> Project {
     let rows = p
         .track(drums)
         .and_then(|t| step_rows::instrument(t))
-        .map(|d| step_rows::rows_for(Some(&d.plugin), &[]))
+        .map(|d| step_rows::rows_for_in(t, Some(&d.plugin), &[]))
         .unwrap_or_default();
     let bar = Tick(PPQ * i64::from(p.meter.num));
     let clip = NewClip {
