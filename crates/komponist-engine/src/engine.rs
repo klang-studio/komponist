@@ -33,10 +33,16 @@
 //!   the wrap), and **no** `reset`: the engine keeps calling every processor while stopped, so
 //!   releases, delays and reverbs ring out. MIDI effects get their `reset` through the
 //!   `AllNotesOff` (they have no tail).
-//! - Second Stop (`Command::Stop` while already stopped): the hard cut. Same events, and `reset`
-//!   on every processor of the program right away, so the output is silent in the same block.
-//!   The app sends it when Stop is pressed while stopped; export sends two Stops before it
-//!   starts, so the song's rendering begins without the live tails.
+//! - Second Stop (`Command::Stop` while already stopped): the hard cut. Note-offs and
+//!   `AllNotesOff` at once, and the final output (after master and metronome) fades linearly to
+//!   0 over 5 ms (`CUT_SECONDS`), across block boundaries, so the cut does not click. When the
+//!   fade is over the rest of that call is silent and every processor of the program is `reset`
+//!   once, after the call. A `Play` or `Record` (from stop), a `SetProgram`, `InsertProcessor` or
+//!   `RemoveProcessor` arriving during the fade finish the cut at once (reset, full level again);
+//!   another `Stop` and a `Locate` leave it running. The app sends it when Stop is pressed while
+//!   stopped; export sends two Stops and a `SetProgram` before it starts, which complete the cut
+//!   in the same command drain, so the song's rendering begins without the live tails and
+//!   without any ramp.
 //! - Program swap: per-track state (active notes, probability RNG, fader position, fast-path
 //!   values, delay line) follows the track id. Fast-path values end with the swap. A device whose
 //!   bypass turns on gets `reset` once.
@@ -173,6 +179,7 @@ impl Engine {
             master_fader: Fader::at((1.0, 1.0)),
             master_gain: None,
             metronome: Metronome::default(),
+            cut: None,
             bufs: Bufs::new(),
             events: EventList::new(MAX_EVENTS_PER_BLOCK),
             fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
@@ -226,6 +233,7 @@ impl Engine {
         let (from, to) = (f64::from(core.sample_rate), f64::from(sample_rate));
         core.transport.rescale((&map, from), (&map, to));
         core.sample_rate = sample_rate;
+        core.finish_cut();
         core.metronome.silence();
         let mut errors = Vec::new();
         for (index, slot) in core.slots.iter_mut().enumerate() {
@@ -375,6 +383,16 @@ impl TrackState {
 }
 
 /// Everything `process` touches.
+/// Length of the fade before a hard cut resets the processors, in seconds.
+const CUT_SECONDS: f64 = 0.005;
+
+/// A hard cut in progress: `pos` of `len` frames of the fade are done.
+#[derive(Clone, Copy)]
+struct Cut {
+    pos: u32,
+    len: u32,
+}
+
 struct Core {
     sample_rate: f32,
     max_block: usize,
@@ -392,6 +410,8 @@ struct Core {
     master_fader: Fader,
     master_gain: Option<f32>,
     metronome: Metronome,
+    /// The fade of a hard cut in progress (`Command::Stop` while stopped).
+    cut: Option<Cut>,
     bufs: Bufs,
     /// Events of the current instrument call.
     events: EventList,
@@ -649,6 +669,7 @@ impl Core {
             }
             done = seg_end;
         }
+        self.apply_cut(&mut out_l[..n], &mut out_r[..n]);
         out_l[n..].fill(0.0);
         out_r[n..].fill(0.0);
         self.live_notes.clear();
@@ -698,6 +719,7 @@ impl Core {
         let rate = f64::from(self.sample_rate);
         match command {
             Command::Play => {
+                self.finish_cut();
                 if !self.transport.playing() {
                     self.start(TransportState::Playing);
                 }
@@ -707,7 +729,11 @@ impl Core {
                 let hard = !self.transport.playing();
                 self.close_captures(self.transport.tick(&self.song, rate));
                 self.transport.state = TransportState::Stopped;
-                self.silence(hard);
+                if hard {
+                    self.begin_cut();
+                } else {
+                    self.silence(false);
+                }
             }
             Command::Locate(tick) => {
                 if self.transport.playing() {
@@ -721,6 +747,7 @@ impl Core {
             }
             Command::Record { from } => match self.transport.state {
                 TransportState::Stopped => {
+                    self.finish_cut();
                     let from = from.max(Tick::ZERO);
                     let bars = i64::from(self.song.count_in_bars);
                     let start = Tick(from.0 - bars * self.song.map.meter.ticks_per_bar());
@@ -743,8 +770,13 @@ impl Core {
                 TransportState::CountIn => self.transport.state = TransportState::Playing,
                 TransportState::Stopped | TransportState::Playing => {}
             },
-            Command::SetProgram(program) => self.install(program),
+            Command::SetProgram(program) => {
+                // The cut resets the processors of the program it fades out.
+                self.finish_cut();
+                self.install(program);
+            }
             Command::InsertProcessor { slot, processor } => {
+                self.finish_cut();
                 self.forget_slot(slot);
                 match self.slots.get_mut(slot.0 as usize) {
                     Some(entry) => {
@@ -761,6 +793,7 @@ impl Core {
                 }
             }
             Command::RemoveProcessor { slot } => {
+                self.finish_cut();
                 self.forget_slot(slot);
                 if let Some(entry) = self.slots.get_mut(slot.0 as usize)
                     && let Some(old) = entry.processor.take()
@@ -871,6 +904,49 @@ impl Core {
         let count = self.track_count();
         for &index in &self.map[..count] {
             self.tracks[usize::from(index)].seq.chase();
+        }
+    }
+
+    /// RT. Starts the hard cut: note-offs and `AllNotesOff` now, the output fades to silence over
+    /// [`CUT_SECONDS`] and every processor is reset when the fade is over. A cut already running
+    /// goes on unchanged.
+    fn begin_cut(&mut self) {
+        if self.cut.is_some() {
+            return;
+        }
+        let len = (CUT_SECONDS * f64::from(self.sample_rate)).round().max(1.0) as u32;
+        self.cut = Some(Cut { pos: 0, len });
+        self.silence(false);
+    }
+
+    /// RT. Ends a running hard cut at once: resets every processor and gives the output its full
+    /// level back (the processors are silent after the reset). No-op without a cut.
+    fn finish_cut(&mut self) {
+        if self.cut.take().is_some() {
+            self.silence(true);
+        }
+    }
+
+    /// RT. Applies the cut's gain ramp to the final output of this call (after master and
+    /// metronome) and ends the cut once the ramp is over: the rest of the call is silent, the
+    /// processors are reset after it.
+    fn apply_cut(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
+        let Some(cut) = self.cut.as_mut() else {
+            return;
+        };
+        let inv = 1.0 / cut.len as f32;
+        for (l, r) in out_l.iter_mut().zip(out_r.iter_mut()) {
+            let gain = if cut.pos < cut.len {
+                1.0 - cut.pos as f32 * inv
+            } else {
+                0.0
+            };
+            cut.pos = cut.pos.saturating_add(1);
+            *l *= gain;
+            *r *= gain;
+        }
+        if cut.pos >= cut.len {
+            self.finish_cut();
         }
     }
 

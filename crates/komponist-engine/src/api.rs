@@ -25,8 +25,10 @@ pub enum Command {
     Play,
     /// Stop playback and recording. Sounding notes get note-offs and processors `AllNotesOff`,
     /// but are not reset: releases, delays and reverbs ring out. A Stop while already stopped is
-    /// the hard cut: processors are reset, the output is silent at once. The position stays (the
-    /// second Stop's jump to the loop start or 0 is a `Locate` from the UI).
+    /// the hard cut: note-offs at once, the output fades to 0 over 5 ms (no click), then every
+    /// processor is reset. A later `Play`, `Record`, `SetProgram` or processor insert/remove
+    /// finishes the cut at once (reset); another `Stop` or a `Locate` leaves it running. The
+    /// position stays (the second Stop's jump to the loop start or 0 is a `Locate` from the UI).
     Stop,
     /// Move the playhead to `Tick` (≥ 0). While playing: note-offs for sounding notes, playback
     /// continues from there and chases the notes sounding at `Tick`; tails ring on (no reset).

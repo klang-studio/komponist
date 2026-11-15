@@ -3,7 +3,9 @@
 //!
 //! [`export`] runs one [`ExportJob`] on a worker thread, faster than real time:
 //!
-//! 1. Queues `Stop` twice (the second is the hard cut: no live tail leaks into the file),
+//! 1. Queues `Stop` twice (the second is the hard cut: no live tail leaks into the file; the
+//!    `SetProgram` behind it completes the cut in the same command drain, so no fade ramp reaches
+//!    the render),
 //!    `SetProgram` with an export variant of the caller's program, `Locate` and
 //!    `Play` on the engine's command queue. The export program has the loop and the metronome
 //!    off, no note starting at or after the range end, notes still sounding there cut at it (so
