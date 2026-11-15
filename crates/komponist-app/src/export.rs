@@ -693,7 +693,7 @@ impl App {
                     .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
                 let text = self.lang.export_done(
                     &file,
-                    &view::minutes_seconds(run.seconds),
+                    view::minutes_seconds(run.seconds),
                     run.job.bit_depth.bits(),
                 ) + &view::dropped_text(self.lang, &dropped);
                 let kind = if dropped.is_empty() {
