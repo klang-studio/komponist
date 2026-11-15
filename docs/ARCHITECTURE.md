@@ -559,8 +559,11 @@ special case.
   the whole mix by the project latency `out(master)` (6.8.5). The export renders that many frames more and drops
   the first ones, so the sound of song frame `f` is file frame `f − range.start` and the tail is complete
   (`Engine::project_latency`: `Routing::latency()` with a routing graph, else the longest track chain, plus the
-  master's active effects). Projects without latency export exactly as before. The export rate must equal the
-  rate the program was compiled at for a routing graph's latency to be exact (see 6.8.10 item 8).
+  master's active effects). Projects without latency export exactly as before. Skip and compensation must come from
+  the same processors at the export rate: once the devices run at it, the worker compiles the project again against the
+  engine's processors (`komponist_engine::export::recompile`, after `Engine::settle` applied the queued commands, e.g. a
+  lookahead switched a moment before), so the program's delay compensation and `Routing::latency()` are in export-rate
+  frames (see 6.8.10 item 8). The stream gets the program the app compiled back afterwards.
 - Dither and PCM quantisation stay in `komponist-engine::export` (only one user, see §10).
 
 ### 6.8 Routing: buses, sends, sidechains (wave 9)
@@ -827,10 +830,11 @@ must not output back into that bus).
    `out(master)` frames and renders as many more (6.7), so the file starts on time.
 7. **Send level fast path** (WP-102): a send level drag recompiles every frame (cheap, and the gain ramps, so no
    click). A `SetSendGain` fast path like `SetTrackGain` can come with WP-103 if it is needed.
-8. **Export at another rate and the routing latency.** With a routing graph `Routing::latency()` (and the delay
-   compensation itself) holds frames of the rate the program was compiled at; an export at another rate re-activates
-   the processors but does not recompile, so the skipped latency is off by the rate ratio there. Flat programs read
-   the live processor latencies and are exact. A recompile after `set_sample_rate` in the export worker would fix both.
+8. **Export at another rate and the routing latency:** resolved (2026-11-15). The export worker compiles the project
+   again against the engine's processors after the re-activation (`komponist_engine::export::recompile`), so the
+   routing latency and the delay compensation are in frames of the export rate and agree with the skipped latency.
+   The same step fixed a race at the same rate: a latency published after the app's last compile (a lookahead switched
+   right before the export) made the skip and the compensation disagree.
 
 ---
 

@@ -454,6 +454,119 @@ fn the_export_is_aligned_with_the_song_despite_the_project_latency() {
     assert!(onset(plain) < 48, "the song starts at frame 0 (± a few)");
 }
 
+/// How [`latency_pair`] sets up the song.
+#[derive(Clone, Copy)]
+struct Pair {
+    /// A send from the presse track to a bus: the program has a routing graph.
+    routed: bool,
+    /// Only the presse track plays, so its own arrival time decides the onset (with the other
+    /// tracks sounding, the onset hides how the presse track lines up with them).
+    only_presse_track: bool,
+    /// Wait for the processor to publish its latency before the export starts (the app's usual
+    /// state); `false` starts right after the parameter change.
+    wait: bool,
+    rate: u32,
+}
+
+/// The same song once with and once without the presse lookahead (3 ms), exported at `pair.rate`
+/// while the null backend runs at its own rate. Returns (plain, with lookahead).
+fn latency_pair(name: &str, pair: Pair) -> (Wav, Wav) {
+    use komponist_model::edits::NewBus;
+    let dir = scratch(name);
+    let presse = komponist_builtin::Internal::Presse;
+    let lookahead = presse.wire(&komponist_model::params::ParamId::new("lookahead"));
+    let mut files = Vec::new();
+    for (file, on) in [("plain.wav", false), ("lookahead.wav", true)] {
+        let (mut project, device) = with_effect(one_bar_song(), presse.plugin_ref());
+        let presse_track = project.tracks[1].id;
+        if pair.routed {
+            project = edits::add_bus(&project, NewBus::effect(vec![presse_track]))
+                .unwrap()
+                .0;
+        }
+        if pair.only_presse_track {
+            for track in &mut project.tracks {
+                if track.id != presse_track {
+                    Arc::make_mut(track).clips.clear();
+                }
+            }
+        }
+        let (mut app, _) = app_in(&dir, project);
+        app.step();
+        if on {
+            let id = lookahead.expect("known parameter");
+            app.dispatch(Action::Plugin(komponist_app::PluginAction::SetParam {
+                device,
+                id,
+                value: 1.0,
+            }));
+            if pair.wait {
+                // The processor publishes its latency when it applies the parameter on the engine.
+                step_until(&mut app, "the latency", |a| {
+                    a.engine().host().latency(device) == 144
+                });
+            }
+        }
+        let settings = ExportSettings {
+            bit_depth: BitDepth::Float32,
+            normalize: false,
+            tail_seconds: 0.25,
+            sample_rate: pair.rate,
+            file_name: file.into(),
+            ..export_settings(&dir, ExportRange::Song)
+        };
+        export(&mut app, settings);
+        files.push(read(&dir.join("out").join(file)));
+    }
+    let late = files.pop().unwrap();
+    let plain = files.pop().unwrap();
+    (plain, late)
+}
+
+/// The two files have the same length, and the sound starts on the same frame.
+fn assert_aligned(what: &str, plain: &Wav, late: &Wav) {
+    assert_eq!(plain.frames, late.frames, "{what}: same length");
+    assert_eq!(onset(late), onset(plain), "{what}: same onset");
+    let limit = plain.spec.sample_rate as usize / 1000;
+    assert!(onset(plain) < limit, "{what}: the song starts at frame 0");
+}
+
+#[test]
+fn a_routed_export_at_another_rate_is_aligned_like_at_the_device_rate() {
+    // The routing latency and the delay compensation are compiled in frames of one rate: the
+    // export worker compiles again at the export rate, so 96 kHz lines up like 48 kHz.
+    for rate in [48_000, 96_000] {
+        let pair = Pair {
+            routed: true,
+            only_presse_track: true,
+            wait: true,
+            rate,
+        };
+        let (plain, late) = latency_pair(&format!("routed-{rate}"), pair);
+        assert_eq!(plain.spec.sample_rate, rate);
+        assert_aligned(&format!("{rate} Hz"), &plain, &late);
+    }
+}
+
+#[test]
+fn an_export_right_after_a_latency_change_is_aligned() {
+    // The processor has not applied the parameter when the export starts: the skip and the delay
+    // compensation must still agree (they come from the same processors in the worker). Repeated
+    // because the engine thread of the null backend races with the start.
+    for round in 0..6 {
+        for routed in [false, true] {
+            let pair = Pair {
+                routed,
+                only_presse_track: round % 2 == 0,
+                wait: false,
+                rate: 48_000,
+            };
+            let (plain, late) = latency_pair(&format!("immediate-{round}-{routed}"), pair);
+            assert_aligned(&format!("round {round}, routed {routed}"), &plain, &late);
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // Cancel
 // ------------------------------------------------------------------------------------------------

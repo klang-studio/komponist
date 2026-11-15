@@ -298,6 +298,30 @@ impl Engine {
         self.core.pool.as_ref().map_or(0, Pool::threads)
     }
 
+    /// Non-RT. The latency in frames of the processor in `slot` at the current rate, as it reports
+    /// it now; 0 for an empty slot, a failed processor or a slot that does not exist.
+    pub fn processor_latency(&self, slot: SlotId) -> u32 {
+        self.core
+            .slots
+            .get(slot.0 as usize)
+            .filter(|slot| !slot.failed)
+            .and_then(|slot| slot.processor.as_ref())
+            .map_or(0, |p| p.latency())
+    }
+
+    /// Non-RT (engine out of the audio callback). Applies the queued commands: renders single
+    /// frames until the queue is empty (at most a few rounds: a command that retires garbage waits
+    /// while nobody collects it), so processors report the latency their parameters give them and
+    /// the program is the one sent last. The export calls it before it reads latencies.
+    pub fn settle(&mut self) {
+        for _ in 0..16 {
+            if self.core.commands.is_empty() {
+                break;
+            }
+            self.render(1);
+        }
+    }
+
     /// Non-RT. The project latency of `program` in frames: the delay at which a note's sound
     /// reaches the output, `out(master)` of ARCHITECTURE §6.8.5. With a routing graph it is
     /// [`Routing::latency`] (every path lined up at the master); in a flat program (which has no
@@ -310,10 +334,7 @@ impl Engine {
             chain
                 .iter()
                 .filter(|s| !s.bypass)
-                .filter_map(|s| self.core.slots.get(s.slot.0 as usize))
-                .filter(|slot| !slot.failed)
-                .filter_map(|slot| slot.processor.as_ref())
-                .map(|p| u64::from(p.latency()))
+                .map(|s| u64::from(self.processor_latency(s.slot)))
                 .sum()
         };
         let tracks = if program.routing.is_flat() {
