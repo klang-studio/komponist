@@ -128,6 +128,83 @@ fn undo_and_redo_of_a_hexa_patch_change_reach_the_running_processor() {
     assert_eq!(note_peak(&mut sync, track), peak_b, "redo: the new patch");
 }
 
+/// Peak of `frames` frames of the held engine, in pieces of 10 ms: the quietest piece.
+fn quietest(sync: &mut EngineSync, frames: usize) -> f32 {
+    let (l, r) = sync.run_held_capture(frames, &[], 0).expect("held engine");
+    l.chunks(480)
+        .zip(r.chunks(480))
+        .map(|(l, r)| l.iter().chain(r).fold(0.0_f32, |m, s| m.max(s.abs())))
+        .fold(f32::INFINITY, f32::min)
+}
+
+#[test]
+fn undo_and_redo_of_a_hexa_knob_keep_a_held_note_sounding() {
+    // #19: the patch is diffed into parameters, so the running processor stays and a held note
+    // sounds on through undo and redo; only a change no parameter reaches makes a fresh one.
+    let project = demo_project();
+    let (track, synth) = hexa_track(&project);
+    let mut doc = Document::new(project);
+    let mut sync = null_sync(Box::new(BuiltinHost::new()));
+    sync.sync(&doc);
+    sync.hold_engine().expect("engine held");
+    let patch = |doc: &Document| {
+        let device = doc.project().find_device(synth).unwrap().2;
+        komponist_builtin::decode_state(device.state.as_deref()).unwrap()
+    };
+    // A sustaining patch, so the note is heard as long as it is held.
+    let before = set_state(&mut doc, synth, hexa_state(0));
+    follow(&mut sync, &doc, &before, None);
+    let original = patch(&doc);
+
+    sync.send(Command::LiveNote {
+        track,
+        key: 60,
+        velocity: 100,
+    });
+    assert!(quietest(&mut sync, 9600) > 1e-3, "the note sounds");
+    let reloads = sync.device_reloads();
+
+    // A tracked knob change (as a paste over or a cancelled gesture would be), undo, redo.
+    let volume = komponist_builtin::device::param(&komponist_model::params::ParamId::new("volume"))
+        .unwrap()
+        .field;
+    let mut turned = original;
+    volume.set(&mut turned, volume.get(&original) * 0.5);
+    let before = set_state(&mut doc, synth, komponist_builtin::encode_state(&turned));
+    follow(&mut sync, &doc, &before, None);
+    assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after the change");
+    undo(&mut sync, &mut doc);
+    assert_eq!(patch(&doc), original);
+    assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after undo");
+    redo(&mut sync, &mut doc);
+    assert_eq!(patch(&doc), turned);
+    assert!(quietest(&mut sync, 9600) > 1e-3, "sounds after redo");
+    assert_eq!(sync.device_reloads(), reloads, "no fresh processor");
+
+    // The same patch from a fresh processor sounds the same: the parameters arrived.
+    sync.send(Command::LiveNote {
+        track,
+        key: 60,
+        velocity: 0,
+    });
+    sync.run_held(96_000, &[], 0);
+    let held = note_peak(&mut sync, track);
+    sync.reload_device(doc.project(), synth);
+    assert_eq!(
+        note_peak(&mut sync, track),
+        held,
+        "redo reached the processor"
+    );
+
+    // A preset with other filters or effects is no parameter: a fresh processor.
+    let reloads = sync.device_reloads();
+    let before = set_state(&mut doc, synth, hexa_state(17));
+    follow(&mut sync, &doc, &before, None);
+    assert_eq!(sync.device_reloads(), reloads + 1);
+    undo(&mut sync, &mut doc);
+    assert_eq!(sync.device_reloads(), reloads + 2);
+}
+
 #[test]
 fn undo_and_redo_of_an_internal_devices_params_reach_the_running_processor() {
     let project = demo_project();

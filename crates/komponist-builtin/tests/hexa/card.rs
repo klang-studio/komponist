@@ -171,6 +171,74 @@ fn a_card_event_reaches_the_running_patch_like_the_document_side_set() {
     assert_eq!(*proc.patch(), expected);
 }
 
+/// Plays `changes` into a processor running `from` and returns its patch afterwards.
+fn applied(from: hexa_core::Patch, changes: &[(u32, f64)]) -> hexa_core::Patch {
+    let events: Vec<_> = changes
+        .iter()
+        .map(|&(id, value)| (0, EventKind::Param { id, value }))
+        .collect();
+    let mut proc = activated(from);
+    let _ = play(&mut proc, 256, 256, &events);
+    *proc.patch()
+}
+
+#[test]
+fn param_changes_turn_the_running_patch_into_the_new_one_or_say_they_cannot() {
+    // #19: undo and redo of a knob turn reach a running hexa as parameters.
+    let init = default_patch().sanitized();
+    assert_eq!(device::param_changes(&init, &init), Some(vec![]));
+    let mut turned = init;
+    let ratio = device::param(&ParamId::new("op2_ratio")).unwrap();
+    ratio.field.set(&mut turned, 3.5);
+    assert_eq!(
+        device::param_changes(&init, &turned),
+        Some(vec![(ratio.wire, 3.5)])
+    );
+    assert_eq!(
+        device::param_changes(&turned, &init),
+        Some(vec![(ratio.wire, ratio.field.get(&init))])
+    );
+
+    // Several fields at once, the algorithm among them (it rewrites the routing first).
+    let set = |patch: &mut hexa_core::Patch, key: &str, v: f64| {
+        let field = device::param(&ParamId::new(key)).unwrap().field;
+        field.set(patch, v);
+    };
+    let mut five = init;
+    set(&mut five, "algorithm", 5.0);
+    let mut many = five;
+    for (key, v) in [("algorithm", 12.0), ("op1_level", 0.5), ("tune", -3.0)] {
+        set(&mut many, key, v);
+    }
+    for (from, to) in [(init, many), (five, many), (many, five)] {
+        let changes = device::param_changes(&from, &to).expect("card fields only");
+        assert_eq!(applied(from, &changes), to);
+    }
+    // Init's routing is no algorithm („Frei“): no parameter goes back to it.
+    assert_eq!(device::param_changes(&many, &init), None);
+
+    // Legato and Mono are both "mono" on the card: no parameter tells them apart.
+    let mut mono = init;
+    mono.voice_mode = hexa_core::VoiceMode::Mono;
+    let mut legato = init;
+    legato.voice_mode = hexa_core::VoiceMode::Legato;
+    assert_eq!(device::param_changes(&mono, &legato), None);
+
+    // Between factory presets: whenever parameters suffice, they give exactly the new patch;
+    // presets with other filters or effects need a fresh processor.
+    let mut none = 0;
+    for a in 0..PRESET_COUNT {
+        let b = (a + 1) % PRESET_COUNT;
+        let (from, to) = (preset_patch(a).unwrap(), preset_patch(b).unwrap());
+        let (from, to) = (from.sanitized(), to.sanitized());
+        match device::param_changes(&from, &to) {
+            Some(changes) => assert_eq!(applied(from, &changes), to, "{a} → {b}"),
+            None => none += 1,
+        }
+    }
+    assert!(none > 0, "some presets differ beyond the card");
+}
+
 #[test]
 fn the_layout_validates_for_every_operator_and_shows_every_card_parameter() {
     let known = |id: &ParamId| device::param(id).is_some();

@@ -76,6 +76,11 @@ pub const MAX_TRACKS: usize = 128;
 /// Most MIDI effects in front of one instrument; the compiler drops further ones.
 pub const MAX_STAGES: usize = 8;
 
+/// Distinct parameters (`Command::SetParam`) that can wait for one slot until its next processor
+/// call; further ones are dropped and counted. A sender that diffs a whole state into parameters
+/// (`EngineSync::sync_device_states`) replaces the processor instead when the diff is larger.
+pub const MAX_PENDING_PARAMS: usize = 16;
+
 /// Size of the engine's processor slot table ([`SlotId`] `0 .. MAX_SLOTS`).
 pub const MAX_SLOTS: usize = 1024;
 

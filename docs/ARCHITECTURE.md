@@ -295,11 +295,14 @@ without buses has every track's output on the master and no sends, which is the 
   entry, reset or dropdown choice is one step; a sample load, replace or clear is one step. The
   value goes into the device state (`edits::set_device_state`) and, for hexa and the internal
   devices, to the running processor as `SetParam` on the engine's fast path: the app does **not**
-  run `EngineSync::sync_device_states` for it (that hands hexa a fresh processor), so a drag
-  neither clicks nor recompiles per frame. Undo, redo, a cancelled gesture, presets and pastes do
-  follow the document that way. A bridged plugin's own edits and card parameters arrive as state
-  snapshots; they are tracked too, **coalesced** per device (snapshots within 1 s amend one step,
-  `Document::amend`), named „<Parameter> ändern“ or „<Plugin>: Zustand ändern“, and a snapshot
+  run `EngineSync::sync_device_states` for it, so a drag neither clicks nor recompiles per frame.
+  Undo, redo, a cancelled gesture, presets and pastes do follow the document that way: the values
+  that differ go to the running processor as `SetParam`s, for hexa its card parameters
+  (`komponist_builtin::device::param_changes`, #19), so a held note sounds on through undo and
+  redo; only a hexa change no card parameter reaches (filters, effects, modulation, as between most
+  presets) or one larger than the engine's per-slot parameter queue gives hexa a fresh processor.
+  A bridged plugin's own edits and card parameters arrive as state snapshots; they are tracked
+  too, **coalesced** per device (snapshots within 1 s amend one step, `Document::amend`), named „<Parameter> ändern“ or „<Plugin>: Zustand ändern“, and a snapshot
   equal to the stored state is skipped. Only transport settings, sample paths rewritten on save
   and the echo of an undo (a plugin answering `SetState` with other bytes) stay outside the
   history (`Document::apply_untracked`). Details: `komponist-app/src/param_undo.rs`.

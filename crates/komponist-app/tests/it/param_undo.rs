@@ -193,16 +193,30 @@ fn a_hexa_drag_is_one_step_that_never_recreates_the_processor_and_undo_follows_i
     assert_eq!(app.undo_text().as_deref(), Some("Lautstärke ändern"));
     let after = patch_of(&app, synth);
     assert_ne!(after, before_patch);
+    // `depth` undid and redid everything: the redone drag reached the processor as a parameter
+    // (#19), and hexa glides the volume over 10 ms, so the sound is compared once the glide is
+    // over (here and after undo and redo below).
+    let settle = |app: &mut App| app.engine_mut().run_held(4800, &[], 0);
+    settle(&mut app);
     let loud = note_peak(&mut app, track, 60);
     assert_ne!(loud, quiet, "the drag changed the sound");
 
-    // Undo: the document and the sound are back. Redo: both again.
+    // Undo: the document and the sound are back. Redo: both again. Both reach the same
+    // processor as parameters.
+    let reloads = app.engine().device_reloads();
     undo(&mut app);
     assert_eq!(state_of(&app, synth), before_state);
+    settle(&mut app);
     assert_eq!(note_peak(&mut app, track, 60), quiet, "undo: the old sound");
     redo(&mut app);
     assert_eq!(patch_of(&app, synth), after);
+    settle(&mut app);
     assert_eq!(note_peak(&mut app, track, 60), loud, "redo: the new sound");
+    assert_eq!(
+        app.engine().device_reloads(),
+        reloads,
+        "undo and redo neither"
+    );
     assert!(app.doc().is_dirty());
 }
 

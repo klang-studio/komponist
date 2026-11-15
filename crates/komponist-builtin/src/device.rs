@@ -509,6 +509,33 @@ pub fn param_in(t: Lang, id: &ParamId) -> Option<&'static CardParam> {
     params_in(t).iter().find(|p| p.info.id == *id)
 }
 
+/// The parameter changes `(wire id, value)` that turn the running patch `from` into `to` when
+/// they reach the processor in this order (as `EventKind::Param`s, which run the same
+/// [`Field::set`]): how undo, redo or a paste over reaches a sounding hexa without a fresh
+/// processor (issue #19). Empty when the patches are equal.
+///
+/// `None` when the patches differ in something the card's parameters do not reach (filters,
+/// effects, LFOs, the modulation matrix, a free routing, pitch modes, …) or a value does not
+/// survive the round trip through its parameter (a ratio below the knob's range, Legato
+/// against Mono): the caller then needs a fresh processor made from `to`. Not RT-safe
+/// (allocates); the UI thread's.
+pub fn param_changes(from: &Patch, to: &Patch) -> Option<Vec<(u32, f64)>> {
+    let mut fields: Vec<Field> = params().iter().map(|p| p.field).collect();
+    // The engine delivers a burst in the order it was sent; wire order puts the Algorithmus macro
+    // (which rewrites the routing) before the fields it touches.
+    fields.sort_by_key(|f| f.wire());
+    let mut probe = *from;
+    let mut changes = Vec::new();
+    for field in fields {
+        let value = field.get(to);
+        if field.get(&probe) != value {
+            field.set(&mut probe, value);
+            changes.push((field.wire(), value));
+        }
+    }
+    (probe == *to).then_some(changes)
+}
+
 /// Whether operator `op` (0–5) is a carrier of algorithm `number` (1–32).
 pub fn is_carrier(number: usize, op: usize) -> bool {
     ALGORITHMS
