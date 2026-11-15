@@ -1558,7 +1558,7 @@ impl App {
                     edits::add_bus(p, edits::NewBus::effect(senders))
                 }) {
                     self.select_tracks(vec![id], SelectMode::Replace);
-                    self.ui.arrangement.rename_request = Some(id);
+                    self.request_rename(id);
                 }
             }
             EditAction::AddBus(spec) => {
@@ -1639,8 +1639,17 @@ impl App {
             edits::add_bus(p, edits::NewBus::group(tracks))
         }) {
             self.select_tracks(vec![id], SelectMode::Replace);
-            self.ui.arrangement.rename_request = Some(id);
+            self.request_rename(id);
         }
+    }
+
+    /// Opens the name field of a bus just made, but only if the arrangement is visible at this
+    /// moment (owner, 2026-11-15); otherwise no request is kept and the bus has its automatic
+    /// name, so a later switch to the arrangement does not open a stale rename.
+    fn request_rename(&mut self, id: TrackId) {
+        let l = &self.ui.layout;
+        let arrangement_hidden = l.dock_open && l.dock_maximized;
+        self.ui.arrangement.rename_request = (!arrangement_hidden).then_some(id);
     }
 
     /// A send change; a level change inside a gesture reaches the engine on the fast path

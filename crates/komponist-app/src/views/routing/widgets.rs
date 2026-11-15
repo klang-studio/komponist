@@ -718,7 +718,7 @@ fn remove_button(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect
 }
 
 /// The „+“ row of a send list: a dashed frame; a click opens the list of buses (the unusable ones
-/// grey) with „Neuer Bus …“ below; the choice goes out as `AddSend` / `SendToNewBus`.
+/// grey) with „Neuer Effekt-Bus“ below (alone while the project has no bus); the choice goes out as `AddSend` / `SendToNewBus`.
 pub fn add_send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Rect, wide: bool) {
     let r = ui.interact(
         rect,
@@ -761,7 +761,7 @@ pub fn add_send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Rec
             names::SEND_TO,
             &rows,
             None,
-            &[names::NEW_BUS],
+            &[names::NEW_EFFECT_BUS],
         );
         match picked {
             Some(Picked::Row(i)) => {

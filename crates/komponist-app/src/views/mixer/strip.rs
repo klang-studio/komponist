@@ -31,7 +31,7 @@ use crate::views::devices::add_menu;
 use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
 use crate::views::routing::widgets as routing_widgets;
-use crate::views::routing::{metrics as rm, names as routing_names};
+use crate::views::routing::{self, OutputDrop, TrackDrag, metrics as rm, names as routing_names};
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The drag payload of an insert slot being reordered.
@@ -369,6 +369,9 @@ pub(super) fn show(
         r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::INSERTS));
     }
     inserts(ui, ctx, s, rows.inserts, tier);
+    if s.is_bus() {
+        bus_drop(ui, ctx, s, rect);
+    }
     if let Some((label, sends)) = rows.sends {
         sends_area(ui, ctx, s, label, sends, tier);
     }
@@ -449,7 +452,12 @@ fn name_and_line(
         color32(ink),
         false,
     );
-    let r = ui.interact(rows.name, ui.scope_id().with("name"), Sense::CLICK);
+    let sense = if s.is_master() {
+        Sense::CLICK
+    } else {
+        Sense::click_and_drag()
+    };
+    let r = ui.interact(rows.name, ui.scope_id().with("name"), sense);
     if s.is_master() {
         r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &s.name));
     } else {
@@ -457,6 +465,20 @@ fn name_and_line(
         r.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, &s.name));
         if r.clicked() {
             select(ctx, s, mods);
+        }
+        if let Some(track) = s.track() {
+            // Dragged onto a bus strip it sets the track's output (`bus_drop`).
+            let tracks = if selected {
+                ctx.project
+                    .tracks
+                    .iter()
+                    .map(|t| t.id)
+                    .filter(|t| ctx.ui.selection.tracks.contains(t))
+                    .collect()
+            } else {
+                vec![track]
+            };
+            r.dnd_set_drag_payload(TrackDrag { tracks });
         }
     }
     if let (Some(chip), Some(rect), Some(track)) = (
@@ -716,6 +738,53 @@ fn drop_over(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, spans: &
                 index,
             },
         }));
+    }
+}
+
+/// A track header dragged over a bus strip (owner, 2026-11-15): the accent ring around the strip,
+/// and on release the dragged tracks output to the bus (one undo step). A drop that would close a
+/// loop is refused: no ring, the reason at the pointer, and on release in the status bar.
+fn bus_drop(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
+    let dnd = ui.ctx().clone();
+    let (Some(bus), Some(drag)) = (s.track(), egui::DragAndDrop::payload::<TrackDrag>(&dnd)) else {
+        return;
+    };
+    let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    if !rect.contains(pos) || !ui.clip_rect().contains(pos) {
+        return;
+    }
+    let released = ui.input(|i| i.pointer.any_released());
+    match routing::output_drop(ctx.project, &drag.tracks, bus) {
+        OutputDrop::Set => {
+            px::inner_border(ui.painter(), rect, color32(color::ACCENT));
+            if released {
+                egui::DragAndDrop::clear_payload(&dnd);
+                ctx.send(Action::Edit(EditAction::SetOutput {
+                    tracks: drag.tracks.clone(),
+                    output: komponist_model::TrackOutput::Bus(bus),
+                }));
+            }
+        }
+        OutputDrop::Unchanged => {}
+        OutputDrop::Refused(reason) => {
+            let at = Rect::from_x_y_ranges(egui::Rangef::point(pos.x), rect.y_range());
+            komponist_ui::tooltip::show_value(
+                &dnd,
+                egui::Id::unique(("komponist_mixer_output_refused", bus.0)),
+                at,
+                komponist_ui::tooltip::Placement::Above,
+                &reason,
+            );
+            if released {
+                egui::DragAndDrop::clear_payload(&dnd);
+                ctx.send(Action::Ui(UiAction::ShowStatus {
+                    text: reason,
+                    kind: crate::ui_state::StatusKind::Info,
+                }));
+            }
+        }
     }
 }
 
@@ -1030,7 +1099,7 @@ mod tests {
         assert_eq!(r.name.height(), 22.0);
         assert_eq!(r.line.left(), 6.0);
         assert_eq!(r.inserts.height(), m::INSERTS_HEIGHT);
-        // The reserved sends are hidden until busses exist.
+        // Tier::FULL alone has no send area; the view adds it with `routed`.
         assert!(r.sends.is_none());
         assert_eq!(r.knob.size(), vec2(28.0, 28.0));
         assert_eq!(r.knob.center().x, 20.0);

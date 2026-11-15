@@ -9,8 +9,8 @@
 //! needs; [`Tier`] switches to the lean strip.
 //!
 //! Deviation from S04 (owner decision 2026-11-14, ARCHITECTURE §13): faders must be tall. The
-//! paddings are tighter, the pan value stands right of the knob, the empty reserved sends are
-//! hidden until a bus exists (then the send list and the output button show, WP-103), and the normal dock's lean strip shows only name, M S R, fader and
+//! paddings are tighter, the pan value stands right of the knob, the send list and the output button
+//! always show on a full strip (WP-103; before the first bus the „+“ offers a new effect bus), and the normal dock's lean strip shows only name, M S R, fader and
 //! values (no instrument line, no inserts; the instrument is the name's tooltip and AccessKit
 //! description). Pan is a small knob at the right end of the lean strip's name row (owner
 //! decision Q8, 2026-11-14), so it takes no fader height.
@@ -130,7 +130,7 @@ pub struct Tier {
     pub inserts_label: bool,
     /// Rows of the insert box (slots and "+").
     pub insert_rows: usize,
-    /// The send list ("Sends" or, on a bus, "Eingänge"): shown once the project has a bus.
+    /// The send list ("Sends" or, on a bus, "Eingänge"): shown on the full strip, also before the first bus.
     pub sends: bool,
     /// Rows of the send list (with the "+" row); 0 without it.
     pub send_rows: usize,
@@ -145,7 +145,7 @@ impl Tier {
     pub const FULL: Tier = Tier {
         inserts_label: true,
         insert_rows: 4,
-        // The two empty reserved send rows (68 px) wait until busses exist.
+        // The send area comes with `Tier::routed`.
         sends: false,
         send_rows: 0,
         output: false,
@@ -168,7 +168,7 @@ impl Tier {
         Tier::for_routed_height(height, 0)
     }
 
-    /// [`Tier::for_height`] for a project with buses: `send_rows` (> 0) rows of sends and the
+    /// [`Tier::for_height`] with the send area: `send_rows` (> 0) rows of sends and the
     /// output button come with the full strip, and the strip must still keep its fader area.
     pub fn for_routed_height(height: f32, send_rows: usize) -> Tier {
         let full = Tier::FULL.routed(send_rows);

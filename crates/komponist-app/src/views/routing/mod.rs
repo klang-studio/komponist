@@ -34,6 +34,8 @@ pub mod names {
     pub const MASTER: &str = "Master";
     /// Output menu: a new effect bus [New bus …].
     pub const NEW_BUS: &str = "Neuer Bus …";
+    /// Send popover: a new effect bus with a send to it (owner, 2026-11-15) [New effect bus].
+    pub const NEW_EFFECT_BUS: &str = "Neuer Effekt-Bus";
     /// Output menu: a new group around the track [New group …].
     pub const NEW_GROUP: &str = "Neue Gruppe …";
     /// The „+“ row of a send list [Add send].
@@ -270,6 +272,51 @@ fn feedback_reason(track: &Track, bus: &Track) -> String {
         names::reason_self(&track.name)
     } else {
         names::reason_feedback(&bus.name, &track.name)
+    }
+}
+
+/// The drag payload of a track header or strip being dragged: dropped on a bus strip (mixer) or
+/// a group header (arrangement) it sets the output (owner, 2026-11-15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackDrag {
+    /// The tracks dragged, in display order.
+    pub tracks: Vec<TrackId>,
+}
+
+/// What dropping a dragged track header on a bus (a group header in the arrangement, a bus strip
+/// in the mixer) does (owner, 2026-11-15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputDrop {
+    /// The tracks get the bus as their output (`SetOutput`).
+    Set,
+    /// All of them output there already: nothing to do.
+    Unchanged,
+    /// It would close a loop: the German reason, shown as the hint.
+    Refused(String),
+}
+
+/// The effect of dropping `tracks` on `bus`: refused with the reason when one of them is the bus
+/// itself or is fed by it, else set (or unchanged when every track outputs there already).
+pub fn output_drop(project: &Project, tracks: &[TrackId], bus: TrackId) -> OutputDrop {
+    let Some(target) = project.track(bus).filter(|b| b.is_bus()) else {
+        return OutputDrop::Unchanged;
+    };
+    for &id in tracks {
+        let Some(source) = project.track(id) else {
+            continue;
+        };
+        if !routing::output_targets(project, id).contains(&TrackOutput::Bus(bus)) {
+            return OutputDrop::Refused(feedback_reason(source, target));
+        }
+    }
+    let all_there = tracks
+        .iter()
+        .filter_map(|&t| project.track(t))
+        .all(|t| t.output == TrackOutput::Bus(bus));
+    if all_there {
+        OutputDrop::Unchanged
+    } else {
+        OutputDrop::Set
     }
 }
 

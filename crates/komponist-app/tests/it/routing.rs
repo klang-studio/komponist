@@ -316,6 +316,44 @@ fn ctrl_g_groups_the_selected_tracks_in_one_undo_step() {
 }
 
 #[test]
+fn ctrl_g_keeps_no_pending_rename_while_the_arrangement_is_hidden() {
+    let p = demo_project();
+    let (drums, bass) = (id_of(&p, "Drums"), id_of(&p, "Bass"));
+    let mut app = mixer_app(p);
+    select_many(&mut app, &[drums, bass]);
+    let mut h = harness(app);
+    let l = &h.state().ui().layout;
+    assert!(
+        l.dock_open && l.dock_maximized,
+        "the mixer hides the arrangement"
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.run_steps(3);
+    let p = h.state().project();
+    let group = p.tracks.iter().find(|t| t.is_group()).expect("a group");
+    assert_eq!(group.name, "Gruppe 1", "the automatic name stays");
+    assert_eq!(h.state().ui().arrangement.rename_request, None);
+    // Back in the arrangement no name field opens late.
+    h.state_mut().dispatch(Action::Ui(UiAction::ToggleMixer));
+    h.run_steps(3);
+    assert!(!h.state().ui().layout.dock_maximized);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Spurname")
+            .is_none(),
+        "no stale rename"
+    );
+    assert!(has_header_of_group(&h, "Gruppe 1"));
+}
+
+fn has_header_of_group(h: &Harness<'_, App>, name: &str) -> bool {
+    h.get_all_by_role(Role::Row).any(|n| {
+        n.accesskit_node().label().is_some_and(|l| {
+            l.starts_with(&names::group(name, false)) || l.starts_with(&names::group(name, true))
+        })
+    })
+}
+
+#[test]
 fn send_to_new_bus_creates_a_bus_and_a_send_at_minus_6_post() {
     let mut app = app_with(demo_project());
     let lead = id_of(app.project(), "Lead");
@@ -419,6 +457,222 @@ fn deleting_a_group_dissolves_it() {
     let p = h.state().project();
     let group = id_of(p, "Rhythmus");
     assert_eq!(routing::group_members(p, group), vec![drums, bass]);
+}
+
+/// Deleting an effect bus acts at once (owner, 2026-11-15): no dialog, one undo step that brings
+/// back the bus, the sends to it and the outputs into it.
+fn deleted_bus_comes_back_with_one_undo(
+    mut h: Harness<'static, App>,
+    delete: impl Fn(&mut Harness<'_, App>),
+) {
+    let before = Arc::clone(h.state().project());
+    let hall = id_of(&before, "Hall");
+    let keys = id_of(&before, "Keys");
+    assert_eq!(before.track(keys).unwrap().output, TrackOutput::Bus(hall));
+    delete(&mut h);
+    assert!(h.state().ui().dialog.is_none(), "no confirmation dialog");
+    let p = h.state().project();
+    assert!(p.tracks.iter().all(|t| t.name != "Hall"), "the bus is gone");
+    assert!(
+        p.tracks
+            .iter()
+            .flat_map(|t| &t.sends)
+            .all(|s| s.target != hall),
+        "its sends are gone"
+    );
+    assert_eq!(p.track(keys).unwrap().output, TrackOutput::Master);
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    let p = h.state().project();
+    assert_eq!(p.tracks.len(), before.tracks.len());
+    for t in &before.tracks {
+        let now = p.track(t.id).expect("track is back");
+        assert_eq!(now.output, t.output, "{}", t.name);
+        assert_eq!(now.sends, t.sends, "{}", t.name);
+    }
+}
+
+fn routed_with_output_to_hall() -> Project {
+    let p = routed();
+    let (keys, hall) = (id_of(&p, "Keys"), id_of(&p, "Hall"));
+    edits::set_output(&p, &[keys], TrackOutput::Bus(hall)).unwrap()
+}
+
+#[test]
+fn deleting_a_bus_from_its_menu_needs_no_confirmation() {
+    let h = harness(app_with(routed_with_output_to_hall()));
+    deleted_bus_comes_back_with_one_undo(h, |h| {
+        let at = header_rect(h, "Hall").center();
+        menu_choice(h, at, names::DELETE_BUS);
+    });
+}
+
+#[test]
+fn del_deletes_the_selected_bus_at_once() {
+    let p = routed_with_output_to_hall();
+    let hall = id_of(&p, "Hall");
+    let mut app = app_with(p);
+    select(&mut app, hall);
+    let h = harness(app);
+    deleted_bus_comes_back_with_one_undo(h, |h| {
+        h.key_press(egui::Key::Delete);
+        h.run_steps(3);
+    });
+}
+
+// ------------------------------------------------------------------------------------------------
+// Dragging a track onto a bus: the arrangement's group header, the mixer's bus strip
+
+fn status_text(h: &Harness<'_, App>) -> Option<String> {
+    h.state().ui().status.as_ref().map(|s| s.text.clone())
+}
+
+/// `routed()` with the group „Rhythmus“ inside „Melodie“: dropping „Melodie“ on „Rhythmus“ would
+/// close a loop.
+fn nested_groups() -> Project {
+    let p = routed();
+    let (rhythmus, melodie) = (id_of(&p, "Rhythmus"), id_of(&p, "Melodie"));
+    edits::set_output(&p, &[rhythmus], TrackOutput::Bus(melodie)).unwrap()
+}
+
+#[test]
+fn a_header_dragged_onto_a_group_sets_its_output_in_one_undo_step() {
+    let mut h = harness(app_with(routed()));
+    let (pad, rhythmus) = (
+        id_of(h.state().project(), "Pad"),
+        id_of(h.state().project(), "Rhythmus"),
+    );
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+    let from = header_rect(&h, "Pad").center();
+    let onto = header_rect(&h, "Rhythmus").center();
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, onto);
+    mask_cpu(&mut h);
+    h.snapshot("routing-drop-on-group-1x");
+    release(&mut h, onto);
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Bus(rhythmus)
+    );
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::MoveTracks { .. })).is_empty());
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+}
+
+#[test]
+fn a_header_dragged_between_rows_still_reorders() {
+    let mut h = harness(app_with(routed()));
+    let pad = id_of(h.state().project(), "Pad");
+    let from = header_rect(&h, "Pad").center();
+    // The top edge of the „Rhythmus“ header: the insert slot, not the group.
+    let rhythmus = header_rect(&h, "Rhythmus");
+    let at = pos2(rhythmus.center().x, rhythmus.top() + 3.0);
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, at);
+    release(&mut h, at);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+    assert_eq!(
+        edits_of(h.state(), |e| matches!(e, EditAction::MoveTracks { .. })).len(),
+        1
+    );
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+}
+
+#[test]
+fn a_header_dropped_on_a_group_that_would_loop_is_refused_with_the_reason() {
+    let mut h = harness(app_with(nested_groups()));
+    let (rhythmus, melodie) = (
+        id_of(h.state().project(), "Rhythmus"),
+        id_of(h.state().project(), "Melodie"),
+    );
+    let from = header_rect(&h, "Melodie").center();
+    let onto = header_rect(&h, "Rhythmus").center();
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, onto);
+    release(&mut h, onto);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+    assert_eq!(
+        h.state().project().track(melodie).unwrap().output,
+        TrackOutput::Master
+    );
+    assert_eq!(
+        status_text(&h).as_deref(),
+        Some(names::reason_feedback("Rhythmus", "Melodie").as_str())
+    );
+    assert_eq!(
+        h.state().project().track(rhythmus).unwrap().output,
+        TrackOutput::Bus(melodie)
+    );
+}
+
+/// The point on the name row of a mixer strip.
+fn strip_name_at(h: &Harness<'_, App>, label: &str) -> Pos2 {
+    let r = strip_rect(h, label);
+    pos2(r.center().x, r.top() + 14.0)
+}
+
+#[test]
+fn a_strip_dragged_onto_a_bus_strip_sets_its_output() {
+    let mut h = harness(mixer_app(routed()));
+    let (pad, rhythmus) = (
+        id_of(h.state().project(), "Pad"),
+        id_of(h.state().project(), "Rhythmus"),
+    );
+    let from = strip_name_at(&h, &komponist_app::views::mixer::model::names::strip("Pad"));
+    let onto = strip_rect(&h, &names::bus_strip("Rhythmus")).center();
+    drag_to(&mut h, from, onto);
+    // The accent ring is up while the pointer is over the strip.
+    mask_cpu(&mut h);
+    h.snapshot("routing-drop-on-bus-strip-1x");
+    release(&mut h, onto);
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Bus(rhythmus)
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+}
+
+#[test]
+fn a_strip_dropped_elsewhere_or_on_a_looping_bus_changes_nothing() {
+    let mut h = harness(mixer_app(nested_groups()));
+    let melodie = id_of(h.state().project(), "Melodie");
+    // On a bus that would loop: refused with the reason.
+    let from = strip_name_at(&h, &names::bus_strip("Melodie"));
+    let onto = strip_rect(&h, &names::bus_strip("Rhythmus")).center();
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, onto);
+    release(&mut h, onto);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+    assert_eq!(
+        status_text(&h).as_deref(),
+        Some(names::reason_feedback("Rhythmus", "Melodie").as_str())
+    );
+    assert_eq!(
+        h.state().project().track(melodie).unwrap().output,
+        TrackOutput::Master
+    );
+    // On a track strip: nothing.
+    let from = strip_name_at(&h, &komponist_app::views::mixer::model::names::strip("Pad"));
+    let onto = strip_rect(
+        &h,
+        &komponist_app::views::mixer::model::names::strip("Keys"),
+    )
+    .center();
+    drag_to(&mut h, from, onto);
+    release(&mut h, onto);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
 }
 
 #[test]
@@ -961,26 +1215,89 @@ fn the_track_context_menu() {
 }
 
 #[test]
-fn a_project_without_buses_looks_as_before() {
-    // No routing section, no send list, no output button, no chip, no label band.
+fn a_project_without_buses_has_the_send_area_but_no_bus_furniture() {
+    // The routing section and the send area are there (owner, 2026-11-15); the label band over
+    // the buses and the dock chip need a bus or a route.
     let mut app = app_with(demo_project());
     let lead = id_of(app.project(), "Lead");
     select(&mut app, lead);
     let h = harness(app);
-    assert!(
-        h.query_by_role_and_label(Role::Group, names::ROUTING)
-            .is_none()
-    );
+    h.get_by_role_and_label(Role::Group, names::ROUTING);
+    h.get_by_role_and_label(Role::Button, &names::output("Master"));
+    plus_of(&h, "Lead");
     let mut app = mixer_app(demo_project());
     select(&mut app, lead);
     let h = harness(app);
-    assert!(h.query_all_by_role(Role::Button).all(|n| {
-        n.accesskit_node()
-            .label()
-            .is_none_or(|l| !l.starts_with("Ausgang:"))
-    }));
+    plus_of(&h, "Lead");
     assert!(
         h.query_by_role_and_label(Role::Label, names::BUSSES)
             .is_none()
     );
+}
+
+/// The „+“ of `track`'s send list; with the mixer and the inspector open the left one (the
+/// mixer's).
+fn plus_of(h: &Harness<'_, App>, track: &str) -> Rect {
+    h.get_all_by_role_and_label(Role::Button, &names::add_send(track))
+        .map(|n| n.rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+        .expect("a „+“")
+}
+
+/// The first bus without a menu: „+“ offers only „Neuer Effekt-Bus“; it creates the bus and a
+/// send at −6 dB post in one undo step.
+fn first_bus_through_the_plus(mut h: Harness<'static, App>, lead: TrackId) {
+    let plus = plus_of(&h, "Lead");
+    click(&mut h, plus.center());
+    assert!(
+        h.query_all_by_role(Role::MenuItemRadio).next().is_none(),
+        "no bus to list"
+    );
+    let item = h
+        .get_by_role_and_label(Role::MenuItem, names::NEW_EFFECT_BUS)
+        .rect();
+    let before = h.state().project().tracks.len();
+    click(&mut h, item.center());
+    let p = h.state().project();
+    let bus = p.tracks.iter().find(|t| t.is_bus()).expect("a bus");
+    assert!(!bus.folder);
+    let send = p.track(lead).unwrap().send_to(bus.id).expect("a send");
+    assert_eq!(
+        (send.level_db, send.tap, send.enabled),
+        (-6.0, Tap::Post, true)
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(h.state().project().tracks.len(), before);
+    assert!(h.state().project().track(lead).unwrap().sends.is_empty());
+}
+
+#[test]
+fn the_first_bus_comes_from_the_plus_in_the_mixer() {
+    let mut app = mixer_app(demo_project());
+    let lead = id_of(app.project(), "Lead");
+    select(&mut app, lead);
+    first_bus_through_the_plus(harness(app), lead);
+}
+
+#[test]
+fn the_first_bus_comes_from_the_plus_in_the_inspector() {
+    let mut app = app_with(demo_project());
+    let lead = id_of(app.project(), "Lead");
+    select(&mut app, lead);
+    first_bus_through_the_plus(harness(app), lead);
+}
+
+#[test]
+fn the_plus_lists_the_buses_and_the_new_bus_below() {
+    let p = routed();
+    let pad = id_of(&p, "Pad");
+    let mut app = app_with(p);
+    select(&mut app, pad);
+    let mut h = harness(app);
+    let plus = h
+        .get_by_role_and_label(Role::Button, &names::add_send("Pad"))
+        .rect();
+    click(&mut h, plus.center());
+    h.get_by_role_and_label(Role::MenuItemRadio, "Delay");
+    h.get_by_role_and_label(Role::MenuItem, names::NEW_EFFECT_BUS);
 }

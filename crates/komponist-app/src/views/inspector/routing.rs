@@ -3,7 +3,7 @@
 //! track as their sidechain source, the line „Sidechain-Quelle für:“. A bus shows its inputs
 //! („Eingänge (3 Sends)“) as a list that selects the track.
 //!
-//! The section shows once the project has a bus; a project without buses looks as before.
+//! The section is always shown for a track, also before the first bus (owner, 2026-11-15).
 
 use egui::{Rangef, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 use komponist_model::{Project, Track};
@@ -19,11 +19,6 @@ use crate::views::ViewCtx;
 use crate::views::mixer::model::base_color;
 use crate::views::routing::widgets::{self as rw, RowKind};
 use crate::views::routing::{self as rt, metrics as rm, names};
-
-/// Whether the section shows for `project`: it has a bus.
-pub fn shown(project: &Project) -> bool {
-    project.tracks.iter().any(|t| t.is_bus())
-}
 
 /// The routing section of `track`.
 pub(super) fn section(

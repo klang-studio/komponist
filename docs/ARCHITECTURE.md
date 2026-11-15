@@ -627,15 +627,15 @@ it from output menus); **B** (generic bus, no folders) = every bus has `folder =
 
 **Where the UI shows it (WP-103).** Mixer: bus strips (80 px, `surface.2`) right before the master under a „Busse“
 label, a send list of compact rows (dot, name, level fill, value; orange = pre) and the output button at the foot
-of each track strip, „Eingänge“ (`2 Spuren`, `3 Sends`) on a bus strip; they appear once the project has a bus.
+of each track strip, „Eingänge“ (`2 Spuren`, `3 Sends`) on a bus strip. The send area and the inspector's „Routing“ section are always there for a track, also before the first bus: the „+“ then offers only „Neuer Effekt-Bus“ (`SendToNewBus`: an effect bus and a send at −6 dB post, one undo step), with buses it lists them above that entry.
 The normal dock's lean strip gets a routing chip (arrow + dot of the output bus, or the dots of the sends) that
 opens a popover with the output and the send rows. Arrangement: a group is a 36 px folder row (fold triangle,
 `n Spuren`), its members are indented 14 px with a 3 px bracket in the group colour; effect buses stand in the
 „Busse“ section below „Neue Spur“ (32 px rows, hatched lane, no clips; a clip dragged or a double-click over a bus is
 refused with the reason „Busse nehmen keine Clips auf.“). Inspector: a „Routing“ section (output, sends with
 „pre“ / „post“ and „×“, „Sidechain-Quelle für:“) and, for a bus, „Bus“ with the list of its inputs. Strg G groups the
-selected tracks (`EditAction::GroupSelection`); the context menu of a header offers „In Gruppe zusammenfassen“,
-„Send zu neuem Bus“, „Send an …“ and „Ausgang“; deleting a group dissolves it. Mute and solo in the views read
+selected tracks (`EditAction::GroupSelection`; the new group's name field opens only while the arrangement is visible, else it keeps its automatic name); the context menu of a header offers „In Gruppe zusammenfassen“,
+„Send zu neuem Bus“, „Send an …“ and „Ausgang“; deleting a group dissolves it, deleting an effect bus acts at once (no dialog, one undo step). Dragging a track header onto the middle half of a group or effect-bus header (arrangement) or a track strip's name onto a bus strip (mixer) sets the output (`SetOutput`, one undo step, accent frame as the drop highlight); a drop that would close a loop is refused with the reason as tooltip and status text, and the outer quarters of a row keep reordering. Mute and solo in the views read
 `routing::gates` (a group stays lit while a member is soloed). „Bus aufnehmen“ (owner decision 16 A) needs audio
 tracks and comes with wave 10.
 
@@ -1210,7 +1210,7 @@ These need a decision (the handoff says: report contradictions; the design syste
 7. **Mixer strip: tall faders (decided 2026-11-14).** S04 stacks name, instrument, inserts, sends, pan
    and M S R above the fader, which leaves 121 px in the normal dock. Deviation, owner decision: the
    strip's paddings are tighter (4 px) and the pan value stands right of the knob; the empty reserved
-   sends are hidden until busses exist; the normal dock shows a lean strip (name, M S R, fader,
+   sends and the output button always show on the full strip (owner decision 2026-11-15, WP-103 follow-up); the normal dock shows a lean strip (name, M S R, fader,
    values; no instrument line or inserts). The instrument is the name's tooltip and AccessKit
    description; pan is a small knob in the lean strip's values row (item 9, Q8). Fader area:
    maximised 641 → 753 px, normal dock 121 → 215 px (`views/mixer/metrics.rs`).

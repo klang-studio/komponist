@@ -316,7 +316,7 @@ pub struct ArrangementView {
     /// Snap on (Shift while dragging disables it temporarily).
     pub snap: bool,
     /// A bus made by Strg G or „Send zu neuem Bus“: its header opens in rename mode (taken by the
-    /// arrangement when it shows the track).
+    /// arrangement when it shows the track). Only set while the arrangement is visible.
     pub rename_request: Option<TrackId>,
 }
 
