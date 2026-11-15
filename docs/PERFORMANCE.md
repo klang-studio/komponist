@@ -1,4 +1,4 @@
-# komponist – Performance and RT safety (WP-61, WP-65)
+# komponist – Performance and RT safety (WP-61, WP-65, WP-102)
 
 Measured 2026-11-14 on the branch `wp/WP-61`; parallel track processing on `wp/WP-65`
 ([§6](#6-parallel-track-processing-wp-65)). Every number below comes from a test or bench in the
@@ -225,6 +225,8 @@ cargo bench -p komponist-ui --bench timeline
 # KOMPONIST_PERF_WORKERS take another list, KOMPONIST_PERF_SECS another length). For RT priority
 # run the test binary under chrt -f 70.
 cargo test --release -p komponist-engine --test engine bench -- --ignored --nocapture
+# Routing (WP-102): 16 tracks flat vs. + 4 buses, sends and a sidechain, 0 and 4 workers
+cargo test --release -p komponist-engine --test engine routing::bench -- --ignored --nocapture
 cargo test --release -p komponist-app --test engine_perf -- --ignored --nocapture --test-threads 1
 KOMPONIST_PERF_WORKERS=4 KOMPONIST_PERF_SECS=300 <engine_perf binary> engine_cpu_16_pisynth_tracks \
     --exact --ignored --nocapture                                  # the 5-minute stress run
@@ -372,3 +374,40 @@ spread) per key; the numbers below are better, on a machine that was busy.
 ```bash
 cargo test --release -p komponist-builtin --lib knurr::bench -- --ignored --nocapture
 ```
+
+## 9. Routing graph (WP-102)
+
+Measured 2026-11-15 on the branch `wp/WP-102`, same machine as §1, **not idle**: other agents built and tested in
+parallel (load average 6–10 on 12 threads during the runs), so worst cases are upper bounds; two runs back to back.
+Bench `tests/engine/routing.rs` `bench_routing_16_tracks_4_buses`, release, 48 kHz / 256 frames (5.33 ms), wall
+time of `Engine::process` on the calling thread over 20 s, workers at `SCHED_FIFO` 80. Design: ARCHITECTURE §6.8.4.
+
+Material: 16 MIDI tracks, each instrument → `TestGain` (latencies 0–75 frames). **Flat**: every track into the
+master. **Routed**: two groups of six tracks inside a third group (nested), two effect buses (a `TestGain` each, one
+with 64 frames latency) fed by a post send from all 16 tracks and a pre send from every other track (24 sends), and
+a sidechain from track 1 into an effect on track 13 (delayed to that device): 20 jobs, 4 of them joins, every
+path delay-compensated. "Constant" instruments write a constant (the engine's own cost); "busy" ones cost about
+120 µs per block each (a synth-like load, comparable to pisynth's 190 µs in §6).
+
+| Run | Flat, 0 workers | Routed, 0 workers | Flat, 4 workers | Routed, 4 workers |
+|---|---|---|---|---|
+| Constant instruments, mean (run 1 / run 2) | 27.2 / 26.1 µs (0.5 %) | 45.6 / 43.9 µs (0.8 %) | 18.3 / 15.4 µs (0.3 %) | 35.7 / 32.0 µs (0.6–0.7 %) |
+| Constant instruments, worst | 162 / 176 µs | 194 / 175 µs | 253 / 152 µs | 218 / 161 µs |
+| Busy instruments, mean | 2.0 / 1.8 ms (34–37 %) | 1.8 / 1.9 ms (35 %) | 471 / 530 µs (8.8–10 %) | 478 / 746 µs (9.0–14 %) |
+| Busy instruments, worst | 2.9 / 2.6 ms | 2.8 / 2.5 ms | 1.9 / 3.3 ms | 1.0 / 4.3 ms |
+
+- **The graph costs about 18 µs per block** (0.33 % of the period) single-threaded for 4 buses, 24 sends (a copy,
+  a delay line and a gain ramp each), the taps and a sidechain, and the same with workers. Against a synth load it
+  disappears in the noise (34–37 % either way single-threaded).
+- **Parallel scaling holds with buses:** 4 workers take the busy material from 35 % to 9–14 % of the period, routed
+  or flat. The joins wait for their sources; the thread that completes a group's last member usually runs the group
+  itself, so the dependency chain (sources → groups → outer group → master) adds no wake-ups in the common case.
+  The spread of the routed 4-worker means (478 / 746 µs) and of the worst cases follows the machine's load between
+  the two runs, not the routing; re-run on an idle machine.
+- Projects without buses compile to the flat routing and render bit-identically to the engine before WP-102
+  (golden hash of a render of the base commit, 0 and 3 workers); their cost is unchanged (flat row vs. §6 and the
+  `bench` above).
+- RT: every `process` / `render` of the routing tests runs inside `assert_no_alloc`, the workers run their jobs
+  inside it, and program swaps with buses, sends and sidechains (also with changed latencies and routing) allocate
+  nothing on the audio thread; a recompiled program is bit-identical to not swapping (delay lines and send gains are
+  kept by edge).

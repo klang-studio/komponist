@@ -523,7 +523,8 @@ impl EngineSync {
     }
 
     /// A fast-path command for a change the dispatcher just applied inside a gesture
-    /// (`SetTrackGain`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`, `SetMasterGain`):
+    /// (`SetTrackGain`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`, `SetGates`,
+    /// `SetMasterGain`):
     /// `before` and `after` are the document revisions around the change. The engine gets the
     /// command now; if the engine was up to date before, the recompile is deferred to the end of
     /// the gesture.
@@ -532,6 +533,14 @@ impl EngineSync {
             self.fast = Some(after);
         }
         self.send(command);
+    }
+
+    /// The fast-path gate table (`Command::SetGates`) of `project`'s mute and solo states for the
+    /// program last sent (ARCHITECTURE §6.8.6): with buses, what solo silences follows the signal
+    /// path, which only the routing graph knows. `None` before the first program.
+    pub fn gates(&self, project: &Project) -> Option<Command> {
+        let program = self.previous.as_ref()?;
+        Some(Command::SetGates(compile::gates(project, program)))
     }
 
     /// Queues `command`; if the engine's queue is full (or an export has the engine) it is
@@ -1094,6 +1103,36 @@ mod tests {
         assert!(!lacks_realtime(&status(3, None)));
         assert!(!lacks_realtime(&status(0, Some("Operation not permitted"))));
         assert!(!lacks_realtime(&WorkerStatus::default()));
+    }
+
+    /// Mute and solo on the fast path carry the gate table of the routing graph: soloing a group
+    /// member keeps its group open (WP-102).
+    #[test]
+    fn mute_and_solo_gestures_send_the_routing_gates() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let mut doc = Document::new(demo_project());
+        assert!(sync.gates(doc.project()).is_none());
+        let (drums, bass) = (doc.project().tracks[0].id, doc.project().tracks[1].id);
+        doc.apply("Gruppe", |p| {
+            edits::add_bus(p, edits::NewBus::group(vec![drums, bass])).map(|(p, _)| p)
+        })
+        .unwrap();
+        sync.sync(&doc);
+        let program = sync.program().unwrap().clone();
+        assert!(!program.routing.is_flat());
+        doc.apply("Solo", |p| {
+            edits::set_track_prop(p, &[bass], TrackProp::Channel(ChannelProp::Solo(true)))
+        })
+        .unwrap();
+        let Some(Command::SetGates(gates)) = sync.gates(doc.project()) else {
+            panic!("no gate table");
+        };
+        let index = |id| program.tracks.iter().position(|t| t.id == id).unwrap();
+        let group = doc.project().tracks[0].id;
+        assert!(doc.project().tracks[0].is_group());
+        assert!(gates.output_open(index(bass)) && gates.output_open(index(group)));
+        assert!(!gates.output_open(index(drums)));
+        assert_eq!(gates, compile::gates(doc.project(), &program));
     }
 
     #[test]

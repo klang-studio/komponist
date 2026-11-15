@@ -124,6 +124,7 @@ pub fn program(bpm: f64, tracks: Vec<TrackProgram>) -> Program {
             mute: false,
         },
         slots: Arc::new(SlotMap::default()),
+        routing: Default::default(),
     }
 }
 

@@ -1565,6 +1565,10 @@ impl App {
             return;
         };
         let after = self.doc.revision();
+        // Mute and solo also go out as the gate table: with buses, solo follows the signal path.
+        let gates = matches!(channel, ChannelProp::Mute(_) | ChannelProp::Solo(_))
+            .then(|| self.engine.gates(self.doc.project()))
+            .flatten();
         for track in tracks {
             let command = match channel {
                 ChannelProp::VolumeDb(db) => Command::SetTrackGain {
@@ -1575,6 +1579,9 @@ impl App {
                 ChannelProp::Mute(mute) => Command::SetTrackMute { track, mute },
                 ChannelProp::Solo(solo) => Command::SetTrackSolo { track, solo },
             };
+            self.engine.fast_path(command, before, after);
+        }
+        if let Some(command) = gates {
             self.engine.fast_path(command, before, after);
         }
     }

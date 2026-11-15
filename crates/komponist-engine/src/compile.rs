@@ -25,6 +25,13 @@
 //!   row soloed, non-soloed rows skipped.
 //! - Devices → [`ChainSlot`](crate::program::ChainSlot)s with stable slots; volume dB → linear
 //!   gain; MIDI input names → [`MidiPort`]s; chain latencies → `pdc_delay`.
+//! - Routing (WP-102, ARCHITECTURE §6.8.4–6.8.6): outputs to buses, sends and sidechains →
+//!   [`Routing`](crate::route::Routing): the job order (`komponist_model::routing::topo_order`), the
+//!   inputs of every bus and of the master in a fixed summing order, the taps, the delay
+//!   compensation over the whole graph (every input of a bus and of the master lines up, sends and
+//!   sidechains line up with their target, a late sidechain delays its holder), and the gates of
+//!   mute and solo (`komponist_model::routing::gates`). A project without buses, sends and
+//!   sidechains compiles to the flat routing, exactly as before wave 9.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,7 +47,10 @@ use crate::program::{
     ChainSlot, InputFilter, MasterProgram, MidiPort, PROBABILITY_FOLLOW, Program, SeqNote, SlotId,
     SlotMap, TrackProgram,
 };
-use crate::{MAX_PDC_FRAMES, MAX_SLOTS, MAX_STAGES, MAX_TRACKS};
+use crate::route::GateTable;
+use crate::{MAX_SLOTS, MAX_STAGES, MAX_TRACKS};
+
+mod graph;
 
 /// What the compiler needs from outside the document. Implemented by the app (from
 /// `komponist-audio`'s MIDI ports and `komponist-plugins`' latencies); [`NoEnv`] for tests.
@@ -78,10 +88,6 @@ impl CompileEnv for NoEnv {
 /// but at the head of a track chain, instruments on the master, and devices that
 /// find no free slot below [`crate::MAX_SLOTS`].
 pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv) -> Program {
-    // WP-102: routing (wave 9, ARCHITECTURE §6.8) is not compiled yet. A bus
-    // (`TrackKind::Bus`) compiles like a track without clips and instrument: its effects run on
-    // silence and it sums into the master. Outputs to buses, sends and sidechains are ignored, so
-    // every track still plays straight into the master, as in every project from before wave 9.
     let mut track_ids = HashSet::new();
     let tracks: Vec<&Arc<Track>> = project
         .tracks
@@ -93,7 +99,15 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
     let mut device_ids = HashSet::new();
     let track_chains: Vec<Vec<&Device>> = tracks
         .iter()
-        .map(|t| valid_chain(&t.channel.devices, ChainKind::Track, &mut device_ids))
+        .map(|t| {
+            // A bus runs audio effects only (it never holds an instrument or MIDI effects).
+            let kind = if t.is_bus() {
+                ChainKind::Master
+            } else {
+                ChainKind::Track
+            };
+            valid_chain(&t.channel.devices, kind, &mut device_ids)
+        })
         .collect();
     let master_chain = valid_chain(&project.master.devices, ChainKind::Master, &mut device_ids);
     let slots = assign_slots(previous.map(|p| &*p.slots), device_ids);
@@ -102,18 +116,24 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         .iter()
         .map(|chain| chain_slots(chain, &slots))
         .collect();
-    let latencies: Vec<u32> = chains.iter().map(|c| chain_latency(c, env)).collect();
-    let max_latency = latencies.iter().copied().max().unwrap_or(0);
-
+    let master_chain = chain_slots(&master_chain, &slots);
+    let graph = graph::compile(
+        project,
+        &tracks,
+        &chains,
+        &master_chain,
+        env,
+        previous.map(|p| &*p.routing),
+    );
     let tracks = tracks
         .into_iter()
         .zip(chains)
-        .zip(latencies)
-        .map(|((track, chain), latency)| {
-            let routing = Routing {
+        .zip(&graph.delays)
+        .map(|((track, chain), &pdc_delay)| {
+            let routing = TrackEnv {
                 chain,
                 input: input_filter(track, env),
-                pdc_delay: (max_latency - latency).min(MAX_PDC_FRAMES as u32),
+                pdc_delay,
             };
             track_program(track, routing, previous.and_then(|p| p.track(track.id)))
         })
@@ -129,13 +149,23 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         song_end: project.song_end(),
         tracks,
         master: MasterProgram {
-            chain: chain_slots(&master_chain, &slots),
+            chain: master_chain,
             gain: fader_gain(master.volume_db),
             pan: balance(master.pan),
             mute: master.mute,
         },
         slots: Arc::new(slots),
+        routing: graph.routing,
     }
+}
+
+/// The gate table of `project`'s mute and solo states for `program` (compiled from an earlier
+/// state of the same project): what `Command::SetGates` carries on the fast path when mute or
+/// solo change during a gesture (ARCHITECTURE §6.8.6). Tracks and sends the program does not have
+/// are left out; tracks of the program missing in `project` are closed.
+pub fn gates(project: &Project, program: &Program) -> GateTable {
+    let tracks: Vec<_> = program.tracks.iter().map(|t| t.id).collect();
+    graph::gate_table(project, &tracks, &program.routing.sends)
 }
 
 /// Devices whose slot appeared or disappeared between two programs.
@@ -175,7 +205,7 @@ pub fn slot_changes(previous: Option<&Program>, next: &Program) -> SlotChanges {
 enum ChainKind {
     /// A track chain: MIDI effects, then an instrument may come first.
     Track,
-    /// The master inserts: effects only.
+    /// The master inserts and a bus chain: effects only.
     Master,
 }
 
@@ -277,7 +307,7 @@ fn chain_latency(chain: &[ChainSlot], env: &dyn CompileEnv) -> u32 {
 
 /// The parts of a track program that depend on more than the track: slots, MIDI ports and the
 /// latencies of all tracks.
-struct Routing {
+struct TrackEnv {
     chain: Vec<ChainSlot>,
     input: InputFilter,
     pdc_delay: u32,
@@ -288,7 +318,7 @@ struct Routing {
 /// (mixer, device and input edits). The meter `Arc` survives every rebuild.
 fn track_program(
     track: &Arc<Track>,
-    routing: Routing,
+    routing: TrackEnv,
     previous: Option<&Arc<TrackProgram>>,
 ) -> Arc<TrackProgram> {
     if let Some(prev) = previous

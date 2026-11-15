@@ -90,6 +90,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
             mute: false,
         },
         slots: Arc::new(SlotMap::default()),
+        routing: Default::default(),
     }
 }
 

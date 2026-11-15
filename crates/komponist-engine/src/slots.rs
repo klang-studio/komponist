@@ -206,6 +206,17 @@ impl Bufs {
     }
 }
 
+/// What a chain needs from the routing graph (WP-102), asked by [`run_chain`] while it runs.
+pub(crate) trait ChainHook {
+    /// Called once per call with the chain's signal in front of the first audio effect (or behind
+    /// the last device when there is none): a MIDI track's head delay (§6.8.5).
+    fn head(&mut self, l: &mut [f32], r: &mut [f32]);
+
+    /// The sidechain input of the device at chain position `index` for this call, if it has one.
+    /// Asked for every device that processes audio, running or not, so delay lines keep flowing.
+    fn sidechain(&mut self, index: usize) -> Option<[&[f32]; 2]>;
+}
+
 /// RT. Runs `chain` over the first `n` frames of `bufs.a` and returns the buffer with the result
 /// and whether a processor failed in this call.
 ///
@@ -213,9 +224,10 @@ impl Bufs {
 /// are skipped) is the instrument: it gets
 /// `instrument_events` and silence as input. Its `AllNotesOff` and parameters are already in
 /// `instrument_events`. Every other device is an effect and gets its own pending `AllNotesOff` and
-/// parameters as events.
+/// parameters as events. A device for which `hook` has a sidechain input gets it
+/// ([`Processor::process_sidechain`](crate::Processor::process_sidechain)).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_chain<T: SlotTable + ?Sized>(
+pub(crate) fn run_chain<T: SlotTable + ?Sized, H: ChainHook + ?Sized>(
     chain: &[ChainSlot],
     slots: &mut T,
     ctx: &ProcessContext,
@@ -224,17 +236,25 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized>(
     bufs: &mut Bufs,
     n: usize,
     track: bool,
+    hook: &mut H,
 ) -> (Buf, bool) {
     let mut current = Buf::A;
     let mut failed = false;
+    let mut head = false;
     for (index, device) in chain.iter().enumerate() {
-        let Some(slot) = slots.slot_mut(device.slot.0 as usize) else {
-            continue;
-        };
         // MIDI effects run in front of the instrument (`crate::stage`), never as audio.
         if device.role == DeviceRole::MidiEffect {
             continue;
         }
+        if device.role == DeviceRole::Effect && !head {
+            head = true;
+            let (l, r) = bufs.pair(current, n);
+            hook.head(l, r);
+        }
+        let sidechain = hook.sidechain(index);
+        let Some(slot) = slots.slot_mut(device.slot.0 as usize) else {
+            continue;
+        };
         let instrument = track
             && device.role == DeviceRole::Instrument
             && chain[..index]
@@ -270,7 +290,11 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized>(
             input,
             output: [&mut out_l[..n], &mut out_r[..n]],
         };
-        if processor.process(ctx, events, &mut io) == ProcessStatus::Failed {
+        let status = match sidechain {
+            Some(sidechain) => processor.process_sidechain(ctx, events, &mut io, sidechain),
+            None => processor.process(ctx, events, &mut io),
+        };
+        if status == ProcessStatus::Failed {
             slot.failed = true;
             failed = true;
         }
@@ -278,6 +302,10 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized>(
             Buf::A => Buf::B,
             Buf::B => Buf::A,
         };
+    }
+    if !head {
+        let (l, r) = bufs.pair(current, n);
+        hook.head(l, r);
     }
     (current, failed)
 }

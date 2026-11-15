@@ -49,6 +49,26 @@ pub trait Processor: Send {
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus;
 
+    /// RT, optional (WP-102). [`Processor::process`] with the device's **sidechain input**: the
+    /// signal of the track or bus its sidechain taps (ARCHITECTURE §6.8.2), stereo, `ctx.frames`
+    /// samples each, lined up in time with `io.input` by the engine's delay compensation. Pre taps
+    /// ignore the source's fader, mute and solo; post taps follow fader, pan and mute.
+    ///
+    /// The engine calls it instead of `process` on every call of a device whose sidechain is set
+    /// (with silence while the source is silent), and `process` otherwise. The default ignores the
+    /// sidechain; devices with a sidechain input override it (internal devices: WP-104, plugins
+    /// through the bridge: WP-105). Same rules as `process`.
+    fn process_sidechain(
+        &mut self,
+        ctx: &ProcessContext,
+        events: &[Event],
+        io: &mut StereoIo<'_>,
+        sidechain: [&[f32]; 2],
+    ) -> ProcessStatus {
+        let _ = sidechain;
+        self.process(ctx, events, io)
+    }
+
     /// RT, optional (WP-65). Starts the next [`Processor::process`] call early, for processors
     /// whose work runs elsewhere (a bridge process): the engine calls it for the instrument at the
     /// head of a track chain as soon as the track's events are known, before it processes any

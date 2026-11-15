@@ -1,32 +1,38 @@
-//! Parallel track processing (WP-65, ARCHITECTURE §6.4).
+//! Parallel track processing (WP-65, ARCHITECTURE §6.4.1), as a scheduler of the routing graph's
+//! jobs (WP-102, §6.8.4).
 //!
 //! A fixed pool of worker threads, started outside the audio callback ([`crate::Engine::set_workers`],
 //! the app does it when a stream starts) and kept until the pool is replaced or the engine is
-//! dropped. Per segment the engine hands the pool one batch of jobs (one job = one track's chain,
-//! fader, meter and delay compensation) and takes part itself:
+//! dropped. Per segment the engine hands the pool one batch of jobs (one job = one track's or bus's
+//! chain, fader, meter and delay compensation) and takes part itself:
 //!
-//! - **Dispatch:** the dispatching thread writes the batch descriptor, publishes it with one
-//!   release store of the claim word (`epoch << 32 | count << 16 | next`) and wakes as many
-//!   sleeping workers as there are jobs beyond the first (one `FUTEX_WAKE`). Every thread then
-//!   claims jobs with a compare-and-swap on the claim word until none is left. No allocation, no
-//!   lock; the descriptor is read only by a thread that holds a claimed job of its epoch, so the
-//!   dispatcher never rewrites it while someone reads it.
+//! - **Dispatch:** the dispatching thread writes the batch descriptor, publishes the jobs that are
+//!   ready at once (every job without inputs; in a project without buses all of them) with one
+//!   release store of the **ready set** (a bit per job, at most [`MAX_JOBS`]) and wakes as many
+//!   sleeping workers as there are ready jobs beyond the first (one `FUTEX_WAKE`). Every thread
+//!   then claims ready jobs, the lowest first, by clearing their bit atomically. No allocation, no
+//!   lock; the descriptor is read only by a thread that holds a claimed job, so the dispatcher
+//!   never rewrites it while someone reads it.
+//! - **Dependencies:** a job that others read (a track feeding a bus) publishes the jobs it makes
+//!   ready when it is done ([`Publisher`]; the engine counts each job's missing inputs and
+//!   publishes a job when its count reaches zero). The thread that publishes goes on claiming, so
+//!   it usually runs the bus itself; the dispatcher is woken to claim the rest.
 //! - **Deadline fallback:** a worker that wakes late (or not at all) simply claims nothing: the
-//!   dispatching thread takes every job no worker has started, in order, without waiting for
-//!   anyone. It then waits (`FUTEX_WAIT` with a deadline of one callback period, repeated) only for
-//!   jobs a worker is already running: such a job owns its track's processors and state until it
-//!   returns, so it cannot be redone or abandoned. A wait past the deadline is counted in
-//!   [`WorkerStats::late`].
-//! - **Determinism:** a job touches only its own track (state, processors, output buffer) and its
-//!   lane's scratch buffers; workers copy the dispatcher's floating-point mode (flush-to-zero,
-//!   rounding) before a batch; the engine sums the tracks in track order after the batch. The
-//!   output is therefore bit-exact whatever thread ran which track (tested against the
-//!   single-threaded path).
+//!   dispatching thread takes every ready job no worker has started, without waiting for anyone.
+//!   It waits (`FUTEX_WAIT` with a deadline of one callback period, repeated) only while jobs a
+//!   worker is running are outstanding (their dependents may be all that is left): such a job owns
+//!   its track's processors and state until it returns, so it cannot be redone or abandoned. A
+//!   wait past the deadline is counted in [`WorkerStats::late`].
+//! - **Determinism:** a job touches only its own track (state, processors, output buffers), the
+//!   finished outputs of the jobs it depends on (read only) and its lane's scratch buffers; workers
+//!   copy the dispatcher's floating-point mode (flush-to-zero, rounding) before a batch; buses and
+//!   the master sum their inputs in a fixed order. The output is therefore bit-exact whatever
+//!   thread ran which job (tested against the single-threaded path).
 //! - **Realtime:** workers run at `SCHED_FIFO` (the bridges' default priority, 80) if the system
 //!   allows it, and run their jobs inside `assert_no_alloc`. Idle workers sleep in `FUTEX_WAIT`
 //!   (with a one-second deadline, to look at the shutdown flag).
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
@@ -36,6 +42,9 @@ use crate::sys;
 
 /// Most worker threads a pool runs (next to the dispatching thread).
 pub const MAX_WORKERS: usize = 15;
+
+/// Most jobs in one batch (the bits of the ready set): one per track, [`crate::MAX_TRACKS`].
+pub const MAX_JOBS: usize = 128;
 
 /// `SCHED_FIFO` priority of the workers: the same as the bridge RT threads (below PipeWire's data
 /// loops, 88 for the server and 83 for clients on the owner's machine).
@@ -106,11 +115,107 @@ impl WorkerStats {
 #[repr(align(128))]
 struct Padded<T>(T);
 
-/// What one batch runs: `run(ctx, job, lane)` for `job` in `0 .. count`.
+/// The jobs of a batch that may be claimed: bit `j` = job `j` is ready and nobody runs it yet.
+pub(crate) struct Ready {
+    words: [AtomicU64; MAX_JOBS / 64],
+}
+
+impl Ready {
+    pub(crate) const fn new() -> Ready {
+        Ready {
+            words: [AtomicU64::new(0), AtomicU64::new(0)],
+        }
+    }
+
+    /// RT. Replaces the set (a new batch; no job of the previous one is outstanding).
+    fn reset(&self, bits: u128) {
+        self.words[0].store(bits as u64, Ordering::Release);
+        self.words[1].store((bits >> 64) as u64, Ordering::Release);
+    }
+
+    /// RT. Adds `bits` to the set.
+    fn publish(&self, bits: u128) {
+        for (word, bits) in self.words.iter().zip([bits as u64, (bits >> 64) as u64]) {
+            if bits != 0 {
+                word.fetch_or(bits, Ordering::AcqRel);
+            }
+        }
+    }
+
+    /// RT. Whether any job is ready.
+    fn any(&self) -> bool {
+        self.words.iter().any(|w| w.load(Ordering::Acquire) != 0)
+    }
+
+    /// RT. Claims the lowest ready job, if there is one.
+    fn claim(&self) -> Option<usize> {
+        for (w, word) in self.words.iter().enumerate() {
+            let mut bits = word.load(Ordering::Acquire);
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let mask = 1u64 << bit;
+                let before = word.fetch_and(!mask, Ordering::AcqRel);
+                if before & mask != 0 {
+                    return Some(w * 64 + bit);
+                }
+                bits = before & !mask;
+            }
+        }
+        None
+    }
+}
+
+/// Handed to every job of a batch: [`Publisher::publish`] makes jobs claimable. Lives on the
+/// stack of the thread that runs the job.
+pub(crate) struct Publisher<'a> {
+    ready: &'a Ready,
+    published: Cell<bool>,
+}
+
+impl<'a> Publisher<'a> {
+    fn new(ready: &'a Ready) -> Publisher<'a> {
+        Publisher {
+            ready,
+            published: Cell::new(false),
+        }
+    }
+
+    /// RT. The jobs in `bits` (bit `j` = job `j`) may run now: all their inputs are done.
+    pub(crate) fn publish(&self, bits: u128) {
+        if bits != 0 {
+            self.ready.publish(bits);
+            self.published.set(true);
+        }
+    }
+}
+
+/// RT. Runs a batch on the calling thread alone: `job(j, 0, …)` for every job, the lowest ready
+/// one first, until `count` jobs ran. `ready` are the jobs ready at the start; the rest must be
+/// published by the jobs (else this panics).
+pub(crate) fn run_serial<F: Fn(usize, usize, &Publisher<'_>)>(count: usize, ready: u128, job: &F) {
+    let set = Ready::new();
+    set.reset(ready);
+    for _ in 0..count {
+        let j = set.claim().expect("a job of the batch never became ready");
+        job(j, 0, &Publisher::new(&set));
+    }
+}
+
+/// The ready set of all jobs `0 .. count`.
+#[cfg(test)]
+fn all_jobs(count: usize) -> u128 {
+    if count >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << count) - 1
+    }
+}
+
+/// What one batch runs: `run(ctx, job, lane, publisher)` for `job` in `0 .. count`.
 #[derive(Clone, Copy)]
 struct Batch {
     ctx: *const (),
-    run: unsafe fn(*const (), usize, usize),
+    run: unsafe fn(*const (), usize, usize, &Publisher<'_>),
     count: u32,
     /// The dispatcher's floating-point control state ([`sys::fp_state`]).
     fp: u64,
@@ -120,8 +225,8 @@ struct Batch {
 struct Shared {
     /// Futex word the workers sleep on: the epoch of the latest batch.
     wake: Padded<AtomicU32>,
-    /// `epoch << 32 | count << 16 | next`: the batch's job counter.
-    claim: Padded<AtomicU64>,
+    /// The batch's ready jobs.
+    ready: Padded<Ready>,
     /// Futex word the dispatcher sleeps on: jobs of the batch finished.
     finished: Padded<AtomicU32>,
     shutdown: AtomicBool,
@@ -140,27 +245,6 @@ struct Shared {
 unsafe impl Sync for Shared {}
 // SAFETY: as above; the raw pointer in `batch` is only dereferenced under that protocol.
 unsafe impl Send for Shared {}
-
-fn pack(epoch: u32, count: usize, next: usize) -> u64 {
-    u64::from(epoch) << 32 | (count as u64) << 16 | next as u64
-}
-
-/// RT. Claims the next job of the batch with `epoch`, if one is left.
-fn claim(word: &AtomicU64, epoch: u32) -> Option<usize> {
-    let mut current = word.load(Ordering::Acquire);
-    loop {
-        let count = (current >> 16) & 0xffff;
-        let next = current & 0xffff;
-        if (current >> 32) as u32 != epoch || next >= count {
-            return None;
-        }
-        match word.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => return Some(next as usize),
-            Err(seen) => current = seen,
-        }
-    }
-}
 
 /// The worker threads and the dispatching side of the batch protocol.
 pub(crate) struct Pool {
@@ -182,7 +266,7 @@ impl Pool {
         let threads = threads.min(MAX_WORKERS);
         let shared = Arc::new(Shared {
             wake: Padded(AtomicU32::new(0)),
-            claim: Padded(AtomicU64::new(0)),
+            ready: Padded(Ready::new()),
             finished: Padded(AtomicU32::new(0)),
             shutdown: AtomicBool::new(false),
             panicked: AtomicBool::new(false),
@@ -247,12 +331,34 @@ impl Pool {
         &self.status
     }
 
-    /// RT. Runs `job(j, lane)` for every `j` in `0 .. count` (≤ `u16::MAX`), on the calling thread
-    /// (lane 0) and the workers, and returns when all are done. Jobs are claimed in order of `j`.
-    /// `period` is the deadline of each wait for running jobs (see the module docs).
+    /// RT. Runs `job(j, lane)` for every `j` in `0 .. count` (≤ [`MAX_JOBS`], all independent),
+    /// on the calling thread (lane 0) and the workers, and returns when all are done. `period`
+    /// is the deadline of each wait for running jobs (see the module docs).
+    #[cfg(test)]
     pub(crate) fn run<F: Fn(usize, usize) + Sync>(
         &mut self,
         count: usize,
+        job: &F,
+        period: Duration,
+    ) {
+        self.run_graph(
+            count,
+            all_jobs(count),
+            &|j, lane, _: &Publisher<'_>| job(j, lane),
+            period,
+        );
+    }
+
+    /// RT. Runs a batch of `count` jobs (≤ [`MAX_JOBS`]) with dependencies: `ready` are the jobs
+    /// that may start at once, every other job must be published by the job that completes its
+    /// inputs (`job(j, lane, publisher)`), or this never returns. Runs on the calling thread
+    /// (lane 0) and the workers and returns when all `count` jobs are done. Ready jobs are claimed
+    /// lowest first. `period` is the deadline of each wait for running jobs (see the module
+    /// docs).
+    pub(crate) fn run_graph<F: Fn(usize, usize, &Publisher<'_>) + Sync>(
+        &mut self,
+        count: usize,
+        ready: u128,
         job: &F,
         period: Duration,
     ) {
@@ -260,13 +366,19 @@ impl Pool {
         ///
         /// # Safety
         /// `ctx` must point to a live `F`.
-        unsafe fn trampoline<F: Fn(usize, usize)>(ctx: *const (), j: usize, lane: usize) {
-            // SAFETY: guaranteed by the caller (`run` keeps `job` alive until every job is done).
+        unsafe fn trampoline<F: Fn(usize, usize, &Publisher<'_>)>(
+            ctx: *const (),
+            j: usize,
+            lane: usize,
+            publisher: &Publisher<'_>,
+        ) {
+            // SAFETY: guaranteed by the caller (`run_graph` keeps `job` alive until every job is
+            // done).
             let f = unsafe { &*ctx.cast::<F>() };
-            f(j, lane);
+            f(j, lane, publisher);
         }
 
-        debug_assert!(count <= usize::from(u16::MAX));
+        debug_assert!(count <= MAX_JOBS);
         if count == 0 {
             return;
         }
@@ -282,31 +394,39 @@ impl Pool {
             };
         }
         s.finished.0.store(0, Ordering::Relaxed);
+        s.ready.0.reset(ready);
         self.epoch = self.epoch.wrapping_add(1);
-        s.claim
-            .0
-            .store(pack(self.epoch, count, 0), Ordering::Release);
         s.wake.0.store(self.epoch, Ordering::Release);
-        let helpers = self.threads.len().min(count - 1);
+        let helpers = self
+            .threads
+            .len()
+            .min((ready.count_ones() as usize).saturating_sub(1));
         if helpers > 0 {
             sys::wake(&s.wake.0, helpers);
         }
         s.stats.batches.fetch_add(1, Ordering::Relaxed);
 
-        let mut mine = 0u32;
-        while let Some(j) = claim(&s.claim.0, self.epoch) {
-            job(j, 0);
-            mine += 1;
-        }
         let count = count as u32;
-        let mut finished = s.finished.0.fetch_add(mine, Ordering::AcqRel) + mine;
-        let mut deadline = Instant::now() + period;
-        while finished < count {
-            if !sys::wait_while(&s.finished.0, finished, deadline) {
-                s.stats.late.fetch_add(1, Ordering::Relaxed);
-                deadline = Instant::now() + period;
+        let mut deadline = None;
+        loop {
+            let mut mine = 0u32;
+            while let Some(j) = s.ready.0.claim() {
+                job(j, 0, &Publisher::new(&s.ready.0));
+                mine += 1;
             }
-            finished = s.finished.0.load(Ordering::Acquire);
+            let finished = s.finished.0.fetch_add(mine, Ordering::AcqRel) + mine;
+            if finished >= count {
+                break;
+            }
+            // A worker published jobs before it counted its own as finished.
+            if s.ready.0.any() {
+                continue;
+            }
+            let until = *deadline.get_or_insert_with(|| Instant::now() + period);
+            if !sys::wait_while(&s.finished.0, finished, until) {
+                s.stats.late.fetch_add(1, Ordering::Relaxed);
+                deadline = Some(Instant::now() + period);
+            }
         }
         // A bug, as on the calling thread; never leave it silent (the track's output is stale).
         assert!(
@@ -339,7 +459,7 @@ impl core::fmt::Debug for Pool {
 
 /// Placeholder job function of an empty descriptor (never called: a batch is published only with
 /// its real function).
-unsafe fn noop(_: *const (), _: usize, _: usize) {}
+unsafe fn noop(_: *const (), _: usize, _: usize, _: &Publisher<'_>) {}
 
 /// A worker's loop: sleep until a new epoch, claim and run jobs, report each finished job.
 fn work(shared: &Shared, lane: usize) {
@@ -356,23 +476,27 @@ fn work(shared: &Shared, lane: usize) {
             if shared.shutdown.load(Ordering::Acquire) {
                 break;
             }
-            while let Some(j) = claim(&shared.claim.0, epoch) {
+            while let Some(j) = shared.ready.0.claim() {
                 // SAFETY: this thread holds a claimed job of the batch, so the descriptor is the
-                // one published with `epoch` and stays unchanged until the job is reported.
+                // one published with it and stays unchanged until the job is reported.
                 let batch = unsafe { *shared.batch.get() };
                 if batch.fp != fp {
                     sys::set_fp_state(batch.fp);
                     fp = batch.fp;
                 }
-                // SAFETY: `ctx` is the live closure of `Pool::run`, which waits for this job.
-                let job = || unsafe { (batch.run)(batch.ctx, j, lane) };
+                let publisher = Publisher::new(&shared.ready.0);
+                // SAFETY: `ctx` is the live closure of `Pool::run_graph`, which waits for this
+                // job.
+                let job = || unsafe { (batch.run)(batch.ctx, j, lane, &publisher) };
                 // A panic still counts the job as finished, so the dispatcher never waits for it
-                // forever; it re-raises the panic.
+                // forever (the engine's jobs publish their dependents on unwind too); it re-raises
+                // the panic.
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
                     shared.panicked.store(true, Ordering::Release);
                 }
                 shared.stats.worker_jobs.fetch_add(1, Ordering::Relaxed);
-                if shared.finished.0.fetch_add(1, Ordering::AcqRel) + 1 == batch.count {
+                let finished = shared.finished.0.fetch_add(1, Ordering::AcqRel) + 1;
+                if finished == batch.count || publisher.published.get() {
                     sys::wake(&shared.finished.0, 1);
                 }
             }
@@ -397,15 +521,59 @@ mod tests {
     }
 
     #[test]
-    fn claims_stop_at_the_count_and_at_a_new_epoch() {
-        let word = AtomicU64::new(pack(7, 2, 0));
-        assert_eq!(claim(&word, 7), Some(0));
-        assert_eq!(claim(&word, 6), None);
-        assert_eq!(claim(&word, 7), Some(1));
-        assert_eq!(claim(&word, 7), None);
-        word.store(pack(8, 1, 0), Ordering::Release);
-        assert_eq!(claim(&word, 7), None);
-        assert_eq!(claim(&word, 8), Some(0));
+    fn ready_jobs_are_claimed_lowest_first_and_once() {
+        let ready = Ready::new();
+        ready.reset(1 << 3 | 1 << 70 | 1);
+        assert!(ready.any());
+        assert_eq!(ready.claim(), Some(0));
+        assert_eq!(ready.claim(), Some(3));
+        ready.publish(1 << 1 | 1 << 127);
+        assert_eq!(ready.claim(), Some(1));
+        assert_eq!(ready.claim(), Some(70));
+        assert_eq!(ready.claim(), Some(127));
+        assert_eq!(ready.claim(), None);
+        assert!(!ready.any());
+        assert_eq!(all_jobs(3), 0b111);
+        assert_eq!(all_jobs(128), u128::MAX);
+    }
+
+    /// A chain of jobs, each published by its predecessor, plus independent ones: every job runs
+    /// once and after its predecessor, serially and on the pool.
+    #[test]
+    fn dependent_jobs_run_after_their_inputs() {
+        use std::sync::atomic::AtomicU32;
+        let (pool, _) = Pool::start(3, None, Arc::default());
+        let mut pool = pool.unwrap();
+        for parallel in [false, true] {
+            for _ in 0..200 {
+                // Jobs 0..4 are independent; 4 needs 0..4 (counter), 5 needs 4.
+                let missing = AtomicU32::new(4);
+                let done: Vec<AtomicU32> = (0..6).map(|_| AtomicU32::new(0)).collect();
+                let job = |j: usize, _lane: usize, publisher: &Publisher<'_>| {
+                    match j {
+                        4 => assert!((0..4).all(|i| done[i].load(Ordering::Acquire) == 1)),
+                        5 => assert_eq!(done[4].load(Ordering::Acquire), 1),
+                        _ => {}
+                    }
+                    std::hint::black_box((0..100).sum::<u64>());
+                    done[j].fetch_add(1, Ordering::Release);
+                    if j < 4 && missing.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        publisher.publish(1 << 4);
+                    }
+                    if j == 4 {
+                        publisher.publish(1 << 5);
+                    }
+                };
+                if parallel {
+                    assert_no_alloc::assert_no_alloc(|| {
+                        pool.run_graph(6, 0b1111, &job, Duration::from_secs(1))
+                    });
+                } else {
+                    run_serial(6, 0b1111, &job);
+                }
+                assert!(done.iter().all(|d| d.load(Ordering::Relaxed) == 1));
+            }
+        }
     }
 
     /// Every job runs exactly once per batch, on lanes `0 ..= threads`, over many batches.
