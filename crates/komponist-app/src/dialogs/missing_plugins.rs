@@ -44,7 +44,7 @@ pub struct Row {
 /// What the dialog shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
-    /// Project name ("Nachtfahrt").
+    /// Project name ("Night Drive").
     pub project: String,
     /// The missing devices in document order.
     pub rows: Vec<Row>,
@@ -551,8 +551,8 @@ mod tests {
         assert_eq!(title(Lang::De, 2), "2 Plugins fehlen");
         assert_eq!(title(Lang::De, 1), "1 Plugin fehlt");
         assert!(
-            text(Lang::De, "Nachtfahrt", 2).starts_with("„Nachtfahrt“ ist geöffnet. Diese Geräte")
+            text(Lang::De, "Night Drive", 2).starts_with("„Night Drive“ ist geöffnet. Diese Geräte")
         );
-        assert!(text(Lang::De, "Nachtfahrt", 1).contains("Dieses Gerät ist nicht installiert"));
+        assert!(text(Lang::De, "Night Drive", 1).contains("Dieses Gerät ist nicht installiert"));
     }
 }

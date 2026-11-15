@@ -154,7 +154,7 @@ pub(crate) struct ShellState {
     saved_panels: Option<PanelSettings>,
     /// The last edit that failed (diagnostics, tests).
     last_error: Option<EditError>,
-    /// The window title last sent ("komponist · Nachtfahrt").
+    /// The window title last sent ("komponist · Night Drive").
     title: Option<String>,
     /// The device host's events of this frame ([`App::device_events`]).
     device_events: Vec<PluginManagerEvent>,
@@ -487,7 +487,7 @@ impl App {
         self.schedule_repaint(&ctx);
     }
 
-    /// The window title follows the project name ("komponist · Nachtfahrt"); the start screen
+    /// The window title follows the project name ("komponist · Night Drive"); the start screen
     /// shows the wordmark alone.
     fn update_title(&mut self, ctx: &Context) {
         let title = if self.ui.screen == Screen::Start {
@@ -2629,7 +2629,7 @@ impl App {
     }
 }
 
-/// The window title for a project: "komponist · Nachtfahrt" (ARCHITECTURE §13.6).
+/// The window title for a project: "komponist · Night Drive" (ARCHITECTURE §13.6).
 pub fn window_title(project_name: &str) -> String {
     format!("{} · {project_name}", crate::panels::transport::WORDMARK)
 }

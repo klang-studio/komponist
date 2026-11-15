@@ -883,11 +883,11 @@ mod tests {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
         let collapsed = BTreeSet::new();
         let paths = [
-            std::path::PathBuf::from("/out/Nachtfahrt.wav"),
+            std::path::PathBuf::from("/out/Night Drive.wav"),
             std::path::PathBuf::from("/out/Loop.wav"),
         ];
         let exports = export_names(&paths);
-        assert_eq!(exports, ["Nachtfahrt.wav", "Loop.wav"]);
+        assert_eq!(exports, ["Night Drive.wav", "Loop.wav"]);
         let with = |segment, query| {
             rows(
                 Lang::De,
@@ -900,7 +900,7 @@ mod tests {
         let files = with(BrowserSegment::Files, "");
         assert_eq!(
             names_of(&files[2..]),
-            ["Exporte", "Nachtfahrt.wav", "Loop.wav"]
+            ["Exporte", "Night Drive.wav", "Loop.wav"]
         );
         assert_eq!(files[3].tag, EXPORT_TAG);
         assert_eq!(files[3].kind, RowKind::Plain);
@@ -910,7 +910,7 @@ mod tests {
         let all = with(BrowserSegment::All, "");
         let folder = all.iter().position(|r| r.name == "Exporte").unwrap();
         assert_eq!(all[folder].tag, "2");
-        assert_eq!(all[folder + 1].name, "Nachtfahrt.wav");
+        assert_eq!(all[folder + 1].name, "Night Drive.wav");
         assert_eq!(all[folder + 1].level, 1);
     }
 

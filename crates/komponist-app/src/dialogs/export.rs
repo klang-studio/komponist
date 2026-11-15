@@ -14,7 +14,7 @@
 //! - **Devices** ([`Stage::Devices`], no screen): while devices of the project load, are missing
 //!   or crashed, the progress dialog's frame lists them and the export waits; it goes on by itself
 //!   when all run. "Ohne sie exportieren" goes on at once, "Abbrechen" / Esc ends it.
-//! - **Progress** ([`Stage::Progress`], S08 "danach · Fortschritt"): "Exportiere Nachtfahrt.wav",
+//! - **Progress** ([`Stage::Progress`], S08 "danach · Fortschritt"): "Exportiere Night Drive.wav",
 //!   the percentage, rendered of total time, the bar, Geschwindigkeit, Spitze bisher (the sample
 //!   peak rendered so far, before normalisation), Restzeit; "Abbrechen" / Esc.
 //!
@@ -842,10 +842,10 @@ mod tests {
 
     #[test]
     fn file_names_get_the_extension_once() {
-        assert_eq!(file_name("Nachtfahrt").as_deref(), Some("Nachtfahrt.wav"));
+        assert_eq!(file_name("Night Drive").as_deref(), Some("Night Drive.wav"));
         assert_eq!(
-            file_name(" Nachtfahrt.wav ").as_deref(),
-            Some("Nachtfahrt.wav")
+            file_name(" Night Drive.wav ").as_deref(),
+            Some("Night Drive.wav")
         );
         assert_eq!(file_name("Mix.WAV").as_deref(), Some("Mix.WAV"));
         assert_eq!(file_name(".wav").as_deref(), Some(".wav.wav"));
@@ -863,8 +863,8 @@ mod tests {
         let t = Lang::De;
         assert_eq!(t.export_loop_bars(9, 13), "Loop 9–13");
         assert_eq!(
-            t.export_done("Nachtfahrt.wav", "00:33", 24),
-            "Nachtfahrt.wav exportiert · 00:33 · 24 bit"
+            t.export_done("Night Drive.wav", "00:33", 24),
+            "Night Drive.wav exportiert · 00:33 · 24 bit"
         );
         assert_eq!(speed_text(t, 6.24), "6.2 × Echtzeit");
         assert_eq!(remaining_text(t, 1.2), "ca. 2 s");

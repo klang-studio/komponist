@@ -502,7 +502,7 @@ mod tests {
         s.ui_scale = Some(2.0);
         s.panels.browser_open = false;
         s.panels.dock_height = 400.0;
-        s.export = Some(default_export("Nachtfahrt", dir.clone()));
+        s.export = Some(default_export("Night Drive", dir.clone()));
         s.favorites.toggle(&PluginRef {
             format: PluginFormat::Clap,
             id: "com.example.reverb".into(),

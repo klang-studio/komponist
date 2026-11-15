@@ -312,5 +312,5 @@ fn render_levels() {
     let mut no_limiter = base.clone();
     Arc::make_mut(&mut no_limiter.master).devices.clear();
     measure(no_limiter, "master-no-limiter", BitDepth::Float32);
-    measure(base, "nachtfahrt", BitDepth::Int24);
+    measure(base, "night-drive", BitDepth::Int24);
 }
