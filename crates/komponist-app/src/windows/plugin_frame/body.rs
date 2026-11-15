@@ -7,6 +7,7 @@
 //! another colour (owner test 2026-11-13).
 
 use egui::{Align, Layout, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, vec2};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, typography};
 use komponist_ui::widgets::button::Button;
@@ -21,28 +22,6 @@ use crate::views::devices::model::{Param, failure_texts};
 use crate::views::mixer::gesture_actions;
 use komponist_model::DeviceId;
 use komponist_plugins::FailReason;
-
-/// Texts of the body (S05 `card()`, `Prototyp.dc.html` `pw.guiT`).
-pub mod names {
-    /// Crashed device (`card()` `msg`).
-    pub const CRASHED: &str = "Abgestürzt";
-    /// The crashed device's button (`card()` `btnT`).
-    pub const RELOAD: &str = "Neu laden";
-    /// Loading device (`card()` `msg`).
-    pub const LOADING: &str = "Lädt …";
-    /// Its explanation (`card()` `msg2`).
-    pub const LOADING_DETAIL: &str = "Plugin wird gescannt und instanziiert.";
-    /// Missing plugin: "Vital fehlt" (S06 track header).
-    pub fn missing(name: &str) -> String {
-        format!("{name} fehlt")
-    }
-    /// GUI placeholder where no X11 child can be embedded (`pw.guiT`).
-    pub fn gui_placeholder(name: &str) -> String {
-        format!("Plugin-GUI · zeichnet {name} selbst")
-    }
-    /// Second line of the placeholder ("Rahmen von klang-studio, Inhalt vom Plugin", rule 1).
-    pub const GUI_PLACEHOLDER_DETAIL: &str = "Rahmen von komponist, Inhalt vom Plugin";
-}
 
 /// The parameter grid: WP-44's knob model ([`Param`]: the parameter model's description, value
 /// and text) for all parameters, not just a device card's auto-layout.
@@ -99,6 +78,7 @@ pub enum BodyEvent {
 
 /// Draws the body into `rect`.
 pub fn show(ui: &mut Ui, rect: Rect, model: &mut BodyModel) -> Vec<BodyEvent> {
+    let t = komponist_ui::lang(ui.ctx());
     px::fill(ui.painter(), rect, 0.0, color32(color::SURFACE_0));
     let mut events = Vec::new();
     let mut body = ui.new_child(
@@ -113,17 +93,17 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &mut BodyModel) -> Vec<BodyEvent> {
         BodyModel::Gui {
             native: false,
             name,
-        } => placeholder(&mut body, rect, name),
+        } => placeholder(&mut body, t, rect, name),
         BodyModel::Loading => {
-            message(&mut body, rect, Message::Loading);
+            message(&mut body, t, rect, Message::Loading);
         }
         BodyModel::Crashed(reason) => {
-            if message(&mut body, rect, Message::Crashed(reason)) {
+            if message(&mut body, t, rect, Message::Crashed(reason)) {
                 events.push(BodyEvent::Reload);
             }
         }
         BodyModel::Missing { name } => {
-            message(&mut body, rect, Message::Missing(name));
+            message(&mut body, t, rect, Message::Missing(name));
         }
         BodyModel::Params(grid_model) => grid(&mut body, rect, grid_model, &mut events),
     }
@@ -137,18 +117,18 @@ enum Message<'a> {
 }
 
 /// The device card's message (`msgS`) centred in the body; `true` when "Neu laden" was clicked.
-fn message(ui: &mut Ui, rect: Rect, msg: Message<'_>) -> bool {
+fn message(ui: &mut Ui, t: Lang, rect: Rect, msg: Message<'_>) -> bool {
     let (title, title_color, detail) = match msg {
         Message::Loading => (
-            names::LOADING.to_owned(),
+            t.plugin_frame_loading().to_owned(),
             color::TEXT_1,
-            Some(names::LOADING_DETAIL.to_owned()),
+            Some(t.plugin_frame_loading_detail().to_owned()),
         ),
         Message::Crashed(reason) => {
             let (title, text) = failure_texts(reason);
             (title.to_owned(), color::STATE_ERROR, Some(text))
         }
-        Message::Missing(name) => (names::missing(name), color::STATE_ERROR, None),
+        Message::Missing(name) => (t.plugin_frame_missing(name), color::STATE_ERROR, None),
     };
     let crashed = matches!(msg, Message::Crashed(_));
     let detail = detail.as_deref();
@@ -188,7 +168,7 @@ fn message(ui: &mut Ui, rect: Rect, msg: Message<'_>) -> bool {
                 progress(ui, inner_width);
             }
             if crashed {
-                clicked = ui.add(Button::new(names::RELOAD)).clicked();
+                clicked = ui.add(Button::new(t.plugin_frame_reload())).clicked();
             }
         });
     });
@@ -252,10 +232,10 @@ fn progress(ui: &mut Ui, width: f32) {
 }
 
 /// The prototype's GUI placeholder (`pw.isGui`): two mono lines in a box.
-fn placeholder(ui: &mut Ui, rect: Rect, name: &str) {
-    let first = names::gui_placeholder(name);
+fn placeholder(ui: &mut Ui, t: Lang, rect: Rect, name: &str) {
+    let first = t.plugin_frame_gui_placeholder(name);
     let a = w::styled_galley(ui, &first, &typography::VALUE_M);
-    let b = w::styled_galley(ui, names::GUI_PLACEHOLDER_DETAIL, &typography::VALUE_S);
+    let b = w::styled_galley(ui, t.plugin_frame_gui_placeholder_detail(), &typography::VALUE_S);
     let [pad_x, pad_y] = m::PLACEHOLDER_PADDING;
     let gap = m::PARAM_ITEM_GAP;
     let size = vec2(
@@ -272,7 +252,7 @@ fn placeholder(ui: &mut Ui, rect: Rect, name: &str) {
     );
     for (pos, galley, text, colour) in [
         (pos_a, a, first.as_str(), color::TEXT_2),
-        (pos_b, b, names::GUI_PLACEHOLDER_DETAIL, color::TEXT_3),
+        (pos_b, b, t.plugin_frame_gui_placeholder_detail(), color::TEXT_3),
     ] {
         let pos = egui::pos2(px::snap(pos.x, ppp), px::snap(pos.y, ppp));
         let r = ui.allocate_rect(Rect::from_min_size(pos, galley.size()), Sense::hover());

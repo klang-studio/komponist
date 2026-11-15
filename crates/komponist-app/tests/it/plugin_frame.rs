@@ -25,6 +25,7 @@ use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderMode
 use komponist_app::windows::plugin_frame::metrics;
 use komponist_app::{Action, App};
 use komponist_engine::Processor;
+use komponist_i18n::{Lang, de};
 use komponist_ipc::{
     GuiSize, ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
 };
@@ -33,6 +34,9 @@ use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef};
 use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup,
 };
+
+/// The title the device card gives a crashed device (`views::devices::model::failure_texts`, #2).
+const CRASHED_TITLE: &str = "Abgestürzt";
 
 fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
@@ -243,14 +247,14 @@ fn header_controls_report_what_the_user_did() {
         1.0,
     );
     h.run();
-    h.get_by_label(header::names::BYPASS).click();
+    h.get_by_label(de::PLUGIN_FRAME_BYPASS).click();
     h.run();
-    h.get_by_label(header::names::KEEP_ON_TOP).click();
+    h.get_by_label(de::PLUGIN_FRAME_KEEP_ON_TOP).click();
     h.run();
-    h.get_by_role_and_label(Role::RadioButton, header::names::VIEW_PARAMS)
+    h.get_by_role_and_label(Role::RadioButton, de::PLUGIN_FRAME_VIEW_PARAMS)
         .click();
     h.run();
-    h.get_by_label(header::names::CLOSE).click();
+    h.get_by_label(de::DIALOG_CLOSE).click();
     h.run();
     assert_eq!(
         h.state().header_events,
@@ -263,9 +267,9 @@ fn header_controls_report_what_the_user_did() {
     );
     // Without presets the preset controls and "Speichern" are disabled.
     for name in [
-        header::names::PRESET_PREV,
-        header::names::PRESET_NEXT,
-        header::names::SAVE,
+        de::PLUGIN_FRAME_PRESET_PREV,
+        de::PLUGIN_FRAME_PRESET_NEXT,
+        de::PLUGIN_FRAME_SAVE,
     ] {
         assert!(
             h.get_by_label(name).accesskit_node().is_disabled(),
@@ -282,11 +286,11 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
         1.0,
     );
     h.run();
-    let plugin = h.get_by_role_and_label(Role::RadioButton, header::names::VIEW_PLUGIN);
+    let plugin = h.get_by_role_and_label(Role::RadioButton, de::PLUGIN_FRAME_VIEW_PLUGIN);
     assert!(plugin.accesskit_node().is_disabled());
-    h.get_by_label(header::names::PRESET_NEXT).click();
+    h.get_by_label(de::PLUGIN_FRAME_PRESET_NEXT).click();
     h.run();
-    h.get_by_label(header::names::PRESET_PREV).click();
+    h.get_by_label(de::PLUGIN_FRAME_PRESET_PREV).click();
     h.run();
     assert_eq!(
         h.state().header_events,
@@ -294,7 +298,7 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
     );
     // The changed preset carries " *" (prototype `pl.changed`).
     let name = komponist_builtin::presets().nth(3).unwrap().name;
-    let field = h.get_by_role_and_label(Role::ComboBox, header::names::PRESET);
+    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
 }
 
@@ -365,10 +369,10 @@ fn a_failed_load_or_a_hang_does_not_read_abgestuerzt() {
             1.0,
         );
         h.run();
-        assert!(h.query_by_label(body::names::CRASHED).is_none());
+        assert!(h.query_by_label(CRASHED_TITLE).is_none());
         assert!(h.query_by_label(title).is_some(), "{title}");
         assert!(h.query_by_label_contains(detail).is_some(), "{detail}");
-        assert!(h.query_by_label(body::names::RELOAD).is_some());
+        assert!(h.query_by_label(de::PLUGIN_FRAME_RELOAD).is_some());
     }
 }
 
@@ -380,8 +384,8 @@ fn the_crashed_body_offers_neu_laden() {
         1.0,
     );
     h.run();
-    assert!(h.query_by_label(body::names::CRASHED).is_some());
-    h.get_by_label(body::names::RELOAD).click();
+    assert!(h.query_by_label(CRASHED_TITLE).is_some());
+    h.get_by_label(de::PLUGIN_FRAME_RELOAD).click();
     h.run();
     assert_eq!(h.state().body_events, [BodyEvent::Reload]);
 }
@@ -586,7 +590,7 @@ fn a_plugin_window_switches_views_sets_parameters_and_closes() {
             .is_some()
     );
     // Parameter view: visible parameters only, the plugin's text.
-    h.get_by_role_and_label(Role::RadioButton, header::names::VIEW_PARAMS)
+    h.get_by_role_and_label(Role::RadioButton, de::PLUGIN_FRAME_VIEW_PARAMS)
         .click();
     h.run_steps(3);
     assert_eq!(h.state().ui().plugin_windows[0].view, PluginView::Params);
@@ -616,7 +620,7 @@ fn a_plugin_window_switches_views_sets_parameters_and_closes() {
                 .all(|(d, id, v)| *d == surge && *id == 7 && *v > 0.25)
     );
     // Bypass and close through the header.
-    h.get_by_label(header::names::BYPASS).click();
+    h.get_by_label(de::PLUGIN_FRAME_BYPASS).click();
     h.run_steps(2);
     let bypassed = h.state().project().find_device(surge).unwrap().2.bypass;
     assert!(bypassed);
@@ -625,11 +629,11 @@ fn a_plugin_window_switches_views_sets_parameters_and_closes() {
             device: surge,
             bypass: true
         })));
-    h.get_by_label(header::names::CLOSE).click();
+    h.get_by_label(de::DIALOG_CLOSE).click();
     h.run_steps(3);
     assert!(h.state().ui().plugin_windows.is_empty());
     assert!(h.state().plugin_frame(surge).is_none());
-    assert!(h.query_by_label(header::names::CLOSE).is_none());
+    assert!(h.query_by_label(de::DIALOG_CLOSE).is_none());
 }
 
 #[test]
@@ -640,7 +644,7 @@ fn oben_halten_and_the_position_are_remembered_per_plugin() {
         .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
     h.run_steps(3);
     assert!(!h.state().ui().plugin_windows[0].keep_on_top);
-    h.get_by_label(header::names::KEEP_ON_TOP).click();
+    h.get_by_label(de::PLUGIN_FRAME_KEEP_ON_TOP).click();
     h.run_steps(3);
     assert!(h.state().ui().plugin_windows[0].keep_on_top);
     assert!(h.state().plugin_frame(surge).unwrap().keep_on_top);
@@ -656,7 +660,7 @@ fn oben_halten_and_the_position_are_remembered_per_plugin() {
     h.state_mut()
         .settings_mut()
         .update_frame_memory(&plugin, |m| m.pos = Some((120, 80)));
-    h.get_by_label(header::names::CLOSE).click();
+    h.get_by_label(de::DIALOG_CLOSE).click();
     h.run_steps(3);
     assert!(h.state().ui().plugin_windows.is_empty());
     // Opened again, it comes back on top and where it stood.
@@ -697,9 +701,9 @@ fn the_frame_shows_loading_crashed_and_reloads() {
         }),
     );
     h.run_steps(3);
-    assert!(h.query_by_label(body::names::CRASHED).is_some());
+    assert!(h.query_by_label(CRASHED_TITLE).is_some());
     let created = script.borrow().created.len();
-    h.get_by_label(body::names::RELOAD).click();
+    h.get_by_label(de::PLUGIN_FRAME_RELOAD).click();
     h.run_steps(3);
     assert!(
         h.state()
@@ -712,7 +716,7 @@ fn the_frame_shows_loading_crashed_and_reloads() {
         .statuses
         .insert(surge, DeviceStatus::Loading);
     h.run_steps(3);
-    assert!(h.query_by_label(body::names::LOADING).is_some());
+    assert!(h.query_by_label(de::PLUGIN_FRAME_LOADING).is_some());
 }
 
 #[test]
@@ -731,7 +735,7 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
             m.name()
         );
     }
-    h.get_by_label(header::names::PRESET_NEXT).click();
+    h.get_by_label(de::PLUGIN_FRAME_PRESET_NEXT).click();
     h.run_steps(3);
     let applied = h.state().dispatched().find_map(|a| match a {
         Action::Plugin(PluginAction::ApplyHexaPreset { device, preset }) if *device == lead => {
@@ -757,7 +761,7 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
         komponist_builtin::encode_state(&komponist_builtin::preset_patch(preset).unwrap());
     assert_eq!(state.as_deref(), Some(&expected[..]));
     let name = komponist_builtin::presets().nth(preset).unwrap().name;
-    let field = h.get_by_role_and_label(Role::ComboBox, header::names::PRESET);
+    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(name));
 
     // A knob writes into the device state (WP-44); the frame reads it back from there and marks
@@ -787,7 +791,7 @@ fn hexa_opens_its_parameters_and_steps_through_its_presets() {
     assert!(stored > preset_value, "{stored} > {preset_value}");
     let shown = h.get_by_role_and_label(Role::Slider, attack.name());
     assert_eq!(shown.value().as_deref(), Some(attack.text(stored).as_str()));
-    let field = h.get_by_role_and_label(Role::ComboBox, header::names::PRESET);
+    let field = h.get_by_role_and_label(Role::ComboBox, de::PLUGIN_FRAME_PRESET);
     assert_eq!(field.value().as_deref(), Some(format!("{name} *").as_str()));
 }
 
@@ -799,7 +803,7 @@ fn a_missing_plugin_says_so_and_esc_in_the_main_window_leaves_the_frame_open() {
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(dexed)));
     h.run_steps(3);
-    assert!(h.query_by_label(&body::names::missing("Dexed")).is_some());
+    assert!(h.query_by_label(&Lang::De.plugin_frame_missing("Dexed")).is_some());
     // Frames are windows of their own: Esc in the main window only clears the selection.
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
@@ -823,7 +827,7 @@ fn another_project_closes_every_plugin_frame() {
     assert!(h.state().ui().plugin_windows.is_empty());
     assert!(h.state().plugin_frame(surge).is_none());
     assert!(h.state().plugin_frame(hexa).is_none());
-    assert!(h.query_by_label(header::names::CLOSE).is_none());
+    assert!(h.query_by_label(de::DIALOG_CLOSE).is_none());
     // No GUI was open (no X11 here), so none had to close.
     assert!(script.borrow().closed.is_empty());
 }

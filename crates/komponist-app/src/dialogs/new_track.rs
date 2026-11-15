@@ -3,7 +3,7 @@
 //!
 //! | Row | Control |
 //! |---|---|
-//! | Spurtyp | a segmented control: "MIDI" or "Bus" (an effect bus, WP-103); "Audio" is one more [`KINDS`] entry later, not a layout change |
+//! | Spurtyp | a segmented control: "MIDI" or "Bus" (an effect bus, WP-103); "Audio" is one more [`kinds`] entry later, not a layout change |
 //! | Instrument | a search field over the instruments of the catalog (the browser's matching, [`crate::views::browser::model::instrument_rows`]) and "Kein Instrument" at the top; ↑ ↓ choose, typing selects the first hit. Hidden for a Bus |
 //! | Name | prefilled with the name the app would give ([`auto_name`], "hexa", "MIDI 2", "Bus 1"); it follows the instrument until it is edited; blank = automatic |
 //! | Anzahl | 1 – [`COUNT_MAX`]; several tracks get numbered names ("Lead 1", "Lead 2", or the automatic names "MIDI", "MIDI 2", …) |
@@ -11,6 +11,7 @@
 //! Enter (not while a button or the count field has the focus) creates, Esc and "Abbrechen" cancel.
 //! The choice of instrument is remembered for the session ([`crate::dialogs::DialogState`]).
 
+use komponist_i18n::Lang;
 use egui::{Color32, Context, Id, Key, Modifiers, Role, Sense, Ui, UiBuilder, WidgetInfo, vec2};
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::{PluginRef, Project};
@@ -30,36 +31,13 @@ use super::{ActionButton, button_row, header, modal, styled};
 use crate::views::browser::model::{Row, RowKind};
 use crate::views::format_tag;
 
-/// Texts of the dialog.
-pub mod names {
-    /// Title and accessible name of the dialog.
-    pub const TITLE: &str = "Neue Spur";
-    /// Row label and name of the track type control.
-    pub const KIND: &str = "Spurtyp";
-    /// The MIDI track type.
-    pub const MIDI: &str = "MIDI";
-    /// The bus type: an effect bus (WP-103).
-    pub const BUS: &str = "Bus";
-    /// Row label and name of the instrument list.
-    pub const INSTRUMENT: &str = "Instrument";
-    /// Name and hint of the search field.
-    pub const SEARCH: &str = "Instrument suchen";
-    /// The first list entry.
-    pub const NO_INSTRUMENT: &str = "Kein Instrument";
-    /// Row label and name of the name field.
-    pub const NAME: &str = "Name";
-    /// Row label and name of the count field.
-    pub const COUNT: &str = "Anzahl";
-    /// "Abbrechen" (Esc).
-    pub const CANCEL: &str = "Abbrechen";
-    /// "Anlegen" (primary, Enter).
-    pub const CREATE: &str = "Anlegen";
+/// The names of the track types the dialog offers, in segment order; a later wave adds "Audio"
+/// here.
+fn kinds(t: Lang) -> [&'static str; 2] {
+    [t.new_track_midi(), t.new_track_bus()]
 }
 
-/// The track types the dialog offers, in segment order; a later wave adds "Audio" here.
-const KINDS: [&str; 2] = [names::MIDI, names::BUS];
-
-/// Index of "Bus" in [`KINDS`].
+/// Index of "Bus" in [`kinds`].
 pub const KIND_BUS: usize = 1;
 
 /// Most tracks one dialog creates.
@@ -71,7 +49,7 @@ const NAME_ID: &str = "komponist_new_track_name";
 /// State of the open dialog.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    /// Index into [`KINDS`].
+    /// Index into [`kinds`].
     pub kind: usize,
     /// The chosen instrument, `None` = "Kein Instrument".
     pub instrument: Option<PluginRef>,
@@ -198,6 +176,7 @@ fn plugin_of(row: &Row) -> Option<&PluginRef> {
 
 /// Draws the dialog and handles its keys; returns the answer in the frame it is given.
 pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
+    let t = komponist_ui::lang(ctx);
     let search_id = Id::unique(SEARCH_ID);
     let name_id = Id::unique(NAME_ID);
     let focused = ctx.memory(|mem| mem.focused());
@@ -238,9 +217,9 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
         ui.set_width(width);
         let builder = UiBuilder::new()
             .accessibility_role(Role::Dialog)
-            .accessibility_label(names::TITLE);
+            .accessibility_label(t.new_track_title());
         ui.scope_builder(builder, |ui| {
-            if header(ui, width, names::TITLE) {
+            if header(ui, width, t.new_track_title()) {
                 out = Some(Output::Cancel);
             }
             let body = egui::Frame::new()
@@ -250,16 +229,16 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                 let inner = width - 2.0 * m::PADDING;
                 ui.set_width(inner);
                 let control = inner - nm::LABEL_COLUMN;
-                row(ui, names::KIND, |ui| {
-                    let items = KINDS.map(Item::new);
-                    ui.add(Segmented::new(names::KIND, &mut s.kind, &items));
+                row(ui, t.new_track_kind(), |ui| {
+                    let items = kinds(t).map(Item::new);
+                    ui.add(Segmented::new(t.new_track_kind(), &mut s.kind, &items));
                 });
                 gap(ui);
                 if s.kind != KIND_BUS {
-                    instrument_row(ui, s, view, &mut rows, control, search_id);
+                    instrument_row(ui, t, s, view, &mut rows, control, search_id);
                     gap(ui);
                 }
-                row(ui, names::NAME, |ui| {
+                row(ui, t.new_track_name(), |ui| {
                     let hint = if s.kind == KIND_BUS {
                         auto_bus_name(view.project)
                     } else {
@@ -269,7 +248,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                         s.name.clone_from(&hint);
                     }
                     let r = ui.add(
-                        TextField::new(&mut s.name, names::NAME)
+                        TextField::new(&mut s.name, t.new_track_name())
                             .hint(hint)
                             .id(name_id)
                             .width(control),
@@ -279,9 +258,9 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                     }
                 });
                 gap(ui);
-                row(ui, names::COUNT, |ui| {
+                row(ui, t.new_track_count(), |ui| {
                     ui.add(
-                        NumberField::new(&mut s.count, names::COUNT)
+                        NumberField::new(&mut s.count, t.new_track_count())
                             .range(1.0..=f64::from(COUNT_MAX))
                             .step(1.0)
                             .decimals(0)
@@ -299,8 +278,8 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                     ui,
                     width - 2.0 * m::PADDING,
                     vec![
-                        ActionButton::dialog(names::CANCEL, Kind::Secondary, 2),
-                        ActionButton::dialog(names::CREATE, Kind::Primary, 2),
+                        ActionButton::dialog(t.dialog_cancel(), Kind::Secondary, 2),
+                        ActionButton::dialog(t.new_track_create(), Kind::Primary, 2),
                     ],
                 );
                 if r[0].clicked() {
@@ -338,6 +317,7 @@ fn row(ui: &mut Ui, label: &str, controls: impl FnOnce(&mut Ui)) {
 /// "Instrument": the search field over the list.
 fn instrument_row(
     ui: &mut Ui,
+    t: Lang,
     s: &mut State,
     view: &View<'_>,
     rows: &mut Vec<Row>,
@@ -345,13 +325,13 @@ fn instrument_row(
     search_id: Id,
 ) {
     ui.horizontal_top(|ui| {
-        field_label(ui, names::INSTRUMENT);
+        field_label(ui, t.new_track_instrument());
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = nm::LIST_GAP;
             let before = s.query.clone();
             let r = ui.add(
-                TextField::new(&mut s.query, names::SEARCH)
-                    .hint(names::SEARCH)
+                TextField::new(&mut s.query, t.new_track_search())
+                    .hint(t.new_track_search())
                     .id(search_id)
                     .width(width),
             );
@@ -365,12 +345,12 @@ fn instrument_row(
                 s.instrument = rows.first().and_then(plugin_of).cloned();
                 s.scroll = true;
             }
-            list(ui, s, rows, width);
+            list(ui, t, s, rows, width);
         });
     });
 }
 
-fn list(ui: &mut Ui, s: &mut State, rows: &[Row], width: f32) {
+fn list(ui: &mut Ui, t: Lang, s: &mut State, rows: &[Row], width: f32) {
     let height = nm::LIST_ROWS * size::MENU_ROW;
     let frame = egui::Frame::new()
         .fill(color32(color::SURFACE_2))
@@ -378,7 +358,7 @@ fn list(ui: &mut Ui, s: &mut State, rows: &[Row], width: f32) {
         .inner_margin(egui::Margin::same(space::SPACE_1 as i8));
     let builder = UiBuilder::new()
         .accessibility_role(Role::ListBox)
-        .accessibility_label(names::INSTRUMENT);
+        .accessibility_label(t.new_track_instrument());
     ui.scope_builder(builder, |ui| {
         frame.show(ui, |ui| {
             let inner = width - 2.0 * space::SPACE_1;
@@ -392,7 +372,13 @@ fn list(ui: &mut Ui, s: &mut State, rows: &[Row], width: f32) {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let mut chosen = None;
-                    let none = entry(ui, inner, names::NO_INSTRUMENT, "", s.instrument.is_none());
+                    let none = entry(
+                        ui,
+                        inner,
+                        t.new_track_no_instrument(),
+                        "",
+                        s.instrument.is_none(),
+                    );
                     if none.clicked() {
                         chosen = Some(None);
                     }

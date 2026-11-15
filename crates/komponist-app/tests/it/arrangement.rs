@@ -1116,7 +1116,6 @@ fn snapshot_of_an_empty_project_next_to_s10() {
 // "Neue Spur": the box below the tracks and its dialog
 
 mod new_track {
-    use komponist_app::dialogs::new_track::names as dn;
     use komponist_i18n::de;
 
     use super::*;
@@ -1126,7 +1125,7 @@ mod new_track {
     }
 
     fn dialog_open(h: &Harness<'_, App>) -> bool {
-        h.query_by_role_and_label(Role::Dialog, dn::TITLE).is_some()
+        h.query_by_role_and_label(Role::Dialog, de::NEW_TRACK_TITLE).is_some()
     }
 
     fn open_by_click(h: &mut Harness<'_, App>) {
@@ -1172,8 +1171,8 @@ mod new_track {
         // Hexa is chosen, the name is the automatic one, the count 1.
         let sel = h.get_by_role_and_label(Role::ListBoxOption, "hexa");
         assert!(sel.accesskit_node().is_selected() == Some(true));
-        h.get_by_role_and_label(Role::SpinButton, dn::COUNT);
-        h.get_by_role_and_label(Role::TextInput, dn::NAME);
+        h.get_by_role_and_label(Role::SpinButton, de::NEW_TRACK_COUNT);
+        h.get_by_role_and_label(Role::TextInput, de::NEW_TRACK_NAME);
         h.key_press(egui::Key::Escape);
         h.run_steps(3);
         assert!(!dialog_open(&h));
@@ -1181,7 +1180,7 @@ mod new_track {
         assert_eq!(undo_text(&h), undo_before);
         // "Abbrechen" does the same.
         open_by_click(&mut h);
-        h.get_by_role_and_label(Role::Button, dn::CANCEL).click();
+        h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL).click();
         h.run_steps(3);
         assert!(!dialog_open(&h));
         assert_eq!(names_of(&h), before);
@@ -1209,7 +1208,7 @@ mod new_track {
 
         let mut h = harness(demo());
         open_by_click(&mut h);
-        h.get_by_role_and_label(Role::Button, dn::CREATE).click();
+        h.get_by_role_and_label(Role::Button, de::NEW_TRACK_CREATE).click();
         h.run_steps(3);
         assert!(!dialog_open(&h));
         let (a, b) = (project(&h), project(&dropped));
@@ -1242,9 +1241,9 @@ mod new_track {
         click(new_track_box(&h).center(), &mut h);
         h.run_steps(3);
         assert!(dialog_open(&h));
-        let none = option(&h, dn::NO_INSTRUMENT).center();
+        let none = option(&h, de::NEW_TRACK_NO_INSTRUMENT).center();
         click(none, &mut h);
-        h.get_by_role_and_label(Role::SpinButton, dn::COUNT)
+        h.get_by_role_and_label(Role::SpinButton, de::NEW_TRACK_COUNT)
             .set_value_accesskit(3.0);
         h.run_steps(2);
         h.key_press(egui::Key::Enter);
@@ -1269,18 +1268,18 @@ mod new_track {
     fn a_typed_name_numbers_the_tracks_and_the_instrument_choice_is_remembered() {
         let mut h = harness(demo());
         open_by_click(&mut h);
-        type_in(&mut h, dn::NAME, "Lead");
-        h.get_by_role_and_label(Role::SpinButton, dn::COUNT)
+        type_in(&mut h, de::NEW_TRACK_NAME, "Lead");
+        h.get_by_role_and_label(Role::SpinButton, de::NEW_TRACK_COUNT)
             .set_value_accesskit(2.0);
         h.run_steps(2);
-        click(option(&h, dn::NO_INSTRUMENT).center(), &mut h);
-        h.get_by_role_and_label(Role::Button, dn::CREATE).click();
+        click(option(&h, de::NEW_TRACK_NO_INSTRUMENT).center(), &mut h);
+        h.get_by_role_and_label(Role::Button, de::NEW_TRACK_CREATE).click();
         h.run_steps(3);
         let names = names_of(&h);
         assert_eq!(names[6..], ["Lead 1", "Lead 2"]);
         // The next dialog starts with "Kein Instrument".
         open_by_click(&mut h);
-        let none = h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
+        let none = h.get_by_role_and_label(Role::ListBoxOption, de::NEW_TRACK_NO_INSTRUMENT);
         assert!(none.accesskit_node().is_selected() == Some(true));
     }
 
@@ -1292,8 +1291,8 @@ mod new_track {
             h.query_by_role_and_label(Role::ListBoxOption, "hexa")
                 .is_some()
         );
-        h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
-        type_in(&mut h, dn::SEARCH, "sampl");
+        h.get_by_role_and_label(Role::ListBoxOption, de::NEW_TRACK_NO_INSTRUMENT);
+        type_in(&mut h, de::NEW_TRACK_SEARCH, "sampl");
         assert!(
             h.query_by_role_and_label(Role::ListBoxOption, "hexa")
                 .is_none()
@@ -1322,7 +1321,7 @@ mod new_track {
         open_by_click(&mut h);
         h.key_press(egui::Key::ArrowUp);
         h.run_steps(2);
-        let none = h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
+        let none = h.get_by_role_and_label(Role::ListBoxOption, de::NEW_TRACK_NO_INSTRUMENT);
         assert!(none.accesskit_node().is_selected() == Some(true));
     }
 

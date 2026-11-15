@@ -61,7 +61,7 @@ use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectActio
 use crate::app::App;
 use crate::dialogs::Overlay;
 use crate::dialogs::export::{
-    self as view, DeviceRow, DeviceState, Output, ProgressView, SettingsView, Stage, names,
+    self as view, DeviceRow, DeviceState, Output, ProgressView, SettingsView, Stage,
 };
 use crate::dialogs::file::{FileBrowser, Purpose};
 use crate::engine_sync::DetachedEngine;
@@ -355,7 +355,7 @@ impl App {
             return;
         }
         if self.project().tracks.is_empty() {
-            self.set_status(names::EMPTY, StatusKind::Error);
+            self.set_status(self.lang.export_empty(), StatusKind::Error);
             return;
         }
         self.stop_for_export();
@@ -388,7 +388,7 @@ impl App {
             return;
         };
         let Some(ticks) = self.export_ticks(settings.range) else {
-            self.set_status(names::EMPTY, StatusKind::Error);
+            self.set_status(self.lang.export_empty(), StatusKind::Error);
             return;
         };
         let Some(program) = self.engine.program() else {
@@ -398,7 +398,7 @@ impl App {
         let range = ExportJob::frames_of(&program.tempo_map, ticks, rate);
         let tail = ExportJob::tail_frames(settings.tail_seconds, rate);
         if range.is_empty() && tail == 0 {
-            self.set_status(names::EMPTY, StatusKind::Error);
+            self.set_status(self.lang.export_empty(), StatusKind::Error);
             return;
         }
         let job = ExportJob {
@@ -437,7 +437,7 @@ impl App {
             .tracks
             .iter()
             .map(|t| (t.name.as_str(), &t.channel.devices))
-            .chain(std::iter::once(("Master", &p.master.devices)));
+            .chain(std::iter::once((self.lang.dialog_master(), &p.master.devices)));
         let mut rows = Vec::new();
         for (track, devices) in chains {
             for d in devices {
@@ -468,7 +468,7 @@ impl App {
             Phase::Devices => {
                 self.export.run = None;
                 self.close_export_dialog();
-                self.set_status(names::CANCELLED, StatusKind::Info);
+                self.set_status(self.lang.export_cancelled(), StatusKind::Info);
             }
             Phase::Running(worker) => {
                 worker.cancel.store(true, Ordering::Relaxed);
@@ -517,7 +517,7 @@ impl App {
                     // The worker panicked; the engine is gone with it.
                     self.export.run = None;
                     self.close_export_dialog();
-                    self.set_status(names::failed("worker stopped"), StatusKind::Error);
+                    self.set_status(self.lang.export_failed("worker stopped"), StatusKind::Error);
                     return;
                 }
             }
@@ -549,7 +549,7 @@ impl App {
         {
             self.export.run = None;
             self.close_export_dialog();
-            self.set_status(names::failed(&e.to_string()), StatusKind::Error);
+            self.set_status(self.lang.export_failed(e), StatusKind::Error);
             return;
         }
         self.engine.sync(&self.doc);
@@ -562,7 +562,7 @@ impl App {
             Err(e) => {
                 self.export.run = None;
                 self.close_export_dialog();
-                self.set_status(names::failed(&e.to_string()), StatusKind::Error);
+                self.set_status(self.lang.export_failed(e), StatusKind::Error);
                 return;
             }
         };
@@ -586,7 +586,7 @@ impl App {
                 // The closure (and with it the engine) is gone; nothing to give back.
                 self.export.run = None;
                 self.close_export_dialog();
-                self.set_status(names::failed(&e.to_string()), StatusKind::Error);
+                self.set_status(self.lang.export_failed(e), StatusKind::Error);
                 return;
             }
         };
@@ -688,11 +688,11 @@ impl App {
                 let file = path
                     .file_name()
                     .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
-                let text = names::done(
+                let text = self.lang.export_done(
                     &file,
                     &view::minutes_seconds(run.seconds),
                     run.job.bit_depth.bits(),
-                ) + &names::dropped(&dropped);
+                ) + &view::dropped_text(self.lang, &dropped);
                 let kind = if dropped.is_empty() {
                     StatusKind::Success
                 } else {
@@ -704,15 +704,15 @@ impl App {
                     kind,
                     since: Instant::now(),
                     link: Some((
-                        names::SHOW_IN_FOLDER.to_owned(),
+                        self.lang.export_show_in_folder().to_owned(),
                         Box::new(Action::Project(ProjectAction::ShowInFolder(folder))),
                     )),
                 });
                 self.export.done.retain(|p| *p != path);
                 self.export.done.push(path);
             }
-            Err(ExportError::Cancelled) => self.set_status(names::CANCELLED, StatusKind::Info),
-            Err(e) => self.set_status(names::failed(&e.to_string()), StatusKind::Error),
+            Err(ExportError::Cancelled) => self.set_status(self.lang.export_cancelled(), StatusKind::Info),
+            Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }
     }
 
@@ -728,7 +728,7 @@ impl App {
                 continue;
             };
             let name = self.project().find_device(device).map_or_else(
-                || format!("Gerät {}", device.0),
+                || self.lang.status_device_unnamed(device.0),
                 |(_, _, d)| d.plugin.name.clone(),
             );
             if !names.contains(&name) {
@@ -748,7 +748,7 @@ impl App {
     /// `ProjectAction::ShowInFolder`: opens `folder` in the file manager; says why if it fails.
     pub(crate) fn show_in_folder(&mut self, folder: &Path) {
         if let Err(e) = (self.export.opener)(folder) {
-            self.set_status(names::open_failed(&e.to_string()), StatusKind::Error);
+            self.set_status(self.lang.export_open_failed(e), StatusKind::Error);
         }
     }
 
@@ -797,7 +797,7 @@ impl App {
         let bar = p.meter.ticks_per_bar();
         let loop_label = self
             .export_ticks(ExportRange::Loop)
-            .map(|r| names::loop_bars(bar_number(r.start, bar), bar_number(r.end, bar)));
+            .map(|r| self.lang.export_loop_bars(bar_number(r.start, bar), bar_number(r.end, bar)));
         let ticks = self
             .export_ticks(s.range)
             .unwrap_or(TickRange::new(Tick::ZERO, Tick::ZERO));
@@ -855,6 +855,7 @@ impl App {
                         std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
                     };
                     self.open_overlay(Overlay::File(FileBrowser::new(
+                        self.lang,
                         Purpose::ExportFolder,
                         start,
                         String::new(),

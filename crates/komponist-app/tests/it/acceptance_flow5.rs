@@ -15,7 +15,6 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use komponist_app::dialogs::export::names;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::Dialog;
 use komponist_app::{App, engine_sync::EngineSync};
@@ -129,9 +128,9 @@ fn the_song_exports_as_wav_through_the_menu_and_through_ctrl_shift_e() {
     h.run_steps(60);
     h.get_by_label_contains("WAV exportieren").click();
     h.run_steps(3);
-    h.get_by_label(names::TITLE);
+    h.get_by_label(de::EXPORT_TITLE);
     target(&mut h, &out, "Menue.wav");
-    click(&mut h, Role::Button, names::EXPORT);
+    click(&mut h, Role::Button, de::EXPORT_EXPORT);
     wait_for_export(&mut h);
     assert!(h.state().ui().dialog.is_none());
     check_wav(h.state(), &out.join("Menue.wav"));
@@ -139,7 +138,7 @@ fn the_song_exports_as_wav_through_the_menu_and_through_ctrl_shift_e() {
     // Strg Shift E: the same dialog with the last settings; Enter starts it.
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::E);
     h.run_steps(3);
-    h.get_by_label(names::TITLE);
+    h.get_by_label(de::EXPORT_TITLE);
     target(&mut h, &out, "Tastatur.wav");
     key(&mut h, Key::Enter);
     wait_for_export(&mut h);

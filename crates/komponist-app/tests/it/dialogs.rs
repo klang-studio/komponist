@@ -22,7 +22,7 @@ use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartV
 use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
 use komponist_audio::{DeviceId as AudioDeviceId, HostKind, StreamConfig};
 use komponist_engine::Processor;
-use komponist_i18n::de;
+use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project};
 use komponist_plugins::{Catalog, DeviceStatus, MissingPlugin, PluginManagerEvent, ProcessorSetup};
@@ -301,11 +301,11 @@ fn opening_a_project_resets_the_engine() {
         inner: BuiltinHost::new(),
         log: Arc::clone(&log),
     };
-    let mut app = app_in(&dir, new_project::empty_project()).with_device_host(Box::new(host));
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De)).with_device_host(Box::new(host));
     // The first project, opened from a file.
     let one_track = |name: &str| {
         komponist_model::edits::add_track(
-            &new_project::empty_project(),
+            &new_project::empty_project(Lang::De),
             komponist_model::edits::NewTrack {
                 name: Some(name.into()),
                 hue: None,
@@ -364,12 +364,12 @@ fn opening_another_project_drops_a_running_recording() {
     use komponist_engine::{MidiInEvent, MidiPort, TransportState};
     use komponist_model::Tick;
     let dir = scratch("record");
-    let mut other = new_project::empty_project();
+    let mut other = new_project::empty_project(Lang::De);
     other.name = "Anderes".into();
     let file = dir.join("Anderes.komponist");
     save_and_open(&file, &other);
     // An armed track, count-in off, the engine held so the test runs it (WP-51 `hold_engine`).
-    let mut app = app_in(&dir, new_project::empty_project());
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De));
     app.dispatch(Action::Edit(EditAction::NewMidiTrack));
     app.dispatch(Action::Transport(
         komponist_app::TransportAction::ToggleCountIn,
@@ -434,7 +434,7 @@ fn nonexistent_plugin() -> PluginRef {
 
 /// An empty project with one track whose instrument is a plugin nobody has, with a state.
 fn project_with_missing_plugin() -> (Project, Vec<u8>) {
-    let p = new_project::empty_project();
+    let p = new_project::empty_project(Lang::De);
     let (p, track) = komponist_model::edits::add_track(
         &p,
         komponist_model::edits::NewTrack {
@@ -564,7 +564,7 @@ fn s06_waits_for_the_running_scan() {
         scanning: Arc::clone(&scanning),
         finished: false,
     };
-    let mut app = app_in(&dir, new_project::empty_project()).with_device_host(Box::new(host));
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De)).with_device_host(Box::new(host));
     app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
     // The scan may still find the plugin: no dialog yet.
     assert!(app.ui().dialog.is_none());
@@ -620,7 +620,7 @@ fn the_start_screen_opens_recent_projects_with_the_keyboard() {
     }
     .save(&dir.join("config/recent.json"))
     .unwrap();
-    let mut app = app_in(&dir, new_project::empty_project());
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De));
     app.show_start_screen();
     let mut h = harness(app);
     assert_eq!(h.state().ui().screen, Screen::Start);
@@ -656,7 +656,7 @@ fn the_start_screen_opens_recent_projects_with_the_keyboard() {
 #[test]
 fn the_start_screen_creates_projects_and_opens_the_settings() {
     let dir = scratch("start-new");
-    let mut app = app_in(&dir, new_project::empty_project());
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De));
     app.show_start_screen();
     let mut h = harness(app);
     // A system row opens the settings at its section; Esc closes them again.
@@ -694,7 +694,7 @@ fn settings_apply_at_once() {
     app.dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Audio)));
     let mut h = harness(app);
     h.get_by_value("Einstellungen");
-    h.get_by_value(settings::names::NO_MIDI);
+    h.get_by_value(de::SETTINGS_NO_MIDI);
     // Buffer 512: the stream is rebuilt on the null driver, the engine stays.
     h.get_by_label("512").click();
     h.run_steps(3);
@@ -716,10 +716,10 @@ fn settings_apply_at_once() {
     // The keyboard switch.
     assert!(!h.state().ui().keyboard_midi);
     // "Tastatur" is at the end of the page.
-    h.get_by_role_and_label(Role::Switch, settings::names::KEYBOARD_MIDI)
+    h.get_by_role_and_label(Role::Switch, de::SETTINGS_KEYBOARD_MIDI)
         .scroll_to_me();
     h.run_steps(3);
-    h.get_by_role_and_label(Role::Switch, settings::names::KEYBOARD_MIDI)
+    h.get_by_role_and_label(Role::Switch, de::SETTINGS_KEYBOARD_MIDI)
         .click();
     h.run_steps(2);
     assert!(h.state().ui().keyboard_midi);
@@ -752,9 +752,9 @@ fn without_a_device_play_is_off_and_s07_offers_a_retry() {
     let mut h = harness(app);
     // The red notice in the transport bar, the status bar and S07.
     assert!(h.get_all_by_label("Kein Audio-Gerät").count() >= 2);
-    h.get_by_value(settings::names::NO_DEVICE_NOTICE);
+    h.get_by_value(de::SETTINGS_NO_DEVICE_NOTICE);
     h.state_mut().clear_dispatched();
-    h.get_by_label(settings::names::RETRY).click();
+    h.get_by_label(de::SETTINGS_RETRY).click();
     h.run_steps(2);
     assert!(
         h.state()
@@ -906,7 +906,7 @@ fn s07_model() -> settings::Model {
         sample_rate: 48_000,
         buffer_frames: 256,
     };
-    let (devices, device) = settings::device_entries(HostKind::PipeWire, &[], &config);
+    let (devices, device) = settings::device_entries(Lang::De, HostKind::PipeWire, &[], &config);
     let dir = |clap: bool, label: &str, n: usize| settings::DirRow {
         clap,
         path: PathBuf::from(label),
@@ -1012,7 +1012,7 @@ fn s09_model() -> start::Model {
         missing: false,
     };
     start::Model {
-        version: start::version_line(),
+        version: start::version_line(Lang::De),
         new_shortcut: "Strg N".into(),
         open_shortcut: "Strg O".into(),
         recent: vec![
@@ -1103,6 +1103,7 @@ fn snapshots_of_the_file_browser_and_the_prompt() {
     use komponist_app::dialogs::file::{Entry, FileBrowser, Purpose};
     let mut results = SnapshotResults::new();
     let mut browser = FileBrowser::new(
+        Lang::De,
         Purpose::Save,
         PathBuf::from("/gibt/es/nicht"),
         String::new(),
@@ -1166,7 +1167,7 @@ fn snapshots_of_the_file_browser_and_the_prompt() {
 #[test]
 fn s06_texts_match_the_screen() {
     let (project, missing) = s06();
-    let model = missing_plugins::model(&project, &missing);
+    let model = missing_plugins::model(Lang::De, &project, &missing);
     assert_eq!(model.rows[0].name, "Vital");
     // Under the name stands the module file name (owner decision Q4, 2026-11-14), not the VST3
     // class id and not S06's mock-up id "audio.vital.synth".
@@ -1174,7 +1175,7 @@ fn s06_texts_match_the_screen() {
     assert_eq!(model.rows[0].place, "Spur Arp · Instrument");
     assert_eq!(model.rows[0].format, "VST3");
     assert_eq!(model.rows[1].place, "Spur Pad · Effekt 4");
-    assert_eq!(missing_plugins::title(model.rows.len()), "2 Plugins fehlen");
+    assert_eq!(missing_plugins::title(Lang::De, model.rows.len()), "2 Plugins fehlen");
 }
 
 /// Drivers and devices that take long to enumerate, like ALSA's devices (WP-61 measured

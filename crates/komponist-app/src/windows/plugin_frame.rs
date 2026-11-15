@@ -774,7 +774,7 @@ impl App {
                         }
                         let name = self.plugin_name(device);
                         self.set_status(
-                            format!("{name}: Plugin-GUI lässt sich nicht öffnen"),
+                            self.lang.plugin_frame_gui_failed(name),
                             StatusKind::Error,
                         );
                     }
@@ -1138,11 +1138,11 @@ impl App {
             Some((channel, _, d)) => {
                 let track = match channel {
                     ChannelRef::Track(t) => project.track(t).map_or("", |t| t.name.as_str()),
-                    ChannelRef::Master => "Master",
+                    ChannelRef::Master => self.lang.dialog_master(),
                 };
                 (
                     d.plugin.name.clone(),
-                    format!("{track} · {}", format_label(d.plugin.format)),
+                    format!("{track} · {}", crate::dialogs::missing_plugins::format_label(self.lang, d.plugin.format)),
                     d.bypass,
                     is_hexa(d),
                 )
@@ -1173,8 +1173,7 @@ impl App {
             view,
             has_gui: host.has_gui(device) || had_gui,
             keep_on_top,
-            // "Esc" is the same in every language; this window migrates with its own WP.
-            close_shortcut: KeyChord::plain(Key::Escape).label(Lang::De),
+            close_shortcut: KeyChord::plain(Key::Escape).label(self.lang),
         }
     }
 
@@ -1250,15 +1249,6 @@ pub(crate) fn factory_states() -> &'static [Vec<u8>] {
 
 fn is_hexa(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA
-}
-
-/// "CLAP", "VST3", "INTERN" (the prototype's format labels).
-fn format_label(format: PluginFormat) -> &'static str {
-    match format {
-        PluginFormat::Builtin => "INTERN",
-        PluginFormat::Clap => "CLAP",
-        PluginFormat::Vst3 => "VST3",
-    }
 }
 
 /// The frame's measures from what its callback saw.
