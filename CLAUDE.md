@@ -97,13 +97,13 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
 
 `HS/` = `../klang-studio-handoff/`.
 
-1. **Language:** code, comments, docs, commits in English. UI texts are German and are taken
-   **verbatim** from the screens (`HS/reference/Screens.dc.html`), including typographic characters
-   (U+2212 minus, „…“, ·). One exception: the DAW is called **komponist**. Where the screens show
-   "klang-studio" for the DAW (wordmark, window title, "Rahmen von klang-studio"), write "komponist".
-   klang-studio is the umbrella name of the workspace.
-   New UI texts go into `crates/komponist-i18n/locales/` (`de` source + `en` draft) once a view has been
-   migrated; see `docs/I18N.md`.
+1. **Language:** code, comments, docs, commits in English. UI texts come from the catalogs in
+   `crates/komponist-i18n/locales/` (`de` is the source, `en` the translation), never as literals in the app, the
+   dialogs or the widgets (the gallery is the one exception). The German texts are taken **verbatim** from the screens
+   (`HS/reference/Screens.dc.html`), including typographic characters (U+2212 minus, „…“, ·); the English texts follow the
+   style guide and glossary in `docs/I18N.md`. Every new text is added to both languages in the same change. One
+   exception to the screens: the DAW is called **komponist**. Where they show "klang-studio" for the DAW (wordmark,
+   window title, "Rahmen von klang-studio"), write "komponist". klang-studio is the umbrella name of the workspace.
 2. **Tokens:** no hard-coded colours, sizes, radii or font sizes. Always use `komponist-tokens`. Missing
    colour or type token → contract change request. Component metrics the handoff defines only in the
    design data (e.g. caret size, menu paddings, swatch size) go into `komponist_ui::widgets::metrics`,
@@ -125,12 +125,14 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
    you touch the catalog, plugins, devices, browser or engine, run `scripts/build-test-plugins.sh` once
    before the final `check.sh` (a fresh worktree has none; WP-85 missed a broken test that way).
 7. **UI work:** render your component/view to PNG with `egui_kittest`, **look at the PNG** (Read
-   tool) and compare it with the reference before you report. Once a binary shows your work (gallery
-   from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb if
-   needed), attach with the `egui` MCP server, read the AccessKit tree, click and type through it and
-   take a screenshot. Parallel agents: use your own port, e.g. `EGUI_INSPECTION=127.0.0.1:57xyz`, not
-   the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` + screenshots
-   (`import -window`) under Xvfb for those.
+   tool) and compare it with the reference before you report (German, verbatim). Look at the English rendering
+   too (`Lang::En`, snapshot name with `-en`): nothing may be cut off or overlap; where English does not fit,
+   shorten the English text, not the layout. Changing English never changes a German snapshot. Once a binary shows
+   your work (gallery from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb
+   if needed; `--lang de|en` picks the language), attach with the `egui` MCP server, read the AccessKit tree, click
+   and type through it and take a screenshot. Parallel agents: use your own port, e.g.
+   `EGUI_INSPECTION=127.0.0.1:57xyz`, not the default 5719. Foreign plugin GUIs are invisible to egui: use `xdotool` +
+   screenshots (`import -window`) under Xvfb for those.
 8. **Dependencies:** use workspace dependencies. A new crate needs one sentence of justification in
    the report and a GPL-3.0-compatible licence (komponist is GPL-3.0-or-later, like everything in
    klang-studio; nothing proprietary or GPL-incompatible such as CDDL or EPL-1.0).
@@ -142,10 +144,12 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
     (Xvfb, ImageMagick, chromium, fontTools, clap-validator, egui-mcp are). If a tool is missing, run it
     once with `nix shell nixpkgs#<pkg> --command <cmd>` (e.g. xdotool) and name it in the report.
 12. **Accessibility is part of the UI contract:** every interactive element has an AccessKit role and
-    a German accessible name (icon-only buttons too, usually the tooltip text). Canvases (arrangement,
-    piano roll, step grid, mixer) expose AccessKit nodes for their **visible** objects (track, clip,
-    note, step, strip) with names such as "Clip Beat A, Takt 1–4" or "Note C4, 1.1.000". Without them
-    neither kittest queries nor the egui MCP server can find anything.
+    an accessible name from the catalogs, in both languages (icon-only buttons too, usually the tooltip text). The
+    AccessKit root carries the UI language. Canvases (arrangement, piano roll, step grid, mixer) expose AccessKit nodes
+    for their **visible** objects (track, clip, note, step, strip) with names such as "Clip Beat A, Takt 1–4" (`de`) or
+    "Clip Beat A, bars 1–4" (`en`), "Note C4, 1.1.000". Read the language once before a `widget_info` closure, never
+    inside it (`docs/I18N.md`, pitfall). Without these nodes neither kittest queries nor the egui MCP server can find
+    anything.
 
 13. **Waiting for background work:** never poll with `pgrep -f "<pattern>"` — the polling shell's own
     command line contains the pattern, so the loop never ends (six such loops ran forever on 2026-11-13).

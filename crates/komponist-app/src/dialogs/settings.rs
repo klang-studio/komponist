@@ -16,7 +16,7 @@
 //!   " MIDI 1" suffix is cut ([`midi_label`]).
 //! - **Plugin-Ordner:** the folders per format with their plugin count, "+ Ordner", "Neu scannen"
 //!   (background) and the summary of the last scan (folder rules: [`crate::settings`]).
-//! - **Darstellung:** UI scale. **Tastatur:** computer keyboard MIDI on or off.
+//! - **Darstellung:** UI scale and language (System, Deutsch, English). **Tastatur:** computer keyboard MIDI on or off.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,10 +41,14 @@ use super::metrics::{dialog as dm, settings as m};
 use super::{ActionButton, divider, dot, galley, header, label_node, modal, section_label, styled};
 use crate::actions::{Action, SettingsAction, UiAction};
 use crate::engine_sync::EngineProcess;
+use crate::settings::Language;
 use crate::ui_state::SettingsSection;
 
 /// Buffer sizes of the segments (`buffers`).
 pub const BUFFERS: [u32; 5] = [64, 128, 256, 512, 1024];
+
+/// The segments of the language row, in order: System, Deutsch, English.
+pub const LANGUAGES: [Language; 3] = [Language::System, Language::De, Language::En];
 
 /// UI scales of the "Darstellung" segments; `None` follows the display.
 pub const SCALES: [Option<f32>; 5] = [None, Some(1.0), Some(1.25), Some(1.5), Some(2.0)];
@@ -364,6 +368,8 @@ pub struct Model {
     pub scanning: bool,
     /// UI scale override.
     pub ui_scale: Option<f32>,
+    /// The language setting (the chosen segment of "Sprache").
+    pub language: Language,
     /// Computer keyboard MIDI switched on.
     pub keyboard_midi: bool,
 }
@@ -586,6 +592,7 @@ impl crate::App {
             scan: scan_summary(t, host.last_scan(), host.is_scanning(), SystemTime::now()),
             scanning: host.is_scanning(),
             ui_scale: self.settings.ui_scale,
+            language: self.settings.language,
             keyboard_midi: self.ui.keyboard_midi,
         }
     }
@@ -1159,6 +1166,29 @@ fn display(ui: &mut Ui, t: Lang, model: &Model, out: &mut Vec<Output>) {
         {
             out.push(Output::Act(Action::Settings(SettingsAction::SetUiScale(
                 *value,
+            ))));
+        }
+    });
+    language_row(ui, t, model.language, out);
+}
+
+/// The UI language: System / Deutsch / English, applied at once.
+fn language_row(ui: &mut Ui, t: Lang, current: Language, out: &mut Vec<Output>) {
+    let labels = [
+        t.settings_language_system(),
+        t.settings_language_de(),
+        t.settings_language_en(),
+    ];
+    let items: Vec<Item<'_>> = labels.iter().map(|l| Item::new(l)).collect();
+    let mut selected = LANGUAGES.iter().position(|l| *l == current).unwrap_or(0);
+    grid_row(ui, t.settings_language(), |ui| {
+        if ui
+            .add(Segmented::new(t.settings_language(), &mut selected, &items))
+            .changed()
+            && let Some(language) = LANGUAGES.get(selected)
+        {
+            out.push(Output::Act(Action::Settings(SettingsAction::SetLanguage(
+                *language,
             ))));
         }
     });

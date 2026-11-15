@@ -17,12 +17,12 @@ use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
-use komponist_app::settings::Settings;
+use komponist_app::settings::{Language, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartView};
 use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
 use komponist_audio::{DeviceId as AudioDeviceId, HostKind, StreamConfig};
 use komponist_engine::Processor;
-use komponist_i18n::{Lang, de};
+use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project};
 use komponist_plugins::{Catalog, DeviceStatus, MissingPlugin, PluginManagerEvent, ProcessorSetup};
@@ -765,6 +765,55 @@ fn without_a_device_play_is_off_and_s07_offers_a_retry() {
     );
 }
 
+/// S07 "Darstellung" › Sprache: the segments switch the UI language in the next frame, the
+/// choice is saved in `settings.json`, the AccessKit root names the language.
+#[test]
+fn the_language_row_switches_the_ui_at_once_and_is_saved() {
+    let dir = scratch("language-row");
+    let file = dir.join("config/settings.json");
+    let mut app = app_in(&dir, demo_project());
+    app.dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Display)));
+    let mut h = harness(app);
+    assert_eq!(h.root().accesskit_node().language(), Some("de"));
+    h.get_by_role_and_label(Role::Label, de::SETTINGS_LANGUAGE);
+    h.get_by_role_and_label(Role::RadioGroup, de::SETTINGS_LANGUAGE);
+    h.get_by_role_and_label(Role::RadioButton, de::SETTINGS_LANGUAGE_SYSTEM);
+    h.get_by_label(de::SETTINGS_TITLE);
+
+    h.get_by_role_and_label(Role::RadioButton, en::SETTINGS_LANGUAGE_EN)
+        .click();
+    // One frame after the click: the dialog, the transport bar and the root are English.
+    h.run_steps(2);
+    assert_eq!(h.state().lang(), Lang::En);
+    h.get_by_label(en::SETTINGS_TITLE);
+    h.get_by_role_and_label(Role::RadioGroup, en::SETTINGS_LANGUAGE);
+    h.get_by_role_and_label(Role::Button, en::TRANSPORT_PLAY);
+    assert!(h.query_by_label(de::SETTINGS_TITLE).is_none());
+    assert!(h.query_by_label(de::TRANSPORT_PLAY).is_none());
+    assert_eq!(h.root().accesskit_node().language(), Some("en"));
+    assert_eq!(h.state().settings().language, Language::En);
+    assert_eq!(Settings::load(&file).unwrap().language, Language::En);
+
+    h.get_by_role_and_label(Role::RadioButton, de::SETTINGS_LANGUAGE_DE)
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state().lang(), Lang::De);
+    h.get_by_label(de::SETTINGS_TITLE);
+    assert_eq!(h.root().accesskit_node().language(), Some("de"));
+    assert_eq!(Settings::load(&file).unwrap().language, Language::De);
+}
+
+/// A status message is text of the old language: a switch clears it.
+#[test]
+fn a_language_switch_clears_the_status_message() {
+    let dir = scratch("language-status");
+    let mut app = app_in(&dir, demo_project());
+    app.set_status("Gespeichert", komponist_app::ui_state::StatusKind::Success);
+    app.dispatch(Action::Settings(SettingsAction::SetLanguage(Language::En)));
+    assert_eq!(app.lang(), Lang::En);
+    assert!(app.ui().status.is_none());
+}
+
 // ------------------------------------------------------------------------------------------------
 // Snapshots next to S06, S07, S09, S10
 // ------------------------------------------------------------------------------------------------
@@ -899,6 +948,11 @@ fn snapshots_of_s06_and_s10() {
 
 /// S07 as the design shows it: Focusrite unplugged, KeyStep active, four plugin folders.
 fn s07_model() -> settings::Model {
+    s07_model_in(Lang::De)
+}
+
+/// S07 in `lang`: the same situation, the texts of the model in that language.
+fn s07_model_in(lang: Lang) -> settings::Model {
     let config = StreamConfig {
         host: HostKind::PipeWire,
         device: Some("Focusrite Scarlett 2i2".into()),
@@ -908,7 +962,7 @@ fn s07_model() -> settings::Model {
         sample_rate: 48_000,
         buffer_frames: 256,
     };
-    let (devices, device) = settings::device_entries(Lang::De, HostKind::PipeWire, &[], &config);
+    let (devices, device) = settings::device_entries(lang, HostKind::PipeWire, &[], &config);
     let dir = |clap: bool, label: &str, n: usize| settings::DirRow {
         clap,
         path: PathBuf::from(label),
@@ -929,7 +983,11 @@ fn s07_model() -> settings::Model {
         device,
         rates: vec![44_100, 48_000, 96_000],
         no_device: Some("no audio device".into()),
-        latency: "5.3 ms Latenz".into(),
+        latency: match lang {
+            Lang::De => "5.3 ms Latenz",
+            Lang::En => "5.3 ms latency",
+        }
+        .into(),
         realtime_denied: false,
         midi: Some(vec![
             settings::MidiRow {
@@ -953,11 +1011,19 @@ fn s07_model() -> settings::Model {
             dir(false, "~/.vst3", 47),
             dir(false, "/usr/lib/vst3", 68),
         ],
-        scan: "214 Plugins gefunden · letzter Scan heute 09:12 · 1 Plugin übersprungen (lässt \
-               sich nicht laden)"
-            .into(),
+        scan: match lang {
+            Lang::De => {
+                "214 Plugins gefunden · letzter Scan heute 09:12 · 1 Plugin übersprungen (lässt \
+                 sich nicht laden)"
+            }
+            Lang::En => {
+                "214 plugins found · last scan today 09:12 · 1 plugin skipped (cannot be loaded)"
+            }
+        }
+        .into(),
         scanning: false,
         ui_scale: None,
+        language: Language::System,
         keyboard_midi: false,
     }
 }
@@ -997,6 +1063,93 @@ fn snapshot_of_s07() {
         h.run_steps(4);
         mask_cpu(&mut h);
         h.snapshot(format!("dialogs-s07-{ppp}x"));
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
+/// S07 in English (#5): the same situation, English texts.
+#[test]
+fn snapshot_of_s07_in_english() {
+    let config = StreamConfig {
+        host: HostKind::Null,
+        buffer_frames: 0,
+        ..StreamConfig::default()
+    };
+    let (engine, _) = EngineSync::new(
+        &config,
+        komponist_app::engine_sync::MidiSetup::None,
+        Box::new(BuiltinHost::new()),
+    );
+    let app = App::new(
+        Document::new(demo_project()),
+        engine,
+        Settings::default(),
+        None,
+    )
+    .with_lang(Lang::En);
+    let model = s07_model_in(Lang::En);
+    let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+        .with_size(vec2(W, H))
+        .with_options(SnapshotOptions::new().output_path(snapshot_dir()))
+        .build_ui_state(
+            move |ui, app: &mut App| {
+                app.show(ui);
+                let _ = settings::show(ui.ctx(), &model, None);
+            },
+            app,
+        );
+    h.run_steps(4);
+    let cpu = h
+        .get_by_role_and_label(Role::Status, en::TRANSPORT_CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    h.snapshot("dialogs-s07-en-1x");
+}
+
+/// S07 scrolled to "Appearance": the language row (#5), German and English.
+#[test]
+fn snapshots_of_the_appearance_section() {
+    let mut results = SnapshotResults::new();
+    for (lang, name) in [
+        (Lang::De, "dialogs-s07-display-1x"),
+        (Lang::En, "dialogs-s07-display-en-1x"),
+    ] {
+        let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+        let app = App::new(
+            Document::new(demo_project()),
+            engine,
+            Settings::default(),
+            None,
+        )
+        .with_lang(lang);
+        let model = settings::Model {
+            section: SettingsSection::Display,
+            ..s07_model_in(lang)
+        };
+        let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(vec2(W, H))
+            .with_options(SnapshotOptions::new().output_path(snapshot_dir()))
+            .build_ui_state(
+                move |ui, app: &mut App| {
+                    app.show(ui);
+                    let _ = settings::show(ui.ctx(), &model, Some(SettingsSection::Display));
+                },
+                app,
+            );
+        h.run_steps(4);
+        let cpu = h
+            .get_by_role_and_label(
+                Role::Status,
+                if lang == Lang::De {
+                    de::TRANSPORT_CPU
+                } else {
+                    en::TRANSPORT_CPU
+                },
+            )
+            .rect();
+        h.mask(cpu.expand(2.0));
+        h.snapshot(name);
         results.extend_harness(&mut h);
     }
     results.unwrap();
@@ -1076,6 +1229,40 @@ fn s09_model() -> start::Model {
         ],
         message: None,
     }
+}
+
+/// S09 in English (#5): the same list, English texts and dates.
+#[test]
+fn snapshot_of_s09_in_english() {
+    let mut model = s09_model();
+    model.version = start::version_line(Lang::En);
+    model.new_shortcut = "Ctrl+N".into();
+    model.open_shortcut = "Ctrl+O".into();
+    let texts = [
+        ("124 BPM · 6 tracks", "2 hours ago"),
+        ("98 BPM · 9 tracks", "yesterday"),
+        ("140 BPM · 3 tracks", "Oct 12"),
+        ("72 BPM · 5 tracks", "Oct 8"),
+        ("126 BPM · 12 tracks", "Oct 2"),
+    ];
+    for (row, (meta, date)) in model.recent.iter_mut().zip(texts) {
+        row.meta = meta.into();
+        row.date = date.into();
+    }
+    model.system[2].info = "214 found · Settings Ctrl+,".into();
+    let mut h = komponist_ui::snapshot::builder::<StartView>(1.0)
+        .with_size(vec2(W, H))
+        .with_options(SnapshotOptions::new().output_path(snapshot_dir()))
+        .build_ui_state(
+            move |ui, view: &mut StartView| {
+                komponist_ui::set_lang(ui.ctx(), Lang::En);
+                let rect = ui.ctx().content_rect();
+                let _ = start::show(ui, rect, &model, view, true);
+            },
+            StartView::default(),
+        );
+    h.run_steps(3);
+    h.snapshot("dialogs-s09-en-1x");
 }
 
 #[test]

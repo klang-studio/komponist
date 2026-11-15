@@ -3,6 +3,9 @@
 # Toolbar: pattern length key (`Länge 16 Steps`) and its accessible name.
 step-seq-length = Länge
 
+# Toolbar: the short key text in front of the length field (the English word does not fit).
+step-seq-length-key = Länge
+
 # Unit of the pattern length.
 step-seq-steps = Steps
 

@@ -727,6 +727,23 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
     h.mask(cpu.expand(2.0));
 }
 
+/// The same screen in English (#5).
+#[test]
+fn snapshot_of_the_piano_roll_in_english() {
+    let mut h = harness_at(s01().with_lang(komponist_i18n::Lang::En), 1.0);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && h.state().engine().playhead() != Tick(36_000) {
+        h.step();
+    }
+    h.state_mut().ui_mut().piano_roll.top_key = 74;
+    h.run_steps(3);
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_i18n::en::TRANSPORT_CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    h.snapshot("piano-roll-s01-en-1x");
+}
+
 #[test]
 fn snapshots_of_the_piano_roll() {
     let mut results = SnapshotResults::new();

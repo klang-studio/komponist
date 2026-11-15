@@ -476,7 +476,7 @@ param-volt-noise = Noise
 param-volt-hp = HP
 
 # volt: how far the filter envelope moves the cutoff.
-param-volt-env-amount = Env Amount
+param-volt-env-amount = Env Amt.
 
 # volt: LFO waveform.
 param-volt-lfo-shape = Shape
@@ -500,7 +500,7 @@ param-volt-vel-filter = Vel → Env
 param-volt-wheel-vib = Wheel → Vib.
 
 # volt: channel pressure to cutoff.
-param-volt-at-cut = Press→Cut
+param-volt-at-cut = Press → Cut
 
 # volt: glide only between legato notes.
 param-volt-glide-legato = Glide Legato

@@ -174,6 +174,19 @@ fn step_until(h: &mut Harness<'_, App>, mut done: impl FnMut(&App) -> bool) -> b
     false
 }
 
+/// The same screen in English (#5).
+#[test]
+fn snapshot_next_to_s03_in_english() {
+    let mut h = harness_at(s03().with_lang(komponist_i18n::Lang::En), 1.0);
+    assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(36_000)));
+    h.run_steps(2);
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_i18n::en::TRANSPORT_CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    h.snapshot("step-seq-s03-en-1x");
+}
+
 #[test]
 fn snapshots_next_to_s03() {
     let mut results = SnapshotResults::new();

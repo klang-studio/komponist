@@ -151,7 +151,7 @@ inspector-device-loading = loading
 inspector-device-crashed = crashed
 
 # Status of a device that failed to load. Short on purpose (owner decision Q5, 2026-11-14); the card and the plugin frame keep "Lässt sich nicht laden".
-inspector-device-load-failed = won't load
+inspector-device-load-failed = failed to load
 
 # Status of a device that stopped answering (as the card's "Hängt").
 inspector-device-unresponsive = not responding

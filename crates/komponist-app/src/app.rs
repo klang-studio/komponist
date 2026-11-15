@@ -444,6 +444,10 @@ impl App {
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         komponist_ui::set_lang(&ctx, self.lang);
+        // The root node carries the language for screen readers (BCP 47).
+        ctx.accesskit_node_builder(egui::accesskit_root_id(), |n| {
+            n.set_language(self.lang.code());
+        });
         if let Some(scale) = self.shell.pending_scale.take() {
             ctx.set_pixels_per_point(scale.unwrap_or(1.0));
         }
@@ -467,6 +471,10 @@ impl App {
         self.draw_shell(&mut root);
         self.shell.requests = Requests::default();
         self.flush_queue();
+        if komponist_ui::lang(&ctx) != self.lang {
+            // A language switch: the next frame draws every text anew, at once.
+            ctx.request_repaint();
+        }
         if let Some(text) = self.shell.pending_clipboard_text.take() {
             ctx.copy_text(text);
         }
@@ -2588,6 +2596,16 @@ impl App {
             SettingsAction::SetUiScale(scale) => {
                 self.settings.ui_scale = scale;
                 self.shell.pending_scale = Some(scale);
+                self.save_settings();
+            }
+            SettingsAction::SetLanguage(language) => {
+                self.settings.language = language;
+                let lang = language.resolve(sys_locale::get_locale().as_deref());
+                if lang != self.lang {
+                    self.lang = lang;
+                    // Status messages are formatted text of the old language.
+                    self.ui.status = None;
+                }
                 self.save_settings();
             }
             SettingsAction::ToggleFavorite(plugin) => {

@@ -182,11 +182,11 @@ fn run_app() -> eframe::Result {
         }
     }
     // The one place that reads the desktop's language; `App::new` stays German for the tests.
-    let lang = args.lang.unwrap_or_else(|| {
-        settings
-            .language
-            .resolve(sys_locale::get_locale().as_deref())
-    });
+    let lang = komponist_app::settings::startup_lang(
+        args.lang,
+        settings.language,
+        sys_locale::get_locale().as_deref(),
+    );
     let first = if args.demo {
         // The demo's Sampler plays the synthesized test kit (written to the temporary folder).
         let demo = komponist_app::showcase::showcase_project();

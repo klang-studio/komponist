@@ -16,10 +16,10 @@ ui-toggle-monitor = Monitoring
 ui-toggle-mute-implied = muted by solo
 
 # Second tooltip line of S.
-ui-toggle-solo-detail = Alt-click: solo this track only
+ui-toggle-solo-detail = Alt+click: solo this track only
 
 # Second tooltip line of R.
-ui-toggle-arm-detail = Alt-click: exclusive
+ui-toggle-arm-detail = Alt+click: exclusive
 
 # Second tooltip line of I while the armed track monitors.
 ui-toggle-monitor-implied = through Record-Arm

@@ -480,7 +480,7 @@ fn the_routing_ui_speaks_english() {
     );
     assert_eq!(
         Lang::En.routing_group_name("Rhythmus", "folded"),
-        "Group Rhythmus, folded"
+        "Group Rhythmus, collapsed"
     );
     assert_eq!(
         Lang::En.routing_bus_lane(3),

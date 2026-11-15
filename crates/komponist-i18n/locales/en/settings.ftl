@@ -87,6 +87,18 @@ settings-scale-auto = Automatic
 # S07 UI scale segment; `$percent` is 100, 125, 150 or 200.
 settings-scale-percent = { $percent }%
 
+# S07 row label and name of the UI language control (issue #5; not in the design handoff).
+settings-language = Language
+
+# S07 UI language segment: follow the desktop's language.
+settings-language-system = System
+
+# S07 UI language segment; the name of a language is written in that language in every UI language.
+settings-language-de = Deutsch
+
+# S07 UI language segment; the name of a language is written in that language in every UI language.
+settings-language-en = English
+
 # S07 label of the computer keyboard switch.
 settings-keyboard-midi = Computer keyboard plays notes
 

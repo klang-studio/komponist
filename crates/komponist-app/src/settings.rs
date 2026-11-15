@@ -58,8 +58,7 @@ pub struct Settings {
     /// file only, no S07 control yet): `null` = automatic (one per core minus two, 4 on a
     /// 6-core machine), `0` = off (single-threaded), `n` = `n` threads (at most 15).
     pub worker_threads: Option<u32>,
-    /// The UI language (WP-71; the control in S07 "Darstellung" follows in WP-77, until then the
-    /// settings file and `--lang`).
+    /// The UI language (S07 "Darstellung", applied at once; `--lang` overrides it for one run).
     pub language: Language,
 }
 
@@ -100,6 +99,11 @@ impl Language {
             Language::En => Lang::En,
         }
     }
+}
+
+/// The language for this run: `--lang` wins over the setting, the setting over the system.
+pub fn startup_lang(cli: Option<Lang>, setting: Language, system: Option<&str>) -> Lang {
+    cli.unwrap_or_else(|| setting.resolve(system))
 }
 
 /// What a plugin's frame window remembers between sessions (WP-50): "Oben halten" and where it
@@ -467,6 +471,12 @@ mod tests {
         // Explicit values ignore the system.
         assert_eq!(Language::De.resolve(Some("en-US")), Lang::De);
         assert_eq!(Language::En.resolve(Some("de-DE")), Lang::En);
+        // `--lang` beats the setting, the setting beats the system.
+        let (de, en) = (Some("de-DE"), Some("en-US"));
+        assert_eq!(startup_lang(Some(Lang::En), Language::De, de), Lang::En);
+        assert_eq!(startup_lang(Some(Lang::De), Language::En, en), Lang::De);
+        assert_eq!(startup_lang(None, Language::En, de), Lang::En);
+        assert_eq!(startup_lang(None, Language::System, de), Lang::De);
     }
 
     #[test]

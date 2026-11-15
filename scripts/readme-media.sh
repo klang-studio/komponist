@@ -5,10 +5,11 @@
 #   scripts/readme-media.sh hero mixer    only these scenarios (names: scripts/readme-media/capture.py)
 #   SKIP_BUILD=1 scripts/readme-media.sh  use the existing target/release/komponist
 #
-# Builds komponist (release, under the shared build lock like run.sh), starts it with `--demo --null-audio --no-plugin-scan`
-# under a private Xvfb (1920x1080, no window manager, so no decorations or borders), with a scratch HOME and
-# XDG folders, drives it through its AccessKit tree (`egui-mcp`, see .mcp.json) and records the GIFs with ffmpeg
-# x11grab. It never touches real audio or MIDI hardware and plays no sound. Idempotent: files are overwritten.
+# Builds komponist (release, under the shared build lock like run.sh), starts it with
+# `--demo --null-audio --no-plugin-scan --lang en` (the media are English) under a private Xvfb (1920x1080, no window
+# manager, so no decorations or borders), with a scratch HOME and XDG folders, drives it through its AccessKit tree
+# (`egui-mcp`, see .mcp.json) and records the GIFs with ffmpeg x11grab. It never touches real audio or MIDI hardware
+# and plays no sound. Idempotent: files are overwritten. The scratch folder is made under $TMPDIR (default /tmp).
 #
 # Needs: xvfb-run, ffmpeg, ImageMagick (`magick` or `convert`), python3, `egui-mcp` (cargo install egui_mcp) on PATH.
 set -euo pipefail
@@ -29,7 +30,7 @@ fi
 bin="$PWD/target/release/komponist"
 [ -x "$bin" ] || { echo "readme-media: $bin not found" >&2; exit 1; }
 
-work="$(mktemp -d /tmp/komponist-readme-media.XXXXXX)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/komponist-readme-media.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p docs/media
 
