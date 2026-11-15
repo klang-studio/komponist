@@ -66,6 +66,7 @@ pub mod eq;
 pub mod hall;
 pub mod limiter;
 pub mod midi;
+pub mod preset_names;
 pub mod presse;
 pub mod tonleiter;
 pub mod volt;
@@ -436,10 +437,11 @@ impl Internal {
 
     /// The preset a device state says it loaded (`"preset"`) and whether the values differ from it
     /// now („ *“). `None` for a state without a (known) preset, as every project saved before
-    /// WP-96.
+    /// WP-96. A name from before the presets were renamed in English ([`preset_names`]) finds
+    /// its preset.
     pub fn loaded_preset(self, state: Option<&[u8]>) -> Option<(usize, bool)> {
         let value: serde_json::Value = serde_json::from_slice(state?).ok()?;
-        let name = value.get("preset")?.as_str()?;
+        let name = preset_names::current_name(self.id(), value.get("preset")?.as_str()?);
         let index = self.presets().iter().position(|p| p.name == name)?;
         let now = self.decode_state(state).ok()?;
         Some((index, Some(&now) != self.preset_values(index).as_ref()))

@@ -169,7 +169,12 @@ fn params(t: Lang) -> Vec<ParamInfo> {
     }
     // The live spectrum behind the graph (WP-92). On by default, so a project saved before the
     // parameter existed shows it too.
-    list.push(ParamInfo::new("analyse", t.param_eq_analyse(), ParamKind::Bool, 1.0));
+    list.push(ParamInfo::new(
+        "analyse",
+        t.param_eq_analyse(),
+        ParamKind::Bool,
+        1.0,
+    ));
     list
 }
 

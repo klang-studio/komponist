@@ -80,18 +80,18 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Track roles recognised by words in the track name (lower case), with the hexa preset that
 /// stands in for the instrument. Checked in order, after the drum check.
 const ROLES: [(&[&str], &str); 5] = [
-    (&["bass"], "Analog-Bass"),
-    (&["lead", "melod"], "Poly-Synth"),
+    (&["bass"], "Analog Bass"),
+    (&["lead", "melod"], "Poly Synth"),
     (&["pad", "string", "streicher", "chor"], "Warm Pad"),
     (
         &["key", "piano", "klavier", "rhodes", "orgel", "organ"],
         "E-Piano",
     ),
-    (&["arp"], "Arp-Bleep"),
+    (&["arp"], "Arp Bleep"),
 ];
 
 /// Preset for instruments of tracks without a recognised role.
-const FALLBACK_PRESET: &str = "Poly-Synth";
+const FALLBACK_PRESET: &str = "Poly Synth";
 
 /// Words in a track name that make it a drum track.
 const DRUM_WORDS: [&str; 4] = ["drum", "beat", "perc", "schlagzeug"];
@@ -403,15 +403,15 @@ type DrumSound = (&'static str, u8, bool);
 /// The sound for a drum row named `name` on `note`: by the name first, then by the General MIDI
 /// drum map, else a bongo.
 fn drum_sound(name: &str, note: u8) -> DrumSound {
-    const KICK: DrumSound = ("Bassdrum", 36, false);
+    const KICK: DrumSound = ("Bass Drum", 36, false);
     const SNARE: DrumSound = ("Snare", 55, false);
     const CLAP: DrumSound = ("Clap", 60, false);
     const OPEN_HAT: DrumSound = ("Hi-Hat", 60, true);
     const HAT: DrumSound = ("Hi-Hat", 60, false);
     const TOM: DrumSound = ("Tom", 45, false);
-    const RIM: DrumSound = ("Buchla-Bongo", 79, false);
-    const CYMBAL: DrumSound = ("Becken", 60, false);
-    const PERC: DrumSound = ("Buchla-Bongo", 67, false);
+    const RIM: DrumSound = ("Buchla Bongo", 79, false);
+    const CYMBAL: DrumSound = ("Cymbal", 60, false);
+    const PERC: DrumSound = ("Buchla Bongo", 67, false);
     let name = name.to_lowercase();
     let by_name: [(&[&str], DrumSound); 8] = [
         (&["kick", "bassdrum", "bass drum"], KICK),
@@ -1295,7 +1295,7 @@ mod tests {
         assert_eq!(
             pads,
             [
-                ("Kick", 36, "Bassdrum", 36, false),
+                ("Kick", 36, "Bass Drum", 36, false),
                 ("Snare", 37, "Snare", 55, false),
                 ("Clap", 38, "Clap", 60, false),
                 ("Hat zu", 39, "Hi-Hat", 60, false),

@@ -108,7 +108,13 @@ const AUTO_SLOW: f32 = 3.0;
 
 fn params(t: Lang) -> Vec<ParamInfo> {
     vec![
-        ParamInfo::new("threshold", t.param_threshold(), ParamKind::lin(-60.0, 0.0), -18.0).unit(Unit::Db),
+        ParamInfo::new(
+            "threshold",
+            t.param_threshold(),
+            ParamKind::lin(-60.0, 0.0),
+            -18.0,
+        )
+        .unit(Unit::Db),
         ParamInfo::new(
             "ratio",
             t.param_ratio(),
@@ -116,10 +122,15 @@ fn params(t: Lang) -> Vec<ParamInfo> {
             4.0,
         )
         .unit(Unit::Ratio),
-        ParamInfo::new("knee", t.param_presse_knee(), ParamKind::lin(0.0, 24.0), 6.0)
-            .unit(Unit::Db)
-            // A width, not a gain: no sign.
-            .formatted(|v| format!("{v:.0} dB")),
+        ParamInfo::new(
+            "knee",
+            t.param_presse_knee(),
+            ParamKind::lin(0.0, 24.0),
+            6.0,
+        )
+        .unit(Unit::Db)
+        // A width, not a gain: no sign.
+        .formatted(|v| format!("{v:.0} dB")),
         ParamInfo::new(
             "attack",
             t.param_attack(),
@@ -151,9 +162,24 @@ fn params(t: Lang) -> Vec<ParamInfo> {
             SC_OFF_HZ,
         )
         .unit(Unit::Hz),
-        ParamInfo::new("sc_listen", t.param_presse_sc_listen(), ParamKind::Bool, 0.0),
-        ParamInfo::new("auto_release", t.param_presse_auto_release(), ParamKind::Bool, 1.0),
-        ParamInfo::new("auto_makeup", t.param_presse_auto_makeup(), ParamKind::Bool, 0.0),
+        ParamInfo::new(
+            "sc_listen",
+            t.param_presse_sc_listen(),
+            ParamKind::Bool,
+            0.0,
+        ),
+        ParamInfo::new(
+            "auto_release",
+            t.param_presse_auto_release(),
+            ParamKind::Bool,
+            1.0,
+        ),
+        ParamInfo::new(
+            "auto_makeup",
+            t.param_presse_auto_makeup(),
+            ParamKind::Bool,
+            0.0,
+        ),
     ]
 }
 

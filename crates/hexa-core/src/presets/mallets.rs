@@ -6,16 +6,16 @@ use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
     entry("Marimba", 0.383, marimba),
-    entry("Vibraphon", 0.334, vibraphone),
-    entry("Xylophon", 0.315, xylophone),
+    entry("Vibraphone", 0.334, vibraphone),
+    entry("Xylophone", 0.315, xylophone),
     entry("Glockenspiel", 0.459, glockenspiel),
-    entry("Röhrenglocke", 0.451, tubular_bell),
-    entry("Kirchenglocke", 0.631, church_bell),
+    entry("Tubular Bell", 0.451, tubular_bell),
+    entry("Church Bell", 0.631, church_bell),
     entry("Gong", 0.466, gong),
     entry("Kalimba", 0.364, kalimba),
     entry("Steel Drum", 0.510, steel_drum),
-    entry("Spieluhr", 0.383, music_box),
-    entry("Kristall", 0.389, crystal),
+    entry("Music Box", 0.383, music_box),
+    entry("Crystal", 0.389, crystal),
 ];
 
 fn marimba() -> Patch {

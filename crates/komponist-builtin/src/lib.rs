@@ -66,7 +66,7 @@ pub mod sampler;
 pub mod state;
 
 pub use hexa_core::Patch;
-pub use i18n::{category_text, value_texts};
+pub use i18n::{category_text, device_name, value_texts};
 pub use internal::{Internal, InternalProcessor, Preset};
 pub use macros::Macro;
 pub use processor::{HexaProcessor, SAMPLE_RATES};

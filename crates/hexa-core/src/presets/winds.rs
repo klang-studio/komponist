@@ -6,16 +6,16 @@ use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
     entry("Brass", 0.394, brass),
-    entry("Synth-Brass", 0.145, synth_brass),
-    entry("Trompete", 0.187, trumpet),
-    entry("Waldhorn", 0.350, french_horn),
-    entry("Bläsersatz", 0.358, brass_section),
-    entry("Flöte", 0.201, flute),
-    entry("Panflöte", 0.383, pan_flute),
-    entry("Klarinette", 0.334, clarinet),
+    entry("Synth Brass", 0.145, synth_brass),
+    entry("Trumpet", 0.187, trumpet),
+    entry("French Horn", 0.350, french_horn),
+    entry("Horn Section", 0.358, brass_section),
+    entry("Flute", 0.201, flute),
+    entry("Pan Flute", 0.383, pan_flute),
+    entry("Clarinet", 0.334, clarinet),
     entry("Oboe", 0.343, oboe),
-    entry("Saxophon", 0.129, saxophone),
-    entry("Mundharmonika", 0.748, harmonica),
+    entry("Saxophone", 0.129, saxophone),
+    entry("Harmonica", 0.748, harmonica),
 ];
 
 fn brass() -> Patch {

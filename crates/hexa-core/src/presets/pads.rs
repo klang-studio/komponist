@@ -6,18 +6,18 @@ use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
     entry("Strings", 1.000, strings),
-    entry("Streicher langsam", 1.000, slow_strings),
+    entry("Slow Strings", 1.000, slow_strings),
     entry("Cello", 0.282, cello),
     entry("Warm Pad", 0.711, warm_pad),
-    entry("Glas-Pad", 0.493, glass_pad),
-    entry("Sweep-Pad", 0.462, sweep_pad),
-    entry("Chor", 0.842, choir),
-    entry("Dunkles Pad", 0.548, dark_pad),
-    entry("PWM-Pad", 0.444, pwm_pad),
-    entry("Shimmer-Pad", 0.522, shimmer_pad),
-    entry("Wandel-Pad", 0.289, evolving_pad),
-    entry("Analog-Pad", 0.647, analog_pad),
-    entry("Nebel", 0.477, mist),
+    entry("Glass Pad", 0.493, glass_pad),
+    entry("Sweep Pad", 0.462, sweep_pad),
+    entry("Choir", 0.842, choir),
+    entry("Dark Pad", 0.548, dark_pad),
+    entry("PWM Pad", 0.444, pwm_pad),
+    entry("Shimmer Pad", 0.522, shimmer_pad),
+    entry("Morph Pad", 0.289, evolving_pad),
+    entry("Analog Pad", 0.647, analog_pad),
+    entry("Fog", 0.477, mist),
 ];
 
 fn strings() -> Patch {

@@ -116,7 +116,12 @@ fn params(t: Lang) -> Vec<ParamInfo> {
             4.0,
         ),
         ParamInfo::new("gate", t.param_gate(), ParamKind::lin(0.05, 1.0), 0.6).unit(Unit::Percent),
-        ParamInfo::new("octaves", t.param_arp_octaves(), ParamKind::Int { min: 1, max: 4 }, 1.0),
+        ParamInfo::new(
+            "octaves",
+            t.param_arp_octaves(),
+            ParamKind::Int { min: 1, max: 4 },
+            1.0,
+        ),
         ParamInfo::new("hold", t.param_arp_hold(), ParamKind::Bool, 0.0),
     ]
 }

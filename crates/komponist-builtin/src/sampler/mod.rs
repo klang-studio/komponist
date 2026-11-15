@@ -219,15 +219,13 @@ fn params(t: Lang) -> Vec<ParamInfo> {
         for field in PadField::ALL {
             let id = ParamId::new(key(field));
             list.push(match field {
-                PadField::Start => {
-                    ParamInfo::new(
-                        id,
-                        t.param_sampler_start(pad),
-                        ParamKind::lin(0.0, MAX_MS),
-                        0.0,
-                    )
-                    .unit(Unit::Ms)
-                }
+                PadField::Start => ParamInfo::new(
+                    id,
+                    t.param_sampler_start(pad),
+                    ParamKind::lin(0.0, MAX_MS),
+                    0.0,
+                )
+                .unit(Unit::Ms),
                 PadField::End => ParamInfo::new(
                     id,
                     t.param_sampler_end(pad),
@@ -245,15 +243,13 @@ fn params(t: Lang) -> Vec<ParamInfo> {
                     ]),
                     0.0,
                 ),
-                PadField::Tune => {
-                    ParamInfo::new(
-                        id,
-                        t.param_sampler_tune(pad),
-                        ParamKind::lin(-24.0, 24.0),
-                        0.0,
-                    )
-                    .unit(Unit::Semitones)
-                }
+                PadField::Tune => ParamInfo::new(
+                    id,
+                    t.param_sampler_tune(pad),
+                    ParamKind::lin(-24.0, 24.0),
+                    0.0,
+                )
+                .unit(Unit::Semitones),
                 PadField::Decay => ParamInfo::new(
                     id,
                     t.param_sampler_decay(pad),
@@ -262,15 +258,13 @@ fn params(t: Lang) -> Vec<ParamInfo> {
                 )
                 .unit(Unit::S)
                 .formatted(decay_text(t)),
-                PadField::Drive => {
-                    ParamInfo::new(
-                        id,
-                        t.param_sampler_drive(pad),
-                        ParamKind::lin(0.0, 1.0),
-                        0.0,
-                    )
-                    .unit(Unit::Percent)
-                }
+                PadField::Drive => ParamInfo::new(
+                    id,
+                    t.param_sampler_drive(pad),
+                    ParamKind::lin(0.0, 1.0),
+                    0.0,
+                )
+                .unit(Unit::Percent),
                 PadField::Pan => ParamInfo::new(
                     id,
                     t.param_sampler_pan(pad),
@@ -284,8 +278,12 @@ fn params(t: Lang) -> Vec<ParamInfo> {
                     0.0,
                 )
                 .unit(Unit::Db),
-                PadField::Mute => ParamInfo::new(id, t.param_sampler_mute(pad), ParamKind::Bool, 0.0),
-                PadField::Solo => ParamInfo::new(id, t.param_sampler_solo(pad), ParamKind::Bool, 0.0),
+                PadField::Mute => {
+                    ParamInfo::new(id, t.param_sampler_mute(pad), ParamKind::Bool, 0.0)
+                }
+                PadField::Solo => {
+                    ParamInfo::new(id, t.param_sampler_solo(pad), ParamKind::Bool, 0.0)
+                }
                 PadField::Choke => ParamInfo::new(
                     id,
                     t.param_sampler_choke(pad),

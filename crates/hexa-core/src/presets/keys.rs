@@ -6,18 +6,18 @@ use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
     entry("E-Piano", 0.385, e_piano),
-    entry("E-Piano weich", 0.463, e_piano_soft),
+    entry("Soft E-Piano", 0.463, e_piano_soft),
     entry("Wurli", 0.136, wurli),
-    entry("E-Piano Glocke", 0.507, e_piano_bell),
-    entry("FM-Klavier", 0.343, fm_piano),
+    entry("Bell E-Piano", 0.507, e_piano_bell),
+    entry("FM Piano", 0.343, fm_piano),
     entry("Clavinet", 0.217, clavinet),
-    entry("Cembalo", 0.428, harpsichord),
+    entry("Harpsichord", 0.428, harpsichord),
     entry("Celesta", 0.348, celesta),
-    entry("Spielzeugklavier", 0.388, toy_piano),
-    entry("Orgel Jazz", 0.654, jazz_organ),
-    entry("Orgel Rock", 0.193, rock_organ),
-    entry("Kirchenorgel", 0.475, pipe_organ),
-    entry("Akkordeon", 0.509, accordion),
+    entry("Toy Piano", 0.388, toy_piano),
+    entry("Jazz Organ", 0.654, jazz_organ),
+    entry("Rock Organ", 0.193, rock_organ),
+    entry("Church Organ", 0.475, pipe_organ),
+    entry("Accordion", 0.509, accordion),
     entry("Harmonium", 0.317, harmonium),
 ];
 

@@ -5,15 +5,15 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Saw-Lead", 0.201, saw_lead),
-    entry("Chip-Lead", 0.442, chip_lead),
-    entry("Sync-Lead", 0.548, sync_lead),
-    entry("PWM-Lead", 0.534, pwm_lead),
-    entry("FM-Lead", 0.782, fm_lead),
-    entry("Resonanz-Lead", 0.247, resonant_lead),
-    entry("Pfeif-Lead", 0.500, whistle),
-    entry("Schrei-Lead", 0.135, screamer),
-    entry("Analog-Lead", 0.182, analog_lead),
+    entry("Saw Lead", 0.201, saw_lead),
+    entry("Chip Lead", 0.442, chip_lead),
+    entry("Sync Lead", 0.548, sync_lead),
+    entry("PWM Lead", 0.534, pwm_lead),
+    entry("FM Lead", 0.782, fm_lead),
+    entry("Resonant Lead", 0.247, resonant_lead),
+    entry("Whistle Lead", 0.500, whistle),
+    entry("Scream Lead", 0.135, screamer),
+    entry("Analog Lead", 0.182, analog_lead),
     entry("Theremin", 0.501, theremin),
 ];
 

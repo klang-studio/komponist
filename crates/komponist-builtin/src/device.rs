@@ -368,7 +368,11 @@ impl Field {
         };
         let (name, kind, unit): (String, ParamKind, Unit) = match self {
             Field::Macro(_) => unreachable!("returned above"),
-            Field::Volume => (t.param_volume().into(), ParamKind::lin(min, max), Unit::Percent),
+            Field::Volume => (
+                t.param_volume().into(),
+                ParamKind::lin(min, max),
+                Unit::Percent,
+            ),
             Field::Glide => (t.param_glide().into(), ParamKind::lin(min, max), Unit::S),
             Field::Voices => (
                 t.param_unison().into(),
@@ -379,7 +383,11 @@ impl Field {
                 Unit::None,
             ),
             Field::Mono => (t.param_mono().into(), ParamKind::Bool, Unit::None),
-            Field::Spread => (t.param_spread().into(), ParamKind::lin(min, max), Unit::Percent),
+            Field::Spread => (
+                t.param_spread().into(),
+                ParamKind::lin(min, max),
+                Unit::Percent,
+            ),
             Field::Tune => (
                 t.param_tune().into(),
                 ParamKind::scaled(min, max, Scale::Pan),
@@ -427,9 +435,7 @@ impl Field {
                 }
             }),
             Field::Op(_, OpField::AttackCurve | OpField::DecayCurve | OpField::ReleaseCurve) => {
-                info.formatted(move |v| {
-                    format!("{}{percent}", signed((v * 100.0).round(), 0))
-                })
+                info.formatted(move |v| format!("{}{percent}", signed((v * 100.0).round(), 0)))
             }
             Field::Op(_, OpField::KeyScale) => info.formatted(|v| format!("{} dB", signed(v, 1))),
             _ => info,

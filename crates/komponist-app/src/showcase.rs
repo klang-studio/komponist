@@ -8,13 +8,13 @@
 //! | Track | Volume | Chain (preset) |
 //! |---|---|---|
 //! | Rhythmus | 0 dB | group (folder) of Drums and Bass, outputs to the master |
-//! | Drums | see `VOLUMES_DB` | Sampler (test kit), presse („Drums fest“) |
-//! | Bass | see `VOLUMES_DB` | volt („Fette Säge“), EQ („Bass Wärme“), presse („Ducking“, gentler: ratio 3, −20 dB, 120 ms; sidechain: Drums, pre-fader) |
-//! | Lead | see `VOLUMES_DB` | hexa („Saw-Lead“), EQ („Low Cut 80 Hz“), Delay („Punktierte Achtel“); post-fader send to Hall |
-//! | Pad | see `VOLUMES_DB` | volt („Breiter Pad“), EQ („Low Cut 80 Hz“); post-fader send to Hall |
-//! | Keys | −8 dB | hexa („E-Piano“), Delay („Weiches Band“) |
-//! | Arp | −10 dB | Tonleiter („A-Moll-Pentatonik“), Arpeggiator („Sechzehntel Auf/Ab“), hexa („Synth-Pluck“), Delay („Achtel Ping-Pong“) |
-//! | Hall | 0 dB | effect bus: Hall („Große Halle“), fed by the sends of Lead and Pad |
+//! | Drums | see `VOLUMES_DB` | Sampler (test kit), presse („Tight Drums“) |
+//! | Bass | see `VOLUMES_DB` | volt („Fat Saw“), EQ („Warm Bass“), presse („Ducking“, gentler: ratio 3, −20 dB, 120 ms; sidechain: Drums, pre-fader) |
+//! | Lead | see `VOLUMES_DB` | hexa („Saw Lead“), EQ („Low Cut 80 Hz“), Delay („Dotted Eighths“); post-fader send to Hall |
+//! | Pad | see `VOLUMES_DB` | volt („Wide Pad“), EQ („Low Cut 80 Hz“); post-fader send to Hall |
+//! | Keys | −8 dB | hexa („E-Piano“), Delay („Soft Tape“) |
+//! | Arp | −10 dB | Tonleiter („A Minor Pentatonic“), Arpeggiator („Sixteenths Up/Down“), hexa („Synth Pluck“), Delay („Eighth Ping-Pong“) |
+//! | Hall | 0 dB | effect bus: Hall („Large Hall“), fed by the sends of Lead and Pad |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
 //!
 //! The routing is built with the model's edits (`add_bus`, `add_send`, `set_send`, `set_sidechain`),
@@ -169,30 +169,27 @@ pub fn showcase_project() -> Project {
         next: project.next_id,
     };
     let chains = [
-        vec![d.sampler(), d.internal(Internal::Presse, "Drums fest")],
+        vec![d.sampler(), d.internal(Internal::Presse, "Tight Drums")],
         vec![
-            d.internal(Internal::Volt, "Fette Säge"),
-            d.internal(Internal::Eq, "Bass Wärme"),
+            d.internal(Internal::Volt, "Fat Saw"),
+            d.internal(Internal::Eq, "Warm Bass"),
             d.tuned(Internal::Presse, "Ducking", BASS_DUCKING),
         ],
         vec![
-            d.hexa("Saw-Lead"),
+            d.hexa("Saw Lead"),
             d.internal(Internal::Eq, "Low Cut 80 Hz"),
-            d.internal(Internal::Delay, "Punktierte Achtel"),
+            d.internal(Internal::Delay, "Dotted Eighths"),
         ],
         vec![
-            d.internal(Internal::Volt, "Breiter Pad"),
+            d.internal(Internal::Volt, "Wide Pad"),
             d.internal(Internal::Eq, "Low Cut 80 Hz"),
         ],
+        vec![d.hexa("E-Piano"), d.internal(Internal::Delay, "Soft Tape")],
         vec![
-            d.hexa("E-Piano"),
-            d.internal(Internal::Delay, "Weiches Band"),
-        ],
-        vec![
-            d.internal(Internal::Tonleiter, "A-Moll-Pentatonik"),
-            d.internal(Internal::Arpeggiator, "Sechzehntel Auf/Ab"),
-            d.hexa("Synth-Pluck"),
-            d.internal(Internal::Delay, "Achtel Ping-Pong"),
+            d.internal(Internal::Tonleiter, "A Minor Pentatonic"),
+            d.internal(Internal::Arpeggiator, "Sixteenths Up/Down"),
+            d.hexa("Synth Pluck"),
+            d.internal(Internal::Delay, "Eighth Ping-Pong"),
         ],
     ];
     let master = vec![d.plain(Internal::Limiter, &[("gain", 3.0), ("ceiling", -0.3)])];
@@ -264,7 +261,7 @@ fn add_routing(project: &mut Project) {
             .expect("the demo routing is valid: tap");
     }
     let mut d = Devices { next: p.next_id };
-    let reverb = d.internal(Internal::Hall, "Große Halle");
+    let reverb = d.internal(Internal::Hall, "Large Hall");
     p.next_id = d.next;
     let bus = p
         .tracks

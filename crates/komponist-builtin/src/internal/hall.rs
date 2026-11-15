@@ -111,7 +111,13 @@ fn params(t: Lang) -> Vec<ParamInfo> {
             2.4,
         )
         .unit(Unit::S),
-        ParamInfo::new("predelay", t.param_pre_delay(), ParamKind::lin(0.0, 250.0), 18.0).unit(Unit::Ms),
+        ParamInfo::new(
+            "predelay",
+            t.param_pre_delay(),
+            ParamKind::lin(0.0, 250.0),
+            18.0,
+        )
+        .unit(Unit::Ms),
         ParamInfo::new(
             "damping",
             t.param_hall_damping(),

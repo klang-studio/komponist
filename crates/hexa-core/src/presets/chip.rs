@@ -8,16 +8,16 @@ use super::{Entry, entry};
 use crate::{EnvelopeParams, ModSource, Patch};
 
 pub(super) const LIST: &[Entry] = &[
-    entry("NES-Puls 12", 0.171, pulse_12),
-    entry("Duty-Zyklus", 0.171, duty_cycle),
-    entry("NES-Dreieck", 0.505, nes_triangle),
-    entry("Chip-Arp Maj7", 0.174, chip_arp),
-    entry("Chip-Snare", 0.321, chip_snare),
+    entry("NES Pulse 12", 0.171, pulse_12),
+    entry("Duty Cycle", 0.171, duty_cycle),
+    entry("NES Triangle", 0.505, nes_triangle),
+    entry("Chip Arp Maj7", 0.174, chip_arp),
+    entry("Chip Snare", 0.321, chip_snare),
     entry("Power-Up", 0.171, power_up),
-    entry("Münze", 0.178, coin),
-    entry("Gameboy-Lead", 0.468, gameboy_lead),
-    entry("Chip-Echo", 0.180, chip_echo),
-    entry("SID-Sweep", 0.171, sid_sweep),
+    entry("Coin", 0.178, coin),
+    entry("Gameboy Lead", 0.468, gameboy_lead),
+    entry("Chip Echo", 0.180, chip_echo),
+    entry("SID Sweep", 0.171, sid_sweep),
 ];
 
 /// A square narrowed to a pulse of `duty` (0..=0.5) by op 2: ops 1 and 2.

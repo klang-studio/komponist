@@ -8,9 +8,7 @@
 
 use komponist_i18n::Lang;
 use komponist_model::format::MINUS;
-use komponist_model::params::va_curve::{
-    FILTER_TYPES, LFO_DIVS, dst as dest, src as source,
-};
+use komponist_model::params::va_curve::{FILTER_TYPES, LFO_DIVS, dst as dest, src as source};
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
 /// Declares the wire ids in order (`id::CUTOFF` …) and the list of their keys.
@@ -304,8 +302,18 @@ fn lfo_params(t: Lang, n: usize, shape: f64, rate: f64) -> Vec<ParamInfo> {
 /// The parameters; the index is the wire id ([`id`]).
 pub fn params(t: Lang) -> Vec<ParamInfo> {
     let mut p = vec![
-        ParamInfo::new("osc_a_wave", t.param_volt_osc_a(), names(&wave_names(t)), 2.0),
-        ParamInfo::new("osc_b_wave", t.param_volt_osc_b(), names(&wave_names(t)), 3.0),
+        ParamInfo::new(
+            "osc_a_wave",
+            t.param_volt_osc_a(),
+            names(&wave_names(t)),
+            2.0,
+        ),
+        ParamInfo::new(
+            "osc_b_wave",
+            t.param_volt_osc_b(),
+            names(&wave_names(t)),
+            3.0,
+        ),
         percent("osc_a_pw", t.param_volt_width_a(), 0.05, 0.95, 0.5).flags(true, true),
         percent("osc_b_pw", t.param_volt_width_b(), 0.05, 0.95, 0.5).flags(true, true),
         ParamInfo::new(
@@ -315,9 +323,14 @@ pub fn params(t: Lang) -> Vec<ParamInfo> {
             0.0,
         )
         .formatted(octaves_text(t)),
-        ParamInfo::new("osc_b_fine", t.param_volt_b_fine(), ParamKind::lin(-100.0, 100.0), 7.0)
-            .formatted(cents_text)
-            .flags(true, true),
+        ParamInfo::new(
+            "osc_b_fine",
+            t.param_volt_b_fine(),
+            ParamKind::lin(-100.0, 100.0),
+            7.0,
+        )
+        .formatted(cents_text)
+        .flags(true, true),
         percent("osc_mix", t.param_volt_osc_mix(), 0.0, 1.0, 0.5).flags(true, true),
         percent("sub_level", t.param_sub(), 0.0, 1.0, 0.25),
         percent("noise_level", t.param_volt_noise(), 0.0, 1.0, 0.0),
@@ -347,10 +360,34 @@ pub fn params(t: Lang) -> Vec<ParamInfo> {
         ("filt", 0.002, 0.35, 0.3, 0.25),
         ("mod", 0.001, 0.6, 0.0, 0.3),
     ] {
-        p.push(time(&format!("{prefix}_a"), t.param_volt_envelope_a(), 0.001, 10.0, a));
-        p.push(time(&format!("{prefix}_d"), t.param_volt_envelope_d(), 0.001, 10.0, d));
-        p.push(percent(&format!("{prefix}_s"), t.param_volt_envelope_s(), 0.0, 1.0, s));
-        p.push(time(&format!("{prefix}_r"), t.param_volt_envelope_r(), 0.001, 20.0, r));
+        p.push(time(
+            &format!("{prefix}_a"),
+            t.param_volt_envelope_a(),
+            0.001,
+            10.0,
+            a,
+        ));
+        p.push(time(
+            &format!("{prefix}_d"),
+            t.param_volt_envelope_d(),
+            0.001,
+            10.0,
+            d,
+        ));
+        p.push(percent(
+            &format!("{prefix}_s"),
+            t.param_volt_envelope_s(),
+            0.0,
+            1.0,
+            s,
+        ));
+        p.push(time(
+            &format!("{prefix}_r"),
+            t.param_volt_envelope_r(),
+            0.001,
+            20.0,
+            r,
+        ));
     }
     p.extend(lfo_params(t, 1, 0.0, 4.5));
     p.extend(lfo_params(t, 2, 1.0, 0.6));
@@ -378,18 +415,48 @@ pub fn params(t: Lang) -> Vec<ParamInfo> {
     p.extend([
         percent("velocity", t.param_velocity(), 0.0, 1.0, 0.6),
         percent("vel_filter", t.param_volt_vel_filter(), 0.0, 1.0, 0.3),
-        ParamInfo::new("wheel_vib", t.param_volt_wheel_vib(), ParamKind::lin(0.0, 200.0), 50.0)
-            .formatted(cents_text),
+        ParamInfo::new(
+            "wheel_vib",
+            t.param_volt_wheel_vib(),
+            ParamKind::lin(0.0, 200.0),
+            50.0,
+        )
+        .formatted(cents_text),
         percent("at_cut", t.param_volt_at_cut(), -1.0, 1.0, 0.0),
-        ParamInfo::new("glide_legato", t.param_volt_glide_legato(), ParamKind::Bool, 0.0),
+        ParamInfo::new(
+            "glide_legato",
+            t.param_volt_glide_legato(),
+            ParamKind::Bool,
+            0.0,
+        ),
         ParamInfo::new("mode", t.param_mode(), names(&MODES), 0.0),
-        ParamInfo::new("voices", t.param_volt_voices(), ParamKind::Int { min: 1, max: 16 }, 8.0),
+        ParamInfo::new(
+            "voices",
+            t.param_volt_voices(),
+            ParamKind::Int { min: 1, max: 16 },
+            8.0,
+        ),
         time("glide", t.param_glide(), OFF_S, 5.0, OFF_S).formatted(off_or_seconds(t)),
-        ParamInfo::new("bend", t.param_bend(), ParamKind::Int { min: 0, max: 24 }, 2.0)
-            .formatted(semitones_text),
-        ParamInfo::new("octave", t.param_volt_octave(), ParamKind::Int { min: -2, max: 2 }, 0.0)
-            .formatted(octaves_text(t)),
-        ParamInfo::new("unison", t.param_unison(), ParamKind::Int { min: 1, max: 7 }, 1.0),
+        ParamInfo::new(
+            "bend",
+            t.param_bend(),
+            ParamKind::Int { min: 0, max: 24 },
+            2.0,
+        )
+        .formatted(semitones_text),
+        ParamInfo::new(
+            "octave",
+            t.param_volt_octave(),
+            ParamKind::Int { min: -2, max: 2 },
+            0.0,
+        )
+        .formatted(octaves_text(t)),
+        ParamInfo::new(
+            "unison",
+            t.param_unison(),
+            ParamKind::Int { min: 1, max: 7 },
+            1.0,
+        ),
         ParamInfo::new("detune", t.param_detune(), ParamKind::lin(0.0, 100.0), 14.0)
             .formatted(cents_text)
             .flags(true, true),

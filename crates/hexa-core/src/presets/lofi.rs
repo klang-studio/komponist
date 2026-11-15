@@ -5,13 +5,13 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Fuzz-Gitarre", 0.489, fuzz_guitar),
-    entry("Lo-Fi-Piano", 0.346, lofi_piano),
-    entry("8-Bit-Bass", 0.605, bit_bass),
-    entry("Fold-Lead", 0.504, fold_lead),
+    entry("Fuzz Guitar", 0.489, fuzz_guitar),
+    entry("Lo-Fi Piano", 0.346, lofi_piano),
+    entry("8-Bit Bass", 0.605, bit_bass),
+    entry("Fold Lead", 0.504, fold_lead),
     entry("Industrial", 0.479, industrial),
-    entry("Kaputtes Radio", 1.000, broken_radio),
-    entry("Tape-Pad", 0.676, tape_pad),
+    entry("Broken Radio", 1.000, broken_radio),
+    entry("Tape Pad", 0.676, tape_pad),
 ];
 
 fn fuzz_guitar() -> Patch {

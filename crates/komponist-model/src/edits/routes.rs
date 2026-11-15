@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::{
-    DefaultNames, EditError, EditResult, copy_clip, locate_track, next_hue, track_mut, unique, update_track,
-    valid_db, valid_hue, valid_name,
+    DefaultNames, EditError, EditResult, copy_clip, locate_track, next_hue, track_mut, unique,
+    update_track, valid_db, valid_hue, valid_name,
 };
 use crate::ids::{DeviceId, SendId, TrackId};
 use crate::project::{

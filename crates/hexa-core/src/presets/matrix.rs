@@ -6,9 +6,9 @@ use super::{Entry, entry};
 use crate::{ModSource, Patch};
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Sing-Lead", 0.527, singing_lead),
-    entry("Drift-Pad", 0.442, drift_pad),
-    entry("Anschlag-Glocke", 0.311, touch_bell),
+    entry("Singing Lead", 0.527, singing_lead),
+    entry("Drift Pad", 0.442, drift_pad),
+    entry("Struck Bell", 0.311, touch_bell),
 ];
 
 fn singing_lead() -> Patch {

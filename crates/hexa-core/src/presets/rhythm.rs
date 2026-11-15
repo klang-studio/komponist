@@ -12,11 +12,11 @@ const EIGHTH: f32 = 0.25;
 const SIXTEENTH: f32 = 0.125;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Trance-Gate-Pad", 0.439, trance_gate),
-    entry("Pump-Pad", 0.571, pump_pad),
-    entry("Blubber-Bass", 0.550, bubble_bass),
-    entry("Glocken-Repeat", 0.325, bell_repeat),
-    entry("Auto-Wah-Clav", 1.000, auto_wah_clav),
+    entry("Trance Gate Pad", 0.439, trance_gate),
+    entry("Pump Pad", 0.571, pump_pad),
+    entry("Bubble Bass", 0.550, bubble_bass),
+    entry("Bell Repeat", 0.325, bell_repeat),
+    entry("Auto-Wah Clav", 1.000, auto_wah_clav),
 ];
 
 fn trance_gate() -> Patch {

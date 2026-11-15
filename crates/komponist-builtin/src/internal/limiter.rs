@@ -64,8 +64,20 @@ fn presets() -> &'static [Preset] {
 
 fn params(t: Lang) -> Vec<ParamInfo> {
     vec![
-        ParamInfo::new("gain", t.param_limiter_gain(), ParamKind::lin(0.0, 24.0), 0.0).unit(Unit::Db),
-        ParamInfo::new("ceiling", t.param_ceiling(), ParamKind::lin(-12.0, 0.0), -0.3).unit(Unit::Db),
+        ParamInfo::new(
+            "gain",
+            t.param_limiter_gain(),
+            ParamKind::lin(0.0, 24.0),
+            0.0,
+        )
+        .unit(Unit::Db),
+        ParamInfo::new(
+            "ceiling",
+            t.param_ceiling(),
+            ParamKind::lin(-12.0, 0.0),
+            -0.3,
+        )
+        .unit(Unit::Db),
         ParamInfo::new(
             "release",
             t.param_release(),

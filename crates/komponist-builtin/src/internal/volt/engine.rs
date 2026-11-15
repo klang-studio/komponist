@@ -86,7 +86,10 @@ impl Volt {
     /// A synthesizer with the parameters at their defaults.
     pub fn new() -> Volt {
         let mut values = [0.0; COUNT];
-        for (v, info) in values.iter_mut().zip(super::params::params(komponist_i18n::Lang::De)) {
+        for (v, info) in values
+            .iter_mut()
+            .zip(super::params::params(komponist_i18n::Lang::De))
+        {
             *v = info.default;
         }
         let mut k = Volt {

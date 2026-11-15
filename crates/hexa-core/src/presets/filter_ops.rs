@@ -7,11 +7,11 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Formant-Chor", 1.000, formant_choir),
-    entry("Filter-FM-Bass", 0.349, filter_fm_bass),
-    entry("Filter-Snare", 0.428, filter_snare),
-    entry("Stereo-Filter-Pad", 0.158, stereo_filter_pad),
-    entry("Doppelfilter-Pluck", 0.272, double_filter_pluck),
+    entry("Formant Choir", 1.000, formant_choir),
+    entry("Filter FM Bass", 0.349, filter_fm_bass),
+    entry("Filter Snare", 0.428, filter_snare),
+    entry("Stereo Filter Pad", 0.158, stereo_filter_pad),
+    entry("Dual Filter Pluck", 0.272, double_filter_pluck),
 ];
 
 fn formant_choir() -> Patch {

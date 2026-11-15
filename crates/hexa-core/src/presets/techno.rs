@@ -6,16 +6,16 @@ use super::{Entry, entry};
 use crate::{EnvelopeParams, ModSource, Patch};
 
 pub(super) const LIST: &[Entry] = &[
-    entry("303-Squelch", 0.118, squelch),
-    entry("Acid-Square", 0.104, acid_square),
+    entry("303 Squelch", 0.118, squelch),
+    entry("Acid Square", 0.104, acid_square),
     entry("Rumble", 0.271, rumble),
-    entry("Dub-Chord", 0.813, dub_chord),
-    entry("Minimal-Blip", 0.363, minimal_blip),
-    entry("House-Orgel", 0.697, house_organ),
-    entry("Deep-Chord", 0.665, deep_chord),
-    entry("Hypno-Sequenz", 0.401, hypno_sequence),
-    entry("Stahl-Hit", 0.438, steel_hit),
-    entry("Detroit-Strings", 0.625, detroit_strings),
+    entry("Dub Chord", 0.813, dub_chord),
+    entry("Minimal Blip", 0.363, minimal_blip),
+    entry("House Organ", 0.697, house_organ),
+    entry("Deep Chord", 0.665, deep_chord),
+    entry("Hypno Sequence", 0.401, hypno_sequence),
+    entry("Steel Hit", 0.438, steel_hit),
+    entry("Detroit Strings", 0.625, detroit_strings),
 ];
 
 fn squelch() -> Patch {

@@ -10,6 +10,62 @@ fn close(a: f64, b: f64) -> bool {
 }
 
 #[test]
+fn value_texts_carry_the_words_of_a_language() {
+    const EN: ValueTexts = ValueTexts {
+        on: "On",
+        off: "Off",
+        percent: "%",
+    };
+    let switch = ParamInfo::new("s", "S", ParamKind::Bool, 0.0);
+    let percent = ParamInfo::new("p", "P", ParamKind::lin(0.0, 1.0), 0.0).unit(Unit::Percent);
+    // German is the default, as the model always wrote.
+    assert_eq!(ValueTexts::default(), ValueTexts::DE);
+    assert_eq!(
+        (switch.format(1.0), switch.format(0.0)),
+        ("Ein".into(), "Aus".into())
+    );
+    assert_eq!(percent.format(0.4), "40 %");
+    let (switch, percent) = (switch.texts(EN), percent.texts(EN));
+    assert_eq!(
+        (switch.format(1.0), switch.format(0.0)),
+        ("On".into(), "Off".into())
+    );
+    assert_eq!(percent.format(0.4), "40%");
+    // Units and notation do not depend on the language.
+    for texts in [ValueTexts::DE, EN] {
+        let hz = float(20.0, 20_000.0, Scale::Log, Unit::Hz).texts(texts);
+        assert_eq!(hz.format(1200.0), "1.2 kHz");
+        let db = float(-12.0, 12.0, Scale::Lin, Unit::Db).texts(texts);
+        assert_eq!(db.format(-4.0), format!("{MINUS}4.0 dB"));
+        let pan = float(-1.0, 1.0, Scale::Pan, Unit::None).texts(texts);
+        assert_eq!(pan.format(0.0), "C");
+    }
+}
+
+#[test]
+fn a_captured_format_belongs_to_one_info_and_its_clones() {
+    let off = "Off";
+    let a = float(0.0, 1.0, Scale::Lin, Unit::None).formatted(move |v| {
+        if v < 0.1 {
+            off.to_owned()
+        } else {
+            format!("{v}")
+        }
+    });
+    assert_eq!(a.format(0.0), "Off");
+    assert_eq!(a.clone(), a);
+    // A separately built function is a different one, even with the same text.
+    let b = float(0.0, 1.0, Scale::Lin, Unit::None).formatted(move |v| {
+        if v < 0.1 {
+            off.to_owned()
+        } else {
+            format!("{v}")
+        }
+    });
+    assert_ne!(a, b);
+}
+
+#[test]
 fn lin_log_and_pan_round_trip_and_hit_the_ends() {
     for p in [
         float(0.0, 1.0, Scale::Lin, Unit::None),
