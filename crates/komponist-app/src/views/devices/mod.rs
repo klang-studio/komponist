@@ -568,24 +568,7 @@ fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track) {
     if hot {
         px::fill(ui.painter(), r, 0.0, color32(color::SURFACE_2));
     }
-    let painter = ui.painter();
-    let stroke = egui::Stroke::new(px::line_width(ppp), color32(edge));
-    let [dash, gap] = metrics::DASH;
-    let half = px::line_width(ppp) / 2.0;
-    let (l, t, rr, b) = (
-        r.left() + half,
-        r.top() + half,
-        r.right() - half,
-        r.bottom() - half,
-    );
-    for side in [
-        [pos2(l, t), pos2(rr, t)],
-        [pos2(rr, t), pos2(rr, b)],
-        [pos2(rr, b), pos2(l, b)],
-        [pos2(l, b), pos2(l, t)],
-    ] {
-        painter.extend(egui::Shape::dashed_line(&side, stroke, dash, gap));
-    }
+    px::dashed_border(ui.painter(), r, color32(edge), metrics::DASH);
     if komponist_ui::focus::ring_visible(&resp) {
         komponist_ui::focus::paint_ring(ui.painter(), r, 0.0);
     }

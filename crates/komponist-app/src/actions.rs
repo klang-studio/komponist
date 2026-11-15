@@ -604,6 +604,8 @@ pub enum UiAction {
         /// On or off.
         on: bool,
     },
+    /// Click, Enter or Space on the "Neue Spur" box below the tracks: open the dialog for new tracks.
+    OpenNewTrackDialog,
     /// Esc / close in a dialog.
     CloseDialog,
     /// Switch computer-keyboard MIDI on or off (ARCHITECTURE §13.2).

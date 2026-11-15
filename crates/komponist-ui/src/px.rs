@@ -102,6 +102,29 @@ pub fn inner_border(painter: &Painter, rect: Rect, color: Color32) {
     }
 }
 
+/// Paints a dashed 1 px border along the inside of `rect` (the drop slot of the device chain, the
+/// "Neue Spur" box): `dash` on, `gap` off, starting at each corner of the snapped rect.
+pub fn dashed_border(painter: &Painter, rect: Rect, color: Color32, [dash, gap]: [f32; 2]) {
+    let ppp = painter.pixels_per_point();
+    let r = snap_rect(rect, ppp);
+    let stroke = Stroke::new(line_width(ppp), color);
+    let half = line_width(ppp) / 2.0;
+    let (l, t, rr, b) = (
+        r.left() + half,
+        r.top() + half,
+        r.right() - half,
+        r.bottom() - half,
+    );
+    for side in [
+        [pos2(l, t), pos2(rr, t)],
+        [pos2(rr, t), pos2(rr, b)],
+        [pos2(rr, b), pos2(l, b)],
+        [pos2(l, b), pos2(l, t)],
+    ] {
+        painter.extend(egui::Shape::dashed_line(&side, stroke, dash, gap));
+    }
+}
+
 /// Paints a 1 px ring *outside* `rect` at distance `offset`, following the corner radius
 /// `radius` of the object (like CSS `outline` with `outline-offset`, whose radius grows by the
 /// offset). Straight parts are crisp; only the rounded corners are anti-aliased.

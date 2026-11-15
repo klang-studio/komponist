@@ -246,6 +246,25 @@ pub mod start {
     pub const OUTLINE_OFFSET: f32 = 1.0;
 }
 
+/// The "Neue Spur" dialog (owner request 2026-11-15; no screen shows it, so these are komponist's
+/// own values, built from the dialog metrics and spacing tokens).
+pub mod new_track {
+    use super::space;
+
+    /// Width: the small dialogs' width (S06).
+    pub const WIDTH: f32 = super::dialog::WIDTH;
+    /// Label column left of the controls: the file browser's.
+    pub const LABEL_COLUMN: f32 = super::dialog::FIELD_LABEL_WIDTH;
+    /// Gap between the rows.
+    pub const ROW_GAP: f32 = space::SPACE_3;
+    /// Gap between the search field and the instrument list.
+    pub const LIST_GAP: f32 = space::SPACE_1;
+    /// Rows of the instrument list shown before it scrolls.
+    pub const LIST_ROWS: f32 = 7.0;
+    /// The count field: the export dialog's field width.
+    pub const COUNT_WIDTH: f32 = 96.0;
+}
+
 /// The start screen's wordmark "komponist": 32 px, 600, `letter-spacing:-0.02em` (no type token;
 /// `type.title` at twice its size and line height).
 pub const WORDMARK: TypeStyle = TypeStyle {

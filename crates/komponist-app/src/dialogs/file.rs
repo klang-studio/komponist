@@ -409,7 +409,7 @@ pub fn show(ctx: &Context, b: &mut FileBrowser) -> Option<Output> {
     out
 }
 
-fn field_label(ui: &mut Ui, text: &str) -> egui::Response {
+pub(super) fn field_label(ui: &mut Ui, text: &str) -> egui::Response {
     let g = styled(ui, text, &typography::UI, color32(color::TEXT_2), None);
     let (rect, _) =
         ui.allocate_exact_size(vec2(m::FIELD_LABEL_WIDTH, size::CONTROL), Sense::hover());

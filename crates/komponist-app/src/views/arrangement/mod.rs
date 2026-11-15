@@ -71,6 +71,8 @@ pub mod names {
     pub const ZOOM_IN: &str = "Hineinzoomen";
     /// The area below the tracks.
     pub const NEW_TRACK: &str = "Neue Spur";
+    /// Accessible name of the box, which opens the dialog for new tracks.
+    pub const NEW_TRACK_BUTTON: &str = "Neue Spur …";
     /// Its hint, before the shortcut of a new MIDI track ("… oder Strg T").
     pub const NEW_TRACK_HINT: &str = "Instrument hierher ziehen oder";
     /// S10: title of the empty-project hint.
