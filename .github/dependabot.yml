@@ -1,0 +1,52 @@
+# Dependabot version updates. Git dependencies pinned by `rev` (klang-dsp, the test-plugins forks) are not
+# moved by Dependabot: see docs/INSTALL.md, "Bumping pinned git dependencies".
+# The `dependencies` label must exist in the repository.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: "deps"
+    groups:
+      egui:
+        patterns: ["egui*", "eframe", "epaint", "emath", "accesskit*", "winit", "wgpu*"]
+        update-types: [minor, patch]
+      audio:
+        patterns: ["cpal", "midir", "alsa*", "jack*", "pipewire*", "libspa*"]
+        update-types: [minor, patch]
+      plugin-hosting:
+        patterns: ["clack-*", "vst3*"]
+        update-types: [minor, patch]
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /test-plugins
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: "deps(test-plugins)"
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
