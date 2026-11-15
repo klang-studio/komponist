@@ -10,6 +10,7 @@
 //! | Pos1 | global | `Transport(GoToStart)` |
 //! | Tab | canvases | `Ui(ToggleMixer)` (§13.1; elsewhere Tab moves widget focus) |
 //! | Strg T | global | `Edit(NewMidiTrack)` |
+//! | Strg G | global | `Edit(GroupSelection)` (the selected tracks into a new group, WP-103) |
 //! | Strg N / O / S | global | `Project(New / Open / Save)` |
 //! | Strg Shift S | global | `Project(SaveAs)` |
 //! | Strg Shift E | global | `Project(OpenExportDialog)` |
@@ -403,6 +404,11 @@ impl Keymap {
             ),
             // Project.
             (KeyChord::ctrl(Key::T), Global, e(EditAction::NewMidiTrack)),
+            (
+                KeyChord::ctrl(Key::G),
+                Global,
+                e(EditAction::GroupSelection),
+            ),
             (KeyChord::ctrl(Key::N), Global, p(ProjectAction::New)),
             (KeyChord::ctrl(Key::O), Global, p(ProjectAction::Open)),
             (KeyChord::ctrl(Key::S), Global, p(ProjectAction::Save)),

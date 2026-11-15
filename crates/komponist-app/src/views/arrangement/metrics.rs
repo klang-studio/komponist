@@ -63,3 +63,28 @@ pub const INSERT_LINE: f32 = 2.0;
 /// pattern on the 1x snapshots), and it is the threshold the ruler labels already use (not a
 /// design value).
 pub const GRID_MIN_SPACING: f32 = space::SPACE_2;
+
+/// A group's row (WP-103, routing proposal 05-arrangement, „Gruppe“): 36 px, the folder row. Folded
+/// it is as high as a track row, with the silhouette of its members' clips drawn larger.
+pub const GROUP_ROW: f32 = 36.0;
+/// A folded group's row (`05-arrangement`: 56 px).
+pub const GROUP_ROW_FOLDED: f32 = size::track::DEFAULT;
+/// An effect bus's row in the „Busse“ section (`05-arrangement`: 32 px, `size.track.min`).
+pub const BUS_ROW: f32 = size::track::MIN;
+/// The „Busse“ section's label row between „Neue Spur“ and the buses (`05-arrangement`: a `type.label`
+/// line with `space.2` above and below).
+pub const SECTION_LABEL: f32 = space::SPACE_2 + 12.0 + space::SPACE_2;
+/// Size of the fold triangle's hit area in a group header (`05-arrangement`).
+pub const FOLD_HIT: f32 = 16.0;
+/// Size of the folder icon of a group header (`05-arrangement`).
+pub const FOLDER_ICON: f32 = 14.0;
+/// The silhouette of a group's lane: the clips' areas in `surface.3`, inset from the row's edges by
+/// this much (`05-arrangement`).
+pub const SILHOUETTE_INSET: f32 = space::SPACE_1;
+/// A bus header's M S toggles are the track toggles; the meter at its right is the header meter.
+pub const BUS_METER_GAP: f32 = space::SPACE_1;
+/// Thickness of the bracket that links a group's members to the group (`05-arrangement`: 3 px in
+/// the bus colour).
+pub const BRACKET: f32 = 3.0;
+/// Indent of a group's members in the arrangement (`05-arrangement`: 14 px).
+pub const MEMBER_INDENT: f32 = space::SPACE_3 + space::SPACE_0_5;

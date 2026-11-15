@@ -10,7 +10,7 @@
 //!
 //! Deviation from S04 (owner decision 2026-11-14, ARCHITECTURE §13): faders must be tall. The
 //! paddings are tighter, the pan value stands right of the knob, the empty reserved sends are
-//! hidden until busses exist, and the normal dock's lean strip shows only name, M S R, fader and
+//! hidden until a bus exists (then the send list and the output button show, WP-103), and the normal dock's lean strip shows only name, M S R, fader and
 //! values (no instrument line, no inserts; the instrument is the name's tooltip and AccessKit
 //! description). Pan is a small knob at the right end of the lean strip's name row (owner
 //! decision Q8, 2026-11-14), so it takes no fader height.
@@ -69,8 +69,28 @@ pub const INSERT_LINE: f32 = 2.0;
 pub const DASH: [f32; 2] = [3.0, 2.0];
 /// Padding above "Sends" (`padding:10px 6px 4px`).
 pub const SENDS_LABEL_TOP: f32 = space::SPACE_2 + space::SPACE_0_5;
-/// The two reserved send rows (`height:20px` each).
+/// The two reserved send rows (`height:20px` each): the least a strip's send list shows.
 pub const SEND_ROWS: usize = 2;
+
+/// Rows of a send list that needs `needed` rows (sends and the "+" row): at least
+/// [`SEND_ROWS`], at most [`crate::views::routing::metrics::MAX_STRIP_SEND_ROWS`] (the list
+/// scrolls from there on).
+pub fn send_rows_for(needed: usize) -> usize {
+    needed.clamp(
+        SEND_ROWS,
+        crate::views::routing::metrics::MAX_STRIP_SEND_ROWS,
+    )
+}
+
+/// The label band over the buses ("Busse", `04-mixer-dock`, `02-mixer-voll`): one `type.label` line
+/// and the gap below it. Only a project with buses has it.
+pub const BUS_LABEL_BAND: f32 = typography::LABEL.line_height + space::SPACE_1;
+/// The free space between the scrolling tracks and the buses (`02-mixer-voll`: the buses do not
+/// move when tracks are added).
+pub const BUS_GAP: f32 = space::SPACE_2;
+
+/// Height of the output button's row above the values row: the button and the gap above it.
+pub const OUTPUT_ROW: f32 = SLOT_HEIGHT + space::SPACE_1;
 /// Padding above the pan knob (design `padding:12px 0 6px`; tightened to 4 px).
 pub const PAN_TOP: f32 = space::SPACE_1;
 /// Gap between the knob and its value, which now stands right of the knob (design: below it,
@@ -110,8 +130,12 @@ pub struct Tier {
     pub inserts_label: bool,
     /// Rows of the insert box (slots and "+").
     pub insert_rows: usize,
-    /// The reserved "Sends".
+    /// The send list ("Sends" or, on a bus, "Eingänge"): shown once the project has a bus.
     pub sends: bool,
+    /// Rows of the send list (with the "+" row); 0 without it.
+    pub send_rows: usize,
+    /// The output button above the values row (WP-103).
+    pub output: bool,
     /// Name (with a small pan knob), M S R, fader and values only. No instrument line.
     pub lean: bool,
 }
@@ -123,6 +147,8 @@ impl Tier {
         insert_rows: 4,
         // The two empty reserved send rows (68 px) wait until busses exist.
         sends: false,
+        send_rows: 0,
+        output: false,
         lean: false,
     };
     /// The normal dock's strip: the secondary parts give way to the fader.
@@ -130,6 +156,8 @@ impl Tier {
         inserts_label: false,
         insert_rows: 0,
         sends: false,
+        send_rows: 0,
+        output: false,
         lean: true,
     };
 
@@ -137,10 +165,27 @@ impl Tier {
     /// [`FADER_AREA_MIN`]; else the lean strip, in which the fader takes what the inserts, the
     /// instrument line and the pan knob leave.
     pub fn for_height(height: f32) -> Tier {
-        if height - fixed_height(Tier::FULL) >= FADER_AREA_MIN {
-            Tier::FULL
+        Tier::for_routed_height(height, 0)
+    }
+
+    /// [`Tier::for_height`] for a project with buses: `send_rows` (> 0) rows of sends and the
+    /// output button come with the full strip, and the strip must still keep its fader area.
+    pub fn for_routed_height(height: f32, send_rows: usize) -> Tier {
+        let full = Tier::FULL.routed(send_rows);
+        if height - fixed_height(full) >= FADER_AREA_MIN {
+            full
         } else {
             Tier::LEAN
+        }
+    }
+
+    /// The full strip with the send list of `send_rows` rows and the output button.
+    pub fn routed(self, send_rows: usize) -> Tier {
+        Tier {
+            sends: send_rows > 0 && !self.lean,
+            send_rows,
+            output: send_rows > 0 && !self.lean,
+            ..self
         }
     }
 
@@ -185,7 +230,10 @@ pub fn fixed_height(tier: Tier) -> f32 {
     }
     h += tier.inserts_height();
     if tier.sends {
-        h += SENDS_LABEL_TOP + LABEL.line_height + LABEL_BOTTOM + rows_height(SEND_ROWS);
+        h += SENDS_LABEL_TOP + LABEL.line_height + LABEL_BOTTOM + rows_height(tier.send_rows);
+    }
+    if tier.output {
+        h += OUTPUT_ROW;
     }
     h += PAN_TOP + size::KNOB + PAN_BOTTOM;
     h += TOGGLE[1] + TOGGLES_BOTTOM;

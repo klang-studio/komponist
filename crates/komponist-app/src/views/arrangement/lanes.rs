@@ -28,6 +28,7 @@ use crate::actions::{Action, EditAction, SelectMode, UiAction};
 use crate::step_rows;
 use crate::ui_state::ArrangementView;
 use crate::views::ViewCtx;
+use crate::views::routing::names as routing_names;
 
 /// The tick a dragged position lands on: on the grid when snapping (and Shift is not held), else
 /// on the tick.
@@ -109,6 +110,9 @@ impl Arrangement {
 
         let painter = ui.painter().clone();
         paint_backgrounds(&painter, ctx, project, g);
+        for i in g.visible_rows() {
+            super::buses::paint_bus_lane(ui, project, g, i);
+        }
         self.paint_clips(ui, &painter, ctx, project, g);
     }
 
@@ -162,7 +166,14 @@ impl Arrangement {
             match g.clip_at(project, pos) {
                 Some(hit) => ctx.send(Action::Ui(UiAction::OpenClip(hit.clip))),
                 None => {
-                    if let Some(i) = g.row_at(pos.y) {
+                    if g.row_at(pos.y).is_some_and(|i| !g.rows[i].takes_clips()) {
+                        // A bus holds no clips: say why instead of adding one (the model refuses
+                        // it as well).
+                        ctx.send(Action::Ui(UiAction::ShowStatus {
+                            text: routing_names::NO_CLIPS.to_owned(),
+                            kind: crate::ui_state::StatusKind::Info,
+                        }));
+                    } else if let Some(i) = g.row_at(pos.y) {
                         let track = &project.tracks[i];
                         let at = Tick(g.tick_at(pos.x).max(0.0) as i64);
                         let host = ctx.engine.host();
@@ -370,6 +381,7 @@ impl Arrangement {
         g: &Geometry,
     ) {
         let any_solo = project.any_solo();
+        let gates = any_solo.then(|| komponist_model::routing::gates(project));
         let (t0, t1) = g.visible_ticks();
         let ppt = g.axis.px_per_tick;
         let hover = if self.drag.is_none() {
@@ -386,7 +398,12 @@ impl Arrangement {
         let mut ghosts = Vec::new();
         for i in g.visible_rows() {
             let track = &project.tracks[i];
-            let implied = any_solo && !track.channel.solo;
+            if !g.rows[i].takes_clips() {
+                continue;
+            }
+            let implied = gates
+                .as_ref()
+                .is_some_and(|gt| !track.channel.solo && gt.output(track.id).solo_muted);
             let track_muted = track.channel.mute || implied;
             let palette = self.palettes.get(track.hue.0);
             for clip in &track.clips {
@@ -469,6 +486,22 @@ impl Arrangement {
         }
         for r in ghosts {
             paint_clip_ghost(painter, r);
+        }
+
+        // A clip dragged over a bus row is refused: it stays on the nearest track, and the pointer
+        // says why.
+        if let Some(Drag::Move(_)) = &self.drag
+            && let Some(p) = ui.input(|i| i.pointer.hover_pos())
+            && let Some(i) = g.bus_row_at(p.y)
+        {
+            let r = Rect::from_x_y_ranges(Rangef::point(p.x), g.rows[i].y);
+            tooltip::show_value(
+                ui.ctx(),
+                Id::unique("komponist_arrangement_no_clips"),
+                r,
+                Placement::Above,
+                routing_names::NO_CLIPS,
+            );
         }
 
         // The length while an edge is dragged ("Länge im Tooltip").

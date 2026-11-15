@@ -147,6 +147,35 @@ undo-sample-clear = Remove Sample
 # Undo step: Tempo.
 undo-tempo = Tempo
 
+## Routing (wave 9)
+
+# Undo step: group tracks (Ctrl G).
+undo-group-tracks = Group Tracks
+
+# Undo step: create a send to a new bus.
+undo-send-to-new-bus = Send to New Bus
+
+# Undo step: create a bus (“New Track” dialog).
+undo-add-bus = Add Bus
+
+# Undo step: change the output of a track.
+undo-set-output = Change Output
+
+# Undo step: create a send.
+undo-add-send = Add Send
+
+# Undo step: change a send (level, tap, target, on/off).
+undo-change-send = Change Send
+
+# Undo step: remove a send.
+undo-remove-send = Remove Send
+
+# Undo step: drag the send level.
+undo-send-level = Send Level
+
+# Undo step: fold or unfold a group.
+undo-fold-group = Fold Group
+
 ## Labels with a name in them (the name is plugin-provided text).
 
 # A card parameter changed; `$name` is the parameter's name ("Cutoff").

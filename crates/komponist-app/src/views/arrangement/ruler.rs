@@ -48,7 +48,7 @@ impl Arrangement {
         let ppp = ui.pixels_per_point();
         let painter = ui.painter().clone();
         px::fill(&painter, g.count, 0.0, color32(color::SURFACE_2));
-        let count = names::track_count(project.tracks.len());
+        let count = names::count_line(project);
         let galley = w::styled_galley(ui, &count, &typography::VALUE_S);
         let pos = w::text_pos(
             g.count,

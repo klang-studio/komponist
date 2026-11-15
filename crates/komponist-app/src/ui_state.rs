@@ -184,6 +184,7 @@ impl Default for ArrangementView {
             v_zoom: 1.0,
             grid: Grid::Bar,
             snap: true,
+            rename_request: None,
         }
     }
 }
@@ -314,6 +315,9 @@ pub struct ArrangementView {
     pub grid: Grid,
     /// Snap on (Shift while dragging disables it temporarily).
     pub snap: bool,
+    /// A bus made by Strg G or „Send zu neuem Bus“: its header opens in rename mode (taken by the
+    /// arrangement when it shows the track).
+    pub rename_request: Option<TrackId>,
 }
 
 /// The editor tab.

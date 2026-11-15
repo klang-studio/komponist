@@ -10,7 +10,7 @@ use egui::{
     UiBuilder, WidgetInfo, pos2,
 };
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
-use komponist_model::{Project, Track, TrackId};
+use komponist_model::{Project, Track, TrackId, routing};
 use komponist_plugins::{DeviceStatus, FailReason};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
@@ -21,7 +21,8 @@ use komponist_ui::widgets::metrics::timeline as tm;
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::{fonts, px};
 
-use super::geometry::{Geometry, row_height, stored_height};
+use super::buses;
+use super::geometry::{Geometry, RowKind, row_height, stored_height};
 use super::{
     Arrangement, Drag, Rename, click_mode, metrics, names, register, select_clips, select_tracks,
 };
@@ -31,7 +32,7 @@ use crate::meters::Meters;
 use crate::views::ViewCtx;
 
 /// The second line of a header and whether it is an error: "stumm durch Solo" while muted by a
-/// solo elsewhere; else the instrument ("hexa", "Surge XT · lädt …", "Dexed · aus",
+/// solo elsewhere (`any_solo`: the track's output is solo-muted, `routing::gates`); else the instrument ("hexa", "Surge XT · lädt …", "Dexed · aus",
 /// "⚠ Plugin fehlt: Vital"), or "Instrument hierher ziehen" without one.
 pub fn instrument_line(track: &Track, any_solo: bool, engine: &EngineSync) -> (String, bool) {
     let ch = &track.channel;
@@ -96,14 +97,20 @@ impl Arrangement {
         g: &Geometry,
     ) {
         let any_solo = project.any_solo();
+        // Mute and solo follow the signal path: a group stays audible while one of its members
+        // is soloed (`routing::gates`).
+        let gates = any_solo.then(|| routing::gates(project));
         let mods = ui.input(|i| i.modifiers);
         let rows: Vec<usize> = g.visible_rows().collect();
         for &i in &rows {
-            self.header(ui, ctx, project, g, i, any_solo, mods);
+            self.header(ui, ctx, project, g, i, gates.as_ref(), mods);
         }
         for &i in &rows {
-            self.height_grip(ui, ctx, project, g, i, mods.alt);
+            if g.rows[i].takes_clips() {
+                self.height_grip(ui, ctx, project, g, i, mods.alt);
+            }
         }
+        self.section_label(ui, g);
         if let Some(Drag::Reorder { .. }) = self.drag {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         }
@@ -117,10 +124,11 @@ impl Arrangement {
         project: &Project,
         g: &Geometry,
         i: usize,
-        any_solo: bool,
+        gates: Option<&routing::Gates>,
         mods: egui::Modifiers,
     ) {
         let track = &project.tracks[i];
+        let row = g.rows[i];
         let rect = g.header(i);
         let ppp = ui.pixels_per_point();
         let response = ui.interact(
@@ -136,30 +144,50 @@ impl Arrangement {
             selected,
             disabled: false,
         };
-        let (instrument, error) = instrument_line(track, any_solo, ctx.engine);
-        let implied_mute = any_solo && !track.channel.solo;
-        let model = HeaderModel {
-            name: &track.name,
-            instrument: &instrument,
-            instrument_error: error,
-            palette: self.palettes.get(track.hue.0),
-            mute: track.channel.mute,
-            solo: track.channel.solo,
-            arm: track.arm,
-            monitor: track.monitor,
-            implied_mute,
-            meter: None,
+        let implied_mute =
+            gates.is_some_and(|g| !track.channel.solo && g.output(track.id).solo_muted);
+        let l = header_layout(rect);
+        let name = if track.is_bus() {
+            self.bus_header(
+                ui,
+                ctx,
+                project,
+                track,
+                row.kind,
+                rect,
+                state,
+                implied_mute,
+                &response,
+            );
+            buses::bus_name_rect(rect, ppp, row.kind)
+        } else {
+            let (instrument, error) = instrument_line(track, implied_mute, ctx.engine);
+            if row.depth > 0 {
+                buses::paint_brackets(ui.painter(), project, g, i, &mut self.palettes);
+            }
+            let model = HeaderModel {
+                name: &track.name,
+                instrument: &instrument,
+                instrument_error: error,
+                palette: self.palettes.get(track.hue.0),
+                mute: track.channel.mute,
+                solo: track.channel.solo,
+                arm: track.arm,
+                monitor: track.monitor,
+                implied_mute,
+                meter: None,
+            };
+            paint_track_header(ui.painter(), rect, &model, state);
+            let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
+            register(&response, &access);
+            name_rect(rect, ppp)
         };
-        paint_track_header(ui.painter(), rect, &model, state);
-        let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
-        register(&response, &access);
 
         // Select, rename, reorder.
-        let name = name_rect(rect, ppp);
         if response.double_clicked()
             && response
                 .interact_pointer_pos()
-                .is_some_and(|p| header_layout(rect).text.contains(p))
+                .is_some_and(|p| name.contains(p) || header_layout(rect).text.contains(p))
         {
             self.rename = Some(Rename {
                 track: track.id,
@@ -173,7 +201,7 @@ impl Arrangement {
             }
             ctx.send(select_tracks(vec![track.id], mode));
         }
-        if response.drag_started() {
+        if response.drag_started() && row.kind != RowKind::EffectBus {
             let tracks: Vec<TrackId> = if selected {
                 project
                     .tracks
@@ -196,9 +224,20 @@ impl Arrangement {
         if response.drag_stopped() {
             self.finish_drag(ctx);
         }
+        if let Some(action) = self.header_menu(ctx, project, track, &response) {
+            action.apply(self, ctx, track);
+        }
 
-        let l = header_layout(rect);
-        self.toggles(ui, ctx, project, g, track, &l.toggles, implied_mute);
+        if track.is_bus() {
+            // Toggles and meter of a bus header: M and S only, right-aligned.
+            let [_, _, m, s] = l.toggles;
+            let rects = [(ToggleKind::Mute, m), (ToggleKind::Solo, s)];
+            self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
+        } else {
+            let rects: Vec<(ToggleKind, Rect)> =
+                ToggleKind::ALL.into_iter().zip(l.toggles).collect();
+            self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
+        }
         for action in header_meter(ui, ctx.meters, track, l.meter, mods.alt) {
             ctx.send(action);
         }
@@ -216,13 +255,13 @@ impl Arrangement {
         project: &Project,
         g: &Geometry,
         track: &Track,
-        rects: &[Rect; 4],
+        rects: &[(ToggleKind, Rect)],
         implied_mute: bool,
     ) {
-        for (k, kind) in ToggleKind::ALL.into_iter().enumerate() {
+        for (k, &(kind, rect)) in rects.iter().enumerate() {
             let mut child = ui.new_child(
                 UiBuilder::new()
-                    .max_rect(rects[k])
+                    .max_rect(rect)
                     .id_salt(("komponist_arrangement_toggle", track.id.0, k))
                     .layout(Layout::left_to_right(Align::Min)),
             );
@@ -268,7 +307,12 @@ impl Arrangement {
                         .iter()
                         .zip(&g.rows)
                         .filter(|(t, r)| {
-                            r.y.min <= span.max && span.min < r.y.max && toggle_on(t, kind) != value
+                            r.shown()
+                                && r.y.min <= span.max
+                                && span.min < r.y.max
+                                && toggle_on(t, kind) != value
+                                && !(t.is_bus()
+                                    && matches!(kind, ToggleKind::Arm | ToggleKind::Monitor))
                         })
                         .map(|(t, _)| t.id)
                         .collect();

@@ -9,7 +9,7 @@
 
 use egui::{Pos2, Rangef, Rect, pos2};
 use komponist_model::project::{TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN};
-use komponist_model::{Clip, ClipId, Project, Tick, TrackId};
+use komponist_model::{Clip, ClipId, Project, Tick, TrackId, routing};
 use komponist_tokens::{line, size};
 use komponist_ui::timeline::{TimeAxis, clip_rect};
 use komponist_ui::widgets::metrics::timeline as tm;
@@ -32,14 +32,72 @@ pub fn stored_height(display: f32, v_zoom: f32) -> u16 {
     h.clamp(f32::from(TRACK_HEIGHT_MIN), f32::from(TRACK_HEIGHT_MAX)) as u16
 }
 
-/// Height of everything below the ruler: the rows and the room kept for "Neue Spur".
-pub fn content_height(project: &Project, v_zoom: f32) -> f32 {
-    let rows: f32 = project
+/// What a row of the arrangement is (wave 9, routing proposal 05-arrangement).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    /// A MIDI track (clips; a member of a group when its `depth` is above 0).
+    Track,
+    /// A group: a bus shown as a folder, with its members behind it.
+    Group {
+        /// Its members are folded away.
+        folded: bool,
+    },
+    /// An effect bus, in the „Busse“ section below „Neue Spur“.
+    EffectBus,
+    /// A track inside a folded group: no height, nothing drawn.
+    Hidden,
+}
+
+/// The rows of `project` in the order of its tracks: height, kind and depth (how many groups the
+/// row is inside). Effect buses leave the flow of the tracks and go into the „Busse“ section.
+fn plan(project: &Project, v_zoom: f32) -> Vec<(f32, RowKind, u8)> {
+    project
         .tracks
         .iter()
-        .map(|t| row_height(t.height, v_zoom))
+        .map(|t| {
+            let groups = routing::group_ancestors(project, t.id);
+            let depth = groups.len().min(u8::MAX as usize) as u8;
+            let hidden = groups
+                .iter()
+                .any(|g| project.track(*g).is_some_and(|g| g.folded));
+            if hidden {
+                (0.0, RowKind::Hidden, depth)
+            } else if t.is_group() {
+                let h = if t.folded {
+                    metrics::GROUP_ROW_FOLDED
+                } else {
+                    metrics::GROUP_ROW
+                };
+                (h, RowKind::Group { folded: t.folded }, depth)
+            } else if t.is_bus() {
+                (metrics::BUS_ROW, RowKind::EffectBus, 0)
+            } else {
+                (row_height(t.height, v_zoom), RowKind::Track, depth)
+            }
+        })
+        .collect()
+}
+
+/// Height of everything below the ruler: the rows, the room kept for "Neue Spur" and, with effect
+/// buses, the „Busse“ section.
+pub fn content_height(project: &Project, v_zoom: f32) -> f32 {
+    let rows = plan(project, v_zoom);
+    let main: f32 = rows
+        .iter()
+        .filter(|(_, k, _)| *k != RowKind::EffectBus)
+        .map(|(h, _, _)| h)
         .sum();
-    rows + metrics::NEW_TRACK_MIN_HEIGHT
+    let buses: f32 = rows
+        .iter()
+        .filter(|(_, k, _)| *k == RowKind::EffectBus)
+        .map(|(h, _, _)| h)
+        .sum();
+    let section = if buses > 0.0 {
+        metrics::SECTION_LABEL + buses
+    } else {
+        0.0
+    };
+    main + metrics::NEW_TRACK_MIN_HEIGHT + section
 }
 
 /// One track row on screen.
@@ -49,6 +107,29 @@ pub struct Row {
     pub track: TrackId,
     /// Top and bottom on screen (the bottom includes the 1 px separator).
     pub y: Rangef,
+    /// What the row is.
+    pub kind: RowKind,
+    /// How many groups the row is inside (0 at the top level): its header is indented that many
+    /// times.
+    pub depth: u8,
+}
+
+impl Row {
+    /// Whether the row is drawn at all (a folded group's members are not).
+    pub fn shown(&self) -> bool {
+        self.kind != RowKind::Hidden
+    }
+
+    /// Whether clips can lie on the row: tracks only (a bus holds none).
+    pub fn takes_clips(&self) -> bool {
+        self.kind == RowKind::Track
+    }
+
+    /// Whether the row is part of the flow of tracks (not hidden, not in the „Busse“ section): the
+    /// rows a header drag can be inserted between.
+    pub fn in_flow(&self) -> bool {
+        !matches!(self.kind, RowKind::Hidden | RowKind::EffectBus)
+    }
 }
 
 /// Which part of a clip a point is on.
@@ -111,8 +192,10 @@ pub struct Geometry {
     pub axis: TimeAxis,
     /// One row per track in display order, scrolled (also the invisible ones).
     pub rows: Vec<Row>,
-    /// Screen y below the last row (top of "Neue Spur").
+    /// Screen y below the last row of the flow of tracks (top of "Neue Spur").
     pub rows_end: f32,
+    /// The label row of the „Busse“ section, when the project has effect buses.
+    pub section: Option<Rect>,
 }
 
 impl Geometry {
@@ -132,20 +215,44 @@ impl Geometry {
             x0: lane_x.min - (view.scroll_tick * f64::from(px_per_tick)) as f32,
             px_per_tick,
         };
+        let plan = plan(project, view.v_zoom);
         let mut y = tracks.top() - view.scroll_y;
-        let rows = project
-            .tracks
-            .iter()
-            .map(|t| {
-                let h = row_height(t.height, view.v_zoom);
-                let row = Row {
+        let mut rows: Vec<Row> = Vec::with_capacity(plan.len());
+        for (t, &(h, kind, depth)) in project.tracks.iter().zip(&plan) {
+            if kind == RowKind::EffectBus {
+                // Placed below "Neue Spur" once the flow of tracks is laid out.
+                rows.push(Row {
                     track: t.id,
-                    y: Rangef::new(y, y + h),
-                };
-                y += h;
-                row
-            })
-            .collect();
+                    y: Rangef::new(0.0, 0.0),
+                    kind,
+                    depth,
+                });
+                continue;
+            }
+            rows.push(Row {
+                track: t.id,
+                y: Rangef::new(y, y + h),
+                kind,
+                depth,
+            });
+            y += h;
+        }
+        let rows_end = y;
+        let mut section = None;
+        if rows.iter().any(|r| r.kind == RowKind::EffectBus) {
+            let mut by = rows_end + metrics::NEW_TRACK_MIN_HEIGHT;
+            section = Some(Rect::from_x_y_ranges(
+                Rangef::new(body.left(), body.right()),
+                Rangef::new(by, by + metrics::SECTION_LABEL),
+            ));
+            by += metrics::SECTION_LABEL;
+            for (row, &(h, kind, _)) in rows.iter_mut().zip(&plan) {
+                if kind == RowKind::EffectBus {
+                    row.y = Rangef::new(by, by + h);
+                    by += h;
+                }
+            }
+        }
         Geometry {
             body,
             count,
@@ -155,12 +262,22 @@ impl Geometry {
             lane_x,
             axis,
             rows,
-            rows_end: y,
+            rows_end,
+            section,
         }
     }
 
-    /// The header of row `i`.
+    /// The header of row `i`, indented for the members of a group.
     pub fn header(&self, i: usize) -> Rect {
+        let indent = f32::from(self.rows[i].depth) * metrics::MEMBER_INDENT;
+        Rect::from_x_y_ranges(
+            Rangef::new(self.header_x.min + indent, self.header_x.max),
+            self.rows[i].y,
+        )
+    }
+
+    /// The whole header column of row `i`, indent included (where a click selects the track).
+    pub fn header_full(&self, i: usize) -> Rect {
         Rect::from_x_y_ranges(self.header_x, self.rows[i].y)
     }
 
@@ -174,16 +291,24 @@ impl Geometry {
         Rect::from_x_y_ranges(self.lane_x, self.tracks.y_range())
     }
 
-    /// The "Neue Spur" area below the rows, down to the bottom (empty when the rows fill the view).
+    /// The "Neue Spur" area below the rows, down to the bottom (empty when the rows fill the view);
+    /// with effect buses it is as high as the room kept for it, and the „Busse“ section follows.
     pub fn new_track(&self) -> Rect {
         let top = self.rows_end.clamp(self.tracks.top(), self.tracks.bottom());
-        Rect::from_min_max(pos2(self.tracks.left(), top), self.tracks.max)
+        let bottom = match self.section {
+            Some(s) => s.top().clamp(top, self.tracks.bottom()),
+            None => self.tracks.bottom(),
+        };
+        Rect::from_min_max(
+            pos2(self.tracks.left(), top),
+            pos2(self.tracks.right(), bottom),
+        )
     }
 
-    /// Whether row `i` is at least partly visible.
+    /// Whether row `i` is shown and at least partly visible.
     pub fn row_visible(&self, i: usize) -> bool {
-        let y = self.rows[i].y;
-        y.max > self.tracks.top() && y.min < self.tracks.bottom()
+        let r = &self.rows[i];
+        r.shown() && r.y.max > self.tracks.top() && r.y.min < self.tracks.bottom()
     }
 
     /// Indices of the visible rows.
@@ -196,31 +321,62 @@ impl Geometry {
         self.rows.iter().position(|r| r.y.min <= y && y < r.y.max)
     }
 
-    /// The row under `y`, or the first / last row when `y` lies above / below them.
+    /// The row a clip dragged to `y` lands on: the row under `y` if it takes clips, else the clip row
+    /// nearest to `y` (a bus under the pointer is refused, so the clip stays on the nearest track).
     pub fn nearest_row(&self, y: f32) -> Option<usize> {
-        let last = self.rows.len().checked_sub(1)?;
-        if y < self.rows[0].y.min {
-            Some(0)
-        } else {
-            Some(self.row_at(y).unwrap_or(last))
+        if let Some(i) = self.row_at(y).filter(|&i| self.rows[i].takes_clips()) {
+            return Some(i);
         }
+        let distance = |r: &Row| {
+            if y < r.y.min {
+                r.y.min - y
+            } else {
+                y - r.y.max
+            }
+        };
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.takes_clips())
+            .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+            .map(|(i, _)| i)
     }
 
-    /// The insert position (0 ..= track count) for a track dragged to `y`: before the first row
-    /// whose middle lies below `y`.
+    /// Whether `y` is over a bus row (a group or an effect bus), where a clip is refused.
+    pub fn bus_row_at(&self, y: f32) -> Option<usize> {
+        self.row_at(y).filter(|&i| {
+            matches!(
+                self.rows[i].kind,
+                RowKind::Group { .. } | RowKind::EffectBus
+            )
+        })
+    }
+
+    /// The insert position (0 ..= track count) for a track dragged to `y`: before the first row of
+    /// the flow whose middle lies below `y`, else behind the last row of the flow.
     pub fn insert_slot(&self, y: f32) -> usize {
         self.rows
             .iter()
-            .position(|r| y < r.y.center())
-            .unwrap_or(self.rows.len())
+            .position(|r| r.in_flow() && y < r.y.center())
+            .unwrap_or_else(|| self.flow_end())
     }
 
-    /// Screen y of insert position `slot` (the top of that row, or the bottom of the last).
+    /// Index behind the last row of the flow of tracks (before the effect buses of the end).
+    fn flow_end(&self) -> usize {
+        self.rows
+            .iter()
+            .rposition(|r| r.kind != RowKind::EffectBus)
+            .map_or(0, |i| i + 1)
+    }
+
+    /// Screen y of insert position `slot` (the top of the next row of the flow, or the bottom of
+    /// the last).
     pub fn slot_y(&self, slot: usize) -> f32 {
-        match self.rows.get(slot) {
-            Some(r) => r.y.min,
-            None => self.rows_end,
-        }
+        self.rows
+            .iter()
+            .skip(slot)
+            .find(|r| r.in_flow())
+            .map_or(self.rows_end, |r| r.y.min)
     }
 
     /// The rect of `clip` in row `i` (`clip_rect`: 1 px in from both ends, 3 px from top and
@@ -266,7 +422,7 @@ impl Geometry {
         let mut out = Vec::new();
         for (i, track) in project.tracks.iter().enumerate() {
             let Some(row) = self.rows.get(i) else { break };
-            if row.y.max <= area.top() || row.y.min >= area.bottom() {
+            if !row.takes_clips() || row.y.max <= area.top() || row.y.min >= area.bottom() {
                 continue;
             }
             out.extend(

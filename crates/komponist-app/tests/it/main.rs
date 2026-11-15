@@ -44,6 +44,7 @@ mod piano_roll;
 mod plugin_frame;
 mod plugins;
 mod record;
+mod routing;
 mod sampler;
 mod shell;
 mod showcase;

@@ -27,6 +27,7 @@ pub mod inspector;
 pub mod late;
 pub mod mixer;
 pub mod piano_roll;
+pub mod routing;
 pub mod step_seq;
 
 use std::sync::Arc;

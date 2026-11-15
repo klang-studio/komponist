@@ -4,12 +4,14 @@
 
 use std::collections::BTreeSet;
 
+use komponist_model::routing as model_routing;
 use komponist_model::{
     Channel, ChannelRef, Device, DeviceId, DeviceRole, PluginFormat, Project, TrackId,
 };
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
+use crate::views::routing::{self, ChipInfo, SendInfo, Target};
 
 /// German texts and accessible names of the mixer (`Screens.dc.html` `mixer()`, the `isMixer`
 /// markup, S04 notes).
@@ -188,9 +190,42 @@ impl Insert {
     }
 }
 
+/// What a strip stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripKind {
+    /// A MIDI track.
+    Track,
+    /// A bus: `group` when it is shown as a folder (Strg G), else an effect bus.
+    Bus {
+        /// A group.
+        group: bool,
+    },
+    /// The master.
+    Master,
+}
+
+/// The routing parts of a strip (wave 9): empty for the master.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Routing {
+    /// Where the output goes.
+    pub output: Target,
+    /// The sends (tracks only; a bus has none, owner decision 11 A).
+    pub sends: Vec<SendInfo>,
+    /// The dock chip, if the strip has one.
+    pub chip: Option<ChipInfo>,
+    /// A bus: its inputs as the line „2 Spuren“ / „3 Sends“.
+    pub inputs: Option<String>,
+}
+
 /// One channel strip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Strip {
+    /// Track, bus or master.
+    pub kind: StripKind,
+    /// Routing; `None` for the master.
+    pub routing: Option<Routing>,
+    /// A bus whose solo only follows a soloed track that feeds it ("läuft mit").
+    pub follows_solo: bool,
     /// The channel.
     pub channel: ChannelRef,
     /// Track name, or "Master".
@@ -233,6 +268,11 @@ impl Strip {
         self.channel == ChannelRef::Master
     }
 
+    /// Whether this is a bus (group or effect bus).
+    pub fn is_bus(&self) -> bool {
+        matches!(self.kind, StripKind::Bus { .. })
+    }
+
     /// Number of MIDI effects at the head of the chain.
     pub fn midi_effect_count(&self) -> usize {
         self.inserts.iter().take_while(|i| i.midi).count()
@@ -262,42 +302,76 @@ fn inserts(channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
         .collect()
 }
 
-/// The strips of `project`: the tracks in display order, then the master.
+/// The strips of `project`: the tracks in display order, then the buses in display order (they
+/// stand right before the master, owner decision 3 A), then the master. Mute and solo follow the
+/// signal path ([`routing::gates`]): a strip is dim when its output is muted or solo-muted.
 pub fn strips(
     project: &Project,
     selected: &BTreeSet<TrackId>,
     host: &dyn DeviceHost,
 ) -> Vec<Strip> {
     let any_solo = project.any_solo();
+    let gates = any_solo.then(|| model_routing::gates(project));
+    let strip = |t: &komponist_model::Track| {
+        let ch = &t.channel;
+        let implied = match &gates {
+            Some(g) => !ch.mute && !ch.solo && g.output(t.id).solo_muted,
+            None => false,
+        };
+        let follows_solo = t.is_bus() && any_solo && !ch.solo && !ch.mute && !implied;
+        let line = if t.is_bus() {
+            routing::names::bus_line(t.folder).to_owned()
+        } else {
+            ch.instrument()
+                .map(|(_, d)| d.plugin.name.clone())
+                .unwrap_or_default()
+        };
+        Strip {
+            kind: if t.is_bus() {
+                StripKind::Bus { group: t.folder }
+            } else {
+                StripKind::Track
+            },
+            routing: Some(Routing {
+                output: routing::output_of(project, t),
+                sends: routing::sends_of(project, t),
+                chip: routing::chip_info(project, t),
+                inputs: t.is_bus().then(|| routing::inputs_line(project, t)),
+            }),
+            follows_solo,
+            channel: ChannelRef::Track(t.id),
+            name: t.name.clone(),
+            line,
+            hue: Some(t.hue.0),
+            selected: selected.contains(&t.id),
+            dim: ch.mute || implied,
+            implied,
+            volume_db: ch.volume_db,
+            pan: ch.pan,
+            mute: ch.mute,
+            solo: ch.solo,
+            arm: t.arm,
+            inserts: inserts(ch, host),
+        }
+    };
     let mut out: Vec<Strip> = project
         .tracks
         .iter()
-        .map(|t| {
-            let ch = &t.channel;
-            let implied = any_solo && !ch.solo && !ch.mute;
-            let line = ch
-                .instrument()
-                .map(|(_, d)| d.plugin.name.clone())
-                .unwrap_or_default();
-            Strip {
-                channel: ChannelRef::Track(t.id),
-                name: t.name.clone(),
-                line,
-                hue: Some(t.hue.0),
-                selected: selected.contains(&t.id),
-                dim: ch.mute || implied,
-                implied,
-                volume_db: ch.volume_db,
-                pan: ch.pan,
-                mute: ch.mute,
-                solo: ch.solo,
-                arm: t.arm,
-                inserts: inserts(ch, host),
-            }
-        })
+        .filter(|t| !t.is_bus())
+        .map(|t| strip(t))
         .collect();
+    out.extend(
+        project
+            .tracks
+            .iter()
+            .filter(|t| t.is_bus())
+            .map(|t| strip(t)),
+    );
     let m = &project.master;
     out.push(Strip {
+        kind: StripKind::Master,
+        routing: None,
+        follows_solo: false,
         channel: ChannelRef::Master,
         name: names::MASTER.to_owned(),
         line: names::OUTPUT.to_owned(),
@@ -313,6 +387,23 @@ pub fn strips(
         inserts: inserts(m, host),
     });
     out
+}
+
+/// The most rows any strip's send list needs, `sends + 1` for the „+“ row, at least
+/// [`super::metrics::SEND_ROWS`] and at most the strip's cap; 0 while the project has no bus (the
+/// strips then look as before).
+pub fn send_rows(strips: &[Strip]) -> usize {
+    use super::metrics::{SEND_ROWS, send_rows_for};
+    if !strips.iter().any(Strip::is_bus) {
+        return 0;
+    }
+    let most = strips
+        .iter()
+        .filter_map(|s| s.routing.as_ref())
+        .map(|r| r.sends.len() + 1)
+        .max()
+        .unwrap_or(0);
+    send_rows_for(most).max(SEND_ROWS)
 }
 
 /// The insert slot (0 ..= slots) for a pointer at `y`, given each slot's `(top, bottom)`: before

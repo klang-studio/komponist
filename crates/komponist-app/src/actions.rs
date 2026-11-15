@@ -20,11 +20,12 @@ use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
 use komponist_model::edits::{
-    ChannelProp, ClipProp, ExclusiveFlag, NewClip, NewNote, NewTrack, ProjectProp, StepClipProp,
-    StepProp, StepRowProp, TrackProp, VelocityChange,
+    ChannelProp, ClipProp, ExclusiveFlag, NewBus, NewClip, NewNote, NewTrack, ProjectProp,
+    SendProp, StepClipProp, StepProp, StepRowProp, TrackProp, VelocityChange,
 };
 use komponist_model::{
-    ChannelRef, ClipId, DeviceId, Grid, NoteId, PluginRef, Tick, TickRange, TrackId,
+    ChannelRef, ClipId, DeviceId, Grid, NoteId, PluginRef, SendId, Tick, TickRange, TrackId,
+    TrackOutput,
 };
 
 use crate::ui_state::{
@@ -327,6 +328,40 @@ pub enum EditAction {
         /// The new sidechain.
         sidechain: Option<komponist_model::Sidechain>,
     },
+    /// Strg G: the selected tracks into a new group (`edits::add_bus` with `NewBus::group`).
+    GroupSelection,
+    /// „In Gruppe zusammenfassen“ (context menu, output menu „Neue Gruppe …“): `tracks` into a
+    /// new group, one undo step.
+    GroupTracks(Vec<TrackId>),
+    /// „Send zu neuem Bus“ / „Neuer Bus …“: a new effect bus with a send from each of `senders`
+    /// (−6 dB, post fader), one undo step.
+    SendToNewBus(Vec<TrackId>),
+    /// `edits::add_bus` for a bus without senders or members (the „Neue Spur“ dialog).
+    AddBus(NewBus),
+    /// `edits::set_output` (output menu, dropping a track on a group).
+    SetOutput {
+        /// The tracks.
+        tracks: Vec<TrackId>,
+        /// Master or a bus.
+        output: TrackOutput,
+    },
+    /// `edits::add_send` („+“ in a send list, „Send an …“).
+    AddSend {
+        /// The sending track.
+        track: TrackId,
+        /// The bus.
+        target: TrackId,
+    },
+    /// `edits::set_send` (level drag, pre/post, target). A level change inside a gesture reaches
+    /// the engine on the fast path (`Command::SetSendGain`).
+    SetSend {
+        /// The send.
+        send: SendId,
+        /// The change.
+        prop: SendProp,
+    },
+    /// `edits::remove_send`.
+    RemoveSend(SendId),
     /// Alt-drag on a device head: a copy of `device` (plugin, state, bypass) at `index` of `to`.
     CopyDevice {
         /// The device to copy.
