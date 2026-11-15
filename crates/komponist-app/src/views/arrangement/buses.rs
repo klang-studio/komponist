@@ -27,6 +27,7 @@ use super::{Arrangement, Rename, metrics};
 use crate::actions::{Action, EditAction};
 use crate::views::routing as rt;
 use crate::views::{ViewCtx, elided_galley};
+use komponist_ui::widgets::rename_field::RenameState;
 
 /// Where the parts of a bus header lie.
 struct BusLayout {
@@ -435,8 +436,7 @@ impl MenuAction {
             MenuAction::Rename => {
                 arrangement.rename = Some(Rename {
                     track: track.id,
-                    text: track.name.clone(),
-                    fresh: true,
+                    edit: RenameState::new(&track.name),
                 });
             }
             MenuAction::Edit(action) => ctx.send(action),

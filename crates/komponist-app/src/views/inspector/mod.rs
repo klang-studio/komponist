@@ -29,17 +29,16 @@ mod track;
 
 use std::sync::Arc;
 
-use egui::text::CCursorRange;
 use egui::{
-    Align, Frame, Key, Layout, Margin, Rangef, Rect, Response, Role, Sense, TextEdit, Ui,
-    UiBuilder, WidgetInfo, pos2, vec2,
+    Align, Layout, Rangef, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{Srgba, color, radius, size, space, typography};
+use komponist_tokens::{Srgba, color, radius, size, typography};
 use komponist_ui::state::State;
 use komponist_ui::widgets::number_field;
+use komponist_ui::widgets::rename_field::{RenameField, RenameOutcome, RenameState};
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
@@ -62,9 +61,7 @@ enum RenameTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Rename {
     target: RenameTarget,
-    text: String,
-    /// Focus and select all in the next frame.
-    fresh: bool,
+    edit: RenameState,
 }
 
 /// The inspector view.
@@ -464,42 +461,16 @@ impl Inspector {
         let Some(rename) = self.rename.as_mut().filter(|r| &r.target == target) else {
             return;
         };
-        let field = rect.expand2(vec2(space::SPACE_1, 0.0));
-        px::fill(ui.painter(), field, radius::S, color32(color::SURFACE_0));
-        px::outline(ui.painter(), field, radius::S, 0.0, color32(color::ACCENT));
-        let mut text = rename.text.clone();
-        let response = ui.put(
-            rect,
-            TextEdit::singleline(&mut text)
-                .id(ui.scope_id().with(("rename", format!("{target:?}"))))
-                .frame(Frame::NONE)
-                .margin(Margin::ZERO)
-                .font(fonts::font_id(&typography::TRACK))
-                .text_color(color32(color::TEXT_1))
-                .desired_width(rect.width()),
-        );
-        let rename_label = komponist_ui::lang(ui.ctx()).inspector_rename();
-        ui.ctx()
-            .accesskit_node_builder(response.id, |n| n.set_label(rename_label));
-        if rename.fresh {
-            let mut st = TextEdit::load_state(ui.ctx(), response.id).unwrap_or_default();
-            st.cursor
-                .set_char_range(Some(CCursorRange::select_all_str(&text)));
-            TextEdit::store_state(ui.ctx(), response.id, st);
-            response.request_focus();
-            rename.fresh = false;
-            rename.text = text;
-            return;
-        }
-        if response.lost_focus() {
-            let escape = ui.input(|i| i.key_pressed(Key::Escape));
-            let name = text.trim();
-            if !escape && !name.is_empty() && name != current {
-                commit(name.to_owned());
+        let id = ui.scope_id().with(("rename", format!("{target:?}")));
+        let font = fonts::font_id(&typography::TRACK);
+        let label = komponist_ui::lang(ui.ctx()).inspector_rename();
+        match RenameField::new(&mut rename.edit, id, label, current, font).show(ui, rect) {
+            RenameOutcome::Editing => {}
+            RenameOutcome::Commit(name) => {
+                commit(name);
+                self.rename = None;
             }
-            self.rename = None;
-        } else {
-            rename.text = text;
+            RenameOutcome::Cancel => self.rename = None,
         }
     }
 
@@ -507,8 +478,7 @@ impl Inspector {
     fn start_rename(&mut self, target: RenameTarget, current: &str) {
         self.rename = Some(Rename {
             target,
-            text: current.to_owned(),
-            fresh: true,
+            edit: RenameState::new(current),
         });
     }
 
