@@ -1184,6 +1184,143 @@ fn s04_playing(ppp: f32) -> Harness<'static, App> {
     h
 }
 
+// ------------------------------------------------------------------------------------------------
+// Rename in place (#35): double-click, context menu, F2.
+
+fn rename_field_open(h: &Harness<'_, App>) -> bool {
+    h.query_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME)
+        .is_some()
+}
+
+/// Types `text` into the open name field (its text is selected; empty: delete it) and presses `key`.
+fn type_and_end(h: &mut Harness<'_, App>, text: &str, key: egui::Key) {
+    h.get_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME);
+    if text.is_empty() {
+        h.key_press(egui::Key::Backspace);
+    } else {
+        h.event(Event::Text(text.into()));
+    }
+    h.run_steps(1);
+    h.key_press(key);
+    h.run_steps(3);
+}
+
+fn lead_name(h: &Harness<'_, App>) -> String {
+    h.state().project().tracks[2].name.clone()
+}
+
+fn undo(h: &mut Harness<'_, App>) {
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    h.run_steps(2);
+}
+
+/// Enter applies as one undo step, Esc discards, an empty name keeps the old one, whatever
+/// opened the field.
+fn rename_ends_by_the_rules(h: &mut Harness<'_, App>, open: impl Fn(&mut Harness<'_, App>)) {
+    open(h);
+    assert!(rename_field_open(h));
+    type_and_end(h, "Melodie", egui::Key::Enter);
+    assert_eq!(lead_name(h), "Melodie");
+    assert!(!rename_field_open(h));
+    undo(h);
+    assert_eq!(lead_name(h), "Lead", "one undo step");
+    open(h);
+    type_and_end(h, "Weg", egui::Key::Escape);
+    assert_eq!(lead_name(h), "Lead", "Esc discards");
+    assert!(!rename_field_open(h));
+    open(h);
+    type_and_end(h, "", egui::Key::Enter);
+    assert_eq!(lead_name(h), "Lead", "empty keeps the old name");
+    assert!(!rename_field_open(h));
+}
+
+fn lead_name_button(h: &Harness<'_, App>) -> Pos2 {
+    in_strip(h, "Lead", Role::Button, "Lead").center()
+}
+
+#[test]
+fn double_click_on_a_strips_name_renames_in_place() {
+    let mut h = harness(s04());
+    rename_ends_by_the_rules(&mut h, |h| {
+        let at = lead_name_button(h);
+        double_click(h, at);
+    });
+    // The strip's name row is the only place: the field belongs to Lead's strip.
+    let at = lead_name_button(&h);
+    double_click(&mut h, at);
+    in_strip(&h, "Lead", Role::TextInput, de::ARRANGEMENT_RENAME);
+}
+
+#[test]
+fn the_strips_context_menu_renames() {
+    let mut h = harness(s04());
+    rename_ends_by_the_rules(&mut h, |h| {
+        let at = lead_name_button(h);
+        menu_choice(h, at, de::ROUTING_RENAME);
+    });
+}
+
+#[test]
+fn f2_renames_the_selected_track_in_the_maximised_mixer() {
+    let mut h = harness(s04());
+    assert!(h.state().ui().layout.dock_maximized);
+    rename_ends_by_the_rules(&mut h, |h| {
+        h.key_press(egui::Key::F2);
+        h.run_steps(3);
+    });
+}
+
+#[test]
+fn f2_in_the_dock_mixer_follows_the_focus() {
+    // Arrangement and mixer both in view: the focused area gets the field.
+    let mut app = App::headless(s04_project()).with_device_host(Box::new(FakeHost::new()));
+    let lead = track(&app, 2);
+    select(&mut app, lead);
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
+    app.dispatch(Action::Ui(UiAction::Focus(FocusArea::Mixer)));
+    let mut h = harness(app);
+    h.key_press(egui::Key::F2);
+    h.run_steps(3);
+    in_strip(&h, "Lead", Role::TextInput, de::ARRANGEMENT_RENAME);
+    // Esc closes it; with the arrangement focused the header gets it.
+    type_and_end(&mut h, "x", egui::Key::Escape);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Focus(FocusArea::Arrangement)));
+    h.key_press(egui::Key::F2);
+    h.run_steps(3);
+    let fields = h
+        .query_all_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME)
+        .count();
+    assert_eq!(fields, 1);
+    assert!(
+        h.get_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Lead"))
+            .query_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME)
+            .is_none(),
+        "the field is the header's, not the strip's"
+    );
+}
+
+#[test]
+fn the_master_strip_cannot_be_renamed() {
+    let mut h = harness(s04());
+    let at = in_strip(&h, "Master", Role::Label, "Master").center();
+    double_click(&mut h, at);
+    assert!(!rename_field_open(&h));
+}
+
+#[test]
+fn snapshot_of_the_rename_field_in_a_strip() {
+    let mut h = harness(s04());
+    let at = lead_name_button(&h);
+    double_click(&mut h, at);
+    in_strip(&h, "Lead", Role::TextInput, de::ARRANGEMENT_RENAME);
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("mixer-rename-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}
+
 #[test]
 fn snapshots_next_to_s04() {
     let mut results = SnapshotResults::new();

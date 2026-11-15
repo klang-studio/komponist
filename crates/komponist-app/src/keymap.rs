@@ -722,6 +722,7 @@ mod tests {
         assert_eq!(label(KeyChord::alt(Key::Minus)), "Alt \u{2212}");
         assert_eq!(label(KeyChord::ctrl(Key::Comma)), "Strg ,");
         assert_eq!(label(KeyChord::ctrl(Key::Num3)), "Strg 3");
+        assert_eq!(label(KeyChord::plain(Key::F2)), "F2");
         assert_eq!(label(KeyChord::shift(Key::ArrowDown)), "Shift ↓");
     }
 
