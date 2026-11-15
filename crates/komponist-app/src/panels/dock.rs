@@ -49,7 +49,9 @@ pub fn editor_tab(
 
 const TABS: [DockTab; 3] = [DockTab::Editor, DockTab::Devices, DockTab::Mixer];
 
-/// Draws the strip into `rect` (28 high); `recording`: the editor shows the take being recorded.
+/// Draws the strip into `rect` (28 high); `recording`: the editor shows the take being recorded;
+/// `t`: the language of its texts.
+#[allow(clippy::too_many_arguments)] // the shell's state, kept apart (like `side_panel`'s callers)
 pub fn tab_strip(
     ui: &mut Ui,
     rect: Rect,
