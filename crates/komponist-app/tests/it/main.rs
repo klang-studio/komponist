@@ -39,6 +39,7 @@ mod inspector;
 mod internal_devices;
 mod internal_presets;
 mod mixer;
+mod packaging;
 mod param_undo;
 mod params_project;
 mod piano_roll;

@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 PREFIX="${PREFIX:-$HOME/.local}"
 DEST="${DESTDIR:-}${PREFIX}/share"
 ICON=komponist
+APP_ID=io.github.klang_studio.komponist
 
 for n in 16 24 32 48 64 128 256 512; do
     f="assets/icons/hicolor/${n}x${n}/apps/$ICON.png"
@@ -24,9 +25,9 @@ for n in 16 24 32 48 64 128 256 512; do
 done
 install -Dm644 "assets/icons/hicolor/scalable/apps/$ICON.svg" "$DEST/icons/hicolor/scalable/apps/$ICON.svg"
 install -Dm644 "assets/icons/hicolor/symbolic/apps/$ICON-symbolic.svg" "$DEST/icons/hicolor/symbolic/apps/$ICON-symbolic.svg"
-install -Dm644 assets/komponist.desktop "$DEST/applications/komponist.desktop"
+install -Dm644 "assets/$APP_ID.desktop" "$DEST/applications/$APP_ID.desktop"
 install -Dm644 assets/komponist-mime.xml "$DEST/mime/packages/komponist.xml"
-install -Dm644 assets/komponist.metainfo.xml "$DEST/metainfo/komponist.metainfo.xml"
+install -Dm644 "assets/$APP_ID.metainfo.xml" "$DEST/metainfo/$APP_ID.metainfo.xml"
 
 echo "Installed into $DEST."
 echo "Refresh the caches if your desktop does not pick the files up:"

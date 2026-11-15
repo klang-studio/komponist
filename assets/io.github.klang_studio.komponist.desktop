@@ -13,4 +13,4 @@ Categories=AudioVideo;Audio;Midi;Sequencer;Music;
 Keywords=DAW;MIDI;Sequencer;Music;Audio;CLAP;VST3;
 Keywords[de]=DAW;MIDI;Sequencer;Musik;Audio;CLAP;VST3;
 MimeType=application/x-komponist-project;
-StartupWMClass=komponist
+StartupWMClass=io.github.klang_studio.komponist
