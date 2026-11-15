@@ -318,7 +318,7 @@ fn a_param_that_changes_the_latency_publishes_it_in_the_meter() {
     let meter = p.meter();
     let on = meter.latency();
     assert!(on > 0 && on == p.latency());
-    let wire = kind.wire(&ParamId::new("lookahead")).unwrap() as u32;
+    let wire = kind.wire(&ParamId::new("lookahead")).unwrap();
     let silence: [Vec<f32>; 2] = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
     run(&mut p, &[param_event(wire, 0.0)], &silence);
     assert_eq!(meter.latency(), 0);
