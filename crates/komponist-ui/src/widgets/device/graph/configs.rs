@@ -12,6 +12,9 @@
 //! | [`waveform`] | `start`, `end` | milliseconds |
 //! | [`xy`] | `x`, `y` | the axes' own units |
 //! | [`lfo`] | `x1`, `y1`, `x2`, `y2`, … | phase 0–1, −1…1 |
+//! | [`filter_va`] | `cutoff`, `resonance`, `type`, `mod1_src` … `lfo2_uni` | Hz, 0–1, knurr's filter list (0 LP 24 · 1 LP 12 · 2 BP 12 · 3 HP 12 · 4 notch), the matrix |
+//! | [`signal`] | `wave_a`, `wave_b`, `pw_a`, `pw_b`, `b_oct`, `b_fine`, `mix`, `sub` | knurr's oscillator parameters |
+//! | [`lfo_shape`] | `shape` | index of `va_curve::LFO_SHAPES` |
 
 use super::spec::{
     AreaAction, Axis, AxisKind, Bind, Curve, CurveFn, DataKind, GraphSpec, Grid, Guide, Handle,

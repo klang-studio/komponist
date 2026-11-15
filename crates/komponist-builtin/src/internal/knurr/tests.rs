@@ -1265,3 +1265,72 @@ fn the_ten_presets_load_and_sound() {
     }
     assert!(presets::state(10).is_none());
 }
+
+#[test]
+fn every_supported_sample_rate_plays_in_tune() {
+    for rate in [22_050.0f32, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+        let mut values = Internal::Knurr.defaults();
+        for (key, value) in merged(&[("lfo1_rate", 0.02)]) {
+            values[wire(key) as usize] = value;
+        }
+        let mut p = Internal::Knurr.processor(&values);
+        p.activate(rate, BLOCK).unwrap();
+        let frames = 16_384 + 4096;
+        let input = [vec![0.0f32; frames], vec![0.0f32; frames]];
+        let mut out = [vec![0.0f32; frames], vec![0.0f32; frames]];
+        let [ol, or] = &mut out;
+        let mut io = StereoIo {
+            input: [&input[0], &input[1]],
+            output: [ol, or],
+        };
+        let mut c = ctx(frames, 120.0);
+        c.sample_rate = rate;
+        let events = [Event {
+            offset: 0,
+            kind: on(69, 100),
+        }];
+        assert_no_alloc(|| p.process(&c, &events, &mut io));
+        let s = spectrum(&out[0][4096..], 16_384);
+        let (i, _) = s
+            .iter()
+            .enumerate()
+            .skip(1)
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap();
+        let hz = i as f64 * f64::from(rate) / 16_384.0;
+        assert!(
+            (hz - 440.0).abs() <= f64::from(rate) / 16_384.0,
+            "{rate} Hz: {hz}"
+        );
+    }
+}
+
+#[test]
+fn stealing_and_retriggering_do_not_click() {
+    // One voice, a sine: the second key takes the voice over while it sounds. The waveform stays
+    // continuous (phase and level carry over), so no step is larger than the sine's own slope.
+    let mut p = processor(&merged(&[
+        ("voices", 1.0),
+        ("amp_a", 0.001),
+        ("amp_r", 0.02),
+    ]));
+    let events = [(0, on(60, 100)), (12_000, on(72, 100)), (24_000, off(72))];
+    let out = render(&mut p, 36_000, &events, 120.0);
+    let step = |from: usize, to: usize| {
+        out[0][from..to]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    // The loudest step of a 523 Hz sine of this level, with some room.
+    let level = peak(&out[0][8000..12_000]);
+    let slope = level * std::f32::consts::TAU * 523.25 / RATE;
+    assert!(
+        step(11_900, 12_300) < 2.5 * slope,
+        "{} vs {slope}",
+        step(11_900, 12_300)
+    );
+    // Release and end of the note: no step beyond the slope either, and silence after.
+    assert!(step(23_900, 28_000) < 2.5 * slope);
+    assert_eq!(peak(&out[0][30_000..]), 0.0);
+}

@@ -37,6 +37,11 @@
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
 //!
+//! **Instruments (WP-87, WP-95):** the sampler and [`knurr`] are [`Internal`]s whose `Dsp` is an
+//! instrument ([`Dsp::is_instrument`]): the processor hands them the note events at their frame
+//! and, from `EventKind::Midi`, pitch bend, the mod wheel (CC 1) and channel pressure
+//! ([`Dsp::pitch_bend`], [`Dsp::mod_wheel`], [`Dsp::pressure`]).
+//!
 //! **Sample tap (WP-92):** a [`Dsp`] can offer a [`komponist_engine::SampleTap`] ([`Dsp::tap`]); the
 //! processor puts it into its [`DeviceMeter`] and the UI reads the latest samples from there (the EQ's
 //! live spectrum). The DSP copies only while the UI looks (`SampleTap::begin`).

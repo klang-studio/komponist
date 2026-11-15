@@ -320,3 +320,39 @@ offline) is bit-exact.
 ```bash
 cargo test --release -p komponist-builtin --lib cpu_ -- --ignored --nocapture
 ```
+
+## 8. knurr (WP-95)
+
+Measured 2026-11-15 on `wp/WP-95` (load average 6–11 on 12 threads, other agents building), release
+profile, 48 kHz, calls of 256 frames (5.33 ms period), keys held (envelopes in sustain), one thread.
+"Per key" is the cost of a held key (all its oscillators, sub, noise, high-pass, filter, three
+envelopes, two LFOs, matrix, drift), measured as (call with N keys − call without) / N; the share
+is of **one core** at 48 kHz. The proposal estimated 0.18 % (unison 1) and 0.42 % (unison 5 +
+spread) per key; the numbers below are better, on a machine that was busy.
+
+| Case | ns per key and sample | share of a core per key | 8 keys, 256 frames |
+|---|---|---|---|
+| Unison 1, LP 24 (default) | 30 | 0.14 % | 59 µs = 1.1 % |
+| Unison 1, LP 12 | 21 | 0.10 % | 45 µs = 0.8 % |
+| Unison 3 + spread | 53 | 0.25 % | 110 µs = 2.1 % |
+| Unison 5 + spread | 64 | 0.31 % | 132 µs = 2.5 % |
+| Unison 7 + spread | 76 | 0.36 % | 6 keys: 117 µs = 2.2 % |
+| Unison 1, four matrix slots, both LFOs per voice, Analog 100 % | 29 | 0.14 % | – |
+| Unison 7 + spread + matrix + Analog 100 % | 75 | 0.36 % | – |
+
+- The matrix, the LFOs and the drift run at the control rate (every 32 samples) and are below the
+  noise of the measurement; the unison oscillators (two PolyBLEP/PolyBLAMP oscillators per pair,
+  about 8 ns each) and the second filter channel (spread) are what costs.
+- **Cap:** `voices × unison` is limited to 48 oscillator groups (`knurr::MAX_GROUPS`): unison 7
+  leaves 6 keys, 5 leaves 9, 3 or less all 16. At the cap a track costs about 2.2–2.5 % of the
+  period, so 16 tracks at the cap are about 40 % of one core, 10 % per worker with four workers
+  (WP-65). 16 tracks with the default 8 keys and unison 1: 18 %, 4–5 % per worker.
+- One parameter event per call (which splits the render): below 0.3 µs.
+- No allocation: every `process` and `reset` of the unit tests runs inside `assert_no_alloc`
+  (`internal::knurr::tests`, the generic `processing_and_reset_do_not_allocate_in_any_device`) and
+  the engine tests (`komponist-engine` `tests/engine/knurr.rs`: 12 tracks with presets, live notes,
+  pitch bend, mod wheel and pressure, bit-exact output with 0, 2 and 4 workers).
+
+```bash
+cargo test --release -p komponist-builtin --lib knurr::bench -- --ignored --nocapture
+```
