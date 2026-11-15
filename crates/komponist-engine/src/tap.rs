@@ -295,4 +295,25 @@ mod tests {
         assert!(total > 1000, "the producer ran");
         assert!(accepted > 0, "rejected {rejected} windows, accepted none");
     }
+    /// Timing, not a check: `cargo test --release -p komponist-engine --lib tap::tests::cost
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing: run in release with --ignored --nocapture"]
+    fn cost_of_pushing_a_block() {
+        let tap = SampleTap::new(DEFAULT_CAPACITY);
+        tap.want();
+        let (l, r) = (vec![0.1_f32; 512], vec![0.2_f32; 512]);
+        let runs = 100_000;
+        let started = std::time::Instant::now();
+        for _ in 0..runs {
+            tap.want();
+            if tap.begin(512) {
+                tap.push_mono(&l, &r);
+            }
+        }
+        println!(
+            "begin + push_mono of 512 frames: {:?}",
+            started.elapsed() / runs
+        );
+    }
 }

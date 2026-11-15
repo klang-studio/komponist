@@ -447,4 +447,28 @@ mod tests {
         let tap = tap_with(&s, 48_000.0);
         assert_eq!(tap.written(), 4096);
     }
+    /// Timing, not a check: `cargo test --release -p komponist-app --lib spectrum::tests::cost
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing: run in release with --ignored --nocapture"]
+    fn cost_of_one_analysis() {
+        let rate = 48_000.0;
+        let tap = SampleTap::new(16_384);
+        tap.set_rate(rate);
+        let mut a = SpectrumAnalyzer::new();
+        a.update(0.0, &tap);
+        let signal = sine(1000.0, rate, 4096);
+        let runs = 2000;
+        let mut now = 0.0;
+        let started = std::time::Instant::now();
+        for _ in 0..runs {
+            tap.push(&signal);
+            now += INTERVAL;
+            a.update(now, &tap);
+        }
+        println!(
+            "one analysis (tap read + window + FFT 4096 + mapping + ballistics): {:?}",
+            started.elapsed() / runs
+        );
+    }
 }

@@ -36,6 +36,10 @@
 //! limiter) are written for komponist on top of the small parts in [`dsp`] and `klang-dsp`'s
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
+//!
+//! **Sample tap (WP-92):** a [`Dsp`] can offer a [`komponist_engine::SampleTap`] ([`Dsp::tap`]); the
+//! processor puts it into its [`DeviceMeter`] and the UI reads the latest samples from there (the EQ's
+//! live spectrum). The DSP copies only while the UI looks (`SampleTap::begin`).
 
 use std::sync::{Arc, OnceLock};
 
