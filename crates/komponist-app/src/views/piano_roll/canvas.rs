@@ -295,7 +295,8 @@ impl PianoRoll {
         self.tooltips(ui, f);
 
         let model = ruler_model(f);
-        ruler.widget_info(|| ruler_access(komponist_ui::lang(ui.ctx()), &model).widget_info());
+        let lang = komponist_ui::lang(ui.ctx());
+        ruler.widget_info(|| ruler_access(lang, &model).widget_info());
         self.access(ui, f, &visible);
     }
 

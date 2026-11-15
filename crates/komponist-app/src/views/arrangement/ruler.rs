@@ -91,7 +91,8 @@ impl Arrangement {
             Id::unique("komponist_arrangement_ruler"),
             Sense::click_and_drag(),
         );
-        response.widget_info(|| ruler_access(komponist_ui::lang(ui.ctx()), &model).widget_info());
+        let lang = komponist_ui::lang(ui.ctx());
+        response.widget_info(|| ruler_access(lang, &model).widget_info());
         let half = g.ruler.center().y;
         if let Some(p) = response.hover_pos()
             && p.y >= half
