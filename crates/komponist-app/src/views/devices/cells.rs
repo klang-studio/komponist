@@ -553,10 +553,12 @@ fn fm(
     let topology = match &routing {
         Some(r) => Topology {
             modulates: &r.modulates,
+            outputs: Some(r.outputs),
             feedback: r.feedback,
         },
         None => Topology {
             modulates: &algo.modulates,
+            outputs: None,
             feedback: Some(algo.feedback),
         },
     };

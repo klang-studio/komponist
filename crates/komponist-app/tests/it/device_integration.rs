@@ -692,3 +692,55 @@ fn snapshot_of_the_fm_display_with_free_routing() {
     results.extend_harness(&mut h);
     results.unwrap();
 }
+
+#[test]
+fn snapshot_of_the_fm_display_with_a_cycle() {
+    use komponist_builtin::{algorithms, default_patch, encode_state};
+    use komponist_model::Hue;
+    let mut patch = default_patch();
+    // 1 and 6 modulate each other and are both heard; 2 → 3 → 4 is a chain on the side.
+    algorithms::apply(&mut patch, 31);
+    patch.operators[0].modulates[5] = true;
+    patch.operators[5].modulates[0] = true;
+    patch.operators[1].modulates[2] = true;
+    patch.operators[2].modulates[3] = true;
+    assert_eq!(algorithms::detect(&patch), None);
+    let pisynth = App::headless(Project::new("x"))
+        .engine()
+        .host()
+        .catalog()
+        .entries()[0]
+        .plugin
+        .clone();
+    let (project, track) = edits::add_track(
+        &Project::new("Frei"),
+        NewTrack {
+            name: Some("FM".into()),
+            hue: Some(Hue::BLUE),
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (project, _) = edits::insert_device(
+        &project,
+        ChannelRef::Track(track),
+        0,
+        NewDevice {
+            role: DeviceRole::Instrument,
+            plugin: pisynth,
+            state: Some(encode_state(&patch).into()),
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(project);
+    select_track(&mut app, track);
+    let mut h = harness(app);
+    h.run_steps(30);
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("devices-fm-cycle-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}

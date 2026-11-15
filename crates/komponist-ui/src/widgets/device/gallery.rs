@@ -652,6 +652,7 @@ fn fm_card(ui: &mut Ui) {
     let pal = palette(LEAD);
     let algo = Topology {
         modulates: &[0, 0b1, 0, 0b100, 0, 0b10000],
+        outputs: None,
         feedback: Some(5),
     };
     demo(ui, |ui| {

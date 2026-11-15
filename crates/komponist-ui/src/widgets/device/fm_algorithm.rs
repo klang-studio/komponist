@@ -7,7 +7,10 @@
 //! 1 px accent outline.
 //!
 //! The routing is data ([`Topology`]); the layout puts the carriers on the bottom row and every
-//! other operator one row above the highest operator it modulates ([`layout`]). A click on an
+//! other operator one row above the highest operator it modulates ([`layout`]). A free routing may
+//! hold cycles (1 ↔ 6): the edge that closes a cycle does not count for the rows and is drawn as a
+//! bracket on the left, so no two operators share a place. An operator that is heard and also
+//! modulates is a carrier (track colour, line to the output) with its modulation links. A click on an
 //! operator selects it ([`FmOutput::clicked`]). AccessKit: one `Button` per operator, „Operator 3,
 //! Träger“ / „Operator 4, Modulator“.
 
@@ -30,6 +33,9 @@ use crate::{focus, px};
 pub struct Topology<'a> {
     /// Per operator index: the bit mask of the operator indices it modulates.
     pub modulates: &'a [u8],
+    /// Bit mask of the heard operators (pisynth's `output` flag). `None`: the operators that
+    /// modulate nothing, as in every fixed algorithm.
+    pub outputs: Option<u8>,
     /// The operator with feedback, if any.
     pub feedback: Option<usize>,
 }
@@ -45,9 +51,12 @@ impl Topology<'_> {
         self.modulates.is_empty()
     }
 
-    /// Operator `op` is heard (it modulates nothing).
+    /// Operator `op` is heard: a carrier, drawn in the track colour with a line to the output.
     pub fn is_carrier(&self, op: usize) -> bool {
-        self.modulates[op] == 0
+        match self.outputs {
+            Some(mask) => op < 8 && mask & (1 << op) != 0,
+            None => self.modulates[op] == 0,
+        }
     }
 
     /// The operators `op` modulates.
@@ -56,21 +65,51 @@ impl Topology<'_> {
         (0..self.len().min(8)).filter(move |t| mask & (1 << t) != 0)
     }
 
-    /// Rows above the carrier row: 0 for a carrier, else one more than the highest target.
-    /// Edges that point at the same or a lower index than their source count once (no loops).
+    /// Rows above the bottom row: 0 for an operator that modulates nothing, else one more than the
+    /// highest operator it modulates. The edge that closes a cycle (it points back at an operator
+    /// that is still being resolved) does not count, so a cycle still gets distinct rows.
     pub fn depth(&self, op: usize) -> usize {
-        self.depth_in(op, 0)
+        self.depths().get(op).copied().unwrap_or(0)
     }
 
-    fn depth_in(&self, op: usize, guard: usize) -> usize {
-        if guard > self.len() {
-            return 0;
+    /// [`Topology::depth`] of every operator.
+    fn depths(&self) -> Vec<usize> {
+        fn visit(topology: &Topology<'_>, op: usize, state: &mut [u8], depth: &mut [usize]) {
+            state[op] = 1;
+            let mut deepest = 0;
+            for t in topology.targets(op).filter(|&t| t != op) {
+                if state[t] == 1 {
+                    continue;
+                }
+                if state[t] == 0 {
+                    visit(topology, t, state, depth);
+                }
+                deepest = deepest.max(1 + depth[t]);
+            }
+            depth[op] = deepest;
+            state[op] = 2;
         }
+        let n = self.len();
+        let (mut state, mut depth) = (vec![0_u8; n], vec![0_usize; n]);
+        for op in 0..n {
+            if state[op] == 0 {
+                visit(self, op, &mut state, &mut depth);
+            }
+        }
+        depth
+    }
+
+    /// The operators `op` modulates that sit on a lower row (the straight links). The others
+    /// close a cycle ([`Topology::is_back_edge`]).
+    fn forward_targets(&self, op: usize) -> impl Iterator<Item = usize> + '_ {
+        let depths = self.depths();
         self.targets(op)
-            .filter(|&t| t != op)
-            .map(|t| 1 + self.depth_in(t, guard + 1))
-            .max()
-            .unwrap_or(0)
+            .filter(move |&t| t != op && depths[t] < depths[op])
+    }
+
+    /// Whether the link `from` → `to` closes a cycle: `to` is not on a lower row.
+    fn is_back_edge(&self, from: usize, to: usize) -> bool {
+        to != from && self.depth(to) >= self.depth(from)
     }
 }
 
@@ -101,7 +140,8 @@ pub fn layout(topology: &Topology<'_>, size: egui::Vec2) -> Layout {
         step = step.min(room / max_depth as f32);
         bh = bh.min((step - 3.0).max(12.0));
     }
-    let carriers: Vec<usize> = (0..n).filter(|&o| topology.is_carrier(o)).collect();
+    // The bottom row: everything that modulates nothing (forward), heard or not.
+    let carriers: Vec<usize> = (0..n).filter(|&o| topology.depth(o) == 0).collect();
     let per_row = carriers.len().max(1) as f32;
     bw = bw.min(((size.x - 6.0) / per_row - 2.0).max(10.0));
     let xs_for = |count: usize| -> Vec<f32> {
@@ -131,11 +171,7 @@ pub fn layout(topology: &Topology<'_>, size: egui::Vec2) -> Layout {
         let mut xs: Vec<(usize, f32)> = row
             .drain(..)
             .map(|op| {
-                let t: Vec<f32> = topology
-                    .targets(op)
-                    .filter(|&t| t != op)
-                    .map(|t| centers[t].x)
-                    .collect();
+                let t: Vec<f32> = topology.forward_targets(op).map(|t| centers[t].x).collect();
                 (op, t.iter().sum::<f32>() / t.len().max(1) as f32)
             })
             .collect();
@@ -301,29 +337,48 @@ fn paint_lines(painter: &Painter, rect: Rect, topology: &Topology<'_>, lay: &Lay
     let stroke = Stroke::new(px::line_width(ppp), color32(color::TEXT_2));
     let at = |c: Pos2| rect.min + c.to_vec2();
     let half = lay.node.y / 2.0;
-    for op in 0..topology.len() {
+    let n = topology.len();
+    for op in 0..n {
         let from = at(lay.centers[op]);
         for t in topology.targets(op).filter(|&t| t != op) {
             let to = at(lay.centers[t]);
-            painter.line_segment([from + vec2(0.0, half), to - vec2(0.0, half)], stroke);
+            if topology.is_back_edge(op, t) {
+                // A link that closes a cycle: a bracket on the left of both operators.
+                let left = from.x.min(to.x) - lay.node.x / 2.0 - 4.0;
+                let x = left.max(rect.left() + 2.0);
+                painter.add(Shape::line(
+                    vec![
+                        from - vec2(lay.node.x / 2.0, 0.0),
+                        pos2(x, from.y),
+                        pos2(x, to.y),
+                        to - vec2(lay.node.x / 2.0, 0.0),
+                    ],
+                    stroke,
+                ));
+            } else {
+                painter.line_segment([from + vec2(0.0, half), to - vec2(0.0, half)], stroke);
+            }
         }
     }
-    let carriers: Vec<usize> = (0..topology.len())
-        .filter(|&o| topology.is_carrier(o))
-        .collect();
+    // The line of every heard operator to the output. One that also modulates leaves from the
+    // right of its box, so the links to its targets (from the middle) stay apart.
     let base_y = rect.top() + lay.baseline;
-    for &c in &carriers {
+    let mut taps: Vec<f32> = Vec::new();
+    for c in (0..n).filter(|&o| topology.is_carrier(o)) {
         let p = at(lay.centers[c]);
-        painter.line_segment([p + vec2(0.0, half), pos2(p.x, base_y)], stroke);
+        let x = if topology.depth(c) == 0 {
+            p.x
+        } else {
+            p.x + lay.node.x / 2.0 - 2.0
+        };
+        painter.line_segment([pos2(x, p.y + half), pos2(x, base_y)], stroke);
+        taps.push(x);
     }
-    if let (Some(&a), Some(&b)) = (carriers.first(), carriers.last()) {
-        painter.line_segment(
-            [
-                pos2(at(lay.centers[a]).x, base_y),
-                pos2(at(lay.centers[b]).x, base_y),
-            ],
-            stroke,
-        );
+    if let (Some(a), Some(b)) = (
+        taps.iter().copied().reduce(f32::min),
+        taps.iter().copied().reduce(f32::max),
+    ) {
+        painter.line_segment([pos2(a, base_y), pos2(b, base_y)], stroke);
     }
     if let Some(op) = topology.feedback.filter(|&o| o < topology.len()) {
         // `M cx+bw/2 y+9 h6 v-16 h-(bw/2+6) v7`: out of the right edge, up, back over the box,
@@ -374,6 +429,7 @@ mod tests {
     /// Algorithm 1 of pisynth: 2 → 1, 4 → 3, 6 → 5 (carriers 1, 3, 5), feedback on 6.
     const ALGO_1: Topology<'static> = Topology {
         modulates: &[0b000000, 0b000001, 0b000000, 0b000100, 0b001000, 0b010000],
+        outputs: None,
         feedback: Some(5),
     };
 
@@ -396,11 +452,24 @@ mod tests {
             ALGO_1,
             Topology {
                 modulates: &[0, 0, 0, 0, 0, 0],
+                outputs: None,
                 feedback: None,
             },
             Topology {
                 modulates: &[0, 1, 2, 4, 8, 16],
+                outputs: None,
                 feedback: Some(5),
+            },
+            // 1 ↔ 6 (free routing), and a longer cycle with everything heard.
+            Topology {
+                modulates: &[0b100000, 0, 0, 0, 0, 0b000001],
+                outputs: Some(0b100001),
+                feedback: None,
+            },
+            Topology {
+                modulates: &[0b000010, 0b000100, 0b001000, 0b000001, 0b100000, 0b010000],
+                outputs: Some(0b111111),
+                feedback: Some(0),
             },
         ] {
             let l = layout(&topo, size);
@@ -422,5 +491,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_cycle_gets_distinct_rows_and_a_heard_modulator_is_a_carrier() {
+        // 1 ↔ 6: one of them is a row above the other, not on the same spot.
+        let cycle = Topology {
+            modulates: &[0b100000, 0, 0, 0, 0, 0b000001],
+            outputs: Some(0b100001),
+            feedback: None,
+        };
+        assert_ne!(cycle.depth(0), cycle.depth(5));
+        assert!(cycle.is_back_edge(5, 0) != cycle.is_back_edge(0, 5));
+        // Heard and modulating: a carrier although it has targets; unheard and silent: not.
+        let mixed = Topology {
+            modulates: &[0b10, 0, 0],
+            outputs: Some(0b001),
+            feedback: None,
+        };
+        assert!(mixed.is_carrier(0) && !mixed.is_carrier(1));
+        assert_eq!(operator_name(&mixed, 0), "Operator 1, Träger");
     }
 }
