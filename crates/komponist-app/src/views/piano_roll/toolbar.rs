@@ -179,7 +179,7 @@ pub fn show(
         color32(color::LINE_1),
     );
     let text = if info.live {
-        crate::record::names::LIVE.to_owned()
+        ctx.lang.record_live().to_owned()
     } else {
         edit::selection_text(info.selected.len(), info.total)
     };

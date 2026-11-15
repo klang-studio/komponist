@@ -5,7 +5,8 @@
 //! geometric shapes); Loop, Metronom, Vorzähler 1 (toggle buttons); the padded position
 //! `fmt_pos` (`type.value.l`) and the time (`type.value.m`, `text.3`); the tempo field (BPM);
 //! the meter "4/4". On the right: "Kein Audio-Gerät" (only without device), CPU load, the master
-//! meter, the "⋯" menu.
+//! meter, the "⋯" menu. The texts come from `locales/*/transport.ftl` (`docs/I18N.md`); German
+//! is quoted here.
 
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use egui::{
 };
 use komponist_audio::AudioState;
 use komponist_engine::TransportState;
+use komponist_i18n::Lang;
 use komponist_model::format::{fmt_pos, fmt_time};
 use komponist_model::{Project, Tempo, Tick};
 use komponist_tokens::egui_support::color32;
@@ -51,6 +53,8 @@ pub struct TransportModel<'a> {
     pub audio: &'a AudioState,
     /// Shortcut labels.
     pub keymap: &'a Keymap,
+    /// The language of the bar's texts.
+    pub lang: Lang,
 }
 
 impl TransportModel<'_> {
@@ -58,38 +62,6 @@ impl TransportModel<'_> {
     pub fn audio_ok(&self) -> bool {
         !matches!(self.audio, AudioState::NoDevice { .. })
     }
-}
-
-/// The transport bar's texts that tests and AccessKit read.
-pub mod names {
-    /// Play button.
-    pub const PLAY: &str = "Wiedergabe";
-    /// Stop button.
-    pub const STOP: &str = "Stopp";
-    /// Record button.
-    pub const RECORD: &str = "Aufnahme";
-    /// Loop toggle.
-    pub const LOOP: &str = "Loop";
-    /// Metronome toggle.
-    pub const METRONOME: &str = "Metronom";
-    /// Count-in toggle (1 bar).
-    pub const COUNT_IN: &str = "Vorzähler 1";
-    /// Position readout.
-    pub const POSITION: &str = "Position";
-    /// Time readout.
-    pub const TIME: &str = "Zeit";
-    /// Tempo field.
-    pub const TEMPO: &str = "Tempo";
-    /// Meter readout ("Taktart" as in the inspector, S06).
-    pub const METER: &str = "Taktart";
-    /// CPU readout.
-    pub const CPU: &str = "CPU";
-    /// Master meter.
-    pub const MASTER: &str = "Pegel Master";
-    /// The "⋯" menu.
-    pub const MENU: &str = "Menü";
-    /// No audio device (S07).
-    pub const NO_DEVICE: &str = "Kein Audio-Gerät";
 }
 
 /// Draws the transport bar into `rect`; what the user does goes to `actions`.
@@ -129,14 +101,18 @@ pub fn show(
         ui.spacing_mut().item_spacing.x = space::SPACE_4;
         menu(ui, model, actions);
         ui.add(
-            Meter::new(&mut meters.master, Meters::NO_PEAKS, names::MASTER)
-                .header()
-                .horizontal()
-                .length(m::MASTER_METER_LENGTH),
+            Meter::new(
+                &mut meters.master,
+                Meters::NO_PEAKS,
+                model.lang.transport_master(),
+            )
+            .header()
+            .horizontal()
+            .length(m::MASTER_METER_LENGTH),
         );
-        cpu(ui, model.cpu);
+        cpu(ui, model);
         if !model.audio_ok() {
-            no_device_chip(ui);
+            no_device_chip(ui, model.lang);
         }
     });
 }
@@ -206,17 +182,12 @@ fn wordmark(ui: &mut Ui, model: &TransportModel<'_>) {
         ],
     );
     text_node(ui, rects[0], "wordmark", WORDMARK);
-    let dirty = if model.dirty {
-        ", nicht gespeichert"
+    let project = if model.dirty {
+        model.lang.transport_project_unsaved(&model.project.name)
     } else {
-        ""
+        model.project.name.clone()
     };
-    text_node(
-        ui,
-        rects[1],
-        "project",
-        &format!("{}{dirty}", model.project.name),
-    );
+    text_node(ui, rects[1], "project", &project);
     if model.dirty {
         let x = rects[1].right() + m::WORDMARK_GAP + m::DIRTY_DOT / 2.0;
         let c = pos2(x, rect.center().y);
@@ -337,27 +308,27 @@ fn shape_button(
 }
 
 fn transport_buttons(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
-    let lang = komponist_ui::lang(ui.ctx());
-    let label = |a: TransportAction| model.keymap.label_for(&Action::Transport(a), lang);
+    let t = model.lang;
+    let label = |a: TransportAction| model.keymap.label_for(&Action::Transport(a), t);
     if shape_button(
         ui,
         Shape::Play,
         model,
-        names::PLAY,
+        t.transport_play(),
         label(TransportAction::TogglePlay),
     )
     .clicked()
     {
         actions.push(Action::Transport(TransportAction::TogglePlay));
     }
-    if shape_button(ui, Shape::Stop, model, names::STOP, None).clicked() {
+    if shape_button(ui, Shape::Stop, model, t.transport_stop(), None).clicked() {
         actions.push(Action::Transport(TransportAction::Stop));
     }
     if shape_button(
         ui,
         Shape::Record,
         model,
-        names::RECORD,
+        t.transport_record(),
         label(TransportAction::ToggleRecord),
     )
     .clicked()
@@ -368,24 +339,23 @@ fn transport_buttons(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<
 
 fn toggles(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let p = model.project;
+    let t = model.lang;
     let items = [
-        (names::LOOP, p.loop_on, TransportAction::ToggleLoop),
+        (t.transport_loop(), p.loop_on, TransportAction::ToggleLoop),
         (
-            names::METRONOME,
+            t.transport_metronome(),
             p.metronome,
             TransportAction::ToggleMetronome,
         ),
         (
-            names::COUNT_IN,
+            t.transport_count_in(),
             p.count_in_bars > 0,
             TransportAction::ToggleCountIn,
         ),
     ];
     for (name, on, action) in items {
         let action = Action::Transport(action);
-        let shortcut = model
-            .keymap
-            .label_for(&action, komponist_ui::lang(ui.ctx()));
+        let shortcut = model.keymap.label_for(&action, t);
         let mut button = Button::new(name).on(on);
         if let Some(sc) = shortcut.as_deref() {
             button = button.shortcut(sc);
@@ -443,14 +413,14 @@ fn position(ui: &mut Ui, model: &TransportModel<'_>) {
             (time_g, color::TEXT_3, 0.0),
         ],
     );
-    readout(ui, rects[0], names::POSITION, &pos);
-    readout(ui, rects[1], names::TIME, &time);
+    readout(ui, rects[0], model.lang.transport_position(), &pos);
+    readout(ui, rects[1], model.lang.transport_time(), &time);
 }
 
 fn tempo(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let mut bpm = model.project.tempo.bpm;
     let response = ui.add(
-        NumberField::new(&mut bpm, names::TEMPO)
+        NumberField::new(&mut bpm, model.lang.transport_tempo())
             .unit("BPM")
             .range(Tempo::MIN_BPM..=Tempo::MAX_BPM)
             .step(0.5)
@@ -460,7 +430,7 @@ fn tempo(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     );
     if response.drag_started() {
         actions.push(Action::Edit(EditAction::BeginGesture {
-            label: "Tempo".to_owned(),
+            label: "undo-tempo".to_owned(),
         }));
     }
     if response.changed() {
@@ -482,24 +452,25 @@ fn meter_box(ui: &mut Ui, model: &TransportModel<'_>) {
     px::fill(ui.painter(), rect, radius::M, color32(color::SURFACE_2));
     let pos = w::text_pos_centered(rect, &galley, ui.pixels_per_point());
     ui.painter().galley(pos, galley, color32(color::TEXT_1));
-    readout(ui, rect, names::METER, &text);
+    readout(ui, rect, model.lang.transport_meter(), &text);
 }
 
-/// CPU load as shown: "18 %".
-pub fn cpu_text(load: f32) -> String {
+/// CPU load as shown: "18 %" ("18%" in English).
+pub fn cpu_text(load: f32, t: Lang) -> String {
     let pct = if load.is_finite() {
         (load * 100.0).round().max(0.0)
     } else {
         0.0
     };
-    format!("{pct:.0} %")
+    t.transport_cpu_value(format!("{pct:.0}"))
 }
 
-fn cpu(ui: &mut Ui, load: f32) {
+fn cpu(ui: &mut Ui, model: &TransportModel<'_>) {
+    let (load, t) = (model.cpu, model.lang);
     // Right-to-left layout: value, bar, label.
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = space::SPACE_2;
-        let text = cpu_text(load);
+        let text = cpu_text(load, t);
         let value = w::styled_galley(ui, &text, &typography::VALUE_S);
         let (vr, _) =
             ui.allocate_exact_size(vec2(m::CPU_VALUE_WIDTH, size::CONTROL), Sense::hover());
@@ -516,19 +487,24 @@ fn cpu(ui: &mut Ui, load: f32) {
             px::fill(ui.painter(), fill, 0.0, color32(color::TEXT_2));
         }
 
-        let label = w::styled_galley(ui, names::CPU, &typography::LABEL);
+        let label = w::styled_galley(ui, t.transport_cpu(), &typography::LABEL);
         let (lr, _) =
             ui.allocate_exact_size(vec2(label.size().x.ceil(), size::CONTROL), Sense::hover());
         let pos = w::text_pos(lr, &label, lr.left(), ui.pixels_per_point());
         ui.painter()
             .galley(pos, label, fonts::style_color(&typography::LABEL));
-        readout(ui, lr.union(vr), names::CPU, &text);
+        readout(ui, lr.union(vr), t.transport_cpu(), &text);
     });
 }
 
-fn no_device_chip(ui: &mut Ui) {
+fn no_device_chip(ui: &mut Ui, t: Lang) {
     let font = w::font_at(&typography::SMALL, wm::MEDIUM);
-    let text = w::galley(ui, names::NO_DEVICE, font, typography::SMALL.line_height);
+    let text = w::galley(
+        ui,
+        t.transport_no_device(),
+        font,
+        typography::SMALL.line_height,
+    );
     let width = wm::BUTTON_PADDING_X * 2.0 + m::ERROR_DOT + space::SPACE_2 + text.size().x.ceil();
     let (rect, _) = ui.allocate_exact_size(vec2(width, size::CONTROL), Sense::hover());
     let painter = ui.painter();
@@ -549,12 +525,12 @@ fn no_device_chip(ui: &mut Ui) {
         text,
         color32(color::TEXT_1),
     );
-    text_node(ui, rect, "no_device", names::NO_DEVICE);
+    text_node(ui, rect, "no_device", t.transport_no_device());
 }
 
 /// The "⋯" menu (prototype `menu`): new, open, save, export, start screen.
 fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
-    let response = ui.add(Button::icon(Icon::Ellipsis, names::MENU));
+    let response = ui.add(Button::icon(Icon::Ellipsis, model.lang.transport_menu()));
     // The menu opens one frame after the click: a press and release delivered in one frame
     // (egui-mcp, fast touchpads) would otherwise count as a press outside the new menu and close
     // it at once (the context menu exempts only its own right-click).
@@ -570,19 +546,23 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         ctx.data_mut(|d| d.insert_temp(pending, true));
         ctx.request_repaint();
     }
+    let t = model.lang;
     let p = |a| Action::Project(a);
     let entries_spec = [
-        ("Neues Projekt", p(ProjectAction::New)),
-        ("Projekt öffnen …", p(ProjectAction::Open)),
-        ("Speichern", p(ProjectAction::Save)),
-        ("Speichern unter …", p(ProjectAction::SaveAs)),
-        ("Sammeln und speichern", p(ProjectAction::CollectAndSave)),
-        ("WAV exportieren …", p(ProjectAction::OpenExportDialog)),
-        ("Zum Startbildschirm", p(ProjectAction::ShowStartScreen)),
+        (t.transport_menu_new(), p(ProjectAction::New)),
+        (t.transport_menu_open(), p(ProjectAction::Open)),
+        (t.transport_menu_save(), p(ProjectAction::Save)),
+        (t.transport_menu_save_as(), p(ProjectAction::SaveAs)),
+        (t.transport_menu_collect(), p(ProjectAction::CollectAndSave)),
+        (
+            t.transport_menu_export(),
+            p(ProjectAction::OpenExportDialog),
+        ),
+        (t.transport_menu_start(), p(ProjectAction::ShowStartScreen)),
     ];
     let labels: Vec<Option<String>> = entries_spec
         .iter()
-        .map(|(_, a)| model.keymap.label_for(a, komponist_ui::lang(ui.ctx())))
+        .map(|(_, a)| model.keymap.label_for(a, t))
         .collect();
     let entries: Vec<Entry<'_, Action>> = entries_spec
         .iter()
@@ -595,7 +575,7 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
             }
         })
         .collect();
-    if let Some(action) = ContextMenu::new(names::MENU, &entries).show_on(&response) {
+    if let Some(action) = ContextMenu::new(t.transport_menu(), &entries).show_on(&response) {
         actions.push(action);
     }
 }

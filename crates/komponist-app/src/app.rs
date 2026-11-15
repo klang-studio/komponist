@@ -63,9 +63,8 @@ use crate::keymap::{self, Key, KeyChord, Keymap};
 use crate::meters::Meters;
 use crate::metrics;
 use crate::project_io::{self, RecentList};
-use crate::record::{self, Recording};
+use crate::record::Recording;
 use crate::settings::{PanelSettings, Settings};
-use crate::shell::names;
 use crate::ui_state::{
     Dialog, DockTab, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind, StatusMessage,
     Tool, UiState,
@@ -381,10 +380,7 @@ impl App {
     /// Tells in the status bar that the engine's worker threads run without realtime priority
     /// (same kind as the bridge's hint, `handle_device_event`). Once per stream start.
     pub fn report_workers_without_realtime(&mut self) {
-        self.set_status(
-            "Audio-Threads laufen ohne Echtzeit-Priorität",
-            StatusKind::Info,
-        );
+        self.set_status(self.lang.status_workers_no_realtime(), StatusKind::Info);
     }
 
     /// Tells in the status bar which MIDI inputs appeared or vanished in the last scans
@@ -404,8 +400,12 @@ impl App {
         let texts: Vec<String> = changes
             .iter()
             .map(|change| match change {
-                MidiChange::Appeared(name) => names::midi_connected(&midi_label(name, &all)),
-                MidiChange::Vanished(name) => names::midi_disconnected(&midi_label(name, &all)),
+                MidiChange::Appeared(name) => {
+                    self.lang.status_midi_connected(midi_label(name, &all))
+                }
+                MidiChange::Vanished(name) => {
+                    self.lang.status_midi_disconnected(midi_label(name, &all))
+                }
             })
             .collect();
         self.set_status(texts.join(" · "), StatusKind::Info);
@@ -572,7 +572,7 @@ impl App {
     fn begin_take(&mut self, at: Tick) {
         // A take still open belongs to an earlier capture; it is kept.
         self.finish_take();
-        self.recording = Some(Recording::new(self.doc.project(), at));
+        self.recording = Some(Recording::new(self.doc.project(), at, self.lang));
         self.set_dock_tab(DockTab::Editor);
         if self.ui.dialog.is_none() {
             self.ui.focus = FocusArea::PianoRoll;
@@ -606,7 +606,7 @@ impl App {
             self.ui_action(UiAction::OpenClip(first));
         }
         if let Some((take, notes)) = commit.summary() {
-            self.set_status(record::names::recorded(take, notes), StatusKind::Success);
+            self.set_status(self.lang.record_recorded(take, notes), StatusKind::Success);
         }
     }
 
@@ -636,13 +636,9 @@ impl App {
                 let name = self.device_name(*device);
                 eprintln!("komponist: device {} ({name}): {reason:?}", device.0);
                 let text = match reason {
-                    FailReason::Exited { .. } => {
-                        format!("{name} abgestürzt · die Spur läuft ohne dieses Gerät weiter")
-                    }
-                    FailReason::Unresponsive => {
-                        format!("{name} hängt · die Spur läuft ohne dieses Gerät weiter")
-                    }
-                    FailReason::LoadFailed(_) => format!("{name} lässt sich nicht laden"),
+                    FailReason::Exited { .. } => self.lang.status_device_crashed(&name),
+                    FailReason::Unresponsive => self.lang.status_device_unresponsive(&name),
+                    FailReason::LoadFailed(_) => self.lang.status_device_load_failed(&name),
                 };
                 self.set_status(text, StatusKind::Error);
             }
@@ -658,17 +654,20 @@ impl App {
                 message,
             } => {
                 // Lines without device come from the scan.
-                let name = device.map_or_else(|| "Plugin-Scan".to_owned(), |d| self.device_name(d));
+                let name = device.map_or_else(
+                    || self.lang.status_plugin_scan().to_owned(),
+                    |d| self.device_name(d),
+                );
                 eprintln!("komponist: {name}: {level:?}: {message}");
                 if *level != LogLevel::Warning {
                     // Errors come with a failure the device status already shows.
                     return;
                 }
                 if message.starts_with(STATE_LOG_PREFIX) {
-                    let text = format!("{name}: Zustand konnte nicht geladen werden");
+                    let text = self.lang.status_state_load_failed(&name);
                     self.set_status(text, StatusKind::Error);
                 } else if message.starts_with(RT_LOG_PREFIX) {
-                    let text = format!("{name} läuft ohne Echtzeit-Priorität");
+                    let text = self.lang.status_plugin_no_realtime(&name);
                     self.set_status(text, StatusKind::Info);
                 } else {
                     // The plugin's or bridge's own words.
@@ -694,7 +693,7 @@ impl App {
         };
         let state: Arc<[u8]> = state.into();
         // The changed values reach the running processor as `SetParam`s (`follow_device_states`).
-        self.apply("Preset laden", |p| {
+        self.apply("undo-load-preset", |p| {
             edits::set_device_state(p, device, Some(Arc::clone(&state)))
         });
     }
@@ -736,7 +735,7 @@ impl App {
     /// The plugin name of `device` for messages ("Surge XT"), its id if it is gone.
     pub(crate) fn device_name(&self, device: DeviceId) -> String {
         self.project().find_device(device).map_or_else(
-            || format!("Gerät {}", device.0),
+            || self.lang.status_device_unnamed(device.0),
             |(_, _, d)| d.plugin.name.clone(),
         )
     }
@@ -1121,11 +1120,11 @@ impl App {
             state => {
                 if !self.project().tracks.iter().any(|t| t.arm) {
                     let Some(&track) = self.ui.selection.tracks.iter().next() else {
-                        self.set_status(record::names::NO_TRACK, StatusKind::Error);
+                        self.set_status(self.lang.record_no_track(), StatusKind::Error);
                         return;
                     };
                     // Arming switches monitoring on (S02 "I").
-                    self.apply("Spur scharf schalten", |p| {
+                    self.apply("undo-arm-track", |p| {
                         edits::set_exclusive(p, track, edits::ExclusiveFlag::Arm)
                     });
                     // The engine must know the armed track before it starts capturing.
@@ -1271,9 +1270,9 @@ impl App {
                 if clips.is_empty() {
                     return;
                 }
-                if let Some(copies) =
-                    self.apply_with("Clips duplizieren", |p| edits::duplicate_clips(p, &clips))
-                {
+                if let Some(copies) = self.apply_with("undo-duplicate-clips", |p| {
+                    edits::duplicate_clips(p, &clips)
+                }) {
                     self.select_clips(copies, SelectMode::Replace);
                 }
             }
@@ -1283,7 +1282,7 @@ impl App {
                     return;
                 }
                 let at = self.engine.playhead();
-                self.apply_with("Clips teilen", |p| edits::split_clips(p, &clips, at));
+                self.apply_with("undo-split-clips", |p| edits::split_clips(p, &clips, at));
             }
             EditAction::ToggleMuteSelection => {
                 let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
@@ -1295,7 +1294,7 @@ impl App {
                 if clips.is_empty() {
                     return;
                 }
-                self.apply("Clips stumm schalten", |p| {
+                self.apply("undo-mute-clips", |p| {
                     edits::set_clips_muted(p, &clips, any_unmuted)
                 });
             }
@@ -1309,7 +1308,7 @@ impl App {
                 if tracks.is_empty() {
                     return;
                 }
-                self.apply("Spuren stumm schalten", |p| {
+                self.apply("undo-mute-tracks", |p| {
                     edits::set_track_prop(
                         p,
                         &tracks,
@@ -1323,7 +1322,7 @@ impl App {
                 };
                 let notes = self.selected_notes();
                 let grid = self.ui.piano_roll.grid.ticks(self.project().meter);
-                self.apply("Quantisieren", |p| {
+                self.apply("undo-quantize", |p| {
                     let sel = (!notes.is_empty()).then_some(notes.as_slice());
                     edits::quantize_notes(p, clip, sel, grid)
                 });
@@ -1336,7 +1335,7 @@ impl App {
                 if notes.is_empty() {
                     return;
                 }
-                self.apply("Noten transponieren", |p| {
+                self.apply("undo-transpose-notes", |p| {
                     edits::move_notes(p, clip, &notes, Tick::ZERO, i32::from(semitones))
                 });
             }
@@ -1350,17 +1349,17 @@ impl App {
                 }
                 let grid = self.ui.piano_roll.grid.ticks(self.project().meter);
                 let delta = Tick(grid.0 * i64::from(steps));
-                self.apply("Noten verschieben", |p| {
+                self.apply("undo-move-notes", |p| {
                     edits::move_notes(p, clip, &notes, delta, 0)
                 });
             }
             EditAction::NewMidiTrack => self.new_midi_track(None, pisynth_ref()),
             EditAction::SetProjectProp(prop) => {
-                self.apply("Projekt ändern", |p| edits::set_project_prop(p, prop));
+                self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
             EditAction::SetMasterProp(prop) => {
                 let before = self.doc.revision();
-                if self.apply("Master ändern", |p| edits::set_master_prop(p, prop))
+                if self.apply("undo-change-master", |p| edits::set_master_prop(p, prop))
                     && self.doc.in_gesture()
                     && let ChannelProp::VolumeDb(db) = prop
                 {
@@ -1370,37 +1369,34 @@ impl App {
                 }
             }
             EditAction::AddTrack(spec) => {
-                if let Some(id) = self.apply_with("Spur hinzufügen", |p| edits::add_track(p, spec))
-                {
+                if let Some(id) = self.apply_with("undo-add-track", |p| edits::add_track(p, spec)) {
                     self.select_tracks(vec![id], SelectMode::Replace);
                 }
             }
             EditAction::RemoveTracks(tracks) => {
-                if self.apply("Spuren löschen", |p| edits::remove_tracks(p, &tracks)) {
+                if self.apply("undo-delete-tracks", |p| edits::remove_tracks(p, &tracks)) {
                     self.prune_selection();
                 }
             }
             EditAction::MoveTracks { tracks, to_index } => {
-                self.apply("Spuren verschieben", |p| {
+                self.apply("undo-move-tracks", |p| {
                     edits::move_tracks(p, &tracks, to_index)
                 });
             }
             EditAction::SetTrackProp { tracks, prop } => self.set_track_prop(tracks, prop),
             EditAction::SetExclusive { track, flag } => {
-                self.apply("Exklusiv schalten", |p| {
-                    edits::set_exclusive(p, track, flag)
-                });
+                self.apply("undo-exclusive", |p| edits::set_exclusive(p, track, flag));
             }
             EditAction::AddClip { track, clip } => {
                 if let Some(id) =
-                    self.apply_with("Clip anlegen", |p| edits::add_clip(p, track, clip))
+                    self.apply_with("undo-add-clip", |p| edits::add_clip(p, track, clip))
                 {
                     self.select_clips(vec![id], SelectMode::Replace);
                     self.ui_action(UiAction::OpenClip(id));
                 }
             }
             EditAction::RemoveClips(clips) => {
-                if self.apply("Clips löschen", |p| edits::remove_clips(p, &clips)) {
+                if self.apply("undo-delete-clips", |p| edits::remove_clips(p, &clips)) {
                     self.prune_selection();
                 }
             }
@@ -1409,7 +1405,7 @@ impl App {
                 delta,
                 track_delta,
             } => {
-                self.apply_delta("Clips verschieben", |p| {
+                self.apply_delta("undo-move-clips", |p| {
                     edits::move_clips(p, &clips, delta, track_delta).map(|p| (p, ()))
                 });
             }
@@ -1418,44 +1414,48 @@ impl App {
                 delta,
                 track_delta,
             } => {
-                if let Some(copies) = self.apply_delta("Clips kopieren", |p| {
+                if let Some(copies) = self.apply_delta("undo-copy-clips", |p| {
                     edits::copy_clips(p, &clips, delta, track_delta)
                 }) {
                     self.select_clips(copies, SelectMode::Replace);
                 }
             }
             EditAction::SetClipLength { clip, length } => {
-                self.apply("Clip-Länge", |p| edits::set_clip_length(p, clip, length));
+                self.apply("undo-clip-length", |p| {
+                    edits::set_clip_length(p, clip, length)
+                });
             }
             EditAction::SetClipLoop {
                 clip,
                 loop_length,
                 length,
             } => {
-                self.apply("Clip-Loop", |p| {
+                self.apply("undo-clip-loop", |p| {
                     edits::set_clip_loop(p, clip, loop_length, length)
                 });
             }
             EditAction::SetClipsMuted { clips, muted } => {
-                self.apply("Clips stumm schalten", |p| {
+                self.apply("undo-mute-clips", |p| {
                     edits::set_clips_muted(p, &clips, muted)
                 });
             }
             EditAction::SetClipProp { clip, prop } => {
-                self.apply("Clip ändern", |p| edits::set_clip_prop(p, clip, prop));
+                self.apply("undo-change-clip", |p| edits::set_clip_prop(p, clip, prop));
             }
             EditAction::SelectTake { clip, take } => {
-                self.apply("Take wählen", |p| edits::select_take(p, clip, take));
+                self.apply("undo-select-take", |p| edits::select_take(p, clip, take));
             }
             EditAction::AddNotes { clip, notes } => {
                 if let Some(ids) =
-                    self.apply_with("Noten hinzufügen", |p| edits::add_notes(p, clip, &notes))
+                    self.apply_with("undo-add-notes", |p| edits::add_notes(p, clip, &notes))
                 {
                     self.ui.selection.notes = ids.into_iter().collect();
                 }
             }
             EditAction::RemoveNotes { clip, notes } => {
-                if self.apply("Noten löschen", |p| edits::remove_notes(p, clip, &notes)) {
+                if self.apply("undo-delete-notes", |p| {
+                    edits::remove_notes(p, clip, &notes)
+                }) {
                     for n in &notes {
                         self.ui.selection.notes.remove(n);
                     }
@@ -1467,7 +1467,7 @@ impl App {
                 delta,
                 pitch_delta,
             } => {
-                self.apply_delta("Noten verschieben", |p| {
+                self.apply_delta("undo-move-notes", |p| {
                     edits::move_notes(p, clip, &notes, delta, pitch_delta).map(|p| (p, ()))
                 });
             }
@@ -1477,14 +1477,14 @@ impl App {
                 delta,
                 pitch_delta,
             } => {
-                if let Some(ids) = self.apply_delta("Noten kopieren", |p| {
+                if let Some(ids) = self.apply_delta("undo-copy-notes", |p| {
                     edits::copy_notes(p, clip, &notes, delta, pitch_delta)
                 }) {
                     self.ui.selection.notes = ids.into_iter().collect();
                 }
             }
             EditAction::ResizeNotes { clip, notes, delta } => {
-                self.apply_delta("Noten-Länge", |p| {
+                self.apply_delta("undo-note-length", |p| {
                     edits::resize_notes(p, clip, &notes, delta).map(|p| (p, ()))
                 });
             }
@@ -1493,7 +1493,7 @@ impl App {
                 notes,
                 change,
             } => {
-                let label = "Velocity";
+                let label = "undo-velocity";
                 match change {
                     VelocityChange::Offset(_) => {
                         self.apply_delta(label, |p| {
@@ -1513,31 +1513,35 @@ impl App {
                 step,
                 prop,
             } => {
-                self.apply("Step", |p| edits::set_step(p, clip, row, step, prop));
+                self.apply("undo-step", |p| edits::set_step(p, clip, row, step, prop));
             }
             EditAction::SetStepClipProp { clip, prop } => {
-                self.apply("Pattern ändern", |p| {
+                self.apply("undo-change-pattern", |p| {
                     edits::set_step_clip_prop(p, clip, prop)
                 });
             }
             EditAction::SetStepRow { clip, row, prop } => {
-                self.apply("Zeile ändern", |p| edits::set_step_row(p, clip, row, prop));
+                self.apply("undo-change-row", |p| {
+                    edits::set_step_row(p, clip, row, prop)
+                });
             }
             EditAction::StepClipToMidi(clip) => {
-                self.apply("Als MIDI-Clip", |p| edits::step_clip_to_midi(p, clip));
+                self.apply("undo-as-midi-clip", |p| edits::step_clip_to_midi(p, clip));
             }
             EditAction::RemoveDevice(device) => {
-                if self.apply("Gerät entfernen", |p| edits::remove_device(p, device)) {
+                if self.apply("undo-remove-device", |p| edits::remove_device(p, device)) {
                     self.ui.selection.devices.remove(&device);
                 }
             }
             EditAction::MoveDevice { device, to_index } => {
-                self.apply("Gerät verschieben", |p| {
+                self.apply("undo-move-device", |p| {
                     edits::move_device(p, device, to_index)
                 });
             }
             EditAction::SetDeviceBypass { device, bypass } => {
-                self.apply("Bypass", |p| edits::set_device_bypass(p, device, bypass));
+                self.apply("undo-bypass", |p| {
+                    edits::set_device_bypass(p, device, bypass)
+                });
             }
             EditAction::CopyDevice { device, to, index } => self.copy_device(device, to, index),
             EditAction::DuplicateDevices => self.duplicate_devices(),
@@ -1552,7 +1556,9 @@ impl App {
             TrackProp::Channel(c) => Some(*c),
             _ => None,
         };
-        if !self.apply("Spur ändern", |p| edits::set_track_prop(p, &tracks, prop)) {
+        if !self.apply("undo-change-track", |p| {
+            edits::set_track_prop(p, &tracks, prop)
+        }) {
             return;
         }
         let (Some(channel), true) = (fast, self.doc.in_gesture()) else {
@@ -1584,7 +1590,9 @@ impl App {
             && !self.ui.selection.notes.is_empty()
         {
             let notes = self.selected_notes();
-            if self.apply("Noten löschen", |p| edits::remove_notes(p, clip, &notes)) {
+            if self.apply("undo-delete-notes", |p| {
+                edits::remove_notes(p, clip, &notes)
+            }) {
                 self.ui.selection.notes.clear();
             }
             return;
@@ -1594,12 +1602,12 @@ impl App {
         }
         if !self.ui.selection.clips.is_empty() {
             let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
-            if self.apply("Clips löschen", |p| edits::remove_clips(p, &clips)) {
+            if self.apply("undo-delete-clips", |p| edits::remove_clips(p, &clips)) {
                 self.prune_selection();
             }
         } else if !self.ui.selection.tracks.is_empty() {
             let tracks: Vec<_> = self.ui.selection.tracks.iter().copied().collect();
-            if self.apply("Spuren löschen", |p| edits::remove_tracks(p, &tracks)) {
+            if self.apply("undo-delete-tracks", |p| edits::remove_tracks(p, &tracks)) {
                 self.prune_selection();
             }
         }
@@ -1615,7 +1623,7 @@ impl App {
             index,
             arm_exclusive: true,
         };
-        if let Some(id) = self.apply_with("Neue MIDI-Spur", |p| edits::add_track(p, spec)) {
+        if let Some(id) = self.apply_with("undo-new-midi-track", |p| edits::add_track(p, spec)) {
             self.select_tracks(vec![id], SelectMode::Replace);
         }
     }
@@ -2122,7 +2130,7 @@ impl App {
                     return;
                 };
                 let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
-                self.apply("Preset laden", |p| {
+                self.apply("undo-load-preset", |p| {
                     edits::set_device_state(p, device, Some(Arc::clone(&state)))
                 });
             }
@@ -2131,7 +2139,7 @@ impl App {
             }
             PluginAction::NewPisynthTrack { preset } => {
                 self.dispatch(Action::Edit(EditAction::BeginGesture {
-                    label: "Preset laden".to_owned(),
+                    label: "undo-load-preset".to_owned(),
                 }));
                 self.new_midi_track(None, pisynth_ref());
                 let track = self.ui.selection.tracks.iter().next().copied();
@@ -2196,7 +2204,7 @@ impl App {
                     ..
                 },
             ) => {
-                self.apply_with("Instrument ersetzen", |p| {
+                self.apply_with("undo-replace-instrument", |p| {
                     edits::replace_instrument(p, track, plugin)
                 });
             }
@@ -2208,7 +2216,10 @@ impl App {
                     DropTarget::NewTrack { .. } => match selected {
                         Some(t) => (ChannelRef::Track(t), usize::MAX),
                         None => {
-                            self.set_status("MIDI-Effekte brauchen eine Spur", StatusKind::Error);
+                            self.set_status(
+                                self.lang.status_midi_fx_need_track(),
+                                StatusKind::Error,
+                            );
                             return;
                         }
                     },
@@ -2216,7 +2227,7 @@ impl App {
                     DropTarget::Chain { channel, index } => (channel, index),
                 };
                 if channel == ChannelRef::Master {
-                    self.set_status("MIDI-Effekte brauchen eine Spur", StatusKind::Error);
+                    self.set_status(self.lang.status_midi_fx_need_track(), StatusKind::Error);
                     return;
                 }
                 let spec = NewDevice {
@@ -2224,7 +2235,7 @@ impl App {
                     plugin,
                     state: None,
                 };
-                self.apply_with("MIDI-Effekt hinzufügen", |p| {
+                self.apply_with("undo-add-midi-effect", |p| {
                     edits::insert_device(p, channel, index, spec)
                 });
             }
@@ -2234,7 +2245,7 @@ impl App {
                         Some(t) => (ChannelRef::Track(t), None),
                         None => {
                             // Prototype `dropNew`.
-                            self.set_status("Effekte brauchen eine Spur", StatusKind::Error);
+                            self.set_status(self.lang.status_fx_need_track(), StatusKind::Error);
                             return;
                         }
                     },
@@ -2252,7 +2263,7 @@ impl App {
                     plugin,
                     state: None,
                 };
-                self.apply_with("Effekt hinzufügen", |p| {
+                self.apply_with("undo-add-effect", |p| {
                     edits::insert_device(p, channel, index, spec)
                 });
             }
