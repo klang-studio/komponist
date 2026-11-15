@@ -15,6 +15,7 @@ mod fake_host;
 
 mod acceptance_flow1;
 mod acceptance_flow2;
+mod acceptance_flow2_realtime;
 mod acceptance_flow3;
 mod acceptance_flow4;
 mod acceptance_flow5;
