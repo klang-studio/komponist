@@ -13,23 +13,22 @@ use komponist_ui::widgets::meter::{Meter, MeterState};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::widgets::value_menu;
 
-use super::model::names;
 use super::{Meta, access_label, frame, label, metrics as m, place};
 use crate::actions::{Action, EditAction, UiAction};
 use crate::meters::Meters;
 use crate::ui_state::DockTab;
 use crate::views::ViewCtx;
-use crate::views::mixer::model::names as mixer_names;
 use crate::views::mixer::send_gesture;
 
 /// The channel section of `track`.
 pub(super) fn section(ui: &mut Ui, ctx: &mut ViewCtx<'_>, x: Rangef, y: &mut f32, track: &Track) {
+    let t = ctx.lang;
     let (_, show) = frame(
         ui,
         x,
         y,
-        names::CHANNEL,
-        Meta::Action(names::SHOW_IN_MIXER),
+        t.inspector_section_channel(),
+        Meta::Action(t.inspector_channel_show_in_mixer()),
         |ui, col| {
             let area = col.take(m::CHANNEL_HEIGHT);
             strip(ui, ctx, area, track);
@@ -48,6 +47,7 @@ fn channel_edit(track: &Track, prop: ChannelProp) -> Action {
 }
 
 fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
+    let t = ctx.lang;
     let ch = &track.channel;
     // Fader: compact thumb, scale on the left, as high as the meter.
     let thumb = FaderSize::Compact.thumb();
@@ -57,13 +57,13 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     let mut db = ch.volume_db;
     let r = place(ui, fader_rect, "fader", |ui| {
         ui.add(
-            Fader::new(&mut db, names::VOLUME)
+            Fader::new(&mut db, t.inspector_channel_volume())
                 .compact()
                 .scale(true)
                 .track_length(length),
         )
     });
-    send_gesture(ctx, &r, mixer_names::UNDO_VOLUME, || {
+    send_gesture(ctx, &r, "undo-volume", || {
         channel_edit(track, ChannelProp::VolumeDb(db))
     });
     if value_menu::show(&r, || fmt_db(db)) {
@@ -80,7 +80,9 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     let mut silent = MeterState::new();
     let state = ctx.meters.track_mut(track.id).unwrap_or(&mut silent);
     let r = place(ui, meter_rect, "meter", |ui| {
-        ui.add(Meter::new(state, Meters::NO_PEAKS, names::METER).length(area.height()))
+        ui.add(
+            Meter::new(state, Meters::NO_PEAKS, t.inspector_channel_meter()).length(area.height()),
+        )
     });
     if r.clicked() {
         let all = ui.input(|i| i.modifiers.alt);
@@ -98,7 +100,14 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     let small = typography::SMALL;
     let value = typography::VALUE_M;
     let key = Rect::from_min_size(column.min, vec2(column.width(), small.line_height));
-    label(ui, key, names::VOLUME, &small, None, color::TEXT_3);
+    label(
+        ui,
+        key,
+        t.inspector_channel_volume(),
+        &small,
+        None,
+        color::TEXT_3,
+    );
     let level = Rect::from_min_size(
         pos2(column.left(), key.bottom() + m::VALUE_KEY_GAP),
         vec2(column.width(), value.line_height),
@@ -109,7 +118,7 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
         ui,
         key.union(level),
         "level",
-        &format!("{} {level_text}", names::VOLUME),
+        &format!("{} {level_text}", t.inspector_channel_volume()),
     );
 
     let toggles = Rect::from_min_max(
@@ -124,9 +133,9 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     );
     let mut pan = ch.pan;
     let r = place(ui, knob, "pan", |ui| {
-        ui.add(Knob::pan(&mut pan, names::PAN))
+        ui.add(Knob::pan(&mut pan, t.inspector_channel_pan()))
     });
-    send_gesture(ctx, &r, mixer_names::UNDO_PAN, || {
+    send_gesture(ctx, &r, "undo-pan", || {
         channel_edit(track, ChannelProp::Pan(pan))
     });
     if value_menu::show(&r, || fmt_pan(pan)) {
@@ -138,7 +147,14 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
         pos2(text_left, mid - pan_block / 2.0),
         vec2(column.right() - text_left, small.line_height),
     );
-    label(ui, pan_key, names::PAN, &small, None, color::TEXT_3);
+    label(
+        ui,
+        pan_key,
+        t.inspector_channel_pan(),
+        &small,
+        None,
+        color::TEXT_3,
+    );
     let pan_value = Rect::from_min_size(
         pos2(text_left, pan_key.bottom() + m::PAN_KEY_GAP),
         vec2(pan_key.width(), value.line_height),

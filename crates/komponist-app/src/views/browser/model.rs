@@ -15,6 +15,7 @@
 
 use std::collections::BTreeSet;
 
+use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
 use komponist_model::{ClipContent, ClipId, DeviceRole, PluginRef, Project, TrackId};
 use komponist_plugins::{Catalog, CatalogEntry, EffectCategory};
@@ -25,87 +26,46 @@ use crate::settings::Favorites;
 use crate::ui_state::{BrowserSegment, DockTab};
 use crate::views::format_tag;
 
-/// German texts of the browser (verbatim from `Screens.dc.html` and `ks-view.js`).
-pub mod names {
-    /// Placeholder and accessible name of the search field (`br()`: `search:'Suchen'`).
-    pub const SEARCH: &str = "Suchen";
-    /// Hint in the search field while it has text (`searchHint`).
-    pub const SEARCH_CLEAR: &str = "Esc";
-    /// Accessible name of the segmented control.
-    pub const SEGMENTS: &str = "Browser-Filter";
-    /// The segments (`segs`).
-    pub const SEGMENT_LABELS: [&str; 4] = ["Alle", "Instr.", "Effekte", "Dateien"];
-    /// Accessible name of the row list.
-    pub const LIST: &str = "Browser-Liste";
-    /// Section of the favourites.
-    pub const FAVORITES: &str = "Favoriten";
-    /// Section of the instruments.
-    pub const INSTRUMENTS: &str = "Instrumente";
-    /// Section of the effects.
-    pub const EFFECTS: &str = "Effekte";
-    /// Section of the MIDI effects (WP-88): they sit in front of the instrument.
-    pub const MIDI_EFFECTS: &str = "MIDI-Effekte";
-    /// Section of hexa's factory presets.
-    pub const PRESETS: &str = "Presets · hexa";
-    /// Section of the project's files (segment Alle).
-    pub const PROJECT: &str = "Projekt";
-    /// Folder and section of the recorded takes.
-    pub const TAKES: &str = "Takes";
-    /// Folder and section of the exports.
-    pub const EXPORTS: &str = "Exporte";
-    /// No takes yet (`browserView`).
-    pub const NO_TAKES: &str = "Noch keine Aufnahmen";
-    /// No exports yet (`browserView`).
-    pub const NO_EXPORTS: &str = "Noch keine Exporte";
-    /// Tag of a take row.
-    pub const TAKE_TAG: &str = "MIDI";
-    /// Tag of an export row (`browserView`: `plain(n,'WAV')`).
-    pub const EXPORT_TAG: &str = "WAV";
-    /// Footer without search (`br()` `foot`, S01).
-    pub const FOOT: &str =
-        "Auf eine Spur ziehen lädt das Instrument. Auf leere Fläche ziehen legt eine neue Spur an.";
-    /// Footer while searching (S05 `foot`).
-    pub const FOOT_SEARCH: &str =
-        "Enter fügt den markierten Effekt an die ausgewählte Spur an. Stern: Favorit.";
+/// Hint in the search field while it has text (`searchHint`): a key name.
+pub const SEARCH_CLEAR: &str = "Esc";
+/// Tag of a take row.
+pub const TAKE_TAG: &str = "MIDI";
+/// Tag of an export row (`browserView`: `plain(n,'WAV')`).
+pub const EXPORT_TAG: &str = "WAV";
 
-    /// „3 Treffer für „hall““.
-    pub fn hits(count: usize, query: &str) -> String {
-        format!("{count} Treffer für „{query}“")
-    }
-
-    /// „Presets mit „hall““.
-    pub fn presets_with(query: &str) -> String {
-        format!("Presets mit „{query}“")
-    }
-
-    /// „Kategorie Hall und Delay“.
-    pub fn category(label: &str) -> String {
-        format!("Kategorie {label}")
-    }
-
-    /// A preset in search results: „Glas · hexa“.
-    pub fn preset_hit(name: &str) -> String {
-        format!("{name} · hexa")
-    }
-
-    /// A take: „Take 2 · Lead“.
-    pub fn take(take: &str, track: &str) -> String {
-        format!("{take} · {track}")
-    }
-
-    /// Accessible name of a row's star.
-    pub fn star(name: &str) -> String {
-        format!("Favorit: {name}")
-    }
+/// The labels of the segments in order (`segs`).
+pub fn segment_labels(lang: Lang) -> [&'static str; 4] {
+    [
+        lang.browser_segment_all(),
+        lang.browser_segment_instruments(),
+        lang.browser_segment_effects(),
+        lang.browser_segment_files(),
+    ]
 }
 
-/// The effect categories with their browser labels, in browser order.
-pub const CATEGORIES: [(EffectCategory, &str); 4] = [
-    (EffectCategory::EqFilter, "EQ und Filter"),
-    (EffectCategory::Dynamics, "Dynamik"),
-    (EffectCategory::ReverbDelay, "Hall und Delay"),
-    (EffectCategory::Modulation, "Modulation"),
+/// A take: „Take 2 · Lead“.
+pub fn take_row_name(take: &str, track: &str) -> String {
+    format!("{take} · {track}")
+}
+
+/// The effect categories in browser order.
+pub const CATEGORIES: [EffectCategory; 4] = [
+    EffectCategory::EqFilter,
+    EffectCategory::Dynamics,
+    EffectCategory::ReverbDelay,
+    EffectCategory::Modulation,
 ];
+
+/// The language-independent id of an effect category, for folder keys.
+fn category_id(category: EffectCategory) -> &'static str {
+    match category {
+        EffectCategory::EqFilter => "eq-filter",
+        EffectCategory::Dynamics => "dynamics",
+        EffectCategory::ReverbDelay => "reverb-delay",
+        EffectCategory::Modulation => "modulation",
+        EffectCategory::Other => "other",
+    }
+}
 
 /// What a row is.
 #[derive(Debug, Clone, PartialEq)]
@@ -230,40 +190,53 @@ pub fn export_names(exports: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
-/// The folder key of `label` in `section`.
+/// The folder key of `label` in `section`: ids, not texts, so a language switch keeps the
+/// folders open and closed.
 pub fn folder_key(section: &str, label: &str) -> String {
     format!("{section}/{label}")
+}
+
+/// The section ids of the folder keys.
+mod section {
+    pub const EFFECTS: &str = "effects";
+    pub const PRESETS: &str = "presets";
+    pub const PROJECT: &str = "project";
+    pub const TAKES: &str = "takes";
+    pub const EXPORTS: &str = "exports";
 }
 
 /// Every folder key, collapsed when the browser first shows (S01: all folders ▸).
 pub fn default_collapsed() -> Vec<String> {
     let mut keys: Vec<String> = CATEGORIES
         .iter()
-        .map(|(_, label)| folder_key(names::EFFECTS, label))
+        .map(|c| folder_key(section::EFFECTS, category_id(*c)))
         .collect();
-    keys.extend(komponist_builtin::categories().map(|c| folder_key(names::PRESETS, c)));
-    keys.push(folder_key(names::PROJECT, names::TAKES));
-    keys.push(folder_key(names::PROJECT, names::EXPORTS));
+    keys.extend(komponist_builtin::categories().map(|c| folder_key(section::PRESETS, c)));
+    keys.push(folder_key(section::PROJECT, section::TAKES));
+    keys.push(folder_key(section::PROJECT, section::EXPORTS));
     keys
 }
 
 /// The browser label of an effect category, `None` for uncategorised effects.
-pub fn category_label(category: EffectCategory) -> Option<&'static str> {
-    CATEGORIES
-        .iter()
-        .find(|(c, _)| *c == category)
-        .map(|(_, label)| *label)
+pub fn category_label(lang: Lang, category: EffectCategory) -> Option<&'static str> {
+    match category {
+        EffectCategory::EqFilter => Some(lang.browser_category_eq_filter()),
+        EffectCategory::Dynamics => Some(lang.browser_category_dynamics()),
+        EffectCategory::ReverbDelay => Some(lang.browser_category_reverb_delay()),
+        EffectCategory::Modulation => Some(lang.browser_category_modulation()),
+        EffectCategory::Other => None,
+    }
 }
 
 /// The rows for `input` (module docs).
-pub fn rows(input: &Input<'_>) -> Vec<Row> {
+pub fn rows(lang: Lang, input: &Input<'_>) -> Vec<Row> {
     let query = input.query.trim();
     if input.segment == BrowserSegment::Files {
-        files(input, query)
+        files(lang, input, query)
     } else if query.is_empty() {
-        browse(input)
+        browse(lang, input)
     } else {
-        search(input, query)
+        search(lang, input, query)
     }
 }
 
@@ -280,14 +253,7 @@ fn plugin_row(input: &Input<'_>, entry: &CatalogEntry, level: u8) -> Row {
     )
 }
 
-fn folder(
-    input: &Input<'_>,
-    section: &str,
-    label: &str,
-    count: usize,
-    rows: &mut Vec<Row>,
-) -> bool {
-    let key = folder_key(section, label);
+fn folder(input: &Input<'_>, key: String, label: &str, count: usize, rows: &mut Vec<Row>) -> bool {
     let expanded = !input.collapsed.contains(&key);
     rows.push(Row::new(
         RowKind::Folder { key, expanded },
@@ -314,7 +280,7 @@ fn in_category(e: &CatalogEntry, category: EffectCategory) -> bool {
     is_effect(e) && e.category.unwrap_or(EffectCategory::Other) == category
 }
 
-fn browse(input: &Input<'_>) -> Vec<Row> {
+fn browse(lang: Lang, input: &Input<'_>) -> Vec<Row> {
     let entries = input.catalog.entries();
     let all = input.segment == BrowserSegment::All;
     let mut rows = Vec::new();
@@ -324,55 +290,58 @@ fn browse(input: &Input<'_>) -> Vec<Row> {
             .filter(|e| input.favorites.contains(&e.plugin))
             .collect();
         if !favorites.is_empty() {
-            rows.push(Row::section(names::FAVORITES));
+            rows.push(Row::section(lang.browser_favorites()));
             rows.extend(favorites.iter().map(|e| plugin_row(input, e, 0)));
         }
     }
     if all || input.segment == BrowserSegment::Instruments {
         let instruments: Vec<&CatalogEntry> = entries.iter().filter(|e| is_instrument(e)).collect();
         if !instruments.is_empty() {
-            rows.push(Row::section(names::INSTRUMENTS));
+            rows.push(Row::section(lang.browser_instruments()));
             rows.extend(instruments.iter().map(|e| plugin_row(input, e, 0)));
         }
     }
     if all || input.segment == BrowserSegment::Effects {
-        effects(input, entries, all, &mut rows);
+        effects(lang, input, entries, all, &mut rows);
         let midi: Vec<&CatalogEntry> = entries.iter().filter(|e| is_midi_effect(e)).collect();
         if !midi.is_empty() {
-            rows.push(Row::section(names::MIDI_EFFECTS));
+            rows.push(Row::section(lang.browser_midi_effects()));
             rows.extend(midi.iter().map(|e| plugin_row(input, e, 0)));
         }
     }
     if all || input.segment == BrowserSegment::Instruments {
-        presets(input, &mut rows);
+        presets(lang, input, &mut rows);
     }
     if all {
-        rows.push(Row::section(names::PROJECT));
+        rows.push(Row::section(lang.browser_project()));
         let takes = takes(input.project, "");
-        if folder(input, names::PROJECT, names::TAKES, takes.len(), &mut rows) {
-            push_or_empty(&mut rows, takes, names::NO_TAKES, 1);
+        let key = folder_key(section::PROJECT, section::TAKES);
+        if folder(input, key, lang.browser_takes(), takes.len(), &mut rows) {
+            push_or_empty(&mut rows, takes, lang.browser_no_takes(), 1);
         }
         let exports = exports(input, "");
-        if folder(
-            input,
-            names::PROJECT,
-            names::EXPORTS,
-            exports.len(),
-            &mut rows,
-        ) {
-            push_or_empty(&mut rows, exports, names::NO_EXPORTS, 1);
+        let key = folder_key(section::PROJECT, section::EXPORTS);
+        if folder(input, key, lang.browser_exports(), exports.len(), &mut rows) {
+            push_or_empty(&mut rows, exports, lang.browser_no_exports(), 1);
         }
     }
     rows
 }
 
 /// The effects (audio effects; the MIDI effects follow in their own section): category folders (Alle) or sub-headers (Effekte), then the uncategorised ones.
-fn effects(input: &Input<'_>, entries: &[CatalogEntry], folders: bool, rows: &mut Vec<Row>) {
+fn effects(
+    lang: Lang,
+    input: &Input<'_>,
+    entries: &[CatalogEntry],
+    folders: bool,
+    rows: &mut Vec<Row>,
+) {
     if !entries.iter().any(is_effect) {
         return;
     }
-    rows.push(Row::section(names::EFFECTS));
-    for (category, label) in CATEGORIES {
+    rows.push(Row::section(lang.browser_effects()));
+    for category in CATEGORIES {
+        let label = category_label(lang, category).unwrap_or_default();
         let members: Vec<&CatalogEntry> = entries
             .iter()
             .filter(|e| in_category(e, category))
@@ -381,7 +350,8 @@ fn effects(input: &Input<'_>, entries: &[CatalogEntry], folders: bool, rows: &mu
             continue;
         }
         if folders {
-            if folder(input, names::EFFECTS, label, members.len(), rows) {
+            let key = folder_key(section::EFFECTS, category_id(category));
+            if folder(input, key, label, members.len(), rows) {
                 rows.extend(members.iter().map(|e| plugin_row(input, e, 1)));
             }
         } else {
@@ -398,7 +368,7 @@ fn effects(input: &Input<'_>, entries: &[CatalogEntry], folders: bool, rows: &mu
 }
 
 /// hexa's factory presets in category folders, if hexa is in the catalog.
-fn presets(input: &Input<'_>, rows: &mut Vec<Row>) {
+fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
     let has_hexa = input
         .catalog
         .entries()
@@ -407,12 +377,13 @@ fn presets(input: &Input<'_>, rows: &mut Vec<Row>) {
     if !has_hexa {
         return;
     }
-    rows.push(Row::section(names::PRESETS));
+    rows.push(Row::section(lang.browser_presets()));
     let all: Vec<komponist_builtin::PresetInfo> = komponist_builtin::presets().collect();
     for category in komponist_builtin::categories() {
         let members: Vec<&komponist_builtin::PresetInfo> =
             all.iter().filter(|p| p.category == category).collect();
-        if folder(input, names::PRESETS, category, members.len(), rows) {
+        let key = folder_key(section::PRESETS, category);
+        if folder(input, key, category, members.len(), rows) {
             rows.extend(
                 members
                     .iter()
@@ -442,7 +413,7 @@ fn takes(project: &Project, query: &str) -> Vec<Row> {
                 if take.name.is_empty() {
                     continue;
                 }
-                let name = names::take(&take.name, &track.name);
+                let name = take_row_name(&take.name, &track.name);
                 if name.to_lowercase().contains(query) {
                     rows.push(Row::new(
                         RowKind::Take {
@@ -450,7 +421,7 @@ fn takes(project: &Project, query: &str) -> Vec<Row> {
                             take: index,
                         },
                         name,
-                        names::TAKE_TAG,
+                        TAKE_TAG,
                         0,
                     ));
                 }
@@ -460,19 +431,19 @@ fn takes(project: &Project, query: &str) -> Vec<Row> {
     rows
 }
 
-fn files(input: &Input<'_>, query: &str) -> Vec<Row> {
-    let mut rows = vec![Row::section(names::TAKES)];
+fn files(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
+    let mut rows = vec![Row::section(lang.browser_takes())];
     push_or_empty(
         &mut rows,
         takes(input.project, &query.to_lowercase()),
-        names::NO_TAKES,
+        lang.browser_no_takes(),
         0,
     );
-    rows.push(Row::section(names::EXPORTS));
+    rows.push(Row::section(lang.browser_exports()));
     push_or_empty(
         &mut rows,
         exports(input, &query.to_lowercase()),
-        names::NO_EXPORTS,
+        lang.browser_no_exports(),
         0,
     );
     rows
@@ -484,11 +455,11 @@ fn exports(input: &Input<'_>, query: &str) -> Vec<Row> {
         .exports
         .iter()
         .filter(|name| name.to_lowercase().contains(query))
-        .map(|name| Row::new(RowKind::Plain, name.as_str(), names::EXPORT_TAG, 0))
+        .map(|name| Row::new(RowKind::Plain, name.as_str(), EXPORT_TAG, 0))
         .collect()
 }
 
-fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
+fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
     let segment_has = |e: &CatalogEntry| match input.segment {
         BrowserSegment::Instruments => is_instrument(e),
         BrowserSegment::Effects => is_effect(e) || is_midi_effect(e),
@@ -500,22 +471,30 @@ fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
         .into_iter()
         .filter(|e| segment_has(e))
         .collect();
-    let mut rows = vec![Row::section(names::hits(hits.len(), query))];
+    let mut rows = vec![Row::section(lang.browser_hits(hits.len(), query))];
     rows.extend(hits.iter().map(|e| plugin_row(input, e, 0)));
 
     let lower = query.to_lowercase();
     if input.segment != BrowserSegment::Effects {
         let presets: Vec<Row> = komponist_builtin::presets()
             .filter(|p| p.name.to_lowercase().contains(&lower))
-            .map(|p| Row::new(RowKind::Preset(p.index), names::preset_hit(p.name), "", 0))
+            .map(|p| {
+                Row::new(
+                    RowKind::Preset(p.index),
+                    lang.browser_preset_hit(p.name),
+                    "",
+                    0,
+                )
+            })
             .collect();
         if !presets.is_empty() {
-            rows.push(Row::section(names::presets_with(query)));
+            rows.push(Row::section(lang.browser_presets_with(query)));
             rows.extend(presets);
         }
     }
     if input.segment != BrowserSegment::Instruments {
-        for (category, label) in CATEGORIES {
+        for category in CATEGORIES {
+            let label = category_label(lang, category).unwrap_or_default();
             if !label.to_lowercase().contains(&lower) {
                 continue;
             }
@@ -528,7 +507,7 @@ fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
                 .map(|e| plugin_row(input, e, 0))
                 .collect();
             if !more.is_empty() {
-                rows.push(Row::section(names::category(label)));
+                rows.push(Row::section(lang.browser_category(label)));
                 rows.extend(more);
             }
         }
@@ -541,14 +520,17 @@ fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
 /// hits of the Alle segment ([`search`], so the matching is the browser's). Presets, folders,
 /// takes and files are left out; sections without a plugin vanish. `effects_only` keeps the audio
 /// effects (the master chain takes nothing else).
-pub fn picker_rows(input: &Input<'_>, effects_only: bool) -> Vec<Row> {
+pub fn picker_rows(lang: Lang, input: &Input<'_>, effects_only: bool) -> Vec<Row> {
     let none = BTreeSet::new();
     let with = |segment| {
-        rows(&Input {
-            segment,
-            collapsed: &none,
-            ..*input
-        })
+        rows(
+            lang,
+            &Input {
+                segment,
+                collapsed: &none,
+                ..*input
+            },
+        )
     };
     let all = if input.query.trim().is_empty() {
         let mut all = with(BrowserSegment::Instruments);
@@ -584,7 +566,8 @@ pub fn picker_rows(input: &Input<'_>, effects_only: bool) -> Vec<Row> {
 /// that are instruments (so the search is the browser's), each plugin once, no section headers.
 pub fn instrument_rows(input: &Input<'_>) -> Vec<Row> {
     let mut seen: Vec<PluginRef> = Vec::new();
-    picker_rows(input, false)
+    // Only the plugin rows are kept: no text of the result depends on the language.
+    picker_rows(Lang::default(), input, false)
         .into_iter()
         .filter(|r| {
             let RowKind::Plugin { plugin, kind, .. } = &r.kind else {
@@ -677,6 +660,7 @@ pub fn hexa_of(project: &Project, track: Option<TrackId>) -> Option<komponist_mo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use komponist_i18n::de;
     use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat};
     use komponist_model::fixtures::demo_project;
 
@@ -756,7 +740,10 @@ mod tests {
     fn all_lists_sections_like_s01() {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
         let collapsed: BTreeSet<String> = default_collapsed().into_iter().collect();
-        let rows = rows(&input(&c, &f, &collapsed, &p, BrowserSegment::All, ""));
+        let rows = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::All, ""),
+        );
         let sections: Vec<&str> = rows
             .iter()
             .filter(|r| r.kind == RowKind::Section)
@@ -811,9 +798,12 @@ mod tests {
     fn open_folders_show_their_members_indented() {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
         let mut collapsed: BTreeSet<String> = default_collapsed().into_iter().collect();
-        collapsed.remove(&folder_key(names::EFFECTS, "Hall und Delay"));
-        collapsed.remove(&folder_key(names::PROJECT, names::EXPORTS));
-        let rows = rows(&input(&c, &f, &collapsed, &p, BrowserSegment::All, ""));
+        collapsed.remove(&folder_key("effects", "reverb-delay"));
+        collapsed.remove(&folder_key("project", "exports"));
+        let rows = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::All, ""),
+        );
         let i = rows
             .iter()
             .position(|r| r.name == "Hall und Delay")
@@ -830,21 +820,17 @@ mod tests {
         );
         assert!(rows[i + 1..i + 6].iter().all(|r| r.level == 1));
         assert_eq!(rows[i + 1].tag, "INTERN");
-        assert_eq!(rows.last().unwrap().name, names::NO_EXPORTS);
+        assert_eq!(rows.last().unwrap().name, de::BROWSER_NO_EXPORTS);
     }
 
     #[test]
     fn segments_filter() {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
         let collapsed = BTreeSet::new();
-        let inst = rows(&input(
-            &c,
-            &f,
-            &collapsed,
-            &p,
-            BrowserSegment::Instruments,
-            "",
-        ));
+        let inst = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::Instruments, ""),
+        );
         assert!(inst.iter().all(|r| !matches!(
             r.kind,
             RowKind::Plugin {
@@ -853,7 +839,10 @@ mod tests {
             }
         )));
         assert_eq!(inst[0].name, "Instrumente");
-        let fx = rows(&input(&c, &f, &collapsed, &p, BrowserSegment::Effects, ""));
+        let fx = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::Effects, ""),
+        );
         assert_eq!(
             names_of(&fx[..5]),
             [
@@ -865,8 +854,11 @@ mod tests {
             ]
         );
         assert_eq!(fx[1].kind, RowKind::Plain);
-        assert!(!fx.iter().any(|r| r.name == names::PRESETS));
-        let files = rows(&input(&c, &f, &collapsed, &p, BrowserSegment::Files, ""));
+        assert!(!fx.iter().any(|r| r.name == de::BROWSER_PRESETS));
+        let files = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::Files, ""),
+        );
         assert_eq!(
             names_of(&files),
             [
@@ -889,17 +881,20 @@ mod tests {
         let exports = export_names(&paths);
         assert_eq!(exports, ["Nachtfahrt.wav", "Loop.wav"]);
         let with = |segment, query| {
-            rows(&Input {
-                exports: &exports,
-                ..input(&c, &f, &collapsed, &p, segment, query)
-            })
+            rows(
+                Lang::De,
+                &Input {
+                    exports: &exports,
+                    ..input(&c, &f, &collapsed, &p, segment, query)
+                },
+            )
         };
         let files = with(BrowserSegment::Files, "");
         assert_eq!(
             names_of(&files[2..]),
             ["Exporte", "Nachtfahrt.wav", "Loop.wav"]
         );
-        assert_eq!(files[3].tag, names::EXPORT_TAG);
+        assert_eq!(files[3].tag, EXPORT_TAG);
         assert_eq!(files[3].kind, RowKind::Plain);
         let hits = with(BrowserSegment::Files, "loop");
         assert_eq!(names_of(&hits[2..]), ["Exporte", "Loop.wav"]);
@@ -915,14 +910,10 @@ mod tests {
     fn search_is_built_like_s05() {
         let (c, f, p) = (catalog(), Favorites::default(), demo_project());
         let collapsed = BTreeSet::new();
-        let rows = rows(&input(
-            &c,
-            &f,
-            &collapsed,
-            &p,
-            BrowserSegment::Effects,
-            "hall",
-        ));
+        let rows = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::Effects, "hall"),
+        );
         assert_eq!(rows[0].name, "2 Treffer für „hall“");
         assert_eq!(names_of(&rows[1..3]), ["Hall", "Dragonfly Hall Reverb"]);
         let k = rows
@@ -951,7 +942,7 @@ mod tests {
         q: &str,
     ) -> Vec<Row> {
         let collapsed = BTreeSet::new();
-        rows(&input(c, f, &collapsed, p, segment, q))
+        rows(Lang::De, &input(c, f, &collapsed, p, segment, q))
     }
 
     #[test]
@@ -965,7 +956,10 @@ mod tests {
         let p = demo_project();
         let collapsed = BTreeSet::new();
         let f = Favorites::default();
-        let rows = rows(&input(&c, &f, &collapsed, &p, BrowserSegment::All, ""));
+        let rows = rows(
+            Lang::De,
+            &input(&c, &f, &collapsed, &p, BrowserSegment::All, ""),
+        );
         let mut seen = std::collections::HashSet::new();
         let mut section = String::new();
         for r in &rows {

@@ -145,7 +145,7 @@ fn message(ui: &mut Ui, rect: Rect, msg: Message<'_>) -> bool {
             Some(names::LOADING_DETAIL.to_owned()),
         ),
         Message::Crashed(reason) => {
-            let (title, text) = failure_texts(reason);
+            let (title, text) = failure_texts(komponist_ui::lang(ui.ctx()), reason);
             (title.to_owned(), color::STATE_ERROR, Some(text))
         }
         Message::Missing(name) => (names::missing(name), color::STATE_ERROR, None),

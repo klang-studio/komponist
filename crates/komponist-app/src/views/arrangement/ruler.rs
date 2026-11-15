@@ -11,7 +11,7 @@ use komponist_ui::timeline::{RulerKind, RulerModel, paint_ruler, ruler_access};
 use komponist_ui::{px, widgets as w};
 
 use super::geometry::Geometry;
-use super::{Arrangement, Drag, metrics, names};
+use super::{Arrangement, Drag, count_line, metrics};
 use crate::actions::{Action, TransportAction};
 use crate::views::ViewCtx;
 
@@ -48,7 +48,7 @@ impl Arrangement {
         let ppp = ui.pixels_per_point();
         let painter = ui.painter().clone();
         px::fill(&painter, g.count, 0.0, color32(color::SURFACE_2));
-        let count = names::count_line(project);
+        let count = count_line(ctx.lang, project);
         let galley = w::styled_galley(ui, &count, &typography::VALUE_S);
         let pos = w::text_pos(
             g.count,

@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 
+use komponist_i18n::Lang;
 use komponist_model::format::MINUS;
 use komponist_model::{
     ClipContent, ClipId, Device, DeviceId, DeviceRole, Meter, Project, TICKS_PER_STEP, Tick,
@@ -16,159 +17,21 @@ use crate::ui_state::{DockTab, PanelLayout};
 use crate::views::browser::model::selected_track;
 use crate::views::format_tag;
 
-/// German texts of the inspector (`Screens.dc.html` `sec`, `F`, `trackSec`, the inspector
-/// markup; `ks-view.js` `inspView`; S01, S02, S03, S10).
-pub mod names {
-    /// Section "Clip".
-    pub const CLIP: &str = "Clip";
-    /// Section "Spur".
-    pub const TRACK: &str = "Spur";
-    /// Section "Bus" of a selected bus or group (routing proposal 07-inspektor C).
-    pub const BUS: &str = "Bus";
-    /// Section "Geräte".
-    pub const DEVICES: &str = "Geräte";
-    /// Section "Parameter" (a touched device parameter, WP-89).
-    pub const PARAMETER: &str = "Parameter";
-    /// Its field "Wert".
-    pub const VALUE: &str = "Wert";
-    /// Its field "Standard".
-    pub const DEFAULT: &str = "Standard";
-    /// Its field "Bereich".
-    pub const RANGE: &str = "Bereich";
-    /// Section "Kanal".
-    pub const CHANNEL: &str = "Kanal";
-    /// Section "Projekt" (nothing selected).
-    pub const PROJECT: &str = "Projekt";
-    /// Section "Auswahl" (nothing selected).
-    pub const SELECTION: &str = "Auswahl";
-    /// Its text (S10).
-    pub const NOTHING_SELECTED: &str = "Nichts ausgewählt. Wenn nichts gewählt ist, zeigt der Inspector die Projekt-Einstellungen.";
-    /// Clip kind of a MIDI clip (`meta:'MIDI'`).
-    pub const MIDI: &str = "MIDI";
-    /// Clip kind of a step clip (`meta:'STEP'`).
-    pub const STEP: &str = "STEP";
-    /// The clip being recorded (`meta:'nimmt auf'`).
-    pub const RECORDING: &str = "nimmt auf";
-    /// Field "Start".
-    pub const START: &str = "Start";
-    /// Field "Länge".
-    pub const LENGTH: &str = "Länge";
-    /// Field "Loop".
-    pub const LOOP: &str = "Loop";
-    /// Field "Loop-Länge".
-    pub const LOOP_LENGTH: &str = "Loop-Länge";
-    /// Field "Transponieren".
-    pub const TRANSPOSE: &str = "Transponieren";
-    /// Its unit.
+/// Units of the number fields: the same in every language (`docs/I18N.md` §5).
+pub mod units {
+    /// Unit of the transposition.
     pub const SEMITONES: &str = "st";
-    /// Field "Velocity".
-    pub const VELOCITY: &str = "Velocity";
     /// Unit of velocity and swing.
     pub const PERCENT: &str = "%";
-    /// Field "Pattern" (step clips).
-    pub const PATTERN: &str = "Pattern";
-    /// Its unit.
-    pub const STEPS: &str = "Steps";
-    /// Field "Auflösung" (step clips).
-    pub const RESOLUTION: &str = "Auflösung";
-    /// Field "Swing" (step clips).
-    pub const SWING: &str = "Swing";
-    /// Field "Noten" (recording).
-    pub const NOTES: &str = "Noten";
-    /// Field "Quantisieren" (recording).
-    pub const QUANTIZE: &str = "Quantisieren";
-    /// Value "an".
-    pub const ON: &str = "an";
-    /// Value "aus".
-    pub const OFF: &str = "aus";
-    /// The takes list (S02 "Jeder Durchlauf wird ein eigener Take im selben Clip, wählbar im
-    /// Inspector"; "Takes" as in the browser's Projekt section).
-    pub const TAKES: &str = "Takes";
-    /// Dropdown "Instrument".
-    pub const INSTRUMENT: &str = "Instrument";
-    /// Its entry for a track without instrument (not in the design).
-    pub const NO_INSTRUMENT: &str = "Kein Instrument";
-    /// Dropdown "Eingang".
-    pub const INPUT: &str = "Eingang";
-    /// Its default entry.
-    pub const ALL_INPUTS: &str = "Alle MIDI-Eingänge";
-    /// Dropdown "Kanal" (MIDI channel).
-    pub const MIDI_CHANNEL: &str = "Kanal";
-    /// Its default entry.
-    pub const OMNI: &str = "Omni";
-    /// Meta action of "Geräte" (`meta:'+ Effekt'`).
-    pub const ADD_EFFECT: &str = "+ Effekt";
-    /// Meta action of "Kanal" (`meta:'im Mixer zeigen'`).
-    pub const SHOW_IN_MIXER: &str = "im Mixer zeigen";
-    /// The level in the compact strip ("Lautstärke").
-    pub const VOLUME: &str = "Lautstärke";
-    /// The pan knob ("Pan").
-    pub const PAN: &str = "Pan";
-    /// The meter of the compact strip.
-    pub const METER: &str = "Pegel";
-    /// Field "Tempo".
-    pub const TEMPO: &str = "Tempo";
-    /// Its unit.
+    /// Unit of the tempo.
     pub const BPM: &str = "BPM";
-    /// Field "Taktart".
-    pub const METER_FIELD: &str = "Taktart";
-    /// Field "Abtastrate" (S10).
-    pub const SAMPLE_RATE: &str = "Abtastrate";
-    /// Its unit.
+    /// Unit of the sample rate.
     pub const KHZ: &str = "kHz";
-    /// Field "Spuren".
-    pub const TRACKS: &str = "Spuren";
-    /// Unit of the project length.
-    pub const BARS: &str = "Takte";
-    /// Accessible name of the power square of a device row (as the device card's switch).
-    pub const ACTIVE: &str = "Aktiv";
-    /// Status of a loading device (`ks-view.js` `fmt:'lädt'`).
-    pub const LOADING: &str = "lädt";
-    /// Status of a crashed device (S05 `D('Airwindows Cons.','abgestürzt',{err:1})`).
-    pub const CRASHED: &str = "abgestürzt";
-    /// Status of a device that failed to load. Short on purpose (owner decision Q5, 2026-11-14), so
-    /// the name stays readable; the card and the plugin frame keep „Lässt sich nicht laden“.
-    pub const LOAD_FAILED: &str = "lädt nicht";
-    /// Status of a device that stopped answering (as the card's „Hängt“).
-    pub const UNRESPONSIVE: &str = "hängt";
-    /// Status of a missing device (by analogy, S06 „Plugin fehlt“).
-    pub const MISSING: &str = "fehlt";
-    pub use crate::views::late::{LATE, late_blocks};
-    /// Undo label of a clip field drag.
-    pub const UNDO_CLIP: &str = "Clip ändern";
-    /// Undo label of a tempo drag.
-    pub const UNDO_TEMPO: &str = "Tempo";
-    /// The name field while renaming.
-    pub const RENAME: &str = "Name";
+}
 
-    /// „3 / 6“: the track's position.
-    pub fn position(index: usize, count: usize) -> String {
-        format!("{} / {count}", index + 1)
-    }
-
-    /// „Farbe Grün“: a colour swatch.
-    pub fn swatch(hue: &str) -> String {
-        format!("Farbe {hue}")
-    }
-
-    /// „Gerät LSP Para EQ x8“: a device row.
-    pub fn device(name: &str) -> String {
-        format!("Gerät {name}")
-    }
-
-    /// „14 Noten“: the notes of a take.
-    pub fn notes(n: usize) -> String {
-        if n == 1 {
-            "1 Note".to_owned()
-        } else {
-            format!("{n} Noten")
-        }
-    }
-
-    /// „Take 2“ for a take without name (a hand-drawn clip's only take has none).
-    pub fn take(index: usize) -> String {
-        format!("Take {}", index + 1)
-    }
+/// „3 / 6“: the track's position.
+pub fn position(index: usize, count: usize) -> String {
+    format!("{} / {count}", index + 1)
 }
 
 /// What the inspector shows (`inspView`): the clip section for the one selected clip or the take
@@ -261,12 +124,12 @@ pub enum RowStatus {
 
 impl DeviceRow {
     /// The text on the right: the format tag, or the failure.
-    pub fn tag(&self, format: &'static str) -> &'static str {
+    pub fn tag(&self, lang: Lang, format: &'static str) -> &'static str {
         match self.status {
-            RowStatus::Crashed => names::CRASHED,
-            RowStatus::LoadFailed => names::LOAD_FAILED,
-            RowStatus::Unresponsive => names::UNRESPONSIVE,
-            RowStatus::Missing => names::MISSING,
+            RowStatus::Crashed => lang.inspector_device_crashed(),
+            RowStatus::LoadFailed => lang.inspector_device_load_failed(),
+            RowStatus::Unresponsive => lang.inspector_device_unresponsive(),
+            RowStatus::Missing => lang.inspector_device_missing(),
             RowStatus::Ok | RowStatus::Loading => format,
         }
     }
@@ -314,7 +177,7 @@ pub struct TakeRow {
 }
 
 /// The takes of `content` if there is more than one (after loop recording), else none.
-pub fn take_rows(content: &ClipContent) -> Vec<TakeRow> {
+pub fn take_rows(lang: Lang, content: &ClipContent) -> Vec<TakeRow> {
     let ClipContent::Midi(m) = content else {
         return Vec::new();
     };
@@ -326,7 +189,7 @@ pub fn take_rows(content: &ClipContent) -> Vec<TakeRow> {
         .enumerate()
         .map(|(i, t)| TakeRow {
             name: if t.name.is_empty() {
-                names::take(i)
+                lang.inspector_take(i + 1)
             } else {
                 t.name.clone()
             },
@@ -441,10 +304,13 @@ mod tests {
             bypass: false,
             status,
         };
-        assert_eq!(row(RowStatus::Crashed).tag("CLAP"), "abgestürzt");
-        assert_eq!(row(RowStatus::LoadFailed).tag("CLAP"), "lädt nicht");
-        assert_eq!(row(RowStatus::Unresponsive).tag("CLAP"), "hängt");
-        assert_eq!(row(RowStatus::Ok).tag("CLAP"), "CLAP");
+        assert_eq!(row(RowStatus::Crashed).tag(Lang::De, "CLAP"), "abgestürzt");
+        assert_eq!(
+            row(RowStatus::LoadFailed).tag(Lang::De, "CLAP"),
+            "lädt nicht"
+        );
+        assert_eq!(row(RowStatus::Unresponsive).tag(Lang::De, "CLAP"), "hängt");
+        assert_eq!(row(RowStatus::Ok).tag(Lang::De, "CLAP"), "CLAP");
     }
 
     /// A builtin host that has seen every device of `p` (unknown devices report `Ok`).
@@ -523,10 +389,10 @@ mod tests {
         assert_eq!(rows.len(), 4);
         let (hexa, tag) = &rows[0];
         assert!(hexa.instrument && hexa.status == RowStatus::Ok);
-        assert_eq!(hexa.tag(tag), "INTERN");
+        assert_eq!(hexa.tag(Lang::De, tag), "INTERN");
         let (eq, tag) = &rows[1];
         assert_eq!(eq.status, RowStatus::Missing);
-        assert_eq!(eq.tag(tag), "fehlt");
+        assert_eq!(eq.tag(Lang::De, tag), "fehlt");
         assert!(rows[2].0.bypass);
     }
 
@@ -550,13 +416,13 @@ mod tests {
             takes: vec![take("", 3)],
             active_take: 0,
         });
-        assert!(take_rows(&one).is_empty());
+        assert!(take_rows(Lang::De, &one).is_empty());
         let two = ClipContent::Midi(MidiClip {
             takes: vec![take("Take 1", 2), take("Take 2", 1)],
             active_take: 1,
         });
         assert_eq!(
-            take_rows(&two),
+            take_rows(Lang::De, &two),
             [
                 TakeRow {
                     name: "Take 1".into(),
@@ -570,7 +436,7 @@ mod tests {
                 }
             ]
         );
-        assert_eq!(names::notes(1), "1 Note");
+        assert_eq!(Lang::De.inspector_take_notes(1), "1 Note");
     }
 
     #[test]

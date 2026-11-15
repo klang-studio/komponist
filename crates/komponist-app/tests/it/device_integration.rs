@@ -13,9 +13,9 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::panels::statusbar;
 use komponist_app::ui_state::DockTab;
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, EditAction, PluginAction, UiAction};
 use komponist_builtin::Internal;
+use komponist_i18n::{Lang, de};
 use komponist_model::edits::{NewDevice, NewTrack};
 use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
@@ -138,7 +138,7 @@ fn decay_wire() -> usize {
 }
 
 fn knob(h: &Harness<'_, App>, name: &str) -> Rect {
-    h.get_by_role_and_label(Role::Group, &names::card("Hall"))
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Hall"))
         .get_by_role_and_label(Role::Slider, name)
         .rect()
 }
@@ -293,7 +293,7 @@ fn the_context_menu_of_a_parameter_has_standard_and_wert_eingeben_only() {
     assert_ne!(hall_values(h.state(), hall)[decay_wire()], default);
 
     right_click(&mut h, decay.center());
-    let menu = h.get_by_role_and_label(Role::Menu, names::PARAMETER);
+    let menu = h.get_by_role_and_label(Role::Menu, de::DEVICES_PARAMETER);
     let labels: Vec<String> = menu
         .query_all_by_role(Role::MenuItem)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
@@ -303,17 +303,21 @@ fn the_context_menu_of_a_parameter_has_standard_and_wert_eingeben_only() {
         2,
         "nothing else for now (automation, MIDI learn and macros are only prepared): {labels:?}"
     );
-    assert!(labels.iter().any(|l| l.starts_with(names::TO_DEFAULT)));
-    assert!(labels.iter().any(|l| l.starts_with(names::ENTER_VALUE)));
+    assert!(labels.iter().any(|l| l.starts_with(de::DEVICES_TO_DEFAULT)));
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with(de::DEVICES_ENTER_VALUE))
+    );
 
     // "Auf Standard" is the Alt-click: the default goes out as SetParam.
-    let item = h.get_by_label(names::TO_DEFAULT).rect();
+    let item = h.get_by_label(de::DEVICES_TO_DEFAULT).rect();
     click(&mut h, item.center());
     assert_eq!(hall_values(h.state(), hall)[decay_wire()], default);
 
     // "Wert eingeben" opens the text entry over the knob.
     right_click(&mut h, decay.center());
-    let item = h.get_by_label(names::ENTER_VALUE).rect();
+    let item = h.get_by_label(de::DEVICES_ENTER_VALUE).rect();
     click(&mut h, item.center());
     h.run_steps(2);
     assert!(
@@ -331,11 +335,13 @@ fn a_maximised_dock_keeps_the_frames_244_high_and_leaves_the_space_below_empty()
     let mut h = harness(app);
     h.run_steps(5);
     let frame = |h: &Harness<'_, App>| {
-        h.get_by_role_and_label(Role::Group, &names::card("Hall"))
+        h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Hall"))
             .rect()
     };
     let normal = frame(&h);
-    let chain_normal = h.get_by_role_and_label(Role::Group, names::CHAIN).rect();
+    let chain_normal = h
+        .get_by_role_and_label(Role::Group, de::DEVICES_CHAIN)
+        .rect();
     h.state_mut()
         .dispatch(Action::Ui(UiAction::ToggleDockMaximized));
     h.run_steps(5);
@@ -343,7 +349,9 @@ fn a_maximised_dock_keeps_the_frames_244_high_and_leaves_the_space_below_empty()
     let maximised = frame(&h);
     assert_eq!(maximised.height(), device::frame::TOTAL_H);
     assert_eq!(normal.height(), maximised.height());
-    let chain_max = h.get_by_role_and_label(Role::Group, names::CHAIN).rect();
+    let chain_max = h
+        .get_by_role_and_label(Role::Group, de::DEVICES_CHAIN)
+        .rect();
     assert!(chain_max.height() > chain_normal.height() + 100.0);
     // The frames sit at the top of the chain area (padding 10); below them nothing is drawn or
     // reachable: the space is reserved for the automation of a later wave.
@@ -372,7 +380,7 @@ fn track_named(app: &App, name: &str) -> TrackId {
 }
 
 fn frame_of(h: &Harness<'_, App>, name: &str) -> Rect {
-    h.get_by_role_and_label(Role::Group, &names::card(name))
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card(name))
         .rect()
 }
 
@@ -660,9 +668,9 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
     let mut app = App::headless(project);
     select_track(&mut app, track);
     let h = harness(app);
-    let label = names::card("hexa");
+    let label = Lang::De.devices_card("hexa");
     let card = h.get_by_role_and_label(Role::Group, &label);
-    card.get_by_role_and_label(Role::Group, names::FM_FREE);
+    card.get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
     // The cards model carries the real masks (operator 1 → 6, operator 6 → 1).
     let cards = komponist_app::views::devices::model::cards(
         h.state().project().track(track).unwrap(),

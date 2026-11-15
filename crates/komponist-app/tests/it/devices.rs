@@ -15,8 +15,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::{BrowserSegment, DockTab, PluginView, PluginWindow};
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, EditAction, PluginAction, SettingsAction, UiAction};
+use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::params::ParamId;
@@ -188,7 +188,7 @@ fn s05() -> (App, Chain, fake_host::Statuses, fake_host::SetLog) {
     (app, c, statuses, set)
 }
 
-/// The card group named `label` (`names::card`).
+/// The card group named `label` (`devices_card`).
 fn card<'h>(h: &'h Harness<'_, App>, label: &'h str) -> Node<'h> {
     h.get_by_role_and_label(Role::Group, label)
 }
@@ -263,13 +263,13 @@ fn head_of(h: &Harness<'_, App>, label: &str) -> Rect {
 fn a_card_has_switch_name_format_open_and_knobs() {
     let (app, c, ..) = s05();
     let mut h = harness(app);
-    let surge_label = names::card("Surge XT");
+    let surge_label = Lang::De.devices_card("Surge XT");
     let surge = card(&h, &surge_label);
-    let switch = surge.get_by_role_and_label(Role::Switch, names::ACTIVE);
+    let switch = surge.get_by_role_and_label(Role::Switch, de::DEVICES_ACTIVE);
     assert_eq!(switch.accesskit_node().toggled(), Some(Toggled::True));
     surge.get_by_role_and_label(Role::Label, "Surge XT");
     surge.get_by_role_and_label(Role::Label, "CLAP");
-    let open = surge.get_by_role_and_label(Role::Button, names::OPENED);
+    let open = surge.get_by_role_and_label(Role::Button, de::DEVICES_OPENED);
     assert_eq!(
         open.accesskit_node().toggled(),
         Some(Toggled::True),
@@ -282,16 +282,16 @@ fn a_card_has_switch_name_format_open_and_knobs() {
     assert_eq!(knobs.len(), 8);
     assert_eq!(knobs[0], "Makro 1");
     // The plugin's value text.
-    let eq_label = names::card("LSP Para EQ x8");
+    let eq_label = Lang::De.devices_card("LSP Para EQ x8");
     let eq = card(&h, &eq_label);
     let low_cut = eq.get_by_role_and_label(Role::Slider, "Low Cut");
     assert_eq!(low_cut.value().as_deref(), Some("80 Hz"));
-    eq.get_by_role_and_label(Role::Button, names::PARAMS);
+    eq.get_by_role_and_label(Role::Button, de::DEVICES_PARAMS);
 
     // The switch is the bypass: TAL is bypassed, a click switches it on.
-    let tal_label = names::card("TAL-Chorus-LX");
+    let tal_label = Lang::De.devices_card("TAL-Chorus-LX");
     let tal_switch = card(&h, &tal_label)
-        .get_by_role_and_label(Role::Switch, names::ACTIVE)
+        .get_by_role_and_label(Role::Switch, de::DEVICES_ACTIVE)
         .rect();
     assert!(h.state().project().find_device(c.tal).unwrap().2.bypass);
     click_at(&mut h, tal_switch.center());
@@ -303,7 +303,7 @@ fn a_card_has_switch_name_format_open_and_knobs() {
         })));
     // Bypass back on from Surge's switch: Surge has no bypass yet.
     let surge_switch = card(&h, &surge_label)
-        .get_by_role_and_label(Role::Switch, names::ACTIVE)
+        .get_by_role_and_label(Role::Switch, de::DEVICES_ACTIVE)
         .rect();
     click_at(&mut h, surge_switch.center());
     assert!(h.state().project().find_device(c.surge).unwrap().2.bypass);
@@ -340,7 +340,7 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    let label = names::card("hexa");
+    let label = Lang::De.devices_card("hexa");
     let names: Vec<String> = card(&h, &label)
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
@@ -403,9 +403,12 @@ fn dragging_a_card_reorders_the_chain() {
     let (app, c, ..) = s05();
     let mut h = harness(app);
     // TAL (index 2) behind Airwindows (the end).
-    let from = head_of(&h, &names::card("TAL-Chorus-LX"));
+    let from = head_of(&h, &Lang::De.devices_card("TAL-Chorus-LX"));
     let airw = h
-        .get_by_role_and_label(Role::Group, &names::card("Airwindows Consolidated"))
+        .get_by_role_and_label(
+            Role::Group,
+            &Lang::De.devices_card("Airwindows Consolidated"),
+        )
         .rect();
     let from = pos2(from.left() + 110.0, from.center().y);
     drag(&mut h, from, pos2(airw.right() - 10.0, airw.center().y));
@@ -424,9 +427,9 @@ fn dragging_a_card_reorders_the_chain() {
         })]
     );
     // Back before the EQ; never before the instrument.
-    let from = head_of(&h, &names::card("TAL-Chorus-LX"));
+    let from = head_of(&h, &Lang::De.devices_card("TAL-Chorus-LX"));
     let surge = h
-        .get_by_role_and_label(Role::Group, &names::card("Surge XT"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("Surge XT"))
         .rect();
     drag(
         &mut h,
@@ -438,7 +441,7 @@ fn dragging_a_card_reorders_the_chain() {
         [c.surge, c.tal, c.eq, c.hall, c.airw]
     );
     // The instrument does not move.
-    let surge_head = head_of(&h, &names::card("Surge XT"));
+    let surge_head = head_of(&h, &Lang::De.devices_card("Surge XT"));
     drag(
         &mut h,
         pos2(surge_head.left() + 90.0, surge_head.center().y),
@@ -454,9 +457,9 @@ fn the_insert_line_shows_while_dragging() {
     h.run_steps(3);
     // Hold Dragonfly over the gap between Surge and the EQ: S05's line after the EQ is the slot
     // before TAL; here the drag of the hall card to that place.
-    let from = head_of(&h, &names::card("Dragonfly Hall Reverb"));
+    let from = head_of(&h, &Lang::De.devices_card("Dragonfly Hall Reverb"));
     let tal = h
-        .get_by_role_and_label(Role::Group, &names::card("TAL-Chorus-LX"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("TAL-Chorus-LX"))
         .rect();
     let start = pos2(from.left() + 110.0, from.center().y);
     let to = pos2(tal.left() + 20.0, tal.center().y);
@@ -483,7 +486,7 @@ fn a_browser_plugin_dropped_on_the_chain_goes_into_the_marked_slot() {
         .get_by_role_and_label(Role::ListItem, "Dragonfly Plate Reverb")
         .rect();
     let eq = h
-        .get_by_role_and_label(Role::Group, &names::card("LSP Para EQ x8"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("LSP Para EQ x8"))
         .rect();
     drag(&mut h, row.center(), pos2(eq.left() + 20.0, eq.center().y));
     let chain = chain_of(h.state(), c.pad);
@@ -502,7 +505,7 @@ fn a_browser_plugin_dropped_on_the_chain_goes_into_the_marked_slot() {
     let _ = row;
     let p = plugin(&screens_catalog(), "vital");
     let mid = h
-        .get_by_role_and_label(Role::Group, &names::card("LSP Para EQ x8"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("LSP Para EQ x8"))
         .rect()
         .center();
     let from = pos2(100.0, 600.0);
@@ -529,17 +532,17 @@ fn a_browser_plugin_dropped_on_the_chain_goes_into_the_marked_slot() {
 fn open_toggles_the_plugin_window() {
     let (app, c, ..) = s05();
     let mut h = harness(app);
-    let surge_label = names::card("Surge XT");
+    let surge_label = Lang::De.devices_card("Surge XT");
     let opened = card(&h, &surge_label)
-        .get_by_role_and_label(Role::Button, names::OPENED)
+        .get_by_role_and_label(Role::Button, de::DEVICES_OPENED)
         .rect();
     click_at(&mut h, opened.center());
     assert!(h.state().ui().plugin_windows.is_empty());
-    card(&h, &surge_label).get_by_role_and_label(Role::Button, names::OPEN);
+    card(&h, &surge_label).get_by_role_and_label(Role::Button, de::DEVICES_OPEN);
     // The EQ has no own GUI: "Parameter" opens the generic view.
-    let eq_label = names::card("LSP Para EQ x8");
+    let eq_label = Lang::De.devices_card("LSP Para EQ x8");
     let params = card(&h, &eq_label)
-        .get_by_role_and_label(Role::Button, names::PARAMS)
+        .get_by_role_and_label(Role::Button, de::DEVICES_PARAMS)
         .rect();
     click_at(&mut h, params.center());
     let w = &h.state().ui().plugin_windows;
@@ -547,14 +550,14 @@ fn open_toggles_the_plugin_window() {
         (w.len(), w[0].device, w[0].view),
         (1, c.eq, PluginView::Params)
     );
-    card(&h, &eq_label).get_by_role_and_label(Role::Button, names::OPENED);
+    card(&h, &eq_label).get_by_role_and_label(Role::Button, de::DEVICES_OPENED);
 }
 
 #[test]
 fn generic_knobs_set_the_plugin_parameter() {
     let (app, c, _, set) = s05();
     let mut h = harness(app);
-    let eq_label = names::card("LSP Para EQ x8");
+    let eq_label = Lang::De.devices_card("LSP Para EQ x8");
     let knob = card(&h, &eq_label)
         .get_by_role_and_label(Role::Slider, "Low Cut")
         .rect();
@@ -564,7 +567,7 @@ fn generic_knobs_set_the_plugin_parameter() {
     assert_eq!((last.0, last.1), (c.eq, 0));
     assert!(last.2 > 0.18 + 0.1, "{}", last.2);
     // Bypassed TAL: the body is dimmed, but the knobs stay operable (device handoff §3).
-    let tal_label = names::card("TAL-Chorus-LX");
+    let tal_label = Lang::De.devices_card("TAL-Chorus-LX");
     let rate = card(&h, &tal_label).get_by_role_and_label(Role::Slider, "Rate");
     assert!(!rate.accesskit_node().is_disabled());
 }
@@ -576,31 +579,32 @@ fn generic_knobs_set_the_plugin_parameter() {
 fn loading_shows_progress_then_the_knobs() {
     let (app, c, statuses, _) = s05();
     let mut h = harness(app);
-    let label = names::card("Dragonfly Hall Reverb");
+    let label = Lang::De.devices_card("Dragonfly Hall Reverb");
     let hall = card(&h, &label);
-    hall.get_by_role_and_label(Role::Label, names::LOADING);
-    hall.get_by_role_and_label(Role::ProgressIndicator, names::LOADING);
+    hall.get_by_role_and_label(Role::Label, de::DEVICES_LOADING);
+    hall.get_by_role_and_label(Role::ProgressIndicator, de::DEVICES_LOADING);
     assert!(
-        hall.query_by_label(names::PARAMS).is_none() && hall.query_by_label(names::OPEN).is_none(),
+        hall.query_by_label(de::DEVICES_PARAMS).is_none()
+            && hall.query_by_label(de::DEVICES_OPEN).is_none(),
         "no open button while loading"
     );
     statuses.lock().unwrap().insert(c.hall, DeviceStatus::Ok);
     h.run_steps(2);
     let hall = card(&h, &label);
-    assert!(hall.query_by_label(names::LOADING).is_none());
-    hall.get_by_role_and_label(Role::Button, names::PARAMS);
+    assert!(hall.query_by_label(de::DEVICES_LOADING).is_none());
+    hall.get_by_role_and_label(Role::Button, de::DEVICES_PARAMS);
 }
 
 #[test]
 fn crashed_shows_the_red_edge_and_reloads() {
     let (app, c, ..) = s05();
     let mut h = harness(app);
-    let label = names::card("Airwindows Consolidated");
+    let label = Lang::De.devices_card("Airwindows Consolidated");
     let airw = card(&h, &label);
-    airw.get_by_role_and_label(Role::Label, names::CRASHED);
-    airw.get_by_role_and_label(Role::Label, names::CRASHED_TEXT);
+    airw.get_by_role_and_label(Role::Label, de::DEVICES_CRASHED);
+    airw.get_by_role_and_label(Role::Label, de::DEVICES_CRASHED_TEXT);
     let reload = airw
-        .get_by_role_and_label(Role::Button, names::RELOAD)
+        .get_by_role_and_label(Role::Button, de::DEVICES_RELOAD)
         .rect();
     click_at(&mut h, reload.center());
     assert!(
@@ -614,15 +618,15 @@ fn crashed_shows_the_red_edge_and_reloads() {
 fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
     let (app, c, statuses, _) = s05();
     let mut h = harness(app);
-    let label = names::card("Airwindows Consolidated");
+    let label = Lang::De.devices_card("Airwindows Consolidated");
     statuses.lock().unwrap().insert(
         c.airw,
         DeviceStatus::Crashed(FailReason::LoadFailed("no such file".into())),
     );
     h.run_steps(2);
     let airw = card(&h, &label);
-    assert!(airw.query_by_label(names::CRASHED).is_none());
-    airw.get_by_role_and_label(Role::Label, names::LOAD_FAILED);
+    assert!(airw.query_by_label(de::DEVICES_CRASHED).is_none());
+    airw.get_by_role_and_label(Role::Label, de::DEVICES_LOAD_FAILED);
     assert!(airw.query_by_label_contains("no such file").is_some());
     statuses
         .lock()
@@ -630,8 +634,8 @@ fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
         .insert(c.airw, DeviceStatus::Crashed(FailReason::Unresponsive));
     h.run_steps(2);
     let airw = card(&h, &label);
-    airw.get_by_role_and_label(Role::Label, names::UNRESPONSIVE);
-    airw.get_by_role_and_label(Role::Button, names::RELOAD);
+    airw.get_by_role_and_label(Role::Label, de::DEVICES_UNRESPONSIVE);
+    airw.get_by_role_and_label(Role::Button, de::DEVICES_RELOAD);
 }
 
 #[test]
@@ -645,13 +649,13 @@ fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    let label = names::card("LSP Para EQ x8");
+    let label = Lang::De.devices_card("LSP Para EQ x8");
     let eq = card(&h, &label);
-    eq.get_by_role_and_label(Role::Label, names::MISSING);
-    eq.get_by_role_and_label(Role::Label, names::MISSING_TEXT);
+    eq.get_by_role_and_label(Role::Label, de::DEVICES_MISSING);
+    eq.get_by_role_and_label(Role::Label, de::DEVICES_MISSING_TEXT);
     assert!(eq.query_by_role(Role::Slider).is_none());
     assert!(
-        eq.query_by_role_and_label(Role::Button, names::OPEN)
+        eq.query_by_role_and_label(Role::Button, de::DEVICES_OPEN)
             .is_none()
     );
     h.run_steps(1);
@@ -673,9 +677,9 @@ fn a_state_that_did_not_load_is_shown_on_the_card() {
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    let label = names::card("LSP Para EQ x8");
+    let label = Lang::De.devices_card("LSP Para EQ x8");
     let eq = card(&h, &label);
-    eq.get_by_role_and_label(Role::Label, names::STATE_WARNING);
+    eq.get_by_role_and_label(Role::Label, de::DEVICES_STATE_WARNING);
     // The knobs stay.
     eq.get_by_role_and_label(Role::Slider, "Low Cut");
     h.run_steps(1);
@@ -706,7 +710,7 @@ fn a_plugin_with_many_parameters_shows_the_rows_that_fit() {
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    let label = names::card("LSP Para EQ x8");
+    let label = Lang::De.devices_card("LSP Para EQ x8");
     let eq = card(&h, &label);
     let knobs: Vec<String> = eq
         .get_all_by_role(Role::Slider)
@@ -748,13 +752,15 @@ fn header_shows_the_track_and_opens_the_add_menu() {
     let mut h = harness(app);
     // The chain head lists the devices as `a › b › c`; a name scrolls to its device.
     for name in ["Surge XT", "LSP Para EQ x8", "Airwindows Consolidated"] {
-        h.get_by_role_and_label(Role::Button, &names::reveal(name));
+        h.get_by_role_and_label(Role::Button, &Lang::De.devices_reveal(name));
     }
     // „+ Gerät“ opens the add menu below the button instead of the browser.
-    let add = h.get_by_role_and_label(Role::Button, names::ADD).rect();
+    let add = h
+        .get_by_role_and_label(Role::Button, de::DEVICES_ADD)
+        .rect();
     click_at(&mut h, add.center());
     h.run_steps(3);
-    h.get_by_role_and_label(Role::TextInput, names::ADD_SEARCH);
+    h.get_by_role_and_label(Role::TextInput, de::DEVICES_ADD_SEARCH);
     assert_eq!(
         h.state().ui().browser.segment,
         BrowserSegment::All,
@@ -766,7 +772,7 @@ fn header_shows_the_track_and_opens_the_add_menu() {
 fn click_selects_and_the_context_menu_removes() {
     let (app, c, ..) = s05();
     let mut h = harness(app);
-    let head = head_of(&h, &names::card("LSP Para EQ x8"));
+    let head = head_of(&h, &Lang::De.devices_card("LSP Para EQ x8"));
     let at = pos2(head.left() + 90.0, head.center().y);
     click_at(&mut h, at);
     assert!(h.state().ui().selection.devices.contains(&c.eq));
@@ -775,7 +781,7 @@ fn click_selects_and_the_context_menu_removes() {
     press(&mut h, at, PointerButton::Secondary, true);
     press(&mut h, at, PointerButton::Secondary, false);
     h.run_steps(2);
-    let remove = h.get_by_label(names::REMOVE).rect();
+    let remove = h.get_by_label(de::DEVICES_REMOVE).rect();
     click_at(&mut h, remove.center());
     assert_eq!(chain_of(h.state(), c.pad), [c.surge, c.tal, c.hall, c.airw]);
 }
@@ -788,7 +794,7 @@ fn shift_wheel_in_the_body_scrolls_a_long_chain() {
     app.ui_mut().layout.inspector_width = komponist_tokens::size::inspector::MAX;
     let mut h = harness(app);
     let first = h
-        .get_by_role_and_label(Role::Group, &names::card("Surge XT"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("Surge XT"))
         .rect();
     h.hover_at(first.center());
     h.event(Event::MouseWheel {
@@ -802,7 +808,7 @@ fn shift_wheel_in_the_body_scrolls_a_long_chain() {
     let scroll = h.state().ui().devices.scroll_x;
     assert!(scroll > 0.0, "{scroll}");
     let moved = h
-        .get_by_role_and_label(Role::Group, &names::card("Surge XT"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("Surge XT"))
         .rect();
     assert!(moved.left() < first.left());
 }
@@ -856,7 +862,7 @@ fn a_test_plugin_added_from_the_browser_loads_and_shows_its_parameters() {
     );
     // The test plugin loads within a frame or two, so the Lädt card itself is checked with the
     // fake host (`loading_shows_progress_then_the_knobs`) and live with Surge XT.
-    let label = names::card("kp-test-fx");
+    let label = Lang::De.devices_card("kp-test-fx");
     let deadline = std::time::Instant::now() + common::PATIENCE;
     loop {
         h.step();
@@ -898,7 +904,7 @@ fn snapshots_next_to_s05() {
 fn a_card_whose_blocks_arrive_late_reads_zu_spaet_for_a_while() {
     let (app, c, late) = s05_with_late();
     let mut h = harness(app);
-    let label = names::card("Surge XT");
+    let label = Lang::De.devices_card("Surge XT");
     assert!(card(&h, &label).query_by_label("zu spät").is_none());
     late.lock().unwrap().insert(c.surge, 2);
     h.run_steps(2);
@@ -967,11 +973,11 @@ mod add_menu {
     }
 
     fn slot<'h>(h: &'h Harness<'_, App>) -> Node<'h> {
-        h.get_by_role_and_label(Role::Button, names::ADD_DEVICE)
+        h.get_by_role_and_label(Role::Button, de::DEVICES_ADD_DEVICE)
     }
 
     fn search<'h>(h: &'h Harness<'_, App>) -> Option<Node<'h>> {
-        h.query_by_role_and_label(Role::TextInput, names::ADD_SEARCH)
+        h.query_by_role_and_label(Role::TextInput, de::DEVICES_ADD_SEARCH)
     }
 
     fn option_names(h: &Harness<'_, App>) -> Vec<String> {
@@ -1045,7 +1051,7 @@ mod add_menu {
         open_by_click(&mut h);
         type_text(&mut h, "zzzz");
         assert!(option_names(&h).is_empty());
-        h.get_by_role_and_label(Role::Label, names::ADD_NO_MATCH);
+        h.get_by_role_and_label(Role::Label, de::DEVICES_ADD_NO_MATCH);
         key(&mut h, Key::Enter);
         assert_eq!(names_of(h.state(), track), ["hexa"]);
     }
@@ -1265,7 +1271,9 @@ mod add_menu {
     fn the_header_button_opens_the_menu_at_the_button_and_adds_to_the_selected_track() {
         let (app, track) = app_with_track();
         let mut h = harness(app);
-        let button = h.get_by_role_and_label(Role::Button, names::ADD).rect();
+        let button = h
+            .get_by_role_and_label(Role::Button, de::DEVICES_ADD)
+            .rect();
         click_at(&mut h, button.center());
         h.run_steps(3);
         assert!(search(&h).expect("search").accesskit_node().is_focused());
@@ -1297,7 +1305,9 @@ mod add_menu {
     fn snapshot_of_the_menu_at_the_header_button() {
         let (app, _) = app_with_track();
         let mut h = harness(app);
-        let button = h.get_by_role_and_label(Role::Button, names::ADD).rect();
+        let button = h
+            .get_by_role_and_label(Role::Button, de::DEVICES_ADD)
+            .rect();
         click_at(&mut h, button.center());
         h.run_steps(3);
         mask_cpu(&mut h);

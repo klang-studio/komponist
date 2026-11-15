@@ -22,7 +22,6 @@ use komponist_app::dialogs::export::{self as view, names};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, StatusKind};
-use komponist_app::views::browser::model::names as browser;
 use komponist_app::{Action, App, ProjectAction, TransportAction, UiAction};
 use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
 use komponist_engine::{
@@ -987,7 +986,7 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
         .click();
     h.run_steps(3);
     h.get_by_label("Nachtfahrt.wav");
-    assert!(h.query_by_label(browser::NO_EXPORTS).is_none());
+    assert!(h.query_by_label(de::BROWSER_NO_EXPORTS).is_none());
 }
 
 #[test]

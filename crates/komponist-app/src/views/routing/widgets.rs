@@ -5,7 +5,9 @@ use egui::{
     Align2, Area, Context, Id, Key, Modifiers, Order, Rect, Response, Role, Sense, Ui, UiKind,
     WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::edits::SendProp;
+use komponist_model::format::fmt_db;
 use komponist_model::project::{SEND_LEVEL_DEFAULT_DB, VOLUME_DB_MAX, VOLUME_DB_MIN};
 use komponist_model::{ChannelRef, Project, Tap, Track, TrackId, TrackOutput};
 use komponist_tokens::egui_support::color32;
@@ -18,7 +20,7 @@ use komponist_ui::widgets::{self as w, accesskit, floating, menu_frame, pressed_
 use komponist_ui::{focus, fonts, icons, px};
 
 use super::metrics as m;
-use super::{SendInfo, Target, names};
+use super::{SendInfo, Target};
 use crate::actions::{Action, EditAction};
 use crate::views::mixer::model::base_color;
 use crate::views::{ViewCtx, elided_galley};
@@ -207,8 +209,9 @@ fn target_row(ui: &mut Ui, t: &Target, checked: bool, highlighted: bool) -> Resp
         vec2(size::MENU_WIDTH, size::MENU_ROW),
         w::sense(ui, Sense::click()),
     );
+    let lang = komponist_ui::lang(ui.ctx());
     let name = match &t.blocked {
-        Some(_) => names::blocked(&t.label),
+        Some(_) => lang.routing_blocked(&t.label),
         None => t.label.clone(),
     };
     r.widget_info(|| WidgetInfo::selected(Role::MenuItemRadio, enabled, checked, &name));
@@ -236,7 +239,7 @@ fn target_row(ui: &mut Ui, t: &Target, checked: bool, highlighted: bool) -> Resp
     dot(ui, pos2(x + m::DOT / 2.0, rect.center().y), t.hue, enabled);
     x += m::DOT + m::DOT_GAP * 2.0;
     let label = if t.group {
-        format!("{} ({})", t.label, names::KIND_GROUP)
+        format!("{} ({})", t.label, lang.routing_kind_group())
     } else {
         t.label.clone()
     };
@@ -283,26 +286,29 @@ fn extra_row(ui: &mut Ui, label: &str, highlighted: bool) -> Response {
 // ------------------------------------------------------------------------------------------------
 
 /// What the output button's popover offers below the separator.
-const OUTPUT_EXTRAS: [&str; 2] = [names::NEW_BUS, names::NEW_GROUP];
+fn output_extras(lang: Lang) -> [&'static str; 2] {
+    [lang.routing_new_bus(), lang.routing_new_group()]
+}
 
 /// The output of `track` as a button (`rect` high 20): the bus's dot, its name, a caret. A click
 /// opens the list of [`super::output_targets`] („Master“, the groups and buses, then „Neuer Bus
 /// …“ and „Neue Gruppe …“); the choice goes out as `SetOutput` (or a new bus around the track).
 pub fn output_button(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Rect, salt: &str) {
     let project = std::sync::Arc::clone(ctx.project);
-    let target = super::output_of(&project, track);
+    let t = ctx.lang;
+    let target = super::output_of(t, &project, track);
     let r = ui.interact(rect, ui.scope_id().with((salt, "output")), Sense::click());
     let egui_ctx = ui.ctx().clone();
     let popover = r.id.with("komponist_output_popover");
     let open = floating::is_open(&egui_ctx, popover);
-    let name = names::output(&target.label);
+    let name = t.routing_output_name(&target.label);
     r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
     accesskit(&r, |n| {
         n.set_has_popup(egui::accesskit::HasPopup::Menu);
         n.set_expanded(open);
     });
     if !open {
-        let tip = names::output_tip(&track.name);
+        let tip = t.routing_output_tip(&track.name);
         Tip::new(&tip).attach(&r);
     }
     let st = State::of(ui, &r);
@@ -355,23 +361,23 @@ pub fn output_button(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Re
         if open {
             floating::close(&egui_ctx, popover);
         } else {
-            let rows = super::output_targets(&project, track.id);
+            let rows = super::output_targets(t, &project, track.id);
             let current = rows.iter().position(|t| t.id == target.id);
             open_popover(&egui_ctx, popover, current);
             egui_ctx.memory_mut(|mem| mem.surrender_focus(r.id));
         }
     }
     if floating::is_open(&egui_ctx, popover) {
-        let rows = super::output_targets(&project, track.id);
+        let rows = super::output_targets(t, &project, track.id);
         let current = rows.iter().position(|t| t.id == target.id);
         let picked = target_popover(
             &egui_ctx,
             popover,
             &r,
-            &names::output_list(&track.name),
+            &t.routing_output_list(&track.name),
             &rows,
             current,
-            &OUTPUT_EXTRAS,
+            &output_extras(t),
         );
         match picked {
             Some(Picked::Row(i)) => ctx.send(Action::Edit(EditAction::SetOutput {
@@ -430,7 +436,13 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
     let id_salt = ("komponist_send_row", info.id.0, wide);
     let r = ui.interact(body, ui.scope_id().with(id_salt), Sense::click_and_drag());
     let egui_ctx = ui.ctx().clone();
-    let name = names::send(&info.name, info.level_db, info.tap, info.enabled);
+    let t = ctx.lang;
+    let tap_key = if info.tap == Tap::Pre { "pre" } else { "post" };
+    let name = if info.enabled {
+        t.routing_send_on(&info.name, fmt_db(info.level_db), tap_key)
+    } else {
+        t.routing_send_off(&info.name, tap_key)
+    };
     let db = info.level_db;
     r.widget_info(|| {
         let mut i = WidgetInfo::slider(true, f64::from(db), &name);
@@ -514,7 +526,7 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
         if floating::is_open(&egui_ctx, retarget) {
             floating::close(&egui_ctx, retarget);
         } else {
-            let rows = super::retarget_rows(ctx.project, info.track, info.target);
+            let rows = super::retarget_rows(t, ctx.project, info.track, info.target);
             let current = rows.iter().position(|t| t.id == Some(info.target));
             open_popover(&egui_ctx, retarget, current);
         }
@@ -524,11 +536,17 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
 
     // The bus list.
     if floating::is_open(&egui_ctx, retarget) {
-        let rows = super::retarget_rows(ctx.project, info.track, info.target);
+        let rows = super::retarget_rows(t, ctx.project, info.track, info.target);
         let current = rows.iter().position(|t| t.id == Some(info.target));
-        if let Some(Picked::Row(i)) =
-            target_popover(&egui_ctx, retarget, &r, names::SENDS, &rows, current, &[])
-            && let Some(target) = rows[i].id
+        if let Some(Picked::Row(i)) = target_popover(
+            &egui_ctx,
+            retarget,
+            &r,
+            t.routing_sends(),
+            &rows,
+            current,
+            &[],
+        ) && let Some(target) = rows[i].id
             && target != info.target
         {
             ctx.send(Action::Edit(EditAction::SetSend {
@@ -546,18 +564,18 @@ pub fn send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect,
         Remove,
     }
     let toggle = if info.enabled {
-        names::SWITCH_OFF
+        t.routing_switch_off()
     } else {
-        names::SWITCH_ON
+        t.routing_switch_on()
     };
     let entries = [
-        Entry::action(names::PRE, Choice::Tap(Tap::Pre)).checked(info.tap == Tap::Pre),
-        Entry::action(names::POST, Choice::Tap(Tap::Post)).checked(info.tap == Tap::Post),
+        Entry::action(t.routing_pre(), Choice::Tap(Tap::Pre)).checked(info.tap == Tap::Pre),
+        Entry::action(t.routing_post(), Choice::Tap(Tap::Post)).checked(info.tap == Tap::Post),
         Entry::separator(),
         Entry::action(toggle, Choice::Enabled(!info.enabled)),
-        Entry::action(names::REMOVE, Choice::Remove),
+        Entry::action(t.routing_remove(), Choice::Remove),
     ];
-    match ContextMenu::new(names::SENDS, &entries).show_on(&r) {
+    match ContextMenu::new(t.routing_sends(), &entries).show_on(&r) {
         Some(Choice::Tap(tap)) => ctx.send(Action::Edit(EditAction::SetSend {
             send: info.id,
             prop: SendProp::Tap(tap),
@@ -612,7 +630,7 @@ fn paint_row(ui: &Ui, r: &Response, rect: Rect, info: &SendInfo, compact: bool) 
         info.enabled,
     );
     x += m::DOT + m::DOT_GAP;
-    let value = info.value_text(compact);
+    let value = info.value_text(komponist_ui::lang(ui.ctx()), compact);
     let vstyle = typography::VALUE_S;
     let vg = w::galley(ui, &value, fonts::font_id(&vstyle), vstyle.line_height);
     let vx = rect.right() - m::ROW_PAD_X - vg.size().x;
@@ -655,10 +673,16 @@ fn tap_chip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect) {
         .track(info.track)
         .map_or("", |t| t.name.as_str())
         .to_owned();
-    let name = names::send_tap(&track_name, &info.name, info.tap);
+    let t = ctx.lang;
     let pre = info.tap == Tap::Pre;
+    let name = t.routing_send_tap(&track_name, &info.name, if pre { "pre" } else { "post" });
     r.widget_info(|| WidgetInfo::selected(Role::Button, true, pre, &name));
-    Tip::new(if pre { names::PRE } else { names::POST }).attach(&r);
+    Tip::new(if pre {
+        t.routing_pre_tip()
+    } else {
+        t.routing_post_tip()
+    })
+    .attach(&r);
     let st = State::of(ui, &r);
     let fill = match (pre, st.hovered) {
         (true, _) => color::TEXT_3,
@@ -669,9 +693,9 @@ fn tap_chip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect) {
     let ink = if pre { color::SURFACE_0 } else { color::TEXT_3 };
     let style = typography::VALUE_S;
     let text = if pre {
-        names::PRE_SHORT
+        t.routing_pre_short()
     } else {
-        names::POST_SHORT
+        t.routing_post_short()
     };
     let g = w::galley(ui, text, fonts::font_id(&style), style.line_height);
     let pos = w::text_pos_centered(rect, &g, ui.pixels_per_point());
@@ -694,9 +718,10 @@ fn remove_button(ui: &mut Ui, ctx: &mut ViewCtx<'_>, info: &SendInfo, rect: Rect
         ui.scope_id().with(("komponist_send_remove", info.id.0)),
         Sense::click(),
     );
-    let name = format!("Send an {} entfernen", info.name);
+    let t = ctx.lang;
+    let name = t.routing_remove_send(&info.name);
     r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
-    Tip::new(names::REMOVE).attach(&r);
+    Tip::new(t.routing_remove()).attach(&r);
     let st = State::of(ui, &r);
     let ink = if st.hovered {
         color::TEXT_1
@@ -725,16 +750,17 @@ pub fn add_send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Rec
         ui.scope_id().with(("komponist_add_send", track.id.0, wide)),
         Sense::click(),
     );
-    let name = names::add_send(&track.name);
+    let t = ctx.lang;
+    let name = t.routing_add_send_name(&track.name);
     r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
-    Tip::new(names::ADD_SEND).attach(&r);
+    Tip::new(t.routing_add_send()).attach(&r);
     let st = State::of(ui, &r);
     if st.hovered || st.pressed {
         px::fill(ui.painter(), rect, radius::S, state::surface_for(1, st));
     }
     crate::views::mixer::dashed_rect(ui, rect, color32(color::LINE_1));
     let style = typography::SMALL;
-    let label = if wide { names::ADD_SEND } else { "+" };
+    let label = if wide { t.routing_add_send() } else { "+" };
     let g = w::galley(ui, label, fonts::font_id(&style), style.line_height);
     let pos = w::text_pos_centered(rect, &g, ui.pixels_per_point());
     ui.painter()
@@ -753,15 +779,15 @@ pub fn add_send_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Rec
         }
     }
     if floating::is_open(&egui_ctx, popover) {
-        let rows = super::send_targets(ctx.project, track.id);
+        let rows = super::send_targets(t, ctx.project, track.id);
         let picked = target_popover(
             &egui_ctx,
             popover,
             &r,
-            names::SEND_TO,
+            t.routing_send_to(),
             &rows,
             None,
-            &[names::NEW_EFFECT_BUS],
+            &[t.routing_new_effect_bus()],
         );
         match picked {
             Some(Picked::Row(i)) => {
@@ -803,16 +829,17 @@ pub fn routing_chip(
     let egui_ctx = ui.ctx().clone();
     let popover = r.id.with("komponist_routing_popover");
     let open = floating::is_open(&egui_ctx, popover);
-    let out = super::output_of(&project, track);
-    let name = names::chip(&track.name, &out.label, track.sends.len());
+    let t = ctx.lang;
+    let out = super::output_of(t, &project, track);
+    let name = t.routing_chip(track.sends.len(), &track.name, &out.label);
     r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
     accesskit(&r, |n| {
         n.set_has_popup(egui::accesskit::HasPopup::Dialog);
         n.set_expanded(open);
     });
     if !open {
-        Tip::new(names::ROUTING)
-            .detail(names::POPOVER_HINT)
+        Tip::new(t.routing_routing())
+            .detail(t.routing_popover_hint())
             .attach(&r);
     }
     let st = State::of(ui, &r);
@@ -883,6 +910,7 @@ fn ctx_command(ctx: &Context) -> bool {
 fn show_popover(ctx: &mut ViewCtx<'_>, track: &Track, chip: &Response, id: Id) {
     let egui_ctx = chip.ctx.clone();
     let project = std::sync::Arc::clone(ctx.project);
+    let t = ctx.lang;
     let area = Area::new(id)
         .order(Order::Foreground)
         .kind(UiKind::Menu)
@@ -890,20 +918,20 @@ fn show_popover(ctx: &mut ViewCtx<'_>, track: &Track, chip: &Response, id: Id) {
         .fixed_pos(chip.rect.left_bottom() + vec2(0.0, space::SPACE_1))
         .constrain(true)
         .accessibility_parent(chip.id)
-        .accessible_name(names::popover_title(&track.name))
+        .accessible_name(t.routing_popover_title(&track.name))
         .show(&egui_ctx, |ui| {
             menu_frame()
                 .show(ui, |ui| {
                     ui.set_width(m::POPOVER_WIDTH);
                     ui.spacing_mut().item_spacing.y = space::SPACE_1;
                     let pad = space::SPACE_1;
-                    let title = names::popover_title(&track.name).to_uppercase();
+                    let title = t.routing_popover_title(&track.name).to_uppercase();
                     ui.add_space(pad);
                     section_label(ui, &title);
-                    labelled_row(ui, names::OUTPUT, |ui, rect| {
+                    labelled_row(ui, t.routing_output(), |ui, rect| {
                         output_button(ui, ctx, track, rect, "popover");
                     });
-                    section_label(ui, names::SENDS);
+                    section_label(ui, t.routing_sends());
                     let sends = super::sends_of(&project, track);
                     let width = m::POPOVER_WIDTH - 2.0 * pad;
                     for info in &sends {

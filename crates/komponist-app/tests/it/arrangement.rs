@@ -12,9 +12,9 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::ui_state::FocusArea;
-use komponist_app::views::arrangement::names;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::Processor;
+use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipId, Device, DeviceId, DeviceRole, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
@@ -182,7 +182,7 @@ fn drag(from: Pos2, to: Pos2, h: &mut Harness<'_, App>) {
 
 /// Screen x of `tick` in the arrangement (from the ruler: bar 1 starts at its left edge).
 fn x_of(h: &Harness<'_, App>, tick: Tick) -> f32 {
-    let ruler = rect_of(h, Role::Slider, names::RULER);
+    let ruler = rect_of(h, Role::Slider, de::A11Y_RULER);
     let v = h.state().ui().arrangement;
     let ppt = v.px_per_bar / 3840.0;
     ruler.left() + ((tick.0 as f64 - v.scroll_tick) as f32) * ppt
@@ -294,13 +294,13 @@ fn shift_click_selects_a_range_and_ctrl_click_adds_one() {
 fn double_click_on_the_name_renames_enter_applies_esc_discards() {
     let mut h = harness(demo());
     double_click(on_header(lead_header(&h)), &mut h);
-    h.get_by_role_and_label(Role::TextInput, names::RENAME);
+    h.get_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME);
     h.event(Event::Text("Melodie".into()));
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(h.state().project().tracks[2].name, "Melodie");
     assert!(
-        h.query_by_role_and_label(Role::TextInput, names::RENAME)
+        h.query_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME)
             .is_none()
     );
     // One undo step.
@@ -337,19 +337,31 @@ fn dragging_a_header_reorders_tracks() {
 #[test]
 fn bottom_edge_sets_the_height_alt_for_all_tracks() {
     let mut h = harness(demo());
-    let grip = rect_of(&h, Role::Splitter, &names::height_grip("Drums"));
+    let grip = rect_of(
+        &h,
+        Role::Splitter,
+        &Lang::De.arrangement_height_grip("Drums"),
+    );
     drag(grip.center(), grip.center() + vec2(0.0, 40.0), &mut h);
     assert_eq!(h.state().project().tracks[0].height, 96);
     assert_eq!(h.state().project().tracks[1].height, 56);
     // Clamped to 160.
-    let grip = rect_of(&h, Role::Splitter, &names::height_grip("Drums"));
+    let grip = rect_of(
+        &h,
+        Role::Splitter,
+        &Lang::De.arrangement_height_grip("Drums"),
+    );
     drag(grip.center(), grip.center() + vec2(0.0, 300.0), &mut h);
     assert_eq!(h.state().project().tracks[0].height, 160);
     // One undo step per drag.
     undo(&mut h);
     assert_eq!(h.state().project().tracks[0].height, 96);
     // Alt: every track.
-    let grip = rect_of(&h, Role::Splitter, &names::height_grip("Bass"));
+    let grip = rect_of(
+        &h,
+        Role::Splitter,
+        &Lang::De.arrangement_height_grip("Bass"),
+    );
     drag_with(
         grip.center(),
         grip.center() - vec2(0.0, 30.0),
@@ -533,7 +545,7 @@ fn click_selects_a_clip_and_its_track() {
     );
     let node = h.get_by_role_and_label(Role::GridCell, LEAD_A);
     assert_eq!(node.accesskit_node().is_selected(), Some(true));
-    h.get_by_role_and_label(Role::Status, &names::clips_selected(1));
+    h.get_by_role_and_label(Role::Status, &Lang::De.status_clips_selected(1));
     // Strg-click adds another, a click on empty lane space clears and selects that track.
     click_with(clip_rect(&h, KEYS_1).center(), Modifiers::COMMAND, &mut h);
     assert_eq!(h.state().ui().selection.clips.len(), 2);
@@ -707,7 +719,7 @@ fn double_click_opens_a_clip_or_makes_a_one_bar_clip() {
         .find(|c| c.start == Tick(2 * BAR))
         .expect("new clip");
     assert_eq!(new.length, Tick(BAR));
-    assert_eq!(new.name, names::NEW_MIDI_CLIP);
+    assert_eq!(new.name, de::ARRANGEMENT_NEW_MIDI_CLIP);
     assert_eq!(h.state().ui().editor.clip, Some(new.id));
     assert_eq!(
         h.state().ui().piano_roll.tool,
@@ -793,13 +805,13 @@ fn esc_during_a_drag_cancels_it() {
 #[test]
 fn ruler_top_sets_the_playhead_bottom_drags_the_loop() {
     let mut h = harness(demo());
-    let ruler = rect_of(&h, Role::Slider, names::RULER);
+    let ruler = rect_of(&h, Role::Slider, de::A11Y_RULER);
     // Top half at bar 5 + a bit: on the beat.
     let x = x_of(&h, Tick(4 * BAR + 100));
     click(pos2(x, ruler.top() + 4.0), &mut h);
     assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(4 * BAR)));
     assert_eq!(
-        value_of(&h, Role::Slider, names::RULER).as_deref(),
+        value_of(&h, Role::Slider, de::A11Y_RULER).as_deref(),
         Some("5.1.000")
     );
     // Bottom half: from bar 3 to the end of bar 6.
@@ -852,12 +864,12 @@ fn buttons_zoom_around_the_playhead() {
         .dispatch(Action::Transport(TransportAction::Locate(Tick(12 * BAR))));
     assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(12 * BAR)));
     let before = x_of(&h, Tick(12 * BAR));
-    h.get_by_role_and_label(Role::Button, names::ZOOM_IN)
+    h.get_by_role_and_label(Role::Button, de::VIEW_ZOOM_IN)
         .click();
     h.run_steps(2);
     assert_eq!(h.state().ui().arrangement.px_per_bar, 90.0);
     assert!((x_of(&h, Tick(12 * BAR)) - before).abs() < 0.5);
-    h.get_by_role_and_label(Role::Button, names::ZOOM_OUT)
+    h.get_by_role_and_label(Role::Button, de::VIEW_ZOOM_OUT)
         .click();
     h.run_steps(2);
     assert_eq!(h.state().ui().arrangement.px_per_bar, 72.0);
@@ -874,7 +886,7 @@ fn z_fits_the_selection() {
     h.run_steps(2);
     let v = h.state().ui().arrangement;
     assert_eq!(v.scroll_tick, (12 * BAR) as f64);
-    let ruler = rect_of(&h, Role::Slider, names::RULER);
+    let ruler = rect_of(&h, Role::Slider, de::A11Y_RULER);
     // 4 bars fill the timeline (clamped to 160 px per bar).
     assert_eq!(v.px_per_bar, (ruler.width() / 4.0).min(160.0));
     // The fit is not re-anchored: Lead B starts at the left edge.
@@ -912,14 +924,14 @@ fn ctrl_brackets_step_the_grid_and_the_header_shows_it() {
     h.run_steps(2);
     assert_eq!(h.state().ui().arrangement.grid, komponist_model::Grid::Half);
     assert_eq!(
-        value_of(&h, Role::ComboBox, names::GRID).as_deref(),
+        value_of(&h, Role::ComboBox, de::VIEW_GRID).as_deref(),
         Some("1/2")
     );
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::CloseBracket);
     h.run_steps(2);
     assert_eq!(h.state().ui().arrangement.grid, komponist_model::Grid::Bar);
     // Snap off from the header.
-    h.get_by_role_and_label(Role::Button, names::SNAP).click();
+    h.get_by_role_and_label(Role::Button, de::VIEW_SNAP).click();
     h.run_steps(2);
     assert!(!h.state().ui().arrangement.snap);
 }
@@ -970,7 +982,7 @@ fn the_grid_dropdown_changes_the_lane_grid_lines() {
         app.ui_mut().arrangement.px_per_bar = 288.0;
         app.ui_mut().arrangement.grid = grid;
         let mut h = harness(app);
-        images.push((grid, render_without_grid_labels(&mut h, names::GRID)));
+        images.push((grid, render_without_grid_labels(&mut h, de::VIEW_GRID)));
     }
     for (i, (a, ia)) in images.iter().enumerate() {
         for (b, ib) in &images[i + 1..] {
@@ -981,7 +993,7 @@ fn the_grid_dropdown_changes_the_lane_grid_lines() {
     let render = |grid: Grid| {
         let mut app = demo();
         app.ui_mut().arrangement.grid = grid;
-        render_without_grid_labels(&mut harness(app), names::GRID)
+        render_without_grid_labels(&mut harness(app), de::VIEW_GRID)
     };
     assert!(
         render(Grid::ThirtySecond) == render(Grid::Eighth),
@@ -1072,12 +1084,12 @@ fn only_visible_tracks_and_clips_have_nodes() {
 #[test]
 fn an_empty_project_shows_the_hint_and_its_primary_action() {
     let mut h = harness(App::headless(komponist_model::fixtures::empty_project()));
-    h.get_by_role_and_label(Role::Label, names::EMPTY_TITLE);
-    h.get_by_role_and_label(Role::Label, names::EMPTY_TEXT);
-    h.get_by_role_and_label(Role::Button, names::NEW_TRACK_BUTTON);
+    h.get_by_role_and_label(Role::Label, de::ARRANGEMENT_EMPTY_TITLE);
+    h.get_by_role_and_label(Role::Label, de::ARRANGEMENT_EMPTY_TEXT);
+    h.get_by_role_and_label(Role::Button, de::ARRANGEMENT_NEW_TRACK_BUTTON);
     h.get_by_label_contains("0 Spuren");
-    h.get_by_role_and_label(Role::Button, names::OPEN_PROJECT);
-    h.get_by_role_and_label(Role::Button, names::ADD_MIDI_TRACK)
+    h.get_by_role_and_label(Role::Button, de::ARRANGEMENT_OPEN_PROJECT);
+    h.get_by_role_and_label(Role::Button, de::ARRANGEMENT_ADD_MIDI_TRACK)
         .click();
     h.run_steps(2);
     let p = project(&h);
@@ -1086,7 +1098,7 @@ fn an_empty_project_shows_the_hint_and_its_primary_action() {
     assert!(h.state().ui().selection.tracks.contains(&p.tracks[0].id));
     // The hint disappears with the first track.
     assert!(
-        h.query_by_role_and_label(Role::Label, names::EMPTY_TITLE)
+        h.query_by_role_and_label(Role::Label, de::ARRANGEMENT_EMPTY_TITLE)
             .is_none()
     );
     // A double-click into the new track makes a one-bar clip and opens it (S10 "Leere Spur").
@@ -1122,7 +1134,7 @@ mod new_track {
     use super::*;
 
     fn new_track_box(h: &Harness<'_, App>) -> Rect {
-        rect_of(h, Role::Button, names::NEW_TRACK_BUTTON)
+        rect_of(h, Role::Button, de::ARRANGEMENT_NEW_TRACK_BUTTON)
     }
 
     fn dialog_open(h: &Harness<'_, App>) -> bool {
@@ -1191,7 +1203,7 @@ mod new_track {
     fn enter_and_space_on_the_focused_box_open_the_dialog() {
         for key in [egui::Key::Enter, egui::Key::Space] {
             let mut h = harness(demo());
-            h.get_by_role_and_label(Role::Button, names::NEW_TRACK_BUTTON)
+            h.get_by_role_and_label(Role::Button, de::ARRANGEMENT_NEW_TRACK_BUTTON)
                 .focus();
             h.run_steps(2);
             h.key_press(key);

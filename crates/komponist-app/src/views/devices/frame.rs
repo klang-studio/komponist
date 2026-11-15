@@ -16,6 +16,7 @@ use egui::{
     Align, Color32, CornerRadius, Galley, Layout, Rect, Response, Role, Sense, Shape, Ui,
     UiBuilder, WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::Track;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
@@ -28,7 +29,7 @@ use komponist_ui::{focus, fonts, px, state};
 
 use super::layout::Page;
 use super::metrics;
-use super::model::{Card, CardState, failure_texts, names};
+use super::model::{self, Card, CardState, failure_texts};
 use super::sidechain;
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::views::late;
@@ -64,12 +65,13 @@ pub(super) fn show(
     rect: Rect,
     at: &Placed<'_>,
 ) -> Response {
+    let t = ctx.lang;
     let mut cu = ui.new_child(
         UiBuilder::new()
             .max_rect(rect)
             .id_salt(("komponist_device_card", card.device.0))
             .accessibility_role(Role::Group)
-            .accessibility_label(names::card(&card.name)),
+            .accessibility_label(t.devices_card(&card.name)),
     );
     cu.set_clip_rect(rect.intersect(ui.clip_rect()));
     group_bounds(&cu, rect);
@@ -105,9 +107,10 @@ fn collapsed(
     rect: Rect,
     at: &Placed<'_>,
 ) -> Response {
+    let t = ctx.lang;
     let ppp = cu.pixels_per_point();
     let id = cu.scope_id().with("head");
-    let label = names::expand(&card.name);
+    let label = t.devices_expand_name(&card.name);
     let response = cu.interact(rect, id, Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &label));
     let [pw, ph] = device::frame::POWER;
@@ -156,6 +159,7 @@ fn expanded(
     rect: Rect,
     at: &Placed<'_>,
 ) -> Response {
+    let t = ctx.lang;
     let ppp = cu.pixels_per_point();
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), device::frame::HEAD_H));
     if card.instrument {
@@ -193,13 +197,15 @@ fn expanded(
                     cu,
                     card,
                     body,
-                    names::STATE_WARNING,
+                    t.devices_state_warning(),
                     None,
                     color::STATE_ERROR,
                 );
                 let tip_rect = Rect::from_min_max(body.min, pos2(body.right(), y));
                 let r = cu.interact(tip_rect, cu.scope_id().with("warning"), Sense::hover());
-                Tip::new(names::STATE_WARNING).detail(reason).attach(&r);
+                Tip::new(t.devices_state_warning())
+                    .detail(reason)
+                    .attach(&r);
             }
             let cells = Rect::from_min_max(pos2(body.left(), y.max(body.top())), body.max);
             if card.bypass {
@@ -213,8 +219,8 @@ fn expanded(
                 cu,
                 card,
                 body,
-                names::LOADING,
-                Some(names::LOADING_TEXT),
+                t.devices_loading(),
+                Some(t.devices_loading_text()),
                 color::TEXT_1,
             );
             let bar = Rect::from_min_size(
@@ -232,10 +238,12 @@ fn expanded(
             );
             px::fill(cu.painter(), fill, pill, color32(color::TEXT_2));
             let r = cu.interact(bar, cu.scope_id().with("progress"), Sense::hover());
-            r.widget_info(|| WidgetInfo::labeled(Role::ProgressIndicator, true, names::LOADING));
+            r.widget_info(|| {
+                WidgetInfo::labeled(Role::ProgressIndicator, true, t.devices_loading())
+            });
         }
         CardState::Crashed(reason) => {
-            let (title, text) = failure_texts(reason);
+            let (title, text) = failure_texts(t, reason);
             let y = message(cu, card, body, title, Some(&text), color::STATE_ERROR);
             let at = Rect::from_min_size(
                 pos2(body.left() + metrics::MESSAGE_PAD, y),
@@ -246,7 +254,7 @@ fn expanded(
                     .max_rect(at)
                     .layout(Layout::left_to_right(Align::Center)),
             );
-            if row.add(Button::new(names::RELOAD)).clicked() {
+            if row.add(Button::new(t.devices_reload())).clicked() {
                 ctx.send(Action::Plugin(PluginAction::Reload(card.device)));
             }
         }
@@ -255,8 +263,8 @@ fn expanded(
                 cu,
                 card,
                 body,
-                names::MISSING,
-                Some(names::MISSING_TEXT),
+                t.devices_missing(),
+                Some(t.devices_missing_text()),
                 color::STATE_ERROR,
             );
         }
@@ -326,6 +334,7 @@ fn desaturate(shape: &mut Shape, amount: f32) {
 /// The width the head needs so the name keeps at least [`metrics::NAME_MIN_WIDTH`] (or all of
 /// it, if shorter) next to its other parts; a narrower frame widens by what it lacks.
 pub(super) fn head_width(ui: &Ui, card: &Card) -> f32 {
+    let t = komponist_ui::lang(ui.ctx());
     let style = typography::UI;
     let name = w::galley(
         ui,
@@ -357,7 +366,7 @@ pub(super) fn head_width(ui: &Ui, card: &Card) -> f32 {
             .x
             + 2.0 * metrics::TAG_PAD_X;
         width += gap + tag.ceil();
-        if let Some(label) = card.open_label() {
+        if let Some(label) = card.open_label(t) {
             let g = w::galley(
                 ui,
                 label,
@@ -397,6 +406,7 @@ fn page_switch_width(ui: &Ui, pages: &[Page]) -> f32 {
 /// The on/off square: `state.play` on, `surface.4` with a 1 px `text.3` edge off. A switch for
 /// AccessKit; the hit area is [`metrics::POWER_HIT`] wide.
 fn power_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, square: Rect) {
+    let t = ctx.lang;
     let hit = Rect::from_center_size(
         square.center(),
         vec2(metrics::POWER_HIT, metrics::POWER_HIT),
@@ -404,8 +414,8 @@ fn power_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, square: Rect) {
     let id = cu.scope_id().with("power");
     let r = cu.interact(hit, id, Sense::click());
     let on = !card.bypass;
-    r.widget_info(|| WidgetInfo::selected(Role::Switch, true, on, names::ACTIVE));
-    Tip::new(names::BYPASS).attach(&r);
+    r.widget_info(|| WidgetInfo::selected(Role::Switch, true, on, t.devices_active()));
+    Tip::new(t.devices_bypass()).attach(&r);
     let radius = komponist_tokens::radius::S;
     if on {
         px::fill(cu.painter(), square, radius, color32(color::STATE_PLAY));
@@ -433,6 +443,7 @@ fn head_controls(
     head: Rect,
     at: &Placed<'_>,
 ) -> Response {
+    let t = ctx.lang;
     let ppp = cu.pixels_per_point();
     let inner = Rect::from_min_max(
         pos2(head.left() + metrics::HEAD_PAD_LEFT, head.top()),
@@ -456,7 +467,7 @@ fn head_controls(
         if card.has_sidechain {
             sidechain::chip(&mut row, ctx, card);
         }
-        if let Some(label) = card.open_label() {
+        if let Some(label) = card.open_label(t) {
             let b = row.add(Button::new(label).compact().on(card.open));
             if b.clicked() {
                 let action = if card.open {
@@ -530,10 +541,11 @@ fn head_controls(
 
 /// The ⋯ button (`20 × 20`, `radius.m`, `text.2`): opens the frame's menu.
 fn more_button(row: &mut Ui) -> Response {
+    let t = komponist_ui::lang(row.ctx());
     let [mw, mh] = device::frame::MENU_BUTTON;
     let (rect, r) = row.allocate_exact_size(vec2(mw, mh), Sense::click());
-    r.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::MORE));
-    Tip::new(names::MORE).attach(&r);
+    r.widget_info(|| WidgetInfo::labeled(Role::Button, true, t.devices_more()));
+    Tip::new(t.devices_more()).attach(&r);
     let hovered = r.hovered() || r.is_pointer_button_down_on();
     if hovered {
         px::fill(
@@ -562,9 +574,10 @@ fn more_button(row: &mut Ui) -> Response {
 
 /// The format tag on `surface.1` (`padding:1px 4px`); „zu spät“ while the device is late.
 fn format_tag(row: &mut Ui, card: &Card) {
+    let t = komponist_ui::lang(row.ctx());
     let missing = card.state == CardState::Missing;
     let tag_text = if card.late.is_some() {
-        late::LATE
+        t.late_label()
     } else {
         card.tag
     };
@@ -576,9 +589,7 @@ fn format_tag(row: &mut Ui, card: &Card) {
     let (tag_rect, tag_r) = row.allocate_exact_size(tag_size, Sense::hover());
     tag_r.widget_info(|| WidgetInfo::labeled(Role::Label, true, tag_text));
     if let Some(n) = card.late {
-        Tip::new(tag_text)
-            .detail(&late::late_blocks(n))
-            .attach(&tag_r);
+        Tip::new(tag_text).detail(&t.late_blocks(n)).attach(&tag_r);
         late::repaint_when_expired(row.ctx());
     }
     px::fill(
@@ -601,6 +612,7 @@ fn format_tag(row: &mut Ui, card: &Card) {
 /// The preset dropdown (`h 20`, `96 … 150` wide, `surface.2` on an instrument's head, `padding:0
 /// 6px`, caret `text.2`): opens a menu of the factory presets by category.
 fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
+    let t = ctx.lang;
     // The current preset's name; „ *“ behind it once a value differs (internal devices).
     let known: Option<String> = match card.internal_presets {
         Some(kind) => card
@@ -614,16 +626,17 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     }
     .map(|name| {
         if card.preset_changed {
-            format!("{name}{}", names::CHANGED)
+            format!("{name}{}", model::CHANGED)
         } else {
             name
         }
     });
-    let current = known.as_deref().unwrap_or(names::PRESET);
+    let current = known.as_deref().unwrap_or(t.devices_preset());
     let style = typography::SMALL;
-    let name = known
-        .as_deref()
-        .map_or_else(|| names::PRESET.to_owned(), names::preset);
+    let name = known.as_deref().map_or_else(
+        || t.devices_preset().to_owned(),
+        |n| t.devices_preset_name(n),
+    );
     let natural = w::galley(row, current, fonts::font_id(&style), style.line_height)
         .size()
         .x
@@ -690,8 +703,8 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     }
     if open || r.clicked() {
         let chosen = match card.internal_presets {
-            Some(kind) => internal_preset_menu(&r, kind),
-            None => hexa_preset_menu(&r),
+            Some(kind) => internal_preset_menu(t, &r, kind),
+            None => hexa_preset_menu(t, &r),
         };
         if let Some(preset) = chosen {
             let action = match card.internal_presets {
@@ -710,7 +723,7 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
 }
 
 /// hexa's menu: its factory bank by category; the chosen index.
-fn hexa_preset_menu(r: &Response) -> Option<usize> {
+fn hexa_preset_menu(t: Lang, r: &Response) -> Option<usize> {
     let categories: Vec<&str> = komponist_builtin::categories().collect();
     let presets: Vec<_> = komponist_builtin::presets().collect();
     let groups: Vec<Vec<Entry<'_, usize>>> = categories
@@ -728,12 +741,12 @@ fn hexa_preset_menu(r: &Response) -> Option<usize> {
         .zip(&groups)
         .map(|(c, g)| Entry::submenu(c, g))
         .collect();
-    ContextMenu::new(names::PRESET, &entries).show_on(r)
+    ContextMenu::new(t.devices_preset(), &entries).show_on(r)
 }
 
 /// The menu of an internal device (WP-96): its presets grouped by category if they have one, else
 /// a flat list; the chosen index in [`Internal::presets`](komponist_builtin::Internal::presets).
-fn internal_preset_menu(r: &Response, kind: komponist_builtin::Internal) -> Option<usize> {
+fn internal_preset_menu(t: Lang, r: &Response, kind: komponist_builtin::Internal) -> Option<usize> {
     let presets = kind.presets();
     let mut categories: Vec<&str> = Vec::new();
     for c in presets.iter().filter_map(|p| p.category) {
@@ -764,7 +777,7 @@ fn internal_preset_menu(r: &Response, kind: komponist_builtin::Internal) -> Opti
             .filter(|(_, p)| p.category.is_none())
             .map(|(i, p)| Entry::action(p.name, i)),
     );
-    ContextMenu::new(names::PRESET, &entries).show_on(r)
+    ContextMenu::new(t.devices_preset(), &entries).show_on(r)
 }
 
 /// The caret of the preset button (`border-left/right:3px`, `border-top:4px`): 6 × 4.
@@ -775,12 +788,13 @@ const CARET_HEIGHT: f32 = 4.0;
 /// The page switch (`h 20`, padding 1, `surface.1`, segments `h 18`, `padding:0 7px`, the page
 /// shown `surface.4` / `text.1`, the others `text.2`).
 fn page_switch(cu: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card, rect: Rect) {
+    let t = ctx.lang;
     let group = cu.new_child(
         UiBuilder::new()
             .max_rect(rect)
             .id_salt("komponist_device_pages")
             .accessibility_role(Role::RadioGroup)
-            .accessibility_label(names::PAGES),
+            .accessibility_label(t.devices_pages()),
     );
     group_bounds(&group, rect);
     px::fill(
@@ -848,6 +862,7 @@ fn menu(
     more: Option<Response>,
     at: &Placed<'_>,
 ) {
+    let t = ctx.lang;
     if let Some(button) = &more
         && button.clicked()
     {
@@ -857,35 +872,35 @@ fn menu(
             button.rect.left_bottom() + vec2(0.0, 2.0),
         );
     }
-    let mut open = Entry::action(names::OPEN, Menu::Open);
-    if card.open_label().is_none() {
+    let mut open = Entry::action(t.devices_open(), Menu::Open);
+    if card.open_label(t).is_none() {
         open = open.disabled();
     }
-    let mut reload = Entry::action(names::RELOAD, Menu::Reload);
+    let mut reload = Entry::action(t.devices_reload(), Menu::Reload);
     if card.state == CardState::Missing {
         reload = reload.disabled();
     }
     let collapse_label = if card.collapsed {
-        names::EXPAND
+        t.devices_expand()
     } else {
-        names::COLLAPSE
+        t.devices_collapse()
     };
-    let mut duplicate = Entry::action(names::DUPLICATE, Menu::Duplicate);
+    let mut duplicate = Entry::action(t.devices_duplicate(), Menu::Duplicate);
     if card.instrument {
         duplicate = duplicate.disabled();
     }
     let entries = [
         open,
-        Entry::action(names::BYPASS, Menu::Bypass).checked(card.bypass),
+        Entry::action(t.devices_bypass(), Menu::Bypass).checked(card.bypass),
         reload,
         Entry::separator(),
         Entry::action(collapse_label, Menu::Collapse),
         duplicate,
         Entry::separator(),
-        Entry::action(names::REMOVE, Menu::Remove),
+        Entry::action(t.devices_remove(), Menu::Remove),
     ];
     let device = card.device;
-    match ContextMenu::new(names::DEVICE, &entries).show_on(head) {
+    match ContextMenu::new(t.devices_device(), &entries).show_on(head) {
         Some(Menu::Open) => ctx.send(Action::Plugin(PluginAction::OpenWindow(device))),
         Some(Menu::Bypass) => ctx.send(Action::Edit(EditAction::SetDeviceBypass {
             device,

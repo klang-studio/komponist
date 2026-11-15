@@ -10,10 +10,10 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_builtin::device::{self, Field};
 use komponist_builtin::{Macro, Patch};
+use komponist_i18n::Lang;
 use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, Project};
 
@@ -106,7 +106,7 @@ const CARD: &str = "Gerät hexa";
 
 /// Whether the column button of operator `n` is the selected one.
 fn op_selected(h: &Harness<'_, App>, n: usize) -> bool {
-    let name = names::operator(n);
+    let name = Lang::De.devices_operator_n(n);
     card(h)
         .get_by_role_and_label(Role::Button, &name)
         .accesskit_node()
@@ -133,7 +133,7 @@ fn the_card_has_four_pages_and_the_preset_shows_in_the_head() {
         assert!(has(&h, Role::RadioButton, name), "page {name}");
     }
     // The factory preset is still recognised from the state: its name is on the dropdown.
-    card(&h).get_by_role_and_label(Role::Button, &names::preset("E-Piano"));
+    card(&h).get_by_role_and_label(Role::Button, &Lang::De.devices_preset_name("E-Piano"));
 }
 
 #[test]

@@ -10,9 +10,9 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::{BrowserSegment, DockTab};
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_builtin::Internal;
+use komponist_i18n::Lang;
 use komponist_model::params::ParamId;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, Project, TrackId};
 use komponist_plugins::DeviceStatus;
@@ -141,7 +141,7 @@ fn the_browser_lists_the_effects_as_intern_and_a_double_click_adds_one() {
     assert_eq!(d.plugin.format, PluginFormat::Builtin);
     assert_eq!(h.state().engine().host().status(d.id), DeviceStatus::Ok);
     // The new card is on the chain.
-    h.get_by_role_and_label(Role::Group, &names::card("Limiter"));
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Limiter"));
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn a_card_shows_its_parameters_and_a_turned_knob_is_saved_in_the_project() {
     let device = chain(&app, track)[1].0;
     let mut h = harness(app);
     h.run_steps(30);
-    let label = names::card("Hall");
+    let label = Lang::De.devices_card("Hall");
     let card = h.get_by_role_and_label(Role::Group, &label);
     let mut sliders: Vec<String> = card
         .get_all_by_role(Role::Slider)
@@ -256,14 +256,8 @@ fn a_mixer_insert_of_an_internal_effect_jumps_to_its_card() {
     let mut h = harness(app);
     let name = h.state().project().tracks[0].name.clone();
     let slot = h
-        .get_by_role_and_label(
-            Role::Group,
-            &komponist_app::views::mixer::model::names::strip(&name),
-        )
-        .get_by_role_and_label(
-            Role::Button,
-            &komponist_app::views::mixer::model::names::insert("EQ"),
-        )
+        .get_by_role_and_label(Role::Group, &Lang::De.mixer_strip(&name))
+        .get_by_role_and_label(Role::Button, &Lang::De.mixer_insert("EQ"))
         .rect();
     double_click_or_click(&mut h, slot.center());
     let ui = h.state().ui();
@@ -409,8 +403,9 @@ fn the_browser_lists_the_midi_effects_in_their_own_section() {
     h.get_by_role_and_label(Role::ListItem, "Arpeggiator");
     h.get_by_role_and_label(Role::ListItem, "Tonleiter");
     // The effects segment lists the section after the audio effects.
-    let rows =
-        komponist_app::views::browser::model::rows(&komponist_app::views::browser::model::Input {
+    let rows = komponist_app::views::browser::model::rows(
+        Lang::De,
+        &komponist_app::views::browser::model::Input {
             catalog: h.state().engine().host().catalog(),
             favorites: &Default::default(),
             segment: BrowserSegment::Effects,
@@ -418,21 +413,25 @@ fn the_browser_lists_the_midi_effects_in_their_own_section() {
             collapsed: &Default::default(),
             project: h.state().project(),
             exports: &[],
-        });
+        },
+    );
     let texts: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
     let section = texts.iter().position(|t| *t == "MIDI-Effekte").unwrap();
     assert_eq!(&texts[section + 1..], ["Arpeggiator", "Tonleiter"]);
     // Search finds them in the effects segment too, and not among the instruments.
     let search = |segment, query: &str| {
-        komponist_app::views::browser::model::rows(&komponist_app::views::browser::model::Input {
-            catalog: h.state().engine().host().catalog(),
-            favorites: &Default::default(),
-            segment,
-            query,
-            collapsed: &Default::default(),
-            project: h.state().project(),
-            exports: &[],
-        })
+        komponist_app::views::browser::model::rows(
+            Lang::De,
+            &komponist_app::views::browser::model::Input {
+                catalog: h.state().engine().host().catalog(),
+                favorites: &Default::default(),
+                segment,
+                query,
+                collapsed: &Default::default(),
+                project: h.state().project(),
+                exports: &[],
+            },
+        )
         .into_iter()
         .map(|r| r.name)
         .collect::<Vec<_>>()
@@ -471,7 +470,7 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     h.run_steps(5);
     let head = |h: &Harness<'_, App>, name: &str| {
         let r = h
-            .get_by_role_and_label(Role::Group, &names::card(name))
+            .get_by_role_and_label(Role::Group, &Lang::De.devices_card(name))
             .rect();
         // The head, where a card is grabbed.
         pos2(
@@ -481,7 +480,7 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     };
     // Tonleiter before Arpeggiator.
     let arp = h
-        .get_by_role_and_label(Role::Group, &names::card("Arpeggiator"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("Arpeggiator"))
         .rect();
     let from = head(&h, "Tonleiter");
     drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
@@ -492,7 +491,7 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     // Dragged behind the instrument (hexa's card is wide, so EQ may lie off screen), a MIDI
     // effect stops at the instrument.
     let synth = h
-        .get_by_role_and_label(Role::Group, &names::card("hexa"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("hexa"))
         .rect();
     let from = head(&h, "Tonleiter");
     drag(&mut h, from, pos2(synth.right() - 10.0, synth.center().y));
@@ -502,7 +501,7 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     );
     // An effect dragged in front of the instrument stops behind it; the instrument stays.
     let arp = h
-        .get_by_role_and_label(Role::Group, &names::card("Arpeggiator"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("Arpeggiator"))
         .rect();
     let from = head(&h, "EQ");
     drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
@@ -524,7 +523,7 @@ fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
     h.run_steps(4);
     // The order the signal runs in, left to right.
     let x = |h: &Harness<'_, App>, name: &str| {
-        h.get_by_role_and_label(Role::Group, &names::card(name))
+        h.get_by_role_and_label(Role::Group, &Lang::De.devices_card(name))
             .rect()
             .left()
     };
@@ -688,7 +687,7 @@ fn the_browser_lists_presse_under_dynamics_and_a_double_click_adds_it() {
     assert_eq!(d.plugin.format, PluginFormat::Builtin);
     assert_eq!(d.plugin.id, "presse");
     assert_eq!(h.state().engine().host().status(d.id), DeviceStatus::Ok);
-    h.get_by_role_and_label(Role::Group, &names::card("presse"));
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("presse"));
     // The card has the two graphs and the meter.
     h.get_by_role_and_label(Role::Group, "Kennlinie");
     h.get_by_role_and_label(Role::Group, "Reduktion \u{b7} 4 s");

@@ -13,6 +13,7 @@
 //! the value at the start of the drag.
 
 use egui::{Align, Event, Key, Layout, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_model::edits::VelocityChange;
 use komponist_model::{ClipId, NoteId, Tick};
 use komponist_tokens::egui_support::color32;
@@ -26,7 +27,6 @@ use komponist_ui::{px, widgets};
 
 use super::edit;
 use super::metrics as m;
-use super::names;
 use crate::actions::{Action, EditAction, GridTarget, UiAction};
 use crate::ui_state::Tool;
 use crate::views::{ViewCtx, grid};
@@ -101,10 +101,11 @@ pub fn show(
 
     // Tools.
     let tools = [Tool::Pointer, Tool::Pencil, Tool::Eraser];
+    let t = ctx.lang;
     let items = [
-        Item::new(names::POINTER),
-        Item::new(names::PENCIL),
-        Item::new(names::ERASER),
+        Item::new(t.piano_roll_pointer()),
+        Item::new(t.piano_roll_pencil()),
+        Item::new(t.piano_roll_eraser()),
     ];
     let pr = ctx.ui.piano_roll;
     let mut tool = tools.iter().position(|t| *t == pr.tool).unwrap_or(0);
@@ -127,26 +128,26 @@ pub fn show(
         })
         .collect();
     if row
-        .add(Segmented::new(names::TOOLS, &mut tool, &items).tips(&tips))
+        .add(Segmented::new(t.piano_roll_tools(), &mut tool, &items).tips(&tips))
         .changed()
     {
         ctx.send(Action::Ui(UiAction::SetTool(tools[tool])));
     }
 
     // Grid, snap, quantise.
-    let labels = grid::items();
+    let labels = grid::items(t);
     let mut selected = grid::index(pr.grid);
     if row
-        .add(Dropdown::new(names::GRID, &mut selected, &labels).label(names::GRID))
+        .add(Dropdown::new(t.view_grid(), &mut selected, &labels).label(t.view_grid()))
         .changed()
     {
         ctx.send(Action::Ui(UiAction::SetGrid {
             target: GridTarget::PianoRoll,
-            grid: grid::GRIDS[selected].0,
+            grid: grid::GRIDS[selected],
         }));
     }
     if row
-        .add(Button::icon(Icon::Magnet, names::SNAP).on(pr.snap))
+        .add(Button::icon(Icon::Magnet, t.view_snap()).on(pr.snap))
         .clicked()
     {
         ctx.send(Action::Ui(UiAction::ToggleSnap(GridTarget::PianoRoll)));
@@ -156,7 +157,7 @@ pub fn show(
         .keymap
         .label_for(&quantize, ctx.lang)
         .unwrap_or_default();
-    let mut button = Button::new(names::QUANTIZE);
+    let mut button = Button::new(t.piano_roll_quantize());
     if !shortcut.is_empty() {
         button = button.chip(&shortcut);
     }
@@ -181,7 +182,7 @@ pub fn show(
     let text = if info.live {
         ctx.lang.record_live().to_owned()
     } else {
-        edit::selection_text(info.selected.len(), info.total)
+        edit::selection_text(ctx.lang, info.selected.len(), info.total)
     };
     let galley = widgets::styled_galley(&row, &text, &typography::LABEL);
     let (r, response) = row.allocate_exact_size(galley.size(), Sense::hover());
@@ -199,8 +200,8 @@ pub fn show(
     row.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = m::ZOOM_GAP;
         for (icon, name, steps) in [
-            (Icon::Plus, names::ZOOM_IN, 1),
-            (Icon::Minus, names::ZOOM_OUT, -1),
+            (Icon::Plus, t.view_zoom_in(), 1),
+            (Icon::Minus, t.view_zoom_out(), -1),
         ] {
             let action = Action::Ui(UiAction::Zoom {
                 vertical: false,
@@ -220,6 +221,7 @@ pub fn show(
 }
 
 fn fields(row: &mut Ui, ctx: &mut ViewCtx<'_>, info: &Info, drag: &mut Option<FieldDrag>) {
+    let t = ctx.lang;
     let meter = ctx.project.meter;
     let grid = info.grid.0.max(1) as f64;
     let esc = escape_pressed(row);
@@ -231,8 +233,8 @@ fn fields(row: &mut Ui, ctx: &mut ViewCtx<'_>, info: &Info, drag: &mut Option<Fi
             Field::Note => (f64::from(info.pitch), 1.0, 0.0..=127.0),
         };
         let mut shown = value;
-        let widget = NumberField::new(&mut shown, field.name())
-            .key(field.key())
+        let widget = NumberField::new(&mut shown, field.name(t))
+            .key(field.key(t))
             .range(range)
             .step(step)
             .default_value(value)
@@ -317,20 +319,20 @@ fn escape_pressed(ui: &Ui) -> bool {
 
 impl Field {
     /// The key shown inside the field.
-    fn key(self) -> &'static str {
+    fn key(self, t: Lang) -> &'static str {
         match self {
-            Field::Velocity => names::VELOCITY_KEY,
-            Field::Length => names::LENGTH_FIELD,
-            Field::Note => names::NOTE_FIELD,
+            Field::Velocity => t.piano_roll_velocity_key(),
+            Field::Length => t.piano_roll_length(),
+            Field::Note => t.piano_roll_note(),
         }
     }
 
     /// The accessible name of the field.
-    fn name(self) -> &'static str {
+    fn name(self, t: Lang) -> &'static str {
         match self {
-            Field::Velocity => names::VELOCITY_FIELD,
-            Field::Length => names::LENGTH_FIELD,
-            Field::Note => names::NOTE_FIELD,
+            Field::Velocity => t.piano_roll_velocity(),
+            Field::Length => t.piano_roll_length(),
+            Field::Note => t.piano_roll_note(),
         }
     }
 
@@ -346,9 +348,9 @@ impl Field {
     /// Undo label of a drag on the field.
     fn label(self) -> &'static str {
         match self {
-            Field::Velocity => "Velocity",
-            Field::Length => "Noten-Länge",
-            Field::Note => "Noten transponieren",
+            Field::Velocity => "undo-velocity",
+            Field::Length => "undo-note-length",
+            Field::Note => "undo-transpose-notes",
         }
     }
 

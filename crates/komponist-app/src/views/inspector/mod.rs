@@ -34,6 +34,7 @@ use egui::{
     Align, Frame, Key, Layout, Margin, Rangef, Rect, Response, Role, Sense, TextEdit, Ui,
     UiBuilder, WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Srgba, color, radius, size, space, typography};
@@ -130,7 +131,7 @@ impl View for Inspector {
             track::section(self, ui, ctx, &project, x, &mut y, track);
             track::devices_section(self, ui, ctx, x, &mut y, track);
             if let Some(touched) = param::touched(ctx, track.id) {
-                param::section(ui, x, &mut y, &touched);
+                param::section(ui, ctx.lang, x, &mut y, &touched);
             }
             if sections.channel {
                 channel::section(ui, ctx, x, &mut y, track);
@@ -139,7 +140,7 @@ impl View for Inspector {
         }
         if sections.is_empty() {
             project::section(ui, ctx, &project, x, &mut y);
-            project::selection_section(ui, x, &mut y);
+            project::selection_section(ui, ctx.lang, x, &mut y);
         }
         self.content_height = y - top;
         let live: Vec<DeviceId> = project
@@ -373,7 +374,7 @@ fn read_only_field(ui: &mut Ui, rect: Rect, key: &str, value: &str, unit: &str) 
 
 /// An on/off field ("Loop an"): `accent.surface` when on (`F(…, hl)`), else the number field's
 /// look; a click switches it unless `fixed`. AccessKit: a check box named `key`.
-fn switch_field(ui: &mut Ui, rect: Rect, key: &str, on: bool, fixed: bool) -> bool {
+fn switch_field(ui: &mut Ui, t: Lang, rect: Rect, key: &str, on: bool, fixed: bool) -> bool {
     let sense = if fixed {
         Sense::hover()
     } else {
@@ -386,9 +387,9 @@ fn switch_field(ui: &mut Ui, rect: Rect, key: &str, on: bool, fixed: bool) -> bo
         look.fill = color32(color::ACCENT_SURFACE);
     }
     let text = if on {
-        model::names::ON
+        t.inspector_value_on()
     } else {
-        model::names::OFF
+        t.inspector_value_off()
     };
     number_field::paint(ui.painter(), rect, &look, text, "", 0.0);
     let enabled = !fixed;
@@ -460,8 +461,9 @@ impl Inspector {
                 .text_color(color32(color::TEXT_1))
                 .desired_width(rect.width()),
         );
+        let rename_label = komponist_ui::lang(ui.ctx()).inspector_rename();
         ui.ctx()
-            .accesskit_node_builder(response.id, |n| n.set_label(model::names::RENAME));
+            .accesskit_node_builder(response.id, |n| n.set_label(rename_label));
         if rename.fresh {
             let mut st = TextEdit::load_state(ui.ctx(), response.id).unwrap_or_default();
             st.cursor

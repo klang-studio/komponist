@@ -14,16 +14,18 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
 use komponist_ui::State;
 use komponist_ui::timeline::{Access, header_layout};
-use komponist_ui::widgets::context_menu::{Colors, ContextMenu, Entry, track_swatches};
+use komponist_ui::widgets::context_menu::{Colors, ContextMenu, Entry};
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, accesskit};
 use komponist_ui::{focus, fonts, icons, px, state};
+
+use komponist_i18n::Lang;
 
 use super::cache::Palettes;
 use super::geometry::{Geometry, RowKind};
 use super::{Arrangement, Rename, metrics};
 use crate::actions::{Action, EditAction};
-use crate::views::routing::{self as rt, names};
+use crate::views::routing as rt;
 use crate::views::{ViewCtx, elided_galley};
 
 /// Where the parts of a bus header lie.
@@ -155,7 +157,9 @@ impl Arrangement {
         let folded = matches!(kind, RowKind::Group { folded: true });
         if let RowKind::Group { .. } = kind {
             if let Some(sub) = lay.sub {
-                let text = names::tracks(routing::group_members(project, track.id).len());
+                let text = ctx
+                    .lang
+                    .routing_tracks(routing::group_members(project, track.id).len());
                 let g = elided_galley(
                     ui,
                     &text,
@@ -182,10 +186,17 @@ impl Arrangement {
             }
         }
         let access = match kind {
-            RowKind::Group { folded } => {
-                Access::selectable(Role::Row, names::group(&track.name, folded), state.selected)
-            }
-            _ => Access::selectable(Role::Row, names::effect_bus(&track.name), state.selected),
+            RowKind::Group { folded } => Access::selectable(
+                Role::Row,
+                ctx.lang
+                    .routing_group_name(&track.name, if folded { "folded" } else { "unfolded" }),
+                state.selected,
+            ),
+            _ => Access::selectable(
+                Role::Row,
+                ctx.lang.routing_effect_bus_name(&track.name),
+                state.selected,
+            ),
         };
         super::register(response, &access);
     }
@@ -206,8 +217,9 @@ impl Arrangement {
                 .with(("komponist_arrangement_fold", track.id.0)),
             Sense::click(),
         );
-        let verb = if folded { "ausklappen" } else { "einklappen" };
-        let label = format!("Gruppe {} {verb}", track.name);
+        let t = ctx.lang;
+        let label =
+            t.arrangement_group_fold(&track.name, if folded { "expand" } else { "collapse" });
         r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &label));
         accesskit(&r, |n| n.set_expanded(!folded));
         let st = State::of(ui, &r);
@@ -232,9 +244,9 @@ impl Arrangement {
             focus::paint_ring(ui.painter(), rect, radius::S);
         }
         Tip::new(if folded {
-            "Gruppe ausklappen"
+            t.arrangement_group_expand()
         } else {
-            "Gruppe einklappen"
+            t.arrangement_group_collapse()
         })
         .attach(&r);
         if r.clicked() {
@@ -257,7 +269,7 @@ impl Arrangement {
     }
 
     /// The label row of the „Busse“ section below „Neue Spur“.
-    pub(super) fn section_label(&mut self, ui: &mut Ui, g: &Geometry) {
+    pub(super) fn section_label(&mut self, ui: &mut Ui, lang: Lang, g: &Geometry) {
         let Some(area) = g.section else {
             return;
         };
@@ -267,7 +279,7 @@ impl Arrangement {
         let left = Rect::from_x_y_ranges(g.header_x, area.y_range());
         px::fill(ui.painter(), left, 0.0, color32(color::SURFACE_1));
         let style = typography::LABEL;
-        let gal = w::styled_galley(ui, names::SECTION, &style);
+        let gal = w::styled_galley(ui, lang.routing_buses(), &style);
         let pos = w::text_pos(
             left,
             &gal,
@@ -280,7 +292,7 @@ impl Arrangement {
             ui.scope_id().with("komponist_arrangement_section"),
             Sense::hover(),
         );
-        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::SECTION));
+        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, lang.routing_buses()));
     }
 
     /// The header's context menu; returns what was chosen.
@@ -314,7 +326,7 @@ impl Arrangement {
         } else {
             vec![track.id]
         };
-        let swatches = track_swatches();
+        let swatches = crate::views::hue_swatches(ctx.lang);
         let hue = Hue::ALL.iter().position(|h| *h == track.hue);
         let shortcut = ctx
             .keymap
@@ -324,7 +336,7 @@ impl Arrangement {
             .keymap
             .label_for(&Action::Edit(EditAction::DeleteSelection), ctx.lang);
         // Output rows (a bus can go to a group or the master as well).
-        let outputs = rt::output_targets(project, track.id);
+        let outputs = rt::output_targets(ctx.lang, project, track.id);
         let output_entries: Vec<Entry<'_, Pick>> = outputs
             .iter()
             .map(|t| {
@@ -333,7 +345,7 @@ impl Arrangement {
                 if t.blocked.is_some() { e.disabled() } else { e }
             })
             .collect();
-        let sends = rt::send_targets(project, track.id);
+        let sends = rt::send_targets(ctx.lang, project, track.id);
         let mut send_entries: Vec<Entry<'_, Pick>> = sends
             .iter()
             .filter_map(|t| {
@@ -344,11 +356,12 @@ impl Arrangement {
         if !sends.is_empty() {
             send_entries.push(Entry::separator());
         }
-        send_entries.push(Entry::action(names::NEW_BUS, Pick::SendNew));
+        let t = ctx.lang;
+        send_entries.push(Entry::action(t.routing_new_bus(), Pick::SendNew));
         let mut entries: Vec<Entry<'_, Pick>> = vec![
-            Entry::action(names::RENAME, Pick::Rename),
+            Entry::action(t.routing_rename(), Pick::Rename),
             Entry::colors(
-                names::COLOR,
+                t.routing_color(),
                 Colors {
                     swatches: &swatches,
                     selected: hue,
@@ -358,20 +371,20 @@ impl Arrangement {
             Entry::separator(),
         ];
         if track.is_bus() {
-            entries.push(Entry::submenu(names::OUTPUT_TO, &output_entries));
+            entries.push(Entry::submenu(t.routing_output_to(), &output_entries));
             entries.push(Entry::separator());
             if track.folder {
-                entries.push(Entry::action(names::UNGROUP, Pick::Ungroup));
+                entries.push(Entry::action(t.routing_ungroup(), Pick::Ungroup));
             } else {
-                entries.push(Entry::action(names::DELETE_BUS, Pick::Delete));
+                entries.push(Entry::action(t.routing_delete_bus(), Pick::Delete));
             }
         } else {
-            entries.push(Entry::action(names::GROUP_TRACKS, Pick::Group).shortcut(&shortcut));
-            entries.push(Entry::action(names::SEND_TO_NEW_BUS, Pick::SendNew));
-            entries.push(Entry::submenu(names::SEND_TO, &send_entries));
-            entries.push(Entry::submenu(names::OUTPUT_TO, &output_entries));
+            entries.push(Entry::action(t.routing_group_tracks(), Pick::Group).shortcut(&shortcut));
+            entries.push(Entry::action(t.routing_send_to_new_bus(), Pick::SendNew));
+            entries.push(Entry::submenu(t.routing_send_to(), &send_entries));
+            entries.push(Entry::submenu(t.routing_output_to(), &output_entries));
             entries.push(Entry::separator());
-            let delete = Entry::action("Löschen", Pick::Delete);
+            let delete = Entry::action(t.arrangement_delete(), Pick::Delete);
             entries.push(match &delete_key {
                 Some(k) => delete.shortcut(k),
                 None => delete,
@@ -379,9 +392,9 @@ impl Arrangement {
         }
         let _ = Pick::NewBusOutput;
         let name = if track.is_bus() {
-            names::KIND_BUS
+            t.routing_kind_bus()
         } else {
-            "Spur"
+            t.arrangement_track_menu()
         };
         let picked = ContextMenu::new(name, &entries).show_on(response)?;
         Some(match picked {
@@ -437,7 +450,7 @@ impl MenuAction {
 
 /// A group's lane: the silhouette of the clips of its members (all levels), display only. An
 /// effect bus's lane is hatched and says what it is.
-pub(super) fn paint_bus_lane(ui: &Ui, project: &Project, g: &Geometry, i: usize) {
+pub(super) fn paint_bus_lane(ui: &Ui, lang: Lang, project: &Project, g: &Geometry, i: usize) {
     let row = g.rows[i];
     let lane = g.lane(i).intersect(g.tracks);
     if !lane.is_positive() {
@@ -480,7 +493,7 @@ pub(super) fn paint_bus_lane(ui: &Ui, project: &Project, g: &Geometry, i: usize)
             if let Some(r) = label {
                 let g2 = w::galley(
                     ui,
-                    names::GROUP_LANE,
+                    lang.routing_group_lane(),
                     fonts::font_id(&typography::SMALL),
                     typography::SMALL.line_height,
                 );
@@ -496,7 +509,7 @@ pub(super) fn paint_bus_lane(ui: &Ui, project: &Project, g: &Geometry, i: usize)
         RowKind::EffectBus => {
             hatch(&painter, g.lane(i));
             let sends = rt::input_sends(project, bus.id);
-            let text = names::bus_lane(sends);
+            let text = lang.routing_bus_lane(sends);
             let gal = w::galley(
                 ui,
                 &text,

@@ -10,7 +10,6 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SelectionChange;
 use komponist_app::ui_state::{FocusArea, Panel, StepLane};
-use komponist_app::views::step_seq::names;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_engine::TransportState;
 use komponist_i18n::de;
@@ -467,7 +466,7 @@ fn step_edits_are_announced_in_the_status_bar() {
 fn a_toolbar_field_takes_typed_values() {
     let mut h = harness(opened());
     let (_, clip) = beat_b(h.state());
-    let field = in_dock(&h, Role::SpinButton, names::LENGTH);
+    let field = in_dock(&h, Role::SpinButton, de::STEP_SEQ_LENGTH);
     let at = field.rect().center();
     h.run_steps(30);
     h.event(Event::PointerMoved(at));
@@ -633,7 +632,7 @@ fn as_midi_clip_converts_the_pattern() {
     let mut h = harness(opened());
     let (_, clip) = beat_b(h.state());
     let hits = pattern(h.state(), clip).hits(Tick(4 * 3840)).len();
-    h.get_by_role_and_label(Role::Button, names::TO_MIDI)
+    h.get_by_role_and_label(Role::Button, de::STEP_SEQ_TO_MIDI)
         .click();
     h.run_steps(3);
     let (_, c) = h.state().project().find_clip(clip).unwrap();
@@ -656,19 +655,19 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
     let mut h = harness(opened());
     let (_, clip) = beat_b(h.state());
     // Länge 16 → 17, then 32 (the new steps show up as nodes).
-    in_dock(&h, Role::SpinButton, names::LENGTH).increment_accesskit();
+    in_dock(&h, Role::SpinButton, de::STEP_SEQ_LENGTH).increment_accesskit();
     h.run_steps(2);
     assert_eq!(pattern(h.state(), clip).length_steps, 17);
-    in_dock(&h, Role::SpinButton, names::LENGTH).set_value_accesskit(32.0);
+    in_dock(&h, Role::SpinButton, de::STEP_SEQ_LENGTH).set_value_accesskit(32.0);
     h.run_steps(2);
     assert_eq!(pattern(h.state(), clip).length_steps, 32);
     assert_eq!(step_boxes(&h), 8 * 32);
     // Swing 12 %.
-    in_dock(&h, Role::SpinButton, names::SWING).set_value_accesskit(12.0);
+    in_dock(&h, Role::SpinButton, de::STEP_SEQ_SWING).set_value_accesskit(12.0);
     h.run_steps(2);
     assert!((pattern(h.state(), clip).swing - 0.12).abs() < 1e-6);
     // Auflösung: 1/8.
-    in_dock(&h, Role::ComboBox, names::RESOLUTION).click();
+    in_dock(&h, Role::ComboBox, de::STEP_SEQ_RESOLUTION).click();
     h.run_steps(3);
     h.get_by_label("1/8").click();
     h.run_steps(3);
@@ -678,22 +677,22 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
     );
 
     // No step selected: no step fields.
-    assert!(h.query_by_label(names::VELOCITY).is_none());
+    assert!(h.query_by_label(de::STEP_SEQ_VELOCITY).is_none());
     // Select Hat zu step 11 (set): "Step 11 · Hat zu", Vel 52, Wahr. 100 %, Ratch. 1.
     h.get_by_label_contains(&step_label("Hat zu", 10))
         .click_modifiers(Modifiers::SHIFT);
     h.run_steps(2);
     h.get_by_label("Step 11 · Hat zu");
-    let vel = h.get_by_role_and_label(Role::SpinButton, names::VELOCITY);
+    let vel = h.get_by_role_and_label(Role::SpinButton, de::STEP_SEQ_VELOCITY);
     assert_eq!(vel.accesskit_node().numeric_value(), Some(52.0));
     vel.increment_accesskit();
     h.run_steps(2);
     assert_eq!(step_of(h.state(), clip, 3, 10).velocity, 53);
-    h.get_by_role_and_label(Role::SpinButton, names::PROBABILITY)
+    h.get_by_role_and_label(Role::SpinButton, de::STEP_SEQ_PROBABILITY)
         .set_value_accesskit(50.0);
     h.run_steps(2);
     assert_eq!(step_of(h.state(), clip, 3, 10).probability, 50);
-    let ratchet = h.get_by_role_and_label(Role::SpinButton, names::RATCHET);
+    let ratchet = h.get_by_role_and_label(Role::SpinButton, de::STEP_SEQ_RATCHET);
     assert_eq!(ratchet.accesskit_node().numeric_value(), Some(2.0));
     ratchet.decrement_accesskit();
     h.run_steps(2);
@@ -702,7 +701,7 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
     h.get_by_label_contains(&step_label("Hat zu", 10)).click();
     h.run_steps(2);
     assert!(!step_of(h.state(), clip, 3, 10).on);
-    assert!(h.query_by_label(names::VELOCITY).is_none());
+    assert!(h.query_by_label(de::STEP_SEQ_VELOCITY).is_none());
 }
 
 #[test]

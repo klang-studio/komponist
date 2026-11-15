@@ -11,6 +11,7 @@
 use egui::accesskit::{Action as AkAction, ActionData};
 use egui::epaint::CornerRadius;
 use egui::{Id, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_model::edits::StepProp;
 use komponist_model::{ClipId, Step};
 use komponist_tokens::egui_support::color32;
@@ -22,18 +23,22 @@ use komponist_ui::{px, widgets};
 use super::Open;
 use super::grid::Columns;
 use super::metrics as m;
-use super::names;
 use super::pattern::{self, changes};
 use crate::actions::{Action, EditAction, SelectionChange, UiAction};
 use crate::ui_state::StepLane;
 use crate::views::ViewCtx;
 
-/// The lane tabs in order, with their labels (verbatim from the screen).
-pub const LANES: [(StepLane, &str); 3] = [
-    (StepLane::Velocity, "Vel"),
-    (StepLane::Probability, "Wahr."),
-    (StepLane::Ratchet, "Ratch."),
-];
+/// The lane tabs in order.
+pub const LANES: [StepLane; 3] = [StepLane::Velocity, StepLane::Probability, StepLane::Ratchet];
+
+/// The label of a lane tab (verbatim from the screen: "Vel", "Wahr.", "Ratch.").
+pub fn lane_label(lang: Lang, lane: StepLane) -> &'static str {
+    match lane {
+        StepLane::Velocity => lang.step_seq_velocity_key(),
+        StepLane::Probability => lang.step_seq_probability_key(),
+        StepLane::Ratchet => lang.step_seq_ratchet_key(),
+    }
+}
 
 /// What the lane keeps between frames: the drag in progress (its clip and row) and whether a
 /// press is held.
@@ -103,10 +108,7 @@ pub fn show(
     );
 
     let selected = open.selected_step(row);
-    let tab = LANES
-        .iter()
-        .find(|(l, _)| *l == lane)
-        .map_or("Vel", |(_, t)| t);
+    let tab = lane_label(ctx.lang, lane);
     for i in 0..open.steps() {
         let step = &model.steps[i];
         let x = cols.x(i);
@@ -148,7 +150,7 @@ pub fn show(
         }
         // AccessKit.
         let v = value(lane, step);
-        let name = format!("{tab} Step {}", i + 1);
+        let name = ctx.lang.step_seq_lane_step(tab, i + 1);
         node.widget_info(|| {
             let mut info = WidgetInfo::labeled(Role::Slider, true, &name);
             info.value = Some(f64::from(v));
@@ -193,7 +195,7 @@ pub fn show(
     let instant = response.clicked() && !state.pressed;
     if held || instant {
         ctx.send(Action::Edit(EditAction::BeginGesture {
-            label: "Lane".to_owned(),
+            label: "undo-lane".to_owned(),
         }));
         state.drag = Some((open.clip, row));
         state.pressed = true;
@@ -250,12 +252,15 @@ fn label_column(
         column.y_range(),
         color32(color::SURFACE_0),
     );
-    let items: Vec<Item<'_>> = LANES.iter().map(|(_, l)| Item::new(l)).collect();
-    let mut index = LANES.iter().position(|(l, _)| *l == lane).unwrap_or(0);
+    let items: Vec<Item<'_>> = LANES
+        .iter()
+        .map(|l| Item::new(lane_label(ctx.lang, *l)))
+        .collect();
+    let mut index = LANES.iter().position(|l| *l == lane).unwrap_or(0);
     let name = open
         .names
         .get(row)
-        .map(|n| names::row(n))
+        .map(|n| ctx.lang.step_seq_row(n))
         .unwrap_or_default();
     let label = widgets::styled_galley(ui, &name, &typography::SMALL);
     // The tabs' height: a segment of `size.control-compact` in a 2 px frame.
@@ -272,9 +277,9 @@ fn label_column(
     );
     let mut tabs_ui = ui.new_child(UiBuilder::new().max_rect(tabs_rect));
     if tabs_ui
-        .add(Segmented::new(names::LANE, &mut index, &items))
+        .add(Segmented::new(ctx.lang.step_seq_lane(), &mut index, &items))
         .changed()
-        && let Some((l, _)) = LANES.get(index)
+        && let Some(l) = LANES.get(index)
     {
         ctx.send(Action::Ui(UiAction::SetStepLane(*l)));
     }

@@ -14,8 +14,8 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{BrowserSegment, DockTab, FocusArea};
-use komponist_app::views::browser::model::names;
 use komponist_app::{Action, App, EditAction, PluginAction, SettingsAction, UiAction};
+use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipId, PluginRef};
 
@@ -144,7 +144,7 @@ fn row(h: &Harness<'_, App>, name: &str) -> egui::Rect {
 }
 
 fn row_names(h: &Harness<'_, App>) -> Vec<String> {
-    h.get_by_role_and_label(Role::List, names::LIST)
+    h.get_by_role_and_label(Role::List, de::BROWSER_LIST)
         .get_all_by_role(Role::ListItem)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect()
@@ -167,7 +167,7 @@ fn adds(app: &App) -> Vec<(PluginRef, DropTarget)> {
 #[test]
 fn segments_filter_the_list() {
     let mut h = harness(app());
-    let segments = h.get_by_role_and_label(Role::RadioGroup, names::SEGMENTS);
+    let segments = h.get_by_role_and_label(Role::RadioGroup, de::BROWSER_SEGMENTS);
     let instr = segments
         .get_by_role_and_label(Role::RadioButton, "Instr.")
         .rect();
@@ -184,8 +184,8 @@ fn segments_filter_the_list() {
     h.get_by_role_and_label(Role::Label, "Hall und Delay");
     let files = h.get_by_role_and_label(Role::RadioButton, "Dateien").rect();
     click_at(&mut h, files.center());
-    h.get_by_role_and_label(Role::Label, names::NO_TAKES);
-    h.get_by_role_and_label(Role::Label, names::NO_EXPORTS);
+    h.get_by_role_and_label(Role::Label, de::BROWSER_NO_TAKES);
+    h.get_by_role_and_label(Role::Label, de::BROWSER_NO_EXPORTS);
 }
 
 #[test]
@@ -233,14 +233,14 @@ fn search_types_filters_moves_and_adds_to_the_selected_track() {
     h.run_steps(2);
     assert_eq!(h.state().ui().focus, FocusArea::Browser);
     assert!(
-        h.get_by_role_and_label(Role::TextInput, names::SEARCH)
+        h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
             .is_focused()
     );
-    h.get_by_role_and_label(Role::TextInput, names::SEARCH)
+    h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
         .type_text("hall");
     h.run_steps(2);
     assert_eq!(h.state().ui().browser.query, "hall");
-    h.get_by_role_and_label(Role::Heading, &names::hits(2, "hall"));
+    h.get_by_role_and_label(Role::Heading, &Lang::De.browser_hits(2, "hall"));
     // The first hit is marked: the internal "Hall".
     let first = h.get_by_role_and_label(Role::ListItem, "Hall");
     assert_eq!(first.accesskit_node().is_selected(), Some(true));
@@ -256,19 +256,19 @@ fn search_types_filters_moves_and_adds_to_the_selected_track() {
     // The dock shows the chain; the field keeps the focus for the next search.
     assert_eq!(h.state().ui().layout.dock_tab, DockTab::Devices);
     assert!(
-        h.get_by_role_and_label(Role::TextInput, names::SEARCH)
+        h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
             .is_focused()
     );
     // Esc clears the text, a second Esc leaves the field.
     key(&mut h, egui::Key::Escape);
     assert_eq!(h.state().ui().browser.query, "");
     assert!(
-        h.get_by_role_and_label(Role::TextInput, names::SEARCH)
+        h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
             .is_focused()
     );
     key(&mut h, egui::Key::Escape);
     assert!(
-        !h.get_by_role_and_label(Role::TextInput, names::SEARCH)
+        !h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
             .is_focused()
     );
 }
@@ -279,7 +279,7 @@ fn enter_on_an_instrument_adds_a_track_and_an_effect_needs_a_track() {
     let tracks = h.state().project().tracks.len();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::F);
     h.run_steps(2);
-    h.get_by_role_and_label(Role::TextInput, names::SEARCH)
+    h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH)
         .type_text("surge");
     h.run_steps(2);
     key(&mut h, egui::Key::Enter);
@@ -291,7 +291,7 @@ fn enter_on_an_instrument_adds_a_track_and_an_effect_needs_a_track() {
     );
     // An effect without a selected track: the status bar says why nothing happens.
     h.state_mut().ui_mut().selection.tracks.clear();
-    let field = h.get_by_role_and_label(Role::TextInput, names::SEARCH);
+    let field = h.get_by_role_and_label(Role::TextInput, de::BROWSER_SEARCH);
     field.type_text("x"); // "surgex": no hits
     h.run_steps(2);
     h.state_mut()
@@ -315,7 +315,7 @@ fn the_star_toggles_a_favourite_and_the_settings_keep_it() {
     let doc = komponist_model::Document::new(demo_project());
     let app = App::new(doc, engine, Settings::default(), Some(path.clone()));
     let mut h = harness(app);
-    let star_label = names::star("Surge XT");
+    let star_label = Lang::De.browser_star("Surge XT");
     let star = h
         .get_all_by_role_and_label(Role::Button, &star_label)
         .next()

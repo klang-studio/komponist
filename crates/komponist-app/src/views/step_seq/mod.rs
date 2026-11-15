@@ -45,49 +45,8 @@ use crate::ui_state::StepCursor;
 use crate::views::{View, ViewCtx, centered_text};
 use metrics as m;
 
-/// UI texts (verbatim from the screens) and accessible names.
-pub mod names {
-    /// Toolbar: pattern length key (`Länge 16 Steps`).
-    pub const LENGTH: &str = "Länge";
-    /// Unit of the pattern length.
-    pub const STEPS: &str = "Steps";
-    /// Toolbar: resolution dropdown.
-    pub const RESOLUTION: &str = "Auflösung";
-    /// Toolbar: swing key.
-    pub const SWING: &str = "Swing";
-    /// Unit of swing and probability.
-    pub const PERCENT: &str = "%";
-    /// Step info: velocity key.
-    pub const VELOCITY_KEY: &str = "Vel";
-    /// Its accessible name.
-    pub const VELOCITY: &str = "Velocity";
-    /// Step info: probability key (the screens write "Wahr.").
-    pub const PROBABILITY_KEY: &str = "Wahr.";
-    /// Its accessible name.
-    pub const PROBABILITY: &str = "Wahrscheinlichkeit";
-    /// Step info: ratchet key.
-    pub const RATCHET_KEY: &str = "Ratch.";
-    /// Its accessible name.
-    pub const RATCHET: &str = "Ratchet";
-    /// The button that turns the pattern into a MIDI clip.
-    pub const TO_MIDI: &str = "Als MIDI-Clip";
-    /// Its tooltip (S03 notes).
-    pub const TO_MIDI_DETAIL: &str = "Wandelt das Pattern in einen normalen MIDI-Clip um.";
-    /// The lane tabs' accessible name.
-    pub const LANE: &str = "Lane";
-    /// Without an open step clip (the shell normally shows its own empty state).
-    pub const NO_CLIP: &str = "Kein Clip geöffnet";
-
-    /// "Zeile Kick": the lane's row and a row header's accessible name.
-    pub fn row(name: &str) -> String {
-        format!("Zeile {name}")
-    }
-
-    /// "Step 11 · Hat zu": the step info (shown in `type.label` capitals).
-    pub fn step_info(step: usize, row: &str) -> String {
-        format!("Step {} · {row}", step + 1)
-    }
-}
+/// Unit of swing and probability: the same in every language (`docs/I18N.md` §5).
+pub const PERCENT: &str = "%";
 
 /// The open step clip as the parts of the view need it.
 pub struct Open<'p> {
@@ -251,7 +210,7 @@ impl View for StepSequencer {
         let project: Arc<Project> = Arc::clone(ctx.project);
         let Some(open) = Open::of(&project, ctx) else {
             self.grid.abandon(ctx);
-            centered_text(ui, rect, names::NO_CLIP, None);
+            centered_text(ui, rect, ctx.lang.step_seq_no_clip(), None);
             return;
         };
         let hue = project.track(open.track).map_or(0, |t| t.hue.0);
@@ -281,7 +240,7 @@ pub(super) fn send_step(
         step,
         prop,
     }));
-    if let Some(text) = pattern::status_text(prop) {
+    if let Some(text) = pattern::status_text(ctx.lang, prop) {
         ctx.send(Action::Ui(UiAction::ShowStatus {
             text,
             kind: crate::ui_state::StatusKind::Info,

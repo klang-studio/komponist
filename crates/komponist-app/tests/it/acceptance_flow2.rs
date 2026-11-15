@@ -17,7 +17,6 @@ use egui_kittest::kittest::Queryable as _;
 use komponist_app::App;
 use komponist_app::ui_state::Tool;
 use komponist_app::views::piano_roll::geometry::Geometry;
-use komponist_app::views::piano_roll::names as pr;
 use komponist_engine::{MidiInEvent, MidiPort, TransportState};
 use komponist_i18n::de;
 use komponist_model::fixtures::empty_project;
@@ -190,7 +189,7 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
     assert_eq!(h.state().undo_text().as_deref(), Some("Quantisieren"));
 
     // Pencil: a click on an empty spot sets a grid note.
-    click(&mut h, Role::RadioButton, pr::PENCIL);
+    click(&mut h, Role::RadioButton, de::PIANO_ROLL_PENCIL);
     assert_eq!(h.state().ui().piano_roll.tool, Tool::Pencil);
     let g = geometry(&h, clip);
     let before = notes_of(h.state(), clip).len();

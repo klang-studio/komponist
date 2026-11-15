@@ -20,10 +20,10 @@ use egui::accesskit::Role;
 use egui::pos2;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::device_host::PluginHost;
-use komponist_app::views::arrangement::names as arrangement_names;
 use komponist_builtin::Internal;
 use komponist_builtin::sampler::{SampleLink, links, testkit};
 use komponist_engine::TransportState;
+use komponist_i18n::de;
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{ClipContent, Project, Tick};
@@ -71,7 +71,7 @@ fn project_with_kit(dir: &std::path::Path) -> Project {
 
 fn x_of(h: &egui_kittest::Harness<'_, komponist_app::App>, tick: Tick) -> f32 {
     let ruler = h
-        .get_all_by_role_and_label(Role::Slider, arrangement_names::RULER)
+        .get_all_by_role_and_label(Role::Slider, de::A11Y_RULER)
         .map(|n| n.rect())
         .min_by(|a, b| a.top().total_cmp(&b.top()))
         .expect("ruler");

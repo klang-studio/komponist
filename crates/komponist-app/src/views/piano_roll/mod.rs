@@ -42,53 +42,8 @@ use self::canvas::{Frame, Gesture};
 use self::geometry::Geometry;
 use crate::views::{View, ViewCtx};
 
-/// Accessible names and texts of the piano roll (German, from the screens and the prototype).
-pub mod names {
-    use komponist_model::format::note_name;
-
-    /// The tool switch.
-    pub const TOOLS: &str = "Werkzeug";
-    /// Tool 1.
-    pub const POINTER: &str = "Zeiger";
-    /// Tool 2.
-    pub const PENCIL: &str = "Stift";
-    /// Tool 3.
-    pub const ERASER: &str = "Radierer";
-    /// The grid dropdown.
-    pub const GRID: &str = "Raster";
-    /// The snap toggle.
-    pub const SNAP: &str = "Snap";
-    /// The quantise button.
-    pub const QUANTIZE: &str = "Quantisieren";
-    /// Key of the velocity field and of the lane (`Vel`).
-    pub const VELOCITY_KEY: &str = "Vel";
-    /// Accessible name of the velocity field.
-    pub const VELOCITY_FIELD: &str = "Velocity";
-    /// The length field.
-    pub const LENGTH_FIELD: &str = "Länge";
-    /// The key field.
-    pub const NOTE_FIELD: &str = "Note";
-    /// Zoom out (−).
-    pub const ZOOM_OUT: &str = "Herauszoomen";
-    /// Zoom in (+).
-    pub const ZOOM_IN: &str = "Hineinzoomen";
-    /// The note grid (AccessKit group of the notes).
-    pub const NOTES: &str = "Noten";
-    /// The keyboard.
-    pub const KEYBOARD: &str = "Klaviatur";
-    /// The velocity lane.
-    pub const VELOCITY_LANE: &str = "Velocity-Spur";
-    /// The top of the lane's scale.
-    pub const VELOCITY_MAX: &str = "127";
-    /// Shown in an empty clip (`Prototyp.dc.html` `pr.emptyS`).
-    pub const EMPTY_HINT: &str =
-        "Stift: Klick setzt eine Note · Zeiger: Doppelklick · Tasten A–K spielen";
-
-    /// A key of the keyboard: "Taste C4".
-    pub fn key(pitch: u8) -> String {
-        format!("Taste {}", note_name(pitch))
-    }
-}
+/// The top of the velocity lane's scale.
+pub const VELOCITY_MAX: &str = "127";
 
 /// The piano roll view. Its document changes go out as actions; its view state lives in
 /// [`crate::ui_state::PianoRollView`]; here are only the gesture in progress and caches.

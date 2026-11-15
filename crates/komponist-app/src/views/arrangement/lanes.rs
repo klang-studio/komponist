@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use egui::{CornerRadius, CursorIcon, Id, Painter, Pos2, Rangef, Rect, Sense, Ui, pos2};
+use komponist_i18n::Lang;
 use komponist_ipc::NoteName;
 use komponist_model::edits::{NewClip, NewClipContent};
 use komponist_model::format::fmt_length;
@@ -21,14 +22,13 @@ use komponist_ui::tooltip::{self, Placement};
 
 use super::geometry::{ClipHit, Geometry, Zone};
 use super::{
-    Arrangement, Drag, EdgeDrag, MoveDrag, click_mode, metrics, names, register, select_clips,
+    Arrangement, Drag, EdgeDrag, MoveDrag, click_mode, metrics, register, select_clips,
     select_tracks,
 };
 use crate::actions::{Action, EditAction, SelectMode, UiAction};
 use crate::step_rows;
 use crate::ui_state::ArrangementView;
 use crate::views::ViewCtx;
-use crate::views::routing::names as routing_names;
 
 /// The tick a dragged position lands on: on the grid when snapping (and Shift is not held), else
 /// on the tick.
@@ -55,6 +55,7 @@ fn min_length(view: &ArrangementView, free: bool, project: &Project) -> Tick {
 /// decides ([`crate::step_rows::rows_for`] with the `note_names` it reports now: its eight pads,
 /// notes 36–43, without note names; ARCHITECTURE §13.3), else an empty MIDI clip "MIDI-Clip".
 pub fn new_clip(
+    lang: Lang,
     project: &Project,
     track: &Track,
     at: Tick,
@@ -75,14 +76,14 @@ pub fn new_clip(
         NewClip {
             start,
             length,
-            name: names::pattern(track.clips.len() + 1),
+            name: lang.arrangement_new_pattern(track.clips.len() + 1),
             content: NewClipContent::Step { rows },
         }
     } else {
         NewClip {
             start,
             length,
-            name: names::NEW_MIDI_CLIP.to_owned(),
+            name: lang.arrangement_new_midi_clip().to_owned(),
             content: NewClipContent::Midi {
                 notes: Vec::new(),
                 take_name: String::new(),
@@ -111,7 +112,7 @@ impl Arrangement {
         let painter = ui.painter().clone();
         paint_backgrounds(&painter, ctx, project, g);
         for i in g.visible_rows() {
-            super::buses::paint_bus_lane(ui, project, g, i);
+            super::buses::paint_bus_lane(ui, ctx.lang, project, g, i);
         }
         self.paint_clips(ui, &painter, ctx, project, g);
     }
@@ -170,7 +171,7 @@ impl Arrangement {
                         // A bus holds no clips: say why instead of adding one (the model refuses
                         // it as well).
                         ctx.send(Action::Ui(UiAction::ShowStatus {
-                            text: routing_names::NO_CLIPS.to_owned(),
+                            text: ctx.lang.routing_no_clips().to_owned(),
                             kind: crate::ui_state::StatusKind::Info,
                         }));
                     } else if let Some(i) = g.row_at(pos.y) {
@@ -179,7 +180,14 @@ impl Arrangement {
                         let host = ctx.engine.host();
                         let note_names =
                             step_rows::instrument(track).map_or(&[][..], |d| host.note_names(d.id));
-                        let clip = new_clip(project, track, at, &ctx.ui.arrangement, note_names);
+                        let clip = new_clip(
+                            ctx.lang,
+                            project,
+                            track,
+                            at,
+                            &ctx.ui.arrangement,
+                            note_names,
+                        );
                         ctx.send(Action::Edit(EditAction::AddClip {
                             track: track.id,
                             clip,
@@ -257,9 +265,9 @@ impl Arrangement {
                 clips.dedup();
                 let copy = mods.alt;
                 let label = if copy {
-                    "Clips kopieren"
+                    "undo-copy-clips"
                 } else {
-                    "Clips verschieben"
+                    "undo-move-clips"
                 };
                 ctx.send(Action::Edit(EditAction::BeginGesture {
                     label: label.to_owned(),
@@ -285,9 +293,9 @@ impl Arrangement {
                     length: clip.length,
                 };
                 let (label, drag) = if hit.zone == Zone::End {
-                    ("Clip-Länge", Drag::Trim(edge))
+                    ("undo-clip-length", Drag::Trim(edge))
                 } else {
-                    ("Clip-Loop", Drag::Loop(edge))
+                    ("undo-clip-loop", Drag::Loop(edge))
                 };
                 ctx.send(Action::Edit(EditAction::BeginGesture {
                     label: label.to_owned(),
@@ -500,7 +508,7 @@ impl Arrangement {
                 Id::unique("komponist_arrangement_no_clips"),
                 r,
                 Placement::Above,
-                routing_names::NO_CLIPS,
+                ctx.lang.routing_no_clips(),
             );
         }
 
@@ -649,7 +657,7 @@ mod tests {
         let p = demo_project();
         let v = ArrangementView::default();
         // Drums has the Sampler: a step clip with the eight pads from note 36.
-        let c = new_clip(&p, &p.tracks[0], Tick(5 * 3840 + 100), &v, &[]);
+        let c = new_clip(Lang::De, &p, &p.tracks[0], Tick(5 * 3840 + 100), &v, &[]);
         assert_eq!(c.start, Tick(5 * 3840));
         assert_eq!(c.length, Tick(3840));
         assert_eq!(c.name, "Pattern 5");
@@ -669,7 +677,7 @@ mod tests {
                 name: name.into(),
             })
             .collect();
-        let c = new_clip(&p, &p.tracks[0], Tick(0), &v, &names);
+        let c = new_clip(Lang::De, &p, &p.tracks[0], Tick(0), &v, &names);
         let NewClipContent::Step { rows } = &c.content else {
             panic!("step clip expected");
         };
@@ -685,7 +693,7 @@ mod tests {
             ]
         );
         // Lead has hexa: an empty MIDI clip.
-        let c = new_clip(&p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
+        let c = new_clip(Lang::De, &p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
         assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));
         assert!(matches!(c.content, NewClipContent::Midi { ref notes, .. } if notes.is_empty()));
     }

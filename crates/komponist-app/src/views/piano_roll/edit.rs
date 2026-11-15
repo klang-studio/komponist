@@ -17,6 +17,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use komponist_i18n::Lang;
 use komponist_model::format::note_name;
 use komponist_model::{Clip, Meter, Note, NoteId, Tick};
 
@@ -257,13 +258,9 @@ fn gcd(mut a: i64, mut b: i64) -> i64 {
 
 /// The selection info of the toolbar: "2 Noten" / "1 Note" selected, else all notes of the clip
 /// (`selT`).
-pub fn selection_text(selected: usize, total: usize) -> String {
+pub fn selection_text(lang: Lang, selected: usize, total: usize) -> String {
     let n = if selected > 0 { selected } else { total };
-    if n == 1 {
-        "1 Note".to_owned()
-    } else {
-        format!("{n} Noten")
-    }
+    lang.piano_roll_selection(n)
 }
 
 /// The note name of a key ("C4"), for keys and the "Note" field.
@@ -507,9 +504,9 @@ mod tests {
         assert_eq!(fmt_note_length(Tick(720), M), "3/16");
         assert_eq!(fmt_note_length(Tick(3840), M), "1/1");
         assert_eq!(fmt_note_length(Tick(320), M), "0.0.80");
-        assert_eq!(selection_text(2, 17), "2 Noten");
-        assert_eq!(selection_text(1, 17), "1 Note");
-        assert_eq!(selection_text(0, 17), "17 Noten");
+        assert_eq!(selection_text(Lang::De, 2, 17), "2 Noten");
+        assert_eq!(selection_text(Lang::De, 1, 17), "1 Note");
+        assert_eq!(selection_text(Lang::De, 0, 17), "17 Noten");
         assert_eq!(key_name(69), "A4");
     }
 }

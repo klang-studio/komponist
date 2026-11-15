@@ -19,9 +19,9 @@ use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::{px, widgets};
 
+use super::Open;
 use super::metrics as m;
 use super::pattern::{self, RESOLUTIONS};
-use super::{Open, names};
 use crate::actions::{Action, EditAction};
 use crate::views::ViewCtx;
 
@@ -102,11 +102,11 @@ impl Field {
     /// Undo label of a drag on the field.
     fn label(self) -> &'static str {
         match self {
-            Field::Length => "Pattern-Länge",
-            Field::Swing => "Swing",
-            Field::Velocity => "Velocity",
-            Field::Probability => "Wahrscheinlichkeit",
-            Field::Ratchet => "Ratchet",
+            Field::Length => "undo-pattern-length",
+            Field::Swing => "undo-swing",
+            Field::Velocity => "undo-velocity",
+            Field::Probability => "undo-probability",
+            Field::Ratchet => "undo-ratchet",
         }
     }
 }
@@ -146,6 +146,7 @@ pub fn show(
     );
     row.set_clip_rect(ui.clip_rect().intersect(rect));
     row.spacing_mut().item_spacing = vec2(m::TOOLBAR_GAP, 0.0);
+    let t = ctx.lang;
     let clip = open.clip;
     let pattern = open.pattern;
     if state.drag.is_some() && !state.cancelled && super::escape_pressed(ui) {
@@ -155,13 +156,13 @@ pub fn show(
 
     // Länge.
     let spec = Spec {
-        key: names::LENGTH,
-        name: names::LENGTH,
+        key: t.step_seq_length(),
+        name: t.step_seq_length(),
         value: f64::from(pattern.length_steps),
         min: 1.0,
         max: komponist_model::project::MAX_STEPS as f64,
         default: 16.0,
-        unit: names::STEPS,
+        unit: t.step_seq_steps(),
         width: m::FIELD_LENGTH_WIDTH,
     };
     let out = field(&mut row, spec);
@@ -177,13 +178,13 @@ pub fn show(
 
     // Swing.
     let spec = Spec {
-        key: names::SWING,
-        name: names::SWING,
+        key: t.step_seq_swing(),
+        name: t.step_seq_swing(),
         value: f64::from(pattern::swing_percent(pattern.swing)),
         min: 0.0,
         max: 75.0,
         default: 0.0,
-        unit: names::PERCENT,
+        unit: super::PERCENT,
         width: m::FIELD_SWING_WIDTH,
     };
     let out = field(&mut row, spec);
@@ -210,7 +211,7 @@ pub fn show(
     if let Some(cursor) = open.cursor {
         let name = &open.names[cursor.row];
         let text = match cursor.step {
-            Some(step) => names::step_info(step, name),
+            Some(step) => t.step_seq_step_info(step + 1, name),
             None => name.clone(),
         };
         let galley = widgets::styled_galley(&row, &text, &typography::LABEL);
@@ -230,8 +231,8 @@ pub fn show(
 
     // Als MIDI-Clip.
     row.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let tip = Tip::new(names::TO_MIDI).detail(names::TO_MIDI_DETAIL);
-        if ui.add(Button::new(names::TO_MIDI).tip(tip)).clicked() {
+        let tip = Tip::new(t.step_seq_to_midi()).detail(t.step_seq_to_midi_detail());
+        if ui.add(Button::new(t.step_seq_to_midi()).tip(tip)).clicked() {
             ctx.send(Action::Edit(EditAction::StepClipToMidi(clip)));
         }
     });
@@ -252,6 +253,7 @@ fn step_fields(
     step: usize,
     s: &komponist_model::Step,
 ) {
+    let t = ctx.lang;
     let clip = open.clip;
     let set = move |prop: StepProp| {
         Action::Edit(EditAction::SetStep {
@@ -265,8 +267,8 @@ fn step_fields(
         (
             Field::Velocity,
             Spec {
-                key: names::VELOCITY_KEY,
-                name: names::VELOCITY,
+                key: t.step_seq_velocity_key(),
+                name: t.step_seq_velocity(),
                 value: f64::from(s.velocity),
                 min: 1.0,
                 max: 127.0,
@@ -278,21 +280,21 @@ fn step_fields(
         (
             Field::Probability,
             Spec {
-                key: names::PROBABILITY_KEY,
-                name: names::PROBABILITY,
+                key: t.step_seq_probability_key(),
+                name: t.step_seq_probability(),
                 value: f64::from(s.probability),
                 min: 0.0,
                 max: 100.0,
                 default: 100.0,
-                unit: names::PERCENT,
+                unit: super::PERCENT,
                 width: m::FIELD_PROBABILITY_WIDTH,
             },
         ),
         (
             Field::Ratchet,
             Spec {
-                key: names::RATCHET_KEY,
-                name: names::RATCHET,
+                key: t.step_seq_ratchet_key(),
+                name: t.step_seq_ratchet(),
                 value: f64::from(s.ratchet),
                 min: 1.0,
                 max: 4.0,
@@ -362,13 +364,19 @@ fn end_drag(ctx: &mut ViewCtx<'_>, state: &mut ToolbarState) {
 
 /// "Auflösung ▾": the dropdown with its key inside the box (`gap:10px`, S03).
 fn resolution(row: &mut Ui, open: &Open<'_>, ctx: &mut ViewCtx<'_>) {
+    let t = ctx.lang;
     let clip = open.clip;
-    let items: Vec<Item<'_>> = RESOLUTIONS.iter().map(|(_, l)| Item::new(l)).collect();
+    let items: Vec<Item<'_>> = RESOLUTIONS
+        .iter()
+        .map(|r| Item::new(pattern::resolution_label(t, *r)))
+        .collect();
     let mut selected = pattern::resolution_index(open.pattern.resolution);
-    let response =
-        row.add(Dropdown::new(names::RESOLUTION, &mut selected, &items).label(names::RESOLUTION));
+    let response = row.add(
+        Dropdown::new(t.step_seq_resolution(), &mut selected, &items)
+            .label(t.step_seq_resolution()),
+    );
     if response.changed()
-        && let Some((res, _)) = RESOLUTIONS.get(selected)
+        && let Some(res) = RESOLUTIONS.get(selected)
     {
         ctx.send(Action::Edit(EditAction::SetStepClipProp {
             clip,

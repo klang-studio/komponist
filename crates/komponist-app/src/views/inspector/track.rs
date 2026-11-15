@@ -2,18 +2,18 @@
 //! Eingang, Kanal) and the devices list (`sec({title:'Geräte', meta:'+ Effekt', devs})`, `D`).
 
 use egui::{Rangef, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_ipc::PluginKind;
 use komponist_model::edits::TrackProp;
 use komponist_model::{ChannelRef, Hue, MidiChannelSel, MidiInputSel, PluginRef, Project, Track};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, typography};
 use komponist_ui::state::{self, State};
-use komponist_ui::widgets::context_menu::HUE_NAMES;
 use komponist_ui::widgets::dropdown::{Dropdown, Item};
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::{focus, fonts, px};
 
-use super::model::{self, DeviceRow, RowStatus, names};
+use super::model::{self, DeviceRow, RowStatus};
 use super::{Col, Inspector, Meta, RenameTarget, frame, label, metrics as m, place};
 use crate::actions::{Action, DropTarget, EditAction, PluginAction};
 use crate::views::ViewCtx;
@@ -29,16 +29,22 @@ pub(super) fn section(
     y: &mut f32,
     track: &Track,
 ) {
+    let t = ctx.lang;
     let index = project.track_index(track.id).unwrap_or(0);
-    let position = names::position(index, project.tracks.len());
+    let position = model::position(index, project.tracks.len());
     let chip = crate::views::mixer::model::base_color(track.hue.0);
     let (title, meta) = if track.is_bus() {
         (
-            names::BUS,
-            crate::views::routing::names::bus_line(track.folder).to_owned(),
+            t.inspector_section_bus(),
+            if track.folder {
+                t.routing_kind_group()
+            } else {
+                t.routing_kind_effect_bus()
+            }
+            .to_owned(),
         )
     } else {
-        (names::TRACK, position)
+        (t.inspector_section_track(), position)
     };
     frame(ui, x, y, title, Meta::Text(&meta), |ui, col| {
         let target = RenameTarget::Track(track.id);
@@ -65,6 +71,7 @@ pub(super) fn section(
 /// The 14 track colours in one row; the current one with a `text.1` ring 1 px away; a click
 /// sets the colour.
 fn swatches(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
+    let t = ctx.lang;
     let row = col.take(m::SWATCH_HEIGHT);
     let n = Hue::ALL.len();
     let w = (row.width() - (n - 1) as f32 * m::SWATCH_GAP) / n as f32;
@@ -100,9 +107,10 @@ fn swatches(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
         if st.focused {
             focus::paint_ring(ui.painter(), rect, radius::S);
         }
-        let name = names::swatch(HUE_NAMES[i]);
+        let hue_name = crate::views::hue_name(t, i);
+        let name = t.inspector_swatch(hue_name);
         response.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, current, &name));
-        Tip::new(HUE_NAMES[i]).attach(&response);
+        Tip::new(hue_name).attach(&response);
         if response.clicked() && !current {
             ctx.send(Action::Edit(EditAction::SetTrackProp {
                 tracks: vec![track.id],
@@ -114,6 +122,7 @@ fn swatches(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 
 /// Instrument, Eingang and Kanal: keys in a 72 px column, the dropdowns filling the rest.
 fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
+    let t = ctx.lang;
     let rows = 3;
     let h = rows as f32 * komponist_tokens::size::CONTROL + (rows - 1) as f32 * m::DD_ROW_GAP;
     let area = col.take(h);
@@ -130,7 +139,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 
     // Instrument: the catalog's instruments; the current one first if it is not among them.
     let (key, field) = row(0);
-    super::field_key(ui, key, names::INSTRUMENT);
+    super::field_key(ui, key, t.inspector_track_instrument());
     let current = track.channel.instrument().map(|(_, d)| d.plugin.clone());
     let mut plugins: Vec<PluginRef> = ctx
         .engine
@@ -158,8 +167,8 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
             0
         }
         (None, None) => {
-            labels.insert(0, names::NO_INSTRUMENT.to_owned());
-            plugins.insert(0, no_instrument());
+            labels.insert(0, t.inspector_track_no_instrument().to_owned());
+            plugins.insert(0, no_instrument(t));
             enabled.insert(0, false);
             0
         }
@@ -174,7 +183,10 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
         .collect();
     let before = selected;
     let r = place(ui, field, "instrument", |ui| {
-        ui.add(Dropdown::new(names::INSTRUMENT, &mut selected, &items).width(field.width()))
+        ui.add(
+            Dropdown::new(t.inspector_track_instrument(), &mut selected, &items)
+                .width(field.width()),
+        )
     });
     if r.changed() && selected != before && enabled[selected] {
         ctx.send(Action::Plugin(PluginAction::Add {
@@ -185,7 +197,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 
     // Eingang: all inputs, or one port by name (kept when the device is absent).
     let (key, field) = row(1);
-    super::field_key(ui, key, names::INPUT);
+    super::field_key(ui, key, t.inspector_track_input());
     let mut ports: Vec<String> = ctx
         .engine
         .midi()
@@ -196,7 +208,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
     {
         ports.push(name.clone());
     }
-    let mut labels = vec![names::ALL_INPUTS.to_owned()];
+    let mut labels = vec![t.inspector_track_all_inputs().to_owned()];
     labels.extend(ports.iter().cloned());
     let mut selected = match &track.input {
         MidiInputSel::All => 0,
@@ -205,7 +217,7 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
     let before = selected;
     let items: Vec<Item<'_>> = labels.iter().map(|l| Item::new(l)).collect();
     let r = place(ui, field, "input", |ui| {
-        ui.add(Dropdown::new(names::INPUT, &mut selected, &items).width(field.width()))
+        ui.add(Dropdown::new(t.inspector_track_input(), &mut selected, &items).width(field.width()))
     });
     if r.changed() && selected != before {
         let input = match selected {
@@ -220,8 +232,8 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 
     // Kanal: Omni, 1 … 16.
     let (key, field) = row(2);
-    super::field_key(ui, key, names::MIDI_CHANNEL);
-    let labels: Vec<String> = std::iter::once(names::OMNI.to_owned())
+    super::field_key(ui, key, t.inspector_track_midi_channel());
+    let labels: Vec<String> = std::iter::once(t.inspector_track_omni().to_owned())
         .chain((1..=16).map(|c| c.to_string()))
         .collect();
     let items: Vec<Item<'_>> = labels.iter().map(|l| Item::new(l)).collect();
@@ -231,7 +243,10 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
     };
     let before = selected;
     let r = place(ui, field, "midi_channel", |ui| {
-        ui.add(Dropdown::new(names::MIDI_CHANNEL, &mut selected, &items).width(field.width()))
+        ui.add(
+            Dropdown::new(t.inspector_track_midi_channel(), &mut selected, &items)
+                .width(field.width()),
+        )
     });
     if r.changed() && selected != before {
         let channel = match selected {
@@ -246,11 +261,11 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 }
 
 /// A placeholder reference for the disabled "Kein Instrument" entry (never sent).
-fn no_instrument() -> PluginRef {
+fn no_instrument(t: Lang) -> PluginRef {
     PluginRef {
         format: komponist_model::PluginFormat::Builtin,
         id: String::new(),
-        name: names::NO_INSTRUMENT.to_owned(),
+        name: t.inspector_track_no_instrument().to_owned(),
         vendor: String::new(),
         version: String::new(),
         module: Box::default(),
@@ -268,14 +283,15 @@ pub(super) fn devices_section(
     y: &mut f32,
     track: &Track,
 ) {
+    let t = ctx.lang;
     let rows = model::device_rows(&track.channel.devices, ctx.engine.host());
     let now = ui.input(|i| i.time);
     let (_, add) = frame(
         ui,
         x,
         y,
-        names::DEVICES,
-        Meta::Action(names::ADD_EFFECT),
+        t.inspector_section_devices(),
+        Meta::Action(t.inspector_devices_add_effect()),
         |ui, col| {
             if rows.is_empty() {
                 return;
@@ -323,6 +339,7 @@ fn device_row(
     tag: &'static str,
     late: Option<u64>,
 ) {
+    let t = ctx.lang;
     let response = ui.interact(
         rect,
         ui.scope_id().with(("device", row.device.0)),
@@ -363,18 +380,19 @@ fn device_row(
         Sense::click(),
     );
     let active = !row.bypass;
-    power_response
-        .widget_info(|| WidgetInfo::selected(Role::CheckBox, true, active, names::ACTIVE));
-    Tip::new(names::ACTIVE)
-        .detail("Bypass")
+    power_response.widget_info(|| {
+        WidgetInfo::selected(Role::CheckBox, true, active, t.inspector_device_active())
+    });
+    Tip::new(t.inspector_device_active())
+        .detail(t.inspector_device_bypass())
         .attach(&power_response);
 
     // Tag on the right.
     let style = typography::VALUE_S;
     let (tag_text, tag_ink) = match (late, row.status) {
-        (Some(_), _) => (names::LATE, color::METER_LOUD),
-        (None, RowStatus::Ok | RowStatus::Loading) => (row.tag(tag), color::TEXT_3),
-        (None, _) => (row.tag(tag), color::STATE_ERROR),
+        (Some(_), _) => (t.late_label(), color::METER_LOUD),
+        (None, RowStatus::Ok | RowStatus::Loading) => (row.tag(t, tag), color::TEXT_3),
+        (None, _) => (row.tag(t, tag), color::STATE_ERROR),
     };
     let g = komponist_ui::widgets::galley(ui, tag_text, fonts::font_id(&style), style.line_height);
     let pos = komponist_ui::widgets::text_pos(
@@ -404,13 +422,13 @@ fn device_row(
         focus::paint_ring(ui.painter(), rect, radius::M);
     }
 
-    let name = names::device(&row.name);
+    let name = t.inspector_device(&row.name);
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(Role::Button, true, &name);
         info.current_text_value = Some(tag_text.to_owned());
         info
     });
-    let late_text = late.map(names::late_blocks);
+    let late_text = late.map(|n| t.late_blocks(n));
     match &late_text {
         Some(t) => Tip::new(&row.name).detail(t).attach(&response),
         None => Tip::new(&row.name).attach(&response),

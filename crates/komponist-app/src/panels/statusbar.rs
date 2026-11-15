@@ -153,8 +153,13 @@ fn context(app: &App, s: &mut StatusModel) {
     }
     // A device parameter held and moved: its name and value (WP-89).
     if let Some(touch) = ui.devices.touched.as_ref().filter(|t| t.dragging)
-        && let Some(param) =
-            crate::views::devices::model::touched(p, app.engine().host(), &ui.plugin_windows, touch)
+        && let Some(param) = crate::views::devices::model::touched(
+            t,
+            p,
+            app.engine().host(),
+            &ui.plugin_windows,
+            touch,
+        )
     {
         s.left = format!("{} · {}", param.name, param.value);
         s.mid = t.status_param_hint().to_owned();
