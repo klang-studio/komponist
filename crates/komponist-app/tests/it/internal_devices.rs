@@ -542,3 +542,63 @@ fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
     results.extend_harness(&mut h);
     results.unwrap();
 }
+
+// ------------------------------------------------------------------------------------------------
+// PDC follows a latency-changing parameter (WP-91)
+
+#[test]
+fn toggling_the_limiter_lookahead_while_playing_updates_the_delay_compensation() {
+    let (mut app, with_limiter) = app_with_track();
+    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: pisynth,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let plain = app.project().tracks[1].id;
+    add(
+        &mut app,
+        Internal::Limiter,
+        DropTarget::Chain {
+            channel: ChannelRef::Track(with_limiter),
+            index: 1,
+        },
+    );
+    let limiter = chain(&app, with_limiter)[1].0;
+    let pdc = |app: &App, track: TrackId| {
+        app.engine()
+            .program()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == track)
+            .unwrap()
+            .pdc_delay
+    };
+    app.engine_mut().hold_engine().expect("engine held");
+    app.dispatch(Action::Transport(
+        komponist_app::TransportAction::TogglePlay,
+    ));
+
+    // Lookahead is on by default: the limited track is late, the other one waits for it.
+    app.step();
+    let lookahead = app.engine().host().latency(limiter);
+    assert!(lookahead > 0, "the default limiter has lookahead");
+    assert_eq!(pdc(&app, with_limiter), 0);
+    assert_eq!(pdc(&app, plain), lookahead);
+
+    // Off: no latency, nothing to compensate. The change travels audio thread → meter → host
+    // → recompile; one block is enough to publish it.
+    set_param(&mut app, limiter, Internal::Limiter, "lookahead", 0.0);
+    assert!(app.engine_mut().run_held(1024, &[], 0));
+    app.step();
+    assert_eq!(app.engine().host().latency(limiter), 0);
+    assert_eq!(pdc(&app, plain), 0);
+    assert_eq!(pdc(&app, with_limiter), 0);
+
+    // On again: the other track follows.
+    set_param(&mut app, limiter, Internal::Limiter, "lookahead", 1.0);
+    assert!(app.engine_mut().run_held(1024, &[], 0));
+    app.step();
+    assert_eq!(pdc(&app, plain), lookahead);
+    assert_eq!(pdc(&app, with_limiter), 0);
+}

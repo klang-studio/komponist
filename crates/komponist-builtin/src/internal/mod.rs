@@ -380,6 +380,7 @@ impl Processor for InternalProcessor {
         }
         self.sample_rate = sample_rate;
         self.dsp.activate(sample_rate);
+        self.meter.set_latency(self.dsp.latency());
         Ok(())
     }
 
@@ -405,6 +406,9 @@ impl Processor for InternalProcessor {
                 done = at;
             }
             self.dsp.set_param(id as usize, info.snap(value));
+            // A parameter can change the latency (limiter lookahead); the UI thread reads it
+            // from the meter and recompiles the delay compensation.
+            self.meter.set_latency(self.dsp.latency());
         }
         if done < frames {
             self.render(io, done, frames);

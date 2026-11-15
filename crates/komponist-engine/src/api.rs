@@ -365,6 +365,8 @@ pub struct DeviceMeter {
     input: AtomicU32,
     reduction: AtomicU32,
     output: AtomicU32,
+    /// The processor's current latency in frames (WP-91).
+    latency: AtomicU32,
 }
 
 impl DeviceMeter {
@@ -374,7 +376,20 @@ impl DeviceMeter {
             input: AtomicU32::new(0),
             reduction: AtomicU32::new(0),
             output: AtomicU32::new(0),
+            latency: AtomicU32::new(0),
         }
+    }
+
+    /// RT. Publishes the processor's current latency in frames. A processor whose latency depends
+    /// on a parameter calls it after every change, so the host can recompile the delay
+    /// compensation ([`DeviceMeter::latency`]).
+    pub fn set_latency(&self, frames: u32) {
+        self.latency.store(frames, Ordering::Relaxed);
+    }
+
+    /// UI. The latency last published with [`DeviceMeter::set_latency`] (0 before any).
+    pub fn latency(&self) -> u32 {
+        self.latency.load(Ordering::Relaxed)
     }
 
     /// RT. Raises the stored values to at least `input`, `reduction_db` and `output` (all ≥ 0 and
