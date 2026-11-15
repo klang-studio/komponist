@@ -580,6 +580,25 @@ pub fn picker_rows(input: &Input<'_>, effects_only: bool) -> Vec<Row> {
     out
 }
 
+/// The instruments of the catalog for the new-track dialog: the plugin rows of [`picker_rows`]
+/// that are instruments (so the search is the browser's), each plugin once, no section headers.
+pub fn instrument_rows(input: &Input<'_>) -> Vec<Row> {
+    let mut seen: Vec<PluginRef> = Vec::new();
+    picker_rows(input, false)
+        .into_iter()
+        .filter(|r| {
+            let RowKind::Plugin { plugin, kind, .. } = &r.kind else {
+                return false;
+            };
+            if *kind != PluginKind::Instrument || seen.contains(plugin) {
+                return false;
+            }
+            seen.push(plugin.clone());
+            true
+        })
+        .collect()
+}
+
 /// The row Enter acts on: the highlighted one, or while searching the first activatable row
 /// (S05: the first hit is marked, so typing and Enter add it).
 pub fn effective_highlight(rows: &[Row], highlighted: Option<usize>, query: &str) -> Option<usize> {

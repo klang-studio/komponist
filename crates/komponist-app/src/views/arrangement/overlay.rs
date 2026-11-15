@@ -13,11 +13,14 @@ use komponist_ui::{focus, fonts, px, widgets as w};
 
 use super::geometry::Geometry;
 use super::{Arrangement, Drag, metrics, names};
-use crate::actions::{Action, DropTarget, EditAction, ProjectAction};
+use crate::actions::{Action, DropTarget, EditAction, ProjectAction, UiAction};
 use crate::views::ViewCtx;
 
 impl Arrangement {
-    /// "Neue Spur" with its hint in the header column below the last track (S01, S10).
+    /// "Neue Spur" with its hint in the header column below the last track (S01, S10), a button:
+    /// click, Enter or Space open the dialog for new tracks. It looks as before at rest; hovered,
+    /// focused (ring) or pressed it gets the device chain's drop slot look (`surface.2` fill,
+    /// dashed `surface.5` frame, `text.2`). A plugin dropped on it is handled by `drop_target`.
     pub(super) fn new_track_area(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, g: &Geometry) {
         let area = g.new_track();
         let left = Rect::from_x_y_ranges(g.header_x, area.y_range());
@@ -31,22 +34,51 @@ impl Arrangement {
             .label_for(&Action::Edit(EditAction::NewMidiTrack), ctx.lang)
             .unwrap_or_default();
         let hint = format!("{} {shortcut}", names::NEW_TRACK_HINT);
+        let hint = hint.trim_end();
+
+        let inset = metrics::NEW_TRACK_BOX_INSET;
+        let height = (left.height() - 2.0 * inset).min(metrics::NEW_TRACK_MIN_HEIGHT);
+        if height <= 0.0 {
+            return;
+        }
+        let boxed = Rect::from_min_size(
+            left.min + vec2(inset, inset),
+            vec2(left.width() - 2.0 * inset, height),
+        );
+        let id = ui.scope_id().with("komponist_arrangement_new_track");
+        let response = ui.interact(boxed, id, Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::NEW_TRACK_BUTTON));
+        w::accesskit(&response, |n| n.set_description(hint));
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let hot = response.hovered() || response.is_pointer_button_down_on();
+        let ink = if hot { color::TEXT_2 } else { color::TEXT_3 };
+        if hot {
+            px::fill(ui.painter(), boxed, 0.0, color32(color::SURFACE_2));
+            px::dashed_border(
+                ui.painter(),
+                boxed,
+                color32(color::SURFACE_5),
+                metrics::NEW_TRACK_DASH,
+            );
+        }
+        if focus::ring_visible(&response) {
+            focus::paint_ring(ui.painter(), boxed, 0.0);
+        }
+
         let x = px::snap(left.left() + pad_x, ppp);
         let mut y = px::snap(left.top() + pad_y, ppp);
+        let title_ink = if hot { color::TEXT_1 } else { color::TEXT_2 };
         for (text, style, c) in [
-            (names::NEW_TRACK, typography::UI, color::TEXT_2),
-            (hint.trim_end(), typography::SMALL, color::TEXT_3),
+            (names::NEW_TRACK, typography::UI, title_ink),
+            (hint, typography::SMALL, ink),
         ] {
             let galley = w::styled_galley(ui, text, &style);
             let r = Rect::from_min_size(pos2(x, y), galley.size());
             y = px::snap(r.bottom() + metrics::NEW_TRACK_GAP, ppp);
             ui.painter().galley(r.min, galley, color32(c));
-            let response = ui.interact(
-                r,
-                Id::unique(("komponist_arrangement_new_track", text)),
-                Sense::hover(),
-            );
-            response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+        }
+        if response.clicked() {
+            ctx.send(Action::Ui(UiAction::OpenNewTrackDialog));
         }
     }
 

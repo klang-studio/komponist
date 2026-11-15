@@ -25,6 +25,7 @@ pub mod format;
 pub mod metrics;
 pub mod missing_plugins;
 pub mod new_project;
+pub mod new_track;
 pub mod settings;
 pub mod start;
 
@@ -67,6 +68,9 @@ pub(crate) struct DialogState {
     pub(crate) quit_confirmed: bool,
     /// Close the window in the next frame.
     pub(crate) close_now: bool,
+    /// The instrument the last "Neue Spur" dialog created tracks with (`Some(None)` = none), for
+    /// the next one in this session.
+    pub(crate) last_instrument: Option<Option<komponist_model::PluginRef>>,
     /// The folder the file browser showed last.
     pub(crate) last_dir: Option<PathBuf>,
     /// Device lists, MIDI activity and scroll targets of the settings dialog.
@@ -84,6 +88,8 @@ pub(crate) enum Overlay {
     File(file::FileBrowser),
     /// "Änderungen speichern?" before the open project is replaced.
     Unsaved,
+    /// "Neue Spur": the dialog behind the box below the tracks.
+    NewTrack(new_track::State),
 }
 
 /// A step that waits for the unsaved-changes prompt (or for the save it started).
@@ -477,6 +483,40 @@ impl crate::App {
                 let name = self.project().name.clone();
                 if let Some(answer) = new_project::show_unsaved(ctx, &name) {
                     self.answer_unsaved(answer);
+                }
+            }
+            Some(Overlay::NewTrack(state)) => {
+                let catalog = self.engine.host().catalog();
+                let favorites = &self.ui.browser.favorites;
+                let project = self.doc.project();
+                let instruments = |query: &str| {
+                    let no_exports: [String; 0] = [];
+                    crate::views::browser::model::instrument_rows(
+                        &crate::views::browser::model::Input {
+                            catalog,
+                            favorites,
+                            segment: crate::ui_state::BrowserSegment::All,
+                            query,
+                            collapsed: &std::collections::BTreeSet::new(),
+                            project,
+                            exports: &no_exports,
+                        },
+                    )
+                };
+                let view = new_track::View {
+                    project,
+                    instruments: &instruments,
+                };
+                match new_track::show(ctx, state, &view) {
+                    Some(new_track::Output::Create(spec)) => {
+                        self.dialogs.last_instrument = Some(spec.instrument.clone());
+                        self.close_overlay();
+                        self.create_tracks(&spec);
+                    }
+                    Some(new_track::Output::Cancel) => {
+                        self.queue.push(Action::Ui(UiAction::CloseDialog));
+                    }
+                    None => {}
                 }
             }
             None => {}

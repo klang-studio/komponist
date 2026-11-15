@@ -1074,7 +1074,7 @@ fn an_empty_project_shows_the_hint_and_its_primary_action() {
     let mut h = harness(App::headless(komponist_model::fixtures::empty_project()));
     h.get_by_role_and_label(Role::Label, names::EMPTY_TITLE);
     h.get_by_role_and_label(Role::Label, names::EMPTY_TEXT);
-    h.get_by_role_and_label(Role::Label, names::NEW_TRACK);
+    h.get_by_role_and_label(Role::Button, names::NEW_TRACK_BUTTON);
     h.get_by_label_contains("0 Spuren");
     h.get_by_role_and_label(Role::Button, names::OPEN_PROJECT);
     h.get_by_role_and_label(Role::Button, names::ADD_MIDI_TRACK)
@@ -1110,4 +1110,246 @@ fn snapshot_of_an_empty_project_next_to_s10() {
         .rect();
     h.mask(cpu.expand(2.0));
     h.snapshot("arrangement-s10-1x");
+}
+
+// ------------------------------------------------------------------------------------------------
+// "Neue Spur": the box below the tracks and its dialog
+
+mod new_track {
+    use komponist_app::dialogs::new_track::names as dn;
+    use komponist_i18n::de;
+
+    use super::*;
+
+    fn new_track_box(h: &Harness<'_, App>) -> Rect {
+        rect_of(h, Role::Button, names::NEW_TRACK_BUTTON)
+    }
+
+    fn dialog_open(h: &Harness<'_, App>) -> bool {
+        h.query_by_role_and_label(Role::Dialog, dn::TITLE).is_some()
+    }
+
+    fn open_by_click(h: &mut Harness<'_, App>) {
+        click(new_track_box(h).center(), h);
+        h.run_steps(3);
+        assert!(dialog_open(h));
+    }
+
+    fn undo_text(h: &Harness<'_, App>) -> Option<String> {
+        h.state().undo_text()
+    }
+
+    fn names_of(h: &Harness<'_, App>) -> Vec<String> {
+        h.state()
+            .project()
+            .tracks
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    }
+
+    fn option(h: &Harness<'_, App>, name: &str) -> Rect {
+        h.get_by_role_and_label(Role::ListBoxOption, name).rect()
+    }
+
+    fn type_in(h: &mut Harness<'_, App>, label: &str, text: &str) {
+        h.get_by_role_and_label(Role::TextInput, label).focus();
+        h.run_steps(1);
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.get_by_role_and_label(Role::TextInput, label)
+            .type_text(text);
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn a_click_opens_the_dialog_and_esc_cancels_without_a_change() {
+        let mut h = harness(demo());
+        let before = names_of(&h);
+        let undo_before = undo_text(&h);
+        assert!(!dialog_open(&h));
+        open_by_click(&mut h);
+        // Pisynth is chosen, the name is the automatic one, the count 1.
+        let sel = h.get_by_role_and_label(Role::ListBoxOption, "pisynth");
+        assert!(sel.accesskit_node().is_selected() == Some(true));
+        h.get_by_role_and_label(Role::SpinButton, dn::COUNT);
+        h.get_by_role_and_label(Role::TextInput, dn::NAME);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(!dialog_open(&h));
+        assert_eq!(names_of(&h), before);
+        assert_eq!(undo_text(&h), undo_before);
+        // "Abbrechen" does the same.
+        open_by_click(&mut h);
+        h.get_by_role_and_label(Role::Button, dn::CANCEL).click();
+        h.run_steps(3);
+        assert!(!dialog_open(&h));
+        assert_eq!(names_of(&h), before);
+    }
+
+    #[test]
+    fn enter_and_space_on_the_focused_box_open_the_dialog() {
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            let mut h = harness(demo());
+            h.get_by_role_and_label(Role::Button, names::NEW_TRACK_BUTTON)
+                .focus();
+            h.run_steps(2);
+            h.key_press(key);
+            h.run_steps(3);
+            assert!(dialog_open(&h), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn one_track_with_pisynth_is_what_a_drop_makes() {
+        let mut dropped = harness(demo());
+        let at = new_track_box(&dropped).center();
+        drop_plugin(komponist_app::app::pisynth_ref(), at, &mut dropped);
+        assert!(!dialog_open(&dropped), "a drop does not open the dialog");
+
+        let mut h = harness(demo());
+        open_by_click(&mut h);
+        h.get_by_role_and_label(Role::Button, dn::CREATE).click();
+        h.run_steps(3);
+        assert!(!dialog_open(&h));
+        let (a, b) = (project(&h), project(&dropped));
+        assert_eq!(a.tracks.len(), 7);
+        let (made, drop) = (a.tracks.last().unwrap(), b.tracks.last().unwrap());
+        assert_eq!(made.name, drop.name);
+        assert_eq!(
+            made.channel.devices[0].plugin,
+            drop.channel.devices[0].plugin
+        );
+        assert_eq!(made.channel.devices[0].plugin.name, "pisynth");
+        assert!(made.arm && made.monitor);
+        assert_eq!(
+            h.state()
+                .ui()
+                .selection
+                .tracks
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [made.id]
+        );
+        assert_eq!(undo_text(&h), undo_text(&dropped));
+        assert_eq!(undo_text(&h).as_deref(), Some(de::UNDO_NEW_MIDI_TRACK));
+    }
+
+    #[test]
+    fn three_tracks_without_instrument_are_numbered_and_one_undo_removes_them() {
+        let mut h = harness(App::headless(komponist_model::fixtures::empty_project()));
+        click(new_track_box(&h).center(), &mut h);
+        h.run_steps(3);
+        assert!(dialog_open(&h));
+        let none = option(&h, dn::NO_INSTRUMENT).center();
+        click(none, &mut h);
+        h.get_by_role_and_label(Role::SpinButton, dn::COUNT)
+            .set_value_accesskit(3.0);
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(!dialog_open(&h));
+        assert_eq!(names_of(&h), ["MIDI", "MIDI 2", "MIDI 3"]);
+        let p = project(&h);
+        assert!(p.tracks.iter().all(|t| t.channel.devices.is_empty()));
+        assert_eq!(
+            p.tracks.iter().filter(|t| t.arm).count(),
+            1,
+            "only the last is armed"
+        );
+        assert!(p.tracks[2].arm);
+        assert_eq!(h.state().ui().selection.tracks.len(), 3);
+        assert_eq!(undo_text(&h).as_deref(), Some(de::UNDO_ADD_TRACKS));
+        undo(&mut h);
+        assert!(project(&h).tracks.is_empty(), "one undo removes all three");
+    }
+
+    #[test]
+    fn a_typed_name_numbers_the_tracks_and_the_instrument_choice_is_remembered() {
+        let mut h = harness(demo());
+        open_by_click(&mut h);
+        type_in(&mut h, dn::NAME, "Lead");
+        h.get_by_role_and_label(Role::SpinButton, dn::COUNT)
+            .set_value_accesskit(2.0);
+        h.run_steps(2);
+        click(option(&h, dn::NO_INSTRUMENT).center(), &mut h);
+        h.get_by_role_and_label(Role::Button, dn::CREATE).click();
+        h.run_steps(3);
+        let names = names_of(&h);
+        assert_eq!(names[6..], ["Lead 1", "Lead 2"]);
+        // The next dialog starts with "Kein Instrument".
+        open_by_click(&mut h);
+        let none = h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
+        assert!(none.accesskit_node().is_selected() == Some(true));
+    }
+
+    #[test]
+    fn the_search_filters_the_instruments() {
+        let mut h = harness(demo());
+        open_by_click(&mut h);
+        assert!(
+            h.query_by_role_and_label(Role::ListBoxOption, "pisynth")
+                .is_some()
+        );
+        h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
+        type_in(&mut h, dn::SEARCH, "sampl");
+        assert!(
+            h.query_by_role_and_label(Role::ListBoxOption, "pisynth")
+                .is_none()
+        );
+        // The first hit is chosen; Enter creates with it.
+        let sampler = h
+            .query_all_by_role(Role::ListBoxOption)
+            .find(|n| n.accesskit_node().is_selected() == Some(true))
+            .expect("a chosen hit")
+            .accesskit_node()
+            .label()
+            .unwrap_or_default();
+        assert!(sampler.to_lowercase().contains("sampl"), "{sampler}");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let p = project(&h);
+        assert_eq!(
+            p.tracks.last().unwrap().channel.devices[0].plugin.name,
+            sampler
+        );
+    }
+
+    #[test]
+    fn arrow_keys_move_the_choice() {
+        let mut h = harness(demo());
+        open_by_click(&mut h);
+        h.key_press(egui::Key::ArrowUp);
+        h.run_steps(2);
+        let none = h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
+        assert!(none.accesskit_node().is_selected() == Some(true));
+    }
+
+    fn mask_cpu(h: &mut Harness<'_, App>) {
+        // The CPU readout depends on the machine.
+        let cpu = h
+            .get_by_role_and_label(Role::Status, de::TRANSPORT_CPU)
+            .rect();
+        h.mask(cpu.expand(2.0));
+    }
+
+    #[test]
+    fn snapshots_of_the_box_and_the_dialog() {
+        let mut results = SnapshotResults::new();
+        let mut h = harness(demo());
+        let at = new_track_box(&h).center();
+        h.event(Event::PointerMoved(at));
+        h.run_steps(3);
+        mask_cpu(&mut h);
+        h.snapshot("arrangement-new-track-hover-1x");
+        results.extend_harness(&mut h);
+        let mut h = harness(demo());
+        open_by_click(&mut h);
+        h.run_steps(3);
+        mask_cpu(&mut h);
+        h.snapshot("new-track-dialog-1x");
+        results.extend_harness(&mut h);
+        results.unwrap();
+    }
 }

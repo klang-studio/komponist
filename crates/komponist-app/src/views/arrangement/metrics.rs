@@ -21,6 +21,11 @@ pub const ZOOM_BUTTON_GAP: f32 = space::SPACE_0_5;
 pub const NEW_TRACK_PADDING: [f32; 2] = [space::SPACE_3 + space::SPACE_0_5, space::SPACE_4];
 /// "Neue Spur": gap between title and hint (`gap:4px`).
 pub const NEW_TRACK_GAP: f32 = space::SPACE_1;
+/// The "Neue Spur" box: its distance to the header column's edges (the box is a button; not a design
+/// value, the screens show text only).
+pub const NEW_TRACK_BOX_INSET: f32 = space::SPACE_1;
+/// … and the dashes of its hover frame, as the device chain's drop slot (`devices::metrics::DASH`).
+pub const NEW_TRACK_DASH: [f32; 2] = [3.0, 3.0];
 /// Room kept below the last track so "Neue Spur" stays reachable when the tracks fill the view
 /// (the screens show it in the free space below the tracks; not a design value).
 pub const NEW_TRACK_MIN_HEIGHT: f32 = size::track::DEFAULT;

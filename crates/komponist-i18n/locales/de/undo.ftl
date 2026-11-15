@@ -51,6 +51,9 @@ undo-add-track = Spur hinzufügen
 # Undo step: Neue MIDI-Spur.
 undo-new-midi-track = Neue MIDI-Spur
 
+# Undo step: Spuren anlegen (the "Neue Spur" dialog with several tracks).
+undo-add-tracks = Spuren anlegen
+
 # Undo step: Spuren löschen.
 undo-delete-tracks = Spuren löschen
 

@@ -1628,6 +1628,46 @@ impl App {
         }
     }
 
+    /// "Anlegen" of the "Neue Spur" dialog: the tracks of `spec` below the last track, one undo
+    /// step, all selected, the last one armed. One track is exactly what an instrument drop onto
+    /// the "Neue Spur" box makes.
+    pub(crate) fn create_tracks(&mut self, spec: &crate::dialogs::new_track::Spec) {
+        let tracks = spec.tracks();
+        let label = if tracks.len() > 1 {
+            "undo-add-tracks"
+        } else {
+            "undo-new-midi-track"
+        };
+        let made = self.apply_with(label, |p| {
+            let mut p = p.clone();
+            let mut ids = Vec::with_capacity(tracks.len());
+            for spec in tracks {
+                let (next, id) = edits::add_track(&p, spec)?;
+                p = next;
+                ids.push(id);
+            }
+            Ok((p, ids))
+        });
+        if let Some(ids) = made {
+            self.select_tracks(ids, SelectMode::Replace);
+        }
+    }
+
+    /// Opens the "Neue Spur" dialog with the instrument of the last one (pisynth the first time).
+    fn open_new_track_dialog(&mut self) {
+        if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
+            return;
+        }
+        let instrument = self
+            .dialogs
+            .last_instrument
+            .clone()
+            .unwrap_or_else(|| Some(pisynth_ref()));
+        self.open_overlay(crate::dialogs::Overlay::NewTrack(
+            crate::dialogs::new_track::State::new(instrument),
+        ));
+    }
+
     /// Drops selected objects that no longer exist.
     fn prune_selection(&mut self) {
         let p = Arc::clone(self.project());
@@ -1857,6 +1897,7 @@ impl App {
                 self.ui.browser.highlighted = None;
             }
             UiAction::OpenSettings(section) => self.open_dialog(Dialog::Settings(section)),
+            UiAction::OpenNewTrackDialog => self.open_new_track_dialog(),
             UiAction::SetPluginView { device, view } => self.set_plugin_view(device, view),
             UiAction::SetPluginKeepOnTop { device, on } => self.set_keep_on_top(device, on),
             UiAction::CloseDialog => {
