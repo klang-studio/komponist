@@ -24,7 +24,7 @@ use crate::widgets::metrics::device::mini_fader as metrics;
 use crate::widgets::number_field::{
     Formatter, GetSet, Parser, accesskit_requests, clamp_finite, drag_gesture, entry, expose_value,
     format_number, get_set, is_still, key_steps, normalized, range_bounds, sense,
-    take_focus_on_press, wheel_steps,
+    take_focus_on_press, value_tooltip_live, wheel_steps,
 };
 use crate::{focus, px, tooltip};
 
@@ -294,7 +294,7 @@ impl Widget for MiniFader<'_> {
                     value = v;
                 }
             }
-        } else if live && response.dragged() {
+        } else if live && value_tooltip_live(ui, &response) {
             tooltip::show_value(
                 &ctx,
                 id,

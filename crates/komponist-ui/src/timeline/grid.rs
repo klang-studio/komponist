@@ -8,8 +8,8 @@
 
 use egui::{Color32, Painter, Rangef, Rect, pos2};
 use komponist_model::{Grid, Meter, Tick};
-use komponist_tokens::egui_support::color32;
 use komponist_tokens::color;
+use komponist_tokens::egui_support::color32;
 
 use super::TimeAxis;
 use super::mesh::Quads;
@@ -258,7 +258,12 @@ mod tests {
     #[test]
     fn display_step_coarsens_musically() {
         let step = |px_per_step: f32, g: Grid| {
-            display_step(&TimeAxis::per_step(0.0, px_per_step), M, &GridSpec::new(g, MIN)).0
+            display_step(
+                &TimeAxis::per_step(0.0, px_per_step),
+                M,
+                &GridSpec::new(g, MIN),
+            )
+            .0
         };
         // Fits: unchanged.
         assert_eq!(step(20.0, Grid::Sixteenth), 240);

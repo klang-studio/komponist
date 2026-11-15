@@ -740,13 +740,18 @@ pub(crate) fn wheel_steps(ui: &mut Ui, response: &Response) -> f64 {
     });
     ui.data_mut(|d| d.insert_temp(key, acc));
     if steps != 0.0 {
-        ui.data_mut(|d| d.insert_temp(response.id.with(WHEEL_TURNED), frame));
+        let time = ui.input(|i| i.time);
+        ui.data_mut(|d| {
+            d.insert_temp(response.id.with(WHEEL_TURNED), frame);
+            d.insert_temp(response.id.with(WHEEL_TURNED_AT), time);
+        });
     }
     steps
 }
 
 const WHEEL_OVER: &str = "komponist_wheel_over";
 const WHEEL_TURNED: &str = "komponist_wheel_turned";
+const WHEEL_TURNED_AT: &str = "komponist_wheel_turned_at";
 
 /// Whether the pointer was over a control that takes the mouse wheel in this or the last frame
 /// (knob, fader, number field, graph handle). A scroll area that lays out before its controls
@@ -769,6 +774,26 @@ pub fn wheel_turned(response: &Response) -> bool {
 
 /// Seconds without a wheel notch after which a wheel gesture ends.
 pub const WHEEL_GESTURE_IDLE: f64 = 0.4;
+
+/// Whether the value tooltip of the control behind `response` shows in this pass: while it is
+/// dragged, and while the wheel turns it (until [`WHEEL_GESTURE_IDLE`] after the last notch, or
+/// the pointer leaves). Schedules the repaint that hides the tooltip after a wheel burst. Call it
+/// after [`wheel_steps`].
+pub(crate) fn value_tooltip_live(ui: &Ui, response: &Response) -> bool {
+    if response.dragged() {
+        return true;
+    }
+    let Some(at) = ui.data(|d| d.get_temp::<f64>(response.id.with(WHEEL_TURNED_AT))) else {
+        return false;
+    };
+    let idle = ui.input(|i| i.time) - at;
+    if idle >= WHEEL_GESTURE_IDLE || !response.hovered() {
+        return false;
+    }
+    ui.ctx()
+        .request_repaint_after_secs((WHEEL_GESTURE_IDLE - idle).max(0.0) as f32);
+    true
+}
 
 /// AccessKit requests for the control `id` in this pass: increments minus decrements, and the
 /// last requested value.

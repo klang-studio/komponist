@@ -36,7 +36,7 @@ use super::metrics::meter as meter_metrics;
 use super::number_field::{
     accesskit_requests, caption, column, drag_gesture, entry, expose_value, galley, is_still,
     key_steps, paint_entry_ring, sense, snap_to, take_focus_on_press, text_pos, text_width,
-    value_label, wheel_steps,
+    value_label, value_tooltip_live, wheel_steps,
 };
 use crate::drag::{ClickAction, ValueDrag};
 use crate::state::State;
@@ -456,7 +456,7 @@ impl Widget for Fader<'_> {
             {
                 db = v;
             }
-        } else if live && response.dragged() {
+        } else if live && value_tooltip_live(ui, &response) {
             tooltip::show_value(&ctx, id, thumb, tooltip::Placement::Above, &db_text(shown));
         }
 

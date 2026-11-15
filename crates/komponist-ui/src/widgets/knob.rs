@@ -35,7 +35,8 @@ use super::metrics::knob as metrics;
 use super::number_field::{
     self, Formatter, GetSet, Parser, accesskit_requests, caption, clamp_finite, column,
     drag_gesture, entry, expose_value, format_number, get_set, is_still, key_steps, normalized,
-    range_bounds, sample_row, sense, take_focus_on_press, text_width, wheel_steps,
+    range_bounds, sample_row, sense, take_focus_on_press, text_width, value_tooltip_live,
+    wheel_steps,
 };
 use crate::drag::{ClickAction, ValueDrag};
 use crate::state::State;
@@ -428,7 +429,7 @@ impl Widget for Knob<'_> {
             {
                 value = v;
             }
-        } else if live && response.dragged() {
+        } else if live && value_tooltip_live(ui, &response) {
             tooltip::show_value(
                 &ctx,
                 id,
