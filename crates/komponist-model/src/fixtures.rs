@@ -36,67 +36,69 @@ pub const DEMO_PROJECT_NAME: &str = "Nachtfahrt";
 /// / VST3 class ids, so they show as missing on machines without them. Ids are allocated in document
 /// order starting at 1: per track the track, its devices, then each clip followed by its notes.
 pub fn demo_project() -> Project {
-    let mut ids = Ids(1);
-    let mut tracks = vec![
-        demo_track(
-            &mut ids,
-            ("Drums", Hue::VERMILION, -6.0, 0.0),
+    let mut project = song(
+        [
             &[SAMPLER, LSP_COMPRESSOR],
-            |ids| {
-                vec![
-                    step_clip(ids, 0, 4, "Beat A", &beat(true)),
-                    step_clip(ids, 4, 4, "Beat A", &beat(true)),
-                    step_clip(ids, 8, 4, "Beat B", &beat(false)),
-                    step_clip(ids, 12, 4, "Beat B", &beat(false)),
-                ]
-            },
-        ),
-        demo_track(
-            &mut ids,
-            ("Bass", Hue::BLUE, -4.0, 0.0),
             &[PISYNTH, LSP_PARA_EQ],
-            |ids| {
-                vec![
-                    midi_clip(ids, 0, 8, "Bass", &repeat(&BASS, 32, 4)),
-                    midi_clip(ids, 8, 8, "Bass 2", &repeat(&BASS, 32, 4)),
-                ]
-            },
-        ),
-        demo_track(
-            &mut ids,
-            ("Lead", Hue::GREEN, -3.0, 0.0),
             &[PISYNTH, LSP_PARA_EQ, TAL_CHORUS, DRAGONFLY_HALL],
-            |ids| {
-                vec![
-                    midi_clip(ids, 8, 2, "Lead A", &LEAD),
-                    midi_clip(ids, 10, 2, "Lead A", &LEAD),
-                    midi_clip(ids, 12, 4, "Lead B", &repeat(&LEAD, 32, 2)),
-                ]
-            },
-        ),
-        demo_track(
-            &mut ids,
-            ("Pad", Hue::VIOLET, -9.0, -0.1),
             &[SURGE_XT, LSP_PARA_EQ, DRAGONFLY_HALL],
-            |ids| vec![midi_clip(ids, 0, 16, "Pad", &repeat(&PAD, 64, 4))],
-        ),
-        demo_track(
-            &mut ids,
-            ("Keys", Hue::YELLOW, -8.0, 0.2),
             &[DEXED],
-            |ids| {
-                vec![
-                    midi_clip(ids, 4, 4, "Keys", &repeat(&KEYS, 32, 2)),
-                    midi_clip(ids, 12, 4, "Keys", &repeat(&KEYS, 32, 2)),
-                ]
-            },
-        ),
-        demo_track(&mut ids, ("Arp", Hue::TEAL, -10.0, 0.0), &[VITAL], |ids| {
+            &[VITAL],
+        ],
+        Ids(1),
+    );
+    // Prototype: `t[5].M = true`.
+    Arc::make_mut(&mut project.tracks[5]).channel.mute = true;
+    project
+}
+
+/// The song "Nachtfahrt" of [`demo_project`] without any device and with the Arp track unmuted:
+/// the same tempo, loop, tracks (order, names, hues, volumes, pans) and clips with their notes.
+/// The app's showcase demo adds its own device chains. Ids continue after the song's (`next_id`).
+pub fn demo_song() -> Project {
+    song([&[]; 6], Ids(1))
+}
+
+/// The song with `chains` (first = instrument) for Drums, Bass, Lead, Pad, Keys and Arp, and
+/// `ids` as the first id.
+fn song(chains: [&[DemoPlugin]; 6], mut ids: Ids) -> Project {
+    let ids = &mut ids;
+    let [drums, bass, lead, pad, keys, arp_chain] = chains;
+    let tracks = vec![
+        demo_track(ids, ("Drums", Hue::VERMILION, -6.0, 0.0), drums, |ids| {
+            vec![
+                step_clip(ids, 0, 4, "Beat A", &beat(true)),
+                step_clip(ids, 4, 4, "Beat A", &beat(true)),
+                step_clip(ids, 8, 4, "Beat B", &beat(false)),
+                step_clip(ids, 12, 4, "Beat B", &beat(false)),
+            ]
+        }),
+        demo_track(ids, ("Bass", Hue::BLUE, -4.0, 0.0), bass, |ids| {
+            vec![
+                midi_clip(ids, 0, 8, "Bass", &repeat(&BASS, 32, 4)),
+                midi_clip(ids, 8, 8, "Bass 2", &repeat(&BASS, 32, 4)),
+            ]
+        }),
+        demo_track(ids, ("Lead", Hue::GREEN, -3.0, 0.0), lead, |ids| {
+            vec![
+                midi_clip(ids, 8, 2, "Lead A", &LEAD),
+                midi_clip(ids, 10, 2, "Lead A", &LEAD),
+                midi_clip(ids, 12, 4, "Lead B", &repeat(&LEAD, 32, 2)),
+            ]
+        }),
+        demo_track(ids, ("Pad", Hue::VIOLET, -9.0, -0.1), pad, |ids| {
+            vec![midi_clip(ids, 0, 16, "Pad", &repeat(&PAD, 64, 4))]
+        }),
+        demo_track(ids, ("Keys", Hue::YELLOW, -8.0, 0.2), keys, |ids| {
+            vec![
+                midi_clip(ids, 4, 4, "Keys", &repeat(&KEYS, 32, 2)),
+                midi_clip(ids, 12, 4, "Keys", &repeat(&KEYS, 32, 2)),
+            ]
+        }),
+        demo_track(ids, ("Arp", Hue::TEAL, -10.0, 0.0), arp_chain, |ids| {
             vec![midi_clip(ids, 8, 8, "Arp", &arp())]
         }),
     ];
-    // Prototype: `t[5].M = true`.
-    tracks[5].channel.mute = true;
 
     let mut project = Project::new(DEMO_PROJECT_NAME);
     project.tempo = Tempo::new(124.0);
