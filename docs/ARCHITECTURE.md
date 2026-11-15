@@ -397,7 +397,9 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
   time / buffer period, smoothed), xrun count, per-track `TrackMeter` (`Arc` shared with the program:
   peak L/R since the last read, as `AtomicU32` f32 bits, taken with `swap(0)`), master meter,
   MIDI activity per input, keys held on the MIDI inputs (`Telemetry::held_input_keys`, a 128-bit
-  map in two atomics; the piano roll's keyboard lights them, WP-61). Ballistics (peak hold 1.5 s, 20 dB/s, clip latch) run in the UI with
+  map in two atomics; the piano roll's keyboard lights them, WP-61), and the master tap (`Telemetry::master_tap`, #34:
+  a `SampleTap` of the master output's mono sum at the master meter's point, written only while the transport bar's
+  scope renews its lease and never in an offline render). Ballistics (peak hold 1.5 s, 20 dB/s, clip latch) run in the UI with
   `klang_dsp::meter`.
 
 ### 6.4 Block processing order
@@ -423,7 +425,7 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
    3. **Sum**, on the audio thread: the track outputs into the master bus in track order.
    With routing (§6.8.4, WP-102) phases 2 and 3 become one job graph in topological order: buses are jobs that sum
    their inputs first, and the master sums what outputs to it.
-5. Master: inserts → master fader → meter → output. The metronome is added after the master fader
+5. Master: inserts → master fader → meter and master tap → output. The metronome is added after the master fader
    with its own level.
 6. Telemetry, events.
 

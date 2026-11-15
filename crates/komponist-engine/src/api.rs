@@ -286,6 +286,10 @@ pub struct Telemetry {
     pub(crate) state: AtomicU8,
     /// Master meter after the master fader (the metronome is not metered).
     pub(crate) master: TrackMeter,
+    /// The master output as a mono sum, at the master meter's point, for the transport bar's
+    /// oscilloscope and spectrum (#34). Written only while the UI holds its lease and not in
+    /// offline renders (an export is not heard).
+    pub(crate) master_tap: Arc<SampleTap>,
     /// Events dropped because a queue or a per-block event buffer was full (diagnostics).
     pub(crate) dropped_events: AtomicU32,
     /// Keys held on the MIDI inputs: bits 0–63 and 64–127 of [`Telemetry::held_input_keys`].
@@ -299,6 +303,7 @@ impl Telemetry {
             playhead: AtomicI64::new(0),
             state: AtomicU8::new(TransportState::Stopped as u8),
             master: TrackMeter::new(),
+            master_tap: Arc::new(SampleTap::new(crate::tap::DEFAULT_CAPACITY)),
             dropped_events: AtomicU32::new(0),
             held_input: [AtomicU64::new(0), AtomicU64::new(0)],
         }
@@ -331,6 +336,12 @@ impl Telemetry {
     /// The master meter.
     pub fn master_meter(&self) -> &TrackMeter {
         &self.master
+    }
+
+    /// The sample tap of the master output (mono sum after the master fader, #34). Its rate is the
+    /// engine's; the UI renews its lease ([`SampleTap::want`]) every frame it shows the signal.
+    pub fn master_tap(&self) -> &Arc<SampleTap> {
+        &self.master_tap
     }
 
     /// Total number of dropped events since the engine started.

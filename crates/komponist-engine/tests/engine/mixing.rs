@@ -144,6 +144,53 @@ fn meters_show_the_known_signal_after_fader_and_balance() {
     assert!(l > 0.12 && l <= 0.125 && r > 0.24 && r <= 0.25, "{l} {r}");
 }
 
+/// The transport bar's master tap (#34): the mono sum of the master output after the fader, only
+/// while the UI holds the lease, never in an offline render; the rate follows the engine.
+#[test]
+fn the_master_tap_records_the_mono_output_only_while_wanted() {
+    let mut t = track(1, 0, vec![note(0, 1000 * BAR, 69)]);
+    t.pan = 0.5;
+    let mut p = program(120.0, vec![t]);
+    p.master.gain = 0.5;
+    let mut rig = Rig::new(RATE, 256);
+    rig.insert(0, TestSine::new());
+    rig.set_program(&p);
+    rig.send(Command::Play);
+    let tap = Arc::clone(rig.handle.telemetry().master_tap());
+    assert_eq!(tap.rate(), RATE);
+    // Nobody looks: the audio thread copies nothing (`Rig::process` runs in `assert_no_alloc`).
+    rig.process(1024, 256);
+    assert_eq!(tap.written(), 0);
+    // The UI looks: every frame goes in, as (L + R) / 2 of what the engine output.
+    tap.want();
+    let range = rig.process(1024, 256);
+    assert_eq!(tap.written(), 1024);
+    let mut window = [0.0_f32; 512];
+    assert_eq!(tap.read_latest(&mut window), Some(1024));
+    let out = range.end - 512..range.end;
+    for (i, (s, (l, r))) in window
+        .iter()
+        .zip(rig.l[out.clone()].iter().zip(&rig.r[out]))
+        .enumerate()
+    {
+        assert_eq!(*s, 0.5 * (l + r), "{i}");
+    }
+    assert!(window.iter().any(|s| s.abs() > 0.05), "the sine is in it");
+    // An offline render (export) does not feed the display.
+    rig.render(512, 256);
+    assert_eq!(tap.written(), 1024);
+    // The lease runs out after half a second of audio; then the copying stops.
+    rig.process(RATE as usize, 256);
+    assert!(!tap.is_wanted());
+    let stopped = tap.written();
+    assert!(stopped <= 1024 + (RATE / 2.0) as u64 + 256, "{stopped}");
+    rig.process(1024, 256);
+    assert_eq!(tap.written(), stopped);
+    // A new sample rate reaches the tap.
+    rig.engine.set_sample_rate(96_000.0).unwrap();
+    assert_eq!(tap.rate(), 96_000.0);
+}
+
 #[test]
 fn delay_compensation_lines_tracks_up() {
     // Track 1: instrument → effect with 100 frames latency. Track 2: instrument, delayed by 100.

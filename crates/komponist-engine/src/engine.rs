@@ -14,8 +14,8 @@
 //!    tracks and buses are jobs of a graph in topological order: a bus first sums its inputs
 //!    (outputs and sends of its sources, delay-compensated, in a fixed order), devices with a
 //!    sidechain get their source's tap, and the master sums what outputs to it.
-//! 5. Master: inserts → master fader → meter → output; the metronome is added after the master
-//!    fader with its own level.
+//! 5. Master: inserts → master fader → meter and master tap (#34) → output; the metronome is
+//!    added after the master fader with its own level.
 //! 6. Telemetry and events.
 //!
 //! Realtime rules: no allocation, freeing, locking, logging, IO or blocking syscalls inside
@@ -168,6 +168,7 @@ impl Engine {
         let (command_tx, command_rx) = rtrb::RingBuffer::new(COMMAND_CAPACITY);
         let (event_tx, event_rx) = rtrb::RingBuffer::new(EVENT_CAPACITY);
         let telemetry = Arc::new(Telemetry::new());
+        telemetry.master_tap.set_rate(config.sample_rate);
         let core = Core {
             sample_rate: config.sample_rate,
             max_block: config.max_block.clamp(1, MAX_BLOCK),
@@ -245,6 +246,7 @@ impl Engine {
         let (from, to) = (f64::from(core.sample_rate), f64::from(sample_rate));
         core.transport.rescale((&map, from), (&map, to));
         core.sample_rate = sample_rate;
+        core.telemetry.master_tap.set_rate(sample_rate);
         core.finish_cut();
         core.metronome.silence();
         let mut errors = Vec::new();
@@ -1768,6 +1770,11 @@ impl Core {
                 let gain = master_gain.unwrap_or(master.gain);
                 master_fader.apply(l, r, targets(gain, master.pan, !master.mute));
                 telemetry.master.record(peak(l), peak(r));
+                // The transport bar's scope (#34): only while it looks, and not in an export.
+                let tap = &telemetry.master_tap;
+                if !ctx.offline && tap.begin(n) {
+                    tap.push_mono(l, r);
+                }
                 out_l.copy_from_slice(l);
                 out_r.copy_from_slice(r);
             }
