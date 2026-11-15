@@ -3,7 +3,8 @@
 //!
 //! [`export`] runs one [`ExportJob`] on a worker thread, faster than real time:
 //!
-//! 1. Queues `Stop`, `SetProgram` with an export variant of the caller's program, `Locate` and
+//! 1. Queues `Stop` twice (the second is the hard cut: no live tail leaks into the file),
+//!    `SetProgram` with an export variant of the caller's program, `Locate` and
 //!    `Play` on the engine's command queue. The export program has the loop and the metronome
 //!    off, no note starting at or after the range end, notes still sounding there cut at it (so
 //!    the tail only lets reverbs, delays and releases ring out), and fresh track meters (the UI's
@@ -17,7 +18,7 @@
 //!    a hidden `.<name>.part` next to the target and renamed onto it when complete, so a cancel or
 //!    an error leaves no partial file (and an existing file at the target untouched). The `.part`
 //!    file is created before step 1, so an unwritable target fails before anything changes.
-//! 4. Queues `Stop`, `SetProgram` with the caller's program and `Locate` to the playhead from
+//! 4. Queues `Stop` twice (hard cut: the export's tail never rings on), `SetProgram` with the caller's program and `Locate` to the playhead from
 //!    before the export, whatever the outcome. They take effect at the engine's next call, so the
 //!    transport is stopped where it was (ARCHITECTURE §6.7: the transport stops during export).
 //!
@@ -78,8 +79,8 @@ const DITHER_SEED: u32 = 0x5eed_d17e;
 /// Interleaved samples written between two checks of the cancel flag.
 const WRITE_CHUNK: usize = 1 << 16;
 
-/// Commands one export queues: four before the render, three after it.
-const COMMANDS: usize = 7;
+/// Commands one export queues: five before the render, four after it.
+const COMMANDS: usize = 9;
 
 /// Sample format of the file (S08 "Bittiefe"); maps 1:1 to the app's `BitDepth`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -255,6 +256,8 @@ pub fn export(
     send_all(
         handle,
         [
+            // Two Stops: the second is the hard cut, so no live tail bleeds into the file.
+            Command::Stop,
             Command::Stop,
             Command::SetProgram(Box::new(export_program(program, end))),
             Command::Locate(from),
@@ -266,6 +269,8 @@ pub fn export(
     let restored = send_all(
         handle,
         [
+            // The export's tail is not for the speakers: hard cut.
+            Command::Stop,
             Command::Stop,
             Command::SetProgram(Box::new(program.clone())),
             Command::Locate(playhead),

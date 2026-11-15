@@ -20,4 +20,5 @@ mod mixing;
 mod parallel;
 mod random;
 mod swap;
+mod tails;
 mod timing;

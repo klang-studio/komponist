@@ -117,7 +117,7 @@ fn removed_track_and_replaced_instrument_get_no_stray_note_off() {
 }
 
 #[test]
-fn stop_ends_notes_resets_and_keeps_the_position() {
+fn stop_ends_notes_without_reset_and_keeps_the_position() {
     let p = program(120.0, vec![track(1, 0, vec![note(0, 2 * BAR, 60)])]);
     let (mut rig, mut log) = playing(&p);
     rig.process(10_000, 1000);
@@ -130,14 +130,15 @@ fn stop_ends_notes_resets_and_keeps_the_position() {
     rig.process(1000, 1000);
     rig.send(Command::Stop);
     rig.process(1000, 1000);
-    let log = drain(&mut log);
-    // Reset first (at the command), then note-offs for both notes and AllNotesOff at offset 0.
+    let log_handle = &mut log;
+    let log = drain(log_handle);
+    // No reset (tails ring out); note-offs for both notes and AllNotesOff at offset 0.
+    assert!(!log.iter().any(|e| matches!(e, Logged::Reset { .. })));
     let tail: Vec<_> = log
         .iter()
-        .skip_while(|e| !matches!(e, Logged::Reset { .. }))
+        .skip_while(|e| !matches!(e, Logged::Event { frame: 11_000, .. }))
         .filter(|e| !matches!(e, Logged::Call { .. }))
         .map(|e| match *e {
-            Logged::Reset { frame } => (frame, "reset", 0),
             Logged::Event {
                 frame,
                 kind: EventKind::NoteOff { key, .. },
@@ -149,16 +150,27 @@ fn stop_ends_notes_resets_and_keeps_the_position() {
             other => panic!("{other:?}"),
         })
         .collect();
-    let mut offs = tail[1..3].to_vec();
+    let mut offs = tail[..2].to_vec();
     offs.sort();
-    assert_eq!(tail[0], (11_000, "reset", 0));
     assert_eq!(offs, [(11_000, "off", 60), (11_000, "off", 67)]);
-    assert_eq!(tail[3..], [(11_000, "all", 0)]);
+    assert_eq!(tail[2..], [(11_000, "all", 0)]);
     let t = rig.handle.telemetry();
     assert_eq!(t.transport(), komponist_engine::TransportState::Stopped);
     assert_eq!(t.playhead(), Tick(11_000 / 25));
-    // Stopped and reset: silence.
+    // The sine has no release: its notes ended, silence. (Tails: `tails.rs`.)
     assert!(rig.l[11_000..].iter().all(|&x| x == 0.0));
+    // A second Stop is the hard cut: every processor is reset, the position stays.
+    rig.send(Command::Stop);
+    rig.process(1000, 1000);
+    let resets: Vec<_> = drain(log_handle)
+        .iter()
+        .filter_map(|e| match *e {
+            Logged::Reset { frame } => Some(frame),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resets, [12_000]);
+    assert_eq!(rig.handle.telemetry().playhead(), Tick(11_000 / 25));
 }
 
 #[test]

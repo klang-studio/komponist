@@ -28,11 +28,15 @@
 //!   count-in and after `max_block` frames (see the private `transport` module). Every processor is called once
 //!   per segment, with the transport of the segment's first frame, so a loop wrap is sample-exact
 //!   for events and transport alike.
-//! - Stop and locate (while playing): note-offs for all sounding notes and `AllNotesOff` at offset
-//!   0 of the next call, and `reset` on every processor of the program right away. A loop wrap
-//!   ends the sequenced notes with note-offs at the wrap and does **not** reset (tails of
-//!   reverbs and releases go on). Panic (`Command::AllNotesOff`) sends note-offs and
-//!   `AllNotesOff`, without reset.
+//! - Stop and locate (while playing), loop wrap, panic (`Command::AllNotesOff`): note-offs for
+//!   all sounding notes and `AllNotesOff` at offset 0 of the next call (a loop wrap: note-offs at
+//!   the wrap), and **no** `reset`: the engine keeps calling every processor while stopped, so
+//!   releases, delays and reverbs ring out. MIDI effects get their `reset` through the
+//!   `AllNotesOff` (they have no tail).
+//! - Second Stop (`Command::Stop` while already stopped): the hard cut. Same events, and `reset`
+//!   on every processor of the program right away, so the output is silent in the same block.
+//!   The app sends it when Stop is pressed while stopped; export sends two Stops before it
+//!   starts, so the song's rendering begins without the live tails.
 //! - Program swap: per-track state (active notes, probability RNG, fader position, fast-path
 //!   values, delay line) follows the track id. Fast-path values end with the swap. A device whose
 //!   bypass turns on gets `reset` once.
@@ -699,14 +703,16 @@ impl Core {
                 }
             }
             Command::Stop => {
+                // A second Stop (already stopped) is the hard cut: reset, tails end at once.
+                let hard = !self.transport.playing();
                 self.close_captures(self.transport.tick(&self.song, rate));
                 self.transport.state = TransportState::Stopped;
-                self.silence(true);
+                self.silence(hard);
             }
             Command::Locate(tick) => {
                 if self.transport.playing() {
                     self.close_captures(self.transport.tick(&self.song, rate));
-                    self.silence(true);
+                    self.silence(false);
                     self.chase();
                 }
                 let tick = tick.max(Tick::ZERO);
