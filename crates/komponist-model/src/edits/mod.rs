@@ -27,7 +27,7 @@ use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::project::{
     BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind,
     DEFAULT_STEP_ROWS, Device, DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip,
-    MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepRow,
+    MidiInputSel, Note, PluginFormat, PluginRef, Project, Sidechain, Step, StepClip, StepRow,
     TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, TrackOutput,
     VOLUME_DB_MAX, VOLUME_DB_MIN,
 };
@@ -323,6 +323,11 @@ pub struct NewDevice {
     pub plugin: PluginRef,
     /// Initial state (`None` = plugin defaults; a preset from the browser passes its state).
     pub state: Option<Arc<[u8]>>,
+    /// The sidechain of the device a copy is made of (copy, duplicate, paste; `None` for a new
+    /// device). [`insert_device`] keeps it only while its source still exists and can feed the
+    /// copy's chain without a cycle ([`crate::routing::sidechain_sources`]); otherwise the copy
+    /// starts without one (no error).
+    pub sidechain: Option<Sidechain>,
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1157,7 +1162,8 @@ pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
 /// Inserts a device into a chain at `index` (clamped to the chain length). The chain keeps its
 /// order `[MIDI effects…] → instrument → [effects…]`: a MIDI effect goes into the MIDI part (index
 /// clamped to it), an instrument right behind the MIDI effects (only when the track has none), an
-/// audio effect behind the instrument. Master chains take audio effects only.
+/// audio effect behind the instrument. Master chains take audio effects only. A copy's
+/// sidechain ([`NewDevice::sidechain`]) is kept if its source can feed this chain, else dropped.
 pub fn insert_device(
     project: &Project,
     channel: ChannelRef,
@@ -1207,6 +1213,13 @@ pub fn insert_device(
             sidechain: None,
         }),
     );
+    // The copy's source must still exist and must not lie downstream of the new holder (#7).
+    if let Some(sc) = spec.sidechain
+        && crate::routing::sidechain_sources(&p, id).contains(&sc.source)
+    {
+        let (_, at, _) = p.find_device(id).expect("just inserted");
+        Arc::make_mut(&mut channel_mut(&mut p, channel)?.devices[at]).sidechain = Some(sc);
+    }
     Ok((p, id))
 }
 

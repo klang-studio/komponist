@@ -524,6 +524,7 @@ fn run(p: &Project, op: &Op) -> Result<Project, EditError> {
                 },
                 plugin: plugin(index),
                 state: None,
+                sidechain: None,
             };
             edits::insert_device(p, channel, usize::from(index), spec).map(|(p, _)| p)
         }

@@ -42,6 +42,7 @@ fn effect(name: &str) -> NewDevice {
         role: DeviceRole::Effect,
         plugin: plugin(name),
         state: None,
+        sidechain: None,
     }
 }
 
@@ -507,6 +508,75 @@ fn removing_a_track_keeps_untouched_tracks_shared() {
     let q = ok(remove_tracks(&p, &[t[0]]));
     assert_eq!(q.find_device(comp).unwrap().2.sidechain, None);
     assert_eq!(track(&q, t[1]).sends.len(), 1);
+}
+
+#[test]
+fn a_device_copy_keeps_its_sidechain_unless_the_source_is_gone_or_closes_a_cycle() {
+    // #7: copy, paste and duplicate pass the original's sidechain in `NewDevice`.
+    let (p, t) = tracks(&["Kick", "Bass", "Pad"]);
+    let (p, b) = effect_bus(&p, &[t[1]]);
+    let (p, comp) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(t[1]),
+        1,
+        effect("presse"),
+    ));
+    let from_kick = Sidechain {
+        source: t[0],
+        tap: Tap::Post,
+    };
+    let p = ok(set_sidechain(&p, comp, Some(from_kick)));
+    let copy_of = |p: &Project, d: DeviceId| NewDevice {
+        sidechain: p.find_device(d).unwrap().2.sidechain,
+        ..effect("presse")
+    };
+    let sidechain = |p: &Project, d: DeviceId| p.find_device(d).unwrap().2.sidechain;
+    // Behind itself, on another track, on the master: the source and the tap stay.
+    for channel in [
+        ChannelRef::Track(t[1]),
+        ChannelRef::Track(t[2]),
+        ChannelRef::Master,
+    ] {
+        let (q, copy) = ok_with(insert_device(&p, channel, 9, copy_of(&p, comp)));
+        assert_eq!(sidechain(&q, copy), Some(from_kick), "{channel:?}");
+        assert_eq!(sidechain(&q, comp), Some(from_kick));
+    }
+    // Onto the source itself: that would close a cycle, the copy has none (no error).
+    let (q, copy) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(t[0]),
+        9,
+        copy_of(&p, comp),
+    ));
+    assert_eq!(sidechain(&q, copy), None);
+    // A bus as the source (on Pad): onto Bass, which sends to the bus, the copy has none
+    // (bass → bus → bass); onto Pad again it keeps it.
+    let (p, pad_comp) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(t[2]),
+        9,
+        effect("presse"),
+    ));
+    let p = ok(set_sidechain(&p, pad_comp, Some(Sidechain::new(b))));
+    let (q, copy) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(t[1]),
+        9,
+        copy_of(&p, pad_comp),
+    ));
+    assert_eq!(sidechain(&q, copy), None, "bass → bus → bass");
+    let (q, copy) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(t[2]),
+        9,
+        copy_of(&p, pad_comp),
+    ));
+    assert_eq!(sidechain(&q, copy), Some(Sidechain::new(b)));
+    // A source that is gone by the time of the paste: none.
+    let spec = copy_of(&p, pad_comp);
+    let p = ok(remove_tracks(&p, &[b]));
+    let (q, copy) = ok_with(insert_device(&p, ChannelRef::Track(t[2]), 9, spec));
+    assert_eq!(sidechain(&q, copy), None);
 }
 
 #[test]

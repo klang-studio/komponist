@@ -913,6 +913,7 @@ fn s06() -> (Project, Vec<MissingPlugin>) {
             role: DeviceRole::Effect,
             plugin: plugin(format, id, name),
             state: None,
+            sidechain: None,
         };
         let (next, device) = insert_device(&p, ChannelRef::Track(pad), len, spec).unwrap();
         p = next;

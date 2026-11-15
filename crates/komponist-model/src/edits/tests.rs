@@ -213,6 +213,7 @@ fn fixture() -> Fixture {
             role: DeviceRole::Effect,
             plugin: plugin("EQ"),
             state: None,
+            sidechain: None,
         },
     )
     .unwrap();
@@ -1504,6 +1505,7 @@ fn find_devices() {
             role: DeviceRole::Effect,
             plugin: plugin("Limiter"),
             state: None,
+            sidechain: None,
         },
     ));
     assert_eq!(
@@ -1520,11 +1522,13 @@ fn insert_devices() {
         role: DeviceRole::Effect,
         plugin: plugin(name),
         state,
+        sidechain: None,
     };
     let instrument = |name: &str| NewDevice {
         role: DeviceRole::Instrument,
         plugin: plugin(name),
         state: None,
+        sidechain: None,
     };
     // An effect never goes before the instrument; the index is clamped to the end.
     let state: Arc<[u8]> = Arc::from(&b"preset"[..]);
@@ -1591,6 +1595,7 @@ fn midi_effects_stay_in_front_of_the_instrument() {
         role,
         plugin: plugin(name),
         state: None,
+        sidechain: None,
     };
     let names = |p: &Project, t| -> Vec<String> { chain(p, t).into_iter().map(|c| c.0).collect() };
     // Dropped right of the instrument, a MIDI effect still goes into the MIDI part.
@@ -1692,6 +1697,7 @@ fn replace_or_insert_the_instrument() {
             role: DeviceRole::Effect,
             plugin: plugin("EQ"),
             state: None,
+            sidechain: None,
         },
     ));
     let (p, id) = ok_with(replace_instrument(&p, f.b, plugin("Synth")));
@@ -1724,6 +1730,7 @@ fn remove_and_move_devices() {
             role: DeviceRole::Effect,
             plugin: plugin("Hall"),
             state: None,
+            sidechain: None,
         },
     ));
     let q = ok(move_device(&p, hall, 1));

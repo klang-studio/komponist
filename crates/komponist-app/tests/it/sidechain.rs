@@ -1,6 +1,7 @@
 //! The „SC“ chip in the device head and its popover (WP-104): devices with a sidechain input
 //! (presse) have the chip, the popover lists the tracks and buses with the loops greyed out,
-//! choosing a source is one undo step, and an EQ has no chip.
+//! choosing a source is one undo step, and an EQ has no chip. Copying, pasting and duplicating a
+//! device keep its source where it still fits (#7).
 
 use std::path::PathBuf;
 
@@ -96,6 +97,7 @@ fn scene() -> Scene {
             role: DeviceRole::Effect,
             plugin: kind.plugin_ref(),
             state: None,
+            sidechain: None,
         };
         let (next, id) = edits::insert_device(p, ChannelRef::Track(pad), at, spec).unwrap();
         *p = next;
@@ -345,4 +347,137 @@ fn snapshots_of_the_head_with_the_chip_off_on_and_the_popover_open() {
     h.snapshot("devices-sidechain-popover-post-1x");
     results.extend_harness(&mut h);
     results.unwrap();
+}
+
+// ------------------------------------------------------------------------------------------------
+// Copies keep the source (#7)
+
+/// The ids of `track`'s chain.
+fn chain(app: &App, track: TrackId) -> Vec<DeviceId> {
+    let t = app.project().track(track).unwrap();
+    t.channel.devices.iter().map(|d| d.id).collect()
+}
+
+/// The device of `track`'s chain that `before` did not have.
+fn new_device(app: &App, track: TrackId, before: &[DeviceId]) -> DeviceId {
+    let added: Vec<DeviceId> = chain(app, track)
+        .into_iter()
+        .filter(|d| !before.contains(d))
+        .collect();
+    assert_eq!(added.len(), 1, "one copy");
+    added[0]
+}
+
+fn select_device(app: &mut App, device: DeviceId) {
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Devices {
+        devices: vec![device],
+        mode: SelectMode::Replace,
+    })));
+}
+
+fn undo_once(app: &mut App, track: TrackId, before: &[DeviceId]) {
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        chain(app, track),
+        before,
+        "one undo step takes the copy away"
+    );
+}
+
+#[test]
+fn copy_paste_duplicate_and_alt_drag_keep_the_sidechain_source_in_one_undo_step() {
+    let s = scene();
+    let mut app = app(&s);
+    let source = Sidechain {
+        source: s.drums,
+        tap: Tap::Post,
+    };
+    app.dispatch(Action::Edit(EditAction::SetSidechain {
+        device: s.presse,
+        sidechain: Some(source),
+    }));
+    assert_eq!(sidechain_of(&app, s.presse), Some(source));
+    let before = chain(&app, s.pad);
+
+    // Ctrl C, Ctrl V.
+    select_device(&mut app, s.presse);
+    app.dispatch(Action::Ui(UiAction::CopyDevices));
+    app.dispatch(Action::Edit(EditAction::PasteDevices));
+    let copy = new_device(&app, s.pad, &before);
+    assert_eq!(sidechain_of(&app, copy), Some(source), "paste");
+    undo_once(&mut app, s.pad, &before);
+
+    // Ctrl D.
+    select_device(&mut app, s.presse);
+    app.dispatch(Action::Edit(EditAction::DuplicateDevices));
+    let copy = new_device(&app, s.pad, &before);
+    assert_eq!(sidechain_of(&app, copy), Some(source), "duplicate");
+    undo_once(&mut app, s.pad, &before);
+
+    // Alt-drag onto another track and onto the master.
+    let lead = app
+        .project()
+        .tracks
+        .iter()
+        .find(|t| t.name == "Lead")
+        .unwrap()
+        .id;
+    let lead_chain = chain(&app, lead);
+    app.dispatch(Action::Edit(EditAction::CopyDevice {
+        device: s.presse,
+        to: ChannelRef::Track(lead),
+        index: usize::MAX,
+    }));
+    let copy = new_device(&app, lead, &lead_chain);
+    assert_eq!(sidechain_of(&app, copy), Some(source), "alt-drag");
+    undo_once(&mut app, lead, &lead_chain);
+    app.dispatch(Action::Edit(EditAction::CopyDevice {
+        device: s.presse,
+        to: ChannelRef::Master,
+        index: usize::MAX,
+    }));
+    let copy = app.project().master.devices.last().unwrap().id;
+    assert_eq!(sidechain_of(&app, copy), Some(source), "onto the master");
+    assert_eq!(
+        sidechain_of(&app, s.presse),
+        Some(source),
+        "the original keeps it"
+    );
+}
+
+#[test]
+fn a_copy_that_would_close_a_loop_or_whose_source_is_gone_has_no_sidechain() {
+    let s = scene();
+    let mut app = app(&s);
+    app.dispatch(Action::Edit(EditAction::SetSidechain {
+        device: s.presse,
+        sidechain: Some(Sidechain::new(s.drums)),
+    }));
+
+    // Onto the source track itself: no sidechain, no error, one undo step.
+    let drums = chain(&app, s.drums);
+    app.dispatch(Action::Edit(EditAction::CopyDevice {
+        device: s.presse,
+        to: ChannelRef::Track(s.drums),
+        index: usize::MAX,
+    }));
+    let copy = new_device(&app, s.drums, &drums);
+    assert_eq!(sidechain_of(&app, copy), None);
+    assert_eq!(sidechain_of(&app, s.presse), Some(Sidechain::new(s.drums)));
+    undo_once(&mut app, s.drums, &drums);
+
+    // Copied, then the source deleted, then pasted: the copy has none.
+    select_device(&mut app, s.presse);
+    app.dispatch(Action::Ui(UiAction::CopyDevices));
+    app.dispatch(Action::Edit(EditAction::RemoveTracks(vec![s.drums])));
+    assert_eq!(sidechain_of(&app, s.presse), None);
+    let before = chain(&app, s.pad);
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![s.pad],
+        mode: SelectMode::Replace,
+    })));
+    select_device(&mut app, s.presse);
+    app.dispatch(Action::Edit(EditAction::PasteDevices));
+    let copy = new_device(&app, s.pad, &before);
+    assert_eq!(sidechain_of(&app, copy), None);
 }

@@ -174,6 +174,7 @@ fn slots_are_stable_and_freed_slots_wait_one_build() {
         role: DeviceRole::Effect,
         plugin: device(0, DeviceRole::Effect, name).plugin.clone(),
         state: None,
+        sidechain: None,
     };
     let p0 = demo_project();
     let prog0 = compile::build(&p0, None, &NoEnv);

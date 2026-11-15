@@ -220,6 +220,7 @@ fn undo_and_redo_of_an_internal_devices_params_reach_the_running_processor() {
                 role: DeviceRole::Effect,
                 plugin: Internal::Limiter.plugin_ref(),
                 state: None,
+                sidechain: None,
             },
         )
         .map(|(p, _)| p)

@@ -696,7 +696,11 @@ master takes all), `would_create_cycle(from, to)`, `group_of`, `group_members`, 
   duplicated kick feeds the duplicated compressor).
 - Existing edits: `add_track` before a group member joins that group; `move_tracks` keeps membership (a group
   moves with its block); clips cannot be added, moved or copied onto a bus; a bus takes audio effects only; arm and
-  monitor are ignored on buses. Device copy and paste (`NewDevice`) start without a sidechain.
+  monitor are ignored on buses. Device copy, paste, duplicate and Alt-drag pass the original's
+  sidechain in `NewDevice::sidechain` (#7): `insert_device` keeps it, in the same undo step, while
+  the source still exists and is one of `sidechain_sources` for the copy (else the copy starts
+  without one, no error: a copy onto its own source track, onto a track that feeds the source bus,
+  or a paste after the source was deleted).
 
 **File (format version 2, 5.5).** Every track writes `"output": "master"` or `{"bus": id}`; `sends`, `folder`,
 `folded` and a device's `sidechain` are written only when set; kind `"bus"`. `migrate_v1_to_v2` gives every track

@@ -2467,6 +2467,7 @@ impl App {
                     role: DeviceRole::MidiEffect,
                     plugin,
                     state: None,
+                    sidechain: None,
                 };
                 self.apply_with("undo-add-midi-effect", |p| {
                     edits::insert_device(p, channel, index, spec)
@@ -2495,6 +2496,7 @@ impl App {
                     role: DeviceRole::Effect,
                     plugin,
                     state: None,
+                    sidechain: None,
                 };
                 self.apply_with("undo-add-effect", |p| {
                     edits::insert_device(p, channel, index, spec)
