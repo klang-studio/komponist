@@ -170,6 +170,63 @@ fn save_as_asks_before_replacing_a_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Undo back to the saved state clears the unsaved mark and the prompt; redo and any other edit
+/// bring them back (#20).
+#[test]
+fn undo_back_to_the_saved_state_is_clean_again() {
+    let dir = scratch("undo-clean");
+    let mut h = harness(app_in(&dir, demo_project()));
+    // The unsaved mark is the project node's accessible name.
+    let unsaved = |h: &Harness<'_, App>| {
+        let name = h.state().project().name.clone();
+        h.query_by_label(&Lang::De.transport_project_unsaved(&name))
+            .is_some()
+    };
+    let action = |h: &mut Harness<'_, App>, a: EditAction| {
+        h.state_mut().dispatch(Action::Edit(a));
+        h.run_steps(2);
+    };
+    // Save: one edit, then Ctrl S into a new file.
+    action(&mut h, EditAction::NewMidiTrack);
+    assert!(h.state().doc().is_dirty() && unsaved(&h));
+    press(&mut h, CTRL, Key::S);
+    std::fs::create_dir_all(&dir).unwrap();
+    type_into(&mut h, "Dateiname", dir.join("Clean").to_str().unwrap());
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    assert!(!h.state().doc().is_dirty() && !unsaved(&h));
+
+    // Edit, then undo: clean again; redo: unsaved again.
+    action(&mut h, EditAction::NewMidiTrack);
+    assert!(h.state().doc().is_dirty() && unsaved(&h));
+    action(&mut h, EditAction::Undo);
+    assert!(!h.state().doc().is_dirty() && !unsaved(&h));
+    action(&mut h, EditAction::Redo);
+    assert!(h.state().doc().is_dirty() && unsaved(&h));
+    action(&mut h, EditAction::Undo);
+
+    // Clean: Ctrl N does not ask.
+    press(&mut h, CTRL, Key::N);
+    assert!(h.query_by_value("Änderungen speichern?").is_none());
+    assert_eq!(h.state().project().name, "Unbenannt");
+
+    // Undoing past the saved state and editing makes it unreachable: dirty, and Ctrl N asks.
+    let mut app = app_in(&dir, demo_project());
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    let mut h = harness(app);
+    press(&mut h, CTRL, Key::S);
+    type_into(&mut h, "Dateiname", dir.join("Clean2").to_str().unwrap());
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    assert!(!h.state().doc().is_dirty());
+    action(&mut h, EditAction::Undo);
+    action(&mut h, EditAction::NewMidiTrack);
+    action(&mut h, EditAction::Undo);
+    action(&mut h, EditAction::Redo);
+    assert!(h.state().doc().is_dirty());
+    press(&mut h, CTRL, Key::N);
+    h.get_by_value("Änderungen speichern?");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn unsaved_changes_ask_before_a_new_project() {
     let dir = scratch("unsaved");
