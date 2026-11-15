@@ -65,6 +65,10 @@ pub mod metrics {
     /// Horizontal padding of a 24 px button in `type.small` (the piano roll toolbar's "Snap" and
     /// "Falten": `height:24px; padding:0 9px; font-size:11px`, S01).
     pub const SMALL_BUTTON_PADDING_X: f32 = 9.0;
+    /// Gap between an icon and the value after it in an icon button (the count-in's bar
+    /// number). Not in the design data: owner's icon-button decision (2026-11-15), 2 like the
+    /// gap between the dock's "Maximieren" and its caret.
+    pub const ICON_BADGE_GAP: f32 = space::SPACE_0_5;
     /// Horizontal padding of a tab (`padding: 0 14px`).
     pub const TAB_PADDING_X: f32 = space::SPACE_3 + space::SPACE_0_5;
     /// Width of the ✓ column in dropdown lists and menus.

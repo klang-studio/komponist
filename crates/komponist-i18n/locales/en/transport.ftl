@@ -70,3 +70,14 @@ transport-menu-export = Export WAV…
 
 # Menu item: back to the start screen.
 transport-menu-start = Go to Start Screen
+
+## Tooltips of the icon toggles (the names above stay the AccessKit names).
+
+# Tooltip of the count-in toggle while it is on, `$bars` is the number of bars.
+transport-count-in-tip = Count-in: { $bars } { $bars ->
+        [one] bar
+       *[other] bars
+    }
+
+# Tooltip of the count-in toggle while it is off.
+transport-count-in-off-tip = Count-in: off

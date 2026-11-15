@@ -39,3 +39,9 @@ dock-recording = ● Aufnahme
 
 # Secondary text of the editor tab while recording (S02).
 dock-recording-kind = Piano Roll · live
+
+# Tooltip of the maximise icon button while the dock is not maximised.
+dock-maximize-tip = Dock maximieren
+
+# Tooltip of the maximise icon button while the dock is maximised.
+dock-restore-tip = Dock wiederherstellen
