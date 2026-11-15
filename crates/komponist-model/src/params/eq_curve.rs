@@ -147,10 +147,26 @@ mod tests {
         assert!((ls(20.0) - 9.0).abs() < 0.1 && ls(10_000.0).abs() < 0.1);
         let hs = |hz| band_response_db(HIGH_SHELF as f64, 4000.0, -6.0, 0.71, hz);
         assert!((hs(20_000.0) + 6.0).abs() < 0.5 && hs(50.0).abs() < 0.1);
-        let lc = |hz| band_response_db(LOW_CUT as f64, 100.0, 0.0, 0.7071, hz);
+        let lc = |hz| {
+            band_response_db(
+                LOW_CUT as f64,
+                100.0,
+                0.0,
+                core::f64::consts::FRAC_1_SQRT_2,
+                hz,
+            )
+        };
         assert!((lc(100.0) + 3.0).abs() < 0.1, "{}", lc(100.0));
         assert!((lc(25.0) + 24.0).abs() < 1.0, "{}", lc(25.0));
-        let hc = |hz| band_response_db(HIGH_CUT as f64, 5000.0, 0.0, 0.7071, hz);
+        let hc = |hz| {
+            band_response_db(
+                HIGH_CUT as f64,
+                5000.0,
+                0.0,
+                core::f64::consts::FRAC_1_SQRT_2,
+                hz,
+            )
+        };
         assert!((hc(5000.0) + 3.0).abs() < 0.1 && hc(100.0).abs() < 0.01);
     }
 }
