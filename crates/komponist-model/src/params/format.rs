@@ -7,24 +7,29 @@ use crate::format::{MINUS, fmt_db, fmt_pan};
 pub(super) fn value_text(info: &ParamInfo, plain: f64) -> String {
     let v = info.snap(plain);
     match &info.kind {
-        ParamKind::Bool => (if v >= 0.5 { "Ein" } else { "Aus" }).to_owned(),
+        ParamKind::Bool => (if v >= 0.5 {
+            info.texts.on
+        } else {
+            info.texts.off
+        })
+        .to_owned(),
         ParamKind::Enum(names) => names.get(v.round() as usize).cloned().unwrap_or_default(),
-        ParamKind::Int { .. } => with_unit(info.unit, v, number(v, 0)),
+        ParamKind::Int { .. } => with_unit(info, v, number(v, 0)),
         ParamKind::Float {
             scale: Scale::Pan, ..
         } => fmt_pan(v as f32),
-        ParamKind::Float { .. } => float_text(info.unit, v),
+        ParamKind::Float { .. } => float_text(info, v),
     }
 }
 
-fn float_text(unit: Unit, v: f64) -> String {
-    match unit {
+fn float_text(info: &ParamInfo, v: f64) -> String {
+    match info.unit {
         Unit::None => number(v, 2),
         Unit::Hz => hz(v),
         Unit::Ms => ms(v),
         Unit::S => seconds(v),
         Unit::Db => format!("{} dB", fmt_db(v as f32)),
-        Unit::Percent => format!("{} %", number((v * 100.0).round(), 0)),
+        Unit::Percent => format!("{}{}", number((v * 100.0).round(), 0), info.texts.percent),
         Unit::Semitones => format!("{} st", signed_whole(v)),
         Unit::Cents => format!("{} ct", signed_whole(v)),
         Unit::Octaves => format!("{} oct", signed_whole(v)),
@@ -34,10 +39,10 @@ fn float_text(unit: Unit, v: f64) -> String {
 }
 
 /// An integer-valued kind: its number plus the unit's suffix, if it has one.
-fn with_unit(unit: Unit, v: f64, whole: String) -> String {
-    match unit {
+fn with_unit(info: &ParamInfo, v: f64, whole: String) -> String {
+    match info.unit {
         Unit::None => whole,
-        _ => float_text(unit, v),
+        _ => float_text(info, v),
     }
 }
 

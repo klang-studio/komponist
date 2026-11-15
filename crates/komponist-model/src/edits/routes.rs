@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::{
-    EditError, EditResult, copy_clip, locate_track, next_hue, track_mut, unique, update_track,
+    DefaultNames, EditError, EditResult, copy_clip, locate_track, next_hue, track_mut, unique, update_track,
     valid_db, valid_hue, valid_name,
 };
 use crate::ids::{DeviceId, SendId, TrackId};
@@ -24,9 +24,9 @@ use crate::project::{
 };
 use crate::routing::{self, RoutingIssue};
 
-/// Name base of a new effect bus: „Bus 1“, „Bus 2“, … (WP-100 §6).
+/// German name base of a new effect bus: „Bus 1“, „Bus 2“, … (WP-100 §6); see [`DefaultNames`].
 pub const DEFAULT_BUS_NAME: &str = "Bus";
-/// Name base of a new group: „Gruppe 1“, „Gruppe 2“, … (WP-100 §6).
+/// German name base of a new group: „Gruppe 1“, „Gruppe 2“, … (WP-100 §6); see [`DefaultNames`].
 pub const DEFAULT_GROUP_NAME: &str = "Gruppe";
 
 /// What a new bus gets. Two ways to make one (owner decision 1 C): [`NewBus::group`] (Strg G,
@@ -139,6 +139,16 @@ fn new_send(id: SendId, target: TrackId) -> TrackSend {
 ///   inserted before a group member joins that member's group.
 /// - Every sender gets a send to the new bus.
 pub fn add_bus(project: &Project, spec: NewBus) -> Result<(Project, TrackId), EditError> {
+    add_bus_in(project, spec, &DefaultNames::DE)
+}
+
+/// [`add_bus`] with the name bases of `names` for a bus or group without a name (the app passes
+/// the words of its language).
+pub fn add_bus_in(
+    project: &Project,
+    spec: NewBus,
+    names: &DefaultNames,
+) -> Result<(Project, TrackId), EditError> {
     let members = unique(&spec.members);
     let senders = unique(&spec.senders);
     for &id in members.iter().chain(&senders) {
@@ -156,8 +166,8 @@ pub fn add_bus(project: &Project, spec: NewBus) -> Result<(Project, TrackId), Ed
     };
     let name = match &spec.name {
         Some(name) => valid_name(name)?,
-        None if spec.group => numbered_track_name(project, DEFAULT_GROUP_NAME),
-        None => numbered_track_name(project, DEFAULT_BUS_NAME),
+        None if spec.group => numbered_track_name(project, names.group),
+        None => numbered_track_name(project, names.bus),
     };
     let roots: Vec<&Arc<Track>> = project
         .tracks
