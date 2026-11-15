@@ -519,9 +519,9 @@ mod tests {
         let host = host_for(&p);
         let rows = device_rows(&p.tracks[2].channel.devices, &host);
         assert_eq!(rows.len(), 4);
-        let (pisynth, tag) = &rows[0];
-        assert!(pisynth.instrument && pisynth.status == RowStatus::Ok);
-        assert_eq!(pisynth.tag(tag), "INTERN");
+        let (hexa, tag) = &rows[0];
+        assert!(hexa.instrument && hexa.status == RowStatus::Ok);
+        assert_eq!(hexa.tag(tag), "INTERN");
         let (eq, tag) = &rows[1];
         assert_eq!(eq.status, RowStatus::Missing);
         assert_eq!(eq.tag(tag), "fehlt");

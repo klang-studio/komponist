@@ -27,7 +27,7 @@ pub fn param(name: &str) -> String {
     with_arg("undo-param", name)
 }
 
-/// A parameter without a name: "pisynth: Parameter ändern".
+/// A parameter without a name: "hexa: Parameter ändern".
 pub fn device_param(plugin: &str) -> String {
     with_arg("undo-param-unnamed", plugin)
 }
@@ -85,8 +85,8 @@ mod tests {
             "Surge XT: Zustand ändern"
         );
         assert_eq!(
-            text(Lang::En, &device_param("pisynth")),
-            "pisynth: Change Parameter"
+            text(Lang::En, &device_param("hexa")),
+            "hexa: Change Parameter"
         );
     }
 

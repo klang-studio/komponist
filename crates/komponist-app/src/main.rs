@@ -16,7 +16,7 @@
 //! opened project (checks of the frame without clicking). With
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
 //!
-//! Plugins: pisynth, the Sampler and the internal devices run in process; the CLAP/VST3 plugins run in
+//! Plugins: hexa, the Sampler and the internal devices run in process; the CLAP/VST3 plugins run in
 //! bridge processes of their own: this executable started as `komponist --bridge …` (one
 //! executable, nothing to build or keep in step; the bridge process initialises no GUI or audio).
 //! At start a

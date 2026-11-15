@@ -31,7 +31,7 @@ use crate::meters::Meters;
 use crate::views::ViewCtx;
 
 /// The second line of a header and whether it is an error: "stumm durch Solo" while muted by a
-/// solo elsewhere; else the instrument ("pisynth", "Surge XT · lädt …", "Dexed · aus",
+/// solo elsewhere; else the instrument ("hexa", "Surge XT · lädt …", "Dexed · aus",
 /// "⚠ Plugin fehlt: Vital"), or "Instrument hierher ziehen" without one.
 pub fn instrument_line(track: &Track, any_solo: bool, engine: &EngineSync) -> (String, bool) {
     let ch = &track.channel;

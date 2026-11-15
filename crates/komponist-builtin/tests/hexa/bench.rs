@@ -1,10 +1,10 @@
 //! CPU cost per block, measured in release builds:
-//! `cargo test --release -p komponist-builtin --test pisynth bench -- --ignored --nocapture`.
+//! `cargo test --release -p komponist-builtin --test hexa bench -- --ignored --nocapture`.
 
 use std::hint::black_box;
 use std::time::Instant;
 
-use komponist_builtin::{Macro, PisynthProcessor, preset_patch, presets};
+use komponist_builtin::{HexaProcessor, Macro, preset_patch, presets};
 use komponist_engine::{Event, EventKind, Processor};
 
 use crate::common::*;
@@ -99,7 +99,7 @@ fn cpu_per_block() {
     );
     let started = Instant::now();
     for _ in 0..20 {
-        black_box(PisynthProcessor::new(preset_patch(index).unwrap()));
+        black_box(HexaProcessor::new(preset_patch(index).unwrap()));
     }
     println!(
         "new (UI thread): {:.1} µs",
@@ -108,7 +108,7 @@ fn cpu_per_block() {
 }
 
 /// The first calls of a fresh processor (WP-61 soak: a rare overrun after undo/redo inserted a
-/// new pisynth): `new` + `activate` on the UI thread, then the first and later 256-frame calls
+/// new hexa): `new` + `activate` on the UI thread, then the first and later 256-frame calls
 /// with a chord, each preset.
 #[test]
 #[ignore]

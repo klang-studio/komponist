@@ -128,7 +128,7 @@ pub fn pad_of_row(pattern: &StepClip, row: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_model::project::BUILTIN_PISYNTH;
+    use komponist_model::project::BUILTIN_HEXA;
     use komponist_model::project::MAX_STEPS;
     use komponist_model::{PluginFormat, Step, StepResolution, StepRow};
 
@@ -147,8 +147,8 @@ mod tests {
         plugin(PluginFormat::Builtin, BUILTIN_SAMPLER)
     }
 
-    fn pisynth() -> PluginRef {
-        plugin(PluginFormat::Builtin, BUILTIN_PISYNTH)
+    fn hexa() -> PluginRef {
+        plugin(PluginFormat::Builtin, BUILTIN_HEXA)
     }
 
     fn name(key: u8, name: &str) -> NoteName {
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn other_instruments_get_the_general_midi_rows() {
         let gm: Vec<(&str, u8)> = DEFAULT_STEP_ROWS.to_vec();
-        assert_eq!(pairs(&rows_for(Some(&pisynth()), &[])), gm);
+        assert_eq!(pairs(&rows_for(Some(&hexa()), &[])), gm);
         assert_eq!(pairs(&rows_for(None, &[])), gm);
         let surge = plugin(PluginFormat::Clap, "org.surge-synth-team.surge-xt");
         assert_eq!(pairs(&rows_for(Some(&surge), &[])), gm);
@@ -201,7 +201,7 @@ mod tests {
         names.push(name(36, "Kick again"));
         names.push(name(38, "  "));
         names.extend((50..60).map(|k| name(k, &format!("Key {k}"))));
-        let rows = rows_for(Some(&pisynth()), &names);
+        let rows = rows_for(Some(&hexa()), &names);
         assert_eq!(rows.len(), ROWS);
         assert_eq!(
             pairs(&rows[..4]),
@@ -224,7 +224,7 @@ mod tests {
         // Keys outside the sampler's pads, and other instruments, show the note name.
         assert_eq!(row_label(Some(&sampler()), 35), "B1");
         assert_eq!(row_label(Some(&sampler()), 44), "G#2");
-        assert_eq!(row_label(Some(&pisynth()), 36), "C2");
+        assert_eq!(row_label(Some(&hexa()), 36), "C2");
         assert_eq!(row_label(None, 42), "F#2");
     }
 

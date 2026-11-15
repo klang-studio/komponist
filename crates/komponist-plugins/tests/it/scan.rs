@@ -29,14 +29,14 @@ fn finish_scan(manager: &mut PluginManager) -> ScanReport {
     .0
 }
 
-/// The catalog's names: pisynth and the scanned plugins. The internal devices (WP-85, WP-88) are
-/// built-ins like pisynth but not what these tests are about, so they are left out.
+/// The catalog's names: hexa and the scanned plugins. The internal devices (WP-85, WP-88) are
+/// built-ins like hexa but not what these tests are about, so they are left out.
 fn names(manager: &PluginManager) -> Vec<String> {
     manager
         .catalog()
         .entries()
         .iter()
-        .filter(|e| !e.is_builtin() || e.plugin.name == "pisynth")
+        .filter(|e| !e.is_builtin() || e.plugin.name == "hexa")
         .map(|e| e.plugin.name.clone())
         .collect()
 }
@@ -80,9 +80,9 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     };
 
     let mut manager = PluginManager::new(config(&dir));
-    // The built-in entries (pisynth and the internal devices of WP-85) come before any scan.
+    // The built-in entries (hexa and the internal devices of WP-85) come before any scan.
     let builtins = names(&manager);
-    assert_eq!(builtins[0], "pisynth");
+    assert_eq!(builtins[0], "hexa");
     assert!(!manager.is_scanning());
     let t0 = Instant::now();
     manager.start_scan(&dirs);

@@ -292,7 +292,7 @@ impl App {
                 self.set_status(self.lang.project_new_created(), StatusKind::Info);
             }
             Pending::Template => {
-                let project = new_project::template(crate::app::pisynth_ref());
+                let project = new_project::template(crate::app::hexa_ref());
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }

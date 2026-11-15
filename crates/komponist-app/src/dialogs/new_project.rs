@@ -4,7 +4,7 @@
 //!   shows the "Leeres Projekt" hint).
 //! - "Aus Vorlage · Beat-Skizze" (S09): three tracks to start a beat: "Drums" with the Sampler and a one-bar step pattern whose rows the drum instrument decides
 //!   ([`crate::step_rows::rows_for`]: the sampler's pads 1–8), "Bass" and
-//!   "Keys" with pisynth.
+//!   "Keys" with hexa.
 //! - A project with unsaved changes asks first: "Speichern" (Enter), "Nicht speichern",
 //!   "Abbrechen" (Esc). The screens have no such dialog; its texts are komponist's own.
 
@@ -132,13 +132,13 @@ const TEMPLATE_BEAT: [(usize, &[usize]); 4] = [
 ];
 
 /// The template project "Beat-Skizze" (see the module docs): the drums play the Sampler, bass and
-/// keys pisynth.
-pub fn template(pisynth: PluginRef) -> Project {
+/// keys hexa.
+pub fn template(hexa: PluginRef) -> Project {
     let mut p = Project::new(names::TEMPLATE);
     let specs = [
         ("Drums", komponist_builtin::Internal::Sampler.plugin_ref()),
-        ("Bass", pisynth.clone()),
-        ("Keys", pisynth),
+        ("Bass", hexa.clone()),
+        ("Keys", hexa),
     ];
     let mut tracks: Vec<TrackId> = Vec::new();
     for ((name, instrument), hue) in specs.into_iter().zip(TEMPLATE_HUES) {
@@ -201,8 +201,8 @@ mod tests {
     }
 
     #[test]
-    fn the_template_has_a_sampler_beat_and_two_pisynth_tracks() {
-        let p = template(crate::app::pisynth_ref());
+    fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
+        let p = template(crate::app::hexa_ref());
         assert_eq!(p.name, "Beat-Skizze");
         let names: Vec<&str> = p.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Drums", "Bass", "Keys"]);

@@ -1,4 +1,4 @@
-//! The built-in entries of the catalog (ARCHITECTURE §8.5): pisynth and the internal devices of
+//! The built-in entries of the catalog (ARCHITECTURE §8.5): hexa and the internal devices of
 //! `komponist-builtin`, all in process, shown as "INTERN".
 //!
 //! The drum sampler of WP-87 is one of the internal devices ([`Internal::Sampler`]); it replaced
@@ -7,7 +7,7 @@
 //! ([`crate::Catalog::resolve`]).
 
 use komponist_ipc::PluginKind;
-use komponist_model::project::BUILTIN_PISYNTH;
+use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{PluginFormat, PluginRef};
 
 use komponist_builtin::Internal;
@@ -18,15 +18,15 @@ use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
 /// built-in klopfer entry resolve to.
 pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
 
-/// The built-in entries: pisynth, then the internal devices (the Sampler, effects and MIDI
+/// The built-in entries: hexa, then the internal devices (the Sampler, effects and MIDI
 /// effects) in the order of [`Internal::ALL`].
 pub(crate) fn entries() -> Vec<CatalogEntry> {
     let mut entries = vec![CatalogEntry {
-        plugin: builtin_ref(BUILTIN_PISYNTH, "pisynth", "klang-studio"),
+        plugin: builtin_ref(BUILTIN_HEXA, "hexa", "klang-studio"),
         kind: PluginKind::Instrument,
         category: None,
         features: vec!["instrument".into(), "synthesizer".into()],
-        location: PluginLocation::InProcess(BuiltinKind::Pisynth),
+        location: PluginLocation::InProcess(BuiltinKind::Hexa),
     }];
     entries.extend(Internal::ALL.into_iter().map(internal_entry));
     entries
@@ -67,9 +67,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_builtin_entries_are_pisynth_then_the_internal_devices() {
+    fn the_builtin_entries_are_hexa_then_the_internal_devices() {
         let names: Vec<String> = entries().into_iter().map(|e| e.plugin.name).collect();
-        let mut expected = vec!["pisynth".to_owned()];
+        let mut expected = vec!["hexa".to_owned()];
         expected.extend(Internal::ALL.iter().map(|k| k.name().to_owned()));
         assert_eq!(names, expected);
         assert!(
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn the_sampler_and_knurr_are_instruments_the_effects_are_not() {
         for e in entries() {
-            let instrument = e.plugin.name == "pisynth"
+            let instrument = e.plugin.name == "hexa"
                 || e.plugin.name == komponist_builtin::sampler::NAME
                 || e.plugin.name == komponist_builtin::internal::knurr::NAME;
             assert_eq!(

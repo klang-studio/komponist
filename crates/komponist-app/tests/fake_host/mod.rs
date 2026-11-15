@@ -1,4 +1,4 @@
-//! A device host for the browser and device-chain tests: pisynth in process (through
+//! A device host for the browser and device-chain tests: hexa in process (through
 //! `BuiltinHost`), every other device with a status, parameters, values, a GUI flag and a state
 //! warning the test chooses, and a catalog with the plugins of S01/S05. Statuses can change while
 //! the app runs ([`FakeHost::statuses`]); parameter changes are recorded ([`FakeHost::set`]).
@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use komponist_app::device_host::{BuiltinHost, DeviceHost, is_pisynth};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
 use komponist_engine::Processor;
 use komponist_ipc::control::param_flags;
 use komponist_ipc::{
@@ -53,7 +53,7 @@ pub fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> 
     }
 }
 
-/// pisynth, the sampler and the plugins of S01/S05.
+/// hexa, the sampler and the plugins of S01/S05.
 pub fn screens_catalog() -> Catalog {
     let mut c = Catalog::builtin();
     c.set_scanned(&[
@@ -205,7 +205,7 @@ impl DeviceHost for FakeHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        if is_pisynth(device) {
+        if is_hexa(device) {
             return self.builtin.create_processor(device, setup);
         }
         self.statuses

@@ -6,7 +6,7 @@
 //! itself ([`geometry`]) and paints them with the `komponist_ui::timeline` painters; clip
 //! previews are cached per clip and zoom ([`cache`]). Headers are one interaction area each, with
 //! the WP-20 track toggles and the WP-21 header meter placed on the painted ones. Every visible
-//! track and clip gets an AccessKit node ("Spur Lead, pisynth", "Clip Lead A, Takt 9–10").
+//! track and clip gets an AccessKit node ("Spur Lead, hexa", "Clip Lead A, Takt 9–10").
 //!
 //! The view never changes the document: it sends [`Action`]s. Drags are gestures
 //! (`BeginGesture`, edits with the total delta, `EndGesture`; Esc cancels). It changes its own

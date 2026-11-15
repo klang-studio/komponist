@@ -621,7 +621,7 @@ const TYPE_SAMPLES: [(&str, TypeStyle, &str); 8] = [
     ("type.title", typography::TITLE, "WAV exportieren"),
     ("type.track", typography::TRACK, "Lead · Drums · Pad"),
     ("type.ui", typography::UI, "Quantisieren auf 1/16"),
-    ("type.small", typography::SMALL, "pisynth · 6-Operator-FM"),
+    ("type.small", typography::SMALL, "hexa · 6-Operator-FM"),
     (
         "type.label",
         typography::LABEL,

@@ -76,12 +76,12 @@ fn select_track(app: &mut App, track: TrackId) {
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
 }
 
-/// A project with one pisynth track and the dock on „Geräte“.
+/// A project with one hexa track and the dock on „Geräte“.
 fn app_with_track() -> (App, TrackId) {
     let mut app = App::headless(Project::new("Intern"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
@@ -180,9 +180,9 @@ fn a_card_shows_its_parameters_and_a_turned_knob_is_saved_in_the_project() {
     .unwrap();
     let mut app = App::headless(Project::new("Intern"));
     app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
@@ -329,7 +329,7 @@ fn names_of(app: &App, track: TrackId) -> Vec<String> {
     chain(app, track).into_iter().map(|c| c.1).collect()
 }
 
-/// pisynth with the arpeggiator and the Tonleiter in front of it and an EQ behind it.
+/// hexa with the arpeggiator and the Tonleiter in front of it and an EQ behind it.
 fn app_with_midi_effects() -> (App, TrackId) {
     let (mut app, track) = app_with_track();
     add(&mut app, Internal::Arpeggiator, DropTarget::Track(track));
@@ -351,7 +351,7 @@ fn a_dropped_midi_effect_goes_into_the_midi_part_in_front_of_the_instrument() {
     let (app, track) = app_with_midi_effects();
     assert_eq!(
         names_of(&app, track),
-        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
     );
     let channel = &app.project().track(track).unwrap().channel;
     assert_eq!(channel.midi_effect_count(), 2);
@@ -395,7 +395,7 @@ fn a_dropped_midi_effect_goes_into_the_midi_part_in_front_of_the_instrument() {
     }));
     assert_eq!(
         names_of(app, track),
-        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
     );
 }
 
@@ -487,18 +487,18 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
     assert_eq!(
         names_of(h.state(), track),
-        ["Tonleiter", "Arpeggiator", "pisynth", "EQ"]
+        ["Tonleiter", "Arpeggiator", "hexa", "EQ"]
     );
-    // Dragged behind the instrument (pisynth's card is wide, so EQ may lie off screen), a MIDI
+    // Dragged behind the instrument (hexa's card is wide, so EQ may lie off screen), a MIDI
     // effect stops at the instrument.
     let synth = h
-        .get_by_role_and_label(Role::Group, &names::card("pisynth"))
+        .get_by_role_and_label(Role::Group, &names::card("hexa"))
         .rect();
     let from = head(&h, "Tonleiter");
     drag(&mut h, from, pos2(synth.right() - 10.0, synth.center().y));
     assert_eq!(
         names_of(h.state(), track),
-        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
     );
     // An effect dragged in front of the instrument stops behind it; the instrument stays.
     let arp = h
@@ -508,7 +508,7 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
     assert_eq!(
         names_of(h.state(), track),
-        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
     );
 }
 
@@ -528,7 +528,7 @@ fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
             .rect()
             .left()
     };
-    let xs: Vec<f32> = ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+    let xs: Vec<f32> = ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
         .iter()
         .map(|n| x(&h, n))
         .collect();
@@ -549,9 +549,9 @@ fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
 #[test]
 fn toggling_the_limiter_lookahead_while_playing_updates_the_delay_compensation() {
     let (mut app, with_limiter) = app_with_track();
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let plain = app.project().tracks[1].id;
@@ -698,9 +698,9 @@ fn the_browser_lists_presse_under_dynamics_and_a_double_click_adds_it() {
 #[test]
 fn toggling_the_presse_lookahead_while_playing_updates_the_delay_compensation() {
     let (mut app, with_presse) = app_with_track();
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let plain = app.project().tracks[1].id;

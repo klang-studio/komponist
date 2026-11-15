@@ -124,7 +124,7 @@ pub enum EditAction {
     TransposeSelection(i8),
     /// ← →: move the selected notes by grid steps.
     NudgeSelection(i32),
-    /// Ctrl T: new MIDI track with pisynth, armed exclusively.
+    /// Ctrl T: new MIDI track with hexa, armed exclusively.
     NewMidiTrack,
 
     /// `edits::set_project_prop`.
@@ -367,10 +367,10 @@ pub enum PluginAction {
         /// Where.
         target: DropTarget,
     },
-    /// Load factory preset `preset` (index in `hexa_core::presets`) into a pisynth device
-    /// ("Presets · pisynth" in the browser); an undoable state change.
-    ApplyPisynthPreset {
-        /// The pisynth device.
+    /// Load factory preset `preset` (index in `hexa_core::presets`) into a hexa device
+    /// ("Presets · hexa" in the browser); an undoable state change.
+    ApplyHexaPreset {
+        /// The hexa device.
         device: DeviceId,
         /// Factory preset index.
         preset: usize,
@@ -383,9 +383,9 @@ pub enum PluginAction {
         /// Index in the device's preset list.
         index: usize,
     },
-    /// A preset double-click without a pisynth on the selected track: a new pisynth track
+    /// A preset double-click without a hexa on the selected track: a new hexa track
     /// with factory preset `preset` (one undo step).
-    NewPisynthTrack {
+    NewHexaTrack {
         /// Factory preset index.
         preset: usize,
     },
@@ -407,7 +407,7 @@ pub enum PluginAction {
         id: u32,
     },
     /// Generic parameter knob or device-card macro. An undoable change of the device's state
-    /// (pisynth, internal devices) or of the bridged plugin (its snapshot follows, see
+    /// (hexa, internal devices) or of the bridged plugin (its snapshot follows, see
     /// `crate::param_undo`).
     SetParam {
         /// The device.

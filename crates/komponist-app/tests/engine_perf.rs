@@ -1,5 +1,5 @@
 //! Engine CPU in the real callback path (WP-61): the app on the null backend at 48 kHz / 256
-//! frames plays 16 pisynth tracks, then the same with a kp-test-fx bridge on 8 of them. The
+//! frames plays 16 hexa tracks, then the same with a kp-test-fx bridge on 8 of them. The
 //! callback load is the time inside the audio callback over the buffer period (5.33 ms), read
 //! from `StreamStats` (smoothed mean, peak of single callbacks, overruns = callbacks longer than
 //! their period). Bridge waits count as callback time: that is what decides an xrun.
@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The bridge case needs the WP-27 fixtures (`scripts/build-test-plugins.sh`) and skips without
-//! them. Debug builds run too, but their numbers mean little (pisynth unoptimised).
+//! them. Debug builds run too, but their numbers mean little (hexa unoptimised).
 
 mod common;
 
@@ -29,7 +29,7 @@ use komponist_audio::{HostKind, StreamConfig};
 use komponist_builtin::{encode_state, preset_patch, presets};
 use komponist_engine::TransportState;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewNote, NewTrack};
-use komponist_model::project::BUILTIN_PISYNTH;
+use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
     Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project, Tick, TickRange,
 };
@@ -62,18 +62,18 @@ fn worker_counts() -> Vec<u32> {
         .unwrap_or_else(|| vec![0, 4])
 }
 
-fn pisynth() -> PluginRef {
+fn hexa() -> PluginRef {
     PluginRef {
         format: PluginFormat::Builtin,
-        id: BUILTIN_PISYNTH.into(),
-        name: "pisynth".into(),
+        id: BUILTIN_HEXA.into(),
+        name: "hexa".into(),
         vendor: "klang-studio".into(),
         version: "0.1.0".into(),
         module: Box::default(),
     }
 }
 
-/// 16 pisynth tracks (presets E-Piano, Strings, Supersaw, Init in turn), each with a 4-bar
+/// 16 hexa tracks (presets E-Piano, Strings, Supersaw, Init in turn), each with a 4-bar
 /// looped clip: a four-note chord per half bar, held, plus a 1/16 line (up to ~8 voices per
 /// track, 128 in all); loop over the 4 bars. With `bridges`, the first 8 tracks get a kp-test-fx.
 fn project(bridges: bool) -> Project {
@@ -83,7 +83,7 @@ fn project(bridges: bool) -> Project {
         let spec = NewTrack {
             name: Some(format!("Spur {}", i + 1)),
             hue: None,
-            instrument: Some(pisynth()),
+            instrument: Some(hexa()),
             index: None,
             arm_exclusive: false,
         };
@@ -200,17 +200,17 @@ fn measure(name: &str, app: &mut App) {
 
 #[test]
 #[ignore = "timing: run in release with --ignored --nocapture"]
-fn engine_cpu_16_pisynth_tracks() {
+fn engine_cpu_16_hexa_tracks() {
     for workers in worker_counts() {
         let mut app = app(project(false), Box::new(BuiltinHost::new()), workers);
-        measure(&format!("16 pisynth tracks, {workers} workers"), &mut app);
+        measure(&format!("16 hexa tracks, {workers} workers"), &mut app);
         app.shutdown();
     }
 }
 
 #[test]
 #[ignore = "timing: run in release with --ignored --nocapture"]
-fn engine_cpu_16_pisynth_tracks_and_8_bridges() {
+fn engine_cpu_16_hexa_tracks_and_8_bridges() {
     let Some(dirs) = fixture_dirs() else {
         return;
     };
@@ -236,7 +236,7 @@ fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
     let mut app = app(project(true), Box::new(host), workers);
     step_until(&mut app, "bridges", all_ok);
     measure(
-        &format!("16 pisynth tracks + 8 kp-test-fx bridges, {workers} workers"),
+        &format!("16 hexa tracks + 8 kp-test-fx bridges, {workers} workers"),
         &mut app,
     );
     let late: u64 = bridged(app.project())

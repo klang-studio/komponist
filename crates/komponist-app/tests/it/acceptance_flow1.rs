@@ -18,19 +18,19 @@ fn new_project_then_ctrl_t_and_a_dragged_instrument_make_two_tracks() {
     assert!(h.state().project().tracks.is_empty());
     assert!(!h.state().doc().is_dirty());
 
-    // Strg T: an armed pisynth track, selected.
+    // Strg T: an armed hexa track, selected.
     ctrl(&mut h, Key::T);
     let p = h.state().project();
     assert_eq!(p.tracks.len(), 1);
     let first = p.tracks[0].id;
     assert!(p.tracks[0].arm);
-    assert_eq!(p.tracks[0].channel.devices[0].plugin.name, "pisynth");
+    assert_eq!(p.tracks[0].channel.devices[0].plugin.name, "hexa");
     assert!(h.state().ui().selection.tracks.contains(&first));
-    h.get_by_role_and_label(Role::Row, &format!("Spur {}, pisynth", p.tracks[0].name));
+    h.get_by_role_and_label(Role::Row, &format!("Spur {}, hexa", p.tracks[0].name));
 
     // A browser row dragged onto the empty area below the header: a second track.
     let row = h
-        .get_all_by_role_and_label(Role::ListItem, "pisynth")
+        .get_all_by_role_and_label(Role::ListItem, "hexa")
         .next()
         .unwrap()
         .rect();
@@ -42,7 +42,7 @@ fn new_project_then_ctrl_t_and_a_dragged_instrument_make_two_tracks() {
     );
     let p = h.state().project();
     assert_eq!(p.tracks.len(), 2);
-    assert_eq!(p.tracks[1].channel.devices[0].plugin.name, "pisynth");
+    assert_eq!(p.tracks[1].channel.devices[0].plugin.name, "hexa");
     assert!(
         p.tracks[1].arm,
         "the new track is armed, the old one is not"

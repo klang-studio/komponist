@@ -11,7 +11,7 @@
 //! During a gesture, fader, pan, mute and solo go to the engine as fast-path commands
 //! ([`EngineSync::fast_path`]); the recompile waits for the gesture's end. A device parameter
 //! (`SetParam`) is the same: the running processor already has the value, so the app stores it
-//! in the document without [`EngineSync::sync_device_states`], which would hand pisynth a fresh
+//! in the document without [`EngineSync::sync_device_states`], which would hand hexa a fresh
 //! processor; only undo, redo, cancelled gestures, presets and pastes follow the document that
 //! way.
 //!
@@ -404,7 +404,7 @@ impl EngineSync {
         }
     }
 
-    /// Replaces the processor of `device` with a fresh one from the host (pisynth preset
+    /// Replaces the processor of `device` with a fresh one from the host (hexa preset
     /// loaded into the device state, "Neu laden"). Nothing happens if the device has no slot.
     pub fn reload_device(&mut self, project: &Project, device: komponist_model::DeviceId) {
         let Some(slot) = self.previous.as_ref().and_then(|p| p.slots.slot(device)) else {
@@ -421,7 +421,7 @@ impl EngineSync {
     }
 
     /// How many fresh processors [`EngineSync::reload_device`] made (a preset, undo or redo of a
-    /// pisynth state, "Neu laden"). A knob turn must not count here: it reaches the running
+    /// hexa state, "Neu laden"). A knob turn must not count here: it reaches the running
     /// processor as `SetParam`.
     pub fn device_reloads(&self) -> u64 {
         self.reloads
@@ -431,7 +431,7 @@ impl EngineSync {
     /// replaced states outside the dispatcher's own paths (undo, redo, a preset, a paste over):
     /// every device in both `before` and `after` whose state differs follows `after`.
     ///
-    /// - pisynth gets a fresh processor made from its patch (like a preset load);
+    /// - hexa gets a fresh processor made from its patch (like a preset load);
     /// - an internal device gets the parameters that differ as `SetParam`, so tails and sounding
     ///   notes go on; the Sampler also loads or clears the pads whose sample link differs (into
     ///   `project_dir`'s samples); a state that does not decode gives a fresh processor;
@@ -474,8 +474,8 @@ impl EngineSync {
         project: &Project,
         project_dir: Option<&std::path::Path>,
     ) {
-        use crate::device_host::{internal_kind, is_pisynth};
-        if is_pisynth(device) {
+        use crate::device_host::{internal_kind, is_hexa};
+        if is_hexa(device) {
             self.reload_device(project, device.id);
         } else if let Some(kind) = internal_kind(device) {
             // A state with only sample links has no `params`: its values are the defaults (as

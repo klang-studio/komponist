@@ -2,7 +2,7 @@
 //! same material as `komponist-app`'s `engine_perf` (four-note chords per half bar, held, and a
 //! 1/16 line, looped over 4 bars), once with instruments that only take their events and write a
 //! constant (the engine's own cost: sequencer, event lists, chains, fader, balance, meters, PDC,
-//! mixing) and once with pisynth (presets E-Piano, Strings, Supersaw, Init in turn).
+//! mixing) and once with hexa (presets E-Piano, Strings, Supersaw, Init in turn).
 //!
 //! Each runs once per worker count (WP-65; `KOMPONIST_BENCH_WORKERS`, default `0,4`); workers ask
 //! for `SCHED_FIFO` 80 like the app's. The time is the wall time of `process` on the calling
@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use komponist_builtin::{PisynthProcessor, preset_patch, presets};
+use komponist_builtin::{HexaProcessor, preset_patch, presets};
 use komponist_engine::program::SeqNote;
 use komponist_engine::{
     Command, Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
@@ -147,12 +147,12 @@ fn bench_engine_16_tracks() {
                 .find(|x| x.name == names[i as usize % 4])
                 .unwrap()
                 .index;
-            let mut p = PisynthProcessor::new(preset_patch(index).unwrap());
+            let mut p = HexaProcessor::new(preset_patch(index).unwrap());
             p.activate(RATE, BLOCK).unwrap();
             Box::new(p)
         });
         eprintln!(
-            "engine + 16 pisynth, {workers} workers: mean {mean:.1?} ({:.1} %), worst {worst:.1?} ({:.1} %) per {BLOCK} frames",
+            "engine + 16 hexa, {workers} workers: mean {mean:.1?} ({:.1} %), worst {worst:.1?} ({:.1} %) per {BLOCK} frames",
             share(mean),
             share(worst)
         );

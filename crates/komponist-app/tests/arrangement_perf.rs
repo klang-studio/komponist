@@ -112,7 +112,7 @@ enum Case {
     Idle,
     /// The arrangement alone, every clip selected.
     AllSelected,
-    /// Playing on the null backend (16 pisynth tracks in real time on the audio thread), the
+    /// Playing on the null backend (16 hexa tracks in real time on the audio thread), the
     /// dock open with one clip in the piano roll: playhead, meters and both canvases move.
     Playing,
 }

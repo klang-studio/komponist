@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use assert_no_alloc::assert_no_alloc;
 use common::*;
 use komponist_app::actions::{PluginAction, ProjectAction, TransportAction};
-use komponist_app::device_host::{DeviceHost, PluginHost, is_pisynth};
+use komponist_app::device_host::{DeviceHost, PluginHost, is_hexa};
 use komponist_app::ui_state::StatusKind;
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, CompileEnv};
@@ -102,7 +102,7 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
     }
     send(&mut handle, Command::SetProgram(Box::new(program.clone())));
     let bridged = bridged(&project);
-    assert_eq!(bridged.len(), 11, "13 devices, all but the two pisynths");
+    assert_eq!(bridged.len(), 11, "13 devices, all but the two hexas");
     for &device in &bridged {
         assert_eq!(host.status(device), DeviceStatus::Loading);
     }
@@ -126,9 +126,9 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
         .find(|t| t.id == keys)
         .unwrap()
         .pdc_delay;
-    // Lead is the longest chain: pisynth and two effects (the third is bypassed); Keys has none.
-    let pisynth = project.tracks[2].channel.devices[0].id;
-    let lead = host.latency(pisynth) + 2 * 64;
+    // Lead is the longest chain: hexa and two effects (the third is bypassed); Keys has none.
+    let hexa = project.tracks[2].channel.devices[0].id;
+    let lead = host.latency(hexa) + 2 * 64;
     assert_eq!(keys_pdc, lead, "Keys waits for Lead");
     send(&mut handle, Command::SetProgram(Box::new(program.clone())));
 
@@ -150,7 +150,7 @@ fn the_demo_with_test_plugins_sounds_through_bridges_in_an_offline_render() {
     }
     assert!(master_peak > 0.05, "master {master_peak}");
     // Drums, Pad and Keys play only through bridged instruments (klopfer, Surge XT and Dexed in
-    // the demo); Bass is pisynth through a bridged effect.
+    // the demo); Bass is hexa through a bridged effect.
     for name in ["Drums", "Bass", "Pad", "Keys"] {
         let (l, r) = program.meter(track_named(&project, name)).unwrap().take();
         eprintln!("{name}: peak {l:.3} / {r:.3}");
@@ -227,13 +227,13 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     };
     assert!(bridged.iter().all(loading), "{events:?}");
     assert!(app.engine().host().needs_polling());
-    // pisynth, the internal devices (WP-85) and the four fixtures.
+    // hexa, the internal devices (WP-85) and the four fixtures.
     assert_eq!(
         app.engine().host().catalog().entries().len(),
         1 + komponist_builtin::internal::Internal::ALL.len() + 4
     );
 
-    // Latencies recompile the program. Lead is the longest chain (pisynth and two 64-frame
+    // Latencies recompile the program. Lead is the longest chain (hexa and two 64-frame
     // effects; the third is bypassed), Pad has two effects after a synth without latency, Keys
     // none.
     let pdc = |app: &App, name: &str| {
@@ -246,8 +246,8 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
             .unwrap()
             .pdc_delay
     };
-    let pisynth = app.project().tracks[2].channel.devices[0].id;
-    let synth = app.engine().host().latency(pisynth);
+    let hexa = app.project().tracks[2].channel.devices[0].id;
+    let synth = app.engine().host().latency(hexa);
     step_until(&mut app, "delay compensation", |app| {
         pdc(app, "Keys") == synth + 128
     });
@@ -342,7 +342,7 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     assert!(!app.doc().is_dirty());
     let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
     for (_, device) in devices(&saved) {
-        if is_pisynth(&device) {
+        if is_hexa(&device) {
             assert_eq!(device.state, None);
         } else {
             assert!(
@@ -367,7 +367,7 @@ fn the_demo_plays_the_installed_plugins() {
     let mut project = komponist_model::fixtures::demo_project();
     // A state blob for every device that is not installed here, to see it kept.
     let blob: Arc<[u8]> = Arc::from(&b"komponist test state \x00\x01\x02"[..]);
-    let installed = ["pisynth", "Sampler", "Surge XT", "Dexed"];
+    let installed = ["hexa", "Sampler", "Surge XT", "Dexed"];
     for track in &mut project.tracks {
         for device in &mut Arc::make_mut(track).channel.devices {
             if !installed.contains(&device.plugin.name.as_str()) {

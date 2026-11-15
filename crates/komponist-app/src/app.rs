@@ -42,7 +42,7 @@ use komponist_ipc::LogLevel;
 use komponist_model::edits::{
     self, ChannelProp, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp, VelocityChange,
 };
-use komponist_model::project::{BUILTIN_PISYNTH, VOLUME_DB_MIN};
+use komponist_model::project::{BUILTIN_HEXA, VOLUME_DB_MIN};
 use komponist_model::{
     ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat, PluginRef,
     Project, Tick, TickRange, TrackId,
@@ -1353,7 +1353,7 @@ impl App {
                     edits::move_notes(p, clip, &notes, delta, 0)
                 });
             }
-            EditAction::NewMidiTrack => self.new_midi_track(None, pisynth_ref()),
+            EditAction::NewMidiTrack => self.new_midi_track(None, hexa_ref()),
             EditAction::SetProjectProp(prop) => {
                 self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
@@ -1660,7 +1660,7 @@ impl App {
         }
     }
 
-    /// Opens the "Neue Spur" dialog with the instrument of the last one (pisynth the first time).
+    /// Opens the "Neue Spur" dialog with the instrument of the last one (hexa the first time).
     fn open_new_track_dialog(&mut self) {
         if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
             return;
@@ -1669,7 +1669,7 @@ impl App {
             .dialogs
             .last_instrument
             .clone()
-            .unwrap_or_else(|| Some(pisynth_ref()));
+            .unwrap_or_else(|| Some(hexa_ref()));
         self.open_overlay(crate::dialogs::Overlay::NewTrack(
             crate::dialogs::new_track::State::new(instrument),
         ));
@@ -2173,7 +2173,7 @@ impl App {
     pub(crate) fn plugin_action(&mut self, action: PluginAction) {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
-            PluginAction::ApplyPisynthPreset { device, preset } => {
+            PluginAction::ApplyHexaPreset { device, preset } => {
                 let Some(patch) = komponist_builtin::preset_patch(preset) else {
                     return;
                 };
@@ -2185,16 +2185,14 @@ impl App {
             PluginAction::ApplyInternalPreset { device, index } => {
                 self.apply_internal_preset(device, index);
             }
-            PluginAction::NewPisynthTrack { preset } => {
+            PluginAction::NewHexaTrack { preset } => {
                 self.dispatch(Action::Edit(EditAction::BeginGesture {
                     label: "undo-load-preset".to_owned(),
                 }));
-                self.new_midi_track(None, pisynth_ref());
+                self.new_midi_track(None, hexa_ref());
                 let track = self.ui.selection.tracks.iter().next().copied();
-                if let Some(device) =
-                    crate::views::browser::model::pisynth_of(self.project(), track)
-                {
-                    self.plugin_action(PluginAction::ApplyPisynthPreset { device, preset });
+                if let Some(device) = crate::views::browser::model::hexa_of(self.project(), track) {
+                    self.plugin_action(PluginAction::ApplyHexaPreset { device, preset });
                 }
                 self.dispatch(Action::Edit(EditAction::EndGesture));
             }
@@ -2471,12 +2469,12 @@ fn fader_gain(db: f32) -> f32 {
     }
 }
 
-/// The reference of the built-in pisynth (Ctrl T).
-pub fn pisynth_ref() -> PluginRef {
+/// The reference of the built-in hexa (Ctrl T).
+pub fn hexa_ref() -> PluginRef {
     PluginRef {
         format: PluginFormat::Builtin,
-        id: BUILTIN_PISYNTH.to_owned(),
-        name: "pisynth".to_owned(),
+        id: BUILTIN_HEXA.to_owned(),
+        name: "hexa".to_owned(),
         vendor: "klang-studio".to_owned(),
         module: Box::default(),
         version: env!("CARGO_PKG_VERSION").to_owned(),

@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    BUILTIN_PISYNTH, BUILTIN_SAMPLER, Channel, Clip, ClipContent, Device, DeviceRole, Hue,
-    MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project,
-    Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind, TrackOutput,
+    BUILTIN_HEXA, BUILTIN_SAMPLER, Channel, Clip, ClipContent, Device, DeviceRole, Hue, MAX_STEPS,
+    MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip,
+    StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind, TrackOutput,
 };
 use crate::time::{StepResolution, Tempo, Tick, TickRange};
 
@@ -23,8 +23,8 @@ pub const DEMO_PROJECT_NAME: &str = "Nachtfahrt";
 /// | Track | Hue | dB | Pan | Instrument | Effects |
 /// |---|---|---|---|---|---|
 /// | Drums | 45 | −6 | 0 | Sampler (builtin) | LSP Compressor |
-/// | Bass | 250 | −4 | 0 | pisynth (builtin) | LSP Para EQ x8 |
-/// | Lead | 150 | −3 | 0 | pisynth (builtin) | LSP Para EQ x8, TAL-Chorus-LX (bypassed), Dragonfly Hall Reverb |
+/// | Bass | 250 | −4 | 0 | hexa (builtin) | LSP Para EQ x8 |
+/// | Lead | 150 | −3 | 0 | hexa (builtin) | LSP Para EQ x8, TAL-Chorus-LX (bypassed), Dragonfly Hall Reverb |
 /// | Pad | 300 | −9 | −0.1 | Surge XT (CLAP) | LSP Para EQ x8, Dragonfly Hall Reverb |
 /// | Keys | 95 | −8 | 0.2 | Dexed (VST3) | – |
 /// | Arp | 200 | −10 | 0 | Vital (VST3), track muted | – |
@@ -39,8 +39,8 @@ pub fn demo_project() -> Project {
     let mut project = song(
         [
             &[SAMPLER, LSP_COMPRESSOR],
-            &[PISYNTH, LSP_PARA_EQ],
-            &[PISYNTH, LSP_PARA_EQ, TAL_CHORUS, DRAGONFLY_HALL],
+            &[HEXA, LSP_PARA_EQ],
+            &[HEXA, LSP_PARA_EQ, TAL_CHORUS, DRAGONFLY_HALL],
             &[SURGE_XT, LSP_PARA_EQ, DRAGONFLY_HALL],
             &[DEXED],
             &[VITAL],
@@ -409,10 +409,10 @@ impl DemoPlugin {
     }
 }
 
-const PISYNTH: DemoPlugin = DemoPlugin {
+const HEXA: DemoPlugin = DemoPlugin {
     format: PluginFormat::Builtin,
-    id: BUILTIN_PISYNTH,
-    name: "pisynth",
+    id: BUILTIN_HEXA,
+    name: "hexa",
     vendor: "klang-studio",
     version: "0.1.0",
 };
@@ -557,11 +557,11 @@ mod tests {
                 .collect()
         };
         assert_eq!(chain(0), [("Sampler", false), ("LSP Compressor", false)]);
-        assert_eq!(chain(1), [("pisynth", false), ("LSP Para EQ x8", false)]);
+        assert_eq!(chain(1), [("hexa", false), ("LSP Para EQ x8", false)]);
         assert_eq!(
             chain(2),
             [
-                ("pisynth", false),
+                ("hexa", false),
                 ("LSP Para EQ x8", false),
                 ("TAL-Chorus-LX", true),
                 ("Dragonfly Hall Reverb", false),

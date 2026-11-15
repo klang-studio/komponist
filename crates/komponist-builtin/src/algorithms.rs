@@ -1,10 +1,10 @@
-//! The 32 fixed algorithms (DX7 style) as templates over pisynth's free routing.
+//! The 32 fixed algorithms (DX7 style) as templates over hexa's free routing.
 //!
-//! pisynth routes freely: every operator has `modulates` targets with `depths`, an `output` flag
+//! hexa routes freely: every operator has `modulates` targets with `depths`, an `output` flag
 //! and its own feedback. A fixed algorithm is a template written into that routing; a patch "has"
 //! algorithm *n* when its routing matches template *n*, otherwise its routing is free.
 //!
-//! Ported from pisynth's display UI (`../pisynth/crates/synth-ui/src/algo.rs`, the HEXA-6 design's
+//! Ported from pisynth's display UI (`synth-ui/src/algo.rs` in the pisynth repository, the HEXA-6 design's
 //! `ALGOS`): same table, same matching and the same way of applying a template, so a patch shows
 //! the same algorithm number here as on the synth. komponist cannot depend on `synth-ui` (it links
 //! LVGL), hence the copy.

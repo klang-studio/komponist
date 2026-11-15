@@ -18,7 +18,7 @@ pub const MARK: f32 = space::SPACE_2;
 pub const CHIP_PAD_X: f32 = space::SPACE_1_5;
 /// … and the gap around the „›“ between two names.
 pub const CHAIN_SEPARATOR_GAP: f32 = space::SPACE_1_5;
-/// The chain head's name separator (HANDOFF §9 `pisynth › eq › presse`).
+/// The chain head's name separator (HANDOFF §9 `hexa › eq › presse`).
 pub const CHAIN_SEPARATOR: &str = "\u{203a}";
 
 /// Padding of the chain (`device.chain.padding`).

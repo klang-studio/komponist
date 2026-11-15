@@ -1,9 +1,9 @@
-//! The demo project "Nachtfahrt" exported through `PisynthProcessor` (every instrument is a
-//! pisynth with its stored state or "Init"; effects have no processor and pass audio through).
+//! The demo project "Nachtfahrt" exported through `HexaProcessor` (every instrument is a
+//! hexa with its stored state or "Init"; effects have no processor and pass audio through).
 
 use std::sync::atomic::AtomicBool;
 
-use komponist_builtin::PisynthProcessor;
+use komponist_builtin::HexaProcessor;
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::export::{BitDepth, ExportJob, NORMALIZE_TARGET_DB, export};
 use komponist_engine::{Command, MAX_BLOCK, Processor, SlotId, TransportState};
@@ -14,7 +14,7 @@ use crate::common::*;
 use crate::export::{dir, files, peak_db, read};
 
 #[test]
-fn the_demo_project_exports_through_pisynth() {
+fn the_demo_project_exports_through_hexa() {
     let project = demo_project();
     let program = compile::build(&project, None, &NoEnv);
     let mut rig = Rig::new(RATE, MAX_BLOCK);
@@ -26,8 +26,7 @@ fn the_demo_project_exports_through_pisynth() {
             .find(|d| d.id == device)
             .unwrap();
         if model.role == DeviceRole::Instrument {
-            let mut synth =
-                PisynthProcessor::from_state(model.state.as_deref()).unwrap_or_default();
+            let mut synth = HexaProcessor::from_state(model.state.as_deref()).unwrap_or_default();
             synth.activate(RATE, MAX_BLOCK).unwrap();
             rig.send(Command::InsertProcessor {
                 slot: SlotId(slot.0),

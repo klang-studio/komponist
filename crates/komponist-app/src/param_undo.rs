@@ -3,11 +3,11 @@
 //! Every change of a device's state is a tracked edit of the document, so Strg Z reverts a knob,
 //! a sample link or a plugin's own edit like anything else:
 //!
-//! - **pisynth and the internal devices** (EQ, Delay, Hall, Limiter, presse, knurr, Arpeggiator,
+//! - **hexa and the internal devices** (EQ, Delay, Hall, Limiter, presse, knurr, Arpeggiator,
 //!   Tonleiter, Sampler): `PluginAction::SetParam` writes the value into the device state and
 //!   sends it to the running processor as `Command::SetParam`. The processor already has the
 //!   value, so the app does not run [`EngineSync::sync_device_states`] for it (that would hand
-//!   pisynth a fresh processor on every frame of a drag): the change goes through the engine's
+//!   hexa a fresh processor on every frame of a drag): the change goes through the engine's
 //!   fast path, which also defers the recompile to the gesture's end. Undo, redo, a cancelled
 //!   gesture, presets and pastes do follow the document that way.
 //! - **Gestures:** the view brackets a drag or a burst of wheel notches in
@@ -47,7 +47,7 @@ use komponist_model::edits;
 use komponist_model::{DeviceId, Project};
 
 use crate::app::App;
-use crate::device_host::{internal_kind, is_pisynth};
+use crate::device_host::{internal_kind, is_hexa};
 use crate::undo_label;
 
 /// Snapshots of a device that arrive within this time of the last one amend its undo step.
@@ -203,7 +203,7 @@ impl App {
             }
             return;
         }
-        // pisynth and the internal devices: the value goes into the state and to the processor.
+        // hexa and the internal devices: the value goes into the state and to the processor.
         let before = self.doc.revision();
         let changed = match self.param_state(device, id, value) {
             Some(state) => {
@@ -232,7 +232,7 @@ impl App {
     /// (bridged, unknown) or an unknown id.
     fn param_state(&self, device: DeviceId, id: u32, value: f64) -> Option<Arc<[u8]>> {
         let (_, _, d) = self.project().find_device(device)?;
-        if is_pisynth(d) {
+        if is_hexa(d) {
             // The `Field::set` the processor applies.
             let field = komponist_builtin::device::Field::from_wire(id)?;
             let mut patch = komponist_builtin::decode_state(d.state.as_deref())
@@ -255,7 +255,7 @@ impl App {
 
     fn param_name(&self, device: DeviceId, id: u32) -> Option<String> {
         let (_, _, d) = self.project().find_device(device)?;
-        if is_pisynth(d) {
+        if is_hexa(d) {
             return komponist_builtin::device::params()
                 .iter()
                 .find(|p| p.wire == id)
@@ -405,7 +405,7 @@ impl App {
     /// plugin what it holds, so undoing the first edit has something to hand back.
     pub(crate) fn device_up(&mut self, device: DeviceId) {
         let bridged = self.project().find_device(device).is_some_and(|(_, _, d)| {
-            d.state.is_none() && !is_pisynth(d) && internal_kind(d).is_none()
+            d.state.is_none() && !is_hexa(d) && internal_kind(d).is_none()
         });
         if bridged
             && !self.param_undo.baseline.contains_key(&device)
@@ -429,7 +429,7 @@ impl App {
             let Some((_, _, old)) = before.find_device(device.id) else {
                 continue;
             };
-            if old.state != device.state && !is_pisynth(device) && internal_kind(device).is_none() {
+            if old.state != device.state && !is_hexa(device) && internal_kind(device).is_none() {
                 if device.state.is_none()
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()
                 {

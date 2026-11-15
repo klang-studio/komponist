@@ -5,7 +5,7 @@
 //! |---|---|
 //! | Spurtyp | a segmented control; today only "MIDI". The row stays visible with its single selected segment, so "Bus" (WP-103) and "Audio" are one more [`KINDS`] entry each, not a layout change |
 //! | Instrument | a search field over the instruments of the catalog (the browser's matching, [`crate::views::browser::model::instrument_rows`]) and "Kein Instrument" at the top; ↑ ↓ choose, typing selects the first hit |
-//! | Name | prefilled with the name the app would give ([`auto_name`], "pisynth", "MIDI 2"); it follows the instrument until it is edited; blank = automatic |
+//! | Name | prefilled with the name the app would give ([`auto_name`], "hexa", "MIDI 2"); it follows the instrument until it is edited; blank = automatic |
 //! | Anzahl | 1 – [`COUNT_MAX`]; several tracks get numbered names ("Lead 1", "Lead 2", or the automatic names "MIDI", "MIDI 2", …) |
 //!
 //! Enter (not while a button or the count field has the focus) creates, Esc and "Abbrechen" cancel.

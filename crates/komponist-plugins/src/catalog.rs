@@ -27,8 +27,8 @@ pub const SCAN_CACHE_FILE: &str = "plugins.json";
 /// Which built-in a catalog entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinKind {
-    /// pisynth, 6-operator FM, runs in process as `komponist_builtin::PisynthProcessor` (D6).
-    Pisynth,
+    /// hexa, 6-operator FM, runs in process as `komponist_builtin::HexaProcessor` (D6).
+    Hexa,
     /// An internal effect of `komponist-builtin`, in process (WP-85).
     Internal(komponist_builtin::Internal),
 }
@@ -102,7 +102,7 @@ impl EffectCategory {
 /// One plugin the browser can offer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CatalogEntry {
-    /// The reference a device stores when this entry is added (format `Builtin` for pisynth and
+    /// The reference a device stores when this entry is added (format `Builtin` for hexa and
     /// the internal devices, shown as "INTERN").
     pub plugin: PluginRef,
     /// Instrument or effect.
@@ -129,7 +129,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Only the built-ins ([`crate::builtin`]): pisynth and the internal devices.
+    /// Only the built-ins ([`crate::builtin`]): hexa and the internal devices.
     pub fn builtin() -> Catalog {
         Catalog {
             entries: crate::builtin::entries(),
@@ -363,15 +363,15 @@ pub struct ScanReport {
 
 #[cfg(test)]
 mod tests {
-    /// `pisynth`, then the internal devices, by name.
+    /// `hexa`, then the internal devices, by name.
     fn builtin_names() -> Vec<&'static str> {
-        let mut names = vec!["pisynth"];
+        let mut names = vec!["hexa"];
         names.extend(komponist_builtin::Internal::ALL.iter().map(|k| k.name()));
         names
     }
 
     use super::*;
-    use komponist_model::project::BUILTIN_PISYNTH;
+    use komponist_model::project::BUILTIN_HEXA;
 
     fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> PluginDescriptor {
         PluginDescriptor {
@@ -429,15 +429,12 @@ mod tests {
             .map(|e| e.plugin.name.as_str())
             .collect();
         assert_eq!(names, builtin_names());
-        let pisynth = &catalog.entries()[0];
-        assert!(pisynth.is_builtin());
-        assert_eq!(pisynth.plugin.id, BUILTIN_PISYNTH);
-        assert_eq!(pisynth.plugin.name, "pisynth");
-        assert_eq!(pisynth.kind, PluginKind::Instrument);
-        assert_eq!(
-            pisynth.location,
-            PluginLocation::InProcess(BuiltinKind::Pisynth)
-        );
+        let hexa = &catalog.entries()[0];
+        assert!(hexa.is_builtin());
+        assert_eq!(hexa.plugin.id, BUILTIN_HEXA);
+        assert_eq!(hexa.plugin.name, "hexa");
+        assert_eq!(hexa.kind, PluginKind::Instrument);
+        assert_eq!(hexa.location, PluginLocation::InProcess(BuiltinKind::Hexa));
 
         // The Sampler is an in-process instrument without a browser category.
         let sampler = &catalog.entries()[1];
@@ -488,7 +485,7 @@ mod tests {
         };
         assert_eq!(module("Surge XT").as_deref(), Some("Surge XT.clap"));
         assert_eq!(module("Vital").as_deref(), Some("Vital.vst3"));
-        assert_eq!(module("pisynth").as_deref(), Some(""));
+        assert_eq!(module("hexa").as_deref(), Some(""));
     }
 
     #[test]
@@ -627,7 +624,7 @@ mod tests {
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
         // The built-in compressor matches by its feature (WP-93).
         assert_eq!(names("compress"), ["presse", "Squash"]);
-        assert_eq!(names("synth"), ["pisynth", "knurr"]);
+        assert_eq!(names("synth"), ["hexa", "knurr"]);
         assert!(names("nothing like this").is_empty());
     }
 

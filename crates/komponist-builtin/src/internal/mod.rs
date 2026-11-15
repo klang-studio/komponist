@@ -15,7 +15,7 @@
 //!   `{"params": {"<id>": value, …}}` keyed by [`ParamId`]. Missing ids get their default, unknown
 //!   ids are ignored, values are snapped to their range, so a state written before a parameter
 //!   existed (or after one was removed) still loads. [`Internal::with_value`] changes one value of
-//!   a state (the app stores a knob turn this way, as for pisynth's macros).
+//!   a state (the app stores a knob turn this way, as for hexa's macros).
 //! - **Processor:** [`Internal::processor`] (from decoded values) gives an [`InternalProcessor`];
 //!   `activate` it and send it with `Command::InsertProcessor`. Knob turns reach it as
 //!   `Command::SetParam { id: wire, value }`; the engine delivers them as `EventKind::Param` at

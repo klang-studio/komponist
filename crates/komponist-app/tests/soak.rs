@@ -6,7 +6,7 @@
 //! Checked at the end:
 //! - no callback whose own work took longer than its period (`StreamStats::overruns`: an xrun the
 //!   app caused); asserted in release builds, where the timing means something, and reported in
-//!   debug builds (unoptimised pisynth),
+//!   debug builds (unoptimised hexa),
 //! - the audio thread kept running: at least 90 % of the callbacks the elapsed time asks for (a
 //!   lock or a stall on the audio thread would show here),
 //! - the engine applied every command (none waiting at the end).
@@ -34,7 +34,7 @@ use komponist_model::edits::{
     ChannelProp, NewClip, NewClipContent, NewNote, ProjectProp, TrackProp,
 };
 use komponist_model::fixtures::demo_project;
-use komponist_model::project::BUILTIN_PISYNTH;
+use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{
     ClipContent, ClipId, Device, DeviceRole, NoteId, PluginFormat, PluginRef, Project, Tempo, Tick,
     TickRange, TrackId,
@@ -53,7 +53,7 @@ const FRAME: Duration = Duration::from_micros(16_667);
 /// The null backend's period: 256 frames at 48 kHz.
 const PERIOD: Duration = Duration::from_micros(5_333);
 /// The generator keeps the project around the demo's size, so the load stays that of a session
-/// (unbounded growth would only measure pisynth with 100 tracks).
+/// (unbounded growth would only measure hexa with 100 tracks).
 const MAX_TRACKS: usize = 10;
 const MAX_CLIPS: usize = 40;
 const MAX_NOTES_PER_CLIP: usize = 200;
@@ -82,20 +82,20 @@ impl Rng {
     }
 }
 
-/// The demo with pisynth only (`App::headless` hosts no bridges): external instruments become
-/// pisynth, external effects go. Every device then runs, so an export never waits.
+/// The demo with hexa only (`App::headless` hosts no bridges): external instruments become
+/// hexa, external effects go. Every device then runs, so an export never waits.
 fn soak_project() -> Project {
     let mut p = demo_project();
-    let pisynth = PluginRef {
+    let hexa = PluginRef {
         format: PluginFormat::Builtin,
-        id: BUILTIN_PISYNTH.into(),
-        name: "pisynth".into(),
+        id: BUILTIN_HEXA.into(),
+        name: "hexa".into(),
         vendor: "klang-studio".into(),
         version: "0.1.0".into(),
         module: Box::default(),
     };
     let builtin =
-        |d: &Device| d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_PISYNTH;
+        |d: &Device| d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_HEXA;
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
         track
@@ -105,7 +105,7 @@ fn soak_project() -> Project {
         for d in &mut track.channel.devices {
             if !builtin(d) {
                 let d = Arc::make_mut(d);
-                d.plugin = pisynth.clone();
+                d.plugin = hexa.clone();
                 d.state = None;
             }
         }
@@ -304,11 +304,9 @@ fn act(
             70.0 + rng.below(110) as f64,
         )))),
         // Tracks and devices.
-        76..=77 if tracks(app).len() < MAX_TRACKS => {
-            Action::Plugin(PluginAction::NewPisynthTrack {
-                preset: rng.below(8),
-            })
-        }
+        76..=77 if tracks(app).len() < MAX_TRACKS => Action::Plugin(PluginAction::NewHexaTrack {
+            preset: rng.below(8),
+        }),
         78 => match track {
             Some(track) if tracks(app).len() > 3 => {
                 Action::Edit(EditAction::RemoveTracks(vec![track]))
@@ -320,9 +318,9 @@ fn act(
                 let p = app.project();
                 let t = p.tracks.iter().find(|x| x.id == t)?;
                 let d = t.channel.devices.first()?;
-                komponist_app::device_host::is_pisynth(d).then_some(d.id)
+                komponist_app::device_host::is_hexa(d).then_some(d.id)
             });
-            Action::Plugin(PluginAction::ApplyPisynthPreset {
+            Action::Plugin(PluginAction::ApplyHexaPreset {
                 device: device?,
                 preset: rng.below(8),
             })

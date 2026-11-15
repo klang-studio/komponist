@@ -1,8 +1,8 @@
-//! Helpers: driving a `PisynthProcessor` call by call with every `process` and `reset` inside
+//! Helpers: driving a `HexaProcessor` call by call with every `process` and `reset` inside
 //! `assert_no_alloc`, and measuring its output.
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_builtin::{Macro, Patch, PisynthProcessor};
+use komponist_builtin::{HexaProcessor, Macro, Patch};
 use komponist_engine::{
     Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
 };
@@ -23,8 +23,8 @@ pub fn frames(seconds: f32) -> usize {
 }
 
 /// A processor for `patch`, activated at [`RATE`].
-pub fn activated(patch: Patch) -> PisynthProcessor {
-    let mut p = PisynthProcessor::new(patch);
+pub fn activated(patch: Patch) -> HexaProcessor {
+    let mut p = HexaProcessor::new(patch);
     p.activate(RATE, MAX_BLOCK).expect("48 kHz is supported");
     p
 }
@@ -126,7 +126,7 @@ impl Out {
 }
 
 /// One `process` call of `frames` frames inside `assert_no_alloc`, appended to `out`.
-pub fn call(p: &mut PisynthProcessor, frames: usize, events: &[Event], out: &mut Out) {
+pub fn call(p: &mut HexaProcessor, frames: usize, events: &[Event], out: &mut Out) {
     let input = vec![0.0; frames];
     let start = out.len();
     out.l.resize(start + frames, f32::NAN);
@@ -143,7 +143,7 @@ pub fn call(p: &mut PisynthProcessor, frames: usize, events: &[Event], out: &mut
 /// Plays `total` frames in calls of `block` frames; `events` are `(absolute frame, event)` in
 /// order. Returns the output.
 pub fn play(
-    p: &mut PisynthProcessor,
+    p: &mut HexaProcessor,
     total: usize,
     block: usize,
     events: &[(usize, EventKind)],
@@ -167,6 +167,6 @@ pub fn play(
 }
 
 /// `reset` inside `assert_no_alloc`.
-pub fn reset(p: &mut PisynthProcessor) {
+pub fn reset(p: &mut HexaProcessor) {
     assert_no_alloc(|| p.reset());
 }

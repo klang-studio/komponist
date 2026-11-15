@@ -1,4 +1,4 @@
-//! [`PisynthProcessor`]: pisynth's `Synth<1>` as an in-process engine [`Processor`].
+//! [`HexaProcessor`]: hexa's `Synth<1>` as an in-process engine [`Processor`].
 
 use hexa_core::midi::CC_ALL_NOTES_OFF;
 use hexa_core::oversampling::DELAY;
@@ -20,20 +20,20 @@ pub const SAMPLE_RATES: core::ops::RangeInclusive<f32> = 8_000.0..=384_000.0;
 // while `Synth` owns nothing that needs dropping (it is plain `no_std` data).
 const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 
-/// pisynth as an instrument in a komponist chain (ARCHITECTURE §8.5).
+/// hexa as an instrument in a komponist chain (ARCHITECTURE §8.5).
 ///
 /// Wraps one `hexa_core::Synth<1>` on the heap (about 2 MB, mostly the master effects' delay
-/// lines). Create it on the UI thread with [`PisynthProcessor::new`] or
-/// [`PisynthProcessor::from_state`], activate it, send it to the engine.
+/// lines). Create it on the UI thread with [`HexaProcessor::new`] or
+/// [`HexaProcessor::from_state`], activate it, send it to the engine.
 ///
 /// Events (all applied at their exact frame by splitting the render at event offsets):
 /// - `NoteOn` / `NoteOff`: `Synth::note_on` / `note_off` (omni: channel and note id are not
-///   used; pisynth pairs notes by key).
+///   used; hexa pairs notes by key).
 /// - `Midi`: `Synth::midi` (sustain pedal, mod wheel, pitch bend, aftertouch, CC 120/123).
 /// - `Param`: a [`Field`] by wire id: one of the 8 macros (0–7) or a parameter of the device card
 ///   ([`crate::device`]); unknown ids are ignored. Parameter changes at one offset are
 ///   collected on a copy of the patch and applied with one `Synth::set_patch` before the next
-///   rendered frame or note (pisynth glides ratios, levels and volume over 10 ms).
+///   rendered frame or note (hexa glides ratios, levels and volume over 10 ms).
 /// - `AllNotesOff`: MIDI All Notes Off: every key and the sustain pedal are released, the
 ///   voices go through their release (the engine contract: "release all sounding notes").
 ///
@@ -41,13 +41,13 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 /// oversampling filter, by rebuilding the synth in place with its current patch (no allocation;
 /// it rewrites the 2 MB, see the crate docs for the cost).
 ///
-/// [`Processor::latency`] is the delay of pisynth's 2× oversampling filter,
+/// [`Processor::latency`] is the delay of hexa's 2× oversampling filter,
 /// [`hexa_core::oversampling::DELAY`] = 17 frames at any sample rate: a note-on at offset `n`
 /// is heard from frame `n + 17` on (the filter's pre-ringing, below −100 dBFS, starts at `n`).
 ///
-/// Output is stereo and clamped to −1 ..= 1 by pisynth; `ctx.offline` changes nothing (pisynth
+/// Output is stereo and clamped to −1 ..= 1 by hexa; `ctx.offline` changes nothing (hexa
 /// always renders at its full quality).
-pub struct PisynthProcessor {
+pub struct HexaProcessor {
     synth: Box<Synth<1>>,
     sample_rate: f32,
     /// The patch with the parameter changes of the current offset, while `dirty`.
@@ -55,11 +55,11 @@ pub struct PisynthProcessor {
     dirty: bool,
 }
 
-impl PisynthProcessor {
+impl HexaProcessor {
     /// A processor playing `patch` (sanitized). Allocates the synth; not RT-safe.
-    pub fn new(patch: Patch) -> PisynthProcessor {
+    pub fn new(patch: Patch) -> HexaProcessor {
         let patch = patch.sanitized();
-        PisynthProcessor {
+        HexaProcessor {
             synth: Synth::boxed(INITIAL_RATE, patch),
             sample_rate: INITIAL_RATE,
             edit: patch,
@@ -69,8 +69,8 @@ impl PisynthProcessor {
 
     /// A processor playing the patch in device state `state` (`None`: "Init"); see
     /// [`crate::decode_state`].
-    pub fn from_state(state: Option<&[u8]>) -> Result<PisynthProcessor, StateError> {
-        state::decode_state(state).map(PisynthProcessor::new)
+    pub fn from_state(state: Option<&[u8]>) -> Result<HexaProcessor, StateError> {
+        state::decode_state(state).map(HexaProcessor::new)
     }
 
     /// The patch playing now, with all parameter changes received so far.
@@ -135,14 +135,14 @@ impl PisynthProcessor {
     }
 }
 
-impl Default for PisynthProcessor {
+impl Default for HexaProcessor {
     /// A processor playing "Init".
-    fn default() -> PisynthProcessor {
-        PisynthProcessor::new(state::default_patch())
+    fn default() -> HexaProcessor {
+        HexaProcessor::new(state::default_patch())
     }
 }
 
-impl Processor for PisynthProcessor {
+impl Processor for HexaProcessor {
     fn activate(&mut self, sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
         if !SAMPLE_RATES.contains(&sample_rate) {
             return Err(ProcessorError::UnsupportedSampleRate(sample_rate));

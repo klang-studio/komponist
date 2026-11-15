@@ -5,7 +5,7 @@
 //! **frame**: an eframe deferred viewport with the 28 px [`header`] and a [`body`] below it. In
 //! the plugin view the body holds an **X11 child window** that the bridge's plugin GUI attaches
 //! to; in the parameter view it is the generic knob grid (all parameters, with WP-44's knob model;
-//! pisynth's macros come from its state in the document).
+//! hexa's macros come from its state in the document).
 //!
 //! # Life of a frame (per root pass, [`App::update_plugin_frames`])
 //!
@@ -62,7 +62,7 @@ use egui::{
     WindowLevel, vec2,
 };
 use komponist_i18n::Lang;
-use komponist_model::project::BUILTIN_PISYNTH;
+use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 use komponist_tokens::color;
@@ -76,7 +76,7 @@ use crate::app::App;
 use crate::keymap::{self, Key, KeyChord};
 use crate::settings::FrameMemory;
 use crate::ui_state::{FocusArea, PluginView, PluginWindow, StatusKind};
-use crate::views::devices::model::{all_plugin_params, internal_params, pisynth_macro_params};
+use crate::views::devices::model::{all_plugin_params, hexa_macro_params, internal_params};
 
 /// How long a parked child waits for the bridge's `GuiClosed` before it is destroyed anyway.
 const PARK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -181,9 +181,9 @@ struct Frame {
     initial: Vec2,
     /// The parameter grid needs rebuilding.
     params_dirty: bool,
-    /// pisynth: the state the preset match belongs to (`None`: not seen yet).
+    /// hexa: the state the preset match belongs to (`None`: not seen yet).
     state_seen: Option<Option<Arc<[u8]>>>,
-    /// pisynth: the preset matching the state, or the last one chosen here.
+    /// hexa: the preset matching the state, or the last one chosen here.
     preset: Option<usize>,
     preset_changed: bool,
 }
@@ -608,7 +608,7 @@ impl App {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        if !is_pisynth(d) || preset >= komponist_builtin::PRESET_COUNT {
+        if !is_hexa(d) || preset >= komponist_builtin::PRESET_COUNT {
             return;
         }
         if let Some(f) = self.frames.frame_mut(device) {
@@ -617,7 +617,7 @@ impl App {
             f.params_dirty = true;
         }
         self.queue
-            .push(Action::Plugin(PluginAction::ApplyPisynthPreset {
+            .push(Action::Plugin(PluginAction::ApplyHexaPreset {
                 device,
                 preset,
             }));
@@ -1041,7 +1041,7 @@ impl App {
         else {
             return;
         };
-        self.update_pisynth_state(i);
+        self.update_hexa_state(i);
         self.frames.frames[i].keep_on_top = window.keep_on_top;
         let f = &self.frames.frames[i];
         let header = self.header_model(
@@ -1087,13 +1087,13 @@ impl App {
         }
     }
 
-    /// pisynth: which factory preset its state is (" *" once a knob changed it).
-    fn update_pisynth_state(&mut self, i: usize) {
+    /// hexa: which factory preset its state is (" *" once a knob changed it).
+    fn update_hexa_state(&mut self, i: usize) {
         let device = self.frames.frames[i].device;
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        if !is_pisynth(d) {
+        if !is_hexa(d) {
             return;
         }
         let state = d.state.clone();
@@ -1134,7 +1134,7 @@ impl App {
         let found = project.find_device(device);
         let host = self.engine.host();
         let status = host.status(device);
-        let (name, sub, bypassed, pisynth) = match found {
+        let (name, sub, bypassed, hexa) = match found {
             Some((channel, _, d)) => {
                 let track = match channel {
                     ChannelRef::Track(t) => project.track(t).map_or("", |t| t.name.as_str()),
@@ -1144,7 +1144,7 @@ impl App {
                     d.plugin.name.clone(),
                     format!("{track} · {}", format_label(d.plugin.format)),
                     d.bypass,
-                    is_pisynth(d),
+                    is_hexa(d),
                 )
             }
             None => (String::new(), String::new(), false, false),
@@ -1154,7 +1154,7 @@ impl App {
             (DeviceStatus::Ok, true) => Mark::Bypassed,
             _ => Mark::Inactive,
         };
-        let presets = if pisynth {
+        let presets = if hexa {
             komponist_builtin::presets()
                 .map(|p| p.name.to_owned())
                 .collect()
@@ -1167,7 +1167,7 @@ impl App {
             mark,
             bypassed,
             presets,
-            preset: if pisynth { preset } else { None },
+            preset: if hexa { preset } else { None },
             preset_changed,
             can_save: false,
             view,
@@ -1179,7 +1179,7 @@ impl App {
     }
 
     /// The knobs of frame `i`: all visible parameters of a bridged plugin (WP-44's filter and
-    /// formatting, without the card's auto-layout limit), or pisynth's macros from its state in the
+    /// formatting, without the card's auto-layout limit), or hexa's macros from its state in the
     /// document (WP-44 writes knob changes there).
     fn param_grid(&self, i: usize) -> ParamGrid {
         let device = self.frames.frames[i].device;
@@ -1190,7 +1190,7 @@ impl App {
             };
         }
         let params = match self.project().find_device(device) {
-            Some((_, _, d)) if is_pisynth(d) => pisynth_macro_params(d),
+            Some((_, _, d)) if is_hexa(d) => hexa_macro_params(d),
             Some((_, _, d)) => crate::device_host::internal_kind(d)
                 .map(|kind| internal_params(kind, d))
                 .unwrap_or_default(),
@@ -1234,7 +1234,7 @@ impl App {
 // Helpers
 // ------------------------------------------------------------------------------------------------
 
-/// pisynth's factory presets as device states, encoded once (preset match per state change).
+/// hexa's factory presets as device states, encoded once (preset match per state change).
 pub(crate) fn factory_states() -> &'static [Vec<u8>] {
     static STATES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
     STATES.get_or_init(|| {
@@ -1248,8 +1248,8 @@ pub(crate) fn factory_states() -> &'static [Vec<u8>] {
     })
 }
 
-fn is_pisynth(device: &Device) -> bool {
-    device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_PISYNTH
+fn is_hexa(device: &Device) -> bool {
+    device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA
 }
 
 /// "CLAP", "VST3", "INTERN" (the prototype's format labels).

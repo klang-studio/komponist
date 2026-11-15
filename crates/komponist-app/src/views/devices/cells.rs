@@ -835,7 +835,7 @@ fn pads(
     }
 }
 
-/// The FM algorithm display of pisynth's algorithm table; the parameter is the algorithm number
+/// The FM algorithm display of hexa's algorithm table; the parameter is the algorithm number
 /// (1 …). Without a parameter it shows algorithm 1.
 fn fm(
     cu: &mut Ui,

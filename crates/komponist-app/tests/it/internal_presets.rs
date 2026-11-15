@@ -50,12 +50,12 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
     h.run_steps(3);
 }
 
-/// A project with a pisynth track and one `kind` device behind it; the dock shows the devices.
+/// A project with a hexa track and one `kind` device behind it; the dock shows the devices.
 fn app_with(kind: Internal) -> (App, TrackId, DeviceId) {
     let mut app = App::headless(Project::new("Presets"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
@@ -120,9 +120,9 @@ fn loading_a_preset_is_one_undo_step_and_the_engine_follows_it_and_its_undo() {
     let (mut app, track, _) = app_with(Internal::Presse);
     let presse = app.project().tracks[0].channel.devices.last().unwrap().id;
     // A second track the first one has to wait for once the presse gets lookahead.
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let plain = app.project().tracks[1].id;
@@ -325,9 +325,9 @@ fn the_loaded_preset_survives_saving_and_old_projects_load_without_one() {
     let kind = Internal::Hall;
     let mut app = App::headless(Project::new("Presets"));
     app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;

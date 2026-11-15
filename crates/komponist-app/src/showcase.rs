@@ -9,18 +9,18 @@
 //! |---|---|---|
 //! | Drums | −6 dB | Sampler (test kit), presse („Drums fest“) |
 //! | Bass | −4 dB | knurr („Fette Säge“), EQ („Bass Wärme“) |
-//! | Lead | −3 dB | pisynth („Saw-Lead“), EQ („Low Cut 80 Hz“), Delay („Punktierte Achtel“), Hall („Studio-Platte“) |
+//! | Lead | −3 dB | hexa („Saw-Lead“), EQ („Low Cut 80 Hz“), Delay („Punktierte Achtel“), Hall („Studio-Platte“) |
 //! | Pad | −9 dB | knurr („Breiter Pad“), EQ („Low Cut 80 Hz“), Hall („Große Halle“) |
-//! | Keys | −8 dB | pisynth („E-Piano“), Delay („Weiches Band“) |
-//! | Arp | −10 dB | Tonleiter („A-Moll-Pentatonik“), Arpeggiator („Sechzehntel Auf/Ab“), pisynth („Synth-Pluck“), Delay („Achtel Ping-Pong“) |
+//! | Keys | −8 dB | hexa („E-Piano“), Delay („Weiches Band“) |
+//! | Arp | −10 dB | Tonleiter („A-Moll-Pentatonik“), Arpeggiator („Sechzehntel Auf/Ab“), hexa („Synth-Pluck“), Delay („Achtel Ping-Pong“) |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
 //!
 //! Device states are written like the presets of the UI do: `{"params": …, "preset": "<name>"}`
-//! ([`Internal::preset_state`]); pisynth's state is the factory patch.
+//! ([`Internal::preset_state`]); hexa's state is the factory patch.
 
 use std::sync::Arc;
 
-use komponist_builtin::{Internal, encode_state, preset_patch, presets as pisynth_presets};
+use komponist_builtin::{Internal, encode_state, preset_patch, presets as hexa_presets};
 use komponist_model::fixtures::demo_song;
 use komponist_model::{
     ClipContent, Device, DeviceId, DeviceRole, MidiClip, Note, NoteId, Project, Take, Tick,
@@ -105,16 +105,16 @@ impl Devices {
         })
     }
 
-    /// pisynth with factory preset `preset`.
-    fn pisynth(&mut self, preset: &str) -> Arc<Device> {
-        let info = pisynth_presets()
+    /// hexa with factory preset `preset`.
+    fn hexa(&mut self, preset: &str) -> Arc<Device> {
+        let info = hexa_presets()
             .find(|p| p.name == preset)
-            .unwrap_or_else(|| panic!("pisynth has no preset {preset}"));
+            .unwrap_or_else(|| panic!("hexa has no preset {preset}"));
         let patch = preset_patch(info.index).expect("a listed preset exists");
         Arc::new(Device {
             id: self.take(),
             role: DeviceRole::Instrument,
-            plugin: crate::app::pisynth_ref(),
+            plugin: crate::app::hexa_ref(),
             bypass: false,
             state: Some(encode_state(&patch).into()),
             sidechain: None,
@@ -135,7 +135,7 @@ pub fn showcase_project() -> Project {
             d.internal(Internal::Eq, "Bass Wärme"),
         ],
         vec![
-            d.pisynth("Saw-Lead"),
+            d.hexa("Saw-Lead"),
             d.internal(Internal::Eq, "Low Cut 80 Hz"),
             d.internal(Internal::Delay, "Punktierte Achtel"),
             d.internal(Internal::Hall, "Studio-Platte"),
@@ -146,13 +146,13 @@ pub fn showcase_project() -> Project {
             d.internal(Internal::Hall, "Große Halle"),
         ],
         vec![
-            d.pisynth("E-Piano"),
+            d.hexa("E-Piano"),
             d.internal(Internal::Delay, "Weiches Band"),
         ],
         vec![
             d.internal(Internal::Tonleiter, "A-Moll-Pentatonik"),
             d.internal(Internal::Arpeggiator, "Sechzehntel Auf/Ab"),
-            d.pisynth("Synth-Pluck"),
+            d.hexa("Synth-Pluck"),
             d.internal(Internal::Delay, "Achtel Ping-Pong"),
         ],
     ];

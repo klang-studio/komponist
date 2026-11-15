@@ -19,7 +19,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::project::{ClipContent, Project};
+use crate::project::{BUILTIN_HEXA, ClipContent, HEXA_NAME, Project};
 use crate::routing;
 
 /// Value of the `format` field.
@@ -104,8 +104,9 @@ pub fn from_json(text: &str) -> Result<Project, PersistError> {
     let project = file
         .remove("project")
         .ok_or_else(|| PersistError::Malformed("missing project".to_owned()))?;
-    let mut project: Project =
-        serde_json::from_value(migrate(project, version)?).map_err(malformed)?;
+    let mut project = migrate(project, version)?;
+    rename_hexa(&mut project);
+    let mut project: Project = serde_json::from_value(project).map_err(malformed)?;
     check_and_repair(&mut project).map_err(PersistError::Malformed)?;
     Ok(project)
 }
@@ -135,6 +136,24 @@ struct FileOut<'a> {
     format: &'static str,
     version: u32,
     project: &'a Project,
+}
+
+/// The built-in synth was called "pisynth" before it became hexa. Its stored id stays (so every
+/// existing project loads); the stored display name of such a plugin reference is replaced here,
+/// without a format version bump, so every view shows [`HEXA_NAME`] and a later save writes it.
+fn rename_hexa(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let is_hexa = map.get("format").and_then(Value::as_str) == Some("builtin")
+                && map.get("id").and_then(Value::as_str) == Some(BUILTIN_HEXA);
+            if is_hexa && map.get("name").and_then(Value::as_str) == Some("pisynth") {
+                map.insert("name".to_owned(), Value::from(HEXA_NAME));
+            }
+            map.values_mut().for_each(rename_hexa);
+        }
+        Value::Array(items) => items.iter_mut().for_each(rename_hexa),
+        _ => {}
+    }
 }
 
 /// A migration step on the `project` value: `MIGRATIONS[i]` upgrades version `i + 1` to `i + 2`.
@@ -582,6 +601,18 @@ mod tests {
             .reverse();
         let p = from_json(&file(v)).unwrap();
         assert_eq!(p, demo_project());
+    }
+
+    #[test]
+    fn a_stored_pisynth_name_loads_as_hexa_with_the_same_id() {
+        let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
+        let mut v =
+            serde_json::json!({"a": [file("pisynth", "pisynth"), file("pisynth", "sampler")]});
+        rename_hexa(&mut v);
+        assert_eq!(v["a"][0]["plugin"]["name"], "hexa");
+        assert_eq!(v["a"][0]["plugin"]["id"], "pisynth");
+        // Only the built-in hexa is renamed; anything else keeps what it stored.
+        assert_eq!(v["a"][1]["plugin"]["name"], "pisynth");
     }
 
     #[test]

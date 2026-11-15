@@ -7,7 +7,7 @@
 //! | Strg F (app shortcut) | the search field takes the keyboard focus |
 //! | typing | filters at once (`SetBrowserQuery`); the first hit is marked |
 //! | ↑ ↓ | marks the previous / next row (in the field, or with the browser focused) |
-//! | Enter, double-click | adds the marked plugin ([`model::activate`]): instrument → new track, effect → selected track; preset → pisynth of the selected track; take → opens its clip; folder → opens / closes |
+//! | Enter, double-click | adds the marked plugin ([`model::activate`]): instrument → new track, effect → selected track; preset → hexa of the selected track; take → opens its clip; folder → opens / closes |
 //! | Esc in the field | clears the text, a second Esc leaves the field |
 //! | click | marks the row; on a folder: opens / closes it; on the star: favourite on / off |
 //! | drag a plugin | an egui drag-and-drop payload of type [`PluginRef`]; the arrangement, the mixer and the device chain take it |

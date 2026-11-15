@@ -559,7 +559,7 @@ pub struct ExportProgress {
 pub enum PluginView {
     /// The plugin's own GUI (X11 child of the frame).
     Gui,
-    /// The generic parameter grid ("Ansicht" toggle, plugins without GUI, pisynth).
+    /// The generic parameter grid ("Ansicht" toggle, plugins without GUI, hexa).
     Params,
 }
 

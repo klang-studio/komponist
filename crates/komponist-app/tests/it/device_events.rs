@@ -121,7 +121,7 @@ impl DeviceHost for FakeHost {
     }
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        // pisynth goes through the engine.
+        // hexa goes through the engine.
         if self.is_builtin(device) {
             return false;
         }
@@ -153,17 +153,17 @@ impl DeviceHost for FakeHost {
 }
 
 impl FakeHost {
-    /// Whether `device` is the demo's pisynth (ids of the demo: Bass 9, Lead 94).
+    /// Whether `device` is the demo's hexa (ids of the demo: Bass 9, Lead 94).
     fn is_builtin(&self, device: DeviceId) -> bool {
         demo_project()
             .tracks
             .iter()
             .flat_map(|t| &t.channel.devices)
-            .any(|d| d.id == device && d.plugin.name == "pisynth")
+            .any(|d| d.id == device && d.plugin.name == "hexa")
     }
 }
 
-/// The demo on the null backend with a [`FakeHost`] that knows only pisynth.
+/// The demo on the null backend with a [`FakeHost`] that knows only hexa.
 fn app() -> (App, Rc<RefCell<Script>>) {
     let script = Rc::new(RefCell::new(Script::default()));
     let host = FakeHost {
@@ -507,16 +507,16 @@ fn plugin_actions_reach_the_host() {
     }]);
     app.step();
     assert_eq!(app.engine().device_status(surge), DeviceStatus::Ok);
-    let pisynth = device(&app, "pisynth");
+    let hexa = device(&app, "hexa");
 
-    // Parameters: bridged devices through the host, pisynth through the engine.
+    // Parameters: bridged devices through the host, hexa through the engine.
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device: surge,
         id: 7,
         value: 0.25,
     }));
     app.dispatch(Action::Plugin(PluginAction::SetParam {
-        device: pisynth,
+        device: hexa,
         id: 0,
         value: 0.5,
     }));
@@ -524,7 +524,7 @@ fn plugin_actions_reach_the_host() {
 
     // Windows: the plugin's GUI if it has one; closing it closes the GUI (state snapshot).
     app.dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
-    app.dispatch(Action::Plugin(PluginAction::OpenWindow(pisynth)));
+    app.dispatch(Action::Plugin(PluginAction::OpenWindow(hexa)));
     let views: Vec<(DeviceId, PluginView)> = app
         .ui()
         .plugin_windows
@@ -533,10 +533,10 @@ fn plugin_actions_reach_the_host() {
         .collect();
     assert_eq!(
         views,
-        [(surge, PluginView::Gui), (pisynth, PluginView::Params)]
+        [(surge, PluginView::Gui), (hexa, PluginView::Params)]
     );
     app.dispatch(Action::Plugin(PluginAction::CloseWindow(surge)));
-    app.dispatch(Action::Plugin(PluginAction::CloseWindow(pisynth)));
+    app.dispatch(Action::Plugin(PluginAction::CloseWindow(hexa)));
     assert!(app.ui().plugin_windows.is_empty());
     assert_eq!(script.borrow().closed_guis, [surge]);
 
