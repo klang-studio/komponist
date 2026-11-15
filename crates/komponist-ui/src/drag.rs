@@ -5,7 +5,10 @@
 //! - Fader: relative from the thumb over the track length ([`ValueDrag::span`] on the fader's
 //!   position; the dB taper is the fader's business).
 //! - Shift = × 0.1 (fine), Ctrl = × 10 (coarse) ([`speed`]); both together cancel out.
-//! - Alt-click = default value, double-click = text entry ([`ClickAction`]).
+//! - Number fields: Alt-click = default value, double-click = text entry ([`ClickAction::of`]).
+//! - Knobs and faders (owner decision 2026-11-15): double-click and Alt-click = default value
+//!   ([`ClickAction::of_control`]); text entry is Enter on the focused control or the right-click
+//!   menu.
 //! - ↑ ↓ and the mouse wheel: one step, with Shift fine ([`step_delta`]).
 //!
 //! Dragging up increases the value. While dragging, the pointer is hidden and confined to the
@@ -138,7 +141,7 @@ pub fn step_delta(steps: f64, step: f64, modifiers: Modifiers) -> f64 {
 pub enum ClickAction {
     /// Nothing special.
     None,
-    /// Alt-click: set the default value.
+    /// Alt-click (and, on knobs and faders, double-click): set the default value.
     Reset,
     /// Double-click: open text entry with the value preselected.
     TextEntry,
@@ -156,10 +159,27 @@ impl ClickAction {
         }
     }
 
-    /// The action for `response` in this pass.
+    /// The action for `response` in this pass, for number fields and value readouts: a
+    /// double-click opens text entry.
     pub fn of(response: &Response) -> Self {
         let modifiers = response.ctx.input(|i| i.modifiers);
         Self::from_click(response.clicked(), response.double_clicked(), modifiers)
+    }
+
+    /// The action for a knob or fader: a double-click or an Alt-click sets the default value
+    /// (never text entry; that is Enter or the context menu).
+    pub fn of_control(response: &Response) -> Self {
+        let modifiers = response.ctx.input(|i| i.modifiers);
+        Self::from_control_click(response.clicked(), response.double_clicked(), modifiers)
+    }
+
+    /// [`ClickAction::of_control`] for the click state given.
+    pub fn from_control_click(clicked: bool, double_clicked: bool, modifiers: Modifiers) -> Self {
+        if double_clicked || (clicked && modifiers.alt) {
+            Self::Reset
+        } else {
+            Self::None
+        }
     }
 }
 

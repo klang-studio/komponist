@@ -39,7 +39,7 @@ pub fn section() -> Section {
             Card::new("Drehregler")
                 .spec("1 × 1 · Ø 28")
                 .ix(&[
-                    ("Ziehen ↕", "200 px = voller Bereich, Shift fein, Strg grob, Alt-Klick Standard."),
+                    ("Ziehen ↕", "200 px = voller Bereich, Shift fein, Strg grob, Alt-Klick oder Doppelklick Standard."),
                     ("Modulation", "Äußerer 1,5-px-Bogen in Spurfarbe zeigt den Modulationsbereich."),
                     ("Automation", "Punkt in Spurfarbe vor dem Namen. Wert folgt der Kurve."),
                 ])
@@ -303,7 +303,7 @@ fn knob_card(ui: &mut Ui) {
     });
     live_caption(
         ui,
-        "live · Ziehen, Shift fein, Strg grob, Alt-Klick Standard, Doppelklick tippt",
+        "live · Ziehen, Shift fein, Strg grob, Alt-Klick oder Doppelklick Standard, Enter tippt",
     );
     demo(ui, |ui| {
         let (id, mut v): (_, [f64; 2]) = live_state(ui, "knobs");
@@ -592,7 +592,7 @@ fn mini_fader_card(ui: &mut Ui) {
     });
     live_caption(
         ui,
-        "live · Ziehen, Shift fein, Strg grob, Alt-Klick Standard, Doppelklick tippt",
+        "live · Ziehen, Shift fein, Strg grob, Alt-Klick oder Doppelklick Standard, Enter tippt",
     );
     demo(ui, |ui| {
         let (id, mut v): (_, f64) = live_state(ui, "mini_fader");

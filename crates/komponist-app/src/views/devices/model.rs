@@ -67,7 +67,7 @@ pub mod names {
     /// Context menu of a parameter: set it to its default (the Alt-click).
     pub const TO_DEFAULT: &str = "Auf Standard";
     /// Its shortcut column.
-    pub const TO_DEFAULT_SHORTCUT: &str = "Alt-Klick";
+    pub const TO_DEFAULT_SHORTCUT: &str = "Doppelklick";
     /// Context menu of a parameter: open the text entry.
     pub const ENTER_VALUE: &str = "Wert eingeben";
     /// Accessible name of a parameter's context menu.

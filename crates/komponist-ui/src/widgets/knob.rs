@@ -7,8 +7,8 @@
 //! |---|---|
 //! | Drag ↕ | 200 px = the full range; the pointer is hidden and grabbed; the value tooltip shows above the knob at once |
 //! | Shift / Ctrl | fine × 0.1 / coarse × 10, as the number field |
-//! | Double-click | text entry in the place of the tooltip; Enter applies, Esc discards |
-//! | Alt-click | the default value (pan: centre) |
+//! | Double-click, Alt-click | the default value (pan: centre); owner decision 2026-11-15 |
+//! | Enter (focused), context menu "Wert eingeben" ([`super::value_menu`]) | text entry in the place of the tooltip; Enter applies, Esc discards |
 //! | ↑ ↓ (focused) | 1 % of the range, Shift fine, Ctrl coarse (keyboard access, not in `ix.knob`) |
 //!
 //! Keyboard focus shows as an accent value arc, as the design's "fokus" sample does, not as a
@@ -389,10 +389,8 @@ impl Widget for Knob<'_> {
 
         if live && !entry::is_open(&ctx, id) {
             take_focus_on_press(&response);
-            match ClickAction::of(&response) {
-                ClickAction::Reset => value = self.default,
-                ClickAction::TextEntry => entry::open(&ctx, id, self.text(value)),
-                ClickAction::None => {}
+            if ClickAction::of_control(&response) == ClickAction::Reset {
+                value = self.default;
             }
             if let Some(v) = drag_gesture(&response, || ValueDrag::knob(value, min, max)) {
                 value = v;

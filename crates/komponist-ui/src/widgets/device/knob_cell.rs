@@ -6,8 +6,8 @@
 //! - **knob_large** (`W_knobL`): Ø 44 at the left (`padding-left:2px`), name and value in
 //!   `type.value.m` (Mono 12/16) to its right, `gap:8px`.
 //!
-//! Operation is the knob's: drag ↕ (200 px = the range), Shift fine, Ctrl coarse, Alt-click the
-//! default, double-click text entry, value tooltip while dragging. AccessKit: `Slider` with the
+//! Operation is the knob's: drag ↕ (200 px = the range), Shift fine, Ctrl coarse, double-click and
+//! Alt-click the default, Enter text entry, value tooltip while dragging. AccessKit: `Slider` with the
 //! name and the value text.
 
 use std::ops::RangeInclusive;

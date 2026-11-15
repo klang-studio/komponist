@@ -4,7 +4,7 @@
 //! it, centred.
 //!
 //! Operation as the knob: drag ↕ (the thumb follows the pointer: the thumb's travel is the range),
-//! Shift fine, Ctrl coarse, Alt-click the default, double-click text entry, ↑ ↓ and wheel,
+//! Shift fine, Ctrl coarse, double-click and Alt-click the default, Enter text entry, ↑ ↓ and wheel,
 //! value tooltip above the thumb while dragging. AccessKit: `Slider`.
 
 use std::ops::RangeInclusive;
@@ -249,10 +249,8 @@ impl Widget for MiniFader<'_> {
 
         if live && !entry::is_open(&ctx, id) {
             take_focus_on_press(&response);
-            match ClickAction::of(&response) {
-                ClickAction::Reset => value = self.default,
-                ClickAction::TextEntry => entry::open(&ctx, id, self.text(value)),
-                ClickAction::None => {}
+            if ClickAction::of_control(&response) == ClickAction::Reset {
+                value = self.default;
             }
             let travel = f64::from(layout.travel);
             if let Some(v) = drag_gesture(&response, || ValueDrag::span(value, min, max, travel)) {

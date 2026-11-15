@@ -5,11 +5,12 @@
 use egui::{Rangef, Rect, Ui, pos2, vec2};
 use komponist_model::Track;
 use komponist_model::edits::{ChannelProp, TrackProp};
-use komponist_model::format::fmt_pan;
+use komponist_model::format::{fmt_db, fmt_pan};
 use komponist_tokens::{color, size, typography};
 use komponist_ui::widgets::fader::{Fader, FaderSize, Layout as FaderLayout, db_text};
 use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::meter::{Meter, MeterState};
+use komponist_ui::widgets::value_menu;
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 
 use super::model::names;
@@ -65,6 +66,10 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     send_gesture(ctx, &r, mixer_names::UNDO_VOLUME, || {
         channel_edit(track, ChannelProp::VolumeDb(db))
     });
+    if value_menu::show(&r, || fmt_db(db)) {
+        db = 0.0;
+        ctx.send(channel_edit(track, ChannelProp::VolumeDb(db)));
+    }
 
     // Meter: LED and bars over the whole height.
     let style = komponist_ui::widgets::meter::Style::MIXER;
@@ -124,6 +129,10 @@ fn strip(ui: &mut Ui, ctx: &mut ViewCtx<'_>, area: Rect, track: &Track) {
     send_gesture(ctx, &r, mixer_names::UNDO_PAN, || {
         channel_edit(track, ChannelProp::Pan(pan))
     });
+    if value_menu::show(&r, || fmt_pan(pan)) {
+        pan = 0.0;
+        ctx.send(channel_edit(track, ChannelProp::Pan(pan)));
+    }
     let text_left = knob.right() + m::PAN_GAP;
     let pan_key = Rect::from_min_size(
         pos2(text_left, mid - pan_block / 2.0),

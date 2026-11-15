@@ -11,6 +11,7 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, typography};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::knob::Knob;
+use komponist_ui::widgets::value_menu;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
@@ -312,7 +313,14 @@ fn cell(ui: &mut Ui, width: f32, p: &mut Param, events: &mut Vec<BodyEvent>) {
                 .range(0.0..=1.0)
                 .default_value(p.info.default_normalized())
                 .format(move |n| shown.text_at(shown.info.to_plain(n)));
-            if ui.add(knob).changed() {
+            let r = ui.add(knob);
+            let mut changed = r.changed();
+            let shown = p.clone();
+            if value_menu::show(&r, move || shown.text_at(shown.value)) {
+                value = p.info.default_normalized();
+                changed = true;
+            }
+            if changed {
                 let value = p.info.to_plain(value);
                 if value != p.value {
                     p.text = p.info.format(value);

@@ -36,6 +36,7 @@ pub mod tabs;
 pub mod text_field;
 pub mod toggle;
 pub mod tooltip;
+pub mod value_menu;
 
 use std::sync::Arc;
 

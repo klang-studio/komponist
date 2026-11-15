@@ -16,6 +16,7 @@ use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::meter::{Meter, MeterState};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::widgets::tooltip::Tip;
+use komponist_ui::widgets::value_menu;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
@@ -702,8 +703,8 @@ fn sends_area(ui: &mut Ui, label: Rect, rows: Rect) {
     Tip::new(names::SENDS).detail(names::SENDS_LATER).attach(&r);
 }
 
-/// The pan knob ("Ziehen relativ, Shift fein, Alt-Klick Standard, Doppelklick Texteingabe") and
-/// its value.
+/// The pan knob ("Ziehen relativ, Shift fein, Doppelklick oder Alt-Klick Standard, Enter oder
+/// Rechtsklick Texteingabe") and its value.
 fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
     let mut pan = s.pan;
     let name = names::pan(&s.name);
@@ -714,6 +715,10 @@ fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
     send_gesture(ctx, &response, names::UNDO_PAN, || {
         channel_edit(s, ChannelProp::Pan(pan))
     });
+    if value_menu::show(&response, || fmt_pan(pan)) {
+        pan = 0.0;
+        ctx.send(channel_edit(s, ChannelProp::Pan(pan)));
+    }
     if tier.lean {
         return;
     }
@@ -799,6 +804,10 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
     send_gesture(ctx, &response, names::UNDO_VOLUME, || {
         channel_edit(s, ChannelProp::VolumeDb(db))
     });
+    if value_menu::show(&response, || fmt_db(db)) {
+        db = 0.0;
+        ctx.send(channel_edit(s, ChannelProp::VolumeDb(db)));
+    }
 
     let meter_left = fader_rect.right() + m::FADER_METER_GAP;
     let top = area.top() + thumb.y / 2.0 - m::METER_LED;

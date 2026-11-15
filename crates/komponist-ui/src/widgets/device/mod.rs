@@ -14,8 +14,8 @@
 //! | graph (envelope, eq, filter, transfer, waveform, xy, lfo) | min 2 × 1 | [`graph`] |
 //!
 //! Base rules of the design system apply to all of them: hover one surface up, focus ring, Shift
-//! fine / Ctrl coarse drag, Alt-click the default, double-click text entry, value tooltip while
-//! dragging; labels in `type.device-label` `text.2`. Every widget has an AccessKit role and the
+//! fine / Ctrl coarse drag, Alt-click and (knobs, faders) double-click the default, Enter or the
+//! right-click menu text entry (number fields: double-click), value tooltip while dragging; labels in `type.device-label` `text.2`. Every widget has an AccessKit role and the
 //! German name the caller gives. Automation dot, modulation arc and MIDI-learn look exist as
 //! options ([`knob_cell`], [`super::knob::ModArc`]) that nothing sets yet (owner decision
 //! 2026-11-14: automation and modulation are only prepared).

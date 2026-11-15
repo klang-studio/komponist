@@ -10,8 +10,9 @@
 //! |---|---|
 //! | Drag | relative from the thumb, no jump on a click on the track; the pointer is hidden and grabbed; the value line turns accent and the value tooltip shows |
 //! | Shift drag | fine (× 0.1); Ctrl coarse (× 10) |
-//! | Alt-click | 0.0 dB |
-//! | Double-click (thumb, or the value under the fader, [`DbValue`]) | text entry in dB |
+//! | Double-click, Alt-click (thumb) | 0.0 dB (owner decision 2026-11-15) |
+//! | Enter (focused), context menu "Wert eingeben" ([`super::value_menu`]) | text entry in dB |
+//! | Double-click on the value under the fader ([`DbValue`]) | text entry in dB (a text readout, like a number field) |
 //! | ↑ ↓ (focused) | ±1 dB, Shift 0.1 dB, Ctrl 10 dB (keyboard access, not in `ix.fader`) |
 //!
 //! The level is in dB, `−70` ([`VOLUME_DB_MIN`]) meaning −∞, as stored in the project
@@ -413,10 +414,8 @@ impl Widget for Fader<'_> {
 
         if live && !entry::is_open(&ctx, id) {
             take_focus_on_press(&response);
-            match ClickAction::of(&response) {
-                ClickAction::Reset => db = 0.0,
-                ClickAction::TextEntry => entry::open(&ctx, id, fmt_db(db)),
-                ClickAction::None => {}
+            if ClickAction::of_control(&response) == ClickAction::Reset {
+                db = 0.0;
             }
             let len = f64::from(layout.track.height());
             let up = f64::from(1.0 - db_to_p(db));

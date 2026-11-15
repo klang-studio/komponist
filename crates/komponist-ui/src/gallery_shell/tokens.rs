@@ -81,8 +81,11 @@ pub mod ix {
             "200 px = voller Bereich. Wert-Tooltip über dem Regler.",
         ),
         ("Shift / Strg", "Fein × 0,1 / grob × 10, wie Zahlenfeld."),
-        ("Doppelklick", "Texteingabe im Tooltip."),
-        ("Alt-Klick", "Standardwert (Pan: Mitte)."),
+        ("Doppelklick / Alt-Klick", "Standardwert (Pan: Mitte)."),
+        (
+            "Enter",
+            "Texteingabe im Tooltip. Im Programm auch Rechtsklick: „Wert eingeben“.",
+        ),
         ("Bipolar", "Bogen läuft von der Mitte aus."),
     ];
     /// `ix.fader`.
@@ -92,7 +95,12 @@ pub mod ix {
             "Relativ ab Knopf, kein Springen beim Klick auf die Bahn. Wertlinie wird akzent, \
              Wert-Tooltip.",
         ),
-        ("Shift / Alt-Klick", "Fein / 0,0 dB."),
+        ("Shift", "Fein."),
+        ("Doppelklick / Alt-Klick", "0,0 dB."),
+        (
+            "Enter",
+            "Texteingabe in dB. Im Programm auch Rechtsklick: „Wert eingeben“.",
+        ),
         ("Doppelklick Wert", "Texteingabe in dB."),
         ("Peak-Hold", "Hält 1,5 s, fällt dann mit 20 dB/s."),
         (
