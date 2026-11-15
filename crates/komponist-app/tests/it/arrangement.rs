@@ -314,6 +314,126 @@ fn double_click_on_the_name_renames_enter_applies_esc_discards() {
     assert_eq!(h.state().project().tracks[2].name, "Lead");
 }
 
+/// Types `text` into the open name field (its text is selected) and presses `key`.
+fn type_and_end(h: &mut Harness<'_, App>, text: &str, key: egui::Key) {
+    h.get_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME);
+    if text.is_empty() {
+        h.key_press(egui::Key::Backspace);
+    } else {
+        h.event(Event::Text(text.into()));
+    }
+    h.run_steps(1);
+    h.key_press(key);
+    h.run_steps(3);
+}
+
+fn name_field_is_open(h: &Harness<'_, App>) -> bool {
+    h.query_by_role_and_label(Role::TextInput, de::ARRANGEMENT_RENAME)
+        .is_some()
+}
+
+fn right_click_menu(pos: Pos2, label: &str, h: &mut Harness<'_, App>) {
+    settle(h);
+    h.event(Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run_steps(3);
+    let item = h.get_by_role_and_label(Role::MenuItem, label).rect();
+    click(item.center(), h);
+    h.run_steps(2);
+}
+
+/// Every way to end a rename of track 2 ("Lead"), whatever opened the field: Enter applies as one
+/// undo step, Esc discards, an empty name keeps the old one. `open` opens the field.
+fn rename_ends_by_the_rules(h: &mut Harness<'_, App>, open: impl Fn(&mut Harness<'_, App>)) {
+    open(h);
+    assert!(name_field_is_open(h));
+    type_and_end(h, "Melodie", egui::Key::Enter);
+    assert_eq!(h.state().project().tracks[2].name, "Melodie");
+    assert!(!name_field_is_open(h));
+    undo(h);
+    assert_eq!(h.state().project().tracks[2].name, "Lead", "one undo step");
+    open(h);
+    type_and_end(h, "Weg", egui::Key::Escape);
+    assert_eq!(h.state().project().tracks[2].name, "Lead", "Esc discards");
+    assert!(!name_field_is_open(h));
+    open(h);
+    type_and_end(h, "", egui::Key::Enter);
+    assert_eq!(h.state().project().tracks[2].name, "Lead", "empty keeps it");
+    assert!(!name_field_is_open(h));
+    open(h);
+    type_and_end(h, "  ", egui::Key::Enter);
+    assert_eq!(h.state().project().tracks[2].name, "Lead", "blank keeps it");
+}
+
+#[test]
+fn the_header_context_menu_renames_a_normal_track() {
+    let mut h = harness(demo());
+    rename_ends_by_the_rules(&mut h, |h| {
+        let at = on_header(lead_header(h));
+        right_click_menu(at, de::ROUTING_RENAME, h);
+    });
+}
+
+#[test]
+fn double_click_renames_by_the_same_rules() {
+    let mut h = harness(demo());
+    rename_ends_by_the_rules(&mut h, |h| {
+        let at = on_header(lead_header(h));
+        double_click(at, h);
+    });
+}
+
+#[test]
+fn f2_renames_the_selected_track_by_the_same_rules() {
+    let mut h = harness(demo());
+    let lead = track_id(&h, 2);
+    click(on_header(lead_header(&h)), &mut h);
+    assert!(h.state().ui().selection.tracks.contains(&lead));
+    rename_ends_by_the_rules(&mut h, |h| {
+        h.key_press(egui::Key::F2);
+        h.run_steps(3);
+    });
+}
+
+#[test]
+fn f2_with_several_tracks_selected_renames_the_first() {
+    let mut h = harness(demo());
+    let drums = track_id(&h, 0);
+    let lead = track_id(&h, 2);
+    // Selected in the opposite order: "first" is the first in track order.
+    for id in [lead, drums] {
+        h.state_mut()
+            .dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+                tracks: vec![id],
+                mode: SelectMode::Toggle,
+            })));
+    }
+    h.run_steps(2);
+    h.key_press(egui::Key::F2);
+    h.run_steps(3);
+    type_and_end(&mut h, "Schlagzeug", egui::Key::Enter);
+    let names: Vec<_> = project(&h).tracks.iter().map(|t| t.name.clone()).collect();
+    assert_eq!(names[0], "Schlagzeug");
+    assert_eq!(names[2], "Lead");
+}
+
+#[test]
+fn f2_without_a_selection_opens_no_field() {
+    let mut h = harness(demo());
+    h.state_mut().dispatch(Action::Ui(UiAction::ClearSelection));
+    h.key_press(egui::Key::F2);
+    h.run_steps(3);
+    assert!(!name_field_is_open(&h));
+}
+
 #[test]
 fn dragging_a_header_reorders_tracks() {
     let mut h = harness(demo());

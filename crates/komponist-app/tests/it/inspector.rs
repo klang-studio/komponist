@@ -12,6 +12,7 @@ use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, Node, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
+use komponist_app::ui_state::{DockTab, Panel};
 use komponist_app::{Action, App, EditAction, UiAction};
 use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
@@ -267,6 +268,77 @@ fn the_clip_fields_show_and_change_the_clip() {
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(clip_of(h.state(), clip).name, "Hook");
+}
+
+/// Types `text` into the open inspector name field (empty: delete the selected text) and presses `key`.
+fn type_and_end(h: &mut Harness<'_, App>, text: &str, key: egui::Key) {
+    h.get_by_role_and_label(Role::TextInput, de::INSPECTOR_RENAME);
+    if text.is_empty() {
+        h.key_press(egui::Key::Backspace);
+    } else {
+        h.event(Event::Text(text.into()));
+    }
+    h.run_steps(1);
+    h.key_press(key);
+    h.run_steps(3);
+}
+
+fn f2(h: &mut Harness<'_, App>) {
+    h.key_press(egui::Key::F2);
+    h.run_steps(3);
+}
+
+#[test]
+fn f2_renames_the_selected_clip_in_the_inspector_by_the_same_rules() {
+    let (app, clip, _) = s01();
+    let mut h = harness(app);
+    f2(&mut h);
+    type_and_end(&mut h, "Hook", egui::Key::Enter);
+    assert_eq!(clip_of(h.state(), clip).name, "Hook");
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    h.run_steps(2);
+    assert_eq!(clip_of(h.state(), clip).name, "Lead A", "one undo step");
+    f2(&mut h);
+    type_and_end(&mut h, "Weg", egui::Key::Escape);
+    assert_eq!(clip_of(h.state(), clip).name, "Lead A", "Esc discards");
+    f2(&mut h);
+    type_and_end(&mut h, "", egui::Key::Enter);
+    assert_eq!(clip_of(h.state(), clip).name, "Lead A", "empty keeps it");
+    // Nothing is left open.
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, de::INSPECTOR_RENAME)
+            .is_none()
+    );
+}
+
+#[test]
+fn f2_on_a_clip_shows_a_hidden_inspector() {
+    let (mut app, clip, _) = s01();
+    app.dispatch(Action::Ui(UiAction::TogglePanel(Panel::Inspector)));
+    let mut h = harness(app);
+    assert!(!h.state().ui().layout.inspector_open);
+    f2(&mut h);
+    assert!(h.state().ui().layout.inspector_open);
+    type_and_end(&mut h, "Hook", egui::Key::Enter);
+    assert_eq!(clip_of(h.state(), clip).name, "Hook");
+}
+
+#[test]
+fn f2_renames_the_track_here_when_the_arrangement_and_the_mixer_are_hidden() {
+    let (mut app, _, track) = s01();
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+        clips: Vec::new(),
+        mode: SelectMode::Replace,
+    })));
+    // Dock maximised on the editor tab: no arrangement, no mixer.
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Editor)));
+    app.dispatch(Action::Ui(UiAction::ToggleDockMaximized));
+    let mut h = harness(app);
+    assert!(h.state().ui().layout.dock_maximized);
+    f2(&mut h);
+    type_and_end(&mut h, "Melodie", egui::Key::Enter);
+    let p = h.state().project();
+    assert_eq!(p.track(track).unwrap().name, "Melodie");
 }
 
 #[test]

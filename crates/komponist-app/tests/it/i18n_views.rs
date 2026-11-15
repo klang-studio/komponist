@@ -331,6 +331,70 @@ fn the_mixer_speaks_english() {
 }
 
 #[test]
+fn renaming_a_track_speaks_english_in_the_mixer_the_menu_and_on_f2() {
+    use egui::{Event, Modifiers, PointerButton};
+    let click = |h: &mut Harness<'_, App>, pos: egui::Pos2, button: PointerButton, times: usize| {
+        h.run_steps(30);
+        h.event(Event::PointerMoved(pos));
+        h.step();
+        for _ in 0..times {
+            for pressed in [true, false] {
+                h.event(Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            h.step();
+        }
+        h.run_steps(3);
+    };
+    let mut app = App::headless(demo_project()).with_lang(Lang::En);
+    app.ui_mut().layout.dock_maximized = true;
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
+    let mut h = harness_of(app);
+    let name_at = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Group, "Channel Lead")
+            .get_by_role_and_label(Role::Button, "Lead")
+            .rect()
+            .center()
+    };
+    // Double-click: the field has its English accessible name.
+    let at = name_at(&h);
+    click(&mut h, at, PointerButton::Primary, 2);
+    h.get_by_role_and_label(Role::TextInput, en::ARRANGEMENT_RENAME);
+    assert_eq!(en::ARRANGEMENT_RENAME, "Track name");
+    h.event(Event::Text("Melody".into()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().project().tracks[2].name, "Melody");
+    // The context menu entry reads "Rename".
+    let at = h
+        .get_by_role_and_label(Role::Group, "Channel Melody")
+        .get_by_role_and_label(Role::Button, "Melody")
+        .rect()
+        .center();
+    click(&mut h, at, PointerButton::Secondary, 1);
+    let entry = h.get_by_role_and_label(Role::MenuItem, en::ROUTING_RENAME);
+    assert_eq!(en::ROUTING_RENAME, "Rename");
+    let at = entry.rect().center();
+    click(&mut h, at, PointerButton::Primary, 1);
+    h.get_by_role_and_label(Role::TextInput, en::ARRANGEMENT_RENAME);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    // F2 on the selected track (Lead is selected by the clicks above).
+    h.key_press(egui::Key::F2);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, en::ARRANGEMENT_RENAME);
+    assert_eq!(
+        komponist_app::keymap::KeyChord::plain(komponist_app::keymap::Key::F2).label(Lang::En),
+        "F2"
+    );
+}
+
+#[test]
 fn the_inspector_speaks_english() {
     let mut h = harness(Lang::En);
     // Nothing selected: the project and the hint.

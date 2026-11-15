@@ -6,7 +6,7 @@
 //!
 //! | Section | Content | Changes |
 //! |---|---|---|
-//! | Clip ([`clip`]) | name (double-click renames), Start, Länge, Loop an/aus, Loop-Länge, Transponieren, Velocity; the takes after loop recording; step clips: Pattern, Auflösung, Swing; the take being recorded ("nimmt auf") | `SetClipProp`, `SetClipLength`, `SetClipLoop`, `SetStepClipProp`, `SelectTake` |
+//! | Clip ([`clip`]) | name (double-click or F2 renames), Start, Länge, Loop an/aus, Loop-Länge, Transponieren, Velocity; the takes after loop recording; step clips: Pattern, Auflösung, Swing; the take being recorded ("nimmt auf") | `SetClipProp`, `SetClipLength`, `SetClipLoop`, `SetStepClipProp`, `SelectTake` |
 //! | Spur ([`track`]) | name, colour swatches, Instrument, Eingang, Kanal | `SetTrackProp` (Name, Hue, Input, MidiChannel), `Plugin(Add)` replaces the instrument |
 //! | Geräte ([`track`]) | the chain with power square, status and format tag; "+ Effekt" | `OpenWindow`, `SetDeviceBypass`, browser on Effekte |
 //! | Parameter ([`param`]) | the device parameter touched last: name, device · band/op · track, Wert, Standard, Bereich | – |
@@ -45,6 +45,7 @@ use komponist_ui::{fonts, px};
 
 use self::metrics as m;
 use self::model::{ClipSection, Sections};
+use crate::ui_state::InspectorRename;
 use crate::views::late::LateTracker;
 use crate::views::{View, ViewCtx, elided_galley, group_bounds};
 
@@ -106,6 +107,22 @@ impl View for Inspector {
             .is_some_and(|r| !self.renaming_shown(r, &sections))
         {
             self.rename = None;
+        }
+        // F2: the name of the clip or track goes into the edit mode.
+        if let Some(request) = ctx.ui.inspector.rename_request.take() {
+            match request {
+                InspectorRename::Clip(c) if sections.clip == Some(ClipSection::Clip(c)) => {
+                    if let Some((_, clip)) = project.find_clip(c) {
+                        self.start_rename(RenameTarget::Clip(c), &clip.name);
+                    }
+                }
+                InspectorRename::Track(t) if sections.track == Some(t) => {
+                    if let Some(track) = project.track(t) {
+                        self.start_rename(RenameTarget::Track(t), &track.name);
+                    }
+                }
+                _ => {}
+            }
         }
 
         let max_scroll = (self.content_height - body.height()).max(0.0);

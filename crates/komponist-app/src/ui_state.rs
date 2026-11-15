@@ -386,6 +386,9 @@ pub struct StepSeqView {
 pub struct MixerView {
     /// Horizontal scroll in design px.
     pub scroll_x: f32,
+    /// F2: the strip of this track opens its name field (taken by the mixer when it shows the
+    /// strip). Only set while the mixer is visible.
+    pub rename_request: Option<TrackId>,
 }
 
 /// Device chain view.
@@ -488,6 +491,17 @@ pub enum InspectorSection {
 pub struct InspectorView {
     /// Collapsed sections.
     pub collapsed: BTreeSet<InspectorSection>,
+    /// F2: this name opens its field (taken by the inspector when it shows the section).
+    pub rename_request: Option<InspectorRename>,
+}
+
+/// What F2 asks the inspector to rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorRename {
+    /// The clip's name.
+    Clip(ClipId),
+    /// The track's name.
+    Track(TrackId),
 }
 
 /// Start screen (S09).

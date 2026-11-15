@@ -14,6 +14,7 @@
 //! | Input | What happens (S04 notes) |
 //! |---|---|
 //! | click on a strip | selects the track (Strg toggles, Shift extends), synchronous with the arrangement |
+//! | name of a track or bus strip | double-click, right click „Umbenennen“, F2 | rename in place (text field „Spurname“), Enter applies, Esc discards, an empty name keeps the old one; the same `SetTrackProp(Name)` as the header's |
 //! | fader / pan | drag relative, Shift fine, double-click or Alt-click default, Enter or right-click „Wert eingeben“ text entry, wheel one step (Shift fine); a drag or a wheel burst is one undo step, fast-path commands while it lasts |
 //! | M S R | as in the track headers: press, drag across strips, Alt-click S / R exclusive |
 //! | insert slot | click opens the plugin window (an internal device: the Geräte tab, scrolled to it), drag reorders (2 px accent line), Alt-click bypass |
@@ -170,6 +171,15 @@ pub fn gesture_touch(
     });
 }
 
+/// A strip's name being edited (double-click on the name, "Umbenennen", F2).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Rename {
+    track: TrackId,
+    text: String,
+    /// Focus and select all in the next frame.
+    fresh: bool,
+}
+
 /// The mixer view. Its view state is [`crate::ui_state::MixerView`] (scroll).
 #[derive(Debug, Default)]
 pub struct Mixer {
@@ -179,6 +189,8 @@ pub struct Mixer {
     late: LateTracker,
     /// The selection of the last frame: a track selected elsewhere is scrolled into view.
     last_selection: std::collections::BTreeSet<TrackId>,
+    /// The name being edited in place.
+    rename: Option<Rename>,
 }
 
 impl Mixer {
@@ -259,6 +271,23 @@ impl View for Mixer {
             &ctx.ui.selection.tracks,
             ctx.engine.host(),
         );
+        if self
+            .rename
+            .as_ref()
+            .is_some_and(|r| project.track(r.track).is_none())
+        {
+            self.rename = None;
+        }
+        // F2 with the mixer in view: the selected track's name goes into the edit mode.
+        if let Some(id) = ctx.ui.mixer.rename_request.take()
+            && let Some(track) = project.track(id)
+        {
+            self.rename = Some(Rename {
+                track: id,
+                text: track.name.clone(),
+                fresh: true,
+            });
+        }
         let now = ui.input(|i| i.time);
         for s in &mut strips {
             for insert in &mut s.inserts {
@@ -351,7 +380,7 @@ impl View for Mixer {
             }
             let rect = Rect::from_x_y_ranges(*span, strips_top..=body.bottom());
             let rect = Rect::from_min_size(rect.min, vec2(STRIP_WIDTH, body.bottom() - strips_top));
-            for (kind, event) in strip::show(ui, ctx, s, rect, clip, tier) {
+            for (kind, event) in strip::show(ui, ctx, s, rect, clip, tier, &mut self.rename) {
                 events.push((*track, kind, event));
             }
         }
@@ -362,7 +391,15 @@ impl View for Mixer {
             output: false,
             ..tier
         };
-        strip::show(ui, ctx, master, master_rect, body, master_tier);
+        strip::show(
+            ui,
+            ctx,
+            master,
+            master_rect,
+            body,
+            master_tier,
+            &mut self.rename,
+        );
         if !buses.is_empty() {
             strip::bus_label(
                 ui,

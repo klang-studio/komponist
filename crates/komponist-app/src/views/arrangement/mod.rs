@@ -19,7 +19,7 @@
 //! | ruler, top half | press, drag | `Transport(Locate)` on beats (Shift: free) |
 //! | ruler, bottom half (loop bar) | press, drag | `Transport(SetLoopRange)` in whole bars |
 //! | header | click / Shift / Strg | `Ui(Select(Tracks))` replace / range / toggle |
-//! | header name | double-click | rename in place, Enter applies, Esc discards |
+//! | header name | double-click, F2 (first selected track), context menu „Umbenennen“ | rename in place, Enter applies, Esc discards, an empty name keeps the old one |
 //! | header | drag ↕ | `Edit(MoveTracks)` at the 2 px insert line |
 //! | header bottom edge | drag ↕ (Alt: all) | `Edit(SetTrackProp(Height))`, 32–160 |
 //! | M S R I | press, drag across, Alt | `Edit(SetTrackProp)` / `Edit(SetExclusive)` |
@@ -576,7 +576,7 @@ fn clamp_scroll(v: &mut ArrangementView, project: &Project, body: Rect) {
 
 /// Whether Esc was pressed in this frame. Read from the raw input: the app's keymap consumes Esc
 /// (as `ClearSelection`, or `CancelGesture` during a drag) before the views run.
-fn escape_pressed(ui: &Ui) -> bool {
+pub(crate) fn escape_pressed(ui: &Ui) -> bool {
     ui.input(|i| {
         i.raw.events.iter().any(|e| {
             matches!(
