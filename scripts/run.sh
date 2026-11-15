@@ -8,6 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 (
     source scripts/build-lock.sh
+    low_priority
     cargo build --release -p komponist-app --bin komponist
 )
 exec target/release/komponist "$@"

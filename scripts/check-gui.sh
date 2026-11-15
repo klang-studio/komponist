@@ -9,7 +9,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # Before XDG_RUNTIME_DIR is redirected below, so the lock file is the shared one.
 source scripts/build-lock.sh
 
-scripts/build-test-plugins.sh >/dev/null
+(
+    low_priority
+    scripts/build-test-plugins.sh >/dev/null
+)
 
 # The toolchain lives in the real home; keep it reachable.
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
