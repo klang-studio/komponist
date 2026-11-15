@@ -25,8 +25,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sampler_core::Sample;
 use rtrb::{Consumer, Producer, RingBuffer};
+use sampler_core::Sample;
 
 use super::PADS;
 use super::links::SampleLink;
