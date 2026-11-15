@@ -348,7 +348,12 @@ fn the_loader_hands_samples_over_and_takes_the_old_ones_back() {
     assert_eq!(handle.view(0).status, PadStatus::Empty);
     let path = testkit::write_kit(&dir).unwrap().remove(0);
     handle.load_link(0, SampleLink::new(&path, None), None);
-    assert_eq!(handle.view(0).status, PadStatus::Loading);
+    // Loading at once; a fast loader may already be done (CI, optimised sampler-core).
+    let status = handle.view(0).status;
+    assert!(
+        matches!(status, PadStatus::Loading | PadStatus::Ready),
+        "{status:?}"
+    );
     assert!(handle.wait_idle(WAIT));
     let view = handle.view(0);
     assert_eq!(view.status, PadStatus::Ready);
