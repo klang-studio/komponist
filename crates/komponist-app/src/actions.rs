@@ -589,6 +589,16 @@ pub enum UiAction {
     RevealDevice(DeviceId),
     /// Click on a name in the chain head: scroll to the device.
     ScrollToDevice(DeviceId),
+    /// A parameter of a device was touched (pressed, dragged, clicked): the inspector shows it,
+    /// the status line shows name and value while `dragging` (WP-89).
+    TouchParam {
+        /// The device.
+        device: DeviceId,
+        /// The parameter's model id.
+        param: komponist_model::params::ParamId,
+        /// The pointer holds the control and moves it.
+        dragging: bool,
+    },
 }
 
 /// Which editor a grid or snap action is for (the toolbars name theirs, instead of the action

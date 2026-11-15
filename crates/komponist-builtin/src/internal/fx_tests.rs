@@ -659,10 +659,10 @@ fn the_limiter_releases_with_its_time_constant_and_reports_the_gain_reduction() 
     x[0][1000] = 1.0;
     x[1][1000] = 1.0;
     let _ = play(&mut *d, &x, 256, &[]);
-    let gr = d.take_gain_reduction_db();
-    assert!((gr + 6.0).abs() < 0.2, "{gr}");
+    let gr = d.take_reduction_db();
+    assert!((gr - 6.0).abs() < 0.2, "{gr}");
     let _ = play(&mut *d, &silence(48_000), 256, &[]);
-    assert!(d.take_gain_reduction_db() > -0.1);
+    assert!(d.take_reduction_db() < 0.1);
 }
 
 #[test]

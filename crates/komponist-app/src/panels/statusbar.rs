@@ -27,6 +27,9 @@ use crate::ui_state::{FocusArea, StatusKind};
 /// Appended to the audio output when the audio thread got no real-time priority.
 pub const NO_REALTIME: &str = "ohne Echtzeit-Priorität";
 
+/// The hint while a device parameter is dragged.
+pub const PARAM_HINT: &str = "Alt-Klick: Standard · Doppelklick: Wert eingeben";
+
 /// The three texts of the status bar and their colours.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusModel {
@@ -156,6 +159,15 @@ fn context(app: &App, s: &mut StatusModel) {
             return;
         }
         TransportState::Playing | TransportState::Stopped => {}
+    }
+    // A device parameter held and moved: its name and value (WP-89).
+    if let Some(touch) = ui.devices.touched.as_ref().filter(|t| t.dragging)
+        && let Some(param) =
+            crate::views::devices::model::touched(p, app.engine().host(), &ui.plugin_windows, touch)
+    {
+        s.left = format!("{} · {}", param.name, param.value);
+        s.mid = PARAM_HINT.to_owned();
+        return;
     }
     let open = ui.editor.clip.and_then(|c| p.find_clip(c));
     let track = sel.tracks.iter().next().and_then(|t| p.track(*t));

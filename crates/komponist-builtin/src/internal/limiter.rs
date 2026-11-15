@@ -11,7 +11,7 @@
 //! the time constant of the gain's recovery. A final clamp at the ceiling only acts on rounding.
 //! The input gain glides (10 ms). Sample peak only: no true-peak (inter-sample) detection.
 //!
-//! The deepest gain reduction is available through [`Dsp::take_gain_reduction_db`] for the GR meter.
+//! The deepest gain reduction is available through [`Dsp::take_reduction_db`] (a positive number of dB) for the GR meter.
 //!
 //! Switching `lookahead` while playing changes the latency: the audio around the switch is cut
 //! (the delay line is cleared), and the host has to read [`Dsp::latency`] again for delay
@@ -193,10 +193,10 @@ impl Dsp for Limiter {
         self.delay as u32
     }
 
-    fn take_gain_reduction_db(&mut self) -> f32 {
-        let db = 20.0 * self.deepest.max(1e-6).log10();
+    fn take_reduction_db(&mut self) -> f32 {
+        let db = -20.0 * self.deepest.max(1e-6).log10();
         self.deepest = 1.0;
-        db.min(0.0)
+        db.max(0.0)
     }
 
     fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2]) {

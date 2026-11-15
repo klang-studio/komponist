@@ -10,7 +10,7 @@
 //!   [`ProcessContext`], [`StereoIo`].
 //! - [`program`]: the compiled [`Program`] the engine plays.
 //! - [`compile`]: project → program, with processor-slot mapping.
-//! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`],
+//! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`], [`DeviceMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
 //! - [`export`]: WAV export of a frame range ([`export::export`]): render, normalise, dither, write.
@@ -50,7 +50,9 @@ pub mod workers;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-pub use api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState};
+pub use api::{
+    Command, DeviceMeter, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState,
+};
 pub use engine::{Engine, EngineConfig, LiveInput, MidiInEvent};
 pub use processor::{
     Event, EventBuffer, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,

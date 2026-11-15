@@ -37,11 +37,11 @@
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use komponist_engine::{
-    Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor, ProcessorError,
-    StereoIo,
+    DeviceMeter, Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor,
+    ProcessorError, StereoIo,
 };
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo};
@@ -82,9 +82,10 @@ pub trait Dsp: Send {
     /// call (constant within one). Tempo-synced effects follow it; the default ignores it.
     fn set_tempo(&mut self, _bpm: f64) {}
 
-    /// RT-safe. The deepest gain reduction in dB (0 or negative) since the last call of this
-    /// method; 0 for devices that do not reduce gain. The hook for the GR meter's telemetry.
-    fn take_gain_reduction_db(&mut self) -> f32 {
+    /// RT. The largest gain reduction in dB (≥ 0) since the last call, then resets it. Only
+    /// dynamics devices (the limiter) report one; the meter feed ([`InternalProcessor::meter`])
+    /// calls it once per rendered piece.
+    fn take_reduction_db(&mut self) -> f32 {
         0.0
     }
 }
@@ -308,6 +309,7 @@ impl Internal {
             dsp,
             stage,
             sample_rate: INITIAL_RATE,
+            meter: Arc::new(DeviceMeter::new()),
         }
     }
 
@@ -354,9 +356,17 @@ pub struct InternalProcessor {
     /// The event stage of a MIDI effect ([`Processor::event_processor`]).
     stage: Option<midi::Stage>,
     sample_rate: f32,
+    /// Input peak, gain reduction and output peak for the UI (WP-89).
+    meter: Arc<DeviceMeter>,
 }
 
 impl InternalProcessor {
+    /// The level meter the processor feeds every block; the UI takes the values every frame
+    /// ([`DeviceMeter::take`]).
+    pub fn meter(&self) -> Arc<DeviceMeter> {
+        Arc::clone(&self.meter)
+    }
+
     /// The sample rate the processor was last activated at (48 kHz before that).
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
@@ -425,6 +435,12 @@ impl InternalProcessor {
         self.dsp.process(
             [&il[from..to], &ir[from..to]],
             [&mut ol[from..to], &mut or[from..to]],
+        );
+        let peak = |a: &[f32], b: &[f32]| a.iter().chain(b).fold(0.0_f32, |m, s| m.max(s.abs()));
+        self.meter.record(
+            peak(&il[from..to], &ir[from..to]),
+            self.dsp.take_reduction_db(),
+            peak(&ol[from..to], &or[from..to]),
         );
     }
 }

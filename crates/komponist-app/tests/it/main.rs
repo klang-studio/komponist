@@ -23,6 +23,7 @@ mod arrangement;
 mod browser;
 mod device_events;
 mod device_frame;
+mod device_integration;
 mod devices;
 mod dialogs;
 mod dispatch;

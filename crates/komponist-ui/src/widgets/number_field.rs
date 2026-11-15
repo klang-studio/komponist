@@ -791,6 +791,13 @@ pub(crate) fn expose_value(
     });
 }
 
+/// Opens the text entry of the value control whose response has id `id` (a knob, number field or
+/// mini fader), with `text` selected: the "Wert eingeben" entry of a context menu. The control
+/// shows the entry in its next pass; Enter applies, Esc discards.
+pub fn open_value_entry(ctx: &Context, id: Id, text: String) {
+    entry::open(ctx, id, text);
+}
+
 /// Text entry of a value control: a text edit over the value, with the text preselected. Enter
 /// applies, Esc discards, losing the focus otherwise (a click elsewhere) applies. The open entry
 /// and its text live in egui memory under the control's id.

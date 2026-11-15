@@ -7,6 +7,7 @@ use komponist_model::params::layout::{BAND, validate};
 use komponist_model::params::{ParamContext, ParamId};
 use komponist_model::{Meter, Tick, TickRange};
 
+use super::dsp::db_to_gain;
 use super::*;
 
 // Debug builds only: in release builds `assert_no_alloc` is a no-op without its allocator.
@@ -264,4 +265,33 @@ fn activation_checks_the_sample_rate_and_the_delay_keeps_its_time() {
     c.sample_rate = 96_000.0;
     p.process(&c, &[], &mut io);
     assert!((out[0][36_000] - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_meter_feed_reports_input_reduction_and_output_without_allocating() {
+    let kind = Internal::Limiter;
+    let mut p = activated(kind, &kind.defaults());
+    let meter = p.meter();
+    // Quiet signal: no reduction, output equals input.
+    let quiet: [Vec<f32>; 2] = [vec![0.25; BLOCK], vec![0.1; BLOCK]];
+    run(&mut p, &[], &quiet);
+    let (i, gr, o) = meter.take();
+    assert_eq!((i, gr, o), (0.25, 0.0, 0.25));
+    // Taken: the next take is empty.
+    assert_eq!(meter.take(), (0.0, 0.0, 0.0));
+    // Twice the ceiling is about 6 dB over it.
+    let ceiling = db_to_gain(-0.3);
+    let loud: [Vec<f32>; 2] = [vec![2.0 * ceiling; BLOCK], vec![0.0; BLOCK]];
+    let out = run(&mut p, &[], &loud);
+    let (i, gr, o) = meter.take();
+    assert!((i - 2.0 * ceiling).abs() < 1e-6);
+    assert!((gr - 6.02).abs() < 0.01, "{gr}");
+    assert!((o - ceiling).abs() < 1e-6 && out[0][0] <= ceiling + 1e-6);
+    // A device that does not reduce reports 0 dB and its own peaks.
+    let eq = Internal::Eq;
+    let mut e = activated(eq, &eq.defaults());
+    let m = e.meter();
+    run(&mut e, &[], &quiet);
+    let (i, gr, _) = m.take();
+    assert_eq!((i, gr), (0.25, 0.0));
 }

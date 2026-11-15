@@ -15,6 +15,7 @@ use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
+use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
 use komponist_ui::widgets::device::choice::{DropdownCell, Segment, SegmentOption, ToggleButton};
 use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};
 use komponist_ui::widgets::device::graph::configs::{self, band};
@@ -27,13 +28,13 @@ use komponist_ui::widgets::device::mini_fader::{Fill, MiniFader};
 use komponist_ui::widgets::device::number::Number;
 use komponist_ui::widgets::device::pad_grid::{Pad, PadGrid};
 use komponist_ui::widgets::dropdown::Item;
-use komponist_ui::widgets::number_field::parse_number;
+use komponist_ui::widgets::number_field::{open_value_entry, parse_number};
 use komponist_ui::{fonts, px};
 
 use super::layout::{BAND, Cell, CellParam, ENV_OP, GraphBinding, GraphConfig, SEL, WidgetKind};
 use super::metrics;
 use super::model::{Card, Param, names};
-use crate::actions::{Action, PluginAction};
+use crate::actions::{Action, PluginAction, UiAction};
 
 /// The memory slot of the context placeholders (`{band}`, `{env_op}`, `{sel}`) of a device.
 fn context_id(device: DeviceId) -> Id {
@@ -111,7 +112,7 @@ pub(super) fn draw_cell(
             true
         }
         (WidgetKind::MeterGr, _) => {
-            meter(cu, cell, rect);
+            meter(cu, card, cell, rect);
             true
         }
         (WidgetKind::PadGrid, _) => {
@@ -139,6 +140,63 @@ fn set(out: &mut Vec<Action>, card: &Card, p: &Param, plain: f64) {
             value: plain,
         }));
     }
+}
+
+/// What the right-click menu of a parameter offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParamMenu {
+    /// Back to the default value.
+    Default,
+    /// The text entry.
+    Enter,
+}
+
+/// A parameter's control was touched: the inspector and the status line follow (`TouchParam`).
+/// `r` is the control's response; `entry` is the text its entry opens with (`None`: a choice, a
+/// switch: no "Wert eingeben").
+///
+/// The right-click menu: "Auf Standard" (the Alt-click) and, for a control with text entry, "Wert
+/// eingeben". Nothing else yet (automation, MIDI learn and macros are prepared, not built).
+fn touch(
+    cu: &Ui,
+    out: &mut Vec<Action>,
+    card: &Card,
+    p: &Param,
+    r: &egui::Response,
+    entry: Option<String>,
+) {
+    if r.is_pointer_button_down_on() || r.drag_stopped() || r.clicked() {
+        out.push(touch_action(card, p, r.dragged()));
+    }
+    let mut enter = Entry::action(names::ENTER_VALUE, ParamMenu::Enter);
+    if entry.is_none() {
+        enter = enter.disabled();
+    }
+    let entries = [
+        Entry::action(names::TO_DEFAULT, ParamMenu::Default).shortcut(names::TO_DEFAULT_SHORTCUT),
+        enter,
+    ];
+    match ContextMenu::new(names::PARAMETER, &entries).show_on(r) {
+        Some(ParamMenu::Default) => {
+            set(out, card, p, p.info.default);
+            out.push(touch_action(card, p, false));
+        }
+        Some(ParamMenu::Enter) => {
+            if let Some(text) = entry {
+                open_value_entry(cu.ctx(), r.id, text);
+            }
+            out.push(touch_action(card, p, false));
+        }
+        None => {}
+    }
+}
+
+fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
+    Action::Ui(UiAction::TouchParam {
+        device: card.device,
+        param: p.info.id.clone(),
+        dragging,
+    })
 }
 
 /// Memory slot of a cell's own state.
@@ -181,6 +239,7 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
     if r.changed() {
         set(out, card, p, info.to_plain(value));
     }
+    touch(cu, out, card, p, &r, Some(p.text_at(p.value)));
 }
 
 /// A compact number field: plain values for integer and stepped parameters, normalised for
@@ -224,6 +283,7 @@ fn number(
             if r.changed() {
                 set(out, card, p, value);
             }
+            touch(cu, out, card, p, &r, Some(plain_text(p.value)));
         }
         None => {
             let mut value = info.to_normalized(p.value);
@@ -237,6 +297,7 @@ fn number(
             if r.changed() {
                 set(out, card, p, info.to_plain(value));
             }
+            touch(cu, out, card, p, &r, Some(plain_text(p.value)));
         }
     }
     true
@@ -273,6 +334,7 @@ fn segment(
     if r.changed() {
         set(out, card, p, selected as f64);
     }
+    touch(cu, out, card, p, &r, None);
     true
 }
 
@@ -292,6 +354,7 @@ fn toggle(
     if r.changed() {
         set(out, card, p, if on { 1.0 } else { 0.0 });
     }
+    touch(cu, out, card, p, &r, None);
     true
 }
 
@@ -315,6 +378,7 @@ fn dropdown(
     if r.changed() {
         set(out, card, p, selected as f64);
     }
+    touch(cu, out, card, p, &r, None);
     true
 }
 
@@ -342,6 +406,7 @@ fn mini_fader(
     if r.changed() {
         set(out, card, p, info.to_plain(value));
     }
+    touch(cu, out, card, p, &r, Some(p.text_at(p.value)));
 }
 
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
@@ -427,14 +492,19 @@ fn column_select(
     }
 }
 
-/// The gain-reduction meter: it shows no level until the device runtime delivers them (WP-85);
-/// the click resets the held reduction.
-fn meter(cu: &mut Ui, cell: &Cell, rect: Rect) {
+/// The gain-reduction meter: In, GR and Out from the device's level feed (`card.levels`, WP-89;
+/// empty without one); the read-out is the largest reduction of the last 1.5 s. The click resets
+/// the held reduction.
+fn meter(cu: &mut Ui, card: &Card, cell: &Cell, rect: Rect) {
     let id = slot(cu, cell, "gr_hold");
     let now = cu.input(|i| i.time);
     let mut hold: GrHold = cu.data(|d| d.get_temp(id)).unwrap_or_default();
+    if let Some(levels) = card.levels {
+        hold.push(now, levels.reduction_db);
+    }
     let text = meter_gr::readout(hold.max(now));
-    let r = cu.put(rect, MeterGr::new([0.0; 3], &text).rows(cell.rows));
+    let bars = card.levels.map_or([0.0; 3], |l| l.bars);
+    let r = cu.put(rect, MeterGr::new(bars, &text).rows(cell.rows));
     if r.clicked() {
         hold.reset();
     }
@@ -474,15 +544,29 @@ fn fm(
 ) {
     let ctx = context(cu.ctx(), card.device);
     let selected = selected_entry(&ctx, ENV_OP, ALGORITHMS[0].modulates.len() as u8) - 1;
-    let number = p.map_or(1, |p| p.value.round().max(1.0) as usize);
+    // Algorithm 0 is free routing: the display draws the routing the patch really has.
+    let value = p.map_or(1, |p| p.value.round().max(0.0) as usize);
+    let free = value == 0 && card.routing.is_some();
+    let number = value.max(1);
     let algo = &ALGORITHMS[(number - 1).min(ALGORITHMS.len() - 1)];
-    let topology = Topology {
-        modulates: &algo.modulates,
-        feedback: Some(algo.feedback),
+    let routing = card.routing.filter(|_| free);
+    let topology = match &routing {
+        Some(r) => Topology {
+            modulates: &r.modulates,
+            feedback: r.feedback,
+        },
+        None => Topology {
+            modulates: &algo.modulates,
+            feedback: Some(algo.feedback),
+        },
     };
+    let mut display = FmAlgorithm::new(number, topology, palette);
+    if free {
+        display = display.titled(names::FM_FREE);
+    }
     let out = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |cu| {
-            FmAlgorithm::new(number, topology, palette)
+            display
                 .cells(cell.cols, cell.rows)
                 .selected(Some(selected))
                 .show(cu)
@@ -630,6 +714,16 @@ fn graph(
                 if normalized { p.info.to_plain(*v) } else { *v },
             );
         }
+    }
+    // Touching a handle selects the parameter it edits (the axis moved last).
+    let touched = shown.response.is_pointer_button_down_on()
+        || shown.response.drag_stopped()
+        || !shown.changed.is_empty();
+    if touched
+        && let Some(slot) = shown.selected_slot.or(shown.changed.first().map(|c| c.0))
+        && let Some(p) = spec.slots.get(slot).and_then(|s| lookup(s))
+    {
+        out.push(touch_action(card, p, shown.response.dragged()));
     }
     if let (Some(key), Some(handle)) = (binding.select, shown.selected) {
         set_context(cu.ctx(), card.device, key, handle + 1);
@@ -793,6 +887,8 @@ mod tests {
             preset: None,
             width: 244.0,
             late: None,
+            levels: None,
+            routing: None,
         }
     }
 

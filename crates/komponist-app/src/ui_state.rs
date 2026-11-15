@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+use komponist_model::params::ParamId;
 use komponist_model::{
     ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId,
 };
@@ -399,6 +400,19 @@ pub struct DevicesView {
     pub reveal: Option<(DeviceId, Reveal)>,
     /// Ctrl C: the copied devices (Ctrl V inserts them behind the selected device).
     pub clipboard: Vec<Device>,
+    /// The parameter touched last (WP-89): the inspector's "Parameter" section.
+    pub touched: Option<ParamTouch>,
+}
+
+/// The parameter of a device the user touched last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamTouch {
+    /// The device.
+    pub device: DeviceId,
+    /// The parameter's model id.
+    pub param: ParamId,
+    /// The pointer holds the control and moves it: the status line shows name and value.
+    pub dragging: bool,
 }
 
 /// How a requested scroll places a device.

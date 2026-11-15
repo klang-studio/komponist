@@ -353,6 +353,55 @@ impl TrackMeter {
     }
 }
 
+/// Levels of one internal device since the UI last read them (WP-89): the input peak, the largest
+/// gain reduction and the output peak, the same take-and-reset scheme as [`TrackMeter`].
+///
+/// The device's processor owns an `Arc` of it and calls [`DeviceMeter::record`] once per block
+/// (RT-safe: relaxed `fetch_max` on `f32` bit patterns, no allocation, no lock); the UI takes the
+/// values every frame with [`DeviceMeter::take`]. Peaks are linear sample magnitudes
+/// (1.0 = 0 dBFS), the reduction is in dB (≥ 0, 6.0 = the signal was turned down by 6 dB).
+#[derive(Debug, Default)]
+pub struct DeviceMeter {
+    input: AtomicU32,
+    reduction: AtomicU32,
+    output: AtomicU32,
+}
+
+impl DeviceMeter {
+    /// All values 0.
+    pub const fn new() -> DeviceMeter {
+        DeviceMeter {
+            input: AtomicU32::new(0),
+            reduction: AtomicU32::new(0),
+            output: AtomicU32::new(0),
+        }
+    }
+
+    /// RT. Raises the stored values to at least `input`, `reduction_db` and `output` (all ≥ 0 and
+    /// finite; anything else is ignored, so a NaN cannot poison the maximum).
+    pub fn record(&self, input: f32, reduction_db: f32, output: f32) {
+        for (slot, v) in [
+            (&self.input, input),
+            (&self.reduction, reduction_db),
+            (&self.output, output),
+        ] {
+            if v.is_finite() && v > 0.0 {
+                slot.fetch_max(v.to_bits(), Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// UI. Returns `(input peak, reduction in dB, output peak)` since the last call and resets
+    /// them to 0.
+    pub fn take(&self) -> (f32, f32, f32) {
+        (
+            f32::from_bits(self.input.swap(0, Ordering::Relaxed)),
+            f32::from_bits(self.reduction.swap(0, Ordering::Relaxed)),
+            f32::from_bits(self.output.swap(0, Ordering::Relaxed)),
+        )
+    }
+}
+
 /// The UI's end of the engine queues. Created with the engine by [`crate::Engine::new`]; lives on
 /// the UI thread (`Send`, not shared).
 pub struct EngineHandle {
@@ -398,6 +447,16 @@ mod tests {
         m.record(0.75, 0.125);
         assert_eq!(m.take(), (0.75, 0.5));
         assert_eq!(m.take(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn device_meter_keeps_the_maximum_until_taken_and_ignores_bad_values() {
+        let m = DeviceMeter::new();
+        m.record(0.25, 1.0, 0.5);
+        m.record(0.75, f32::NAN, -1.0);
+        m.record(0.5, 3.0, f32::INFINITY);
+        assert_eq!(m.take(), (0.75, 3.0, 0.5));
+        assert_eq!(m.take(), (0.0, 0.0, 0.0));
     }
 
     #[test]
