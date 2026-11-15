@@ -1,0 +1,18 @@
+[package]
+name = "komponist-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+# The typed text catalog: `build.rs` turns `locales/<lang>/*.ftl` into `Lang` and one method per
+# message (`docs/I18N.md`). No runtime dependencies.
+
+[build-dependencies]
+# Mozilla's official Project Fluent parser (Apache-2.0 OR MIT); the generator uses it at build time only.
+fluent-syntax.workspace = true
+
+[dev-dependencies]
+# The golden tests of the generator compile `generator.rs` into the test binary.
+fluent-syntax.workspace = true

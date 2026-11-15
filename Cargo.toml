@@ -21,6 +21,7 @@ komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-hosting = { path = "crates/komponist-hosting" }
 komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-ui = { path = "crates/komponist-ui" }
+komponist-i18n = { path = "crates/komponist-i18n" }
 
 # Sibling repositories, referenced by relative path. A worktree must therefore sit exactly
 # one level below <workspace>/ (PLAN §1.2).
@@ -54,6 +55,11 @@ rtrb = "0.4.1"
 libc = "0.2.191"
 rustix = { version = "1.1.6", features = ["mm", "thread", "process", "net"] }
 x11rb = "0.14.0"
+
+# Text catalog generator (komponist-i18n build script): Project Fluent parser, Apache-2.0 OR MIT.
+fluent-syntax = "0.12.0"
+# komponist: the system language for "System" in the language setting (MIT OR Apache-2.0; already in the tree via egui).
+sys-locale = "0.3.2"
 
 # Serialization and files.
 serde = { version = "1.0.229", features = ["derive"] }
