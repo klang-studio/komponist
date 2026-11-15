@@ -257,7 +257,7 @@ fn a_file_that_cannot_be_read_keeps_the_project() {
 // Engine reset on open
 // ------------------------------------------------------------------------------------------------
 
-/// pisynth through [`BuiltinHost`], recording which devices got a processor and which left.
+/// hexa through [`BuiltinHost`], recording which devices got a processor and which left.
 struct Recording {
     inner: BuiltinHost,
     log: Arc<Mutex<Vec<(&'static str, DeviceId)>>>,
@@ -309,7 +309,7 @@ fn opening_a_project_resets_the_engine() {
             komponist_model::edits::NewTrack {
                 name: Some(name.into()),
                 hue: None,
-                instrument: Some(komponist_app::app::pisynth_ref()),
+                instrument: Some(komponist_app::app::hexa_ref()),
                 index: None,
                 arm_exclusive: false,
             },
@@ -502,7 +502,7 @@ fn a_missing_plugin_opens_s06_and_keeps_its_state() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// pisynth only, with a scan the test finishes by hand.
+/// hexa only, with a scan the test finishes by hand.
 struct Scanning {
     inner: BuiltinHost,
     scanning: Arc<Mutex<bool>>,

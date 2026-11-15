@@ -48,7 +48,7 @@ pub enum WidgetKind {
     FmAlgorithm,
     /// `graph` (WP-84), bound by [`CellParam::Graph`].
     Graph,
-    /// An overlay over whole columns (WP-86: pisynth's operator columns): a click on a column
+    /// An overlay over whole columns (WP-86: hexa's operator columns): a click on a column
     /// selects it (context placeholder of [`CellParam::Select`]) and the selected column gets an
     /// accent outline. It draws and takes clicks *below* the cells above it, so
     /// [`validate`] lets it share their grid slots.
@@ -426,7 +426,7 @@ impl DeviceLayout {
     }
 
     /// The knobs of `params`, row by row in `cols` columns (the auto-layout of a foreign plugin and
-    /// of pisynth's macros until WP-86).
+    /// of hexa's macros until WP-86).
     pub fn knob_grid(params: impl IntoIterator<Item = ParamId>, cols: u8) -> DeviceLayout {
         let cols = cols.max(1);
         let cells: Vec<Cell> = params

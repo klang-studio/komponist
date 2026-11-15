@@ -344,10 +344,7 @@ fn the_track_section_sets_colour_instrument_input_and_channel() {
     let track = |app: &App| (**app.project().track(lead).unwrap()).clone();
     assert_eq!(track(h.state()).hue, komponist_model::Hue::RED);
 
-    assert_eq!(
-        value_in(&h, t, Role::ComboBox, names::INSTRUMENT),
-        "pisynth"
-    );
+    assert_eq!(value_in(&h, t, Role::ComboBox, names::INSTRUMENT), "hexa");
     choose(&mut h, t, names::INSTRUMENT, "Surge XT");
     assert_eq!(track(h.state()).channel.devices[0].plugin.name, "Surge XT");
     assert_eq!(

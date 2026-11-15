@@ -1,7 +1,7 @@
 //! `komponist-play`: the headless demo player (WP-28, gate G3).
 //!
 //! Plays the demo project "Nachtfahrt" (or a `.komponist` file) through the real engine and
-//! pisynth, before any UI exists:
+//! hexa, before any UI exists:
 //!
 //! ```text
 //! komponist-play [PROJECT.komponist] [--seconds N] [--song] [--gain DB] [--buffer FRAMES]
@@ -18,16 +18,16 @@
 //!   `Engine::render` at 48 kHz, without opening a device, and writes a 24-bit WAV (`--float`:
 //!   32-bit float). Prints length, peak, RMS and per-track activity per bar.
 //!
-//! komponist hosts no plugins yet, so pisynth stands in for every instrument: a pisynth device with
+//! komponist hosts no plugins yet, so hexa stands in for every instrument: a hexa device with
 //! a stored state plays that state; other instruments get a factory preset chosen by the track's
-//! role (track name), and drum tracks (the Sampler, step clips) get [`DrumKit`], one pisynth per drum
+//! role (track name), and drum tracks (the Sampler, step clips) get [`DrumKit`], one hexa per drum
 //! note. Effects get no processor, so the engine passes their input through. The table is printed
 //! at start.
 //!
 //! The master gets a trim of [`DEFAULT_GAIN_DB`] on top of the project's master fader (`--gain`
 //! overrides), so the demo peaks at about −8 dBFS. Debug builds abort on any allocation inside the
 //! audio callback and the offline render (`assert_no_alloc`). Play release builds
-//! (`cargo run --release -p komponist-app --bin komponist-play`): unoptimised pisynth needs more
+//! (`cargo run --release -p komponist-app --bin komponist-play`): unoptimised hexa needs more
 //! than the whole buffer period.
 
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ use komponist_audio::{
     AudioProcess, AudioState, AudioSystem, CallbackInfo, HostKind, MidiIn, MidiReceiver,
     OutputBuffer, StreamConfig, StreamParams,
 };
-use komponist_builtin::{Patch, PisynthProcessor, preset_patch, presets};
+use komponist_builtin::{HexaProcessor, Patch, preset_patch, presets};
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, Event, EventKind, LiveInput,
@@ -49,7 +49,7 @@ use komponist_engine::{
     ProcessorError, Program, StereoIo,
 };
 use komponist_model::format::{fmt_db, fmt_pos, fmt_time, note_name};
-use komponist_model::project::{BUILTIN_PISYNTH, BUILTIN_SAMPLER};
+use komponist_model::project::{BUILTIN_HEXA, BUILTIN_SAMPLER};
 use komponist_model::{
     ClipContent, Device, DeviceId, PluginFormat, Project, Tick, TickRange, Track, fixtures, persist,
 };
@@ -77,7 +77,7 @@ const ACTIVE_LEVEL: f32 = 0.001;
 /// How often the play loop polls the audio system and the engine events.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Track roles recognised by words in the track name (lower case), with the pisynth preset that
+/// Track roles recognised by words in the track name (lower case), with the hexa preset that
 /// stands in for the instrument. Checked in order, after the drum check.
 const ROLES: [(&[&str], &str); 5] = [
     (&["bass"], "Analog-Bass"),
@@ -152,7 +152,7 @@ fn load_project(path: Option<&std::path::Path>) -> Result<Project, String> {
 const USAGE: &str = "\
 usage: komponist-play [PROJECT.komponist] [options]
 
-Plays the demo project \"Nachtfahrt\" (or PROJECT) through the engine and pisynth.
+Plays the demo project \"Nachtfahrt\" (or PROJECT) through the engine and hexa.
 
 play (default): default output device, from bar 1, looping the project loop (or the whole song)
   --seconds N      stop after N seconds (default: on Enter or Ctrl-C)
@@ -249,9 +249,9 @@ struct DevicePlan {
 /// The processor that stands in for a device.
 #[derive(Debug, Clone)]
 enum StandIn {
-    /// One pisynth playing `patch`; `label` says where the patch comes from.
+    /// One hexa playing `patch`; `label` says where the patch comes from.
     Synth { patch: Box<Patch>, label: String },
-    /// A pisynth per drum note.
+    /// A hexa per drum note.
     Kit(Vec<PadPlan>),
     /// No processor: the engine passes an effect's input through (an instrument would be silent).
     Bypass,
@@ -310,8 +310,8 @@ fn plan(project: &Project) -> Vec<DevicePlan> {
 /// The stand-in for the instrument of `track`.
 fn instrument_stand_in(track: &Track, device: &Device) -> StandIn {
     let plugin = &device.plugin;
-    let is_pisynth = plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_PISYNTH;
-    if is_pisynth && let Some(state) = device.state.as_deref() {
+    let is_hexa = plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_HEXA;
+    if is_hexa && let Some(state) = device.state.as_deref() {
         match komponist_builtin::decode_state(Some(state)) {
             Ok(patch) => {
                 return StandIn::Synth {
@@ -442,7 +442,7 @@ fn drum_sound(name: &str, note: u8) -> DrumSound {
     }
 }
 
-/// The patch of the factory preset named `name` ("Init" if pisynth has no such preset).
+/// The patch of the factory preset named `name` ("Init" if hexa has no such preset).
 fn preset_by_name(name: &str) -> Patch {
     presets()
         .find(|p| p.name == name)
@@ -465,7 +465,7 @@ fn pad_patch(pad: &PadPlan) -> Patch {
 }
 
 fn print_plans(plans: &[DevicePlan]) {
-    println!("stand-ins (komponist hosts no plugins yet; pisynth plays every instrument):");
+    println!("stand-ins (komponist hosts no plugins yet; hexa plays every instrument):");
     let width = plans
         .iter()
         .map(|p| p.track.as_deref().unwrap_or("Master").chars().count())
@@ -478,8 +478,8 @@ fn print_plans(plans: &[DevicePlan]) {
         last_track = Some(track);
         let device = format!("{} [{:?}]", p.plugin, p.format);
         let what = match &p.stand_in {
-            StandIn::Synth { label, .. } => format!("pisynth, {label}"),
-            StandIn::Kit(pads) => format!("drum kit, a pisynth per note ({} notes)", pads.len()),
+            StandIn::Synth { label, .. } => format!("hexa, {label}"),
+            StandIn::Kit(pads) => format!("drum kit, a hexa per note ({} notes)", pads.len()),
             StandIn::Bypass => "bypass (no processor, audio passes through)".to_owned(),
         };
         println!("  {shown:width$}  {device:34} → {what}");
@@ -504,9 +504,9 @@ fn print_plans(plans: &[DevicePlan]) {
 // Drum kit
 // ------------------------------------------------------------------------------------------------
 
-/// One pisynth per drum note, summed: a stand-in for the Sampler.
+/// One hexa per drum note, summed: a stand-in for the Sampler.
 ///
-/// A note-on/off for a pad's note goes to that pad's pisynth at the pad's key; other notes are
+/// A note-on/off for a pad's note goes to that pad's hexa at the pad's key; other notes are
 /// ignored. MIDI messages and `AllNotesOff` go to every pad; parameters to none. A pad without
 /// voices whose last output was silent is skipped until its next event.
 struct DrumKit {
@@ -520,7 +520,7 @@ struct DrumKit {
 struct Pad {
     note: u8,
     key: u8,
-    synth: PisynthProcessor,
+    synth: HexaProcessor,
     /// No voices and silent output in the last call.
     quiet: bool,
 }
@@ -536,7 +536,7 @@ impl DrumKit {
                 .map(|p| Pad {
                     note: p.note,
                     key: p.key,
-                    synth: PisynthProcessor::new(pad_patch(p)),
+                    synth: HexaProcessor::new(pad_patch(p)),
                     quiet: true,
                 })
                 .collect(),
@@ -646,7 +646,7 @@ impl Processor for DrumKit {
 /// The processor for a stand-in, `None` for a bypass.
 fn processor(stand_in: &StandIn) -> Option<Box<dyn Processor>> {
     match stand_in {
-        StandIn::Synth { patch, .. } => Some(Box::new(PisynthProcessor::new(**patch))),
+        StandIn::Synth { patch, .. } => Some(Box::new(HexaProcessor::new(**patch))),
         StandIn::Kit(pads) => Some(Box::new(DrumKit::new(pads))),
         StandIn::Bypass => None,
     }
@@ -1259,9 +1259,9 @@ mod tests {
         let expected = [
             ("Drums", "Sampler", "kit of 6"),
             ("Drums", "LSP Compressor", "bypass"),
-            ("Bass", "pisynth", "preset \"Analog-Bass\""),
+            ("Bass", "hexa", "preset \"Analog-Bass\""),
             ("Bass", "LSP Para EQ x8", "bypass"),
-            ("Lead", "pisynth", "preset \"Poly-Synth\""),
+            ("Lead", "hexa", "preset \"Poly-Synth\""),
             ("Lead", "LSP Para EQ x8", "bypass"),
             ("Lead", "TAL-Chorus-LX", "bypass"),
             ("Lead", "Dragonfly Hall Reverb", "bypass"),
@@ -1276,7 +1276,7 @@ mod tests {
             .map(|&(t, d, w)| (t, d, w.to_owned()))
             .collect();
         assert_eq!(summary, expected);
-        // Every named preset exists in pisynth's bank.
+        // Every named preset exists in hexa's bank.
         let names: Vec<&str> = presets().map(|p| p.name).collect();
         for (_, preset) in ROLES {
             assert!(names.contains(&preset), "{preset}");
@@ -1314,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_pisynth_state_wins_over_the_role_preset() {
+    fn a_stored_hexa_state_wins_over_the_role_preset() {
         let mut project = demo_project();
         let patch = preset_patch(1).unwrap();
         let bass = Arc::make_mut(&mut project.tracks[1]);
@@ -1373,7 +1373,7 @@ mod tests {
         let pads = drum_pads(&demo_project().tracks[0]);
         let mut kit = DrumKit::new(&pads);
         kit.activate(48_000.0, 1024).unwrap();
-        assert_eq!(kit.latency(), PisynthProcessor::default().latency());
+        assert_eq!(kit.latency(), HexaProcessor::default().latency());
         // Silence without events, every output frame written.
         let (l, r) = run_kit(&mut kit, 512, &[]);
         assert_eq!((peak(&l), peak(&r)), (0.0, 0.0));

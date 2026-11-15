@@ -18,7 +18,7 @@
 //! builtin devices, plugin manager, app, UI) and it holds the display formatting
 //! ([`crate::format`]) and the fader taper the `Db` scale shares. It depends on no other studio
 //! crate, so the adapters from foreign types live where those types are: bridged plugins in
-//! `komponist-plugins`, pisynth's macros in `komponist-builtin`.
+//! `komponist-plugins`, hexa's macros in `komponist-builtin`.
 //!
 //! Plain values are what travels to devices (`Command::SetParam`, `PluginAction::SetParam`); the
 //! normalised value is for knobs, automation lanes and modulation.

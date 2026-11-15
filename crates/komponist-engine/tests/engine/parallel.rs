@@ -1,5 +1,5 @@
 //! Parallel track processing (WP-65): the output with worker threads is bit-exact with the
-//! single-threaded engine (realtime and offline, test processors and pisynth), chains that share
+//! single-threaded engine (realtime and offline, test processors and hexa), chains that share
 //! a slot run serially, bridge-style processors are started early (`Processor::begin`) and their
 //! tracks run last, and the pool can be changed and switched off.
 //!
@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use komponist_builtin::{Internal, PisynthProcessor, preset_patch, presets};
+use komponist_builtin::{HexaProcessor, Internal, preset_patch, presets};
 use komponist_engine::testing::{TestGain, TestSine};
 use komponist_engine::{
     Command, Event, MidiInEvent, MidiPort, ProcessContext, ProcessStatus, Processor,
@@ -55,14 +55,14 @@ fn sines() -> Setup {
     (p, processors)
 }
 
-/// 8 pisynth tracks with the bench's stress material (presets E-Piano, Strings, Supersaw, Init).
-fn pisynths() -> Setup {
+/// 8 hexa tracks with the bench's stress material (presets E-Piano, Strings, Supersaw, Init).
+fn hexas() -> Setup {
     let names = ["E-Piano", "Strings", "Supersaw", "Init"];
     let mut processors: Vec<(u32, Box<dyn Processor>)> = Vec::new();
     let tracks = (0..8)
         .map(|i| {
             let preset = presets().find(|x| x.name == names[i as usize % 4]).unwrap();
-            let mut p = PisynthProcessor::new(preset_patch(preset.index).unwrap());
+            let mut p = HexaProcessor::new(preset_patch(preset.index).unwrap());
             p.activate(RATE, 256).unwrap();
             processors.push((i, Box::new(p)));
             track(u64::from(i) + 1, i, material(i))
@@ -220,11 +220,11 @@ fn internal_effects_are_bit_exact_with_workers() {
 }
 
 #[test]
-fn pisynth_is_bit_exact_with_workers() {
+fn hexa_is_bit_exact_with_workers() {
     let frames = 48_000;
-    let single = play(0, frames, pisynths);
-    let parallel = play(3, frames, pisynths);
-    assert_bit_exact(&single, &parallel, "pisynth, 3 workers");
+    let single = play(0, frames, hexas);
+    let parallel = play(3, frames, hexas);
+    assert_bit_exact(&single, &parallel, "hexa, 3 workers");
 }
 
 /// Two tracks whose chains share an effect slot cannot run in parallel: the engine runs them

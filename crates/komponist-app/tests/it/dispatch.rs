@@ -185,7 +185,7 @@ fn opening_a_clip_fills_the_editor_tab() {
 }
 
 #[test]
-fn ctrl_t_adds_an_armed_pisynth_track() {
+fn ctrl_t_adds_an_armed_hexa_track() {
     let mut a = app();
     let n = a.project().tracks.len();
     a.dispatch(Action::Edit(EditAction::NewMidiTrack));
@@ -193,7 +193,7 @@ fn ctrl_t_adds_an_armed_pisynth_track() {
     assert_eq!(p.tracks.len(), n + 1);
     let t = p.tracks.last().unwrap();
     assert!(t.arm && t.monitor);
-    assert_eq!(t.channel.devices[0].plugin.name, "pisynth");
+    assert_eq!(t.channel.devices[0].plugin.name, "hexa");
     assert!(p.tracks.iter().filter(|x| x.arm).count() == 1);
     assert_eq!(a.ui().selection.tracks.iter().next(), Some(&t.id));
     assert!(

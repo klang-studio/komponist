@@ -73,7 +73,7 @@ fn snapshot_next_to_s01() {
     let mut results = SnapshotResults::new();
     for ppp in [1.0, 2.0] {
         let mut app = app();
-        // S01 marks pisynth in "Instrumente" (`sel:1`) and hovers Surge XT.
+        // S01 marks hexa in "Instrumente" (`sel:1`) and hovers Surge XT.
         app.ui_mut().browser.highlighted = Some(5);
         let mut h = harness_at(app, ppp);
         h.run_steps(2);
@@ -326,14 +326,14 @@ fn the_star_toggles_a_favourite_and_the_settings_keep_it() {
     let surge = plugin(&screens_catalog(), "surge");
     assert!(h.state().settings().favorites.contains(&surge));
     let rows = row_names(&h);
-    assert_eq!(&rows[..3], ["pisynth", "Sampler", "Surge XT"], "Favoriten");
+    assert_eq!(&rows[..3], ["hexa", "Sampler", "Surge XT"], "Favoriten");
     // Saved: a new app with the file shows it as a favourite.
     let saved = Settings::load(&path).unwrap();
     assert!(saved.favorites.contains(&surge));
     let engine = komponist_app::engine_sync::EngineSync::null(Box::new(FakeHost::new()));
     let doc = komponist_model::Document::new(demo_project());
     let h2 = harness(App::new(doc, engine, saved, None));
-    assert_eq!(&row_names(&h2)[..3], ["pisynth", "Sampler", "Surge XT"]);
+    assert_eq!(&row_names(&h2)[..3], ["hexa", "Sampler", "Surge XT"]);
     // And off again.
     let star = h
         .get_all_by_role_and_label(Role::Button, &star_label)
@@ -403,10 +403,10 @@ fn a_row_dragged_onto_the_empty_area_makes_a_track() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Presets · pisynth, Projekt (takes)
+// Presets · hexa, Projekt (takes)
 
 #[test]
-fn a_preset_loads_into_the_selected_tracks_pisynth() {
+fn a_preset_loads_into_the_selected_tracks_hexa() {
     let mut app = app();
     select_track(&mut app, 2);
     let device = app.project().tracks[2].channel.devices[0].id;
@@ -420,7 +420,7 @@ fn a_preset_loads_into_the_selected_tracks_pisynth() {
     let preset = h.get_by_role_and_label(Role::ListItem, first.name).rect();
     double_click(&mut h, preset.center());
     assert!(h.state().dispatched().any(|a| *a
-        == Action::Plugin(PluginAction::ApplyPisynthPreset {
+        == Action::Plugin(PluginAction::ApplyHexaPreset {
             device,
             preset: first.index
         })));
@@ -437,9 +437,9 @@ fn a_preset_loads_into_the_selected_tracks_pisynth() {
 }
 
 #[test]
-fn a_preset_without_a_pisynth_on_the_selected_track_makes_a_new_pisynth_track() {
+fn a_preset_without_a_hexa_on_the_selected_track_makes_a_new_hexa_track() {
     let mut app = app();
-    // Pad plays Surge XT: no pisynth there.
+    // Pad plays Surge XT: no hexa there.
     select_track(&mut app, 3);
     let tracks = app.project().tracks.len();
     let mut h = harness(app);

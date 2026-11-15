@@ -2,7 +2,7 @@
 
 Status: **proposal, waiting for approval** (stack decision, gate G0 in `PLAN.md`).
 Date: 2026-11-13. Inputs: `../klang-studio-handoff/` (design v0.1 "Graphit"),
-`../daw-design-briefing.md`, `../klang-dsp`, `../pisynth`, `../klopfer`.
+`../daw-design-briefing.md`, klang-dsp, pisynth (origin of hexa), `../klopfer`.
 
 This document fixes the structure that the work packages in `PLAN.md` build on.
 Anything marked **Decision** needs the owner's approval before code is written.
@@ -24,7 +24,7 @@ From `HANDOFF.md` §3 and the screens:
 | R3 | A plugin crash must not stop the track (S05 "abgestürzt → Neu laden") | **Plugins run out of process.** In-process hosting cannot survive a segfault. |
 | R4 | The realtime audio thread is separate from the UI | No locks, allocation or blocking syscalls on the audio thread. Lock-free queues. |
 | R5 | Pixel-exact custom UI, 1×/2× scaling, 1 px lines, 60 fps with thousands of notes | GPU-drawn custom widgets, our own hit testing for canvases, culling and level of detail. |
-| R6 | Built-in instruments pisynth (6-op FM) and klopfer (drum sampler) | pisynth's `synth-core` runs in process. klopfer is already a CLAP plugin. |
+| R6 | Built-in instruments hexa (6-op FM) and klopfer (drum sampler) | hexa (the built-in FM synth, derived from the pisynth hardware synth) runs in process as `hexa-core`. klopfer is already a CLAP plugin. |
 | R7 | Tokens are never hard-coded; `tokens.json` is the single source of truth | Code generation from `tokens.json` at build time. |
 | R8 | Keyboard first; every frequent action has a shortcut | Central action and keymap layer, independent of widgets. |
 | R9 | Later: audio tracks, automation, buses/sends, CC lanes | Extension points in the model, the engine events and the program, without building them now. |
@@ -86,7 +86,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 | D3 | Plugin format layer | **decided after WP-15:** own layer behind `HostedPlugin` on clack-host 0.2 (CLAP) + vst3 0.3 (VST3); CLAP first. Test plugins with nice-plug |
 | D4 | Plugin isolation | out of process, one bridge per instance |
 | D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN". **Superseded by WP-87:** komponist has its own Sampler (internal device, `klopfer_dsp` engine); klopfer is an ordinary scanned CLAP plugin |
-| D6 | pisynth integration | in process via `synth-core` (`alloc` + `serde` features), as a built-in `Processor` |
+| D6 | hexa integration | in process via `hexa-core` (`alloc` + `serde` features), as a built-in `Processor` |
 | D7 | Project format | one JSON file `*.komponist` with schema version; plugin states as base64 |
 | D8 | Undo | immutable snapshots with `Arc` structural sharing (copy on write) |
 | D9 | Musical time | `i64` ticks at 960 PPQ; display `Takt.Schlag.Tick` with 240 ticks/beat (= PPQ/4) |
@@ -103,7 +103,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 │  │ App: Document (model +   │ ──rtrb──────▶   │ Engine                        │  │
 │  │ undo), UiState, Keymap,  │                 │  transport · sequencer ·      │  │
 │  │ panels, dialogs, plugin  │ ◀──rtrb──────── │  mixer · metronome · record   │  │
-│  │ frame windows            │   events +      │  processors: pisynth (in-proc)│  │
+│  │ frame windows            │   events +      │  processors: hexa (in-proc)│  │
 │  │ EngineSync (compile)     │   garbage       │  ExternalProcessor ──┐        │  │
 │  └────────────┬─────────────┘ ◀── atomics ─── │  telemetry (meters…) │        │  │
 │               │                 (telemetry)   └──────────────────────┼────────┘  │
@@ -135,8 +135,8 @@ Threads and their rules:
 ## 4. Workspace and crates
 
 New repository `komponist/` (this folder), Cargo workspace, edition 2024, resolver 3 (as in pisynth).
-Sibling repositories are referenced by **relative path** and must stay at their places:
-`../klang-dsp`, `../pisynth/crates/synth-core`, `../klopfer` (bundle build only).
+klang-dsp is a git dependency pinned to a commit (`docs/INSTALL.md` for the local override). `crates/hexa-core` is
+vendored from pisynth's `synth-core`. `../klopfer` is referenced by relative path.
 
 ```
 komponist/
@@ -151,7 +151,7 @@ komponist/
     komponist-model/            project document, time, edits, undo, serde, formatting
     komponist-engine/           RT engine, Processor trait, program compiler, offline render, export
     komponist-audio/            cpal backends, midir inputs, stream lifecycle, CPU/xrun stats
-    komponist-builtin/          pisynth adapter (Processor), metronome voice
+    komponist-builtin/          hexa adapter (Processor), metronome voice
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
@@ -169,7 +169,7 @@ graph TD
   dsp --> engine[komponist-engine]
   model[komponist-model] --> engine
   engine --> builtin[komponist-builtin]
-  synth[(pisynth synth-core)] --> builtin
+  synth[(hexa-core)] --> builtin
   ipc[komponist-ipc] --> bridge[komponist-bridge]
   hosting[komponist-hosting] --> bridge
   ipc --> plugins[komponist-plugins]
@@ -290,9 +290,9 @@ without buses has every track's output on the master and no sends, which is the 
 - **Device parameters and plugin states are tracked** (owner decision 2026-11-15). A knob, fader,
   XY or graph-handle drag is one gesture, a wheel burst is one gesture, a click, key step, text
   entry, reset or dropdown choice is one step; a sample load, replace or clear is one step. The
-  value goes into the device state (`edits::set_device_state`) and, for pisynth and the internal
+  value goes into the device state (`edits::set_device_state`) and, for hexa and the internal
   devices, to the running processor as `SetParam` on the engine's fast path: the app does **not**
-  run `EngineSync::sync_device_states` for it (that hands pisynth a fresh processor), so a drag
+  run `EngineSync::sync_device_states` for it (that hands hexa a fresh processor), so a drag
   neither clicks nor recompiles per frame. Undo, redo, a cancelled gesture, presets and pastes do
   follow the document that way. A bridged plugin's own edits and card parameters arrive as state
   snapshots; they are tracked too, **coalesced** per device (snapshots within 1 s amend one step,
@@ -955,17 +955,20 @@ table of CLAP features / VST3 subcategories.
   dedicated thread — Strg S always goes to komponist; Leertaste, Esc, Strg Z, Strg Shift Z go to komponist unless
   the user is typing in the plugin (heuristic: text keys start a typing session, Enter/Tab/Esc or 5 s idle end it);
   everything else goes to the plugin. `KOMPONIST_LOG_KEYS=1` logs keys, grab decisions and focus changes.
-  `komponist --open-plugin NAME` opens a frame directly (for checks). Presets work for pisynth only until a
+  `komponist --open-plugin NAME` opens a frame directly (for checks). Presets work for hexa only until a
   CLAP/VST3 preset API exists (post v0.1).
 
 ### 8.5 Built-in instruments
 
-- **pisynth (D6):** `komponist-builtin::PisynthProcessor` wraps `synth_core::Synth<1>` (`Synth::boxed`,
+- **hexa (D6):** the built-in FM synth, called pisynth until 2026-11-15 (its stored plugin id is still
+  `"pisynth"`; older files that store the name "pisynth" show "hexa" after loading, `persist::from_json`).
+  It derives from the pisynth hardware synth's engine (`crates/hexa-core`, copied from `synth-core`).
+  `komponist-builtin::HexaProcessor` wraps `hexa_core::Synth<1>` (`Synth::boxed`,
   features `alloc` + `serde`). Events are applied sample-accurately by splitting `render` at event
-  offsets. State = `Patch` (serde). The browser shows the factory presets (`synth_core::presets`)
-  under "Presets · pisynth". The device card shows 8 macros (S05: Algorithmus, Ratio 2, Index,
+  offsets. State = `Patch` (serde). The browser shows the factory presets (`hexa_core::presets`)
+  under "Presets · hexa". The device card shows 8 macros (S05: Algorithmus, Ratio 2, Index,
   Feedback, Attack, Decay, Sustain, Release) mapped to patch fields. The mapping is documented in WP-25.
-  pisynth has no own GUI in v0.1 (generic view only). An idea for later: the HEXA-6 display
+  hexa has no own GUI in v0.1 (generic view only). An idea for later: the HEXA-6 display
   (`synth-ui`, LVGL) rendered into a texture in a frame window.
 - **klopfer (D5):** `../klopfer` builds `Klopfer.clap` (`cargo xtask bundle klopfer --release`).
   The catalog contains it as a built-in entry ("INTERN") with a fixed path. It runs through the
@@ -1062,7 +1065,7 @@ with `Painter`:
 ### 10.1 Current state
 
 `no_std`, no allocation, `f32`, math via `libm`. Modules: `biquad`, `crush`, `one_pole`, `phase`, `rng`,
-`sine`, `svf`, `units`, `wave` (≈ 1 200 lines with tests). Users: pisynth (`synth-core`, `synth-ui`)
+`sine`, `svf`, `units`, `wave` (≈ 1 200 lines with tests). Users: pisynth (`synth-core`, `synth-ui`), hexa-core
 and klopfer (`klopfer_dsp`, plugin). Rule from the crate doc: *building blocks only, no parameter
 mapping; something moves in once at least two projects need it.*
 **klang-dsp is not under version control yet.** That must change before agents edit it (WP-00).

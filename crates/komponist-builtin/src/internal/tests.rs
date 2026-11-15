@@ -96,7 +96,7 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), Internal::ALL.len());
-    assert_eq!(Internal::from_id("pisynth"), None);
+    assert_eq!(Internal::from_id("hexa"), None);
     let mut clap = Internal::Eq.plugin_ref();
     clap.format = PluginFormat::Clap;
     assert_eq!(Internal::from_plugin(&clap), None);

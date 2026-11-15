@@ -246,7 +246,7 @@ fn on_header(r: Rect) -> Pos2 {
 }
 
 fn lead_header(h: &Harness<'_, App>) -> Rect {
-    header_rect(h, "Spur Lead, pisynth")
+    header_rect(h, "Spur Lead, hexa")
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn header_click_selects_the_track_for_the_inspector() {
     assert_eq!(sel.tracks.iter().copied().collect::<Vec<_>>(), vec![lead]);
     assert!(sel.clips.is_empty());
     assert_eq!(h.state().ui().focus, FocusArea::Arrangement);
-    let node = h.get_by_role_and_label(Role::Row, "Spur Lead, pisynth");
+    let node = h.get_by_role_and_label(Role::Row, "Spur Lead, hexa");
     assert_eq!(node.accesskit_node().is_selected(), Some(true));
 }
 
@@ -266,7 +266,7 @@ fn header_click_selects_the_track_for_the_inspector() {
 fn shift_click_selects_a_range_and_ctrl_click_adds_one() {
     let mut h = harness(demo());
     let ids: Vec<TrackId> = (0..6).map(|i| track_id(&h, i)).collect();
-    click(on_header(header_rect(&h, "Spur Bass, pisynth")), &mut h);
+    click(on_header(header_rect(&h, "Spur Bass, hexa")), &mut h);
     click_with(
         on_header(header_rect(&h, "Spur Pad, Plugin fehlt: Surge XT")),
         Modifiers::SHIFT,
@@ -372,7 +372,7 @@ fn ctrl_t_adds_a_midi_track_and_delete_removes_selected_tracks() {
     assert!(p.tracks[6].arm, "armed exclusively");
     assert!(h.state().ui().selection.tracks.contains(&new));
     // Its header is there.
-    h.get_by_role_and_label(Role::Row, &format!("Spur {}, pisynth", p.tracks[6].name));
+    h.get_by_role_and_label(Role::Row, &format!("Spur {}, hexa", p.tracks[6].name));
     // Entf deletes the selected track.
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
@@ -383,7 +383,7 @@ fn ctrl_t_adds_a_midi_track_and_delete_removes_selected_tracks() {
 fn an_instrument_dropped_on_the_empty_area_makes_an_armed_track() {
     let mut h = harness(demo());
     let below = lead_header(&h).left_bottom() + vec2(300.0, 300.0);
-    drop_plugin(komponist_app::app::pisynth_ref(), below, &mut h);
+    drop_plugin(komponist_app::app::hexa_ref(), below, &mut h);
     let p = project(&h);
     assert_eq!(p.tracks.len(), 7);
     assert!(p.tracks[6].arm);
@@ -403,12 +403,12 @@ fn an_instrument_dropped_on_a_header_replaces_the_instrument() {
     let mut h = harness(demo());
     let keys = header_rect(&h, "Spur Keys, Plugin fehlt: Dexed");
     let keys_id = track_id(&h, 4);
-    drop_plugin(komponist_app::app::pisynth_ref(), on_header(keys), &mut h);
+    drop_plugin(komponist_app::app::hexa_ref(), on_header(keys), &mut h);
     let p = project(&h);
     assert_eq!(p.tracks.len(), 6);
     let t = p.track(keys_id).unwrap();
-    assert_eq!(t.channel.devices[0].plugin.name, "pisynth");
-    h.get_by_role_and_label(Role::Row, "Spur Keys, pisynth");
+    assert_eq!(t.channel.devices[0].plugin.name, "hexa");
+    h.get_by_role_and_label(Role::Row, "Spur Keys, hexa");
 }
 
 /// A browser drag (WP-44): the payload is a `PluginRef` in egui's drag and drop, released at
@@ -1090,7 +1090,7 @@ fn an_empty_project_shows_the_hint_and_its_primary_action() {
             .is_none()
     );
     // A double-click into the new track makes a one-bar clip and opens it (S10 "Leere Spur").
-    let r = header_rect(&h, &format!("Spur {}, pisynth", p.tracks[0].name));
+    let r = header_rect(&h, &format!("Spur {}, hexa", p.tracks[0].name));
     let at = pos2(x_of(&h, Tick(BAR / 2)), r.center().y);
     double_click(at, &mut h);
     let p = project(&h);
@@ -1169,8 +1169,8 @@ mod new_track {
         let undo_before = undo_text(&h);
         assert!(!dialog_open(&h));
         open_by_click(&mut h);
-        // Pisynth is chosen, the name is the automatic one, the count 1.
-        let sel = h.get_by_role_and_label(Role::ListBoxOption, "pisynth");
+        // Hexa is chosen, the name is the automatic one, the count 1.
+        let sel = h.get_by_role_and_label(Role::ListBoxOption, "hexa");
         assert!(sel.accesskit_node().is_selected() == Some(true));
         h.get_by_role_and_label(Role::SpinButton, dn::COUNT);
         h.get_by_role_and_label(Role::TextInput, dn::NAME);
@@ -1201,10 +1201,10 @@ mod new_track {
     }
 
     #[test]
-    fn one_track_with_pisynth_is_what_a_drop_makes() {
+    fn one_track_with_hexa_is_what_a_drop_makes() {
         let mut dropped = harness(demo());
         let at = new_track_box(&dropped).center();
-        drop_plugin(komponist_app::app::pisynth_ref(), at, &mut dropped);
+        drop_plugin(komponist_app::app::hexa_ref(), at, &mut dropped);
         assert!(!dialog_open(&dropped), "a drop does not open the dialog");
 
         let mut h = harness(demo());
@@ -1220,7 +1220,7 @@ mod new_track {
             made.channel.devices[0].plugin,
             drop.channel.devices[0].plugin
         );
-        assert_eq!(made.channel.devices[0].plugin.name, "pisynth");
+        assert_eq!(made.channel.devices[0].plugin.name, "hexa");
         assert!(made.arm && made.monitor);
         assert_eq!(
             h.state()
@@ -1289,13 +1289,13 @@ mod new_track {
         let mut h = harness(demo());
         open_by_click(&mut h);
         assert!(
-            h.query_by_role_and_label(Role::ListBoxOption, "pisynth")
+            h.query_by_role_and_label(Role::ListBoxOption, "hexa")
                 .is_some()
         );
         h.get_by_role_and_label(Role::ListBoxOption, dn::NO_INSTRUMENT);
         type_in(&mut h, dn::SEARCH, "sampl");
         assert!(
-            h.query_by_role_and_label(Role::ListBoxOption, "pisynth")
+            h.query_by_role_and_label(Role::ListBoxOption, "hexa")
                 .is_none()
         );
         // The first hit is chosen; Enter creates with it.

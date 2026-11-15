@@ -232,7 +232,7 @@ fn left_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
             events.push(HeaderEvent::PresetNext);
         }
     });
-    // No preset API for CLAP/VST3 and no user presets for pisynth yet (report).
+    // No preset API for CLAP/VST3 and no user presets for hexa yet (report).
     ui.add_enabled(model.can_save, Button::new(names::SAVE));
 }
 

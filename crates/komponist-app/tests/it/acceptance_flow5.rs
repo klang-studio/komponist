@@ -1,7 +1,7 @@
 //! Acceptance flow 5 (HANDOFF §9): export as WAV through "⋯ › WAV exportieren …" and through
 //! Strg Shift E; the files are read back (length = song + tail, normalised peak, music in the body).
 //!
-//! The song is the demo's first bar on pisynth only (debug builds render slowly). Files and
+//! The song is the demo's first bar on hexa only (debug builds render slowly). Files and
 //! settings go to a scratch folder under `CARGO_TARGET_TMPDIR`, never to the real home.
 
 use crate::acceptance_support;
@@ -27,7 +27,7 @@ use komponist_model::{DeviceRole, Document, Project, Tick, TickRange};
 const BAR: i64 = 3840;
 const PATIENCE: Duration = Duration::from_secs(120);
 
-/// The demo's first bar, pisynth for every instrument, no effects.
+/// The demo's first bar, hexa for every instrument, no effects.
 fn one_bar_song() -> Project {
     let mut p = demo_project();
     for track in &mut p.tracks {
@@ -37,9 +37,9 @@ fn one_bar_song() -> Project {
             .devices
             .retain(|d| d.role == DeviceRole::Instrument);
         for device in &mut track.channel.devices {
-            if !komponist_app::device_host::is_pisynth(device) {
+            if !komponist_app::device_host::is_hexa(device) {
                 let device = Arc::make_mut(device);
-                device.plugin = komponist_app::app::pisynth_ref();
+                device.plugin = komponist_app::app::hexa_ref();
                 device.state = None;
             }
         }

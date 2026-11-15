@@ -19,7 +19,7 @@ use komponist_app::device_host::DeviceHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
-use komponist_app::views::devices::model::pisynth_macro_params;
+use komponist_app::views::devices::model::hexa_macro_params;
 use komponist_app::windows::plugin_frame::body::{self, BodyEvent, BodyModel, ParamGrid};
 use komponist_app::windows::plugin_frame::header::{self, HeaderEvent, HeaderModel, Mark};
 use komponist_app::windows::plugin_frame::metrics;
@@ -59,9 +59,9 @@ fn surge_header() -> HeaderModel {
     }
 }
 
-fn pisynth_header() -> HeaderModel {
+fn hexa_header() -> HeaderModel {
     HeaderModel {
-        name: "pisynth".into(),
+        name: "hexa".into(),
         sub: "Lead · INTERN".into(),
         presets: komponist_builtin::presets()
             .map(|p| p.name.to_owned())
@@ -74,17 +74,17 @@ fn pisynth_header() -> HeaderModel {
     }
 }
 
-/// pisynth's macros as the frame shows them (WP-44's model, read from the device state).
+/// hexa's macros as the frame shows them (WP-44's model, read from the device state).
 fn macro_grid() -> ParamGrid {
     let project = demo_project();
-    let pisynth = project
+    let hexa = project
         .tracks
         .iter()
         .flat_map(|t| t.channel.devices.iter())
-        .find(|d| d.plugin.name == "pisynth")
+        .find(|d| d.plugin.name == "hexa")
         .unwrap();
     ParamGrid {
-        params: pisynth_macro_params(pisynth),
+        params: hexa_macro_params(hexa),
     }
 }
 
@@ -188,7 +188,7 @@ fn frame_states_next_to_s05() {
         ),
         (
             "plugin-frame-params",
-            frame(pisynth_header(), BodyModel::Params(macro_grid())),
+            frame(hexa_header(), BodyModel::Params(macro_grid())),
             params_size,
         ),
     ];
@@ -277,7 +277,7 @@ fn header_controls_report_what_the_user_did() {
 #[test]
 fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
     let mut h = frame_harness(
-        frame(pisynth_header(), BodyModel::Params(macro_grid())),
+        frame(hexa_header(), BodyModel::Params(macro_grid())),
         [900.0, 300.0],
         1.0,
     );
@@ -301,7 +301,7 @@ fn a_plugin_without_gui_cannot_switch_to_the_plugin_view() {
 #[test]
 fn knobs_report_plain_values_on_the_step_grid() {
     let mut h = frame_harness(
-        frame(pisynth_header(), BodyModel::Params(macro_grid())),
+        frame(hexa_header(), BodyModel::Params(macro_grid())),
         [900.0, 300.0],
         1.0,
     );
@@ -467,7 +467,7 @@ impl DeviceHost for FakeHost {
         self.known(device).then(|| self.values.get(&id)).flatten()
     }
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
-        // pisynth goes through the engine (and into the document), as with the real host.
+        // hexa goes through the engine (and into the document), as with the real host.
         if !self.known(device) {
             return false;
         }
@@ -667,7 +667,7 @@ fn oben_halten_and_the_position_are_remembered_per_plugin() {
     assert!(w.keep_on_top);
     assert_eq!(w.pos, Some((120, 80)));
     // Another plugin has no memory.
-    let other = device_named(h.state(), "pisynth");
+    let other = device_named(h.state(), "hexa");
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(other)));
     h.run_steps(3);
@@ -716,10 +716,10 @@ fn the_frame_shows_loading_crashed_and_reloads() {
 }
 
 #[test]
-fn pisynth_opens_its_parameters_and_steps_through_its_presets() {
+fn hexa_opens_its_parameters_and_steps_through_its_presets() {
     let (app, _script, _) = app();
     let mut h = harness(app);
-    let lead = device_named(h.state(), "pisynth");
+    let lead = device_named(h.state(), "hexa");
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(lead)));
     h.run_steps(3);
@@ -734,7 +734,7 @@ fn pisynth_opens_its_parameters_and_steps_through_its_presets() {
     h.get_by_label(header::names::PRESET_NEXT).click();
     h.run_steps(3);
     let applied = h.state().dispatched().find_map(|a| match a {
-        Action::Plugin(PluginAction::ApplyPisynthPreset { device, preset }) if *device == lead => {
+        Action::Plugin(PluginAction::ApplyHexaPreset { device, preset }) if *device == lead => {
             Some(*preset)
         }
         _ => None,
@@ -811,18 +811,18 @@ fn a_missing_plugin_says_so_and_esc_in_the_main_window_leaves_the_frame_open() {
 fn another_project_closes_every_plugin_frame() {
     let (app, script, surge) = app();
     let mut h = harness(app);
-    let pisynth = device_named(h.state(), "pisynth");
-    for device in [surge, pisynth] {
+    let hexa = device_named(h.state(), "hexa");
+    for device in [surge, hexa] {
         h.state_mut()
             .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));
     }
     h.run_steps(3);
-    assert!(h.state().plugin_frame(surge).is_some() && h.state().plugin_frame(pisynth).is_some());
+    assert!(h.state().plugin_frame(surge).is_some() && h.state().plugin_frame(hexa).is_some());
     h.state_mut().dispatch(Action::Project(ProjectAction::New));
     h.run_steps(3);
     assert!(h.state().ui().plugin_windows.is_empty());
     assert!(h.state().plugin_frame(surge).is_none());
-    assert!(h.state().plugin_frame(pisynth).is_none());
+    assert!(h.state().plugin_frame(hexa).is_none());
     assert!(h.query_by_label(header::names::CLOSE).is_none());
     // No GUI was open (no X11 here), so none had to close.
     assert!(script.borrow().closed.is_empty());

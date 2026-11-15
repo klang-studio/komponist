@@ -1,4 +1,4 @@
-//! `fm_algorithm` (`W_alg`): the special display of pisynth's FM routing, for what the graph does
+//! `fm_algorithm` (`W_alg`): the special display of hexa's FM routing, for what the graph does
 //! not cover (nodes instead of a function). A `surface.1` display with the title „Algorithmus 5“
 //! ([`typography::GRAPH_TITLE`]); each operator is a 22 × 18 box with its number (Mono 10, 600),
 //! carriers in the track colour with `surface.0` text, modulators in `surface.4` with `text.1`;
@@ -34,7 +34,7 @@ use crate::{focus, px};
 pub struct Topology<'a> {
     /// Per operator index: the bit mask of the operator indices it modulates.
     pub modulates: &'a [u8],
-    /// Bit mask of the heard operators (pisynth's `output` flag). `None`: the operators that
+    /// Bit mask of the heard operators (hexa's `output` flag). `None`: the operators that
     /// modulate nothing, as in every fixed algorithm.
     pub outputs: Option<u8>,
     /// The operator with feedback, if any.
@@ -427,7 +427,7 @@ fn paint_node(
 mod tests {
     use super::*;
 
-    /// Algorithm 1 of pisynth: 2 → 1, 4 → 3, 6 → 5 (carriers 1, 3, 5), feedback on 6.
+    /// Algorithm 1 of hexa: 2 → 1, 4 → 3, 6 → 5 (carriers 1, 3, 5), feedback on 6.
     const ALGO_1: Topology<'static> = Topology {
         modulates: &[0b000000, 0b000001, 0b000000, 0b000100, 0b001000, 0b010000],
         outputs: None,

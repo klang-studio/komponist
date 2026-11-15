@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
 use komponist_i18n::Lang;
-use komponist_model::project::{BUILTIN_PISYNTH, BUILTIN_SAMPLER};
+use komponist_model::project::{BUILTIN_HEXA, BUILTIN_SAMPLER};
 use komponist_model::{PluginFormat, PluginRef};
 use komponist_plugins::PluginDirs;
 use komponist_tokens::size;
@@ -180,7 +180,7 @@ impl Favorite {
 }
 
 /// The favourites in the order they were starred. A fresh install starts with the two built-in
-/// instruments, pisynth and the sampler (S01 "Favoriten", the prototype's `favs`).
+/// instruments, hexa and the sampler (S01 "Favoriten", the prototype's `favs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Favorites(pub Vec<Favorite>);
@@ -191,7 +191,7 @@ impl Default for Favorites {
             format: PluginFormat::Builtin,
             id: id.to_owned(),
         };
-        Favorites(vec![builtin(BUILTIN_PISYNTH), builtin(BUILTIN_SAMPLER)])
+        Favorites(vec![builtin(BUILTIN_HEXA), builtin(BUILTIN_SAMPLER)])
     }
 }
 
@@ -557,21 +557,21 @@ mod tests {
     fn favourites_start_with_the_builtins_and_toggle() {
         let s = Settings::default();
         let ids: Vec<&str> = s.favorites.0.iter().map(|f| f.id.as_str()).collect();
-        assert_eq!(ids, [BUILTIN_PISYNTH, BUILTIN_SAMPLER]);
+        assert_eq!(ids, [BUILTIN_HEXA, BUILTIN_SAMPLER]);
         let mut f = s.favorites.clone();
-        let pisynth = PluginRef {
+        let hexa = PluginRef {
             format: PluginFormat::Builtin,
-            id: BUILTIN_PISYNTH.into(),
-            name: "pisynth".into(),
+            id: BUILTIN_HEXA.into(),
+            name: "hexa".into(),
             vendor: String::new(),
             version: "9".into(),
             module: Box::default(),
         };
-        assert!(f.contains(&pisynth));
-        f.toggle(&pisynth);
-        assert!(!f.contains(&pisynth));
-        f.toggle(&pisynth);
-        assert_eq!(f.0.last(), Some(&Favorite::of(&pisynth)));
+        assert!(f.contains(&hexa));
+        f.toggle(&hexa);
+        assert!(!f.contains(&hexa));
+        f.toggle(&hexa);
+        assert_eq!(f.0.last(), Some(&Favorite::of(&hexa)));
         // An empty list stays empty after a save (no defaults come back).
         let json = serde_json::to_string(&Favorites(Vec::new())).unwrap();
         assert_eq!(json, "[]");

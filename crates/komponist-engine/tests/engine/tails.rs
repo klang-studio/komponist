@@ -2,7 +2,7 @@
 //! playing do not reset), a second Stop is the hard cut (5 ms fade, then reset), and MIDI effects do not play on.
 //! Every `process` call runs inside `assert_no_alloc` (the rig).
 
-use komponist_builtin::{Internal, PisynthProcessor, preset_patch, presets};
+use komponist_builtin::{HexaProcessor, Internal, preset_patch, presets};
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{Command, Processor, Program, SlotId};
 use komponist_model::params::ParamId;
@@ -22,11 +22,11 @@ fn device(kind: Internal, values: &[(&str, f64)]) -> komponist_builtin::Internal
     p
 }
 
-/// One pisynth ("Strings") track with a Hall behind it; a two-bar note at bar 1.
+/// One hexa ("Strings") track with a Hall behind it; a two-bar note at bar 1.
 fn strings_hall() -> (Rig, Program) {
     let mut rig = Rig::new(RATE, BLOCK);
     let preset = presets().find(|x| x.name == "Strings").unwrap();
-    let mut synth = PisynthProcessor::new(preset_patch(preset.index).unwrap());
+    let mut synth = HexaProcessor::new(preset_patch(preset.index).unwrap());
     synth.activate(RATE, BLOCK).unwrap();
     rig.insert(0, synth);
     rig.insert(1, device(Internal::Hall, &[("mix", 1.0)]));

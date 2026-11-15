@@ -1,4 +1,4 @@
-//! pisynth processor tests (PLAN WP-25 "Done when"). Every `process` and `reset` call runs inside
+//! hexa processor tests (PLAN WP-25 "Done when"). Every `process` and `reset` call runs inside
 //! `assert_no_alloc`, which aborts on any allocation or free.
 
 // Debug builds only: in release builds `assert_no_alloc` is a no-op without its allocator.

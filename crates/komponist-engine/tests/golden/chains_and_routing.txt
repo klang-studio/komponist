@@ -15,7 +15,7 @@ tracks: 4
 track 1 "Synth": gain 1.9953, pan +0.00, mute off, solo off, arm on, monitor on
   input: port 3, channel 2; pdc delay 320
   chain:
-    [0] dev 11 "pisynth" instrument -> slot 0
+    [0] dev 11 "hexa" instrument -> slot 0
     [1] dev 12 "EQ" effect -> slot 1
   notes: 0
 

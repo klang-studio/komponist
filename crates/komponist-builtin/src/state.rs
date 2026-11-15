@@ -1,20 +1,20 @@
-//! pisynth's device state (the patch as JSON) and the factory presets.
+//! hexa's device state (the patch as JSON) and the factory presets.
 //!
-//! The state is the [`Patch`] serialised with pisynth's own serde derive as UTF-8 JSON, nothing
-//! around it. pisynth's fields carry serde defaults, so a state written before a field existed
+//! The state is the [`Patch`] serialised with hexa's own serde derive as UTF-8 JSON, nothing
+//! around it. hexa's fields carry serde defaults, so a state written before a field existed
 //! still loads, and unknown fields are ignored. Loading sanitizes the patch (out-of-range values
 //! clamped, non-finite ones replaced), so a state from a file never puts invalid values into the
 //! engine. All functions here allocate and run on the UI thread.
 
-use synth_core::Patch;
+use hexa_core::Patch;
 
-/// Number of factory presets (`synth_core::PRESET_COUNT`).
-pub const PRESET_COUNT: usize = synth_core::PRESET_COUNT;
+/// Number of factory presets (`hexa_core::PRESET_COUNT`).
+pub const PRESET_COUNT: usize = hexa_core::PRESET_COUNT;
 
-/// A factory preset as the browser lists it ("Presets · pisynth").
+/// A factory preset as the browser lists it ("Presets · hexa").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PresetInfo {
-    /// Index in pisynth's factory bank, `0 .. PRESET_COUNT`; stable (new presets go to the end).
+    /// Index in hexa's factory bank, `0 .. PRESET_COUNT`; stable (new presets go to the end).
     pub index: usize,
     /// Name ("E-Piano").
     pub name: &'static str,
@@ -27,20 +27,20 @@ pub fn presets() -> impl Iterator<Item = PresetInfo> {
     (0..PRESET_COUNT).filter_map(|index| {
         Some(PresetInfo {
             index,
-            name: synth_core::preset_name(index)?,
-            category: synth_core::preset_category(index)?,
+            name: hexa_core::preset_name(index)?,
+            category: hexa_core::preset_category(index)?,
         })
     })
 }
 
 /// The preset categories in menu order ("Init", "Tasten", …).
 pub fn categories() -> impl Iterator<Item = &'static str> {
-    synth_core::categories()
+    hexa_core::categories()
 }
 
 /// The patch of factory preset `index`, `None` if out of range.
 pub fn preset_patch(index: usize) -> Option<Patch> {
-    synth_core::preset(index).map(|preset| preset.patch)
+    hexa_core::preset(index).map(|preset| preset.patch)
 }
 
 /// The patch of a device without state: factory preset 0, "Init" (the default patch with the
@@ -67,13 +67,13 @@ pub fn decode_state(state: Option<&[u8]>) -> Result<Patch, StateError> {
     }
 }
 
-/// A device state that is not a pisynth patch.
+/// A device state that is not a hexa patch.
 #[derive(Debug)]
 pub struct StateError(serde_json::Error);
 
 impl core::fmt::Display for StateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "invalid pisynth state: {}", self.0)
+        write!(f, "invalid hexa state: {}", self.0)
     }
 }
 
@@ -115,7 +115,7 @@ mod tests {
     fn missing_state_is_init_and_garbage_is_an_error() {
         assert_eq!(decode_state(None).unwrap(), preset_patch(0).unwrap());
         let err = decode_state(Some(b"{\"volume\": ")).unwrap_err();
-        assert!(err.to_string().starts_with("invalid pisynth state"));
+        assert!(err.to_string().starts_with("invalid hexa state"));
         assert!(decode_state(Some(b"[1, 2]")).is_err());
     }
 

@@ -462,11 +462,11 @@ fn release_shutdown_and_drop_end_the_bridges() {
         manager.create_processor(d, SETUP).unwrap();
     }
     // In-process and unknown devices.
-    let pisynth = Device {
+    let hexa = Device {
         plugin: PluginRef {
             format: PluginFormat::Builtin,
-            id: komponist_model::project::BUILTIN_PISYNTH.into(),
-            name: "pisynth".into(),
+            id: komponist_model::project::BUILTIN_HEXA.into(),
+            name: "hexa".into(),
             vendor: "klang-studio".into(),
             version: "0.1.0".into(),
             module: Box::default(),
@@ -474,7 +474,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
         ..device(9, DeviceRole::Instrument, clap_plugin(SYNTH), None)
     };
     assert!(matches!(
-        manager.create_processor(&pisynth, SETUP),
+        manager.create_processor(&hexa, SETUP),
         Err(PluginError::InProcess(_))
     ));
     assert_eq!(manager.status(DeviceId(9)), DeviceStatus::Ok);

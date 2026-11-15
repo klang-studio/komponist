@@ -1,6 +1,6 @@
 //! Sample-accurate events: notes, note-offs, All Notes Off, reset, macros.
 
-use komponist_builtin::{Macro, Patch, PisynthProcessor, default_patch, preset_patch};
+use komponist_builtin::{HexaProcessor, Macro, Patch, default_patch, preset_patch};
 use komponist_engine::{EventKind, Processor, ProcessorError};
 
 use crate::common::*;
@@ -160,7 +160,7 @@ fn reset_silences_at_once_and_clears_effect_tails() {
     reset(&mut p);
     let after = play(&mut p, frames(1.0), 256, &[]);
     // Silent at once. Not bit-exact zero: the reverb is still on in the patch and restarts
-    // from silence, with pisynth's anti-denormal offset (1e-20) in its tank.
+    // from silence, with hexa's anti-denormal offset (1e-20) in its tank.
     assert!(after.peak(0..after.len()) < 1e-12);
     assert_eq!(*p.patch(), patch.sanitized());
 
@@ -275,5 +275,5 @@ fn activate_checks_the_rate_and_rebuilds() {
         (44_100.0, 0, 17)
     );
     assert_eq!(*p.patch(), default_patch());
-    assert_eq!(PisynthProcessor::default().patch(), &default_patch());
+    assert_eq!(HexaProcessor::default().patch(), &default_patch());
 }

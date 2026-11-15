@@ -110,12 +110,12 @@ fn select_track(app: &mut App, track: TrackId) {
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
 }
 
-/// One pisynth track with a Hall behind it, the dock on „Geräte“.
+/// One hexa track with a Hall behind it, the dock on „Geräte“.
 fn app_with_hall() -> (App, TrackId, DeviceId) {
     let mut app = App::headless(Project::new("Intern"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
@@ -431,9 +431,9 @@ fn a_plain_drag_onto_another_track_does_nothing() {
 #[test]
 fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before_it() {
     let mut app = App::headless(Project::new("Kopie"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let a = app.project().tracks[0].id;
@@ -447,7 +447,7 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
     }));
     let names_of =
         |app: &App, t| -> Vec<String> { chain(app, t).into_iter().map(|c| c.1).collect() };
-    assert_eq!(names_of(&app, a), ["Arpeggiator", "pisynth", "Hall"]);
+    assert_eq!(names_of(&app, a), ["Arpeggiator", "hexa", "Hall"]);
     let ids: Vec<DeviceId> = chain(&app, a).into_iter().map(|c| c.0).collect();
     // A second track with an instrument refuses the instrument; MIDI effect and effect go to
     // their parts.
@@ -469,21 +469,21 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
         to: ChannelRef::Track(empty),
         index: usize::MAX,
     }));
-    assert_eq!(names_of(&app, empty), ["pisynth", "Hall"]);
+    assert_eq!(names_of(&app, empty), ["hexa", "Hall"]);
     // A MIDI effect lands in the MIDI part, in front of the instrument.
     app.dispatch(Action::Edit(EditAction::CopyDevice {
         device: ids[0],
         to: ChannelRef::Track(empty),
         index: usize::MAX,
     }));
-    assert_eq!(names_of(&app, empty), ["Arpeggiator", "pisynth", "Hall"]);
+    assert_eq!(names_of(&app, empty), ["Arpeggiator", "hexa", "Hall"]);
     // The track has an instrument now: another copy is refused, nothing changes.
     app.dispatch(Action::Edit(EditAction::CopyDevice {
         device: ids[1],
         to: ChannelRef::Track(empty),
         index: usize::MAX,
     }));
-    assert_eq!(names_of(&app, empty), ["Arpeggiator", "pisynth", "Hall"]);
+    assert_eq!(names_of(&app, empty), ["Arpeggiator", "hexa", "Hall"]);
     assert!(app.last_error().is_some());
     // An effect goes behind the instrument.
     app.dispatch(Action::Edit(EditAction::CopyDevice {
@@ -493,7 +493,7 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
     }));
     assert_eq!(
         names_of(&app, empty),
-        ["Arpeggiator", "pisynth", "Hall", "Hall"]
+        ["Arpeggiator", "hexa", "Hall", "Hall"]
     );
 }
 
@@ -560,9 +560,9 @@ fn copying_devices_puts_a_marker_on_the_system_clipboard_so_strg_v_arrives() {
 fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
     use komponist_engine::{MidiInEvent, MidiPort};
     let mut app = App::headless(Project::new("Pegel"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
@@ -639,7 +639,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
     )
     .unwrap();
     project = p;
-    let pisynth = App::headless(Project::new("x"))
+    let hexa = App::headless(Project::new("x"))
         .engine()
         .host()
         .catalog()
@@ -652,7 +652,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
         0,
         NewDevice {
             role: DeviceRole::Instrument,
-            plugin: pisynth,
+            plugin: hexa,
             state: Some(encode_state(&patch).into()),
         },
     )
@@ -660,7 +660,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
     let mut app = App::headless(project);
     select_track(&mut app, track);
     let h = harness(app);
-    let label = names::card("pisynth");
+    let label = names::card("hexa");
     let card = h.get_by_role_and_label(Role::Group, &label);
     card.get_by_role_and_label(Role::Group, names::FM_FREE);
     // The cards model carries the real masks (operator 1 → 6, operator 6 → 1).
@@ -669,7 +669,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
         h.state().engine().host(),
         &[],
     );
-    let routing = cards[0].routing.expect("pisynth has a routing");
+    let routing = cards[0].routing.expect("hexa has a routing");
     assert_eq!(routing.modulates[0] & 0b100000, 0b100000);
     assert_eq!(routing.modulates[5] & 0b000001, 0b000001);
     assert_ne!(routing.modulates, algorithms::ALGORITHMS[0].modulates);
@@ -711,7 +711,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
     patch.operators[2].modulates[0] = true;
     patch.operators[3].modulates[4] = true;
     assert_eq!(algorithms::detect(&patch), None);
-    let pisynth = App::headless(Project::new("x"))
+    let hexa = App::headless(Project::new("x"))
         .engine()
         .host()
         .catalog()
@@ -735,7 +735,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
         0,
         NewDevice {
             role: DeviceRole::Instrument,
-            plugin: pisynth,
+            plugin: hexa,
             state: Some(encode_state(&patch).into()),
         },
     )
@@ -763,7 +763,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
     patch.operators[1].modulates[2] = true;
     patch.operators[2].modulates[3] = true;
     assert_eq!(algorithms::detect(&patch), None);
-    let pisynth = App::headless(Project::new("x"))
+    let hexa = App::headless(Project::new("x"))
         .engine()
         .host()
         .catalog()
@@ -787,7 +787,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
         0,
         NewDevice {
             role: DeviceRole::Instrument,
-            plugin: pisynth,
+            plugin: hexa,
             state: Some(encode_state(&patch).into()),
         },
     )

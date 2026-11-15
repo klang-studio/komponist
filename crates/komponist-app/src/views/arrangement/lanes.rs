@@ -651,7 +651,7 @@ mod tests {
                 ("Hat zu", 39)
             ]
         );
-        // Lead has pisynth: an empty MIDI clip.
+        // Lead has hexa: an empty MIDI clip.
         let c = new_clip(&p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
         assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));
         assert!(matches!(c.content, NewClipContent::Midi { ref notes, .. } if notes.is_empty()));

@@ -1,6 +1,6 @@
 //! The device chain (WP-44) through `egui_kittest`: one test per row of the S05 notes that
 //! concerns the chain (Geräte-Karte, Ziehen, Öffnen, Parameter, Lädt / abgestürzt), the missing
-//! placeholder (S06), the state warning, pisynth's macros (saved with the project), and
+//! placeholder (S06), the state warning, hexa's macros (saved with the project), and
 //! snapshots of every device state next to S05.
 
 use crate::common;
@@ -310,7 +310,7 @@ fn a_card_has_switch_name_format_open_and_knobs() {
 }
 
 #[test]
-fn pisynth_shows_its_card_and_turning_a_knob_is_saved() {
+fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     let dir = std::env::temp_dir().join(format!("komponist-wp44-macro-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -324,7 +324,7 @@ fn pisynth_shows_its_card_and_turning_a_knob_is_saved() {
     app.dispatch(Action::Project(komponist_app::ProjectAction::OpenPath(
         path.clone(),
     )));
-    // The headless host has only pisynth: S06 lists the demo's other plugins; go on without them.
+    // The headless host has only hexa: S06 lists the demo's other plugins; go on without them.
     assert!(matches!(
         app.ui().dialog,
         Some(komponist_app::ui_state::Dialog::MissingPlugins(_))
@@ -340,7 +340,7 @@ fn pisynth_shows_its_card_and_turning_a_knob_is_saved() {
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    let label = names::card("pisynth");
+    let label = names::card("hexa");
     let names: Vec<String> = card(&h, &label)
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
@@ -636,7 +636,7 @@ fn a_failed_load_or_a_hang_does_not_read_abgestuerzt_on_the_card() {
 
 #[test]
 fn a_missing_plugin_is_a_red_placeholder_that_keeps_its_state() {
-    // The built-in host knows only pisynth: Lead's effects are missing (S06).
+    // The built-in host knows only hexa: Lead's effects are missing (S06).
     let mut app = App::headless(demo_project());
     let lead = app.project().tracks[2].id;
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
@@ -938,12 +938,12 @@ mod add_menu {
     use komponist_app::views::devices::model::{Placement, place_plugin};
     use komponist_builtin::Internal;
 
-    /// A project with one pisynth track, the dock on „Geräte“; the built-in catalog.
+    /// A project with one hexa track, the dock on „Geräte“; the built-in catalog.
     fn app_with_track() -> (App, TrackId) {
         let mut app = App::headless(Project::new("Menü"));
-        let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+        let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
         app.dispatch(Action::Plugin(PluginAction::Add {
-            plugin: pisynth,
+            plugin: hexa,
             target: DropTarget::NewTrack { index: None },
         }));
         let track = app.project().tracks[0].id;
@@ -1005,7 +1005,7 @@ mod add_menu {
         let field = search(&h).expect("the search field");
         assert!(field.accesskit_node().is_focused(), "focused right away");
         let listed = option_names(&h);
-        for name in ["pisynth", Internal::Eq.name(), Internal::Arpeggiator.name()] {
+        for name in ["hexa", Internal::Eq.name(), Internal::Arpeggiator.name()] {
             assert!(listed.iter().any(|n| n == name), "{name} in {listed:?}");
         }
     }
@@ -1035,10 +1035,7 @@ mod add_menu {
         );
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none(), "the menu closes");
-        assert_eq!(
-            names_of(h.state(), track),
-            ["pisynth", Internal::Delay.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Delay.name()]);
     }
 
     #[test]
@@ -1050,7 +1047,7 @@ mod add_menu {
         assert!(option_names(&h).is_empty());
         h.get_by_role_and_label(Role::Label, names::ADD_NO_MATCH);
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        assert_eq!(names_of(h.state(), track), ["hexa"]);
     }
 
     #[test]
@@ -1076,10 +1073,7 @@ mod add_menu {
         key(&mut h, Key::ArrowUp);
         key(&mut h, Key::ArrowDown);
         key(&mut h, Key::Enter);
-        assert_eq!(
-            names_of(h.state(), track),
-            ["pisynth", Internal::Hall.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Hall.name()]);
     }
 
     #[test]
@@ -1095,7 +1089,7 @@ mod add_menu {
         assert!(search(&h).is_none());
         assert_eq!(
             names_of(h.state(), track),
-            ["pisynth", Internal::Limiter.name()]
+            ["hexa", Internal::Limiter.name()]
         );
     }
 
@@ -1108,7 +1102,7 @@ mod add_menu {
         key(&mut h, Key::Enter);
         assert_eq!(
             names_of(h.state(), track),
-            [Internal::Arpeggiator.name(), "pisynth"]
+            [Internal::Arpeggiator.name(), "hexa"]
         );
     }
 
@@ -1122,12 +1116,12 @@ mod add_menu {
         assert_eq!(names_of(h.state(), track), [Internal::Sampler.name()]);
         // Without an instrument: an EQ is there, the instrument comes in front of it.
         let (mut app, track) = app_with_track();
-        let pisynth = app.project().track(track).unwrap().channel.devices[0].id;
+        let hexa = app.project().track(track).unwrap().channel.devices[0].id;
         app.dispatch(Action::Plugin(PluginAction::Add {
             plugin: Internal::Eq.plugin_ref(),
             target: DropTarget::Track(track),
         }));
-        app.dispatch(Action::Edit(EditAction::RemoveDevice(pisynth)));
+        app.dispatch(Action::Edit(EditAction::RemoveDevice(hexa)));
         assert_eq!(names_of(&app, track), [Internal::Eq.name()]);
         let mut h = harness(app);
         open_by_click(&mut h);
@@ -1178,12 +1172,12 @@ mod add_menu {
         type_text(&mut h, "delay");
         key(&mut h, Key::Escape);
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        assert_eq!(names_of(h.state(), track), ["hexa"]);
         open_by_click(&mut h);
         assert!(search(&h).is_some());
         click_at(&mut h, pos2(60.0, 300.0));
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        assert_eq!(names_of(h.state(), track), ["hexa"]);
     }
 
     #[test]
@@ -1195,7 +1189,7 @@ mod add_menu {
         key(&mut h, Key::Enter);
         assert_eq!(names_of(h.state(), track).len(), 2);
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        assert_eq!(names_of(h.state(), track), ["hexa"]);
     }
 
     #[test]
@@ -1236,7 +1230,7 @@ mod add_menu {
         press(&mut h, slot_rect.center(), PointerButton::Primary, false);
         h.run_steps(3);
         assert!(search(&h).is_none(), "a drop is not a click");
-        assert_eq!(names_of(h.state(), track), ["pisynth", Internal::Eq.name()]);
+        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Eq.name()]);
     }
 
     #[test]
@@ -1287,12 +1281,9 @@ mod add_menu {
         type_text(&mut h, "delay");
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none());
-        assert_eq!(
-            names_of(h.state(), track),
-            ["pisynth", Internal::Delay.name()]
-        );
+        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Delay.name()]);
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        assert_eq!(names_of(h.state(), track), ["hexa"]);
         // A second click on the button closes an open menu.
         click_at(&mut h, button.center());
         h.run_steps(3);

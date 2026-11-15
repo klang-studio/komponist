@@ -17,7 +17,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
-use komponist_app::device_host::{BuiltinHost, DeviceHost, is_pisynth};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
 use komponist_app::dialogs::export::{self as view, names};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
@@ -61,9 +61,9 @@ fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
 
-/// The demo "Nachtfahrt" with pisynth for every instrument and no effects, so that everything
+/// The demo "Nachtfahrt" with hexa for every instrument and no effects, so that everything
 /// sounds on the builtin host and no device is missing.
-fn pisynth_demo() -> Project {
+fn hexa_demo() -> Project {
     let mut p = demo_project();
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
@@ -72,9 +72,9 @@ fn pisynth_demo() -> Project {
             .devices
             .retain(|d| d.role == DeviceRole::Instrument);
         for device in &mut track.channel.devices {
-            if !is_pisynth(device) {
+            if !is_hexa(device) {
                 let device = Arc::make_mut(device);
-                device.plugin = komponist_app::app::pisynth_ref();
+                device.plugin = komponist_app::app::hexa_ref();
                 device.state = None;
             }
         }
@@ -82,10 +82,10 @@ fn pisynth_demo() -> Project {
     p
 }
 
-/// [`pisynth_demo`] cut to its first bar (debug builds render slowly): the clips that start at
+/// [`hexa_demo`] cut to its first bar (debug builds render slowly): the clips that start at
 /// tick 0, each one bar long. The song ends after bar 1.
 fn one_bar_song() -> Project {
-    let mut p = pisynth_demo();
+    let mut p = hexa_demo();
     for track in &mut p.tracks {
         let track = Arc::make_mut(track);
         track.clips.retain(|c| c.start == Tick::ZERO);
@@ -299,7 +299,7 @@ fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
 #[test]
 fn loop_and_selection_set_the_range() {
     let dir = scratch("ranges");
-    let mut project = pisynth_demo();
+    let mut project = hexa_demo();
     // The demo's loop 9–13, shortened to bar 9.
     project.loop_range = TickRange::new(Tick(8 * BAR), Tick(9 * BAR));
     let (mut app, _) = app_in(&dir, project);
@@ -365,7 +365,7 @@ fn loop_and_selection_set_the_range() {
 #[test]
 fn another_sample_rate_renders_at_it_and_the_device_rate_comes_back() {
     let dir = scratch("rate");
-    let mut project = pisynth_demo();
+    let mut project = hexa_demo();
     project.loop_range = TickRange::new(Tick(8 * BAR), Tick(9 * BAR));
     let (mut app, _) = app_in(&dir, project);
     app.step();
@@ -408,7 +408,7 @@ fn another_sample_rate_renders_at_it_and_the_device_rate_comes_back() {
 fn cancel_leaves_no_file_and_the_engine_plays_again() {
     let dir = scratch("cancel");
     // The whole demo song: 33 s, long enough to cancel in the middle.
-    let (mut app, _) = app_in(&dir, pisynth_demo());
+    let (mut app, _) = app_in(&dir, hexa_demo());
     app.step();
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
     let settings = export_settings(&dir, ExportRange::Song);
@@ -530,7 +530,7 @@ fn run_until(h: &mut Harness<'_, App>, what: &str, mut done: impl FnMut(&App) ->
 fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all() {
     let dir = scratch("missing");
     // The plain demo on the builtin host: Surge XT, Dexed, Vital and the third-party effects are
-    // missing (the Sampler and pisynth run in process).
+    // missing (the Sampler and hexa run in process).
     let mut project = demo_project();
     project.loop_range = TickRange::new(Tick(8 * BAR), Tick(8 * BAR + BAR / 2));
     let (app, _) = app_in(&dir, project);
@@ -565,11 +565,11 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
     assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"]);
     let wav = read(&dir.join("out/Nachtfahrt.wav"));
-    // Bass, Lead and the muted Arp's neighbours: pisynth sounds.
+    // Bass, Lead and the muted Arp's neighbours: hexa sounds.
     assert!(peak_db(&wav.samples) > -40.0);
 }
 
-/// pisynth through [`BuiltinHost`]; a device with plugin id "kaputt" gets a processor that
+/// hexa through [`BuiltinHost`]; a device with plugin id "kaputt" gets a processor that
 /// fails as soon as it renders offline (a bridge that dies during the export).
 struct FailingHost {
     builtin: BuiltinHost,
@@ -826,7 +826,7 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
 #[test]
 fn esc_and_the_cancel_button_end_a_running_export() {
     let dir = scratch("esc");
-    let (app, _) = app_in(&dir, pisynth_demo());
+    let (app, _) = app_in(&dir, hexa_demo());
     let mut h = harness(app);
     let settings = export_settings(&dir, ExportRange::Song);
     h.state_mut()

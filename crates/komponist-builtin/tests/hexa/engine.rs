@@ -1,10 +1,10 @@
-//! pisynth inside the real engine: timing through the sequencer, preset switch by replacing the
+//! hexa inside the real engine: timing through the sequencer, preset switch by replacing the
 //! processor, no allocation in `Engine::process`.
 
 use std::sync::Arc;
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_builtin::{PisynthProcessor, preset_patch};
+use komponist_builtin::{HexaProcessor, preset_patch};
 use komponist_engine::program::{
     ChainSlot, InputFilter, MasterProgram, SeqNote, SlotMap, TrackProgram,
 };
@@ -100,9 +100,9 @@ fn sample(program: &Program, tick: i64) -> usize {
         .tick_to_sample(Tick(tick), f64::from(RATE)) as usize
 }
 
-/// A pisynth processor for factory preset `index`, activated as the app does before inserting.
-fn pisynth(index: usize, max_block: usize) -> Box<dyn Processor> {
-    let mut p = PisynthProcessor::new(preset_patch(index).unwrap());
+/// A hexa processor for factory preset `index`, activated as the app does before inserting.
+fn hexa(index: usize, max_block: usize) -> Box<dyn Processor> {
+    let mut p = HexaProcessor::new(preset_patch(index).unwrap());
     p.activate(RATE, max_block).unwrap();
     Box::new(p)
 }
@@ -151,7 +151,7 @@ impl Rig {
             while let Some(event) = self.handle.poll() {
                 match event {
                     EngineEvent::Retired(Garbage::Processor(..)) => self.garbage += 1,
-                    EngineEvent::ProcessorFailed { .. } => panic!("pisynth failed"),
+                    EngineEvent::ProcessorFailed { .. } => panic!("hexa failed"),
                     _ => {}
                 }
             }
@@ -171,7 +171,7 @@ fn sequenced_notes_sound_on_their_samples() {
         let mut rig = Rig::new(max_block);
         rig.send(Command::InsertProcessor {
             slot: SlotId(0),
-            processor: pisynth(35, max_block),
+            processor: hexa(35, max_block),
         });
         rig.send(Command::SetProgram(Box::new(p.clone())));
         rig.send(Command::Play);
@@ -212,7 +212,7 @@ fn replacing_the_processor_switches_the_preset() {
     let mut piano = Rig::new(512);
     piano.send(Command::InsertProcessor {
         slot: SlotId(0),
-        processor: pisynth(1, 512),
+        processor: hexa(1, 512),
     });
     piano.send(Command::SetProgram(Box::new(p.clone())));
     piano.send(Command::Play);
@@ -221,14 +221,14 @@ fn replacing_the_processor_switches_the_preset() {
     let mut switched = Rig::new(512);
     switched.send(Command::InsertProcessor {
         slot: SlotId(0),
-        processor: pisynth(1, 512),
+        processor: hexa(1, 512),
     });
     switched.send(Command::SetProgram(Box::new(p.clone())));
     switched.send(Command::Play);
     switched.process(second - 4096, 512);
     switched.send(Command::InsertProcessor {
         slot: SlotId(0),
-        processor: pisynth(35, 512),
+        processor: hexa(35, 512),
     });
     switched.process(second + 24_000 - switched.out.len(), 512);
 

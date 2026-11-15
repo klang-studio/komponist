@@ -36,7 +36,7 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
-/// The demo's Lead track (pisynth, EQ, TAL, Dragonfly) selected, the dock on „Geräte“.
+/// The demo's Lead track (hexa, EQ, TAL, Dragonfly) selected, the dock on „Geräte“.
 fn lead() -> (App, TrackId, Vec<DeviceId>) {
     let mut app = App::headless(demo_project()).with_device_host(Box::new(FakeHost::new()));
     let track = app.project().tracks[2].id;
@@ -105,11 +105,11 @@ fn collapsed(app: &App) -> Vec<DeviceId> {
 fn a_frame_is_244_high_and_as_wide_as_its_columns() {
     let (app, ..) = lead();
     let h = harness(app);
-    for name in ["pisynth", "LSP Para EQ x8", "TAL-Chorus-LX"] {
+    for name in ["hexa", "LSP Para EQ x8", "TAL-Chorus-LX"] {
         let f = frame(&h, name);
         assert_eq!(f.height(), device::frame::TOTAL_H, "{name}");
-        // pisynth's first page has ten columns (WP-86), the others four.
-        let columns = if name == "pisynth" { 10.0 } else { 4.0 };
+        // hexa's first page has ten columns (WP-86), the others four.
+        let columns = if name == "hexa" { 10.0 } else { 4.0 };
         assert_eq!(
             f.width(),
             16.0 + 60.0 * columns - 4.0,
@@ -123,7 +123,7 @@ fn a_frame_is_244_high_and_as_wide_as_its_columns() {
     );
     // The chain head: padding 10 above the frames, drop slot 120 wide behind them.
     let chain = h.get_by_role_and_label(Role::Group, names::CHAIN).rect();
-    let first = frame(&h, "pisynth");
+    let first = frame(&h, "hexa");
     assert_eq!(first.left() - chain.left(), device::chain::PADDING);
     assert_eq!(first.top() - chain.top(), device::chain::PADDING);
     let second = frame(&h, "LSP Para EQ x8");
@@ -134,7 +134,7 @@ fn a_frame_is_244_high_and_as_wide_as_its_columns() {
 fn a_frame_has_power_menu_and_the_instrument_a_preset() {
     let (app, ..) = lead();
     let h = harness(app);
-    let (synth_name, eq_name) = (names::card("pisynth"), names::card("LSP Para EQ x8"));
+    let (synth_name, eq_name) = (names::card("hexa"), names::card("LSP Para EQ x8"));
     let synth = h.get_by_role_and_label(Role::Group, &synth_name);
     synth.get_by_role_and_label(Role::Switch, names::ACTIVE);
     synth.get_by_role_and_label(Role::Button, names::MORE);
@@ -170,7 +170,7 @@ fn double_click_collapses_alt_double_click_all_and_a_click_on_the_strip_expands(
     let at = head_point(&h, "TAL-Chorus-LX");
     click(&mut h, at, Modifiers::ALT, 2);
     assert_eq!(collapsed(h.state()).len(), ids.len());
-    assert_eq!(frame(&h, "pisynth").width(), device::frame::COLLAPSED_W);
+    assert_eq!(frame(&h, "hexa").width(), device::frame::COLLAPSED_W);
     // And Alt-double-click on an expanded head of a collapsed chain expands them all: use the menu
     // action the head offers.
     h.state_mut()
@@ -352,7 +352,7 @@ fn below_a_320_px_dock_the_chain_scrolls_vertically() {
     let (mut app, ..) = lead();
     app.ui_mut().layout.dock_height = size::dock::MIN;
     let mut h = harness(app);
-    let before = frame(&h, "pisynth");
+    let before = frame(&h, "hexa");
     // Over the frame's left edge: no knob, fader or field takes the wheel there.
     h.hover_at(before.left_center() + vec2(1.0, 0.0));
     h.step();
@@ -365,7 +365,7 @@ fn below_a_320_px_dock_the_chain_scrolls_vertically() {
     });
     h.run_steps(3);
     assert!(h.state().ui().devices.scroll_y > 0.0);
-    assert!(frame(&h, "pisynth").top() < before.top());
+    assert!(frame(&h, "hexa").top() < before.top());
     h.get_by_role_and_label(Role::ScrollBar, names::SCROLL_V);
 }
 
@@ -374,7 +374,7 @@ fn at_320_px_nothing_scrolls() {
     let (mut app, ..) = lead();
     app.ui_mut().layout.dock_height = size::dock::DEFAULT;
     let mut h = harness(app);
-    let before = frame(&h, "pisynth");
+    let before = frame(&h, "hexa");
     h.hover_at(before.center());
     h.event(Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
@@ -403,7 +403,7 @@ fn a_mixer_insert_of_an_internal_device_jumps_to_the_geraete_tab() {
         )
         .get_by_role_and_label(
             Role::Button,
-            &komponist_app::views::mixer::model::names::insert("pisynth"),
+            &komponist_app::views::mixer::model::names::insert("hexa"),
         )
         .rect();
     click(&mut h, slot.center(), Modifiers::NONE, 1);

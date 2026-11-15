@@ -23,11 +23,12 @@ komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-bridge = { path = "crates/komponist-bridge" }
 komponist-ui = { path = "crates/komponist-ui" }
 komponist-i18n = { path = "crates/komponist-i18n" }
+hexa-core = { path = "crates/hexa-core", features = ["alloc", "serde"] }
 
-# Sibling repositories, referenced by relative path. A worktree must therefore sit exactly
-# one level below <workspace>/ (PLAN §1.2).
-klang-dsp = { path = "../klang-dsp" }
-synth-core = { path = "../pisynth/crates/synth-core", features = ["alloc", "serde"] }
+# Public DSP library, pinned to one commit. To work on both locally, see docs/INSTALL.md.
+klang-dsp = { git = "https://github.com/klang-studio/klang-dsp", rev = "e1737fbf04ba42a3501d14521c5d5125c9f09c2f" }
+libm = "0.2"
+# Sibling repository, referenced by relative path.
 # klopfer's RT sampler engine (voices, pads, envelopes, interpolation), GPL-3.0-or-later like komponist (WP-87).
 klopfer_dsp = { path = "../klopfer/dsp" }
 

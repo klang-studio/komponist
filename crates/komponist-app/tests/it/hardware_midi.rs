@@ -99,7 +99,7 @@ fn signal_within(h: &mut Harness<'_, App>, track: TrackId, secs: u64) -> bool {
     false
 }
 
-/// A project with one monitoring pisynth track, played from `config`'s stream through `out`.
+/// A project with one monitoring hexa track, played from `config`'s stream through `out`.
 fn plays_after(config: &StreamConfig, restarts: usize) {
     let port = unique("plays");
     let Some(mut out) = virtual_output(&port) else {

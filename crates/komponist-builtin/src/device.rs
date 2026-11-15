@@ -1,6 +1,6 @@
-//! pisynth's device card (WP-86): the parameters of its layout and the layout itself.
+//! hexa's device card (WP-86): the parameters of its layout and the layout itself.
 //!
-//! The device state stays pisynth's [`Patch`] as JSON (see [`crate::state`]); a card parameter is
+//! The device state stays hexa's [`Patch`] as JSON (see [`crate::state`]); a card parameter is
 //! a *view onto a patch field*: [`Field::get`] reads it, [`Field::set`] writes it, and both the
 //! processor (on an `EventKind::Param`) and the app (on the document's copy of the state) run the
 //! same `set`, so the running patch and the document stay equal. Nothing in the state changed:
@@ -9,7 +9,7 @@
 //!
 //! # Wire ids
 //!
-//! `Command::SetParam::id` / `EventKind::Param::id` of pisynth: 0–7 are the old macros
+//! `Command::SetParam::id` / `EventKind::Param::id` of hexa: 0–7 are the old macros
 //! ([`crate::Macro`], unchanged, still understood; the plugin window's parameter view still lists
 //! them), 8 and up are the card's own parameters: per operator 14 in the order of
 //! [`OpField`] (`8 + 14 · (op − 1) + field`), then the global ones from [`GLOBAL_BASE`]. The card's
@@ -25,7 +25,7 @@
 //! | `feedback` | Feedback | macro Feedback (the feedback operator's `feedback`) |
 //! | `volume` | Lautstärke | `volume` |
 //! | `glide` | Glide | `portamento` |
-//! | `voices` | Unison | `unison` (voices per key; pisynth's polyphony is a fixed 16) |
+//! | `voices` | Unison | `unison` (voices per key; hexa's polyphony is a fixed 16) |
 //! | `mono` | Mono | `voice_mode`: on = Mono (Legato stays Legato), off = Poly |
 //! | `spread` | Spread | `unison_spread` |
 //! | `tune` | Tune | `tune` (semitones, ±24) |
@@ -39,24 +39,24 @@
 //! | `op{n}_key_scale` | Key Scale n | `key_scaling.right`: ±24 dB per octave above the break point (shown in dB) |
 //! | `op{n}_output` | Träger n | `operators[n-1].output` (carrier: heard); on the card only the fill of the level fader |
 //!
-//! Not in the table because `synth-core` has no field for them (only free routes of the modulation
+//! Not in the table because `hexa-core` has no field for them (only free routes of the modulation
 //! matrix, which a card parameter cannot own): per-operator velocity sensitivity and the pitch
 //! envelope.
 //!
-//! Operators are numbered 1–6 as in pisynth's UI. Every `set` ignores non-finite values, clamps to
+//! Operators are numbered 1–6 as in hexa's UI. Every `set` ignores non-finite values, clamps to
 //! the range, keeps the patch sanitized, allocates nothing and is RT-safe.
 
 use std::sync::OnceLock;
 
+use hexa_core::{
+    MAX_KEY_SCALING, MAX_PORTAMENTO, MAX_RATIO, MAX_TIME, MAX_TUNE, MAX_UNISON, OPERATORS, Patch,
+    PitchMode, VoiceMode,
+};
 use komponist_model::format::MINUS;
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, ENV_OP, GraphBinding, GraphConfig, Half, Page, WidgetKind,
 };
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
-use synth_core::{
-    MAX_KEY_SCALING, MAX_PORTAMENTO, MAX_RATIO, MAX_TIME, MAX_TUNE, MAX_UNISON, OPERATORS, Patch,
-    PitchMode, VoiceMode,
-};
 
 use crate::algorithms::ALGORITHMS;
 use crate::macros::Macro;
@@ -70,7 +70,7 @@ pub const GLOBAL_BASE: u32 = FIRST_WIRE + (OPERATORS * OpField::COUNT) as u32;
 /// Shortest time of a time parameter (seconds); a delay or hold at or below it is 0.
 pub const TIME_MIN: f64 = 0.001;
 
-/// Level scaling of `op{n}_key_scale` at ±1 (dB per octave), pisynth's `MAX_KEY_SCALING`.
+/// Level scaling of `op{n}_key_scale` at ±1 (dB per octave), hexa's `MAX_KEY_SCALING`.
 const KEY_SCALE_DB: f32 = MAX_KEY_SCALING;
 
 /// A per-operator parameter, in wire order.
@@ -502,7 +502,7 @@ fn id(key: &str) -> ParamId {
 /// *Hüllkurven:* the envelope graph of the selected operator with its attack, decay, sustain, release,
 /// attack curve and key scale knobs below; on the right the operator switch, loop, delay, hold and
 /// the decay and release curves. The handoff's velocity and pitch envelope cells are left
-/// out, `synth-core` has no field for them.
+/// out, `hexa-core` has no field for them.
 pub fn layout() -> DeviceLayout {
     let select = || CellParam::Select {
         key: ENV_OP,

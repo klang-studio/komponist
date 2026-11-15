@@ -13,7 +13,7 @@ use komponist_tokens::device;
 
 use super::layout::{self, DeviceLayout};
 use super::metrics;
-use crate::device_host::{DeviceHost, internal_kind, is_pisynth};
+use crate::device_host::{DeviceHost, internal_kind, is_hexa};
 use crate::gain_trace::Dynamics;
 use crate::meters::DeviceLevels;
 use crate::spectrum::Analysis;
@@ -75,7 +75,7 @@ pub mod names {
     pub const CHANGED: &str = " *";
     /// The page switch's accessible name.
     pub const PAGES: &str = "Seiten";
-    /// The accessible name of the operator switch on pisynth's envelope page.
+    /// The accessible name of the operator switch on hexa's envelope page.
     pub const OPERATOR: &str = "Operator";
     /// Context menu of a parameter: set it to its default (knobs and faders: the double-click).
     pub const TO_DEFAULT: &str = "Auf Standard";
@@ -148,7 +148,7 @@ pub mod names {
         format!("{name} aufklappen")
     }
 
-    /// The accessible name of a chain head entry: „Gerät pisynth anzeigen“.
+    /// The accessible name of a chain head entry: „Gerät hexa anzeigen“.
     pub fn reveal(name: &str) -> String {
         format!("{DEVICE} {name} anzeigen")
     }
@@ -300,7 +300,7 @@ pub fn failure_texts(reason: &FailReason) -> (&'static str, String) {
 /// A knob of a card: the parameter's description in the parameter model plus its current value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
-    /// The id the device is addressed by (`Command::SetParam::id`: pisynth's macro id, the
+    /// The id the device is addressed by (`Command::SetParam::id`: hexa's macro id, the
     /// plugin's own parameter id); the model id is `info.id`.
     pub wire: u32,
     /// Name, kind, range, default, unit, flags.
@@ -378,13 +378,13 @@ pub struct Card {
     pub page: usize,
     /// Shown as the 28 px strip (set by the view).
     pub collapsed: bool,
-    /// The device has factory presets (pisynth, internal devices with a list): the head shows
+    /// The device has factory presets (hexa, internal devices with a list): the head shows
     /// the preset dropdown.
     pub presets: bool,
-    /// The factory preset the state is (pisynth) or says it loaded (internal devices), if any.
+    /// The factory preset the state is (hexa) or says it loaded (internal devices), if any.
     pub preset: Option<usize>,
     /// The internal device whose [`Internal::presets`] the dropdown lists (WP-96); `None` for
-    /// pisynth (its bank) and for devices without presets.
+    /// hexa (its bank) and for devices without presets.
     ///
     /// [`Internal::presets`]: komponist_builtin::Internal::presets
     pub internal_presets: Option<komponist_builtin::Internal>,
@@ -399,7 +399,7 @@ pub struct Card {
     pub width: f32,
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
     pub late: Option<u64>,
-    /// pisynth's routing as the patch has it: the FM display draws it for algorithm 0 („Frei“).
+    /// hexa's routing as the patch has it: the FM display draws it for algorithm 0 („Frei“).
     pub routing: Option<komponist_builtin::algorithms::Routing>,
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
@@ -535,8 +535,8 @@ pub fn cards(track: &Track, host: &dyn DeviceHost, windows: &[PluginWindow]) -> 
 fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
     let state = CardState::from(host.status(device.id));
     let params = if state == CardState::Ok {
-        if is_pisynth(device) {
-            pisynth_params(device)
+        if is_hexa(device) {
+            hexa_params(device)
         } else if let Some(kind) = internal_kind(device) {
             internal_params(kind, device)
         } else {
@@ -549,9 +549,9 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
     };
     let instrument = device.role == DeviceRole::Instrument;
     let midi_effect = device.role == DeviceRole::MidiEffect;
-    // pisynth and the internal devices bring their own layout; everything else gets the
+    // hexa and the internal devices bring their own layout; everything else gets the
     // auto-layout.
-    let layout = if is_pisynth(device) {
+    let layout = if is_hexa(device) {
         komponist_builtin::device::layout()
     } else {
         internal_kind(device).map_or_else(
@@ -574,12 +574,12 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
             device.plugin.name
         );
     }
-    let pisynth = is_pisynth(device);
+    let hexa = is_hexa(device);
     let internal_presets = internal_kind(device).filter(|k| !k.presets().is_empty());
-    let presets = pisynth || internal_presets.is_some();
+    let presets = hexa || internal_presets.is_some();
     let loaded = internal_presets.and_then(|k| k.loaded_preset(device.state.as_deref()));
     let preset_changed = loaded.is_some_and(|(_, changed)| changed);
-    let preset = pisynth
+    let preset = hexa
         .then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
@@ -617,7 +617,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         sampler: sampler_view(host, device.id),
         analysis: None,
         dynamics: None,
-        routing: pisynth.then(|| {
+        routing: hexa.then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
             komponist_builtin::algorithms::routing(&patch)
@@ -656,9 +656,9 @@ pub fn internal_params(kind: komponist_builtin::Internal, device: &Device) -> Ve
         .collect()
 }
 
-/// The parameters of pisynth's card (`komponist_builtin::device`), read from the patch in the
+/// The parameters of hexa's card (`komponist_builtin::device`), read from the patch in the
 /// device state; the wire id is `Field::wire`.
-pub fn pisynth_params(device: &Device) -> Vec<Param> {
+pub fn hexa_params(device: &Device) -> Vec<Param> {
     let patch = komponist_builtin::decode_state(device.state.as_deref())
         .unwrap_or_else(|_| komponist_builtin::default_patch());
     komponist_builtin::device::params()
@@ -675,9 +675,9 @@ pub fn pisynth_params(device: &Device) -> Vec<Param> {
         .collect()
 }
 
-/// pisynth's 8 macros, read from the patch in the device state (the plugin window's parameter
-/// view lists them; the card has its own parameters, [`pisynth_params`]).
-pub fn pisynth_macro_params(device: &Device) -> Vec<Param> {
+/// hexa's 8 macros, read from the patch in the device state (the plugin window's parameter
+/// view lists them; the card has its own parameters, [`hexa_params`]).
+pub fn hexa_macro_params(device: &Device) -> Vec<Param> {
     let patch = komponist_builtin::decode_state(device.state.as_deref())
         .unwrap_or_else(|_| komponist_builtin::default_patch());
     Macro::ALL
@@ -993,7 +993,7 @@ mod tests {
 
     #[test]
     fn values_are_texted_and_snapped() {
-        let algo = pisynth_macro_params(
+        let algo = hexa_macro_params(
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
                 .devices[0],
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(algo.snap(7.4), 7.0);
         assert_eq!(algo.snap(40.0), 32.0);
         assert_eq!(algo.text_at(0.0), "Frei");
-        let ratio = pisynth_macro_params(
+        let ratio = hexa_macro_params(
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
                 .devices[0],
@@ -1040,31 +1040,23 @@ mod tests {
         assert_eq!(
             names,
             [
-                "pisynth",
+                "hexa",
                 "LSP Para EQ x8",
                 "TAL-Chorus-LX",
                 "Dragonfly Hall Reverb"
             ]
         );
-        let pisynth = &cards[0];
-        assert!(pisynth.instrument && pisynth.state == CardState::Ok);
+        let hexa = &cards[0];
+        assert!(hexa.instrument && hexa.state == CardState::Ok);
         // WP-86: ten columns on the first page, eight on the envelope page.
-        assert_eq!(pisynth.frame_width(0.0), 612.0, "10 columns");
-        let pages: Vec<_> = pisynth
-            .layout
-            .pages
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect();
+        assert_eq!(hexa.frame_width(0.0), 612.0, "10 columns");
+        let pages: Vec<_> = hexa.layout.pages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(pages, ["Operatoren", "Hüllkurven", "LFO", "Global"]);
-        assert!(pisynth.presets);
-        assert_eq!(pisynth.tag, "INTERN");
-        assert_eq!(
-            pisynth.params.len(),
-            komponist_builtin::device::params().len()
-        );
-        assert_eq!(pisynth.params[0].name(), "Algorithmus");
-        assert_eq!(pisynth.open_label(), Some(names::PARAMS));
+        assert!(hexa.presets);
+        assert_eq!(hexa.tag, "INTERN");
+        assert_eq!(hexa.params.len(), komponist_builtin::device::params().len());
+        assert_eq!(hexa.params[0].name(), "Algorithmus");
+        assert_eq!(hexa.open_label(), Some(names::PARAMS));
         // Without plugin manager the effects are missing; TAL is bypassed.
         assert_eq!(cards[1].state, CardState::Missing);
         assert_eq!(cards[1].frame_width(0.0), 252.0);

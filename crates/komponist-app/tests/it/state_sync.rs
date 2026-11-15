@@ -1,5 +1,5 @@
 //! Undo, redo and every other tracked edit that replaces a device's state reach the running
-//! processor (`EngineSync::sync_device_states`): pisynth (patch), an internal effect (params),
+//! processor (`EngineSync::sync_device_states`): hexa (patch), an internal effect (params),
 //! the Sampler (sample links) and a bridged plugin (`SetState`). The engine is held and rendered
 //! by the test, so the checks listen to the processors, not only to the document.
 //!
@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost, is_pisynth};
+use komponist_app::device_host::{BuiltinHost, DeviceHost, PluginHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_builtin::Internal;
@@ -81,7 +81,7 @@ fn note_peak(sync: &mut EngineSync, track: TrackId) -> f32 {
     l.iter().chain(&r).fold(0.0_f32, |m, s| m.max(s.abs()))
 }
 
-fn pisynth_track(project: &Project) -> (TrackId, DeviceId) {
+fn hexa_track(project: &Project) -> (TrackId, DeviceId) {
     project
         .tracks
         .iter()
@@ -89,20 +89,20 @@ fn pisynth_track(project: &Project) -> (TrackId, DeviceId) {
             t.channel
                 .devices
                 .iter()
-                .find(|d| is_pisynth(d))
+                .find(|d| is_hexa(d))
                 .map(|d| (t.id, d.id))
         })
-        .expect("a pisynth track")
+        .expect("a hexa track")
 }
 
-fn pisynth_state(preset: usize) -> Vec<u8> {
+fn hexa_state(preset: usize) -> Vec<u8> {
     komponist_builtin::encode_state(&komponist_builtin::preset_patch(preset).unwrap())
 }
 
 #[test]
-fn undo_and_redo_of_a_pisynth_patch_change_reach_the_running_processor() {
+fn undo_and_redo_of_a_hexa_patch_change_reach_the_running_processor() {
     let project = demo_project();
-    let (track, synth) = pisynth_track(&project);
+    let (track, synth) = hexa_track(&project);
     let mut doc = Document::new(project);
     let mut sync = null_sync(Box::new(BuiltinHost::new()));
     sync.sync(&doc);
@@ -110,10 +110,10 @@ fn undo_and_redo_of_a_pisynth_patch_change_reach_the_running_processor() {
 
     // A patch with a clearly different level from the first.
     let (a, b) = (0, 17);
-    let before = set_state(&mut doc, synth, pisynth_state(a));
+    let before = set_state(&mut doc, synth, hexa_state(a));
     follow(&mut sync, &doc, &before, None);
     let peak_a = note_peak(&mut sync, track);
-    let before = set_state(&mut doc, synth, pisynth_state(b));
+    let before = set_state(&mut doc, synth, hexa_state(b));
     follow(&mut sync, &doc, &before, None);
     let peak_b = note_peak(&mut sync, track);
     assert!(peak_a > 0.0 && peak_b > 0.0, "{peak_a} {peak_b}");
@@ -131,7 +131,7 @@ fn undo_and_redo_of_a_pisynth_patch_change_reach_the_running_processor() {
 #[test]
 fn undo_and_redo_of_an_internal_devices_params_reach_the_running_processor() {
     let project = demo_project();
-    let (track, _) = pisynth_track(&project);
+    let (track, _) = hexa_track(&project);
     let mut doc = Document::new(project);
     // A limiter on the master: its ceiling bounds the peak of everything.
     doc.apply("Limiter", |p| {

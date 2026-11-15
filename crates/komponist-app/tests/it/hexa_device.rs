@@ -1,4 +1,4 @@
-//! pisynth's device layout (WP-86) in the app: the card with its two pages, the operator
+//! hexa's device layout (WP-86) in the app: the card with its two pages, the operator
 //! selection (`{env_op}`), the carrier fill, a knob turn reaching the document, the presets, and
 //! snapshots of both pages.
 
@@ -65,18 +65,18 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
     h.run_steps(3);
 }
 
-/// A project with one pisynth track (preset "E-Piano": six operators, carriers 1, 3 and 5) and the
+/// A project with one hexa track (preset "E-Piano": six operators, carriers 1, 3 and 5) and the
 /// dock on „Geräte“.
-fn app_with_pisynth(preset: usize) -> (App, DeviceId) {
+fn app_with_hexa(preset: usize) -> (App, DeviceId) {
     let mut app = App::headless(Project::new("Synth"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
     let device = app.project().tracks[0].channel.devices[0].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyPisynthPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyHexaPreset {
         device,
         preset,
     }));
@@ -101,8 +101,8 @@ fn card<'h>(h: &'h Harness<'_, App>) -> egui_kittest::Node<'h> {
     h.get_by_role_and_label(Role::Group, CARD)
 }
 
-/// The accessible name of the pisynth card.
-const CARD: &str = "Gerät pisynth";
+/// The accessible name of the hexa card.
+const CARD: &str = "Gerät hexa";
 
 /// Whether the column button of operator `n` is the selected one.
 fn op_selected(h: &Harness<'_, App>, n: usize) -> bool {
@@ -127,7 +127,7 @@ fn slider_value(h: &Harness<'_, App>, label: &str) -> String {
 
 #[test]
 fn the_card_has_four_pages_and_the_preset_shows_in_the_head() {
-    let (app, _) = app_with_pisynth(1);
+    let (app, _) = app_with_hexa(1);
     let h = harness(app);
     for name in ["Operatoren", "Hüllkurven", "LFO", "Global"] {
         assert!(has(&h, Role::RadioButton, name), "page {name}");
@@ -155,7 +155,7 @@ fn every_factory_preset_still_loads_into_the_card() {
 
 #[test]
 fn clicking_an_operator_column_selects_it_and_the_envelope_page_follows() {
-    let (mut app, device) = app_with_pisynth(1);
+    let (mut app, device) = app_with_hexa(1);
     page(&mut app, device, 0);
     let mut h = harness(app);
     // Operator 1 is selected at the start; its column is a selected button.
@@ -201,7 +201,7 @@ fn page_to(h: &mut Harness<'_, App>, device: DeviceId, index: usize) {
 
 #[test]
 fn a_knob_change_reaches_the_engine_and_the_document_state() {
-    let (mut app, device) = app_with_pisynth(1);
+    let (mut app, device) = app_with_hexa(1);
     page(&mut app, device, 0);
     let mut h = harness(app);
     let ratio = device::param(&ParamId::new("op2_ratio")).unwrap();
@@ -243,7 +243,7 @@ fn a_knob_change_reaches_the_engine_and_the_document_state() {
 #[test]
 fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
     // The layout asks `op{n}_output` per fader; the Algorithmus macro sets it from the table.
-    let (mut app, device) = app_with_pisynth(0);
+    let (mut app, device) = app_with_hexa(0);
     let algorithm = Field::Macro(Macro::Algorithm);
     app.dispatch(Action::Plugin(PluginAction::SetParam {
         device,
@@ -260,7 +260,7 @@ fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
         );
     }
     // The fader colours are in the snapshot; here the card's own carrier values.
-    let params = komponist_app::views::devices::model::pisynth_params(
+    let params = komponist_app::views::devices::model::hexa_params(
         &app.project().find_device(device).unwrap().2.clone(),
     );
     let carrier = |n: usize| {
@@ -288,7 +288,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 
 #[test]
 fn snapshot_of_both_pages() {
-    let (mut app, device) = app_with_pisynth(1);
+    let (mut app, device) = app_with_hexa(1);
     // A modulated operator to look at: operator 2 selected, a slower envelope.
     for (key, v) in [
         ("op2_attack", 0.08),
@@ -314,12 +314,12 @@ fn snapshot_of_both_pages() {
     h.hover_at(Pos2::new(900.0, 300.0));
     h.run_steps(30);
     mask_cpu(&mut h);
-    h.snapshot("devices-pisynth-operators-1x");
+    h.snapshot("devices-hexa-operators-1x");
     results.extend_harness(&mut h);
     page_to(&mut h, device, 1);
     h.run_steps(30);
     mask_cpu(&mut h);
-    h.snapshot("devices-pisynth-envelopes-1x");
+    h.snapshot("devices-hexa-envelopes-1x");
     results.extend_harness(&mut h);
     results.unwrap();
 }

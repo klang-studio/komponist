@@ -1,11 +1,11 @@
-//! The 8 macros of pisynth's device card (S05) and how they map to [`Patch`] fields.
+//! The 8 macros of hexa's device card (S05) and how they map to [`Patch`] fields.
 //!
 //! A macro is a function of the patch in both directions: [`Macro::get`] reads its value from a
 //! patch, [`Macro::set`] writes a value into a patch. The processor applies `set` to its running
 //! patch when an `EventKind::Param { id, value }` with the macro's [`Macro::id`] arrives; the app
 //! applies the same `set` to the device state it keeps in the document, so both stay equal.
 //!
-//! Operators are numbered 1–6 as in pisynth's UI (array index + 1). "Carriers" are the heard
+//! Operators are numbered 1–6 as in hexa's UI (array index + 1). "Carriers" are the heard
 //! operators (`output = true`); the "first carrier" is the lowest-numbered one (operator 1 in every
 //! factory preset but "Wind"), or operator 1 if none is heard.
 //!
@@ -29,7 +29,7 @@
 //!
 //! Algorithms that differ only in the feedback operator (1/2, 3/4, 5/6, …) have the same routing.
 //! While no operator has feedback a patch matches both, and `get` gives the lower number (as
-//! pisynth's display does), so after `set(17)` on a patch without feedback `get` gives 16.
+//! hexa's display does), so after `set(17)` on a patch without feedback `get` gives 16.
 //!
 //! Time macros use a knob position `v` in 0 ..= 1 as plain value, because a linear 0–30 s knob
 //! is unusable: time = [`TIME_MIN`] + ([`TIME_MAX`] − [`TIME_MIN`]) · v⁴ (1 ms … 30 s; 50 ms at
@@ -40,17 +40,17 @@
 //! is not invertible in general (Algorithmus rewrites the routing, proportions collapse at 0):
 //! to restore an earlier patch (undo), load its state.
 
+use hexa_core::{EnvelopeParams, MAX_RATIO, MAX_TIME, OPERATORS, Patch, PitchMode};
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
-use synth_core::{EnvelopeParams, MAX_RATIO, MAX_TIME, OPERATORS, Patch, PitchMode};
 
 use crate::algorithms::{self, ALGORITHMS};
 
-/// Shortest time of the time macros, seconds (pisynth's shortest stage time).
+/// Shortest time of the time macros, seconds (hexa's shortest stage time).
 pub const TIME_MIN: f64 = 0.001;
-/// Longest time of the time macros, seconds (`synth_core::MAX_TIME`).
+/// Longest time of the time macros, seconds (`hexa_core::MAX_TIME`).
 pub const TIME_MAX: f64 = MAX_TIME as f64;
 
-/// One of pisynth's 8 macros. The discriminant is the stable parameter id ([`Macro::id`]).
+/// One of hexa's 8 macros. The discriminant is the stable parameter id ([`Macro::id`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Macro {
     /// "Algorithmus": fixed algorithm 1–32, 0 = free routing.
@@ -340,7 +340,7 @@ fn time_to_knob(seconds: f32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synth_core::{PRESET_COUNT, preset};
+    use hexa_core::{PRESET_COUNT, preset};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-5

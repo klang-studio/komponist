@@ -9,7 +9,7 @@ publish.workspace = true
 name = "komponist"
 path = "src/main.rs"
 
-# Headless demo player (WP-28, gate G3): plays a project through the engine and pisynth.
+# Headless demo player (WP-28, gate G3): plays a project through the engine and hexa.
 [[bin]]
 name = "komponist-play"
 path = "src/bin/komponist-play.rs"

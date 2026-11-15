@@ -309,7 +309,7 @@ pub fn paint_toggle(painter: &Painter, rect: Rect, kind: ToggleKind, on: bool, i
     );
 }
 
-/// Accessible name and role of a header: `Spur Lead, pisynth`, `Spur Strings, Plugin fehlt:
+/// Accessible name and role of a header: `Spur Lead, hexa`, `Spur Strings, Plugin fehlt:
 /// Vital` (role row, selectable).
 pub fn header_access(t: Lang, model: &HeaderModel<'_>, state: State) -> Access {
     let instrument = instrument_text(model);
@@ -383,9 +383,9 @@ mod tests {
     #[test]
     fn access_names() {
         let p = TrackPalette::new(150);
-        let m = HeaderModel::new("Lead", "pisynth", &p);
+        let m = HeaderModel::new("Lead", "hexa", &p);
         let a = header_access(Lang::De, &m, State::SELECTED);
-        assert_eq!(a.name, "Spur Lead, pisynth");
+        assert_eq!(a.name, "Spur Lead, hexa");
         assert_eq!(a.role, Role::Row);
         assert_eq!(a.selected, Some(true));
         let m = HeaderModel::new("MIDI 3", "", &p);

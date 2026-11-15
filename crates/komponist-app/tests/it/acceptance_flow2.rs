@@ -53,7 +53,7 @@ fn run(h: &mut Harness<'_, App>, ms: usize, midi: &[(usize, [u8; 3])]) {
     h.step();
 }
 
-/// An empty project with an armed pisynth track (Strg T) and the count-in switched off by its
+/// An empty project with an armed hexa track (Strg T) and the count-in switched off by its
 /// transport button; the dock tall enough for the piano roll tests.
 fn rig() -> Harness<'static, App> {
     let mut app = App::headless(empty_project());

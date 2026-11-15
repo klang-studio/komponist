@@ -261,7 +261,7 @@ fn tracks_beyond_the_limit_are_left_out() {
     let tracks = (0..MAX_TRACKS as u64 + 3)
         .map(|i| {
             let mut t = track(i + 1, &format!("Spur {i}"), vec![]);
-            t.channel.devices = vec![device(1000 + i, DeviceRole::Instrument, "pisynth")];
+            t.channel.devices = vec![device(1000 + i, DeviceRole::Instrument, "hexa")];
             t
         })
         .collect();

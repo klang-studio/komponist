@@ -3,7 +3,7 @@
 //! restore the document **and** the running processor. The engine is held and rendered by the
 //! test, so the checks listen to the processors.
 //!
-//! Gestures are driven two ways: through the real pisynth card (a drag and a wheel burst on its
+//! Gestures are driven two ways: through the real hexa card (a drag and a wheel burst on its
 //! knob, which checks the cells' wiring) and as the action sequence the cells send
 //! (`BeginParamGesture`, `SetParam` per frame, `EndGesture`).
 
@@ -118,16 +118,16 @@ fn hold(app: &mut App) {
     app.engine_mut().hold_engine().expect("engine held");
 }
 
-fn pisynth_app(preset: usize) -> (App, TrackId, DeviceId) {
+fn hexa_app(preset: usize) -> (App, TrackId, DeviceId) {
     let mut app = App::headless(Project::new("Synth"));
-    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    let hexa = app.engine().host().catalog().entries()[0].plugin.clone();
     app.dispatch(Action::Plugin(PluginAction::Add {
-        plugin: pisynth,
+        plugin: hexa,
         target: DropTarget::NewTrack { index: None },
     }));
     let track = app.project().tracks[0].id;
     let device = app.project().tracks[0].channel.devices[0].id;
-    app.dispatch(Action::Plugin(PluginAction::ApplyPisynthPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyHexaPreset {
         device,
         preset,
     }));
@@ -145,16 +145,16 @@ fn patch_of(app: &App, device: DeviceId) -> Patch {
 
 fn wire(key: &str) -> u32 {
     device::param(&ParamId::new(key))
-        .expect("a pisynth parameter")
+        .expect("a hexa parameter")
         .wire
 }
 
 // ------------------------------------------------------------------------------------------------
-// pisynth
+// hexa
 
 #[test]
-fn a_pisynth_drag_is_one_step_that_never_recreates_the_processor_and_undo_follows_it() {
-    let (mut app, track, synth) = pisynth_app(1);
+fn a_hexa_drag_is_one_step_that_never_recreates_the_processor_and_undo_follows_it() {
+    let (mut app, track, synth) = hexa_app(1);
     hold(&mut app);
     let (before_patch, before_state) = (patch_of(&app, synth), state_of(&app, synth));
     let start_depth = depth(&mut app);
@@ -208,14 +208,14 @@ fn a_pisynth_drag_is_one_step_that_never_recreates_the_processor_and_undo_follow
 
 #[test]
 fn a_parameter_without_a_gesture_is_a_step_of_its_own_and_a_preset_then_a_knob_undoes_in_two() {
-    let (mut app, track, synth) = pisynth_app(0);
+    let (mut app, track, synth) = hexa_app(0);
     hold(&mut app);
     let original = state_of(&app, synth);
     let start = depth(&mut app);
     let quiet = note_peak(&mut app, track, 60);
 
     // Preset, then a knob turn (a key step or a click: no gesture).
-    app.dispatch(Action::Plugin(PluginAction::ApplyPisynthPreset {
+    app.dispatch(Action::Plugin(PluginAction::ApplyHexaPreset {
         device: synth,
         preset: 17,
     }));
@@ -244,7 +244,7 @@ fn a_parameter_without_a_gesture_is_a_step_of_its_own_and_a_preset_then_a_knob_u
 
 #[test]
 fn escape_during_a_drag_puts_the_value_back_in_the_document_and_the_engine() {
-    let (mut app, track, synth) = pisynth_app(1);
+    let (mut app, track, synth) = hexa_app(1);
     hold(&mut app);
     let before = state_of(&app, synth);
     let start = depth(&mut app);
@@ -267,7 +267,7 @@ fn escape_during_a_drag_puts_the_value_back_in_the_document_and_the_engine() {
 
 #[test]
 fn a_drag_that_changes_nothing_leaves_no_step() {
-    let (mut app, _, synth) = pisynth_app(1);
+    let (mut app, _, synth) = hexa_app(1);
     let start = depth(&mut app);
     let value = Field::Macro(komponist_builtin::Macro::Feedback).get(&patch_of(&app, synth));
     drag_param(&mut app, synth, wire("volume"), &[]);
@@ -336,14 +336,14 @@ fn wheel(h: &mut Harness<'_, App>, pos: Pos2, notches: &[f32]) {
 }
 
 fn knob_rect(h: &Harness<'_, App>, name: &str) -> egui::Rect {
-    h.get_by_role_and_label(Role::Group, "Gerät pisynth")
+    h.get_by_role_and_label(Role::Group, "Gerät hexa")
         .get_by_role_and_label(Role::Slider, name)
         .rect()
 }
 
 #[test]
 fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
-    let (mut app, track, synth) = pisynth_app(1);
+    let (mut app, track, synth) = hexa_app(1);
     hold(&mut app);
     let start = depth(&mut app);
     let quiet = note_peak(&mut app, track, 60);
@@ -407,7 +407,7 @@ fn limiter_app() -> (App, TrackId, DeviceId) {
             t.channel
                 .devices
                 .iter()
-                .any(|d| komponist_app::device_host::is_pisynth(d))
+                .any(|d| komponist_app::device_host::is_hexa(d))
         })
         .unwrap()
         .id;

@@ -5,7 +5,7 @@
 //!
 //! The head holds the on/off square (10 × 10, `state.play` on), for instruments a 3 × 14 track
 //! colour bar and the `surface.3` head, the name, the page switch (two pages or more), the preset
-//! dropdown (pisynth), the format tag and „Öffnen“ (foreign plugins) and the ⋯ menu. States:
+//! dropdown (hexa), the format tag and „Öffnen“ (foreign plugins) and the ⋯ menu. States:
 //! selected (1 px accent outline), bypassed (the body desaturated and at half opacity, **still
 //! operable**), collapsed (a 28 px strip with the name set vertically).
 
@@ -445,7 +445,7 @@ fn head_controls(
     );
     row.spacing_mut().item_spacing = vec2(metrics::HEAD_GAP, 0.0);
 
-    // Right side, from the right: ⋯, preset (pisynth, internal devices with presets) or „Öffnen“ and format tag (foreign).
+    // Right side, from the right: ⋯, preset (hexa, internal devices with presets) or „Öffnen“ and format tag (foreign).
     let more = more_button(&mut row);
     if card.presets {
         preset_button(&mut row, ctx, card);
@@ -691,7 +691,7 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     if open || r.clicked() {
         let chosen = match card.internal_presets {
             Some(kind) => internal_preset_menu(&r, kind),
-            None => pisynth_preset_menu(&r),
+            None => hexa_preset_menu(&r),
         };
         if let Some(preset) = chosen {
             let action = match card.internal_presets {
@@ -699,7 +699,7 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
                     device: card.device,
                     index: preset,
                 },
-                None => PluginAction::ApplyPisynthPreset {
+                None => PluginAction::ApplyHexaPreset {
                     device: card.device,
                     preset,
                 },
@@ -709,8 +709,8 @@ fn preset_button(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     }
 }
 
-/// pisynth's menu: its factory bank by category; the chosen index.
-fn pisynth_preset_menu(r: &Response) -> Option<usize> {
+/// hexa's menu: its factory bank by category; the chosen index.
+fn hexa_preset_menu(r: &Response) -> Option<usize> {
     let categories: Vec<&str> = komponist_builtin::categories().collect();
     let presets: Vec<_> = komponist_builtin::presets().collect();
     let groups: Vec<Vec<Entry<'_, usize>>> = categories

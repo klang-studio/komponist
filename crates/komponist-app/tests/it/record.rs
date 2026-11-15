@@ -44,7 +44,7 @@ fn held(project: Project) -> Harness<'static, App> {
     harness(app)
 }
 
-/// An empty project (120 bpm) with one armed pisynth track (Strg T), count-in off unless
+/// An empty project (120 bpm) with one armed hexa track (Strg T), count-in off unless
 /// `count_in`.
 fn rig(count_in: bool) -> (Harness<'static, App>, TrackId) {
     let mut app = App::headless(empty_project());

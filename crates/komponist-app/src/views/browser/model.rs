@@ -4,13 +4,13 @@
 //!
 //! | Segment | Without search (`browserAll`, `browserView`) | With search (`browserSearch`) |
 //! |---|---|---|
-//! | Alle | Favoriten · Instrumente · Effekte (category folders, then uncategorised effects) · Presets · pisynth (category folders) · Projekt (Takes, Exporte) | „n Treffer für „q““ · Presets mit „q“ · Kategorie … |
-//! | Instr. | Instrumente · Presets · pisynth | hits among the instruments · presets |
+//! | Alle | Favoriten · Instrumente · Effekte (category folders, then uncategorised effects) · Presets · hexa (category folders) · Projekt (Takes, Exporte) | „n Treffer für „q““ · Presets mit „q“ · Kategorie … |
+//! | Instr. | Instrumente · Presets · hexa | hits among the instruments · presets |
 //! | Effekte | Effekte with a sub-header per category (prototype) | hits among the effects · Kategorie … |
 //! | Dateien | Takes · Exporte | the takes and exports whose name contains the text |
 //!
 //! Folders start collapsed ([`default_collapsed`], S01 shows ▸); their keys are
-//! "section/label" ("Effekte/Dynamik"), so a pisynth category cannot collide with an effect
+//! "section/label" ("Effekte/Dynamik"), so a hexa category cannot collide with an effect
 //! category.
 
 use std::collections::BTreeSet;
@@ -20,7 +20,7 @@ use komponist_model::{ClipContent, ClipId, DeviceRole, PluginRef, Project, Track
 use komponist_plugins::{Catalog, CatalogEntry, EffectCategory};
 
 use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
-use crate::device_host::is_pisynth;
+use crate::device_host::is_hexa;
 use crate::settings::Favorites;
 use crate::ui_state::{BrowserSegment, DockTab};
 use crate::views::format_tag;
@@ -45,8 +45,8 @@ pub mod names {
     pub const EFFECTS: &str = "Effekte";
     /// Section of the MIDI effects (WP-88): they sit in front of the instrument.
     pub const MIDI_EFFECTS: &str = "MIDI-Effekte";
-    /// Section of pisynth's factory presets.
-    pub const PRESETS: &str = "Presets · pisynth";
+    /// Section of hexa's factory presets.
+    pub const PRESETS: &str = "Presets · hexa";
     /// Section of the project's files (segment Alle).
     pub const PROJECT: &str = "Projekt";
     /// Folder and section of the recorded takes.
@@ -83,9 +83,9 @@ pub mod names {
         format!("Kategorie {label}")
     }
 
-    /// A preset in search results: „Glas · pisynth“.
+    /// A preset in search results: „Glas · hexa“.
     pub fn preset_hit(name: &str) -> String {
-        format!("{name} · pisynth")
+        format!("{name} · hexa")
     }
 
     /// A take: „Take 2 · Lead“.
@@ -130,7 +130,7 @@ pub enum RowKind {
         /// Open.
         expanded: bool,
     },
-    /// A factory preset of pisynth (index in `komponist_builtin::presets`).
+    /// A factory preset of hexa (index in `komponist_builtin::presets`).
     Preset(usize),
     /// A recorded take.
     Take {
@@ -397,14 +397,14 @@ fn effects(input: &Input<'_>, entries: &[CatalogEntry], folders: bool, rows: &mu
     );
 }
 
-/// pisynth's factory presets in category folders, if pisynth is in the catalog.
+/// hexa's factory presets in category folders, if hexa is in the catalog.
 fn presets(input: &Input<'_>, rows: &mut Vec<Row>) {
-    let has_pisynth = input
+    let has_hexa = input
         .catalog
         .entries()
         .iter()
-        .any(|e| e.plugin.id == komponist_model::project::BUILTIN_PISYNTH);
-    if !has_pisynth {
+        .any(|e| e.plugin.id == komponist_model::project::BUILTIN_HEXA);
+    if !has_hexa {
         return;
     }
     rows.push(Row::section(names::PRESETS));
@@ -621,7 +621,7 @@ pub fn selected_track(project: &Project, selected: &BTreeSet<TrackId>) -> Option
 /// What a double-click or Enter on `row` does (prototype `brActivate`): an instrument gets a new
 /// track; an effect goes onto the selected track and the dock shows its chain (prototype
 /// `addEffect`), without a selected track the dispatcher says that effects need one; a preset
-/// loads into the selected track's pisynth; a take opens its clip with that take active.
+/// loads into the selected track's hexa; a take opens its clip with that take active.
 pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Action> {
     match &row.kind {
         RowKind::Plugin {
@@ -645,12 +645,12 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
                 target: DropTarget::NewTrack { index: None },
             })],
         },
-        RowKind::Preset(preset) => vec![Action::Plugin(match pisynth_of(project, track) {
-            Some(device) => PluginAction::ApplyPisynthPreset {
+        RowKind::Preset(preset) => vec![Action::Plugin(match hexa_of(project, track) {
+            Some(device) => PluginAction::ApplyHexaPreset {
                 device,
                 preset: *preset,
             },
-            None => PluginAction::NewPisynthTrack { preset: *preset },
+            None => PluginAction::NewHexaTrack { preset: *preset },
         })],
         RowKind::Take { clip, take } => vec![
             Action::Edit(EditAction::SelectTake {
@@ -663,14 +663,14 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
     }
 }
 
-/// The pisynth instrument of `track`, if it has one.
-pub fn pisynth_of(project: &Project, track: Option<TrackId>) -> Option<komponist_model::DeviceId> {
+/// The hexa instrument of `track`, if it has one.
+pub fn hexa_of(project: &Project, track: Option<TrackId>) -> Option<komponist_model::DeviceId> {
     let track = project.track(track?)?;
     track
         .channel
         .devices
         .iter()
-        .find(|d| d.role == DeviceRole::Instrument && is_pisynth(d))
+        .find(|d| d.role == DeviceRole::Instrument && is_hexa(d))
         .map(|d| d.id)
 }
 
@@ -693,7 +693,7 @@ mod tests {
         }
     }
 
-    /// pisynth, the sampler and the plugins of S01/S05.
+    /// hexa, the sampler and the plugins of S01/S05.
     fn catalog() -> Catalog {
         let mut c = Catalog::builtin();
         c.set_scanned(&[
@@ -769,7 +769,7 @@ mod tests {
                 "Instrumente",
                 "Effekte",
                 "MIDI-Effekte",
-                "Presets · pisynth",
+                "Presets · hexa",
                 "Projekt"
             ]
         );
@@ -778,10 +778,10 @@ mod tests {
             &n[..8],
             [
                 "Favoriten",
-                "pisynth",
+                "hexa",
                 "Sampler",
                 "Instrumente",
-                "pisynth",
+                "hexa",
                 "Sampler",
                 "knurr",
                 "Surge XT"
@@ -804,7 +804,7 @@ mod tests {
         assert!(!n.contains(&"Dragonfly Hall Reverb"));
         // Projekt: Takes and Exporte folders.
         assert_eq!(&n[n.len() - 2..], ["Takes", "Exporte"]);
-        assert!(n.contains(&"Tasten"), "pisynth categories as folders");
+        assert!(n.contains(&"Tasten"), "hexa categories as folders");
     }
 
     #[test]
@@ -940,7 +940,7 @@ mod tests {
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "glocke");
         assert_eq!(rows[0].name, "0 Treffer für „glocke“");
         assert!(rows.iter().any(|r| r.name == "Presets mit „glocke“"));
-        assert!(rows.iter().any(|r| r.name.ends_with(" · pisynth")));
+        assert!(rows.iter().any(|r| r.name.ends_with(" · hexa")));
     }
 
     fn rows_for(
@@ -1036,18 +1036,18 @@ mod tests {
                 target: DropTarget::NewTrack { index: None }
             })]
         );
-        // Lead plays pisynth; Pad plays Surge XT (no pisynth there).
+        // Lead plays hexa; Pad plays Surge XT (no hexa there).
         let preset = Row::new(RowKind::Preset(3), "x", "", 1);
         let device = p.tracks[2].channel.devices[0].id;
         assert_eq!(
             activate(&preset, &p, Some(lead)),
-            [Action::Plugin(PluginAction::ApplyPisynthPreset {
+            [Action::Plugin(PluginAction::ApplyHexaPreset {
                 device,
                 preset: 3
             })]
         );
-        // No pisynth on the selected track (or no track): a new pisynth track with the preset.
-        let new = [Action::Plugin(PluginAction::NewPisynthTrack { preset: 3 })];
+        // No hexa on the selected track (or no track): a new hexa track with the preset.
+        let new = [Action::Plugin(PluginAction::NewHexaTrack { preset: 3 })];
         assert_eq!(activate(&preset, &p, Some(p.tracks[3].id)), new);
         assert_eq!(activate(&preset, &p, None), new);
         let mut sel = BTreeSet::new();

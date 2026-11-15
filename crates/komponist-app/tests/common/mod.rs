@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{PluginHost, is_pisynth};
+use komponist_app::device_host::{PluginHost, is_hexa};
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
@@ -32,7 +32,7 @@ pub const FX: &str = "de.klang-studio.kp-test-fx";
 pub const CRASH: &str = "de.klang-studio.kp-test-crash";
 
 /// The null backend's buffer in the app tests: the largest block, so a bridge's deadline (60 % of
-/// the block) leaves room for unoptimised pisynth in the same callback.
+/// the block) leaves room for unoptimised hexa in the same callback.
 pub const NULL_BUFFER: u32 = komponist_engine::MAX_BLOCK as u32;
 
 /// The workspace's `target/` directory.
@@ -91,13 +91,13 @@ pub fn clap_plugin(id: &str) -> PluginRef {
 }
 
 /// The demo project "Nachtfahrt" with kp-test-synth for every external instrument (klopfer,
-/// Surge XT, Dexed, Vital) and kp-test-fx for every effect (LSP, TAL, Dragonfly); pisynth stays.
+/// Surge XT, Dexed, Vital) and kp-test-fx for every effect (LSP, TAL, Dragonfly); hexa stays.
 pub fn demo_with_test_plugins() -> Project {
     let mut project = demo_project();
     for track in &mut project.tracks {
         let track = Arc::make_mut(track);
         for device in &mut track.channel.devices {
-            if is_pisynth(device) {
+            if is_hexa(device) {
                 continue;
             }
             let device = Arc::make_mut(device);
@@ -119,11 +119,11 @@ pub fn devices(project: &Project) -> Vec<(TrackId, Device)> {
         .collect()
 }
 
-/// The devices of `project` that run in bridges (everything but pisynth).
+/// The devices of `project` that run in bridges (everything but hexa).
 pub fn bridged(project: &Project) -> Vec<DeviceId> {
     devices(project)
         .into_iter()
-        .filter(|(_, d)| !is_pisynth(d))
+        .filter(|(_, d)| !is_hexa(d))
         .map(|(_, d)| d.id)
         .collect()
 }

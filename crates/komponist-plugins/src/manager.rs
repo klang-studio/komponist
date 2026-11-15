@@ -12,7 +12,7 @@
 //! stores them with `edits::set_device_state` as tracked, coalesced undo steps (`komponist-app`'s
 //! `param_undo`).
 //!
-//! Built-in in-process devices (pisynth) are not managed here; the app creates their processors.
+//! Built-in in-process devices (hexa) are not managed here; the app creates their processors.
 //! Their status is always `Ok`.
 //!
 //! Start order per bridge: memfd, `Load`, `SetState` (if there is a state), `Activate`, so the
@@ -359,7 +359,7 @@ impl PluginManager {
     /// Starts a bridge for `device` and returns its processor (already activated for `setup`) for
     /// `Command::InsertProcessor`. Loading continues in the background with the device's stored
     /// state; status `Loading` until the bridge is active. Errors: `NotInstalled` (status `Missing`),
-    /// `InProcess` for pisynth, `Spawn` / `Ipc`.
+    /// `InProcess` for hexa, `Spawn` / `Ipc`.
     pub fn create_processor(
         &mut self,
         device: &Device,
@@ -763,7 +763,7 @@ mod tests {
         assert_eq!(
             manager.catalog().entries().len(),
             1 + komponist_builtin::Internal::ALL.len(),
-            "pisynth and the internal devices"
+            "hexa and the internal devices"
         );
         assert!(!manager.is_scanning());
         assert_eq!(manager.last_scan(), None);

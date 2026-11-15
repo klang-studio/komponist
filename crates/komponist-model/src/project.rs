@@ -51,8 +51,12 @@ pub const DEFAULT_STEP_ROWS: [(&str, u8); 8] = [
     ("Perc", 47),
 ];
 
-/// Catalog id of the built-in pisynth instrument (in process, `komponist-builtin`).
-pub const BUILTIN_PISYNTH: &str = "pisynth";
+/// Catalog id of the built-in hexa instrument (in process, `komponist-builtin`). The value is what project
+/// files store; it keeps the synth's former name "pisynth" so existing projects load.
+pub const BUILTIN_HEXA: &str = "pisynth";
+/// Display name of [`BUILTIN_HEXA`]. Project files written before the rename store "pisynth" as the plugin
+/// name; loading replaces it (`persist::from_json`).
+pub const HEXA_NAME: &str = "hexa";
 /// Catalog id of the built-in drum sampler (`komponist_builtin::sampler`, in process, WP-87).
 pub const BUILTIN_SAMPLER: &str = "sampler";
 /// Catalog id klopfer had as a built-in ("klopfer · INTERN", the bundled `Klopfer.clap`) before
@@ -504,7 +508,7 @@ pub struct Device {
     /// Bypass: effects pass audio through, instruments are silent; the processor is reset when
     /// bypass turns on.
     pub bypass: bool,
-    /// Opaque plugin state (pisynth: patch JSON; CLAP/VST3: the bridge's state blob). `None` = the
+    /// Opaque plugin state (hexa: patch JSON; CLAP/VST3: the bridge's state blob). `None` = the
     /// plugin's defaults. Kept unchanged when the plugin is missing (S06). Stored as base64 in the
     /// project file.
     #[serde(default, with = "crate::persist::base64_state")]
@@ -537,7 +541,7 @@ pub enum DeviceRole {
 pub struct PluginRef {
     /// Plugin format.
     pub format: PluginFormat,
-    /// Format-specific id: [`BUILTIN_PISYNTH`] / [`BUILTIN_SAMPLER`] for built-ins, the CLAP plugin
+    /// Format-specific id: [`BUILTIN_HEXA`] / [`BUILTIN_SAMPLER`] for built-ins, the CLAP plugin
     /// id (`com.example.synth`), or the VST3 class id as 32 upper-case hex digits.
     pub id: String,
     /// Display name at the time the device was added ("Vital"); shown when the plugin is missing.
@@ -560,7 +564,7 @@ pub struct PluginRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginFormat {
-    /// Shipped with komponist (pisynth, the sampler and the internal effects, all in process).
+    /// Shipped with komponist (hexa, the sampler and the internal effects, all in process).
     Builtin,
     /// A CLAP plugin.
     Clap,

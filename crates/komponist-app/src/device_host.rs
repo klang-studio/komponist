@@ -8,11 +8,11 @@
 //! and warnings go to the status bar.
 //!
 //! Two implementations:
-//! - [`PluginHost`], the app's: pisynth and the internal devices in process through
+//! - [`PluginHost`], the app's: hexa and the internal devices in process through
 //!   [`BuiltinHost`], every other device (scanned CLAP and VST3 plugins) in a bridge process of the
 //!   [`PluginManager`] (ARCHITECTURE §8).
-//! - [`BuiltinHost`], for tests and as the fallback: pisynth in process
-//!   ([`PisynthProcessor`]) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
+//! - [`BuiltinHost`], for tests and as the fallback: hexa in process
+//!   ([`HexaProcessor`]) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
 //!   effect's input through and an instrument stays silent, and its status is
 //!   [`DeviceStatus::Missing`].
 //!
@@ -26,7 +26,7 @@
 //!   [`DeviceHost::late_blocks`], "Neu laden" = `PluginAction::Reload`.
 //! - Generic parameter grid (WP-44): [`DeviceHost::params`], [`DeviceHost::param_value`]; knob
 //!   changes go through `PluginAction::SetParam` (bridged devices: [`DeviceHost::set_param`],
-//!   pisynth: the engine's `SetParam`).
+//!   hexa: the engine's `SetParam`).
 //! - Browser (WP-44) and S06/S07 (WP-52): [`DeviceHost::catalog`], [`DeviceHost::role`],
 //!   [`DeviceHost::missing_plugins`], [`DeviceHost::is_scanning`], [`DeviceHost::last_scan`];
 //!   a rescan is `SettingsAction::RescanPlugins` (or `App::scan_plugins`).
@@ -44,10 +44,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use komponist_builtin::sampler::{self, SamplerHandle};
-use komponist_builtin::{Internal, PisynthProcessor};
+use komponist_builtin::{HexaProcessor, Internal};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::{GuiSize, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
-use komponist_model::project::BUILTIN_PISYNTH;
+use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError, PluginManager,
@@ -148,7 +148,7 @@ pub trait DeviceHost {
     }
 
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
-    /// caller then sends the engine's `SetParam` to the device's slot, as for pisynth).
+    /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
         let _ = (device, id, value);
         false
@@ -243,14 +243,14 @@ pub trait DeviceHost {
     fn shutdown(&mut self) {}
 }
 
-/// Whether `plugin` is pisynth, the one built-in instrument that is not an internal device.
+/// Whether `plugin` is hexa, the one built-in instrument that is not an internal device.
 pub fn is_builtin_instrument(plugin: &PluginRef) -> bool {
-    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_PISYNTH
+    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_HEXA
 }
 
-/// Whether `device` is pisynth, the in-process built-in.
-pub fn is_pisynth(device: &Device) -> bool {
-    device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_PISYNTH
+/// Whether `device` is hexa, the in-process built-in.
+pub fn is_hexa(device: &Device) -> bool {
+    device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA
 }
 
 /// The internal device `device` is (Sampler, effects, MIDI effects), if it is one.
@@ -258,9 +258,9 @@ pub fn internal_kind(device: &Device) -> Option<Internal> {
     Internal::from_plugin(&device.plugin)
 }
 
-/// Whether `device` runs in process: pisynth or an internal device.
+/// Whether `device` runs in process: hexa or an internal device.
 pub fn is_in_process(device: &Device) -> bool {
-    is_pisynth(device) || internal_kind(device).is_some()
+    is_hexa(device) || internal_kind(device).is_some()
 }
 
 /// The pads of a sampler that hold a sample as note names for the step rows: the sample's name.
@@ -306,14 +306,14 @@ fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
 // BuiltinHost
 // ------------------------------------------------------------------------------------------------
 
-/// pisynth and the internal effects in process, everything else without processor (`Missing`).
+/// hexa and the internal effects in process, everything else without processor (`Missing`).
 #[derive(Debug)]
 pub struct BuiltinHost {
     devices: HashMap<DeviceId, Known>,
     /// The level meters of the internal devices' processors.
     meters: HashMap<DeviceId, Arc<DeviceMeter>>,
     events: Vec<PluginManagerEvent>,
-    /// pisynth only.
+    /// hexa only.
     catalog: Catalog,
     /// The folder of the project file, for relative sample paths.
     project_dir: Option<PathBuf>,
@@ -371,12 +371,12 @@ impl DeviceHost for BuiltinHost {
         device: &Device,
         setup: ProcessorSetup,
     ) -> Option<Box<dyn Processor>> {
-        // A state that does not load plays "Init" (pisynth) or the defaults (internal effects)
+        // A state that does not load plays "Init" (hexa) or the defaults (internal effects)
         // rather than nothing; the state stays in the document untouched.
-        let mut processor: Box<dyn Processor> = if is_pisynth(device) {
+        let mut processor: Box<dyn Processor> = if is_hexa(device) {
             Box::new(
-                PisynthProcessor::from_state(device.state.as_deref())
-                    .unwrap_or_else(|_| PisynthProcessor::new(komponist_builtin::default_patch())),
+                HexaProcessor::from_state(device.state.as_deref())
+                    .unwrap_or_else(|_| HexaProcessor::new(komponist_builtin::default_patch())),
             )
         } else if let Some(kind) = internal_kind(device) {
             let processor = kind.processor_from_state(device.state.as_deref());
@@ -497,7 +497,7 @@ impl DeviceHost for BuiltinHost {
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        // pisynth and the internal devices; everything else needs the plugin manager's catalog.
+        // hexa and the internal devices; everything else needs the plugin manager's catalog.
         if is_builtin_instrument(plugin) {
             Some(DeviceRole::Instrument)
         } else {
@@ -514,7 +514,7 @@ impl DeviceHost for BuiltinHost {
 // PluginHost
 // ------------------------------------------------------------------------------------------------
 
-/// The app's device host: pisynth in process through [`BuiltinHost`], every other device
+/// The app's device host: hexa in process through [`BuiltinHost`], every other device
 /// (klopfer, CLAP, VST3) in a bridge process of the [`PluginManager`].
 ///
 /// A device the manager cannot resolve plays without processor and stays `Missing` with its
@@ -733,7 +733,7 @@ mod tests {
     };
 
     #[test]
-    fn pisynth_plays_and_everything_else_is_missing() {
+    fn hexa_plays_and_everything_else_is_missing() {
         let project = demo_project();
         let mut host = BuiltinHost::new();
         let mut made = Vec::new();
@@ -748,7 +748,7 @@ mod tests {
             }
         }
         for (name, has_processor, status) in &made {
-            if name == "pisynth" || name == komponist_builtin::sampler::NAME {
+            if name == "hexa" || name == komponist_builtin::sampler::NAME {
                 assert!(has_processor);
                 assert_eq!(*status, DeviceStatus::Ok);
             } else {
@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_host_offers_pisynth_and_reports_the_rest_missing() {
+    fn the_builtin_host_offers_hexa_and_reports_the_rest_missing() {
         let project = demo_project();
         let mut host = BuiltinHost::new();
         let names: Vec<&str> = host
@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "pisynth",
+                "hexa",
                 "Sampler",
                 "EQ",
                 "Delay",
@@ -804,7 +804,7 @@ mod tests {
             .map(|t| t.channel.devices.len())
             .sum::<usize>();
         assert_eq!(missing.len(), all - in_process);
-        assert!(missing.iter().all(|m| m.plugin.name != "pisynth"));
+        assert!(missing.iter().all(|m| m.plugin.name != "hexa"));
         // Drums: the Sampler (in process) is at index 0, so the compressor behind it is the
         // first missing device.
         assert_eq!(missing[0].track, Some(project.tracks[0].id));

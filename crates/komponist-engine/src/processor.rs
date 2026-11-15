@@ -1,7 +1,7 @@
 //! The `Processor` trait and the per-block types it sees (ARCHITECTURE §6.2).
 //!
 //! A processor is one device in a channel chain: an instrument (makes sound from note events) or an
-//! effect (processes audio). Implementations: `PisynthProcessor` (`komponist-builtin`),
+//! effect (processes audio). Implementations: `HexaProcessor` (`komponist-builtin`),
 //! `ExternalProcessor` (`komponist-plugins`, talks to a bridge process), `TestSine` / `TestGain`
 //! (engine tests). The metronome is engine-internal and not a processor.
 //!
@@ -257,7 +257,7 @@ pub enum EventKind {
     /// pitch bend, aftertouch from live input. CC lanes come later.
     Midi([u8; 3]),
     /// Sets parameter `id` to `value` in the parameter's plain range (its `min ..= max`). Used for
-    /// pisynth macros now and automation later.
+    /// hexa macros now and automation later.
     Param {
         /// Parameter id (stable per processor type).
         id: u32,

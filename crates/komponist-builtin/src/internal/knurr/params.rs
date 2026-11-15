@@ -3,7 +3,7 @@
 //! The wire id is the index in [`params`]; [`id`] names every index. Plain values follow the
 //! model: Hz, seconds, cents, semitones, a choice's index, **fractions** for everything shown as
 //! percent (0.5 = 50 %). The two view switches of the proposal (`env_view`, `lfo_view`) are not
-//! parameters: they are context selections of the layout, like pisynth's operator
+//! parameters: they are context selections of the layout, like hexa's operator
 //! (`CellParam::Choice`), so a view is not part of the sound or of a saved state.
 
 use komponist_model::format::MINUS;

@@ -19,8 +19,8 @@
 //!   then).
 //! - [`engine_sync`]: [`engine_sync::EngineSync`], document → program → engine, the audio stream.
 //! - [`device_host`]: [`device_host::DeviceHost`], where processors come from, and its
-//!   implementations: [`device_host::PluginHost`] (pisynth in process, everything else in bridges
-//!   of the plugin manager) and [`device_host::BuiltinHost`] (pisynth only, tests).
+//!   implementations: [`device_host::PluginHost`] (hexa in process, everything else in bridges
+//!   of the plugin manager) and [`device_host::BuiltinHost`] (hexa only, tests).
 //! - [`meters`]: meter ballistics fed from the engine once per frame.
 //! - [`record`]: [`record::Recording`], the take that grows while recording (WP-51).
 //! - [`step_rows`]: which rows a new step clip gets per instrument and how rows are labelled
