@@ -60,7 +60,7 @@ fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
 
-/// The demo "Nachtfahrt" with hexa for every instrument and no effects, so that everything
+/// The demo "Night Drive" with hexa for every instrument and no effects, so that everything
 /// sounds on the builtin host and no device is missing.
 fn hexa_demo() -> Project {
     let mut p = demo_project();
@@ -138,12 +138,12 @@ pub(crate) fn app_in(dir: &Path, project: Project) -> (App, Opened) {
     app_with(dir, project, Box::new(BuiltinHost::new()))
 }
 
-/// Export settings into `dir/out`: the defaults, `range`, "Nachtfahrt.wav".
+/// Export settings into `dir/out`: the defaults, `range`, "Night Drive.wav".
 pub(crate) fn export_settings(dir: &Path, range: ExportRange) -> ExportSettings {
     ExportSettings {
         range,
-        file_name: "Nachtfahrt.wav".into(),
-        ..settings::default_export("Nachtfahrt", dir.join("out"))
+        file_name: "Night Drive.wav".into(),
+        ..settings::default_export("Night Drive", dir.join("out"))
     }
 }
 
@@ -251,8 +251,8 @@ fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
     step_until(&mut app, "playback", |a| a.engine().playhead() > Tick::ZERO);
     export(&mut app, export_settings(&dir, ExportRange::Song));
 
-    let path = dir.join("out/Nachtfahrt.wav");
-    assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"], "no part file");
+    let path = dir.join("out/Night Drive.wav");
+    assert_eq!(files(&dir.join("out")), ["Night Drive.wav"], "no part file");
     let wav = read(&path);
     assert_eq!(
         (
@@ -280,7 +280,7 @@ fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
     assert_eq!(
         status(&app),
         (
-            "Nachtfahrt.wav exportiert · 00:04 · 24 bit".to_owned(),
+            "Night Drive.wav exportiert · 00:04 · 24 bit".to_owned(),
             StatusKind::Success
         )
     );
@@ -374,7 +374,7 @@ fn another_sample_rate_renders_at_it_and_the_device_rate_comes_back() {
         ..export_settings(&dir, ExportRange::Loop)
     };
     export(&mut app, settings);
-    let wav = read(&dir.join("out/Nachtfahrt.wav"));
+    let wav = read(&dir.join("out/Night Drive.wav"));
     assert_eq!(wav.spec.sample_rate, 44_100);
     let bar9 = frames_of(&app, TickRange::new(Tick(8 * BAR), Tick(9 * BAR)), 44_100);
     assert_eq!(wav.frames, bar9 + 22_050);
@@ -585,7 +585,7 @@ fn cancel_leaves_no_file_and_the_engine_plays_again() {
     });
     assert!(app.engine().is_detached());
     // A part file is being written meanwhile, never the target.
-    assert!(!dir.join("out/Nachtfahrt.wav").exists());
+    assert!(!dir.join("out/Night Drive.wav").exists());
     // Esc in the dialog cancels.
     assert_eq!(app.ui().focus, FocusArea::Dialog);
     app.dispatch(Action::Ui(UiAction::CloseDialog));
@@ -631,7 +631,7 @@ fn the_export_waits_for_loading_devices() {
     // The device runs: the export goes on by itself.
     statuses.lock().unwrap().insert(hall, DeviceStatus::Ok);
     step_until(&mut app, "end of the export", |a| !a.is_exporting());
-    assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"]);
+    assert_eq!(files(&dir.join("out")), ["Night Drive.wav"]);
     assert_eq!(status(&app).1, StatusKind::Success);
 }
 
@@ -710,7 +710,7 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
             settings.clone(),
         )));
     h.run_steps(3);
-    h.get_by_label(&Lang::De.export_exporting("Nachtfahrt.wav"));
+    h.get_by_label(&Lang::De.export_exporting("Night Drive.wav"));
     h.get_by_label(de::EXPORT_WAITING);
     h.get_by_role_and_label(Role::ListItem, "LSP Compressor · Drums · fehlt");
     h.get_by_role_and_label(Role::ListItem, "Vital · Arp · fehlt");
@@ -730,8 +730,8 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     h.get_by_role_and_label(Role::Button, de::EXPORT_WITHOUT)
         .click();
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
-    assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"]);
-    let wav = read(&dir.join("out/Nachtfahrt.wav"));
+    assert_eq!(files(&dir.join("out")), ["Night Drive.wav"]);
+    let wav = read(&dir.join("out/Night Drive.wav"));
     // Bass, Lead and the muted Arp's neighbours: hexa sounds.
     assert!(peak_db(&wav.samples) > -40.0);
 }
@@ -836,11 +836,11 @@ fn a_device_that_drops_out_of_the_render_is_named() {
     };
     export(&mut app, settings);
     // The file is complete; the message names the device.
-    assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"]);
+    assert_eq!(files(&dir.join("out")), ["Night Drive.wav"]);
     assert_eq!(
         status(&app),
         (
-            "Nachtfahrt.wav exportiert · 00:01 · 24 bit · Kaputt-Hall ist ausgefallen".to_owned(),
+            "Night Drive.wav exportiert · 00:01 · 24 bit · Kaputt-Hall ist ausgefallen".to_owned(),
             StatusKind::Error
         )
     );
@@ -881,7 +881,7 @@ fn the_last_settings_are_saved_and_the_dialog_opens_with_them() {
     assert_eq!(
         d.settings,
         ExportSettings {
-            file_name: "Nachtfahrt.wav".into(),
+            file_name: "Night Drive.wav".into(),
             ..used
         }
     );
@@ -969,15 +969,15 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
     h.run_steps(1);
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
     h.run_steps(2);
-    assert_eq!(files(&target), ["Nachtfahrt.wav"]);
+    assert_eq!(files(&target), ["Night Drive.wav"]);
     assert_eq!(
-        read(&target.join("Nachtfahrt.wav")).spec.bits_per_sample,
+        read(&target.join("Night Drive.wav")).spec.bits_per_sample,
         16
     );
 
     // The status bar: S08's message and the link.
     // Half a bar and the default 2 s tail.
-    h.get_by_label("Nachtfahrt.wav exportiert · 00:03 · 16 bit");
+    h.get_by_label("Night Drive.wav exportiert · 00:03 · 16 bit");
     h.get_by_role_and_label(Role::Link, de::EXPORT_SHOW_IN_FOLDER)
         .click();
     h.run_steps(2);
@@ -987,7 +987,7 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
     h.get_by_role_and_label(Role::RadioButton, "Dateien")
         .click();
     h.run_steps(3);
-    h.get_by_label("Nachtfahrt.wav");
+    h.get_by_label("Night Drive.wav");
     assert!(h.query_by_label(de::BROWSER_NO_EXPORTS).is_none());
 }
 
@@ -1008,7 +1008,7 @@ fn esc_and_the_cancel_button_end_a_running_export() {
             if d.progress.is_some_and(|p| p.fraction > 0.0))
     });
     h.run_steps(1);
-    h.get_by_label(&Lang::De.export_exporting("Nachtfahrt.wav"));
+    h.get_by_label(&Lang::De.export_exporting("Night Drive.wav"));
     h.get_by_role(Role::ProgressIndicator);
     h.key_press(Key::Escape);
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
@@ -1045,7 +1045,7 @@ fn mask_cpu(h: &mut Harness<'_, App>) {
 /// S08's settings: the defaults into "~/Musik/Exporte".
 fn s08_settings() -> ExportSettings {
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/home"), PathBuf::from);
-    settings::default_export("Nachtfahrt", home.join("Musik/Exporte"))
+    settings::default_export("Night Drive", home.join("Musik/Exporte"))
 }
 
 /// The settings dialog in English (#5).

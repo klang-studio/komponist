@@ -178,8 +178,8 @@ fn status_messages_are_english() {
         "Take 1 recorded · 1 note · Q quantizes"
     );
     assert_eq!(
-        Lang::En.status_collected(2, "Nachtfahrt Samples"),
-        "Collected and saved · 2 samples in “Nachtfahrt Samples”"
+        Lang::En.status_collected(2, "Night Drive Samples"),
+        "Collected and saved · 2 samples in “Night Drive Samples”"
     );
 }
 

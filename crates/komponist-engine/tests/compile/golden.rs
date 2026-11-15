@@ -29,7 +29,7 @@ fn golden(name: &str, title: &str, project: &Project, env: &dyn CompileEnv) -> P
 fn demo_project_golden() {
     let program = golden(
         "demo_project",
-        "The demo project \"Nachtfahrt\" (fixtures::demo_project)",
+        "The demo project \"Night Drive\" (fixtures::demo_project)",
         &demo_project(),
         &NoEnv,
     );

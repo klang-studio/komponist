@@ -334,7 +334,7 @@ fn dialogs_take_the_focus_and_give_it_back() {
     ));
     match &a.ui().dialog {
         Some(komponist_app::ui_state::Dialog::Export(d)) => {
-            assert_eq!(d.settings.file_name, "Nachtfahrt.wav");
+            assert_eq!(d.settings.file_name, "Night Drive.wav");
             assert_eq!(d.settings.sample_rate, 48_000);
         }
         other => panic!("{other:?}"),

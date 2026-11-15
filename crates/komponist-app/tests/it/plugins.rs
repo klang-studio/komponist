@@ -192,7 +192,7 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     };
     let dir = scratch("app");
     let (project, crash) = demo_with_crash();
-    let file = dir.join("Nachtfahrt.komponist");
+    let file = dir.join("Night Drive.komponist");
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
     let mut app = app_with(
         komponist_model::fixtures::empty_project(),
@@ -375,7 +375,7 @@ fn the_demo_plays_the_installed_plugins() {
             }
         }
     }
-    let file = dir.join("Nachtfahrt.komponist");
+    let file = dir.join("Night Drive.komponist");
     std::fs::write(&file, persist::to_json(&project).unwrap()).unwrap();
     let mut app = app_with(
         komponist_model::fixtures::empty_project(),

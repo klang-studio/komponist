@@ -274,7 +274,7 @@ fn state_snapshots_are_undo_steps_that_follow_each_other_into_one() {
     let surge = device(&app, "Surge XT");
     let original = state(&app, surge);
     app.dispatch(Action::Edit(EditAction::SetProjectProp(ProjectProp::Name(
-        "Nachtfahrt 2".into(),
+        "Night Drive 2".into(),
     ))));
     let depth = undo_depth(&mut app);
 
@@ -305,9 +305,9 @@ fn state_snapshots_are_undo_steps_that_follow_each_other_into_one() {
     // Undo reverts the plugin's state first, then the rename.
     app.dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(state(&app, surge), original);
-    assert_eq!(app.project().name, "Nachtfahrt 2");
+    assert_eq!(app.project().name, "Night Drive 2");
     app.dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(app.project().name, "Nachtfahrt");
+    assert_eq!(app.project().name, "Night Drive");
     app.dispatch(Action::Edit(EditAction::Redo));
     app.dispatch(Action::Edit(EditAction::Redo));
     assert_eq!(state(&app, surge).as_deref(), Some(&[1u8, 2, 5][..]));
@@ -554,7 +554,7 @@ fn saving_snapshots_the_states_and_exit_shuts_the_host_down() {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("Nachtfahrt.komponist");
+    let file = dir.join("Night Drive.komponist");
     std::fs::write(&file, persist::to_json(app.project()).unwrap()).unwrap();
     app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
     app.step();

@@ -483,7 +483,7 @@ fn missing_samples_open_s06_with_suchen_and_a_found_one_leaves_the_list() {
     };
     key(&mut h, egui::Key::ArrowDown);
     key(&mut h, egui::Key::Enter);
-    // In the folder: Clap, Hat offen, Hat zu, Kick …
+    // In the folder: Clap, Closed Hat, Kick, Open Hat …
     for _ in 0..4 {
         key(&mut h, egui::Key::ArrowDown);
     }
@@ -539,7 +539,7 @@ fn the_pad_selection_and_the_step_row_selection_follow_each_other() {
             step: None,
         })));
     h.run_steps(4);
-    assert_eq!(selected_pad(&h), "Pad Hat zu");
+    assert_eq!(selected_pad(&h), "Pad Closed Hat");
     // A pad click in the device card selects its row in the sequencer.
     let tom = h
         .get_all_by_role_and_label(Role::Button, "Pad Tom")

@@ -30,9 +30,9 @@ use crate::ui_state::{SettingsSection, StartView};
 pub struct RecentRow {
     /// The file.
     pub path: PathBuf,
-    /// Project name ("Nachtfahrt").
+    /// Project name ("Night Drive").
     pub name: String,
-    /// The path as shown ("~/Musik/klang/Nachtfahrt.komponist").
+    /// The path as shown ("~/Musik/klang/Night Drive.komponist").
     pub path_label: String,
     /// "124 BPM · 6 Spuren", or "Datei fehlt".
     pub meta: String,
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn the_filter_matches_name_and_path() {
         let rows = [
-            row("Nachtfahrt", "~/Musik/klang/Nachtfahrt.komponist"),
+            row("Night Drive", "~/Musik/klang/Night Drive.komponist"),
             row("Hafenlicht", "~/Musik/klang/Hafenlicht.komponist"),
             row("Beat-Skizze 14", "~/Musik/klang/skizzen/beat-14.komponist"),
         ];

@@ -299,7 +299,7 @@ fn a_file_that_cannot_be_read_keeps_the_project() {
     std::fs::write(&broken, "kein json").unwrap();
     let mut app = app_in(&dir, demo_project());
     app.dispatch(Action::Project(ProjectAction::OpenPath(broken)));
-    assert_eq!(app.project().name, "Nachtfahrt");
+    assert_eq!(app.project().name, "Night Drive");
     let status = app.ui().status.as_ref().unwrap();
     assert!(
         status
@@ -665,11 +665,11 @@ fn continuing_closes_s06() {
 fn the_start_screen_opens_recent_projects_with_the_keyboard() {
     let dir = scratch("start");
     let mut a = demo_project();
-    a.name = "Nachtfahrt".into();
+    a.name = "Night Drive".into();
     let mut b = demo_project();
     b.name = "Hafenlicht".into();
     let (pa, pb) = (
-        dir.join("Nachtfahrt.komponist"),
+        dir.join("Night Drive.komponist"),
         dir.join("Hafenlicht.komponist"),
     );
     save_and_open(&pa, &a);
@@ -690,7 +690,7 @@ fn the_start_screen_opens_recent_projects_with_the_keyboard() {
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
     assert_eq!(rows.len(), 3, "{rows:?}");
-    assert!(rows[0].starts_with("Nachtfahrt, 124 BPM · 6 Spuren"));
+    assert!(rows[0].starts_with("Night Drive, 124 BPM · 6 Spuren"));
     assert!(rows[2].starts_with("Weg, Datei fehlt"));
     assert_eq!(h.state().ui().start.selected, 0);
     // Entf removes the missing file from the list (not from disk).
@@ -984,7 +984,7 @@ fn snapshots_of_s06_and_s10() {
         app.ui_mut().dialog = Some(Dialog::MissingPlugins(missing));
         app.ui_mut().focus = FocusArea::Dialog;
         app.set_status(
-            "Nachtfahrt geöffnet · 2 Plugins fehlen",
+            "Night Drive geöffnet · 2 Plugins fehlen",
             komponist_app::ui_state::StatusKind::Error,
         );
         let mut h = harness_at(app, ppp);
@@ -1229,8 +1229,8 @@ fn s09_model() -> start::Model {
         open_shortcut: "Strg O".into(),
         recent: vec![
             row(
-                "Nachtfahrt",
-                "~/Musik/klang/Nachtfahrt.komponist",
+                "Night Drive",
+                "~/Musik/klang/Night Drive.komponist",
                 "124 BPM · 6 Spuren",
                 "vor 2 Stunden",
                 &[45, 250, 150, 300, 95, 200],
@@ -1370,7 +1370,7 @@ fn snapshots_of_the_file_browser_and_the_prompt() {
             [
                 "FM-Glocken.komponist",
                 "Hafenlicht.komponist",
-                "Nachtfahrt.komponist",
+                "Night Drive.komponist",
             ]
             .iter()
             .map(|n| Entry {
@@ -1399,7 +1399,7 @@ fn snapshots_of_the_file_browser_and_the_prompt() {
         .with_options(SnapshotOptions::new().output_path(snapshot_dir()))
         .build_ui_state(
             |ui, _: &mut ()| {
-                let _ = new_project::show_unsaved(ui.ctx(), "Nachtfahrt");
+                let _ = new_project::show_unsaved(ui.ctx(), "Night Drive");
             },
             (),
         );

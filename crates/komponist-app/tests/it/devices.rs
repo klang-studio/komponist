@@ -314,7 +314,7 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     let dir = std::env::temp_dir().join(format!("komponist-wp44-macro-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("Nachtfahrt.komponist");
+    let path = dir.join("Night Drive.komponist");
     std::fs::write(
         &path,
         komponist_model::persist::to_json(&demo_project()).unwrap(),

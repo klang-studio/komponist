@@ -135,7 +135,7 @@ pub fn day_and_time(t: Lang, then: &LocalTime, now: &LocalTime) -> String {
     t.dialog_day_time(day, format!("{:02}:{:02}", then.hour, then.minute))
 }
 
-/// `path` with the home folder written as `~` ("~/Musik/klang/Nachtfahrt.komponist").
+/// `path` with the home folder written as `~` ("~/Musik/klang/Night Drive.komponist").
 pub fn tilde(path: &Path) -> String {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     tilde_in(path, home.as_deref())

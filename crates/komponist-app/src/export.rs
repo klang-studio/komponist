@@ -28,7 +28,7 @@
 //! 5. **Finish** (UI): the engine goes back into the stream (`EngineSync::attach`), the bridges
 //!    back to realtime, the engine's events are drained (a `ProcessorFailed` from the render, or a
 //!    processor that failed to re-activate, names a device that dropped out), the dialog closes
-//!    and the status bar says „Nachtfahrt.wav exportiert · 00:33 · 24 bit“ with „Im Ordner
+//!    and the status bar says „Night Drive.wav exportiert · 00:33 · 24 bit“ with „Im Ordner
 //!    zeigen“ (the folder opens with `xdg-open`, local only). The file joins Projekt › Exporte
 //!    (this session's exports of the open project).
 //!
