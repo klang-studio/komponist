@@ -6,7 +6,7 @@ use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
     BUILTIN_PISYNTH, BUILTIN_SAMPLER, Channel, Clip, ClipContent, Device, DeviceRole, Hue,
     MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project,
-    Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind,
+    Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind, TrackOutput,
 };
 use crate::time::{StepResolution, Tempo, Tick, TickRange};
 
@@ -278,6 +278,7 @@ fn demo_track(
                 // Prototype: `mkDev('chorus', {bypass: true})`.
                 bypass: plugin.id == TAL_CHORUS.id,
                 state: None,
+                sidechain: None,
             })
         })
         .collect();
@@ -299,6 +300,10 @@ fn demo_track(
         midi_channel: MidiChannelSel::Omni,
         height: TRACK_HEIGHT_DEFAULT,
         clips: clips(ids).into_iter().map(Arc::new).collect(),
+        output: TrackOutput::Master,
+        sends: Vec::new(),
+        folder: false,
+        folded: false,
     }
 }
 

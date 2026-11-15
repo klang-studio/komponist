@@ -41,6 +41,10 @@ pub fn track(id: u64, name: &str, clips: Vec<Clip>) -> Track {
         midi_channel: MidiChannelSel::Omni,
         height: TRACK_HEIGHT_DEFAULT,
         clips: clips.into_iter().map(Arc::new).collect(),
+        output: komponist_model::TrackOutput::Master,
+        sends: Vec::new(),
+        folder: false,
+        folded: false,
     }
 }
 
@@ -59,6 +63,7 @@ pub fn device(id: u64, role: DeviceRole, name: &str) -> Arc<Device> {
         },
         bypass: false,
         state: None,
+        sidechain: None,
     })
 }
 

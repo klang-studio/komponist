@@ -809,6 +809,7 @@ mod tests {
                 .clone(),
             bypass: false,
             state: None,
+            sidechain: None,
         };
         let setup = ProcessorSetup {
             sample_rate: 48_000.0,

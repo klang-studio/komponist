@@ -1,6 +1,9 @@
 //! Property tests across the crate: random edit sequences through [`Document`] (undo all restores
 //! the initial project, redo all the final one, every step keeps the invariants, errors change
-//! nothing), gestures and untracked edits, and the save → load round trip of edited projects.
+//! nothing), gestures and untracked edits, the save → load round trip of edited projects, and the
+//! routing graph (wave 9): random routing edits never make a cycle or a dangling reference, and on
+//! random raw graphs the cycle check, the topological order and the target lists agree with a
+//! brute-force transitive closure.
 
 use std::sync::Arc;
 
@@ -9,16 +12,19 @@ use proptest::prelude::*;
 use crate::document::Document;
 use crate::edits::tests::check_invariants;
 use crate::edits::{
-    self, ChannelProp, ClipProp, EditError, ExclusiveFlag, NewClip, NewClipContent, NewDevice,
-    NewNote, NewTrack, ProjectProp, StepClipProp, StepProp, StepRowProp, StepRowSpec, TrackProp,
-    VelocityChange,
+    self, ChannelProp, ClipProp, EditError, ExclusiveFlag, NewBus, NewClip, NewClipContent,
+    NewDevice, NewNote, NewTrack, ProjectProp, SendProp, StepClipProp, StepProp, StepRowProp,
+    StepRowSpec, TrackProp, VelocityChange,
 };
 use crate::fixtures::{demo_project, empty_project};
-use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
+use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::persist::{from_json, to_json};
 use crate::project::{
-    ChannelRef, ClipContent, ClipKind, DeviceRole, Hue, PluginFormat, PluginRef, Project,
+    Channel, ChannelRef, ClipContent, ClipKind, Device, DeviceRole, Hue, MidiChannelSel,
+    MidiInputSel, PluginFormat, PluginRef, Project, Sidechain, Tap, Track, TrackKind, TrackOutput,
+    TrackSend,
 };
+use crate::routing;
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
 // ------------------------------------------------------------------------------------------------
@@ -81,6 +87,57 @@ enum Op {
     State(u16, Vec<u8>),
     AddTake(u16),
     SelectTake(u16, u8),
+    AddBus {
+        group: bool,
+        index: Option<u8>,
+        members: Vec<u16>,
+        senders: Vec<u16>,
+    },
+    SetOutput(Vec<u16>, Option<u16>),
+    AddSend(u16, u16),
+    SetSend(u16, u8, i32, u16),
+    RemoveSend(u16),
+    SetSidechain(u16, Option<u16>, bool),
+    DuplicateTracks(Vec<u16>),
+}
+
+/// Routing edits, plus the track edits that change the routing (remove, move, add).
+fn routing_op() -> impl Strategy<Value = Op> {
+    let pick = any::<u16>;
+    let picks = || prop::collection::vec(pick(), 0..4);
+    prop_oneof![
+        (any::<bool>(), prop::option::of(0u8..10), picks(), picks()).prop_map(
+            |(group, index, members, senders)| Op::AddBus {
+                group,
+                index,
+                members,
+                senders,
+            }
+        ),
+        (picks(), prop::option::of(pick())).prop_map(|(t, b)| Op::SetOutput(t, b)),
+        (pick(), pick()).prop_map(|(t, b)| Op::AddSend(t, b)),
+        (pick(), 0u8..4, -400i32..100, pick()).prop_map(|(s, w, v, b)| Op::SetSend(s, w, v, b)),
+        pick().prop_map(Op::RemoveSend),
+        (pick(), prop::option::of(pick()), any::<bool>())
+            .prop_map(|(d, t, pre)| Op::SetSidechain(d, t, pre)),
+        picks().prop_map(Op::DuplicateTracks),
+        pick().prop_map(Op::RemoveTrack),
+        (pick(), pick(), 0u8..10).prop_map(|(a, b, to)| Op::MoveTracks(a, b, to)),
+        (0u8..4, prop::option::of(0u8..10), any::<bool>()).prop_map(|(instrument, index, arm)| {
+            Op::AddTrack {
+                instrument,
+                index,
+                arm,
+            }
+        }),
+        (pick(), any::<bool>(), 0u8..6).prop_map(|(track, master, index)| Op::InsertDevice {
+            track,
+            master,
+            index,
+            instrument: false,
+        }),
+        (pick(), 0u8..13, -200i32..400).prop_map(|(t, w, v)| Op::TrackProp(t, w, v)),
+    ]
 }
 
 fn notes_strategy() -> impl Strategy<Value = Vec<(i64, i64, u8, u8)>> {
@@ -101,7 +158,7 @@ fn op() -> impl Strategy<Value = Op> {
         }),
         pick().prop_map(Op::RemoveTrack),
         (pick(), pick(), 0u8..8).prop_map(|(a, b, to)| Op::MoveTracks(a, b, to)),
-        (pick(), 0u8..10, -200i32..400).prop_map(|(t, w, v)| Op::TrackProp(t, w, v)),
+        (pick(), 0u8..13, -200i32..400).prop_map(|(t, w, v)| Op::TrackProp(t, w, v)),
         (pick(), any::<bool>()).prop_map(|(t, arm)| Op::Exclusive(t, arm)),
         (
             pick(),
@@ -160,6 +217,7 @@ fn op() -> impl Strategy<Value = Op> {
         (pick(), prop::collection::vec(any::<u8>(), 0..16)).prop_map(|(d, s)| Op::State(d, s)),
         pick().prop_map(Op::AddTake),
         (pick(), 0u8..4).prop_map(|(c, t)| Op::SelectTake(c, t)),
+        routing_op(),
     ]
 }
 
@@ -205,7 +263,23 @@ fn devices(p: &Project) -> Vec<DeviceId> {
         .collect()
 }
 
+fn buses(p: &Project) -> Vec<TrackId> {
+    p.tracks
+        .iter()
+        .filter(|t| t.is_bus())
+        .map(|t| t.id)
+        .collect()
+}
+
+fn sends(p: &Project) -> Vec<SendId> {
+    p.tracks
+        .iter()
+        .flat_map(|t| t.sends.iter().map(|s| s.id))
+        .collect()
+}
+
 const NO_TRACK: TrackId = TrackId(u64::MAX);
+const NO_SEND: SendId = SendId(u64::MAX);
 const NO_CLIP: ClipId = ClipId(u64::MAX);
 const NO_NOTE: NoteId = NoteId(u64::MAX);
 const NO_DEVICE: DeviceId = DeviceId(u64::MAX);
@@ -296,7 +370,8 @@ fn run(p: &Project, op: &Op) -> Result<Project, EditError> {
                 5 => TrackProp::Height(v.clamp(0, 400) as u16),
                 6 => TrackProp::MidiChannel(crate::MidiChannelSel::Channel(v.rem_euclid(20) as u8)),
                 7 => TrackProp::Input(crate::MidiInputSel::Device(format!("Port {v}"))),
-                w => TrackProp::Channel(channel_prop(w - 8, v)),
+                8 => TrackProp::Folded(v % 2 == 0),
+                w => TrackProp::Channel(channel_prop(w - 9, v)),
             };
             edits::set_track_prop(p, &[track(t)], prop)
         }
@@ -464,6 +539,53 @@ fn run(p: &Project, op: &Op) -> Result<Project, EditError> {
         }
         Op::AddTake(c) => edits::add_take(p, midi(c), format!("Take {c}")).map(|(p, _)| p),
         Op::SelectTake(c, t) => edits::select_take(p, midi(c), usize::from(t)),
+        Op::AddBus {
+            group,
+            index,
+            members,
+            senders,
+        } => {
+            let spec = NewBus {
+                group,
+                index: index.map(usize::from),
+                members: members.into_iter().map(track).collect(),
+                senders: senders.into_iter().map(track).collect(),
+                ..NewBus::default()
+            };
+            edits::add_bus(p, spec).map(|(p, _)| p)
+        }
+        Op::SetOutput(tracks, target) => {
+            let output = match target {
+                None => TrackOutput::Master,
+                Some(b) => TrackOutput::Bus(choose(&buses(p), b, NO_TRACK)),
+            };
+            let tracks: Vec<TrackId> = tracks.into_iter().map(track).collect();
+            edits::set_output(p, &tracks, output)
+        }
+        Op::AddSend(t, b) => {
+            edits::add_send(p, track(t), choose(&buses(p), b, NO_TRACK)).map(|(p, _)| p)
+        }
+        Op::SetSend(s, which, v, b) => {
+            let prop = match which {
+                0 => SendProp::LevelDb(v as f32 / 4.0),
+                1 => SendProp::Tap(if v % 2 == 0 { Tap::Pre } else { Tap::Post }),
+                2 => SendProp::Enabled(v % 2 == 0),
+                _ => SendProp::Target(choose(&buses(p), b, NO_TRACK)),
+            };
+            edits::set_send(p, choose(&sends(p), s, NO_SEND), prop)
+        }
+        Op::RemoveSend(s) => edits::remove_send(p, choose(&sends(p), s, NO_SEND)),
+        Op::SetSidechain(d, source, pre) => {
+            let sidechain = source.map(|t| Sidechain {
+                source: track(t),
+                tap: if pre { Tap::Pre } else { Tap::Post },
+            });
+            edits::set_sidechain(p, device(d), sidechain)
+        }
+        Op::DuplicateTracks(tracks) => {
+            let tracks: Vec<TrackId> = tracks.into_iter().map(track).collect();
+            edits::duplicate_tracks(p, &tracks).map(|(p, _)| p)
+        }
     }
 }
 
@@ -539,8 +661,267 @@ fn untracked(which: u8, v: u8) -> impl Fn(&Project) -> Result<Project, EditError
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// Raw routing graphs
+// ------------------------------------------------------------------------------------------------
+
+/// A raw graph: per node `(is bus, group view, output pick (None = master), send picks,
+/// sidechain pick on its one effect, muted, soloed)`. Picks select a bus (outputs, sends) or any
+/// node (sidechains) modulo the count, so cycles and self-references happen; in DAG mode
+/// (`raw_project`'s `forward`) every pick only reaches later nodes, so the graph is acyclic.
+type RawNode = (bool, bool, Option<u8>, Vec<u8>, Option<u8>, bool, bool);
+
+fn raw_graph() -> impl Strategy<Value = (Vec<RawNode>, Option<u8>, bool)> {
+    let node = (
+        any::<bool>(),
+        any::<bool>(),
+        prop::option::of(any::<u8>()),
+        prop::collection::vec(any::<u8>(), 0..3),
+        prop::option::of(any::<u8>()),
+        prop::bool::weighted(0.15),
+        prop::bool::weighted(0.15),
+    );
+    (
+        prop::collection::vec(node, 1..9),
+        prop::option::of(any::<u8>()),
+        any::<bool>(),
+    )
+}
+
+/// Builds a project from a raw graph, bypassing the edits (so it may break the invariants). Every
+/// node gets one effect (id `100 + i`); `master_sidechain` puts a limiter with a sidechain on the
+/// master. `forward`: outputs and sends only go to later buses and sidechains only come from
+/// earlier nodes (a DAG). Group members are put behind their groups.
+fn raw_project(nodes: &[RawNode], master_sidechain: Option<u8>, forward: bool) -> Project {
+    let n = nodes.len();
+    let ids: Vec<TrackId> = (0..n).map(|i| TrackId(1 + i as u64)).collect();
+    let pick_bus = |from: usize, pick: u8| {
+        let buses: Vec<usize> = (0..n)
+            .filter(|&j| nodes[j].0 && (!forward || j > from))
+            .collect();
+        (!buses.is_empty()).then(|| ids[buses[usize::from(pick) % buses.len()]])
+    };
+    let device = |id: u64, holder: usize, source: Option<u8>| {
+        let sources = if forward { holder } else { n };
+        Arc::new(Device {
+            id: DeviceId(id),
+            role: DeviceRole::Effect,
+            plugin: plugin(3),
+            bypass: false,
+            state: None,
+            sidechain: source.filter(|_| sources > 0).map(|s| Sidechain {
+                source: ids[usize::from(s) % sources],
+                tap: Tap::Pre,
+            }),
+        })
+    };
+    let mut p = Project::new("Graph");
+    let mut next_send = 1000;
+    for (i, (bus, folder, output, sends, sidechain, mute, solo)) in nodes.iter().enumerate() {
+        let mut targets = Vec::new();
+        for &s in sends {
+            if let Some(b) = pick_bus(i, s)
+                && !targets.contains(&b)
+            {
+                targets.push(b);
+            }
+        }
+        p.tracks.push(Arc::new(Track {
+            id: ids[i],
+            name: format!("N{i}"),
+            hue: Hue::RED,
+            kind: if *bus {
+                TrackKind::Bus
+            } else {
+                TrackKind::Midi
+            },
+            channel: Channel {
+                mute: *mute,
+                solo: *solo,
+                devices: vec![device(100 + i as u64, i, *sidechain)],
+                ..Channel::default()
+            },
+            arm: false,
+            monitor: false,
+            input: MidiInputSel::All,
+            midi_channel: MidiChannelSel::Omni,
+            height: 56,
+            clips: Vec::new(),
+            output: output
+                .and_then(|o| pick_bus(i, o))
+                .map_or(TrackOutput::Master, TrackOutput::Bus),
+            sends: targets
+                .into_iter()
+                .map(|target| {
+                    next_send += 1;
+                    TrackSend {
+                        id: SendId(next_send),
+                        target,
+                        level_db: 0.0,
+                        tap: Tap::Post,
+                        enabled: true,
+                    }
+                })
+                .collect(),
+            folder: *bus && *folder,
+            folded: false,
+        }));
+    }
+    if let Some(s) = master_sidechain {
+        Arc::make_mut(&mut p.master)
+            .devices
+            .push(device(99, n, Some(s)));
+    }
+    p.next_id = 2000;
+    routing::normalize_groups(&mut p);
+    p
+}
+
+/// Node index for the closure: tracks by display index, the master last.
+fn node_index(p: &Project, node: ChannelRef) -> usize {
+    match node {
+        ChannelRef::Track(id) => p.track_index(id).unwrap(),
+        ChannelRef::Master => p.tracks.len(),
+    }
+}
+
+/// `closure[a][b]`: a path of one or more edges leads from `a` to `b` (Floyd–Warshall).
+fn closure(p: &Project) -> Vec<Vec<bool>> {
+    let n = p.tracks.len() + 1;
+    let mut c = vec![vec![false; n]; n];
+    for e in routing::edges(p) {
+        c[node_index(p, e.from)][node_index(p, e.to)] = true;
+    }
+    for k in 0..n {
+        let via = c[k].clone();
+        for row in &mut c {
+            if row[k] {
+                for (cell, &reach) in row.iter_mut().zip(&via) {
+                    *cell |= reach;
+                }
+            }
+        }
+    }
+    c
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// On random graphs (cycles included) the cycle check, the topological order and the lists of
+    /// valid targets agree with the transitive closure.
+    #[test]
+    fn routing_queries_match_the_closure((nodes, master_sc, forward) in raw_graph()) {
+        let p = raw_project(&nodes, master_sc, forward);
+        let c = closure(&p);
+        let n = p.tracks.len();
+        let cyclic = (0..=n).any(|i| c[i][i]);
+        prop_assert!(!(forward && cyclic), "forward graphs are acyclic");
+        let check = routing::check(&p);
+        prop_assert_eq!(check.is_ok(), !cyclic, "{:?}", check);
+        if cyclic {
+            prop_assert!(matches!(
+                check,
+                Err(routing::RoutingIssue::Cycle | routing::RoutingIssue::SelfReference(_))
+            ));
+            prop_assert!(routing::topo_order(&p).is_err());
+            return Ok(());
+        }
+        // Topological order: every node once, every edge forwards, the master last.
+        let order = routing::topo_order(&p).unwrap();
+        prop_assert_eq!(order.len(), n + 1);
+        prop_assert_eq!(order.last(), Some(&ChannelRef::Master));
+        let pos = |node: ChannelRef| order.iter().position(|o| *o == node).unwrap();
+        for e in routing::edges(&p) {
+            prop_assert!(pos(e.from) < pos(e.to), "{:?}", e);
+        }
+        // Valid targets: exactly the buses that close no cycle.
+        for (i, t) in p.tracks.iter().enumerate() {
+            let acyclic: Vec<TrackId> = p
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|&(j, b)| b.is_bus() && j != i && !c[j][i])
+                .map(|(_, b)| b.id)
+                .collect();
+            let outputs: Vec<TrackOutput> = std::iter::once(TrackOutput::Master)
+                .chain(acyclic.iter().map(|&b| TrackOutput::Bus(b)))
+                .collect();
+            prop_assert_eq!(routing::output_targets(&p, t.id), outputs);
+            let sendable: Vec<TrackId> = acyclic
+                .iter()
+                .copied()
+                .filter(|b| t.send_to(*b).is_none())
+                .collect();
+            prop_assert_eq!(routing::send_targets(&p, t.id), sendable);
+            // Each valid output really is acyclic after the edit.
+            for output in routing::output_targets(&p, t.id) {
+                let q = edits::set_output(&p, &[t.id], output).unwrap();
+                prop_assert!(routing::check(&q).is_ok());
+            }
+            let device = t.channel.devices[0].id;
+            let sources: Vec<TrackId> = p
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i && !c[i][j])
+                .map(|(_, s)| s.id)
+                .collect();
+            prop_assert_eq!(routing::sidechain_sources(&p, device), sources);
+        }
+        if master_sc.is_some() {
+            let all: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
+            prop_assert_eq!(routing::sidechain_sources(&p, DeviceId(99)), all);
+        }
+        // Gates: mute closes, and without solo nothing else does.
+        let gates = routing::gates(&p);
+        let any_solo = p.any_solo();
+        for t in &p.tracks {
+            let g = gates.output(t.id);
+            prop_assert_eq!(g.muted, t.channel.mute);
+            if !any_solo {
+                prop_assert!(!g.solo_muted);
+            }
+            if t.channel.solo {
+                prop_assert!(!g.solo_muted, "a soloed node is never solo-muted");
+            }
+        }
+    }
+
+    /// Random routing edits (and the track edits that touch routing) through the document: every
+    /// step keeps all invariants (acyclic, no dangling reference, groups in blocks), undo and redo
+    /// restore every state, and the result survives save and load.
+    #[test]
+    fn routing_edits_keep_the_graph_valid(
+        demo in any::<bool>(),
+        ops in prop::collection::vec(
+            prop_oneof![3 => routing_op(), 1 => op()],
+            1..40,
+        ),
+    ) {
+        let initial = if demo { demo_project() } else { empty_project() };
+        let mut doc = Document::new(initial);
+        let mut history = vec![Arc::clone(doc.project())];
+        for op in &ops {
+            if apply(&mut doc, op)? {
+                history.push(Arc::clone(doc.project()));
+            }
+            let p = doc.project();
+            prop_assert!(routing::topo_order(p).is_ok());
+            for e in routing::edges(p) {
+                if let ChannelRef::Track(id) = e.from {
+                    prop_assert!(p.track(id).is_some(), "dangling source {:?}", e);
+                }
+                if let ChannelRef::Track(id) = e.to {
+                    prop_assert!(p.track(id).is_some(), "dangling target {:?}", e);
+                }
+            }
+        }
+        let last = Arc::clone(doc.project());
+        check_history(&mut doc, &history)?;
+        let loaded = from_json(&to_json(&last).unwrap()).unwrap();
+        prop_assert_eq!(&loaded, &*last);
+    }
 
     /// Random edit sequences: undo all = initial project, redo all = final project.
     #[test]

@@ -23,16 +23,25 @@ use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
+use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::project::{
     BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind,
     DEFAULT_STEP_ROWS, Device, DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip,
     MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepRow,
-    TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind,
+    TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, TrackOutput,
     VOLUME_DB_MAX, VOLUME_DB_MIN,
 };
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
+mod routes;
+
+pub use routes::{
+    DEFAULT_BUS_NAME, DEFAULT_GROUP_NAME, NewBus, SendProp, add_bus, add_send, duplicate_tracks,
+    numbered_track_name, remove_send, set_output, set_send, set_sidechain,
+};
+
+#[cfg(test)]
+mod routing_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -51,6 +60,13 @@ pub enum EditError {
     NoteNotFound(NoteId),
     /// No device with this id.
     DeviceNotFound(DeviceId),
+    /// No send with this id.
+    SendNotFound(SendId),
+    /// The track is not a bus, but the edit needs one (output, send or group target).
+    NotABus(TrackId),
+    /// The edit would close a cycle in the routing graph (outputs, sends, sidechains), including
+    /// a track routing or tapping into itself.
+    RoutingCycle,
     /// The clip has the other content kind (note edit on a step clip, step edit on a MIDI clip).
     WrongClipKind {
         /// The clip.
@@ -77,6 +93,9 @@ impl fmt::Display for EditError {
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
             EditError::NoteNotFound(id) => write!(f, "note {} not found", id.0),
             EditError::DeviceNotFound(id) => write!(f, "device {} not found", id.0),
+            EditError::SendNotFound(id) => write!(f, "send {} not found", id.0),
+            EditError::NotABus(id) => write!(f, "track {} is not a bus", id.0),
+            EditError::RoutingCycle => write!(f, "the routing would have a cycle"),
             EditError::WrongClipKind { clip, expected } => {
                 write!(f, "clip {} is not a {expected:?} clip", clip.0)
             }
@@ -155,9 +174,9 @@ pub enum TrackProp {
     Hue(Hue),
     /// A mixer value of the track's channel.
     Channel(ChannelProp),
-    /// Record arm. `Arm(true)` also switches monitoring on (S02).
+    /// Record arm. `Arm(true)` also switches monitoring on (S02). Ignored on buses.
     Arm(bool),
-    /// Input monitoring.
+    /// Input monitoring. Ignored on buses.
     Monitor(bool),
     /// MIDI input.
     Input(MidiInputSel),
@@ -165,6 +184,8 @@ pub enum TrackProp {
     MidiChannel(MidiChannelSel),
     /// Header height, clamped to `TRACK_HEIGHT_MIN ..= TRACK_HEIGHT_MAX`.
     Height(u16),
+    /// Fold or unfold a group in the arrangement; ignored on other tracks and on effect buses.
+    Folded(bool),
 }
 
 /// Alt-click toggles: only this track has the flag afterwards.
@@ -405,7 +426,8 @@ pub fn set_master_prop(project: &Project, prop: ChannelProp) -> EditResult {
 // ------------------------------------------------------------------------------------------------
 
 /// Adds a MIDI track (Ctrl T, instrument drop). Height [`crate::project::TRACK_HEIGHT_DEFAULT`],
-/// 0 dB, centred, input "all", Omni.
+/// 0 dB, centred, input "all", Omni. Inserted before a group member, it joins that member's group
+/// (outputs to the group bus); elsewhere it outputs to the master.
 pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId), EditError> {
     let hue = match spec.hue {
         Some(hue) => valid_hue(hue)?,
@@ -432,6 +454,7 @@ pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId)
             plugin,
             bypass: false,
             state: None,
+            sidechain: None,
         }));
     }
     if spec.arm_exclusive {
@@ -442,6 +465,11 @@ pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId)
             })?;
         }
     }
+    let index = spec.index.unwrap_or(p.tracks.len()).min(p.tracks.len());
+    let group = p
+        .tracks
+        .get(index)
+        .and_then(|t| crate::routing::group_of(&p, t.id));
     let track = Track {
         id,
         name,
@@ -454,25 +482,37 @@ pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId)
         midi_channel: MidiChannelSel::Omni,
         height: TRACK_HEIGHT_DEFAULT,
         clips: Vec::new(),
+        output: group.map_or(TrackOutput::Master, TrackOutput::Bus),
+        sends: Vec::new(),
+        folder: false,
+        folded: false,
     };
-    let index = spec.index.unwrap_or(p.tracks.len()).min(p.tracks.len());
     p.tracks.insert(index, Arc::new(track));
+    crate::routing::normalize_groups(&mut p);
     Ok((p, id))
 }
 
-/// Removes tracks with all their clips and devices (Entf with tracks selected).
+/// Removes tracks and buses with all their clips and devices (Entf with tracks selected), and
+/// every routing reference to them in the same step: outputs to a removed bus go where that bus
+/// went (deleting a group dissolves it; its members join the group it was in, or the top level),
+/// sends to it are removed, sidechains from a removed track are cleared (ARCHITECTURE §6.8.3).
 pub fn remove_tracks(project: &Project, tracks: &[TrackId]) -> EditResult {
     for &id in tracks {
         locate_track(project, id)?;
     }
+    let removed: HashSet<TrackId> = tracks.iter().copied().collect();
     let mut p = project.clone();
-    p.tracks.retain(|t| !tracks.contains(&t.id));
+    p.tracks.retain(|t| !removed.contains(&t.id));
+    routes::detach_removed(&mut p, project, &removed);
+    crate::routing::normalize_groups(&mut p);
     Ok(p)
 }
 
 /// Moves tracks (keeping their relative order) so the first of them lands at display index
 /// `to_index` of the list *without* the moved tracks (drag reorder, 2 px insert line). `to_index`
-/// is clamped to the list end.
+/// is clamped to the list end. Group membership does not change (that is the output,
+/// [`set_output`]): a moved group takes its members along, and a member stays in its group's
+/// block.
 pub fn move_tracks(project: &Project, tracks: &[TrackId], to_index: usize) -> EditResult {
     for &id in tracks {
         locate_track(project, id)?;
@@ -486,6 +526,7 @@ pub fn move_tracks(project: &Project, tracks: &[TrackId], to_index: usize) -> Ed
     rest.splice(at..at, moved);
     let mut p = project.clone();
     p.tracks = rest;
+    crate::routing::normalize_groups(&mut p);
     Ok(p)
 }
 
@@ -520,6 +561,7 @@ pub fn set_exclusive(project: &Project, track: TrackId, flag: ExclusiveFlag) -> 
             match flag {
                 ExclusiveFlag::Solo => t.channel.solo = this,
                 ExclusiveFlag::Arm => {
+                    let this = this && !t.is_bus();
                     t.arm = this;
                     t.monitor |= this;
                 }
@@ -541,6 +583,9 @@ pub fn add_clip(
     spec: NewClip,
 ) -> Result<(Project, ClipId), EditError> {
     let track_index = locate_track(project, track)?;
+    if project.tracks[track_index].is_bus() {
+        return Err(EditError::Invalid("a bus holds no clips"));
+    }
     let mut p = project.clone();
     let id = ClipId(p.alloc_id());
     let content = match spec.content {
@@ -1080,7 +1125,13 @@ pub fn insert_device(
     spec: NewDevice,
 ) -> Result<(Project, DeviceId), EditError> {
     let chain: &Channel = match channel {
-        ChannelRef::Track(id) => &project.tracks[locate_track(project, id)?].channel,
+        ChannelRef::Track(id) => {
+            let track = &project.tracks[locate_track(project, id)?];
+            if track.is_bus() && spec.role != DeviceRole::Effect {
+                return Err(EditError::Invalid("a bus takes audio effects only"));
+            }
+            &track.channel
+        }
         ChannelRef::Master => {
             if spec.role != DeviceRole::Effect {
                 return Err(EditError::Invalid("the master takes effects only"));
@@ -1113,6 +1164,7 @@ pub fn insert_device(
             plugin: spec.plugin,
             bypass: false,
             state: spec.state,
+            sidechain: None,
         }),
     );
     Ok((p, id))
@@ -1126,6 +1178,9 @@ pub fn replace_instrument(
     plugin: PluginRef,
 ) -> Result<(Project, DeviceId), EditError> {
     let track_index = locate_track(project, track)?;
+    if project.tracks[track_index].is_bus() {
+        return Err(EditError::Invalid("a bus takes audio effects only"));
+    }
     let mut p = project.clone();
     let id = DeviceId(p.alloc_id());
     let device = Arc::new(Device {
@@ -1134,6 +1189,7 @@ pub fn replace_instrument(
         plugin,
         bypass: false,
         state: None,
+        sidechain: None,
     });
     let channel = &mut track_mut(&mut p, track_index).channel;
     match channel.instrument() {
@@ -1290,14 +1346,18 @@ fn unique<T: Copy + Eq + Hash>(ids: &[T]) -> Vec<T> {
     ids.iter().copied().filter(|id| seen.insert(*id)).collect()
 }
 
+/// A level in dB clamped to `VOLUME_DB_MIN ..= VOLUME_DB_MAX` (−∞ to the minimum); NaN is
+/// `Invalid`.
+fn valid_db(db: f32) -> Result<f32, EditError> {
+    if db.is_nan() {
+        return Err(EditError::Invalid("volume is not a number"));
+    }
+    Ok(db.clamp(VOLUME_DB_MIN, VOLUME_DB_MAX))
+}
+
 fn apply_channel_prop(channel: &mut Channel, prop: ChannelProp) -> Result<(), EditError> {
     match prop {
-        ChannelProp::VolumeDb(db) => {
-            if db.is_nan() {
-                return Err(EditError::Invalid("volume is not a number"));
-            }
-            channel.volume_db = db.clamp(VOLUME_DB_MIN, VOLUME_DB_MAX);
-        }
+        ChannelProp::VolumeDb(db) => channel.volume_db = valid_db(db)?,
         ChannelProp::Pan(pan) => {
             if pan.is_nan() {
                 return Err(EditError::Invalid("pan is not a number"));
@@ -1316,11 +1376,13 @@ fn apply_track_prop(track: &mut Track, prop: &TrackProp) -> Result<(), EditError
         TrackProp::Name(name) => track.name.clone_from(name),
         TrackProp::Hue(hue) => track.hue = *hue,
         TrackProp::Channel(prop) => apply_channel_prop(&mut track.channel, *prop)?,
+        TrackProp::Arm(_) | TrackProp::Monitor(_) if track.is_bus() => {}
         TrackProp::Arm(arm) => {
             track.arm = *arm;
             track.monitor |= *arm;
         }
         TrackProp::Monitor(monitor) => track.monitor = *monitor,
+        TrackProp::Folded(folded) => track.folded = *folded && track.is_group(),
         TrackProp::Input(input) => track.input = input.clone(),
         TrackProp::MidiChannel(channel) => track.midi_channel = *channel,
         TrackProp::Height(height) => {
@@ -1538,11 +1600,19 @@ impl ClipGroup {
         let top = clips.iter().map(|&(t, _)| t).min().unwrap_or(0) as i64;
         let bottom = clips.iter().map(|&(t, _)| t).max().unwrap_or(0) as i64;
         let last = project.tracks.len() as i64 - 1;
-        Ok(ClipGroup {
+        let group = ClipGroup {
             clips,
             delta: delta.max(-earliest),
             track_delta: i64::from(track_delta).clamp(-top, (last - bottom).max(-top)),
-        })
+        };
+        if group
+            .clips
+            .iter()
+            .any(|&(t, _)| project.tracks[group.target(t)].is_bus())
+        {
+            return Err(EditError::Invalid("a bus holds no clips"));
+        }
+        Ok(group)
     }
 
     /// Track index a clip from `track_index` moves to.

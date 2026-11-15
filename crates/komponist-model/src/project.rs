@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
+use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::time::{Meter, StepResolution, Tempo, TempoMap, Tick, TickRange};
 
 /// Name of a new, empty project (S10, prototype `newProject`).
@@ -133,6 +133,13 @@ impl Project {
             .find_map(|t| t.clips.iter().find(|c| c.id == id).map(|c| (t, c)))
     }
 
+    /// The send with `id`: the track that holds it and its index in [`Track::sends`].
+    pub fn find_send(&self, id: SendId) -> Option<(&Arc<Track>, usize)> {
+        self.tracks
+            .iter()
+            .find_map(|t| t.sends.iter().position(|s| s.id == id).map(|i| (t, i)))
+    }
+
     /// The device with `id`, the channel that holds it and its index in that channel's chain.
     pub fn find_device(&self, id: DeviceId) -> Option<(ChannelRef, usize, &Arc<Device>)> {
         let chains = self
@@ -148,8 +155,9 @@ impl Project {
         None
     }
 
-    /// Whether any track is soloed. Audible = `!mute && (!any_solo || solo)`; "stumm durch Solo" is
-    /// derived from this in the UI.
+    /// Whether any track or bus is soloed. With buses, what solo silences follows the routing graph
+    /// ([`crate::routing::Gates`], ARCHITECTURE §6.8.6); without buses it is
+    /// `!mute && (!any_solo || solo)`.
     pub fn any_solo(&self) -> bool {
         self.tracks.iter().any(|t| t.channel.solo)
     }
@@ -185,7 +193,7 @@ pub struct Track {
     pub name: String,
     /// Track colour, one of the 14 token hues ([`Hue::ALL`]).
     pub hue: Hue,
-    /// What the track carries. Only MIDI in v0.1.
+    /// What the track carries: MIDI (clips, instrument) or a bus (sums its inputs, effects only).
     pub kind: TrackKind,
     /// Mixer channel: volume, pan, mute, solo, devices. A MIDI track's chain is
     /// `[MIDI effects…] → instrument → [audio effects…]` ([`Channel::midi_effect_count`],
@@ -202,17 +210,127 @@ pub struct Track {
     pub midi_channel: MidiChannelSel,
     /// Header height in design px, [`TRACK_HEIGHT_MIN`] ..= [`TRACK_HEIGHT_MAX`]. Part of the project.
     pub height: u16,
-    /// Clips sorted by `start`, then by id. Clips may overlap; overlapping clips all play.
+    /// Clips sorted by `start`, then by id. Clips may overlap; overlapping clips all play. Always
+    /// empty on a bus.
     pub clips: Vec<Arc<Clip>>,
+    /// Where the main output goes (after fader and pan): the master or a bus (wave 9, ARCHITECTURE
+    /// §6.8). Never the track itself; the routing graph stays acyclic ([`crate::routing`]). A track
+    /// whose output is a group ([`Track::folder`]) is that group's member in the arrangement.
+    pub output: TrackOutput,
+    /// Sends to buses, in display order (mixer send list). At most one send per target bus. Empty
+    /// on buses in v1 (owner decision 11 A: a bus has only its output).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<TrackSend>,
+    /// A bus shown as a group: a foldable folder of the tracks that output to it, which follow it
+    /// directly in display order as one block ([`crate::routing::normalized_order`]). Set for a
+    /// bus made with Strg G („In Gruppe zusammenfassen“); `false` for an effect bus („Send zu neuem
+    /// Bus“, listed in the arrangement's „Busse“ section) and on every other kind. View only: the
+    /// routing is the same for both.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folder: bool,
+    /// A group whose members are hidden in the arrangement. Only on a [`Track::folder`] bus.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folded: bool,
 }
 
-/// Kind of a track. An enum so audio tracks can come later (ARCHITECTURE §14).
+impl Track {
+    /// Whether this track is a bus ([`TrackKind::Bus`]).
+    pub fn is_bus(&self) -> bool {
+        self.kind == TrackKind::Bus
+    }
+
+    /// Whether this track is a group: a bus shown as a folder of its members.
+    pub fn is_group(&self) -> bool {
+        self.is_bus() && self.folder
+    }
+
+    /// The send to `target`, if there is one.
+    pub fn send_to(&self, target: TrackId) -> Option<&TrackSend> {
+        self.sends.iter().find(|s| s.target == target)
+    }
+}
+
+/// Where a track's main output goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackOutput {
+    /// The master strip (default; every track of a project from before wave 9).
+    #[default]
+    Master,
+    /// The bus with this id ([`TrackKind::Bus`]).
+    Bus(TrackId),
+}
+
+/// Where a send or a sidechain taps its source's signal (ARCHITECTURE §6.8.2). New sends tap
+/// [`SEND_TAP_DEFAULT`], new sidechains [`SIDECHAIN_TAP_DEFAULT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tap {
+    /// Behind the device chain, before fader, pan and mute („Vor Fader“).
+    Pre,
+    /// Behind fader, pan and mute, where the main output leaves („Nach Fader“).
+    Post,
+}
+
+/// Level of a new send (owner decision 8 B: audible but safe).
+pub const SEND_LEVEL_DEFAULT_DB: f32 = -6.0;
+/// Tap of a new send (owner decision 9 A: post-fader, as in Ableton and Logic).
+pub const SEND_TAP_DEFAULT: Tap = Tap::Post;
+/// Tap of a new sidechain (owner decision 10 A: pre-fader, so ducking keeps working when the
+/// source is pulled down or muted).
+pub const SIDECHAIN_TAP_DEFAULT: Tap = Tap::Pre;
+
+/// A send from a track (or bus) to a bus: a copy of the source's signal at `tap`, scaled by
+/// `level_db`, summed into the target bus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackSend {
+    /// Stable id.
+    pub id: SendId,
+    /// The bus this send feeds ([`TrackKind::Bus`], never the sending track).
+    pub target: TrackId,
+    /// Send level in dB, [`VOLUME_DB_MIN`] (= −∞) ..= [`VOLUME_DB_MAX`].
+    pub level_db: f32,
+    /// Pre or post fader.
+    pub tap: Tap,
+    /// Off: the send is kept with its level but feeds nothing (the engine skips it).
+    pub enabled: bool,
+}
+
+/// The sidechain input of a device: which track's (or bus's) signal feeds it, and where it is
+/// tapped. Only devices with a sidechain input use it (the model does not know which do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Sidechain {
+    /// The track or bus whose signal is tapped (never the track that holds the device).
+    pub source: TrackId,
+    /// Pre or post fader of the source.
+    pub tap: Tap,
+}
+
+impl Sidechain {
+    /// A sidechain from `source` with the default tap ([`SIDECHAIN_TAP_DEFAULT`]).
+    pub fn new(source: TrackId) -> Sidechain {
+        Sidechain {
+            source,
+            tap: SIDECHAIN_TAP_DEFAULT,
+        }
+    }
+}
+
+/// Kind of a track. Kinds are separate, there are no hybrid tracks (owner, 2026-11-15).
+///
+/// Reserved: `Audio` (wave 10, WP-111) will be the next variant: audio clips instead of MIDI
+/// clips, effects only, one more source node in the same routing graph (ARCHITECTURE §6.8.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackKind {
     /// A MIDI track with an instrument.
     #[default]
     Midi,
+    /// A bus (wave 9): sums the tracks that output or send to it, runs audio effects, has its own
+    /// fader, pan, mute, solo and output. Holds no clips, no instrument and no MIDI effects and is
+    /// never armed. Groups and effect buses are both buses ([`Track::folder`], ARCHITECTURE
+    /// §6.8.1).
+    Bus,
 }
 
 /// A track colour: one of the 14 hues of the design tokens (`track.colors.*.hue`), in degrees of
@@ -391,6 +509,10 @@ pub struct Device {
     /// project file.
     #[serde(default, with = "crate::persist::base64_state")]
     pub state: Option<Arc<[u8]>>,
+    /// Where the device's sidechain input comes from (wave 9); `None` = no sidechain (silence).
+    /// Not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<Sidechain>,
 }
 
 /// Role of a device in its chain.

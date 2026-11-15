@@ -18,6 +18,9 @@ pub(crate) fn check_invariants(p: &Project) {
         assert!(ids.insert(raw), "id {raw} used twice");
     };
     assert!(valid_meter(p.meter));
+    if let Err(issue) = crate::routing::check(p) {
+        panic!("routing: {issue}");
+    }
     assert!(!p.loop_range.is_empty() && p.loop_range.start >= Tick::ZERO);
     for d in &p.master.devices {
         id(d.id.0);
@@ -32,6 +35,14 @@ pub(crate) fn check_invariants(p: &Project) {
         assert!((-1.0..=1.0).contains(&c.pan));
         for d in &c.devices {
             id(d.id.0);
+        }
+        assert!(
+            !t.is_bus() || t.sends.is_empty(),
+            "edits give buses no sends"
+        );
+        for send in &t.sends {
+            id(send.id.0);
+            assert!((VOLUME_DB_MIN..=VOLUME_DB_MAX).contains(&send.level_db));
         }
         // `[MIDI effects…] → instrument → [effects…]`.
         let rank = |r: DeviceRole| match r {

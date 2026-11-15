@@ -46,6 +46,10 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         midi_channel: MidiChannelSel::Omni,
         height: 56,
         clips: Vec::new(),
+        output: komponist_model::TrackOutput::Master,
+        sends: Vec::new(),
+        folder: false,
+        folded: false,
     });
     let track = TrackProgram {
         id: TrackId(1),

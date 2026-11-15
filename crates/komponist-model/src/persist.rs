@@ -1,9 +1,15 @@
 //! Project files `*.komponist` (ARCHITECTURE §5.5, decision D7).
 //!
-//! One JSON file: `{ "format": "komponist", "version": 1, "project": { … } }`. Plugin states are
+//! One JSON file: `{ "format": "komponist", "version": 2, "project": { … } }`. Plugin states are
 //! base64 strings. A missing plugin keeps its state byte-identical through load and save (S06).
 //! Older versions are upgraded on load by a chain of `migrate_vN_to_vN+1` functions on the JSON
 //! value, one per version step, each with its own test.
+//!
+//! Versions:
+//! - 1: up to WP-100; every track plays into the master.
+//! - 2 (WP-101, wave 9): routing. Every track has an `output` (`"master"` or `{"bus": id}`);
+//!   optional `sends`, `folder`, `folded` on tracks and `sidechain` on devices; track kind `"bus"`.
+//!   [`migrate_v1_to_v2`] gives every track `"output": "master"`.
 //!
 //! Thread: any non-RT thread (loading and saving run on workers).
 
@@ -14,12 +20,13 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::project::{ClipContent, Project};
+use crate::routing;
 
 /// Value of the `format` field.
 pub const FORMAT_TAG: &str = "komponist";
 
 /// Version written by this build; files with a higher version are rejected.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// File name extension, without the dot.
 pub const FILE_EXTENSION: &str = "komponist";
@@ -135,11 +142,30 @@ struct FileOut<'a> {
 type MigrationStep = fn(Value) -> Result<Value, String>;
 
 /// All migration steps, oldest first.
-const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] = [];
+const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] = [migrate_v1_to_v2];
+
+/// Version 1 → 2 (wave 9, routing): every track outputs to the master. Sends, groups and
+/// sidechains are optional fields and absent in version 1, which means none. A malformed track
+/// list is left alone for the schema check to report.
+fn migrate_v1_to_v2(mut project: Value) -> Result<Value, String> {
+    let tracks = project.get_mut("tracks").and_then(Value::as_array_mut);
+    for track in tracks
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        track
+            .entry("output")
+            .or_insert_with(|| Value::String("master".to_owned()));
+    }
+    Ok(project)
+}
 
 /// After loading: rejects what the program cannot work with (meter, tempo, takes, pattern
-/// lengths) and repairs what is cheap to repair (`next_id` below an existing id, unsorted clips
-/// and notes). Hand-edited files then cannot crash the app.
+/// lengths, a routing cycle, a bus with clips or an instrument) and repairs what is cheap to
+/// repair (`next_id` below an existing id, unsorted clips and notes, routing references to
+/// missing tracks or to tracks that are not buses, group order). Hand-edited files then cannot
+/// crash the app.
 fn check_and_repair(project: &mut Project) -> Result<(), String> {
     let meter = project.meter;
     if !crate::edits::valid_meter(meter) {
@@ -159,6 +185,7 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
     for track in &mut project.tracks {
         let mut ids = vec![track.id.0];
         ids.extend(track.channel.devices.iter().map(|d| d.id.0));
+        ids.extend(track.sends.iter().map(|s| s.id.0));
         if !track.clips.is_sorted_by_key(|c| (c.start, c.id)) {
             Arc::make_mut(track).clips.sort_by_key(|c| (c.start, c.id));
         }
@@ -199,7 +226,77 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
         max_id = ids.into_iter().fold(max_id, u64::max);
     }
     project.next_id = project.next_id.max(max_id + 1);
-    Ok(())
+    repair_routing(project);
+    routing::check(project).map_err(|issue| issue.to_string())
+}
+
+/// Drops routing references that cannot work: outputs and sends that name a missing track, the
+/// track itself or a track that is not a bus (outputs then go to the master), second sends to the
+/// same bus, sidechains from a missing track or from the device's own track, `folder` on a track
+/// that is not a bus, `folded` on one that is not a group, arm and monitoring on a bus. Then puts
+/// every group's members behind it. Leaves cycles and bus content to [`routing::check`], which
+/// rejects them.
+fn repair_routing(project: &mut Project) {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::project::TrackOutput;
+
+    let kinds: HashMap<_, bool> = project.tracks.iter().map(|t| (t.id, t.is_bus())).collect();
+    let is_bus = |own, id| id != own && kinds.get(&id) == Some(&true);
+    let bad_sidechain = |own: Option<_>, sc: Option<crate::Sidechain>| {
+        sc.is_some_and(|sc| Some(sc.source) == own || !kinds.contains_key(&sc.source))
+    };
+    for index in 0..project.tracks.len() {
+        let t = &project.tracks[index];
+        let own = t.id;
+        let mut targets = HashSet::new();
+        let broken = matches!(t.output, TrackOutput::Bus(b) if !is_bus(own, b))
+            || !t
+                .sends
+                .iter()
+                .all(|s| is_bus(own, s.target) && targets.insert(s.target))
+            || (t.folder && !t.is_bus())
+            || (t.folded && !t.is_group())
+            || (t.is_bus() && (t.arm || t.monitor))
+            || t.channel
+                .devices
+                .iter()
+                .any(|d| bad_sidechain(Some(own), d.sidechain));
+        if !broken {
+            continue;
+        }
+        let t = Arc::make_mut(&mut project.tracks[index]);
+        if matches!(t.output, TrackOutput::Bus(b) if !is_bus(own, b)) {
+            t.output = TrackOutput::Master;
+        }
+        let mut targets = HashSet::new();
+        t.sends
+            .retain(|s| is_bus(own, s.target) && targets.insert(s.target));
+        t.folder &= t.is_bus();
+        t.folded &= t.folder;
+        if t.is_bus() {
+            t.arm = false;
+            t.monitor = false;
+        }
+        for d in &mut t.channel.devices {
+            if bad_sidechain(Some(own), d.sidechain) {
+                Arc::make_mut(d).sidechain = None;
+            }
+        }
+    }
+    if project
+        .master
+        .devices
+        .iter()
+        .any(|d| bad_sidechain(None, d.sidechain))
+    {
+        for d in &mut Arc::make_mut(&mut project.master).devices {
+            if bad_sidechain(None, d.sidechain) {
+                Arc::make_mut(d).sidechain = None;
+            }
+        }
+    }
+    routing::normalize_groups(project);
 }
 
 /// serde helper for [`crate::Device::state`]: `Option<Arc<[u8]>>` as an optional standard base64
@@ -271,7 +368,7 @@ mod tests {
         let text = to_json(&demo_project()).unwrap();
         assert!(
             text.starts_with(
-                "{\n  \"format\": \"komponist\",\n  \"version\": 1,\n  \"project\": {"
+                "{\n  \"format\": \"komponist\",\n  \"version\": 2,\n  \"project\": {"
             )
         );
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -281,6 +378,14 @@ mod tests {
         assert_eq!(track["kind"], "midi");
         assert_eq!(track["input"], "all");
         assert_eq!(track["midi_channel"], "omni");
+        assert_eq!(track["output"], "master");
+        for absent in ["sends", "folder", "folded"] {
+            assert!(
+                track.get(absent).is_none(),
+                "{absent} is written only when set"
+            );
+        }
+        assert!(track["channel"]["devices"][0].get("sidechain").is_none());
         assert_eq!(
             track["channel"]["devices"][0]["plugin"]["format"],
             "builtin"
@@ -437,8 +542,8 @@ mod tests {
             );
         }
         assert_eq!(
-            from_json(r#"{"format": "komponist", "version": 2, "project": {}}"#),
-            Err(PersistError::TooNew { found: 2 })
+            from_json(r#"{"format": "komponist", "version": 3, "project": {}}"#),
+            Err(PersistError::TooNew { found: 3 })
         );
         assert!(matches!(
             from_json(r#"{"format": "komponist", "version": 0, "project": {}}"#),
@@ -530,11 +635,205 @@ mod tests {
         assert_eq!(from_json(&to_json(&p).unwrap()).unwrap(), p);
     }
 
+    /// The demo with routing: Pad and Keys send to an effect bus, Drums and Bass form a folded
+    /// group, Bass's first effect listens to Drums, a master limiter listens to the group.
+    fn routed_project() -> Project {
+        use crate::project::{Sidechain, Tap};
+        let p = demo_project();
+        let t: Vec<_> = p.tracks.iter().map(|t| t.id).collect();
+        let (p, hall) = edits::add_bus(&p, edits::NewBus::effect(vec![t[3], t[4]])).unwrap();
+        let (p, group) = edits::add_bus(&p, edits::NewBus::group(vec![t[0], t[1]])).unwrap();
+        let p = edits::set_track_prop(&p, &[group], edits::TrackProp::Folded(true)).unwrap();
+        let send = p.track(t[3]).unwrap().sends[0].id;
+        let p = edits::set_send(&p, send, edits::SendProp::Tap(Tap::Pre)).unwrap();
+        let bass_fx = p.track(t[1]).unwrap().channel.devices[1].id;
+        let p = edits::set_sidechain(&p, bass_fx, Some(Sidechain::new(t[0]))).unwrap();
+        let spec = edits::NewDevice {
+            role: crate::DeviceRole::Effect,
+            plugin: p.track(t[0]).unwrap().channel.devices[0].plugin.clone(),
+            state: None,
+        };
+        let (p, limiter) = edits::insert_device(&p, crate::ChannelRef::Master, 0, spec).unwrap();
+        let sc = Sidechain {
+            source: group,
+            tap: Tap::Post,
+        };
+        let p = edits::set_sidechain(&p, limiter, Some(sc)).unwrap();
+        assert_eq!(p.track(hall).unwrap().kind, crate::TrackKind::Bus);
+        p
+    }
+
+    #[test]
+    fn routing_round_trips() {
+        let p = routed_project();
+        let text = to_json(&p).unwrap();
+        let back = from_json(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(to_json(&back).unwrap(), text, "stable output");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let tracks = v["project"]["tracks"].as_array().unwrap();
+        let group = &tracks[0];
+        assert_eq!(group["kind"], "bus");
+        assert_eq!(group["name"], "Gruppe 1");
+        assert_eq!(group["folder"], true);
+        assert_eq!(group["folded"], true);
+        assert_eq!(
+            tracks[1]["output"],
+            serde_json::json!({ "bus": group["id"] })
+        );
+        let bus = tracks.last().unwrap();
+        assert_eq!(bus["kind"], "bus");
+        assert_eq!(bus["output"], "master");
+        assert!(bus.get("folder").is_none());
+        let pad = &tracks[4];
+        assert_eq!(pad["name"], "Pad");
+        let send = &pad["sends"][0];
+        assert_eq!(send["target"], bus["id"]);
+        assert_eq!(send["level_db"], -6.0);
+        assert_eq!(send["tap"], "pre");
+        assert_eq!(send["enabled"], true);
+        assert_eq!(
+            tracks[2]["channel"]["devices"][1]["sidechain"],
+            serde_json::json!({ "source": tracks[1]["id"], "tap": "pre" })
+        );
+        assert_eq!(
+            v["project"]["master"]["devices"][0]["sidechain"]["tap"],
+            "post"
+        );
+    }
+
+    /// A file from before wave 9 (version 1, no `output`) loads as every track into the master,
+    /// without sends, and equals the project it was saved from.
+    #[test]
+    fn version_1_files_load_into_the_master() {
+        let mut v = demo_value();
+        for track in v["tracks"].as_array_mut().unwrap() {
+            assert_eq!(
+                track.as_object_mut().unwrap().remove("output").unwrap(),
+                "master"
+            );
+        }
+        let migrated = migrate(v.clone(), 1).unwrap();
+        assert!(
+            migrated["tracks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["output"] == "master")
+        );
+        let old = from_json(&file(v.clone())).unwrap();
+        assert_eq!(old, demo_project());
+        assert!(
+            old.tracks
+                .iter()
+                .all(|t| t.output == crate::TrackOutput::Master && t.sends.is_empty() && !t.folder)
+        );
+        // The same project as version 2 must name the output.
+        let v2 = serde_json::json!({ "format": "komponist", "version": 2, "project": v });
+        assert!(matches!(
+            from_json(&v2.to_string()),
+            Err(PersistError::Malformed(_))
+        ));
+        // A broken track list is left to the schema check.
+        assert!(migrate_v1_to_v2(serde_json::json!({ "tracks": [1, "x"] })).is_ok());
+        assert!(migrate_v1_to_v2(serde_json::json!({})).is_ok());
+    }
+
+    #[test]
+    fn repairs_broken_routing_references() {
+        let p = routed_project();
+        let mut v = serde_json::to_value(&p).unwrap();
+        let ids: Vec<u64> = v["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_u64().unwrap())
+            .collect();
+        // Lead outputs to a missing bus, Keys sends to a MIDI track, Pad sends twice to the bus,
+        // Bass's sidechain comes from a missing track, Lead is a folder and folded, the bus armed.
+        v["tracks"][3]["output"] = serde_json::json!({ "bus": 99_999 });
+        v["tracks"][3]["folder"] = true.into();
+        v["tracks"][3]["folded"] = true.into();
+        v["tracks"][5]["sends"][0]["target"] = ids[3].into();
+        let first = v["tracks"][4]["sends"][0].clone();
+        let mut second = first.clone();
+        second["id"] = 88_888.into();
+        v["tracks"][4]["sends"] = serde_json::json!([first, second]);
+        v["tracks"][2]["channel"]["devices"][1]["sidechain"]["source"] = 77_777.into();
+        let last = ids.len() - 1;
+        v["tracks"][last]["arm"] = true.into();
+        // The group's members out of order: Drums moves to the end.
+        let tracks = v["tracks"].as_array_mut().unwrap();
+        let drums = tracks.remove(1);
+        tracks.push(drums);
+        let q = from_json(&file(v)).unwrap();
+        crate::routing::check(&q).unwrap();
+        let lead = &q.tracks[q.track_index(crate::TrackId(ids[3])).unwrap()];
+        assert_eq!(lead.output, crate::TrackOutput::Master);
+        assert!(!lead.folder && !lead.folded);
+        assert!(
+            q.tracks[q.track_index(crate::TrackId(ids[5])).unwrap()]
+                .sends
+                .is_empty()
+        );
+        assert_eq!(
+            q.tracks[q.track_index(crate::TrackId(ids[4])).unwrap()]
+                .sends
+                .len(),
+            1
+        );
+        let bass = &q.tracks[q.track_index(crate::TrackId(ids[2])).unwrap()];
+        assert_eq!(bass.channel.devices[1].sidechain, None);
+        assert!(!q.tracks.last().unwrap().arm);
+        let names: Vec<&str> = q.tracks.iter().map(|t| t.name.as_str()).collect();
+        // Drums is still a member: it moves back behind the group, after Bass.
+        assert_eq!(
+            &names[..3],
+            ["Gruppe 1", "Bass", "Drums"],
+            "members behind the group"
+        );
+        assert!(q.next_id > 88_888, "send ids count for next_id");
+    }
+
+    #[test]
+    fn rejects_routing_cycles_and_bus_content() {
+        let p = routed_project();
+        let v = serde_json::to_value(&p).unwrap();
+        let tracks = v["tracks"].as_array().unwrap();
+        let (group, bus) = (
+            tracks[0]["id"].clone(),
+            tracks.last().unwrap()["id"].clone(),
+        );
+        let last = tracks.len() - 1;
+        let last_output = format!("/tracks/{last}/output");
+        let last_clips = format!("/tracks/{last}/clips");
+        let broken = [
+            // Group → bus → group.
+            vec![
+                ("/tracks/0/output", serde_json::json!({ "bus": bus })),
+                (last_output.as_str(), serde_json::json!({ "bus": group })),
+            ],
+            // A bus with a clip.
+            vec![(last_clips.as_str(), tracks[1]["clips"].clone())],
+        ];
+        for changes in broken {
+            let mut v = v.clone();
+            for (pointer, value) in &changes {
+                *v.pointer_mut(pointer).unwrap() = value.clone();
+            }
+            let result = from_json(&file(v));
+            assert!(
+                matches!(result, Err(PersistError::Malformed(_))),
+                "{changes:?}: {result:?}"
+            );
+        }
+    }
+
     #[test]
     fn errors_display() {
         assert_eq!(
             PersistError::TooNew { found: 3 }.to_string(),
-            "project file version 3 is newer than 1"
+            "project file version 3 is newer than 2"
         );
     }
 }

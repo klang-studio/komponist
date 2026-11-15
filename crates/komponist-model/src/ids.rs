@@ -42,3 +42,10 @@ id_type! {
     /// maps each device to one processor slot, so a new device id always means a new processor.
     DeviceId
 }
+
+id_type! {
+    /// Identifies a send ([`TrackSend`](crate::TrackSend)) within its project. The mixer's send
+    /// controls and the engine's send buffers follow this id, so reordering or retargeting a send
+    /// keeps it (ARCHITECTURE §6.8).
+    SendId
+}

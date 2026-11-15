@@ -832,6 +832,7 @@ mod sampler_tests {
             plugin: Internal::Sampler.plugin_ref(),
             bypass: false,
             state: state.map(Arc::from),
+            sidechain: None,
         }
     }
 
