@@ -44,4 +44,5 @@ mod plugins;
 mod record;
 mod sampler;
 mod shell;
+mod state_sync;
 mod step_seq;

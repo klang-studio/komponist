@@ -760,7 +760,8 @@ impl EngineSync {
     /// counted from the start of this call, sorted) heard `output_latency` frames late, as a
     /// stream would. Returns `false` if no engine is held.
     pub fn run_held(&mut self, frames: usize, midi: &[MidiInEvent], output_latency: u32) -> bool {
-        self.run_held_capture(frames, midi, output_latency).is_some()
+        self.run_held_capture(frames, midi, output_latency)
+            .is_some()
     }
 
     /// [`EngineSync::run_held`] that also returns what the engine rendered (left, right); `None`
