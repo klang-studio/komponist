@@ -439,3 +439,156 @@ fn the_routing_ui_speaks_english() {
         "Change Output"
     );
 }
+
+// ------------------------------------------------------------------------------------------------
+// #33: the views show the built-in devices' names, parameters, value words and categories.
+
+/// The lead track (hexa) with an EQ and a Hall behind it, in English, on the devices tab.
+fn english_chain() -> App {
+    use komponist_app::PluginAction;
+    use komponist_app::actions::DropTarget;
+    use komponist_builtin::Internal;
+    let mut app = App::headless(demo_project()).with_lang(Lang::En);
+    let track = app.project().tracks[2].id;
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![track],
+        mode: komponist_app::actions::SelectMode::Replace,
+    })));
+    for kind in [Internal::Eq, Internal::Hall] {
+        app.dispatch(Action::Plugin(PluginAction::Add {
+            plugin: kind.plugin_ref(),
+            target: DropTarget::Track(track),
+        }));
+    }
+    app
+}
+
+#[test]
+fn the_device_cards_show_english_names_parameters_and_value_words() {
+    let h = harness_of(english_chain());
+    // Names: hexa stays, Hall is Reverb; the chip is the same BUILT-IN as in the dialogs.
+    for name in ["hexa", "EQ", "Reverb"] {
+        h.get_by_role_and_label(Role::Group, &Lang::En.devices_card(name));
+    }
+    assert!(
+        h.query_all_by_label(&Lang::De.devices_card("Hall"))
+            .next()
+            .is_none(),
+        "no German name on the card"
+    );
+    let chip = Lang::En.devices_card("EQ");
+    assert_eq!(
+        h.get_by_role_and_label(Role::Button, &chip)
+            .value()
+            .as_deref(),
+        Some("BUILT-IN")
+    );
+    // Parameter names and value words: the percent suffix has no space in English.
+    let reverb_label = Lang::En.devices_card("Reverb");
+    let reverb = h.get_by_role_and_label(Role::Group, &reverb_label);
+    let mix = reverb.get_by_role_and_label(Role::Slider, "Mix");
+    assert_eq!(mix.value().as_deref(), Some("22%"));
+    reverb.get_by_role_and_label(Role::Slider, "Pre-Delay");
+    reverb.get_by_role_and_label(Role::RadioGroup, "Room");
+    reverb.get_by_role_and_label(Role::RadioButton, "Room: Chamber");
+    reverb.get_by_role_and_label(Role::Button, "Freeze");
+    assert!(reverb.query_by_label("Raum").is_none());
+    // The EQ's band types: the five-way segment of the card.
+    let eq_label = Lang::En.devices_card("EQ");
+    let eq = h.get_by_role_and_label(Role::Group, &eq_label);
+    for kind in ["LC", "LS", "Bell", "HS", "HC"] {
+        eq.get_by_role_and_label(Role::RadioButton, &format!("Type 1: {kind}"));
+    }
+    // hexa's pages and macros.
+    let hexa_label = Lang::En.devices_card("hexa");
+    let hexa = h.get_by_role_and_label(Role::Group, &hexa_label);
+    hexa.get_by_role_and_label(Role::RadioButton, "Operators");
+    assert_eq!(
+        hexa.get_by_role_and_label(Role::SpinButton, "Algorithm")
+            .value()
+            .as_deref(),
+        Some("Free")
+    );
+}
+
+#[test]
+fn bool_value_words_are_english_in_the_device_model() {
+    use komponist_app::views::devices::model::cards;
+    let app = english_chain();
+    let track = &app.project().tracks[2];
+    let all = cards(Lang::En, track, app.engine().host(), &[]);
+    let reverb = all.iter().find(|c| c.name == "Reverb").expect("Reverb");
+    let freeze = reverb
+        .params
+        .iter()
+        .find(|p| p.info.id.as_str() == "freeze")
+        .expect("freeze");
+    assert_eq!(freeze.text, "Off");
+    let de_cards = cards(Lang::De, track, app.engine().host(), &[]);
+    assert!(de_cards.iter().any(|c| c.name == "Hall"));
+    let de_freeze = de_cards
+        .iter()
+        .find(|c| c.name == "Hall")
+        .and_then(|c| c.params.iter().find(|p| p.info.id.as_str() == "freeze"))
+        .expect("freeze");
+    assert_eq!(de_freeze.text, "Aus");
+}
+
+#[test]
+fn the_browser_and_the_add_menu_show_english_names_and_categories() {
+    let mut app = App::headless(demo_project()).with_lang(Lang::En);
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    let h = harness_of(app);
+    // A device name, a preset category and an effect category of the browser.
+    has_role!(h, Role::ListItem, "Scale");
+    assert!(h.query_all_by_label("Tonleiter").next().is_none());
+    has_role!(h, Role::ListItem, "Keys");
+    assert!(h.query_all_by_label("Tasten").next().is_none());
+    has_role!(h, Role::ListItem, "Reverb and Delay");
+    // The same names in the add menu.
+    let mut app = App::headless(demo_project()).with_lang(Lang::En);
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    let id = app.project().tracks[2].id;
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![id],
+        mode: komponist_app::actions::SelectMode::Replace,
+    })));
+    let mut h = harness_of(app);
+    h.get_by_role_and_label(Role::Button, en::DEVICES_ADD)
+        .click();
+    h.run_steps(4);
+    has_role!(h, Role::ListBoxOption, "Reverb");
+    assert!(h.query_all_by_label("Hall").next().is_none());
+}
+
+#[test]
+fn searching_the_browser_finds_a_device_by_its_english_name() {
+    use komponist_app::settings::Favorites;
+    use komponist_app::views::browser::model::{Input, rows};
+    let app = App::headless(demo_project());
+    let catalog = app.engine().host().catalog();
+    let project = demo_project();
+    let collapsed = std::collections::BTreeSet::new();
+    let favorites = Favorites::default();
+    let input = |query| Input {
+        catalog: &catalog,
+        favorites: &favorites,
+        segment: komponist_app::ui_state::BrowserSegment::All,
+        query,
+        collapsed: &collapsed,
+        project: &project,
+        exports: &[],
+    };
+    let en_rows = rows(Lang::En, &input("reverb"));
+    assert!(en_rows.iter().any(|r| r.name == "Reverb"));
+    // The stored German name still finds it, shown as Reverb.
+    let hall = rows(Lang::En, &input("hall"));
+    assert!(hall.iter().any(|r| r.name == "Reverb"));
+    // German keeps Hall.
+    assert!(
+        rows(Lang::De, &input("hall"))
+            .iter()
+            .any(|r| r.name == "Hall")
+    );
+}
