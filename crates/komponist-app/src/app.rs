@@ -519,7 +519,13 @@ impl App {
     /// frame's.
     pub(crate) fn drain_events(&mut self) {
         let events = self.engine.poll();
-        if self.engine.take_worker_notice() {
+        // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
+        // without RTKit) the missing priority is not worth a notice.
+        let device_stream = matches!(
+            self.engine.audio_state(),
+            AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
+        );
+        if self.engine.take_worker_notice() && device_stream {
             self.report_workers_without_realtime();
         }
         self.report_midi_changes();
