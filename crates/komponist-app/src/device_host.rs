@@ -765,6 +765,7 @@ mod tests {
                 "Delay",
                 "Hall",
                 "Limiter",
+                "presse",
                 "Arpeggiator",
                 "Tonleiter"
             ]

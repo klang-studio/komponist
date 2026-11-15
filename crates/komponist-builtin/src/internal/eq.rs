@@ -152,7 +152,7 @@ const FADE: f32 = 0.004;
 /// 0.994, where `f32` coefficients and state are audibly wrong (3 dB off at 40 Hz with an 80 Hz
 /// cut), and `f64` costs nothing at six bands.
 #[derive(Clone, Copy, Debug, Default)]
-struct Df1 {
+pub(super) struct Df1 {
     x1: f64,
     x2: f64,
     y1: f64,
@@ -161,7 +161,7 @@ struct Df1 {
 
 impl Df1 {
     #[inline]
-    fn tick(&mut self, x: f32, c: &Coefs) -> f32 {
+    pub(super) fn tick(&mut self, x: f32, c: &Coefs) -> f32 {
         let x = f64::from(x);
         let y =
             c.b[0] * x + c.b[1] * self.x1 + c.b[2] * self.x2 - c.a[0] * self.y1 - c.a[1] * self.y2;
@@ -173,7 +173,7 @@ impl Df1 {
     }
 
     /// Keeps the recursive state out of the subnormal range.
-    fn flush_denormals(&mut self) {
+    pub(super) fn flush_denormals(&mut self) {
         for v in [&mut self.y1, &mut self.y2] {
             if v.abs() < 1e-30 {
                 *v = 0.0;

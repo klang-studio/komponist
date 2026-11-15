@@ -74,9 +74,10 @@ fn pisynths() -> Setup {
     (p, processors)
 }
 
-/// 8 tracks, each a `TestSine` and the four internal effects in a chain (EQ with active bands,
-/// tempo-synced Delay, Hall, lookahead Limiter; WP-90), so the transport tempo, the Limiter's
-/// latency and the effects' control-rate counters all go through the worker pool.
+/// 8 tracks, each a `TestSine` and five internal effects in a chain (EQ with active bands,
+/// tempo-synced Delay, Hall, the compressor `presse` with lookahead, SC-HP, partial link and mix,
+/// lookahead Limiter; WP-90, WP-93), so the transport tempo, the latencies and the effects'
+/// control-rate counters all go through the worker pool.
 fn effects() -> Setup {
     let mut tracks = Vec::new();
     let mut processors: Vec<(u32, Box<dyn Processor>)> = Vec::new();
@@ -91,20 +92,33 @@ fn effects() -> Setup {
         delay[Internal::Delay.wire(&"mix".into()).unwrap() as usize] = 0.5;
         let mut limiter = Internal::Limiter.defaults();
         limiter[Internal::Limiter.wire(&"gain".into()).unwrap() as usize] = 12.0;
+        let mut presse = Internal::Presse.defaults();
+        for (key, value) in [
+            ("threshold", -30.0),
+            ("ratio", 6.0),
+            ("detector", f64::from(i % 2)),
+            ("link", 0.5),
+            ("lookahead", 1.0),
+            ("sc_hpf", 100.0),
+            ("mix", 0.8),
+        ] {
+            presse[Internal::Presse.wire(&key.into()).unwrap() as usize] = value;
+        }
         let chain = [
             (Internal::Eq, eq),
             (Internal::Delay, delay),
             (Internal::Hall, Internal::Hall.defaults()),
+            (Internal::Presse, presse),
             (Internal::Limiter, limiter),
         ];
         for (k, (kind, values)) in chain.into_iter().enumerate() {
-            let slot = 100 + i * 4 + k as u32;
+            let slot = 100 + i * 5 + k as u32;
             let mut p = kind.processor(&values);
             p.activate(RATE, 256).unwrap();
             t.chain.push(effect(slot));
             processors.push((slot, Box::new(p)));
         }
-        // All tracks have the same latency (the limiter's lookahead): nothing to compensate.
+        // All tracks have the same latency (the lookaheads): nothing to compensate.
         t.pdc_delay = 0;
         tracks.push(t);
         processors.push((i, Box::new(TestSine::new())));

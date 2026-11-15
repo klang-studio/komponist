@@ -317,6 +317,22 @@ data-dependently); every effect runs inside `assert_no_alloc` in the unit tests,
 `internal_effects_are_bit_exact_with_workers` (8 tracks × 4 effects, 0/2/4 workers, realtime and
 offline) is bit-exact.
 
+**presse, the compressor (WP-93)**, measured 2026-11-15 on `wp/WP-93` the same way (release, 48 kHz,
+256 frames, white noise, threshold −30 dB so it compresses all the time). The proposal estimated
+14 µs (0.26 %); it costs less because the level conversion uses a 4-term series for `log2` and a
+5-term polynomial for `exp2` instead of `ln` and `powf` per sample.
+
+| presse (settings) | 1 instance, mean | worst | 16 instances, mean | worst |
+|---|---|---|---|---|
+| RMS, link 100 % (one gain computer), no lookahead, auto-release | 9.9 µs (0.19 %) | 19 µs | 155 µs (2.9 %) | 203 µs |
+| Peak, link 0 % (two gain computers), lookahead, SC-HP 120 Hz, auto-release | 11.5 µs (0.22 %) | 521 µs (noise) | 176 µs (3.3 %) | 462 µs |
+| RMS, link 100 %, mix 50 % | 9.9 µs (0.19 %) | 15 µs | 162 µs (3.0 %) | 571 µs |
+
+The tap that feeds the level point and the reduction history copies one pair of floats per 32 frames,
+and only while the card is on screen; it is not in these numbers (a few atomic stores per block). The
+engine test `internal_effects_are_bit_exact_with_workers` now runs 8 tracks × 5 effects with a
+lookahead `presse` on every track.
+
 ```bash
 cargo test --release -p komponist-builtin --lib cpu_ -- --ignored --nocapture
 ```
