@@ -235,7 +235,11 @@ fn progress(ui: &mut Ui, width: f32) {
 fn placeholder(ui: &mut Ui, t: Lang, rect: Rect, name: &str) {
     let first = t.plugin_frame_gui_placeholder(name);
     let a = w::styled_galley(ui, &first, &typography::VALUE_M);
-    let b = w::styled_galley(ui, t.plugin_frame_gui_placeholder_detail(), &typography::VALUE_S);
+    let b = w::styled_galley(
+        ui,
+        t.plugin_frame_gui_placeholder_detail(),
+        &typography::VALUE_S,
+    );
     let [pad_x, pad_y] = m::PLACEHOLDER_PADDING;
     let gap = m::PARAM_ITEM_GAP;
     let size = vec2(
@@ -252,7 +256,12 @@ fn placeholder(ui: &mut Ui, t: Lang, rect: Rect, name: &str) {
     );
     for (pos, galley, text, colour) in [
         (pos_a, a, first.as_str(), color::TEXT_2),
-        (pos_b, b, t.plugin_frame_gui_placeholder_detail(), color::TEXT_3),
+        (
+            pos_b,
+            b,
+            t.plugin_frame_gui_placeholder_detail(),
+            color::TEXT_3,
+        ),
     ] {
         let pos = egui::pos2(px::snap(pos.x, ppp), px::snap(pos.y, ppp));
         let r = ui.allocate_rect(Rect::from_min_size(pos, galley.size()), Sense::hover());

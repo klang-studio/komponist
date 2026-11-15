@@ -717,7 +717,8 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     h.get_by_role_and_label(Role::ListItem, "Vital · Arp · fehlt");
     assert!(!h.state().engine().is_detached());
     // "Abbrechen": nothing written.
-    h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL).click();
+    h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL)
+        .click();
     h.run_steps(3);
     assert!(!h.state().is_exporting());
     assert!(h.state().ui().dialog.is_none());
@@ -948,7 +949,8 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
         d.settings.folder = dir.clone();
     }
     h.run_steps(1);
-    h.get_by_role_and_label(Role::Button, de::EXPORT_CHANGE).click();
+    h.get_by_role_and_label(Role::Button, de::EXPORT_CHANGE)
+        .click();
     h.run_steps(3);
     h.get_by_value(de::EXPORT_FOLDER_TITLE);
     h.get_by_role_and_label(Role::ListItem, "Mixdowns").click();
@@ -1020,7 +1022,8 @@ fn esc_and_the_cancel_button_end_a_running_export() {
             if d.progress.is_some_and(|p| p.fraction > 0.0))
     });
     h.run_steps(1);
-    h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL).click();
+    h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL)
+        .click();
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
     h.run_steps(2);
     assert!(files(&dir.join("out")).is_empty());

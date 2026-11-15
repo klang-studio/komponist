@@ -213,10 +213,22 @@ mod tests {
             relative_date(Lang::De, &at(2026, 11, 14, 15, 10), &now),
             "vor 1 Stunde"
         );
-        assert_eq!(relative_date(Lang::De, &at(2026, 11, 13, 23, 59), &now), "gestern");
-        assert_eq!(relative_date(Lang::De, &at(2026, 10, 12, 9, 0), &now), "12. Okt.");
-        assert_eq!(relative_date(Lang::De, &at(2026, 3, 8, 9, 0), &now), "8. März");
-        assert_eq!(relative_date(Lang::De, &at(2025, 10, 2, 9, 0), &now), "2. Okt. 2025");
+        assert_eq!(
+            relative_date(Lang::De, &at(2026, 11, 13, 23, 59), &now),
+            "gestern"
+        );
+        assert_eq!(
+            relative_date(Lang::De, &at(2026, 10, 12, 9, 0), &now),
+            "12. Okt."
+        );
+        assert_eq!(
+            relative_date(Lang::De, &at(2026, 3, 8, 9, 0), &now),
+            "8. März"
+        );
+        assert_eq!(
+            relative_date(Lang::De, &at(2025, 10, 2, 9, 0), &now),
+            "2. Okt. 2025"
+        );
         // Over New Year: yesterday is still "gestern".
         let new_year = at(2027, 1, 1, 0, 10);
         assert_eq!(
@@ -228,12 +240,18 @@ mod tests {
     #[test]
     fn scan_times_read_like_s07() {
         let now = at(2026, 11, 14, 16, 30);
-        assert_eq!(day_and_time(Lang::De, &at(2026, 11, 14, 9, 12), &now), "heute 09:12");
+        assert_eq!(
+            day_and_time(Lang::De, &at(2026, 11, 14, 9, 12), &now),
+            "heute 09:12"
+        );
         assert_eq!(
             day_and_time(Lang::De, &at(2026, 11, 13, 21, 5), &now),
             "gestern 21:05"
         );
-        assert_eq!(day_and_time(Lang::De, &at(2026, 9, 1, 8, 0), &now), "1. Sept. 08:00");
+        assert_eq!(
+            day_and_time(Lang::De, &at(2026, 9, 1, 8, 0), &now),
+            "1. Sept. 08:00"
+        );
     }
 
     #[test]
@@ -260,7 +278,10 @@ mod tests {
             tilde_in(Path::new("/home/kimberly"), Some(home)),
             "/home/kimberly"
         );
-        assert_eq!(latency(Lang::De, 256, 48_000, Duration::ZERO), "5.3 ms Latenz");
+        assert_eq!(
+            latency(Lang::De, 256, 48_000, Duration::ZERO),
+            "5.3 ms Latenz"
+        );
         assert_eq!(
             latency(Lang::De, 256, 48_000, Duration::from_micros(2_000)),
             "7.3 ms Latenz"

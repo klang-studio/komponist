@@ -184,7 +184,10 @@ fn left_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<Header
     let has_presets = !model.presets.is_empty();
     ui.add_enabled_ui(has_presets, |ui| {
         if ui
-            .add(Button::icon(Icon::ChevronLeft, t.plugin_frame_preset_prev()))
+            .add(Button::icon(
+                Icon::ChevronLeft,
+                t.plugin_frame_preset_prev(),
+            ))
             .clicked()
         {
             events.push(HeaderEvent::PresetPrev);
@@ -203,13 +206,17 @@ fn left_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<Header
             })
             .collect();
         let mut selected = current;
-        let field =
-            ui.add(Dropdown::new(t.plugin_frame_preset(), &mut selected, &items).width(m::PRESET_WIDTH));
+        let field = ui.add(
+            Dropdown::new(t.plugin_frame_preset(), &mut selected, &items).width(m::PRESET_WIDTH),
+        );
         if field.changed() && selected != current && selected < model.presets.len() {
             events.push(HeaderEvent::Preset(selected));
         }
         if ui
-            .add(Button::icon(Icon::ChevronRight, t.plugin_frame_preset_next()))
+            .add(Button::icon(
+                Icon::ChevronRight,
+                t.plugin_frame_preset_next(),
+            ))
             .clicked()
         {
             events.push(HeaderEvent::PresetNext);

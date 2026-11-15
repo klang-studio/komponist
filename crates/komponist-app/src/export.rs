@@ -437,7 +437,10 @@ impl App {
             .tracks
             .iter()
             .map(|t| (t.name.as_str(), &t.channel.devices))
-            .chain(std::iter::once((self.lang.dialog_master(), &p.master.devices)));
+            .chain(std::iter::once((
+                self.lang.dialog_master(),
+                &p.master.devices,
+            )));
         let mut rows = Vec::new();
         for (track, devices) in chains {
             for d in devices {
@@ -711,7 +714,9 @@ impl App {
                 self.export.done.retain(|p| *p != path);
                 self.export.done.push(path);
             }
-            Err(ExportError::Cancelled) => self.set_status(self.lang.export_cancelled(), StatusKind::Info),
+            Err(ExportError::Cancelled) => {
+                self.set_status(self.lang.export_cancelled(), StatusKind::Info)
+            }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }
     }
@@ -795,9 +800,10 @@ impl App {
     fn settings_view(&self, s: &ExportSettings) -> SettingsView {
         let p = self.project();
         let bar = p.meter.ticks_per_bar();
-        let loop_label = self
-            .export_ticks(ExportRange::Loop)
-            .map(|r| self.lang.export_loop_bars(bar_number(r.start, bar), bar_number(r.end, bar)));
+        let loop_label = self.export_ticks(ExportRange::Loop).map(|r| {
+            self.lang
+                .export_loop_bars(bar_number(r.start, bar), bar_number(r.end, bar))
+        });
         let ticks = self
             .export_ticks(s.range)
             .unwrap_or(TickRange::new(Tick::ZERO, Tick::ZERO));

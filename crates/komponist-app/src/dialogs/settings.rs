@@ -24,9 +24,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
-use komponist_i18n::Lang;
 use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
 use komponist_audio::{AudioSystem, DeviceInfo, HostKind, StreamConfig};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, typography};
 use komponist_ui::widgets::button::{Button, Height, Kind};
@@ -857,7 +857,8 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
         .position(|r| *r == config.sample_rate)
         .unwrap_or(0);
     grid_row(ui, t.settings_rate(), |ui| {
-        let r = ui.add(Dropdown::new(t.settings_rate(), &mut rate, &rate_items).width(m::RATE_WIDTH));
+        let r =
+            ui.add(Dropdown::new(t.settings_rate(), &mut rate, &rate_items).width(m::RATE_WIDTH));
         if r.changed()
             && let Some(&sample_rate) = model.rates.get(rate)
         {
@@ -877,7 +878,11 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
     grid_row(ui, t.settings_buffer(), |ui| {
         ui.spacing_mut().item_spacing.x = m::LATENCY_GAP;
         if ui
-            .add(Segmented::new(t.settings_buffer(), &mut buffer, &buffer_items))
+            .add(Segmented::new(
+                t.settings_buffer(),
+                &mut buffer,
+                &buffer_items,
+            ))
             .changed()
             && let Some(&buffer_frames) = BUFFERS.get(buffer)
         {
@@ -1166,7 +1171,10 @@ fn keyboard(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Outpu
         ui.set_height(m::MIDI_ROW);
         ui.spacing_mut().item_spacing.x = m::MIDI_GAP;
         let mut on = model.keyboard_midi;
-        if ui.add(Switch::new(&mut on, t.settings_keyboard_midi())).changed() {
+        if ui
+            .add(Switch::new(&mut on, t.settings_keyboard_midi()))
+            .changed()
+        {
             out.push(Output::Act(Action::Ui(UiAction::ToggleKeyboardMidi)));
         }
         let g = styled(
@@ -1233,7 +1241,8 @@ mod tests {
     #[test]
     fn pseudo_devices_become_one_default_entry() {
         let config = StreamConfig::default();
-        let (entries, selected) = device_entries(Lang::De, HostKind::PipeWire, &pipewire(), &config);
+        let (entries, selected) =
+            device_entries(Lang::De, HostKind::PipeWire, &pipewire(), &config);
         let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -1279,7 +1288,12 @@ mod tests {
     #[test]
     fn rates_include_the_configured_one_and_pipewire_conversions() {
         let devices = pipewire();
-        let (entries, _) = device_entries(Lang::De, HostKind::PipeWire, &devices, &StreamConfig::default());
+        let (entries, _) = device_entries(
+            Lang::De,
+            HostKind::PipeWire,
+            &devices,
+            &StreamConfig::default(),
+        );
         let config = StreamConfig {
             sample_rate: 88_200,
             ..StreamConfig::default()
@@ -1372,7 +1386,10 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with(" · 1 Plugin übersprungen (lässt sich nicht laden)"));
-        assert_eq!(scan_summary(Lang::De, Some(&report), true, now), "Scan läuft …");
+        assert_eq!(
+            scan_summary(Lang::De, Some(&report), true, now),
+            "Scan läuft …"
+        );
         assert_eq!(scan_summary(Lang::De, None, false, now), "Noch kein Scan");
     }
 }

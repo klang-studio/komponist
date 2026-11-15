@@ -1125,7 +1125,8 @@ mod new_track {
     }
 
     fn dialog_open(h: &Harness<'_, App>) -> bool {
-        h.query_by_role_and_label(Role::Dialog, de::NEW_TRACK_TITLE).is_some()
+        h.query_by_role_and_label(Role::Dialog, de::NEW_TRACK_TITLE)
+            .is_some()
     }
 
     fn open_by_click(h: &mut Harness<'_, App>) {
@@ -1180,7 +1181,8 @@ mod new_track {
         assert_eq!(undo_text(&h), undo_before);
         // "Abbrechen" does the same.
         open_by_click(&mut h);
-        h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL).click();
+        h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL)
+            .click();
         h.run_steps(3);
         assert!(!dialog_open(&h));
         assert_eq!(names_of(&h), before);
@@ -1208,7 +1210,8 @@ mod new_track {
 
         let mut h = harness(demo());
         open_by_click(&mut h);
-        h.get_by_role_and_label(Role::Button, de::NEW_TRACK_CREATE).click();
+        h.get_by_role_and_label(Role::Button, de::NEW_TRACK_CREATE)
+            .click();
         h.run_steps(3);
         assert!(!dialog_open(&h));
         let (a, b) = (project(&h), project(&dropped));
@@ -1273,7 +1276,8 @@ mod new_track {
             .set_value_accesskit(2.0);
         h.run_steps(2);
         click(option(&h, de::NEW_TRACK_NO_INSTRUMENT).center(), &mut h);
-        h.get_by_role_and_label(Role::Button, de::NEW_TRACK_CREATE).click();
+        h.get_by_role_and_label(Role::Button, de::NEW_TRACK_CREATE)
+            .click();
         h.run_steps(3);
         let names = names_of(&h);
         assert_eq!(names[6..], ["Lead 1", "Lead 2"]);

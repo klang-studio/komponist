@@ -14,8 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
-use komponist_i18n::Lang;
 use egui::{Color32, Context, Id, Key, Modifiers, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
 use komponist_ui::widgets::button::{Button, Kind};
@@ -233,7 +233,8 @@ impl FileBrowser {
                 if let Some(parent) = path.parent()
                     && !parent.is_dir()
                 {
-                    self.message = Some(self.lang.file_no_such_folder(super::format::tilde(parent)));
+                    self.message =
+                        Some(self.lang.file_no_such_folder(super::format::tilde(parent)));
                     self.replace = None;
                     return None;
                 }

@@ -301,7 +301,8 @@ fn opening_a_project_resets_the_engine() {
         inner: BuiltinHost::new(),
         log: Arc::clone(&log),
     };
-    let mut app = app_in(&dir, new_project::empty_project(Lang::De)).with_device_host(Box::new(host));
+    let mut app =
+        app_in(&dir, new_project::empty_project(Lang::De)).with_device_host(Box::new(host));
     // The first project, opened from a file.
     let one_track = |name: &str| {
         komponist_model::edits::add_track(
@@ -564,7 +565,8 @@ fn s06_waits_for_the_running_scan() {
         scanning: Arc::clone(&scanning),
         finished: false,
     };
-    let mut app = app_in(&dir, new_project::empty_project(Lang::De)).with_device_host(Box::new(host));
+    let mut app =
+        app_in(&dir, new_project::empty_project(Lang::De)).with_device_host(Box::new(host));
     app.dispatch(Action::Project(ProjectAction::OpenPath(file)));
     // The scan may still find the plugin: no dialog yet.
     assert!(app.ui().dialog.is_none());
@@ -1175,7 +1177,10 @@ fn s06_texts_match_the_screen() {
     assert_eq!(model.rows[0].place, "Spur Arp · Instrument");
     assert_eq!(model.rows[0].format, "VST3");
     assert_eq!(model.rows[1].place, "Spur Pad · Effekt 4");
-    assert_eq!(missing_plugins::title(Lang::De, model.rows.len()), "2 Plugins fehlen");
+    assert_eq!(
+        missing_plugins::title(Lang::De, model.rows.len()),
+        "2 Plugins fehlen"
+    );
 }
 
 /// Drivers and devices that take long to enumerate, like ALSA's devices (WP-61 measured

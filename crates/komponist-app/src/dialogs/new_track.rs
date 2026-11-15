@@ -11,8 +11,8 @@
 //! Enter (not while a button or the count field has the focus) creates, Esc and "Abbrechen" cancel.
 //! The choice of instrument is remembered for the session ([`crate::dialogs::DialogState`]).
 
-use komponist_i18n::Lang;
 use egui::{Color32, Context, Id, Key, Modifiers, Role, Sense, Ui, UiBuilder, WidgetInfo, vec2};
+use komponist_i18n::Lang;
 use komponist_model::edits::{self, NewTrack};
 use komponist_model::{PluginRef, Project};
 use komponist_tokens::egui_support::color32;

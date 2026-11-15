@@ -773,10 +773,7 @@ impl App {
                             w.view = PluginView::Params;
                         }
                         let name = self.plugin_name(device);
-                        self.set_status(
-                            self.lang.plugin_frame_gui_failed(name),
-                            StatusKind::Error,
-                        );
+                        self.set_status(self.lang.plugin_frame_gui_failed(name), StatusKind::Error);
                     }
                     Gui::Open => {
                         // The plugin closed its GUI itself: the frame closes too.
@@ -1142,7 +1139,10 @@ impl App {
                 };
                 (
                     d.plugin.name.clone(),
-                    format!("{track} · {}", crate::dialogs::missing_plugins::format_label(self.lang, d.plugin.format)),
+                    format!(
+                        "{track} · {}",
+                        crate::dialogs::missing_plugins::format_label(self.lang, d.plugin.format)
+                    ),
                     d.bypass,
                     is_hexa(d),
                 )

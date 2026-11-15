@@ -474,7 +474,9 @@ impl App {
             Purpose::Save => format!("{}.{FILE_EXTENSION}", self.project().name),
             _ => String::new(),
         };
-        self.open_overlay(Overlay::File(FileBrowser::new(self.lang, purpose, dir, name)));
+        self.open_overlay(Overlay::File(FileBrowser::new(
+            self.lang, purpose, dir, name,
+        )));
     }
 
     /// Shows `overlay` above everything; the keyboard focus goes to it.

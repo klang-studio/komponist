@@ -803,7 +803,10 @@ fn a_missing_plugin_says_so_and_esc_in_the_main_window_leaves_the_frame_open() {
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(dexed)));
     h.run_steps(3);
-    assert!(h.query_by_label(&Lang::De.plugin_frame_missing("Dexed")).is_some());
+    assert!(
+        h.query_by_label(&Lang::De.plugin_frame_missing("Dexed"))
+            .is_some()
+    );
     // Frames are windows of their own: Esc in the main window only clears the selection.
     h.key_press(egui::Key::Escape);
     h.run_steps(3);

@@ -13,8 +13,8 @@
 //! sample leaves the list; with nothing left the dialog closes. With samples only the title is
 //! "1 Sample fehlt" / "n Samples fehlen" and the primary action "Ohne diese Samples fortfahren".
 
-use komponist_i18n::Lang;
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::egui_support::color32;
@@ -491,7 +491,8 @@ mod tests {
         // Pad (track 3): Surge XT, then effects.
         let pad = &project.tracks[3];
         assert!(pad.channel.devices.len() >= 2);
-        let rows = model(Lang::De,
+        let rows = model(
+            Lang::De,
             &project,
             &[missing(&project, 3, 0), missing(&project, 3, 1)],
         )
@@ -553,7 +554,9 @@ mod tests {
     fn titles_and_texts_follow_the_count() {
         assert_eq!(title(Lang::De, 2), "2 Plugins fehlen");
         assert_eq!(title(Lang::De, 1), "1 Plugin fehlt");
-        assert!(text(Lang::De, "Nachtfahrt", 2).starts_with("„Nachtfahrt“ ist geöffnet. Diese Geräte"));
+        assert!(
+            text(Lang::De, "Nachtfahrt", 2).starts_with("„Nachtfahrt“ ist geöffnet. Diese Geräte")
+        );
         assert!(text(Lang::De, "Nachtfahrt", 1).contains("Dieses Gerät ist nicht installiert"));
     }
 }
