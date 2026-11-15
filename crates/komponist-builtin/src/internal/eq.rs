@@ -9,6 +9,9 @@
 //! fades out over about 10 ms first, so neither makes a click; a band with 0 dB gain (bell,
 //! shelf) is bit-exact, and so is a flat EQ.
 
+use std::sync::Arc;
+
+use komponist_engine::{SampleTap, tap};
 use komponist_model::params::layout::{
     Cell, DeviceLayout, GraphBinding, GraphConfig, Half, WidgetKind,
 };
@@ -48,6 +51,10 @@ const PER_BAND: usize = 5;
 
 /// Wire id of the output gain.
 pub const OUT: usize = 0;
+
+/// Wire id of the „Analyse“ switch (WP-92): it comes after the bands, so the ids of every parameter
+/// that existed before stay what they were.
+pub const ANALYSE: usize = 1 + BANDS * PER_BAND;
 
 fn params() -> Vec<ParamInfo> {
     let mut list = vec![
@@ -98,6 +105,9 @@ fn params() -> Vec<ParamInfo> {
             0.71,
         ));
     }
+    // The live spectrum behind the graph (WP-92). On by default, so a project saved before the
+    // parameter existed shows it too.
+    list.push(ParamInfo::new("analyse", "Analyse", ParamKind::Bool, 1.0));
     list
 }
 
@@ -123,7 +133,8 @@ fn layout() -> DeviceLayout {
                 WidgetKind::Segment,
                 template("b{band}_type"),
             ),
-            super::toggle(0, 2, 2, Half::Bottom, template("b{band}_on")),
+            super::toggle(0, 2, 1, Half::Bottom, template("b{band}_on")),
+            super::toggle(1, 2, 1, Half::Bottom, super::param("analyse")),
             Cell::span(2, 2, 1, 1, WidgetKind::Knob, template("b{band}_freq")),
             Cell::span(3, 2, 1, 1, WidgetKind::Knob, template("b{band}_gain")),
             Cell::span(4, 2, 1, 1, WidgetKind::Knob, template("b{band}_q")),
@@ -279,6 +290,10 @@ struct Eq {
     fade_step: f32,
     /// Samples until the next control update, and how far into the interval we are.
     countdown: usize,
+    /// The output for the live spectrum (WP-92); the audio side copies into it only while
+    /// `analyse` is on and the UI looks at it.
+    tap: Arc<SampleTap>,
+    analyse: bool,
 }
 
 fn dsp() -> Box<dyn Dsp> {
@@ -289,6 +304,8 @@ fn dsp() -> Box<dyn Dsp> {
         glide: 0.0,
         fade_step: 0.0,
         countdown: 0,
+        tap: Arc::new(SampleTap::new(tap::DEFAULT_CAPACITY)),
+        analyse: true,
     };
     eq.set_rate(INITIAL_RATE);
     Box::new(eq)
@@ -297,6 +314,7 @@ fn dsp() -> Box<dyn Dsp> {
 impl Eq {
     fn set_rate(&mut self, rate: f32) {
         self.rate = rate;
+        self.tap.set_rate(rate);
         self.glide = smooth_coeff(GLIDE, CONTROL, rate);
         self.fade_step = (CONTROL as f32 / (FADE * rate)).min(1.0);
         for b in &mut self.bands {
@@ -337,6 +355,10 @@ impl Dsp for Eq {
     fn set_param(&mut self, index: usize, value: f64) {
         if index == OUT {
             self.out.target = db_to_gain(value as f32);
+            return;
+        }
+        if index == ANALYSE {
+            self.analyse = value >= 0.5;
             return;
         }
         let i = index - 1;
@@ -403,6 +425,13 @@ impl Dsp for Eq {
             self.countdown -= run;
             n += run;
         }
+        if self.analyse && self.tap.begin(il.len()) {
+            self.tap.push_mono(ol, or);
+        }
+    }
+
+    fn tap(&self) -> Option<Arc<SampleTap>> {
+        Some(Arc::clone(&self.tap))
     }
 
     fn reset(&mut self) {
