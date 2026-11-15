@@ -40,15 +40,20 @@ The step sequencer is made for drums and Sampler kits. Toggle steps while the pa
 
 ### Built-in instruments
 
-No plugins needed to make a sound:
+No plugins needed to make a sound.
 
-- **hexa**, a six-operator FM synth with envelopes, LFOs and a large preset library.
-- **knurr**, a subtractive synth with two oscillators, a filter and a sub oscillator.
-- **Sampler**, a pad sampler with layers, envelopes, filters and slicing. The demo kit is synthesized, so it needs no
-  sample files.
+**hexa** is a six-operator FM synth with envelopes, LFOs and a large preset library. Here with the EQ, Delay and Hall
+devices behind it:
 
 ![hexa (FM synth) with the EQ, Delay and Hall devices behind it](docs/media/device-hexa.png)
+
+**knurr** is a subtractive synth with two oscillators, a filter and a sub oscillator:
+
 ![knurr, a subtractive synth, with an EQ](docs/media/device-knurr.png)
+
+The **Sampler** is a pad sampler with layers, envelopes, filters and slicing. The demo kit is synthesized, so it needs
+no sample files. Next to it, the presse compressor with its sidechain chip:
+
 ![Sampler with its pads, and the presse compressor with its sidechain chip](docs/media/device-sampler-presse.png)
 
 ### Built-in effects
@@ -76,21 +81,24 @@ does not take your project down with it. Plugin windows open as native X11 windo
 
 ### Mixer, routing, recording
 
-The mixer shows every track with its inserts, pan, mute/solo, faders and level meters, next to the master channel:
-
-![The mixer with the arrangement above it, playing](docs/media/mixer.png)
-
 - Record MIDI from any connected MIDI input (or the computer keyboard) into a take.
 - Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain presse from any
   track or bus.
 - Every edit is undoable, including parameter changes.
 
+The mixer shows every track with its inserts, pan, mute/solo, faders and level meters, next to the master channel:
+
+![The mixer with the arrangement above it, playing](docs/media/mixer.png)
+
 ### Tracks, German and English
 
-A new track takes an instrument, a name and a count, or you drag an instrument onto the "Neue Spur" box:
+Click the "Neue Spur" box below the tracks to open the new-track dialog: choose an instrument, a name and a count:
+
+![The new-track dialog](docs/media/new-track-dialog.png)
+
+Or drag an instrument from the browser onto the box:
 
 ![Dragging knurr from the browser onto the "Neue Spur" box creates a track](docs/media/new-track.gif)
-![The new-track dialog](docs/media/new-track-dialog.png)
 
 The UI is available in **German** (the source language) and **English** (a draft that is still being completed).
 All texts live in [Fluent](https://projectfluent.org/) `.ftl` files, see [docs/I18N.md](docs/I18N.md).

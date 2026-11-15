@@ -57,7 +57,8 @@ class Session:
             KOMPONIST_NULL_AUDIO="1",
         )
         self.app = subprocess.Popen(
-            [a.bin, "--demo", "--null-audio", "--scale", "1", "--lang", "de"],
+            # No plugin scan: the browser shows only the built-in devices, not the plugins of this machine.
+            [a.bin, "--demo", "--null-audio", "--no-plugin-scan", "--scale", "1", "--lang", "de"],
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self.c = Client(PORT, 60)

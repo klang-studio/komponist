@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! komponist [PROJECT.komponist] [--demo] [--null-audio] [--scale N] [--settings PATH]
-//!           [--open-plugin NAME] [--lang de|en]
+//!           [--open-plugin NAME] [--lang de|en] [--no-plugin-scan]
 //! ```
 //!
 //! Opens `PROJECT`, or shows the start screen (S09) with the recent projects
@@ -21,7 +21,9 @@
 //! executable, nothing to build or keep in step; the bridge process initialises no GUI or audio).
 //! At start a
 //! background scan covers the default plugin folders plus those in the settings; devices whose
-//! plugin it finds load when it ends. Closing the window shuts every bridge down.
+//! plugin it finds load when it ends. `--no-plugin-scan` (or `KOMPONIST_NO_PLUGIN_SCAN=1`) skips that
+//! scan, so the browser lists only the built-in devices (screenshots, checks). Closing the window shuts
+//! every bridge down.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,7 +53,8 @@ usage: komponist [PROJECT.komponist] [options]
   --scale N        UI scale (pixels per point), e.g. 1 or 2
   --settings PATH  settings file (default ~/.config/komponist/settings.json)
   --open-plugin NAME  open the plugin window of the first device whose plugin is NAME
-  --lang de|en     UI language (default: the setting; \"system\" is German on a German desktop, else English)";
+  --lang de|en     UI language (default: the setting; \"system\" is German on a German desktop, else English)
+  --no-plugin-scan  skip the plugin scan: only the built-in devices (also KOMPONIST_NO_PLUGIN_SCAN=1)";
 
 #[derive(Debug, Default)]
 struct Args {
@@ -62,11 +65,14 @@ struct Args {
     settings: Option<PathBuf>,
     open_plugin: Option<String>,
     lang: Option<Lang>,
+    no_plugin_scan: bool,
 }
 
 fn parse_args() -> Result<Option<Args>, String> {
     let mut args = Args {
         null_audio: std::env::var("KOMPONIST_NULL_AUDIO").is_ok_and(|v| v != "0" && !v.is_empty()),
+        no_plugin_scan: std::env::var("KOMPONIST_NO_PLUGIN_SCAN")
+            .is_ok_and(|v| v != "0" && !v.is_empty()),
         ..Args::default()
     };
     let mut it = std::env::args().skip(1);
@@ -75,6 +81,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--null-audio" => args.null_audio = true,
+            "--no-plugin-scan" => args.no_plugin_scan = true,
             "--demo" => args.demo = true,
             "--scale" => {
                 let v: f32 = value()?.parse().map_err(|e| format!("--scale: {e}"))?;
@@ -195,7 +202,9 @@ fn run_app() -> eframe::Result {
             .resolve(sys_locale::get_locale().as_deref())
     });
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
-    app.scan_plugins();
+    if !args.no_plugin_scan {
+        app.scan_plugins();
+    }
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {
             let _ = hub.set_enabled(&name, false);

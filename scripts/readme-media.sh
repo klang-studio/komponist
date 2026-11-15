@@ -5,7 +5,7 @@
 #   scripts/readme-media.sh hero mixer    only these scenarios (names: scripts/readme-media/capture.py)
 #   SKIP_BUILD=1 scripts/readme-media.sh  use the existing target/release/komponist
 #
-# Builds komponist (release, under the shared build lock like run.sh), starts it with `--demo --null-audio`
+# Builds komponist (release, under the shared build lock like run.sh), starts it with `--demo --null-audio --no-plugin-scan`
 # under a private Xvfb (1920x1080, no window manager, so no decorations or borders), with a scratch HOME and
 # XDG folders, drives it through its AccessKit tree (`egui-mcp`, see .mcp.json) and records the GIFs with ffmpeg
 # x11grab. It never touches real audio or MIDI hardware and plays no sound. Idempotent: files are overwritten.
