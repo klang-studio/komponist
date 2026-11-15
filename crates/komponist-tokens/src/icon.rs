@@ -99,6 +99,8 @@ icons! {
     Metronome => "metronome",
     /// `repeat`: loop toggle in the transport bar.
     Repeat => "repeat",
+    /// `timer`: count-in toggle in the transport bar (with the bar count beside it).
+    Timer => "timer",
     /// `volume-2`: the track toggle "Monitoring" (I).
     Volume2 => "volume-2",
 }
@@ -138,7 +140,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 27);
+        assert_eq!(Icon::ALL.len(), 28);
     }
 
     #[test]

@@ -21,7 +21,7 @@
 //! Focus: the 1 px ring at 1 px distance, after keyboard input only. Enter or Space clicks a
 //! focused button. The tooltip appears after 600 ms with the shortcut ([`Tip`]).
 
-use egui::{Color32, FontId, Response, Role, Sense, Ui, Widget, WidgetInfo, vec2};
+use egui::{Color32, FontId, Rect, Response, Role, Sense, Ui, Widget, WidgetInfo, pos2, vec2};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{Icon, color, radius, size, space};
@@ -207,6 +207,7 @@ pub struct Button<'a> {
     small: bool,
     ground: Option<usize>,
     trailing: Option<Trailing<'a>>,
+    badge: Option<&'a str>,
     fixed_width: Option<f32>,
     name: Option<&'a str>,
     shortcut: Option<&'a str>,
@@ -223,6 +224,7 @@ impl<'a> Button<'a> {
             small: false,
             ground: None,
             trailing: None,
+            badge: None,
             fixed_width: None,
             name: None,
             shortcut: None,
@@ -317,6 +319,13 @@ impl<'a> Button<'a> {
     /// A shortcut chip after the label ("Quantisieren Q").
     pub fn chip(mut self, chip: &'a str) -> Self {
         self.trailing = Some(Trailing::Chip(chip));
+        self
+    }
+
+    /// A short value after an icon button's icon, in Mono 10 like a chip, in the icon's colour
+    /// (count-in "1"). The button grows by the gap and the text's width.
+    pub fn badge(mut self, badge: &'a str) -> Self {
+        self.badge = Some(badge);
         self
     }
 
@@ -436,6 +445,17 @@ impl Widget for Button<'_> {
             )
         });
         let gap = self.height.chip_gap();
+        let badge = self
+            .badge
+            .filter(|_| matches!(self.content, Content::Icon(_)))
+            .map(|b| {
+                super::galley(
+                    ui,
+                    b,
+                    fonts::font_id(&typography::VALUE_S),
+                    typography::VALUE_S.line_height,
+                )
+            });
         let width = match (&galley, self.fixed_width) {
             (_, Some(w)) => w,
             (Some(g), None) => {
@@ -445,7 +465,12 @@ impl Widget for Button<'_> {
                         .map_or(0.0, |(t, _)| gap + t.size().x.ceil())
                     + 2.0 * padding
             }
-            (None, None) => size::CONTROL,
+            (None, None) => {
+                size::CONTROL
+                    + badge
+                        .as_ref()
+                        .map_or(0.0, |g| metrics::ICON_BADGE_GAP + g.size().x.ceil())
+            }
         };
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, height), super::sense(ui, Sense::click()));
@@ -495,7 +520,21 @@ impl Widget for Button<'_> {
                         painter.galley(pos, galley, l.text);
                     }
                 }
-                (Content::Icon(icon), _) => icons::paint(ui, rect, icon, l.text),
+                (Content::Icon(icon), _) => {
+                    if let Some(badge) = badge {
+                        // Icon and badge as one group, the icon at the usual left padding.
+                        let pad = (size::CONTROL - size::ICON) / 2.0;
+                        let icon_rect = Rect::from_min_size(
+                            pos2(rect.left() + pad, rect.top()),
+                            vec2(size::ICON, rect.height()),
+                        );
+                        icons::paint(ui, icon_rect, icon, l.text);
+                        let x = icon_rect.right() + metrics::ICON_BADGE_GAP;
+                        painter.galley(super::text_pos(rect, &badge, x, ppp), badge, l.text);
+                    } else {
+                        icons::paint(ui, rect, icon, l.text);
+                    }
+                }
                 (Content::Text(_), None) => {}
             }
             if l.focus_ring {

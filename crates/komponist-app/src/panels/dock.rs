@@ -2,7 +2,7 @@
 //! `editorTabs`; `Layout.dc.html` `dockRules`).
 //!
 //! Tabs Editor · Geräte · Mixer (fixed) and "+" (later views, disabled in v0.1); on the right
-//! "Maximieren" / "Maximiert" (Ctrl ↑) and the caret that collapses the dock to this strip or
+//! "Maximieren" / "Maximiert" (icon toggle, Ctrl ↑) and the caret that collapses the dock to this strip or
 //! opens it again (Ctrl 3). The editor tab is titled with the open clip's name, its editor kind
 //! as secondary text and the track colour as mark ("■ Lead A  Piano Roll"), else "Kein Clip";
 //! while recording "● Aufnahme  Piano Roll · live" with a `state.record` mark (S02). The texts
@@ -122,24 +122,23 @@ pub fn tab_strip(
         }
         let max = Action::Ui(UiAction::ToggleDockMaximized);
         let maximized = layout.dock_open && layout.dock_maximized;
-        let label = if maximized {
-            t.dock_maximized()
+        // Icon toggle (owner, 2026-11-15): the German label stays the AccessKit name, the tooltip
+        // says what a click does. Text.2 while off, accent while on (`maxS`).
+        let (icon, name, tip) = if maximized {
+            (Icon::Minimize2, t.dock_maximized(), t.dock_restore_tip())
         } else {
-            t.dock_maximize()
+            (Icon::Maximize2, t.dock_maximize(), t.dock_maximize_tip())
         };
         let shortcut = keymap.label_for(&max, t);
-        let mut button = Button::new(label)
+        let mut tip = Tip::new(tip);
+        if let Some(sc) = shortcut.as_deref() {
+            tip = tip.shortcut(sc);
+        }
+        let button = Button::icon(icon, name)
             .on(maximized)
             .compact()
-            .small()
-            .frameless(0);
-        if !maximized {
-            // `maxS`: text.2, regular, 11 px while off; accent while on.
-            button = button.quiet();
-        }
-        if let Some(sc) = shortcut.as_deref() {
-            button = button.shortcut(sc);
-        }
+            .frameless(0)
+            .tip(tip);
         if ui.add(button).clicked() {
             actions.push(max);
         }
