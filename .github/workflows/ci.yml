@@ -53,7 +53,7 @@ jobs:
             libasound2-dev libjack-jackd2-dev libpipewire-0.3-dev libspa-0.2-dev \
             libdbus-1-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libx11-xcb-dev libxcb1-dev \
             libwayland-dev libfontconfig1-dev libgl1-mesa-dev \
-            mesa-vulkan-drivers libvulkan1 xvfb xauth
+            mesa-vulkan-drivers libvulkan1 xvfb xauth gdb
 
       # rust-toolchain.toml: stable + rustfmt + clippy.
       - name: Install Rust toolchain
@@ -86,8 +86,30 @@ jobs:
           TOML
           cat kittest.toml
 
+      # A hanging test (2026-11-15: dispatch::dialogs_take_the_focus_and_give_it_back) would otherwise
+      # hold the job for its full hour. After TEST_WATCHDOG seconds the watchdog prints the backtraces
+      # of every thread of the running test binaries and fails the step.
       - name: Test
-        run: cargo test --workspace
+        timeout-minutes: 30
+        env:
+          TEST_WATCHDOG: "1200"
+        run: |
+          cargo test --workspace &
+          tests=$!
+          (
+            sleep "$TEST_WATCHDOG"
+            echo "::error::tests still running after ${TEST_WATCHDOG}s, dumping backtraces"
+            for pid in $(pgrep -f '/target/debug/deps/'); do
+              echo "=== $(tr '\0' ' ' < /proc/$pid/cmdline)"
+              sudo gdb -p "$pid" -batch -ex 'thread apply all bt' 2>/dev/null | grep -vE '^\[(New|Thread debugging)|^Using host'
+            done
+            kill "$tests"
+          ) &
+          watchdog=$!
+          status=0
+          wait "$tests" || status=$?
+          kill "$watchdog" 2>/dev/null || true
+          exit "$status"
 
       # Starts its own Xvfb per test binary, builds the test plugins again (cached), scratch HOME.
       - name: GUI tests
