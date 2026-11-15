@@ -34,6 +34,11 @@ updates:
     labels: [dependencies]
     commit-message:
       prefix: "deps(test-plugins)"
+    # egui must stay the version nice-plug-egui builds against (the pinned fork), or kp-test-synth's editor
+    # gets two egui crates. Bump it together with the nice-plug `rev` by hand.
+    ignore:
+      - dependency-name: "egui"
+      - dependency-name: "egui_glow"
     groups:
       minor-and-patch:
         patterns: ["*"]
