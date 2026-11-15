@@ -43,6 +43,24 @@ pub mod transport {
     pub const CPU_VALUE_WIDTH: f32 = 30.0;
     /// Master meter: `width:72px`, two bars.
     pub const MASTER_METER_LENGTH: f32 = 72.0;
+
+    // The master display left of the CPU readout (#34): master-scope proposal, variant A
+    // „Fenster“ (internal notes), chosen by the owner on 2026-11-15. Its height is
+    // `size.control` (24), its gap to the CPU label `space.4` (the bar's item spacing).
+
+    /// Width of the master display: „88 × 24 (`size.control`)“.
+    pub const SCOPE_WIDTH: f32 = 88.0;
+    /// Inset of the picture inside the 1 px frame: „Innenfläche 82 × 18 (Abstand 3 px zum
+    /// Rahmen)“.
+    pub const SCOPE_INSET: f32 = 3.0;
+    /// Length of the oscilloscope window in seconds: „Fenster 30 ms, Trigger auf steigenden
+    /// Nulldurchgang“.
+    pub const SCOPE_WINDOW_S: f32 = 0.030;
+    /// Bottom of the spectrum in dBFS (top: 0 dBFS): „0 bis −72 dB“. Also the level below which
+    /// the oscilloscope counts the signal as silence.
+    pub const SCOPE_DB_FLOOR: f32 = -72.0;
+    /// The spectrum's vertical grid: „vertikales Raster bei 100 Hz, 1 kHz, 10 kHz in `line.1`“.
+    pub const SCOPE_GRID_HZ: [f32; 3] = [100.0, 1_000.0, 10_000.0];
 }
 
 /// Dock tab strip (`Screens.dc.html` shell markup, `dock`; `ks-view.js` `dockView`).
