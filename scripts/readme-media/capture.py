@@ -301,7 +301,6 @@ def piano_roll(s):
     s.pause(1.0)
     top = dock_top(s)
     s.gif("piano-roll", (DOCK_X, top, 1040, 300), 1040, fps=12, trim=(0.3, None))
-    s.shot("piano-roll", crop=(DOCK_X, top, 1379, 296))
 
 
 def step_sequencer(s):
@@ -310,7 +309,6 @@ def step_sequencer(s):
     open_dock(s, 380)
     s.pause(0.6)
     top = dock_top(s)
-    s.shot("step-sequencer", crop=(DOCK_X, top, 1379, 320))
     s.rec_start()
     play(s)
     s.pause(0.8)
@@ -345,7 +343,6 @@ def sidechain(s):
     s.wait_for(role="Menu", label="Sidechain-Quelle")
     s.pause(0.5)
     chip = s.bounds(role="Button", label="Sidechain: Drums")
-    s.shot("presse-sidechain", crop=(int(chip["x"]) - 330, top + 28, 560, 410))
     s.key("Escape")
     s.pause(0.5)
     s.click_pos({"x": 553, "y": 83})  # ruler, bar 5 (browser folded): drums and bass play
@@ -354,7 +351,6 @@ def sidechain(s):
     s.pause(0.4)
     play(s)
     s.pause(1.5)
-    s.shot("presse-ducking", crop=(650, top + 28, 880, 300))
     s.pause(4.0)
     stop(s)
     s.gif("sidechain", (650, top + 28, 880, 300), 880, fps=12, trim=(0.5, 6.0))
