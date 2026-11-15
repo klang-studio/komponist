@@ -143,7 +143,6 @@ komponist/
   Cargo.toml                 workspace
   CLAUDE.md                  rules for agents (from PLAN.md §1)
   design/tokens.json         copy of the handoff tokens (single source of truth)
-  design/reference/*.png     rendered reference screens and components (scripts/render-reference.sh)
   assets/fonts/              IBM Plex Sans / Mono (OFL)
   assets/icons/              Lucide subset (ISC), SVG
   crates/
@@ -160,7 +159,7 @@ komponist/
     komponist-ui/               design system on egui: theme, widgets, paint fns, bin `komponist-gallery`
     komponist-app/              bin `komponist`: shell, views, dialogs, actions, keymap
   test-plugins/              own Cargo workspace: nice-plug test plugins (CLAP + VST3 each): synth, fx, crash, slow
-  scripts/                   check.sh, render-reference.sh, build-klopfer.sh
+  scripts/                   check.sh, build-klopfer.sh
   spikes/                    throwaway risk spikes (not in the workspace)
 ```
 
@@ -1106,7 +1105,7 @@ An FTZ/DAZ guard stays in `komponist-audio`.
 | IPC/bridge | roundtrip, deadline/timeout, crash (test plugin crashes on a note), reload with state | `test-plugins/*` built with nice-plug, as CLAP and VST3 |
 | Hosting | real plugins: Klopfer.clap; installed CLAP/VST3s if present (LSP, Surge XT, Dexed …) | integration tests marked `#[ignore]` when the plugin is missing |
 | UI components | one snapshot per component state; interaction (drag math, Alt-click, double-click) | `egui_kittest` (wgpu renderer) |
-| Visual | compare against `design/reference/*.png` (rendered from the handoff) | review WP-62, PNGs side by side |
+| Visual | compare against the reference screens rendered from the design handoff (internal notes) | review WP-62, PNGs side by side |
 | Acceptance | the five flows of `HANDOFF.md` §9, headless App + NullBackend + offline render (WAV not silent) | `egui_kittest`; flow 4 GUI part under Xvfb |
 | Live (agents) | the running app or gallery: AccessKit tree, clicks, typing, screenshots | `egui_mcp` over `egui_inspection` (§11.1); `xdotool` + screenshots for foreign plugin GUIs |
 | Performance | 10k notes ≤ 8 ms UI frame; engine with 16 tracks; IPC roundtrip p99 | bench binaries, WP-61 |
@@ -1124,7 +1123,7 @@ All three rely on the AccessKit nodes from §9.2 and on accessible names for eve
 
 The design reference can be rendered: the `.dc.html` files need the dc runtime `support.js`, which lies
 in `../pisynth/design_handoff/`. Copied next to them, headless Chromium renders them
-(`scripts/render-reference.sh`, WP-00).
+(a maintainer script kept with the internal notes, WP-00).
 
 ---
 

@@ -57,7 +57,7 @@ the child processes of the test process (`plugin_exit`). Run one module:
 | `scripts/run.sh [args]` | Builds `komponist` (release) and starts it with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). The plugin bridge is part of the executable (`komponist --bridge`, WP-94), so `cargo run -p komponist-app` works as well. |
 | `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
-| `scripts/render-reference.sh` | Renders the handoff `.dc.html` files with headless Chromium into `design/reference/*.png` (needs network for the Google fonts). |
+| `<workspace>/.claude/komponist/scripts/render-reference.sh` | (internal) Renders the handoff `.dc.html` files with headless Chromium into `<workspace>/.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |
 | `scripts/build-klopfer.sh` | Bundles klopfer in `../klopfer` (`cargo xtask bundle klopfer --release`) and prints the paths of `Klopfer.clap` and `Klopfer.vst3` in `../klopfer/target/bundled/`. Does not touch klopfer's submodules. |
 
 The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is configured in
@@ -67,7 +67,8 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
 ## Design references
 
 - `design/tokens.json`: all design tokens, the single source of truth (copy of the handoff file).
-- `design/reference/*.png`, rendered by `scripts/render-reference.sh`:
+- Reference screens (internal, outside the repo since 2026-11-15) in `<workspace>/.claude/komponist/design/reference/*.png`, rendered by
+  `<workspace>/.claude/komponist/scripts/render-reference.sh`; the device handoff copy is `<workspace>/.claude/komponist/design/DEVICES-HANDOFF.md` + `devices.json`:
   - `Screens-01.png` … `Screens-10.png`: screen S01 … S10, each with its notes. The 1920 × 1080
     frame starts at x = 56 (1 px border around it).
   - `Designsystem-01.png` … `-04.png`: tokens and components, cut between sections.
@@ -94,7 +95,7 @@ From `PLAN.md` §2 (internal notes). `HS/` = `../klang-studio-handoff/`.
    of the app shell or of one view live in that crate's or view's own `metrics` module, with sources too.
 3. **Design sources:** the `.dc.html` files render only with their runtime. Values are in the
    `<script>` blocks (`renderVals()`, `ix`, `notes:ixs([...])`, `headers`, `clips`, `notes`, …), so read
-   those, not the markup. Visual reference: `design/reference/*.png`. If a screen and the design
+   those, not the markup. Visual reference: `<workspace>/.claude/komponist/design/reference/*.png`. If a screen and the design
    system disagree, the **design system wins**; report the contradiction.
 4. **Realtime:** inside `Engine::process`, `Processor::process` and the bridge RT loop: no allocation
    or freeing, no locks, no logging, no IO, no blocking syscalls except the specified futex wait

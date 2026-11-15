@@ -3,7 +3,7 @@
 - `tokens.json`: all design tokens, the single source of truth. It is the handoff's `tokens.json`
   (`../klang-studio-handoff/`) plus the komponist additions listed below; `komponist-tokens`
   generates its constants from it and rejects keys it does not know.
-- `reference/*.png`: the handoff's `.dc.html` files rendered by `scripts/render-reference.sh`.
+- `device-tokens.json`: the device frame, grid and widget metrics from the device handoff.
 
 ## komponist additions to the handoff tokens
 
@@ -59,7 +59,7 @@ by a contract change when those need them:
 
 ## Knob and fader interaction (owner decision 2026-11-15)
 
-The design system's `ix.knob` / `ix.fader` and `DEVICES-HANDOFF.md` §4 list Alt-click = default and
+The design system's `ix.knob` / `ix.fader` and the device handoff (§4) list Alt-click = default and
 double-click = text entry. komponist deviates for knobs and faders (not for number fields): a
 **double-click resets to the default** (Alt-click still does), text entry is **Enter** on the focused
 control or the right-click menu „Wert eingeben“, and the **mouse wheel over the control** changes

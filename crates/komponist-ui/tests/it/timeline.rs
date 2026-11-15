@@ -3,7 +3,7 @@
 //! - One snapshot per state of the design system: 12 track headers, 12 clips, 11 notes
 //!   (`tests/snapshots/timeline-{header,clip,note}-<state>-{1x,2x}.png`).
 //! - Ruler and grid, and an S01-like arrangement and piano roll from the demo project
-//!   "Nachtfahrt" for the side-by-side check with `design/reference/Screens-01.png`.
+//!   "Nachtfahrt" for the side-by-side check with reference screen S01 (internal notes).
 //! - AccessKit: the gallery cards expose every painted header, clip and note with its German
 //!   name and selection state.
 //! - Pixels: straight note edges are crisp at fractional positions.
