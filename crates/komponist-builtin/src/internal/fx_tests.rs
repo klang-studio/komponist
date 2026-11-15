@@ -3,6 +3,8 @@
 //! block-size independence, no allocation and NaN safety. They drive the [`Dsp`] objects directly
 //! (the `InternalProcessor` around them is covered in `tests`).
 
+#![allow(clippy::needless_range_loop, clippy::type_complexity)]
+
 use assert_no_alloc::assert_no_alloc;
 use komponist_model::params::ParamId;
 use komponist_model::params::eq_curve;

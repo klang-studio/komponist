@@ -20,6 +20,9 @@
 //! changes bend the tail like a moving wall instead of clicking. Recursive state is flushed
 //! below 1e-20 against denormals.
 
+// The loops index several parallel per-line arrays at once.
+#![allow(clippy::needless_range_loop)]
+
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
