@@ -12,8 +12,8 @@ use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, Node, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::views::inspector::model::names;
 use komponist_app::{Action, App, EditAction, UiAction};
+use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipId, Project, Tick, TrackId, edits};
 
@@ -176,57 +176,93 @@ fn clip_of(app: &App, id: ClipId) -> komponist_model::Clip {
 fn the_clip_fields_show_and_change_the_clip() {
     let (app, clip, _) = s01();
     let mut h = harness(app);
-    let c = names::CLIP;
+    let c = de::INSPECTOR_SECTION_CLIP;
     section(&h, c).get_by_role_and_label(Role::Label, "Lead A");
-    section(&h, c).get_by_role_and_label(Role::Label, names::MIDI);
-    assert_eq!(value_in(&h, c, Role::SpinButton, names::START), "9.1.1");
-    assert_eq!(value_in(&h, c, Role::SpinButton, names::LENGTH), "2.0.0");
+    section(&h, c).get_by_role_and_label(Role::Label, de::INSPECTOR_CLIP_MIDI);
     assert_eq!(
-        value_in(&h, c, Role::SpinButton, names::LOOP_LENGTH),
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_START),
+        "9.1.1"
+    );
+    assert_eq!(
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_LENGTH),
         "2.0.0"
     );
-    assert_eq!(value_in(&h, c, Role::SpinButton, names::TRANSPOSE), "0 st");
-    assert_eq!(value_in(&h, c, Role::SpinButton, names::VELOCITY), "+0 %");
-    let looped = section(&h, c).get_by_role_and_label(Role::CheckBox, names::LOOP);
+    assert_eq!(
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_LOOP_LENGTH),
+        "2.0.0"
+    );
+    assert_eq!(
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_TRANSPOSE),
+        "0 st"
+    );
+    assert_eq!(
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_VELOCITY),
+        "+0 %"
+    );
+    let looped = section(&h, c).get_by_role_and_label(Role::CheckBox, de::INSPECTOR_CLIP_LOOP);
     assert_eq!(looped.accesskit_node().toggled(), Some(Toggled::True));
 
     // Start: drag up 16 px = one bar later, one undo step.
-    let start = in_section(&h, c, Role::SpinButton, names::START);
+    let start = in_section(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_START);
     drag(&mut h, start.center(), start.center() - vec2(0.0, 16.0));
     assert_eq!(clip_of(h.state(), clip).start, Tick(9 * BAR));
-    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_CLIP));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Clip ändern"));
     // Länge by text entry; the clip keeps its loop.
-    enter(&mut h, c, Role::SpinButton, names::LENGTH, "4.0.0");
+    enter(
+        &mut h,
+        c,
+        Role::SpinButton,
+        de::INSPECTOR_CLIP_LENGTH,
+        "4.0.0",
+    );
     let now = clip_of(h.state(), clip);
     assert_eq!(
         (now.length, now.loop_length),
         (Tick(4 * BAR), Some(Tick(2 * BAR)))
     );
     // Loop-Länge.
-    enter(&mut h, c, Role::SpinButton, names::LOOP_LENGTH, "1.0.0");
+    enter(
+        &mut h,
+        c,
+        Role::SpinButton,
+        de::INSPECTOR_CLIP_LOOP_LENGTH,
+        "1.0.0",
+    );
     assert_eq!(clip_of(h.state(), clip).loop_length, Some(Tick(BAR)));
     // Transponieren and Velocity.
-    enter(&mut h, c, Role::SpinButton, names::TRANSPOSE, "-5");
+    enter(
+        &mut h,
+        c,
+        Role::SpinButton,
+        de::INSPECTOR_CLIP_TRANSPOSE,
+        "-5",
+    );
     assert_eq!(clip_of(h.state(), clip).transpose, -5);
     assert_eq!(
-        value_in(&h, c, Role::SpinButton, names::TRANSPOSE),
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_TRANSPOSE),
         "\u{2212}5 st"
     );
-    enter(&mut h, c, Role::SpinButton, names::VELOCITY, "20");
+    enter(
+        &mut h,
+        c,
+        Role::SpinButton,
+        de::INSPECTOR_CLIP_VELOCITY,
+        "20",
+    );
     assert_eq!(clip_of(h.state(), clip).velocity_pct, 20);
-    let velocity = in_section(&h, c, Role::SpinButton, names::VELOCITY);
+    let velocity = in_section(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_VELOCITY);
     click_with(&mut h, velocity.center(), Modifiers::ALT);
     assert_eq!(clip_of(h.state(), clip).velocity_pct, 0);
     // Loop off: Loop-Länge is disabled; on again loops the whole clip.
-    click_in(&mut h, c, Role::CheckBox, names::LOOP);
+    click_in(&mut h, c, Role::CheckBox, de::INSPECTOR_CLIP_LOOP);
     assert_eq!(clip_of(h.state(), clip).loop_length, None);
-    let ll = section(&h, c).get_by_role_and_label(Role::SpinButton, names::LOOP_LENGTH);
+    let ll = section(&h, c).get_by_role_and_label(Role::SpinButton, de::INSPECTOR_CLIP_LOOP_LENGTH);
     assert!(ll.accesskit_node().is_disabled());
-    click_in(&mut h, c, Role::CheckBox, names::LOOP);
+    click_in(&mut h, c, Role::CheckBox, de::INSPECTOR_CLIP_LOOP);
     assert_eq!(clip_of(h.state(), clip).loop_length, Some(Tick(4 * BAR)));
     // Rename by double-click on the name.
     double_click_in(&mut h, c, Role::Label, "Lead A");
-    h.get_by_role_and_label(Role::TextInput, names::RENAME)
+    h.get_by_role_and_label(Role::TextInput, de::INSPECTOR_RENAME)
         .type_text("Hook");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
@@ -246,7 +282,8 @@ fn the_takes_of_a_loop_recording_are_listed_and_selectable() {
     app2.dispatch(Action::Ui(UiAction::OpenClip(clip)));
     app = app2;
     let mut h = harness(app);
-    let list = section(&h, names::CLIP).get_by_role_and_label(Role::ListBox, names::TAKES);
+    let list = section(&h, de::INSPECTOR_SECTION_CLIP)
+        .get_by_role_and_label(Role::ListBox, de::INSPECTOR_CLIP_TAKES);
     let rows: Vec<(String, Option<bool>)> = list
         .get_all_by_role(Role::ListBoxOption)
         .map(|n| {
@@ -286,19 +323,28 @@ fn a_step_clip_shows_pattern_resolution_swing_and_always_loops() {
     let beat_b = app.project().tracks[0].clips[2].id;
     app.dispatch(Action::Ui(UiAction::OpenClip(beat_b)));
     let mut h = harness(app);
-    let c = names::CLIP;
-    section(&h, c).get_by_role_and_label(Role::Label, names::STEP);
+    let c = de::INSPECTOR_SECTION_CLIP;
+    section(&h, c).get_by_role_and_label(Role::Label, de::INSPECTOR_CLIP_STEP);
     assert_eq!(
-        value_in(&h, c, Role::SpinButton, names::PATTERN),
+        value_in(&h, c, Role::SpinButton, de::INSPECTOR_CLIP_PATTERN),
         "16 Steps"
     );
-    assert_eq!(value_in(&h, c, Role::ComboBox, names::RESOLUTION), "1/16");
-    let looped = section(&h, c).get_by_role_and_label(Role::CheckBox, names::LOOP);
+    assert_eq!(
+        value_in(&h, c, Role::ComboBox, de::INSPECTOR_CLIP_RESOLUTION),
+        "1/16"
+    );
+    let looped = section(&h, c).get_by_role_and_label(Role::CheckBox, de::INSPECTOR_CLIP_LOOP);
     assert_eq!(looped.accesskit_node().toggled(), Some(Toggled::True));
     assert!(looped.accesskit_node().is_disabled());
-    enter(&mut h, c, Role::SpinButton, names::PATTERN, "32");
-    enter(&mut h, c, Role::SpinButton, names::SWING, "25");
-    choose(&mut h, c, names::RESOLUTION, "1/8");
+    enter(
+        &mut h,
+        c,
+        Role::SpinButton,
+        de::INSPECTOR_CLIP_PATTERN,
+        "32",
+    );
+    enter(&mut h, c, Role::SpinButton, de::INSPECTOR_CLIP_SWING, "25");
+    choose(&mut h, c, de::INSPECTOR_CLIP_RESOLUTION, "1/8");
     let komponist_model::ClipContent::Step(s) = &clip_of(h.state(), beat_b).content else {
         panic!()
     };
@@ -321,8 +367,8 @@ fn the_take_being_recorded_shows_while_recording() {
     assert!(h.state_mut().engine_mut().run_held(48_000, &[], 0));
     h.run_steps(3);
     assert!(h.state().recording().is_some());
-    let c = names::CLIP;
-    section(&h, c).get_by_role_and_label(Role::Label, names::RECORDING);
+    let c = de::INSPECTOR_SECTION_CLIP;
+    section(&h, c).get_by_role_and_label(Role::Label, de::INSPECTOR_CLIP_RECORDING);
     section(&h, c).get_by_role_and_label(Role::Label, "Take 1");
     section(&h, c).get_by_role_and_label(Role::Label, "Noten 0");
     section(&h, c).get_by_role_and_label(Role::Label, "Quantisieren aus");
@@ -335,35 +381,48 @@ fn the_take_being_recorded_shows_while_recording() {
 fn the_track_section_sets_colour_instrument_input_and_channel() {
     let (app, _, lead) = s01();
     let mut h = harness(app);
-    let t = names::TRACK;
+    let t = de::INSPECTOR_SECTION_TRACK;
     section(&h, t).get_by_role_and_label(Role::Label, "3 / 6");
-    let green = names::swatch("Grün");
+    let green = Lang::De.inspector_swatch("Grün");
     let green = section(&h, t).get_by_role_and_label(Role::RadioButton, &green);
     assert_eq!(green.accesskit_node().toggled(), Some(Toggled::True));
-    click_in(&mut h, t, Role::RadioButton, &names::swatch("Rot"));
+    click_in(
+        &mut h,
+        t,
+        Role::RadioButton,
+        &Lang::De.inspector_swatch("Rot"),
+    );
     let track = |app: &App| (**app.project().track(lead).unwrap()).clone();
     assert_eq!(track(h.state()).hue, komponist_model::Hue::RED);
 
-    assert_eq!(value_in(&h, t, Role::ComboBox, names::INSTRUMENT), "hexa");
-    choose(&mut h, t, names::INSTRUMENT, "Surge XT");
+    assert_eq!(
+        value_in(&h, t, Role::ComboBox, de::INSPECTOR_TRACK_INSTRUMENT),
+        "hexa"
+    );
+    choose(&mut h, t, de::INSPECTOR_TRACK_INSTRUMENT, "Surge XT");
     assert_eq!(track(h.state()).channel.devices[0].plugin.name, "Surge XT");
     assert_eq!(
-        value_in(&h, t, Role::ComboBox, names::INPUT),
-        names::ALL_INPUTS
+        value_in(&h, t, Role::ComboBox, de::INSPECTOR_TRACK_INPUT),
+        de::INSPECTOR_TRACK_ALL_INPUTS
     );
-    choose(&mut h, t, names::MIDI_CHANNEL, "3");
+    choose(&mut h, t, de::INSPECTOR_TRACK_MIDI_CHANNEL, "3");
     assert_eq!(
         track(h.state()).midi_channel,
         komponist_model::MidiChannelSel::Channel(2)
     );
-    choose(&mut h, t, names::MIDI_CHANNEL, names::OMNI);
+    choose(
+        &mut h,
+        t,
+        de::INSPECTOR_TRACK_MIDI_CHANNEL,
+        de::INSPECTOR_TRACK_OMNI,
+    );
     assert_eq!(
         track(h.state()).midi_channel,
         komponist_model::MidiChannelSel::Omni
     );
     // Rename.
     double_click_in(&mut h, t, Role::Label, "Lead");
-    h.get_by_role_and_label(Role::TextInput, names::RENAME)
+    h.get_by_role_and_label(Role::TextInput, de::INSPECTOR_RENAME)
         .type_text("Melodie");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
@@ -389,8 +448,8 @@ fn the_devices_list_shows_status_and_opens_bypasses_and_flags_late_blocks() {
         mode: SelectMode::Replace,
     })));
     let mut h = harness(app);
-    let d = names::DEVICES;
-    let row = |name: &str| names::device(name);
+    let d = de::INSPECTOR_SECTION_DEVICES;
+    let row = |name: &str| Lang::De.inspector_device(name);
     assert_eq!(value_in(&h, d, Role::Button, &row("Surge XT")), "CLAP");
     assert_eq!(
         value_in(&h, d, Role::Button, &row("LSP Para EQ x8")),
@@ -398,7 +457,7 @@ fn the_devices_list_shows_status_and_opens_bypasses_and_flags_late_blocks() {
     );
     assert_eq!(
         value_in(&h, d, Role::Button, &row("Dragonfly Hall Reverb")),
-        names::MISSING
+        de::INSPECTOR_DEVICE_MISSING
     );
     // A click opens the window; the power square switches bypass.
     click_in(&mut h, d, Role::Button, &row("Surge XT"));
@@ -426,7 +485,10 @@ fn the_devices_list_shows_status_and_opens_bypasses_and_flags_late_blocks() {
         }));
     late.lock().unwrap().insert(surge, 3);
     h.run_steps(2);
-    assert_eq!(value_in(&h, d, Role::Button, &row("Surge XT")), names::LATE);
+    assert_eq!(
+        value_in(&h, d, Role::Button, &row("Surge XT")),
+        de::LATE_LABEL
+    );
     h.run_steps(140);
     assert_eq!(value_in(&h, d, Role::Button, &row("Surge XT")), "CLAP");
     // "+ Effekt": the add menu below the link, for the inspected track; one undo step.
@@ -438,9 +500,9 @@ fn the_devices_list_shows_status_and_opens_bypasses_and_flags_late_blocks() {
         .channel
         .devices
         .len();
-    click_in(&mut h, d, Role::Link, names::ADD_EFFECT);
+    click_in(&mut h, d, Role::Link, de::INSPECTOR_DEVICES_ADD_EFFECT);
     h.run_steps(3);
-    let search = komponist_app::views::devices::model::names::ADD_SEARCH;
+    let search = de::DEVICES_ADD_SEARCH;
     let field = h.get_by_role_and_label(Role::TextInput, search);
     assert!(field.accesskit_node().is_focused());
     h.event(egui::Event::Text("delay".into()));
@@ -479,8 +541,8 @@ fn the_devices_list_shows_status_and_opens_bypasses_and_flags_late_blocks() {
 fn the_compact_channel_strip_controls_the_track() {
     let (app, _, lead) = s01();
     let mut h = harness(app);
-    let k = names::CHANNEL;
-    let fader = in_section(&h, k, Role::Slider, names::VOLUME);
+    let k = de::INSPECTOR_SECTION_CHANNEL;
+    let fader = in_section(&h, k, Role::Slider, de::INSPECTOR_CHANNEL_VOLUME);
     drag(&mut h, fader.center(), fader.center() + vec2(0.0, 30.0));
     let db = h.state().project().track(lead).unwrap().channel.volume_db;
     assert!(db < -3.5, "{db}");
@@ -489,7 +551,7 @@ fn the_compact_channel_strip_controls_the_track() {
         Role::Label,
         &format!("Lautstärke {}", komponist_ui::widgets::fader::db_text(db)),
     );
-    let knob = in_section(&h, k, Role::Slider, names::PAN);
+    let knob = in_section(&h, k, Role::Slider, de::INSPECTOR_CHANNEL_PAN);
     click_with(&mut h, knob.center(), Modifiers::NONE);
     drag(&mut h, knob.center(), knob.center() + vec2(0.0, 40.0));
     assert!(h.state().project().track(lead).unwrap().channel.pan < -0.2);
@@ -498,7 +560,7 @@ fn the_compact_channel_strip_controls_the_track() {
     click_in(&mut h, k, Role::Button, "Solo");
     assert!(h.state().project().track(lead).unwrap().channel.solo);
     // "im Mixer zeigen": the dock's mixer tab; the channel section steps aside.
-    click_in(&mut h, k, Role::Link, names::SHOW_IN_MIXER);
+    click_in(&mut h, k, Role::Link, de::INSPECTOR_CHANNEL_SHOW_IN_MIXER);
     assert_eq!(
         h.state().ui().layout.dock_tab,
         komponist_app::ui_state::DockTab::Mixer
@@ -512,18 +574,25 @@ fn the_compact_channel_strip_controls_the_track() {
 #[test]
 fn with_nothing_selected_the_project_shows() {
     let mut h = harness(App::headless(demo_project()));
-    let p = names::PROJECT;
+    let p = de::INSPECTOR_SECTION_PROJECT;
     section(&h, p).get_by_role_and_label(Role::Label, "Nachtfahrt");
     assert_eq!(
-        value_in(&h, p, Role::SpinButton, names::TEMPO),
+        value_in(&h, p, Role::SpinButton, de::INSPECTOR_PROJECT_TEMPO),
         "124.00 BPM"
     );
     section(&h, p).get_by_role_and_label(Role::Label, "Taktart 4/4");
     section(&h, p).get_by_role_and_label(Role::Label, "Abtastrate 48 kHz");
     section(&h, p).get_by_role_and_label(Role::Label, "Spuren 6");
     section(&h, p).get_by_role_and_label(Role::Label, "Länge 16 Takte");
-    section(&h, names::SELECTION).get_by_role_and_label(Role::Label, names::NOTHING_SELECTED);
-    enter(&mut h, p, Role::SpinButton, names::TEMPO, "128");
+    section(&h, de::INSPECTOR_SECTION_SELECTION)
+        .get_by_role_and_label(Role::Label, de::INSPECTOR_NOTHING_SELECTED);
+    enter(
+        &mut h,
+        p,
+        Role::SpinButton,
+        de::INSPECTOR_PROJECT_TEMPO,
+        "128",
+    );
     assert_eq!(h.state().project().tempo.bpm, 128.0);
 }
 

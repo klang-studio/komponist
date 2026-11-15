@@ -5,20 +5,19 @@
 
 use std::collections::HashMap;
 
+use komponist_i18n::Lang;
 use komponist_model::DeviceId;
 
 use crate::device_host::DeviceHost;
 
 /// The indicator's text: a device whose blocks recently missed their deadline (not in the design).
-pub const LATE: &str = "zu spät";
+pub fn label(lang: Lang) -> &'static str {
+    lang.late_label()
+}
 
 /// „3 Blöcke zu spät“: the tooltip of the late indicator.
-pub fn late_blocks(n: u64) -> String {
-    if n == 1 {
-        "1 Block zu spät".to_owned()
-    } else {
-        format!("{n} Blöcke zu spät")
-    }
+pub fn late_blocks(lang: Lang, n: u64) -> String {
+    lang.late_blocks(n)
 }
 
 /// How long a device shows "zu spät" after a block missed its deadline.

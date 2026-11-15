@@ -9,6 +9,7 @@ use egui::{
     Align, CursorIcon, Frame, Id, Layout, Margin, Rangef, Rect, Role, Sense, TextEdit, Ui,
     UiBuilder, WidgetInfo, pos2,
 };
+use komponist_i18n::Lang;
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
 use komponist_model::{Project, Track, TrackId, routing};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -24,7 +25,7 @@ use komponist_ui::{fonts, px};
 use super::buses;
 use super::geometry::{Geometry, RowKind, row_height, stored_height};
 use super::{
-    Arrangement, Drag, Rename, click_mode, metrics, names, register, select_clips, select_tracks,
+    Arrangement, Drag, Rename, click_mode, metrics, register, select_clips, select_tracks,
 };
 use crate::actions::{Action, EditAction, SelectMode, UiAction};
 use crate::engine_sync::EngineSync;
@@ -34,22 +35,33 @@ use crate::views::ViewCtx;
 /// The second line of a header and whether it is an error: "stumm durch Solo" while muted by a
 /// solo elsewhere (`any_solo`: the track's output is solo-muted, `routing::gates`); else the instrument ("hexa", "Surge XT · lädt …", "Dexed · aus",
 /// "⚠ Plugin fehlt: Vital"), or "Instrument hierher ziehen" without one.
-pub fn instrument_line(track: &Track, any_solo: bool, engine: &EngineSync) -> (String, bool) {
+pub fn instrument_line(
+    lang: Lang,
+    track: &Track,
+    any_solo: bool,
+    engine: &EngineSync,
+) -> (String, bool) {
     let ch = &track.channel;
     if any_solo && !ch.solo && !ch.mute {
-        return (names::IMPLIED_MUTE.to_owned(), false);
+        return (lang.arrangement_implied_mute().to_owned(), false);
     }
     let Some((_, device)) = ch.instrument() else {
-        return (names::NO_INSTRUMENT.to_owned(), false);
+        return (lang.arrangement_no_instrument().to_owned(), false);
     };
     let name = &device.plugin.name;
     match engine.device_status(device.id) {
-        DeviceStatus::Missing => (names::missing(name), true),
-        DeviceStatus::Crashed(FailReason::Exited { .. }) => (names::crashed(name), true),
-        DeviceStatus::Crashed(FailReason::LoadFailed(_)) => (names::load_failed(name), true),
-        DeviceStatus::Crashed(FailReason::Unresponsive) => (names::unresponsive(name), true),
-        DeviceStatus::Loading => (names::loading(name), false),
-        DeviceStatus::Ok if device.bypass => (names::bypassed(name), false),
+        DeviceStatus::Missing => (lang.arrangement_plugin_missing(name), true),
+        DeviceStatus::Crashed(FailReason::Exited { .. }) => {
+            (lang.arrangement_plugin_crashed(name), true)
+        }
+        DeviceStatus::Crashed(FailReason::LoadFailed(_)) => {
+            (lang.arrangement_plugin_load_failed(name), true)
+        }
+        DeviceStatus::Crashed(FailReason::Unresponsive) => {
+            (lang.arrangement_plugin_unresponsive(name), true)
+        }
+        DeviceStatus::Loading => (lang.arrangement_plugin_loading(name), false),
+        DeviceStatus::Ok if device.bypass => (lang.arrangement_plugin_bypassed(name), false),
         DeviceStatus::Ok => (name.clone(), false),
     }
 }
@@ -110,7 +122,7 @@ impl Arrangement {
                 self.height_grip(ui, ctx, project, g, i, mods.alt);
             }
         }
-        self.section_label(ui, g);
+        self.section_label(ui, ctx.lang, g);
         if let Some(Drag::Reorder { .. }) = self.drag {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         }
@@ -161,7 +173,7 @@ impl Arrangement {
             );
             buses::bus_name_rect(rect, ppp, row.kind)
         } else {
-            let (instrument, error) = instrument_line(track, implied_mute, ctx.engine);
+            let (instrument, error) = instrument_line(ctx.lang, track, implied_mute, ctx.engine);
             if row.depth > 0 {
                 buses::paint_brackets(ui.painter(), project, g, i, &mut self.palettes);
             }
@@ -243,7 +255,7 @@ impl Arrangement {
                 ToggleKind::ALL.into_iter().zip(l.toggles).collect();
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
         }
-        for action in header_meter(ui, ctx.meters, track, l.meter, mods.alt) {
+        for action in header_meter(ui, ctx.lang, ctx.meters, track, l.meter, mods.alt) {
             ctx.send(action);
         }
 
@@ -295,7 +307,7 @@ impl Arrangement {
                 Some(ToggleEvent::Set { value, .. }) => {
                     if !self.toggle_gesture {
                         ctx.send(Action::Edit(EditAction::BeginGesture {
-                            label: "Spuren schalten".to_owned(),
+                            label: "undo-toggle-tracks".to_owned(),
                         }));
                         self.toggle_gesture = true;
                     }
@@ -354,8 +366,9 @@ impl Arrangement {
                 .text_color(color32(color::TEXT_1))
                 .desired_width(rect.width()),
         );
+        let rename_label = ctx.lang.arrangement_rename();
         ui.ctx()
-            .accesskit_node_builder(response.id, |n| n.set_label(names::RENAME));
+            .accesskit_node_builder(response.id, |n| n.set_label(rename_label));
         if rename.fresh {
             // Focus after the field exists: the double-click that opened it would otherwise
             // count as a click elsewhere.
@@ -408,9 +421,9 @@ impl Arrangement {
             Sense::drag(),
         );
         let height = row.y.span();
+        let grip_name = ctx.lang.arrangement_height_grip(&track.name);
         response.widget_info(|| {
-            let mut info =
-                WidgetInfo::labeled(Role::Splitter, true, names::height_grip(&track.name));
+            let mut info = WidgetInfo::labeled(Role::Splitter, true, &grip_name);
             info.value = Some(f64::from(height));
             info
         });
@@ -422,7 +435,7 @@ impl Arrangement {
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         {
             ctx.send(Action::Edit(EditAction::BeginGesture {
-                label: "Spurhöhe".to_owned(),
+                label: "undo-track-height".to_owned(),
             }));
             self.drag = Some(Drag::Height {
                 track: track.id,
@@ -467,6 +480,7 @@ impl Arrangement {
 /// strips, S04). Returns what to dispatch.
 fn header_meter(
     ui: &mut Ui,
+    lang: Lang,
     meters: &mut Meters,
     track: &Track,
     rect: Rect,
@@ -481,7 +495,7 @@ fn header_meter(
     let mut silent = MeterState::new();
     let state = meters.track_mut(track.id).unwrap_or(&mut silent);
     let response = child.add(
-        Meter::new(state, Meters::NO_PEAKS, names::meter(&track.name))
+        Meter::new(state, Meters::NO_PEAKS, lang.arrangement_meter(&track.name))
             .header()
             .length(rect.height()),
     );

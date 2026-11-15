@@ -34,7 +34,7 @@ use komponist_ui::widgets::{self as w, floating};
 use komponist_ui::{fonts, px};
 
 use super::metrics;
-use super::model::{self, names};
+use super::model;
 use crate::actions::{Action, DropTarget, PluginAction};
 use crate::ui_state::BrowserSegment;
 use crate::views::ViewCtx;
@@ -104,6 +104,7 @@ struct Memory {
 fn rows(ctx: &ViewCtx<'_>, query: &str, effects_only: bool) -> Vec<Row> {
     let no_exports: [String; 0] = [];
     picker_rows(
+        ctx.lang,
         &Input {
             catalog: ctx.engine.host().catalog(),
             favorites: &ctx.ui.browser.favorites,
@@ -259,6 +260,7 @@ fn draw(
     choose: &mut Option<PluginRef>,
     by_key: bool,
 ) {
+    let t = ctx.lang;
     let ectx = ui.ctx().clone();
     let width = metrics::ADD_MENU_WIDTH.max(trigger.rect.width());
     let (pos, pivot, max_h) = anchor.place(trigger.rect, ectx.content_rect());
@@ -271,7 +273,7 @@ fn draw(
         .pivot(pivot)
         .constrain(true)
         .accessibility_parent(trigger.id)
-        .accessible_name(names::ADD_DEVICE)
+        .accessible_name(t.devices_add_device())
         .role(Role::Menu)
         .show(&ectx, |ui| {
             w::menu_frame().show(ui, |ui| {
@@ -281,8 +283,8 @@ fn draw(
                 ui.ctx().memory_mut(|m| m.request_focus(field_id));
                 let before = mem.query.clone();
                 ui.add(
-                    TextField::new(&mut mem.query, names::ADD_SEARCH)
-                        .hint(names::ADD_SEARCH)
+                    TextField::new(&mut mem.query, t.devices_add_search())
+                        .hint(t.devices_add_search())
                         .id(field_id),
                 );
                 let listed = rows(ctx, &mem.query, target.master());
@@ -301,6 +303,7 @@ fn draw(
 }
 
 fn list(ui: &mut Ui, rows: &[Row], mem: &mut Memory, choose: &mut Option<PluginRef>, by_key: bool) {
+    let t = komponist_ui::lang(ui.ctx());
     let ppp = ui.pixels_per_point();
     let width = ui.available_width();
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -309,11 +312,11 @@ fn list(ui: &mut Ui, rows: &[Row], mem: &mut Memory, choose: &mut Option<PluginR
         .any(|r| matches!(r.kind, RowKind::Plugin { .. }))
     {
         let (rect, r) = ui.allocate_exact_size(vec2(width, size::MENU_ROW), Sense::hover());
-        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::ADD_NO_MATCH));
+        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, t.devices_add_no_match()));
         let style = typography::UI;
         let g = w::galley(
             ui,
-            names::ADD_NO_MATCH,
+            t.devices_add_no_match(),
             fonts::font_id(&style),
             style.line_height,
         );

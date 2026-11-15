@@ -52,7 +52,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px, state};
 
 use self::frame::Placed;
-use self::model::{Card, Placement, names};
+use self::model::{Card, Placement};
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
@@ -248,6 +248,7 @@ fn header_row(
     cards: &[Card],
     visible: &[bool],
 ) {
+    let t = ctx.lang;
     let ppp = ui.pixels_per_point();
     px::hline(
         ui.painter(),
@@ -283,7 +284,7 @@ fn header_row(
     let button_width = {
         let g = w::galley(
             ui,
-            names::ADD,
+            t.devices_add(),
             fonts::emphasis_font_id(&style),
             style.line_height,
         );
@@ -299,7 +300,7 @@ fn header_row(
             .max_rect(right)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    let add = row.add(Button::new(names::ADD));
+    let add = row.add(Button::new(t.devices_add()));
     add_menu::show(
         ui,
         ctx,
@@ -343,7 +344,7 @@ fn header_row(
             cu.scope_id().with(("chain", card.device.0)),
             Sense::click(),
         );
-        r.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::reveal(&card.name)));
+        r.widget_info(|| WidgetInfo::labeled(Role::Button, true, t.devices_reveal(&card.name)));
         let shown = visible.get(i).copied().unwrap_or(false);
         if shown {
             px::fill(cu.painter(), chip, radius::S, color32(color::SURFACE_3));
@@ -384,6 +385,7 @@ fn chain(
     track: &Track,
     cards: &[Card],
 ) -> (f32, f32) {
+    let t = ctx.lang;
     let body = view.body;
     let pad = metrics::BODY_PAD;
     let gap = metrics::CARD_GAP;
@@ -392,7 +394,7 @@ fn chain(
             .max_rect(body)
             .id_salt(("komponist_device_chain", track.id.0))
             .accessibility_role(Role::Group)
-            .accessibility_label(names::CHAIN),
+            .accessibility_label(t.devices_chain()),
     );
     cu.set_clip_rect(body.intersect(ui.clip_rect()));
     group_bounds(&cu, body);
@@ -490,6 +492,7 @@ fn chain(
 /// A 4 px scrollbar along the bottom (or right) edge of `body`, shown while there is something
 /// to scroll: a `surface.4` thumb, `surface.5` while dragged. Returns the scroll after dragging.
 fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32, max: f32) -> f32 {
+    let t = komponist_ui::lang(ui.ctx());
     if max <= 0.0 {
         return scroll;
     }
@@ -525,9 +528,9 @@ fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32,
             Role::ScrollBar,
             true,
             if vertical {
-                names::SCROLL_V
+                t.devices_scroll_v()
             } else {
-                names::SCROLL_H
+                t.devices_scroll_h()
             },
         )
     });
@@ -553,11 +556,12 @@ fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32,
 /// The drop area after the last card: a dashed `surface.4` frame with a „+“ and the hint. It is
 /// also a button: a click, Enter or Space opens the add menu ([`add_menu`]).
 fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track) {
+    let t = ctx.lang;
     let ppp = ui.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
     let id = ui.scope_id().with("komponist_devices_drop_area");
     let resp = ui.interact(rect, id, Sense::click());
-    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::ADD_DEVICE));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, t.devices_add_device()));
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let open = komponist_ui::widgets::floating::is_open(ui.ctx(), id.with("add_menu"));
     let hot = resp.hovered() || open;
@@ -574,7 +578,7 @@ fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track) {
         komponist_ui::focus::paint_ring(ui.painter(), r, 0.0);
     }
     let style = typography::SMALL;
-    let mut job = fonts::layout_job(names::DROP_HINT, &style, color32(ink));
+    let mut job = fonts::layout_job(t.devices_drop_hint(), &style, color32(ink));
     job.wrap.max_width = rect.width() - 2.0 * metrics::DROP_AREA_PAD;
     job.halign = egui::Align::Center;
     let g = ui.painter().layout_job(job);

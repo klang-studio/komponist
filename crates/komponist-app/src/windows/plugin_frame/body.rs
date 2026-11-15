@@ -125,7 +125,7 @@ fn message(ui: &mut Ui, t: Lang, rect: Rect, msg: Message<'_>) -> bool {
             Some(t.plugin_frame_loading_detail().to_owned()),
         ),
         Message::Crashed(reason) => {
-            let (title, text) = failure_texts(reason);
+            let (title, text) = failure_texts(komponist_ui::lang(ui.ctx()), reason);
             (title.to_owned(), color::STATE_ERROR, Some(text))
         }
         Message::Missing(name) => (t.plugin_frame_missing(name), color::STATE_ERROR, None),

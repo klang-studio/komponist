@@ -9,7 +9,7 @@ use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::dropdown::Dropdown;
 use komponist_ui::{px, widgets as w};
 
-use super::{metrics, names};
+use super::metrics;
 use crate::actions::{Action, GridTarget, UiAction};
 use crate::views::{ViewCtx, grid};
 
@@ -17,14 +17,15 @@ use crate::views::{ViewCtx, grid};
 pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
     ui.spacing_mut().item_spacing = vec2(metrics::TOOL_GAP, 0.0);
     let view = ctx.ui.arrangement;
+    let t = ctx.lang;
 
-    let items = grid::items();
+    let items = grid::items(t);
     let current = grid::index(view.grid);
     let mut selected = current;
     if ui
         .add(
-            Dropdown::new(names::GRID, &mut selected, &items)
-                .label(names::GRID)
+            Dropdown::new(t.view_grid(), &mut selected, &items)
+                .label(t.view_grid())
                 .compact(),
         )
         .changed()
@@ -32,13 +33,13 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
     {
         ctx.send(Action::Ui(UiAction::SetGrid {
             target: GridTarget::Arrangement,
-            grid: grid::GRIDS[selected].0,
+            grid: grid::GRIDS[selected],
         }));
     }
 
     // Icon toggle (owner, 2026-11-15): "Snap" stays the AccessKit name and the tooltip; no
     // shortcut is bound to it, so the tooltip is the name alone.
-    let snap = Button::icon(Icon::Magnet, names::SNAP)
+    let snap = Button::icon(Icon::Magnet, t.view_snap())
         .on(view.snap)
         .compact();
     if ui.add(snap).clicked() {
@@ -54,11 +55,11 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
             })
         };
         for (icon, name, steps) in [
-            (Icon::Plus, names::ZOOM_IN, 1),
-            (Icon::Minus, names::ZOOM_OUT, -1),
+            (Icon::Plus, t.view_zoom_in(), 1),
+            (Icon::Minus, t.view_zoom_out(), -1),
         ] {
             let action = zoom(steps);
-            let shortcut = ctx.keymap.label_for(&action, ctx.lang);
+            let shortcut = ctx.keymap.label_for(&action, t);
             let mut button = Button::icon(icon, name).compact();
             if let Some(sc) = shortcut.as_deref() {
                 button = button.shortcut(sc);
@@ -92,7 +93,7 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
                 .collect();
             info(ui, &ctx.lang.record_info(tracks.join(", ")));
         } else if n > 0 {
-            info(ui, &names::clips_selected(n));
+            info(ui, &t.status_clips_selected(n));
         }
     });
 }

@@ -61,130 +61,26 @@ use crate::actions::{Action, DropTarget, EditAction, PluginAction};
 use crate::metrics::arrangement::{PX_PER_BAR_MAX, PX_PER_BAR_MIN, V_ZOOM};
 use crate::ui_state::ArrangementView;
 
-/// Accessible names and texts of the arrangement (German, from the screens).
-pub mod names {
-    /// The ruler (`komponist_ui::timeline::ruler_access`).
-    pub const RULER: &str = "Lineal";
-    /// The grid dropdown in the panel header.
-    pub const GRID: &str = "Raster";
-    /// The snap toggle in the panel header.
-    pub const SNAP: &str = "Snap";
-    /// The "−" in the panel header.
-    pub const ZOOM_OUT: &str = "Herauszoomen";
-    /// The "+" in the panel header.
-    pub const ZOOM_IN: &str = "Hineinzoomen";
-    /// The area below the tracks.
-    pub const NEW_TRACK: &str = "Neue Spur";
-    /// Accessible name of the box, which opens the dialog for new tracks.
-    pub const NEW_TRACK_BUTTON: &str = "Neue Spur …";
-    /// Its hint, before the shortcut of a new MIDI track ("… oder Strg T").
-    pub const NEW_TRACK_HINT: &str = "Instrument hierher ziehen oder";
-    /// S10: title of the empty-project hint.
-    pub const EMPTY_TITLE: &str = "Leeres Projekt";
-    /// S10: its text.
-    pub const EMPTY_TEXT: &str = "Ziehe ein Instrument aus dem Browser hierher. Das legt eine \
-                                  MIDI-Spur mit diesem Instrument an.";
-    /// S10: the primary action.
-    pub const ADD_MIDI_TRACK: &str = "MIDI-Spur hinzufügen";
-    /// S10: the secondary action.
-    pub const OPEN_PROJECT: &str = "Projekt öffnen";
-    /// The text field of a track being renamed.
-    pub const RENAME: &str = "Spurname";
-    /// Instrument line of a track without instrument (design system `headers`).
-    pub const NO_INSTRUMENT: &str = "Instrument hierher ziehen";
-    /// Instrument line of a track muted by a solo elsewhere.
-    pub const IMPLIED_MUTE: &str = "stumm durch Solo";
-    /// Name of a new MIDI clip from a double-click (prototype `newClip`).
-    pub const NEW_MIDI_CLIP: &str = "MIDI-Clip";
-
-    /// "Spurhöhe · Lead": the bottom edge of a header.
-    pub fn height_grip(track: &str) -> String {
-        format!("Spurhöhe · {track}")
+/// The count box: "6 Spuren", with buses "8 Spuren · 1 Gruppe · 2 Busse" (`05-arrangement`).
+/// Groups and effect buses are not counted as tracks.
+pub fn count_line(lang: komponist_i18n::Lang, project: &komponist_model::Project) -> String {
+    let groups = project.tracks.iter().filter(|t| t.is_group()).count();
+    let buses = project
+        .tracks
+        .iter()
+        .filter(|t| t.is_bus() && !t.folder)
+        .count();
+    let tracks = project.tracks.len() - groups - buses;
+    let mut line = lang.arrangement_count_tracks(tracks);
+    if groups > 0 {
+        line.push_str(" · ");
+        line.push_str(&lang.arrangement_count_groups(groups));
     }
-
-    /// "Pegel Lead": the header meter.
-    pub fn meter(track: &str) -> String {
-        format!("Pegel {track}")
+    if buses > 0 {
+        line.push_str(" · ");
+        line.push_str(&lang.arrangement_count_buses(buses));
     }
-
-    /// "⚠ Plugin fehlt: Vital" (design system `headers`, "plugin fehlt").
-    pub fn missing(plugin: &str) -> String {
-        format!("⚠ Plugin fehlt: {plugin}")
-    }
-
-    /// "⚠ Plugin abgestürzt: Vital" (by analogy with "Plugin fehlt"; S05 "abgestürzt").
-    pub fn crashed(plugin: &str) -> String {
-        format!("⚠ Plugin abgestürzt: {plugin}")
-    }
-
-    /// "⚠ Plugin lässt sich nicht laden: Vital": loading failed, no crash (as the status bar).
-    pub fn load_failed(plugin: &str) -> String {
-        format!("⚠ Plugin lässt sich nicht laden: {plugin}")
-    }
-
-    /// "⚠ Plugin hängt: Vital": the plugin stopped answering, no crash (as the status bar).
-    pub fn unresponsive(plugin: &str) -> String {
-        format!("⚠ Plugin hängt: {plugin}")
-    }
-
-    /// "Surge XT · lädt …" (prototype `arrView`).
-    pub fn loading(plugin: &str) -> String {
-        format!("{plugin} · lädt …")
-    }
-
-    /// "Dexed · aus": the instrument is bypassed (prototype `arrView`).
-    pub fn bypassed(plugin: &str) -> String {
-        format!("{plugin} · aus")
-    }
-
-    /// "Pattern 3": a new step clip on a sampler track (prototype `newClip`).
-    pub fn pattern(n: usize) -> String {
-        format!("Pattern {n}")
-    }
-
-    /// "6 Spuren", "1 Spur" (prototype `arrView` `count`).
-    pub fn track_count(n: usize) -> String {
-        if n == 1 {
-            "1 Spur".to_owned()
-        } else {
-            format!("{n} Spuren")
-        }
-    }
-
-    /// The count box: "6 Spuren", with buses "8 Spuren · 1 Gruppe · 2 Busse" (`05-arrangement`).
-    /// Groups and effect buses are not counted as tracks.
-    pub fn count_line(project: &komponist_model::Project) -> String {
-        let groups = project.tracks.iter().filter(|t| t.is_group()).count();
-        let buses = project
-            .tracks
-            .iter()
-            .filter(|t| t.is_bus() && !t.folder)
-            .count();
-        let tracks = project.tracks.len() - groups - buses;
-        let mut line = track_count(tracks);
-        if groups > 0 {
-            line.push_str(&format!(
-                " · {groups} {}",
-                if groups == 1 { "Gruppe" } else { "Gruppen" }
-            ));
-        }
-        if buses > 0 {
-            line.push_str(&format!(
-                " · {buses} {}",
-                if buses == 1 { "Bus" } else { "Busse" }
-            ));
-        }
-        line
-    }
-
-    /// "1 Clip ausgewählt", "3 Clips ausgewählt" (S01 `info`).
-    pub fn clips_selected(n: usize) -> String {
-        if n == 1 {
-            "1 Clip ausgewählt".to_owned()
-        } else {
-            format!("{n} Clips ausgewählt")
-        }
-    }
+    line
 }
 
 /// What the pointer is dragging.
@@ -527,7 +423,7 @@ impl Arrangement {
                 tracks,
                 onto: Some(bus),
                 ..
-            } => match super::routing::output_drop(ctx.project, &tracks, bus) {
+            } => match super::routing::output_drop(ctx.lang, ctx.project, &tracks, bus) {
                 super::routing::OutputDrop::Set => {
                     ctx.send(Action::Edit(EditAction::SetOutput {
                         tracks,
@@ -588,7 +484,7 @@ impl Arrangement {
                     egui::Id::unique("komponist_arrangement_effects_only"),
                     r,
                     komponist_ui::tooltip::Placement::Above,
-                    super::routing::names::EFFECTS_ONLY,
+                    ctx.lang.routing_effects_only(),
                 );
             }
             return;
@@ -752,9 +648,17 @@ mod tests {
 
     #[test]
     fn names_and_grids() {
-        assert_eq!(names::track_count(0), "0 Spuren");
-        assert_eq!(names::track_count(1), "1 Spur");
-        assert_eq!(names::clips_selected(2), "2 Clips ausgewählt");
-        assert_eq!(names::missing("Vital"), "⚠ Plugin fehlt: Vital");
+        use komponist_i18n::Lang;
+        assert_eq!(Lang::De.arrangement_count_tracks(0), "0 Spuren");
+        assert_eq!(Lang::De.arrangement_count_tracks(1), "1 Spur");
+        assert_eq!(Lang::De.status_clips_selected(2), "2 Clips ausgewählt");
+        assert_eq!(
+            Lang::De.arrangement_plugin_missing("Vital"),
+            "⚠ Plugin fehlt: Vital"
+        );
+        assert_eq!(
+            count_line(Lang::De, &demo_project()),
+            Lang::De.arrangement_count_tracks(demo_project().tracks.len())
+        );
     }
 }

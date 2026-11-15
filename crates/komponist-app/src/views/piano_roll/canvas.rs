@@ -30,7 +30,9 @@ use egui::{
     Color32, CursorIcon, Event, Id, Key, Mesh, Modifiers, PointerButton, Pos2, Rect, Response,
     Sense, Shape, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::edits::{NewNote, VelocityChange};
+use komponist_model::format::note_name;
 use komponist_model::{Clip, Grid, Meter, Note, NoteId, Tick, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, typography};
@@ -43,7 +45,7 @@ use komponist_ui::{fonts, px};
 
 use super::edit::{self, Snap};
 use super::geometry::Geometry;
-use super::{PianoRoll, metrics as m, names};
+use super::{PianoRoll, VELOCITY_MAX, metrics as m};
 use crate::actions::{Action, EditAction, SelectMode, SelectionChange, TransportAction, UiAction};
 use crate::ui_state::Tool;
 use crate::views::ViewCtx;
@@ -290,8 +292,9 @@ impl PianoRoll {
         self.paint_ruler(&painter, f);
         self.paint_keys(&painter, f);
         let hovered = self.hovered_note(f, &grid, p);
-        let visible = self.paint_grid(&painter, f, hovered);
-        self.paint_lane(&painter, f);
+        let t = ctx.lang;
+        let visible = self.paint_grid(t, &painter, f, hovered);
+        self.paint_lane(t, &painter, f);
         self.tooltips(ui, f);
 
         let model = ruler_model(f);
@@ -486,9 +489,9 @@ impl PianoRoll {
                     }
                     d.last = (delta, pitch_delta);
                     let label = if d.copy {
-                        "Noten kopieren"
+                        "undo-copy-notes"
                     } else {
-                        "Noten verschieben"
+                        "undo-move-notes"
                     };
                     begin(ctx, &mut d.begun, label);
                     let notes = d.notes.clone();
@@ -514,7 +517,7 @@ impl PianoRoll {
                 let delta = edit::resized_length(d.length, dx, snap) - d.length;
                 if delta != d.last {
                     d.last = delta;
-                    begin(ctx, &mut d.begun, "Noten-Länge");
+                    begin(ctx, &mut d.begun, "undo-note-length");
                     ctx.send(Action::Edit(EditAction::ResizeNotes {
                         clip,
                         notes: d.notes.clone(),
@@ -526,7 +529,7 @@ impl PianoRoll {
                 let offset = edit::velocity_offset(at.y - d.anchor_y);
                 if offset != d.last {
                     d.last = offset;
-                    begin(ctx, &mut d.begun, "Velocity");
+                    begin(ctx, &mut d.begun, "undo-velocity");
                     ctx.send(Action::Edit(EditAction::SetNotesVelocity {
                         clip,
                         notes: d.notes.clone(),
@@ -534,7 +537,7 @@ impl PianoRoll {
                     }));
                     if let Some(n) = f.notes.iter().find(|n| d.notes.contains(&n.id)) {
                         let v = (i16::from(n.velocity) + offset).clamp(1, 127);
-                        status(ctx, format!("Velocity {v}"));
+                        status(ctx, ctx.lang.piano_roll_velocity_status(v));
                     }
                 }
             }
@@ -546,7 +549,7 @@ impl PianoRoll {
                 if let Some(hit) = edit::hit_note(f.notes, f.window.clone(), &f.geo, at) {
                     let id = f.notes[hit.index].id;
                     if erased.insert(id) {
-                        begin(ctx, begun, "Noten löschen");
+                        begin(ctx, begun, "undo-delete-notes");
                         ctx.send(Action::Edit(EditAction::RemoveNotes {
                             clip,
                             notes: vec![id],
@@ -579,13 +582,13 @@ impl PianoRoll {
                     let v = edit::lane_velocity(lane.bottom() - m::VELOCITY_BOTTOM - at.y);
                     let next = (targets, v);
                     if !next.0.is_empty() && last.as_ref() != Some(&next) {
-                        begin(ctx, begun, "Velocity");
+                        begin(ctx, begun, "undo-velocity");
                         ctx.send(Action::Edit(EditAction::SetNotesVelocity {
                             clip,
                             notes: next.0.clone(),
                             change: VelocityChange::Set(v),
                         }));
-                        status(ctx, format!("Velocity {v}"));
+                        status(ctx, ctx.lang.piano_roll_velocity_status(v));
                         *last = Some(next);
                     }
                 }
@@ -699,7 +702,7 @@ impl PianoRoll {
         match edit::extended_length(f.clip, note.start + note.length, f.meter) {
             Some(length) => {
                 ctx.send(Action::Edit(EditAction::BeginGesture {
-                    label: "Note setzen".to_owned(),
+                    label: "undo-set-note".to_owned(),
                 }));
                 ctx.send(add);
                 ctx.send(Action::Edit(EditAction::SetClipLength {
@@ -875,6 +878,7 @@ impl PianoRoll {
     /// AccessKit nodes.
     fn paint_grid(
         &self,
+        t: Lang,
         painter: &egui::Painter,
         f: &Frame<'_>,
         hovered: Option<NoteId>,
@@ -975,7 +979,7 @@ impl PianoRoll {
         self.paint_playhead(&painter, f, g.grid);
         if f.notes.is_empty() && !f.live && !matches!(self.gesture, Some(Gesture::Pencil(_))) {
             let galley = painter.layout_job(fonts::layout_job(
-                names::EMPTY_HINT,
+                t.piano_roll_empty_hint(),
                 &typography::UI,
                 color32(color::TEXT_3),
             ));
@@ -1013,7 +1017,7 @@ impl PianoRoll {
         }
     }
 
-    fn paint_lane(&self, painter: &egui::Painter, f: &Frame<'_>) {
+    fn paint_lane(&self, t: Lang, painter: &egui::Painter, f: &Frame<'_>) {
         let (Some(label), Some(lane)) = (f.geo.lane_label, f.geo.lane) else {
             return;
         };
@@ -1029,7 +1033,7 @@ impl PianoRoll {
         );
         let pad = m::VELOCITY_LABEL_PAD;
         let top = painter.layout_job(fonts::layout_job(
-            names::VELOCITY_KEY,
+            t.piano_roll_velocity_key(),
             &typography::LABEL,
             color32(color::TEXT_3),
         ));
@@ -1039,7 +1043,7 @@ impl PianoRoll {
             Color32::PLACEHOLDER,
         );
         let max = painter.layout_job(fonts::layout_job(
-            names::VELOCITY_MAX,
+            VELOCITY_MAX,
             &typography::VALUE_S,
             color32(color::TEXT_4),
         ));
@@ -1121,13 +1125,14 @@ impl PianoRoll {
     /// AccessKit nodes: the keyboard with its visible keys, the grid with its visible notes
     /// ("Note C4, 9.1.000"), the velocity lane, the empty-clip hint.
     fn access(&self, ui: &mut Ui, f: &Frame<'_>, visible: &[(usize, Rect, NoteState)]) {
+        let t = komponist_ui::lang(ui.ctx());
         let g = &f.geo;
         let mut keys = ui.new_child(
             UiBuilder::new()
                 .max_rect(g.keys)
                 .id_salt("komponist_piano_roll_keys")
                 .accessibility_role(Role::Group)
-                .accessibility_label(names::KEYBOARD),
+                .accessibility_label(t.piano_roll_keyboard()),
         );
         if !ui.ctx().has_accesskit_node(keys.unique_id()) {
             return;
@@ -1145,7 +1150,7 @@ impl PianoRoll {
                 base_id("key").with(pitch),
                 r,
                 Role::Button,
-                &names::key(pitch),
+                &t.piano_roll_key(note_name(pitch)),
                 None,
             );
         }
@@ -1155,7 +1160,7 @@ impl PianoRoll {
                 .max_rect(g.grid)
                 .id_salt("komponist_piano_roll_notes")
                 .accessibility_role(Role::Grid)
-                .accessibility_label(names::NOTES),
+                .accessibility_label(t.piano_roll_notes()),
         );
         group_bounds(&notes, g.grid);
         for (i, rect, state) in visible.iter().take(m::MAX_NOTE_NODES) {
@@ -1178,7 +1183,7 @@ impl PianoRoll {
         }
         if f.notes.is_empty() && !f.live {
             let galley = notes.painter().layout_job(fonts::layout_job(
-                names::EMPTY_HINT,
+                t.piano_roll_empty_hint(),
                 &typography::UI,
                 Color32::PLACEHOLDER,
             ));
@@ -1188,7 +1193,7 @@ impl PianoRoll {
                 base_id("empty"),
                 r,
                 Role::Label,
-                names::EMPTY_HINT,
+                t.piano_roll_empty_hint(),
                 None,
             );
         }
@@ -1199,7 +1204,7 @@ impl PianoRoll {
                     .max_rect(lane)
                     .id_salt("komponist_piano_roll_lane")
                     .accessibility_role(Role::Group)
-                    .accessibility_label(names::VELOCITY_LANE),
+                    .accessibility_label(t.piano_roll_velocity_lane()),
             );
             group_bounds(&group, lane);
         }

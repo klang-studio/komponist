@@ -198,6 +198,36 @@ pub fn format_tag(format: PluginFormat) -> &'static str {
     }
 }
 
+/// The name of track hue `index` (0 ..= 13, the order of `komponist_tokens::track::HUES`) in `lang`.
+pub fn hue_name(lang: Lang, index: usize) -> &'static str {
+    [
+        lang.hue_red(),
+        lang.hue_vermilion(),
+        lang.hue_orange(),
+        lang.hue_yellow(),
+        lang.hue_lime(),
+        lang.hue_green(),
+        lang.hue_emerald(),
+        lang.hue_teal(),
+        lang.hue_cyan(),
+        lang.hue_blue(),
+        lang.hue_indigo(),
+        lang.hue_violet(),
+        lang.hue_magenta(),
+        lang.hue_pink(),
+    ][index]
+}
+
+/// The 14 track colours as swatches with their names in `lang` (the UI crate's
+/// [`widgets::context_menu::track_swatches`] carries German names).
+pub fn hue_swatches(lang: Lang) -> [widgets::context_menu::Swatch<'static>; 14] {
+    let mut swatches = widgets::context_menu::track_swatches();
+    for (i, swatch) in swatches.iter_mut().enumerate() {
+        swatch.name = hue_name(lang, i);
+    }
+    swatches
+}
+
 /// `text` on one line in `font`, cut with "…" to at most `max_width` (CSS `text-overflow:
 /// ellipsis`); colour [`Color32::PLACEHOLDER`] (the painter's colour applies).
 pub fn elided_galley(

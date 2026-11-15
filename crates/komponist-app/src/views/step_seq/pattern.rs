@@ -15,20 +15,32 @@
 //! Painting stays in the row the press started in ("mehrere Steps in einer Zeile malen").
 
 use komponist_engine::TransportState;
+use komponist_i18n::Lang;
 use komponist_model::edits::StepProp;
 use komponist_model::{Step, StepClip, StepResolution, Tick};
 
 use super::metrics::DRAG_THRESHOLD;
 use crate::ui_state::StepLane;
 
-/// The "Auflösung" entries in list order, with their labels.
-pub const RESOLUTIONS: [(StepResolution, &str); 5] = [
-    (StepResolution::Eighth, "1/8"),
-    (StepResolution::Sixteenth, "1/16"),
-    (StepResolution::ThirtySecond, "1/32"),
-    (StepResolution::EighthTriplet, "1/8 Triole"),
-    (StepResolution::SixteenthTriplet, "1/16 Triole"),
+/// The "Auflösung" entries in list order.
+pub const RESOLUTIONS: [StepResolution; 5] = [
+    StepResolution::Eighth,
+    StepResolution::Sixteenth,
+    StepResolution::ThirtySecond,
+    StepResolution::EighthTriplet,
+    StepResolution::SixteenthTriplet,
 ];
+
+/// The label of a resolution entry ("1/16", "1/8 Triole"; "1/8 Triplet").
+pub fn resolution_label(lang: Lang, resolution: StepResolution) -> &'static str {
+    match resolution {
+        StepResolution::Eighth => lang.grid_eighth(),
+        StepResolution::Sixteenth => lang.grid_sixteenth(),
+        StepResolution::ThirtySecond => lang.grid_thirty_second(),
+        StepResolution::EighthTriplet => lang.grid_eighth_triplet(),
+        StepResolution::SixteenthTriplet => lang.grid_sixteenth_triplet(),
+    }
+}
 
 /// The probabilities Alt-click cycles through (`stepDown`: `o=[100,75,50,25]`).
 pub const PROBABILITY_CYCLE: [u8; 4] = [100, 75, 50, 25];
@@ -37,7 +49,7 @@ pub const PROBABILITY_CYCLE: [u8; 4] = [100, 75, 50, 25];
 pub fn resolution_index(resolution: StepResolution) -> usize {
     RESOLUTIONS
         .iter()
-        .position(|(r, _)| *r == resolution)
+        .position(|r| *r == resolution)
         .unwrap_or(1)
 }
 
@@ -113,27 +125,27 @@ pub fn changes(step: &Step, prop: StepProp) -> bool {
 
 /// The status bar text of a step change the prototype announces: "Velocity 52", "Ratchet ×3",
 /// "Wahrscheinlichkeit 50 %"; none for switching a step on or off.
-pub fn status_text(prop: StepProp) -> Option<String> {
+pub fn status_text(lang: Lang, prop: StepProp) -> Option<String> {
     match prop {
         StepProp::On(_) => None,
-        StepProp::Velocity(v) => Some(format!("Velocity {v}")),
-        StepProp::Probability(p) => Some(format!("Wahrscheinlichkeit {p} %")),
-        StepProp::Ratchet(r) => Some(format!("Ratchet ×{r}")),
+        StepProp::Velocity(v) => Some(lang.step_seq_status_velocity(v)),
+        StepProp::Probability(p) => Some(lang.step_seq_status_probability(p)),
+        StepProp::Ratchet(r) => Some(lang.step_seq_status_ratchet(r)),
     }
 }
 
 /// The accessible name of a step: "Step 5, Kick, an, Velocity 100", with ", Wahrscheinlichkeit
 /// 50 %" and ", Ratchet 3" where they differ from the default; "Step 5, Kick, aus".
-pub fn step_name(index: usize, row: &str, step: &Step) -> String {
+pub fn step_name(lang: Lang, index: usize, row: &str, step: &Step) -> String {
     if !step.on {
-        return format!("Step {}, {row}, aus", index + 1);
+        return lang.step_seq_step_off(index + 1, row);
     }
-    let mut name = format!("Step {}, {row}, an, Velocity {}", index + 1, step.velocity);
+    let mut name = lang.step_seq_step_on(index + 1, row, step.velocity);
     if step.probability < 100 {
-        name.push_str(&format!(", Wahrscheinlichkeit {} %", step.probability));
+        name.push_str(&lang.step_seq_step_probability(step.probability));
     }
     if step.ratchet > 1 {
-        name.push_str(&format!(", Ratchet {}", step.ratchet));
+        name.push_str(&lang.step_seq_step_ratchet(step.ratchet));
     }
     name
 }
@@ -355,9 +367,9 @@ impl Gesture {
     /// The undo label of the gesture.
     pub fn label(&self) -> &'static str {
         match self {
-            Gesture::Probability { .. } => "Wahrscheinlichkeit",
-            Gesture::Velocity { .. } => "Velocity",
-            _ => "Steps",
+            Gesture::Probability { .. } => "undo-probability",
+            Gesture::Velocity { .. } => "undo-velocity",
+            _ => "undo-steps",
         }
     }
 }
@@ -429,7 +441,10 @@ mod tests {
         assert_eq!(swing_percent(0.12), 12);
         assert_eq!(resolution_index(StepResolution::Sixteenth), 1);
         assert_eq!(
-            RESOLUTIONS[resolution_index(StepResolution::SixteenthTriplet)].1,
+            resolution_label(
+                Lang::De,
+                RESOLUTIONS[resolution_index(StepResolution::SixteenthTriplet)]
+            ),
             "1/16 Triole"
         );
     }
@@ -459,11 +474,11 @@ mod tests {
     #[test]
     fn step_names_read_the_state() {
         assert_eq!(
-            step_name(4, "Kick", &on(100)),
+            step_name(Lang::De, 4, "Kick", &on(100)),
             "Step 5, Kick, an, Velocity 100"
         );
         assert_eq!(
-            step_name(0, "Snare", &Step::default()),
+            step_name(Lang::De, 0, "Snare", &Step::default()),
             "Step 1, Snare, aus"
         );
         let s = Step {
@@ -472,7 +487,7 @@ mod tests {
             ..on(52)
         };
         assert_eq!(
-            step_name(10, "Hat zu", &s),
+            step_name(Lang::De, 10, "Hat zu", &s),
             "Step 11, Hat zu, an, Velocity 52, Wahrscheinlichkeit 50 %, Ratchet 3"
         );
     }

@@ -3,6 +3,7 @@
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, Id, Painter, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_model::{Project, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
@@ -12,7 +13,7 @@ use komponist_ui::widgets::metrics as wm;
 use komponist_ui::{focus, fonts, px, widgets as w};
 
 use super::geometry::Geometry;
-use super::{Arrangement, Drag, metrics, names};
+use super::{Arrangement, Drag, metrics};
 use crate::actions::{Action, DropTarget, EditAction, ProjectAction, UiAction};
 use crate::views::ViewCtx;
 
@@ -33,7 +34,8 @@ impl Arrangement {
             .keymap
             .label_for(&Action::Edit(EditAction::NewMidiTrack), ctx.lang)
             .unwrap_or_default();
-        let hint = format!("{} {shortcut}", names::NEW_TRACK_HINT);
+        let t = ctx.lang;
+        let hint = t.arrangement_new_track_hint(&shortcut);
         let hint = hint.trim_end();
 
         let inset = metrics::NEW_TRACK_BOX_INSET;
@@ -47,7 +49,9 @@ impl Arrangement {
         );
         let id = ui.scope_id().with("komponist_arrangement_new_track");
         let response = ui.interact(boxed, id, Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::NEW_TRACK_BUTTON));
+        response.widget_info(|| {
+            WidgetInfo::labeled(Role::Button, true, t.arrangement_new_track_button())
+        });
         w::accesskit(&response, |n| n.set_description(hint));
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         let hot = response.hovered() || response.is_pointer_button_down_on();
@@ -67,7 +71,7 @@ impl Arrangement {
         let mut y = px::snap(left.top() + pad_y, ppp);
         let title_ink = if hot { color::TEXT_1 } else { color::TEXT_2 };
         for (text, style, c) in [
-            (names::NEW_TRACK, typography::UI, title_ink),
+            (t.arrangement_new_track(), typography::UI, title_ink),
             (hint, typography::SMALL, ink),
         ] {
             let galley = w::styled_galley(ui, text, &style);
@@ -84,7 +88,7 @@ impl Arrangement {
     pub(super) fn overlays(
         &mut self,
         ui: &mut Ui,
-        _ctx: &mut ViewCtx<'_>,
+        ctx: &mut ViewCtx<'_>,
         project: &Project,
         g: &Geometry,
     ) {
@@ -96,7 +100,7 @@ impl Arrangement {
                 tracks,
                 onto: Some(bus),
                 ..
-            }) => self.paint_output_drop(ui, project, g, tracks, *bus),
+            }) => self.paint_output_drop(ui, ctx.lang, project, g, tracks, *bus),
             _ => {}
         }
     }
@@ -107,6 +111,7 @@ impl Arrangement {
     fn paint_output_drop(
         &self,
         ui: &Ui,
+        lang: Lang,
         project: &Project,
         g: &Geometry,
         tracks: &[TrackId],
@@ -115,7 +120,7 @@ impl Arrangement {
         let Some(i) = g.rows.iter().position(|r| r.track == bus) else {
             return;
         };
-        match crate::views::routing::output_drop(project, tracks, bus) {
+        match crate::views::routing::output_drop(lang, project, tracks, bus) {
             crate::views::routing::OutputDrop::Set => {
                 px::inner_border(ui.painter(), g.header(i), color32(color::ACCENT));
             }
@@ -144,9 +149,10 @@ impl Arrangement {
         if width <= 0.0 {
             return;
         }
-        let title = w::styled_galley(ui, names::EMPTY_TITLE, &typography::TITLE);
+        let t = ctx.lang;
+        let title = w::styled_galley(ui, t.arrangement_empty_title(), &typography::TITLE);
         let mut job = LayoutJob::single_section(
-            names::EMPTY_TEXT.to_owned(),
+            t.arrangement_empty_text().to_owned(),
             TextFormat {
                 font_id: fonts::font_id(&typography::BODY),
                 line_height: Some(typography::BODY.line_height),
@@ -172,12 +178,12 @@ impl Arrangement {
         let title_rect = Rect::from_min_size(pos2(x, y), title.size());
         ui.painter()
             .galley(title_rect.min, title, color32(color::TEXT_1));
-        label_node(ui, title_rect, names::EMPTY_TITLE);
+        label_node(ui, title_rect, t.arrangement_empty_title());
         y = px::snap(title_rect.bottom() + gap, ppp);
         let text_rect = Rect::from_min_size(pos2(x, y), text.size());
         ui.painter()
             .galley(text_rect.min, text, Color32::PLACEHOLDER);
-        label_node(ui, text_rect, names::EMPTY_TEXT);
+        label_node(ui, text_rect, t.arrangement_empty_text());
         y = px::snap(text_rect.bottom() + gap + metrics::EMPTY_BUTTONS_TOP, ppp);
 
         let shortcut = ctx
@@ -186,7 +192,7 @@ impl Arrangement {
         let add = hint_button(
             ui,
             pos2(x, y),
-            names::ADD_MIDI_TRACK,
+            t.arrangement_add_midi_track(),
             shortcut.as_deref(),
             Kind::Primary,
         );
@@ -196,7 +202,7 @@ impl Arrangement {
         let open = hint_button(
             ui,
             pos2(add.rect.right() + metrics::EMPTY_BUTTON_GAP, y),
-            names::OPEN_PROJECT,
+            t.arrangement_open_project(),
             None,
             Kind::Secondary,
         );

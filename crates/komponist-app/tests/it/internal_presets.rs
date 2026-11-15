@@ -10,11 +10,11 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
-use komponist_app::views::devices::model::names;
 use komponist_app::{
     Action, App, EditAction, PluginAction, ProjectAction, TransportAction, UiAction,
 };
 use komponist_builtin::Internal;
+use komponist_i18n::{Lang, de};
 use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, Project, TrackId};
 
@@ -88,7 +88,7 @@ fn set_param(app: &mut App, device: DeviceId, kind: Internal, key: &str, value: 
 
 fn card<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::Node<'h> {
     // Test code: leaking the name keeps the node's borrow simple.
-    let label: &'static str = Box::leak(names::card(kind.name()).into_boxed_str());
+    let label: &'static str = Box::leak(Lang::De.devices_card(kind.name()).into_boxed_str());
     h.get_by_role_and_label(Role::Group, label)
 }
 
@@ -99,7 +99,7 @@ fn preset_button<'h>(h: &'h Harness<'_, App>, kind: Internal) -> egui_kittest::N
         .find(|b| {
             b.accesskit_node()
                 .label()
-                .is_some_and(|l| l.starts_with(names::PRESET))
+                .is_some_and(|l| l.starts_with(de::DEVICES_PRESET))
         })
         .expect("a preset button")
 }
@@ -213,12 +213,12 @@ fn the_dropdown_shows_the_loaded_preset_and_a_star_while_a_value_differs() {
     // No preset yet: „Preset“.
     assert_eq!(
         preset_button(&h, kind).accesskit_node().label().as_deref(),
-        Some(names::PRESET)
+        Some(de::DEVICES_PRESET)
     );
     open_menu(&mut h, kind);
     pick(&mut h, "Slapback");
     assert_eq!(loaded(h.state(), kind, device), Some((0, false)));
-    let label = names::preset("Slapback");
+    let label = Lang::De.devices_preset_name("Slapback");
     assert_eq!(
         preset_button(&h, kind).accesskit_node().label().as_deref(),
         Some(label.as_str())
@@ -227,7 +227,7 @@ fn the_dropdown_shows_the_loaded_preset_and_a_star_while_a_value_differs() {
     // A changed value: „ *“.
     set_param(h.state_mut(), device, kind, "mix", 0.9);
     h.run_steps(3);
-    let starred = names::preset("Slapback *");
+    let starred = Lang::De.devices_preset_name("Slapback *");
     assert_eq!(
         preset_button(&h, kind).accesskit_node().label().as_deref(),
         Some(starred.as_str())
@@ -307,7 +307,7 @@ fn volt_groups_its_presets_by_category_and_the_sampler_has_no_dropdown() {
             .any(|b| b
                 .accesskit_node()
                 .label()
-                .is_some_and(|l| l.starts_with(names::PRESET)))
+                .is_some_and(|l| l.starts_with(de::DEVICES_PRESET)))
     );
 }
 
@@ -369,7 +369,7 @@ fn the_loaded_preset_survives_saving_and_old_projects_load_without_one() {
     let h = harness(app);
     assert_eq!(
         preset_button(&h, kind).accesskit_node().label().as_deref(),
-        Some(names::PRESET)
+        Some(de::DEVICES_PRESET)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

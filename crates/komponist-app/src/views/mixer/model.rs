@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 
+use komponist_i18n::Lang;
 use komponist_model::routing as model_routing;
 use komponist_model::{
     Channel, ChannelRef, Device, DeviceId, DeviceRole, PluginFormat, Project, TrackId,
@@ -12,87 +13,6 @@ use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
 use crate::views::routing::{self, ChipInfo, SendInfo, Target};
-
-/// German texts and accessible names of the mixer (`Screens.dc.html` `mixer()`, the `isMixer`
-/// markup, S04 notes).
-pub mod names {
-    /// Section label of the inserts (shown upper case by `type.label`).
-    pub const INSERTS: &str = "Inserts";
-    /// Section label of the reserved sends.
-    pub const SENDS: &str = "Sends";
-    /// Tooltip detail of the sends ("Sends: Platz ist reserviert, kommt mit Bussen in einer
-    /// späteren Stufe.").
-    pub const SENDS_LATER: &str = "Platz ist reserviert, kommt mit Bussen in einer späteren Stufe.";
-    /// Name of the master strip.
-    pub const MASTER: &str = "Master";
-    /// Second line of the master strip (`inst:'Ausgang 1–2'`).
-    pub const OUTPUT: &str = "Ausgang 1–2";
-    /// The "+" slot.
-    pub const ADD: &str = "+";
-    /// Accessible name and tooltip of the "+" slot ("„+“ öffnet die Gerätesuche").
-    pub const ADD_EFFECT: &str = "Effekt hinzufügen";
-    /// Its tooltip detail.
-    pub const ADD_EFFECT_DETAIL: &str = "Öffnet die Gerätesuche für diesen Kanal";
-    /// Tooltip detail of an insert slot (S04 "Insert-Slot").
-    pub const SLOT_DETAIL: &str = "Klick öffnet · Ziehen sortiert um · Alt-Klick Bypass";
-    /// Tooltip of the peak value (S04 "Peak-Wert / LED").
-    pub const PEAK_TIP: &str = "Peak und Clip zurücksetzen";
-    /// Its detail.
-    pub const PEAK_DETAIL: &str = "Alt-Klick für alle Kanäle";
-    /// Undo label of a fader drag.
-    pub const UNDO_VOLUME: &str = "Lautstärke";
-    /// Undo label of a pan drag.
-    pub const UNDO_PAN: &str = "Pan";
-    /// Undo label of a drag across the toggles.
-    pub const UNDO_TOGGLES: &str = "Spuren schalten";
-    /// Status of a loading insert.
-    pub const LOADING: &str = "lädt …";
-    /// Status of a crashed insert.
-    pub const CRASHED: &str = "abgestürzt";
-    /// Status of an insert that failed to load (as the device card's „Lässt sich nicht laden“).
-    pub const LOAD_FAILED: &str = "lässt sich nicht laden";
-    /// Status of an insert that stopped answering (as the card's „Hängt“).
-    pub const UNRESPONSIVE: &str = "hängt";
-    /// Status of a missing insert (S06 „Plugin fehlt“).
-    pub const MISSING: &str = "Plugin fehlt";
-    /// Status of a bypassed insert.
-    pub const BYPASS: &str = "Bypass";
-
-    /// „Kanal Lead“: the strip (rule 12).
-    pub fn strip(name: &str) -> String {
-        format!("Kanal {name}")
-    }
-
-    /// „Lautstärke Lead“: the fader.
-    pub fn volume(name: &str) -> String {
-        format!("Lautstärke {name}")
-    }
-
-    /// „Lautstärke Lead, Wert“: the level under the fader.
-    pub fn volume_value(name: &str) -> String {
-        format!("Lautstärke {name}, Wert")
-    }
-
-    /// „Pan Lead“: the pan knob.
-    pub fn pan(name: &str) -> String {
-        format!("Pan {name}")
-    }
-
-    /// „Pegel Lead“: the meter.
-    pub fn meter(name: &str) -> String {
-        format!("Pegel {name}")
-    }
-
-    /// „Peak Lead“: the peak value.
-    pub fn peak(name: &str) -> String {
-        format!("Peak {name}")
-    }
-
-    /// „Insert LSP Para EQ x8“: an insert slot.
-    pub fn insert(plugin: &str) -> String {
-        format!("Insert {plugin}")
-    }
-}
 
 /// The `base` colour of track hue `hue` (colour bar, chips, swatches), without building a whole
 /// `TrackPalette` (which computes 256 note colours).
@@ -177,15 +97,15 @@ pub struct Insert {
 
 impl Insert {
     /// The tooltip detail: the state when it is not plain "running", else the interactions.
-    pub fn detail(&self) -> &'static str {
+    pub fn detail(&self, lang: Lang) -> &'static str {
         match self.state {
-            SlotState::Loading => names::LOADING,
-            SlotState::Crashed => names::CRASHED,
-            SlotState::LoadFailed => names::LOAD_FAILED,
-            SlotState::Unresponsive => names::UNRESPONSIVE,
-            SlotState::Missing => names::MISSING,
-            SlotState::Ok if self.bypass => names::BYPASS,
-            SlotState::Ok => names::SLOT_DETAIL,
+            SlotState::Loading => lang.mixer_slot_loading(),
+            SlotState::Crashed => lang.mixer_slot_crashed(),
+            SlotState::LoadFailed => lang.mixer_slot_load_failed(),
+            SlotState::Unresponsive => lang.mixer_slot_unresponsive(),
+            SlotState::Missing => lang.mixer_slot_missing(),
+            SlotState::Ok if self.bypass => lang.mixer_slot_bypass(),
+            SlotState::Ok => lang.mixer_slot_detail(),
         }
     }
 }
@@ -306,6 +226,7 @@ fn inserts(channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
 /// stand right before the master, owner decision 3 A), then the master. Mute and solo follow the
 /// signal path ([`routing::gates`]): a strip is dim when its output is muted or solo-muted.
 pub fn strips(
+    lang: Lang,
     project: &Project,
     selected: &BTreeSet<TrackId>,
     host: &dyn DeviceHost,
@@ -320,7 +241,12 @@ pub fn strips(
         };
         let follows_solo = t.is_bus() && any_solo && !ch.solo && !ch.mute && !implied;
         let line = if t.is_bus() {
-            routing::names::bus_line(t.folder).to_owned()
+            if t.folder {
+                lang.routing_kind_group()
+            } else {
+                lang.routing_kind_effect_bus()
+            }
+            .to_owned()
         } else {
             ch.instrument()
                 .map(|(_, d)| d.plugin.name.clone())
@@ -333,10 +259,10 @@ pub fn strips(
                 StripKind::Track
             },
             routing: Some(Routing {
-                output: routing::output_of(project, t),
+                output: routing::output_of(lang, project, t),
                 sends: routing::sends_of(project, t),
                 chip: routing::chip_info(project, t),
-                inputs: t.is_bus().then(|| routing::inputs_line(project, t)),
+                inputs: t.is_bus().then(|| routing::inputs_line(lang, project, t)),
             }),
             follows_solo,
             channel: ChannelRef::Track(t.id),
@@ -373,8 +299,8 @@ pub fn strips(
         routing: None,
         follows_solo: false,
         channel: ChannelRef::Master,
-        name: names::MASTER.to_owned(),
-        line: names::OUTPUT.to_owned(),
+        name: lang.mixer_master().to_owned(),
+        line: lang.mixer_master_output().to_owned(),
         hue: None,
         selected: false,
         dim: false,
@@ -448,7 +374,7 @@ mod tests {
                 internal: false,
                 late: None,
             }
-            .detail()
+            .detail(Lang::De)
         };
         assert_eq!(detail(SlotState::Crashed), "abgestürzt");
         assert_eq!(detail(SlotState::LoadFailed), "lässt sich nicht laden");
@@ -479,7 +405,7 @@ mod tests {
     fn the_demo_has_six_strips_and_the_master() {
         let p = demo_project();
         let lead = p.tracks[2].id;
-        let strips = strips(&p, &BTreeSet::from([lead]), &host_for(&p));
+        let strips = strips(Lang::De, &p, &BTreeSet::from([lead]), &host_for(&p));
         let names: Vec<&str> = strips.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
@@ -492,7 +418,10 @@ mod tests {
         assert!(lead.inserts[0].instrument);
         // Without plugin manager the effects are missing; TAL is bypassed.
         assert_eq!(lead.inserts[1].state, SlotState::Missing);
-        assert_eq!(lead.inserts[1].detail(), names::MISSING);
+        assert_eq!(
+            lead.inserts[1].detail(Lang::De),
+            komponist_i18n::de::MIXER_SLOT_MISSING
+        );
         assert!(lead.inserts[2].bypass);
         // Arp is muted: dim.
         assert!(strips[5].mute && strips[5].dim);
@@ -508,7 +437,7 @@ mod tests {
         let drums = p.tracks[0].id;
         let p = edits::set_track_prop(&p, &[drums], TrackProp::Channel(ChannelProp::Solo(true)))
             .unwrap();
-        let strips = strips(&p, &BTreeSet::new(), &BuiltinHost::new());
+        let strips = strips(Lang::De, &p, &BTreeSet::new(), &BuiltinHost::new());
         assert!(!strips[0].dim && !strips[0].implied);
         assert!(strips[1].dim && strips[1].implied);
         // Arp is muted itself, not by the solo.

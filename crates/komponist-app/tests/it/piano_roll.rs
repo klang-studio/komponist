@@ -13,8 +13,8 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::{FocusArea, Tool};
 use komponist_app::views::piano_roll::geometry::Geometry;
-use komponist_app::views::piano_roll::names;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
+use komponist_i18n::de;
 use komponist_model::edits::{NewClip, NewClipContent, NewNote};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipContent, ClipId, Grid, Note, NoteId, Project, Tick};
@@ -396,7 +396,7 @@ fn arrows_transpose_and_nudge_q_quantizes() {
     h.run_steps(2);
     assert_eq!(get(&h).start, n.start);
     // The toolbar button does the same.
-    h.get_by_role_and_label(Role::Button, names::QUANTIZE)
+    h.get_by_role_and_label(Role::Button, de::PIANO_ROLL_QUANTIZE)
         .click();
     h.run_steps(2);
     assert_eq!(h.state().undo_text().as_deref(), Some("Quantisieren"));
@@ -416,7 +416,7 @@ fn ctrl_a_selects_all_and_delete_deletes() {
     h.run_steps(2);
     assert!(notes_of(h.state(), clip).is_empty());
     // The empty clip shows its hint.
-    h.get_by_role_and_label(Role::Label, names::EMPTY_HINT);
+    h.get_by_role_and_label(Role::Label, de::PIANO_ROLL_EMPTY_HINT);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -479,20 +479,20 @@ fn eraser_deletes_by_click_and_drag() {
 fn toolbar_switches_tools_grid_and_snap() {
     let (app, _) = lead_a();
     let mut h = harness(app);
-    h.get_by_role_and_label(Role::RadioButton, names::PENCIL)
+    h.get_by_role_and_label(Role::RadioButton, de::PIANO_ROLL_PENCIL)
         .click();
     h.run_steps(2);
     assert_eq!(h.state().ui().piano_roll.tool, Tool::Pencil);
     h.key_press(egui::Key::Num3);
     h.run_steps(2);
     assert_eq!(h.state().ui().piano_roll.tool, Tool::Eraser);
-    dock_node(&h, Role::Button, names::SNAP).click();
+    dock_node(&h, Role::Button, de::VIEW_SNAP).click();
     h.run_steps(2);
     assert!(!h.state().ui().piano_roll.snap);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::CloseBracket);
     h.run_steps(2);
     assert_eq!(h.state().ui().piano_roll.grid, Grid::Eighth);
-    dock_node(&h, Role::Button, names::ZOOM_IN).click();
+    dock_node(&h, Role::Button, de::VIEW_ZOOM_IN).click();
     h.run_steps(2);
     assert!(h.state().ui().piano_roll.px_per_bar > 320.0);
     h.key_press_modifiers(Modifiers::ALT, egui::Key::Plus);
@@ -506,10 +506,10 @@ fn toolbar_fields_change_the_selection() {
     let n = notes_of(&app, clip)[2]; // G4, velocity 100, 2 steps
     select(&mut app, vec![n.id]);
     let mut h = harness(app);
-    let field = toolbar_field(&h, names::VELOCITY_FIELD);
+    let field = toolbar_field(&h, de::PIANO_ROLL_VELOCITY);
     assert_eq!(field.value().as_deref(), Some("100"));
-    toolbar_field(&h, names::LENGTH_FIELD);
-    let note = toolbar_field(&h, names::NOTE_FIELD);
+    toolbar_field(&h, de::PIANO_ROLL_LENGTH);
+    let note = toolbar_field(&h, de::PIANO_ROLL_NOTE);
     assert_eq!(note.value().as_deref(), Some("G4"));
     note.increment_accesskit();
     h.run_steps(2);
@@ -520,11 +520,11 @@ fn toolbar_fields_change_the_selection() {
             .unwrap()
     };
     assert_eq!(get(&h).pitch, n.pitch + 1);
-    toolbar_field(&h, names::LENGTH_FIELD).increment_accesskit();
+    toolbar_field(&h, de::PIANO_ROLL_LENGTH).increment_accesskit();
     h.run_steps(2);
     assert_eq!(get(&h).length, n.length + Tick(240));
     // Drag ↑ on Vel: 10 px = +10, one undo step.
-    let r = toolbar_field(&h, names::VELOCITY_FIELD).rect();
+    let r = toolbar_field(&h, de::PIANO_ROLL_VELOCITY).rect();
     drag(
         &mut h,
         r.center(),
@@ -632,7 +632,7 @@ fn an_empty_clip_opens_with_the_pencil() {
     let (app, clip) = empty_clip_app();
     assert_eq!(app.ui().piano_roll.tool, Tool::Pencil);
     let mut h = harness(app);
-    h.get_by_role_and_label(Role::Label, names::EMPTY_HINT);
+    h.get_by_role_and_label(Role::Label, de::PIANO_ROLL_EMPTY_HINT);
     h.get_by_role_and_label(Role::Button, "Taste C4");
     h.get_by_role_and_label(Role::Label, "0 Noten");
     let g = geometry(&h, clip);
@@ -655,9 +655,9 @@ fn visible_notes_have_accesskit_nodes() {
     h.get_by_role_and_label(Role::GridCell, "Note C4, 9.1.000");
     let a4 = h.get_by_role_and_label(Role::GridCell, "Note A4, 9.1.120");
     assert_eq!(a4.accesskit_node().is_selected(), Some(true));
-    h.get_by_role_and_label(Role::Grid, names::NOTES);
-    h.get_by_role_and_label(Role::Group, names::KEYBOARD);
-    h.get_by_role_and_label(Role::Group, names::VELOCITY_LANE);
+    h.get_by_role_and_label(Role::Grid, de::PIANO_ROLL_NOTES);
+    h.get_by_role_and_label(Role::Group, de::PIANO_ROLL_KEYBOARD);
+    h.get_by_role_and_label(Role::Group, de::PIANO_ROLL_VELOCITY_LANE);
     dock_node(&h, Role::Slider, "Lineal");
     // Only visible notes: none below the lowest visible key.
     let g = geometry(&h, clip);
@@ -815,7 +815,7 @@ fn every_raster_draws_its_own_grid_and_thins_at_low_zoom() {
         let mut h = harness(app);
         h.run_steps(2);
         mask_cpu(&mut h);
-        render_without_grid_labels(&mut h, names::GRID)
+        render_without_grid_labels(&mut h, de::VIEW_GRID)
     };
     let images: Vec<_> = grids.iter().map(|g| render(*g, 960.0)).collect();
     for i in 0..grids.len() {
@@ -1026,14 +1026,14 @@ fn the_toolbar_names_its_editor_for_grid_and_snap() {
     h.state_mut()
         .dispatch(Action::Ui(UiAction::Focus(FocusArea::Arrangement)));
     let arrangement = h.state().ui().arrangement.grid;
-    dock_node(&h, Role::ComboBox, names::GRID).click();
+    dock_node(&h, Role::ComboBox, de::VIEW_GRID).click();
     h.run_steps(3);
     h.get_by_role_and_label(Role::ListBoxOption, "1/8").click();
     h.run_steps(3);
     assert_eq!(h.state().ui().piano_roll.grid, Grid::Eighth);
     assert_eq!(h.state().ui().arrangement.grid, arrangement, "untouched");
     let snap = h.state().ui().arrangement.snap;
-    dock_node(&h, Role::Button, names::SNAP).click();
+    dock_node(&h, Role::Button, de::VIEW_SNAP).click();
     h.run_steps(2);
     assert!(!h.state().ui().piano_roll.snap);
     assert_eq!(h.state().ui().arrangement.snap, snap, "untouched");
@@ -1119,7 +1119,7 @@ fn esc_cancels_a_toolbar_field_drag() {
     let n = notes_of(&app, clip)[2];
     select(&mut app, vec![n.id]);
     let mut h = harness(app);
-    let r = toolbar_field(&h, names::VELOCITY_FIELD).rect();
+    let r = toolbar_field(&h, de::PIANO_ROLL_VELOCITY).rect();
     let from = r.center();
     h.hover_at(from);
     h.step();

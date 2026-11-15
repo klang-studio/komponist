@@ -13,8 +13,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, Node, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::{BrowserSegment, DockTab, FocusArea};
-use komponist_app::views::mixer::model::names;
 use komponist_app::{Action, App, EditAction, PluginAction, TransportAction, UiAction};
+use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::project::VOLUME_DB_MIN;
@@ -23,7 +23,7 @@ use komponist_plugins::DeviceStatus;
 
 use fake_host::{FakeHost, plugin, screens_catalog};
 
-const ADD_SEARCH: &str = komponist_app::views::devices::model::names::ADD_SEARCH;
+const ADD_SEARCH: &str = de::DEVICES_ADD_SEARCH;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -194,7 +194,7 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
 
 /// The rect of the node `role` / `label` inside strip `strip`.
 fn in_strip(h: &Harness<'_, App>, strip: &str, role: Role, label: &str) -> Rect {
-    let group = names::strip(strip);
+    let group = Lang::De.mixer_strip(strip);
     h.get_by_role_and_label(Role::Group, &group)
         .get_by_role_and_label(role, label)
         .rect()
@@ -219,7 +219,7 @@ fn header<'h>(h: &'h Harness<'_, App>, name: &str) -> Node<'h> {
 }
 
 fn value_in_strip(h: &Harness<'_, App>, strip: &str, role: Role, label: &str) -> String {
-    let group = names::strip(strip);
+    let group = Lang::De.mixer_strip(strip);
     h.get_by_role_and_label(Role::Group, &group)
         .get_by_role_and_label(role, label)
         .value()
@@ -253,7 +253,7 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     app.dispatch(Action::Ui(UiAction::Focus(FocusArea::Arrangement)));
     let mut h = harness(app);
     assert!(
-        h.query_by_role_and_label(Role::Group, &names::strip("Lead"))
+        h.query_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Lead"))
             .is_none()
     );
     h.key_press(egui::Key::Tab);
@@ -262,12 +262,12 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     // Every track and the master; the send area is there before the first bus (owner decision
     // 2026-11-15).
     for name in ["Drums", "Bass", "Lead", "Pad", "Keys", "Arp", "Master"] {
-        strip(&h, &names::strip(name));
+        strip(&h, &Lang::De.mixer_strip(name));
     }
-    let lead = names::strip("Lead");
-    strip(&h, &lead).get_by_role_and_label(Role::Label, names::SENDS);
-    strip(&h, &lead).get_by_role_and_label(Role::Label, names::INSERTS);
-    strip(&h, &lead).get_by_role_and_label(Role::Slider, &names::pan("Lead"));
+    let lead = Lang::De.mixer_strip("Lead");
+    strip(&h, &lead).get_by_role_and_label(Role::Label, de::ROUTING_SENDS);
+    strip(&h, &lead).get_by_role_and_label(Role::Label, de::MIXER_INSERTS);
+    strip(&h, &lead).get_by_role_and_label(Role::Slider, &Lang::De.mixer_pan("Lead"));
     h.key_press(egui::Key::Tab);
     h.run_steps(2);
     assert!(!h.state().ui().layout.dock_maximized);
@@ -281,15 +281,15 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     assert!(!h.state().ui().layout.dock_maximized);
     let s = strip(&h, &lead);
     assert!(
-        s.query_by_role_and_label(Role::Label, names::SENDS)
+        s.query_by_role_and_label(Role::Label, de::ROUTING_SENDS)
             .is_none()
     );
-    s.get_by_role_and_label(Role::Slider, &names::volume("Lead"));
-    s.get_by_role_and_label(Role::Slider, &names::pan("Lead"));
+    s.get_by_role_and_label(Role::Slider, &Lang::De.mixer_volume("Lead"));
+    s.get_by_role_and_label(Role::Slider, &Lang::De.mixer_pan("Lead"));
     s.get_by_role_and_label(Role::Button, "Mute · Lead");
     s.get_by_role_and_label(Role::Button, "Solo · Lead");
     assert!(
-        s.query_by_role_and_label(Role::Button, &names::insert("hexa"))
+        s.query_by_role_and_label(Role::Button, &Lang::De.mixer_insert("hexa"))
             .is_none()
     );
     // The instrument line is gone; the name carries it as its AccessKit description.
@@ -297,7 +297,7 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     let name = s.get_by_role_and_label(Role::Button, "Lead");
     assert_eq!(name.accesskit_node().description().as_deref(), Some("hexa"));
     let fader = s
-        .get_by_role_and_label(Role::Slider, &names::volume("Lead"))
+        .get_by_role_and_label(Role::Slider, &Lang::De.mixer_volume("Lead"))
         .rect();
     assert!(fader.height() >= komponist_app::views::mixer::metrics::FADER_AREA_MIN - 1.0);
     // The arrangement stays above it.
@@ -311,37 +311,42 @@ fn the_lean_dock_strip_has_a_pan_knob_that_costs_the_fader_no_height() {
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
     let mut h = harness(app);
     assert!(!h.state().ui().layout.dock_maximized);
-    let name = names::pan("Bass");
+    let name = Lang::De.mixer_pan("Bass");
     let knob = in_strip(&h, "Bass", Role::Slider, &name);
     let diameter = komponist_tokens::size::KNOB_SMALL;
     assert_eq!((knob.width(), knob.height()), (diameter, diameter));
     // It sits in the values row, right of the level and at the end of the row; the name row
     // gives the name its full width, and there is no peak readout in the lean strip.
     let toggles = in_strip(&h, "Bass", Role::Button, "Mute · Bass");
-    let level = in_strip(&h, "Bass", Role::SpinButton, &names::volume_value("Bass"));
+    let level = in_strip(
+        &h,
+        "Bass",
+        Role::SpinButton,
+        &Lang::De.mixer_volume_value("Bass"),
+    );
     assert!(knob.top() > toggles.bottom());
     assert!(knob.left() >= level.right(), "{knob:?} {level:?}");
     assert!((knob.center().y - level.center().y).abs() < 1.0);
-    let strip_rect = strip(&h, &names::strip("Bass")).rect();
+    let strip_rect = strip(&h, &Lang::De.mixer_strip("Bass")).rect();
     assert!(
         (strip_rect.right() - komponist_app::views::mixer::metrics::PAD_X - knob.right()).abs()
             < 1.0
     );
     assert!(
-        strip(&h, &names::strip("Bass"))
-            .query_by_role_and_label(Role::Button, &names::peak("Bass"))
+        strip(&h, &Lang::De.mixer_strip("Bass"))
+            .query_by_role_and_label(Role::Button, &Lang::De.mixer_peak("Bass"))
             .is_none()
     );
     // Nothing of the knob stands in the name row any more.
     let name_row = in_strip(&h, "Bass", Role::Button, "Bass");
     assert!(knob.top() > name_row.bottom());
     // The fader keeps the height it had before the knob (215 px of track + thumb at 1x).
-    let fader = in_strip(&h, "Bass", Role::Slider, &names::volume("Bass"));
+    let fader = in_strip(&h, "Bass", Role::Slider, &Lang::De.mixer_volume("Bass"));
     assert!(fader.height() >= 215.0 - 0.5, "fader {}", fader.height());
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 50.0));
     let pan = h.state().project().tracks[1].channel.pan;
     assert!(pan > 0.3, "{pan}");
-    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_PAN));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Pan"));
     click_with(&mut h, knob.center(), Modifiers::ALT);
     assert_eq!(h.state().project().tracks[1].channel.pan, 0.0);
     menu_choice(&mut h, knob.center(), "Wert eingeben");
@@ -371,13 +376,13 @@ fn a_strip_click_selects_the_track_in_sync_with_the_arrangement() {
         Some(true)
     );
     assert_eq!(
-        strip(&h, &names::strip("Bass"))
+        strip(&h, &Lang::De.mixer_strip("Bass"))
             .accesskit_node()
             .is_selected(),
         Some(true)
     );
     // Strg-click on the strip's empty background adds Keys.
-    let keys_strip = strip(&h, &names::strip("Keys")).rect();
+    let keys_strip = strip(&h, &Lang::De.mixer_strip("Keys")).rect();
     // The lean strip of the normal dock: the gap right below the name row.
     let name = in_strip(&h, "Keys", Role::Button, "Keys");
     let below_name = pos2(keys_strip.center().x, name.bottom() + 2.0);
@@ -391,13 +396,13 @@ fn a_strip_click_selects_the_track_in_sync_with_the_arrangement() {
         pos2(lead_header.left() + 60.0, lead_header.top() + 12.0),
     );
     assert_eq!(
-        strip(&h, &names::strip("Lead"))
+        strip(&h, &Lang::De.mixer_strip("Lead"))
             .accesskit_node()
             .is_selected(),
         Some(true)
     );
     assert_eq!(
-        strip(&h, &names::strip("Bass"))
+        strip(&h, &Lang::De.mixer_strip("Bass"))
             .accesskit_node()
             .is_selected(),
         Some(false)
@@ -429,7 +434,7 @@ fn a_fader_drag_is_one_undo_step_and_sounds_at_once_through_the_fast_path() {
     h.state_mut().clear_dispatched();
 
     // Drag the fader to the bottom, still holding it.
-    let fader = in_strip(&h, "Bass", Role::Slider, &names::volume("Bass"));
+    let fader = in_strip(&h, "Bass", Role::Slider, &Lang::De.mixer_volume("Bass"));
     let from = fader.center();
     let to = pos2(from.x, fader.bottom() + 400.0);
     drag_to(&mut h, from, to);
@@ -454,7 +459,7 @@ fn a_fader_drag_is_one_undo_step_and_sounds_at_once_through_the_fast_path() {
     assert_eq!(
         begins,
         [&EditAction::BeginGesture {
-            label: names::UNDO_VOLUME.to_owned()
+            label: "undo-volume".to_owned()
         }]
     );
     assert_eq!(
@@ -462,7 +467,7 @@ fn a_fader_drag_is_one_undo_step_and_sounds_at_once_through_the_fast_path() {
         1
     );
     assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetTrackProp { .. })).len() > 1);
-    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_VOLUME));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Lautstärke"));
     // One undo brings the level back.
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(h.state().project().tracks[1].channel.volume_db, before_db);
@@ -477,38 +482,43 @@ fn fader_and_pan_take_alt_click_and_text_entry() {
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let mut h = harness(app);
     // Alt-click: 0 dB, one undo step.
-    let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
+    let fader = in_strip(&h, "Drums", Role::Slider, &Lang::De.mixer_volume("Drums"));
     click_with(&mut h, fader.center(), Modifiers::ALT);
     assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
     assert_eq!(h.state().undo_text().as_deref(), Some("Spur ändern"));
     // Double-click on the level under the fader: type −12.
-    let value = in_strip(&h, "Drums", Role::SpinButton, &names::volume_value("Drums"));
+    let value = in_strip(
+        &h,
+        "Drums",
+        Role::SpinButton,
+        &Lang::De.mixer_volume_value("Drums"),
+    );
     double_click(&mut h, value.center());
-    let entry = format!("{} Eingabe", names::volume_value("Drums"));
+    let entry = format!("{} Eingabe", Lang::De.mixer_volume_value("Drums"));
     h.get_by_role_and_label(Role::TextInput, &entry)
         .type_text("-12");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(h.state().project().tracks[0].channel.volume_db, -12.0);
     assert_eq!(
-        value_in_strip(&h, "Drums", Role::Slider, &names::volume("Drums")),
+        value_in_strip(&h, "Drums", Role::Slider, &Lang::De.mixer_volume("Drums")),
         "\u{2212}12.0 dB"
     );
 
     // Pan: drag up turns right, Alt-click centres, the menu's "Wert eingeben" takes "L 20".
-    let knob = in_strip(&h, "Bass", Role::Slider, &names::pan("Bass"));
+    let knob = in_strip(&h, "Bass", Role::Slider, &Lang::De.mixer_pan("Bass"));
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 50.0));
     let pan = h.state().project().tracks[1].channel.pan;
     assert!(pan > 0.3, "{pan}");
-    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_PAN));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Pan"));
     assert_eq!(
-        value_in_strip(&h, "Bass", Role::Slider, &names::pan("Bass")),
+        value_in_strip(&h, "Bass", Role::Slider, &Lang::De.mixer_pan("Bass")),
         komponist_model::format::fmt_pan(pan)
     );
     click_with(&mut h, knob.center(), Modifiers::ALT);
     assert_eq!(h.state().project().tracks[1].channel.pan, 0.0);
     menu_choice(&mut h, knob.center(), "Wert eingeben");
-    let entry = format!("{} Eingabe", names::pan("Bass"));
+    let entry = format!("{} Eingabe", Lang::De.mixer_pan("Bass"));
     h.get_by_role_and_label(Role::TextInput, &entry)
         .type_text("L 20");
     h.key_press(egui::Key::Enter);
@@ -516,7 +526,7 @@ fn fader_and_pan_take_alt_click_and_text_entry() {
     assert!((h.state().project().tracks[1].channel.pan + 0.4).abs() < 1e-6);
 
     // The master fader: SetMasterProp.
-    let master = in_strip(&h, "Master", Role::Slider, &names::volume("Master"));
+    let master = in_strip(&h, "Master", Role::Slider, &Lang::De.mixer_volume("Master"));
     drag(&mut h, master.center(), master.center() + vec2(0.0, 80.0));
     assert!(h.state().project().master.volume_db < -3.0);
     assert!(!edits_of(h.state(), |e| matches!(e, EditAction::SetMasterProp(_))).is_empty());
@@ -531,19 +541,19 @@ fn double_click_resets_fader_and_pan_in_one_undo_step() {
     let mut h = harness(app);
     let before_db = h.state().project().tracks[0].channel.volume_db;
     assert_ne!(before_db, 0.0);
-    let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
+    let fader = in_strip(&h, "Drums", Role::Slider, &Lang::De.mixer_volume("Drums"));
     double_click(&mut h, fader.center());
     assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
     assert_eq!(h.state().undo_text().as_deref(), Some("Spur ändern"));
     assert!(
-        h.query_by_label(&format!("{} Eingabe", names::volume("Drums")))
+        h.query_by_label(&format!("{} Eingabe", Lang::De.mixer_volume("Drums")))
             .is_none()
     );
     assert!(edits_of(h.state(), |e| matches!(e, EditAction::BeginGesture { .. })).is_empty());
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(h.state().project().tracks[0].channel.volume_db, before_db);
 
-    let knob = in_strip(&h, "Bass", Role::Slider, &names::pan("Bass"));
+    let knob = in_strip(&h, "Bass", Role::Slider, &Lang::De.mixer_pan("Bass"));
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 50.0));
     let pan = h.state().project().tracks[1].channel.pan;
     assert!(pan > 0.3);
@@ -558,7 +568,7 @@ fn fader_menu_and_enter_reset_and_enter_values() {
     let mut app = App::headless(demo_project());
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let mut h = harness(app);
-    let name = names::volume("Drums");
+    let name = Lang::De.mixer_volume("Drums");
     let fader = in_strip(&h, "Drums", Role::Slider, &name);
     menu_choice(&mut h, fader.center(), "Auf Standard");
     assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
@@ -582,9 +592,9 @@ fn wheel_over_a_fader_is_one_undo_step_and_needs_the_pointer_on_it() {
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let mut h = harness(app);
     let before = h.state().project().tracks[0].channel.volume_db;
-    let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
+    let fader = in_strip(&h, "Drums", Role::Slider, &Lang::De.mixer_volume("Drums"));
     let name_row = h
-        .get_by_role_and_label(Role::Group, &names::strip("Drums"))
+        .get_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Drums"))
         .rect()
         .center_top()
         + vec2(0.0, 12.0);
@@ -605,7 +615,7 @@ fn wheel_over_a_fader_is_one_undo_step_and_needs_the_pointer_on_it() {
         edits_of(h.state(), |e| matches!(e, EditAction::EndGesture)).len(),
         1
     );
-    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_VOLUME));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Lautstärke"));
     // Shift: fine (0.1 dB); a second burst after the pause is a second step.
     wheel(&mut h, fader.center(), &[-1.0], Modifiers::SHIFT);
     h.run_steps(60);
@@ -649,9 +659,9 @@ fn toggles_switch_alt_is_exclusive_and_a_drag_spreads_across_strips() {
     drag(&mut h, from, to);
     let armed: Vec<bool> = h.state().project().tracks.iter().map(|t| t.arm).collect();
     assert_eq!(armed, [true, true, true, true, false, false]);
-    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_TOGGLES));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Spuren schalten"));
     // The master has M only.
-    let master = names::strip("Master");
+    let master = Lang::De.mixer_strip("Master");
     assert!(
         strip(&h, &master)
             .query_by_role_and_label(Role::Button, "Solo · Master")
@@ -682,7 +692,7 @@ fn insert_slots_open_reorder_and_bypass() {
         &mut h,
         "Lead",
         Role::Button,
-        &names::insert("LSP Para EQ x8"),
+        &Lang::De.mixer_insert("LSP Para EQ x8"),
         Modifiers::NONE,
     );
     assert!(
@@ -692,10 +702,20 @@ fn insert_slots_open_reorder_and_bypass() {
     );
     assert!(h.state().ui().plugin_windows.iter().any(|w| w.device == eq));
     // Alt-click switches bypass (TAL is bypassed in the demo).
-    let tal_slot = in_strip(&h, "Lead", Role::Button, &names::insert("TAL-Chorus-LX"));
+    let tal_slot = in_strip(
+        &h,
+        "Lead",
+        Role::Button,
+        &Lang::De.mixer_insert("TAL-Chorus-LX"),
+    );
     assert_eq!(
-        value_in_strip(&h, "Lead", Role::Button, &names::insert("TAL-Chorus-LX")),
-        names::BYPASS
+        value_in_strip(
+            &h,
+            "Lead",
+            Role::Button,
+            &Lang::De.mixer_insert("TAL-Chorus-LX")
+        ),
+        de::MIXER_SLOT_BYPASS
     );
     click_with(&mut h, tal_slot.center(), Modifiers::ALT);
     assert!(!h.state().project().find_device(tal).unwrap().2.bypass);
@@ -704,9 +724,14 @@ fn insert_slots_open_reorder_and_bypass() {
         &h,
         "Lead",
         Role::Button,
-        &names::insert("Dragonfly Hall Reverb"),
+        &Lang::De.mixer_insert("Dragonfly Hall Reverb"),
     );
-    let eq_slot = in_strip(&h, "Lead", Role::Button, &names::insert("LSP Para EQ x8"));
+    let eq_slot = in_strip(
+        &h,
+        "Lead",
+        Role::Button,
+        &Lang::De.mixer_insert("LSP Para EQ x8"),
+    );
     drag(
         &mut h,
         hall_slot.center(),
@@ -720,8 +745,13 @@ fn insert_slots_open_reorder_and_bypass() {
         .collect();
     assert_eq!(chain, [synth, hall, eq, tal]);
     // The instrument does not move.
-    let synth_slot = in_strip(&h, "Lead", Role::Button, &names::insert("hexa"));
-    let tal_slot = in_strip(&h, "Lead", Role::Button, &names::insert("TAL-Chorus-LX"));
+    let synth_slot = in_strip(&h, "Lead", Role::Button, &Lang::De.mixer_insert("hexa"));
+    let tal_slot = in_strip(
+        &h,
+        "Lead",
+        Role::Button,
+        &Lang::De.mixer_insert("TAL-Chorus-LX"),
+    );
     drag(
         &mut h,
         synth_slot.center(),
@@ -738,7 +768,7 @@ fn plus_opens_the_add_menu_and_a_dropped_effect_is_inserted() {
         &mut h,
         "Bass",
         Role::Button,
-        names::ADD_EFFECT,
+        de::MIXER_ADD_EFFECT,
         Modifiers::NONE,
     );
     h.run_steps(3);
@@ -760,7 +790,7 @@ fn plus_opens_the_add_menu_and_a_dropped_effect_is_inserted() {
         .dispatch(Action::Ui(UiAction::SetBrowserQuery("delay".into())));
     h.run_steps(2);
     let row = h.get_by_role_and_label(Role::ListItem, "LSP Delay").rect();
-    let target = in_strip(&h, "Bass", Role::Button, names::ADD_EFFECT).center();
+    let target = in_strip(&h, "Bass", Role::Button, de::MIXER_ADD_EFFECT).center();
     drag(&mut h, row.center(), target);
     let delay = plugin(&screens_catalog(), "delay");
     assert!(h.state().dispatched().any(|a| *a
@@ -805,7 +835,7 @@ fn the_master_plus_offers_audio_effects_only_and_adds_to_the_master_chain() {
         &mut h,
         "Master",
         Role::Button,
-        names::ADD_EFFECT,
+        de::MIXER_ADD_EFFECT,
         Modifiers::NONE,
     );
     h.run_steps(3);
@@ -846,7 +876,7 @@ fn the_lean_strip_meter_click_resets_the_peak() {
     let mut app = App::headless(demo_project());
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
     let mut h = harness(app);
-    let meter = names::meter("Bass");
+    let meter = Lang::De.mixer_meter("Bass");
     click_in(&mut h, "Bass", Role::Meter, &meter, Modifiers::NONE);
     let bass = h.state().project().tracks[1].id;
     assert!(h.state().dispatched().any(|a| *a
@@ -858,7 +888,7 @@ fn the_lean_strip_meter_click_resets_the_peak() {
         &mut h,
         "Master",
         Role::Meter,
-        &names::meter("Master"),
+        &Lang::De.mixer_meter("Master"),
         Modifiers::ALT,
     );
     assert!(h.state().dispatched().any(|a| *a
@@ -905,26 +935,26 @@ fn peak_value_and_led_reset_alt_for_all() {
     assert!(h.state_mut().engine_mut().run_held(4_800, &[], 0));
     h.run_steps(1);
     let silent = "\u{2212}\u{221e} dB";
-    let bass_peak = value_in_strip(&h, "Bass", Role::Button, &names::peak("Bass"));
-    let lead_peak = value_in_strip(&h, "Lead", Role::Button, &names::peak("Lead"));
+    let bass_peak = value_in_strip(&h, "Bass", Role::Button, &Lang::De.mixer_peak("Bass"));
+    let lead_peak = value_in_strip(&h, "Lead", Role::Button, &Lang::De.mixer_peak("Lead"));
     assert_ne!(bass_peak, silent);
     assert_ne!(lead_peak, silent);
-    let master_meter = value_in_strip(&h, "Master", Role::Meter, &names::meter("Master"));
+    let master_meter = value_in_strip(&h, "Master", Role::Meter, &Lang::De.mixer_meter("Master"));
     assert!(master_meter.ends_with(", Clip"), "{master_meter}");
     // Click on Bass's peak: only Bass.
     click_in(
         &mut h,
         "Bass",
         Role::Button,
-        &names::peak("Bass"),
+        &Lang::De.mixer_peak("Bass"),
         Modifiers::NONE,
     );
     assert_eq!(
-        value_in_strip(&h, "Bass", Role::Button, &names::peak("Bass")),
+        value_in_strip(&h, "Bass", Role::Button, &Lang::De.mixer_peak("Bass")),
         silent
     );
     assert_ne!(
-        value_in_strip(&h, "Lead", Role::Button, &names::peak("Lead")),
+        value_in_strip(&h, "Lead", Role::Button, &Lang::De.mixer_peak("Lead")),
         silent
     );
     // Click on the master's meter (LED): the clip goes.
@@ -932,21 +962,21 @@ fn peak_value_and_led_reset_alt_for_all() {
         &mut h,
         "Master",
         Role::Meter,
-        &names::meter("Master"),
+        &Lang::De.mixer_meter("Master"),
         Modifiers::NONE,
     );
-    let master_meter = value_in_strip(&h, "Master", Role::Meter, &names::meter("Master"));
+    let master_meter = value_in_strip(&h, "Master", Role::Meter, &Lang::De.mixer_meter("Master"));
     assert!(!master_meter.contains("Clip"), "{master_meter}");
     // Alt-click on a peak: every strip.
     click_in(
         &mut h,
         "Bass",
         Role::Button,
-        &names::peak("Bass"),
+        &Lang::De.mixer_peak("Bass"),
         Modifiers::ALT,
     );
     assert_eq!(
-        value_in_strip(&h, "Lead", Role::Button, &names::peak("Lead")),
+        value_in_strip(&h, "Lead", Role::Button, &Lang::De.mixer_peak("Lead")),
         silent
     );
     assert!(edits_of(h.state(), |_| false).is_empty());
@@ -963,16 +993,13 @@ fn peak_value_and_led_reset_alt_for_all() {
 #[test]
 fn sends_are_there_before_the_first_bus() {
     let h = harness(s04());
-    let lead = names::strip("Lead");
+    let lead = Lang::De.mixer_strip("Lead");
     let s = strip(&h, &lead);
     assert!(
-        s.query_by_role_and_label(Role::Label, names::SENDS)
+        s.query_by_role_and_label(Role::Label, de::ROUTING_SENDS)
             .is_some()
     );
-    s.get_by_role_and_label(
-        Role::Button,
-        &komponist_app::views::routing::names::add_send("Lead"),
-    );
+    s.get_by_role_and_label(Role::Button, &Lang::De.routing_add_send_name("Lead"));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -994,16 +1021,16 @@ fn many_strips_scroll_sideways_and_the_master_stays() {
     let mut app = App::headless(p);
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let mut h = harness(app);
-    let master = strip(&h, &names::strip("Master")).rect();
+    let master = strip(&h, &Lang::De.mixer_strip("Master")).rect();
     let inspector_left = W - h.state().ui().layout.inspector_width;
     assert!((master.right() - inspector_left).abs() <= 2.0, "{master:?}");
     // Only the visible strips are there.
     assert!(
-        h.query_by_role_and_label(Role::Group, &names::strip("Spur 20"))
+        h.query_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Spur 20"))
             .is_none()
     );
     // Over the name row: the fader and the pan knob take the wheel themselves.
-    let drums = strip(&h, &names::strip("Drums")).rect();
+    let drums = strip(&h, &Lang::De.mixer_strip("Drums")).rect();
     h.hover_at(drums.center_top() + vec2(0.0, 12.0));
     h.step();
     h.event(Event::MouseWheel {
@@ -1016,12 +1043,12 @@ fn many_strips_scroll_sideways_and_the_master_stays() {
     h.run_steps(30);
     assert!(h.state().ui().mixer.scroll_x > 0.0);
     assert!(
-        h.query_by_role_and_label(Role::Group, &names::strip("Drums"))
+        h.query_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Drums"))
             .is_none()
     );
-    strip(&h, &names::strip("Spur 20"));
+    strip(&h, &Lang::De.mixer_strip("Spur 20"));
     // The master did not move.
-    assert_eq!(strip(&h, &names::strip("Master")).rect(), master);
+    assert_eq!(strip(&h, &Lang::De.mixer_strip("Master")).rect(), master);
 }
 
 #[test]
@@ -1046,7 +1073,7 @@ fn a_track_selected_elsewhere_is_scrolled_into_view() {
     select(h.state_mut(), last);
     h.run_steps(3);
     assert!(h.state().ui().mixer.scroll_x > 0.0);
-    strip(&h, &names::strip("Spur 20"));
+    strip(&h, &Lang::De.mixer_strip("Spur 20"));
     // Selecting a visible track back scrolls only as far as needed.
     let first = h.state().project().tracks[0].id;
     select(h.state_mut(), first);
@@ -1058,7 +1085,7 @@ fn a_track_selected_elsewhere_is_scrolled_into_view() {
 fn tab_always_leaves_the_maximised_mixer_even_over_a_focus_ring() {
     // Owner decision Q9 (2026-11-14): one key back to the arrangement, whatever has the focus.
     let mut h = harness(s04());
-    let pan = names::pan("Lead");
+    let pan = Lang::De.mixer_pan("Lead");
     click_in(&mut h, "Lead", Role::Slider, &pan, Modifiers::NONE);
     h.run_steps(2);
     komponist_ui::focus::set_visible(&h.ctx, true);
@@ -1071,7 +1098,7 @@ fn tab_always_leaves_the_maximised_mixer_even_over_a_focus_ring() {
 #[test]
 fn shift_tab_still_moves_the_widget_focus_in_the_maximised_mixer() {
     let mut h = harness(s04());
-    let pan = names::pan("Lead");
+    let pan = Lang::De.mixer_pan("Lead");
     click_in(&mut h, "Lead", Role::Slider, &pan, Modifiers::NONE);
     h.run_steps(2);
     komponist_ui::focus::set_visible(&h.ctx, true);
@@ -1114,9 +1141,12 @@ fn insert_slots_show_the_device_status() {
     let mut app = App::headless(p).with_device_host(Box::new(host));
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let h = harness(app);
-    let group = names::strip("Pad");
+    let group = Lang::De.mixer_strip("Pad");
     let s = strip(&h, &group);
-    let (surge_label, eq_label) = (names::insert("Surge XT"), names::insert("LSP Para EQ x8"));
+    let (surge_label, eq_label) = (
+        Lang::De.mixer_insert("Surge XT"),
+        Lang::De.mixer_insert("LSP Para EQ x8"),
+    );
     let surge_slot = s.get_by_role_and_label(Role::Button, &surge_label);
     let eq_slot = s.get_by_role_and_label(Role::Button, &eq_label);
     assert!(
@@ -1124,14 +1154,14 @@ fn insert_slots_show_the_device_status() {
             .accesskit_node()
             .description()
             .unwrap_or_default()
-            .contains(names::LOADING)
+            .contains(de::MIXER_SLOT_LOADING)
     );
     assert!(
         eq_slot
             .accesskit_node()
             .description()
             .unwrap_or_default()
-            .contains(names::CRASHED)
+            .contains(de::MIXER_SLOT_CRASHED)
     );
 }
 
@@ -1188,7 +1218,7 @@ fn an_insert_whose_blocks_arrive_late_reads_zu_spaet_for_a_while() {
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let mut h = harness(app);
     let slot = |h: &Harness<'_, App>| {
-        h.get_by_role_and_label(Role::Button, &names::insert("Surge XT"))
+        h.get_by_role_and_label(Role::Button, &Lang::De.mixer_insert("Surge XT"))
             .accesskit_node()
             .value()
     };

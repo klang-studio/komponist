@@ -6,6 +6,7 @@
 //! The section is always shown for a track, also before the first bus (owner, 2026-11-15).
 
 use egui::{Rangef, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_model::{Project, Track};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, typography};
@@ -18,7 +19,7 @@ use crate::actions::{Action, SelectMode, SelectionChange, UiAction};
 use crate::views::ViewCtx;
 use crate::views::mixer::model::base_color;
 use crate::views::routing::widgets::{self as rw, RowKind};
-use crate::views::routing::{self as rt, metrics as rm, names};
+use crate::views::routing::{self as rt, metrics as rm};
 
 /// The routing section of `track`.
 pub(super) fn section(
@@ -29,22 +30,24 @@ pub(super) fn section(
     y: &mut f32,
     track: &Track,
 ) {
-    frame(ui, x, y, names::ROUTING, Meta::None, |ui, col| {
+    let t = ctx.lang;
+    frame(ui, x, y, t.routing_routing(), Meta::None, |ui, col| {
         output_row(ui, ctx, col, track);
         if track.is_bus() {
             inputs(ui, ctx, col, project, track);
         } else {
             sends(ui, ctx, col, project, track);
         }
-        sidechain_line(ui, col, project, track);
+        sidechain_line(ui, t, col, project, track);
     });
 }
 
 /// „Ausgang“ and the output button over the rest of the row.
 fn output_row(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
+    let t = ctx.lang;
     let row = col.take(size::CONTROL);
     let key = Rect::from_x_y_ranges(row.left()..=row.left() + m::DD_KEY_WIDTH, row.y_range());
-    field_key(ui, key, names::OUTPUT);
+    field_key(ui, key, t.routing_output());
     let field = Rect::from_x_y_ranges(
         row.left() + m::DD_KEY_WIDTH + m::DD_COLUMN_GAP..=row.right(),
         row.y_range(),
@@ -70,7 +73,13 @@ fn sends(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, t
 
 /// A bus's inputs: „Eingänge (3 Sends)“ and one row per input, a click selects the track.
 fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, bus: &Track) {
-    let title = format!("{} ({})", names::INPUTS, rt::inputs_line(project, bus));
+    let t = ctx.lang;
+    let lang = t;
+    let title = format!(
+        "{} ({})",
+        t.routing_inputs(),
+        rt::inputs_line(t, project, bus)
+    );
     let head = col.take(typography::SMALL.line_height);
     label(ui, head, &title, &typography::SMALL, None, color::TEXT_3);
     access_label(ui, head, "inputs", &title);
@@ -80,7 +89,7 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
         label(
             ui,
             row,
-            names::NO_INPUTS,
+            t.routing_no_inputs(),
             &typography::SMALL,
             None,
             color::TEXT_4,
@@ -112,13 +121,13 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
                 "{} dB {}",
                 komponist_model::format::fmt_db(s.level_db),
                 match s.tap {
-                    komponist_model::Tap::Pre => names::PRE_SHORT,
+                    komponist_model::Tap::Pre => lang.routing_pre_short(),
                     komponist_model::Tap::Post => "",
                 }
             )
             .trim_end()
             .to_owned(),
-            None => names::OUTPUT.to_owned(),
+            None => lang.routing_output().to_owned(),
         };
         let g = w::galley(
             ui,
@@ -133,7 +142,7 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
             ui.pixels_per_point(),
         );
         ui.painter().galley(pos, g, color32(color::TEXT_3));
-        let name = format!("Eingang {}, {detail}", t.name);
+        let name = lang.inspector_input_row(&t.name, &detail);
         r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
         if r.clicked() {
             ctx.send(Action::Ui(UiAction::Select(SelectionChange::Tracks {
@@ -145,13 +154,13 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
 }
 
 /// „Sidechain-Quelle für:“ and the devices that take this track as their source.
-fn sidechain_line(ui: &mut Ui, col: &mut Col, project: &Project, track: &Track) {
-    let users = rt::sidechain_users(project, track.id);
+fn sidechain_line(ui: &mut Ui, t: Lang, col: &mut Col, project: &Project, track: &Track) {
+    let users = rt::sidechain_users(t, project, track.id);
     if users.is_empty() {
         return;
     }
     let head = col.take(typography::SMALL.line_height);
-    field_key(ui, head, names::SIDECHAIN_FOR);
+    field_key(ui, head, t.routing_sidechain_for());
     for user in users {
         let row = col.take(typography::SMALL.line_height);
         label(ui, row, &user, &typography::SMALL, None, color::TEXT_2);

@@ -3,6 +3,7 @@
 //! tested without pixels.
 
 use komponist_builtin::Macro;
+use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, auto_layout};
@@ -20,243 +21,36 @@ use crate::spectrum::Analysis;
 use crate::ui_state::{PluginWindow, Reveal};
 use crate::views::format_tag;
 
-/// German texts of the device chain (`Screens.dc.html` `card()`, the `isDevices` markup, S05/S06
-/// notes).
-pub mod names {
-    /// Undo step of a band the EQ graph's double-click turns on.
-    pub const UNDO_BAND_ADD: &str = "Band hinzufügen";
-    /// "Öffnen" (`openT` default).
-    pub const OPEN: &str = "Öffnen";
-    /// The open button while the plugin window is open (`openT:'Geöffnet'`).
-    pub const OPENED: &str = "Geöffnet";
-    /// The open button of a plugin without own GUI (`openT:'Parameter'`): opens the generic view.
-    pub const PARAMS: &str = "Parameter";
-    /// Loading (`msg`).
-    pub const LOADING: &str = "Lädt …";
-    /// Its text (`msg2`).
-    pub const LOADING_TEXT: &str = "Plugin wird gescannt und instanziiert.";
-    /// Crashed (`msg`).
-    pub const CRASHED: &str = "Abgestürzt";
-    /// Its text (`msg2`).
-    pub const CRASHED_TEXT: &str = "Das Plugin wurde beendet, die Spur läuft ohne dieses Gerät weiter. Die letzte Einstellung ist gesichert.";
-    /// The text when loading failed (the status bar's „… lässt sich nicht laden“ plus the rest
-    /// of `msg2`).
-    pub const LOAD_FAILED_TEXT: &str = "Das Plugin lässt sich nicht laden, die Spur läuft ohne dieses Gerät weiter. Die letzte Einstellung ist gesichert.";
-    /// The title when loading failed (the status bar's „… lässt sich nicht laden“; not in S05).
-    pub const LOAD_FAILED: &str = "Lässt sich nicht laden";
-    /// The title of a plugin that stopped answering („hängt“ as in the status bar; not in S05).
-    pub const UNRESPONSIVE: &str = "Hängt";
-    /// Its text.
-    pub const UNRESPONSIVE_TEXT: &str = "Das Plugin antwortet nicht mehr, die Spur läuft ohne dieses Gerät weiter. Die letzte Einstellung ist gesichert.";
-    /// "Neu laden" (`btnT`).
-    pub const RELOAD: &str = "Neu laden";
-    /// A missing plugin (S06 label „Plugin fehlt“).
-    pub const MISSING: &str = "Plugin fehlt";
-    /// Its text, from the S06 dialog („… nicht installiert oder liegen nicht in einem
-    /// Plugin-Ordner. Ihre Einstellungen bleiben im Projekt gespeichert …“).
-    pub const MISSING_TEXT: &str = "Nicht installiert oder nicht in einem Plugin-Ordner. Die Einstellungen bleiben im Projekt gespeichert und werden wieder geladen, sobald das Plugin gefunden wird.";
-    /// A state that failed to load (WP-45 note, the status bar's text).
-    pub const STATE_WARNING: &str = "Zustand konnte nicht geladen werden";
-    /// The drop area after the last card.
-    pub const DROP_HINT: &str = "Effekt aus dem Browser hierher ziehen";
-    /// Accessible name of the drop box, which also opens the add menu.
-    pub const ADD_DEVICE: &str = "Gerät hinzufügen";
-    /// The add menu's search field: hint and accessible name.
-    pub const ADD_SEARCH: &str = "Gerät suchen …";
-    /// The add menu with no match.
-    pub const ADD_NO_MATCH: &str = "Keine Treffer";
-    /// Accessible name of the add menu's list.
-    pub const ADD_LIST: &str = "Geräte";
-    /// Accessible name and tooltip of the ⋯ button (handoff `aria-label="Weitere Aktionen"`).
-    pub const MORE: &str = "Weitere Aktionen";
-    /// The preset button without a matching factory preset, and the menu's name.
-    pub const PRESET: &str = "Preset";
-    /// Marks a loaded preset whose values were changed since (as in the plugin window's header).
-    pub const CHANGED: &str = " *";
-    /// The page switch's accessible name.
-    pub const PAGES: &str = "Seiten";
-    /// The accessible name of the operator switch on hexa's envelope page.
-    pub const OPERATOR: &str = "Operator";
-    /// Context menu of a parameter: set it to its default (knobs and faders: the double-click).
-    pub const TO_DEFAULT: &str = "Auf Standard";
-    /// Its shortcut column.
-    pub const TO_DEFAULT_SHORTCUT: &str = "Doppelklick";
-    /// … for the controls where only the Alt-click resets (number fields, choices).
-    pub const TO_DEFAULT_ALT_SHORTCUT: &str = "Alt-Klick";
-    /// Context menu of a parameter: open the text entry.
-    pub const ENTER_VALUE: &str = "Wert eingeben";
-    /// Accessible name of a parameter's context menu.
-    pub const PARAMETER: &str = "Parameter";
-    /// Title of the FM display with free routing.
-    pub const FM_FREE: &str = "Algorithmus Frei";
-    /// Band of an EQ, in the place of a parameter („EQ · Band 2 · Spur 1“).
-    pub const BAND: &str = "Band";
-    /// The range's „bis“ („20 Hz bis 20 kHz“).
-    pub const TO: &str = "bis";
-    /// The master channel in the place of a parameter.
-    pub const MASTER: &str = "Master";
-    /// Context menu: collapse the frame to its 28 px strip.
-    pub const COLLAPSE: &str = "Einklappen";
-    /// Context menu: expand a collapsed frame.
-    pub const EXPAND: &str = "Aufklappen";
-    /// Context menu: copy the device behind itself.
-    pub const DUPLICATE: &str = "Duplizieren";
-    /// Accessible names of the chain's scrollbars.
-    pub const SCROLL_H: &str = "Geräte-Kette horizontal scrollen";
-    /// … and of the vertical one.
-    pub const SCROLL_V: &str = "Geräte-Kette vertikal scrollen";
-    /// The header button (`+ Gerät`).
-    pub const ADD: &str = "+ Gerät";
-    /// Accessible name and tooltip of the bypass switch (on = the device runs).
-    pub const ACTIVE: &str = "Aktiv";
-    /// Tooltip detail of the switch (S05 note „Schalter (Bypass)“).
-    pub const BYPASS: &str = "Bypass";
-    /// Context menu: remove the device.
-    pub const REMOVE: &str = "Entfernen";
-    /// Sampler pad context menu: pick a sample file.
-    pub const LOAD_SAMPLE: &str = "Sample laden …";
-    /// Sampler pad context menu for a missing sample: look for the file.
-    pub const SEARCH: &str = "Suchen …";
-    /// Sampler pad context menu: empty the pad.
-    pub const REMOVE_SAMPLE: &str = "Sample entfernen";
-    /// Under a pad whose sample file is gone.
-    pub const PAD_MISSING: &str = "fehlt";
-    /// Under a pad whose sample is loading.
-    pub const PAD_LOADING: &str = "Lädt …";
-    /// Under a pad whose sample could not be read.
-    pub const PAD_FAILED: &str = "Fehler";
-    /// The waveform's title for a pad without a sample.
-    pub const NO_SAMPLE: &str = "kein Sample";
-    /// Accessible name of the context menu and prefix of a card's group.
-    pub const DEVICE: &str = "Gerät";
-    /// Accessible name of the card row.
-    pub const CHAIN: &str = "Geräte-Kette";
+/// Marks a loaded preset whose values were changed since (as in the plugin window's header).
+pub const CHANGED: &str = " *";
 
-    /// „5 Geräte · Signal läuft von links nach rechts“.
-    pub fn info(count: usize) -> String {
-        let devices = if count == 1 { "Gerät" } else { "Geräte" };
-        format!("{count} {devices} · Signal läuft von links nach rechts")
+/// The name of a widget kind (handoff §4), shown by the placeholder of the graph (WP-84).
+pub fn widget_name(lang: Lang, kind: super::layout::WidgetKind) -> &'static str {
+    use super::layout::WidgetKind as K;
+    match kind {
+        K::Knob => lang.devices_widget_knob(),
+        K::KnobLarge => lang.devices_widget_knob_large(),
+        K::Number => lang.devices_widget_number(),
+        K::Segment => lang.devices_widget_segment(),
+        K::ToggleButton => lang.devices_widget_toggle_button(),
+        K::Dropdown => lang.devices_widget_dropdown(),
+        K::MiniFader => lang.devices_widget_mini_fader(),
+        K::MeterGr => lang.devices_widget_meter_gr(),
+        K::PadGrid => lang.devices_widget_pad_grid(),
+        K::FmAlgorithm => lang.devices_widget_fm_algorithm(),
+        K::ColumnSelect => lang.devices_widget_column_select(),
+        K::Graph => lang.devices_widget_graph(),
     }
+}
 
-    /// The accessible name of the preset button: „Preset: Glas-Glocke“ (handoff `aria-label`).
-    pub fn preset(name: &str) -> String {
-        format!("{PRESET}: {name}")
-    }
-
-    /// The accessible name of a collapsed frame (handoff `collapsed()`: „… aufklappen“).
-    pub fn expand(name: &str) -> String {
-        format!("{name} aufklappen")
-    }
-
-    /// The accessible name of a chain head entry: „Gerät hexa anzeigen“.
-    pub fn reveal(name: &str) -> String {
-        format!("{DEVICE} {name} anzeigen")
-    }
-
-    /// The name of a widget kind (handoff §4), shown by the placeholder of the graph (WP-84).
-    pub fn widget(kind: super::layout::WidgetKind) -> &'static str {
-        use super::layout::WidgetKind as K;
-        match kind {
-            K::Knob => "Regler",
-            K::KnobLarge => "Großer Regler",
-            K::Number => "Zahlenfeld",
-            K::Segment => "Umschalter",
-            K::ToggleButton => "Schalt-Button",
-            K::Dropdown => "Dropdown",
-            K::MiniFader => "Mini-Fader",
-            K::MeterGr => "GR-Meter",
-            K::PadGrid => "Pad-Raster",
-            K::FmAlgorithm => "FM-Algorithmus",
-            K::ColumnSelect => "Spaltenwahl",
-            K::Graph => "Graph",
-        }
-    }
-
-    /// Readout name in the compressor graph's strip while an external sidechain source is set
-    /// (shown over [`DETECTOR_EXTERNAL`]; reads „Detektor: Extern“). en draft: "Detector: External".
-    pub const DETECTOR: &str = "Detektor";
-    /// Readout value for [`DETECTOR`]. en draft: "External".
-    pub const DETECTOR_EXTERNAL: &str = "Extern";
-    /// The title of volt's filter graph (followed by the type) and of its LFO graph.
-    pub const FILTER: &str = "Filter";
-    /// See [`FILTER`].
-    pub const LFO: &str = "LFO";
-
-    /// The accessible name of operator column `n`: „Operator 3“.
-    pub fn operator(n: usize) -> String {
-        format!("{OPERATOR} {n}")
-    }
-
-    /// An empty sampler pad: „Pad 3“.
-    pub fn pad(n: usize) -> String {
-        format!("Pad {n}")
-    }
-
-    /// The accessible name of a pad's context menu: „Pad Kick“.
-    pub fn pad_menu(name: &str) -> String {
-        format!("Pad {name}")
-    }
-
-    /// The waveform's title: „Pad 1 · Kick“ or „Pad 1 · kein Sample“.
-    pub fn waveform_title(pad: usize, sample: &str) -> String {
-        let sample = if sample.is_empty() { NO_SAMPLE } else { sample };
-        format!("Pad {pad} · {sample}")
-    }
-
-    /// The sidechain chip's text (`SC`).
-    pub const SC: &str = "SC";
-    /// Tooltip of the chip.
-    pub const SC_TIP: &str = "Sidechain: Das Signal einer anderen Spur steuert dieses Gerät.";
-    /// Accessible name of the chip without a source.
-    pub const SC_OFF: &str = "Sidechain: aus";
-    /// Accessible name and name of the popover's list.
-    pub const SC_SOURCE: &str = "Sidechain-Quelle";
-    /// The popover's first row: the device's own input.
-    pub const SC_INTERNAL: &str = "— (intern: Eingangssignal)";
-    /// The popover's section of the tap.
-    pub const SC_TAP: &str = "Abgriff";
-    /// Tap before the source's fader (the default).
-    pub const SC_PRE: &str = "Vor Fader";
-    /// Tap after the source's fader.
-    pub const SC_POST: &str = "Nach Fader";
-    /// Hint under the tap while it is „Vor Fader“.
-    pub const SC_PRE_HINT: &str = "Vor Fader: Mute der Quelle ändert nichts";
-    /// Hint under the tap while it is „Nach Fader“.
-    pub const SC_POST_HINT: &str = "Nach Fader: folgt Fader und Stumm, nicht Solo";
-    /// Context menu of the chip: back to the internal input.
-    pub const SC_REMOVE: &str = "Quelle entfernen";
-    /// „Bass (diese Spur)“: the track that holds the device.
-    pub const SC_THIS_TRACK: &str = "diese Spur";
-
-    /// „Sidechain: Drums“.
-    pub fn sc_chip(source: &str) -> String {
-        format!("Sidechain: {source}")
-    }
-
-    /// The accessible name of a source row that cannot be chosen: „Hall, nicht möglich: Rückkopplung“.
-    pub fn sc_blocked(name: &str) -> String {
-        format!("{name}, nicht möglich: Rückkopplung")
-    }
-
-    /// The reason for the tooltip when the source is the track that holds the device.
-    pub fn sc_reason_self(name: &str) -> String {
-        format!("Nicht möglich: „{name}“ ist die Spur dieses Geräts (Rückkopplung).")
-    }
-
-    /// … when the source is a group that contains it.
-    pub fn sc_reason_group(name: &str) -> String {
-        format!("Nicht möglich: „{name}“ enthält diese Spur (Rückkopplung).")
-    }
-
-    /// … when the source is fed by the device's track.
-    pub fn sc_reason_fed(name: &str, holder: &str) -> String {
-        format!("Nicht möglich: „{holder}“ gibt schon an „{name}“ aus (Rückkopplung).")
-    }
-
-    /// The accessible name of a card: „Gerät Surge XT“.
-    pub fn card(name: &str) -> String {
-        format!("{DEVICE} {name}")
-    }
+/// The waveform's title: „Pad 1 · Kick“ or „Pad 1 · kein Sample“.
+pub fn waveform_title(lang: Lang, pad: usize, sample: &str) -> String {
+    let sample = if sample.is_empty() {
+        lang.devices_no_sample()
+    } else {
+        sample
+    };
+    lang.devices_waveform_title(pad, sample)
 }
 
 /// The runtime state a card shows.
@@ -286,19 +80,25 @@ impl From<DeviceStatus> for CardState {
 /// The title and text of a failed device's card, and of the S05 frame's body: a crash reads
 /// „Abgestürzt“; a plugin that cannot load or does not answer must not (owner test 2026-11-14),
 /// it reads „Lässt sich nicht laden“ with the reason, or „Hängt“.
-pub fn failure_texts(reason: &FailReason) -> (&'static str, String) {
+pub fn failure_texts(lang: Lang, reason: &FailReason) -> (&'static str, String) {
     match reason {
-        FailReason::Exited { .. } => (names::CRASHED, names::CRASHED_TEXT.to_owned()),
+        FailReason::Exited { .. } => (
+            lang.devices_crashed(),
+            lang.devices_crashed_text().to_owned(),
+        ),
         FailReason::LoadFailed(why) => {
             let why = why.trim();
             let text = if why.is_empty() {
-                names::LOAD_FAILED_TEXT.to_owned()
+                lang.devices_load_failed_text().to_owned()
             } else {
-                format!("{} ({why})", names::LOAD_FAILED_TEXT)
+                format!("{} ({why})", lang.devices_load_failed_text())
             };
-            (names::LOAD_FAILED, text)
+            (lang.devices_load_failed(), text)
         }
-        FailReason::Unresponsive => (names::UNRESPONSIVE, names::UNRESPONSIVE_TEXT.to_owned()),
+        FailReason::Unresponsive => (
+            lang.devices_unresponsive(),
+            lang.devices_unresponsive_text().to_owned(),
+        ),
     }
 }
 
@@ -444,11 +244,11 @@ impl Card {
     }
 
     /// The open button's label, `None` while it is hidden (loading, crashed, missing).
-    pub fn open_label(&self) -> Option<&'static str> {
+    pub fn open_label(&self, lang: Lang) -> Option<&'static str> {
         match self.state {
-            CardState::Ok if self.open => Some(names::OPENED),
-            CardState::Ok if self.has_gui => Some(names::OPEN),
-            CardState::Ok => Some(names::PARAMS),
+            CardState::Ok if self.open => Some(lang.devices_opened()),
+            CardState::Ok if self.has_gui => Some(lang.devices_open()),
+            CardState::Ok => Some(lang.devices_params()),
             _ => None,
         }
     }
@@ -473,27 +273,27 @@ pub struct TouchedParam {
 }
 
 /// The band or operator an id belongs to: `b2_freq` → „Band 2“, `op3_ratio` → „Operator 3“.
-pub fn place_of(id: &ParamId) -> Option<String> {
+pub fn place_of(lang: Lang, id: &ParamId) -> Option<String> {
     let (head, _) = id.as_str().split_once('_')?;
     let number = |prefix: &str| {
         head.strip_prefix(prefix)
             .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     };
     if let Some(n) = number("op") {
-        Some(format!("{} {n}", names::OPERATOR))
+        Some(lang.devices_operator_n(n))
     } else {
-        number("b").map(|n| format!("{} {n}", names::BAND))
+        number("b").map(|n| format!("{} {n}", lang.devices_band()))
     }
 }
 
 /// The text of a parameter's range: „20 Hz bis 20 kHz“, „Aus · An“, the choices of an enum.
-pub fn range_text(info: &ParamInfo) -> String {
+pub fn range_text(lang: Lang, info: &ParamInfo) -> String {
     match &info.kind {
         ParamKind::Bool => format!("{} · {}", info.format(0.0), info.format(1.0)),
         ParamKind::Enum(choices) => choices.join(" · "),
         _ => {
             let (min, max) = info.range();
-            format!("{} {} {}", info.format(min), names::TO, info.format(max))
+            lang.devices_range(info.format(min), info.format(max))
         }
     }
 }
@@ -501,6 +301,7 @@ pub fn range_text(info: &ParamInfo) -> String {
 /// What the touched parameter `touch` is now, `None` when its device is gone, not running, or the
 /// parameter is unknown to it.
 pub fn touched(
+    lang: Lang,
     project: &komponist_model::Project,
     host: &dyn DeviceHost,
     windows: &[PluginWindow],
@@ -512,10 +313,10 @@ pub fn touched(
     let p = card.param(&touch.param)?;
     let (track, track_name) = match channel {
         ChannelRef::Track(t) => (Some(t), project.track(t)?.name.clone()),
-        ChannelRef::Master => (None, names::MASTER.to_owned()),
+        ChannelRef::Master => (None, lang.devices_master().to_owned()),
     };
     let mut parts = vec![card.name.clone()];
-    parts.extend(place_of(&p.info.id));
+    parts.extend(place_of(lang, &p.info.id));
     parts.push(track_name);
     Some(TouchedParam {
         track,
@@ -523,7 +324,7 @@ pub fn touched(
         place: parts.join(" · "),
         value: p.text.clone(),
         default: p.info.format(p.info.default),
-        range: range_text(&p.info),
+        range: range_text(lang, &p.info),
     })
 }
 
@@ -1061,11 +862,11 @@ mod tests {
         assert_eq!(hexa.tag, "INTERN");
         assert_eq!(hexa.params.len(), komponist_builtin::device::params().len());
         assert_eq!(hexa.params[0].name(), "Algorithmus");
-        assert_eq!(hexa.open_label(), Some(names::PARAMS));
+        assert_eq!(hexa.open_label(Lang::De), Some(Lang::De.devices_params()));
         // Without plugin manager the effects are missing; TAL is bypassed.
         assert_eq!(cards[1].state, CardState::Missing);
         assert_eq!(cards[1].frame_width(0.0), 252.0);
-        assert_eq!(cards[1].open_label(), None);
+        assert_eq!(cards[1].open_label(Lang::De), None);
         assert!(cards[2].bypass);
         assert_eq!(first_effect_slot(&cards), 1);
     }
@@ -1163,7 +964,7 @@ mod tests {
 
     #[test]
     fn the_place_of_a_parameter_names_its_band_or_operator() {
-        let place = |id: &str| place_of(&ParamId::new(id));
+        let place = |id: &str| place_of(Lang::De, &ParamId::new(id));
         assert_eq!(place("b2_freq").as_deref(), Some("Band 2"));
         assert_eq!(place("op3_ratio").as_deref(), Some("Operator 3"));
         assert_eq!(place("op12_level").as_deref(), Some("Operator 12"));
@@ -1177,16 +978,16 @@ mod tests {
         use komponist_model::params::Unit;
         let hz =
             ParamInfo::new("f", "Frequenz", ParamKind::lin(20.0, 20_000.0), 1_000.0).unit(Unit::Hz);
-        assert_eq!(range_text(&hz), "20 Hz bis 20 kHz");
+        assert_eq!(range_text(Lang::De, &hz), "20 Hz bis 20 kHz");
         let on = ParamInfo::new("b", "Schalter", ParamKind::Bool, 0.0);
-        assert_eq!(range_text(&on), "Aus · Ein");
+        assert_eq!(range_text(Lang::De, &on), "Aus · Ein");
         let mode = ParamInfo::new(
             "m",
             "Modus",
             ParamKind::Enum(vec!["Auf".into(), "Ab".into()]),
             0.0,
         );
-        assert_eq!(range_text(&mode), "Auf · Ab");
+        assert_eq!(range_text(Lang::De, &mode), "Auf · Ab");
     }
     #[test]
     fn the_spectrum_shows_only_for_a_running_eq_with_analyse_on() {

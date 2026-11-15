@@ -10,9 +10,9 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, EditAction, UiAction};
 use komponist_builtin::Internal;
+use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewBus, NewDevice, NewTrack};
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, Sidechain, Tap, TrackId};
 
@@ -186,7 +186,7 @@ fn the_tap_segments_change_the_tap_and_keep_the_source() {
     let rect = chip(&h, "Sidechain: Drums").rect();
     click(&mut h, rect.center());
     let post = h
-        .get_by_role_and_label(Role::RadioButton, names::SC_POST)
+        .get_by_role_and_label(Role::RadioButton, de::ROUTING_POST)
         .rect();
     click(&mut h, post.center());
     assert_eq!(
@@ -198,7 +198,7 @@ fn the_tap_segments_change_the_tap_and_keep_the_source() {
     );
     // The tap stays open for more; „— (intern …)“ clears the source.
     let none = h
-        .get_by_role_and_label(Role::MenuItemRadio, names::SC_INTERNAL)
+        .get_by_role_and_label(Role::MenuItemRadio, de::DEVICES_SC_INTERNAL)
         .rect();
     click(&mut h, none.center());
     assert_eq!(sidechain_of(h.state(), s.presse), None);
@@ -222,7 +222,7 @@ fn sources_that_close_a_loop_are_disabled_with_their_reason() {
         // The popover stays open.
         h.get_by_role_and_label(Role::MenuItemRadio, "Drums");
     }
-    for name in ["Drums", "Lead", names::SC_INTERNAL] {
+    for name in ["Drums", "Lead", de::DEVICES_SC_INTERNAL] {
         let row = h.get_by_role_and_label(Role::MenuItemRadio, name);
         assert!(!row.accesskit_node().is_disabled(), "{name}");
     }
@@ -260,7 +260,10 @@ fn a_device_without_a_sidechain_input_has_no_chip() {
         .count();
     // presse has one, the EQ does not.
     assert_eq!(chips, 1);
-    let eq = h.get_by_role_and_label(Role::Group, names::card(Internal::Eq.name()).leak());
+    let eq = h.get_by_role_and_label(
+        Role::Group,
+        Lang::De.devices_card(Internal::Eq.name()).leak(),
+    );
     assert!(eq.query_all_by_role(Role::Button).all(|b| {
         !b.accesskit_node()
             .label()
@@ -292,7 +295,7 @@ fn the_context_menu_of_the_chip_removes_the_source() {
     }
     h.run_steps(3);
     let item = h
-        .get_by_role_and_label(Role::MenuItem, names::SC_REMOVE)
+        .get_by_role_and_label(Role::MenuItem, de::DEVICES_SC_REMOVE)
         .rect();
     click(&mut h, item.center());
     assert_eq!(sidechain_of(h.state(), s.presse), None);
@@ -334,7 +337,7 @@ fn snapshots_of_the_head_with_the_chip_off_on_and_the_popover_open() {
 
     // The post-fader tap shows its hint: it follows fader and mute, not solo.
     let post = h
-        .get_by_role_and_label(Role::RadioButton, names::SC_POST)
+        .get_by_role_and_label(Role::RadioButton, de::ROUTING_POST)
         .rect();
     click(&mut h, post.center());
     h.run_steps(3);

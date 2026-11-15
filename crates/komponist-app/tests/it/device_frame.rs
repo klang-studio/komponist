@@ -11,8 +11,8 @@ use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::{DockTab, FocusArea};
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, EditAction, UiAction};
+use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{DeviceId, TrackId};
 use komponist_tokens::{device, size};
@@ -61,7 +61,7 @@ fn chain(app: &App, track: TrackId) -> Vec<DeviceId> {
 }
 
 fn frame(h: &Harness<'_, App>, name: &str) -> Rect {
-    h.get_by_role_and_label(Role::Group, &names::card(name))
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card(name))
         .rect()
 }
 
@@ -122,7 +122,9 @@ fn a_frame_is_244_high_and_as_wide_as_its_columns() {
         device::frame::TOTAL_H
     );
     // The chain head: padding 10 above the frames, drop slot 120 wide behind them.
-    let chain = h.get_by_role_and_label(Role::Group, names::CHAIN).rect();
+    let chain = h
+        .get_by_role_and_label(Role::Group, de::DEVICES_CHAIN)
+        .rect();
     let first = frame(&h, "hexa");
     assert_eq!(first.left() - chain.left(), device::chain::PADDING);
     assert_eq!(first.top() - chain.top(), device::chain::PADDING);
@@ -134,14 +136,17 @@ fn a_frame_is_244_high_and_as_wide_as_its_columns() {
 fn a_frame_has_power_menu_and_the_instrument_a_preset() {
     let (app, ..) = lead();
     let h = harness(app);
-    let (synth_name, eq_name) = (names::card("hexa"), names::card("LSP Para EQ x8"));
+    let (synth_name, eq_name) = (
+        Lang::De.devices_card("hexa"),
+        Lang::De.devices_card("LSP Para EQ x8"),
+    );
     let synth = h.get_by_role_and_label(Role::Group, &synth_name);
-    synth.get_by_role_and_label(Role::Switch, names::ACTIVE);
-    synth.get_by_role_and_label(Role::Button, names::MORE);
-    synth.get_by_role_and_label(Role::Button, &names::preset("Init"));
+    synth.get_by_role_and_label(Role::Switch, de::DEVICES_ACTIVE);
+    synth.get_by_role_and_label(Role::Button, de::DEVICES_MORE);
+    synth.get_by_role_and_label(Role::Button, &Lang::De.devices_preset_name("Init"));
     let eq = h.get_by_role_and_label(Role::Group, &eq_name);
-    eq.get_by_role_and_label(Role::Switch, names::ACTIVE);
-    eq.get_by_role_and_label(Role::Button, names::MORE);
+    eq.get_by_role_and_label(Role::Switch, de::DEVICES_ACTIVE);
+    eq.get_by_role_and_label(Role::Button, de::DEVICES_MORE);
     assert!(eq.query_by_label_contains("Preset").is_none());
 }
 
@@ -157,7 +162,10 @@ fn double_click_collapses_alt_double_click_all_and_a_click_on_the_strip_expands(
         (strip.width(), strip.height()),
         (device::frame::COLLAPSED_W, device::frame::TOTAL_H)
     );
-    h.get_by_role_and_label(Role::Button, &names::expand("LSP Para EQ x8"));
+    h.get_by_role_and_label(
+        Role::Button,
+        &Lang::De.devices_expand_name("LSP Para EQ x8"),
+    );
     // The strip's own click expands it again.
     click(
         &mut h,
@@ -192,8 +200,8 @@ fn bypass_dims_the_body_but_keeps_it_operable() {
     );
     // The power square switches it on again.
     let power = h
-        .get_by_role_and_label(Role::Group, &names::card("TAL-Chorus-LX"))
-        .get_by_role_and_label(Role::Switch, names::ACTIVE)
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("TAL-Chorus-LX"))
+        .get_by_role_and_label(Role::Switch, de::DEVICES_ACTIVE)
         .rect();
     click(&mut h, power.center(), Modifiers::NONE, 1);
     assert!(!h.state().project().find_device(tal).unwrap().2.bypass);
@@ -334,7 +342,7 @@ fn the_chain_head_lists_the_devices_and_a_click_scrolls_there() {
     // it scrolls the chain.
     assert_eq!(h.state().ui().devices.scroll_x, 0.0);
     let entries: Vec<_> = h
-        .get_all_by_role_and_label(Role::Button, &names::reveal("LSP Para EQ x8"))
+        .get_all_by_role_and_label(Role::Button, &Lang::De.devices_reveal("LSP Para EQ x8"))
         .map(|n| n.rect())
         .collect();
     assert_eq!(entries.len(), 4, "the EQ and its three copies");
@@ -344,7 +352,7 @@ fn the_chain_head_lists_the_devices_and_a_click_scrolls_there() {
     assert!(h.state().ui().devices.scroll_x > 0.0);
     let _ = last;
     // The scrollbar is there while there is something to scroll.
-    h.get_by_role_and_label(Role::ScrollBar, names::SCROLL_H);
+    h.get_by_role_and_label(Role::ScrollBar, de::DEVICES_SCROLL_H);
 }
 
 #[test]
@@ -366,7 +374,7 @@ fn below_a_320_px_dock_the_chain_scrolls_vertically() {
     h.run_steps(3);
     assert!(h.state().ui().devices.scroll_y > 0.0);
     assert!(frame(&h, "hexa").top() < before.top());
-    h.get_by_role_and_label(Role::ScrollBar, names::SCROLL_V);
+    h.get_by_role_and_label(Role::ScrollBar, de::DEVICES_SCROLL_V);
 }
 
 #[test]
@@ -386,7 +394,7 @@ fn at_320_px_nothing_scrolls() {
     h.run_steps(3);
     assert_eq!(h.state().ui().devices.scroll_y, 0.0);
     assert!(
-        h.query_by_role_and_label(Role::ScrollBar, names::SCROLL_V)
+        h.query_by_role_and_label(Role::ScrollBar, de::DEVICES_SCROLL_V)
             .is_none()
     );
 }
@@ -397,14 +405,8 @@ fn a_mixer_insert_of_an_internal_device_jumps_to_the_geraete_tab() {
     app.dispatch(Action::Ui(UiAction::ToggleMixer));
     let mut h = harness(app);
     let slot = h
-        .get_by_role_and_label(
-            Role::Group,
-            &komponist_app::views::mixer::model::names::strip("Lead"),
-        )
-        .get_by_role_and_label(
-            Role::Button,
-            &komponist_app::views::mixer::model::names::insert("hexa"),
-        )
+        .get_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Lead"))
+        .get_by_role_and_label(Role::Button, &Lang::De.mixer_insert("hexa"))
         .rect();
     click(&mut h, slot.center(), Modifiers::NONE, 1);
     h.run_steps(3);
@@ -420,14 +422,8 @@ fn a_mixer_insert_of_an_internal_device_jumps_to_the_geraete_tab() {
     h.state_mut().dispatch(Action::Ui(UiAction::ToggleMixer));
     h.run_steps(3);
     let eq = h
-        .get_by_role_and_label(
-            Role::Group,
-            &komponist_app::views::mixer::model::names::strip("Lead"),
-        )
-        .get_by_role_and_label(
-            Role::Button,
-            &komponist_app::views::mixer::model::names::insert("LSP Para EQ x8"),
-        )
+        .get_by_role_and_label(Role::Group, &Lang::De.mixer_strip("Lead"))
+        .get_by_role_and_label(Role::Button, &Lang::De.mixer_insert("LSP Para EQ x8"))
         .rect();
     click(&mut h, eq.center(), Modifiers::NONE, 1);
     assert!(
@@ -456,9 +452,11 @@ fn the_reveal_centres_a_device_in_a_long_chain() {
     h.state_mut()
         .dispatch(Action::Ui(UiAction::RevealDevice(far)));
     h.run_steps(4);
-    let body = h.get_by_role_and_label(Role::Group, names::CHAIN).rect();
+    let body = h
+        .get_by_role_and_label(Role::Group, de::DEVICES_CHAIN)
+        .rect();
     let frames: Vec<Rect> = h
-        .get_all_by_role_and_label(Role::Group, &names::card("LSP Para EQ x8"))
+        .get_all_by_role_and_label(Role::Group, &Lang::De.devices_card("LSP Para EQ x8"))
         .map(|n| n.rect())
         .collect();
     let last = frames.last().unwrap();

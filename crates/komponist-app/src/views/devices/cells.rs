@@ -42,7 +42,7 @@ use super::layout::{
     BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, SEL, WidgetKind,
 };
 use super::metrics;
-use super::model::{Card, Param, names};
+use super::model::{self, Card, Param};
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::views::mixer::{Touch, gesture_actions, gesture_touch};
 use komponist_builtin::sampler::PadStatus;
@@ -225,6 +225,7 @@ fn touch(
     double_click_resets: bool,
     change: Option<f64>,
 ) {
+    let t = komponist_ui::lang(cu.ctx());
     gesture_actions(
         r,
         change.is_some(),
@@ -239,19 +240,21 @@ fn touch(
     if r.is_pointer_button_down_on() || r.drag_stopped() || r.clicked() {
         out.push(touch_action(card, p, r.dragged()));
     }
-    let mut enter = Entry::action(names::ENTER_VALUE, ParamMenu::Enter);
+    let mut enter = Entry::action(t.devices_enter_value(), ParamMenu::Enter);
     if entry.is_none() {
         enter = enter.disabled();
     }
     let entries = [
-        Entry::action(names::TO_DEFAULT, ParamMenu::Default).shortcut(if double_click_resets {
-            names::TO_DEFAULT_SHORTCUT
-        } else {
-            names::TO_DEFAULT_ALT_SHORTCUT
-        }),
+        Entry::action(t.devices_to_default(), ParamMenu::Default).shortcut(
+            if double_click_resets {
+                t.devices_to_default_shortcut()
+            } else {
+                t.devices_to_default_alt_shortcut()
+            },
+        ),
         enter,
     ];
-    match ContextMenu::new(names::PARAMETER, &entries).show_on(r) {
+    match ContextMenu::new(t.devices_parameter(), &entries).show_on(r) {
         Some(ParamMenu::Default) => {
             set(out, card, p, p.info.default);
             out.push(touch_action(card, p, false));
@@ -591,12 +594,13 @@ fn select_segment(
     ctx: &ParamContext,
     rect: Rect,
 ) {
+    let t = komponist_ui::lang(cu.ctx());
     let labels: Vec<String> = (1..=count).map(|n| n.to_string()).collect();
     let options: Vec<SegmentOption<'_>> = labels.iter().map(|n| SegmentOption::text(n)).collect();
     let mut selected = selected_entry(ctx, key, count) - 1;
     let r = cu.put(
         rect,
-        Segment::new(names::OPERATOR, &options, &mut selected).cols(cell.cols),
+        Segment::new(t.devices_operator(), &options, &mut selected).cols(cell.cols),
     );
     if r.changed() && set_context(cu.ctx(), card.device, key, selected + 1) {
         cu.ctx().request_repaint();
@@ -672,6 +676,7 @@ fn column_select(
     ctx: &ParamContext,
     rect: Rect,
 ) {
+    let t = komponist_ui::lang(cu.ctx());
     let selected = selected_entry(ctx, key, count);
     let step = device::grid::CELL[0] + device::grid::GAP;
     let pressed = cu.input(|i| {
@@ -686,7 +691,7 @@ fn column_select(
             egui::pos2(left, rect.top()),
             egui::pos2(left + device::grid::CELL[0], rect.bottom()),
         );
-        let name = names::operator(n);
+        let name = t.devices_operator_n(n);
         let r = cu.interact(
             column,
             slot(cu, cell, "column").with(n),
@@ -745,6 +750,7 @@ fn pads(
     palette: &TrackPalette,
     rect: Rect,
 ) {
+    let t = komponist_ui::lang(cu.ctx());
     let count = usize::from(cell.cols) * usize::from(cell.rows);
     let ctx = context(cu.ctx(), card.device);
     let selected = selected_entry(&ctx, SEL, count.min(255) as u8) - 1;
@@ -753,16 +759,16 @@ fn pads(
     let names: Vec<String> = (0..count)
         .map(|i| match views(i).filter(|v| !v.name.trim().is_empty()) {
             Some(v) => v.name.clone(),
-            None if sampler.is_some() => names::pad(i + 1),
+            None if sampler.is_some() => t.devices_pad(i + 1),
             None => (i + 1).to_string(),
         })
         .collect();
     let notes: Vec<String> = (0..count)
         .map(|i| match (sampler, views(i).map(|v| &v.status)) {
             (None, _) => String::new(),
-            (_, Some(PadStatus::Missing)) => names::PAD_MISSING.to_owned(),
-            (_, Some(PadStatus::Loading)) => names::PAD_LOADING.to_owned(),
-            (_, Some(PadStatus::Failed(_))) => names::PAD_FAILED.to_owned(),
+            (_, Some(PadStatus::Missing)) => t.devices_pad_missing().to_owned(),
+            (_, Some(PadStatus::Loading)) => t.devices_pad_loading().to_owned(),
+            (_, Some(PadStatus::Failed(_))) => t.devices_pad_failed().to_owned(),
             _ => note_name(komponist_builtin::sampler::note_of_pad(i)),
         })
         .collect();
@@ -813,15 +819,15 @@ fn pads(
     for (i, response) in shown.pads.iter().enumerate() {
         let status = sampler.pads.get(i).map(|v| &v.status);
         let pick = match status {
-            Some(PadStatus::Missing) => names::SEARCH,
-            _ => names::LOAD_SAMPLE,
+            Some(PadStatus::Missing) => t.devices_search(),
+            _ => t.devices_load_sample(),
         };
-        let mut clear = Entry::action(names::REMOVE_SAMPLE, PadMenu::Clear);
+        let mut clear = Entry::action(t.devices_remove_sample(), PadMenu::Clear);
         if matches!(status, None | Some(PadStatus::Empty)) {
             clear = clear.disabled();
         }
         let entries = [Entry::action(pick, PadMenu::Pick), clear];
-        match ContextMenu::new(&names::pad_menu(&names[i]), &entries).show_on(response) {
+        match ContextMenu::new(&t.devices_pad_menu(&names[i]), &entries).show_on(response) {
             Some(PadMenu::Pick) => out.push(Action::Plugin(PluginAction::PickSample {
                 device: card.device,
                 pad: i,
@@ -845,6 +851,7 @@ fn fm(
     palette: &TrackPalette,
     rect: Rect,
 ) {
+    let t = komponist_ui::lang(cu.ctx());
     let ctx = context(cu.ctx(), card.device);
     let selected = selected_entry(&ctx, ENV_OP, ALGORITHMS[0].modulates.len() as u8) - 1;
     // Algorithm 0 is free routing: the display draws the routing the patch really has.
@@ -867,7 +874,7 @@ fn fm(
     };
     let mut display = FmAlgorithm::new(number, topology, palette);
     if free {
-        display = display.titled(names::FM_FREE);
+        display = display.titled(t.devices_fm_free());
     }
     let out = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |cu| {
@@ -991,6 +998,7 @@ fn graph(
     ctx: &ParamContext,
     rect: Rect,
 ) -> bool {
+    let t = komponist_ui::lang(cu.ctx());
     let CellParam::Graph(binding) = &cell.param else {
         return false;
     };
@@ -1001,12 +1009,12 @@ fn graph(
     match binding.config {
         GraphConfig::FilterVa => {
             if let Some(kind) = text_of("type") {
-                title = format!("{} · {kind}", names::FILTER);
+                title = format!("{} · {kind}", t.devices_filter());
             }
         }
         GraphConfig::LfoShape => {
             if let (Some(shape), Some(n)) = (text_of("shape"), ctx.get(LFO_VIEW)) {
-                title = format!("{} {n} · {shape}", names::LFO);
+                title = format!("{} {n} · {shape}", t.devices_lfo());
             }
         }
         _ => {}
@@ -1018,7 +1026,7 @@ fn graph(
         .flatten()
         .and_then(|s| Some((s.pads.get(pad)?, s.playheads.get(pad).copied().flatten())));
     if let Some((view, _)) = sample {
-        title = names::waveform_title(pad + 1, &view.name);
+        title = model::waveform_title(t, pad + 1, &view.name);
     }
     let length = sample
         .map(|(v, _)| v.length_s)
@@ -1093,7 +1101,7 @@ fn graph(
     }
     // presse with an external sidechain source: the detector listens to that source.
     let detector_note = (binding.config == GraphConfig::Compressor && card.sidechain.is_some())
-        .then_some((names::DETECTOR, names::DETECTOR_EXTERNAL));
+        .then_some((t.devices_detector(), t.devices_detector_external()));
     let look = if card.bypass {
         Look::Bypass
     } else {
@@ -1190,7 +1198,7 @@ fn eq_event<'c>(
             let Some(n) = free else { return };
             // Four parameters, one undo step.
             out.push(Action::Edit(EditAction::BeginGesture {
-                label: names::UNDO_BAND_ADD.to_owned(),
+                label: "undo-add-band".to_owned(),
             }));
             for (what, v) in [("freq", x), ("gain", y), ("type", band::BELL), ("on", 1.0)] {
                 if let Some(p) = band_param(n, what) {
@@ -1211,9 +1219,10 @@ fn eq_event<'c>(
 /// The placeholder of a cell without a widget (a widget kind the parameter does not fit): a
 /// `surface.1` box with the kind's name and the parameter's.
 fn placeholder(cu: &mut Ui, cell: &Cell, param: Option<&Param>, rect: Rect) {
+    let t = komponist_ui::lang(cu.ctx());
     let ppp = cu.pixels_per_point();
     px::fill(cu.painter(), rect, radius::M, color32(color::SURFACE_1));
-    let kind = names::widget(cell.widget);
+    let kind = model::widget_name(t, cell.widget);
     let label = match param {
         Some(p) => format!("{kind} {}", p.name()),
         None => kind.to_owned(),

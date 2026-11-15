@@ -26,7 +26,6 @@ use komponist_ui::{px, widgets};
 use std::sync::Arc;
 
 use super::metrics as m;
-use super::names;
 use super::pattern::{self, Gesture, PressMods};
 use super::{Areas, Open, row_pitch};
 use crate::actions::{Action, EditAction, SelectionChange, TransportAction, UiAction};
@@ -436,7 +435,7 @@ fn header(
     let selected = open.cursor.is_some_and(|c| c.row == r);
     let id = Id::unique(("komponist_step_row", open.clip, r));
     let response = ui.interact(rect, id, Sense::CLICK);
-    let label = names::row(name);
+    let label = ctx.lang.step_seq_row(name);
     response.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, &label));
 
     // Paint.
@@ -568,14 +567,14 @@ fn toggle_event(
             let held = !pointer.up;
             if held && !state.toggle_gesture {
                 ctx.send(Action::Edit(EditAction::BeginGesture {
-                    label: "Zeile ändern".to_owned(),
+                    label: "undo-change-row".to_owned(),
                 }));
                 state.toggle_gesture = true;
             }
             if exclusive {
                 if !held {
                     ctx.send(Action::Edit(EditAction::BeginGesture {
-                        label: "Zeile ändern".to_owned(),
+                        label: "undo-change-row".to_owned(),
                     }));
                 }
                 for row in 0..open.pattern.rows.len() {
@@ -634,7 +633,7 @@ fn cells(
                 Role::CheckBox,
                 true,
                 step.on,
-                pattern::step_name(i, name, step),
+                pattern::step_name(ctx.lang, i, name, step),
             )
         });
         if is_selected {

@@ -9,9 +9,9 @@ use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::ui_state::DockTab;
-use komponist_app::views::devices::model::names;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_builtin::Internal;
+use komponist_i18n::Lang;
 use komponist_model::params::ParamId;
 use komponist_model::{DeviceId, DeviceRole, Project};
 
@@ -141,8 +141,8 @@ fn snapshot_of_the_three_pages() {
 const CARD: &str = "volt";
 
 fn card<'h>(h: &'h Harness<'_, App>) -> egui_kittest::Node<'h> {
-    // The accessible name of the card (`names::card`) lives as long as the harness' tree.
-    let name: &'static str = Box::leak(names::card(CARD).into_boxed_str());
+    // The accessible name of the card (`devices_card`) lives as long as the harness' tree.
+    let name: &'static str = Box::leak(Lang::De.devices_card(CARD).into_boxed_str());
     h.get_by_role_and_label(Role::Group, name)
 }
 

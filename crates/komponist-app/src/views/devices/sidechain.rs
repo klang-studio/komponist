@@ -18,6 +18,7 @@ use egui::{
     Align2, Area, Context, Id, Key, Modifiers, Order, Rect, Response, Role, Sense, Ui, UiKind,
     WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::routing;
 use komponist_model::{ChannelRef, DeviceId, Project, Sidechain, Tap, TrackId};
 use komponist_tokens::egui_support::color32;
@@ -30,7 +31,7 @@ use komponist_ui::widgets::{self as w, accesskit, floating, menu_frame, pressed_
 use komponist_ui::{focus, fonts, icons, px};
 
 use super::metrics;
-use super::model::{Card, names};
+use super::model::Card;
 use crate::actions::{Action, EditAction};
 use crate::views::ViewCtx;
 use crate::views::mixer::model::base_color;
@@ -51,7 +52,7 @@ pub(super) struct Source {
 /// The rows of the popover for `device`: its own input, the tracks, then the buses (the separator
 /// between them is the caller's: `buses_from`). Every track and bus is listed; those
 /// [`routing::sidechain_sources`] does not offer are blocked, with the reason.
-pub(super) fn sources(project: &Project, device: DeviceId) -> (Vec<Source>, usize) {
+pub(super) fn sources(lang: Lang, project: &Project, device: DeviceId) -> (Vec<Source>, usize) {
     let valid = routing::sidechain_sources(project, device);
     let holder = project.find_device(device).map(|(c, _, _)| c);
     let holder_id = match holder {
@@ -67,15 +68,15 @@ pub(super) fn sources(project: &Project, device: DeviceId) -> (Vec<Source>, usiz
     let row = |t: &komponist_model::Track| {
         let blocked = (!valid.contains(&t.id)).then(|| {
             if Some(t.id) == holder_id {
-                names::sc_reason_self(&t.name)
+                lang.devices_sc_reason_self(&t.name)
             } else if groups.contains(&t.id) {
-                names::sc_reason_group(&t.name)
+                lang.devices_sc_reason_group(&t.name)
             } else {
-                names::sc_reason_fed(&t.name, holder_name)
+                lang.devices_sc_reason_fed(holder_name, &t.name)
             }
         });
         let label = if Some(t.id) == holder_id {
-            format!("{} ({})", t.name, names::SC_THIS_TRACK)
+            format!("{} ({})", t.name, lang.devices_sc_this_track())
         } else {
             t.name.clone()
         };
@@ -88,7 +89,7 @@ pub(super) fn sources(project: &Project, device: DeviceId) -> (Vec<Source>, usiz
     };
     let mut rows = vec![Source {
         id: None,
-        label: names::SC_INTERNAL.to_owned(),
+        label: lang.devices_sc_internal().to_owned(),
         hue: None,
         blocked: None,
     }];
@@ -106,9 +107,10 @@ pub(super) fn sources(project: &Project, device: DeviceId) -> (Vec<Source>, usiz
 
 /// The width of the chip: padding, „SC“, the dot, the caret and the gaps between.
 pub(super) fn chip_width(ui: &Ui) -> f32 {
+    let t = komponist_ui::lang(ui.ctx());
     let text = w::galley(
         ui,
-        names::SC,
+        t.devices_sc(),
         fonts::font_id(&typography::SMALL),
         typography::SMALL.line_height,
     )
@@ -123,10 +125,10 @@ pub(super) fn chip_width(ui: &Ui) -> f32 {
 }
 
 /// The chip's accessible name: „Sidechain: Drums“, „Sidechain: aus“.
-fn chip_name(project: &Project, sidechain: Option<Sidechain>) -> String {
+fn chip_name(lang: Lang, project: &Project, sidechain: Option<Sidechain>) -> String {
     match sidechain.and_then(|s| project.track(s.source)) {
-        Some(t) => names::sc_chip(&t.name),
-        None => names::SC_OFF.to_owned(),
+        Some(t) => lang.devices_sc_chip(&t.name),
+        None => lang.devices_sc_off().to_owned(),
     }
 }
 
@@ -139,6 +141,7 @@ struct Open {
 /// Draws the chip into `row` (right to left, so it lands left of what was added before), opens
 /// and shows the popover and sends the chosen sidechain.
 pub(super) fn chip(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
+    let t = ctx.lang;
     let project = std::sync::Arc::clone(ctx.project);
     let width = chip_width(row);
     let (rect, r) = row.allocate_exact_size(
@@ -148,7 +151,7 @@ pub(super) fn chip(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     let popover = r.id.with("komponist_sc_popover");
     let egui_ctx = row.ctx().clone();
     let open = floating::is_open(&egui_ctx, popover);
-    let name = chip_name(&project, card.sidechain);
+    let name = chip_name(t, &project, card.sidechain);
     let set = card.sidechain.filter(|s| project.track(s.source).is_some());
     r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
     accesskit(&r, |n| {
@@ -156,7 +159,7 @@ pub(super) fn chip(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
         n.set_expanded(open);
     });
     if !open {
-        Tip::new(names::SC_TIP).attach(&r);
+        Tip::new(t.devices_sc_tip()).attach(&r);
     }
 
     // Paint.
@@ -194,7 +197,7 @@ pub(super) fn chip(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
     let ppp = row.pixels_per_point();
     let text = w::galley(
         row,
-        names::SC,
+        t.devices_sc(),
         fonts::font_id(&typography::SMALL),
         typography::SMALL.line_height,
     );
@@ -227,8 +230,8 @@ pub(super) fn chip(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
 
     // Context menu: remove the source.
     if set.is_some() {
-        let entries = [Entry::action(names::SC_REMOVE, ())];
-        if ContextMenu::new(names::SC_SOURCE, &entries)
+        let entries = [Entry::action(t.devices_sc_remove(), ())];
+        if ContextMenu::new(t.devices_sc_source(), &entries)
             .show_on(&r)
             .is_some()
         {
@@ -244,7 +247,7 @@ pub(super) fn chip(row: &mut Ui, ctx: &mut ViewCtx<'_>, card: &Card) {
             floating::close(&egui_ctx, popover);
         } else {
             floating::open(&egui_ctx, popover);
-            let current = sources(&project, card.device)
+            let current = sources(t, &project, card.device)
                 .0
                 .iter()
                 .position(|s| s.id == set.map(|c| c.source));
@@ -274,8 +277,9 @@ fn show_popover(
     chip: &Response,
     id: Id,
 ) {
+    let t = ctx.lang;
     let egui_ctx = chip.ctx.clone();
-    let (rows, buses_from) = sources(project, card.device);
+    let (rows, buses_from) = sources(t, project, card.device);
     let mut st: Open = egui_ctx.data(|d| d.get_temp(id)).unwrap_or_default();
     let mut chosen: Option<Option<TrackId>> = None;
     let mut close = keys(&egui_ctx, &rows, &mut st, &mut chosen);
@@ -288,7 +292,7 @@ fn show_popover(
         .fixed_pos(chip.rect.right_bottom() + vec2(0.0, space::SPACE_1))
         .constrain(true)
         .accessibility_parent(chip.id)
-        .accessible_name(names::SC_SOURCE)
+        .accessible_name(t.devices_sc_source())
         .show(&egui_ctx, |ui| {
             menu_frame()
                 .show(ui, |ui| {
@@ -393,13 +397,14 @@ fn separator(ui: &mut Ui) {
 /// One source row: ✓ column, the track dot, the name. Blocked rows are grey with the reason as
 /// tooltip and as accessible description.
 fn source_row(ui: &mut Ui, s: &Source, checked: bool, highlighted: bool) -> Response {
+    let t = komponist_ui::lang(ui.ctx());
     let enabled = s.blocked.is_none();
     let (rect, r) = ui.allocate_exact_size(
         vec2(size::MENU_WIDTH, size::MENU_ROW),
         w::sense(ui, Sense::click()),
     );
     let name = match &s.blocked {
-        Some(_) => names::sc_blocked(&s.label),
+        Some(_) => t.routing_blocked(&s.label),
         None => s.label.clone(),
     };
     r.widget_info(|| WidgetInfo::selected(Role::MenuItemRadio, enabled, checked, &name));
@@ -451,6 +456,7 @@ fn source_row(ui: &mut Ui, s: &Source, checked: bool, highlighted: bool) -> Resp
 /// „Abgriff“ with the segmented „Vor Fader“ / „Nach Fader“ and its hint. Returns the tap the user
 /// chose this pass. Without a source the segments are shown but cannot be used.
 fn tap_section(ui: &mut Ui, current: Option<Sidechain>) -> Option<Tap> {
+    let t = komponist_ui::lang(ui.ctx());
     let (label, _) = ui.allocate_exact_size(
         vec2(
             size::MENU_WIDTH,
@@ -460,7 +466,7 @@ fn tap_section(ui: &mut Ui, current: Option<Sidechain>) -> Option<Tap> {
     );
     let title = w::galley(
         ui,
-        names::SC_TAP,
+        t.devices_sc_tap(),
         fonts::font_id(&typography::VALUE_S),
         typography::VALUE_S.line_height,
     );
@@ -477,7 +483,7 @@ fn tap_section(ui: &mut Ui, current: Option<Sidechain>) -> Option<Tap> {
         Tap::Pre => 0,
         Tap::Post => 1,
     };
-    let items = [Item::new(names::SC_PRE), Item::new(names::SC_POST)];
+    let items = [Item::new(t.routing_pre()), Item::new(t.routing_post())];
     let before = index;
     let enabled = current.is_some();
     let changed = ui
@@ -485,15 +491,15 @@ fn tap_section(ui: &mut Ui, current: Option<Sidechain>) -> Option<Tap> {
             ui.set_width(size::MENU_WIDTH - 2.0 * space::SPACE_1_5);
             ui.add_enabled(
                 enabled,
-                Segmented::new(names::SC_TAP, &mut index, &items).equal_width(),
+                Segmented::new(t.devices_sc_tap(), &mut index, &items).equal_width(),
             )
             .changed()
         })
         .inner;
     let hint = if index == 0 {
-        names::SC_PRE_HINT
+        t.devices_sc_pre_hint()
     } else {
-        names::SC_POST_HINT
+        t.devices_sc_post_hint()
     };
     // The hint wraps inside the menu width (the post-fader hint is longer than one line).
     let mut job = egui::text::LayoutJob::single_section(

@@ -350,17 +350,16 @@ fn exited() -> FailReason {
 
 #[test]
 fn a_failed_load_or_a_hang_does_not_read_abgestuerzt() {
-    use komponist_app::views::devices::model::names as card;
     for (reason, title, detail) in [
         (
             FailReason::LoadFailed("bridge missing".into()),
-            card::LOAD_FAILED,
+            de::DEVICES_LOAD_FAILED,
             "bridge missing",
         ),
         (
             FailReason::Unresponsive,
-            card::UNRESPONSIVE,
-            card::UNRESPONSIVE_TEXT,
+            de::DEVICES_UNRESPONSIVE,
+            de::DEVICES_UNRESPONSIVE_TEXT,
         ),
     ] {
         let mut h = frame_harness(

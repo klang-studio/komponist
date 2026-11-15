@@ -33,7 +33,7 @@ use komponist_ui::widgets::tabs::{Item, Segmented};
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, px, state, tooltip};
 
-use self::model::{Input, Row, RowKind, names};
+use self::model::{Input, Row, RowKind};
 use crate::actions::{Action, SettingsAction, UiAction};
 use crate::ui_state::BrowserSegment;
 use crate::views::{View, ViewCtx, elided_galley, group_bounds};
@@ -98,22 +98,25 @@ impl View for Browser {
         }
 
         let foot_text = if self.query.trim().is_empty() {
-            names::FOOT
+            ctx.lang.browser_foot()
         } else {
-            names::FOOT_SEARCH
+            ctx.lang.browser_foot_search()
         };
         let layout = layout(ui, foot_text);
         let catalog = ctx.engine.host().catalog();
         let exports = model::export_names(ctx.exports);
-        let rows = model::rows(&Input {
-            catalog,
-            favorites: &ctx.ui.browser.favorites,
-            segment,
-            query: &self.query,
-            collapsed: &ctx.ui.browser.collapsed,
-            project: ctx.project,
-            exports: &exports,
-        });
+        let rows = model::rows(
+            ctx.lang,
+            &Input {
+                catalog,
+                favorites: &ctx.ui.browser.favorites,
+                segment,
+                query: &self.query,
+                collapsed: &ctx.ui.browser.collapsed,
+                project: ctx.project,
+                exports: &exports,
+            },
+        );
         self.keys(ui, ctx, &rows, search_focused);
         self.search_field(ui, ctx, layout.search);
         segments(ui, ctx, layout.segments);
@@ -209,7 +212,7 @@ impl Browser {
                 .label_for(&Action::Ui(UiAction::FocusBrowserSearch), ctx.lang)
                 .unwrap_or_default()
         } else {
-            names::SEARCH_CLEAR.to_owned()
+            model::SEARCH_CLEAR.to_owned()
         };
         let hint_g = w::styled_galley(ui, &hint, &typography::VALUE_S);
         let hint_x = rect.right() - metrics::SEARCH_PAD_X - hint_g.size().x;
@@ -233,7 +236,9 @@ impl Browser {
             .margin(egui::Margin::ZERO)
             .font(font)
             .text_color(color32(color::TEXT_1))
-            .hint_text(fonts::rich_text(names::SEARCH, &style).color(color32(color::TEXT_3)))
+            .hint_text(
+                fonts::rich_text(ctx.lang.browser_search(), &style).color(color32(color::TEXT_3)),
+            )
             .desired_width(field.width())
             // ↑ ↓ and Esc belong to the browser while typing (egui would move or drop the focus).
             .event_filter(egui::EventFilter {
@@ -244,7 +249,7 @@ impl Browser {
             });
         let response = ui.put(field, edit);
         ui.ctx()
-            .accesskit_node_builder(response.id, |n| n.set_label(names::SEARCH));
+            .accesskit_node_builder(response.id, |n| n.set_label(ctx.lang.browser_search()));
         if response.changed() {
             ctx.send(Action::Ui(UiAction::SetBrowserQuery(self.query.clone())));
         }
@@ -257,7 +262,7 @@ impl Browser {
                 .max_rect(rect)
                 .id_salt("komponist_browser_list")
                 .accessibility_role(Role::List)
-                .accessibility_label(names::LIST),
+                .accessibility_label(ctx.lang.browser_list()),
         );
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         group_bounds(&child, rect);
@@ -292,7 +297,7 @@ impl Browser {
 
 /// The segments "Alle · Instr. · Effekte · Dateien", equally wide over the panel (`segs`).
 fn segments(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect) {
-    let items = names::SEGMENT_LABELS.map(Item::new);
+    let items = model::segment_labels(ctx.lang).map(Item::new);
     let mut selected = SEGMENTS
         .iter()
         .position(|s| *s == ctx.ui.browser.segment)
@@ -302,7 +307,8 @@ fn segments(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect) {
             .max_rect(rect)
             .id_salt("komponist_browser_segments"),
     );
-    let response = child.add(Segmented::new(names::SEGMENTS, &mut selected, &items).equal_width());
+    let response =
+        child.add(Segmented::new(ctx.lang.browser_segments(), &mut selected, &items).equal_width());
     if response.changed() {
         ctx.send(Action::Ui(UiAction::SetBrowserSegment(SEGMENTS[selected])));
     }
@@ -390,7 +396,7 @@ fn row_ui(
         );
         let star = ui.interact(hit, id.with("star"), Sense::click());
         star_hovered = star.hovered();
-        let name = names::star(&row.name);
+        let name = komponist_ui::lang(ui.ctx()).browser_star(&row.name);
         let fav = *favorite;
         star.widget_info(|| WidgetInfo::selected(Role::Button, true, fav, &name));
         if star.clicked() {

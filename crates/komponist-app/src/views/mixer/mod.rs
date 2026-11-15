@@ -211,7 +211,7 @@ impl Mixer {
             ToggleEvent::Set { value, .. } => {
                 if !self.toggle_gesture {
                     ctx.send(Action::Edit(EditAction::BeginGesture {
-                        label: model::names::UNDO_TOGGLES.to_owned(),
+                        label: "undo-toggle-tracks".to_owned(),
                     }));
                     self.toggle_gesture = true;
                 }
@@ -253,7 +253,12 @@ impl Mixer {
 impl View for Mixer {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         let project = Arc::clone(ctx.project);
-        let mut strips = model::strips(&project, &ctx.ui.selection.tracks, ctx.engine.host());
+        let mut strips = model::strips(
+            ctx.lang,
+            &project,
+            &ctx.ui.selection.tracks,
+            ctx.engine.host(),
+        );
         let now = ui.input(|i| i.time);
         for s in &mut strips {
             for insert in &mut s.inserts {
@@ -361,6 +366,7 @@ impl View for Mixer {
         if !buses.is_empty() {
             strip::bus_label(
                 ui,
+                ctx.lang,
                 Rect::from_min_max(
                     pos2(buses_left, body.top()),
                     pos2(master_rect.left(), strips_top),

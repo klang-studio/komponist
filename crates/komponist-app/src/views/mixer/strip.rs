@@ -5,6 +5,7 @@ use egui::{
     Align, Layout, Modifiers, Pos2, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2,
     vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::edits::{ChannelProp, TrackProp};
 use komponist_model::format::{fmt_db, fmt_pan};
 use komponist_model::{ChannelRef, DeviceId, PluginRef};
@@ -21,7 +22,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics::{self as m, Tier};
-use super::model::{Insert, SlotState, Strip, move_target_in, names, slot_at};
+use super::model::{Insert, SlotState, Strip, move_target_in, slot_at};
 use super::send_gesture;
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
@@ -31,7 +32,7 @@ use crate::views::devices::add_menu;
 use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
 use crate::views::routing::widgets as routing_widgets;
-use crate::views::routing::{self, OutputDrop, TrackDrag, metrics as rm, names as routing_names};
+use crate::views::routing::{self, OutputDrop, TrackDrag, metrics as rm};
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The drag payload of an insert slot being reordered.
@@ -307,8 +308,8 @@ fn select(ctx: &mut ViewCtx<'_>, s: &Strip, mods: Modifiers) {
 }
 
 /// The "Busse" label over the bus strips, in `text.4` like the other section labels.
-pub(super) fn bus_label(ui: &mut Ui, rect: Rect) {
-    let g = w::styled_galley(ui, routing_names::BUSSES, &typography::LABEL);
+pub(super) fn bus_label(ui: &mut Ui, lang: Lang, rect: Rect) {
+    let g = w::styled_galley(ui, lang.routing_buses(), &typography::LABEL);
     let pos = w::text_pos(rect, &g, rect.left() + m::PAD_X, ui.pixels_per_point());
     ui.painter().galley(pos, g, color32(color::TEXT_4));
     let r = ui.interact(
@@ -316,7 +317,7 @@ pub(super) fn bus_label(ui: &mut Ui, rect: Rect) {
         ui.scope_id().with("komponist_mixer_bus_label"),
         Sense::hover(),
     );
-    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, routing_names::BUSSES));
+    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, lang.routing_buses()));
 }
 
 /// Draws strip `s` at `rect` (clipped to `clip`) and handles its controls. Returns the toggle
@@ -339,9 +340,9 @@ pub(super) fn show(
             .id_salt(("komponist_mixer_strip", key))
             .accessibility_role(Role::Group)
             .accessibility_label(if s.is_bus() {
-                routing_names::bus_strip(&s.name)
+                ctx.lang.routing_bus_strip(&s.name)
             } else {
-                names::strip(&s.name)
+                ctx.lang.mixer_strip(&s.name)
             }),
     );
     let ui = &mut ui;
@@ -361,12 +362,12 @@ pub(super) fn show(
     paint_frame(ui, s, &rows, rect);
     name_and_line(ui, ctx, s, &rows, mods, tier);
     if let Some(label) = rows.inserts_label {
-        let g = w::styled_galley(ui, names::INSERTS, &typography::LABEL);
+        let g = w::styled_galley(ui, ctx.lang.mixer_inserts(), &typography::LABEL);
         let pos = w::text_pos(label, &g, label.left(), ui.pixels_per_point());
         ui.painter()
             .galley(pos, g, fonts::style_color(&typography::LABEL));
         let r = ui.interact(label, ui.scope_id().with("inserts_label"), Sense::hover());
-        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::INSERTS));
+        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, ctx.lang.mixer_inserts()));
     }
     inserts(ui, ctx, s, rows.inserts, tier);
     if s.is_bus() {
@@ -598,19 +599,20 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     if st.focused {
         komponist_ui::focus::paint_ring(ui.painter(), rect, radius::S);
     }
-    let name = names::insert(&insert.name);
+    let t = komponist_ui::lang(ui.ctx());
+    let name = t.mixer_insert(&insert.name);
     let bypass = insert.bypass;
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(Role::Button, true, &name);
         info.current_text_value = match insert.late {
-            Some(_) => Some(late::LATE.to_owned()),
-            None => bypass.then(|| names::BYPASS.to_owned()),
+            Some(_) => Some(t.late_label().to_owned()),
+            None => bypass.then(|| t.mixer_slot_bypass().to_owned()),
         };
         info
     });
-    let late_text = insert.late.map(late::late_blocks);
+    let late_text = insert.late.map(|n| t.late_blocks(n));
     Tip::new(&insert.name)
-        .detail(late_text.as_deref().unwrap_or(insert.detail()))
+        .detail(late_text.as_deref().unwrap_or(insert.detail(t)))
         .attach(&response);
     if insert.late.is_some() {
         late::repaint_when_expired(ui.ctx());
@@ -638,7 +640,7 @@ fn add_slot(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
     text(
         ui,
         rect,
-        names::ADD,
+        "+",
         fonts::font_id(&style),
         style.line_height,
         state::text_for(color::TEXT_3, st),
@@ -647,9 +649,9 @@ fn add_slot(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
     if st.focused {
         komponist_ui::focus::paint_ring(ui.painter(), rect, radius::S);
     }
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::ADD_EFFECT));
-    Tip::new(names::ADD_EFFECT)
-        .detail(names::ADD_EFFECT_DETAIL)
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, ctx.lang.mixer_add_effect()));
+    Tip::new(ctx.lang.mixer_add_effect())
+        .detail(ctx.lang.mixer_add_effect_detail())
         .attach(&response);
     add_menu::show(ui, ctx, &response, s.channel, add_menu::Anchor::Below);
 }
@@ -756,7 +758,7 @@ fn bus_drop(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
         return;
     }
     let released = ui.input(|i| i.pointer.any_released());
-    match routing::output_drop(ctx.project, &drag.tracks, bus) {
+    match routing::output_drop(ctx.lang, ctx.project, &drag.tracks, bus) {
         OutputDrop::Set => {
             px::inner_border(ui.painter(), rect, color32(color::ACCENT));
             if released {
@@ -794,9 +796,9 @@ fn bus_drop(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
 /// the wheel when it has more rows than the strips show.
 fn sends_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, label: Rect, rows: Rect, tier: Tier) {
     let title = if s.is_bus() {
-        routing_names::INPUTS
+        ctx.lang.routing_inputs()
     } else {
-        routing_names::SENDS
+        ctx.lang.routing_sends()
     };
     let g = w::styled_galley(ui, title, &typography::LABEL);
     let pos = w::text_pos(label, &g, label.left(), ui.pixels_per_point());
@@ -869,12 +871,12 @@ fn sends_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, label: Rect, rows: 
 /// Rechtsklick Texteingabe") and its value.
 fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
     let mut pan = s.pan;
-    let name = names::pan(&s.name);
+    let name = ctx.lang.mixer_pan(&s.name);
     let response = place(ui, rows.knob, "pan", |ui| {
         let knob = Knob::pan(&mut pan, name);
         ui.add(if tier.lean { knob.small() } else { knob })
     });
-    send_gesture(ctx, &response, names::UNDO_PAN, || {
+    send_gesture(ctx, &response, "undo-pan", || {
         channel_edit(s, ChannelProp::Pan(pan))
     });
     if value_menu::show(&response, || fmt_pan(pan)) {
@@ -936,10 +938,9 @@ fn toggles(
             // A bus that only follows a solo: a dashed yellow frame around the S (WP-100 §7).
             dashed_rect(ui, r, color32(color::STATE_SOLO));
             let hint = ui.interact(r, ui.scope_id().with("solo_follows"), Sense::hover());
-            hint.widget_info(|| {
-                WidgetInfo::labeled(Role::Label, true, routing_names::solo_follows(&s.name))
-            });
-            Tip::new(routing_names::SOLO_FOLLOWS).attach(&hint);
+            let follows = ctx.lang.routing_solo_follows(&s.name);
+            hint.widget_info(|| WidgetInfo::labeled(Role::Label, true, &follows));
+            Tip::new(ctx.lang.routing_solo_follows_tip()).attach(&hint);
         }
         match (shown.event, s.channel) {
             (Some(ToggleEvent::Set { value, .. }), ChannelRef::Master) => {
@@ -964,7 +965,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
     let fader_w = komponist_ui::widgets::fader::Layout::desired_size(m::FADER, scale, length).x;
     let fader_rect = Rect::from_min_size(pos2(left, area.top()), vec2(fader_w, area.height()));
     let mut db = s.volume_db;
-    let name = names::volume(&s.name);
+    let name = ctx.lang.mixer_volume(&s.name);
     let response = place(ui, fader_rect, "fader", |ui| {
         ui.add(
             Fader::new(&mut db, name)
@@ -974,7 +975,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
                 .track_length(length),
         )
     });
-    send_gesture(ctx, &response, names::UNDO_VOLUME, || {
+    send_gesture(ctx, &response, "undo-volume", || {
         channel_edit(s, ChannelProp::VolumeDb(db))
     });
     if value_menu::show(&response, || fmt_db(db)) {
@@ -994,7 +995,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
     };
     let response = place(ui, meter_rect, "meter", |ui| {
         ui.add(
-            Meter::new(state, Meters::NO_PEAKS, names::meter(&s.name))
+            Meter::new(state, Meters::NO_PEAKS, ctx.lang.mixer_meter(&s.name))
                 .style(m::METER)
                 .length(meter_rect.height()),
         )
@@ -1012,7 +1013,7 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
 /// lean strip has the level only.
 fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers, tier: Tier) {
     let mut db = s.volume_db;
-    let name = names::volume_value(&s.name);
+    let name = ctx.lang.mixer_volume_value(&s.name);
     // The level stands left in the row (S04 `justify-content:space-between`).
     let value = komponist_ui::widgets::fader::VALUE_TEXT;
     let text_w = |t: &str| {
@@ -1062,15 +1063,15 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
     };
     ui.painter().galley(pos, g, color32(ink));
     let response = ui.interact(r, ui.scope_id().with("peak"), Sense::click());
-    let label = names::peak(&s.name);
+    let label = ctx.lang.mixer_peak(&s.name);
     let value = format!("{shown} dB{}", if clipped { ", Clip" } else { "" });
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(Role::Button, true, &label);
         info.current_text_value = Some(value.clone());
         info
     });
-    Tip::new(names::PEAK_TIP)
-        .detail(names::PEAK_DETAIL)
+    Tip::new(ctx.lang.mixer_peak_tip())
+        .detail(ctx.lang.mixer_peak_detail())
         .attach(&response);
     if response.clicked() {
         ctx.send(Action::Ui(UiAction::ResetMeters {
