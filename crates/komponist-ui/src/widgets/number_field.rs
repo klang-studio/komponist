@@ -590,6 +590,47 @@ pub(crate) fn drag_gesture(response: &Response, start: impl FnOnce() -> ValueDra
     drag_gesture_with(response, start, None)
 }
 
+/// The absolute drag gesture of a fader behind `response` ([`drag::AbsoluteDrag`]): the thumb
+/// (fraction 0 bottom … 1 top, `fraction` = where it is now, `top`/`len` = its reference y at the
+/// top and its travel) sticks to the pointer. Grabs and hides the pointer like [`drag_gesture`].
+/// Returns the new fraction while dragging.
+pub(crate) fn absolute_drag_gesture(
+    response: &Response,
+    top: f32,
+    len: f32,
+    fraction: f32,
+) -> Option<f32> {
+    let ctx = &response.ctx;
+    let key = drag_key(response.id).with("absolute");
+    let (press, latest, shift) = ctx.input(|i| {
+        (
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+            i.modifiers.shift,
+        )
+    });
+    if response.drag_started() {
+        drag::grab_pointer(ctx);
+        let press_y = press.or(latest)?.y;
+        let mut d = drag::AbsoluteDrag::start(top, len, fraction, press_y);
+        let f = d.update(latest.map_or(press_y, |p| p.y), shift);
+        ctx.data_mut(|m| m.insert_temp(key, d));
+        Some(f)
+    } else if response.dragged() {
+        let mut d = ctx.data(|m| m.get_temp::<drag::AbsoluteDrag>(key))?;
+        let y = latest?.y;
+        let f = d.update(y, shift);
+        ctx.data_mut(|m| m.insert_temp(key, d));
+        Some(f)
+    } else {
+        if response.drag_stopped() {
+            drag::release_pointer(ctx);
+            ctx.data_mut(|m| m.remove::<drag::AbsoluteDrag>(key));
+        }
+        None
+    }
+}
+
 /// The quantisation of a drag: its step and range.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Quantise {

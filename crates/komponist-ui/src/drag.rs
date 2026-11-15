@@ -2,9 +2,13 @@
 //!
 //! - Number field: 1 px = 1 step ([`ValueDrag::number`]).
 //! - Knob: 200 px = the full range ([`ValueDrag::knob`]).
-//! - Fader: relative from the thumb over the track length ([`ValueDrag::span`] on the fader's
-//!   position; the dB taper is the fader's business).
-//! - Shift = × 0.1 (fine), Ctrl = × 10 (coarse) ([`speed`]); both together cancel out.
+//! - Fader: absolute, the thumb sticks to the pointer ([`AbsoluteDrag`], owner decision
+//!   2026-11-15): the grab offset between pointer and thumb is kept, the thumb follows the real
+//!   (accelerated) pointer position 1:1 along the track and clamps at its ends; Shift moves it at
+//!   × 0.1 of the pointer movement relative to the current value; Ctrl does nothing. The dB taper
+//!   is the fader's business.
+//! - Knob and number field: Shift = × 0.1 (fine), Ctrl = × 10 (coarse) ([`speed`]); both together
+//!   cancel out.
 //! - Number fields: Alt-click = default value, double-click = text entry ([`ClickAction::of`]).
 //! - Knobs and faders (owner decision 2026-11-15): double-click and Alt-click = default value
 //!   ([`ClickAction::of_control`]); text entry is Enter on the focused control or the right-click
@@ -12,8 +16,9 @@
 //! - ↑ ↓ and the mouse wheel: one step, with Shift fine ([`step_delta`]).
 //!
 //! Dragging up increases the value. While dragging, the pointer is hidden and confined to the
-//! window ([`grab_pointer`] / [`release_pointer`]) and raw mouse motion drives the value
-//! ([`pointer_delta`]), so the value keeps following when the cursor would hit the screen edge.
+//! window ([`grab_pointer`] / [`release_pointer`]). Knobs and number fields are driven by raw
+//! mouse motion ([`pointer_delta`]), so the value keeps following when the cursor would hit the
+//! screen edge; faders follow the pointer position instead.
 //!
 //! The numbers in this module are interaction rules of the design system (`ix.number`,
 //! `ix.knob`, HANDOFF §5), not visual tokens.
@@ -127,6 +132,64 @@ impl ValueDrag {
     /// The value the gesture started from.
     pub fn start(&self) -> f64 {
         self.start
+    }
+}
+
+/// One absolute drag gesture on a fader: the thumb follows the pointer position 1:1.
+///
+/// Works in screen y along a track: `top` is the reference y of the thumb at fraction 1,
+/// `top + len` at fraction 0 (the reference is any fixed point of the thumb; only differences
+/// matter). On the press the offset between pointer and thumb is remembered, so grabbing does
+/// not make the thumb jump. Beyond the track ends the thumb stays at the end until the pointer
+/// is back over the track (absolute semantics). With `fine` (Shift) the thumb moves at
+/// [`FINE`] × the pointer movement relative to where it is; changing `fine` re-anchors the
+/// offset, so neither switching on nor off makes the thumb jump.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AbsoluteDrag {
+    top: f32,
+    len: f32,
+    offset: f32,
+    thumb_y: f32,
+    last_y: f32,
+    fine: bool,
+}
+
+impl AbsoluteDrag {
+    /// Starts a drag with the thumb at `fraction` (0 bottom … 1 top) of the track `top..top + len`
+    /// and the pointer pressed at `press_y`.
+    pub fn start(top: f32, len: f32, fraction: f32, press_y: f32) -> Self {
+        let len = len.max(1.0);
+        let thumb_y = top + (1.0 - fraction.clamp(0.0, 1.0)) * len;
+        Self {
+            top,
+            len,
+            offset: press_y - thumb_y,
+            thumb_y,
+            last_y: press_y,
+            fine: false,
+        }
+    }
+
+    /// Moves to the pointer at `pointer_y`; `fine` = Shift held. Returns the fraction
+    /// (0 bottom … 1 top).
+    pub fn update(&mut self, pointer_y: f32, fine: bool) -> f32 {
+        if fine != self.fine {
+            self.fine = fine;
+            self.offset = pointer_y - self.thumb_y;
+        }
+        let y = if fine {
+            self.thumb_y + (pointer_y - self.last_y) * FINE as f32
+        } else {
+            pointer_y - self.offset
+        };
+        self.thumb_y = y.clamp(self.top, self.top + self.len);
+        self.last_y = pointer_y;
+        self.fraction()
+    }
+
+    /// The current fraction (0 bottom … 1 top).
+    pub fn fraction(&self) -> f32 {
+        1.0 - (self.thumb_y - self.top) / self.len
     }
 }
 
@@ -285,6 +348,66 @@ mod tests {
         assert!((f.drag_px(-60.0, NONE) - 0.0).abs() < 1e-12);
         let mut f = ValueDrag::span(0.30, 0.0, 1.0, 120.0);
         assert!((f.drag_px(12.0, NONE) - 0.40).abs() < 1e-12);
+    }
+
+    fn drag_at(len: f32, fraction: f32, press_y: f32) -> AbsoluteDrag {
+        AbsoluteDrag::start(100.0, len, fraction, press_y)
+    }
+
+    #[test]
+    fn absolute_drag_moves_thumb_by_pointer_distance() {
+        for len in [60.0_f32, 120.0, 333.0] {
+            // The thumb centre sits at 100 + 0.7 · len; press on it.
+            let thumb = 100.0 + 0.7 * len;
+            let mut d = drag_at(len, 0.3, thumb);
+            let f = d.update(thumb - 20.0, false);
+            // 20 points up = 20 points of thumb travel, whatever the track length.
+            assert!((f - (0.3 + 20.0 / len)).abs() < 1e-5, "len {len}: {f}");
+            let f = d.update(thumb + 10.0, false);
+            assert!((f - (0.3 - 10.0 / len)).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn absolute_drag_is_independent_of_pixels_per_point() {
+        // Points in, points out: the scale factor never enters (egui reports points).
+        let mut a = drag_at(100.0, 0.5, 150.0);
+        let mut b = drag_at(100.0, 0.5, 150.0);
+        assert_eq!(a.update(130.0, false), b.update(130.0, false));
+    }
+
+    #[test]
+    fn absolute_drag_keeps_the_grab_offset() {
+        // Thumb at y 150, grabbed 7 points below its centre: no jump on the first update.
+        let mut d = drag_at(100.0, 0.5, 157.0);
+        assert!((d.update(157.0, false) - 0.5).abs() < 1e-6);
+        assert!((d.update(147.0, false) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn absolute_drag_clamps_and_comes_back_from_the_pointer() {
+        let mut d = drag_at(100.0, 0.5, 150.0);
+        assert_eq!(d.update(40.0, false), 1.0);
+        assert_eq!(d.update(-500.0, false), 1.0);
+        // Absolute: the thumb answers only when the pointer is back over the track.
+        assert_eq!(d.update(90.0, false), 1.0);
+        assert!((d.update(110.0, false) - 0.9).abs() < 1e-6);
+        assert_eq!(d.update(900.0, false), 0.0);
+    }
+
+    #[test]
+    fn absolute_drag_shift_is_fine_and_re_anchors() {
+        let mut d = drag_at(100.0, 0.5, 150.0);
+        d.update(140.0, false); // thumb at y 140
+        // Shift pressed: no jump, then 0.1 × the pointer movement.
+        assert!((d.update(140.0, true) - 0.6).abs() < 1e-6);
+        assert!((d.update(120.0, true) - 0.62).abs() < 1e-6);
+        // Released: continues from 0.62 with the pointer 20 points away from the thumb.
+        assert!((d.update(120.0, false) - 0.62).abs() < 1e-6);
+        assert!((d.update(110.0, false) - 0.72).abs() < 1e-6);
+        // Fine movement clamps at the end too.
+        let mut e = drag_at(100.0, 0.99, 101.0);
+        assert_eq!(e.update(0.0, true), 1.0);
     }
 
     #[test]

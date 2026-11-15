@@ -17,13 +17,13 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, widget};
 
 use super::{LABEL, VALUE, cell_height, cell_width, paint_centered};
-use crate::drag::{ClickAction, ValueDrag};
+use crate::drag::ClickAction;
 use crate::state::State;
 use crate::widgets::fader::{self, FaderSize};
 use crate::widgets::metrics::device::mini_fader as metrics;
 use crate::widgets::number_field::{
-    Formatter, GetSet, Parser, accesskit_requests, clamp_finite, drag_gesture, entry, expose_value,
-    format_number, get_set, is_still, key_steps, normalized, range_bounds, sense,
+    Formatter, GetSet, Parser, absolute_drag_gesture, accesskit_requests, clamp_finite, entry,
+    expose_value, format_number, get_set, is_still, key_steps, normalized, range_bounds, sense,
     take_focus_on_press, value_tooltip_live, wheel_steps,
 };
 use crate::{focus, px, tooltip};
@@ -252,9 +252,11 @@ impl Widget for MiniFader<'_> {
             if ClickAction::of_control(&response) == ClickAction::Reset {
                 value = self.default;
             }
-            let travel = f64::from(layout.travel);
-            if let Some(v) = drag_gesture(&response, || ValueDrag::span(value, min, max, travel)) {
-                value = v;
+            let fraction = normalized(clamp_finite(value, min, max, old), min, max) as f32;
+            if let Some(f) =
+                absolute_drag_gesture(&response, layout.thumb_top(1.0), layout.travel, fraction)
+            {
+                value = min + f64::from(f) * (max - min);
             }
             value += (key_steps(ui, &response) + wheel_steps(ui, &response)) * key_step;
             if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
