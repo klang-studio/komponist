@@ -536,6 +536,50 @@ fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
     rows
 }
 
+/// The rows of the chain's add menu: the catalog's instruments, effects (category sub-headers)
+/// and MIDI effects as the Effekte and Instr. segments list them, or with a search text the
+/// hits of the Alle segment ([`search`], so the matching is the browser's). Presets, folders,
+/// takes and files are left out; sections without a plugin vanish. `effects_only` keeps the audio
+/// effects (the master chain takes nothing else).
+pub fn picker_rows(input: &Input<'_>, effects_only: bool) -> Vec<Row> {
+    let none = BTreeSet::new();
+    let with = |segment| {
+        rows(&Input {
+            segment,
+            collapsed: &none,
+            ..*input
+        })
+    };
+    let all = if input.query.trim().is_empty() {
+        let mut all = with(BrowserSegment::Instruments);
+        all.extend(with(BrowserSegment::Effects));
+        all
+    } else {
+        with(BrowserSegment::All)
+    };
+    let is_plugin = |r: &Row| matches!(r.kind, RowKind::Plugin { .. });
+    let wanted = |r: &Row| match &r.kind {
+        RowKind::Plugin { kind, .. } => !effects_only || *kind == PluginKind::Effect,
+        RowKind::Section | RowKind::Plain => true,
+        _ => false,
+    };
+    let kept: Vec<Row> = all.into_iter().filter(wanted).collect();
+    // Per section (header up to the next header): keep it when a plugin is in it.
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < kept.len() {
+        let end = kept[start + 1..]
+            .iter()
+            .position(|r| r.kind == RowKind::Section)
+            .map_or(kept.len(), |n| start + 1 + n);
+        if kept[start..end].iter().any(is_plugin) {
+            out.extend_from_slice(&kept[start..end]);
+        }
+        start = end;
+    }
+    out
+}
+
 /// The row Enter acts on: the highlighted one, or while searching the first activatable row
 /// (S05: the first hit is marked, so typing and Enter add it).
 pub fn effective_highlight(rows: &[Row], highlighted: Option<usize>, query: &str) -> Option<usize> {

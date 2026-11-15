@@ -98,3 +98,19 @@ pub const DASH: [f32; 2] = [3.0, 3.0];
 pub const DROP_AREA_PAD: f32 = space::SPACE_3;
 /// The insert line while dragging (`dvDrop`: `width:2`, centred in the gap).
 pub const INSERT_LINE: f32 = space::SPACE_0_5;
+
+/// The add menu behind the drop slot (owner request 2026-11-15, not in the design): its width
+/// (the slot is narrower than a device name plus format tag needs) …
+pub const ADD_MENU_WIDTH: f32 = 240.0;
+/// … its highest extent before the list scrolls …
+pub const ADD_MENU_MAX_HEIGHT: f32 = 320.0;
+/// … the space it keeps to the window edge …
+pub const ADD_MENU_MARGIN: f32 = space::SPACE_2;
+/// … and the gap between its search field and the list.
+pub const ADD_MENU_GAP: f32 = space::SPACE_1;
+/// The „+“ above the drop slot's hint: its size …
+pub const ADD_GLYPH: f32 = 12.0;
+/// … stroke …
+pub const ADD_GLYPH_STROKE: f32 = 1.5;
+/// … and the gap to the hint.
+pub const ADD_GLYPH_GAP: f32 = space::SPACE_2;
