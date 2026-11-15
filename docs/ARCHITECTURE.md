@@ -153,7 +153,7 @@ komponist/
     komponist-audio/            cpal backends, midir inputs, stream lifecycle, CPU/xrun stats
     hexa-core/                  vendored 6-op FM engine of hexa (from pisynth)
     sampler-core/               vendored sampler engine of the Sampler (from klopfer's dsp crate)
-    komponist-builtin/          hexa adapter (Processor), metronome voice
+    komponist-builtin/          hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
@@ -178,6 +178,7 @@ graph TD
   engine --> plugins
   model --> plugins
   i18n[komponist-i18n] --> ui
+  i18n --> builtin
   i18n --> app
   audio[komponist-audio] --> app[komponist-app]
   ui --> app
@@ -187,7 +188,7 @@ graph TD
   plugins --> app
 ```
 
-Rules: `komponist-model` has no dependency on any other studio crate. `komponist-engine` knows no UI,
+Rules: `komponist-model` has no dependency on any other studio crate (it writes no language of its own: default names and value words are passed in, see `docs/I18N.md` §8). `komponist-engine` knows no UI,
 no IPC and no plugin format. Only `komponist-bridge` links plugin formats. Only `komponist-app` knows egui
 *and* the engine.
 
