@@ -769,6 +769,92 @@ fn snapshots_of_the_piano_roll() {
     results.unwrap();
 }
 
+/// The rendered frame (1x) without the "Raster" dropdowns, whose label names the grid, and
+/// without the CPU readout.
+fn render_without_grid_labels(h: &mut Harness<'_, App>, label: &str) -> Vec<u8> {
+    let mut rects: Vec<Rect> = h
+        .get_all_by_role_and_label(Role::ComboBox, label)
+        .map(|n| n.rect())
+        .collect();
+    rects.push(
+        h.get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+            .rect(),
+    );
+    let img = h.render().expect("render");
+    let (w, ht) = (img.width() as usize, img.height() as usize);
+    let mut raw = img.into_raw();
+    for r in rects {
+        for y in r.top().max(0.0) as usize..(r.bottom().ceil() as usize).min(ht) {
+            for x in r.left().max(0.0) as usize..(r.right().ceil() as usize).min(w) {
+                raw[(y * w + x) * 4..(y * w + x) * 4 + 4].fill(0);
+            }
+        }
+    }
+    raw
+}
+
+/// Every "Raster" value changes the drawn grid lines at a zoom where it fits; at low zoom the
+/// display thins out to a coarser level while the snap grid stays.
+#[test]
+fn every_raster_draws_its_own_grid_and_thins_at_low_zoom() {
+    let grids = [
+        Grid::Bar,
+        Grid::Half,
+        Grid::Quarter,
+        Grid::Eighth,
+        Grid::Sixteenth,
+        Grid::ThirtySecond,
+        Grid::QuarterTriplet,
+        Grid::EighthTriplet,
+        Grid::SixteenthTriplet,
+    ];
+    let render = |grid: Grid, px_per_bar: f32| {
+        let (mut app, _) = lead_a();
+        app.ui_mut().piano_roll.px_per_bar = px_per_bar;
+        app.ui_mut().piano_roll.grid = grid;
+        let mut h = harness(app);
+        h.run_steps(2);
+        mask_cpu(&mut h);
+        render_without_grid_labels(&mut h, names::GRID)
+    };
+    let images: Vec<_> = grids.iter().map(|g| render(*g, 960.0)).collect();
+    for i in 0..grids.len() {
+        for j in i + 1..grids.len() {
+            assert!(
+                images[i] != images[j],
+                "{:?} and {:?} draw the same grid",
+                grids[i],
+                grids[j]
+            );
+        }
+    }
+    // 160 px per bar: a 1/32 (5 px) draws the 1/16 level (10 px), a 1/16 triplet (6.7 px) the
+    // 1/8 triplet level (13 px).
+    assert!(render(Grid::ThirtySecond, 160.0) == render(Grid::Sixteenth, 160.0));
+    assert!(render(Grid::SixteenthTriplet, 160.0) == render(Grid::EighthTriplet, 160.0));
+    // Snap is untouched by the display.
+    let (mut app, _) = lead_a();
+    app.ui_mut().piano_roll.grid = Grid::ThirtySecond;
+    assert_eq!(app.ui().piano_roll.grid, Grid::ThirtySecond);
+}
+
+/// A 1/32 raster at 160 px per bar (thinned to 1/16) and at 640 px per bar (full).
+#[test]
+fn snapshots_of_the_piano_roll_grid() {
+    let mut results = SnapshotResults::new();
+    for px_per_bar in [160.0, 640.0] {
+        let (mut app, _) = lead_a();
+        app.ui_mut().piano_roll.px_per_bar = px_per_bar;
+        app.ui_mut().piano_roll.grid = Grid::ThirtySecond;
+        let mut h = harness(app);
+        h.run_steps(2);
+        mask_cpu(&mut h);
+        h.snapshot(format!("piano-roll-grid-32-{px_per_bar}px-1x"));
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
 // ------------------------------------------------------------------------------------------------
 // Performance
 

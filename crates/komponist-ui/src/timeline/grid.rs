@@ -3,12 +3,13 @@
 //! Weights follow the design system's line tokens: bar lines `line.2` ("Taktlinien"), beat lines
 //! `line.1` ("Schlaglinien"), grid lines between beats the fainter `line.0` (a komponist addition
 //! from the piano roll of the screens, `design/README.md`). A level is left out when its lines
-//! would be closer than `space.2`; bar lines then thin out to every 2nd, 4th, … bar.
+//! would be closer than the view's minimum spacing; the chosen raster is then drawn one musical
+//! level coarser at a time ([`display_step`]), shared by arrangement and piano roll.
 
 use egui::{Color32, Painter, Rangef, Rect, pos2};
 use komponist_model::{Grid, Meter, Tick};
+use komponist_tokens::color;
 use komponist_tokens::egui_support::color32;
-use komponist_tokens::{color, space};
 
 use super::TimeAxis;
 use super::mesh::Quads;
@@ -36,88 +37,123 @@ impl LineWeight {
     }
 }
 
-/// Which lines a canvas shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which lines a canvas shows: the chosen raster, drawn as long as its lines keep `min_spacing`.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridSpec {
-    /// Weight of the bar lines.
-    pub bar: LineWeight,
-    /// Weight of the beat lines; `None`: no beat lines.
-    pub beat: Option<LineWeight>,
-    /// Spacing and weight of the lines between beats; `None`: none.
-    pub sub: Option<(Tick, LineWeight)>,
+    /// The raster chosen in the "Raster" dropdown (the snap grid; only the display adapts).
+    pub grid: Grid,
+    /// Minimum distance in px between two drawn lines (the view's `GRID_MIN_SPACING`).
+    pub min_spacing: f32,
 }
 
 impl GridSpec {
-    /// The arrangement lanes: bar lines only.
-    pub const fn arrangement() -> Self {
-        Self {
-            bar: LineWeight::Bar,
-            beat: None,
-            sub: None,
-        }
-    }
-
-    /// The piano roll at snap grid `grid`: bars, beats and lines at the grid, at least every 1/16
-    /// (`prView`: finer grids keep the 1/16 lines).
-    pub fn editor(grid: Grid, meter: Meter) -> Self {
-        let g = grid.ticks(meter).max(Grid::Sixteenth.ticks(meter));
-        Self {
-            bar: LineWeight::Bar,
-            beat: Some(LineWeight::Beat),
-            sub: Some((g, LineWeight::Sub)),
-        }
+    /// The raster `grid`, thinned out where lines would be closer than `min_spacing` px.
+    pub const fn new(grid: Grid, min_spacing: f32) -> Self {
+        Self { grid, min_spacing }
     }
 }
 
+/// The next coarser musical level above `step`: straight rasters double up to one bar; triplet
+/// rasters double up to one beat, then jump to one bar; from a bar on, the bar count doubles
+/// (2, 4, 8 bars, and beyond, so that the spacing guarantee holds at any zoom).
+fn coarser_step(step: i64, triplet: bool, meter: Meter) -> i64 {
+    let (per_bar, per_beat) = (meter.ticks_per_bar(), meter.ticks_per_beat());
+    if step >= per_bar {
+        step * 2
+    } else if triplet {
+        if step < per_beat {
+            (step * 2).min(per_beat)
+        } else {
+            per_bar
+        }
+    } else {
+        (step * 2).min(per_bar)
+    }
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// The spacing in ticks of the lines drawn for `spec`: the raster itself, or the first coarser
+/// musical level whose lines are at least `spec.min_spacing` px apart on `axis`. Snapping uses
+/// the raster, never this.
+pub fn display_step(axis: &TimeAxis, meter: Meter, spec: &GridSpec) -> Tick {
+    let triplet = matches!(
+        spec.grid,
+        Grid::QuarterTriplet | Grid::EighthTriplet | Grid::SixteenthTriplet
+    );
+    let mut step = spec.grid.ticks(meter).0.max(1);
+    let (per_bar, per_beat) = (meter.ticks_per_bar(), meter.ticks_per_beat());
+    let width = |t: i64| axis.width(Tick(t));
+    if !width(per_bar).is_finite() || width(per_bar) <= 0.0 {
+        return Tick(step);
+    }
+    // Bars and (below a beat) beats are drawn between the step's lines, so the smallest gap is the
+    // step's gcd with them (a 1/4 triplet and the beat lines are 1/8 triplet apart).
+    let gap = |s: i64| {
+        let mut g = if s < per_bar { gcd(s, per_bar) } else { s };
+        if s < per_beat {
+            g = gcd(g, per_beat);
+        }
+        g
+    };
+    while width(gap(step)) < spec.min_spacing {
+        step = coarser_step(step, triplet, meter);
+    }
+    Tick(step)
+}
+
 /// The x positions and weights of the lines of `spec` inside the screen range `x`, left to right.
-/// A line on a bar is a bar line, on a beat a beat line; levels closer than `space.2` are left
-/// out, and bar lines thin out to every 2ⁿ-th bar.
+/// Lines sit at every multiple of [`display_step`]; bar lines (`line.2`) are always drawn and a
+/// line on a bar is a bar line, on a beat a beat line (`line.1`), else a grid line (`line.0`).
+/// Beats are drawn as context while the step is finer than a beat, bars while it is finer than a
+/// bar.
 pub fn grid_lines(
     axis: &TimeAxis,
     meter: Meter,
     x: Rangef,
     spec: &GridSpec,
 ) -> Vec<(f32, LineWeight)> {
-    let min = space::SPACE_2;
     let per_bar = meter.ticks_per_bar();
     let per_beat = meter.ticks_per_beat();
     let bar_px = axis.width(Tick(per_bar));
     if bar_px <= 0.0 || !bar_px.is_finite() {
         return Vec::new();
     }
-    let mut bar_step = 1_i64;
-    while (bar_step as f32) * bar_px < min {
-        bar_step *= 2;
-    }
-    let beat = spec
-        .beat
-        .filter(|_| bar_step == 1 && axis.width(Tick(per_beat)) >= min);
-    let sub = spec
-        .sub
-        .filter(|(t, _)| t.0 > 0 && bar_step == 1 && axis.width(*t) >= min);
+    let step = display_step(axis, meter, spec).0;
     let (t0, t1) = axis.ticks_in(x);
-    // Candidate lines of every level; where levels meet, the stronger weight wins (bar, beat,
-    // grid). Triplet grids need not divide the beat, so the levels are collected separately.
-    let mut lines: Vec<(i64, u8, LineWeight)> = Vec::new();
-    let mut level = |step: i64, rank: u8, weight: LineWeight| {
+    // Candidate positions of every level; triplet rasters need not divide the beat, so the levels
+    // are collected separately and merged.
+    let mut ticks: Vec<i64> = Vec::new();
+    let mut level = |step: i64| {
         let mut t = t0.0.div_euclid(step).max(0) * step;
         while t <= t1.0 {
-            lines.push((t, rank, weight));
+            ticks.push(t);
             t += step;
         }
     };
-    level(per_bar * bar_step, 0, spec.bar);
-    if let Some(w) = beat {
-        level(per_beat, 1, w);
+    level(step);
+    if step < per_bar {
+        level(per_bar);
     }
-    if let Some((t, w)) = sub {
-        level(t.0, 2, w);
+    if step < per_beat {
+        level(per_beat);
     }
-    lines.sort_unstable_by_key(|&(t, rank, _)| (t, rank));
-    lines.dedup_by_key(|l| l.0);
-    lines
+    ticks.sort_unstable();
+    ticks.dedup();
+    ticks
         .into_iter()
-        .map(|(t, _, w)| (axis.x(Tick(t)), w))
+        .map(|t| {
+            let weight = if t % per_bar == 0 {
+                LineWeight::Bar
+            } else if t % per_beat == 0 {
+                LineWeight::Beat
+            } else {
+                LineWeight::Sub
+            };
+            (axis.x(Tick(t)), weight)
+        })
         .filter(|(lx, _)| x.contains(*lx))
         .collect()
 }
@@ -144,67 +180,132 @@ mod tests {
     use super::*;
 
     const M: Meter = Meter::FOUR_FOUR;
+    const MIN: f32 = 8.0;
+    const ALL: [Grid; 9] = [
+        Grid::Bar,
+        Grid::Half,
+        Grid::Quarter,
+        Grid::Eighth,
+        Grid::Sixteenth,
+        Grid::ThirtySecond,
+        Grid::QuarterTriplet,
+        Grid::EighthTriplet,
+        Grid::SixteenthTriplet,
+    ];
+
+    fn lines(axis: &TimeAxis, grid: Grid, width: f32) -> Vec<(f32, LineWeight)> {
+        grid_lines(axis, M, Rangef::new(0.0, width), &GridSpec::new(grid, MIN))
+    }
 
     #[test]
-    fn arrangement_shows_bars() {
+    fn bar_raster_shows_bars() {
         let axis = TimeAxis::per_bar(0.0, 72.0, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 300.0), &GridSpec::arrangement());
-        let xs: Vec<f32> = lines.iter().map(|l| l.0.round()).collect();
+        let l = lines(&axis, Grid::Bar, 300.0);
+        let xs: Vec<f32> = l.iter().map(|l| l.0.round()).collect();
         assert_eq!(xs, [0.0, 72.0, 144.0, 216.0, 288.0]);
-        assert!(lines.iter().all(|l| l.1 == LineWeight::Bar));
+        assert!(l.iter().all(|l| l.1 == LineWeight::Bar));
     }
 
     #[test]
-    fn bars_thin_out_when_zoomed_out() {
-        let axis = TimeAxis::per_bar(0.0, 3.0, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 100.0), &GridSpec::arrangement());
-        let xs: Vec<f32> = lines.iter().map(|l| l.0.round()).collect();
-        assert_eq!(xs, [0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0, 96.0]);
+    fn every_raster_changes_the_line_set() {
+        // 480 px per bar: every raster fits (1/32 = 15 px, 1/16 triplet = 20 px).
+        let axis = TimeAxis::per_bar(0.0, 960.0, M);
+        let sets: Vec<Vec<i32>> = ALL
+            .iter()
+            .map(|g| {
+                lines(&axis, *g, 1920.0)
+                    .iter()
+                    .map(|l| l.0.round() as i32)
+                    .collect()
+            })
+            .collect();
+        for i in 0..sets.len() {
+            for j in i + 1..sets.len() {
+                assert_ne!(sets[i], sets[j], "{:?} vs {:?}", ALL[i], ALL[j]);
+            }
+        }
+        // Line counts over two bars at 960 px/bar (inclusive ends).
+        assert_eq!(sets[0].len(), 3, "bar");
+        assert_eq!(sets[1].len(), 5, "1/2");
+        assert_eq!(sets[2].len(), 9, "1/4");
+        assert_eq!(sets[5].len(), 65, "1/32");
     }
 
     #[test]
-    fn editor_shows_bars_beats_and_grid() {
-        // 20 px per 1/16 (S01 piano roll).
+    fn hierarchy_of_weights() {
         let axis = TimeAxis::per_step(0.0, 20.0);
-        let spec = GridSpec::editor(Grid::Sixteenth, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 320.0), &spec);
-        assert_eq!(lines.len(), 17);
-        assert_eq!(lines[0], (0.0, LineWeight::Bar));
-        assert_eq!(lines[1], (20.0, LineWeight::Sub));
-        assert_eq!(lines[4], (80.0, LineWeight::Beat));
-        assert_eq!(lines[16], (320.0, LineWeight::Bar));
-        // A 1/8 grid: lines every 1/8 (and every beat).
-        let spec = GridSpec::editor(Grid::Eighth, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 320.0), &spec);
-        assert_eq!(lines.len(), 9);
-        // Zoomed out to 1 px per 1/16, only beats... and then only bars remain.
-        let axis = TimeAxis::per_step(0.0, 1.0);
-        let spec = GridSpec::editor(Grid::Sixteenth, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 64.0), &spec);
-        assert!(lines.iter().all(|l| l.1 == LineWeight::Bar));
+        let l = lines(&axis, Grid::Sixteenth, 320.0);
+        assert_eq!(l.len(), 17);
+        assert_eq!(l[0], (0.0, LineWeight::Bar));
+        assert_eq!(l[1], (20.0, LineWeight::Sub));
+        assert_eq!(l[4], (80.0, LineWeight::Beat));
+        assert_eq!(l[16], (320.0, LineWeight::Bar));
+        // 1/8: every 1/8 and every beat.
+        assert_eq!(lines(&axis, Grid::Eighth, 320.0).len(), 9);
     }
 
     #[test]
     fn triplet_grid_keeps_beats() {
         let axis = TimeAxis::per_step(0.0, 40.0);
-        let spec = GridSpec::editor(Grid::QuarterTriplet, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 640.0), &spec);
-        let beats = lines.iter().filter(|l| l.1 == LineWeight::Beat).count();
-        let subs = lines.iter().filter(|l| l.1 == LineWeight::Sub).count();
+        let l = lines(&axis, Grid::QuarterTriplet, 640.0);
+        let beats = l.iter().filter(|l| l.1 == LineWeight::Beat).count();
+        let subs = l.iter().filter(|l| l.1 == LineWeight::Sub).count();
         // Bar 0 and 1, beats 1–3, triplet lines at 640, 1280, 2560, 3200 ticks.
         assert_eq!(beats, 3);
         assert_eq!(subs, 4);
     }
 
     #[test]
+    fn display_step_coarsens_musically() {
+        let step = |px_per_step: f32, g: Grid| {
+            display_step(
+                &TimeAxis::per_step(0.0, px_per_step),
+                M,
+                &GridSpec::new(g, MIN),
+            )
+            .0
+        };
+        // Fits: unchanged.
+        assert_eq!(step(20.0, Grid::Sixteenth), 240);
+        assert_eq!(step(20.0, Grid::SixteenthTriplet), 160);
+        // 1/32 at 3 px per 1/16 is 1.5 px: doubles to 1/16 (3 px), 1/8 (6 px), 1/4 (12 px).
+        assert_eq!(step(3.0, Grid::ThirtySecond), 960);
+        // Straight rasters climb to bars: 1/16 at 1 px, a bar is 16 px; 2 bars 32 px.
+        assert_eq!(step(0.5, Grid::Sixteenth), 3840);
+        assert_eq!(step(0.1, Grid::Sixteenth), 3840 * 8);
+        // Triplets: within the family up to a beat, then bars.
+        assert_eq!(step(3.0, Grid::SixteenthTriplet), 960);
+        assert_eq!(step(1.5, Grid::SixteenthTriplet), 3840);
+        assert_eq!(step(2.5, Grid::QuarterTriplet), 960);
+    }
+
+    #[test]
+    fn lines_never_crowd() {
+        for g in ALL {
+            for px_per_step in [0.05_f32, 0.2, 0.5, 1.0, 3.0, 7.0, 20.0, 80.0] {
+                let axis = TimeAxis::per_step(0.0, px_per_step);
+                let width = (px_per_step * 16.0 * 40.0).min(4000.0);
+                let l = lines(&axis, g, width);
+                for w in l.windows(2) {
+                    assert!(
+                        w[1].0 - w[0].0 >= MIN - 1e-3 || w[0].1 == LineWeight::Bar,
+                        "{g:?} at {px_per_step}: {:?}",
+                        w
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn scrolled_axis() {
         let axis = TimeAxis::per_bar(-1000.0, 72.0, M);
-        let lines = grid_lines(&axis, M, Rangef::new(0.0, 100.0), &GridSpec::arrangement());
-        for (x, _) in &lines {
+        let l = lines(&axis, Grid::Bar, 100.0);
+        for (x, _) in &l {
             assert!((0.0..=100.0).contains(x));
             let rem = (x + 1000.0).rem_euclid(72.0);
             assert!(rem < 1e-3 || 72.0 - rem < 1e-3, "{x}");
         }
-        assert_eq!(lines.len(), 2);
+        assert_eq!(l.len(), 2);
     }
 }

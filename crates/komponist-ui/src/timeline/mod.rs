@@ -44,7 +44,7 @@ pub use clip::{
     ClipEdge, ClipModel, ClipState, PreviewMesh, clip_access, clip_rect, paint_clip,
     paint_clip_ghost,
 };
-pub use grid::{GridSpec, LineWeight, grid_lines, paint_grid};
+pub use grid::{GridSpec, LineWeight, display_step, grid_lines, paint_grid};
 pub use note::{NoteBatch, NoteState, note_access, note_rect, paint_note};
 pub use ruler::{RulerKind, RulerModel, paint_playhead, paint_ruler, ruler_access};
 pub use track_header::{

@@ -195,6 +195,45 @@ mod behaviour {
     }
 
     #[test]
+    fn wheel_shows_the_value_tooltip_of_knob_cells_and_mini_faders() {
+        use egui::{Event, Modifiers, MouseWheelSource, MouseWheelUnit, TouchPhase};
+        use komponist_ui::widgets::number_field::WHEEL_GESTURE_IDLE;
+        let app = |ui: &mut Ui, s: &mut (f64, f64)| {
+            ui.add(KnobCell::new(&mut s.0, "Cutoff").format(|v| format!("{:.0} %", v * 100.0)));
+            ui.add(MiniFader::new(&mut s.1, "Op 1").format(|v| format!("{:.0} %", v * 100.0)));
+        };
+        let mut h = snapshot::builder::<(f64, f64)>(1.0)
+            .with_size(vec2(480.0, 320.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(
+                move |ui, s| snapshot::padded(ui, |ui| app(ui, s)),
+                (0.5, 0.2),
+            );
+        h.run();
+        for (label, shown) in [("Cutoff", "51 %"), ("Op 1", "21 %")] {
+            // The cell and the mini fader paint the value as text as well; the tooltip is one more.
+            let base = h.query_all_by_label(shown).count();
+            let at = h.get_by_label(label).rect().center();
+            h.event(Event::PointerMoved(at));
+            h.event(Event::MouseWheel {
+                unit: MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: TouchPhase::Move,
+                source: MouseWheelSource::Wheel,
+                modifiers: Modifiers::NONE,
+            });
+            h.run_steps(10);
+            let during = h.query_all_by_label(shown).count();
+            assert!(during > base, "{label}: tooltip while turning");
+            h.run_steps((WHEEL_GESTURE_IDLE * 60.0) as usize + 5);
+            assert!(
+                h.query_all_by_label(shown).count() < during,
+                "{label}: tooltip gone after the burst"
+            );
+        }
+    }
+
+    #[test]
     fn meter_click_is_reported() {
         let mut h = harness(0_u32, |ui, n| {
             if ui.add(MeterGr::new([0.0; 3], "0.0")).clicked() {

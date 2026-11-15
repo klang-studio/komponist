@@ -51,3 +51,10 @@ pub const CLIP_EDGE_GRAB: f32 = 8.0;
 pub const HEIGHT_GRAB: f32 = 3.0;
 /// Track reorder: the insert line (`ix.header` "Einfügelinie 2 px akzent").
 pub const INSERT_LINE: f32 = 2.0;
+
+/// Minimum distance in px between two drawn grid lines. Where the chosen "Raster" would crowd, the
+/// grid is drawn one musical level coarser ([`komponist_ui::timeline::display_step`]). `space.2`
+/// (8 px): with 1 px lines that leaves 7 px of lane between lines (6 px was still read as a hatch
+/// pattern on the 1x snapshots), and it is the threshold the ruler labels already use (not a
+/// design value).
+pub const GRID_MIN_SPACING: f32 = space::SPACE_2;

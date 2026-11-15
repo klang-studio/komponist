@@ -17,7 +17,7 @@ use komponist_ui::snapshot;
 use komponist_ui::widgets::fader::{self, DbValue, Fader, FaderSize};
 use komponist_ui::widgets::knob::{self, Knob};
 use komponist_ui::widgets::meter::{self, Meter, MeterState, Style};
-use komponist_ui::widgets::number_field::{self, NumberField};
+use komponist_ui::widgets::number_field::{self, NumberField, WHEEL_GESTURE_IDLE};
 
 /// One frame per event, short enough that two clicks make a double-click.
 const STEP: f32 = 1.0 / 60.0;
@@ -484,6 +484,41 @@ fn knob_shows_the_value_tooltip_while_dragging() {
     h.snapshot(snapshot::file_stem("knob-drag-live", 1.0));
     release(&mut h, c + vec2(0.0, -20.0));
     assert!(h.query_by_label("35 %").is_none(), "gone after the drag");
+}
+
+/// The wheel shows the same value tooltip as a drag while it turns, and hides it one
+/// `WHEEL_GESTURE_IDLE` after the last notch.
+#[test]
+fn knob_shows_the_value_tooltip_while_the_wheel_turns() {
+    let mut h = knob_harness(0.5, 0.0);
+    let c = center(&h, "Cutoff");
+    assert!(h.query_by_label("51 %").is_none());
+    wheel(&mut h, c, 1.0, Modifiers::NONE);
+    let tip = h.get_by_label("51 %");
+    assert!(tip.rect().bottom() < c.y, "the tooltip is above the knob");
+    h.snapshot(snapshot::file_stem("knob-wheel-live", 1.0));
+    // A second notch within the idle time keeps it, with the new value.
+    wheel(&mut h, c, 1.0, Modifiers::NONE);
+    assert!(h.query_by_label("52 %").is_some());
+    // The burst ends: gone after the idle time, the pointer still over the knob.
+    for _ in 0..((WHEEL_GESTURE_IDLE / f64::from(STEP)) as usize + 5) {
+        h.step();
+    }
+    assert!(h.query_by_label("52 %").is_none(), "gone after the burst");
+    assert!(near(h.state().cutoff, 0.52));
+}
+
+#[test]
+fn fader_shows_the_value_tooltip_while_the_wheel_turns() {
+    let mut h = fader_harness(0.0);
+    let thumb = thumb_center(&h, 0.0);
+    let count = |h: &Harness<'_, Faders>| h.query_all_by_label("+1.0 dB").count();
+    wheel(&mut h, thumb, 1.0, Modifiers::NONE);
+    assert_eq!(count(&h), 1, "the tooltip");
+    for _ in 0..((WHEEL_GESTURE_IDLE / f64::from(STEP)) as usize + 5) {
+        h.step();
+    }
+    assert_eq!(count(&h), 0, "tooltip gone after the burst");
 }
 
 #[test]

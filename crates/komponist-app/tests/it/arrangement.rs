@@ -909,6 +909,98 @@ fn ctrl_brackets_step_the_grid_and_the_header_shows_it() {
     assert!(!h.state().ui().arrangement.snap);
 }
 
+/// The rendered frame (1x) without the "Raster" dropdowns, whose label names the grid, and
+/// without the CPU readout.
+fn render_without_grid_labels(h: &mut Harness<'_, App>, label: &str) -> Vec<u8> {
+    let mut rects: Vec<Rect> = h
+        .get_all_by_role_and_label(Role::ComboBox, label)
+        .map(|n| n.rect())
+        .collect();
+    rects.push(
+        h.get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+            .rect(),
+    );
+    let img = h.render().expect("render");
+    let (w, ht) = (img.width() as usize, img.height() as usize);
+    let mut raw = img.into_raw();
+    for r in rects {
+        for y in r.top().max(0.0) as usize..(r.bottom().ceil() as usize).min(ht) {
+            for x in r.left().max(0.0) as usize..(r.right().ceil() as usize).min(w) {
+                raw[(y * w + x) * 4..(y * w + x) * 4 + 4].fill(0);
+            }
+        }
+    }
+    raw
+}
+
+/// The "Raster" dropdown changes the drawn grid lines of the lanes (every value, at a zoom where
+/// it fits), and at low zoom the display thins out to a coarser level.
+#[test]
+fn the_grid_dropdown_changes_the_lane_grid_lines() {
+    use komponist_model::Grid;
+    let grids = [
+        Grid::Bar,
+        Grid::Half,
+        Grid::Quarter,
+        Grid::Eighth,
+        Grid::Sixteenth,
+        Grid::ThirtySecond,
+        Grid::QuarterTriplet,
+        Grid::EighthTriplet,
+        Grid::SixteenthTriplet,
+    ];
+    let mut images = Vec::new();
+    for grid in grids {
+        let mut app = demo();
+        app.ui_mut().arrangement.px_per_bar = 288.0;
+        app.ui_mut().arrangement.grid = grid;
+        let mut h = harness(app);
+        images.push((grid, render_without_grid_labels(&mut h, names::GRID)));
+    }
+    for (i, (a, ia)) in images.iter().enumerate() {
+        for (b, ib) in &images[i + 1..] {
+            assert!(ia != ib, "{a:?} and {b:?} draw the same grid");
+        }
+    }
+    // At 72 px per bar a 1/32 raster (2.25 px) thins to the 1/8 level (9 px): same picture as 1/8.
+    let render = |grid: Grid| {
+        let mut app = demo();
+        app.ui_mut().arrangement.grid = grid;
+        render_without_grid_labels(&mut harness(app), names::GRID)
+    };
+    assert!(
+        render(Grid::ThirtySecond) == render(Grid::Eighth),
+        "thinned 1/32 looks like 1/8"
+    );
+    // Snap keeps the chosen raster.
+    let mut app = demo();
+    app.ui_mut().arrangement.grid = Grid::ThirtySecond;
+    let h = harness(app);
+    assert_eq!(
+        h.state().ui().arrangement.grid.ticks(demo_project().meter),
+        Tick(120)
+    );
+}
+
+/// The thinned grid (1/16 at 72 px per bar draws 1/8 lines) and the full one (288 px per bar).
+#[test]
+fn snapshots_of_the_arrangement_grid() {
+    let mut results = SnapshotResults::new();
+    for px_per_bar in [72.0, 288.0] {
+        let mut app = demo();
+        app.ui_mut().arrangement.px_per_bar = px_per_bar;
+        app.ui_mut().arrangement.grid = komponist_model::Grid::Sixteenth;
+        let mut h = harness(app);
+        let cpu = h
+            .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+            .rect();
+        h.mask(cpu.expand(2.0));
+        h.snapshot(format!("arrangement-grid-16-{px_per_bar}px-1x"));
+        results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
 #[test]
 fn the_wheel_scrolls_and_ctrl_wheel_zooms() {
     let mut h = harness(demo());
