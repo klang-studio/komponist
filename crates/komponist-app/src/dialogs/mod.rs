@@ -178,16 +178,17 @@ pub(crate) fn header(ui: &mut Ui, width: f32, title: &str) -> bool {
         vec2(m::CLOSE, m::CLOSE),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(close));
+    // The name of the × button is `dialog-close`; the language lives in the egui context.
+    let t = komponist_ui::lang(ui.ctx());
     child
         .add_sized(
             close.size(),
-            Button::icon(Icon::X, CLOSE).frameless(3).shortcut("Esc"),
+            Button::icon(Icon::X, t.dialog_close())
+                .frameless(3)
+                .shortcut(t.key_escape()),
         )
         .clicked()
 }
-
-/// Accessible name of the × button of a dialog.
-pub const CLOSE: &str = "Schließen";
 
 /// A label node for painted text (AccessKit, tests).
 pub(crate) fn label_node(ui: &Ui, rect: Rect, text: &str, role: Role) -> Response {
@@ -442,7 +443,8 @@ impl crate::App {
                     return;
                 }
                 let model = missing_plugins::with_samples(
-                    missing_plugins::model(self.project(), &missing),
+                    self.lang,
+                    missing_plugins::model(self.lang, self.project(), &missing),
                     self.project(),
                     &samples,
                 );

@@ -26,6 +26,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
 use komponist_audio::{AudioSystem, DeviceInfo, HostKind, StreamConfig};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, typography};
 use komponist_ui::widgets::button::{Button, Height, Kind};
@@ -42,75 +43,39 @@ use crate::actions::{Action, SettingsAction, UiAction};
 use crate::engine_sync::EngineProcess;
 use crate::ui_state::SettingsSection;
 
-/// Texts of S07.
-pub mod names {
-    /// Dialog title.
-    pub const TITLE: &str = "Einstellungen";
-    /// Section "Audio".
-    pub const AUDIO: &str = "Audio";
-    /// Section "MIDI-Eingänge".
-    pub const MIDI_INPUTS: &str = "MIDI-Eingänge";
-    /// Section "Plugin-Ordner".
-    pub const PLUGIN_DIRS: &str = "Plugin-Ordner";
-    /// Section "Darstellung".
-    pub const DISPLAY: &str = "Darstellung";
-    /// Section "Tastatur".
-    pub const KEYBOARD: &str = "Tastatur";
-    /// "Treiber".
-    pub const DRIVER: &str = "Treiber";
-    /// "Ausgabegerät".
-    pub const DEVICE: &str = "Ausgabegerät";
-    /// "Abtastrate".
-    pub const RATE: &str = "Abtastrate";
-    /// "Puffergröße".
-    pub const BUFFER: &str = "Puffergröße";
-    /// The driver's default device.
-    pub const DEFAULT_DEVICE: &str = "Standardgerät";
-    /// Notice without a device.
-    pub const NO_DEVICE_NOTICE: &str = "Gerät nicht verbunden. Wiedergabe und Aufnahme sind \
-                                        angehalten, das Projekt bleibt bearbeitbar.";
-    /// "Erneut suchen".
-    pub const RETRY: &str = "Erneut suchen";
-    /// Hint when the audio thread got no real-time priority.
-    pub const NO_REALTIME: &str = "Audio läuft ohne Echtzeit-Priorität; Aussetzer sind möglich. \
-                                   RTKit oder die Gruppe „audio“ erlauben sie.";
-    /// "+ Ordner".
-    pub const ADD_FOLDER: &str = "+ Ordner";
-    /// "Neu scannen".
-    pub const RESCAN: &str = "Neu scannen";
-    /// Remove an added plugin folder.
-    pub const REMOVE_FOLDER: &str = "Ordner entfernen";
-    /// No MIDI system.
-    pub const NO_MIDI: &str = "Keine MIDI-Eingänge gefunden";
-    /// "UI-Skalierung".
-    pub const SCALE: &str = "UI-Skalierung";
-    /// Computer keyboard MIDI switch.
-    pub const KEYBOARD_MIDI: &str = "Computer-Tastatur spielt Noten";
-    /// Its hint (prototype start screen "Tastatur").
-    pub const KEYBOARD_HINT: &str = "A W S E D F T G Z H U J K spielen Noten, sobald eine Spur \
-                                     scharf ist oder dieser Schalter an ist.";
-}
-
 /// Buffer sizes of the segments (`buffers`).
 pub const BUFFERS: [u32; 5] = [64, 128, 256, 512, 1024];
 
 /// UI scales of the "Darstellung" segments; `None` follows the display.
-pub const SCALES: [(Option<f32>, &str); 5] = [
-    (None, "Automatisch"),
-    (Some(1.0), "100 %"),
-    (Some(1.25), "125 %"),
-    (Some(1.5), "150 %"),
-    (Some(2.0), "200 %"),
-];
+pub const SCALES: [Option<f32>; 5] = [None, Some(1.0), Some(1.25), Some(1.5), Some(2.0)];
+
+/// The label of a UI scale segment: "Automatisch", "100 %" ("Automatic", "100%").
+pub fn scale_label(t: Lang, scale: Option<f32>) -> String {
+    match scale {
+        None => t.settings_scale_auto().to_owned(),
+        Some(s) => t.settings_scale_percent((s * 100.0).round() as u32),
+    }
+}
 
 /// The navigation entries in order (`setNav`).
-pub const SECTIONS: [(SettingsSection, &str); 5] = [
-    (SettingsSection::Audio, "Audio"),
-    (SettingsSection::Midi, "MIDI"),
-    (SettingsSection::Plugins, "Plugins"),
-    (SettingsSection::Display, "Darstellung"),
-    (SettingsSection::Keyboard, "Tastatur"),
+pub const SECTIONS: [SettingsSection; 5] = [
+    SettingsSection::Audio,
+    SettingsSection::Midi,
+    SettingsSection::Plugins,
+    SettingsSection::Display,
+    SettingsSection::Keyboard,
 ];
+
+/// The name of a navigation entry ("Darstellung" / "Appearance").
+pub fn section_name(t: Lang, section: SettingsSection) -> &'static str {
+    match section {
+        SettingsSection::Audio => t.settings_nav_audio(),
+        SettingsSection::Midi => t.settings_nav_midi(),
+        SettingsSection::Plugins => t.settings_nav_plugins(),
+        SettingsSection::Display => t.settings_nav_display(),
+        SettingsSection::Keyboard => t.settings_nav_keyboard(),
+    }
+}
 
 /// The drivers of the "Treiber" segments.
 pub const DRIVERS: [(HostKind, &str); 3] = [
@@ -238,12 +203,13 @@ pub fn is_pseudo(device: &DeviceInfo) -> bool {
 /// "Standardgerät", then the real devices; a configured device that is not present (unplugged)
 /// is added at the end under its stored name, so the field shows what is missing.
 pub fn device_entries(
+    t: Lang,
     host: HostKind,
     devices: &[DeviceInfo],
     config: &StreamConfig,
 ) -> (Vec<DeviceEntry>, usize) {
     let mut entries = vec![DeviceEntry {
-        label: names::DEFAULT_DEVICE.to_owned(),
+        label: t.settings_default_device().to_owned(),
         name: None,
         id: None,
     }];
@@ -343,11 +309,11 @@ pub struct MidiRow {
 
 impl MidiRow {
     /// The info text after the dot (`midiIns` `info`).
-    pub fn info(&self) -> &'static str {
+    pub fn info(&self, t: Lang) -> &'static str {
         match (self.enabled, self.connected) {
-            (false, _) => "aus",
-            (true, true) => "aktiv · Kanal 1–16",
-            (true, false) => "nicht verbunden",
+            (false, _) => t.settings_midi_off(),
+            (true, true) => t.settings_midi_active(),
+            (true, false) => t.settings_midi_disconnected(),
         }
     }
 }
@@ -404,34 +370,25 @@ pub struct Model {
 
 /// The summary line under the plugin folders.
 pub fn scan_summary(
+    t: Lang,
     report: Option<&komponist_plugins::ScanReport>,
     scanning: bool,
     now: SystemTime,
 ) -> String {
     if scanning {
-        return "Scan läuft …".to_owned();
+        return t.settings_scan_running().to_owned();
     }
     let Some(report) = report else {
-        return "Noch kein Scan".to_owned();
+        return t.settings_scan_none().to_owned();
     };
-    let mut text = format::plural(
-        report.found as i64,
-        "1 Plugin gefunden",
-        "{} Plugins gefunden",
-    );
+    let mut text = t.settings_scan_found(report.found);
     if let (Some(then), Some(now)) = (format::local(report.finished), format::local(now)) {
-        text.push_str(&format!(
-            " · letzter Scan {}",
-            format::day_and_time(&then, &now)
-        ));
+        text.push_str(" · ");
+        text.push_str(&t.settings_scan_last(format::day_and_time(t, &then, &now)));
     }
     if !report.skipped.is_empty() {
         text.push_str(" · ");
-        text.push_str(&format::plural(
-            report.skipped.len() as i64,
-            "1 Plugin übersprungen (lässt sich nicht laden)",
-            "{} Plugins übersprungen (lassen sich nicht laden)",
-        ));
+        text.push_str(&t.settings_scan_skipped(report.skipped.len()));
     }
     text
 }
@@ -578,23 +535,24 @@ impl crate::App {
             cache.pending_devices = Some((host, rx));
         }
         cache.collect();
-        let (devices, device) = device_entries(config.host, &cache.devices, &config);
+        let t = self.lang;
+        let (devices, device) = device_entries(t, config.host, &cache.devices, &config);
         let rates = rates(config.host, &cache.devices, &devices[device], &config);
         let (no_device, latency) = match self.engine.audio_state() {
             komponist_audio::AudioState::NoDevice { reason, .. } => (
                 Some(reason.clone()),
-                format::latency(config.buffer_frames, config.sample_rate, Duration::ZERO),
+                format::latency(t, config.buffer_frames, config.sample_rate, Duration::ZERO),
             ),
             komponist_audio::AudioState::Running {
                 config: running,
                 latency,
             } if running.host == config.host => (
                 None,
-                format::latency(running.buffer_frames, running.sample_rate, *latency),
+                format::latency(t, running.buffer_frames, running.sample_rate, *latency),
             ),
             _ => (
                 None,
-                format::latency(config.buffer_frames, config.sample_rate, Duration::ZERO),
+                format::latency(t, config.buffer_frames, config.sample_rate, Duration::ZERO),
             ),
         };
         let now = Instant::now();
@@ -625,7 +583,7 @@ impl crate::App {
             realtime_denied: self.engine.stats().realtime_denied(),
             midi,
             dirs: dir_rows(&self.settings, host.last_scan()),
-            scan: scan_summary(host.last_scan(), host.is_scanning(), SystemTime::now()),
+            scan: scan_summary(t, host.last_scan(), host.is_scanning(), SystemTime::now()),
             scanning: host.is_scanning(),
             ui_scale: self.settings.ui_scale,
             keyboard_midi: self.ui.keyboard_midi,
@@ -652,12 +610,13 @@ pub enum Output {
 
 /// Draws S07; `scroll_to` scrolls the page to a section in this frame.
 pub fn show(ctx: &Context, model: &Model, scroll_to: Option<SettingsSection>) -> Vec<Output> {
+    let t = komponist_ui::lang(ctx);
     let mut out = Vec::new();
     let size = super::fit(ctx, vec2(m::SIZE[0], m::SIZE[1]));
     let response = modal(ctx, "settings", color32(color::SURFACE_2), |ui| {
         ui.set_min_size(size);
         ui.set_max_size(size);
-        if header(ui, size.x, names::TITLE) {
+        if header(ui, size.x, t.settings_title()) {
             out.push(Output::Close);
         }
         let body = Rect::from_min_size(ui.cursor().min, vec2(size.x, size.y - dm::HEADER_HEIGHT));
@@ -683,7 +642,7 @@ pub fn show(ctx: &Context, model: &Model, scroll_to: Option<SettingsSection>) ->
             color32(color::SURFACE_0),
         );
         let mut nav_ui = ui.new_child(UiBuilder::new().max_rect(nav).id_salt("settings_nav"));
-        navigation(&mut nav_ui, model.section, &mut out);
+        navigation(&mut nav_ui, t, model.section, &mut out);
         let mut page = ui.new_child(
             UiBuilder::new()
                 .max_rect(content)
@@ -703,7 +662,7 @@ pub fn show(ctx: &Context, model: &Model, scroll_to: Option<SettingsSection>) ->
                         let width = content.width() - 2.0 * px_;
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                        sections(ui, model, width, scroll_to, &mut out);
+                        sections(ui, t, model, width, scroll_to, &mut out);
                     });
                 });
                 ui.add_space(py);
@@ -716,11 +675,12 @@ pub fn show(ctx: &Context, model: &Model, scroll_to: Option<SettingsSection>) ->
 }
 
 /// The navigation column (`setNav`): 28 px items, the active one on `accent.surface`.
-fn navigation(ui: &mut Ui, active: SettingsSection, out: &mut Vec<Output>) {
+fn navigation(ui: &mut Ui, t: Lang, active: SettingsSection, out: &mut Vec<Output>) {
     let [pad_x, pad_y] = m::NAV_PADDING;
     let rect = ui.max_rect();
     let mut y = rect.top() + pad_y;
-    for (section, label) in SECTIONS {
+    for section in SECTIONS {
+        let label = section_name(t, section);
         let item = Rect::from_min_size(
             pos2(rect.left() + pad_x, y),
             vec2(rect.width() - 2.0 * pad_x, m::NAV_ITEM_HEIGHT),
@@ -774,6 +734,7 @@ fn navigation(ui: &mut Ui, active: SettingsSection, out: &mut Vec<Output>) {
 /// All sections of the page.
 fn sections(
     ui: &mut Ui,
+    t: Lang,
     model: &Model,
     width: f32,
     scroll_to: Option<SettingsSection>,
@@ -789,19 +750,19 @@ fn sections(
         }
     };
     anchor(ui, SettingsSection::Audio);
-    audio(ui, model, width, out);
+    audio(ui, t, model, width, out);
     gap_and_divider(ui, width);
     anchor(ui, SettingsSection::Midi);
-    midi(ui, model, out);
+    midi(ui, t, model, out);
     gap_and_divider(ui, width);
     anchor(ui, SettingsSection::Plugins);
-    plugins(ui, model, width, out);
+    plugins(ui, t, model, width, out);
     gap_and_divider(ui, width);
     anchor(ui, SettingsSection::Display);
-    display(ui, model, out);
+    display(ui, t, model, out);
     gap_and_divider(ui, width);
     anchor(ui, SettingsSection::Keyboard);
-    keyboard(ui, model, width, out);
+    keyboard(ui, t, model, width, out);
 }
 
 fn gap_and_divider(ui: &mut Ui, width: f32) {
@@ -830,8 +791,8 @@ fn grid_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     r
 }
 
-fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
-    section_label(ui, names::AUDIO);
+fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+    section_label(ui, t.settings_audio());
     ui.add_space(m::SECTION_INNER_GAP);
     let field_width = width - m::LABEL_COLUMN - m::GRID_GAP[0];
     let config = &model.config;
@@ -851,9 +812,9 @@ fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
         .iter()
         .position(|(h, _)| *h == config.host)
         .unwrap_or(DRIVERS.len());
-    grid_row(ui, names::DRIVER, |ui| {
+    grid_row(ui, t.settings_driver(), |ui| {
         if ui
-            .add(Segmented::new(names::DRIVER, &mut driver, &drivers))
+            .add(Segmented::new(t.settings_driver(), &mut driver, &drivers))
             .changed()
             && let Some((host, _)) = DRIVERS.get(driver)
         {
@@ -868,8 +829,8 @@ fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
 
     let items: Vec<Item<'_>> = model.devices.iter().map(|d| Item::new(&d.label)).collect();
     let mut device = model.device;
-    grid_row(ui, names::DEVICE, |ui| {
-        let r = ui.add(Dropdown::new(names::DEVICE, &mut device, &items).width(field_width));
+    grid_row(ui, t.settings_device(), |ui| {
+        let r = ui.add(Dropdown::new(t.settings_device(), &mut device, &items).width(field_width));
         if model.no_device.is_some() {
             // `box-shadow: inset 0 0 0 1px #ff5a5f` (`state.error`).
             px::inner_border(ui.painter(), r.rect, color32(color::STATE_ERROR));
@@ -885,7 +846,7 @@ fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
         }
     });
     if model.no_device.is_some() {
-        grid_row(ui, "", |ui| notice(ui, field_width, out));
+        grid_row(ui, "", |ui| notice(ui, t, field_width, out));
     }
 
     let labels: Vec<String> = model.rates.iter().map(|r| format!("{r} Hz")).collect();
@@ -895,8 +856,9 @@ fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
         .iter()
         .position(|r| *r == config.sample_rate)
         .unwrap_or(0);
-    grid_row(ui, names::RATE, |ui| {
-        let r = ui.add(Dropdown::new(names::RATE, &mut rate, &rate_items).width(m::RATE_WIDTH));
+    grid_row(ui, t.settings_rate(), |ui| {
+        let r =
+            ui.add(Dropdown::new(t.settings_rate(), &mut rate, &rate_items).width(m::RATE_WIDTH));
         if r.changed()
             && let Some(&sample_rate) = model.rates.get(rate)
         {
@@ -913,10 +875,14 @@ fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
         .iter()
         .position(|b| *b == config.buffer_frames)
         .unwrap_or(BUFFERS.len());
-    grid_row(ui, names::BUFFER, |ui| {
+    grid_row(ui, t.settings_buffer(), |ui| {
         ui.spacing_mut().item_spacing.x = m::LATENCY_GAP;
         if ui
-            .add(Segmented::new(names::BUFFER, &mut buffer, &buffer_items))
+            .add(Segmented::new(
+                t.settings_buffer(),
+                &mut buffer,
+                &buffer_items,
+            ))
             .changed()
             && let Some(&buffer_frames) = BUFFERS.get(buffer)
         {
@@ -938,12 +904,12 @@ fn audio(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
         grid_row(ui, "", |ui| {
             let g = styled(
                 ui,
-                names::NO_REALTIME,
+                t.settings_no_realtime(),
                 &typography::SMALL,
                 color32(color::METER_LOUD),
                 Some(field_width),
             );
-            super::paint_text(ui, g, names::NO_REALTIME);
+            super::paint_text(ui, g, t.settings_no_realtime());
         });
     }
 }
@@ -953,16 +919,16 @@ fn set_audio(config: StreamConfig) -> Output {
 }
 
 /// "Gerät nicht verbunden …" with "Erneut suchen" (`#2c1c1e` box, red dot).
-fn notice(ui: &mut Ui, width: f32, out: &mut Vec<Output>) {
+fn notice(ui: &mut Ui, t: Lang, width: f32, out: &mut Vec<Output>) {
     let [pad_x, pad_y] = m::NOTICE_PADDING;
     let button = ActionButton {
         height: Height::Control,
-        ..ActionButton::dialog(names::RETRY, Kind::Secondary, 4)
+        ..ActionButton::dialog(t.settings_retry(), Kind::Secondary, 4)
     };
     // The button's width, to wrap the text beside it.
     let button_text = galley(
         ui,
-        names::RETRY,
+        t.settings_retry(),
         komponist_ui::fonts::emphasis_font_id(&typography::UI),
         typography::UI.line_height,
         Color32::PLACEHOLDER,
@@ -972,7 +938,7 @@ fn notice(ui: &mut Ui, width: f32, out: &mut Vec<Output>) {
     let text_width = width - 2.0 * pad_x - m::DOT - 2.0 * m::NOTICE_GAP - button_width;
     let text = galley(
         ui,
-        names::NO_DEVICE_NOTICE,
+        t.settings_no_device_notice(),
         komponist_ui::fonts::font_id(&typography::UI),
         m::NOTICE_LINE_HEIGHT,
         color32(color::TEXT_1),
@@ -997,7 +963,7 @@ fn notice(ui: &mut Ui, width: f32, out: &mut Vec<Output>) {
         text,
         Color32::PLACEHOLDER,
     );
-    label_node(ui, text_rect, names::NO_DEVICE_NOTICE, Role::Label);
+    label_node(ui, text_rect, t.settings_no_device_notice(), Role::Label);
     let b = Rect::from_min_size(
         pos2(
             rect.right() - pad_x - button_width,
@@ -1011,29 +977,29 @@ fn notice(ui: &mut Ui, width: f32, out: &mut Vec<Output>) {
     }
 }
 
-fn midi(ui: &mut Ui, model: &Model, out: &mut Vec<Output>) {
-    section_label(ui, names::MIDI_INPUTS);
+fn midi(ui: &mut Ui, t: Lang, model: &Model, out: &mut Vec<Output>) {
+    section_label(ui, t.settings_midi_inputs());
     ui.add_space(m::SECTION_INNER_GAP);
     let Some(rows) = &model.midi else {
         let g = styled(
             ui,
-            names::NO_MIDI,
+            t.settings_no_midi(),
             &typography::UI,
             color32(color::TEXT_3),
             None,
         );
-        super::paint_text(ui, g, names::NO_MIDI);
+        super::paint_text(ui, g, t.settings_no_midi());
         return;
     };
     if rows.is_empty() {
         let g = styled(
             ui,
-            names::NO_MIDI,
+            t.settings_no_midi(),
             &typography::UI,
             color32(color::TEXT_3),
             None,
         );
-        super::paint_text(ui, g, names::NO_MIDI);
+        super::paint_text(ui, g, t.settings_no_midi());
     }
     for row in rows {
         ui.horizontal(|ui| {
@@ -1067,30 +1033,30 @@ fn midi(ui: &mut Ui, model: &Model, out: &mut Vec<Output>) {
                 color::SURFACE_4
             };
             dot(ui, dot_rect.center(), m::DOT, color32(lit));
-            let info = row.info();
+            let info = row.info(t);
             let g = styled(ui, info, &typography::VALUE_S, color32(color::TEXT_3), None);
             super::paint_text(ui, g, info);
         });
     }
 }
 
-fn plugins(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
+fn plugins(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
     ui.horizontal(|ui| {
         ui.set_width(width);
-        section_label(ui, names::PLUGIN_DIRS);
+        section_label(ui, t.settings_plugin_dirs());
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = m::DIR_BUTTON_GAP;
-            if ui.add(Button::new(names::RESCAN)).clicked() {
+            if ui.add(Button::new(t.settings_rescan())).clicked() {
                 out.push(Output::Act(Action::Settings(SettingsAction::RescanPlugins)));
             }
-            if ui.add(Button::new(names::ADD_FOLDER)).clicked() {
+            if ui.add(Button::new(t.settings_add_folder())).clicked() {
                 out.push(Output::AddFolder);
             }
         });
     });
     ui.add_space(m::SECTION_INNER_GAP);
     for row in &model.dirs {
-        dir_row(ui, width, row, out);
+        dir_row(ui, t, width, row, out);
         ui.add_space(super::metrics::missing::LIST_GAP);
     }
     ui.add_space(m::SECTION_INNER_GAP - super::metrics::missing::LIST_GAP);
@@ -1105,7 +1071,7 @@ fn plugins(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
 }
 
 /// A folder row (`pluginDirs`): format, path, count; added folders also "×".
-fn dir_row(ui: &mut Ui, width: f32, row: &DirRow, out: &mut Vec<Output>) {
+fn dir_row(ui: &mut Ui, t: Lang, width: f32, row: &DirRow, out: &mut Vec<Output>) {
     let ppp = ui.pixels_per_point();
     let (rect, _) = ui.allocate_exact_size(vec2(width, m::DIR_ROW), Sense::hover());
     px::fill(ui.painter(), rect, radius::M, color32(color::SURFACE_2));
@@ -1133,7 +1099,7 @@ fn dir_row(ui: &mut Ui, width: f32, row: &DirRow, out: &mut Vec<Output>) {
             vec2(size::CONTROL_COMPACT, size::CONTROL_COMPACT),
         );
         let mut child = ui.new_child(UiBuilder::new().max_rect(b));
-        let remove = Button::icon(Icon::X, names::REMOVE_FOLDER).frameless(2);
+        let remove = Button::icon(Icon::X, t.settings_remove_folder()).frameless(2);
         if child.add_sized(b.size(), remove).clicked() {
             out.push(Output::Act(Action::Settings(
                 SettingsAction::RemovePluginDir {
@@ -1176,19 +1142,20 @@ fn dir_row(ui: &mut Ui, width: f32, row: &DirRow, out: &mut Vec<Output>) {
     label_node(ui, rect, &name, Role::ListItem);
 }
 
-fn display(ui: &mut Ui, model: &Model, out: &mut Vec<Output>) {
-    section_label(ui, names::DISPLAY);
+fn display(ui: &mut Ui, t: Lang, model: &Model, out: &mut Vec<Output>) {
+    section_label(ui, t.settings_display());
     ui.add_space(m::SECTION_INNER_GAP);
-    let items: Vec<Item<'_>> = SCALES.iter().map(|(_, l)| Item::new(l)).collect();
+    let labels: Vec<String> = SCALES.iter().map(|s| scale_label(t, *s)).collect();
+    let items: Vec<Item<'_>> = labels.iter().map(|l| Item::new(l)).collect();
     let mut scale = SCALES
         .iter()
-        .position(|(s, _)| *s == model.ui_scale)
+        .position(|s| *s == model.ui_scale)
         .unwrap_or(0);
-    grid_row(ui, names::SCALE, |ui| {
+    grid_row(ui, t.settings_scale(), |ui| {
         if ui
-            .add(Segmented::new(names::SCALE, &mut scale, &items))
+            .add(Segmented::new(t.settings_scale(), &mut scale, &items))
             .changed()
-            && let Some((value, _)) = SCALES.get(scale)
+            && let Some(value) = SCALES.get(scale)
         {
             out.push(Output::Act(Action::Settings(SettingsAction::SetUiScale(
                 *value,
@@ -1197,33 +1164,36 @@ fn display(ui: &mut Ui, model: &Model, out: &mut Vec<Output>) {
     });
 }
 
-fn keyboard(ui: &mut Ui, model: &Model, width: f32, out: &mut Vec<Output>) {
-    section_label(ui, names::KEYBOARD);
+fn keyboard(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+    section_label(ui, t.settings_keyboard());
     ui.add_space(m::SECTION_INNER_GAP);
     ui.horizontal(|ui| {
         ui.set_height(m::MIDI_ROW);
         ui.spacing_mut().item_spacing.x = m::MIDI_GAP;
         let mut on = model.keyboard_midi;
-        if ui.add(Switch::new(&mut on, names::KEYBOARD_MIDI)).changed() {
+        if ui
+            .add(Switch::new(&mut on, t.settings_keyboard_midi()))
+            .changed()
+        {
             out.push(Output::Act(Action::Ui(UiAction::ToggleKeyboardMidi)));
         }
         let g = styled(
             ui,
-            names::KEYBOARD_MIDI,
+            t.settings_keyboard_midi(),
             &typography::UI,
             color32(color::TEXT_1),
             None,
         );
-        super::paint_text(ui, g, names::KEYBOARD_MIDI);
+        super::paint_text(ui, g, t.settings_keyboard_midi());
     });
     let g = styled(
         ui,
-        names::KEYBOARD_HINT,
+        t.settings_keyboard_hint(),
         &typography::SMALL,
         color32(color::TEXT_3),
         Some(width),
     );
-    super::paint_text(ui, g, names::KEYBOARD_HINT);
+    super::paint_text(ui, g, t.settings_keyboard_hint());
 }
 
 #[cfg(test)]
@@ -1271,7 +1241,8 @@ mod tests {
     #[test]
     fn pseudo_devices_become_one_default_entry() {
         let config = StreamConfig::default();
-        let (entries, selected) = device_entries(HostKind::PipeWire, &pipewire(), &config);
+        let (entries, selected) =
+            device_entries(Lang::De, HostKind::PipeWire, &pipewire(), &config);
         let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -1295,7 +1266,7 @@ mod tests {
             device_id: Some(DeviceId(starship.into())),
             ..StreamConfig::default()
         };
-        let (entries, i) = device_entries(HostKind::PipeWire, &pipewire(), &config);
+        let (entries, i) = device_entries(Lang::De, HostKind::PipeWire, &pipewire(), &config);
         assert_eq!(entries[i].id.as_ref().unwrap().0, starship);
         // Unplugged: shown under its stored name, selected, with its id kept.
         let config = StreamConfig {
@@ -1303,7 +1274,7 @@ mod tests {
             device_id: Some(DeviceId("pipewire:alsa_output.usb-Focusrite".into())),
             ..StreamConfig::default()
         };
-        let (entries, i) = device_entries(HostKind::PipeWire, &pipewire(), &config);
+        let (entries, i) = device_entries(Lang::De, HostKind::PipeWire, &pipewire(), &config);
         assert_eq!(i, entries.len() - 1);
         assert_eq!(entries[i].label, "Focusrite Scarlett 2i2");
         assert_eq!(
@@ -1311,13 +1282,18 @@ mod tests {
             "pipewire:alsa_output.usb-Focusrite"
         );
         // Another driver's list starts at the default.
-        assert_eq!(device_entries(HostKind::Alsa, &[], &config).1, 0);
+        assert_eq!(device_entries(Lang::De, HostKind::Alsa, &[], &config).1, 0);
     }
 
     #[test]
     fn rates_include_the_configured_one_and_pipewire_conversions() {
         let devices = pipewire();
-        let (entries, _) = device_entries(HostKind::PipeWire, &devices, &StreamConfig::default());
+        let (entries, _) = device_entries(
+            Lang::De,
+            HostKind::PipeWire,
+            &devices,
+            &StreamConfig::default(),
+        );
         let config = StreamConfig {
             sample_rate: 88_200,
             ..StreamConfig::default()
@@ -1355,13 +1331,13 @@ mod tests {
             connected: true,
             active: false,
         };
-        assert_eq!(row.info(), "aktiv · Kanal 1–16");
+        assert_eq!(row.info(Lang::De), "aktiv · Kanal 1–16");
         assert_eq!(
             MidiRow {
                 enabled: false,
                 ..row.clone()
             }
-            .info(),
+            .info(Lang::De),
             "aus"
         );
     }
@@ -1404,13 +1380,16 @@ mod tests {
             }],
             finished: now,
         };
-        let text = scan_summary(Some(&report), false, now);
+        let text = scan_summary(Lang::De, Some(&report), false, now);
         assert!(
             text.starts_with("214 Plugins gefunden · letzter Scan heute "),
             "{text}"
         );
         assert!(text.ends_with(" · 1 Plugin übersprungen (lässt sich nicht laden)"));
-        assert_eq!(scan_summary(Some(&report), true, now), "Scan läuft …");
-        assert_eq!(scan_summary(None, false, now), "Noch kein Scan");
+        assert_eq!(
+            scan_summary(Lang::De, Some(&report), true, now),
+            "Scan läuft …"
+        );
+        assert_eq!(scan_summary(Lang::De, None, false, now), "Noch kein Scan");
     }
 }

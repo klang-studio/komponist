@@ -33,6 +33,7 @@ mod export_bridges;
 mod hardware_midi;
 mod hexa_device;
 mod i18n;
+mod i18n_dialogs;
 mod inspector;
 mod internal_devices;
 mod internal_presets;

@@ -9,8 +9,8 @@
 //!   "Abbrechen" (Esc). The screens have no such dialog; its texts are komponist's own.
 
 use egui::{Context, vec2};
+use komponist_i18n::Lang;
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepProp};
-use komponist_model::project::DEFAULT_PROJECT_NAME;
 use komponist_model::{ClipId, Hue, PPQ, PluginRef, Project, Tick, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
@@ -20,20 +20,6 @@ use komponist_ui::widgets::{self as w};
 use super::metrics::dialog as m;
 use super::{ActionButton, button_row, galley, header, modal};
 use crate::step_rows;
-
-/// Texts of the prompt and the template.
-pub mod names {
-    /// Title of the unsaved-changes prompt.
-    pub const UNSAVED_TITLE: &str = "Änderungen speichern?";
-    /// "Speichern" (primary, Enter).
-    pub const SAVE: &str = "Speichern";
-    /// "Nicht speichern".
-    pub const DISCARD: &str = "Nicht speichern";
-    /// "Abbrechen" (Esc).
-    pub const CANCEL: &str = "Abbrechen";
-    /// The template's name (S09 "Aus Vorlage · Beat-Skizze").
-    pub const TEMPLATE: &str = "Beat-Skizze";
-}
 
 /// The answer to the unsaved-changes prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,24 +32,26 @@ pub enum Answer {
     Cancel,
 }
 
-/// The empty project of Ctrl N (S10): "Unbenannt", 120 BPM, 4/4, no tracks.
-pub fn empty_project() -> Project {
-    Project::new(DEFAULT_PROJECT_NAME)
+/// The empty project of Ctrl N (S10): "Unbenannt" ("Untitled"), 120 BPM, 4/4, no tracks. The name
+/// is made in `t` and is content afterwards (`docs/I18N.md` §5).
+pub fn empty_project(t: Lang) -> Project {
+    Project::new(t.new_project_default_name())
 }
 
 /// The text of the prompt for project `name`.
-pub fn unsaved_text(name: &str) -> String {
-    format!("„{name}“ hat ungespeicherte Änderungen. Ohne Speichern gehen sie verloren.")
+pub fn unsaved_text(t: Lang, name: &str) -> String {
+    t.new_project_unsaved_text(name)
 }
 
 /// Draws the unsaved-changes prompt for project `name`; returns the answer in the frame it is
 /// given.
 pub fn show_unsaved(ctx: &Context, name: &str) -> Option<Answer> {
+    let t = komponist_ui::lang(ctx);
     let mut out = None;
     let response = modal(ctx, "unsaved", color32(color::SURFACE_2), |ui| {
         let width = m::WIDTH;
         ui.set_width(width);
-        if header(ui, width, names::UNSAVED_TITLE) {
+        if header(ui, width, t.new_project_unsaved_title()) {
             out = Some(Answer::Cancel);
         }
         let body = egui::Frame::new()
@@ -71,7 +59,7 @@ pub fn show_unsaved(ctx: &Context, name: &str) -> Option<Answer> {
             .inner_margin(egui::Margin::same(m::PADDING as i8));
         body.show(ui, |ui| {
             ui.set_width(width - 2.0 * m::PADDING);
-            let text = unsaved_text(name);
+            let text = unsaved_text(t, name);
             let g = galley(
                 ui,
                 &text,
@@ -91,9 +79,9 @@ pub fn show_unsaved(ctx: &Context, name: &str) -> Option<Answer> {
                 ui,
                 width - 2.0 * m::PADDING,
                 vec![
-                    ActionButton::dialog(names::DISCARD, Kind::Secondary, 2),
-                    ActionButton::dialog(names::CANCEL, Kind::Secondary, 2),
-                    ActionButton::dialog(names::SAVE, Kind::Primary, 2),
+                    ActionButton::dialog(t.new_project_discard(), Kind::Secondary, 2),
+                    ActionButton::dialog(t.dialog_cancel(), Kind::Secondary, 2),
+                    ActionButton::dialog(t.new_project_save(), Kind::Primary, 2),
                 ],
             );
             for (response, answer) in r
@@ -133,8 +121,8 @@ const TEMPLATE_BEAT: [(usize, &[usize]); 4] = [
 
 /// The template project "Beat-Skizze" (see the module docs): the drums play the Sampler, bass and
 /// keys hexa.
-pub fn template(hexa: PluginRef) -> Project {
-    let mut p = Project::new(names::TEMPLATE);
+pub fn template(t: Lang, hexa: PluginRef) -> Project {
+    let mut p = Project::new(t.new_project_template_name());
     let specs = [
         ("Drums", komponist_builtin::Internal::Sampler.plugin_ref()),
         ("Bass", hexa.clone()),
@@ -194,16 +182,21 @@ mod tests {
 
     #[test]
     fn the_empty_project_is_s10() {
-        let p = empty_project();
+        let p = empty_project(Lang::De);
         assert_eq!(p.name, "Unbenannt");
+        assert_eq!(empty_project(Lang::En).name, "Untitled");
         assert_eq!(p.tempo.bpm, 120.0);
         assert!(p.tracks.is_empty());
     }
 
     #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let p = template(crate::app::hexa_ref());
+        let p = template(Lang::De, crate::app::hexa_ref());
         assert_eq!(p.name, "Beat-Skizze");
+        assert_eq!(
+            template(Lang::En, crate::app::hexa_ref()).name,
+            "Beat Sketch"
+        );
         let names: Vec<&str> = p.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Drums", "Bass", "Keys"]);
         let hues: Vec<u16> = p.tracks.iter().map(|t| t.hue.0).collect();

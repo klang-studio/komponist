@@ -19,12 +19,13 @@
 //!   peak rendered so far, before normalisation), Restzeit; "Abbrechen" / Esc.
 //!
 //! Texts are verbatim from S08 and the prototype; those of the device list and of the status bar
-//! messages other than S08's are komponist's own ([`names`]).
+//! messages other than S08's are komponist's own (all in the catalog, `export.ftl`).
 
 use egui::{
     Align, Color32, Context, Galley, Key, Layout, Margin, Modifiers, Rect, Response, Role, Sense,
     Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::format::{fmt_db, fmt_time};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, space, typography};
@@ -43,148 +44,33 @@ use super::metrics::export as m;
 use super::{ActionButton, divider, header, label_node, modal, styled};
 use crate::actions::{BitDepth, ExportRange, ExportSettings};
 
-/// Texts of the export dialog and of its status bar messages.
-pub mod names {
-    /// Title of the settings dialog.
-    pub const TITLE: &str = "WAV exportieren";
-    /// "Bereich" (also the segmented control's accessible name).
-    pub const RANGE: &str = "Bereich";
-    /// The whole song.
-    pub const SONG: &str = "Ganzer Song";
-    /// The loop segment without a current loop (`exportView`: "Loop " + bars).
-    pub const LOOP: &str = "Loop";
-    /// The selection segment.
-    pub const SELECTION: &str = "Auswahl";
-    /// "Von – bis".
-    pub const FROM_TO: &str = "Von – bis";
-    /// Accessible name of the range start.
-    pub const FROM: &str = "Von";
-    /// Accessible name of the range end.
-    pub const TO: &str = "Bis";
-    /// Accessible name of the range length.
-    pub const LENGTH: &str = "Länge";
-    /// "Nachlauf".
-    pub const TAIL: &str = "Nachlauf";
-    /// Its hint.
-    pub const TAIL_HINT: &str = "für Hall und Delay";
-    /// "Abtastrate".
-    pub const RATE: &str = "Abtastrate";
-    /// "Bittiefe".
-    pub const BIT_DEPTH: &str = "Bittiefe";
-    /// The bit depth segments.
-    pub const BIT_LABELS: [&str; 3] = ["16 bit", "24 bit", "32 bit float"];
-    /// "Normalisieren".
-    pub const NORMALIZE: &str = "Normalisieren";
-    /// Next to the switch when on (`normInfo`).
-    pub const NORMALIZE_ON: &str = "auf \u{2212}1.0 dBFS";
-    /// Next to the switch when off.
-    pub const NORMALIZE_OFF: &str = "aus";
-    /// "Dithering".
-    pub const DITHER: &str = "Dithering";
-    /// "Datei".
-    pub const FILE: &str = "Datei";
-    /// "Ordner".
-    pub const FOLDER: &str = "Ordner";
-    /// The folder's button.
-    pub const CHANGE: &str = "Ändern";
-    /// "Abbrechen".
-    pub const CANCEL: &str = "Abbrechen";
-    /// "Exportieren" (primary).
-    pub const EXPORT: &str = "Exportieren";
-    /// Its shortcut.
-    pub const ENTER: &str = "Enter";
-    /// The cancel shortcut while exporting.
-    pub const ESC: &str = "Esc";
-    /// Accessible name of the progress bar.
-    pub const PROGRESS: &str = "Fortschritt";
-    /// "Geschwindigkeit".
-    pub const SPEED: &str = "Geschwindigkeit";
-    /// "Spitze bisher".
-    pub const PEAK: &str = "Spitze bisher";
-    /// "Restzeit".
-    pub const REMAINING: &str = "Restzeit";
-    /// The device list's text (no screen).
-    pub const WAITING: &str = "Der Export wartet, bis alle Geräte laufen.";
-    /// A device still loading (prototype `arrView`: "· lädt …").
-    pub const LOADING: &str = "lädt …";
-    /// A device whose plugin is not installed.
-    pub const MISSING: &str = "fehlt";
-    /// A device whose bridge crashed.
-    pub const CRASHED: &str = "abgestürzt";
-    /// A device that failed to load (as the device card's „Lässt sich nicht laden“).
-    pub const LOAD_FAILED: &str = "lässt sich nicht laden";
-    /// A device that stopped answering (as the card's „Hängt“).
-    pub const UNRESPONSIVE: &str = "hängt";
-    /// Go on without the devices that are not ready.
-    pub const WITHOUT: &str = "Ohne sie exportieren";
-    /// The link of the status bar message (S08 "fertig · Statuszeile").
-    pub const SHOW_IN_FOLDER: &str = "Im Ordner zeigen";
-    /// The title of the file browser for "Ändern".
-    pub const FOLDER_TITLE: &str = "Export-Ordner wählen";
-    /// Nothing to export (prototype `openExport`).
-    pub const EMPTY: &str = "Leeres Projekt · nichts zu exportieren";
-    /// The export was cancelled.
-    pub const CANCELLED: &str = "Export abgebrochen";
+/// "6.2 × Echtzeit" ("6.2 × real time").
+pub fn speed_text(t: Lang, factor: f64) -> String {
+    t.export_speed_value(format!("{factor:.1}"))
+}
 
-    /// "Loop 9–13" (`exportView`: bar numbers of the loop's start and end).
-    pub fn loop_bars(from: i64, to: i64) -> String {
-        format!("{LOOP} {from}–{to}")
+/// "ca. 2 s" (whole seconds, rounded up), "ca. 3 min" from a minute on ("about 2 s").
+pub fn remaining_text(t: Lang, seconds: f64) -> String {
+    let s = seconds.max(0.0).ceil() as u64;
+    if s < 60 {
+        t.export_remaining_seconds(s)
+    } else {
+        t.export_remaining_minutes(s.div_ceil(60))
     }
+}
 
-    /// Title of the progress dialog: "Exportiere Nachtfahrt.wav".
-    pub fn exporting(file: &str) -> String {
-        format!("Exportiere {file}")
-    }
+/// The peak: "−2.4 dBFS" (a value and a unit, the same in every language).
+pub fn peak_text(db: f32) -> String {
+    format!("{} dBFS", fmt_db(db))
+}
 
-    /// "00:19.6 von 00:33.0".
-    pub fn of(done: &str, total: &str) -> String {
-        format!("{done} von {total}")
-    }
-
-    /// "6.2 × Echtzeit".
-    pub fn speed(factor: f64) -> String {
-        format!("{factor:.1} × Echtzeit")
-    }
-
-    /// "ca. 2 s" (whole seconds, rounded up), "ca. 3 min" from a minute on.
-    pub fn remaining(seconds: f64) -> String {
-        let s = seconds.max(0.0).ceil() as u64;
-        if s < 60 {
-            format!("ca. {s} s")
-        } else {
-            format!("ca. {} min", s.div_ceil(60))
-        }
-    }
-
-    /// The peak: "−2.4 dBFS".
-    pub fn peak(db: f32) -> String {
-        format!("{} dBFS", super::fmt_db(db))
-    }
-
-    /// The status bar message of a finished export (prototype: `file + ' exportiert · ' +
-    /// mm:ss + ' · ' + bits + ' bit'`): "Nachtfahrt.wav exportiert · 00:33 · 24 bit".
-    pub fn done(file: &str, length: &str, bits: u16) -> String {
-        format!("{file} exportiert · {length} · {bits} bit")
-    }
-
-    /// Appended to [`done`] when devices dropped out of the render: " · Surge XT ist
-    /// ausgefallen", " · Surge XT, Dexed sind ausgefallen".
-    pub fn dropped(devices: &[String]) -> String {
-        match devices {
-            [] => String::new(),
-            [one] => format!(" · {one} ist ausgefallen"),
-            many => format!(" · {} sind ausgefallen", many.join(", ")),
-        }
-    }
-
-    /// The export failed: "Export fehlgeschlagen · …".
-    pub fn failed(why: &str) -> String {
-        format!("Export fehlgeschlagen · {why}")
-    }
-
-    /// "Im Ordner zeigen" failed.
-    pub fn open_failed(why: &str) -> String {
-        format!("Ordner lässt sich nicht öffnen · {why}")
+/// Appended to the finished message when devices dropped out of the render: " · Surge XT ist
+/// ausgefallen", " · Surge XT, Dexed sind ausgefallen"; empty without devices.
+pub fn dropped_text(t: Lang, devices: &[String]) -> String {
+    match devices {
+        [] => String::new(),
+        [one] => format!(" · {}", t.export_dropped_one(one)),
+        many => format!(" · {}", t.export_dropped_many(many.join(", "))),
     }
 }
 
@@ -339,13 +225,14 @@ pub fn show(ctx: &Context, model: &Model) -> Vec<Output> {
 // ------------------------------------------------------------------------------------------------
 
 fn settings_dialog(ctx: &Context, model: &Model, view: &SettingsView) -> Vec<Output> {
+    let t = komponist_ui::lang(ctx);
     let mut out = Vec::new();
     let mut s = model.settings.clone();
     let mut enter = false;
     let response = modal(ctx, "export", color32(color::SURFACE_2), |ui| {
         let width = super::fit(ctx, vec2(m::WIDTH, 0.0)).x;
         ui.set_width(width);
-        if header(ui, width, names::TITLE) {
+        if header(ui, width, t.export_title()) {
             out.push(Output::Cancel);
         }
         let body = egui::Frame::new()
@@ -354,7 +241,7 @@ fn settings_dialog(ctx: &Context, model: &Model, view: &SettingsView) -> Vec<Out
         body.show(ui, |ui| {
             let inner = width - 2.0 * d::PADDING;
             ui.set_width(inner);
-            enter = settings_body(ui, inner, &mut s, view, &mut out);
+            enter = settings_body(ui, t, inner, &mut s, view, &mut out);
         });
         let footer = egui::Frame::new().inner_margin(Margin::symmetric(
             d::PADDING as i8,
@@ -372,8 +259,8 @@ fn settings_dialog(ctx: &Context, model: &Model, view: &SettingsView) -> Vec<Out
                     .layout(Layout::right_to_left(Align::Center)),
             );
             child.spacing_mut().item_spacing.x = d::BUTTON_GAP;
-            let mut export = ActionButton::dialog(names::EXPORT, Kind::Primary, 2);
-            export.trailing = Some(Trailing::Chip(names::ENTER));
+            let mut export = ActionButton::dialog(t.export_export(), Kind::Primary, 2);
+            export.trailing = Some(Trailing::Chip(t.key_enter()));
             let can = view.can_export;
             if child
                 .add_enabled_ui(can, |ui| export.show(ui))
@@ -383,7 +270,7 @@ fn settings_dialog(ctx: &Context, model: &Model, view: &SettingsView) -> Vec<Out
                 out.push(Output::Export);
             }
             // `background:#303236` on the `surface.2` footer.
-            if ActionButton::dialog(names::CANCEL, Kind::Secondary, 3)
+            if ActionButton::dialog(t.dialog_cancel(), Kind::Secondary, 3)
                 .show(&mut child)
                 .clicked()
             {
@@ -495,6 +382,7 @@ fn text(ui: &mut Ui, text: &str, style: &typography::TypeStyle, ink: Color32) ->
 /// The grid of the settings dialog; returns whether Enter left the file name field.
 fn settings_body(
     ui: &mut Ui,
+    t: Lang,
     width: f32,
     s: &mut ExportSettings,
     view: &SettingsView,
@@ -505,11 +393,11 @@ fn settings_body(
     let control = size::CONTROL;
     let line = typography::UI.line_height;
 
-    let loop_label = view.loop_label.as_deref().unwrap_or(names::LOOP);
+    let loop_label = view.loop_label.as_deref().unwrap_or(t.export_loop());
     let mut ranges = [
-        Item::new(names::SONG),
+        Item::new(t.export_song()),
         Item::new(loop_label),
-        Item::new(names::SELECTION),
+        Item::new(t.export_selection()),
     ];
     if view.loop_label.is_none() {
         ranges[1] = ranges[1].disabled();
@@ -518,29 +406,30 @@ fn settings_body(
         ranges[2] = ranges[2].disabled();
     }
     let mut range = range_index(s.range);
-    grid_row(ui, width, names::RANGE, control, |ui| {
+    grid_row(ui, width, t.export_range(), control, |ui| {
         if ui
-            .add(Segmented::new(names::RANGE, &mut range, &ranges))
+            .add(Segmented::new(t.export_range(), &mut range, &ranges))
             .changed()
         {
             s.range = [ExportRange::Song, ExportRange::Loop, ExportRange::Selection][range];
         }
     });
 
-    grid_row(ui, width, names::FROM_TO, control, |ui| {
+    grid_row(ui, width, t.export_from_to(), control, |ui| {
         ui.spacing_mut().item_spacing.x = m::RANGE_GAP;
         let ink = color32(color::TEXT_1);
-        value_box(ui, m::FIELD_WIDTH, &view.from, names::FROM, ink);
+        value_box(ui, m::FIELD_WIDTH, &view.from, t.export_from(), ink);
         text(ui, "–", &typography::UI, color32(color::TEXT_3));
-        value_box(ui, m::FIELD_WIDTH, &view.to, names::TO, ink);
+        value_box(ui, m::FIELD_WIDTH, &view.to, t.export_to(), ink);
+        let length_name = t.export_length();
         let r = text(ui, &view.length, &MONO_SMALL, color32(color::TEXT_3));
-        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::LENGTH));
+        r.widget_info(|| WidgetInfo::labeled(Role::Label, true, length_name));
     });
 
-    grid_row(ui, width, names::TAIL, control, |ui| {
+    grid_row(ui, width, t.export_tail(), control, |ui| {
         ui.spacing_mut().item_spacing.x = m::HINT_GAP;
         ui.add(
-            NumberField::new(&mut s.tail_seconds, names::TAIL)
+            NumberField::new(&mut s.tail_seconds, t.export_tail())
                 .unit("s")
                 .range(0.0..=30.0)
                 .step(0.1)
@@ -550,7 +439,7 @@ fn settings_body(
         );
         text(
             ui,
-            names::TAIL_HINT,
+            t.export_tail_hint(),
             &typography::SMALL,
             color32(color::TEXT_3),
         );
@@ -561,20 +450,20 @@ fn settings_body(
     let rate_labels: Vec<String> = RATES.iter().map(|r| format!("{r} Hz")).collect();
     let rate_items: Vec<Item<'_>> = rate_labels.iter().map(|l| Item::new(l)).collect();
     let mut rate = RATES.iter().position(|r| *r == s.sample_rate).unwrap_or(1);
-    grid_row(ui, width, names::RATE, control, |ui| {
+    grid_row(ui, width, t.export_rate(), control, |ui| {
         if ui
-            .add(Dropdown::new(names::RATE, &mut rate, &rate_items).width(m::RATE_WIDTH))
+            .add(Dropdown::new(t.export_rate(), &mut rate, &rate_items).width(m::RATE_WIDTH))
             .changed()
         {
             s.sample_rate = RATES[rate];
         }
     });
 
-    let bit_items = names::BIT_LABELS.map(Item::new);
+    let bit_items = [t.export_bits_16(), t.export_bits_24(), t.export_bits_32()].map(Item::new);
     let mut bits = bits_index(s.bit_depth);
-    grid_row(ui, width, names::BIT_DEPTH, control, |ui| {
+    grid_row(ui, width, t.export_bit_depth(), control, |ui| {
         if ui
-            .add(Segmented::new(names::BIT_DEPTH, &mut bits, &bit_items))
+            .add(Segmented::new(t.export_bit_depth(), &mut bits, &bit_items))
             .changed()
         {
             s.bit_depth = [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32][bits];
@@ -582,23 +471,23 @@ fn settings_body(
     });
 
     let switch = size::SWITCH[1].max(line);
-    grid_row(ui, width, names::NORMALIZE, switch, |ui| {
+    grid_row(ui, width, t.export_normalize(), switch, |ui| {
         ui.spacing_mut().item_spacing.x = m::HINT_GAP;
-        ui.add(Switch::new(&mut s.normalize, names::NORMALIZE));
+        ui.add(Switch::new(&mut s.normalize, t.export_normalize()));
         let info = if s.normalize {
-            names::NORMALIZE_ON
+            t.export_normalize_on()
         } else {
-            names::NORMALIZE_OFF
+            t.export_normalize_off()
         };
         text(ui, info, &MONO_SMALL, color32(color::TEXT_2));
     });
 
-    grid_row(ui, width, names::DITHER, switch, |ui| {
+    grid_row(ui, width, t.export_dither(), switch, |ui| {
         // 32 bit float is never dithered.
         let float = s.bit_depth == BitDepth::Float32;
         let mut on = s.dither && !float;
         if ui
-            .add_enabled(!float, Switch::new(&mut on, names::DITHER))
+            .add_enabled(!float, Switch::new(&mut on, t.export_dither()))
             .changed()
         {
             s.dither = on;
@@ -607,9 +496,9 @@ fn settings_body(
 
     divider_row(ui, width);
 
-    let enter = grid_row(ui, width, names::FILE, control, |ui| {
+    let enter = grid_row(ui, width, t.export_file(), control, |ui| {
         let r = ui.add(
-            TextField::new(&mut s.file_name, names::FILE)
+            TextField::new(&mut s.file_name, t.export_file())
                 .id(egui::Id::unique("komponist_export_file"))
                 .width(field_width),
         );
@@ -617,16 +506,16 @@ fn settings_body(
     });
 
     // The last row has no gap below (the body's padding follows).
-    let folder = row(ui, width, names::FOLDER, control, |ui| {
+    let folder = row(ui, width, t.export_folder(), control, |ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = m::FOLDER_GAP;
-            let clicked = ui.add(Button::new(names::CHANGE)).clicked();
+            let clicked = ui.add(Button::new(t.export_change())).clicked();
             let rest = ui.available_width();
             value_box(
                 ui,
                 rest,
                 &view.folder,
-                names::FOLDER,
+                t.export_folder(),
                 color32(color::TEXT_2),
             );
             clicked
@@ -716,24 +605,25 @@ fn small_dialog(
 }
 
 /// "Abbrechen  Esc" (`background:#303236`, the shortcut in Mono 10, `text.3`).
-fn cancel_button(ui: &mut Ui) -> Response {
-    let mut cancel = ActionButton::dialog(names::CANCEL, Kind::Secondary, 3);
-    cancel.trailing = Some(Trailing::Chip(names::ESC));
+fn cancel_button(ui: &mut Ui, t: Lang) -> Response {
+    let mut cancel = ActionButton::dialog(t.dialog_cancel(), Kind::Secondary, 3);
+    cancel.trailing = Some(Trailing::Chip(t.key_escape()));
     cancel.show(ui)
 }
 
 fn progress_dialog(ctx: &Context, model: &Model, view: &ProgressView) -> Vec<Output> {
+    let t = komponist_ui::lang(ctx);
     let mut out = Vec::new();
     let file = file_name(&model.settings.file_name).unwrap_or_default();
-    let title = names::exporting(&file);
+    let title = t.export_exporting(&file);
     small_dialog(
         ctx,
         "export-progress",
         &title,
-        |ui, width| progress_body(ui, width, view),
+        |ui, width| progress_body(ui, t, width, view),
         |ui| {
             if ui
-                .add_enabled_ui(!view.cancelling, cancel_button)
+                .add_enabled_ui(!view.cancelling, |ui| cancel_button(ui, t))
                 .inner
                 .clicked()
             {
@@ -751,7 +641,7 @@ fn baseline(g: &Galley) -> f32 {
     })
 }
 
-fn progress_body(ui: &mut Ui, width: f32, view: &ProgressView) {
+fn progress_body(ui: &mut Ui, t: Lang, width: f32, view: &ProgressView) {
     let ppp = ui.pixels_per_point();
     // "62 %" and "00:19.6 von 00:33.0" on one baseline (`align-items:baseline`).
     let percent = format!(
@@ -765,7 +655,7 @@ fn progress_body(ui: &mut Ui, width: f32, view: &ProgressView) {
         color32(color::TEXT_1),
         None,
     );
-    let times = names::of(&view.done, &view.total);
+    let times = t.export_of(&view.done, &view.total);
     let small = styled(ui, &times, &MONO_SMALL, color32(color::TEXT_3), None);
     let (row, _) = ui.allocate_exact_size(vec2(width, big.size().y), Sense::hover());
     let big_pos = px::snap_rect(Rect::from_min_size(row.min, big.size()), ppp).min;
@@ -798,8 +688,9 @@ fn progress_body(ui: &mut Ui, width: f32, view: &ProgressView) {
         let clip = ui.painter().with_clip_rect(done.intersect(ui.clip_rect()));
         px::fill(&clip, bar, radius::S, color32(color::ACCENT));
     }
+    let progress_name = t.export_progress();
     response.widget_info(|| {
-        let mut info = WidgetInfo::labeled(Role::ProgressIndicator, true, names::PROGRESS);
+        let mut info = WidgetInfo::labeled(Role::ProgressIndicator, true, progress_name);
         info.value = Some(f64::from(fraction));
         info
     });
@@ -811,15 +702,17 @@ fn progress_body(ui: &mut Ui, width: f32, view: &ProgressView) {
     });
     ui.add_space(m::PROGRESS_GAP);
 
-    let speed = view.speed.map_or_else(|| "–".to_owned(), names::speed);
-    let peak = names::peak(view.peak_db);
+    let speed = view
+        .speed
+        .map_or_else(|| "–".to_owned(), |f| speed_text(t, f));
+    let peak = peak_text(view.peak_db);
     let remaining = view
         .remaining
-        .map_or_else(|| "–".to_owned(), names::remaining);
+        .map_or_else(|| "–".to_owned(), |s| remaining_text(t, s));
     let rows = [
-        (names::SPEED, speed),
-        (names::PEAK, peak),
-        (names::REMAINING, remaining),
+        (t.export_speed(), speed),
+        (t.export_peak(), peak),
+        (t.export_remaining(), remaining),
     ];
     for (i, (label, value)) in rows.iter().enumerate() {
         let l = styled(ui, label, &typography::UI, color32(color::TEXT_2), None);
@@ -848,22 +741,23 @@ fn progress_body(ui: &mut Ui, width: f32, view: &ProgressView) {
 }
 
 fn devices_dialog(ctx: &Context, model: &Model, rows: &[DeviceRow]) -> Vec<Output> {
+    let t = komponist_ui::lang(ctx);
     let mut out = Vec::new();
     let file = file_name(&model.settings.file_name).unwrap_or_default();
-    let title = names::exporting(&file);
+    let title = t.export_exporting(&file);
     small_dialog(
         ctx,
         "export-devices",
         &title,
-        |ui, width| devices_body(ui, width, rows),
+        |ui, width| devices_body(ui, t, width, rows),
         |ui| {
-            if ActionButton::dialog(names::WITHOUT, Kind::Primary, 2)
+            if ActionButton::dialog(t.export_without(), Kind::Primary, 2)
                 .show(ui)
                 .clicked()
             {
                 out.push(Output::ExportWithout);
             }
-            if cancel_button(ui).clicked() {
+            if cancel_button(ui, t).clicked() {
                 out.push(Output::Cancel);
             }
         },
@@ -871,15 +765,15 @@ fn devices_dialog(ctx: &Context, model: &Model, rows: &[DeviceRow]) -> Vec<Outpu
     out
 }
 
-fn devices_body(ui: &mut Ui, width: f32, rows: &[DeviceRow]) {
+fn devices_body(ui: &mut Ui, t: Lang, width: f32, rows: &[DeviceRow]) {
     let g = styled(
         ui,
-        names::WAITING,
+        t.export_waiting(),
         &typography::UI,
         color32(color::TEXT_2),
         Some(width),
     );
-    super::paint_text(ui, g, names::WAITING);
+    super::paint_text(ui, g, t.export_waiting());
     ui.add_space(m::PROGRESS_GAP);
     egui::ScrollArea::vertical()
         .id_salt("komponist_export_devices")
@@ -887,22 +781,22 @@ fn devices_body(ui: &mut Ui, width: f32, rows: &[DeviceRow]) {
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            device_rows(ui, width, rows);
+            device_rows(ui, t, width, rows);
         });
 }
 
-fn device_rows(ui: &mut Ui, width: f32, rows: &[DeviceRow]) {
+fn device_rows(ui: &mut Ui, t: Lang, width: f32, rows: &[DeviceRow]) {
     let ppp = ui.pixels_per_point();
     for (i, row) in rows.iter().enumerate() {
         let (rect, _) = ui.allocate_exact_size(vec2(width, m::DEVICE_ROW), Sense::hover());
         px::fill(ui.painter(), rect, radius::M, color32(color::SURFACE_2));
         let inner = rect.shrink2(vec2(m::DEVICE_PADDING_X, 0.0));
         let (state, ink) = match row.state {
-            DeviceState::Loading => (names::LOADING, color::TEXT_2),
-            DeviceState::Missing => (names::MISSING, color::STATE_ERROR),
-            DeviceState::Crashed => (names::CRASHED, color::STATE_ERROR),
-            DeviceState::LoadFailed => (names::LOAD_FAILED, color::STATE_ERROR),
-            DeviceState::Unresponsive => (names::UNRESPONSIVE, color::STATE_ERROR),
+            DeviceState::Loading => (t.export_loading(), color::TEXT_2),
+            DeviceState::Missing => (t.export_missing(), color::STATE_ERROR),
+            DeviceState::Crashed => (t.export_crashed(), color::STATE_ERROR),
+            DeviceState::LoadFailed => (t.export_load_failed(), color::STATE_ERROR),
+            DeviceState::Unresponsive => (t.export_unresponsive(), color::STATE_ERROR),
         };
         let st = styled(ui, state, &typography::UI, color32(ink), None);
         let st_pos = w::text_pos(inner, &st, inner.right() - st.size().x, ppp);
@@ -966,24 +860,43 @@ mod tests {
         assert_eq!(tenths(19.64), "00:19.6");
         assert_eq!(minutes_seconds(32.968), "00:33");
         assert_eq!(minutes_seconds(59.6), "01:00");
-        assert_eq!(names::loop_bars(9, 13), "Loop 9–13");
+        let t = Lang::De;
+        assert_eq!(t.export_loop_bars(9, 13), "Loop 9–13");
         assert_eq!(
-            names::done("Nachtfahrt.wav", "00:33", 24),
+            t.export_done("Nachtfahrt.wav", "00:33", 24),
             "Nachtfahrt.wav exportiert · 00:33 · 24 bit"
         );
-        assert_eq!(names::speed(6.24), "6.2 × Echtzeit");
-        assert_eq!(names::remaining(1.2), "ca. 2 s");
-        assert_eq!(names::remaining(150.0), "ca. 3 min");
-        assert_eq!(names::peak(-2.4), "\u{2212}2.4 dBFS");
-        assert_eq!(names::of("00:19.6", "00:33.0"), "00:19.6 von 00:33.0");
-        assert_eq!(names::dropped(&[]), "");
+        assert_eq!(speed_text(t, 6.24), "6.2 × Echtzeit");
+        assert_eq!(remaining_text(t, 1.2), "ca. 2 s");
+        assert_eq!(remaining_text(t, 150.0), "ca. 3 min");
+        assert_eq!(peak_text(-2.4), "\u{2212}2.4 dBFS");
+        assert_eq!(t.export_of("00:19.6", "00:33.0"), "00:19.6 von 00:33.0");
+        assert_eq!(dropped_text(t, &[]), "");
         assert_eq!(
-            names::dropped(&["Surge XT".into()]),
+            dropped_text(t, &["Surge XT".into()]),
             " · Surge XT ist ausgefallen"
         );
         assert_eq!(
-            names::dropped(&["Surge XT".into(), "Dexed".into()]),
+            dropped_text(t, &["Surge XT".into(), "Dexed".into()]),
             " · Surge XT, Dexed sind ausgefallen"
+        );
+    }
+
+    #[test]
+    fn texts_in_english() {
+        let t = Lang::En;
+        assert_eq!(t.export_loop_bars(9, 13), "Loop 9–13");
+        assert_eq!(
+            t.export_done("Night.wav", "00:33", 24),
+            "Night.wav exported · 00:33 · 24 bit"
+        );
+        assert_eq!(speed_text(t, 6.24), "6.2 × real time");
+        assert_eq!(remaining_text(t, 1.2), "about 2 s");
+        assert_eq!(remaining_text(t, 150.0), "about 3 min");
+        assert_eq!(t.export_of("00:19.6", "00:33.0"), "00:19.6 of 00:33.0");
+        assert_eq!(
+            dropped_text(t, &["Surge XT".into(), "Dexed".into()]),
+            " · Surge XT, Dexed dropped out"
         );
     }
 }

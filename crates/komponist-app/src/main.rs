@@ -181,6 +181,12 @@ fn run_app() -> eframe::Result {
             eprintln!("komponist: worker threads run without realtime priority ({e})");
         }
     }
+    // The one place that reads the desktop's language; `App::new` stays German for the tests.
+    let lang = args.lang.unwrap_or_else(|| {
+        settings
+            .language
+            .resolve(sys_locale::get_locale().as_deref())
+    });
     let first = if args.demo {
         // The demo's Sampler plays the synthesized test kit (written to the temporary folder).
         let demo = komponist_app::showcase::showcase_project();
@@ -190,17 +196,11 @@ fn run_app() -> eframe::Result {
             demo
         })
     } else {
-        new_project::empty_project()
+        new_project::empty_project(lang)
     };
     let title = komponist_app::app::window_title(&first.name);
     let mut options = RunOptions::new(WORDMARK, title);
     options.pixels_per_point = args.scale.or(settings.ui_scale);
-    // The one place that reads the desktop's language; `App::new` stays German for the tests.
-    let lang = args.lang.unwrap_or_else(|| {
-        settings
-            .language
-            .resolve(sys_locale::get_locale().as_deref())
-    });
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
     if !args.no_plugin_scan {
         app.scan_plugins();

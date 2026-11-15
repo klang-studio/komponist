@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use egui::{Color32, Key, Modifiers, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, radius, size, typography};
 use komponist_ui::widgets::button::{Height, Kind, Trailing};
@@ -23,33 +24,6 @@ use super::metrics::{MONO_SMALL, WORDMARK, start as m};
 use super::{ActionButton, dot, format, label_node, section_label, styled};
 use crate::project_io::ProjectSummary;
 use crate::ui_state::{SettingsSection, StartView};
-
-/// Texts of S09.
-pub mod names {
-    /// The wordmark (rule 1: "klang-studio" in the screens).
-    pub const WORDMARK: &str = "komponist";
-    /// "Neues Projekt".
-    pub const NEW: &str = "Neues Projekt";
-    /// "Projekt öffnen …".
-    pub const OPEN: &str = "Projekt öffnen …";
-    /// "Aus Vorlage".
-    pub const TEMPLATE: &str = "Aus Vorlage";
-    /// "System".
-    pub const SYSTEM: &str = "System";
-    /// "Zuletzt geöffnet".
-    pub const RECENT: &str = "Zuletzt geöffnet";
-    /// The filter field's placeholder and name.
-    pub const FILTER: &str = "Filtern";
-    /// The keyboard hint under the list.
-    pub const HINT: &str = "↑ ↓ wählen · Enter öffnet · Entf entfernt aus der Liste · Projekte \
-                            lassen sich auch per Drag and Drop öffnen";
-    /// The list without entries.
-    pub const NO_RECENT: &str = "Noch keine Projekte geöffnet.";
-    /// The list with a filter that matches nothing.
-    pub const NO_MATCH: &str = "Kein Projekt passt zum Filter.";
-    /// A recent file that is gone.
-    pub const FILE_MISSING: &str = "Datei fehlt";
-}
 
 /// A recent project row.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,8 +103,8 @@ pub enum Output {
 }
 
 /// The version line: "0.1.0 · Linux · CLAP und VST3".
-pub fn version_line() -> String {
-    format!("{} · Linux · CLAP und VST3", env!("CARGO_PKG_VERSION"))
+pub fn version_line(t: Lang) -> String {
+    t.start_version(env!("CARGO_PKG_VERSION"))
 }
 
 /// Indices of the rows that match `filter` (name or path, case-insensitive).
@@ -149,19 +123,24 @@ pub fn filtered(recent: &[RecentRow], filter: &str) -> Vec<usize> {
 }
 
 /// The row of a recent file from its summary (`None`: unreadable) at `now`.
-pub fn recent_row(path: PathBuf, summary: Option<&ProjectSummary>, now: SystemTime) -> RecentRow {
+pub fn recent_row(
+    t: Lang,
+    path: PathBuf,
+    summary: Option<&ProjectSummary>,
+    now: SystemTime,
+) -> RecentRow {
     let path_label = format::tilde(&path);
     let file_name =
         || crate::project_io::name_from_path(&path).unwrap_or_else(|| path_label.clone());
     match summary {
         Some(s) => {
             let date = match (s.modified.and_then(format::local), format::local(now)) {
-                (Some(then), Some(now)) => format::relative_date(&then, &now),
+                (Some(then), Some(now)) => format::relative_date(t, &then, &now),
                 _ => String::new(),
             };
             RecentRow {
                 name: s.name.clone(),
-                meta: s.meta(),
+                meta: s.meta(t),
                 date,
                 hues: s.hues.clone(),
                 missing: false,
@@ -171,7 +150,7 @@ pub fn recent_row(path: PathBuf, summary: Option<&ProjectSummary>, now: SystemTi
         }
         None => RecentRow {
             name: file_name(),
-            meta: names::FILE_MISSING.to_owned(),
+            meta: t.start_file_missing().to_owned(),
             date: String::new(),
             hues: Vec::new(),
             missing: true,
@@ -215,6 +194,7 @@ pub fn show(
     view: &mut StartView,
     keys: bool,
 ) -> Vec<Output> {
+    let t = komponist_ui::lang(ui.ctx());
     let mut out = Vec::new();
     px::fill(ui.painter(), rect, 0.0, color32(color::SURFACE_0));
     let left = Rect::from_min_size(
@@ -223,12 +203,12 @@ pub fn show(
     );
     px::fill(ui.painter(), left, 0.0, color32(color::SURFACE_1));
     let right = Rect::from_min_max(pos2(left.right() + 1.0, rect.top()), rect.max);
-    left_column(ui, left, model, &mut out);
-    right_column(ui, right, model, view, keys, &mut out);
+    left_column(ui, t, left, model, &mut out);
+    right_column(ui, t, right, model, view, keys, &mut out);
     out
 }
 
-fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
+fn left_column(ui: &mut Ui, t: Lang, rect: Rect, model: &Model, out: &mut Vec<Output>) {
     let [pad_x, pad_y] = m::PADDING;
     let inner = rect.shrink2(vec2(pad_x, pad_y));
     let mut col = ui.new_child(
@@ -238,14 +218,9 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     col.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    let g = styled(
-        &col,
-        names::WORDMARK,
-        &WORDMARK,
-        color32(color::TEXT_1),
-        None,
-    );
-    super::paint_text(&mut col, g, names::WORDMARK);
+    let wordmark = crate::panels::transport::WORDMARK;
+    let g = styled(&col, wordmark, &WORDMARK, color32(color::TEXT_1), None);
+    super::paint_text(&mut col, g, wordmark);
     col.add_space(m::WORDMARK_GAP);
     let g = styled(
         &col,
@@ -268,7 +243,7 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
     let buttons = [
         (
             button(
-                names::NEW,
+                t.start_new(),
                 Kind::Primary,
                 Trailing::Chip(model.new_shortcut.as_str()),
             ),
@@ -276,7 +251,7 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
         ),
         (
             button(
-                names::OPEN,
+                t.start_open(),
                 Kind::Secondary,
                 Trailing::Chip(model.open_shortcut.as_str()),
             ),
@@ -284,9 +259,9 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
         ),
         (
             button(
-                names::TEMPLATE,
+                t.start_template(),
                 Kind::Secondary,
-                Trailing::Hint(super::new_project::names::TEMPLATE),
+                Trailing::Hint(t.new_project_template_name()),
             ),
             Output::Template,
         ),
@@ -312,7 +287,7 @@ fn left_column(ui: &mut Ui, rect: Rect, model: &Model, out: &mut Vec<Output>) {
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     sys.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    section_label(&mut sys, names::SYSTEM);
+    section_label(&mut sys, t.start_system());
     for row in &model.system {
         sys.add_space(m::SYSTEM_GAP);
         if system_row(&mut sys, inner.width(), row).clicked() {
@@ -368,6 +343,7 @@ fn system_row(ui: &mut Ui, width: f32, row: &SystemRow) -> egui::Response {
 
 fn right_column(
     ui: &mut Ui,
+    t: Lang,
     rect: Rect,
     model: &Model,
     view: &mut StartView,
@@ -422,7 +398,7 @@ fn right_column(
     col.allocate_rect(header, Sense::hover());
     let label = styled(
         &col,
-        names::RECENT,
+        t.start_recent(),
         &typography::LABEL,
         fonts::style_color(&typography::LABEL),
         None,
@@ -430,16 +406,16 @@ fn right_column(
     let pos = w::text_pos(header, &label, header.left(), col.pixels_per_point());
     let label_rect = Rect::from_min_size(pos, label.size());
     col.painter().galley(pos, label, Color32::PLACEHOLDER);
-    label_node(&col, label_rect, names::RECENT, Role::Label);
+    label_node(&col, label_rect, t.start_recent(), Role::Label);
     let field = Rect::from_min_max(
         pos2(header.right() - m::FILTER_WIDTH, header.top()),
         header.max,
     );
     let mut field_ui = col.new_child(UiBuilder::new().max_rect(field));
     let filter = field_ui.add(
-        TextField::new(&mut view.filter, names::FILTER)
+        TextField::new(&mut view.filter, t.start_filter())
             .id(filter_id)
-            .hint(names::FILTER)
+            .hint(t.start_filter())
             .width(m::FILTER_WIDTH),
     );
     if filter.changed() {
@@ -450,16 +426,16 @@ fn right_column(
     let shown = filtered(&model.recent, &view.filter);
     if shown.is_empty() {
         let text = if model.recent.is_empty() {
-            names::NO_RECENT
+            t.start_no_recent()
         } else {
-            names::NO_MATCH
+            t.start_no_match()
         };
         let g = styled(&col, text, &typography::UI, color32(color::TEXT_3), None);
         super::paint_text(&mut col, g, text);
     }
     let builder = UiBuilder::new()
         .accessibility_role(Role::List)
-        .accessibility_label(names::RECENT);
+        .accessibility_label(t.start_recent());
     col.scope_builder(builder, |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, m::LIST_GAP);
         for (k, &i) in shown.iter().enumerate() {
@@ -474,12 +450,12 @@ fn right_column(
     col.add_space(m::RIGHT_GAP + m::HINT_TOP);
     let g = styled(
         &col,
-        names::HINT,
+        t.start_hint(),
         &typography::SMALL,
         color32(color::TEXT_3),
         Some(width),
     );
-    super::paint_text(&mut col, g, names::HINT);
+    super::paint_text(&mut col, g, t.start_hint());
     if let Some(message) = &model.message {
         col.add_space(m::SYSTEM_GAP);
         let g = styled(
@@ -590,6 +566,7 @@ impl crate::App {
     pub(crate) fn start_model(&mut self) -> Model {
         use crate::actions::{Action, ProjectAction, UiAction};
         use komponist_audio::{AudioState, HostKind};
+        let t = self.lang;
         let label = |app: &Self, action: Action| {
             app.keymap.label_for(&action, app.lang).unwrap_or_default()
         };
@@ -607,14 +584,14 @@ impl crate::App {
             .paths
             .iter()
             .zip(&self.dialogs.start.summaries)
-            .map(|(p, s)| recent_row(p.clone(), s.as_ref(), now))
+            .map(|(p, s)| recent_row(t, p.clone(), s.as_ref(), now))
             .collect();
 
         let audio = match self.engine.audio_state() {
-            AudioState::NoDevice { .. } => (Health::Error, "Kein Audio-Gerät".to_owned()),
-            AudioState::Stopped => (Health::Idle, "Audio angehalten".to_owned()),
+            AudioState::NoDevice { .. } => (Health::Error, t.start_audio_none().to_owned()),
+            AudioState::Stopped => (Health::Idle, t.start_audio_stopped().to_owned()),
             AudioState::Running { config, .. } if config.host == HostKind::Null => {
-                (Health::Idle, "Kein Audio-Gerät".to_owned())
+                (Health::Idle, t.start_audio_none().to_owned())
             }
             AudioState::Running { config, .. } => {
                 let host = super::settings::DRIVERS
@@ -624,7 +601,7 @@ impl crate::App {
                 let device = config
                     .device
                     .clone()
-                    .unwrap_or_else(|| super::settings::names::DEFAULT_DEVICE.to_owned());
+                    .unwrap_or_else(|| t.settings_default_device().to_owned());
                 let rate = crate::panels::statusbar::fmt_rate(config.sample_rate);
                 (
                     Health::Ok,
@@ -642,34 +619,34 @@ impl crate::App {
                 .collect()
         });
         let midi = if inputs.is_empty() {
-            (Health::Idle, "kein MIDI-Gerät erkannt".to_owned())
+            (Health::Idle, t.start_midi_none().to_owned())
         } else {
             (Health::Ok, inputs.join(", "))
         };
         let host = self.engine.host();
         let plugins = if host.is_scanning() {
-            format!("Scan läuft · Einstellungen {settings_shortcut}")
+            t.start_plugins_scanning(&settings_shortcut)
         } else {
             let found = host
                 .last_scan()
                 .map_or(host.catalog().entries().len(), |r| r.found);
-            format!("{found} gefunden · Einstellungen {settings_shortcut}")
+            t.start_plugins_found(found, &settings_shortcut)
         };
         let system = vec![
             SystemRow {
-                label: "Audio",
+                label: t.start_row_audio(),
                 info: audio.1,
                 health: audio.0,
                 section: SettingsSection::Audio,
             },
             SystemRow {
-                label: "MIDI",
+                label: t.start_row_midi(),
                 info: midi.1,
                 health: midi.0,
                 section: SettingsSection::Midi,
             },
             SystemRow {
-                label: "Plugins",
+                label: t.start_row_plugins(),
                 info: plugins,
                 health: Health::Idle,
                 section: SettingsSection::Plugins,
@@ -682,7 +659,7 @@ impl crate::App {
             .filter(|s| s.kind == crate::ui_state::StatusKind::Error)
             .map(|s| s.text.clone());
         Model {
-            version: version_line(),
+            version: version_line(t),
             new_shortcut,
             open_shortcut,
             recent,
@@ -759,13 +736,15 @@ mod tests {
     #[test]
     fn unreadable_files_stay_listed_by_their_file_name() {
         let r = recent_row(
+            Lang::De,
             PathBuf::from("/nirgends/Alt.komponist"),
             None,
             SystemTime::now(),
         );
         assert_eq!(r.name, "Alt");
-        assert_eq!(r.meta, names::FILE_MISSING);
+        assert_eq!(r.meta, komponist_i18n::de::START_FILE_MISSING);
         assert!(r.missing);
-        assert!(version_line().ends_with(" · Linux · CLAP und VST3"));
+        assert!(version_line(Lang::De).ends_with(" · Linux · CLAP und VST3"));
+        assert!(version_line(Lang::En).ends_with(" · Linux · CLAP and VST3"));
     }
 }

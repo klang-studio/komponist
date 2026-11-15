@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use egui::{Color32, Context, Id, Key, Modifiers, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
 use komponist_ui::widgets::button::{Button, Kind};
@@ -25,44 +26,6 @@ use komponist_ui::{icons, px, state};
 use super::metrics::dialog as m;
 use super::{ActionButton, button_row, header, label_node, modal, styled};
 use crate::project_io::{is_project_file, with_extension};
-
-/// Texts of the file browser.
-pub mod names {
-    /// Title when opening.
-    pub const OPEN_TITLE: &str = "Projekt öffnen";
-    /// Title when saving.
-    pub const SAVE_TITLE: &str = "Projekt speichern";
-    /// Title when choosing a plugin folder.
-    pub const FOLDER_TITLE: &str = "Plugin-Ordner hinzufügen";
-    /// Primary action when opening.
-    pub const OPEN: &str = "Öffnen";
-    /// Primary action when saving.
-    pub const SAVE: &str = "Speichern";
-    /// Primary action when the file exists.
-    pub const REPLACE: &str = "Ersetzen";
-    /// Primary action when choosing a folder.
-    pub const CHOOSE_FOLDER: &str = "Ordner wählen";
-    /// "Abbrechen".
-    pub const CANCEL: &str = "Abbrechen";
-    /// Label of the folder field.
-    pub const FOLDER: &str = "Ordner";
-    /// The "‹" button.
-    pub const PARENT: &str = "Übergeordneter Ordner";
-    /// Label of the file name field.
-    pub const FILE_NAME: &str = "Dateiname";
-    /// The list.
-    pub const LIST: &str = "Dateien";
-    /// Empty list when opening or saving.
-    pub const NO_PROJECTS: &str = "Keine Projekte in diesem Ordner";
-    /// Empty list when choosing a folder.
-    pub const NO_FOLDERS: &str = "Keine Unterordner";
-    /// Title when choosing a sample.
-    pub const SAMPLE_TITLE: &str = "Sample laden";
-    /// Primary action when choosing a sample.
-    pub const LOAD: &str = "Laden";
-    /// Empty list when choosing a sample.
-    pub const NO_SAMPLES: &str = "Keine Samples in diesem Ordner";
-}
 
 /// What the browser is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +72,9 @@ pub enum Output {
 /// State of an open file browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileBrowser {
+    /// The language of the messages the browser makes ([`FileBrowser::show`](show) follows the
+    /// UI's).
+    pub lang: Lang,
     /// What it is for.
     pub purpose: Purpose,
     /// The folder shown.
@@ -130,9 +96,11 @@ pub struct FileBrowser {
 }
 
 impl FileBrowser {
-    /// A browser for `purpose` showing `dir`, with `name` in the file name field (saving).
-    pub fn new(purpose: Purpose, dir: PathBuf, name: String) -> FileBrowser {
+    /// A browser for `purpose` showing `dir`, with `name` in the file name field (saving); its
+    /// messages are in `lang`.
+    pub fn new(lang: Lang, purpose: Purpose, dir: PathBuf, name: String) -> FileBrowser {
         let mut b = FileBrowser {
+            lang,
             purpose,
             dir: dir.clone(),
             entries: Vec::new(),
@@ -148,24 +116,24 @@ impl FileBrowser {
     }
 
     /// Title of the dialog.
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self, t: Lang) -> &'static str {
         match self.purpose {
-            Purpose::Open => names::OPEN_TITLE,
-            Purpose::Save => names::SAVE_TITLE,
-            Purpose::Folder => names::FOLDER_TITLE,
-            Purpose::ExportFolder => super::export::names::FOLDER_TITLE,
-            Purpose::Sample => names::SAMPLE_TITLE,
+            Purpose::Open => t.file_open_title(),
+            Purpose::Save => t.file_save_title(),
+            Purpose::Folder => t.file_folder_title(),
+            Purpose::ExportFolder => t.export_folder_title(),
+            Purpose::Sample => t.file_sample_title(),
         }
     }
 
     /// Label of the primary button.
-    pub fn primary(&self) -> &'static str {
+    pub fn primary(&self, t: Lang) -> &'static str {
         match self.purpose {
-            Purpose::Open => names::OPEN,
-            Purpose::Save if self.replace.is_some() => names::REPLACE,
-            Purpose::Save => names::SAVE,
-            Purpose::Folder | Purpose::ExportFolder => names::CHOOSE_FOLDER,
-            Purpose::Sample => names::LOAD,
+            Purpose::Open => t.file_open(),
+            Purpose::Save if self.replace.is_some() => t.file_replace(),
+            Purpose::Save => t.file_save(),
+            Purpose::Folder | Purpose::ExportFolder => t.file_choose_folder(),
+            Purpose::Sample => t.file_load(),
         }
     }
 
@@ -180,7 +148,7 @@ impl FileBrowser {
                 self.replace = None;
             }
             Err(e) => {
-                self.message = Some(format!("{} lässt sich nicht lesen: {e}", dir.display()));
+                self.message = Some(self.lang.file_unreadable(dir.display(), e));
             }
         }
         self.location = super::format::tilde(&self.dir);
@@ -265,10 +233,8 @@ impl FileBrowser {
                 if let Some(parent) = path.parent()
                     && !parent.is_dir()
                 {
-                    self.message = Some(format!(
-                        "Den Ordner {} gibt es nicht",
-                        super::format::tilde(parent)
-                    ));
+                    self.message =
+                        Some(self.lang.file_no_such_folder(super::format::tilde(parent)));
                     self.replace = None;
                     return None;
                 }
@@ -276,7 +242,7 @@ impl FileBrowser {
                     let file = path
                         .file_name()
                         .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
-                    self.message = Some(format!("„{file}“ gibt es schon. Ersetzen?"));
+                    self.message = Some(self.lang.file_exists(file));
                     self.replace = Some(path);
                     return None;
                 }
@@ -294,7 +260,7 @@ impl FileBrowser {
         } else if matches!(self.purpose, Purpose::Open | Purpose::Sample) && path.is_file() {
             Some(Output::Chosen(path))
         } else {
-            self.message = Some(format!("{} gibt es nicht", path.display()));
+            self.message = Some(self.lang.file_no_such_path(path.display()));
             None
         }
     }
@@ -348,12 +314,14 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
 
 /// Draws the browser; returns what the user did in this frame.
 pub fn show(ctx: &Context, b: &mut FileBrowser) -> Option<Output> {
+    let t = komponist_ui::lang(ctx);
+    b.lang = t;
     let mut out = None;
     let size = super::fit(ctx, vec2(m::WIDTH, f32::INFINITY));
     let width = size.x;
     let response = modal(ctx, "file", color32(color::SURFACE_2), |ui| {
         ui.set_width(width);
-        if header(ui, width, b.title()) {
+        if header(ui, width, b.title(t)) {
             out = Some(Output::Cancel);
         }
         let body = egui::Frame::new()
@@ -363,13 +331,13 @@ pub fn show(ctx: &Context, b: &mut FileBrowser) -> Option<Output> {
             let inner = width - 2.0 * m::PADDING;
             ui.set_width(inner);
             ui.spacing_mut().item_spacing = vec2(space::SPACE_2, space::SPACE_2);
-            if let Some(o) = location_row(ui, b) {
+            if let Some(o) = location_row(ui, t, b) {
                 out = Some(o);
             }
-            if let Some(o) = file_list(ui, b, inner) {
+            if let Some(o) = file_list(ui, t, b, inner) {
                 out = Some(o);
             }
-            if b.purpose == Purpose::Save && name_row(ui, b) {
+            if b.purpose == Purpose::Save && name_row(ui, t, b) {
                 out = b.confirm();
             }
             if let Some(message) = &b.message {
@@ -391,8 +359,8 @@ pub fn show(ctx: &Context, b: &mut FileBrowser) -> Option<Output> {
                 ui,
                 width - 2.0 * m::PADDING,
                 vec![
-                    ActionButton::dialog(names::CANCEL, Kind::Secondary, 2),
-                    ActionButton::dialog(b.primary(), Kind::Primary, 2),
+                    ActionButton::dialog(t.dialog_cancel(), Kind::Secondary, 2),
+                    ActionButton::dialog(b.primary(t), Kind::Primary, 2),
                 ],
             );
             if r[0].clicked() {
@@ -419,17 +387,17 @@ pub(super) fn field_label(ui: &mut Ui, text: &str) -> egui::Response {
 }
 
 /// "Ordner", "‹" and the editable path.
-fn location_row(ui: &mut Ui, b: &mut FileBrowser) -> Option<Output> {
+fn location_row(ui: &mut Ui, t: Lang, b: &mut FileBrowser) -> Option<Output> {
     let mut out = None;
     ui.horizontal(|ui| {
-        let label = field_label(ui, names::FOLDER);
+        let label = field_label(ui, t.file_folder());
         if ui
-            .add(Button::icon(Icon::ChevronLeft, names::PARENT))
+            .add(Button::icon(Icon::ChevronLeft, t.file_parent()))
             .clicked()
         {
             b.parent();
         }
-        let r = ui.add(TextField::new(&mut b.location, names::FOLDER).style(typography::VALUE_M));
+        let r = ui.add(TextField::new(&mut b.location, t.file_folder()).style(typography::VALUE_M));
         let r = r.labelled_by(label.id);
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             out = b.go_to_location();
@@ -439,7 +407,7 @@ fn location_row(ui: &mut Ui, b: &mut FileBrowser) -> Option<Output> {
 }
 
 /// The list of folders and files.
-fn file_list(ui: &mut Ui, b: &mut FileBrowser, width: f32) -> Option<Output> {
+fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Output> {
     let mut out = None;
     let typing = ui.ctx().egui_wants_keyboard_input();
     // Keys of the list (not while a text field has them, except Enter in the name field, which
@@ -476,7 +444,7 @@ fn file_list(ui: &mut Ui, b: &mut FileBrowser, width: f32) -> Option<Output> {
         .inner_margin(egui::Margin::same(space::SPACE_1 as i8));
     let builder = egui::UiBuilder::new()
         .accessibility_role(Role::List)
-        .accessibility_label(names::LIST);
+        .accessibility_label(t.file_list());
     ui.scope_builder(builder, |ui| {
         frame.show(ui, |ui| {
             let inner = width - 2.0 * space::SPACE_1;
@@ -491,9 +459,9 @@ fn file_list(ui: &mut Ui, b: &mut FileBrowser, width: f32) -> Option<Output> {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if b.entries.is_empty() {
                         let text = match b.purpose {
-                            Purpose::Folder | Purpose::ExportFolder => names::NO_FOLDERS,
-                            Purpose::Sample => names::NO_SAMPLES,
-                            _ => names::NO_PROJECTS,
+                            Purpose::Folder | Purpose::ExportFolder => t.file_no_folders(),
+                            Purpose::Sample => t.file_no_samples(),
+                            _ => t.file_no_projects(),
                         };
                         let g = styled(ui, text, &typography::SMALL, color32(color::TEXT_3), None);
                         super::paint_text(ui, g, text);
@@ -568,12 +536,12 @@ fn row(ui: &mut Ui, width: f32, entry: &Entry, selected: bool) -> egui::Response
 }
 
 /// "Dateiname" and its field (saving); `true` when Enter was pressed in it (save).
-fn name_row(ui: &mut Ui, b: &mut FileBrowser) -> bool {
+fn name_row(ui: &mut Ui, t: Lang, b: &mut FileBrowser) -> bool {
     ui.horizontal(|ui| {
-        let label = field_label(ui, names::FILE_NAME);
+        let label = field_label(ui, t.file_name());
         let id = Id::unique("komponist_file_name");
         let r = ui
-            .add(TextField::new(&mut b.name, names::FILE_NAME).id(id))
+            .add(TextField::new(&mut b.name, t.file_name()).id(id))
             .labelled_by(label.id);
         if b.focus_name {
             r.request_focus();
@@ -634,7 +602,7 @@ mod tests {
         let dir = scratch("nav");
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/Lied.komponist"), "{}").unwrap();
-        let mut b = FileBrowser::new(Purpose::Open, dir.clone(), String::new());
+        let mut b = FileBrowser::new(Lang::De, Purpose::Open, dir.clone(), String::new());
         assert_eq!(b.entries.len(), 1);
         b.step(1);
         assert_eq!(b.selected, Some(0));
@@ -658,15 +626,15 @@ mod tests {
     #[test]
     fn saving_adds_the_extension_and_asks_before_replacing() {
         let dir = scratch("save");
-        let mut b = FileBrowser::new(Purpose::Save, dir.clone(), "Hafenlicht".into());
-        assert_eq!(b.primary(), "Speichern");
+        let mut b = FileBrowser::new(Lang::De, Purpose::Save, dir.clone(), "Hafenlicht".into());
+        assert_eq!(b.primary(Lang::De), "Speichern");
         assert_eq!(
             b.confirm(),
             Some(Output::Chosen(dir.join("Hafenlicht.komponist")))
         );
         std::fs::write(dir.join("Hafenlicht.komponist"), "{}").unwrap();
         assert_eq!(b.confirm(), None);
-        assert_eq!(b.primary(), "Ersetzen");
+        assert_eq!(b.primary(Lang::De), "Ersetzen");
         assert!(b.message.as_deref().unwrap().contains("gibt es schon"));
         assert_eq!(
             b.confirm(),
@@ -687,7 +655,7 @@ mod tests {
     fn choosing_a_folder_takes_the_highlighted_or_the_shown_one() {
         let dir = scratch("folder");
         std::fs::create_dir(dir.join("clap")).unwrap();
-        let mut b = FileBrowser::new(Purpose::Folder, dir.clone(), String::new());
+        let mut b = FileBrowser::new(Lang::De, Purpose::Folder, dir.clone(), String::new());
         assert_eq!(b.confirm(), Some(Output::Chosen(dir.clone())));
         b.step(1);
         assert_eq!(b.confirm(), Some(Output::Chosen(dir.join("clap"))));

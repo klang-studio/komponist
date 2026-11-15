@@ -225,10 +225,9 @@ impl ProjectSummary {
         Ok(ProjectSummary::of(&project, modified))
     }
 
-    /// "124 BPM · 6 Spuren".
-    pub fn meta(&self) -> String {
-        let tracks = crate::dialogs::format::plural(self.tracks as i64, "1 Spur", "{} Spuren");
-        format!("{} BPM · {tracks}", fmt_bpm(self.bpm))
+    /// "124 BPM · 6 Spuren" ("124 BPM · 6 tracks").
+    pub fn meta(&self, t: komponist_i18n::Lang) -> String {
+        t.start_meta(fmt_bpm(self.bpm), self.tracks)
     }
 }
 
@@ -288,11 +287,11 @@ impl App {
     pub(crate) fn proceed(&mut self, next: Pending) {
         match next {
             Pending::New => {
-                self.open_document(Document::new(new_project::empty_project()), None);
+                self.open_document(Document::new(new_project::empty_project(self.lang)), None);
                 self.set_status(self.lang.project_new_created(), StatusKind::Info);
             }
             Pending::Template => {
-                let project = new_project::template(crate::app::hexa_ref());
+                let project = new_project::template(self.lang, crate::app::hexa_ref());
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }
@@ -366,7 +365,7 @@ impl App {
             self.set_status(self.lang.project_opened_ready(&name), StatusKind::Info);
             return;
         }
-        let n = crate::dialogs::missing_plugins::title_for(missing.len(), samples);
+        let n = crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples);
         self.set_status(
             self.lang.project_opened_problems(&name, n),
             StatusKind::Error,
@@ -475,7 +474,9 @@ impl App {
             Purpose::Save => format!("{}.{FILE_EXTENSION}", self.project().name),
             _ => String::new(),
         };
-        self.open_overlay(Overlay::File(FileBrowser::new(purpose, dir, name)));
+        self.open_overlay(Overlay::File(FileBrowser::new(
+            self.lang, purpose, dir, name,
+        )));
     }
 
     /// Shows `overlay` above everything; the keyboard focus goes to it.
@@ -604,7 +605,7 @@ mod tests {
         assert_eq!(summary.name, "Nachtfahrt");
         assert_eq!(summary.tracks, project.tracks.len());
         assert_eq!(summary.hues[0], project.tracks[0].hue.0);
-        assert_eq!(summary.meta(), "124 BPM · 6 Spuren");
+        assert_eq!(summary.meta(komponist_i18n::Lang::De), "124 BPM · 6 Spuren");
         assert!(summary.modified.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }

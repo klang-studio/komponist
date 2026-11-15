@@ -1,5 +1,6 @@
-//! Texts the dialogs compute: local dates ("vor 2 Stunden", "gestern", "12. Okt.", "heute
-//! 09:12"), counts with their German plural, paths with `~`.
+//! Texts the dialogs compute: local dates ("vor 2 Stunden" / "2 hours ago", "gestern", "12. Okt." /
+//! "Oct 12", "heute 09:12"), the latency, paths with `~`. Words and plurals come from the catalog
+//! (`dialog.ftl`).
 //!
 //! The formatting functions take [`LocalTime`] values, so tests give fixed times; [`local`]
 //! converts a [`SystemTime`] with the system's time zone (`localtime_r`).
@@ -7,10 +8,26 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Month abbreviations as the screens write them ("12. Okt."; Duden abbreviations).
-const MONTHS: [&str; 12] = [
-    "Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez.",
-];
+use komponist_i18n::Lang;
+
+/// The abbreviation of month `month` (1 ..= 12) as the screens write it ("Okt."; Duden
+/// abbreviations) or as English does ("Oct").
+fn month_name(t: Lang, month: u8) -> &'static str {
+    match month.clamp(1, 12) {
+        1 => t.dialog_month_1(),
+        2 => t.dialog_month_2(),
+        3 => t.dialog_month_3(),
+        4 => t.dialog_month_4(),
+        5 => t.dialog_month_5(),
+        6 => t.dialog_month_6(),
+        7 => t.dialog_month_7(),
+        8 => t.dialog_month_8(),
+        9 => t.dialog_month_9(),
+        10 => t.dialog_month_10(),
+        11 => t.dialog_month_11(),
+        _ => t.dialog_month_12(),
+    }
+}
 
 /// A point in time on the local calendar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,57 +91,48 @@ pub fn local(time: SystemTime) -> Option<LocalTime> {
     })
 }
 
-/// "12. Okt." (and the year when it is not `now`'s: "12. Okt. 2025").
-fn date(then: &LocalTime, now: &LocalTime) -> String {
-    let month = MONTHS[usize::from(then.month.clamp(1, 12)) - 1];
+/// "12. Okt." / "Oct 12" (and the year when it is not `now`'s: "12. Okt. 2025" / "Oct 12, 2025").
+fn date(t: Lang, then: &LocalTime, now: &LocalTime) -> String {
+    let month = month_name(t, then.month);
     if then.year == now.year {
-        format!("{}. {month}", then.day)
+        t.dialog_date(then.day, month)
     } else {
-        format!("{}. {month} {}", then.day, then.year)
+        t.dialog_date_year(then.day, month, then.year)
     }
 }
 
 /// When a project was last saved, as the start screen shows it (S09 `recent`): "gerade eben",
-/// "vor 5 Minuten", "vor 2 Stunden" (today), "gestern", "12. Okt.".
-pub fn relative_date(then: &LocalTime, now: &LocalTime) -> String {
+/// "vor 5 Minuten", "vor 2 Stunden" (today), "gestern", "12. Okt." ("5 minutes ago", "2 hours ago",
+/// "yesterday", "Oct 12" in English).
+pub fn relative_date(t: Lang, then: &LocalTime, now: &LocalTime) -> String {
     let days = now.day_number() - then.day_number();
     if days == 0 {
         let secs = (now.unix - then.unix).max(0);
         let minutes = secs / 60;
         let hours = minutes / 60;
         if minutes < 1 {
-            "gerade eben".to_owned()
+            t.dialog_just_now().to_owned()
         } else if hours < 1 {
-            plural(minutes, "vor 1 Minute", "vor {} Minuten")
+            t.dialog_minutes_ago(minutes)
         } else {
-            plural(hours, "vor 1 Stunde", "vor {} Stunden")
+            t.dialog_hours_ago(hours)
         }
     } else if days == 1 {
-        "gestern".to_owned()
+        t.dialog_yesterday().to_owned()
     } else {
-        date(then, now)
+        date(t, then, now)
     }
 }
 
 /// The time of a scan (S07 "letzter Scan heute 09:12"): "heute 09:12", "gestern 09:12",
-/// "12. Okt. 09:12".
-pub fn day_and_time(then: &LocalTime, now: &LocalTime) -> String {
+/// "12. Okt. 09:12" (24 hour clock in every language).
+pub fn day_and_time(t: Lang, then: &LocalTime, now: &LocalTime) -> String {
     let day = match now.day_number() - then.day_number() {
-        0 => "heute".to_owned(),
-        1 => "gestern".to_owned(),
-        _ => date(then, now),
+        0 => t.dialog_today().to_owned(),
+        1 => t.dialog_yesterday().to_owned(),
+        _ => date(t, then, now),
     };
-    format!("{day} {:02}:{:02}", then.hour, then.minute)
-}
-
-/// `one` for 1, else `many` with `{}` replaced by `n` ("1 Plugin", "214 Plugins").
-pub fn plural(n: impl Into<i64>, one: &str, many: &str) -> String {
-    let n = n.into();
-    if n == 1 {
-        one.to_owned()
-    } else {
-        many.replace("{}", &n.to_string())
-    }
+    t.dialog_day_time(day, format!("{:02}:{:02}", then.hour, then.minute))
 }
 
 /// `path` with the home folder written as `~` ("~/Musik/klang/Nachtfahrt.komponist").
@@ -143,11 +151,11 @@ pub fn tilde_in(path: &Path, home: Option<&Path>) -> String {
 }
 
 /// Latency text of the S07 buffer row: `buffer / rate` plus what the stream reports, "5.3 ms
-/// Latenz".
-pub fn latency(buffer_frames: u32, sample_rate: u32, reported: Duration) -> String {
+/// Latenz" ("5.3 ms latency").
+pub fn latency(t: Lang, buffer_frames: u32, sample_rate: u32, reported: Duration) -> String {
     let ms = f64::from(buffer_frames) * 1000.0 / f64::from(sample_rate.max(1))
         + reported.as_secs_f64() * 1000.0;
-    format!("{ms:.1} ms Latenz")
+    t.dialog_latency(format!("{ms:.1}"))
 }
 
 #[cfg(test)]
@@ -186,33 +194,45 @@ mod tests {
     fn recent_dates_read_like_s09() {
         let now = at(2026, 11, 14, 16, 30);
         assert_eq!(
-            relative_date(&at(2026, 11, 14, 16, 30), &now),
+            relative_date(Lang::De, &at(2026, 11, 14, 16, 30), &now),
             "gerade eben"
         );
         assert_eq!(
-            relative_date(&at(2026, 11, 14, 16, 29), &now),
+            relative_date(Lang::De, &at(2026, 11, 14, 16, 29), &now),
             "vor 1 Minute"
         );
         assert_eq!(
-            relative_date(&at(2026, 11, 14, 16, 5), &now),
+            relative_date(Lang::De, &at(2026, 11, 14, 16, 5), &now),
             "vor 25 Minuten"
         );
         assert_eq!(
-            relative_date(&at(2026, 11, 14, 14, 20), &now),
+            relative_date(Lang::De, &at(2026, 11, 14, 14, 20), &now),
             "vor 2 Stunden"
         );
         assert_eq!(
-            relative_date(&at(2026, 11, 14, 15, 10), &now),
+            relative_date(Lang::De, &at(2026, 11, 14, 15, 10), &now),
             "vor 1 Stunde"
         );
-        assert_eq!(relative_date(&at(2026, 11, 13, 23, 59), &now), "gestern");
-        assert_eq!(relative_date(&at(2026, 10, 12, 9, 0), &now), "12. Okt.");
-        assert_eq!(relative_date(&at(2026, 3, 8, 9, 0), &now), "8. März");
-        assert_eq!(relative_date(&at(2025, 10, 2, 9, 0), &now), "2. Okt. 2025");
+        assert_eq!(
+            relative_date(Lang::De, &at(2026, 11, 13, 23, 59), &now),
+            "gestern"
+        );
+        assert_eq!(
+            relative_date(Lang::De, &at(2026, 10, 12, 9, 0), &now),
+            "12. Okt."
+        );
+        assert_eq!(
+            relative_date(Lang::De, &at(2026, 3, 8, 9, 0), &now),
+            "8. März"
+        );
+        assert_eq!(
+            relative_date(Lang::De, &at(2025, 10, 2, 9, 0), &now),
+            "2. Okt. 2025"
+        );
         // Over New Year: yesterday is still "gestern".
         let new_year = at(2027, 1, 1, 0, 10);
         assert_eq!(
-            relative_date(&at(2026, 12, 31, 22, 0), &new_year),
+            relative_date(Lang::De, &at(2026, 12, 31, 22, 0), &new_year),
             "gestern"
         );
     }
@@ -220,12 +240,18 @@ mod tests {
     #[test]
     fn scan_times_read_like_s07() {
         let now = at(2026, 11, 14, 16, 30);
-        assert_eq!(day_and_time(&at(2026, 11, 14, 9, 12), &now), "heute 09:12");
         assert_eq!(
-            day_and_time(&at(2026, 11, 13, 21, 5), &now),
+            day_and_time(Lang::De, &at(2026, 11, 14, 9, 12), &now),
+            "heute 09:12"
+        );
+        assert_eq!(
+            day_and_time(Lang::De, &at(2026, 11, 13, 21, 5), &now),
             "gestern 21:05"
         );
-        assert_eq!(day_and_time(&at(2026, 9, 1, 8, 0), &now), "1. Sept. 08:00");
+        assert_eq!(
+            day_and_time(Lang::De, &at(2026, 9, 1, 8, 0), &now),
+            "1. Sept. 08:00"
+        );
     }
 
     #[test]
@@ -238,8 +264,6 @@ mod tests {
 
     #[test]
     fn plurals_paths_and_latency() {
-        assert_eq!(plural(1_usize as i64, "1 Plugin", "{} Plugins"), "1 Plugin");
-        assert_eq!(plural(214, "1 Plugin", "{} Plugins"), "214 Plugins");
         let home = Path::new("/home/kim");
         assert_eq!(
             tilde_in(Path::new("/home/kim/Musik/a.komponist"), Some(home)),
@@ -254,9 +278,12 @@ mod tests {
             tilde_in(Path::new("/home/kimberly"), Some(home)),
             "/home/kimberly"
         );
-        assert_eq!(latency(256, 48_000, Duration::ZERO), "5.3 ms Latenz");
         assert_eq!(
-            latency(256, 48_000, Duration::from_micros(2_000)),
+            latency(Lang::De, 256, 48_000, Duration::ZERO),
+            "5.3 ms Latenz"
+        );
+        assert_eq!(
+            latency(Lang::De, 256, 48_000, Duration::from_micros(2_000)),
             "7.3 ms Latenz"
         );
     }

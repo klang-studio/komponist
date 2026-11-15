@@ -18,7 +18,7 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{BitDepth, ExportRange, ExportSettings};
 use komponist_app::device_host::{BuiltinHost, DeviceHost, is_hexa};
-use komponist_app::dialogs::export::{self as view, names};
+use komponist_app::dialogs::export::{self as view};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, StatusKind};
@@ -28,7 +28,7 @@ use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
 use komponist_engine::{
     Event, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo, TransportState,
 };
-use komponist_i18n::de;
+use komponist_i18n::{Lang, de};
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{
@@ -594,7 +594,7 @@ fn cancel_leaves_no_file_and_the_engine_plays_again() {
     assert_eq!(files(&dir.join("out")), Vec::<String>::new());
     assert_eq!(
         status(&app),
-        (names::CANCELLED.to_owned(), StatusKind::Info)
+        (de::EXPORT_CANCELLED.to_owned(), StatusKind::Info)
     );
     assert!(app.ui().dialog.is_none());
     assert_ne!(app.ui().focus, FocusArea::Dialog);
@@ -711,13 +711,14 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
             settings.clone(),
         )));
     h.run_steps(3);
-    h.get_by_label(&names::exporting("Nachtfahrt.wav"));
-    h.get_by_label(names::WAITING);
+    h.get_by_label(&Lang::De.export_exporting("Nachtfahrt.wav"));
+    h.get_by_label(de::EXPORT_WAITING);
     h.get_by_role_and_label(Role::ListItem, "LSP Compressor · Drums · fehlt");
     h.get_by_role_and_label(Role::ListItem, "Vital · Arp · fehlt");
     assert!(!h.state().engine().is_detached());
     // "Abbrechen": nothing written.
-    h.get_by_role_and_label(Role::Button, names::CANCEL).click();
+    h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL)
+        .click();
     h.run_steps(3);
     assert!(!h.state().is_exporting());
     assert!(h.state().ui().dialog.is_none());
@@ -727,7 +728,7 @@ fn missing_devices_are_listed_and_the_export_goes_on_without_them_or_not_at_all(
     h.state_mut()
         .dispatch(Action::Project(ProjectAction::StartExport(settings)));
     h.run_steps(3);
-    h.get_by_role_and_label(Role::Button, names::WITHOUT)
+    h.get_by_role_and_label(Role::Button, de::EXPORT_WITHOUT)
         .click();
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
     assert_eq!(files(&dir.join("out")), ["Nachtfahrt.wav"]);
@@ -891,7 +892,7 @@ fn the_last_settings_are_saved_and_the_dialog_opens_with_them() {
     let mut app = App::headless(Project::new("Leer"));
     app.dispatch(Action::Project(ProjectAction::OpenExportDialog));
     assert!(app.ui().dialog.is_none());
-    assert_eq!(status(&app).0, names::EMPTY);
+    assert_eq!(status(&app).0, de::EXPORT_EMPTY);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -919,38 +920,39 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
     // Strg Shift E: S08 with the defaults.
     h.key_press_modifiers(CTRL_SHIFT, Key::E);
     h.run_steps(3);
-    h.get_by_label(names::TITLE);
-    h.get_by_role_and_label(Role::RadioButton, names::SONG);
-    let selection = h.get_by_role_and_label(Role::RadioButton, names::SELECTION);
+    h.get_by_label(de::EXPORT_TITLE);
+    h.get_by_role_and_label(Role::RadioButton, de::EXPORT_SONG);
+    let selection = h.get_by_role_and_label(Role::RadioButton, de::EXPORT_SELECTION);
     assert!(selection.accesskit_node().is_disabled());
-    h.get_by_role_and_label(Role::ComboBox, names::RATE);
+    h.get_by_role_and_label(Role::ComboBox, de::EXPORT_RATE);
     let value = |h: &Harness<'_, App>, name: &str| {
         h.get_by_role_and_label(Role::TextInput, name)
             .accesskit_node()
             .value()
             .unwrap_or_default()
     };
-    assert_eq!(value(&h, view::names::FROM), "1.1.1");
-    assert_eq!(value(&h, view::names::TO), "2.1.1");
+    assert_eq!(value(&h, de::EXPORT_FROM), "1.1.1");
+    assert_eq!(value(&h, de::EXPORT_TO), "2.1.1");
     // Choose the loop, 16 bit, normalise off.
     h.get_by_role_and_label(Role::RadioButton, "Loop 1–1")
         .click();
     h.run_steps(2);
-    assert_eq!(value(&h, view::names::TO), "1.3.1");
+    assert_eq!(value(&h, de::EXPORT_TO), "1.3.1");
     h.get_by_role_and_label(Role::RadioButton, "16 bit").click();
     h.run_steps(2);
-    h.get_by_role_and_label(Role::Switch, names::NORMALIZE)
+    h.get_by_role_and_label(Role::Switch, de::EXPORT_NORMALIZE)
         .click();
     h.run_steps(2);
-    h.get_by_label(names::NORMALIZE_OFF);
+    h.get_by_label(de::EXPORT_NORMALIZE_OFF);
     // The folder through "Ändern": the file browser starts in the dialog's folder.
     if let Some(Dialog::Export(d)) = &mut h.state_mut().ui_mut().dialog {
         d.settings.folder = dir.clone();
     }
     h.run_steps(1);
-    h.get_by_role_and_label(Role::Button, names::CHANGE).click();
+    h.get_by_role_and_label(Role::Button, de::EXPORT_CHANGE)
+        .click();
     h.run_steps(3);
-    h.get_by_value(names::FOLDER_TITLE);
+    h.get_by_value(de::EXPORT_FOLDER_TITLE);
     h.get_by_role_and_label(Role::ListItem, "Mixdowns").click();
     h.run_steps(2);
     h.get_by_role_and_label(Role::Button, "Ordner wählen")
@@ -977,7 +979,7 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
     // The status bar: S08's message and the link.
     // Half a bar and the default 2 s tail.
     h.get_by_label("Nachtfahrt.wav exportiert · 00:03 · 16 bit");
-    h.get_by_role_and_label(Role::Link, names::SHOW_IN_FOLDER)
+    h.get_by_role_and_label(Role::Link, de::EXPORT_SHOW_IN_FOLDER)
         .click();
     h.run_steps(2);
     assert_eq!(*opened.lock().unwrap(), std::slice::from_ref(&target));
@@ -1007,7 +1009,7 @@ fn esc_and_the_cancel_button_end_a_running_export() {
             if d.progress.is_some_and(|p| p.fraction > 0.0))
     });
     h.run_steps(1);
-    h.get_by_label(&names::exporting("Nachtfahrt.wav"));
+    h.get_by_label(&Lang::De.export_exporting("Nachtfahrt.wav"));
     h.get_by_role(Role::ProgressIndicator);
     h.key_press(Key::Escape);
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
@@ -1020,12 +1022,13 @@ fn esc_and_the_cancel_button_end_a_running_export() {
             if d.progress.is_some_and(|p| p.fraction > 0.0))
     });
     h.run_steps(1);
-    h.get_by_role_and_label(Role::Button, names::CANCEL).click();
+    h.get_by_role_and_label(Role::Button, de::DIALOG_CANCEL)
+        .click();
     run_until(&mut h, "end of the export", |a| !a.is_exporting());
     h.run_steps(2);
     assert!(files(&dir.join("out")).is_empty());
     assert!(h.state().ui().dialog.is_none());
-    h.get_by_label(names::CANCELLED);
+    h.get_by_label(de::EXPORT_CANCELLED);
 }
 
 // ------------------------------------------------------------------------------------------------

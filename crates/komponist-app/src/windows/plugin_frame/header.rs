@@ -9,6 +9,7 @@
 //! actions. It needs no app state, so tests render it directly.
 
 use egui::{Align, Layout, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, typography};
 use komponist_ui::widgets::button::Button;
@@ -20,28 +21,9 @@ use komponist_ui::{fonts, px};
 use super::metrics as m;
 use crate::ui_state::PluginView;
 
-/// Texts and accessible names of the frame (S05, `pluginView`).
+/// Marks that are notation, not words: they are the same in every language. The header's texts
+/// are in the catalog (`plugin-frame.ftl`).
 pub mod names {
-    /// The bypass button (S05).
-    pub const BYPASS: &str = "Bypass";
-    /// Save the preset (S05).
-    pub const SAVE: &str = "Speichern";
-    /// Keep the frame above other windows (S05).
-    pub const KEEP_ON_TOP: &str = "Oben halten";
-    /// The close button (`title="Schließen · Esc"` in the prototype).
-    pub const CLOSE: &str = "Schließen";
-    /// The view switch (S05 note "Bypass, Presets, Ansicht, Schließen").
-    pub const VIEW: &str = "Ansicht";
-    /// View segment: the plugin's own GUI.
-    pub const VIEW_PLUGIN: &str = "Plugin";
-    /// View segment: the generic parameter grid.
-    pub const VIEW_PARAMS: &str = "Parameter";
-    /// The preset field.
-    pub const PRESET: &str = "Preset";
-    /// ‹ (S05 draws only the glyph).
-    pub const PRESET_PREV: &str = "Voriges Preset";
-    /// › (S05 draws only the glyph).
-    pub const PRESET_NEXT: &str = "Nächstes Preset";
     /// The preset field without a known preset.
     pub const NO_PRESET: &str = "—";
     /// Marks a changed preset (`pluginView`: `pl.changed?' *':''`).
@@ -148,6 +130,7 @@ pub struct HeaderOutput {
 
 /// Draws the header into `rect`.
 pub fn show(ui: &mut Ui, rect: Rect, model: &HeaderModel) -> HeaderOutput {
+    let t = komponist_ui::lang(ui.ctx());
     let mut out = HeaderOutput::default();
     px::fill(ui.painter(), rect, 0.0, color32(metrics_ground()));
     let inner = Rect::from_min_max(
@@ -162,7 +145,7 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &HeaderModel) -> HeaderOutput {
             .layout(Layout::left_to_right(Align::Center)),
     );
     left.spacing_mut().item_spacing = vec2(m::HEADER_GAP, 0.0);
-    left_items(&mut left, model, &mut out.events);
+    left_items(&mut left, t, model, &mut out.events);
     let left_width = left.min_rect().width();
 
     // The right group in reading order, ending at the right edge: its width is measured in one
@@ -178,7 +161,7 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &HeaderModel) -> HeaderOutput {
             .layout(Layout::left_to_right(Align::Center)),
     );
     right.spacing_mut().item_spacing = vec2(m::HEADER_GAP, 0.0);
-    right_items(&mut right, model, &mut out.events);
+    right_items(&mut right, t, model, &mut out.events);
     let right_width = right.min_rect().width();
     if (right_width - known).abs() > 0.5 {
         ui.data_mut(|d| d.insert_temp(width_id, right_width));
@@ -190,7 +173,7 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &HeaderModel) -> HeaderOutput {
     out
 }
 
-fn left_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
+fn left_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
     mark(ui, model.mark);
     let name = fonts::rich_text(&model.name, &typography::TRACK).color(color32(color::TEXT_1));
     ui.label(name);
@@ -201,7 +184,10 @@ fn left_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
     let has_presets = !model.presets.is_empty();
     ui.add_enabled_ui(has_presets, |ui| {
         if ui
-            .add(Button::icon(Icon::ChevronLeft, names::PRESET_PREV))
+            .add(Button::icon(
+                Icon::ChevronLeft,
+                t.plugin_frame_preset_prev(),
+            ))
             .clicked()
         {
             events.push(HeaderEvent::PresetPrev);
@@ -220,30 +206,34 @@ fn left_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
             })
             .collect();
         let mut selected = current;
-        let field =
-            ui.add(Dropdown::new(names::PRESET, &mut selected, &items).width(m::PRESET_WIDTH));
+        let field = ui.add(
+            Dropdown::new(t.plugin_frame_preset(), &mut selected, &items).width(m::PRESET_WIDTH),
+        );
         if field.changed() && selected != current && selected < model.presets.len() {
             events.push(HeaderEvent::Preset(selected));
         }
         if ui
-            .add(Button::icon(Icon::ChevronRight, names::PRESET_NEXT))
+            .add(Button::icon(
+                Icon::ChevronRight,
+                t.plugin_frame_preset_next(),
+            ))
             .clicked()
         {
             events.push(HeaderEvent::PresetNext);
         }
     });
     // No preset API for CLAP/VST3 and no user presets for hexa yet (report).
-    ui.add_enabled(model.can_save, Button::new(names::SAVE));
+    ui.add_enabled(model.can_save, Button::new(t.plugin_frame_save()));
 }
 
-fn right_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
+fn right_items(ui: &mut Ui, t: Lang, model: &HeaderModel, events: &mut Vec<HeaderEvent>) {
     let items = [
         if model.has_gui {
-            Item::new(names::VIEW_PLUGIN)
+            Item::new(t.plugin_frame_view_plugin())
         } else {
-            Item::new(names::VIEW_PLUGIN).disabled()
+            Item::new(t.plugin_frame_view_plugin()).disabled()
         },
-        Item::new(names::VIEW_PARAMS),
+        Item::new(t.plugin_frame_view_params()),
     ];
     let current = match model.view {
         PluginView::Gui => 0,
@@ -251,7 +241,7 @@ fn right_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) 
     };
     let mut selected = current;
     if ui
-        .add(Segmented::new(names::VIEW, &mut selected, &items))
+        .add(Segmented::new(t.plugin_frame_view(), &mut selected, &items))
         .changed()
         && selected != current
     {
@@ -262,20 +252,20 @@ fn right_items(ui: &mut Ui, model: &HeaderModel, events: &mut Vec<HeaderEvent>) 
         }));
     }
     if ui
-        .add(Button::new(names::BYPASS).on(model.bypassed))
+        .add(Button::new(t.plugin_frame_bypass()).on(model.bypassed))
         .clicked()
     {
         events.push(HeaderEvent::ToggleBypass);
     }
-    let keep = Button::new(names::KEEP_ON_TOP)
+    let keep = Button::new(t.plugin_frame_keep_on_top())
         .frameless(GROUND)
         .on(model.keep_on_top);
     if ui.add(keep).clicked() {
         events.push(HeaderEvent::KeepOnTop(!model.keep_on_top));
     }
-    let close = Button::icon(Icon::X, names::CLOSE)
+    let close = Button::icon(Icon::X, t.dialog_close())
         .frameless(GROUND)
-        .tip(Tip::new(names::CLOSE).shortcut(&model.close_shortcut));
+        .tip(Tip::new(t.dialog_close()).shortcut(&model.close_shortcut));
     if ui.add(close).clicked() {
         events.push(HeaderEvent::Close);
     }

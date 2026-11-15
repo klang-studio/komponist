@@ -14,6 +14,7 @@
 //! "1 Sample fehlt" / "n Samples fehlen" and the primary action "Ohne diese Samples fortfahren".
 
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
+use komponist_i18n::Lang;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::egui_support::color32;
@@ -24,24 +25,6 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 
 use super::metrics::{dialog as dm, missing as m};
 use super::{ActionButton, button_row, dot, galley, label_node, modal, styled};
-
-/// The S06 texts.
-pub mod names {
-    /// "Plugin-Ordner prüfen".
-    pub const CHECK_FOLDERS: &str = "Plugin-Ordner prüfen";
-    /// The primary action with several plugins.
-    pub const CONTINUE_MANY: &str = "Ohne diese Plugins fortfahren";
-    /// The primary action with one plugin.
-    pub const CONTINUE_ONE: &str = "Ohne dieses Plugin fortfahren";
-    /// The primary action with samples only (several).
-    pub const CONTINUE_SAMPLES: &str = "Ohne diese Samples fortfahren";
-    /// The primary action with one sample only.
-    pub const CONTINUE_SAMPLE: &str = "Ohne dieses Sample fortfahren";
-    /// A missing sample's button: look for the file.
-    pub const SEARCH: &str = "Suchen …";
-    /// The format chip of a sample row.
-    pub const SAMPLE_CHIP: &str = "SAMPLE";
-}
 
 /// One missing device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,17 +63,25 @@ pub enum Output {
     Search(DeviceId, usize),
 }
 
-/// The format chip of a plugin format.
-pub fn format_label(format: PluginFormat) -> &'static str {
+/// The format chip of a plugin format ("INTERN" / "BUILT-IN" for the built-in devices).
+pub fn format_label(t: Lang, format: PluginFormat) -> &'static str {
     match format {
         PluginFormat::Clap => "CLAP",
         PluginFormat::Vst3 => "VST3",
-        PluginFormat::Builtin => "INTERN",
+        PluginFormat::Builtin => t.missing_format_builtin(),
+    }
+}
+
+/// The owner of a device in a place: "Spur Arp" ("Track Arp"), "Master".
+fn owner_label(t: Lang, track: Option<&komponist_model::Track>) -> String {
+    match track {
+        Some(track) => t.dialog_track_place(&track.name),
+        None => t.dialog_master().to_owned(),
     }
 }
 
 /// The model for `missing` in `project`.
-pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
+pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
     let rows = missing
         .iter()
         .map(|mp| {
@@ -99,14 +90,14 @@ pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
                 None => ChannelRef::Master,
             };
             let (owner, devices) = match channel {
-                ChannelRef::Track(t) => match project.track(t) {
-                    Some(track) => (format!("Spur {}", track.name), &track.channel.devices),
-                    None => ("Spur".to_owned(), &project.master.devices),
+                ChannelRef::Track(id) => match project.track(id) {
+                    Some(track) => (owner_label(t, Some(track)), &track.channel.devices),
+                    None => (t.dialog_track_unknown().to_owned(), &project.master.devices),
                 },
-                ChannelRef::Master => ("Master".to_owned(), &project.master.devices),
+                ChannelRef::Master => (owner_label(t, None), &project.master.devices),
             };
             let role = match mp.role {
-                DeviceRole::Instrument => "Instrument".to_owned(),
+                DeviceRole::Instrument => t.missing_role_instrument().to_owned(),
                 DeviceRole::Effect => {
                     // The effect's number in its chain, the instrument not counted.
                     let n = devices
@@ -115,7 +106,7 @@ pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
                         .filter(|d| d.role == DeviceRole::Effect)
                         .count()
                         .max(1);
-                    format!("Effekt {n}")
+                    t.missing_role_effect(n)
                 }
                 DeviceRole::MidiEffect => {
                     let n = devices
@@ -124,13 +115,13 @@ pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
                         .filter(|d| d.role == DeviceRole::MidiEffect)
                         .count()
                         .max(1);
-                    format!("MIDI-Effekt {n}")
+                    t.missing_role_midi_effect(n)
                 }
             };
             Row {
                 name: mp.plugin.name.clone(),
-                format: format_label(mp.plugin.format),
-                place: format!("{owner} · {role}"),
+                format: format_label(t, mp.plugin.format),
+                place: t.missing_place(owner, role),
                 module: module_label(&mp.plugin),
                 search: None,
             }
@@ -197,22 +188,24 @@ pub fn missing_samples(
 }
 
 /// The model with the missing samples added.
-pub fn with_samples(mut model: Model, project: &Project, samples: &[MissingSample]) -> Model {
+pub fn with_samples(
+    t: Lang,
+    mut model: Model,
+    project: &Project,
+    samples: &[MissingSample],
+) -> Model {
     model.samples = samples
         .iter()
         .map(|s| {
-            let owner = match s.track.and_then(|t| project.track(t)) {
-                Some(track) => format!("Spur {}", track.name),
-                None => "Master".to_owned(),
-            };
+            let owner = owner_label(t, s.track.and_then(|id| project.track(id)).map(|t| &**t));
             Row {
                 name: if s.name.is_empty() {
                     s.file.clone()
                 } else {
                     s.name.clone()
                 },
-                format: names::SAMPLE_CHIP,
-                place: format!("{owner} · Pad {}", s.pad + 1),
+                format: t.missing_sample_chip(),
+                place: t.missing_place_pad(owner, s.pad + 1),
                 module: s.file.clone(),
                 search: Some((s.device, s.pad)),
             }
@@ -233,66 +226,29 @@ fn module_label(plugin: &PluginRef) -> String {
     }
 }
 
-/// "2 Plugins fehlen", "1 Plugin fehlt".
-pub fn title(n: usize) -> String {
-    if n == 1 {
-        "1 Plugin fehlt".to_owned()
-    } else {
-        format!("{n} Plugins fehlen")
-    }
+/// "2 Plugins fehlen", "1 Plugin fehlt" ("2 Plugins Missing").
+pub fn title(t: Lang, n: usize) -> String {
+    t.missing_title_plugins(n)
 }
 
 /// The title for `plugins` missing plugins and `samples` missing samples: "1 Sample fehlt",
-/// "2 Plugins und 3 Samples fehlen".
-pub fn title_for(plugins: usize, samples: usize) -> String {
+/// "2 Plugins und 3 Samples fehlen". The status bar's `project-opened-problems` uses it too.
+pub fn title_for(t: Lang, plugins: usize, samples: usize) -> String {
     match (plugins, samples) {
-        (_, 0) => title(plugins),
-        (0, 1) => "1 Sample fehlt".to_owned(),
-        (0, n) => format!("{n} Samples fehlen"),
-        (p, s) => {
-            let plugins = if p == 1 {
-                "1 Plugin".to_owned()
-            } else {
-                format!("{p} Plugins")
-            };
-            let samples = if s == 1 {
-                "1 Sample".to_owned()
-            } else {
-                format!("{s} Samples")
-            };
-            format!("{plugins} und {samples} fehlen")
-        }
+        (_, 0) => title(t, plugins),
+        (0, n) => t.missing_title_samples(n),
+        (p, s) => t.missing_title_both(t.missing_count_plugins(p), t.missing_count_samples(s)),
     }
 }
 
 /// The explanation for samples only.
-pub fn samples_text(project: &str, n: usize) -> String {
-    let what = if n == 1 {
-        "Dieses Sample liegt nicht mehr an seinem Platz"
-    } else {
-        "Diese Samples liegen nicht mehr an ihrem Platz"
-    };
-    format!(
-        "„{project}“ ist geöffnet. {what}. Mit „Suchen“ verknüpfst du sie neu; die Pads bleiben \
-         im Projekt gespeichert."
-    )
+pub fn samples_text(t: Lang, project: &str, n: usize) -> String {
+    t.missing_samples_text(n, project)
 }
 
 /// The explanation under the title.
-pub fn text(project: &str, n: usize) -> String {
-    if n == 1 {
-        format!(
-            "„{project}“ ist geöffnet. Dieses Gerät ist nicht installiert oder liegt nicht in \
-             einem Plugin-Ordner. Seine Einstellungen bleiben im Projekt gespeichert und werden \
-             wieder geladen, sobald das Plugin gefunden wird."
-        )
-    } else {
-        format!(
-            "„{project}“ ist geöffnet. Diese Geräte sind nicht installiert oder liegen nicht in \
-             einem Plugin-Ordner. Ihre Einstellungen bleiben im Projekt gespeichert und werden \
-             wieder geladen, sobald das Plugin gefunden wird."
-        )
-    }
+pub fn text(t: Lang, project: &str, n: usize) -> String {
+    t.missing_text(n, project)
 }
 
 /// Draws the dialog; returns the user's choice in the frame it is made.
@@ -300,6 +256,7 @@ pub fn text(project: &str, n: usize) -> String {
 /// `keys` is false while something is on top of the dialog (the file browser of "Suchen …"): Enter
 /// and Esc belong to it then.
 pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
+    let t = komponist_ui::lang(ctx);
     let n = model.rows.len();
     let samples = model.samples.len();
     let mut out = None;
@@ -309,12 +266,12 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         ui.add_space(dm::PADDING);
         let inner = width - 2.0 * dm::PADDING;
         indented(ui, dm::PADDING, |ui| {
-            title_row(ui, &title_for(n, samples));
+            title_row(ui, &title_for(t, n, samples));
             ui.add_space(m::TEXT_GAP);
             let body = if n == 0 {
-                samples_text(&model.project, samples)
+                samples_text(t, &model.project, samples)
             } else {
-                text(&model.project, n)
+                text(t, &model.project, n)
             };
             let g = galley(
                 ui,
@@ -334,7 +291,7 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = m::LIST_GAP;
                     for row in model.rows.iter().chain(&model.samples) {
-                        if let Some(search) = missing_row(ui, inner, row) {
+                        if let Some(search) = missing_row(ui, t, inner, row) {
                             out = Some(search);
                         }
                     }
@@ -343,16 +300,16 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         ui.add_space(m::LIST_MARGIN_Y + m::FOOTER_PADDING_TOP);
         indented(ui, dm::PADDING, |ui| {
             let primary = match (n, samples) {
-                (0, 1) => names::CONTINUE_SAMPLE,
-                (0, _) => names::CONTINUE_SAMPLES,
-                (1, 0) => names::CONTINUE_ONE,
-                _ => names::CONTINUE_MANY,
+                (0, 1) => t.missing_continue_sample(),
+                (0, _) => t.missing_continue_samples(),
+                (1, 0) => t.missing_continue_one(),
+                _ => t.missing_continue_many(),
             };
             let r = button_row(
                 ui,
                 inner,
                 vec![
-                    ActionButton::dialog(names::CHECK_FOLDERS, Kind::Secondary, 3),
+                    ActionButton::dialog(t.missing_check_folders(), Kind::Secondary, 3),
                     ActionButton::dialog(primary, Kind::Primary, 3),
                 ],
             );
@@ -403,7 +360,7 @@ fn title_row(ui: &mut Ui, title: &str) {
 }
 
 /// One row: name and format chip, place and module file name (`gap:4px 12px`, `padding:10px 12px`).
-fn missing_row(ui: &mut Ui, width: f32, row: &Row) -> Option<Output> {
+fn missing_row(ui: &mut Ui, t: Lang, width: f32, row: &Row) -> Option<Output> {
     let ppp = ui.pixels_per_point();
     let name = galley(
         ui,
@@ -503,7 +460,7 @@ fn missing_row(ui: &mut Ui, width: f32, row: &Row) -> Option<Output> {
     // A child at a fixed place: `put` would move the list's cursor.
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(at));
     let button = child.add(
-        komponist_ui::widgets::button::Button::new(names::SEARCH)
+        komponist_ui::widgets::button::Button::new(t.missing_search())
             .small()
             .ground(2),
     );
@@ -535,6 +492,7 @@ mod tests {
         let pad = &project.tracks[3];
         assert!(pad.channel.devices.len() >= 2);
         let rows = model(
+            Lang::De,
             &project,
             &[missing(&project, 3, 0), missing(&project, 3, 1)],
         )
@@ -558,7 +516,7 @@ mod tests {
                 module: Box::default(),
             },
         };
-        let row = &model(&project, &[master]).rows[0];
+        let row = &model(Lang::De, &project, &[master]).rows[0];
         assert_eq!(row.place, "Master · Effekt 1");
         assert_eq!(row.format, "VST3");
         // An old project without a module name: a VST3 shows nothing, never the class id.
@@ -583,20 +541,22 @@ mod tests {
             },
         };
         assert_eq!(
-            model(&project, &[vst3("Vital.vst3")]).rows[0].module,
+            model(Lang::De, &project, &[vst3("Vital.vst3")]).rows[0].module,
             "Vital.vst3"
         );
-        assert_eq!(model(&project, &[vst3("")]).rows[0].module, "");
+        assert_eq!(model(Lang::De, &project, &[vst3("")]).rows[0].module, "");
         // The demo's CLAP devices carry their module name.
-        let rows = model(&project, &[missing(&project, 3, 0)]).rows;
+        let rows = model(Lang::De, &project, &[missing(&project, 3, 0)]).rows;
         assert_eq!(rows[0].module, "Surge XT.clap");
     }
 
     #[test]
     fn titles_and_texts_follow_the_count() {
-        assert_eq!(title(2), "2 Plugins fehlen");
-        assert_eq!(title(1), "1 Plugin fehlt");
-        assert!(text("Nachtfahrt", 2).starts_with("„Nachtfahrt“ ist geöffnet. Diese Geräte"));
-        assert!(text("Nachtfahrt", 1).contains("Dieses Gerät ist nicht installiert"));
+        assert_eq!(title(Lang::De, 2), "2 Plugins fehlen");
+        assert_eq!(title(Lang::De, 1), "1 Plugin fehlt");
+        assert!(
+            text(Lang::De, "Nachtfahrt", 2).starts_with("„Nachtfahrt“ ist geöffnet. Diese Geräte")
+        );
+        assert!(text(Lang::De, "Nachtfahrt", 1).contains("Dieses Gerät ist nicht installiert"));
     }
 }
