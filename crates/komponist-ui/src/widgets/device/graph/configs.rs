@@ -1,4 +1,4 @@
-//! The seven configurations of the graph (device handoff §5), constructors that return a
+//! The nine configurations of the graph (device handoff §5), constructors that return a
 //! [`GraphSpec`]. A device may adapt the result ([`GraphSpec::titled`], its public fields).
 //!
 //! Slot conventions (what the host puts into [`GraphSpec::slots`], in this order):
@@ -9,6 +9,8 @@
 //! | [`eq`] | per band `b{n}_on`, `b{n}_freq`, `b{n}_gain`, `b{n}_q`, `b{n}_type` | 0/1, Hz, dB, Q, 0 LC · 1 LS · 2 bell · 3 HS · 4 HC |
 //! | [`filter`] | `cutoff`, `resonance`, `type` | Hz, 0–1, 0 TP 12 · 1 TP 24 · 2 BP · 3 HP |
 //! | [`transfer`] | `threshold`, `ratio`, `knee` | dB, ratio, 0 hard · 1 soft |
+//! | [`compressor`] | `threshold`, `ratio`, `knee` | dB, ratio, knee width in dB (0 hard) |
+//! | [`gr_history`] | none | display only: `Data` = input level 0–1, `Trace` = reduction in dB (≤ 0) |
 //! | [`waveform`] | `start`, `end` | milliseconds |
 //! | [`xy`] | `x`, `y` | the axes' own units |
 //! | [`lfo`] | `x1`, `y1`, `x2`, `y2`, … | phase 0–1, −1…1 |
@@ -18,6 +20,7 @@ use super::spec::{
     HandleLook, Layer, Marker, PosFn, Pred, Region, Tick,
 };
 use crate::widgets::metrics::device::graph as m;
+use komponist_model::params::comp_curve;
 use komponist_model::params::eq_curve::CURVE_RATE;
 
 /// Slot indices of [`envelope`].
@@ -323,6 +326,99 @@ pub fn transfer() -> GraphSpec {
             .x(Bind::axis(0, "Threshold"))
             .y(Bind::knob(1, "Ratio", true))
             .at(PosFn::new(|p| (p[0], p[0]))),
+    ];
+    spec
+}
+
+// ---------------------------------------------------------------------------------------------
+// Compressor
+
+/// The compressor's output level at input `x` dB: the curve of the device
+/// ([`komponist_model::params::comp_curve::output_db`]), with the knee as its width in dB.
+pub fn compressor_level(x: f64, threshold: f64, ratio: f64, knee: f64) -> f64 {
+    comp_curve::output_db(x, threshold, ratio, knee)
+}
+
+/// `graph::compressor` (WP-93, `standard-1.svg`): `graph::transfer` for the compressor `presse`.
+/// Input dB −60…0 on x, output dB on y, a 4-division grid with labels at −48, −24 and 0, the
+/// diagonal and the threshold as guides, the curve with the soft knee of `knee` dB and the level
+/// point; to the right of the plot IN, OUT and GR of the live level
+/// ([`Marker::Levels`]). Handle at the knee: Threshold ↔, Ratio ↕.
+pub fn compressor() -> GraphSpec {
+    let (px, py) = m::pad::COMPRESSOR;
+    let labels = |step: f64| {
+        let mut t = Vec::new();
+        let mut v = -60.0 + step;
+        while v < 0.0 {
+            t.push(if (v + 48.0).abs() < 1e-9 || (v + 24.0).abs() < 1e-9 {
+                Tick::major(v, format!("\u{2212}{}", v.abs()))
+            } else {
+                Tick::minor(v)
+            });
+            v += step;
+        }
+        t.push(Tick::major(0.0, "0"));
+        t
+    };
+    let mut x = Axis::new(AxisKind::Db, -60.0, 0.0).padding(px);
+    x.grid = Grid::Ticks(labels(12.0));
+    x.labels = true;
+    let y = Axis::new(AxisKind::Db, -60.0, 0.0)
+        .padding(py)
+        .grid(Grid::Divisions(5));
+    let mut spec = GraphSpec::new("Kennlinie", x, y);
+    spec.grid_inside = true;
+    spec.slots = slots(&["threshold", "ratio", "knee"]);
+    spec.layers = vec![
+        Layer::Guide(Guide::Diagonal),
+        Layer::Guide(Guide::VLine { slot: 0 }),
+        Layer::Curve(Curve {
+            f: CurveFn::new(|x, p| compressor_level(x, p[0], p[1], p[2])),
+            baseline: None,
+            fill: true,
+        }),
+        Layer::Marker(Marker::Level),
+        Layer::Marker(Marker::Levels),
+    ];
+    spec.handles = vec![
+        Handle::dot("Knie")
+            .x(Bind::axis(0, "Threshold"))
+            .y(Bind::knob(1, "Ratio", true))
+            .at(PosFn::new(|p| (p[0], p[0]))),
+    ];
+    spec
+}
+
+/// Seconds the reduction history shows.
+pub const GR_HISTORY_SECONDS: f64 = 4.0;
+/// Bottom of the reduction history's y axis in dB (the top is 0).
+pub const GR_HISTORY_DB: f64 = 24.0;
+
+/// `graph::gr_history` (WP-93): time 0…4 s on x, 0 … −24 dB on y (the reduction hangs from the
+/// top); the input level as the `Data` layer (`surface.3`), the reduction as the `Trace` layer in
+/// the track colour, the playhead at the right edge (now). Display only: no slots, no handles.
+pub fn gr_history() -> GraphSpec {
+    let (px, py) = m::pad::GR_HISTORY;
+    let y = Axis::new(AxisKind::Db, -GR_HISTORY_DB, 0.0)
+        .padding(py)
+        .grid(Grid::Ticks(vec![
+            Tick::major(-6.0, "\u{2212}6"),
+            Tick::major(-12.0, "\u{2212}12"),
+            Tick::major(-18.0, "\u{2212}18"),
+        ]))
+        .labelled();
+    let mut spec = GraphSpec::new(
+        "Reduktion \u{b7} 4 s",
+        Axis::new(AxisKind::Time, 0.0, GR_HISTORY_SECONDS)
+            .padding(px)
+            .grid(Grid::None),
+        y,
+    );
+    spec.title_bottom_right = true;
+    spec.layers = vec![
+        Layer::Data(DataKind::Spectrum),
+        Layer::Trace { baseline: 0.0 },
+        Layer::Marker(Marker::Playhead),
     ];
     spec
 }

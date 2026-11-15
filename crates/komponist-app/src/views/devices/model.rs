@@ -14,6 +14,7 @@ use komponist_tokens::device;
 use super::layout::{self, DeviceLayout};
 use super::metrics;
 use crate::device_host::{DeviceHost, internal_kind, is_pisynth};
+use crate::gain_trace::Dynamics;
 use crate::meters::DeviceLevels;
 use crate::spectrum::Analysis;
 use crate::ui_state::{PluginWindow, Reveal};
@@ -328,6 +329,9 @@ pub struct Card {
     /// The device's sample rate and live spectrum (WP-92, set by the view from `Meters`); `None`
     /// for a device without a sample tap.
     pub analysis: Option<Analysis>,
+    /// The live level and reduction history of a compressor (WP-93, set by the view from
+    /// `Meters`); `None` for a device without a compressor graph.
+    pub dynamics: Option<Dynamics>,
 }
 
 impl Card {
@@ -522,6 +526,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         levels: None,
         sampler: sampler_view(host, device.id),
         analysis: None,
+        dynamics: None,
         routing: presets.then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
@@ -688,6 +693,29 @@ pub fn shows_spectrum(card: &Card) -> bool {
         && card
             .param(&ParamId::new("analyse"))
             .is_some_and(|p| p.value >= 0.5)
+}
+
+/// Whether the card has a compressor graph: the transfer curve with a live level or the reduction
+/// history.
+pub fn has_dynamics_graph(card: &Card) -> bool {
+    card.layout.pages.iter().any(|page| {
+        page.cells.iter().any(|c| {
+            matches!(
+                &c.param,
+                layout::CellParam::Graph(b)
+                    if matches!(
+                        b.config,
+                        layout::GraphConfig::Compressor | layout::GraphConfig::GrHistory
+                    )
+            )
+        })
+    })
+}
+
+/// Whether that graph shows live data when it is on screen: the device runs and is neither
+/// bypassed nor collapsed.
+pub fn shows_dynamics(card: &Card) -> bool {
+    card.state == CardState::Ok && !card.bypass && !card.collapsed && has_dynamics_graph(card)
 }
 
 /// Which frames show at least partly in a view `width` wide scrolled by `scroll`.

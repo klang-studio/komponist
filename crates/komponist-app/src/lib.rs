@@ -45,6 +45,7 @@ pub mod device_host;
 pub mod dialogs;
 pub mod engine_sync;
 pub mod export;
+pub mod gain_trace;
 pub mod keymap;
 pub mod layout;
 pub mod meters;

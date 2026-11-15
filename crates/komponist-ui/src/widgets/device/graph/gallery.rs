@@ -25,6 +25,7 @@ struct Demo {
     values: Vec<f64>,
     infos: Vec<SlotInfo<'static>>,
     data: Vec<f32>,
+    trace: Vec<f32>,
     size: Vec2,
     hue: u16,
     playhead: Option<f64>,
@@ -47,6 +48,7 @@ impl Demo {
             .track(color32(palette.base))
             .look(look)
             .data(&self.data)
+            .trace(&self.trace)
             .playhead(self.playhead)
             .level(self.level);
         if let Some(id) = id {
@@ -135,6 +137,7 @@ fn envelope() -> Demo {
         hue: LEAD,
         playhead: Some(0.32),
         level: None,
+        trace: Vec::new(),
         pick: 1,
     }
 }
@@ -186,6 +189,7 @@ fn eq_demo(size: Vec2) -> Demo {
         hue: LEAD,
         playhead: None,
         level: None,
+        trace: Vec::new(),
         pick: 2,
     }
 }
@@ -223,6 +227,7 @@ fn filter(kind: f64) -> Demo {
         hue: 250,
         playhead: None,
         level: None,
+        trace: Vec::new(),
         pick: 0,
     }
 }
@@ -259,6 +264,51 @@ fn transfer() -> Demo {
         hue: LEAD,
         playhead: None,
         level: Some(-9.0),
+        trace: Vec::new(),
+        pick: 0,
+    }
+}
+
+/// The compressor of the device `presse` at its size in the layout (3 columns × 2 rows) with a
+/// level point at −9 dB.
+fn compressor() -> Demo {
+    let mut d = transfer();
+    d.spec = configs::compressor();
+    d.values = vec![-18.0, 4.0, 6.0];
+    d.infos[2] = SlotInfo::from_param(
+        &param("knee", "Knie", ParamKind::lin(0.0, 24.0), 6.0, Unit::Db),
+        false,
+    );
+    d.size = vec2(cell_width(3), crate::widgets::device::cell_height(2));
+    d.level = Some(-9.0);
+    d
+}
+
+/// The reduction history of `presse` (2 columns × 1 row): a few seconds of music-like material.
+fn gr_history() -> Demo {
+    let points = 128;
+    let level: Vec<f32> = (0..points)
+        .map(|i| {
+            let t = i as f32 / points as f32;
+            (0.05 + 0.3 * (t * 23.0).sin().abs() * (t * 3.0).cos().abs()).clamp(0.0, 0.4)
+        })
+        .collect();
+    let reduction: Vec<f32> = (0..points)
+        .map(|i| {
+            let t = i as f32 / points as f32;
+            -(1.0 + 13.0 * (t * 9.0).sin().powi(2) * (0.4 + 0.6 * t)).min(18.0)
+        })
+        .collect();
+    Demo {
+        spec: configs::gr_history(),
+        values: Vec::new(),
+        infos: Vec::new(),
+        data: level,
+        trace: reduction,
+        size: vec2(cell_width(2), crate::widgets::device::cell_height(1)),
+        hue: LEAD,
+        playhead: Some(configs::GR_HISTORY_SECONDS),
+        level: None,
         pick: 0,
     }
 }
@@ -282,6 +332,7 @@ fn waveform() -> Demo {
         hue: DRUM,
         playhead: Some(0.1),
         level: None,
+        trace: Vec::new(),
         pick: 0,
     }
 }
@@ -309,6 +360,7 @@ fn xy() -> Demo {
         hue: LEAD,
         playhead: None,
         level: None,
+        trace: Vec::new(),
         pick: 0,
     }
 }
@@ -332,6 +384,7 @@ fn lfo() -> Demo {
         hue: LEAD,
         playhead: Some(0.37),
         level: None,
+        trace: Vec::new(),
         pick: 2,
     }
 }
@@ -393,6 +446,14 @@ fn filter_card(ui: &mut Ui) {
 
 fn transfer_card(ui: &mut Ui) {
     config_card(ui, "graph_transfer", &transfer(), None);
+}
+
+fn compressor_card(ui: &mut Ui) {
+    config_card(ui, "graph_compressor", &compressor(), None);
+}
+
+fn gr_history_card(ui: &mut Ui) {
+    config_card(ui, "graph_gr_history", &gr_history(), None);
 }
 
 fn waveform_card(ui: &mut Ui) {
@@ -497,6 +558,25 @@ pub fn cards() -> Vec<Card> {
                 ("Griffe", "Knie: Threshold ↔, Ratio ↕"),
             ])
             .content(transfer_card),
+        Card::new("Kompressor (presse)")
+            .spec("graph::compressor")
+            .ix(&[
+                ("X", "dB, −60 bis 0 (Eingang), Beschriftung −48, −24, 0"),
+                ("Y", "dB, −60 bis 0 (Ausgang)"),
+                ("Ebenen", "Diagonale, Kurve mit Knie in dB, Pegelpunkt live"),
+                ("Ablesung", "IN, OUT und GR des Pegelpunkts rechts neben der Kurve"),
+                ("Griffe", "Knie: Threshold ↔, Ratio ↕"),
+            ])
+            .content(compressor_card),
+        Card::new("Reduktionsverlauf (presse)")
+            .spec("graph::gr_history")
+            .ix(&[
+                ("X", "Zeit, 4 s, jetzt rechts"),
+                ("Y", "dB, 0 bis −24, die Reduktion hängt von oben"),
+                ("Ebenen", "Daten Eingangspegel, Verlauf Reduktion, Marker Playhead"),
+                ("Griffe", "keine, nur Anzeige"),
+            ])
+            .content(gr_history_card),
         Card::new("Wellenform")
             .spec("graph::waveform")
             .ix(&[

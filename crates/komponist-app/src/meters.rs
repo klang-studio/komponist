@@ -15,6 +15,7 @@ use komponist_model::{DeviceId, TrackId};
 use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;
+use crate::gain_trace::{Dynamics, GainTrace};
 use crate::spectrum::{Analysis, SpectrumAnalyzer};
 
 /// The largest gain reduction the display scale shows by default (the GR bar is full at this many
@@ -92,6 +93,8 @@ pub struct Meters {
     /// spectrum is visible right now.
     taps: HashMap<DeviceId, Arc<SampleTap>>,
     spectra: HashMap<DeviceId, SpectrumAnalyzer>,
+    /// The traces of the compressors whose card is visible right now (WP-93).
+    traces: HashMap<DeviceId, GainTrace>,
 }
 
 impl Meters {
@@ -119,6 +122,7 @@ impl Meters {
                 if self.taps.get(&id).is_none_or(|old| !Arc::ptr_eq(old, tap)) {
                     self.taps.insert(id, Arc::clone(tap));
                     self.spectra.remove(&id);
+                    self.traces.remove(&id);
                 }
             }
             seen.push(id);
@@ -126,6 +130,7 @@ impl Meters {
         self.devices.retain(|id, _| seen.contains(id));
         self.taps.retain(|id, _| seen.contains(id));
         self.spectra.retain(|id, _| seen.contains(id));
+        self.traces.retain(|id, _| seen.contains(id));
         let Some(program) = engine.program() else {
             self.tracks.clear();
             return;
@@ -165,6 +170,22 @@ impl Meters {
         })
     }
 
+    /// What the card of `device` shows of its compressor's signal (WP-93): the live level point and
+    /// the four seconds of reduction history; `None` for a device without a sample tap. `show` says
+    /// whether the card is visible now (on screen, running, not bypassed): only then the trace
+    /// reads the tap and renews its lease, so a hidden compressor costs nothing; otherwise the
+    /// picture is empty and the trace is dropped.
+    pub fn dynamics(&mut self, device: DeviceId, show: bool, now: f64) -> Option<Dynamics> {
+        let tap = self.taps.get(&device)?;
+        if !show {
+            self.traces.remove(&device);
+            return Some(GainTrace::new().view());
+        }
+        let trace = self.traces.entry(device).or_default();
+        trace.update(now, tap);
+        Some(trace.view())
+    }
+
     /// The meter of `track`, if it is in the program.
     pub fn track(&self, track: TrackId) -> Option<&MeterState> {
         self.tracks.get(&track)
@@ -198,6 +219,7 @@ impl Meters {
             || self.tracks.values().any(MeterState::is_active)
             || self.devices.values().any(DeviceBallistics::is_active)
             || self.spectra.values().any(SpectrumAnalyzer::is_active)
+            || self.traces.values().any(GainTrace::is_active)
     }
 }
 

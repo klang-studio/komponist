@@ -409,6 +409,7 @@ pub struct Graph<'a> {
     track: Color32,
     look: Look,
     data: &'a [f32],
+    trace: &'a [f32],
     playhead: Option<f64>,
     level: Option<f64>,
     selected: Option<Option<usize>>,
@@ -431,6 +432,7 @@ impl<'a> Graph<'a> {
             track: color32(color::TEXT_1),
             look: Look::Normal,
             data: &[],
+            trace: &[],
             playhead: None,
             level: None,
             selected: None,
@@ -456,6 +458,13 @@ impl<'a> Graph<'a> {
     #[must_use]
     pub fn data(mut self, data: &'a [f32]) -> Self {
         self.data = data;
+        self
+    }
+
+    /// The y values of the `Trace` layer, spread evenly over the x axis.
+    #[must_use]
+    pub fn trace(mut self, trace: &'a [f32]) -> Self {
+        self.trace = trace;
         self
     }
 
@@ -498,6 +507,7 @@ impl<'a> Graph<'a> {
             track,
             look,
             data,
+            trace,
             playhead,
             level,
             selected: forced_selection,
@@ -754,6 +764,10 @@ impl<'a> Graph<'a> {
                 Layer::Data(_) => {}
                 Layer::Region(r) => paint_region(&painter, &plot, spec, *r, values, ppp),
                 Layer::Curve(c) => paint_curve(&painter, &plot, spec, c, values, curve_col),
+                Layer::Trace { baseline } if look == Look::Normal => {
+                    paint_trace(&painter, &plot, spec, *baseline, trace, curve_col)
+                }
+                Layer::Trace { .. } => {}
                 Layer::Guide(g) => paint_guide(&painter, &plot, spec, *g, values, curve_col, ppp),
                 Layer::Marker(mk) => {
                     paint_marker(&painter, &plot, spec, *mk, values, playhead, level, ppp)
@@ -1071,13 +1085,18 @@ fn text_galley(
 fn paint_grid(painter: &Painter, spec: &GraphSpec, plot: &Plot) {
     let rect = plot.rect;
     let line = |major: bool| color32(if major { color::LINE_2 } else { color::LINE_1 });
+    let (xs, ys) = if spec.grid_inside {
+        ((plot.xs.0, plot.xs.1), (plot.ys.1, plot.ys.0))
+    } else {
+        ((rect.left(), rect.right()), (rect.top(), rect.bottom()))
+    };
     for t in spec.x.ticks() {
         let x = plot.x(&spec.x, t.value);
-        px::vline(painter, x, rect.top()..=rect.bottom(), line(t.major));
+        px::vline(painter, x, ys.0..=ys.1, line(t.major));
     }
     for t in spec.y.ticks() {
         let y = plot.y(&spec.y, t.value);
-        px::hline(painter, rect.left()..=rect.right(), y, line(t.major));
+        px::hline(painter, xs.0..=xs.1, y, line(t.major));
     }
 }
 
@@ -1183,6 +1202,47 @@ fn paint_data(
             painter.add(strip(&top, &bottom, track));
         }
     }
+}
+
+/// The history line of a `Trace` layer: `trace` holds y values spread evenly over the x axis.
+fn paint_trace(
+    painter: &Painter,
+    plot: &Plot,
+    spec: &GraphSpec,
+    baseline: f64,
+    trace: &[f32],
+    col: Color32,
+) {
+    if trace.len() < 2 {
+        return;
+    }
+    let n = trace.len() - 1;
+    let line: Vec<Pos2> = trace
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let y = if v.is_finite() {
+                f64::from(*v)
+            } else {
+                spec.y.min
+            };
+            pos2(
+                plot.xs.0 + (plot.xs.1 - plot.xs.0) * i as f32 / n as f32,
+                plot.y(&spec.y, y),
+            )
+        })
+        .collect();
+    let base = plot.y(&spec.y, baseline);
+    let flat: Vec<Pos2> = line.iter().map(|p| pos2(p.x, base)).collect();
+    painter.add(strip(
+        &line,
+        &flat,
+        with_opacity(col, widget::graph::curve::FILL_OPACITY),
+    ));
+    painter.add(Shape::line(
+        line,
+        Stroke::new(widget::graph::curve::STROKE, col),
+    ));
 }
 
 fn paint_region(
@@ -1320,8 +1380,49 @@ fn paint_marker(
                 painter.circle_filled(plot.at(spec, x, y), m::POINT_R, color32(color::TEXT_1));
             }
         }
+        Marker::Levels => paint_levels(painter, plot, spec, values, level),
         // Drawn above the handles.
         Marker::Readout { .. } => {}
+    }
+}
+
+/// IN, OUT and GR of the level point (`standard-1.svg`): name (`type.device-label`) over value
+/// (`type.mono-xs`), in the strip right of the plot; GR in `meter.loud`. Without a level the
+/// values are dashes.
+fn paint_levels(
+    painter: &Painter,
+    plot: &Plot,
+    spec: &GraphSpec,
+    values: &[f64],
+    level: Option<f64>,
+) {
+    let level = level.map(|x| spec.x.clamp(x));
+    let out = level
+        .zip(spec.first_curve())
+        .map(|(x, c)| c.f.at(x, values));
+    let texts = [
+        ("IN", level, color::TEXT_1),
+        ("OUT", out, color::TEXT_1),
+        ("GR", level.zip(out).map(|(i, o)| o - i), color::METER_LOUD),
+    ];
+    let [dx, dy] = m::LEVELS_INSET;
+    let left = plot.xs.1 + dx;
+    for (i, (name, value, col)) in texts.into_iter().enumerate() {
+        let top = plot.rect.top() + dy + m::LEVELS_PITCH * i as f32;
+        let label = text_galley(
+            painter,
+            name,
+            &typography::DEVICE_LABEL,
+            color32(color::TEXT_2),
+        );
+        let text = value.map_or_else(
+            || "\u{2013}".to_owned(),
+            |v| format!("{} dB", komponist_model::format::fmt_db(v as f32)),
+        );
+        let h = label.size().y;
+        painter.galley(pos2(left, top), label, color32(color::TEXT_2));
+        let g = text_galley(painter, &text, &typography::MONO_XS, color32(col));
+        painter.galley(pos2(left, top + h), g, color32(col));
     }
 }
 
@@ -1474,11 +1575,16 @@ fn paint_title(ui: &Ui, painter: &Painter, spec: &GraphSpec, rect: Rect) {
         color32(color::TEXT_2),
     );
     let [dx, dy] = m::TITLE_POS;
-    painter.galley(
+    let at = if spec.title_bottom_right {
         pos2(
-            px::snap(rect.left() + dx, ppp),
-            px::snap(rect.top() + dy, ppp),
-        ),
+            rect.right() - dx - g.size().x,
+            rect.bottom() - dy - g.size().y,
+        )
+    } else {
+        pos2(rect.left() + dx, rect.top() + dy)
+    };
+    painter.galley(
+        pos2(px::snap(at.x, ppp), px::snap(at.y, ppp)),
         g,
         color32(color::TEXT_2),
     );

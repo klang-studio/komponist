@@ -197,6 +197,11 @@ impl View for Devices {
         for (c, on_screen) in cards.iter_mut().zip(&visible) {
             let show = *on_screen && model::shows_spectrum(c);
             c.analysis = ctx.meters.analysis(c.device, show, now);
+            // The compressor's level point and reduction history likewise.
+            let live = *on_screen && model::shows_dynamics(c);
+            if model::has_dynamics_graph(c) {
+                c.dynamics = ctx.meters.dynamics(c.device, live, now);
+            }
         }
         header_row(ui, ctx, header, track, &cards, &visible);
         let view = ChainView {

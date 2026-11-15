@@ -110,6 +110,9 @@ pub enum GraphConfig {
         /// Points.
         points: u8,
     },
+    /// `graph::compressor` (WP-93): `graph::transfer` with a knee width in dB and the IN, OUT and
+    /// GR readouts of the live level beside the plot. Slots `threshold`, `ratio`, `knee`.
+    Compressor,
     /// `graph::gr_history` (WP-93): the input level and the gain reduction of the last four
     /// seconds, display only (no slots, no handles).
     GrHistory,

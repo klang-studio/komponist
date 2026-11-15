@@ -113,7 +113,10 @@ fn params() -> Vec<ParamInfo> {
             4.0,
         )
         .unit(Unit::Ratio),
-        ParamInfo::new("knee", "Knie", ParamKind::lin(0.0, 24.0), 6.0).unit(Unit::Db),
+        ParamInfo::new("knee", "Knie", ParamKind::lin(0.0, 24.0), 6.0)
+            .unit(Unit::Db)
+            // A width, not a gain: no sign.
+            .formatted(|v| format!("{v:.0} dB")),
         ParamInfo::new(
             "attack",
             "Attack",
@@ -156,7 +159,7 @@ fn params() -> Vec<ParamInfo> {
 /// release; the reduction history, sidechain high-pass, mix, auto switches and „SC hören“; the
 /// gain-reduction meter on the right.
 fn layout() -> DeviceLayout {
-    let transfer = GraphBinding::new(GraphConfig::Transfer)
+    let transfer = GraphBinding::new(GraphConfig::Compressor)
         .bind("threshold", "threshold")
         .bind("ratio", "ratio")
         .bind("knee", "knee");
