@@ -16,7 +16,7 @@
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
-![komponist with the demo project "Nachtfahrt": arrangement, piano roll and track meters while the transport plays](docs/media/hero.png)
+![komponist with the demo project "Night Drive": arrangement, piano roll and track meters while the transport plays](docs/media/hero.png)
 
 komponist is a MIDI DAW written in Rust with [egui](https://github.com/emilk/egui). You arrange clips, edit notes and
 steps, shape sounds with built-in instruments and effects, host CLAP and VST3 plugins, and mix it all on the same
@@ -89,7 +89,7 @@ does not take your project down with it. Plugin windows open as native X11 windo
 - Every edit is undoable, including parameter changes.
 - The transport bar shows the master output as an oscilloscope or a spectrum; a click switches between them.
 
-The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (named Rhythmus in the demo) and the effect bus (named Hall) have strips of their own on the right, next to the master channel:
+The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (named Rhythm in the demo) and the effect bus (named Reverb) have strips of their own on the right, next to the master channel:
 
 ![The mixer with the arrangement above it, playing](docs/media/mixer.png)
 
