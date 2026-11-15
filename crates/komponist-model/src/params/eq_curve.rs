@@ -50,11 +50,17 @@ pub fn coefs(typ: f64, freq: f64, gain_db: f64, q: f64, rate: f64) -> Coefs {
     let (b, a) = match typ.round() as i64 {
         0 => {
             let k = 1.0 + cos;
-            ([k / 2.0, -k, k / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
+            (
+                [k / 2.0, -k, k / 2.0],
+                [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+            )
         }
         4 => {
             let k = 1.0 - cos;
-            ([k / 2.0, k, k / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
+            (
+                [k / 2.0, k, k / 2.0],
+                [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+            )
         }
         1 | 3 => {
             let amp = 10f64.powf(gain_db / 40.0);

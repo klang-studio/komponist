@@ -476,6 +476,7 @@ impl Dsp for Hall {
         for f in &mut self.lp {
             f.reset();
         }
+        self.phase = core::array::from_fn(|i| i as f32 / LINES as f32);
         self.snap();
     }
 }

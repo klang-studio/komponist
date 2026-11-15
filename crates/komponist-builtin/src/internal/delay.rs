@@ -2,8 +2,9 @@
 //! cut in the feedback loop, width and mix (WP-90).
 //!
 //! Two delay lines (4 s) read with Hermite interpolation. The time (free in milliseconds, or a note
-//! value of the transport tempo) glides with a 60 ms time constant, so a change bends the echoes in
-//! pitch like a tape delay instead of clicking, and a tempo change follows the same way. The
+//! value of the transport tempo) glides with a 60 ms time constant and at most 0.5 samples per sample,
+//! so a change bends the echoes in pitch like a tape delay (at most an octave) instead of clicking,
+//! and a tempo change follows the same way. The
 //! feedback passes a one-pole high-pass (`low_cut`) and low-pass (`high_cut`) on every repeat;
 //! the first echo is unfiltered. Ping-pong is a smoothed cross-feedback: at 100 % the stereo input
 //! enters the left line as a mono sum and the repeats bounce right, left, right, … `width` scales
@@ -15,7 +16,7 @@ use komponist_model::params::layout::{
 };
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
-use super::dsp::{CONTROL, OnePole, Ring, Glide, finite, flush, pole, smooth_coeff};
+use super::dsp::{CONTROL, Glide, OnePole, Ring, finite, flush, pole, smooth_coeff};
 use super::{Dsp, INITIAL_RATE, Spec, knob, single_page, toggle};
 
 /// The device.
@@ -145,6 +146,9 @@ fn layout() -> DeviceLayout {
 
 /// Seconds the delay time takes to cover 63 % of a change.
 const TIME_GLIDE: f32 = 0.060;
+/// Fastest change of the delay time in samples per sample: the echoes bend by at most an octave
+/// down or half an octave up while the time moves.
+const MAX_SLEW: f32 = 0.5;
 /// Seconds of the other smoothers (feedback, mix, width, ping-pong, cuts).
 const GLIDE: f32 = 0.020;
 
@@ -169,6 +173,9 @@ struct Delay {
     sync: bool,
     note: usize,
     bpm: f64,
+    /// Whether the transport tempo has arrived since activation: the first one is taken at once
+    /// (no glide from the 120 BPM the device starts with).
+    have_tempo: bool,
     hp: [OnePole; 2],
     lp: [OnePole; 2],
     countdown: usize,
@@ -193,6 +200,7 @@ fn dsp() -> Box<dyn Dsp> {
         sync: false,
         note: 8,
         bpm: 120.0,
+        have_tempo: false,
         hp: [OnePole::default(); 2],
         lp: [OnePole::default(); 2],
         countdown: 0,
@@ -236,7 +244,7 @@ impl Delay {
     }
 
     fn control(&mut self) {
-        self.time.start(self.time_coeff, 0.01);
+        self.time.start_limited(self.time_coeff, 0.01, MAX_SLEW);
         let g = self.glide;
         self.feedback.start(g, 1e-5);
         self.ping_pong.start(g, 1e-4);
@@ -252,6 +260,7 @@ impl Delay {
 impl Dsp for Delay {
     fn activate(&mut self, sample_rate: f32) {
         self.rate = sample_rate;
+        self.have_tempo = false;
         self.allocate();
     }
 
@@ -285,10 +294,15 @@ impl Dsp for Delay {
         } else {
             120.0
         };
+        let first = !self.have_tempo;
+        self.have_tempo = true;
         if bpm != self.bpm {
             self.bpm = bpm;
             if self.sync {
                 self.retarget();
+                if first {
+                    self.time.snap();
+                }
             }
         }
     }
@@ -335,6 +349,7 @@ impl Dsp for Delay {
         for f in self.hp.iter_mut().chain(self.lp.iter_mut()) {
             f.reset();
         }
+        self.have_tempo = false;
         self.snap();
     }
 }

@@ -101,6 +101,22 @@ impl Glide {
         self.start_to(next);
     }
 
+    /// As [`Glide::start`], with the change per sample limited to `max_per_sample`.
+    pub fn start_limited(&mut self, coeff: f32, eps: f32, max_per_sample: f32) {
+        self.start(coeff, eps);
+        let max = max_per_sample * CONTROL as f32;
+        if (self.next - self.cur).abs() > max {
+            let next = self.cur + max.copysign(self.next - self.cur);
+            self.start_to_keep(next);
+        }
+    }
+
+    /// Re-aims the interval that [`Glide::start`] just began at `next`.
+    fn start_to_keep(&mut self, next: f32) {
+        self.next = next;
+        self.step = (next - self.cur) / CONTROL as f32;
+    }
+
     /// The value `done` samples into the interval; exactly `cur` when it rests.
     #[inline]
     pub fn at(&self, done: usize) -> f32 {

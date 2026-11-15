@@ -154,7 +154,9 @@ fn eq_with_bands(rate: f32) -> Box<dyn Dsp> {
 fn eq_expected_db(hz: f64, rate: f64) -> f64 {
     EQ_BANDS
         .iter()
-        .map(|(t, f, g, q)| eq_curve::magnitude_db(&eq_curve::coefs(*t, *f, *g, *q, rate), hz, rate))
+        .map(|(t, f, g, q)| {
+            eq_curve::magnitude_db(&eq_curve::coefs(*t, *f, *g, *q, rate), hz, rate)
+        })
         .sum()
 }
 
@@ -162,8 +164,8 @@ fn eq_expected_db(hz: f64, rate: f64) -> f64 {
 fn eq_response_matches_the_analytic_curve_within_a_tenth_of_a_db() {
     for rate in [44_100.0f32, 48_000.0, 96_000.0] {
         for hz in [
-            40.0, 80.0, 150.0, 200.0, 400.0, 800.0, 1000.0, 1300.0, 2200.0, 3000.0, 4000.0,
-            5000.0, 7000.0, 10_000.0, 12_000.0, 15_000.0,
+            40.0, 80.0, 150.0, 200.0, 400.0, 800.0, 1000.0, 1300.0, 2200.0, 3000.0, 4000.0, 5000.0,
+            7000.0, 10_000.0, 12_000.0, 15_000.0,
         ] {
             let mut eq = eq_with_bands(rate);
             let frames = rate as usize;
@@ -296,7 +298,9 @@ fn the_delay_time_is_exact_free_and_synced() {
     let frames = 60_000;
     let echo_at = |set_list: &[(&str, f64)], bpm: f64| -> (usize, f32) {
         let mut d = make(kind, RATE, set_list);
+        // The tempo is in place before the first call (activation snaps to it).
         d.set_tempo(bpm);
+        d.activate(RATE);
         let y = play(&mut *d, &impulse(frames), 256, &[]);
         let at = (0..frames)
             .max_by(|a, b| y[0][*a].abs().total_cmp(&y[0][*b].abs()))
@@ -324,12 +328,18 @@ fn the_delay_time_is_exact_free_and_synced() {
     ] {
         let (at, v) = echo_at(&with(&[("sync", 1.0), ("note", note)]), 120.0);
         let want = (ms * 48.0f64).round() as i64;
-        assert!((at as i64 - want).abs() <= 1 && v > 0.5, "note {note}: {at} vs {want}");
+        assert!(
+            (at as i64 - want).abs() <= 1 && v > 0.5,
+            "note {note}: {at} vs {want}"
+        );
     }
     // Other tempos: 1/4 at 90 BPM = 666.7 ms, at 60 BPM = 1 s.
     for (bpm, ms) in [(90.0, 666.667), (60.0, 1000.0)] {
         let (at, _) = echo_at(&with(&[("sync", 1.0), ("note", 8.0)]), bpm);
-        assert!((at as i64 - (ms * 48.0f64).round() as i64).abs() <= 1, "{bpm}: {at}");
+        assert!(
+            (at as i64 - (ms * 48.0f64).round() as i64).abs() <= 1,
+            "{bpm}: {at}"
+        );
     }
 }
 
@@ -339,7 +349,13 @@ fn the_synced_delay_follows_a_tempo_change_by_gliding() {
     let mut d = make(
         kind,
         RATE,
-        &[("sync", 1.0), ("note", 8.0), ("mix", 1.0), ("feedback", 0.0), ("ping_pong", 0.0)],
+        &[
+            ("sync", 1.0),
+            ("note", 8.0),
+            ("mix", 1.0),
+            ("feedback", 0.0),
+            ("ping_pong", 0.0),
+        ],
     );
     d.set_tempo(120.0);
     let x = sine(440.0, 0.5, 96_000, RATE);
@@ -348,7 +364,11 @@ fn the_synced_delay_follows_a_tempo_change_by_gliding() {
     let b = play(&mut *d, &x, 256, &[]);
     // 500 ms now, 1 s afterwards, arriving without a jump.
     let steady = max_step(&a[0][60_000..]);
-    assert!(max_step(&b[0]) < steady * 1.6, "{} vs {steady}", max_step(&b[0]));
+    assert!(
+        max_step(&b[0]) < steady * 1.6,
+        "{} vs {steady}",
+        max_step(&b[0])
+    );
     // After the glide (≤ 1 s at the slew limit) the new time holds: an impulse echoes at 1 s.
     let mut quiet = silence(100_000);
     quiet[0][0] = 1.0;
@@ -359,10 +379,26 @@ fn the_synced_delay_follows_a_tempo_change_by_gliding() {
 #[test]
 fn a_free_time_change_glides_without_a_click() {
     let kind = Internal::Delay;
-    let mut d = make(kind, RATE, &[("mix", 1.0), ("feedback", 0.5), ("ping_pong", 1.0), ("time", 300.0)]);
+    // No feedback: with it, the repeats at different delays beat against each other and the level
+    // moves by itself; a click would still be several times the sine's own step.
+    let mut d = make(
+        kind,
+        RATE,
+        &[
+            ("mix", 1.0),
+            ("feedback", 0.0),
+            ("ping_pong", 1.0),
+            ("time", 300.0),
+        ],
+    );
     let x = sine(1000.0, 0.5, 96_000, RATE);
     let time = wire(kind, "time");
-    let y = play(&mut *d, &x, 256, &[(48_000, time, 420.0), (72_000, time, 150.0)]);
+    let y = play(
+        &mut *d,
+        &x,
+        256,
+        &[(48_000, time, 420.0), (72_000, time, 150.0)],
+    );
     let steady = max_step(&y[0][30_000..40_000]).max(max_step(&y[1][30_000..40_000]));
     for c in 0..2 {
         let worst = max_step(&y[c][48_000..]);
@@ -374,7 +410,16 @@ fn a_free_time_change_glides_without_a_click() {
 fn the_delay_ping_pongs_and_the_width_collapses_to_mono() {
     let kind = Internal::Delay;
     let t = 4800;
-    let mut d = make(kind, RATE, &[("time", 100.0), ("mix", 1.0), ("feedback", 0.8), ("ping_pong", 1.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[
+            ("time", 100.0),
+            ("mix", 1.0),
+            ("feedback", 0.8),
+            ("ping_pong", 1.0),
+        ],
+    );
     let mut x = silence(20_000);
     x[0][0] = 1.0;
     let y = play(&mut *d, &x, 256, &[]);
@@ -383,7 +428,17 @@ fn the_delay_ping_pongs_and_the_width_collapses_to_mono() {
     assert!(y[1][2 * t].abs() > 0.2 && y[0][2 * t].abs() < 1e-6);
     assert!(y[0][3 * t].abs() > 0.1 && y[1][3 * t].abs() < 1e-6);
     // Width 0: both channels carry the same wet signal.
-    let mut d = make(kind, RATE, &[("time", 100.0), ("mix", 1.0), ("feedback", 0.8), ("ping_pong", 1.0), ("width", 0.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[
+            ("time", 100.0),
+            ("mix", 1.0),
+            ("feedback", 0.8),
+            ("ping_pong", 1.0),
+            ("width", 0.0),
+        ],
+    );
     let y = play(&mut *d, &x, 256, &[]);
     assert!(y[0].iter().zip(&y[1]).all(|(a, b)| (a - b).abs() < 1e-6));
     assert!((y[0][t] - 0.25).abs() < 1e-6);
@@ -394,7 +449,20 @@ fn the_cuts_in_the_loop_shape_the_repeats() {
     let kind = Internal::Delay;
     // A burst of 100 Hz and of 8 kHz; compare the third repeat with the first.
     let repeats = |hz: f32, set_list: &[(&str, f64)]| -> (f32, f32) {
-        let mut d = make(kind, RATE, &[&[("time", 50.0), ("mix", 1.0), ("feedback", 0.9), ("ping_pong", 0.0)], set_list].concat());
+        let mut d = make(
+            kind,
+            RATE,
+            &[
+                &[
+                    ("time", 50.0),
+                    ("mix", 1.0),
+                    ("feedback", 0.9),
+                    ("ping_pong", 0.0),
+                ],
+                set_list,
+            ]
+            .concat(),
+        );
         let mut x = sine(hz, 0.5, 2400, RATE);
         x[0].resize(30_000, 0.0);
         x[1].resize(30_000, 0.0);
@@ -403,11 +471,17 @@ fn the_cuts_in_the_loop_shape_the_repeats() {
         (rms(&y[0][t..2 * t]), rms(&y[0][3 * t..4 * t]))
     };
     let (first, third) = repeats(8000.0, &[("high_cut", 1000.0)]);
-    assert!(third < first * 0.05, "8 kHz through a 1 kHz high cut: {first} -> {third}");
+    assert!(
+        third < first * 0.05,
+        "8 kHz through a 1 kHz high cut: {first} -> {third}"
+    );
     let (first, third) = repeats(8000.0, &[]);
     assert!(third > first * 0.5, "{first} -> {third}");
     let (first, third) = repeats(100.0, &[("low_cut", 1000.0)]);
-    assert!(third < first * 0.05, "100 Hz through a 1 kHz low cut: {first} -> {third}");
+    assert!(
+        third < first * 0.05,
+        "100 Hz through a 1 kHz low cut: {first} -> {third}"
+    );
     let (first, third) = repeats(100.0, &[]);
     assert!(third > first * 0.5, "{first} -> {third}");
 }
@@ -415,12 +489,25 @@ fn the_cuts_in_the_loop_shape_the_repeats() {
 #[test]
 fn the_feedback_always_dies_out_and_is_never_nan() {
     let kind = Internal::Delay;
-    let mut d = make(kind, RATE, &[("time", 20.0), ("feedback", 0.95), ("mix", 1.0), ("ping_pong", 1.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[
+            ("time", 20.0),
+            ("feedback", 0.95),
+            ("mix", 1.0),
+            ("ping_pong", 1.0),
+        ],
+    );
     let burst = noise(4800, 5);
     let _ = play(&mut *d, &burst, 256, &[]);
     let tail = play(&mut *d, &silence(48_000 * 20), 480, &[]);
     assert!(tail[0].iter().chain(&tail[1]).all(|s| s.is_finite()));
-    assert!(rms(&tail[0][48_000 * 19..]) < 1e-4, "{}", rms(&tail[0][48_000 * 19..]));
+    assert!(
+        rms(&tail[0][48_000 * 19..]) < 1e-4,
+        "{}",
+        rms(&tail[0][48_000 * 19..])
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -428,13 +515,20 @@ fn the_feedback_always_dies_out_and_is_never_nan() {
 
 /// RT60 in seconds from the Schroeder backward integral, extrapolated from −5 … −35 dB.
 fn rt60(impulse_response: &[f32], rate: f32) -> f32 {
-    let mut energy: Vec<f64> = impulse_response.iter().map(|s| f64::from(*s).powi(2)).collect();
+    let mut energy: Vec<f64> = impulse_response
+        .iter()
+        .map(|s| f64::from(*s).powi(2))
+        .collect();
     for i in (0..energy.len() - 1).rev() {
         energy[i] += energy[i + 1];
     }
     let total = energy[0];
     let db = |i: usize| 10.0 * (energy[i] / total).log10();
-    let at = |level: f64| (0..energy.len()).find(|i| db(*i) <= level).unwrap_or(energy.len() - 1);
+    let at = |level: f64| {
+        (0..energy.len())
+            .find(|i| db(*i) <= level)
+            .unwrap_or(energy.len() - 1)
+    };
     let (a, b) = (at(-5.0), at(-35.0));
     (b - a) as f32 / rate * 2.0
 }
@@ -443,7 +537,16 @@ fn hall_ir(set_list: &[(&str, f64)], seconds: usize) -> Stereo {
     let mut d = make(
         Internal::Hall,
         RATE,
-        &[&[("mix", 1.0), ("wet_only", 1.0), ("damping", 20_000.0), ("modulation", 0.0)], set_list].concat(),
+        &[
+            &[
+                ("mix", 1.0),
+                ("wet_only", 1.0),
+                ("damping", 20_000.0),
+                ("modulation", 0.0),
+            ],
+            set_list,
+        ]
+        .concat(),
     );
     play(&mut *d, &impulse(48_000 * seconds), 256, &[])
 }
@@ -470,9 +573,19 @@ fn the_reverb_decays_in_the_time_the_decay_parameter_says() {
 
 #[test]
 fn damping_shortens_the_tail_and_the_rooms_differ_in_their_onset() {
-    let open = rt60(&hall_ir(&[("decay", 3.0)], 12)[0], RATE);
-    let dark = rt60(&hall_ir(&[("decay", 3.0), ("damping", 800.0)], 12)[0], RATE);
-    assert!(dark < open * 0.8, "{dark} vs {open}");
+    // The decay of the highs: the second difference of the response (+12 dB/octave) hides the
+    // lows, which decay at the decay time whatever the damping.
+    let highs = |ir: &[f32]| -> Vec<f32> {
+        (2..ir.len())
+            .map(|i| ir[i] - 2.0 * ir[i - 1] + ir[i - 2])
+            .collect()
+    };
+    let open = rt60(&highs(&hall_ir(&[("decay", 3.0)], 12)[0]), RATE);
+    let dark = rt60(
+        &highs(&hall_ir(&[("decay", 3.0), ("damping", 800.0)], 12)[0]),
+        RATE,
+    );
+    assert!(dark < open * 0.5, "{dark} vs {open}");
     // First energy after the pre-delay: Zimmer (small) before Kirche (large).
     let onset = |room: f64| {
         let ir = hall_ir(&[("room", room), ("predelay", 0.0), ("diffusion", 0.0)], 1);
@@ -484,7 +597,16 @@ fn damping_shortens_the_tail_and_the_rooms_differ_in_their_onset() {
 #[test]
 fn freeze_holds_the_tail_and_nur_hall_removes_the_dry_signal() {
     let kind = Internal::Hall;
-    let mut d = make(kind, RATE, &[("decay", 0.5), ("mix", 1.0), ("wet_only", 1.0), ("predelay", 0.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[
+            ("decay", 0.5),
+            ("mix", 1.0),
+            ("wet_only", 1.0),
+            ("predelay", 0.0),
+        ],
+    );
     let n = noise(48_000, 7);
     let freeze = wire(kind, "freeze");
     let mut x = n;
@@ -496,15 +618,32 @@ fn freeze_holds_the_tail_and_nur_hall_removes_the_dry_signal() {
     let late = rms(&y[0][at(5.5)..at(5.6)]);
     assert!(early > 1e-3 && late > early * 0.5, "{early} -> {late}");
     // Without freeze the same tail is gone.
-    let mut d = make(kind, RATE, &[("decay", 0.5), ("mix", 1.0), ("wet_only", 1.0), ("predelay", 0.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[
+            ("decay", 0.5),
+            ("mix", 1.0),
+            ("wet_only", 1.0),
+            ("predelay", 0.0),
+        ],
+    );
     let y = play(&mut *d, &x, 256, &[]);
     assert!(rms(&y[0][at(5.5)..at(5.6)]) < early * 0.01);
     // Wet only: nothing before the pre-delay; with the dry signal on, the input shows at once.
-    let mut d = make(kind, RATE, &[("predelay", 100.0), ("mix", 0.5), ("wet_only", 1.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[("predelay", 100.0), ("mix", 0.5), ("wet_only", 1.0)],
+    );
     let y = play(&mut *d, &impulse(8000), 256, &[]);
     assert!(y[0][..4700].iter().all(|s| *s == 0.0));
     assert!(y[0][4800..].iter().any(|s| s.abs() > 1e-4));
-    let mut d = make(kind, RATE, &[("predelay", 100.0), ("mix", 0.5), ("wet_only", 0.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[("predelay", 100.0), ("mix", 0.5), ("wet_only", 0.0)],
+    );
     let y = play(&mut *d, &impulse(8000), 256, &[]);
     assert!((y[0][0] - 0.5).abs() < 1e-6);
 }
@@ -512,15 +651,28 @@ fn freeze_holds_the_tail_and_nur_hall_removes_the_dry_signal() {
 #[test]
 fn the_reverb_is_stereo_and_width_zero_is_mono() {
     let wide = hall_ir(&[("width", 1.0)], 2);
-    let diff: f32 = wide[0].iter().zip(&wide[1]).map(|(a, b)| (a - b).abs()).sum();
+    let diff: f32 = wide[0]
+        .iter()
+        .zip(&wide[1])
+        .map(|(a, b)| (a - b).abs())
+        .sum();
     assert!(diff > 1.0, "{diff}");
     let mono = hall_ir(&[("width", 0.0)], 2);
-    assert!(mono[0].iter().zip(&mono[1]).all(|(a, b)| (a - b).abs() < 1e-7));
+    assert!(
+        mono[0]
+            .iter()
+            .zip(&mono[1])
+            .all(|(a, b)| (a - b).abs() < 1e-7)
+    );
 }
 
 #[test]
 fn the_reverb_level_is_in_the_range_of_the_dry_signal() {
-    let mut d = make(Internal::Hall, RATE, &[("mix", 1.0), ("wet_only", 1.0), ("decay", 2.4)]);
+    let mut d = make(
+        Internal::Hall,
+        RATE,
+        &[("mix", 1.0), ("wet_only", 1.0), ("decay", 2.4)],
+    );
     let x = noise(48_000 * 4, 9);
     let y = play(&mut *d, &x, 256, &[]);
     let ratio = rms(&y[0][48_000 * 3..]) / rms(&x[0][48_000 * 3..]);
@@ -529,11 +681,20 @@ fn the_reverb_level_is_in_the_range_of_the_dry_signal() {
 
 #[test]
 fn the_tail_never_goes_subnormal() {
-    for kind in [Internal::Hall, Internal::Delay, Internal::Eq, Internal::Limiter] {
+    for kind in [
+        Internal::Hall,
+        Internal::Delay,
+        Internal::Eq,
+        Internal::Limiter,
+    ] {
         let mut d = make(kind, RATE, &[("mix", 1.0)]);
         let _ = play(&mut *d, &noise(4800, 11), 256, &[]);
         let tail = play(&mut *d, &silence(48_000 * 30), 4800, &[]);
-        let sub = tail[0].iter().chain(&tail[1]).filter(|s| s.is_subnormal()).count();
+        let sub = tail[0]
+            .iter()
+            .chain(&tail[1])
+            .filter(|s| s.is_subnormal())
+            .count();
         assert_eq!(sub, 0, "{kind:?}");
     }
 }
@@ -564,11 +725,18 @@ fn stress(frames: usize) -> Stereo {
 fn the_limiter_never_exceeds_the_ceiling() {
     let kind = Internal::Limiter;
     for lookahead in [1.0, 0.0] {
-        for (ceiling, release, gain) in [(-0.3, 100.0, 0.0), (-6.0, 10.0, 12.0), (-1.0, 1000.0, 24.0)] {
+        for (ceiling, release, gain) in
+            [(-0.3, 100.0, 0.0), (-6.0, 10.0, 12.0), (-1.0, 1000.0, 24.0)]
+        {
             let mut d = make(
                 kind,
                 RATE,
-                &[("ceiling", ceiling), ("release", release), ("gain", gain), ("lookahead", lookahead)],
+                &[
+                    ("ceiling", ceiling),
+                    ("release", release),
+                    ("gain", gain),
+                    ("lookahead", lookahead),
+                ],
             );
             let x = stress(48_000 * 3);
             for chunk in [1, 37, 256] {
@@ -576,7 +744,10 @@ fn the_limiter_never_exceeds_the_ceiling() {
                 let y = play(&mut *d, &x, chunk, &[]);
                 let limit = db_to_gain(ceiling as f32);
                 let top = peak(&y[0]).max(peak(&y[1]));
-                assert!(top <= limit, "lookahead {lookahead}, ceiling {ceiling}: {top} > {limit}");
+                assert!(
+                    top <= limit,
+                    "lookahead {lookahead}, ceiling {ceiling}: {top} > {limit}"
+                );
                 // It limits, it does not mute: the loud parts get through at about the ceiling.
                 assert!(top > limit * 0.9);
             }
@@ -585,11 +756,15 @@ fn the_limiter_never_exceeds_the_ceiling() {
 }
 
 #[test]
-fn the_limiter_gain_is_found_by_the_algorithm_not_by_the_final_clamp() {
-    // With lookahead the smooth gain alone keeps the signal under the ceiling: the output of a
-    // step to 4× the ceiling is attenuated before the step arrives at the output.
+fn a_step_to_four_times_the_ceiling_arrives_attenuated_and_under_it() {
+    // The gain is down before the loud audio leaves the delay line (that no overs are found
+    // without the final clamp is checked in `limiter::tests`).
     let kind = Internal::Limiter;
-    let mut d = make(kind, RATE, &[("ceiling", -6.0), ("release", 100.0), ("lookahead", 1.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[("ceiling", -6.0), ("release", 100.0), ("lookahead", 1.0)],
+    );
     let ceiling = db_to_gain(-6.0);
     let mut x = silence(4800);
     for i in 2000..4800 {
@@ -598,15 +773,13 @@ fn the_limiter_gain_is_found_by_the_algorithm_not_by_the_final_clamp() {
     }
     let y = play(&mut *d, &x, 256, &[]);
     let delay = d.latency() as usize;
-    // The ramp is in place before the loud sample leaves, and each sample is already under the
-    // ceiling without the clamp: ceiling / peak is the gain it needs.
-    for i in 2000..4800 {
-        assert!(y[0][i + delay.min(4800 - 1 - i)] <= ceiling);
-    }
-    let unclamped = y[0][2000 + delay..].iter().all(|s| *s <= ceiling);
-    assert!(unclamped);
-    // The gain ramps down smoothly (no step) into the loud part.
-    assert!(max_step(&y[0][1900..2000 + delay + 10]) < ceiling * 0.1);
+    assert!(y[0][2000 + delay - 1] == 0.0);
+    assert!(
+        (y[0][2000 + delay] - ceiling).abs() < 1e-5,
+        "{}",
+        y[0][2000 + delay]
+    );
+    assert!(y[0][2000 + delay..].iter().all(|s| *s <= ceiling));
 }
 
 #[test]
@@ -617,7 +790,11 @@ fn lookahead_reports_its_delay_as_latency_and_delays_the_audio_by_it() {
     let x = noise(2000, 31).map(|c| c.iter().map(|s| s * 0.5).collect::<Vec<f32>>());
     let y = play(&mut *d, &x, 256, &[]);
     assert!(y[0][..96].iter().all(|s| *s == 0.0));
-    assert_eq!(&y[0][96..], &x[0][..2000 - 96], "bit-exact copy, 96 frames late");
+    assert_eq!(
+        &y[0][96..],
+        &x[0][..2000 - 96],
+        "bit-exact copy, 96 frames late"
+    );
     let d96 = make(kind, 96_000.0, &[("lookahead", 1.0)]);
     assert_eq!(d96.latency(), 192);
     let mut off = make(kind, RATE, &[("lookahead", 0.0)]);
@@ -633,7 +810,11 @@ fn lookahead_reports_its_delay_as_latency_and_delays_the_audio_by_it() {
 fn the_limiter_releases_with_its_time_constant_and_reports_the_gain_reduction() {
     let kind = Internal::Limiter;
     let gain_after = |release: f64, ms_after: f64| -> f32 {
-        let mut d = make(kind, RATE, &[("ceiling", -6.0), ("release", release), ("lookahead", 0.0)]);
+        let mut d = make(
+            kind,
+            RATE,
+            &[("ceiling", -6.0), ("release", release), ("lookahead", 0.0)],
+        );
         let mut x = silence(48_000);
         for i in 0..2400 {
             x[0][i] = 1.0;
@@ -654,7 +835,11 @@ fn the_limiter_releases_with_its_time_constant_and_reports_the_gain_reduction() 
     assert!(gain_after(10.0, 100.0) > 0.99);
     assert!(gain_after(1000.0, 100.0) < 0.6);
     // The gain-reduction hook: about −6 dB for the burst, then back to 0 once released.
-    let mut d = make(kind, RATE, &[("ceiling", -6.0), ("lookahead", 1.0), ("release", 50.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[("ceiling", -6.0), ("lookahead", 1.0), ("release", 50.0)],
+    );
     let mut x = silence(4800);
     x[0][1000] = 1.0;
     x[1][1000] = 1.0;
@@ -662,13 +847,19 @@ fn the_limiter_releases_with_its_time_constant_and_reports_the_gain_reduction() 
     let gr = d.take_reduction_db();
     assert!((gr - 6.0).abs() < 0.2, "{gr}");
     let _ = play(&mut *d, &silence(48_000), 256, &[]);
+    let _ = d.take_reduction_db();
+    let _ = play(&mut *d, &silence(48_000), 256, &[]);
     assert!(d.take_reduction_db() < 0.1);
 }
 
 #[test]
 fn the_limiter_input_gain_changes_without_a_click() {
     let kind = Internal::Limiter;
-    let mut d = make(kind, RATE, &[("ceiling", 0.0), ("lookahead", 1.0), ("gain", 0.0)]);
+    let mut d = make(
+        kind,
+        RATE,
+        &[("ceiling", 0.0), ("lookahead", 1.0), ("gain", 0.0)],
+    );
     let x = sine(1000.0, 0.2, 48_000, RATE);
     let gain = wire(kind, "gain");
     let y = play(&mut *d, &x, 256, &[(24_000, gain, 12.0)]);
@@ -681,7 +872,12 @@ fn the_limiter_input_gain_changes_without_a_click() {
 
 #[test]
 fn the_output_does_not_depend_on_how_the_host_splits_the_blocks() {
-    for kind in [Internal::Eq, Internal::Delay, Internal::Hall, Internal::Limiter] {
+    for kind in [
+        Internal::Eq,
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+    ] {
         let x = noise(30_000, 41);
         let reference = {
             let mut d = make(kind, RATE, &[("mix", 0.6)]);
@@ -713,7 +909,12 @@ fn param_script(kind: Internal) -> Vec<(usize, usize, f64)> {
 
 #[test]
 fn nan_and_infinity_in_never_come_out_and_do_not_poison_the_state() {
-    for kind in [Internal::Eq, Internal::Delay, Internal::Hall, Internal::Limiter] {
+    for kind in [
+        Internal::Eq,
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+    ] {
         let mut d = make(kind, RATE, &[("mix", 1.0), ("feedback", 0.9)]);
         let mut x = noise(2000, 51);
         for i in (0..2000).step_by(7) {
@@ -736,7 +937,12 @@ fn nan_and_infinity_in_never_come_out_and_do_not_poison_the_state() {
 
 #[test]
 fn extreme_parameter_values_stay_finite_and_bounded() {
-    for kind in [Internal::Eq, Internal::Delay, Internal::Hall, Internal::Limiter] {
+    for kind in [
+        Internal::Eq,
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+    ] {
         for pick in [0usize, 1] {
             let mut d = make(kind, RATE, &[]);
             for (i, p) in kind.params().iter().enumerate() {
@@ -746,7 +952,12 @@ fn extreme_parameter_values_stay_finite_and_bounded() {
             let x = noise(48_000, 61);
             let y = play(&mut *d, &x, 256, &[]);
             let top = peak(&y[0]).max(peak(&y[1]));
-            assert!(top.is_finite() && top < 1000.0, "{kind:?} pick {pick}: {top}");
+            // All six EQ bands at +24 dB on top of each other are +144 dB at 20 kHz: finite is the bar.
+            let bound = if kind == Internal::Eq { 1e12 } else { 1000.0 };
+            assert!(
+                top.is_finite() && top < bound,
+                "{kind:?} pick {pick}: {top}"
+            );
         }
     }
 }
@@ -754,20 +965,28 @@ fn extreme_parameter_values_stay_finite_and_bounded() {
 #[test]
 fn sample_rates_from_8_to_192_khz_work() {
     for rate in [8_000.0f32, 22_050.0, 44_100.0, 96_000.0, 192_000.0] {
-        for kind in [Internal::Eq, Internal::Delay, Internal::Hall, Internal::Limiter] {
+        for kind in [
+            Internal::Eq,
+            Internal::Delay,
+            Internal::Hall,
+            Internal::Limiter,
+        ] {
             let mut d = make(kind, rate, &[("mix", 0.5)]);
             let x = noise(rate as usize / 2, 71);
             let y = play(&mut *d, &x, 256, &[]);
-            assert!(y[0].iter().chain(&y[1]).all(|s| s.is_finite() && s.abs() < 50.0), "{kind:?} at {rate}");
+            assert!(
+                y[0].iter()
+                    .chain(&y[1])
+                    .all(|s| s.is_finite() && s.abs() < 50.0),
+                "{kind:?} at {rate}"
+            );
         }
     }
 }
 
 #[test]
 fn through_the_processor_the_tempo_and_the_latency_arrive() {
-    use komponist_engine::{
-        ProcessContext, Processor, StereoIo, TransportInfo,
-    };
+    use komponist_engine::{ProcessContext, Processor, StereoIo, TransportInfo};
     use komponist_model::{Meter, Tick, TickRange};
     let mut p = Internal::Limiter.processor(&Internal::Limiter.defaults());
     p.activate(RATE, 256).unwrap();
@@ -775,8 +994,8 @@ fn through_the_processor_the_tempo_and_the_latency_arrive() {
     let values: Vec<f64> = {
         let kind = Internal::Delay;
         let mut v = kind.defaults();
-        v[wire(kind, "sync") ] = 1.0;
-        v[wire(kind, "note")] = 8.0;
+        v[wire(kind, "sync")] = 1.0;
+        v[wire(kind, "note")] = 5.0;
         v[wire(kind, "mix")] = 1.0;
         v[wire(kind, "feedback")] = 0.0;
         v[wire(kind, "ping_pong")] = 0.0;
@@ -789,7 +1008,10 @@ fn through_the_processor_the_tempo_and_the_latency_arrive() {
     input[1][0] = 0.0;
     let mut out = silence(frames);
     let [ol, or] = &mut out;
-    let mut io = StereoIo { input: [&input[0], &input[1]], output: [ol, or] };
+    let mut io = StereoIo {
+        input: [&input[0], &input[1]],
+        output: [ol, or],
+    };
     let ctx = ProcessContext {
         frames: frames as u32,
         sample_rate: RATE,
@@ -806,8 +1028,78 @@ fn through_the_processor_the_tempo_and_the_latency_arrive() {
         deadline: None,
     };
     assert_no_alloc(|| p.process(&ctx, &[], &mut io));
-    // 1/4 at 480 BPM = 125 ms = 6000 frames: beyond this block. 1/32 would be 7.8 ms; use the
-    // 480 BPM tempo to check the glide target instead: the echo is not at the 120 BPM time.
-    assert!(out[0][..4096].iter().all(|s| s.abs() < 1e-3 || *s == 1.0 * 0.0 || true));
+    // 1/8 at 480 BPM is 62.5 ms = 3000 frames; the 120 BPM the device started with would give
+    // 250 ms. The first tempo is taken at once, so the echo is exactly there.
+    assert_eq!(out[0].iter().position(|s| s.abs() > 0.5), Some(3000));
 }
 
+// ------------------------------------------------------------------------------------------------
+// CPU (docs/PERFORMANCE.md §7): `cargo test -p komponist-builtin --release --lib cpu_ -- --ignored --nocapture`
+
+/// Mean and worst time of one 256-frame call in microseconds for `instances` instances of `kind`
+/// (called one after the other, as a single thread of the engine would), over 10 s of noise.
+fn cpu_us(kind: Internal, instances: usize, set: &[(&str, f64)]) -> (f64, f64) {
+    let mut dsps: Vec<Box<dyn Dsp>> = (0..instances).map(|_| make(kind, RATE, set)).collect();
+    let x = noise(48_000 * 10, 77);
+    let blocks = x[0].len() / 256;
+    let mut out = silence(256);
+    let (mut total, mut worst) = (0.0f64, 0.0f64);
+    for b in 0..blocks + 100 {
+        let at = (b % blocks) * 256;
+        let t = std::time::Instant::now();
+        for d in &mut dsps {
+            let [ol, or] = &mut out;
+            d.process(
+                [&x[0][at..at + 256], &x[1][at..at + 256]],
+                [&mut ol[..], &mut or[..]],
+            );
+        }
+        let us = t.elapsed().as_secs_f64() * 1e6;
+        if b >= 100 {
+            total += us;
+            worst = worst.max(us);
+        }
+    }
+    (total / blocks as f64, worst)
+}
+
+#[test]
+#[ignore = "timing; run in release"]
+fn cpu_per_effect() {
+    let period = 256.0 / 48_000.0 * 1e6;
+    let eq_all: Vec<(String, f64)> = (1..=6)
+        .flat_map(|n| {
+            [
+                (format!("b{n}_on"), 1.0),
+                (format!("b{n}_type"), [0.0, 1.0, 2.0, 2.0, 3.0, 4.0][n - 1]),
+                (format!("b{n}_gain"), 6.0),
+                (format!("b{n}_freq"), 100.0 * 3.0f64.powi(n as i32)),
+            ]
+        })
+        .collect();
+    let eq_all: Vec<(&str, f64)> = eq_all.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let cases: [(&str, Internal, &[(&str, f64)]); 5] = [
+        ("EQ, 6 bands active", Internal::Eq, &eq_all),
+        (
+            "Delay, ping-pong, feedback 0.6",
+            Internal::Delay,
+            &[("feedback", 0.6), ("mix", 0.5)],
+        ),
+        ("Hall, defaults", Internal::Hall, &[]),
+        (
+            "Hall, Kirche, modulation 1",
+            Internal::Hall,
+            &[("room", 2.0), ("modulation", 1.0)],
+        ),
+        ("Limiter, lookahead", Internal::Limiter, &[("gain", 12.0)]),
+    ];
+    for (name, kind, set) in cases {
+        let (one, one_worst) = cpu_us(kind, 1, set);
+        let (sixteen, sixteen_worst) = cpu_us(kind, 16, set);
+        println!(
+            "{name}: 1× mean {one:.1} µs ({:.3} % of the period), worst {one_worst:.0} µs; 16× mean {sixteen:.1} µs ({:.2} %), worst {sixteen_worst:.0} µs",
+            one / period * 100.0,
+            sixteen / period * 100.0
+        );
+    }
+}

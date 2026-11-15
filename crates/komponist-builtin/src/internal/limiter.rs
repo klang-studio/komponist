@@ -97,6 +97,9 @@ struct Limiter {
     /// Smallest applied gain since the last take.
     deepest: f32,
     countdown: usize,
+    /// The largest amount any sample was above the ceiling before the final clamp (tests).
+    #[cfg(test)]
+    over: f32,
 }
 
 fn dsp() -> Box<dyn Dsp> {
@@ -116,6 +119,8 @@ fn dsp() -> Box<dyn Dsp> {
         gr: 1.0,
         deepest: 1.0,
         countdown: 0,
+        #[cfg(test)]
+        over: 0.0,
     };
     l.allocate();
     Box::new(l)
@@ -247,6 +252,13 @@ impl Dsp for Limiter {
             // `gr` can lag the average above it by rounding only; never above the required gain.
             let g = self.gr.min(smooth);
             self.deepest = self.deepest.min(g);
+            #[cfg(test)]
+            {
+                self.over = self
+                    .over
+                    .max((yl * g).abs() - ceiling)
+                    .max((yr * g).abs() - ceiling);
+            }
             ol[n] = (yl * g).clamp(-ceiling, ceiling);
             or[n] = (yr * g).clamp(-ceiling, ceiling);
         }
@@ -255,5 +267,70 @@ impl Dsp for Limiter {
     fn reset(&mut self) {
         self.gain.snap();
         self.apply_lookahead();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noise(frames: usize, seed: u32, scale: f32) -> [Vec<f32>; 2] {
+        let mut x = seed;
+        let mut v = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x as f32 / u32::MAX as f32 * 2.0 - 1.0) * scale
+        };
+        [
+            (0..frames).map(|_| v()).collect(),
+            (0..frames).map(|_| v()).collect(),
+        ]
+    }
+
+    /// The attack stage alone keeps every sample under the ceiling: the final clamp only
+    /// catches rounding (at most one part in a million).
+    #[test]
+    fn the_gain_found_by_the_lookahead_needs_no_clamp() {
+        for lookahead in [true, false] {
+            for release_ms in [10.0, 100.0, 1000.0] {
+                let mut l = Limiter {
+                    rate: INITIAL_RATE,
+                    gain: Glide::new(1.0),
+                    glide: 0.0,
+                    ceiling: db_to_gain(-3.0),
+                    release_ms,
+                    release: 0.0,
+                    lookahead,
+                    delay: 0,
+                    lines: [Ring::default(), Ring::default()],
+                    min: SlidingMin::default(),
+                    avg: Ring::default(),
+                    avg_sum: 0.0,
+                    gr: 1.0,
+                    deepest: 1.0,
+                    countdown: 0,
+                    over: 0.0,
+                };
+                l.gain.target = db_to_gain(12.0);
+                l.allocate();
+                // Noise of changing loudness with the odd full-scale click.
+                let mut x = noise(48_000, 99, 1.0);
+                for (i, s) in x[0].iter_mut().enumerate() {
+                    *s *= [0.05, 0.4, 1.5][(i / 3000) % 3];
+                    if i % 4001 == 0 {
+                        *s = 1.0;
+                    }
+                }
+                let mut out = [vec![0.0; 48_000], vec![0.0; 48_000]];
+                let [ol, or] = &mut out;
+                l.process([&x[0], &x[1]], [ol, or]);
+                assert!(
+                    l.over < 1e-5,
+                    "lookahead {lookahead}, release {release_ms}: {} over before the clamp",
+                    l.over
+                );
+            }
+        }
     }
 }

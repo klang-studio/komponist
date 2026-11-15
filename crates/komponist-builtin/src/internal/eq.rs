@@ -152,7 +152,8 @@ impl Df1 {
     #[inline]
     fn tick(&mut self, x: f32, c: &Coefs) -> f32 {
         let x = f64::from(x);
-        let y = c.b[0] * x + c.b[1] * self.x1 + c.b[2] * self.x2 - c.a[0] * self.y1 - c.a[1] * self.y2;
+        let y =
+            c.b[0] * x + c.b[1] * self.x1 + c.b[2] * self.x2 - c.a[0] * self.y1 - c.a[1] * self.y2;
         self.x2 = self.x1;
         self.x1 = x;
         self.y2 = self.y1;
@@ -374,29 +375,29 @@ impl Dsp for Eq {
                 if !band.running() {
                     continue;
                 }
-                let mut m = band.mix.at(done);
-                let steady = band.mix.step == 0.0 && m == 1.0;
-                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                let steady = band.mix.step == 0.0 && band.mix.cur == 1.0;
+                for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
                     let yl = band.state[0].tick(*l, &band.coefs);
                     let yr = band.state[1].tick(*r, &band.coefs);
                     if steady {
                         *l = yl;
                         *r = yr;
                     } else {
+                        // Computed from the interval start, not accumulated: the same value
+                        // whatever the block split.
+                        let m = band.mix.at(done + i);
                         *l += (yl - *l) * m;
                         *r += (yr - *r) * m;
-                        m += band.mix.step;
                     }
                 }
                 band.state[0].flush_denormals();
                 band.state[1].flush_denormals();
             }
-            let mut g = self.out.at(done);
-            if !(self.out.step == 0.0 && g == 1.0) {
-                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            if !(self.out.step == 0.0 && self.out.cur == 1.0) {
+                for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                    let g = self.out.at(done + i);
                     *l *= g;
                     *r *= g;
-                    g += self.out.step;
                 }
             }
             self.countdown -= run;
