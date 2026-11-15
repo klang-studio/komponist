@@ -16,12 +16,12 @@ design handoff still says "klang-studio" where it means the DAW; read it as "kom
 
 ## Worktrees
 
-All worktrees live in **`../.claude/worktrees/`** of the workspace (owner's rule, 2026-11-14).
-The workspace depends on siblings by relative path (`../klopfer`, the handoffs; `../klang-dsp` only for the
-local patch below; no longer `../pisynth`). That folder therefore holds symlinks to every sibling (`klang-dsp`, `pisynth`, `klopfer`,
-`komponist`, `klang-studio-handoff`, `klang-studio-geraete-handoff`, `daw-design-briefing.md`), so
-`../klang-dsp` resolves inside a worktree there. A new sibling project needs a new symlink. Do **not**
-use the Agent tool's `isolation: "worktree"` (it puts the worktree where the symlinks are missing).
+All worktrees live in **`../.claude/worktrees/`** of the workspace (owner's rule, 2026-11-14). komponist builds
+without any sibling folder (klang-dsp is a git dependency, `hexa-core` and `sampler-core` are vendored), so a worktree
+needs no symlinks for the build. That folder still holds symlinks to the siblings (`klang-dsp`, `pisynth`, `klopfer`,
+`komponist`, `klang-studio-handoff`, `klang-studio-geraete-handoff`, `daw-design-briefing.md`) for the local klang-dsp
+patch below and the design handoff files. Do **not** use the Agent tool's `isolation: "worktree"` (it puts the worktree
+where the symlinks are missing).
 
 ```bash
 cd komponist                                       # the main checkout
@@ -68,7 +68,7 @@ after pushing klang-dsp, bump `rev`.
 | `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
 | `../.claude/komponist/scripts/render-reference.sh` | (internal) Renders the handoff `.dc.html` files with headless Chromium into `../.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |
-| `scripts/build-klopfer.sh` | Bundles klopfer in `../klopfer` (`cargo xtask bundle klopfer --release`) and prints the paths of `Klopfer.clap` and `Klopfer.vst3` in `../klopfer/target/bundled/`. Does not touch klopfer's submodules. |
+| `scripts/build-klopfer.sh` | Optional, not needed to build komponist: bundles a klopfer checkout (`$KLOPFER_DIR`, default `../klopfer`) with `cargo xtask bundle klopfer --release` for the plugin tests that use an installed Klopfer (they skip without it), and prints the bundle paths. |
 
 The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is configured in
 `.mcp.json`. It attaches to a running app or gallery started with `EGUI_INSPECTION=1`
@@ -110,8 +110,8 @@ From `PLAN.md` §2 (internal notes). `HS/` = `../klang-studio-handoff/`.
 4. **Realtime:** inside `Engine::process`, `Processor::process` and the bridge RT loop: no allocation
    or freeing, no locks, no logging, no IO, no blocking syscalls except the specified futex wait
    with a deadline. Tests wrap `process` in `assert_no_alloc`.
-5. **Scope:** change only the paths your WP owns. Never touch `../pisynth`, `../klopfer` or
-   `../klang-dsp` unless your WP says so.
+5. **Scope:** change only the paths your WP owns. Never touch the sibling projects (`../pisynth`,
+   `../klopfer`, `../klang-dsp`) unless your WP says so.
 6. **Tests first-class:** every WP ships tests. Before reporting, `scripts/check.sh` must pass
    (fmt, clippy `-D warnings`, tests). Run it once at the end, in the background (it waits for the
    shared build lock); iterate with crate-level `cargo check`/`cargo test` before that.
