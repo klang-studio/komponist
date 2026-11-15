@@ -1,0 +1,92 @@
+# Release: runs when a GitHub release is published (the release, tag and notes are written by hand on GitHub).
+# Pre-releases (v0.2.0-rc.1, v0.2-beta1 ...) trigger it too, deliberately and unfiltered: publish a pre-release
+# to try this workflow. It builds komponist, checks that it starts headless and attaches
+# komponist-<tag>-linux-x86_64.tar.gz and its .sha256 to that same release.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    name: Linux x86_64 archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_TERM_COLOR: always
+      WGPU_BACKEND: vulkan
+    steps:
+      - name: Check the tag name
+        run: |
+          # The tag ends up in file names: letters, digits, dot, underscore, dash only.
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Unsupported tag name: $TAG"
+            exit 1
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev \
+            libasound2-dev libjack-jackd2-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libdbus-1-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libx11-xcb-dev libxcb1-dev \
+            libwayland-dev libfontconfig1-dev libgl1-mesa-dev \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Build
+        run: cargo build --release -p komponist-app --bin komponist
+
+      - name: Package
+        run: |
+          name="komponist-${TAG}-linux-x86_64"
+          mkdir -p "dist/$name/scripts" "dist/$name/assets/icons"
+          install -m755 target/release/komponist "dist/$name/komponist"
+          cp -R assets/icons/hicolor "dist/$name/assets/icons/"
+          cp assets/komponist.desktop assets/komponist.metainfo.xml assets/komponist-mime.xml "dist/$name/assets/"
+          install -m755 scripts/install-desktop.sh "dist/$name/scripts/"
+          cp LICENSE README.md "dist/$name/"
+          tar -C dist -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          cat "$name.tar.gz.sha256"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      # install-desktop.sh does `cd "$(dirname "$0")/.."`, so it needs assets/ next to scripts/
+      # in the unpacked archive (the layout above). Try it from there into a scratch prefix.
+      - name: Test the installer from the unpacked archive
+        run: |
+          mkdir unpacked
+          tar -C unpacked -xzf "$NAME.tar.gz"
+          (cd "unpacked/$NAME" && PREFIX="$RUNNER_TEMP/prefix" scripts/install-desktop.sh)
+          test -f "$RUNNER_TEMP/prefix/share/applications/komponist.desktop"
+
+      # Headless start: killed by the timeout (124) after 10 s = still running = fine; any other exit = crash.
+      - name: Smoke start
+        run: |
+          export HOME="$RUNNER_TEMP/smoke-home" XDG_CONFIG_HOME="$RUNNER_TEMP/smoke-home/config"
+          mkdir -p "$HOME"
+          status=0
+          (cd "unpacked/$NAME" && xvfb-run -a timeout 10 ./komponist --null-audio --no-plugin-scan) || status=$?
+          echo "exit status: $status"
+          if [ "$status" -ne 124 ]; then
+            echo "::error::komponist did not keep running for 10 s (exit status $status)"
+            exit 1
+          fi
+
+      - name: Upload to the release
+        run: gh release upload "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" --repo "$GITHUB_REPOSITORY"

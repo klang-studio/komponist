@@ -1,0 +1,100 @@
+# CI: formatting, clippy, tests (incl. the test plugins and the GUI tests under Xvfb) on every push to
+# main and on every pull request. Local equivalent: scripts/check.sh + scripts/check-gui.sh.
+#
+# Snapshot tests (egui_kittest, wgpu) render with lavapipe, the software Vulkan driver of Mesa, on the runner,
+# while the committed PNGs come from the owner's GPU. Anti-aliasing can differ in single pixels, so this
+# workflow writes a kittest.toml with a tolerance (SNAPSHOT_* below) before the tests. Local runs keep kittest's strict
+# defaults. If the first CI run fails on snapshots, look at the "snapshot-diffs" artifact first.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Software Vulkan (lavapipe, from mesa-vulkan-drivers); there is no GPU on the runner.
+  WGPU_BACKEND: vulkan
+  # kittest tolerance on CI only (per-pixel YIQ distance, number of pixels allowed over it).
+  # Starting values, to be tuned after the first run (see the header comment).
+  SNAPSHOT_THRESHOLD: "1.0"
+  SNAPSHOT_MAX_FAILED_PIXELS: "20"
+
+jobs:
+  check:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The build list of the README (docs: libfontconfig1-dev is missing there: yeslogic-fontconfig-sys),
+      # plus the runtime pieces of the tests: lavapipe, Xvfb (check-gui.sh starts it), xkbcommon-x11 for winit.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev \
+            libasound2-dev libjack-jackd2-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libdbus-1-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libx11-xcb-dev libxcb1-dev \
+            libwayland-dev libfontconfig1-dev libgl1-mesa-dev \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth
+
+      # rust-toolchain.toml: stable + rustfmt + clippy.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            test-plugins -> target
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Without the bundles the plugin tests skip silently.
+      - name: Build test plugins
+        run: scripts/build-test-plugins.sh
+
+      - name: Allow small rendering differences in snapshots
+        run: |
+          cat > kittest.toml <<TOML
+          threshold = ${SNAPSHOT_THRESHOLD}
+          max_failed_pixels = ${SNAPSHOT_MAX_FAILED_PIXELS}
+          TOML
+          cat kittest.toml
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Starts its own Xvfb per test binary, builds the test plugins again (cached), scratch HOME.
+      - name: GUI tests
+        run: scripts/check-gui.sh
+
+      - name: Upload snapshot diffs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-diffs
+          path: |
+            crates/**/tests/snapshots/*.new.png
+            crates/**/tests/snapshots/*.diff.png
+          if-no-files-found: ignore
+          retention-days: 14

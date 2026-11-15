@@ -9,6 +9,7 @@
 <p align="center"><b>A MIDI DAW for Linux. Fast, small, and made for writing music.</b></p>
 
 <p align="center">
+  <a href="https://github.com/klang-studio/komponist/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/klang-studio/komponist/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue"></a>
   <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-informational">
   <img alt="Status: early, v0.1" src="https://img.shields.io/badge/status-early%20(v0.1)-orange">
