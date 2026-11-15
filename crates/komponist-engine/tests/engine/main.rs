@@ -19,6 +19,7 @@ mod midi_fx;
 mod mixing;
 mod parallel;
 mod random;
+mod routing;
 mod swap;
 mod tails;
 mod timing;
