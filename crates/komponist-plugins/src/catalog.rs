@@ -29,8 +29,6 @@ pub const SCAN_CACHE_FILE: &str = "plugins.json";
 pub enum BuiltinKind {
     /// pisynth, 6-operator FM, runs in process as `komponist_builtin::PisynthProcessor` (D6).
     Pisynth,
-    /// klopfer, drum sampler, the bundled `Klopfer.clap` run through the bridge (D5).
-    Klopfer,
     /// An internal effect of `komponist-builtin`, in process (WP-85).
     Internal(komponist_builtin::Internal),
 }
@@ -105,7 +103,7 @@ impl EffectCategory {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CatalogEntry {
     /// The reference a device stores when this entry is added (format `Builtin` for pisynth and
-    /// klopfer, shown as "INTERN").
+    /// the internal devices, shown as "INTERN").
     pub plugin: PluginRef,
     /// Instrument or effect.
     pub kind: PluginKind,
@@ -131,11 +129,10 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Only the built-ins ([`crate::builtin`]): pisynth always; klopfer if `klopfer_bundle` is
-    /// `Some` (from [`crate::builtin::find_klopfer_bundle`]).
-    pub fn builtin(klopfer_bundle: Option<PathBuf>) -> Catalog {
+    /// Only the built-ins ([`crate::builtin`]): pisynth and the internal devices.
+    pub fn builtin() -> Catalog {
         Catalog {
-            entries: crate::builtin::entries(klopfer_bundle),
+            entries: crate::builtin::entries(),
         }
     }
 
@@ -146,17 +143,19 @@ impl Catalog {
 
     /// The entry for a device's plugin reference (same format and id), if installed.
     ///
-    /// A reference to klopfer as a CLAP plugin (a project made with a scanned `Klopfer.clap`)
-    /// resolves to the built-in klopfer when that is installed: the scanned duplicate is not
-    /// listed ([`Catalog::set_scanned`]), and both load the same CLAP plugin with the same state.
+    /// A project saved while klopfer was a built-in (`Builtin` format, id [`BUILTIN_KLOPFER`])
+    /// resolves to the scanned klopfer CLAP plugin: the device keeps its state, which is the
+    /// plugin's own.
     pub fn resolve(&self, plugin: &PluginRef) -> Option<&CatalogEntry> {
         let same = |e: &&CatalogEntry| e.plugin.format == plugin.format && e.plugin.id == plugin.id;
         self.entries.iter().find(same).or_else(|| {
-            (plugin.format == komponist_model::PluginFormat::Clap && plugin.id == KLOPFER_CLAP_ID)
+            (plugin.format == komponist_model::PluginFormat::Builtin
+                && plugin.id == BUILTIN_KLOPFER)
                 .then(|| {
-                    self.entries
-                        .iter()
-                        .find(|e| e.plugin.id == BUILTIN_KLOPFER && e.is_builtin())
+                    self.entries.iter().find(|e| {
+                        e.plugin.format == komponist_model::PluginFormat::Clap
+                            && e.plugin.id == KLOPFER_CLAP_ID
+                    })
                 })
                 .flatten()
         })
@@ -166,16 +165,13 @@ impl Catalog {
     /// `Other` are left out.
     ///
     /// The same plugin in several bundles (one per folder) is listed once, from the first
-    /// descriptor. The bundled klopfer is not listed again as a CLAP plugin while the built-in
-    /// entry exists.
+    /// descriptor.
     pub fn set_scanned(&mut self, descriptors: &[PluginDescriptor]) {
         self.entries.retain(CatalogEntry::is_builtin);
-        let has_klopfer = self.entries.iter().any(|e| e.plugin.id == BUILTIN_KLOPFER);
         let mut seen = HashSet::new();
         let mut scanned: Vec<CatalogEntry> = descriptors
             .iter()
             .filter(|d| d.kind != PluginKind::Other)
-            .filter(|d| !(has_klopfer && d.format == BundleFormat::Clap && d.id == KLOPFER_CLAP_ID))
             .filter(|d| seen.insert((d.format, d.id.clone())))
             .map(scanned_entry)
             .collect();
@@ -367,12 +363,9 @@ pub struct ScanReport {
 
 #[cfg(test)]
 mod tests {
-    /// `pisynth`, the klopfer entry if `klopfer`, then the internal devices, by name.
-    fn builtin_names(klopfer: bool) -> Vec<&'static str> {
+    /// `pisynth`, then the internal devices, by name.
+    fn builtin_names() -> Vec<&'static str> {
         let mut names = vec!["pisynth"];
-        if klopfer {
-            names.push("klopfer");
-        }
         names.extend(komponist_builtin::Internal::ALL.iter().map(|k| k.name()));
         names
     }
@@ -428,14 +421,14 @@ mod tests {
     }
 
     #[test]
-    fn builtins_come_first_and_klopfer_only_with_a_bundle() {
-        let catalog = Catalog::builtin(None);
+    fn builtins_come_first() {
+        let catalog = Catalog::builtin();
         let names: Vec<&str> = catalog
             .entries()
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(names, builtin_names(false));
+        assert_eq!(names, builtin_names());
         let pisynth = &catalog.entries()[0];
         assert!(pisynth.is_builtin());
         assert_eq!(pisynth.plugin.id, BUILTIN_PISYNTH);
@@ -446,8 +439,16 @@ mod tests {
             PluginLocation::InProcess(BuiltinKind::Pisynth)
         );
 
+        // The Sampler is an in-process instrument without a browser category.
+        let sampler = &catalog.entries()[1];
+        assert!(sampler.is_builtin());
+        assert_eq!(sampler.kind, PluginKind::Instrument);
+        assert_eq!(sampler.category, None);
+        assert_eq!(sampler.plugin.name, komponist_builtin::sampler::NAME);
+        assert_eq!(catalog.resolve(&sampler.plugin), Some(sampler));
+
         // The internal effects: in process, effects with a browser category, resolvable.
-        let eq = &catalog.entries()[1];
+        let eq = &catalog.entries()[2];
         assert!(eq.is_builtin());
         assert_eq!(eq.kind, PluginKind::Effect);
         assert_eq!(eq.category, Some(EffectCategory::EqFilter));
@@ -455,7 +456,7 @@ mod tests {
             eq.location,
             PluginLocation::InProcess(BuiltinKind::Internal(komponist_builtin::Internal::Eq))
         );
-        let categories: Vec<_> = catalog.entries()[1..5].iter().map(|e| e.category).collect();
+        let categories: Vec<_> = catalog.entries()[2..6].iter().map(|e| e.category).collect();
         assert_eq!(
             categories,
             [
@@ -466,26 +467,11 @@ mod tests {
             ]
         );
         assert_eq!(catalog.resolve(&eq.plugin), Some(eq));
-
-        let catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
-        let klopfer = &catalog.entries()[1];
-        assert!(klopfer.is_builtin());
-        assert_eq!(klopfer.plugin.id, BUILTIN_KLOPFER);
-        assert_eq!(klopfer.plugin.vendor, "Klopfer");
-        assert_eq!(
-            klopfer.location,
-            PluginLocation::Bundle {
-                format: BundleFormat::Clap,
-                path: "/opt/Klopfer.clap".into(),
-                plugin_id: KLOPFER_CLAP_ID.into(),
-            }
-        );
-        assert_eq!(catalog.resolve(&klopfer.plugin), Some(klopfer));
     }
 
     #[test]
     fn scanned_entries_carry_the_module_file_name() {
-        let mut catalog = Catalog::builtin(None);
+        let mut catalog = Catalog::builtin();
         let mut vst3 = descriptor("0123ABCD", "Vital", PluginKind::Instrument, &[]);
         vst3.format = BundleFormat::Vst3;
         vst3.bundle = "/home/u/.vst3/Vital.vst3".into();
@@ -507,7 +493,7 @@ mod tests {
 
     #[test]
     fn scanned_entries_are_sorted_filtered_and_resolved() {
-        let mut catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
+        let mut catalog = Catalog::builtin();
         let mut vst3 = descriptor("0123ABCD", "dexed", PluginKind::Instrument, &["instrument"]);
         vst3.format = BundleFormat::Vst3;
         let descriptors = [
@@ -525,9 +511,8 @@ mod tests {
             ),
             descriptor("x.analyzer", "Scope", PluginKind::Other, &["analyzer"]),
             vst3,
-            // The same plugin from a later folder, and the bundled klopfer as CLAP.
+            // The same plugin from a later folder.
             descriptor("org.surge", "Surge XT (old)", PluginKind::Instrument, &[]),
-            descriptor(KLOPFER_CLAP_ID, "Klopfer", PluginKind::Instrument, &[]),
         ];
         catalog.set_scanned(&descriptors);
         let names: Vec<&str> = catalog
@@ -535,7 +520,7 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        let mut expected = builtin_names(true);
+        let mut expected = builtin_names();
         let first = expected.len();
         expected.extend(["Big Hall", "dexed", "Surge XT"]);
         assert_eq!(names, expected);
@@ -563,63 +548,57 @@ mod tests {
         };
         assert_eq!(catalog.resolve(&as_vst3), None);
 
-        // A rescan replaces the scanned entries; without the built-in klopfer the CLAP one shows.
-        let mut catalog = Catalog::builtin(None);
+        // A rescan replaces the scanned entries.
+        let mut catalog = Catalog::builtin();
         catalog.set_scanned(&descriptors);
-        catalog.set_scanned(&descriptors[5..]);
+        catalog.set_scanned(&descriptors[4..]);
         let names: Vec<&str> = catalog
             .entries()
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        let mut expected = builtin_names(false);
-        expected.push("Klopfer");
+        let mut expected = builtin_names();
+        expected.push("Surge XT (old)");
         assert_eq!(names, expected);
     }
 
     #[test]
-    fn a_clap_klopfer_reference_resolves_to_the_builtin() {
-        let mut catalog = Catalog::builtin(Some("/opt/Klopfer.clap".into()));
+    fn klopfer_is_an_ordinary_scanned_plugin_and_old_projects_find_it() {
+        let mut catalog = Catalog::builtin();
+        assert!(catalog.entries().iter().all(|e| e.plugin.name != "klopfer"));
         catalog.set_scanned(&[descriptor(
             KLOPFER_CLAP_ID,
             "Klopfer",
             PluginKind::Instrument,
             &["instrument"],
         )]);
-        let as_clap = PluginRef {
-            format: komponist_model::PluginFormat::Clap,
-            id: KLOPFER_CLAP_ID.into(),
-            name: "Klopfer".into(),
+        let scanned = catalog.entries().last().unwrap();
+        assert!(!scanned.is_builtin());
+        assert_eq!(scanned.plugin.id, KLOPFER_CLAP_ID);
+        // A project from before the sampler names klopfer as a built-in ("INTERN"): it resolves to
+        // the scanned plugin, which loads the same state.
+        let legacy = PluginRef {
+            format: komponist_model::PluginFormat::Builtin,
+            id: BUILTIN_KLOPFER.into(),
+            name: "klopfer".into(),
             vendor: "Klopfer".into(),
             version: "0.1.0".into(),
             module: Box::default(),
         };
-        // Listed once (as the built-in), still found for a project that names the CLAP plugin.
-        assert_eq!(catalog.entries().len(), builtin_names(true).len());
-        let entry = catalog.resolve(&as_clap).unwrap();
-        assert!(entry.is_builtin());
-        assert_eq!(entry.plugin.id, BUILTIN_KLOPFER);
-        // Without the built-in, the scanned CLAP entry itself.
-        let mut catalog = Catalog::builtin(None);
-        catalog.set_scanned(&[descriptor(
-            KLOPFER_CLAP_ID,
-            "Klopfer",
-            PluginKind::Instrument,
-            &[],
-        )]);
-        let entry = catalog.resolve(&as_clap).unwrap();
-        assert!(!entry.is_builtin());
-        // Other CLAP plugins do not fall back.
+        assert_eq!(catalog.resolve(&legacy), Some(scanned));
+        // Without the scanned plugin it is missing (the S06 dialog lists it).
+        assert_eq!(Catalog::builtin().resolve(&legacy), None);
+        // Other built-in ids do not fall back.
         let other = PluginRef {
             id: "x.other".into(),
-            ..as_clap
+            ..legacy
         };
         assert_eq!(catalog.resolve(&other), None);
     }
 
     #[test]
     fn search_matches_name_vendor_and_features() {
-        let mut catalog = Catalog::builtin(None);
+        let mut catalog = Catalog::builtin();
         catalog.set_scanned(&[
             descriptor(
                 "x.reverb",
@@ -641,7 +620,7 @@ mod tests {
                 .map(|e| e.plugin.name.clone())
                 .collect()
         };
-        let mut all = builtin_names(false);
+        let mut all = builtin_names();
         all.extend(["Big Hall", "Squash"]);
         assert_eq!(names(""), all);
         assert_eq!(names("HALL"), ["Hall", "Big Hall"]);

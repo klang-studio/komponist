@@ -486,7 +486,7 @@ fn app() -> (App, Rc<RefCell<Script>>, DeviceId) {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Surge XT")
         .unwrap();
-    let mut catalog = Catalog::builtin(None);
+    let mut catalog = Catalog::builtin();
     catalog.set_scanned(&[PluginDescriptor {
         format: BundleFormat::Clap,
         id: surge.plugin.id.clone(),

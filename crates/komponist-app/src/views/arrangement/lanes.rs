@@ -50,7 +50,7 @@ fn min_length(view: &ArrangementView, free: bool, project: &Project) -> Tick {
 }
 
 /// What a double-click on empty space of `track` at tick `at` creates: a one-bar clip starting on
-/// the grid (prototype `newClip`): a step clip "Pattern n" on a klopfer track, whose rows klopfer
+/// the grid (prototype `newClip`): a step clip "Pattern n" on a sampler track, whose rows the sampler
 /// decides ([`crate::step_rows::rows_for`] with the `note_names` it reports now: its eight pads,
 /// notes 36–43, without note names; ARCHITECTURE §13.3), else an empty MIDI clip "MIDI-Clip".
 pub fn new_clip(
@@ -68,7 +68,7 @@ pub fn new_clip(
     }
     .max(Tick::ZERO);
     let length = Grid::Bar.ticks(meter);
-    if step_rows::is_klopfer_track(track) {
+    if step_rows::is_sampler_track(track) {
         let instrument = step_rows::instrument(track).map(|d| &d.plugin);
         let rows = step_rows::rows_for(instrument, note_names);
         NewClip {

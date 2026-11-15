@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    BUILTIN_KLOPFER, BUILTIN_PISYNTH, Channel, Clip, ClipContent, Device, DeviceRole, Hue,
+    BUILTIN_PISYNTH, BUILTIN_SAMPLER, Channel, Clip, ClipContent, Device, DeviceRole, Hue,
     MAX_STEPS, MidiChannelSel, MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project,
     Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT, Take, Track, TrackKind,
 };
@@ -22,7 +22,7 @@ pub const DEMO_PROJECT_NAME: &str = "Nachtfahrt";
 ///
 /// | Track | Hue | dB | Pan | Instrument | Effects |
 /// |---|---|---|---|---|---|
-/// | Drums | 45 | −6 | 0 | klopfer (builtin) | LSP Compressor |
+/// | Drums | 45 | −6 | 0 | Sampler (builtin) | LSP Compressor |
 /// | Bass | 250 | −4 | 0 | pisynth (builtin) | LSP Para EQ x8 |
 /// | Lead | 150 | −3 | 0 | pisynth (builtin) | LSP Para EQ x8, TAL-Chorus-LX (bypassed), Dragonfly Hall Reverb |
 /// | Pad | 300 | −9 | −0.1 | Surge XT (CLAP) | LSP Para EQ x8, Dragonfly Hall Reverb |
@@ -30,7 +30,7 @@ pub const DEMO_PROJECT_NAME: &str = "Nachtfahrt";
 /// | Arp | 200 | −10 | 0 | Vital (VST3), track muted | – |
 ///
 /// Drum clips are step clips ("Beat A" / "Beat B" patterns from `beat()`, 16 steps at 1/16,
-/// velocities from the prototype's step values). Their rows carry the prototype names with klopfer's
+/// velocities from the prototype's step values). Their rows carry the prototype names with the sampler's
 /// pad notes 36–43 (Kick 36 … Perc 43; decided at G1, ARCHITECTURE §13.3), not the GM notes of
 /// [`crate::project::DEFAULT_STEP_ROWS`]. Third-party plugins are referenced by their real CLAP ids
 /// / VST3 class ids, so they show as missing on machines without them. Ids are allocated in document
@@ -41,7 +41,7 @@ pub fn demo_project() -> Project {
         demo_track(
             &mut ids,
             ("Drums", Hue::VERMILION, -6.0, 0.0),
-            &[KLOPFER, LSP_COMPRESSOR],
+            &[SAMPLER, LSP_COMPRESSOR],
             |ids| {
                 vec![
                     step_clip(ids, 0, 4, "Beat A", &beat(true)),
@@ -198,7 +198,7 @@ fn arp() -> Vec<ProtoNote> {
         .collect()
 }
 
-/// Step rows of the demo's drum clips: prototype names on klopfer pads 1–8 (notes 36–43).
+/// Step rows of the demo's drum clips: prototype names on the sampler's pads 1–8 (notes 36–43).
 const DRUM_ROWS: [&str; 8] = [
     "Kick",
     "Snare",
@@ -210,8 +210,8 @@ const DRUM_ROWS: [&str; 8] = [
     "Perc",
 ];
 
-/// Lowest klopfer pad note.
-const KLOPFER_FIRST_NOTE: u8 = 36;
+/// Note of the sampler's first pad.
+const SAMPLER_FIRST_NOTE: u8 = 36;
 
 /// Prototype `beat(a)`: velocities per row and step (0 = off) of "Beat A" (`a`) or "Beat B".
 fn beat(a: bool) -> [[u8; 16]; 8] {
@@ -345,7 +345,7 @@ fn step_clip(ids: &mut Ids, bar: i64, bars: i64, name: &str, velocities: &[[u8; 
     let rows = DRUM_ROWS
         .iter()
         .zip(velocities)
-        .zip(KLOPFER_FIRST_NOTE..)
+        .zip(SAMPLER_FIRST_NOTE..)
         .map(|((&row_name, row), note)| {
             let mut steps = [Step::default(); MAX_STEPS];
             for (step, &velocity) in steps.iter_mut().zip(row) {
@@ -410,12 +410,13 @@ const PISYNTH: DemoPlugin = DemoPlugin {
     version: "0.1.0",
 };
 
-const KLOPFER: DemoPlugin = DemoPlugin {
+/// The built-in sampler; its name is `komponist_builtin::sampler::NAME` (a test in komponist-app
+/// keeps the two equal).
+const SAMPLER: DemoPlugin = DemoPlugin {
     format: PluginFormat::Builtin,
-    id: BUILTIN_KLOPFER,
-    name: "klopfer",
-    // klopfer's CLAP vendor (`../klopfer/src/lib.rs`).
-    vendor: "Klopfer",
+    id: BUILTIN_SAMPLER,
+    name: "Sampler",
+    vendor: "komponist",
     version: "0.1.0",
 };
 
@@ -548,7 +549,7 @@ mod tests {
                 .map(|d| (d.plugin.name.as_str(), d.bypass))
                 .collect()
         };
-        assert_eq!(chain(0), [("klopfer", false), ("LSP Compressor", false)]);
+        assert_eq!(chain(0), [("Sampler", false), ("LSP Compressor", false)]);
         assert_eq!(chain(1), [("pisynth", false), ("LSP Para EQ x8", false)]);
         assert_eq!(
             chain(2),
@@ -573,7 +574,7 @@ mod tests {
         let drums = &p.tracks[0].channel.devices[0].plugin;
         assert_eq!(
             (drums.format, drums.id.as_str()),
-            (PluginFormat::Builtin, BUILTIN_KLOPFER)
+            (PluginFormat::Builtin, BUILTIN_SAMPLER)
         );
         let pad = &p.tracks[3].channel.devices[0].plugin;
         assert_eq!(pad.format, PluginFormat::Clap);
@@ -662,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_beats_use_klopfer_pads() {
+    fn demo_beats_use_the_samplers_pads() {
         let p = demo_project();
         let ClipContent::Step(beat_b) = &p.tracks[0].clips[2].content else {
             panic!("Beat B is a step clip");

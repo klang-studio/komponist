@@ -2,17 +2,16 @@
 //!
 //! - Ctrl N / "Neues Projekt": an empty project "Unbenannt" at 120 BPM, 4/4 (S10; the arrangement
 //!   shows the "Leeres Projekt" hint).
-//! - "Aus Vorlage · Beat-Skizze" (S09): three tracks to start a beat: "Drums" with klopfer (pisynth
-//!   if klopfer is not installed) and a one-bar step pattern whose rows the drum instrument decides
-//!   ([`crate::step_rows::rows_for`]: klopfer's pads 1–8, else the General MIDI rows), "Bass" and
+//! - "Aus Vorlage · Beat-Skizze" (S09): three tracks to start a beat: "Drums" with the Sampler and a one-bar step pattern whose rows the drum instrument decides
+//!   ([`crate::step_rows::rows_for`]: the sampler's pads 1–8), "Bass" and
 //!   "Keys" with pisynth.
 //! - A project with unsaved changes asks first: "Speichern" (Enter), "Nicht speichern",
 //!   "Abbrechen" (Esc). The screens have no such dialog; its texts are komponist's own.
 
 use egui::{Context, vec2};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack, StepProp};
-use komponist_model::project::{BUILTIN_KLOPFER, DEFAULT_PROJECT_NAME};
-use komponist_model::{ClipId, Hue, PPQ, PluginFormat, PluginRef, Project, Tick, TrackId};
+use komponist_model::project::DEFAULT_PROJECT_NAME;
+use komponist_model::{ClipId, Hue, PPQ, PluginRef, Project, Tick, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
 use komponist_ui::widgets::button::Kind;
@@ -132,13 +131,12 @@ const TEMPLATE_BEAT: [(usize, &[usize]); 4] = [
     (3, &[0, 2, 4, 6, 8, 10, 12, 14]),
 ];
 
-/// The template project "Beat-Skizze" (see the module docs). `klopfer` is the catalog's klopfer
-/// reference if it is installed.
-pub fn template(klopfer: Option<PluginRef>, pisynth: PluginRef) -> Project {
+/// The template project "Beat-Skizze" (see the module docs): the drums play the Sampler, bass and
+/// keys pisynth.
+pub fn template(pisynth: PluginRef) -> Project {
     let mut p = Project::new(names::TEMPLATE);
-    let drums_instrument = klopfer.unwrap_or_else(|| pisynth.clone());
     let specs = [
-        ("Drums", drums_instrument),
+        ("Drums", komponist_builtin::Internal::Sampler.plugin_ref()),
         ("Bass", pisynth.clone()),
         ("Keys", pisynth),
     ];
@@ -189,16 +187,6 @@ fn set_beat(p: &mut Project, clip: ClipId) {
     }
 }
 
-/// The catalog's klopfer reference, if klopfer is installed.
-pub fn klopfer_in(catalog: &komponist_plugins::Catalog) -> Option<PluginRef> {
-    catalog
-        .entries()
-        .iter()
-        .map(|e| &e.plugin)
-        .find(|p| p.format == PluginFormat::Builtin && p.id == BUILTIN_KLOPFER)
-        .cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,19 +201,19 @@ mod tests {
     }
 
     #[test]
-    fn the_template_has_a_beat_and_two_pisynth_tracks() {
-        let p = template(None, crate::app::pisynth_ref());
+    fn the_template_has_a_sampler_beat_and_two_pisynth_tracks() {
+        let p = template(crate::app::pisynth_ref());
         assert_eq!(p.name, "Beat-Skizze");
         let names: Vec<&str> = p.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Drums", "Bass", "Keys"]);
         let hues: Vec<u16> = p.tracks.iter().map(|t| t.hue.0).collect();
         assert_eq!(hues, TEMPLATE_HUES);
-        // Without klopfer every instrument is pisynth, so nothing is missing.
-        assert!(
-            p.tracks
-                .iter()
-                .all(|t| t.channel.devices[0].plugin.id == "pisynth")
-        );
+        let instruments: Vec<&str> = p
+            .tracks
+            .iter()
+            .map(|t| t.channel.devices[0].plugin.id.as_str())
+            .collect();
+        assert_eq!(instruments, ["sampler", "pisynth", "pisynth"]);
         let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
             panic!("the beat is a step clip");
         };
@@ -240,28 +228,7 @@ mod tests {
         };
         assert_eq!(on(0), [0, 4, 8, 12]);
         assert_eq!(on(1), [4, 12]);
-        // pisynth plays the General MIDI rows.
-        let notes: Vec<u8> = steps.rows.iter().map(|r| r.note).collect();
-        assert_eq!(notes, [36, 38, 39, 42, 46, 45, 37, 47]);
-        // It saves and loads.
-        let json = persist::to_json(&p).unwrap();
-        assert_eq!(persist::from_json(&json).unwrap(), p);
-    }
-
-    #[test]
-    fn the_template_beat_plays_klopfers_pads() {
-        let klopfer = PluginRef {
-            format: PluginFormat::Builtin,
-            id: BUILTIN_KLOPFER.into(),
-            name: "klopfer".into(),
-            vendor: "Klopfer".into(),
-            version: "0.1.0".into(),
-            module: Box::default(),
-        };
-        let p = template(Some(klopfer), crate::app::pisynth_ref());
-        let ClipContent::Step(steps) = &p.tracks[0].clips[0].content else {
-            panic!("the beat is a step clip");
-        };
+        // The sampler's pads 1–8 are the rows, named like the demo's.
         let rows: Vec<(&str, u8)> = steps
             .rows
             .iter()
@@ -273,5 +240,8 @@ mod tests {
         );
         assert_eq!(rows[7], ("Perc", 43));
         assert!(steps.rows[0].steps[0].on && steps.rows[3].steps[2].on);
+        // It saves and loads.
+        let json = persist::to_json(&p).unwrap();
+        assert_eq!(persist::from_json(&json).unwrap(), p);
     }
 }

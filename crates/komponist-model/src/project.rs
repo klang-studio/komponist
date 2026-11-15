@@ -53,8 +53,11 @@ pub const DEFAULT_STEP_ROWS: [(&str, u8); 8] = [
 
 /// Catalog id of the built-in pisynth instrument (in process, `komponist-builtin`).
 pub const BUILTIN_PISYNTH: &str = "pisynth";
-/// Catalog id of the built-in klopfer drum sampler (the bundled `Klopfer.clap`, hosted through the
-/// normal bridge, shown as "INTERN"; decision D5).
+/// Catalog id of the built-in drum sampler (`komponist_builtin::sampler`, in process, WP-87).
+pub const BUILTIN_SAMPLER: &str = "sampler";
+/// Catalog id klopfer had as a built-in ("klopfer · INTERN", the bundled `Klopfer.clap`) before
+/// the sampler replaced it. Only old projects hold it; the catalog resolves it to the scanned
+/// klopfer CLAP plugin.
 pub const BUILTIN_KLOPFER: &str = "klopfer";
 
 /// A whole project: the root of the document tree.
@@ -411,7 +414,7 @@ pub enum DeviceRole {
 pub struct PluginRef {
     /// Plugin format.
     pub format: PluginFormat,
-    /// Format-specific id: [`BUILTIN_PISYNTH`] / [`BUILTIN_KLOPFER`] for built-ins, the CLAP plugin
+    /// Format-specific id: [`BUILTIN_PISYNTH`] / [`BUILTIN_SAMPLER`] for built-ins, the CLAP plugin
     /// id (`com.example.synth`), or the VST3 class id as 32 upper-case hex digits.
     pub id: String,
     /// Display name at the time the device was added ("Vital"); shown when the plugin is missing.
@@ -434,7 +437,7 @@ pub struct PluginRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginFormat {
-    /// Shipped with komponist (pisynth in process, klopfer through the bridge).
+    /// Shipped with komponist (pisynth, the sampler and the internal effects, all in process).
     Builtin,
     /// A CLAP plugin.
     Clap,

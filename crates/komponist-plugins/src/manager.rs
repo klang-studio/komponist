@@ -211,19 +211,14 @@ pub struct PluginManagerConfig {
     pub bridge_exe: PathBuf,
     /// Path of the scan cache (`~/.cache/komponist/plugins.json`).
     pub cache_file: PathBuf,
-    /// The bundled `Klopfer.clap`, if present.
-    pub klopfer_bundle: Option<PathBuf>,
     /// Scan processes running at once.
     pub parallel_scans: usize,
 }
 
 impl PluginManagerConfig {
     /// The default setup of the app: `komponist-bridge` next to the running executable, the cache
-    /// in `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`), klopfer from the first of
-    /// `<exe>/../lib/komponist/plugins/Klopfer.clap` (installed), the sibling checkout's
-    /// `../klopfer/target/bundled/Klopfer.clap` (development, `scripts/build-klopfer.sh`) and
-    /// `~/.clap/Klopfer.clap` that exists ([`crate::builtin::find_klopfer_bundle`]), and half the
-    /// CPU cores (1 ..= 8) for scans.
+    /// in `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`), and half the CPU cores
+    /// (1 ..= 8) for scans.
     pub fn defaults() -> PluginManagerConfig {
         let exe_dir = std::env::current_exe()
             .ok()
@@ -235,12 +230,10 @@ impl PluginManagerConfig {
             .filter(|d| d.is_absolute())
             .or_else(|| home.as_ref().map(|h| h.join(".cache")))
             .unwrap_or_else(std::env::temp_dir);
-        let klopfer_bundle = crate::builtin::find_klopfer_bundle(&exe_dir, home.as_deref());
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         PluginManagerConfig {
             bridge_exe: exe_dir.join("komponist-bridge"),
             cache_file: cache_dir.join("komponist").join(SCAN_CACHE_FILE),
-            klopfer_bundle,
             parallel_scans: (cores / 2).clamp(1, 8),
         }
     }
@@ -282,7 +275,7 @@ impl PluginManager {
     /// Loads the scan cache into the catalog (built-ins plus cached plugins). Starts no process.
     pub fn new(config: PluginManagerConfig) -> PluginManager {
         let cache = ScanCache::load(&config.cache_file);
-        let mut catalog = Catalog::builtin(config.klopfer_bundle.clone());
+        let mut catalog = Catalog::builtin();
         catalog.set_scanned(&cache.descriptors());
         PluginManager {
             config,
@@ -740,9 +733,6 @@ mod tests {
         assert!(config.cache_file.ends_with("komponist/plugins.json"));
         assert!(config.cache_file.is_absolute());
         assert!((1..=8).contains(&config.parallel_scans));
-        if let Some(klopfer) = &config.klopfer_bundle {
-            assert!(klopfer.is_absolute() && klopfer.ends_with("Klopfer.clap"));
-        }
     }
 
     #[test]
@@ -751,7 +741,6 @@ mod tests {
         let manager = PluginManager::new(PluginManagerConfig {
             bridge_exe: "/nonexistent/komponist-bridge".into(),
             cache_file: dir.join("plugins.json"),
-            klopfer_bundle: None,
             parallel_scans: 1,
         });
         assert_eq!(
@@ -774,13 +763,32 @@ mod tests {
         let mut manager = PluginManager::new(PluginManagerConfig {
             bridge_exe: "/nonexistent/komponist-bridge".into(),
             cache_file: dir.join("plugins.json"),
-            klopfer_bundle: Some("/nonexistent/Klopfer.clap".into()),
             parallel_scans: 1,
         });
+        // A scanned plugin whose bridge cannot start.
+        manager
+            .catalog
+            .set_scanned(&[komponist_ipc::PluginDescriptor {
+                format: komponist_ipc::PluginFormat::Clap,
+                id: "x.synth".into(),
+                name: "Synth".into(),
+                vendor: "Vendor".into(),
+                version: "1.0".into(),
+                kind: komponist_ipc::PluginKind::Instrument,
+                features: Vec::new(),
+                bundle: "/nonexistent/Synth.clap".into(),
+            }]);
         let klopfer = Device {
             id: DeviceId(5),
             role: DeviceRole::Instrument,
-            plugin: manager.catalog().entries()[1].plugin.clone(),
+            plugin: manager
+                .catalog()
+                .entries()
+                .iter()
+                .find(|e| !e.is_builtin())
+                .expect("the scanned plugin")
+                .plugin
+                .clone(),
             bypass: false,
             state: None,
         };

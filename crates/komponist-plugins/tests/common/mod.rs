@@ -141,7 +141,6 @@ pub fn config(dir: &Path) -> PluginManagerConfig {
     PluginManagerConfig {
         bridge_exe: bridge_exe(),
         cache_file: dir.join("cache/plugins.json"),
-        klopfer_bundle: None,
         parallel_scans: 4,
     }
 }
@@ -192,6 +191,7 @@ pub fn clap_plugin(id: &str) -> PluginRef {
     }
 }
 
+/// The reference a project from before the sampler (WP-87) holds for klopfer ("INTERN").
 pub fn klopfer() -> PluginRef {
     PluginRef {
         format: PluginFormat::Builtin,

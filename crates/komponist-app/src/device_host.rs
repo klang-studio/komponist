@@ -8,11 +8,11 @@
 //! and warnings go to the status bar.
 //!
 //! Two implementations:
-//! - [`PluginHost`], the app's: pisynth in process through [`BuiltinHost`], every other device
-//!   (klopfer, scanned CLAP and VST3 plugins) in a bridge process of the
+//! - [`PluginHost`], the app's: pisynth and the internal devices in process through
+//!   [`BuiltinHost`], every other device (scanned CLAP and VST3 plugins) in a bridge process of the
 //!   [`PluginManager`] (ARCHITECTURE §8).
 //! - [`BuiltinHost`], for tests and as the fallback: pisynth in process
-//!   ([`PisynthProcessor`]) and the internal effects ([`Internal`]); every other device gets no processor, so the engine passes an
+//!   ([`PisynthProcessor`]) and the internal devices ([`Internal`], the Sampler among them); every other device gets no processor, so the engine passes an
 //!   effect's input through and an instrument stays silent, and its status is
 //!   [`DeviceStatus::Missing`].
 //!
@@ -39,13 +39,15 @@
 //! Thread: UI thread.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use komponist_builtin::sampler::{self, SamplerHandle};
 use komponist_builtin::{Internal, PisynthProcessor};
 use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::{GuiSize, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
-use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
+use komponist_model::project::BUILTIN_PISYNTH;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError, PluginManager,
@@ -163,6 +165,19 @@ pub trait DeviceHost {
         &[]
     }
 
+    /// Tells the host the folder of the project file (`None`: not saved yet): relative sample
+    /// paths resolve against it. Called before the devices of a project get their processors.
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        let _ = dir;
+    }
+
+    /// The UI side of a sampler device (loading samples, what the pads show); `None` for every
+    /// other device.
+    fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
+        let _ = device;
+        None
+    }
+
     /// Whether the device's plugin has its own GUI.
     fn has_gui(&self, device: DeviceId) -> bool {
         let _ = device;
@@ -212,10 +227,9 @@ pub trait DeviceHost {
     fn shutdown(&mut self) {}
 }
 
-/// Whether `plugin` is one of the built-in instruments (pisynth, klopfer).
+/// Whether `plugin` is pisynth, the one built-in instrument that is not an internal device.
 pub fn is_builtin_instrument(plugin: &PluginRef) -> bool {
-    plugin.format == PluginFormat::Builtin
-        && (plugin.id == BUILTIN_PISYNTH || plugin.id == BUILTIN_KLOPFER)
+    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_PISYNTH
 }
 
 /// Whether `device` is pisynth, the in-process built-in.
@@ -223,14 +237,31 @@ pub fn is_pisynth(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_PISYNTH
 }
 
-/// The internal effect `device` is (EQ, Delay, Hall, Limiter), if it is one.
+/// The internal device `device` is (Sampler, effects, MIDI effects), if it is one.
 pub fn internal_kind(device: &Device) -> Option<Internal> {
     Internal::from_plugin(&device.plugin)
 }
 
-/// Whether `device` runs in process: pisynth or an internal effect.
+/// Whether `device` runs in process: pisynth or an internal device.
 pub fn is_in_process(device: &Device) -> bool {
     is_pisynth(device) || internal_kind(device).is_some()
+}
+
+/// The pads of a sampler as note names for the step rows: the sample's name, else "Pad 3".
+pub fn pad_note_names(views: &[sampler::PadView]) -> Vec<NoteName> {
+    views
+        .iter()
+        .enumerate()
+        .map(|(pad, view)| NoteName {
+            key: sampler::note_of_pad(pad),
+            channel: None,
+            name: if view.name.trim().is_empty() {
+                format!("Pad {}", pad + 1)
+            } else {
+                view.name.clone()
+            },
+        })
+        .collect()
 }
 
 /// Devices of `project` whose plugin `catalog` does not resolve, in document order (master last).
@@ -270,6 +301,12 @@ pub struct BuiltinHost {
     events: Vec<PluginManagerEvent>,
     /// pisynth only.
     catalog: Catalog,
+    /// The folder of the project file, for relative sample paths.
+    project_dir: Option<PathBuf>,
+    /// The sampler devices' UI sides.
+    samplers: HashMap<DeviceId, SamplerHandle>,
+    /// The pad names of the samplers as note names (step rows).
+    pad_names: HashMap<DeviceId, Vec<NoteName>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,7 +321,10 @@ impl Default for BuiltinHost {
             devices: HashMap::new(),
             meters: HashMap::new(),
             events: Vec::new(),
-            catalog: Catalog::builtin(None),
+            catalog: Catalog::builtin(),
+            project_dir: None,
+            samplers: HashMap::new(),
+            pad_names: HashMap::new(),
         }
     }
 }
@@ -323,6 +363,16 @@ impl DeviceHost for BuiltinHost {
         } else if let Some(kind) = internal_kind(device) {
             let processor = kind.processor_from_state(device.state.as_deref());
             self.meters.insert(device.id, processor.meter());
+            if let Some(handle) = processor.sampler() {
+                // The samples the state links load in the background; the pads play as they
+                // arrive.
+                for (pad, link) in sampler::links::read(device.state.as_deref()) {
+                    handle.load_link(pad, link, self.project_dir.clone());
+                }
+                self.pad_names
+                    .insert(device.id, pad_note_names(&handle.views()));
+                self.samplers.insert(device.id, handle);
+            }
             Box::new(processor)
         } else {
             self.set(device.id, DeviceStatus::Missing, 0);
@@ -347,6 +397,20 @@ impl DeviceHost for BuiltinHost {
     fn release(&mut self, device: DeviceId) {
         self.devices.remove(&device);
         self.meters.remove(&device);
+        self.samplers.remove(&device);
+        self.pad_names.remove(&device);
+    }
+
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        self.project_dir = dir;
+    }
+
+    fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
+        self.samplers.get(&device)
+    }
+
+    fn note_names(&self, device: DeviceId) -> &[NoteName] {
+        self.pad_names.get(&device).map_or(&[], Vec::as_slice)
     }
 
     fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
@@ -366,12 +430,17 @@ impl DeviceHost for BuiltinHost {
     }
 
     fn poll(&mut self) -> Vec<PluginManagerEvent> {
+        for (device, handle) in &self.samplers {
+            let names = pad_note_names(&handle.views());
+            if self.pad_names.get(device) != Some(&names) {
+                self.pad_names.insert(*device, names);
+            }
+        }
         std::mem::take(&mut self.events)
     }
 
     fn role(&self, plugin: &PluginRef) -> Option<DeviceRole> {
-        // The built-in instruments and the internal effects; everything else needs the plugin
-        // manager's catalog.
+        // pisynth and the internal devices; everything else needs the plugin manager's catalog.
         if is_builtin_instrument(plugin) {
             Some(DeviceRole::Instrument)
         } else {
@@ -539,7 +608,19 @@ impl DeviceHost for PluginHost {
     }
 
     fn note_names(&self, device: DeviceId) -> &[NoteName] {
-        self.manager.note_names(device)
+        if self.is_external(device) {
+            self.manager.note_names(device)
+        } else {
+            self.builtin.note_names(device)
+        }
+    }
+
+    fn set_project_dir(&mut self, dir: Option<PathBuf>) {
+        self.builtin.set_project_dir(dir);
+    }
+
+    fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
+        self.builtin.sampler(device)
     }
 
     fn has_gui(&self, device: DeviceId) -> bool {

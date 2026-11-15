@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    BUILTIN_KLOPFER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
+    BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
     DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
     PluginFormat, PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT,
     TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, VOLUME_DB_MAX, VOLUME_DB_MIN,
@@ -117,7 +117,7 @@ pub enum ProjectProp {
 /// What a new track gets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewTrack {
-    /// Name; `None` = the instrument's name (klopfer: "Drums"), or "MIDI" without instrument, made
+    /// Name; `None` = the instrument's name (the sampler: "Drums"), or "MIDI" without instrument, made
     /// unique with [`unique_track_name`].
     pub name: Option<String>,
     /// Colour; `None` = [`next_hue`].
@@ -414,7 +414,7 @@ pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId)
         Some(name) => valid_name(name)?,
         None => {
             let base = match &spec.instrument {
-                Some(plugin) if is_klopfer(plugin) => KLOPFER_TRACK_NAME,
+                Some(plugin) if is_drum_sampler(plugin) => DRUMS_TRACK_NAME,
                 Some(plugin) if !plugin.name.trim().is_empty() => plugin.name.trim(),
                 _ => DEFAULT_TRACK_NAME,
             };
@@ -1248,8 +1248,8 @@ pub fn select_take(project: &Project, clip: ClipId, take: usize) -> EditResult {
 const MIN_LENGTH: Tick = Tick(1);
 /// Longest count-in.
 const MAX_COUNT_IN_BARS: u8 = 4;
-/// Default name of a track with klopfer (prototype `addTrack`).
-const KLOPFER_TRACK_NAME: &str = "Drums";
+/// Default name of a track with the drum sampler (prototype `addTrack`).
+const DRUMS_TRACK_NAME: &str = "Drums";
 /// Default name of a track without instrument.
 const DEFAULT_TRACK_NAME: &str = "MIDI";
 
@@ -1276,9 +1276,10 @@ pub(crate) fn valid_meter(meter: Meter) -> bool {
     (1..=32).contains(&meter.num) && matches!(meter.den, 1 | 2 | 4 | 8 | 16)
 }
 
-/// Whether `plugin` is the built-in klopfer.
-fn is_klopfer(plugin: &PluginRef) -> bool {
-    plugin.format == PluginFormat::Builtin && plugin.id == BUILTIN_KLOPFER
+/// Whether `plugin` is the built-in drum sampler (or klopfer as the built-in it once was).
+fn is_drum_sampler(plugin: &PluginRef) -> bool {
+    plugin.format == PluginFormat::Builtin
+        && (plugin.id == BUILTIN_SAMPLER || plugin.id == BUILTIN_KLOPFER)
 }
 
 /// `ids` without repetitions, in first-seen order.

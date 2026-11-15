@@ -630,9 +630,9 @@ mod tests {
         }
     }
 
-    /// pisynth, klopfer and the plugins of S01/S05.
+    /// pisynth, the sampler and the plugins of S01/S05.
     fn catalog() -> Catalog {
-        let mut c = Catalog::builtin(Some("/k/Klopfer.clap".into()));
+        let mut c = Catalog::builtin();
         c.set_scanned(&[
             descriptor(
                 "surge",
@@ -716,10 +716,10 @@ mod tests {
             [
                 "Favoriten",
                 "pisynth",
-                "klopfer",
+                "Sampler",
                 "Instrumente",
                 "pisynth",
-                "klopfer",
+                "Sampler",
                 "Surge XT"
             ]
         );

@@ -49,7 +49,7 @@ use komponist_engine::{
     ProcessorError, Program, StereoIo,
 };
 use komponist_model::format::{fmt_db, fmt_pos, fmt_time, note_name};
-use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
+use komponist_model::project::{BUILTIN_PISYNTH, BUILTIN_SAMPLER};
 use komponist_model::{
     ClipContent, Device, DeviceId, PluginFormat, Project, Tick, TickRange, Track, fixtures, persist,
 };
@@ -336,17 +336,17 @@ fn instrument_stand_in(track: &Track, device: &Device) -> StandIn {
     }
 }
 
-/// A track is a drum track if it plays klopfer, has step clips, or says so in its name.
+/// A track is a drum track if it plays the sampler, has step clips, or says so in its name.
 fn is_drum_track(track: &Track) -> bool {
-    let klopfer = track.channel.instrument().is_some_and(|(_, d)| {
-        d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_KLOPFER
+    let sampler = track.channel.instrument().is_some_and(|(_, d)| {
+        d.plugin.format == PluginFormat::Builtin && d.plugin.id == BUILTIN_SAMPLER
     });
     let steps = track
         .clips
         .iter()
         .any(|c| matches!(c.content, ClipContent::Step(_)));
     let name = track.name.to_lowercase();
-    klopfer || steps || DRUM_WORDS.iter().any(|w| name.contains(w))
+    sampler || steps || DRUM_WORDS.iter().any(|w| name.contains(w))
 }
 
 /// The drum notes `track` plays, in note order: step rows with at least one step on (named by the
@@ -1257,7 +1257,7 @@ mod tests {
             })
             .collect();
         let expected = [
-            ("Drums", "klopfer", "kit of 6"),
+            ("Drums", "Sampler", "kit of 6"),
             ("Drums", "LSP Compressor", "bypass"),
             ("Bass", "pisynth", "preset \"Analog-Bass\""),
             ("Bass", "LSP Para EQ x8", "bypass"),

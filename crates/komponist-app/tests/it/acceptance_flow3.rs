@@ -1,41 +1,37 @@
-//! Acceptance flow 3 (HANDOFF §9): build a drum beat in the step sequencer and play it. With the
-//! real klopfer bundle and its test kit; without them kp-test-synth (WP-27) plays; without that
-//! the test skips with a note.
+//! Acceptance flow 3 (HANDOFF §9): build a drum beat in the step sequencer and play it, with the
+//! sampler and its synthesized test kit (WP-87; it replaced klopfer as the drum instrument).
 //!
-//! The app runs on the null backend in real time with the real bridge. A double-click into the
-//! empty lane makes the step clip, clicks on the steps build the beat, Space plays: the document
-//! holds the pattern, the engine's transport runs and the track's meter shows signal.
+//! The app runs on the null backend in real time. A double-click into the empty lane makes the
+//! step clip whose rows are the sampler's pads (named after the kit's files), clicks on the steps
+//! build the beat, Space plays: the document holds the pattern, the engine's transport runs and
+//! the track's meter shows signal. The sampler runs in process, so no bridge or installed plugin
+//! is needed.
 
 use crate::acceptance_support;
 use crate::common;
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use acceptance_support::{click_at, double_click, harness, key};
-use common::{
-    PATIENCE, SYNTH, app_with, clap_plugin, config, fixture_dirs, scratch, step_for, step_until,
-};
+use common::{PATIENCE, app_with, config, scratch, step_for, step_until};
 use egui::Key;
 use egui::accesskit::Role;
 use egui::pos2;
 use egui_kittest::kittest::Queryable as _;
-use komponist_app::device_host::{DeviceHost as _, PluginHost};
-use komponist_app::step_rows;
+use komponist_app::device_host::PluginHost;
 use komponist_app::views::arrangement::names as arrangement_names;
-use komponist_app::{Action, EditAction, UiAction};
 use komponist_engine::TransportState;
-use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
-use komponist_model::project::{BUILTIN_KLOPFER, DEFAULT_PROJECT_NAME};
-use komponist_model::{ClipContent, PluginFormat, PluginRef, Project, Tick};
-use komponist_plugins::builtin::klopfer_kit_state;
-use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerConfig, PluginManagerEvent};
+use komponist_model::edits::{self, NewTrack};
+use komponist_builtin::Internal;
+use komponist_builtin::sampler::{SampleLink, links, testkit};
+use komponist_model::project::DEFAULT_PROJECT_NAME;
+use komponist_model::{ClipContent, Project, Tick};
+use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 const BAR: i64 = 3840;
 
-/// `(row, step)` hits: kick, snare, closed hat (rows 0, 1, 4 exist for klopfer's eight pads and for
-/// a generic instrument's drum rows alike).
+/// `(row, step)` hits: kick, snare, closed hat.
 const BEAT: [(usize, usize); 8] = [
     (0, 0),
     (4, 2),
@@ -47,66 +43,29 @@ const BEAT: [(usize, usize); 8] = [
     (4, 14),
 ];
 
-/// What plays the beat.
-struct Sound {
-    plugin: PluginRef,
-    /// klopfer's kit as plugin state.
-    state: Option<Vec<u8>>,
-    config: PluginManagerConfig,
-    scan: Option<PluginDirs>,
-    label: &'static str,
-}
-
-fn klopfer_sound(dir: &Path) -> Option<Sound> {
-    let bundle = PluginManagerConfig::defaults().klopfer_bundle?;
-    let kit = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../klopfer/testkit-out/Testkit.klopfer")
-        .canonicalize()
-        .ok()?;
-    Some(Sound {
-        plugin: PluginRef {
-            format: PluginFormat::Builtin,
-            id: BUILTIN_KLOPFER.into(),
-            name: "klopfer".into(),
-            vendor: "Klopfer".into(),
-            version: "0.1.0".into(),
-            module: Box::default(),
-        },
-        state: Some(klopfer_kit_state(&kit).expect("kit state")),
-        config: PluginManagerConfig {
-            klopfer_bundle: Some(bundle),
-            ..config(dir)
-        },
-        scan: None,
-        label: "klopfer",
-    })
-}
-
-fn synth_sound(dir: &Path) -> Option<Sound> {
-    let scan = fixture_dirs()?;
-    Some(Sound {
-        plugin: clap_plugin(SYNTH),
-        state: None,
-        config: config(dir),
-        scan: Some(scan),
-        label: "kp-test-synth",
-    })
-}
-
-fn project_with(sound: &Sound) -> Project {
+/// An empty project with one sampler track whose pads hold the synthesized kit (links into
+/// `dir`).
+fn project_with_kit(dir: &std::path::Path) -> Project {
     let spec = NewTrack {
         name: None,
         hue: None,
-        instrument: Some(sound.plugin.clone()),
+        instrument: Some(Internal::Sampler.plugin_ref()),
         index: None,
         arm_exclusive: false,
     };
     let (mut p, _) = edits::add_track(&Project::new(DEFAULT_PROJECT_NAME), spec).unwrap();
-    if let Some(state) = &sound.state {
-        let track = Arc::make_mut(&mut p.tracks[0]);
-        let device = Arc::make_mut(&mut track.channel.devices[0]);
-        device.state = Some(Arc::from(state.as_slice()));
+    let kit = testkit::write_kit(dir).unwrap();
+    let mut state: Option<Vec<u8>> = None;
+    for (pad, path) in kit.iter().enumerate() {
+        state = Some(links::write(
+            state.as_deref(),
+            pad,
+            Some(&SampleLink::new(path, None)),
+        ));
     }
+    let track = Arc::make_mut(&mut p.tracks[0]);
+    let device = Arc::make_mut(&mut track.channel.devices[0]);
+    device.state = state.map(Arc::from);
     p
 }
 
@@ -123,21 +82,10 @@ fn x_of(h: &egui_kittest::Harness<'_, komponist_app::App>, tick: Tick) -> f32 {
 #[test]
 fn a_drum_beat_built_in_the_step_sequencer_plays() {
     let dir = scratch("flow3");
-    // KOMPONIST_ACCEPTANCE_SYNTH=1 forces the fallback (to try it where klopfer is built).
-    let forced = std::env::var_os("KOMPONIST_ACCEPTANCE_SYNTH").is_some();
-    let klopfer = if forced { None } else { klopfer_sound(&dir) };
-    let Some(sound) = klopfer.or_else(|| synth_sound(&dir)) else {
-        eprintln!("skipped: neither the klopfer bundle with its test kit nor kp-test-synth exists");
-        return;
-    };
-    eprintln!("flow 3 plays {}", sound.label);
-    let project = project_with(&sound);
+    let project = project_with_kit(&dir);
     let track = project.tracks[0].id;
     let device = project.tracks[0].channel.devices[0].id;
-    let mut host = PluginHost::new(sound.config.clone());
-    if let Some(scan) = &sound.scan {
-        host.start_scan(scan);
-    }
+    let host = PluginHost::new(config(&dir));
     let mut app = app_with(project, host);
     step_until(&mut app, "the instrument is loaded", |a| {
         a.engine().device_status(device) == DeviceStatus::Ok
@@ -154,34 +102,21 @@ fn a_drum_beat_built_in_the_step_sequencer_plays() {
         })
         .expect("track header")
         .rect();
-    if sound.state.is_some() {
-        let at = pos2(x_of(&h, Tick(BAR / 3)), header.center().y);
-        double_click(&mut h, at);
-    } else {
-        // kp-test-synth is no drum instrument: its lane makes MIDI clips, so the step clip (the
-        // General MIDI rows) is added by the action the double-click would send for klopfer.
-        let rows = step_rows::rows_for(None, &[]);
-        h.state_mut().dispatch(Action::Edit(EditAction::AddClip {
-            track,
-            clip: NewClip {
-                start: Tick::ZERO,
-                length: Tick(BAR),
-                name: "Pattern 1".into(),
-                content: NewClipContent::Step { rows },
-            },
-        }));
-        h.run_steps(2);
-        let clip = h.state().project().tracks[0].clips[0].id;
-        h.state_mut().dispatch(Action::Ui(UiAction::OpenClip(clip)));
-        h.run_steps(3);
-    }
+    let at = pos2(x_of(&h, Tick(BAR / 3)), header.center().y);
+    double_click(&mut h, at);
     let clip = h.state().project().tracks[0].clips[0].id;
     assert_eq!(h.state().ui().editor.clip, Some(clip));
     let rows = match &h.state().project().find_clip(clip).unwrap().1.content {
         ClipContent::Step(s) => s.rows.clone(),
         ClipContent::Midi(_) => panic!("not a step clip"),
     };
-    assert!(rows.len() >= 5);
+    // The pads of the kit are the rows, named after its files.
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, testkit::NAMES);
+    assert_eq!(
+        rows.iter().map(|r| r.note).collect::<Vec<_>>(),
+        (36..44).collect::<Vec<u8>>()
+    );
 
     // The beat, one click per step.
     for (row, step) in BEAT {
@@ -208,8 +143,7 @@ fn a_drum_beat_built_in_the_step_sequencer_plays() {
     expected.sort_unstable();
     assert_eq!(on(&h), expected);
 
-    // The instrument gets a moment after activation before it sounds (klopfer loads its pads in the
-    // background), then Space plays.
+    // The kit loads in the background; give it a moment, then Space plays.
     step_for(h.state_mut(), Duration::from_secs(1));
     h.state().engine().track_meter(track).unwrap().take();
     key(&mut h, Key::Space);

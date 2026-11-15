@@ -288,8 +288,7 @@ impl App {
                 );
             }
             Pending::Template => {
-                let klopfer = new_project::klopfer_in(self.engine.host().catalog());
-                let project = new_project::template(klopfer, crate::app::pisynth_ref());
+                let project = new_project::template(crate::app::pisynth_ref());
                 self.open_document(Document::new(project), None);
                 self.check_missing_plugins();
             }

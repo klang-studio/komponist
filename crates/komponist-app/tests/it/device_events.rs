@@ -168,7 +168,7 @@ fn app() -> (App, Rc<RefCell<Script>>) {
     let script = Rc::new(RefCell::new(Script::default()));
     let host = FakeHost {
         script: Rc::clone(&script),
-        catalog: Catalog::builtin(None),
+        catalog: Catalog::builtin(),
         statuses: HashMap::new(),
     };
     let engine = EngineSync::null(Box::new(host));
