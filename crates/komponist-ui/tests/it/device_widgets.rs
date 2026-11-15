@@ -155,6 +155,45 @@ mod behaviour {
         assert_eq!(h.state().2, Some(1));
     }
 
+    /// A mini fader follows the pointer 1:1 along its track (like the mixer fader).
+    #[test]
+    fn mini_fader_thumb_sticks_to_the_pointer() {
+        use egui::{Event, Modifiers, PointerButton};
+        use komponist_ui::widgets::device::mini_fader::Layout;
+        for ppp in [1.0, 2.0] {
+            let mut h = snapshot::builder::<f64>(ppp)
+                .with_size(vec2(200.0, 240.0))
+                .with_step_dt(1.0 / 60.0)
+                .build_ui_state(
+                    move |ui, s| {
+                        snapshot::padded(ui, |ui| {
+                            ui.add(MiniFader::new(s, "Op 1"));
+                        })
+                    },
+                    0.5,
+                );
+            h.run();
+            let cell = h.get_by_label("Op 1").rect();
+            let layout = Layout::new(cell);
+            let from = layout.thumb(0.5).center() + vec2(0.0, 3.0);
+            h.run_steps(30);
+            h.event(Event::PointerMoved(from));
+            h.event(Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            });
+            for i in 1..=10 {
+                h.event(Event::PointerMoved(from + vec2(0.0, -2.0 * i as f32)));
+            }
+            h.run();
+            // 20 points up on a track of `travel` points.
+            let want = 0.5 + 20.0 / f64::from(layout.travel);
+            assert!((*h.state() - want).abs() < 1e-3, "ppp {ppp}: {}", h.state());
+        }
+    }
+
     #[test]
     fn double_click_resets_knob_cells_and_mini_faders() {
         use egui::{Event, Modifiers, PointerButton};

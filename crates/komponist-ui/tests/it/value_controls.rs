@@ -2,8 +2,8 @@
 //!
 //! - Snapshots per state at 1× and 2× (`tests/snapshots/number-field-*`, `knob-*`, `fader-*`,
 //!   `meter-*`) and of the three gallery cards.
-//! - Interaction: drag math (1 px = 1 step, Shift fine, Ctrl coarse, knob 200 px, fader relative
-//!   from the thumb without a jump), Alt-click default, double-click text entry (Enter applies,
+//! - Interaction: drag math (1 px = 1 step, Shift fine, Ctrl coarse, knob 200 px, fader absolute: the
+//!   thumb follows the pointer without a jump), Alt-click default, double-click text entry (Enter applies,
 //!   Esc discards), arrows, wheel, AccessKit actions, the value tooltip, the meter's clip reset.
 
 use egui::{
@@ -638,6 +638,119 @@ fn fader_drag_is_relative_with_the_taper() {
         h.get_by_label("Lautstärke").value().as_deref(),
         Some("−∞ dB")
     );
+}
+
+/// A fader harness with a track of `length` points at `ppp`.
+fn sized_fader(db: f32, length: f32, ppp: f32) -> Harness<'static, Faders> {
+    let mut h = snapshot::builder::<Faders>(ppp)
+        .with_size(vec2(360.0, 420.0))
+        .with_step_dt(STEP)
+        .build_ui_state(
+            move |ui, s| {
+                snapshot::padded(ui, |ui| {
+                    ui.add(
+                        Fader::new(&mut s.db, "Lautstärke")
+                            .track_length(length)
+                            .scale(true),
+                    );
+                })
+            },
+            Faders { db, changes: 0 },
+        );
+    h.run();
+    h
+}
+
+/// The y of the thumb centre of a fader at `db` on its track.
+fn thumb_y(h: &Harness<'_, Faders>) -> f32 {
+    let rect = h.get_by_label("Lautstärke").rect();
+    let layout = fader::Layout::new(rect, FaderSize::Normal, true);
+    layout.thumb_rect(h.state().db).center().y
+}
+
+/// Owner decision 2026-11-15: the thumb sticks to the pointer; N points of pointer movement are
+/// N points of thumb movement, at any track length and scale factor, and the grab offset stays.
+#[test]
+fn fader_thumb_follows_the_pointer_one_to_one() {
+    for ppp in [1.0, 2.0] {
+        for length in [80.0, 200.0, 320.0] {
+            let mut h = sized_fader(-20.0, length, ppp);
+            let y0 = thumb_y(&h);
+            // Grab 5 points below the thumb centre, then drag 30 points up.
+            let grab = pos2(thumb_center(&h, -20.0).x, y0 + 5.0);
+            drag(&mut h, grab, vec2(0.0, -30.0), 15, Modifiers::NONE);
+            let moved = y0 - thumb_y(&h);
+            // The dB value is rounded to 0.1 dB on the way, so allow a small step.
+            assert!(
+                (moved - 30.0).abs() < 1.5,
+                "ppp {ppp}, length {length}: thumb moved {moved}"
+            );
+            // The grab offset stays: the thumb is still 5 points above the release position.
+            assert!(((grab.y - 30.0) - (thumb_y(&h) + 5.0)).abs() < 1.5);
+        }
+    }
+}
+
+#[test]
+fn fader_clamps_at_the_ends_and_answers_when_the_pointer_is_back() {
+    let mut h = sized_fader(-20.0, 200.0, 1.0);
+    let t = thumb_center(&h, -20.0);
+    // Far above the top: +6 dB.
+    drag(&mut h, t, vec2(0.0, -600.0), 20, Modifiers::NONE);
+    assert_eq!(h.state().db, 6.0);
+    // Down again, but only 20 points past the clamped end: value stays high (absolute semantics:
+    // the pointer began 600 points away).
+    pause(&mut h);
+    let top = thumb_center(&h, 6.0);
+    hold_drag(&mut h, top, vec2(0.0, -300.0), 10);
+    assert_eq!(h.state().db, 6.0);
+    h.event(Event::PointerMoved(top + vec2(0.0, -280.0)));
+    h.run();
+    assert_eq!(h.state().db, 6.0, "still beyond the track end");
+    h.event(Event::PointerMoved(top + vec2(0.0, -300.0 + 340.0)));
+    h.run();
+    assert!(h.state().db < 6.0, "back over the track the thumb answers");
+    release(&mut h, top);
+}
+
+#[test]
+fn fader_shift_drag_is_fine_and_releasing_shift_does_not_jump() {
+    let mut h = sized_fader(-20.0, 200.0, 1.0);
+    let t = thumb_center(&h, -20.0);
+    let y0 = thumb_y(&h);
+    pause(&mut h);
+    h.event(Event::PointerMoved(t));
+    h.event(Event::PointerButton {
+        pos: t,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.event(Event::PointerMoved(t + vec2(0.0, -10.0)));
+    h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+    for i in 1..=10 {
+        h.event(Event::PointerMoved(t + vec2(0.0, -10.0 - 3.0 * i as f32)));
+    }
+    h.run();
+    // 10 points normal + 30 points at × 0.1 = 13 points.
+    assert!(
+        (y0 - thumb_y(&h) - 13.0).abs() < 1.5,
+        "{}",
+        y0 - thumb_y(&h)
+    );
+    // Shift released: no jump back under the pointer (which is 27 points further up).
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.event(Event::PointerMoved(t + vec2(0.0, -40.0)));
+    h.run();
+    assert!(
+        (y0 - thumb_y(&h) - 13.0).abs() < 1.5,
+        "{}",
+        y0 - thumb_y(&h)
+    );
+    h.event(Event::PointerMoved(t + vec2(0.0, -50.0)));
+    h.run();
+    assert!((y0 - thumb_y(&h) - 23.0).abs() < 1.5);
+    release(&mut h, t + vec2(0.0, -50.0));
 }
 
 #[test]

@@ -432,11 +432,46 @@ fn the_devices_list_shows_status_and_opens_bypasses_and_flags_late_blocks() {
     assert_eq!(value_in(&h, d, Role::Button, &row("Surge XT")), names::LATE);
     h.run_steps(140);
     assert_eq!(value_in(&h, d, Role::Button, &row("Surge XT")), "CLAP");
-    // "+ Effekt": the browser on Effekte.
+    // "+ Effekt": the add menu below the link, for the inspected track; one undo step.
+    let before = h
+        .state()
+        .project()
+        .track(pad_id)
+        .unwrap()
+        .channel
+        .devices
+        .len();
     click_in(&mut h, d, Role::Link, names::ADD_EFFECT);
+    h.run_steps(3);
+    let search = komponist_app::views::devices::model::names::ADD_SEARCH;
+    let field = h.get_by_role_and_label(Role::TextInput, search);
+    assert!(field.accesskit_node().is_focused());
+    h.event(egui::Event::Text("delay".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.query_by_role_and_label(Role::TextInput, search).is_none());
+    let devices = &h.state().project().track(pad_id).unwrap().channel.devices;
+    assert_eq!(devices.len(), before + 1);
+    assert!(
+        devices
+            .last()
+            .unwrap()
+            .plugin
+            .name
+            .to_lowercase()
+            .contains("delay")
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(
-        h.state().ui().browser.segment,
-        komponist_app::ui_state::BrowserSegment::Effects
+        h.state()
+            .project()
+            .track(pad_id)
+            .unwrap()
+            .channel
+            .devices
+            .len(),
+        before
     );
 }
 

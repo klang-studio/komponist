@@ -813,6 +813,23 @@ pub fn place_plugin(
     })
 }
 
+/// `(first, midi)` of a chain of `devices`: the first slot an audio effect may take
+/// ([`first_effect_slot`]) and the number of MIDI effects ([`midi_slots`]), for a chain that has
+/// no cards (the master's, the add menu's).
+pub fn chain_slots(devices: &[std::sync::Arc<Device>]) -> (usize, usize) {
+    let midi = devices
+        .iter()
+        .take_while(|d| d.role == DeviceRole::MidiEffect)
+        .count();
+    let first = midi
+        + usize::from(
+            devices
+                .get(midi)
+                .is_some_and(|d| d.role == DeviceRole::Instrument),
+        );
+    (first, midi)
+}
+
 /// The number of MIDI effects at the head of the chain: the last insert slot a MIDI effect may take.
 pub fn midi_slots(cards: &[Card]) -> usize {
     cards.iter().take_while(|c| c.midi_effect).count()

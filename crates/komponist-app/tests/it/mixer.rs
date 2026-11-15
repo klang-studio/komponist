@@ -23,6 +23,8 @@ use komponist_plugins::DeviceStatus;
 
 use fake_host::{FakeHost, plugin, screens_catalog};
 
+const ADD_SEARCH: &str = komponist_app::views::devices::model::names::ADD_SEARCH;
+
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
 
@@ -673,8 +675,8 @@ fn toggles_switch_alt_is_exclusive_and_a_drag_spreads_across_strips() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// S04 "Insert-Slot": click opens the plugin, drag reorders, Alt-click bypass; "+" opens the
-// browser filtered to effects; a browser effect dropped on a strip is inserted.
+// S04 "Insert-Slot": click opens the plugin, drag reorders, Alt-click bypass; "+" opens the add
+// menu; a browser effect dropped on a strip is inserted.
 
 #[test]
 fn insert_slots_open_reorder_and_bypass() {
@@ -736,7 +738,7 @@ fn insert_slots_open_reorder_and_bypass() {
 }
 
 #[test]
-fn plus_opens_the_browser_on_effects_and_a_dropped_effect_is_inserted() {
+fn plus_opens_the_add_menu_and_a_dropped_effect_is_inserted() {
     let mut h = harness(s04());
     let bass = track(h.state(), 1);
     click_in(
@@ -746,12 +748,18 @@ fn plus_opens_the_browser_on_effects_and_a_dropped_effect_is_inserted() {
         names::ADD_EFFECT,
         Modifiers::NONE,
     );
-    let ui = h.state().ui();
-    assert_eq!(ui.browser.segment, BrowserSegment::Effects);
-    assert_eq!(ui.focus, FocusArea::Browser);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, ADD_SEARCH);
     assert_eq!(
-        ui.selection.tracks.iter().copied().collect::<Vec<_>>(),
-        [bass]
+        h.state().ui().browser.segment,
+        BrowserSegment::All,
+        "the browser is not touched"
+    );
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, ADD_SEARCH)
+            .is_none()
     );
 
     // Drag "LSP Delay" from the browser onto the Bass strip: appended after the EQ.
@@ -777,6 +785,67 @@ fn plus_opens_the_browser_on_effects_and_a_dropped_effect_is_inserted() {
         .map(|d| d.plugin.name.clone())
         .collect();
     assert_eq!(names_now, ["pisynth", "LSP Para EQ x8", "LSP Delay"]);
+}
+
+fn option_names(h: &Harness<'_, App>) -> Vec<String> {
+    h.query_all_by_role(Role::ListBoxOption)
+        .map(|n| n.accesskit_node().label().unwrap_or_default())
+        .collect()
+}
+
+fn master_names(app: &App) -> Vec<String> {
+    app.project()
+        .master
+        .devices
+        .iter()
+        .map(|d| d.plugin.name.clone())
+        .collect()
+}
+
+/// The master strip's „+“ opens the menu below it, with audio effects only; the add goes to the
+/// master chain and one undo removes it.
+#[test]
+fn the_master_plus_offers_audio_effects_only_and_adds_to_the_master_chain() {
+    let mut h = harness(s04());
+    let before = master_names(h.state());
+    click_in(
+        &mut h,
+        "Master",
+        Role::Button,
+        names::ADD_EFFECT,
+        Modifiers::NONE,
+    );
+    h.run_steps(3);
+    let listed = option_names(&h);
+    assert!(!listed.is_empty());
+    for name in ["pisynth", "Arpeggiator", "Sampler"] {
+        assert!(!listed.iter().any(|n| n == name), "{name} in {listed:?}");
+    }
+    assert!(listed.iter().any(|n| n == "LSP Delay"), "{listed:?}");
+    mask_cpu(&mut h);
+    let mut results = SnapshotResults::new();
+    h.snapshot("mixer-master-add-menu-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+    h.event(Event::Text("delay".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let after = master_names(h.state());
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after.last().map(String::as_str), Some("Delay"));
+    assert!(h.state().dispatched().any(|a| matches!(
+        a,
+        Action::Plugin(PluginAction::Add {
+            target: DropTarget::Chain {
+                channel: ChannelRef::Master,
+                ..
+            },
+            ..
+        })
+    )));
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(master_names(h.state()), before);
 }
 
 #[test]

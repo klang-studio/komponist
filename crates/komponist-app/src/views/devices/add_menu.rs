@@ -1,10 +1,13 @@
-//! The add menu behind the chain's drop slot (owner request 2026-11-15; not in the handoff): a
-//! small popup under the slot's click with a search field and the catalog's devices, so a device
-//! can be added without the browser.
+//! The add menu (owner request 2026-11-15; not in the handoff): a small popup with a search field
+//! and the catalog's devices, so a device can be added without the browser. One implementation
+//! for every entry point, each passing its trigger, the channel to add to and an [`Anchor`]:
+//! the chain's drop slot (top left of the slot), „+ Gerät“ in the devices dock header, „+ Effekt“
+//! in the inspector's Geräte section and the „+“ slot of the mixer strips, the master's included
+//! (all below the button, above it where the window leaves less room below).
 //!
 //! | Input | What happens |
 //! |---|---|
-//! | click, Enter or Space on the slot | opens the menu at the slot's top left, the search field focused |
+//! | click, Enter or Space on the trigger | opens the menu at the [`Anchor`], the search field focused |
 //! | typing | filters with the browser's matching (`browser::model::picker_rows`) |
 //! | ↑ ↓ | move the highlighted device (the first hit is highlighted while typing) |
 //! | Enter, click on a device | adds it, same rule and same action as dropping it at the end of the chain ([`model::place_plugin`]), one undo step |
@@ -31,22 +34,57 @@ use komponist_ui::widgets::{self as w, floating};
 use komponist_ui::{fonts, px};
 
 use super::metrics;
-use super::model::{self, Card, names};
+use super::model::{self, names};
 use crate::actions::{Action, DropTarget, PluginAction};
 use crate::ui_state::BrowserSegment;
 use crate::views::ViewCtx;
 use crate::views::browser::model::{Input, Row, RowKind, picker_rows};
 use crate::views::format_tag;
 
-/// Where the menu adds to.
-pub struct Target<'a> {
-    /// The channel.
-    pub channel: ChannelRef,
-    /// Its devices.
-    pub cards: &'a [Card],
+/// Where the popup sits relative to its trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    /// Its top left on the trigger's top left (the drop slot).
+    TopLeft,
+    /// Its top left [`metrics::ADD_MENU_ANCHOR_GAP`] below the trigger's bottom left (buttons); its
+    /// bottom left above the trigger's top left if there is more room there.
+    Below,
 }
 
-impl Target<'_> {
+impl Anchor {
+    /// The menu's anchor point, its pivot and the height it may take in `window`. A menu under a
+    /// button that does not fit below it in full goes above it instead when that leaves more
+    /// room (the devices dock sits at the bottom of the window); it never covers its button.
+    fn place(self, trigger: Rect, window: Rect) -> (egui::Pos2, egui::Align2, f32) {
+        let full = metrics::ADD_MENU_MAX_HEIGHT;
+        let margin = metrics::ADD_MENU_MARGIN;
+        match self {
+            Anchor::TopLeft => {
+                let h = full.min(window.height() - 2.0 * margin);
+                (trigger.left_top(), egui::Align2::LEFT_TOP, h)
+            }
+            Anchor::Below => {
+                let gap = metrics::ADD_MENU_ANCHOR_GAP;
+                let below = window.bottom() - margin - (trigger.bottom() + gap);
+                let above = trigger.top() - gap - margin - window.top();
+                if below >= full || below >= above {
+                    let pos = trigger.left_bottom() + vec2(0.0, gap);
+                    (pos, egui::Align2::LEFT_TOP, full.min(below))
+                } else {
+                    let pos = trigger.left_top() - vec2(0.0, gap);
+                    (pos, egui::Align2::LEFT_BOTTOM, full.min(above))
+                }
+            }
+        }
+    }
+}
+
+/// Where the menu adds to.
+struct Target {
+    channel: ChannelRef,
+}
+
+impl Target {
     fn master(&self) -> bool {
         self.channel == ChannelRef::Master
     }
@@ -88,30 +126,44 @@ fn plugins(rows: &[Row]) -> Vec<PluginRef> {
         .collect()
 }
 
-/// Sends the add of `plugin` at the end of the chain, the way dropping it there would.
-fn add(ctx: &mut ViewCtx<'_>, target: &Target<'_>, plugin: PluginRef) {
+/// Sends the add of `plugin` at the end of the chain of `channel`, the way dropping it there
+/// would.
+fn add(ctx: &mut ViewCtx<'_>, channel: ChannelRef, plugin: PluginRef) {
     let Some(role) = ctx.engine.host().role(&plugin) else {
         return;
     };
-    let (midi, first) = (
-        model::midi_slots(target.cards),
-        model::first_effect_slot(target.cards),
-    );
-    let Some(place) = model::place_plugin(role, target.master(), target.cards.len(), first, midi)
-    else {
+    let project = std::sync::Arc::clone(ctx.project);
+    let devices = match channel {
+        ChannelRef::Track(t) => project.track(t).map(|t| &t.channel.devices),
+        ChannelRef::Master => Some(&project.master.devices),
+    };
+    let Some(devices) = devices else {
+        return;
+    };
+    let (first, midi) = model::chain_slots(devices);
+    let master = channel == ChannelRef::Master;
+    let Some(place) = model::place_plugin(role, master, devices.len(), first, midi) else {
         return;
     };
     ctx.send(Action::Plugin(PluginAction::Add {
         plugin,
         target: DropTarget::Chain {
-            channel: target.channel,
+            channel,
             index: place.index(),
         },
     }));
 }
 
-/// Opens, draws and handles the menu of `trigger` (the drop slot); call it every frame.
-pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>, trigger: &Response, target: &Target<'_>) {
+/// Opens, draws and handles the menu of `trigger` for the chain of `channel` at `anchor`; call
+/// it every frame.
+pub fn show(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    trigger: &Response,
+    channel: ChannelRef,
+    anchor: Anchor,
+) {
+    let target = &Target { channel };
     let ectx = ui.ctx().clone();
     let id = trigger.id.with("add_menu");
     let was_open = floating::is_open(&ectx, id);
@@ -165,7 +217,17 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>, trigger: &Response, target: &Tar
 
     if open {
         floating::open(&ectx, id);
-        draw(ui, ctx, trigger, target, id, &mut mem, &mut choose, by_key);
+        draw(
+            ui,
+            ctx,
+            trigger,
+            anchor,
+            target,
+            id,
+            &mut mem,
+            &mut choose,
+            by_key,
+        );
         if choose.is_some() {
             open = false;
             refocus = true;
@@ -181,7 +243,7 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>, trigger: &Response, target: &Tar
         trigger.request_focus();
     }
     if let Some(plugin) = choose {
-        add(ctx, target, plugin);
+        add(ctx, channel, plugin);
     }
 }
 
@@ -190,7 +252,8 @@ fn draw(
     ui: &Ui,
     ctx: &ViewCtx<'_>,
     trigger: &Response,
-    target: &Target<'_>,
+    anchor: Anchor,
+    target: &Target,
     id: egui::Id,
     mem: &mut Memory,
     choose: &mut Option<PluginRef>,
@@ -198,14 +261,14 @@ fn draw(
 ) {
     let ectx = ui.ctx().clone();
     let width = metrics::ADD_MENU_WIDTH.max(trigger.rect.width());
-    let max_h = metrics::ADD_MENU_MAX_HEIGHT
-        .min(ectx.content_rect().height() - 2.0 * metrics::ADD_MENU_MARGIN);
+    let (pos, pivot, max_h) = anchor.place(trigger.rect, ectx.content_rect());
     let list_h = max_h - 2.0 * space::SPACE_1 - size::CONTROL - metrics::ADD_MENU_GAP;
     let field_id = id.with("search");
     let out = Area::new(id)
         .order(Order::Foreground)
         .kind(UiKind::Popup)
-        .fixed_pos(trigger.rect.left_top())
+        .fixed_pos(pos)
+        .pivot(pivot)
         .constrain(true)
         .accessibility_parent(trigger.id)
         .accessible_name(names::ADD_DEVICE)

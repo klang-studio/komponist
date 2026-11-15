@@ -739,7 +739,7 @@ fn a_plugin_with_many_parameters_shows_the_rows_that_fit() {
 // Header, context menu, selection, scrolling.
 
 #[test]
-fn header_shows_the_track_and_opens_the_browser_on_effects() {
+fn header_shows_the_track_and_opens_the_add_menu() {
     let (mut app, ..) = s05();
     app.dispatch(Action::Ui(UiAction::TogglePanel(
         komponist_app::ui_state::Panel::Browser,
@@ -750,12 +750,16 @@ fn header_shows_the_track_and_opens_the_browser_on_effects() {
     for name in ["Surge XT", "LSP Para EQ x8", "Airwindows Consolidated"] {
         h.get_by_role_and_label(Role::Button, &names::reveal(name));
     }
+    // „+ Gerät“ opens the add menu below the button instead of the browser.
     let add = h.get_by_role_and_label(Role::Button, names::ADD).rect();
     click_at(&mut h, add.center());
-    let ui = h.state().ui();
-    assert!(ui.layout.browser_open);
-    assert_eq!(ui.browser.segment, BrowserSegment::Effects);
-    assert_eq!(ui.focus, komponist_app::FocusArea::Browser);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, names::ADD_SEARCH);
+    assert_eq!(
+        h.state().ui().browser.segment,
+        BrowserSegment::All,
+        "the browser is not touched"
+    );
 }
 
 #[test]
@@ -1258,6 +1262,56 @@ mod add_menu {
         mask_cpu(&mut h);
         let mut results = SnapshotResults::new();
         h.snapshot("devices-add-slot-hover-1x");
+        results.extend_harness(&mut h);
+        results.unwrap();
+    }
+
+    /// „+ Gerät“ in the dock header opens the menu below the button, for the selected track.
+    #[test]
+    fn the_header_button_opens_the_menu_at_the_button_and_adds_to_the_selected_track() {
+        let (app, track) = app_with_track();
+        let mut h = harness(app);
+        let button = h.get_by_role_and_label(Role::Button, names::ADD).rect();
+        click_at(&mut h, button.center());
+        h.run_steps(3);
+        assert!(search(&h).expect("search").accesskit_node().is_focused());
+        // The dock sits at the bottom of the window, so the menu opens above the button; either
+        // way it never covers it and starts on its left edge (plus the frame's padding).
+        let field = search(&h).expect("search").rect();
+        assert!(!field.intersects(button), "{field:?} covers {button:?}");
+        assert!(
+            (field.left() - button.left()).abs() < 8.0,
+            "{field:?} {button:?}"
+        );
+        assert!(field.right() <= h.ctx.content_rect().right());
+        type_text(&mut h, "delay");
+        key(&mut h, Key::Enter);
+        assert!(search(&h).is_none());
+        assert_eq!(
+            names_of(h.state(), track),
+            ["pisynth", Internal::Delay.name()]
+        );
+        h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+        assert_eq!(names_of(h.state(), track), ["pisynth"]);
+        // A second click on the button closes an open menu.
+        click_at(&mut h, button.center());
+        h.run_steps(3);
+        assert!(search(&h).is_some());
+        click_at(&mut h, button.center());
+        h.run_steps(3);
+        assert!(search(&h).is_none());
+    }
+
+    #[test]
+    fn snapshot_of_the_menu_at_the_header_button() {
+        let (app, _) = app_with_track();
+        let mut h = harness(app);
+        let button = h.get_by_role_and_label(Role::Button, names::ADD).rect();
+        click_at(&mut h, button.center());
+        h.run_steps(3);
+        mask_cpu(&mut h);
+        let mut results = SnapshotResults::new();
+        h.snapshot("devices-add-menu-header-1x");
         results.extend_harness(&mut h);
         results.unwrap();
     }

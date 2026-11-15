@@ -8,8 +8,8 @@
 //!
 //! | Input | What happens (`ix.fader`) |
 //! |---|---|
-//! | Drag | relative from the thumb, no jump on a click on the track; the pointer is hidden and grabbed; the value line turns accent and the value tooltip shows |
-//! | Shift drag | fine (× 0.1); Ctrl coarse (× 10) |
+//! | Drag | the thumb sticks to the pointer (absolute, [`crate::drag::AbsoluteDrag`]), keeping the grab offset: no jump on a click on the track; the pointer is hidden and grabbed; the value line turns accent and the value tooltip shows |
+//! | Shift drag | fine (× 0.1 of the pointer movement, relative); no Ctrl for drags |
 //! | Double-click, Alt-click (thumb) | 0.0 dB (owner decision 2026-11-15) |
 //! | Enter (focused), context menu "Wert eingeben" ([`super::value_menu`]) | text entry in dB |
 //! | Double-click on the value under the fader ([`DbValue`]) | text entry in dB (a text readout, like a number field) |
@@ -34,11 +34,11 @@ use super::meter;
 use super::metrics::fader as metrics;
 use super::metrics::meter as meter_metrics;
 use super::number_field::{
-    accesskit_requests, caption, column, drag_gesture, entry, expose_value, galley, is_still,
-    key_steps, paint_entry_ring, sense, snap_to, take_focus_on_press, text_pos, text_width,
-    value_label, value_tooltip_live, wheel_steps,
+    absolute_drag_gesture, accesskit_requests, caption, column, entry, expose_value, galley,
+    is_still, key_steps, paint_entry_ring, sense, snap_to, take_focus_on_press, text_pos,
+    text_width, value_label, value_tooltip_live, wheel_steps,
 };
-use crate::drag::{ClickAction, ValueDrag};
+use crate::drag::ClickAction;
 use crate::state::State;
 use crate::{focus, fonts, px, tooltip};
 
@@ -418,10 +418,10 @@ impl Widget for Fader<'_> {
             if ClickAction::of_control(&response) == ClickAction::Reset {
                 db = 0.0;
             }
-            let len = f64::from(layout.track.height());
-            let up = f64::from(1.0 - db_to_p(db));
-            if let Some(u) = drag_gesture(&response, || ValueDrag::span(up, 0.0, 1.0, len)) {
-                db = p_to_db(1.0 - u as f32);
+            let (top, len) = (layout.track.top(), layout.track.height());
+            let up = 1.0 - db_to_p(db);
+            if let Some(u) = absolute_drag_gesture(&response, top, len, up) {
+                db = p_to_db(1.0 - u);
             }
             let steps = key_steps(ui, &response) + wheel_steps(ui, &response);
             if steps != 0.0 {
