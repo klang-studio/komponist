@@ -13,6 +13,7 @@ mod chase;
 mod common;
 mod export;
 mod export_demo;
+mod knurr;
 mod live;
 mod midi_fx;
 mod mixing;

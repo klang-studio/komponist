@@ -83,12 +83,10 @@ fn cpu_per_voice() {
     for (name, changes) in &cases {
         // Unison 7 leaves six voices (the cap of 48 oscillator groups): measure what sounds.
         let sounding = if name.contains("unison 7") { 6 } else { 8 };
-        for block in [256usize] {
-            let (ns, share) = per_voice(changes, sounding, block);
-            println!(
-                "{name:48} block {block}: {ns:7.0} ns per key and sample = {share:5.2} % of a core per key"
-            );
-        }
+        let (ns, share) = per_voice(changes, sounding, 256);
+        println!(
+            "{name:48} block 256: {ns:7.0} ns per key and sample = {share:5.2} % of a core per key"
+        );
     }
     // 8 keys chord of the whole device, the way the proposal counts.
     for (name, changes) in &cases[..5] {

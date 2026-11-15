@@ -76,6 +76,12 @@ pub struct Knurr {
     env_gen: u32,
 }
 
+impl Default for Knurr {
+    fn default() -> Self {
+        Knurr::new()
+    }
+}
+
 impl Knurr {
     /// A synthesizer with the parameters at their defaults.
     pub fn new() -> Knurr {
@@ -327,10 +333,13 @@ impl Knurr {
     /// A voice for a new note: a free one, or the quietest released, or the oldest held.
     fn allocate(&self) -> usize {
         let active = self.voices.iter().filter(|v| v.sounds()).count();
-        if active < self.max_poly() {
-            if let Some(free) = self.voices.iter().position(|v| !v.sounds()) {
-                return free;
-            }
+        if let Some(free) = self
+            .voices
+            .iter()
+            .position(|v| !v.sounds())
+            .filter(|_| active < self.max_poly())
+        {
+            return free;
         }
         let released = self
             .voices

@@ -882,8 +882,7 @@ fn unison_detunes_and_spreads() {
     let n = 16_384;
     let spec = |extra: &[(&str, f64)]| {
         let mut p = processor(&merged(extra));
-        let out = render(&mut p, 24_000, &[(0, on(69, 100))], 120.0);
-        out
+        render(&mut p, 24_000, &[(0, on(69, 100))], 120.0)
     };
     // Three voices at ±100 ct: three lines, 440 Hz and 440 · 2^(±1/12).
     let out = spec(&[("unison", 3.0), ("detune", 100.0), ("spread", 0.0)]);
@@ -1218,4 +1217,51 @@ fn the_default_sound_has_a_sensible_level() {
     let chord: Vec<_> = (0..8).map(|i| (0, on(48 + 4 * i, 127))).collect();
     let out = render(&mut loud, 24_000, &chord, 120.0);
     assert!(peak(&out[0]) < 8.0 && peak(&out[1]) < 8.0);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Presets
+
+#[test]
+fn the_ten_presets_load_and_sound() {
+    let list = presets::presets();
+    assert_eq!(list.len(), 10);
+    let mut names: Vec<&str> = list.iter().map(|p| p.name).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), 10);
+    for (index, preset) in list.iter().enumerate() {
+        // Every key exists, every value is inside its range.
+        for (key, value) in preset.changes {
+            let wire = Internal::Knurr
+                .wire(&ParamId::new(*key))
+                .unwrap_or_else(|| panic!("{}: unknown parameter {key}", preset.name));
+            let info = &Internal::Knurr.params()[wire as usize];
+            assert_eq!(
+                info.snap(*value),
+                *value,
+                "{}: {key} = {value}",
+                preset.name
+            );
+        }
+        let state = presets::state(index).unwrap();
+        let values = Internal::Knurr.decode_state(Some(&state)).unwrap();
+        assert_eq!(values, preset.values());
+        assert_ne!(values, Internal::Knurr.defaults(), "{}", preset.name);
+        // A single note and a chord sound, finite and within reach of full scale.
+        let mut p = Internal::Knurr.processor(&values);
+        p.activate(RATE, BLOCK).unwrap();
+        let chord = [
+            (0, on(40, 100)),
+            (0, on(47, 100)),
+            (0, on(52, 110)),
+            (0, on(59, 90)),
+        ];
+        let out = render(&mut p, 36_000, &chord, 120.0);
+        let (level, top) = (rms(&out[0][1_000..12_000]), peak(&out[0]));
+        assert!(level > 0.005, "{}: silent ({level})", preset.name);
+        assert!(top < 2.0, "{}: peak {top}", preset.name);
+        assert!(out[0].iter().chain(&out[1]).all(|s| s.is_finite()));
+    }
+    assert!(presets::state(10).is_none());
 }
