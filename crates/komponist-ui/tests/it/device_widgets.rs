@@ -159,7 +159,7 @@ mod behaviour {
     fn double_click_resets_knob_cells_and_mini_faders() {
         use egui::{Event, Modifiers, PointerButton};
         // Frames of a 60 Hz display, so two clicks fit egui's double-click window.
-        let mut app = |ui: &mut Ui, s: &mut (f64, f64)| {
+        let app = |ui: &mut Ui, s: &mut (f64, f64)| {
             ui.add(KnobCell::new(&mut s.0, "Cutoff").default_value(0.5));
             ui.add(MiniFader::new(&mut s.1, "Op 1").default_value(0.7));
         };
