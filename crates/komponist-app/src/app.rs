@@ -67,8 +67,8 @@ use crate::project_io::{self, RecentList};
 use crate::record::Recording;
 use crate::settings::{PanelSettings, Settings};
 use crate::ui_state::{
-    Dialog, DockTab, FocusArea, Panel, PluginView, PluginWindow, Screen, StatusKind, StatusMessage,
-    Tool, UiState,
+    Dialog, DockTab, FocusArea, InspectorRename, Panel, PluginView, PluginWindow, Screen,
+    StatusKind, StatusMessage, Tool, UiState,
 };
 use crate::views::{Requests, Views};
 use crate::windows::plugin_frame::{self, PluginFrames};
@@ -1668,6 +1668,36 @@ impl App {
         self.ui.arrangement.rename_request = (!arrangement_hidden).then_some(id);
     }
 
+    /// F2: the selected clip (exactly one: the inspector's clip section), else the first selected
+    /// track, opens its name field where it is on screen: the arrangement's header, else the
+    /// mixer's strip (the dock's mixer tab, or when the mixer has the focus), else the inspector
+    /// (opened if hidden). A clip always goes to the inspector, the only place that renames clips.
+    fn rename_selection(&mut self) {
+        let clip = (self.ui.selection.clips.len() == 1)
+            .then(|| self.ui.selection.clips.iter().next().copied())
+            .flatten()
+            .filter(|c| self.project().find_clip(*c).is_some());
+        if let Some(clip) = clip {
+            self.ui.layout.inspector_open = true;
+            self.ui.inspector.rename_request = Some(InspectorRename::Clip(clip));
+            return;
+        }
+        let Some(track) = self.selected_track_order().first().copied() else {
+            return;
+        };
+        let l = &self.ui.layout;
+        let arrangement = !(l.dock_open && l.dock_maximized);
+        let mixer = l.dock_open && l.dock_tab == DockTab::Mixer;
+        if mixer && (!arrangement || self.ui.focus == FocusArea::Mixer) {
+            self.ui.mixer.rename_request = Some(track);
+        } else if arrangement {
+            self.ui.arrangement.rename_request = Some(track);
+        } else {
+            self.ui.layout.inspector_open = true;
+            self.ui.inspector.rename_request = Some(InspectorRename::Track(track));
+        }
+    }
+
     /// A send change; a level change inside a gesture reaches the engine on the fast path
     /// (`Command::SetSendGain`, ramped by the send's edge state), so dragging a send level does not
     /// recompile the program per frame.
@@ -1976,6 +2006,7 @@ impl App {
             }
             UiAction::Zoom { vertical, steps } => self.zoom(vertical, steps),
             UiAction::ZoomToFit => self.zoom_to_fit(),
+            UiAction::RenameSelection => self.rename_selection(),
             UiAction::GridFiner | UiAction::GridCoarser => {
                 let finer = action == UiAction::GridFiner;
                 let target = self.focused_grid();
@@ -2686,6 +2717,7 @@ pub fn key_from_egui(key: egui::Key) -> Option<Key> {
         E::OpenBracket => Key::OpenBracket,
         E::CloseBracket => Key::CloseBracket,
         E::Comma => Key::Comma,
+        E::F2 => Key::F2,
         _ => return None,
     })
 }
@@ -2747,6 +2779,7 @@ pub fn key_to_egui(key: Key) -> egui::Key {
         Key::OpenBracket => E::OpenBracket,
         Key::CloseBracket => E::CloseBracket,
         Key::Comma => E::Comma,
+        Key::F2 => E::F2,
     }
 }
 

@@ -591,6 +591,10 @@ pub enum UiAction {
     },
     /// Z: fit the selection (or everything) into the view.
     ZoomToFit,
+    /// F2: the name of the selected clip (exactly one clip selected), else of the first selected
+    /// track, goes into an edit field of the view that shows it (arrangement header, mixer
+    /// strip or inspector). The edit is the one a double-click makes.
+    RenameSelection,
     /// Ctrl `[`: finer grid.
     GridFiner,
     /// Ctrl `]`: coarser grid.

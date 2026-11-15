@@ -22,6 +22,7 @@
 //! | Alt + / Alt − | canvases | `Ui(Zoom { vertical: true, steps: ±1 })` |
 //! | Z | canvases | `Ui(ZoomToFit)` (only while computer keyboard MIDI is off, §13.2) |
 //! | Strg [ / Strg ] | canvases | `Ui(GridFiner / GridCoarser)` |
+//! | F2 | global | `Ui(RenameSelection)` (the selected clip, else the first selected track: name field) |
 //! | Strg Z / Strg Shift Z | global | `Edit(Undo / Redo)` |
 //! | Strg , | global | `Ui(OpenSettings(Audio))` |
 //! | Esc | global | `Ui(ClearSelection)` (recording: `Transport(DiscardTake)`) |
@@ -112,6 +113,8 @@ pub enum Key {
     CloseBracket,
     /// `,`.
     Comma,
+    /// F2.
+    F2,
 }
 
 /// Modifier state of a chord. Ctrl means Ctrl (Linux); there is no Cmd mapping in v0.1.
@@ -280,6 +283,7 @@ impl Key {
             Key::OpenBracket => "[",
             Key::CloseBracket => "]",
             Key::Comma => ",",
+            Key::F2 => "F2",
         }
     }
 }
@@ -421,6 +425,12 @@ impl Keymap {
                 KeyChord::ctrl_shift(Key::E),
                 Global,
                 p(ProjectAction::OpenExportDialog),
+            ),
+            // Rename the selected clip or track.
+            (
+                KeyChord::plain(Key::F2),
+                Global,
+                u(UiAction::RenameSelection),
             ),
             // History.
             (KeyChord::ctrl(Key::Z), Global, e(EditAction::Undo)),
@@ -830,6 +840,7 @@ mod tests {
             (KeyChord::ctrl(Key::Z), FocusArea::Arrangement),
             (KeyChord::ctrl_shift(Key::Z), FocusArea::Arrangement),
             (KeyChord::ctrl(Key::Comma), FocusArea::Arrangement),
+            (KeyChord::plain(Key::F2), FocusArea::Arrangement),
             (KeyChord::plain(Key::Escape), FocusArea::Arrangement),
             (KeyChord::ctrl(Key::D), FocusArea::Arrangement),
             (KeyChord::ctrl(Key::E), FocusArea::Arrangement),

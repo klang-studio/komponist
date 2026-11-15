@@ -14,6 +14,7 @@
 //! | Input | What happens (S04 notes) |
 //! |---|---|
 //! | click on a strip | selects the track (Strg toggles, Shift extends), synchronous with the arrangement |
+//! | name of a track or bus strip | double-click, right click „Umbenennen“, F2 | rename in place (text field „Spurname“), Enter applies, Esc discards, an empty name keeps the old one; the same `SetTrackProp(Name)` as the header's |
 //! | fader / pan | drag relative, Shift fine, double-click or Alt-click default, Enter or right-click „Wert eingeben“ text entry, wheel one step (Shift fine); a drag or a wheel burst is one undo step, fast-path commands while it lasts |
 //! | M S R | as in the track headers: press, drag across strips, Alt-click S / R exclusive |
 //! | insert slot | click opens the plugin window (an internal device: the Geräte tab, scrolled to it), drag reorders (2 px accent line), Alt-click bypass |

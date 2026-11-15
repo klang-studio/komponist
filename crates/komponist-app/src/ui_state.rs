@@ -491,6 +491,17 @@ pub enum InspectorSection {
 pub struct InspectorView {
     /// Collapsed sections.
     pub collapsed: BTreeSet<InspectorSection>,
+    /// F2: this name opens its field (taken by the inspector when it shows the section).
+    pub rename_request: Option<InspectorRename>,
+}
+
+/// What F2 asks the inspector to rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorRename {
+    /// The clip's name.
+    Clip(ClipId),
+    /// The track's name.
+    Track(TrackId),
 }
 
 /// Start screen (S09).
