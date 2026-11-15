@@ -262,7 +262,21 @@ fn status_with(h: &mut Harness<'_, App>, needle: &str, secs: u64) -> Option<Stri
     None
 }
 
-/// The status bar names a device that is plugged in or out, once per change (WP midi-notice).
+/// The changes of the next scan that concern `port`. Other tests of this binary create and drop
+/// virtual ports of their own at the same time, so a scan may report those as well.
+fn changes_of(h: &mut Harness<'_, App>, port: &str) -> Vec<komponist_app::engine_sync::MidiChange> {
+    use komponist_app::engine_sync::MidiChange::{Appeared, Vanished};
+    let name = port_name(port);
+    let engine = h.state_mut().engine_mut();
+    engine.scan_midi();
+    engine
+        .take_midi_changes()
+        .into_iter()
+        .filter(|c| matches!(c, Appeared(n) | Vanished(n) if *n == name))
+        .collect()
+}
+
+/// The status bar names a device that is plugged in or out, once per change.
 #[test]
 fn the_status_bar_tells_when_a_midi_device_appears_and_vanishes() {
     use komponist_app::ui_state::StatusKind;
@@ -273,23 +287,23 @@ fn the_status_bar_tells_when_a_midi_device_appears_and_vanishes() {
         return;
     }
     let mut h = harness(app_on(&null_config(), &port));
-    // The scan at start-up and a scan without a change say nothing.
+    // The scan at start-up and a scan without a change say nothing about our port.
     step_for(&mut h, 100);
-    assert!(!h.state_mut().engine_mut().scan_midi());
-    assert!(h.state_mut().engine_mut().take_midi_changes().is_empty());
+    assert!(changes_of(&mut h, &port).is_empty());
 
     let out = virtual_output(&port).unwrap();
-    let text = status_with(&mut h, "verbunden", 6).expect("no notice for the new port");
-    assert_eq!(text, format!("{} verbunden", port_name(&port)));
+    let appeared = format!("{} verbunden", port_name(&port));
+    let text = status_with(&mut h, &appeared, 6).expect("no notice for the new port");
+    assert!(text.contains(&appeared), "{text}");
     assert_eq!(
         h.state().ui().status.as_ref().unwrap().kind,
         StatusKind::Info
     );
     // Nothing changed since: no further change is reported.
-    assert!(!h.state_mut().engine_mut().scan_midi());
-    assert!(h.state_mut().engine_mut().take_midi_changes().is_empty());
+    assert!(changes_of(&mut h, &port).is_empty());
 
     drop(out);
-    let text = status_with(&mut h, "getrennt", 6).expect("no notice for the vanished port");
-    assert_eq!(text, format!("{} getrennt", port_name(&port)));
+    let vanished = format!("{} getrennt", port_name(&port));
+    let text = status_with(&mut h, &vanished, 6).expect("no notice for the vanished port");
+    assert!(text.contains(&vanished), "{text}");
 }
