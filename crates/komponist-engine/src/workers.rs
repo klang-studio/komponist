@@ -254,17 +254,10 @@ pub(crate) struct Pool {
     status: WorkerStatus,
 }
 
-impl Pool {
-    /// Non-RT. Starts `threads` workers (at most [`MAX_WORKERS`]) whose lanes are `1 ..= threads`,
-    /// at `SCHED_FIFO` `priority` if given. `None` if not a single thread could start (the status
-    /// says why).
-    pub(crate) fn start(
-        threads: usize,
-        priority: Option<i32>,
-        stats: Arc<WorkerStats>,
-    ) -> (Option<Pool>, WorkerStatus) {
-        let threads = threads.min(MAX_WORKERS);
-        let shared = Arc::new(Shared {
+impl Shared {
+    /// Non-RT. The state of a pool without any batch, at epoch 0.
+    fn new(stats: Arc<WorkerStats>) -> Shared {
+        Shared {
             wake: Padded(AtomicU32::new(0)),
             ready: Padded(Ready::new()),
             finished: Padded(AtomicU32::new(0)),
@@ -277,7 +270,21 @@ impl Pool {
                 fp: 0,
             }),
             stats,
-        });
+        }
+    }
+}
+
+impl Pool {
+    /// Non-RT. Starts `threads` workers (at most [`MAX_WORKERS`]) whose lanes are `1 ..= threads`,
+    /// at `SCHED_FIFO` `priority` if given. `None` if not a single thread could start (the status
+    /// says why).
+    pub(crate) fn start(
+        threads: usize,
+        priority: Option<i32>,
+        stats: Arc<WorkerStats>,
+    ) -> (Option<Pool>, WorkerStatus) {
+        let threads = threads.min(MAX_WORKERS);
+        let shared = Arc::new(Shared::new(stats));
         let mut status = WorkerStatus {
             priority,
             ..WorkerStatus::default()
@@ -287,12 +294,17 @@ impl Pool {
         for lane in 1..=threads {
             let shared = Arc::clone(&shared);
             let ready = ready_tx.clone();
+            // The epoch the worker starts from is read here, before it runs: a worker that reads
+            // it itself can come up after `Drop` bumped it for the shutdown, take that bump as its
+            // start and sleep through it (a pool dropped right after it started hung in `join` on
+            // slow CI runners, 2026-11-15).
+            let seen = shared.wake.0.load(Ordering::Acquire);
             let spawned = std::thread::Builder::new()
                 .name(format!("komponist-worker-{lane}"))
                 .spawn(move || {
                     let realtime = priority.map(sys::set_current_thread_fifo);
                     let _ = ready.send(realtime);
-                    work(&shared, lane);
+                    work(&shared, lane, seen);
                 });
             match spawned {
                 Ok(handle) => handles.push(handle),
@@ -461,21 +473,22 @@ impl core::fmt::Debug for Pool {
 /// its real function).
 unsafe fn noop(_: *const (), _: usize, _: usize, _: &Publisher<'_>) {}
 
-/// A worker's loop: sleep until a new epoch, claim and run jobs, report each finished job.
-fn work(shared: &Shared, lane: usize) {
-    let mut seen = shared.wake.0.load(Ordering::Acquire);
+/// A worker's loop: sleep until a new epoch after `seen` (the epoch when it was spawned), claim
+/// and run jobs, report each finished job. The shutdown flag is looked at on every round, so even
+/// a missed wake-up ends the worker within [`IDLE_WAIT`].
+fn work(shared: &Shared, lane: usize, mut seen: u32) {
     let mut fp = sys::fp_state();
     assert_no_alloc::assert_no_alloc(|| {
         loop {
+            if shared.shutdown.load(Ordering::Acquire) {
+                break;
+            }
             let epoch = shared.wake.0.load(Ordering::Acquire);
             if epoch == seen {
                 sys::wait_while(&shared.wake.0, seen, Instant::now() + IDLE_WAIT);
                 continue;
             }
             seen = epoch;
-            if shared.shutdown.load(Ordering::Acquire) {
-                break;
-            }
             while let Some(j) = shared.ready.0.claim() {
                 // SAFETY: this thread holds a claimed job of the batch, so the descriptor is the
                 // one published with it and stays unchanged until the job is reported.
@@ -508,6 +521,37 @@ fn work(shared: &Shared, lane: usize) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    /// A worker that runs only after the pool was dropped (its shutdown wake-up already
+    /// happened) still ends: it starts from the epoch of its spawn, not from the one it finds.
+    #[test]
+    fn a_worker_that_starts_after_the_shutdown_ends() {
+        let shared = Arc::new(Shared::new(Arc::default()));
+        let seen = shared.wake.0.load(Ordering::Acquire);
+        // `Pool::drop`, before the worker ran.
+        shared.shutdown.store(true, Ordering::Release);
+        shared.wake.0.fetch_add(1, Ordering::AcqRel);
+        sys::wake(&shared.wake.0, usize::MAX);
+        let worker = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || work(&shared, 1, seen))
+        };
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline, "the worker missed the shutdown");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap();
+    }
+
+    /// Many pools dropped right after they started: none hangs in `join`.
+    #[test]
+    fn pools_dropped_at_once_join() {
+        for _ in 0..200 {
+            let (pool, _) = Pool::start(2, None, Arc::default());
+            drop(pool);
+        }
+    }
 
     #[test]
     fn auto_count_leaves_room_for_the_system() {
