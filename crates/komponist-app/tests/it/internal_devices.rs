@@ -666,3 +666,180 @@ fn the_eq_taps_its_output_only_while_it_is_shown_and_analyse_is_on() {
     play(&mut h, SECOND / 2, &[]);
     assert_eq!(tapped(h.state(), eq), hidden, "a hidden EQ costs nothing");
 }
+
+// ------------------------------------------------------------------------------------------------
+// The compressor „presse“ (WP-93)
+
+#[test]
+fn the_browser_lists_presse_under_dynamics_and_a_double_click_adds_it() {
+    let (mut app, track) = app_with_track();
+    app.dispatch(Action::Ui(UiAction::SetBrowserSegment(
+        BrowserSegment::Effects,
+    )));
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::SetBrowserQuery("presse".into())));
+    h.run_steps(2);
+    let row = h.get_by_role_and_label(Role::ListItem, "presse").rect();
+    double_click(&mut h, row.center());
+    let devices = chain(h.state(), track);
+    assert_eq!(devices.last().unwrap().1, "presse");
+    let (_, _, d) = h.state().project().find_device(devices[1].0).unwrap();
+    assert_eq!(d.plugin.format, PluginFormat::Builtin);
+    assert_eq!(d.plugin.id, "presse");
+    assert_eq!(h.state().engine().host().status(d.id), DeviceStatus::Ok);
+    h.get_by_role_and_label(Role::Group, &names::card("presse"));
+    // The card has the two graphs and the meter.
+    h.get_by_role_and_label(Role::Group, "Kennlinie");
+    h.get_by_role_and_label(Role::Group, "Reduktion \u{b7} 4 s");
+    h.get_by_role_and_label(Role::Slider, "Threshold");
+}
+
+#[test]
+fn toggling_the_presse_lookahead_while_playing_updates_the_delay_compensation() {
+    let (mut app, with_presse) = app_with_track();
+    let pisynth = app.engine().host().catalog().entries()[0].plugin.clone();
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: pisynth,
+        target: DropTarget::NewTrack { index: None },
+    }));
+    let plain = app.project().tracks[1].id;
+    add(
+        &mut app,
+        Internal::Presse,
+        DropTarget::Chain {
+            channel: ChannelRef::Track(with_presse),
+            index: 1,
+        },
+    );
+    let presse = chain(&app, with_presse)[1].0;
+    let pdc = |app: &App, track: TrackId| {
+        app.engine()
+            .program()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == track)
+            .unwrap()
+            .pdc_delay
+    };
+    app.engine_mut().hold_engine().expect("engine held");
+    app.dispatch(Action::Transport(
+        komponist_app::TransportAction::TogglePlay,
+    ));
+    // Lookahead is off by default: nothing to compensate.
+    app.step();
+    assert_eq!(app.engine().host().latency(presse), 0);
+    assert_eq!(pdc(&app, plain), 0);
+    // On: 3 ms, the other track waits for it.
+    set_param(&mut app, presse, Internal::Presse, "lookahead", 1.0);
+    assert!(app.engine_mut().run_held(1024, &[], 0));
+    app.step();
+    let frames = app.engine().host().latency(presse);
+    assert!(frames > 0, "3 ms of lookahead");
+    assert_eq!(pdc(&app, plain), frames);
+    assert_eq!(pdc(&app, with_presse), 0);
+    // Off again.
+    set_param(&mut app, presse, Internal::Presse, "lookahead", 0.0);
+    assert!(app.engine_mut().run_held(1024, &[], 0));
+    app.step();
+    assert_eq!(pdc(&app, plain), 0);
+}
+
+/// The sample tap of `device`, for the counters.
+fn tap_of(app: &App, device: DeviceId) -> std::sync::Arc<komponist_engine::SampleTap> {
+    let mut tap = None;
+    app.engine().host().for_each_meter(&mut |id, meter| {
+        if id == device {
+            tap = meter.tap().cloned();
+        }
+    });
+    tap.expect("presse has a tap")
+}
+
+/// Plays one second of a note through a track with `presse` (threshold −40 dB, so it compresses)
+/// and gives the harness and the device.
+fn playing_presse() -> (Harness<'static, App>, DeviceId) {
+    use komponist_engine::{MidiInEvent, MidiPort};
+    let (mut app, track) = app_with_track();
+    add(&mut app, Internal::Presse, DropTarget::Track(track));
+    let presse = chain(&app, track)[1].0;
+    for (key, v) in [("threshold", -40.0), ("ratio", 8.0), ("detector", 0.0)] {
+        set_param(&mut app, presse, Internal::Presse, key, v);
+    }
+    app.dispatch(Action::Edit(komponist_app::EditAction::SetTrackProp {
+        tracks: vec![track],
+        prop: komponist_model::edits::TrackProp::Arm(true),
+    }));
+    app.engine_mut().hold_engine().expect("engine held");
+    let mut h = harness(app);
+    let note = MidiInEvent {
+        frame: 0,
+        port: MidiPort(1),
+        data: [0x90, 57, 127],
+    };
+    h.run_steps(2);
+    for chunk in 0..10 {
+        let events: &[MidiInEvent] = if chunk == 0 { &[note] } else { &[] };
+        assert!(h.state_mut().engine_mut().run_held(4800, events, 0));
+        h.run_steps(2);
+    }
+    (h, presse)
+}
+
+#[test]
+fn the_presse_card_follows_the_signal_only_while_it_is_shown() {
+    let (mut h, presse) = playing_presse();
+    let tap = tap_of(h.state(), presse);
+    assert!(tap.written() > 0, "a visible presse feeds its tap");
+    // A pair is two samples; the audio thread writes whole pairs.
+    assert_eq!(tap.written() % 2, 0);
+    // Hidden (another dock tab): the lease runs out within half a second of audio.
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
+    h.run_steps(3);
+    for _ in 0..10 {
+        assert!(h.state_mut().engine_mut().run_held(4800, &[], 0));
+        h.run_steps(1);
+    }
+    let hidden = tap.written();
+    for _ in 0..5 {
+        assert!(h.state_mut().engine_mut().run_held(4800, &[], 0));
+        h.run_steps(1);
+    }
+    assert_eq!(tap.written(), hidden, "a hidden presse costs nothing");
+}
+
+#[test]
+fn the_presse_meter_shows_the_reduction_the_engine_measured() {
+    let (h, presse) = playing_presse();
+    let mut range = None;
+    h.state().engine().host().for_each_meter(&mut |id, meter| {
+        if id == presse {
+            range = Some(meter.gr_range_db());
+        }
+    });
+    assert_eq!(range, Some(24.0), "24 dB range");
+    let text = h
+        .get_by_role_and_label(
+            Role::Meter,
+            komponist_ui::widgets::device::meter_gr::ACCESSIBLE_NAME,
+        )
+        .accesskit_node()
+        .value()
+        .unwrap_or_default();
+    assert!(text.contains("\u{2212}"), "a reduction is shown: {text}");
+}
+
+#[test]
+fn snapshot_of_the_presse_frame_while_playing() {
+    let (mut h, _) = playing_presse();
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    let mut results = SnapshotResults::new();
+    h.snapshot("devices-presse-live-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}
