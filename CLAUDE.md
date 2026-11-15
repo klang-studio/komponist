@@ -128,3 +128,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
     command line contains the pattern, so the loop never ends (six such loops ran forever on 2026-11-13).
     Start long commands with `run_in_background` and wait for their completion notification; if you
     must poll, wait on a PID (`while kill -0 $PID; do sleep 3; done`) or use `pgrep -x`.
+
+14. **Hands off the owner's system:** never connect to the owner's real MIDI or audio hardware (tests use virtual
+    ports only, e.g. `MidiInputHub::only_connect_to`), never load modules into PipeWire/PulseAudio/JACK or change
+    system audio settings, and never write outside the worktree, scratch dirs and the NVMe build folder. **If a tool
+    call is blocked, stop and report it — do not retry the same action another way** (2026-11-15).
