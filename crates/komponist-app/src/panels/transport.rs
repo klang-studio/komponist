@@ -2,7 +2,7 @@
 //!
 //! Left to right, 16 apart, padding 0 12, on `surface.1`: wordmark "komponist" (`type.track`),
 //! project name (`type.ui`, `text.2`) and the unsaved dot; Play / Stop / Record (30 × 28,
-//! geometric shapes); Loop, Metronom, Vorzähler 1 (toggle buttons); the padded position
+//! geometric shapes); Loop, Metronom, Vorzähler 1 (icon toggle buttons, count-in with its bar count); the padded position
 //! `fmt_pos` (`type.value.l`) and the time (`type.value.m`, `text.3`); the tempo field (BPM);
 //! the meter "4/4". On the right: "Kein Audio-Gerät" (only without device), CPU load, the master
 //! meter, the "⋯" menu. The texts come from `locales/*/transport.ftl` (`docs/I18N.md`); German
@@ -340,24 +340,53 @@ fn transport_buttons(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<
 fn toggles(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let p = model.project;
     let t = model.lang;
+    // Icon toggles: the German label stays the AccessKit name, the tooltip carries it with the
+    // shortcut. The count-in shows its bar count beside the icon (1 while it is off, as the
+    // next click turns on one bar).
+    let bars = p.count_in_bars;
+    let bars_text = bars.max(1).to_string();
+    let count_in_tip = if bars > 0 {
+        t.transport_count_in_tip(i64::from(bars))
+    } else {
+        t.transport_count_in_off_tip().to_owned()
+    };
     let items = [
-        (t.transport_loop(), p.loop_on, TransportAction::ToggleLoop),
         (
+            Icon::Repeat,
+            t.transport_loop(),
+            p.loop_on,
+            TransportAction::ToggleLoop,
+            None,
+        ),
+        (
+            Icon::Metronome,
             t.transport_metronome(),
             p.metronome,
             TransportAction::ToggleMetronome,
+            None,
         ),
         (
+            Icon::Timer,
             t.transport_count_in(),
-            p.count_in_bars > 0,
+            bars > 0,
             TransportAction::ToggleCountIn,
+            Some(bars_text.as_str()),
         ),
     ];
-    for (name, on, action) in items {
+    for (icon, name, on, action, badge) in items {
         let action = Action::Transport(action);
         let shortcut = model.keymap.label_for(&action, t);
-        let mut button = Button::new(name).on(on);
-        if let Some(sc) = shortcut.as_deref() {
+        let mut button = Button::icon(icon, name).on(on);
+        if let Some(badge) = badge {
+            button = button.badge(badge);
+        }
+        if badge.is_some() {
+            let mut tip = Tip::new(&count_in_tip);
+            if let Some(sc) = shortcut.as_deref() {
+                tip = tip.shortcut(sc);
+            }
+            button = button.tip(tip);
+        } else if let Some(sc) = shortcut.as_deref() {
             button = button.shortcut(sc);
         }
         if ui.add(button).clicked() {
