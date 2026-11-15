@@ -396,6 +396,21 @@ impl Bridge {
         self.snapshot_soon();
     }
 
+    /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
+    /// plugin's parameter values follow with the bridge's echo. `false` while the bridge is not
+    /// running (it then starts with the state it was given).
+    pub(crate) fn set_state(&mut self, state: &Arc<[u8]>) -> bool {
+        if self.phase != Phase::Running {
+            return false;
+        }
+        self.user_changed();
+        self.last_state = Some(Arc::clone(state));
+        self.send(ControlMsg::SetState {
+            state: state.to_vec(),
+        });
+        true
+    }
+
     /// Sends `OpenGui`; the watchdog waits while it is outstanding.
     pub(crate) fn open_gui(&mut self, parent_xid: u64, scale: f64) -> Result<(), PluginError> {
         if !self.has_gui {

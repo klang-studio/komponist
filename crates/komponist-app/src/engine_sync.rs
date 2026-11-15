@@ -380,6 +380,96 @@ impl EngineSync {
         }
     }
 
+    /// Brings the running devices in line with their document state after a change that
+    /// replaced states outside the dispatcher's own paths (undo, redo, a preset, a paste over):
+    /// every device in both `before` and `after` whose state differs follows `after`.
+    ///
+    /// - pisynth gets a fresh processor made from its patch (like a preset load);
+    /// - an internal device gets the parameters that differ as `SetParam`, so tails and sounding
+    ///   notes go on; the Sampler also loads or clears the pads whose sample link differs (into
+    ///   `project_dir`'s samples); a state that does not decode gives a fresh processor;
+    /// - a bridged plugin gets `SetState` over its control socket.
+    ///
+    /// Devices without slot (not in the sent program yet) are skipped: their processor is made
+    /// from the document state when the program is sent.
+    pub fn sync_device_states(
+        &mut self,
+        before: &Project,
+        after: &Project,
+        project_dir: Option<&std::path::Path>,
+    ) {
+        let devices = after
+            .tracks
+            .iter()
+            .flat_map(|t| t.channel.devices.iter())
+            .chain(after.master.devices.iter());
+        for device in devices {
+            let Some((_, _, old)) = before.find_device(device.id) else {
+                continue;
+            };
+            if Arc::ptr_eq(old, device) || old.state == device.state {
+                continue;
+            }
+            let has_slot = self
+                .previous
+                .as_ref()
+                .is_some_and(|p| p.slots.slot(device.id).is_some());
+            if has_slot {
+                self.follow_state(old, device, after, project_dir);
+            }
+        }
+    }
+
+    fn follow_state(
+        &mut self,
+        old: &komponist_model::Device,
+        device: &komponist_model::Device,
+        project: &Project,
+        project_dir: Option<&std::path::Path>,
+    ) {
+        use crate::device_host::{internal_kind, is_pisynth};
+        if is_pisynth(device) {
+            self.reload_device(project, device.id);
+        } else if let Some(kind) = internal_kind(device) {
+            let values = |d: &komponist_model::Device| kind.decode_state(d.state.as_deref());
+            let (Ok(was), Ok(now)) = (values(old), values(device)) else {
+                self.reload_device(project, device.id);
+                return;
+            };
+            let slot = self
+                .previous
+                .as_ref()
+                .and_then(|p| p.slots.slot(device.id))
+                .expect("checked by the caller");
+            for (id, (a, b)) in was.iter().zip(&now).enumerate() {
+                if a != b {
+                    self.send(Command::SetParam {
+                        slot,
+                        id: id as u32,
+                        value: *b,
+                    });
+                }
+            }
+            if let Some(handle) = self.host.sampler(device.id) {
+                use komponist_builtin::sampler::links;
+                let old_links = links::read(old.state.as_deref());
+                let new_links = links::read(device.state.as_deref());
+                for (pad, link) in &new_links {
+                    if !old_links.iter().any(|(p, l)| p == pad && l == link) {
+                        handle.load_link(*pad, link.clone(), project_dir.map(Into::into));
+                    }
+                }
+                for (pad, _) in &old_links {
+                    if !new_links.iter().any(|(p, _)| p == pad) {
+                        handle.clear(*pad);
+                    }
+                }
+            }
+        } else if let Some(state) = &device.state {
+            self.host.set_state(device.id, state);
+        }
+    }
+
     /// A fast-path command for a change the dispatcher just applied inside a gesture
     /// (`SetTrackGain`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`, `SetMasterGain`):
     /// `before` and `after` are the document revisions around the change. The engine gets the
@@ -670,9 +760,19 @@ impl EngineSync {
     /// counted from the start of this call, sorted) heard `output_latency` frames late, as a
     /// stream would. Returns `false` if no engine is held.
     pub fn run_held(&mut self, frames: usize, midi: &[MidiInEvent], output_latency: u32) -> bool {
-        let Some(process) = self.held.as_mut() else {
-            return false;
-        };
+        self.run_held_capture(frames, midi, output_latency).is_some()
+    }
+
+    /// [`EngineSync::run_held`] that also returns what the engine rendered (left, right); `None`
+    /// if no engine is held.
+    pub fn run_held_capture(
+        &mut self,
+        frames: usize,
+        midi: &[MidiInEvent],
+        output_latency: u32,
+    ) -> Option<(Vec<f32>, Vec<f32>)> {
+        let process = self.held.as_mut()?;
+        let mut out = (Vec::with_capacity(frames), Vec::with_capacity(frames));
         let mut block_midi = Vec::with_capacity(midi.len());
         let mut done = 0;
         while done < frames {
@@ -697,9 +797,11 @@ impl EngineSync {
                 ..
             } = &mut **process;
             engine.process(&mut left[..n], &mut right[..n], &input);
+            out.0.extend_from_slice(&left[..n]);
+            out.1.extend_from_slice(&right[..n]);
             done += n;
         }
-        true
+        Some(out)
     }
 
     /// Tests: gives the held engine back to the stream.

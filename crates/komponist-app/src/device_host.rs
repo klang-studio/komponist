@@ -146,6 +146,14 @@ pub trait DeviceHost {
         false
     }
 
+    /// Restores `state` in the running plugin of a bridged device (undo or redo changed the state
+    /// in the document); `false` if this host does not handle `device` or its bridge is not
+    /// running.
+    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        let _ = (device, state);
+        false
+    }
+
     /// Why the device's stored state could not be loaded, while that matters (device card
     /// warning „Zustand konnte nicht geladen werden“).
     fn state_warning(&self, device: DeviceId) -> Option<&str> {
@@ -638,6 +646,10 @@ impl DeviceHost for PluginHost {
         }
         self.manager.set_param(device, id, value);
         true
+    }
+
+    fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.is_external(device) && self.manager.set_state(device, state)
     }
 
     fn state_warning(&self, device: DeviceId) -> Option<&str> {

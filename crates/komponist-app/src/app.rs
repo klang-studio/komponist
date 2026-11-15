@@ -709,48 +709,24 @@ impl App {
         let Some(state) = kind.preset_state(d.state.as_deref(), index) else {
             return;
         };
-        let Some(values) = kind.preset_values(index) else {
-            return;
-        };
         let state: Arc<[u8]> = state.into();
-        if !self.apply("Preset laden", |p| {
+        // The changed values reach the running processor as `SetParam`s (`follow_device_states`).
+        self.apply("Preset laden", |p| {
             edits::set_device_state(p, device, Some(Arc::clone(&state)))
-        }) {
-            return;
-        }
-        if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
-            for (id, value) in values.into_iter().enumerate() {
-                self.engine.send(Command::SetParam {
-                    slot,
-                    id: id as u32,
-                    value,
-                });
-            }
-        }
+        });
     }
 
-    /// After undo or redo: internal devices with presets whose state changed get a fresh
-    /// processor, so the engine follows the card (a state change is not otherwise sent).
-    fn reload_changed_presets(&mut self, before: &Arc<Project>) {
+    /// After a tracked document change (an edit, undo, redo): every device whose state changed
+    /// is brought in sync with the running processor (`EngineSync::sync_device_states`), since
+    /// a state change is not otherwise sent to the engine.
+    fn follow_device_states(&mut self, before: &Arc<Project>) {
         let after = Arc::clone(self.doc.project());
-        let changed: Vec<DeviceId> = after
-            .tracks
-            .iter()
-            .flat_map(|t| t.channel.devices.iter())
-            .chain(after.master.devices.iter())
-            .filter(|d| {
-                crate::device_host::internal_kind(d).is_some_and(|k| !k.presets().is_empty())
-            })
-            .filter(|d| {
-                before
-                    .find_device(d.id)
-                    .is_some_and(|(_, _, old)| old.state != d.state)
-            })
-            .map(|d| d.id)
-            .collect();
-        for device in changed {
-            self.engine.reload_device(&after, device);
+        if Arc::ptr_eq(before, &after) {
+            return;
         }
+        let dir = self.project_dir();
+        self.engine
+            .sync_device_states(before, &after, dir.as_deref());
     }
 
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
@@ -1208,8 +1184,12 @@ impl App {
 
     /// Applies `edit` as an undo step `label` (or inside the open gesture); records a failure.
     fn apply(&mut self, label: &str, edit: impl FnOnce(&Project) -> EditResult) -> bool {
+        let before = Arc::clone(self.doc.project());
         match self.doc.apply(label, edit) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.follow_device_states(&before);
+                true
+            }
             Err(e) => {
                 self.shell.last_error = Some(e);
                 false
@@ -1223,8 +1203,12 @@ impl App {
         label: &str,
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
     ) -> Option<T> {
+        let before = Arc::clone(self.doc.project());
         match self.doc.apply_with(label, edit) {
-            Ok(v) => Some(v),
+            Ok(v) => {
+                self.follow_device_states(&before);
+                Some(v)
+            }
             Err(e) => {
                 self.shell.last_error = Some(e);
                 None
@@ -1239,13 +1223,17 @@ impl App {
         label: &str,
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
     ) -> Option<T> {
+        let before = Arc::clone(self.doc.project());
         let result = if self.doc.in_gesture() {
             self.doc.apply_in_gesture_with(edit)
         } else {
             self.doc.apply_with(label, edit)
         };
         match result {
-            Ok(v) => Some(v),
+            Ok(v) => {
+                self.follow_device_states(&before);
+                Some(v)
+            }
             Err(e) => {
                 self.shell.last_error = Some(e);
                 None
@@ -1273,12 +1261,12 @@ impl App {
             EditAction::Undo => {
                 let before = Arc::clone(self.doc.project());
                 self.doc.undo();
-                self.reload_changed_presets(&before);
+                self.follow_device_states(&before);
             }
             EditAction::Redo => {
                 let before = Arc::clone(self.doc.project());
                 self.doc.redo();
-                self.reload_changed_presets(&before);
+                self.follow_device_states(&before);
             }
             EditAction::BeginGesture { label } => self.doc.begin_gesture(label),
             EditAction::EndGesture => self.doc.end_gesture(),
@@ -2140,11 +2128,9 @@ impl App {
                     return;
                 };
                 let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
-                if self.apply("Preset laden", |p| {
+                self.apply("Preset laden", |p| {
                     edits::set_device_state(p, device, Some(Arc::clone(&state)))
-                }) {
-                    self.engine.reload_device(self.doc.project(), device);
-                }
+                });
             }
             PluginAction::ApplyInternalPreset { device, index } => {
                 self.apply_internal_preset(device, index);

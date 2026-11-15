@@ -550,6 +550,14 @@ impl PluginManager {
         }
     }
 
+    /// Restores `state` in the running plugin of `device` (undo or redo changed the device's
+    /// state in the document); `false` if the device has no running bridge.
+    pub fn set_state(&mut self, device: DeviceId, state: &Arc<[u8]>) -> bool {
+        self.bridges
+            .get_mut(&device)
+            .is_some_and(|bridge| bridge.set_state(state))
+    }
+
     /// Asks for a state snapshot; it arrives as [`PluginManagerEvent::StateSnapshot`] (not while
     /// the device has a [`Self::state_warning`]).
     pub fn request_state(&mut self, device: DeviceId) {
