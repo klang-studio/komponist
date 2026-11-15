@@ -12,7 +12,7 @@
 //! with an offset) carry the **total** delta since the drag start and are applied with
 //! `Document::apply_in_gesture` (to the state at `BeginGesture`), so each replaces the previous
 //! intermediate state and clamping never accumulates. All other actions (step painting, fader
-//! values) are applied to the current state.
+//! values, device parameters) are applied to the current state.
 
 use std::path::PathBuf;
 
@@ -396,7 +396,19 @@ pub enum PluginAction {
     CloseWindow(DeviceId),
     /// "Neu laden" on a crashed device.
     Reload(DeviceId),
-    /// Generic parameter knob or device-card macro.
+    /// A drag or a wheel burst on parameter `id` of `device` starts: opens a gesture whose one undo
+    /// step is named after the parameter („Cutoff ändern“). `Edit(EndGesture)` closes it (or
+    /// `CancelGesture`: the device goes back to the value it had). Without it every
+    /// [`PluginAction::SetParam`] is a step of its own.
+    BeginParamGesture {
+        /// The device.
+        device: DeviceId,
+        /// Parameter id.
+        id: u32,
+    },
+    /// Generic parameter knob or device-card macro. An undoable change of the device's state
+    /// (pisynth, internal devices) or of the bridged plugin (its snapshot follows, see
+    /// `crate::param_undo`).
     SetParam {
         /// The device.
         device: DeviceId,

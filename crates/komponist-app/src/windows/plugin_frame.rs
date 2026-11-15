@@ -578,6 +578,13 @@ impl App {
                 self.queue
                     .push(Action::Plugin(PluginAction::Reload(device)));
             }
+            Output::Body(BodyEvent::BeginGesture { id }) => {
+                self.queue
+                    .push(Action::Plugin(PluginAction::BeginParamGesture { device, id }));
+            }
+            Output::Body(BodyEvent::EndGesture) => {
+                self.queue.push(Action::Edit(EditAction::EndGesture));
+            }
             Output::Body(BodyEvent::SetParam { id, value }) => {
                 self.queue
                     .push(Action::Plugin(PluginAction::SetParam { device, id, value }));

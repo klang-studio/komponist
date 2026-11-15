@@ -55,10 +55,36 @@ pub fn send_gesture(
     label: &str,
     action: impl FnOnce() -> Action,
 ) {
+    let mut out = Vec::new();
+    gesture_actions(
+        response,
+        response.changed(),
+        || {
+            Action::Edit(EditAction::BeginGesture {
+                label: label.to_owned(),
+            })
+        },
+        &mut out,
+        |out| out.push(action()),
+    );
+    for action in out {
+        ctx.send(action);
+    }
+}
+
+/// The gesture bracket of [`send_gesture`] for views that collect their actions in a `Vec` (the
+/// device cards): `begin` is pushed when the drag starts or the first wheel notch comes, `change`
+/// runs when `changed` (and pushes the edits), `Edit(EndGesture)` follows when the drag stops or the
+/// wheel burst ends. A change without drag or wheel is not bracketed: one undo step of its own.
+pub fn gesture_actions(
+    response: &Response,
+    changed: bool,
+    begin: impl Fn() -> Action,
+    out: &mut Vec<Action>,
+    change: impl FnOnce(&mut Vec<Action>),
+) {
     if response.drag_started() {
-        ctx.send(Action::Edit(EditAction::BeginGesture {
-            label: label.to_owned(),
-        }));
+        out.push(begin());
     }
     // A burst of wheel notches is one gesture: it opens with the first notch and closes after
     // [`WHEEL_GESTURE_IDLE`] without one, or when the pointer leaves the control.
@@ -68,21 +94,19 @@ pub fn send_gesture(
     let mut open: Option<f64> = response.ctx.data(|d| d.get_temp(wheel));
     if turned {
         if open.is_none() {
-            ctx.send(Action::Edit(EditAction::BeginGesture {
-                label: label.to_owned(),
-            }));
+            out.push(begin());
         }
         open = Some(now);
     }
-    if response.changed() {
-        ctx.send(action());
+    if changed {
+        change(out);
     }
     if response.drag_stopped() {
-        ctx.send(Action::Edit(EditAction::EndGesture));
+        out.push(Action::Edit(EditAction::EndGesture));
     }
     if let Some(last) = open {
         if !turned && (now - last >= WHEEL_GESTURE_IDLE || !response.hovered()) {
-            ctx.send(Action::Edit(EditAction::EndGesture));
+            out.push(Action::Edit(EditAction::EndGesture));
             open = None;
         } else if !turned {
             response

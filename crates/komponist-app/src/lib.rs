@@ -50,6 +50,7 @@ pub mod keymap;
 pub mod layout;
 pub mod meters;
 pub mod metrics;
+pub mod param_undo;
 pub mod panels;
 pub mod project_io;
 pub mod record;

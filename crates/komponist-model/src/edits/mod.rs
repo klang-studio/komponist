@@ -1193,8 +1193,9 @@ pub fn set_device_bypass(project: &Project, device: DeviceId, bypass: bool) -> E
     edit_device(project, device, |d| d.bypass = bypass)
 }
 
-/// Stores a plugin state snapshot. Apply with [`crate::Document::apply_untracked`] for snapshots
-/// taken by the plugin manager; a preset loaded on purpose is an undoable edit.
+/// Stores a device state: a parameter value, a preset, a sample link, a plugin's own snapshot.
+/// A tracked edit (one undo step per gesture); [`crate::Document::apply_untracked`] only for the
+/// states that must not enter the history (sample paths rewritten on save, the echo of an undo).
 pub fn set_device_state(
     project: &Project,
     device: DeviceId,
