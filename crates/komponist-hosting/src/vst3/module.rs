@@ -240,6 +240,7 @@ pub(crate) fn audio_classes(
                 kind: crate::scan::kind_from_features(PluginFormat::Vst3, &features),
                 features,
                 bundle: bundle.clone(),
+                sidechain: false,
             },
         ));
     }

@@ -4,8 +4,9 @@
 //! each direction (`setBusArrangements`) and adapts what the plugin settles on, like the CLAP layer:
 //!
 //! - **Input:** the main input bus gets the stereo input (a mono bus `(L + R) / 2`, more than two
-//!   channels L and R and silence). Every other input bus gets silence. An instrument without
-//!   audio inputs gets `numInputs = 0`.
+//!   channels L and R and silence). The sidechain bus (the first `kAux` input bus, #6) gets the
+//!   block's sidechain the same way, or silence without one. Every other input bus gets silence.
+//!   An instrument without audio inputs gets `numInputs = 0`.
 //! - **Output:** the main output bus is read back (mono to both channels, more channels: the first
 //!   two; channels flagged silent are zeroed). Other output buses are rendered into scratch
 //!   buffers and discarded. Without output buses the input passes through.
@@ -70,6 +71,8 @@ const CC_ALL_NOTES_OFF: u8 = 123;
 pub(crate) struct BusLayout {
     pub(crate) channels: Vec<u32>,
     pub(crate) main: Option<usize>,
+    /// Inputs only: the sidechain bus (#6).
+    pub(crate) sidechain: Option<usize>,
 }
 
 impl BusLayout {
@@ -82,7 +85,9 @@ impl BusLayout {
 struct BusBuffers {
     channels: Vec<u32>,
     main: Option<usize>,
-    main_first: usize,
+    sidechain: Option<usize>,
+    /// Per bus: the index of its first channel in `data`.
+    firsts: Vec<usize>,
     stride: usize,
     data: Vec<f32>,
     /// One pointer per channel into `data`, grouped by bus; `buses` point into it.
@@ -100,8 +105,10 @@ impl BusBuffers {
             .map(|ch| unsafe { base.add(ch * max_frames) })
             .collect();
         let mut buses = Vec::with_capacity(layout.channels.len());
+        let mut firsts = Vec::with_capacity(layout.channels.len());
         let mut first = 0usize;
         for &count in &layout.channels {
+            firsts.push(first);
             let channel_buffers = if count == 0 {
                 std::ptr::null_mut()
             } else {
@@ -116,14 +123,11 @@ impl BusBuffers {
             });
             first += count as usize;
         }
-        let main_first = layout
-            .main
-            .map(|m| layout.channels[..m].iter().map(|&c| c as usize).sum())
-            .unwrap_or(0);
         BusBuffers {
             channels: layout.channels.clone(),
             main: layout.main,
-            main_first,
+            sidechain: layout.sidechain,
+            firsts,
             stride: max_frames,
             data,
             _pointers: pointers,
@@ -135,9 +139,35 @@ impl BusBuffers {
         self.main.map_or(0, |m| self.channels[m] as usize)
     }
 
-    fn main_channel(&mut self, ch: usize, frames: usize) -> &mut [f32] {
-        let start = (self.main_first + ch) * self.stride;
+    /// Channel `ch` of bus `bus`, `frames` long.
+    fn bus_channel(&mut self, bus: usize, ch: usize, frames: usize) -> &mut [f32] {
+        let start = (self.firsts[bus] + ch) * self.stride;
         &mut self.data[start..start + frames]
+    }
+
+    fn main_channel(&mut self, ch: usize, frames: usize) -> &mut [f32] {
+        let main = self.main.expect("a main bus");
+        self.bus_channel(main, ch, frames)
+    }
+
+    /// Writes the stereo `src` into `bus`, adapted to its channel count: a mono bus gets the mid
+    /// signal, a bus with more channels L and R and (already) silence in the rest.
+    fn write_stereo(&mut self, bus: usize, src: [&[f32]; 2], frames: usize) {
+        match self.channels[bus] {
+            0 => {}
+            1 => {
+                let mono = self.bus_channel(bus, 0, frames);
+                for ((m, l), r) in mono.iter_mut().zip(src[0]).zip(src[1]) {
+                    *m = 0.5 * (l + r);
+                }
+            }
+            _ => {
+                for (ch, samples) in src.iter().enumerate() {
+                    self.bus_channel(bus, ch, frames)
+                        .copy_from_slice(&samples[..frames]);
+                }
+            }
+        }
     }
 
     /// Zeroes the first `frames` of every channel and clears the silence flags.
@@ -150,23 +180,20 @@ impl BusBuffers {
         }
     }
 
-    /// Input side: silences every bus, then writes the stereo `input` into the main bus.
-    fn fill_from_stereo(&mut self, input: [&[f32]; 2], frames: usize) {
+    /// Input side: silences every bus, then writes the stereo `input` into the main bus and the
+    /// `sidechain` (if any) into the sidechain bus.
+    fn fill_from_stereo(
+        &mut self,
+        input: [&[f32]; 2],
+        sidechain: Option<[&[f32]; 2]>,
+        frames: usize,
+    ) {
         self.clear(frames);
-        match self.main_channels() {
-            0 => {}
-            1 => {
-                let mono = self.main_channel(0, frames);
-                for ((m, l), r) in mono.iter_mut().zip(input[0]).zip(input[1]) {
-                    *m = 0.5 * (l + r);
-                }
-            }
-            _ => {
-                for (ch, src) in input.iter().enumerate() {
-                    self.main_channel(ch, frames)
-                        .copy_from_slice(&src[..frames]);
-                }
-            }
+        if let Some(main) = self.main {
+            self.write_stereo(main, input, frames);
+        }
+        if let (Some(bus), Some(sidechain)) = (self.sidechain, sidechain) {
+            self.write_stereo(bus, sidechain, frames);
         }
     }
 
@@ -535,13 +562,17 @@ impl HostedProcessor for Vst3Processor {
         if block.frames == 0
             || block.frames > self.max_frames
             || block.input.iter().any(|c| c.len() < frames)
+            || block
+                .sidechain
+                .is_some_and(|sc| sc.iter().any(|c| c.len() < frames))
             || block.output.iter().any(|c| c.len() < frames)
             || !self.started
         {
             return ProcessStatus::Error;
         }
         self.convert_inputs(block);
-        self.inputs.fill_from_stereo(block.input, frames);
+        self.inputs
+            .fill_from_stereo(block.input, block.sidechain, frames);
         self.outputs.clear(frames);
         self.context = process_context(block.transport, self.sample_rate, block.steady_time);
 
@@ -618,7 +649,40 @@ mod tests {
         BusLayout {
             channels: channels.to_vec(),
             main,
+            sidechain: None,
         }
+    }
+
+    #[test]
+    fn the_sidechain_goes_into_its_bus_or_silence() {
+        let left = [1.0, 2.0, 3.0];
+        let right = [3.0, 4.0, 5.0];
+        let sc = [[0.5f32; 3], [-0.5f32; 3]];
+        let mut buses = BusBuffers::new(
+            &BusLayout {
+                sidechain: Some(1),
+                ..layout(&[2, 2, 1], Some(0))
+            },
+            4,
+        );
+        buses.data.fill(9.0);
+        buses.fill_from_stereo([&left, &right], Some([&sc[0], &sc[1]]), 3);
+        assert_eq!(buses.main_channel(0, 3), &left);
+        assert_eq!(buses.bus_channel(1, 0, 3), &sc[0]);
+        assert_eq!(buses.bus_channel(1, 1, 3), &sc[1]);
+        assert_eq!(buses.bus_channel(2, 0, 3), &[0.0; 3]);
+        buses.fill_from_stereo([&left, &right], None, 3);
+        assert_eq!(buses.bus_channel(1, 0, 3), &[0.0; 3]);
+        // A mono sidechain bus gets the mid signal.
+        let mut buses = BusBuffers::new(
+            &BusLayout {
+                sidechain: Some(1),
+                ..layout(&[2, 1], Some(0))
+            },
+            3,
+        );
+        buses.fill_from_stereo([&left, &right], Some([&left, &right]), 3);
+        assert_eq!(buses.bus_channel(1, 0, 3), &[2.0, 3.0, 4.0]);
     }
 
     #[test]
@@ -641,7 +705,7 @@ mod tests {
         // Sidechain (2 ch) first, mono main second.
         let mut buses = BusBuffers::new(&layout(&[2, 1], Some(1)), 4);
         buses.data.fill(9.0);
-        buses.fill_from_stereo([&left, &right], 3);
+        buses.fill_from_stereo([&left, &right], None, 3);
         assert_eq!(buses.main_channel(0, 3), &[2.0, 3.0, 4.0]);
         assert_eq!(&buses.data[0..3], &[0.0; 3]);
 

@@ -43,12 +43,14 @@ pub const SYNTH: &str = "de.klang-studio.kp-test-synth";
 pub const FX: &str = "de.klang-studio.kp-test-fx";
 pub const CRASH: &str = "de.klang-studio.kp-test-crash";
 pub const SLOW: &str = "de.klang-studio.kp-test-slow";
+pub const SC: &str = "de.klang-studio.kp-test-sc";
 
 /// VST3 class ids of the fixtures (their 16 ASCII bytes in hex, test-plugins/README.md).
 pub const SYNTH_VST3: &str = "6B705465737453796E74683030303031";
 pub const FX_VST3: &str = "6B705465737446783030303030303031";
 pub const CRASH_VST3: &str = "6B705465737443726173683030303031";
 pub const SLOW_VST3: &str = "6B7054657374536C6F77303030303031";
+pub const SC_VST3: &str = "6B705465737453633030303030303031";
 
 /// A WP-27 fixture bundle (`scripts/build-test-plugins.sh`), or `None` with a note on stderr.
 pub fn fixture(name: &str) -> Option<PathBuf> {
@@ -133,6 +135,8 @@ pub struct Bridge {
     /// Messages `expect` passed over (logs, values), in order.
     pub seen: Vec<BridgeMsg>,
     pub input: [Vec<f32>; 2],
+    /// The sidechain sent with every block (`None`: none, #6).
+    pub sidechain: Option<[Vec<f32>; 2]>,
     pub output: [Vec<f32>; 2],
     pub steady_time: u64,
     /// `BLOCK_FLAG_*` bits for the next block only.
@@ -198,6 +202,7 @@ impl Bridge {
             monitor: BridgeMonitor::new(region),
             seen: Vec::new(),
             input: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
+            sidechain: None,
             output: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
             steady_time: 0,
             next_flags: 0,
@@ -396,6 +401,9 @@ impl Bridge {
         let seq = self.client.begin_block(
             &spec,
             [&self.input[0][..BLOCK], &self.input[1][..BLOCK]],
+            self.sidechain
+                .as_ref()
+                .map(|[l, r]| [&l[..BLOCK], &r[..BLOCK]]),
             events,
         )?;
         self.steady_time += BLOCK as u64;

@@ -50,6 +50,7 @@ pub fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> 
         kind,
         features: features.iter().map(|f| (*f).into()).collect(),
         bundle: format!("/plugins/{id}.clap").into(),
+        sidechain: false,
     }
 }
 

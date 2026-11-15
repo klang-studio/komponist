@@ -47,8 +47,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// Protocol version; `Hello` carries it and the app refuses other versions. 2: `Ping`/`Pong`,
-/// `RtPriority`.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// `RtPriority`. 3 (#6): [`PluginDescriptor::sidechain`] (shared memory version 2 carries the
+/// sidechain audio).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -121,6 +122,12 @@ pub struct PluginDescriptor {
     pub features: Vec<String>,
     /// Absolute path of the bundle (`X.clap` file, or the `X.vst3` directory).
     pub bundle: PathBuf,
+    /// Whether the plugin has a sidechain input (#6): a CLAP audio input port besides the main
+    /// one, a VST3 audio input bus of type `kAux`. The bridge feeds the device's sidechain into it
+    /// (ARCHITECTURE §6.8.2); the device head shows the „SC“ chip. Absent in scan output from
+    /// before #6 (read as `false`).
+    #[serde(default)]
+    pub sidechain: bool,
 }
 
 /// Parameter flag bits ([`ParamInfo::flags`]).
@@ -764,6 +771,7 @@ mod tests {
             kind: PluginKind::Instrument,
             features: vec!["instrument".into(), "synthesizer".into()],
             bundle: "/usr/lib/clap/Synth.clap".into(),
+            sidechain: false,
         }
     }
 

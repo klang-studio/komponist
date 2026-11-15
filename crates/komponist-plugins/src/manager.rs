@@ -410,6 +410,7 @@ impl PluginManager {
                 plugin_id,
             } => (*format, path.clone(), plugin_id.clone()),
         };
+        let sidechain = entry.sidechain;
         if !(setup.sample_rate.is_finite() && setup.sample_rate > 0.0)
             || !(1..=MAX_BLOCK).contains(&setup.max_block)
         {
@@ -430,6 +431,7 @@ impl PluginManager {
             state,
             setup,
             timing: self.timing,
+            sidechain,
         });
         match started {
             Ok(started) => {
@@ -660,6 +662,13 @@ impl PluginManager {
         self.bridges.get(&device).is_some_and(|b| b.has_gui)
     }
 
+    /// Whether a device's plugin has a sidechain input (#6), so its head shows the „SC“ chip:
+    /// what the catalog says until the bridge loaded the plugin, then what the plugin says.
+    /// `false` for devices without a bridge (missing plugins).
+    pub fn has_sidechain(&self, device: DeviceId) -> bool {
+        self.bridges.get(&device).is_some_and(|b| b.sidechain)
+    }
+
     /// Opens the plugin GUI inside the X11 window `parent_xid` (the frame's child window) at UI
     /// `scale`; answered by [`PluginManagerEvent::GuiOpened`].
     pub fn open_gui(
@@ -795,6 +804,7 @@ mod tests {
                 kind: komponist_ipc::PluginKind::Instrument,
                 features: Vec::new(),
                 bundle: "/nonexistent/Synth.clap".into(),
+                sidechain: false,
             }]);
         let klopfer = Device {
             id: DeviceId(5),

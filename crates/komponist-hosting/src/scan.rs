@@ -3,12 +3,74 @@
 //! [`crate::scan`] dispatches on the bundle format. Descriptors carry the plugin's features (CLAP
 //! features or VST3 subcategories, lower-case) and a broad [`PluginKind`]; the browser categories
 //! ("EQ und Filter", …) are derived from the features by `komponist-plugins`.
+//!
+//! Whether a plugin has a sidechain input ([`PluginDescriptor::sidechain`], #6) is not in the
+//! factory's metadata: the scan instantiates each plugin once (CLAP `init`, VST3
+//! `IComponent::initialize`), reads its audio input ports, and destroys it again, without
+//! activating it. It does so with [`probe_context`], a host that offers nothing (timers and fds
+//! are accepted and never fire). A plugin that fails to instantiate is still listed, without a
+//! sidechain.
 
+use std::os::fd::RawFd;
 use std::path::Path;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
-use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind};
+use komponist_ipc::{LogLevel, PluginDescriptor, PluginFormat, PluginKind};
 
+use crate::host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 use crate::plugin::HostingError;
+
+/// The host context of a scan's short-lived instances: timers and fds are accepted and never
+/// fire, notifications and log lines are dropped.
+pub(crate) fn probe_context() -> HostContext {
+    HostContext {
+        host_loop: Rc::new(ProbeLoop::default()),
+        notify: Arc::new(ProbeNotify),
+        host_name: "komponist",
+        host_version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
+/// [`HostLoop`] of [`probe_context`].
+#[derive(Default)]
+struct ProbeLoop {
+    next_timer: std::cell::Cell<u32>,
+}
+
+impl HostLoop for ProbeLoop {
+    fn register_timer(&self, _period: Duration) -> Result<TimerId, HostingError> {
+        let id = self.next_timer.get();
+        self.next_timer.set(id.wrapping_add(1));
+        Ok(TimerId(id))
+    }
+
+    fn unregister_timer(&self, _timer: TimerId) -> Result<(), HostingError> {
+        Ok(())
+    }
+
+    fn register_fd(&self, _fd: RawFd, _events: FdEvents) -> Result<(), HostingError> {
+        Ok(())
+    }
+
+    fn modify_fd(&self, _fd: RawFd, _events: FdEvents) -> Result<(), HostingError> {
+        Ok(())
+    }
+
+    fn unregister_fd(&self, _fd: RawFd) -> Result<(), HostingError> {
+        Ok(())
+    }
+}
+
+/// [`HostNotify`] of [`probe_context`].
+struct ProbeNotify;
+
+impl HostNotify for ProbeNotify {
+    fn notify(&self, _notification: HostNotification) {}
+
+    fn log(&self, _level: LogLevel, _message: &str) {}
+}
 
 /// Lists the plugins in `bundle` without activating them.
 pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {

@@ -1,0 +1,16 @@
+[package]
+name = "kp-test-sc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Test effect for komponist: adds its stereo sidechain input to the main input"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+nice-plug.workspace = true
+
+[dev-dependencies]
+fake-host.workspace = true

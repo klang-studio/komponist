@@ -342,7 +342,7 @@ fn round_trip(
 ) -> Result<BlockResult, BlockError> {
     let [left, right] = output;
     assert_no_alloc(|| {
-        let seq = client.begin_block(&block.spec, block.inputs(), &block.events)?;
+        let seq = client.begin_block(&block.spec, block.inputs(), None, &block.events)?;
         client.wait_done(seq, deadline, [left, right])
     })
 }
@@ -468,7 +468,7 @@ fn late_block_and_resynchronisation() {
     let t0 = Instant::now();
     let late = bridge
         .client
-        .begin_block(&block.spec, block.inputs(), &block.events);
+        .begin_block(&block.spec, block.inputs(), None, &block.events);
     let late = late.unwrap();
     let [left, right] = &mut *output;
     let deadline = t0 + Duration::from_millis(5);
@@ -488,7 +488,7 @@ fn late_block_and_resynchronisation() {
         match assert_no_alloc(|| {
             bridge
                 .client
-                .begin_block(&block.spec, block.inputs(), &block.events)
+                .begin_block(&block.spec, block.inputs(), None, &block.events)
         }) {
             Err(BlockError::Busy) => {
                 busy += 1;
@@ -570,7 +570,7 @@ fn killed_bridge_is_detected_by_the_pidfd_within_10ms() {
     assert!(t1.elapsed() < Duration::from_millis(50));
     let busy = bridge
         .client
-        .begin_block(&block.spec, block.inputs(), &block.events);
+        .begin_block(&block.spec, block.inputs(), None, &block.events);
     assert_eq!(busy, Err(BlockError::Busy));
     assert_eq!(
         bridge.channel.recv(),
@@ -647,7 +647,7 @@ fn latency_report() {
         let client = &mut bridge.client;
         let [left, right] = &mut *output;
         let result = assert_no_alloc(|| {
-            let seq = client.begin_block(&block.spec, block.inputs(), &block.events)?;
+            let seq = client.begin_block(&block.spec, block.inputs(), None, &block.events)?;
             let until = Instant::now() + spin;
             while !client.is_idle() && Instant::now() < until {
                 std::hint::spin_loop();

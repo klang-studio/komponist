@@ -228,6 +228,7 @@ fn a_finished_scan_loads_the_devices_it_found() {
         kind: PluginKind::Instrument,
         features: vec!["instrument".into()],
         bundle: "/usr/lib/clap/Surge XT.clap".into(),
+        sidechain: false,
     }]);
     app.step();
     assert!(
@@ -504,6 +505,7 @@ fn plugin_actions_reach_the_host() {
         kind: PluginKind::Instrument,
         features: Vec::new(),
         bundle: "/usr/lib/clap/Surge XT.clap".into(),
+        sidechain: false,
     }]);
     app.step();
     assert_eq!(app.engine().device_status(surge), DeviceStatus::Ok);

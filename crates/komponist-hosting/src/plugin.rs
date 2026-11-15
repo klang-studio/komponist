@@ -16,8 +16,9 @@
 //!
 //! Per-block data reuses the shared-memory types of `komponist-ipc` ([`WireEvent`],
 //! [`WireTransport`]), so the bridge passes what it read from the rings without conversion and the
-//! format layers decode with [`WireEvent::decode`]. Audio is always stereo in and out; the format
-//! layer adapts mono or multi-channel ports (WP-26/WP-32).
+//! format layers decode with [`WireEvent::decode`]. Audio is always stereo in and out, plus an
+//! optional stereo sidechain in (#6); the format layer adapts mono or multi-channel ports
+//! (WP-26/WP-32).
 
 use komponist_ipc::{GuiSize, NoteName, ParamInfo, PluginDescriptor, RenderMode};
 use komponist_ipc::{WireEvent, WireTransport};
@@ -205,6 +206,10 @@ pub struct ProcessBlock<'a> {
     pub frames: u32,
     /// Stereo input (effects), `frames` samples each.
     pub input: [&'a [f32]; 2],
+    /// The device's sidechain input (#6), `frames` samples each, for the plugin's sidechain port
+    /// (a CLAP audio input port besides the main one, a VST3 `kAux` input bus); `None`: the port
+    /// gets silence. Ignored by plugins without such a port.
+    pub sidechain: Option<[&'a [f32]; 2]>,
     /// Stereo output, `frames` samples each; the plugin writes every frame.
     pub output: [&'a mut [f32]; 2],
     /// Input events sorted by offset (< `frames`).

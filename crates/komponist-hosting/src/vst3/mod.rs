@@ -19,9 +19,10 @@
 //! - **Component ↔ controller:** a separate controller is created from the component's controller
 //!   class id, both are connected through `IConnectionPoint`, and the component state is mirrored
 //!   into the controller (`setComponentState`) after initialisation and after every state load.
-//! - **Buses:** stereo main buses are requested (`setBusArrangements`), main buses and the first
-//!   event input are activated (`activateBus`) before `setActive(true)`, and instruments without
-//!   audio inputs get `numInputs = 0`. Otherwise instruments stay silent.
+//! - **Buses:** stereo main buses are requested (`setBusArrangements`), main buses, the sidechain
+//!   input (the first `kAux` audio input bus, #6) and the first event input are activated
+//!   (`activateBus`) before `setActive(true)`, and instruments without audio inputs get
+//!   `numInputs = 0`. Otherwise instruments stay silent.
 //! - **Parameters reach the processor:** app values and GUI edits go in as
 //!   `inputParameterChanges`; the controller learns the processor's output changes.
 //! - **Unload:** GUI closed, deactivated, disconnected, controller and component terminated,
@@ -76,7 +77,7 @@ use komponist_ipc::{
 };
 use vst3::Steinberg::Vst::BusDirections_::{kInput, kOutput};
 use vst3::Steinberg::Vst::BusInfo_::BusFlags_::kDefaultActive;
-use vst3::Steinberg::Vst::BusTypes_::kMain;
+use vst3::Steinberg::Vst::BusTypes_::{kAux, kMain};
 use vst3::Steinberg::Vst::MediaTypes_::{kAudio, kEvent};
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::{
     kCanAutomate, kIsBypass, kIsHidden, kIsList, kIsReadOnly,
@@ -116,15 +117,81 @@ const FLUSH_CONFIG: ActivateConfig = ActivateConfig {
     max_frames: 512,
 };
 
-/// Lists the audio module classes of a `.vst3` bundle without instantiating them.
+/// Lists the audio module classes of a `.vst3` bundle. Each component is created and initialised
+/// once (not activated, no controller) to read whether it has a sidechain bus (`crate::scan`).
 pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
     let module = load_module(bundle)?;
     let factory = module.factory()?;
     let context = HostApplication::new("komponist");
     set_host_context(&factory, &context);
     let classes = audio_classes(&factory, bundle);
+    let descriptors = classes
+        .into_iter()
+        .map(|(cid, descriptor)| PluginDescriptor {
+            sidechain: probe_sidechain(&factory, &cid, &context),
+            ..descriptor
+        })
+        .collect();
     drop(factory);
-    Ok(classes.into_iter().map(|(_, d)| d).collect())
+    Ok(descriptors)
+}
+
+/// Whether class `cid` has a sidechain input bus: creates its component, initialises it, reads
+/// its audio input buses and terminates it again.
+fn probe_sidechain(
+    factory: &ComPtr<IPluginFactory>,
+    cid: &TUID,
+    context: &ComWrapper<HostApplication>,
+) -> bool {
+    let Some(component) = create::<IComponent>(factory, cid) else {
+        return false;
+    };
+    let host = context
+        .as_com_ref::<FUnknown>()
+        .map_or(std::ptr::null_mut(), |c| c.as_ptr());
+    // SAFETY: a fresh component on this (main) thread, with our live host context.
+    if unsafe { component.initialize(host) } != kResultOk {
+        return false;
+    }
+    let found = sidechain_bus(&bus_infos(&component, kAudio, kInput)).is_some();
+    // SAFETY: initialised above; nothing else holds the component.
+    unsafe { component.terminate() };
+    found
+}
+
+/// The buses of `media` in direction `dir` (main thread, inactive); a bus whose info the plugin
+/// refuses reads as 0 channels.
+fn bus_infos(component: &ComPtr<IComponent>, media: u32, dir: u32) -> Vec<BusInfo> {
+    // SAFETY: main thread, inactive; plain out-structs.
+    let count = unsafe { component.getBusCount(media as i32, dir as i32) };
+    (0..count.max(0))
+        .map(|index| {
+            let mut info: BusInfo = unsafe { std::mem::zeroed() };
+            let ok = unsafe { component.getBusInfo(media as i32, dir as i32, index, &mut info) }
+                == kResultOk;
+            if !ok {
+                info.channelCount = 0;
+            }
+            info
+        })
+        .collect()
+}
+
+/// The main bus: the first flagged `kMain`, else bus 0.
+fn main_bus(infos: &[BusInfo]) -> Option<usize> {
+    infos
+        .iter()
+        .position(|b| b.busType == kMain as i32)
+        .or((!infos.is_empty()).then_some(0))
+}
+
+/// The sidechain bus among audio inputs: the first `kAux` bus with channels that is not the main
+/// bus (#6).
+fn sidechain_bus(infos: &[BusInfo]) -> Option<usize> {
+    let main = main_bus(infos);
+    (0..infos.len()).find(|&index| {
+        Some(index) != main && infos[index].busType == kAux as i32 && infos[index].channelCount > 0
+    })
 }
 
 /// Loads plugin `plugin_id` (a class id as 32 hex digits) from a `.vst3` bundle on the calling
@@ -363,6 +430,7 @@ impl Vst3Plugin {
         }
         // SAFETY: plain getter on the main thread.
         self.event_inputs = unsafe { self.component.getBusCount(kEvent as i32, kInput as i32) };
+        self.descriptor.sidechain = sidechain_bus(&self.bus_infos(kAudio, kInput)).is_some();
         self.has_gui = self.probe_gui();
         self.refresh_params();
         Ok(())
@@ -485,29 +553,7 @@ impl Vst3Plugin {
     }
 
     fn bus_infos(&self, media: u32, dir: u32) -> Vec<BusInfo> {
-        // SAFETY: main thread, inactive; plain out-structs.
-        let count = unsafe { self.component.getBusCount(media as i32, dir as i32) };
-        (0..count.max(0))
-            .map(|index| {
-                let mut info: BusInfo = unsafe { std::mem::zeroed() };
-                let ok = unsafe {
-                    self.component
-                        .getBusInfo(media as i32, dir as i32, index, &mut info)
-                } == kResultOk;
-                if !ok {
-                    info.channelCount = 0;
-                }
-                info
-            })
-            .collect()
-    }
-
-    /// The main bus: the first flagged `kMain`, else bus 0.
-    fn main_bus(infos: &[BusInfo]) -> Option<usize> {
-        infos
-            .iter()
-            .position(|b| b.busType == kMain as i32)
-            .or((!infos.is_empty()).then_some(0))
+        bus_infos(&self.component, media, dir)
     }
 
     /// Asks for stereo main buses (keeping the other buses' arrangements) and returns the audio
@@ -528,8 +574,8 @@ impl Vst3Plugin {
         };
         let ins = self.bus_infos(kAudio, kInput);
         let outs = self.bus_infos(kAudio, kOutput);
-        let mut in_arr = arrangements(kInput, ins.len(), Self::main_bus(&ins));
-        let mut out_arr = arrangements(kOutput, outs.len(), Self::main_bus(&outs));
+        let mut in_arr = arrangements(kInput, ins.len(), main_bus(&ins));
+        let mut out_arr = arrangements(kOutput, outs.len(), main_bus(&outs));
         // SAFETY: main thread, inactive; the arrays hold the counts given.
         let result = unsafe {
             self.audio.setBusArrangements(
@@ -545,27 +591,35 @@ impl Vst3Plugin {
                 "VST3: setBusArrangements(stereo) declined, adapting to the plugin's layout",
             );
         }
-        let layout = |infos: Vec<BusInfo>| BusLayout {
-            main: Self::main_bus(&infos),
+        let layout = |infos: Vec<BusInfo>, is_input: bool| BusLayout {
+            main: main_bus(&infos),
+            sidechain: if is_input {
+                sidechain_bus(&infos)
+            } else {
+                None
+            },
             channels: infos.iter().map(|b| b.channelCount.max(0) as u32).collect(),
         };
         (
-            layout(self.bus_infos(kAudio, kInput)),
-            layout(self.bus_infos(kAudio, kOutput)),
+            layout(self.bus_infos(kAudio, kInput), true),
+            layout(self.bus_infos(kAudio, kOutput), false),
         )
     }
 
-    /// Activates the main audio buses, the first event input and every bus the plugin marks
-    /// default-active.
+    /// Activates the main audio buses, the sidechain input, the first event input and every bus
+    /// the plugin marks default-active.
     fn activate_buses(&self, inputs: &BusLayout, outputs: &BusLayout) {
-        for (media, dir, main) in [
-            (kAudio, kInput, inputs.main),
-            (kAudio, kOutput, outputs.main),
-            (kEvent, kInput, Some(0)),
-            (kEvent, kOutput, None),
+        for (media, dir, main, sidechain) in [
+            (kAudio, kInput, inputs.main, inputs.sidechain),
+            (kAudio, kOutput, outputs.main, None),
+            (kEvent, kInput, Some(0), None),
+            (kEvent, kOutput, None, None),
         ] {
             for (index, info) in self.bus_infos(media, dir).iter().enumerate() {
-                if Some(index) == main || info.flags & kDefaultActive != 0 {
+                if Some(index) == main
+                    || Some(index) == sidechain
+                    || info.flags & kDefaultActive != 0
+                {
                     // SAFETY: main thread, inactive.
                     unsafe {
                         self.component

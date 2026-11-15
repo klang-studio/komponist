@@ -55,7 +55,9 @@ are checked:
 | Held MIDI-input keys (telemetry) | `live.rs` `held_input_keys_…` |
 | hexa `PisynthProcessor::process` / `reset` / parameter events | `komponist-builtin` `tests/hexa` |
 | `ExternalProcessor::process` (bridge client: wire events, stash, futex wait, fallbacks) | `komponist-plugins` `tests/it/engine.rs` (`call` and `Rig`) |
-| IPC `begin_block` / `wait_done` / output events | `komponist-ipc` `tests/bridge_process.rs` (10 000 checked blocks) |
+| `ExternalProcessor::process_sidechain` (#6: the sidechain through the shared memory) | `komponist-plugins` `tests/it/sidechain.rs` (direct calls and `Rig`) |
+| IPC `begin_block` / `wait_done` / output events | `komponist-ipc` `tests/bridge_process.rs` (10 000 checked blocks), sidechain blocks in `shm.rs` unit tests |
+| CLAP / VST3 `process` with a sidechain port | `komponist-hosting` fixture tests (`Blocks::run`, `sidechain_reaches_the_port`) |
 | Bridge RT loop | `komponist-bridge` `rt.rs` runs its loop inside `assert_no_alloc` in debug builds |
 | Audio callback: backend → `EngineSlot` (attach/detach mailbox) → `EngineProcess` (MIDI → frames) → engine | `komponist-audio` `StreamCallback::run` wraps every callback; every app test on the null backend runs it (acceptance flows, soak) |
 | **Export render** | new: `komponist_engine::export` wraps every `Engine::render` call (WP-61); checked by the engine export tests, `export_bridges`, `klopfer`, acceptance flow 5 and the soak |

@@ -6,7 +6,9 @@
 //!
 //! Layout ([`ShmLayout`], `#[repr(C)]`, all offsets fixed): header with the futex words, the
 //! per-block request and result, an input event ring (app → bridge), an output event ring
-//! (bridge → app) and stereo audio in/out of [`MAX_BLOCK`] frames.
+//! (bridge → app), stereo audio in/out of [`MAX_BLOCK`] frames and, since version 2 (#6), the
+//! stereo sidechain input of the same size. A block carries a sidechain only when its request has
+//! [`BLOCK_FLAG_SIDECHAIN`]; without it the bridge feeds the plugin's sidechain port silence.
 //!
 //! RT handshake per block (app audio thread ↔ bridge RT thread):
 //! 1. App ([`BridgeClient::begin_block`]): only if the bridge is idle (`done_seq == request_seq`),
@@ -40,8 +42,9 @@ use crate::signal::{self, WaitOutcome};
 /// `b"KPSM"` as little-endian `u32`, the first header field.
 pub const SHM_MAGIC: u32 = u32::from_le_bytes(*b"KPSM");
 
-/// Layout version; both sides must agree.
-pub const SHM_VERSION: u32 = 1;
+/// Layout version; both sides must agree. 2 (#6): [`ShmLayout::audio_sidechain`] and
+/// [`BLOCK_FLAG_SIDECHAIN`].
+pub const SHM_VERSION: u32 = 2;
 
 /// Frames of audio per block the mapping holds. Must equal `komponist_engine::MAX_BLOCK`
 /// (`komponist-plugins` asserts it in a test).
@@ -61,6 +64,10 @@ pub const SHM_SIZE: usize = core::mem::size_of::<ShmLayout>().next_multiple_of(4
 pub const BLOCK_FLAG_RESET: u32 = 1;
 /// [`BlockRequest::flags`]: the block is part of an offline render.
 pub const BLOCK_FLAG_OFFLINE: u32 = 2;
+/// [`BlockRequest::flags`]: [`ShmLayout::audio_sidechain`] holds this block's sidechain input
+/// (set by [`BridgeClient::begin_block`] when it is given one; #6). Without it the sidechain is
+/// silent.
+pub const BLOCK_FLAG_SIDECHAIN: u32 = 4;
 
 /// [`WireTransport::flags`]: transport running.
 pub const TRANSPORT_PLAYING: u32 = 1;
@@ -92,6 +99,9 @@ pub struct ShmLayout {
     pub output_events: ShmRing<WireEvent, OUTPUT_EVENT_CAPACITY>,
     /// Input audio, `[channel][frame]`; written by the app before a request.
     pub audio_in: UnsafeCell<[[f32; MAX_BLOCK]; 2]>,
+    /// Sidechain input audio, `[channel][frame]` (#6); written by the app before a request with
+    /// [`BLOCK_FLAG_SIDECHAIN`], untouched otherwise.
+    pub audio_sidechain: UnsafeCell<[[f32; MAX_BLOCK]; 2]>,
     /// Output audio, `[channel][frame]`; written by the bridge before `done_seq`.
     pub audio_out: UnsafeCell<[[f32; MAX_BLOCK]; 2]>,
 }
@@ -579,6 +589,30 @@ impl core::fmt::Debug for ShmRegion {
     }
 }
 
+/// The audio of the open request, from [`BridgeServer::audio_with_sidechain`]: input, sidechain
+/// (`None` without one), output.
+pub type BlockAudio<'a> = ([&'a [f32]; 2], Option<[&'a [f32]; 2]>, [&'a mut [f32]; 2]);
+
+/// Copies `frames` samples of each channel of `src` into the stereo buffer `dst`.
+///
+/// # Safety
+///
+/// Nobody else may access `dst` during the call (the handshake's ownership rules), and
+/// `frames <= MAX_BLOCK` with every `src` channel at least `frames` long.
+unsafe fn write_stereo(dst: &UnsafeCell<[[f32; MAX_BLOCK]; 2]>, src: [&[f32]; 2], frames: usize) {
+    let dst = dst.get().cast::<[f32; MAX_BLOCK]>();
+    for (channel, samples) in src.iter().enumerate() {
+        // SAFETY: per the caller; `channel < 2`.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                samples.as_ptr(),
+                dst.add(channel).cast::<f32>(),
+                frames,
+            );
+        }
+    }
+}
+
 /// Parameters of a block for [`BridgeClient::begin_block`].
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BlockSpec {
@@ -636,21 +670,25 @@ impl BridgeClient {
     }
 
     /// Publishes one block (step 1 of the handshake) and wakes the bridge. Returns the sequence
-    /// number to wait for. `input` holds `spec.frames` samples per channel; `events` are sorted by
-    /// offset.
+    /// number to wait for. `input` holds `spec.frames` samples per channel; `sidechain`, if given,
+    /// too (it sets [`BLOCK_FLAG_SIDECHAIN`]; `None` clears it, so the plugin's sidechain port gets
+    /// silence); `events` are sorted by offset.
     ///
     /// # Panics
     ///
-    /// If `spec.frames` is not in 1 ..= [`MAX_BLOCK`] or an input channel is shorter.
+    /// If `spec.frames` is not in 1 ..= [`MAX_BLOCK`] or an input or sidechain channel is shorter.
     pub fn begin_block(
         &mut self,
         spec: &BlockSpec,
         input: [&[f32]; 2],
+        sidechain: Option<[&[f32]; 2]>,
         events: &[WireEvent],
     ) -> Result<u32, BlockError> {
         let frames = spec.frames as usize;
         assert!(
-            (1..=MAX_BLOCK).contains(&frames) && input.iter().all(|ch| ch.len() >= frames),
+            (1..=MAX_BLOCK).contains(&frames)
+                && input.iter().all(|ch| ch.len() >= frames)
+                && sidechain.is_none_or(|sc| sc.iter().all(|ch| ch.len() >= frames)),
             "begin_block: frames out of range or input too short"
         );
         if self.region.bridge_state() != BridgeState::Active {
@@ -664,17 +702,15 @@ impl BridgeClient {
         if events.len() > free {
             return Err(BlockError::TooManyEvents);
         }
-        let audio_in = layout.audio_in.get().cast::<[f32; MAX_BLOCK]>();
-        for (channel, samples) in input.iter().enumerate() {
-            // SAFETY: the bridge is idle; it reads `audio_in` only between a request and its
-            // `done_seq`, so nobody else accesses the buffer now. `frames <= MAX_BLOCK`.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    samples.as_ptr(),
-                    audio_in.add(channel).cast::<f32>(),
-                    frames,
-                );
-            }
+        // SAFETY: the bridge is idle; it reads `audio_in` and `audio_sidechain` only between a
+        // request and its `done_seq`, so nobody else accesses the buffers now.
+        // `frames <= MAX_BLOCK`.
+        unsafe { write_stereo(&layout.audio_in, input, frames) };
+        let mut flags = spec.flags & !BLOCK_FLAG_SIDECHAIN;
+        if let Some(sidechain) = sidechain {
+            // SAFETY: as above.
+            unsafe { write_stereo(&layout.audio_sidechain, sidechain, frames) };
+            flags |= BLOCK_FLAG_SIDECHAIN;
         }
         let mut pushed = 0u32;
         for event in events {
@@ -688,7 +724,7 @@ impl BridgeClient {
         let request = BlockRequest {
             seq,
             frames: spec.frames,
-            flags: spec.flags,
+            flags,
             event_count: pushed,
             steady_time: spec.steady_time,
             transport: spec.transport,
@@ -784,6 +820,8 @@ pub struct BridgeServer {
     remaining_events: u32,
     /// A request was taken and not finished yet.
     busy: bool,
+    /// The current request carries a sidechain ([`BLOCK_FLAG_SIDECHAIN`]).
+    sidechain: bool,
 }
 
 impl BridgeServer {
@@ -797,6 +835,7 @@ impl BridgeServer {
             seq,
             remaining_events: 0,
             busy: false,
+            sidechain: false,
         }
     }
 
@@ -817,6 +856,7 @@ impl BridgeServer {
                 self.seq = seq;
                 self.remaining_events = request.event_count.min(INPUT_EVENT_CAPACITY as u32);
                 self.busy = true;
+                self.sidechain = request.flags & BLOCK_FLAG_SIDECHAIN != 0;
                 return Some(BlockRequest {
                     seq,
                     frames: request.frames.min(MAX_BLOCK as u32),
@@ -856,16 +896,37 @@ impl BridgeServer {
     ///
     /// If `frames > MAX_BLOCK`.
     pub fn audio(&mut self, frames: usize) -> ([&[f32]; 2], [&mut [f32]; 2]) {
+        let (input, _, output) = self.audio_with_sidechain(frames);
+        (input, output)
+    }
+
+    /// [`Self::audio`] plus the sidechain input of the current request: `Some` with `frames`
+    /// samples per channel if the request carries one ([`BLOCK_FLAG_SIDECHAIN`]), else `None`
+    /// (the plugin's sidechain port gets silence).
+    ///
+    /// # Panics
+    ///
+    /// If `frames > MAX_BLOCK`.
+    pub fn audio_with_sidechain(&mut self, frames: usize) -> BlockAudio<'_> {
         assert!(frames <= MAX_BLOCK, "audio: frames > MAX_BLOCK");
         let frames = if self.busy { frames } else { 0 };
         let layout = self.region.layout();
-        // SAFETY: while a request is open the app touches neither buffer (it writes `audio_in`
-        // only when idle and reads `audio_out` only after `done_seq`); the borrows are tied to
-        // `&mut self`, and `BridgeServer` exists once per region.
-        let (input, output) = unsafe { (&*layout.audio_in.get(), &mut *layout.audio_out.get()) };
+        // SAFETY: while a request is open the app touches none of the buffers (it writes
+        // `audio_in` and `audio_sidechain` only when idle and reads `audio_out` only after
+        // `done_seq`); the borrows are tied to `&mut self`, and `BridgeServer` exists once per
+        // region.
+        let (input, sidechain, output) = unsafe {
+            (
+                &*layout.audio_in.get(),
+                &*layout.audio_sidechain.get(),
+                &mut *layout.audio_out.get(),
+            )
+        };
         let [out_l, out_r] = output;
         (
             [&input[0][..frames], &input[1][..frames]],
+            (self.busy && self.sidechain)
+                .then(|| [&sidechain[0][..frames], &sidechain[1][..frames]]),
             [&mut out_l[..frames], &mut out_r[..frames]],
         )
     }
@@ -1146,7 +1207,8 @@ mod tests {
         };
         assert!(client.is_idle());
         let seq =
-            assert_no_alloc(|| client.begin_block(&spec, [&input[0], &input[1]], &events)).unwrap();
+            assert_no_alloc(|| client.begin_block(&spec, [&input[0], &input[1]], None, &events))
+                .unwrap();
         assert_eq!(seq, 1);
         assert!(!client.is_idle());
 
@@ -1208,28 +1270,82 @@ mod tests {
     }
 
     #[test]
+    fn a_block_carries_its_sidechain_and_the_next_one_without_none() {
+        let (mut client, mut server, _monitor) = active();
+        let input = [[0.25f32; 32], [-0.5f32; 32]];
+        let sidechain = [[0.75f32; 32], [-1.0f32; 32]];
+        // A caller's stray flag does not count: only a given sidechain sets it.
+        let stray = BlockSpec {
+            frames: 32,
+            flags: BLOCK_FLAG_SIDECHAIN | BLOCK_FLAG_RESET,
+            ..BlockSpec::default()
+        };
+        let mut out = [[0f32; 32]; 2];
+        for (spec, with) in [(spec(32), true), (stray, false), (spec(16), true)] {
+            let sc = with.then_some([&sidechain[0][..], &sidechain[1][..]]);
+            let seq =
+                assert_no_alloc(|| client.begin_block(&spec, [&input[0], &input[1]], sc, &[]))
+                    .unwrap();
+            let request = server.wait_request(None).unwrap();
+            assert_eq!(request.flags & BLOCK_FLAG_SIDECHAIN != 0, with);
+            assert_eq!(
+                request.flags & BLOCK_FLAG_RESET,
+                spec.flags & BLOCK_FLAG_RESET
+            );
+            let frames = request.frames as usize;
+            assert_no_alloc(|| {
+                let (inp, sc, out) = server.audio_with_sidechain(frames);
+                assert_eq!(inp[1], &input[1][..frames]);
+                match sc {
+                    Some(sc) => {
+                        assert!(with);
+                        assert_eq!(sc[0], &sidechain[0][..frames]);
+                        assert_eq!(sc[1], &sidechain[1][..frames]);
+                    }
+                    None => assert!(!with),
+                }
+                for (o, s) in out.into_iter().zip(sc.unwrap_or(inp)) {
+                    o.copy_from_slice(s);
+                }
+            });
+            server.finish(BlockResult::default());
+            // Nothing open any more: no sidechain either.
+            assert!(server.audio_with_sidechain(frames).1.is_none());
+            let [l, r] = &mut out;
+            client.wait_done(seq, Instant::now(), [l, r]).unwrap();
+            let expected = if with { sidechain[0][0] } else { input[0][0] };
+            assert!(out[0][..frames].iter().all(|&s| s == expected));
+        }
+    }
+
+    #[test]
     fn not_active_busy_and_too_many_events() {
         let (mut client, mut server, _monitor) = active();
         let input = [0f32; MAX_BLOCK];
         let both = [&input[..], &input[..]];
         client.region().set_bridge_state(BridgeState::Loaded);
         assert_eq!(
-            client.begin_block(&spec(16), both, &[]),
+            client.begin_block(&spec(16), both, None, &[]),
             Err(BlockError::NotActive)
         );
         client.region().set_bridge_state(BridgeState::Active);
 
         let many = [param(0, 0, 0.0); INPUT_EVENT_CAPACITY + 1];
         assert_eq!(
-            client.begin_block(&spec(16), both, &many),
+            client.begin_block(&spec(16), both, None, &many),
             Err(BlockError::TooManyEvents)
         );
         let seq = client
-            .begin_block(&spec(MAX_BLOCK as u32), both, &many[..INPUT_EVENT_CAPACITY])
+            .begin_block(
+                &spec(MAX_BLOCK as u32),
+                both,
+                None,
+                &many[..INPUT_EVENT_CAPACITY],
+            )
             .unwrap();
         assert_eq!(seq, 1, "refused blocks publish nothing");
         assert_eq!(
-            client.begin_block(&spec(16), both, &[]),
+            client.begin_block(&spec(16), both, None, &[]),
             Err(BlockError::Busy)
         );
 
@@ -1245,7 +1361,7 @@ mod tests {
         let [l, r] = &mut out;
         assert!(client.wait_done(seq, Instant::now(), [l, r]).is_ok());
         let seq = client
-            .begin_block(&spec(16), both, &[param(3, 3, 3.0)])
+            .begin_block(&spec(16), both, None, &[param(3, 3, 3.0)])
             .unwrap();
         assert_eq!(seq, 2);
         let request = server.wait_request(None).unwrap();
@@ -1261,7 +1377,9 @@ mod tests {
         let twos = [2f32; 32];
         let mut out = [[0f32; 32]; 2];
 
-        let late = client.begin_block(&spec(32), [&ones, &ones], &[]).unwrap();
+        let late = client
+            .begin_block(&spec(32), [&ones, &ones], None, &[])
+            .unwrap();
         let t0 = Instant::now();
         let [l, r] = &mut out;
         let outcome =
@@ -1269,7 +1387,7 @@ mod tests {
         assert_eq!(outcome, Err(BlockError::Late));
         assert!(t0.elapsed() >= Duration::from_millis(5));
         assert_eq!(
-            client.begin_block(&spec(32), [&twos, &twos], &[]),
+            client.begin_block(&spec(32), [&twos, &twos], None, &[]),
             Err(BlockError::Busy)
         );
 
@@ -1282,7 +1400,9 @@ mod tests {
         }
         server.finish(BlockResult::default());
 
-        let next = client.begin_block(&spec(32), [&twos, &twos], &[]).unwrap();
+        let next = client
+            .begin_block(&spec(32), [&twos, &twos], None, &[])
+            .unwrap();
         assert_eq!(next, late + 1);
         let [l, r] = &mut out;
         // The stale result of `late` does not satisfy the wait for `next`.
@@ -1309,7 +1429,9 @@ mod tests {
         region.set_bridge_state(BridgeState::Active);
         let mut client = BridgeClient::new(Arc::clone(&region));
         let input = [0f32; 8];
-        let seq = client.begin_block(&spec(8), [&input, &input], &[]).unwrap();
+        let seq = client
+            .begin_block(&spec(8), [&input, &input], None, &[])
+            .unwrap();
         let mut server = BridgeServer::new(region);
         assert_eq!(
             server.wait_request(Some(Instant::now())).map(|r| r.seq),
@@ -1365,7 +1487,8 @@ mod tests {
             let events = [param(0, 0, block as f64), param(1, 0, 0.5)];
             let [l, r] = &mut out;
             let result = assert_no_alloc(|| {
-                let seq = client.begin_block(&spec(frames), [&input[0], &input[1]], &events)?;
+                let seq =
+                    client.begin_block(&spec(frames), [&input[0], &input[1]], None, &events)?;
                 client.wait_done(seq, Instant::now() + Duration::from_secs(10), [l, r])
             });
             bad += usize::from(result.map(|r| r.seq) != Ok(block + 1));

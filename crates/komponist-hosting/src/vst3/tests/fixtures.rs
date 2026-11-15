@@ -10,6 +10,7 @@ use crate::plugin::{ActivateConfig, HostingError};
 
 const SYNTH_CID: &[u8; 16] = b"kpTestSynth00001";
 const FX_CID: &[u8; 16] = b"kpTestFx00000001";
+const SC_CID: &[u8; 16] = b"kpTestSc00000001";
 
 fn synth() -> Option<(PathBuf, String)> {
     fixture("kp-test-synth").map(|b| (b, fixture_id(SYNTH_CID)))
@@ -49,6 +50,7 @@ fn scans_the_fixtures() {
         ("kp-test-fx", FX_CID, PluginKind::Effect),
         ("kp-test-crash", b"kpTestCrash00001", PluginKind::Effect),
         ("kp-test-slow", b"kpTestSlow000001", PluginKind::Effect),
+        ("kp-test-sc", SC_CID, PluginKind::Effect),
     ] {
         let Some(bundle) = fixture(name) else {
             continue;
@@ -64,6 +66,8 @@ fn scans_the_fixtures() {
         assert_eq!(d.kind, kind, "{d:?}");
         assert!(d.bundle.is_absolute());
         assert!(d.features.iter().all(|f| *f == f.to_lowercase()));
+        // Only kp-test-sc has a `kAux` input bus (#6).
+        assert_eq!(d.sidechain, name == "kp-test-sc", "{d:?}");
         if name == "kp-test-synth" {
             assert_eq!(d.features, ["instrument", "synth"]);
             eprintln!("scan {name}: {d:?}");
@@ -359,6 +363,20 @@ fn state_round_trip() {
     assert_eq!(active_blob, blob);
     processor.stop_processing();
     other.plugin.deactivate(processor);
+}
+
+#[test]
+fn the_sidechain_reaches_kp_test_sc() {
+    let Some(bundle) = fixture("kp-test-sc") else {
+        return;
+    };
+    let mut rig = load(&bundle, &fixture_id(SC_CID));
+    crate::clap::tests::sidechain_reaches_the_port(rig.plugin.as_mut());
+    let Some(bundle) = fixture("kp-test-fx") else {
+        return;
+    };
+    let rig = load(&bundle, &fixture_id(FX_CID));
+    assert!(!rig.plugin.descriptor().sidechain);
 }
 
 #[test]

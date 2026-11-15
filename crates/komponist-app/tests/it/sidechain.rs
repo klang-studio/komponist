@@ -274,6 +274,102 @@ fn a_device_without_a_sidechain_input_has_no_chip() {
     let _ = s.eq;
 }
 
+/// #6: bridged plugins have the chip exactly when they have a sidechain port: `kp-test-sc` does,
+/// `kp-test-fx` does not (the test plugins from `scripts/build-test-plugins.sh`; skipped without).
+#[test]
+fn a_bridged_plugin_has_the_chip_only_with_a_sidechain_port() {
+    use crate::common::{all_ok, app_with, config, fixture_dirs, scratch, step_until};
+    use komponist_app::device_host::{DeviceHost, PluginHost};
+
+    let Some(dirs) = fixture_dirs() else {
+        return;
+    };
+    let dir = scratch("sidechain-chip");
+    // A scan fills the cache the app's host starts from.
+    let mut scan = PluginHost::new(config(&dir));
+    scan.start_scan(&dirs);
+    let deadline = std::time::Instant::now() + crate::common::PATIENCE;
+    while scan.is_scanning() {
+        assert!(std::time::Instant::now() < deadline, "scan");
+        scan.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let plugin = |id: &str| {
+        scan.catalog()
+            .entries()
+            .iter()
+            .find(|e| e.plugin.id == id)
+            .unwrap_or_else(|| panic!("{id} not scanned"))
+            .clone()
+    };
+    let (sc, fx) = (
+        plugin("de.klang-studio.kp-test-sc"),
+        plugin(crate::common::FX),
+    );
+    assert!(sc.sidechain && !fx.sidechain);
+    scan.shutdown();
+    drop(scan);
+
+    let mut p = Project::new("Sidechain");
+    let hexa = App::headless(Project::new("probe"))
+        .engine()
+        .host()
+        .catalog()
+        .entries()[0]
+        .plugin
+        .clone();
+    let (next, pad) = edits::add_track(
+        &p,
+        NewTrack {
+            name: Some("Pad".to_owned()),
+            hue: None,
+            instrument: Some(hexa),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    p = next;
+    let mut ids = Vec::new();
+    for entry in [&sc, &fx] {
+        let at = p.track(pad).unwrap().channel.devices.len();
+        let spec = NewDevice {
+            role: DeviceRole::Effect,
+            plugin: entry.plugin.clone(),
+            state: None,
+            sidechain: None,
+        };
+        let (next, id) = edits::insert_device(&p, ChannelRef::Track(pad), at, spec).unwrap();
+        p = next;
+        ids.push(id);
+    }
+    let mut app = app_with(p, PluginHost::new(config(&dir)));
+    step_until(&mut app, "every device Ok", all_ok);
+    assert!(app.engine().host().has_sidechain(ids[0]));
+    assert!(!app.engine().host().has_sidechain(ids[1]));
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+        tracks: vec![pad],
+        mode: SelectMode::Replace,
+    })));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
+    let mut h = harness(app);
+    let is_chip = |b: &egui_kittest::Node<'_>| {
+        b.accesskit_node()
+            .label()
+            .is_some_and(|l| l.starts_with("Sidechain"))
+    };
+    let card = |h: &Harness<'_, App>, name: &str| -> usize {
+        h.get_by_role_and_label(Role::Group, Lang::De.devices_card(name).leak())
+            .query_all_by_role(Role::Button)
+            .filter(is_chip)
+            .count()
+    };
+    assert_eq!(card(&h, &sc.plugin.name), 1);
+    assert_eq!(card(&h, &fx.plugin.name), 0);
+    chip(&h, "Sidechain: aus");
+    h.state_mut().shutdown();
+}
+
 #[test]
 fn the_context_menu_of_the_chip_removes_the_source() {
     let s = scene();

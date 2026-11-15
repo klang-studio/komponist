@@ -96,20 +96,28 @@ fn descriptor_of(d: &clack_host::plugin::PluginDescriptor, bundle: &Path) -> Plu
         kind: crate::scan::kind_from_features(PluginFormat::Clap, &features),
         features,
         bundle: std::path::absolute(bundle).unwrap_or_else(|_| bundle.to_path_buf()),
+        sidechain: false,
     }
 }
 
-/// Lists the plugins of a `.clap` bundle without instantiating them.
+/// Lists the plugins of a `.clap` bundle. Each one is instantiated once (not activated) to read
+/// whether it has a sidechain input port (`crate::scan`).
 pub(crate) fn scan(bundle: &Path) -> Result<Vec<PluginDescriptor>, HostingError> {
     let entry = load_entry(bundle)?;
     let factory = entry
         .get_plugin_factory()
         .ok_or_else(|| HostingError::Load(format!("{}: no plugin factory", bundle.display())))?;
-    Ok(factory
+    let mut descriptors: Vec<PluginDescriptor> = factory
         .plugin_descriptors()
         .filter(|d| d.id().is_some())
         .map(|d| descriptor_of(d, bundle))
-        .collect())
+        .collect();
+    for descriptor in &mut descriptors {
+        descriptor.sidechain =
+            ClapPlugin::load(bundle, &descriptor.id, crate::scan::probe_context())
+                .is_ok_and(|plugin| plugin.descriptor.sidechain);
+    }
+    Ok(descriptors)
 }
 
 /// The plugin extensions komponist uses, queried once after instantiation.
@@ -214,6 +222,12 @@ impl ClapPlugin {
         let has_gui = ext
             .gui
             .is_some_and(|gui| gui.is_api_supported(&handle, X11_EMBEDDED));
+        let descriptor = PluginDescriptor {
+            sidechain: PortLayout::query(ext.audio_ports, &handle, true)
+                .sidechain
+                .is_some(),
+            ..descriptor
+        };
 
         Ok(ClapPlugin {
             instance: RefCell::new(instance),

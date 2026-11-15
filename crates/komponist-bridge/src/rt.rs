@@ -3,8 +3,9 @@
 //! Started per activation by [`RtThread::start`]: it switches itself to `SCHED_FIFO`, starts
 //! processing (CLAP wants that on the audio thread) and then serves one block per request:
 //! futex-wait on `request_seq` → the parameter values the app set over the control socket
-//! ([`RtThread::set_param`]) at offset 0, then the block's input events → `process` → output events
-//! into the shared ring → `finish`. [`RtThread::stop`] ends it and hands the processor back for
+//! ([`RtThread::set_param`]) at offset 0, then the block's input events → `process` (with the
+//! block's sidechain input, if the request carries one, #6) → output events into the shared ring →
+//! `finish`. [`RtThread::stop`] ends it and hands the processor back for
 //! deactivation.
 //!
 //! Realtime rules (CLAUDE.md rule 4): everything is allocated before the loop; inside it there is
@@ -277,10 +278,11 @@ fn serve(
     }
 
     let (status, produced, mut dropped) = {
-        let (input, output) = server.audio(frames);
+        let (input, sidechain, output) = server.audio_with_sidechain(frames);
         let mut block = ProcessBlock {
             frames: request.frames,
             input,
+            sidechain,
             output,
             events_in: &scratch.events_in[..count],
             events_out: EventOut::new(&mut scratch.events_out),

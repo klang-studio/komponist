@@ -44,6 +44,7 @@ fn scans_the_fixtures() {
         ("kp-test-fx", Some(PluginKind::Effect)),
         ("kp-test-crash", None),
         ("kp-test-slow", None),
+        ("kp-test-sc", Some(PluginKind::Effect)),
     ] {
         let Some(bundle) = fixture(name) else {
             continue;
@@ -61,6 +62,8 @@ fn scans_the_fixtures() {
         if let Some(kind) = kind {
             assert_eq!(d.kind, kind, "{d:?}");
         }
+        // Only kp-test-sc has a sidechain port (#6): the scan instantiated each plugin to see.
+        assert_eq!(d.sidechain, name == "kp-test-sc", "{d:?}");
     }
     let Some(synth) = fixture("kp-test-synth") else {
         return;
@@ -322,6 +325,21 @@ fn fx_reports_and_applies_latency() {
         .run_once(rig.plugin.as_mut(), std::time::Duration::ZERO);
     let observed = rig.host_loop.take_observed();
     assert!(!observed.has(bits::GUI_CLOSED), "{observed:?}");
+}
+
+#[test]
+fn the_sidechain_reaches_kp_test_sc() {
+    let Some(bundle) = fixture("kp-test-sc") else {
+        return;
+    };
+    let mut rig = load(&bundle, "de.klang-studio.kp-test-sc");
+    sidechain_reaches_the_port(rig.plugin.as_mut());
+    // A plugin without the port says so and ignores a sidechain.
+    let Some(bundle) = fixture("kp-test-fx") else {
+        return;
+    };
+    let rig = load(&bundle, FX);
+    assert!(!rig.plugin.descriptor().sidechain);
 }
 
 #[test]

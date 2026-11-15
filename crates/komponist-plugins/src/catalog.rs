@@ -113,6 +113,9 @@ pub struct CatalogEntry {
     pub features: Vec<String>,
     /// Where the code is.
     pub location: PluginLocation,
+    /// The plugin has a sidechain input (#6): the device head shows the „SC“ chip. Scanned plugins
+    /// from their audio ports ([`PluginDescriptor::sidechain`]), internal devices from their spec.
+    pub sidechain: bool,
 }
 
 impl CatalogEntry {
@@ -224,6 +227,7 @@ fn scanned_entry(d: &PluginDescriptor) -> CatalogEntry {
             path: d.bundle.clone(),
             plugin_id: d.id.clone(),
         },
+        sidechain: d.sidechain,
     }
 }
 
@@ -277,19 +281,38 @@ pub struct CachedBundle {
     pub error: Option<String>,
 }
 
+/// Format version of the scan cache file. 1 (#6): descriptors say whether the plugin has a
+/// sidechain input, which a file without a version (from before #6) does not know.
+pub const SCAN_CACHE_VERSION: u32 = 1;
+
 /// The scan cache file. A bundle is rescanned when its path is new or its mtime changed.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanCache {
+    /// [`SCAN_CACHE_VERSION`] of the writer; absent (0) in files from before #6.
+    #[serde(default)]
+    pub version: u32,
     /// Cached bundles.
     pub bundles: Vec<CachedBundle>,
 }
 
+impl Default for ScanCache {
+    fn default() -> ScanCache {
+        ScanCache {
+            version: SCAN_CACHE_VERSION,
+            bundles: Vec::new(),
+        }
+    }
+}
+
 impl ScanCache {
-    /// Reads the cache; a missing or unreadable file gives an empty cache.
+    /// Reads the cache; a missing or unreadable file, or one of another
+    /// [`SCAN_CACHE_VERSION`], gives an empty cache, so the next scan scans every bundle again
+    /// (the catalog starts with the built-ins only until then).
     pub fn load(path: &Path) -> ScanCache {
         std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<ScanCache>(&bytes).ok())
+            .filter(|cache| cache.version == SCAN_CACHE_VERSION)
             .unwrap_or_default()
     }
 
@@ -383,6 +406,7 @@ mod tests {
             kind,
             features: features.iter().map(|f| (*f).into()).collect(),
             bundle: format!("/usr/lib/clap/{name}.clap").into(),
+            sidechain: false,
         }
     }
 
@@ -670,6 +694,7 @@ mod tests {
         let file = dir.join("nested/plugins.json");
         assert_eq!(ScanCache::load(&file), ScanCache::default());
         let cache = ScanCache {
+            version: SCAN_CACHE_VERSION,
             bundles: vec![
                 CachedBundle {
                     path: "/usr/lib/clap/A.clap".into(),
@@ -696,6 +721,24 @@ mod tests {
         assert_eq!(cache.descriptors().len(), 1);
         std::fs::write(&file, b"{ not json").unwrap();
         assert_eq!(ScanCache::load(&file), ScanCache::default());
+        // A cache from before #6 (no version, descriptors without `sidechain`) is dropped, so
+        // the next scan finds the sidechain ports.
+        std::fs::write(
+            &file,
+            br#"{"bundles":[{"path":"/usr/lib/clap/A.clap","mtime_secs":3,"descriptors":[
+                {"format":"clap","id":"a","name":"A","vendor":"V","version":"1","kind":"effect",
+                 "features":[],"bundle":"/usr/lib/clap/A.clap"}],"error":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ScanCache::load(&file), ScanCache::default());
+        // The current version keeps it.
+        let current = String::from_utf8(std::fs::read(&file).unwrap())
+            .unwrap()
+            .replacen('{', &format!("{{\"version\":{SCAN_CACHE_VERSION},"), 1);
+        std::fs::write(&file, current).unwrap();
+        let loaded = ScanCache::load(&file);
+        assert_eq!(loaded.bundles.len(), 1);
+        assert!(!loaded.bundles[0].descriptors[0].sidechain);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

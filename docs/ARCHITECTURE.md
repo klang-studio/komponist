@@ -733,7 +733,8 @@ fast paths, and the same output bit for bit (golden test against a render of the
   tap, applies the send's delay and gain ramp, and adds. Sidechain inputs are read from the source's tap buffer by
   the holder's job into a lane buffer and passed to `Processor::process_sidechain` (internal devices consume it since
   WP-104: `Spec::sidechain` marks the device, `Dsp::process_sidechain` gets the buffer slice of each piece between
-  parameter events, presse feeds its detector with it instead of the input; plugins through the bridge's extra channels in WP-105). The program carries only indices: per node
+  parameter events, presse feeds its detector with it instead of the input; bridged CLAP and VST3 plugins with a sidechain port through the bridge's extra
+  shared-memory channels since #6, see §8.1 and §8.2). The program carries only indices: per node
   `NodeRoute` (bus, output, input / sidechain / dependent spans, number of inputs, taps, head delay, latencies),
   the input list (`RouteInput`: source, optional `SendRoute` with gate index, linear level, tap and delay), the
   sidechain list (`SidechainRoute`: chain position, source, tap, delay), the dependents, the master's inputs and
@@ -906,7 +907,14 @@ unchanged settings (non-dumpable, RT priority, signals, exit codes); it sets its
 
 **Shared memory per instance** (fixed size): header with futex words `request_seq` and `done_seq`,
 `frames`, transport info, status, latency; SPSC rings for input events (notes, params) and output
-events (param changes from the plugin); audio in and out `[2][MAX_BLOCK]`.
+events (param changes from the plugin); audio in and out `[2][MAX_BLOCK]`, and since layout version 2
+(#6) the sidechain input `[2][MAX_BLOCK]`. A block carries a sidechain when its request has
+`BLOCK_FLAG_SIDECHAIN`: `ExternalProcessor::process_sidechain` (a device whose sidechain is set,
+§6.8.4) copies the tap into it and sets the flag through `BridgeClient::begin_block`; a plain `process`
+sends none, and the bridge then hands the plugin's sidechain port silence, never the previous block's
+data. The sidechain arrives already aligned by the engine (§6.8.5); the bridge adds no latency, so PDC
+counts only what the plugin reports. Both sides check the layout version (`SHM_VERSION`) when the bridge
+maps the memfd, and the control protocol version (`PROTOCOL_VERSION` 3) in `Hello`.
 
 **RT handshake per block:** the engine writes input and events → `request_seq += 1` → futex wake →
 futex wait on `done_seq` with a deadline (about 60 % of the block period minus elapsed time).
@@ -929,7 +937,8 @@ state. State snapshots are taken on save, on GUI close, and debounced on "state 
 
 **Control protocol** (postcard over a Unix seqpacket socket), app → bridge:
 `Load`, `Activate`, `Deactivate`, `GetState`, `SetState`, `ListParams`, `SetParam`, `OpenGui{parent_xid, scale}`,
-`SetGuiSize`, `CloseGui`, `SetRenderMode`, `Shutdown`. Bridge → app: `Loaded{info, params, latency}`,
+`SetGuiSize`, `CloseGui`, `SetRenderMode`, `Shutdown`. Bridge → app: `Loaded{info, params, latency}`
+(the info's descriptor says whether the plugin has a sidechain port, `PluginDescriptor::sidechain`, #6),
 `State(bytes)`, `ParamValues(batch, ~30 Hz)`, `GuiSizeRequest`, `LatencyChanged`, `RestartRequested`,
 `StateDirty`, `Log`, `Error`.
 
@@ -950,7 +959,12 @@ truce-rack serve as further reference code.
 
 - **CLAP** via clack-host. Extensions: audio-ports, note-ports, params, state, latency, gui (x11,
   embedded), timer-support, posix-fd-support, thread-check, log, render, note-name (step sequencer
-  rows, optional).
+  rows, optional). The **sidechain port** (#6) is the first audio input port besides the main one
+  with at least one channel (CLAP has no sidechain flag).
+- **Ports and buses, both formats:** the stereo input goes into the main input, the block's sidechain
+  (`ProcessBlock::sidechain`) into the sidechain port or bus, each adapted to its channel count (mono
+  gets `(L + R) / 2`, more channels get L, R and silence); every other input and a sidechain port in a
+  block without sidechain get silence. The main output is read back as stereo.
 - **VST3** via the `vst3` crate: Linux bundle layout `X.vst3/Contents/x86_64-linux/X.so`,
   `GetPluginFactory`, IComponent/IAudioProcessor/IEditController (+ IConnectionPoint),
   IHostApplication, IComponentHandler (GUI edits), IParameterChanges/IEventList, IBStream (state:
@@ -960,7 +974,8 @@ truce-rack serve as further reference code.
   controller converts to plain values; the state blob is `KPV3` + class id + component and controller
   state (`vst3/stream.rs`). Plugin libraries stay mapped (`RTLD_NODELETE`) in both formats, because
   threads that called into a plugin crash at exit after `dlclose`. Host duties the spike found: call `ModuleEntry` before and
-  `ModuleExit` after use, activate buses before processing (otherwise instruments stay silent), sync
+  `ModuleExit` after use, activate buses before processing (otherwise instruments stay silent; the
+  sidechain bus, the first audio input bus of type `kAux`, is activated with the main buses, #6), sync
   component state into the controller, keep the library loaded until every COM object is released.
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
@@ -971,7 +986,14 @@ truce-rack serve as further reference code.
 
 `komponist --bridge --scan <bundle>` prints JSON descriptors (format, id, name, vendor, version,
 instrument/effect, features/subcategories). The app runs scans in parallel as separate processes with
-a 10 s timeout and caches them by path + mtime. Default folders: CLAP `~/.clap`, `/usr/lib/clap`,
+a 10 s timeout and caches them by path + mtime. A scan instantiates every plugin once, without
+activating it, to read whether it has a sidechain port (CLAP `init` and the audio-ports extension, VST3
+`IComponent::initialize` and the audio input buses; a host context that offers nothing, so no timer or
+fd ever fires), and stores it in the descriptor and the catalog entry (`CatalogEntry::sidechain`). The
+device head's „SC“ chip (§6.8.1, WP-104) appears for such plugins: `PluginHost::has_sidechain` answers
+from the catalog until the bridge loaded the plugin, then from the plugin itself. The cache file has a
+version (`SCAN_CACHE_VERSION`, 1 since #6); a file of another version, or one from before #6 without it,
+is dropped, so the next scan scans every bundle again. Default folders: CLAP `~/.clap`, `/usr/lib/clap`,
 `/usr/local/lib/clap`, `$CLAP_PATH`; VST3 `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`.
 Browser categories ("EQ und Filter", "Dynamik", "Hall und Delay", "Modulation") come from a mapping
 table of CLAP features / VST3 subcategories.

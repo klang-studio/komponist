@@ -102,6 +102,8 @@ pub(super) fn param_id(plugin: &dyn HostedPlugin, name: &str) -> u32 {
 /// `assert_no_alloc`.
 pub(crate) struct Blocks {
     pub(crate) input: [Vec<f32>; 2],
+    /// The sidechain of every block (`None`: none).
+    pub(crate) sidechain: Option<[Vec<f32>; 2]>,
     pub(crate) output: [Vec<f32>; 2],
     pub(crate) events_out: Vec<WireEvent>,
     pub(crate) out_count: usize,
@@ -113,6 +115,7 @@ impl Blocks {
     pub(crate) fn new() -> Blocks {
         Blocks {
             input: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
+            sidechain: None,
             output: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
             events_out: vec![WireEvent::default(); OUTPUT_EVENT_CAPACITY],
             out_count: 0,
@@ -136,6 +139,7 @@ impl Blocks {
         let mut block = ProcessBlock {
             frames: BLOCK as u32,
             input: [in_l, in_r],
+            sidechain: self.sidechain.as_ref().map(|[l, r]| [&l[..], &r[..]]),
             output: [out_l, out_r],
             events_in: events,
             events_out: EventOut::new(&mut self.events_out),
@@ -160,4 +164,36 @@ impl Blocks {
     pub(crate) fn has_nan(&self) -> bool {
         self.output.iter().flatten().any(|s| s.is_nan())
     }
+}
+
+/// The `kp-test-sc` checks for either format (#6): the loaded plugin reports its sidechain port,
+/// a block's sidechain reaches it sample-exactly (the plugin outputs input + sidechain), and a
+/// block without one feeds it silence (the output is the input).
+pub(crate) fn sidechain_reaches_the_port(plugin: &mut dyn HostedPlugin) {
+    assert!(plugin.descriptor().sidechain, "{:?}", plugin.descriptor());
+    let mut processor = plugin.activate(CONFIG).unwrap();
+    processor.start_processing().unwrap();
+    let wave = |step: f32, phase: f32| -> Vec<f32> {
+        (0..BLOCK)
+            .map(|i| (i as f32 * step + phase).sin() * 0.5)
+            .collect()
+    };
+    let mut blocks = Blocks::new();
+    for block in 0..3 {
+        let phase = block as f32;
+        blocks.input = [wave(0.01, phase), wave(0.02, phase)];
+        blocks.sidechain = Some([wave(0.03, phase), wave(-0.05, phase)]);
+        assert_eq!(blocks.run(processor.as_mut(), &[]), ProcessStatus::Continue);
+        let sidechain = blocks.sidechain.as_ref().unwrap();
+        for (ch, (input, side)) in blocks.input.iter().zip(sidechain).enumerate() {
+            let sum: Vec<f32> = input.iter().zip(side).map(|(a, b)| a + b).collect();
+            assert_eq!(blocks.output[ch], sum, "block {block}, channel {ch}");
+        }
+    }
+    // No sidechain: the port is silent again, nothing of the last block stays.
+    blocks.sidechain = None;
+    assert_eq!(blocks.run(processor.as_mut(), &[]), ProcessStatus::Continue);
+    assert_eq!(blocks.output, blocks.input);
+    processor.stop_processing();
+    plugin.deactivate(processor);
 }

@@ -246,6 +246,57 @@ fn effect_audio_and_latency_through_the_ipc_path() {
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 
+/// #6: a block's sidechain reaches the plugin's sidechain port through the shared memory, in
+/// both formats; a block without one feeds the port silence; `Loaded` reports the port.
+#[test]
+fn sidechain_through_the_ipc_path() {
+    for (format, id) in [("clap", SC), ("vst3", SC_VST3)] {
+        let Some(bundle) = fixture_in(format, "kp-test-sc") else {
+            continue;
+        };
+        let mut bridge = Bridge::spawn();
+        let info = bridge.load(&bundle, id);
+        assert!(info.descriptor.sidechain, "{format}: {:?}", info.descriptor);
+        assert_eq!(bridge.activate(), 0);
+        let wave = |step: f32| -> Vec<f32> {
+            (0..MAX_BLOCK)
+                .map(|i| (i as f32 * step).sin() * 0.5)
+                .collect()
+        };
+        bridge.input = [wave(0.01), wave(0.02)];
+        bridge.sidechain = Some([wave(0.03), wave(-0.05)]);
+        for _ in 0..3 {
+            let result = bridge.block(&[]);
+            assert_eq!(result.status, BlockStatus::Ok as u32);
+            let sidechain = bridge.sidechain.as_ref().unwrap();
+            for (ch, (input, side)) in bridge.input.iter().zip(sidechain).enumerate() {
+                let sum: Vec<f32> = input[..BLOCK]
+                    .iter()
+                    .zip(&side[..BLOCK])
+                    .map(|(a, b)| a + b)
+                    .collect();
+                assert_eq!(bridge.output[ch][..BLOCK], sum, "{format}, channel {ch}");
+            }
+        }
+        bridge.sidechain = None;
+        bridge.block(&[]);
+        for ch in 0..2 {
+            assert_eq!(
+                bridge.output[ch][..BLOCK],
+                bridge.input[ch][..BLOCK],
+                "{format}: the port is silent without a sidechain"
+            );
+        }
+        assert_eq!(bridge.shutdown(), EXIT_OK);
+    }
+    // A plugin without the port says so.
+    if let Some(bundle) = fixture("kp-test-fx") {
+        let mut bridge = Bridge::spawn();
+        assert!(!bridge.load(&bundle, FX).descriptor.sidechain);
+        assert_eq!(bridge.shutdown(), EXIT_OK);
+    }
+}
+
 #[test]
 fn param_changes_from_the_app_reach_the_plugin() {
     let Some(bundle) = fixture("kp-test-synth") else {
