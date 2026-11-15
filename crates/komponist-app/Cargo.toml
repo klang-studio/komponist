@@ -20,6 +20,8 @@ komponist-engine.workspace = true
 komponist-audio.workspace = true
 komponist-builtin.workspace = true
 komponist-plugins.workspace = true
+# `komponist --bridge`: the plugin bridge runs inside this executable, in its own process (WP-94).
+komponist-bridge.workspace = true
 # Parameter, note-name, GUI-size and log types of the plugin manager's API (`device_host`).
 komponist-ipc.workspace = true
 komponist-ui.workspace = true

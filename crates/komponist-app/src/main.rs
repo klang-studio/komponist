@@ -17,11 +17,14 @@
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
 //!
 //! Plugins: pisynth, the Sampler and the internal devices run in process; the CLAP/VST3 plugins run in
-//! `komponist-bridge` processes next to this executable (`cargo build` builds both). At start a
+//! bridge processes of their own: this executable started as `komponist --bridge …` (one
+//! executable, nothing to build or keep in step; the bridge process initialises no GUI or audio).
+//! At start a
 //! background scan covers the default plugin folders plus those in the settings; devices whose
 //! plugin it finds load when it ends. Closing the window shuts every bridge down.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use komponist_app::device_host::PluginHost;
 use komponist_app::dialogs::new_project;
@@ -32,7 +35,7 @@ use komponist_app::{Action, App, ProjectAction};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_i18n::Lang;
 use komponist_model::{Document, fixtures};
-use komponist_plugins::PluginManagerConfig;
+use komponist_plugins::{BRIDGE_FLAG, PluginManagerConfig};
 use komponist_ui::RunOptions;
 
 // Debug builds abort on any allocation inside the audio callback (ARCHITECTURE §6.1).
@@ -100,7 +103,24 @@ fn parse_args() -> Result<Option<Args>, String> {
     Ok(Some(args))
 }
 
-fn main() -> eframe::Result {
+fn main() -> ExitCode {
+    // Bridge mode first, before anything of the app starts (no settings, GUI, graphics or audio):
+    // the app starts its plugin bridges as `komponist --bridge …` (WP-94).
+    let mut argv = std::env::args_os().skip(1).peekable();
+    if argv.peek().is_some_and(|a| a == BRIDGE_FLAG) {
+        argv.next();
+        return komponist_bridge::run(argv);
+    }
+    match run_app() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_app() -> eframe::Result {
     let args = match parse_args() {
         Ok(Some(args)) => args,
         Ok(None) => {
@@ -135,16 +155,8 @@ fn main() -> eframe::Result {
     } else {
         (settings.audio.clone(), MidiSetup::System)
     };
-    let plugins = PluginManagerConfig::defaults();
-    if !plugins.bridge_exe.exists() {
-        eprintln!(
-            "komponist: {} not found; plugins other than pisynth will not load \
-             (cargo build -p komponist-bridge)",
-            plugins.bridge_exe.display()
-        );
-    }
-    let missing_bridge = (!plugins.bridge_exe.exists()).then(|| plugins.bridge_exe.clone());
-    let host = PluginHost::new(plugins);
+    // The plugin bridge is this executable with `--bridge` (see `main`).
+    let host = PluginHost::new(PluginManagerConfig::defaults());
     let (mut engine, started) = EngineSync::new(&config, midi, Box::new(host));
     if let Err(e) = started {
         eprintln!("komponist: audio output not available ({e}); running without device");
@@ -183,9 +195,6 @@ fn main() -> eframe::Result {
             .resolve(sys_locale::get_locale().as_deref())
     });
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
-    if let Some(exe) = &missing_bridge {
-        app.report_missing_bridge(exe);
-    }
     app.scan_plugins();
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {

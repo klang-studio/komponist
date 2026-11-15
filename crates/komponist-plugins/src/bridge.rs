@@ -25,6 +25,7 @@
 //! [`Timing::long_call_timeout`].
 
 use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsString;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -157,7 +158,9 @@ pub(crate) struct Started {
 
 /// What `spawn` needs.
 pub(crate) struct SpawnSetup<'a> {
+    /// The launcher: executable and its leading arguments (`PluginManagerConfig`).
     pub exe: &'a Path,
+    pub args: &'a [OsString],
     pub device: DeviceId,
     pub role: DeviceRole,
     pub format: PluginFormat,
@@ -181,6 +184,7 @@ impl Bridge {
         let raw = bridge_fd.as_raw_fd();
         let mut command = Command::new(s.exe);
         command
+            .args(s.args)
             .arg("--instance")
             .arg("--control-fd")
             .arg(raw.to_string())

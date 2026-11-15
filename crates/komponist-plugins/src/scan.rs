@@ -2,7 +2,7 @@
 //!
 //! [`ScanJob::start`] runs on its own thread: it walks the plugin folders for bundles (recursively,
 //! as the CLAP spec asks for Linux), canonicalizes their paths (the cache key), takes unchanged
-//! bundles from the [`ScanCache`] and scans the rest with `komponist-bridge --scan <bundle>`,
+//! bundles from the [`ScanCache`] and scans the rest with `<launcher> --scan <bundle>` (`komponist --bridge`),
 //! [`PluginManagerConfig::parallel_scans`](crate::PluginManagerConfig) processes at a time, each
 //! killed after [`SCAN_TIMEOUT`](crate::catalog::SCAN_TIMEOUT). The finished job writes the new cache file and hands a
 //! [`ScanOutcome`] to the plugin manager, which polls for it.
@@ -13,6 +13,7 @@
 //! host yet (VST3 until WP-32).
 
 use std::collections::{HashSet, VecDeque};
+use std::ffi::OsString;
 use std::io::Read;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,7 @@ pub(crate) struct ScanJob {
 #[derive(Debug, Clone)]
 pub(crate) struct ScanSetup {
     pub bridge_exe: PathBuf,
+    pub bridge_args: Vec<OsString>,
     pub dirs: PluginDirs,
     pub cache: ScanCache,
     pub cache_file: PathBuf,
@@ -209,7 +211,13 @@ fn run(setup: &ScanSetup, cancel: &AtomicBool) -> Option<ScanOutcome> {
                         return;
                     };
                     let bundle = &found[index].path;
-                    let scanned = scan_bundle(&setup.bridge_exe, bundle, setup.timeout, cancel);
+                    let scanned = scan_bundle(
+                        &setup.bridge_exe,
+                        &setup.bridge_args,
+                        bundle,
+                        setup.timeout,
+                        cancel,
+                    );
                     if let Some(scanned) = scanned {
                         let _ = tx.send((index, scanned));
                     }
@@ -365,11 +373,13 @@ pub(crate) fn bundle_mtime(path: &Path) -> u64 {
 /// Runs `komponist-bridge --scan bundle` with a timeout; `None` when cancelled.
 pub(crate) fn scan_bundle(
     bridge_exe: &Path,
+    bridge_args: &[OsString],
     bundle: &Path,
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> Option<Scanned> {
     let mut child = match Command::new(bridge_exe)
+        .args(bridge_args)
         .arg("--scan")
         .arg(bundle)
         .stdin(Stdio::null())

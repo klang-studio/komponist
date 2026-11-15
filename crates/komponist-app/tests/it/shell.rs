@@ -620,16 +620,3 @@ fn the_esc_after_a_text_field_lost_focus_is_not_a_shortcut() {
     h.run_steps(2);
     assert!(h.state().ui().selection.clips.is_empty());
 }
-
-#[test]
-fn a_missing_bridge_executable_is_reported_in_the_status_bar() {
-    let mut app = App::headless(komponist_model::fixtures::demo_project());
-    app.report_missing_bridge(std::path::Path::new("/nowhere/komponist-bridge"));
-    let status = app.ui().status.clone().expect("a status message");
-    assert!(
-        status.text.starts_with("komponist-bridge fehlt"),
-        "{}",
-        status.text
-    );
-    assert_eq!(status.kind, komponist_app::ui_state::StatusKind::Error);
-}

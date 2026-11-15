@@ -30,8 +30,8 @@ pub use catalog::{
 };
 pub use external::ExternalProcessor;
 pub use manager::{
-    DeviceStatus, FailReason, MissingPlugin, PluginError, PluginManager, PluginManagerConfig,
-    PluginManagerEvent, ProcessorSetup,
+    BRIDGE_FLAG, DeviceStatus, FailReason, MissingPlugin, PluginError, PluginManager,
+    PluginManagerConfig, PluginManagerEvent, ProcessorSetup,
 };
 
 /// How long a bridged device stays `Loading` after its bridge reported the plugin active (also

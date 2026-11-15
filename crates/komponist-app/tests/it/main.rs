@@ -20,6 +20,7 @@ mod acceptance_flow3;
 mod acceptance_flow4;
 mod acceptance_flow5;
 mod arrangement;
+mod bridge_mode;
 mod browser;
 mod device_events;
 mod device_frame;

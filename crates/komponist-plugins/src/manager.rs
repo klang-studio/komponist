@@ -24,7 +24,8 @@
 //! Thread: UI thread only, non-blocking except where noted.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -204,11 +205,18 @@ impl core::fmt::Display for PluginError {
 
 impl std::error::Error for PluginError {}
 
+/// First argument that makes the `komponist` executable run as a plugin bridge (WP-94).
+pub const BRIDGE_FLAG: &str = "--bridge";
+
 /// Fixed setup of the plugin manager.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PluginManagerConfig {
-    /// Path of the `komponist-bridge` binary (next to the app binary by default).
+    /// The bridge launcher: this executable runs the bridge (the app's own executable by default,
+    /// or the `komponist-bridge` binary) …
     pub bridge_exe: PathBuf,
+    /// … with these leading arguments (`--bridge` for the app's executable). The bridge's own
+    /// arguments (`--instance …`, `--scan <bundle>`) follow.
+    pub bridge_args: Vec<OsString>,
     /// Path of the scan cache (`~/.cache/komponist/plugins.json`).
     pub cache_file: PathBuf,
     /// Scan processes running at once.
@@ -216,14 +224,13 @@ pub struct PluginManagerConfig {
 }
 
 impl PluginManagerConfig {
-    /// The default setup of the app: `komponist-bridge` next to the running executable, the cache
-    /// in `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`), and half the CPU cores
-    /// (1 ..= 8) for scans.
+    /// The default setup of the app: the bridge is the running executable itself with `--bridge`
+    /// (WP-94: nothing next to it can be missing or stale), the cache in
+    /// `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`), and half the CPU cores (1 ..= 8)
+    /// for scans. When the running executable cannot be determined, `bridge_exe` is empty and
+    /// every start of a bridge fails with a clear [`PluginError::Spawn`].
     pub fn defaults() -> PluginManagerConfig {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .unwrap_or_default();
+        let exe = std::env::current_exe().unwrap_or_default();
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let cache_dir = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
@@ -232,7 +239,8 @@ impl PluginManagerConfig {
             .unwrap_or_else(std::env::temp_dir);
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         PluginManagerConfig {
-            bridge_exe: exe_dir.join("komponist-bridge"),
+            bridge_exe: exe,
+            bridge_args: vec![OsString::from(BRIDGE_FLAG)],
             cache_file: cache_dir.join("komponist").join(SCAN_CACHE_FILE),
             parallel_scans: (cores / 2).clamp(1, 8),
         }
@@ -304,6 +312,7 @@ impl PluginManager {
         self.scan = None;
         self.scan = Some(ScanJob::start(ScanSetup {
             bridge_exe: self.config.bridge_exe.clone(),
+            bridge_args: self.config.bridge_args.clone(),
             dirs: dirs.clone(),
             cache: self.cache.clone(),
             cache_file: self.config.cache_file.clone(),
@@ -411,6 +420,7 @@ impl PluginManager {
         self.retire(device.id, false);
         let started = Bridge::spawn(SpawnSetup {
             exe: &self.config.bridge_exe,
+            args: &self.config.bridge_args,
             device: device.id,
             role: device.role,
             format,
@@ -723,13 +733,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_points_next_to_the_executable() {
+    fn default_config_runs_the_executable_itself_as_the_bridge() {
         let config = PluginManagerConfig::defaults();
-        let exe_dir = std::env::current_exe().unwrap();
-        assert_eq!(
-            config.bridge_exe,
-            exe_dir.parent().unwrap().join("komponist-bridge")
-        );
+        assert_eq!(config.bridge_exe, std::env::current_exe().unwrap());
+        assert_eq!(config.bridge_args, [OsString::from("--bridge")]);
         assert!(config.cache_file.ends_with("komponist/plugins.json"));
         assert!(config.cache_file.is_absolute());
         assert!((1..=8).contains(&config.parallel_scans));
@@ -740,6 +747,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kp-manager-new-{}", std::process::id()));
         let manager = PluginManager::new(PluginManagerConfig {
             bridge_exe: "/nonexistent/komponist-bridge".into(),
+            bridge_args: Vec::new(),
             cache_file: dir.join("plugins.json"),
             parallel_scans: 1,
         });
@@ -762,6 +770,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kp-manager-spawn-{}", std::process::id()));
         let mut manager = PluginManager::new(PluginManagerConfig {
             bridge_exe: "/nonexistent/komponist-bridge".into(),
+            bridge_args: Vec::new(),
             cache_file: dir.join("plugins.json"),
             parallel_scans: 1,
         });

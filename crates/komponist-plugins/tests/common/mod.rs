@@ -140,6 +140,7 @@ pub fn scratch(name: &str) -> PathBuf {
 pub fn config(dir: &Path) -> PluginManagerConfig {
     PluginManagerConfig {
         bridge_exe: bridge_exe(),
+        bridge_args: Vec::new(),
         cache_file: dir.join("cache/plugins.json"),
         parallel_scans: 4,
     }

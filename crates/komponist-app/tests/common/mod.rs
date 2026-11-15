@@ -1,19 +1,17 @@
-//! Shared harness of the plugin tests: the real `komponist-bridge` binary, the WP-27 test plugins,
+//! Shared harness of the plugin tests: the real bridge, the WP-27 test plugins,
 //! the demo project with the test plugins in place of its external devices, and an app on the
 //! null backend whose device host is a [`PluginHost`].
 //!
-//! The bridge binary: `$KOMPONIST_BRIDGE_EXE` if set, else `target/<profile>/komponist-bridge`. If
-//! that is missing or older than the sources of komponist-bridge, komponist-ipc or
-//! komponist-hosting, it is built with cargo first. The test plugins come from
+//! The bridge: the `komponist` binary of this package run as `komponist --bridge` (cargo builds it
+//! for the integration tests), exactly how the app starts its bridges (WP-94). The test plugins come from
 //! `scripts/build-test-plugins.sh` (`target/test-plugins/clap/`); without them the tests skip with
 //! a note.
 
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use komponist_app::App;
 use komponist_app::device_host::{PluginHost, is_pisynth};
@@ -38,68 +36,8 @@ pub const CRASH: &str = "de.klang-studio.kp-test-crash";
 pub const NULL_BUFFER: u32 = komponist_engine::MAX_BLOCK as u32;
 
 /// The workspace's `target/` directory.
-fn target_dir() -> PathBuf {
+pub fn target_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
-}
-
-/// The `komponist-bridge` binary (see the module docs).
-pub fn bridge_exe() -> PathBuf {
-    static EXE: OnceLock<PathBuf> = OnceLock::new();
-    EXE.get_or_init(|| {
-        if let Some(exe) = std::env::var_os("KOMPONIST_BRIDGE_EXE") {
-            return PathBuf::from(exe);
-        }
-        // target/<profile>/deps/<test> → target/<profile>/komponist-bridge
-        let test = std::env::current_exe().expect("test executable");
-        let profile_dir = test.parent().and_then(Path::parent).expect("profile dir");
-        let exe = profile_dir.join("komponist-bridge");
-        if !is_fresh(&exe) {
-            let mut cargo = Command::new(env!("CARGO"));
-            cargo.args(["build", "-p", "komponist-bridge"]);
-            if !cfg!(debug_assertions) {
-                cargo.arg("--release");
-            }
-            let status = cargo.status().expect("run cargo build");
-            assert!(status.success(), "cargo build -p komponist-bridge failed");
-        }
-        exe
-    })
-    .clone()
-}
-
-/// Whether `exe` exists and is newer than every source file it is built from.
-fn is_fresh(exe: &Path) -> bool {
-    let Ok(built) = std::fs::metadata(exe).and_then(|m| m.modified()) else {
-        return false;
-    };
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    ["komponist-bridge", "komponist-ipc", "komponist-hosting"]
-        .iter()
-        .all(|name| newest(&crates.join(name)) <= built)
-}
-
-fn newest(dir: &Path) -> SystemTime {
-    let mut latest = SystemTime::UNIX_EPOCH;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return latest;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        if name == "tests" || name == "target" {
-            continue;
-        }
-        let time = if path.is_dir() {
-            newest(&path)
-        } else {
-            entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(latest)
-        };
-        latest = latest.max(time);
-    }
-    latest
 }
 
 /// The folder of the WP-27 CLAP fixtures as scan folders, or `None` with a note if they are not
@@ -132,7 +70,9 @@ pub fn scratch(name: &str) -> PathBuf {
 /// A plugin manager setup with its own (empty) scan cache in `dir`.
 pub fn config(dir: &Path) -> PluginManagerConfig {
     PluginManagerConfig {
-        bridge_exe: bridge_exe(),
+        // The way the app starts bridges (WP-94): its own executable, `komponist --bridge`.
+        bridge_exe: PathBuf::from(env!("CARGO_BIN_EXE_komponist")),
+        bridge_args: vec![komponist_plugins::BRIDGE_FLAG.into()],
         cache_file: dir.join("cache/plugins.json"),
         parallel_scans: 4,
     }

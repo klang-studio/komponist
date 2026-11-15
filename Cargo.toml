@@ -20,6 +20,7 @@ komponist-builtin = { path = "crates/komponist-builtin" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-hosting = { path = "crates/komponist-hosting" }
 komponist-plugins = { path = "crates/komponist-plugins" }
+komponist-bridge = { path = "crates/komponist-bridge" }
 komponist-ui = { path = "crates/komponist-ui" }
 komponist-i18n = { path = "crates/komponist-i18n" }
 
@@ -43,7 +44,8 @@ winit = { version = "0.30.13", default-features = false, features = ["x11"] }
 cpal = { version = "0.18.2", features = ["pipewire", "jack"] }
 midir = "0.11.1"
 
-# Plugin format layer (linked only by komponist-bridge via komponist-hosting).
+# Plugin format layer (linked only by komponist-bridge via komponist-hosting; the komponist binary
+# carries the bridge since WP-94).
 # truce-rack is added only if gate G4 picks it (ARCHITECTURE §2.4, D3).
 clack-host = "0.2.0"
 clack-extensions = "0.2.0"
