@@ -24,6 +24,17 @@ While the patch is active cargo rewrites the klang-dsp entry in `Cargo.lock`; do
 (`git checkout Cargo.lock`). When a klang-dsp change is pushed, bump `rev` in the root `Cargo.toml` and commit it
 together with the komponist change that needs it.
 
+## Bumping pinned git dependencies
+
+Dependabot (`.github/dependabot.yml`) updates crates.io dependencies and GitHub Actions, but it does **not** move git
+dependencies that are pinned by `rev`. Bump them by hand:
+
+- **klang-dsp** (`Cargo.toml`, `[workspace.dependencies]`): push the klang-dsp change, then set `rev` to the new commit
+  hash and run `cargo update -p klang-dsp` so `Cargo.lock` follows. Commit both with the komponist change that needs it.
+- **test-plugins** (`test-plugins/Cargo.toml`): the `baseview`, `egui-baseview` and `nice-plug*` forks of klang-studio
+  are pinned by `rev` as well. Set the new hash on every line of the same repository (all `nice-plug*` entries share
+  one `rev`), run `cargo update` inside `test-plugins/` and check with `scripts/build-test-plugins.sh`.
+
 ## Executable
 
 ```bash
