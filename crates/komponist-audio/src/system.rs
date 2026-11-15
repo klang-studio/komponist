@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::{self, NullStream, StreamCallback, StreamShared};
 use crate::midi::MidiReceiver;
 use crate::process::{AudioProcess, StreamParams};
-use crate::slot::{EngineSlot, SlotHandle};
+use crate::slot::{DetachStep, EngineSlot, SlotHandle};
 
 /// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
 const LOAD_SMOOTHING: f32 = 0.05;
@@ -477,22 +477,19 @@ impl<P: AudioProcess> AudioSystem<P> {
         let deadline = Instant::now() + timeout;
         loop {
             self.collect_retired();
+            let mut slot_pending = false;
             if let Some(current) = self.current.as_mut() {
-                if let Some(engine) = current.handle.try_take_engine() {
-                    self.keep_engine(engine);
-                } else if current.handle.is_occupied() {
-                    current.handle.request_detach();
+                match current.handle.detach_step() {
+                    DetachStep::Engine(engine) => self.keep_engine(engine),
+                    DetachStep::Pending => slot_pending = true,
+                    DetachStep::Empty => {}
                 }
             }
             if let Some(engine) = self.engine.take() {
                 self.detached = true;
                 return Ok(engine);
             }
-            let pending = self
-                .current
-                .as_ref()
-                .is_some_and(|c| c.handle.is_occupied())
-                || !self.retired.is_empty();
+            let pending = slot_pending || !self.retired.is_empty();
             if !pending {
                 return Err(AudioError::Detached);
             }
