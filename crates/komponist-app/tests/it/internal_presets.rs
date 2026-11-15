@@ -388,7 +388,7 @@ fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
     open_menu(&mut h, kind);
     h.run_steps(4);
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();

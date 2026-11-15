@@ -15,11 +15,11 @@ use egui::{Key, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::App;
-use komponist_app::panels::transport::names as tp;
 use komponist_app::ui_state::Tool;
 use komponist_app::views::piano_roll::geometry::Geometry;
 use komponist_app::views::piano_roll::names as pr;
 use komponist_engine::{MidiInEvent, MidiPort, TransportState};
+use komponist_i18n::de;
 use komponist_model::fixtures::empty_project;
 use komponist_model::{ClipContent, ClipId, Note, Project, Tick};
 use komponist_tokens::size;
@@ -62,7 +62,7 @@ fn rig() -> Harness<'static, App> {
     ctrl(&mut h, Key::T);
     assert!(h.state().project().tracks[0].arm);
     assert_eq!(h.state().project().count_in_bars, 1);
-    click(&mut h, Role::Button, tp::COUNT_IN);
+    click(&mut h, Role::Button, de::TRANSPORT_COUNT_IN);
     assert_eq!(h.state().project().count_in_bars, 0, "count-in off");
     h.state_mut()
         .engine_mut()
@@ -145,7 +145,7 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
     run(&mut h, 100, &[(0, off(64))]);
     let clip = stop_recording(&mut h);
     assert_recorded(h.state().project(), clip, [60, 64]);
-    assert_eq!(h.state().doc().undo_label(), Some("Take 1"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Take 1"));
     let velocities: Vec<u8> = notes_of(h.state(), clip)
         .iter()
         .map(|n| n.velocity)
@@ -187,7 +187,7 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
     for n in notes_of(h.state(), clip) {
         assert_eq!(n.start.0 % 240, 0, "start {:?} on the grid", n.start);
     }
-    assert_eq!(h.state().doc().undo_label(), Some("Quantisieren"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Quantisieren"));
 
     // Pencil: a click on an empty spot sets a grid note.
     click(&mut h, Role::RadioButton, pr::PENCIL);
@@ -206,7 +206,7 @@ fn midi_keyboard_records_and_the_piano_roll_edits_the_take() {
     let stem = pos2(g.x_of_local(new.start) + 2.0, lane.bottom() - 4.0 - 26.0);
     click_at(&mut h, stem);
     assert_eq!(note(h.state(), clip, 72).velocity, 64);
-    assert_eq!(h.state().doc().undo_label(), Some("Velocity"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Velocity"));
 }
 
 #[test]

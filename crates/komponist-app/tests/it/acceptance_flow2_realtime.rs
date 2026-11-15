@@ -14,9 +14,9 @@ use egui::Key;
 use egui::accesskit::Role;
 use egui_kittest::Harness;
 use komponist_app::App;
-use komponist_app::panels::transport::names as tp;
 use komponist_audio::{MidiPortId, TestMidiSource};
 use komponist_engine::TransportState;
+use komponist_i18n::de;
 use komponist_model::fixtures::empty_project;
 use komponist_model::{ClipContent, Note};
 
@@ -48,7 +48,7 @@ fn real_time_midi_input_records_the_played_notes() {
     let mut h = harness(app);
     ctrl(&mut h, Key::T);
     assert!(h.state().project().tracks[0].arm);
-    click(&mut h, Role::Button, tp::COUNT_IN);
+    click(&mut h, Role::Button, de::TRANSPORT_COUNT_IN);
     assert_eq!(h.state().project().count_in_bars, 0, "count-in off");
 
     key(&mut h, Key::R);

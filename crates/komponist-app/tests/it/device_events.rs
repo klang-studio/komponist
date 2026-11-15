@@ -283,7 +283,7 @@ fn state_snapshots_are_undo_steps_that_follow_each_other_into_one() {
     snapshot(&script, surge, &blob);
     app.step();
     assert_eq!(state(&app, surge).as_deref(), Some(&blob[..]));
-    assert_eq!(app.doc().undo_label(), Some("Surge XT: Zustand ändern"));
+    assert_eq!(app.undo_text().as_deref(), Some("Surge XT: Zustand ändern"));
     assert!(app.doc().is_dirty());
 
     // More edits right after it amend the same step.
@@ -356,9 +356,9 @@ fn a_snapshot_during_another_gesture_waits_for_its_end() {
     app.step();
     assert_eq!(state(&app, surge).as_deref(), Some(&[7u8][..]));
     // The fader and the plugin are two steps.
-    assert_eq!(app.doc().undo_label(), Some("Surge XT: Zustand ändern"));
+    assert_eq!(app.undo_text().as_deref(), Some("Surge XT: Zustand ändern"));
     app.dispatch(Action::Edit(EditAction::Undo));
-    assert_eq!(app.doc().undo_label(), Some("Lautstärke"));
+    assert_eq!(app.undo_text().as_deref(), Some("Lautstärke"));
 }
 
 #[test]

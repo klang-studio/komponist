@@ -228,7 +228,7 @@ fn snapshot_of_the_demo_next_to_s01() {
         h.run_steps(2);
         // The CPU readout depends on the machine.
         let cpu = h
-            .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+            .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
             .rect();
         h.mask(cpu.expand(2.0));
         h.snapshot(format!("arrangement-s01-{ppp}x"));
@@ -932,7 +932,7 @@ fn render_without_grid_labels(h: &mut Harness<'_, App>, label: &str) -> Vec<u8> 
         .map(|n| n.rect())
         .collect();
     rects.push(
-        h.get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        h.get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
             .rect(),
     );
     let img = h.render().expect("render");
@@ -1007,7 +1007,7 @@ fn snapshots_of_the_arrangement_grid() {
         app.ui_mut().arrangement.grid = komponist_model::Grid::Sixteenth;
         let mut h = harness(app);
         let cpu = h
-            .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+            .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
             .rect();
         h.mask(cpu.expand(2.0));
         h.snapshot(format!("arrangement-grid-16-{px_per_bar}px-1x"));
@@ -1106,7 +1106,7 @@ fn snapshot_of_an_empty_project_next_to_s10() {
     );
     h.run_steps(3);
     let cpu = h
-        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .get_by_role_and_label(Role::Status, komponist_i18n::de::TRANSPORT_CPU)
         .rect();
     h.mask(cpu.expand(2.0));
     h.snapshot("arrangement-s10-1x");

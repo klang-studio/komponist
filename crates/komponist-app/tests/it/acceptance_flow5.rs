@@ -16,11 +16,11 @@ use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::dialogs::export::names;
-use komponist_app::panels::transport::names as tp;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::Dialog;
 use komponist_app::{App, engine_sync::EngineSync};
 use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
+use komponist_i18n::de;
 use komponist_model::fixtures::demo_project;
 use komponist_model::{DeviceRole, Document, Project, Tick, TickRange};
 
@@ -125,7 +125,7 @@ fn the_song_exports_as_wav_through_the_menu_and_through_ctrl_shift_e() {
     let mut h = harness(app_in(&dir));
 
     // ⋯ › "WAV exportieren …": S08 opens, "Exportieren" starts it.
-    click(&mut h, Role::Button, tp::MENU);
+    click(&mut h, Role::Button, de::TRANSPORT_MENU);
     h.run_steps(60);
     h.get_by_label_contains("WAV exportieren").click();
     h.run_steps(3);

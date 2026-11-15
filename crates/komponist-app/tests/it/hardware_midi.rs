@@ -14,6 +14,7 @@ use komponist_app::device_host::BuiltinHost;
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::{Action, App, EditAction};
 use komponist_audio::{AudioError, HostKind, MidiInputHub, StreamConfig};
+use komponist_i18n::de;
 use komponist_model::edits::TrackProp;
 use komponist_model::{MidiInputSel, TrackId};
 use midir::MidiOutput;
@@ -151,7 +152,6 @@ fn pipewire_virtual_port_plays() {
 fn the_app_monitors_and_records_a_virtual_port() {
     use crate::acceptance_support::click;
     use egui::accesskit::Role;
-    use komponist_app::panels::transport::names as tp;
     use komponist_engine::TransportState;
     use komponist_model::ClipContent;
 
@@ -171,7 +171,7 @@ fn the_app_monitors_and_records_a_virtual_port() {
     assert!(signal_within(&mut h, track, 3), "monitoring: no signal");
     out.send(&[0x80, 60, 0]).unwrap();
 
-    click(&mut h, Role::Button, tp::COUNT_IN);
+    click(&mut h, Role::Button, de::TRANSPORT_COUNT_IN);
     key(&mut h, Key::R);
     let until = Instant::now() + Duration::from_secs(10);
     while h.state().transport() != TransportState::Recording {

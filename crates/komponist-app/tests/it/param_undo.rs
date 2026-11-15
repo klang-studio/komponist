@@ -190,7 +190,7 @@ fn a_pisynth_drag_is_one_step_that_never_recreates_the_processor_and_undo_follow
 
     // One step, named after the parameter; the value is in the document.
     assert_eq!(depth(&mut app), start_depth + 1);
-    assert_eq!(app.doc().undo_label(), Some("Lautstärke ändern"));
+    assert_eq!(app.undo_text().as_deref(), Some("Lautstärke ändern"));
     let after = patch_of(&app, synth);
     assert_ne!(after, before_patch);
     let loud = note_peak(&mut app, track, 60);
@@ -356,7 +356,7 @@ fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 40.0));
     let started = komponist_builtin::decode_state(before.as_deref()).unwrap();
     assert!(glide.field.get(&patch_of(h.state(), synth)) > glide.field.get(&started));
-    assert_eq!(h.state().doc().undo_label(), Some("Glide ändern"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Glide ändern"));
     assert_eq!(
         h.state().engine().device_reloads(),
         reloads,
@@ -374,7 +374,7 @@ fn dragging_a_card_knob_and_a_wheel_burst_are_one_undo_step_each() {
         tuned,
         "the wheel turned the knob"
     );
-    assert_eq!(h.state().doc().undo_label(), Some("Tune ändern"));
+    assert_eq!(h.state().undo_text().as_deref(), Some("Tune ändern"));
     assert_eq!(depth(h.state_mut()), start + 2, "the burst is one step");
 
     // Two undos, and the document and the sound are as at the start.
@@ -432,7 +432,7 @@ fn an_internal_devices_drag_is_one_step_and_undo_redo_restore_the_sound() {
     let quiet = note_peak(&mut app, track, 60);
     assert!(quiet <= 0.26 && loud > quiet * 1.5, "{loud} {quiet}");
     assert_eq!(depth(&mut app), start + 1);
-    let label = app.doc().undo_label().unwrap().to_owned();
+    let label = app.undo_text().unwrap();
     assert!(label.ends_with(" ändern"), "{label}");
 
     undo(&mut app);
@@ -506,7 +506,7 @@ fn clearing_and_relinking_a_sample_are_one_step_each_and_undo_reaches_the_sample
         pad: 0,
     }));
     app.step();
-    assert_eq!(app.doc().undo_label(), Some("Sample entfernen"));
+    assert_eq!(app.undo_text().as_deref(), Some("Sample entfernen"));
     assert!(pad_names(&app, drums)[0].is_empty());
 
     // A sample on a pad whose start was moved: loading it resets the start (a second change) and
@@ -521,7 +521,7 @@ fn clearing_and_relinking_a_sample_are_one_step_each_and_undo_reaches_the_sample
         path: other.clone(),
     }));
     app.step();
-    assert_eq!(app.doc().undo_label(), Some("Sample laden"));
+    assert_eq!(app.undo_text().as_deref(), Some("Sample laden"));
     assert_eq!(
         pad_names(&app, drums)[0],
         SampleLink::new(&other, None).name
@@ -633,7 +633,7 @@ fn a_bridged_plugins_card_drag_is_one_step_and_undo_restores_the_plugin() {
     // The debounced snapshot of the same turns follows; it must not make a second step.
     step_for(&mut app, Duration::from_millis(1500));
     assert_eq!(depth(&mut app), start + 1, "the drag is one step");
-    assert_eq!(app.doc().undo_label(), Some("Gain ändern"));
+    assert_eq!(app.undo_text().as_deref(), Some("Gain ändern"));
     let turned = state_of(&app, synth).unwrap();
     assert_ne!(*turned, *baseline);
     assert_eq!(
@@ -676,5 +676,5 @@ fn a_bridged_plugins_single_turn_is_a_step_named_after_the_parameter() {
         state_of(a, synth).is_some()
     });
     assert_eq!(depth(&mut app), start + 1);
-    assert_eq!(app.doc().undo_label(), Some("Gain ändern"));
+    assert_eq!(app.undo_text().as_deref(), Some("Gain ändern"));
 }
