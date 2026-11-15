@@ -18,9 +18,9 @@ use crate::views::ViewCtx;
 
 impl Arrangement {
     /// "Neue Spur" with its hint in the header column below the last track (S01, S10), a button:
-    /// click, Enter or Space open the dialog for new tracks. It looks as before at rest; hovered,
-    /// focused (ring) or pressed it gets the device chain's drop slot look (`surface.2` fill,
-    /// dashed `surface.5` frame, `text.2`). A plugin dropped on it is handled by `drop_target`.
+    /// click, Enter or Space open the dialog for new tracks. At rest it has the device chain's drop
+    /// slot look (dashed `surface.4` frame, `text.3`); hovered or pressed it gets the brighter
+    /// one (`surface.2` fill, dashed `surface.5` frame, `text.2`), focused it gets the ring. A plugin dropped on it is handled by `drop_target`.
     pub(super) fn new_track_area(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, g: &Geometry) {
         let area = g.new_track();
         let left = Rect::from_x_y_ranges(g.header_x, area.y_range());
@@ -52,15 +52,13 @@ impl Arrangement {
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         let hot = response.hovered() || response.is_pointer_button_down_on();
         let ink = if hot { color::TEXT_2 } else { color::TEXT_3 };
-        if hot {
+        let edge = if hot {
             px::fill(ui.painter(), boxed, 0.0, color32(color::SURFACE_2));
-            px::dashed_border(
-                ui.painter(),
-                boxed,
-                color32(color::SURFACE_5),
-                metrics::NEW_TRACK_DASH,
-            );
-        }
+            color::SURFACE_5
+        } else {
+            color::SURFACE_4
+        };
+        px::dashed_border(ui.painter(), boxed, color32(edge), metrics::NEW_TRACK_DASH);
         if focus::ring_visible(&response) {
             focus::paint_ring(ui.painter(), boxed, 0.0);
         }
