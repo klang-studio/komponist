@@ -756,8 +756,8 @@ mod tests {
         });
         assert_eq!(
             manager.catalog().entries().len(),
-            5,
-            "pisynth and the four internal effects"
+            1 + komponist_builtin::Internal::ALL.len(),
+            "pisynth and the internal devices"
         );
         assert!(!manager.is_scanning());
         assert_eq!(manager.last_scan(), None);

@@ -30,13 +30,27 @@ pub(crate) fn check_invariants(p: &Project) {
         let c = &t.channel;
         assert!((VOLUME_DB_MIN..=VOLUME_DB_MAX).contains(&c.volume_db));
         assert!((-1.0..=1.0).contains(&c.pan));
-        for (i, d) in c.devices.iter().enumerate() {
+        for d in &c.devices {
             id(d.id.0);
-            assert!(
-                d.role == DeviceRole::Effect || i == 0,
-                "instrument only at index 0"
-            );
         }
+        // `[MIDI effects…] → instrument → [effects…]`.
+        let rank = |r: DeviceRole| match r {
+            DeviceRole::MidiEffect => 0,
+            DeviceRole::Instrument => 1,
+            DeviceRole::Effect => 2,
+        };
+        assert!(
+            c.devices.is_sorted_by_key(|d| rank(d.role)),
+            "chain order: MIDI effects, instrument, effects"
+        );
+        assert!(
+            c.devices
+                .iter()
+                .filter(|d| d.role == DeviceRole::Instrument)
+                .count()
+                <= 1,
+            "one instrument"
+        );
         assert!(
             t.clips.is_sorted_by_key(|c| (c.start, c.id)),
             "clips sorted"
@@ -269,6 +283,10 @@ fn chain(p: &Project, id: TrackId) -> Vec<(String, DeviceRole)> {
         .iter()
         .map(|d| (d.plugin.name.clone(), d.role))
         .collect()
+}
+
+fn chain_ids(p: &Project, id: TrackId) -> Vec<DeviceId> {
+    track(p, id).channel.devices.iter().map(|d| d.id).collect()
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1489,7 +1507,9 @@ fn insert_devices() {
     ));
     assert_eq!(
         insert_device(&p, ChannelRef::Track(f.b), 1, instrument("Synth")),
-        Err(EditError::Invalid("an instrument goes first in the chain"))
+        Err(EditError::Invalid(
+            "an instrument goes right behind the MIDI effects"
+        ))
     );
     let (p, _) = ok_with(insert_device(
         &p,
@@ -1503,6 +1523,96 @@ fn insert_devices() {
         Err(EditError::Invalid("the master takes effects only"))
     );
     assert!(insert_device(&f.p, ChannelRef::Track(TrackId(999)), 0, effect("EQ", None)).is_err());
+}
+
+/// WP-88: a track chain is `[MIDI effects…] → instrument → [effects…]`, whatever order the
+/// inserts, moves and instrument replacements come in.
+#[test]
+fn midi_effects_stay_in_front_of_the_instrument() {
+    let f = fixture();
+    let spec = |role, name: &str| NewDevice {
+        role,
+        plugin: plugin(name),
+        state: None,
+    };
+    let names = |p: &Project, t| -> Vec<String> { chain(p, t).into_iter().map(|c| c.0).collect() };
+    // Dropped right of the instrument, a MIDI effect still goes into the MIDI part.
+    let (p, arp) = ok_with(insert_device(
+        &f.p,
+        ChannelRef::Track(f.a),
+        2,
+        spec(DeviceRole::MidiEffect, "Arp"),
+    ));
+    assert_eq!(names(&p, f.a), ["Arp", "Synth", "EQ"]);
+    let (p, scale) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(f.a),
+        0,
+        spec(DeviceRole::MidiEffect, "Scale"),
+    ));
+    assert_eq!(names(&p, f.a), ["Scale", "Arp", "Synth", "EQ"]);
+    // An effect never goes into the MIDI part or before the instrument.
+    let (p, _) = ok_with(insert_device(
+        &p,
+        ChannelRef::Track(f.a),
+        0,
+        spec(DeviceRole::Effect, "Hall"),
+    ));
+    assert_eq!(names(&p, f.a), ["Scale", "Arp", "Synth", "Hall", "EQ"]);
+    // Reordering stays inside the part.
+    let moved = ok(move_device(&p, scale, 1));
+    assert_eq!(names(&moved, f.a), ["Arp", "Scale", "Synth", "Hall", "EQ"]);
+    assert!(move_device(&p, arp, 3).is_err());
+    assert!(move_device(&p, arp, 2).is_err());
+    let hall = chain_ids(&p, f.a)[3];
+    assert!(move_device(&p, hall, 1).is_err());
+    assert_eq!(
+        move_device(&p, f.synth, 0),
+        Err(EditError::Invalid("an instrument cannot move"))
+    );
+    // The instrument is replaced in place, or inserted right behind the MIDI effects.
+    let (q, _) = ok_with(replace_instrument(&p, f.a, plugin("Other")));
+    assert_eq!(names(&q, f.a), ["Scale", "Arp", "Other", "Hall", "EQ"]);
+    let q = ok(remove_device(&q, chain_ids(&q, f.a)[2]));
+    let (q, _) = ok_with(replace_instrument(&q, f.a, plugin("Back")));
+    assert_eq!(names(&q, f.a), ["Scale", "Arp", "Back", "Hall", "EQ"]);
+    // An instrument may only be inserted right behind them; the master takes audio effects only.
+    let q = ok(remove_device(&q, chain_ids(&q, f.a)[2]));
+    assert!(
+        insert_device(
+            &q,
+            ChannelRef::Track(f.a),
+            3,
+            spec(DeviceRole::Instrument, "X")
+        )
+        .is_err()
+    );
+    assert!(
+        insert_device(
+            &q,
+            ChannelRef::Track(f.a),
+            2,
+            spec(DeviceRole::Instrument, "X")
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        insert_device(
+            &p,
+            ChannelRef::Master,
+            0,
+            spec(DeviceRole::MidiEffect, "Arp")
+        ),
+        Err(EditError::Invalid("the master takes effects only"))
+    );
+    // The helpers read the same order.
+    let channel = &track(&p, f.a).channel;
+    assert_eq!(channel.midi_effect_count(), 2);
+    assert_eq!(
+        channel.instrument().map(|(i, d)| (i, d.id)),
+        Some((2, f.synth))
+    );
+    assert_eq!(channel.first_effect_index(), 3);
 }
 
 #[test]

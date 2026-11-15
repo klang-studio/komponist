@@ -20,20 +20,15 @@ use komponist_ipc::NoteName;
 use komponist_model::edits::StepRowSpec;
 use komponist_model::format::note_name;
 use komponist_model::project::DEFAULT_STEP_ROWS;
-use komponist_model::{Device, DeviceRole, PluginRef, StepClip, Track};
+use komponist_model::{Device, PluginRef, StepClip, Track};
 use komponist_plugins::builtin::{KLOPFER_FIRST_NOTE, is_klopfer, klopfer_pad};
 
 /// Rows of a new step clip (S03: 8 pads).
 pub const ROWS: usize = 8;
 
-/// The instrument of `track`: the first device, if it is one.
+/// The instrument of `track`: the device right behind the MIDI effects, if it is one.
 pub fn instrument(track: &Track) -> Option<&Device> {
-    track
-        .channel
-        .devices
-        .first()
-        .filter(|d| d.role == DeviceRole::Instrument)
-        .map(|d| &**d)
+    track.channel.instrument().map(|(_, d)| &**d)
 }
 
 /// Whether `track` plays klopfer.

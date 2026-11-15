@@ -10,7 +10,7 @@ use egui::{
     UiBuilder, WidgetInfo, pos2,
 };
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
-use komponist_model::{DeviceRole, Project, Track, TrackId};
+use komponist_model::{Project, Track, TrackId};
 use komponist_plugins::{DeviceStatus, FailReason};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
@@ -38,11 +38,7 @@ pub fn instrument_line(track: &Track, any_solo: bool, engine: &EngineSync) -> (S
     if any_solo && !ch.solo && !ch.mute {
         return (names::IMPLIED_MUTE.to_owned(), false);
     }
-    let Some(device) = ch
-        .devices
-        .first()
-        .filter(|d| d.role == DeviceRole::Instrument)
-    else {
+    let Some((_, device)) = ch.instrument() else {
         return (names::NO_INSTRUMENT.to_owned(), false);
     };
     let name = &device.plugin.name;

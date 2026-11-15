@@ -43,6 +43,8 @@ pub mod names {
     pub const INSTRUMENTS: &str = "Instrumente";
     /// Section of the effects.
     pub const EFFECTS: &str = "Effekte";
+    /// Section of the MIDI effects (WP-88): they sit in front of the instrument.
+    pub const MIDI_EFFECTS: &str = "MIDI-Effekte";
     /// Section of pisynth's factory presets.
     pub const PRESETS: &str = "Presets · pisynth";
     /// Section of the project's files (segment Alle).
@@ -304,6 +306,10 @@ fn is_effect(e: &CatalogEntry) -> bool {
     e.kind == PluginKind::Effect
 }
 
+fn is_midi_effect(e: &CatalogEntry) -> bool {
+    e.kind == PluginKind::MidiEffect
+}
+
 fn in_category(e: &CatalogEntry, category: EffectCategory) -> bool {
     is_effect(e) && e.category.unwrap_or(EffectCategory::Other) == category
 }
@@ -331,6 +337,11 @@ fn browse(input: &Input<'_>) -> Vec<Row> {
     }
     if all || input.segment == BrowserSegment::Effects {
         effects(input, entries, all, &mut rows);
+        let midi: Vec<&CatalogEntry> = entries.iter().filter(|e| is_midi_effect(e)).collect();
+        if !midi.is_empty() {
+            rows.push(Row::section(names::MIDI_EFFECTS));
+            rows.extend(midi.iter().map(|e| plugin_row(input, e, 0)));
+        }
     }
     if all || input.segment == BrowserSegment::Instruments {
         presets(input, &mut rows);
@@ -355,7 +366,7 @@ fn browse(input: &Input<'_>) -> Vec<Row> {
     rows
 }
 
-/// The effects: category folders (Alle) or sub-headers (Effekte), then the uncategorised ones.
+/// The effects (audio effects; the MIDI effects follow in their own section): category folders (Alle) or sub-headers (Effekte), then the uncategorised ones.
 fn effects(input: &Input<'_>, entries: &[CatalogEntry], folders: bool, rows: &mut Vec<Row>) {
     if !entries.iter().any(is_effect) {
         return;
@@ -480,7 +491,7 @@ fn exports(input: &Input<'_>, query: &str) -> Vec<Row> {
 fn search(input: &Input<'_>, query: &str) -> Vec<Row> {
     let segment_has = |e: &CatalogEntry| match input.segment {
         BrowserSegment::Instruments => is_instrument(e),
-        BrowserSegment::Effects => is_effect(e),
+        BrowserSegment::Effects => is_effect(e) || is_midi_effect(e),
         _ => true,
     };
     let hits: Vec<&CatalogEntry> = input
@@ -694,6 +705,7 @@ mod tests {
                 "Favoriten",
                 "Instrumente",
                 "Effekte",
+                "MIDI-Effekte",
                 "Presets · pisynth",
                 "Projekt"
             ]

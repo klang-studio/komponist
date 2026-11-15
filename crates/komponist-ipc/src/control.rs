@@ -94,6 +94,9 @@ pub enum PluginKind {
     Instrument,
     /// Processes audio (CLAP `audio-effect`, VST3 `Fx`).
     Effect,
+    /// Rewrites note events in front of an instrument (komponist's own MIDI effects, WP-88; the
+    /// scan never reports it: foreign note effects stay [`PluginKind::Other`]).
+    MidiEffect,
     /// Anything else (note effects, analyzers); not offered in the browser in v0.1.
     Other,
 }

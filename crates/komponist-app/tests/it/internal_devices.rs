@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use egui::accesskit::Role;
-use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
+use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
@@ -284,7 +284,12 @@ fn double_click_or_click(h: &mut Harness<'_, App>, pos: Pos2) {
 #[test]
 fn snapshot_of_the_four_effect_frames() {
     let (mut app, track) = app_with_track();
-    for kind in Internal::ALL {
+    for kind in [
+        Internal::Eq,
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+    ] {
         add(&mut app, kind, DropTarget::Track(track));
     }
     let ids = chain(&app, track);
@@ -312,6 +317,228 @@ fn snapshot_of_the_four_effect_frames() {
     h.mask(cpu.expand(2.0));
     let mut results = SnapshotResults::new();
     h.snapshot("devices-internal-1x");
+    results.extend_harness(&mut h);
+    results.unwrap();
+}
+
+// ------------------------------------------------------------------------------------------------
+// MIDI effects (WP-88)
+// ------------------------------------------------------------------------------------------------
+
+fn names_of(app: &App, track: TrackId) -> Vec<String> {
+    chain(app, track).into_iter().map(|c| c.1).collect()
+}
+
+/// pisynth with the arpeggiator and the Tonleiter in front of it and an EQ behind it.
+fn app_with_midi_effects() -> (App, TrackId) {
+    let (mut app, track) = app_with_track();
+    add(&mut app, Internal::Arpeggiator, DropTarget::Track(track));
+    // Dropped behind everything, a MIDI effect still lands in the MIDI part.
+    add(
+        &mut app,
+        Internal::Tonleiter,
+        DropTarget::Chain {
+            channel: ChannelRef::Track(track),
+            index: 99,
+        },
+    );
+    add(&mut app, Internal::Eq, DropTarget::Track(track));
+    (app, track)
+}
+
+#[test]
+fn a_dropped_midi_effect_goes_into_the_midi_part_in_front_of_the_instrument() {
+    let (app, track) = app_with_midi_effects();
+    assert_eq!(
+        names_of(&app, track),
+        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+    );
+    let channel = &app.project().track(track).unwrap().channel;
+    assert_eq!(channel.midi_effect_count(), 2);
+    assert_eq!(channel.instrument().unwrap().0, 2);
+    assert!(
+        channel.devices[..2]
+            .iter()
+            .all(|d| d.role == DeviceRole::MidiEffect)
+    );
+    // The engine's program has them as stages, their processors exist and run.
+    let mut h = harness(app);
+    h.run_steps(3);
+    let app = h.state_mut();
+    let program = app.engine().program().unwrap();
+    let t = program.track(track).unwrap();
+    assert_eq!((t.stage_count(), t.chain.len()), (2, 4));
+    let channel = &app.project().track(track).unwrap().channel;
+    for d in &channel.devices {
+        assert_eq!(
+            app.engine().host().status(d.id),
+            DeviceStatus::Ok,
+            "{}",
+            d.plugin.name
+        );
+    }
+    // A MIDI effect needs a track: dropped on the master it changes nothing.
+    add(
+        app,
+        Internal::Arpeggiator,
+        DropTarget::Chain {
+            channel: ChannelRef::Master,
+            index: 0,
+        },
+    );
+    assert!(app.project().master.devices.is_empty());
+    // The instrument is replaced in place, not put in front of the MIDI effects.
+    let klopfer_free = app.engine().host().catalog().entries()[0].plugin.clone();
+    app.dispatch(Action::Plugin(PluginAction::Add {
+        plugin: klopfer_free,
+        target: DropTarget::Track(track),
+    }));
+    assert_eq!(
+        names_of(app, track),
+        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+    );
+}
+
+#[test]
+fn the_browser_lists_the_midi_effects_in_their_own_section() {
+    let (mut app, _) = app_with_track();
+    app.dispatch(Action::Ui(UiAction::SetBrowserSegment(
+        BrowserSegment::Effects,
+    )));
+    let h = harness(app);
+    h.get_by_role_and_label(Role::ListItem, "Arpeggiator");
+    h.get_by_role_and_label(Role::ListItem, "Tonleiter");
+    // The effects segment lists the section after the audio effects.
+    let rows =
+        komponist_app::views::browser::model::rows(&komponist_app::views::browser::model::Input {
+            catalog: h.state().engine().host().catalog(),
+            favorites: &Default::default(),
+            segment: BrowserSegment::Effects,
+            query: "",
+            collapsed: &Default::default(),
+            project: h.state().project(),
+            exports: &[],
+        });
+    let texts: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+    let section = texts.iter().position(|t| *t == "MIDI-Effekte").unwrap();
+    assert_eq!(&texts[section + 1..], ["Arpeggiator", "Tonleiter"]);
+    // Search finds them in the effects segment too, and not among the instruments.
+    let search = |segment, query: &str| {
+        komponist_app::views::browser::model::rows(&komponist_app::views::browser::model::Input {
+            catalog: h.state().engine().host().catalog(),
+            favorites: &Default::default(),
+            segment,
+            query,
+            collapsed: &Default::default(),
+            project: h.state().project(),
+            exports: &[],
+        })
+        .into_iter()
+        .map(|r| r.name)
+        .collect::<Vec<_>>()
+    };
+    assert!(
+        search(BrowserSegment::Effects, "arpeg")
+            .iter()
+            .any(|n| n == "Arpeggiator")
+    );
+    assert!(
+        !search(BrowserSegment::Instruments, "arpeg")
+            .iter()
+            .any(|n| n == "Arpeggiator")
+    );
+}
+
+#[test]
+fn a_turned_knob_of_a_midi_effect_is_saved_and_reaches_the_engine() {
+    let (mut app, track) = app_with_midi_effects();
+    let arp = chain(&app, track)[0].0;
+    set_param(&mut app, arp, Internal::Arpeggiator, "mode", 2.0);
+    set_param(&mut app, arp, Internal::Arpeggiator, "rate", 6.0);
+    let v = values(&app, arp);
+    let wire = |key| Internal::Arpeggiator.wire(&ParamId::new(key)).unwrap() as usize;
+    assert_eq!((v[wire("mode")], v[wire("rate")]), (2.0, 6.0));
+    assert!(app.dispatched().any(|a| matches!(
+        a,
+        Action::Plugin(PluginAction::SetParam { device, .. }) if *device == arp
+    )));
+}
+
+#[test]
+fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
+    let (app, track) = app_with_midi_effects();
+    let mut h = harness(app);
+    h.run_steps(5);
+    let head = |h: &Harness<'_, App>, name: &str| {
+        let r = h
+            .get_by_role_and_label(Role::Group, &names::card(name))
+            .rect();
+        // The head, where a card is grabbed.
+        pos2(
+            r.left() + 30.0,
+            r.top() + komponist_tokens::size::PANEL_HEADER / 2.0,
+        )
+    };
+    // Tonleiter before Arpeggiator.
+    let arp = h
+        .get_by_role_and_label(Role::Group, &names::card("Arpeggiator"))
+        .rect();
+    let from = head(&h, "Tonleiter");
+    drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
+    assert_eq!(
+        names_of(h.state(), track),
+        ["Tonleiter", "Arpeggiator", "pisynth", "EQ"]
+    );
+    // Dragged behind the instrument (pisynth's card is wide, so EQ may lie off screen), a MIDI
+    // effect stops at the instrument.
+    let synth = h
+        .get_by_role_and_label(Role::Group, &names::card("pisynth"))
+        .rect();
+    let from = head(&h, "Tonleiter");
+    drag(&mut h, from, pos2(synth.right() - 10.0, synth.center().y));
+    assert_eq!(
+        names_of(h.state(), track),
+        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+    );
+    // An effect dragged in front of the instrument stops behind it; the instrument stays.
+    let arp = h
+        .get_by_role_and_label(Role::Group, &names::card("Arpeggiator"))
+        .rect();
+    let from = head(&h, "EQ");
+    drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
+    assert_eq!(
+        names_of(h.state(), track),
+        ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+    );
+}
+
+#[test]
+fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
+    let (mut app, track) = app_with_midi_effects();
+    let ids = chain(&app, track);
+    set_param(&mut app, ids[0].0, Internal::Arpeggiator, "mode", 2.0);
+    set_param(&mut app, ids[0].0, Internal::Arpeggiator, "octaves", 2.0);
+    set_param(&mut app, ids[1].0, Internal::Tonleiter, "scale", 1.0);
+    set_param(&mut app, ids[1].0, Internal::Tonleiter, "root", 9.0);
+    let mut h = harness(app);
+    h.run_steps(4);
+    // The order the signal runs in, left to right.
+    let x = |h: &Harness<'_, App>, name: &str| {
+        h.get_by_role_and_label(Role::Group, &names::card(name))
+            .rect()
+            .left()
+    };
+    let xs: Vec<f32> = ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
+        .iter()
+        .map(|n| x(&h, n))
+        .collect();
+    assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
+    let cpu = h
+        .get_by_role_and_label(Role::Status, komponist_app::panels::transport::names::CPU)
+        .rect();
+    h.mask(cpu.expand(2.0));
+    let mut results = SnapshotResults::new();
+    h.snapshot("devices-midi-effects-1x");
     results.extend_harness(&mut h);
     results.unwrap();
 }

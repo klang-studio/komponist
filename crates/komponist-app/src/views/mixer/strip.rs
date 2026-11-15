@@ -20,7 +20,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics::{self as m, Tier};
-use super::model::{Insert, SlotState, Strip, move_target, names, slot_at};
+use super::model::{Insert, SlotState, Strip, move_target_in, names, slot_at};
 use super::send_gesture;
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
@@ -625,10 +625,16 @@ fn drop_over(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, spans: &
         if drag.channel != s.channel || !area.contains(pos) {
             return;
         }
-        let Some(to) = move_target(drag.from, slot, first) else {
+        // A MIDI effect stays in front of the instrument, any other effect behind it.
+        let (lo, hi) = if s.inserts.get(drag.from).is_some_and(|i| i.midi) {
+            (0, s.midi_effect_count())
+        } else {
+            (first, usize::MAX)
+        };
+        let Some(to) = move_target_in(drag.from, slot, lo, hi) else {
             return;
         };
-        line_at(ui, slot.max(first));
+        line_at(ui, slot.clamp(lo, hi.max(lo)));
         if released {
             egui::DragAndDrop::clear_payload(&dnd);
             ctx.send(Action::Edit(EditAction::MoveDevice {
@@ -644,17 +650,23 @@ fn drop_over(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, spans: &
     let Some(role) = ctx.engine.host().role(&plugin) else {
         return;
     };
+    let midi = s.midi_effect_count();
     let index = match (role, s.channel) {
-        (DeviceRole::Instrument, ChannelRef::Master) => return,
+        (DeviceRole::Instrument | DeviceRole::MidiEffect, ChannelRef::Master) => return,
         (DeviceRole::Instrument, ChannelRef::Track(_)) => {
-            match spans.first() {
-                Some((top, bottom)) if first == 1 => {
+            match spans.get(midi) {
+                Some((top, bottom)) if first > midi => {
                     let r = Rect::from_x_y_ranges(area.x_range(), *top..=*bottom);
                     state::paint_select_ring(ui.painter(), r, radius::S);
                 }
-                _ => line_at(ui, 0),
+                _ => line_at(ui, midi),
             }
-            0
+            midi
+        }
+        (DeviceRole::MidiEffect, ChannelRef::Track(_)) => {
+            let at = slot.min(midi);
+            line_at(ui, at);
+            at
         }
         (DeviceRole::Effect, _) => {
             let at = slot.max(first);

@@ -32,6 +32,7 @@ pub(crate) const MAX_ACTIVE_NOTES: usize = 256;
 /// Sorting keeps the push order within an offset, except that note-ons go after everything else
 /// at their offset (note-offs before note-ons, `Processor::process`). No allocation: both buffers
 /// are preallocated and `sort_unstable` works in place (the push index makes it stable).
+#[derive(Debug)]
 pub(crate) struct EventList {
     keyed: Vec<(u64, Event)>,
     sorted: Vec<Event>,
@@ -86,6 +87,11 @@ impl EventList {
         if let Some(index) = found {
             self.keyed.remove(index);
         }
+    }
+
+    /// The events as last sorted by [`EventList::finish`].
+    pub(crate) fn sorted(&self) -> &[Event] {
+        &self.sorted
     }
 
     /// RT. The events sorted for the processor call.
@@ -264,6 +270,21 @@ impl TrackSeq {
         while k < self.active.len() {
             if self.active[k].slot == slot {
                 self.active.swap_remove(k);
+            } else {
+                k += 1;
+            }
+        }
+    }
+
+    /// RT. Takes every note of `slot` out of the table without a note-off, calling `f(key,
+    /// channel, note_id)` for each: the notes the slot's processor holds, whose note-offs the
+    /// caller now owns (a MIDI effect stage is put in front of an instrument that is playing).
+    pub(crate) fn drain_slot(&mut self, slot: SlotId, mut f: impl FnMut(u8, u8, u32)) {
+        let mut k = 0;
+        while k < self.active.len() {
+            if self.active[k].slot == slot {
+                let n = self.active.swap_remove(k);
+                f(n.key, n.channel, n.note_id);
             } else {
                 k += 1;
             }

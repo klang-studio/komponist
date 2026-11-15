@@ -367,6 +367,16 @@ pub struct ScanReport {
 
 #[cfg(test)]
 mod tests {
+    /// `pisynth`, the klopfer entry if `klopfer`, then the internal devices, by name.
+    fn builtin_names(klopfer: bool) -> Vec<&'static str> {
+        let mut names = vec!["pisynth"];
+        if klopfer {
+            names.push("klopfer");
+        }
+        names.extend(komponist_builtin::Internal::ALL.iter().map(|k| k.name()));
+        names
+    }
+
     use super::*;
     use komponist_model::project::BUILTIN_PISYNTH;
 
@@ -425,7 +435,7 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(names, ["pisynth", "EQ", "Delay", "Hall", "Limiter"]);
+        assert_eq!(names, builtin_names(false));
         let pisynth = &catalog.entries()[0];
         assert!(pisynth.is_builtin());
         assert_eq!(pisynth.plugin.id, BUILTIN_PISYNTH);
@@ -445,7 +455,7 @@ mod tests {
             eq.location,
             PluginLocation::InProcess(BuiltinKind::Internal(komponist_builtin::Internal::Eq))
         );
-        let categories: Vec<_> = catalog.entries()[1..].iter().map(|e| e.category).collect();
+        let categories: Vec<_> = catalog.entries()[1..5].iter().map(|e| e.category).collect();
         assert_eq!(
             categories,
             [
@@ -525,21 +535,18 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(
-            names,
-            [
-                "pisynth", "klopfer", "EQ", "Delay", "Hall", "Limiter", "Big Hall", "dexed",
-                "Surge XT"
-            ]
-        );
-        let hall = &catalog.entries()[6];
+        let mut expected = builtin_names(true);
+        let first = expected.len();
+        expected.extend(["Big Hall", "dexed", "Surge XT"]);
+        assert_eq!(names, expected);
+        let hall = &catalog.entries()[first];
         assert_eq!(hall.category, Some(EffectCategory::ReverbDelay));
         assert_eq!(hall.plugin.format, komponist_model::PluginFormat::Clap);
         assert_eq!(
-            catalog.entries()[7].plugin.format,
+            catalog.entries()[first + 1].plugin.format,
             komponist_model::PluginFormat::Vst3
         );
-        assert_eq!(catalog.entries()[8].category, None);
+        assert_eq!(catalog.entries()[first + 2].category, None);
 
         let surge = PluginRef {
             format: komponist_model::PluginFormat::Clap,
@@ -565,10 +572,9 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(
-            names,
-            ["pisynth", "EQ", "Delay", "Hall", "Limiter", "Klopfer"]
-        );
+        let mut expected = builtin_names(false);
+        expected.push("Klopfer");
+        assert_eq!(names, expected);
     }
 
     #[test]
@@ -589,7 +595,7 @@ mod tests {
             module: Box::default(),
         };
         // Listed once (as the built-in), still found for a project that names the CLAP plugin.
-        assert_eq!(catalog.entries().len(), 6);
+        assert_eq!(catalog.entries().len(), builtin_names(true).len());
         let entry = catalog.resolve(&as_clap).unwrap();
         assert!(entry.is_builtin());
         assert_eq!(entry.plugin.id, BUILTIN_KLOPFER);
@@ -635,12 +641,9 @@ mod tests {
                 .map(|e| e.plugin.name.clone())
                 .collect()
         };
-        assert_eq!(
-            names(""),
-            [
-                "pisynth", "EQ", "Delay", "Hall", "Limiter", "Big Hall", "Squash"
-            ]
-        );
+        let mut all = builtin_names(false);
+        all.extend(["Big Hall", "Squash"]);
+        assert_eq!(names(""), all);
         assert_eq!(names("HALL"), ["Hall", "Big Hall"]);
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
         assert_eq!(names("compress"), ["Squash"]);

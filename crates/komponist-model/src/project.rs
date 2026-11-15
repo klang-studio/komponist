@@ -184,8 +184,9 @@ pub struct Track {
     pub hue: Hue,
     /// What the track carries. Only MIDI in v0.1.
     pub kind: TrackKind,
-    /// Mixer channel: volume, pan, mute, solo, devices. `devices[0]` is the instrument on MIDI
-    /// tracks (role [`DeviceRole::Instrument`]); a track may have no instrument (silent).
+    /// Mixer channel: volume, pan, mute, solo, devices. A MIDI track's chain is
+    /// `[MIDI effects…] → instrument → [audio effects…]` ([`Channel::midi_effect_count`],
+    /// [`Channel::instrument`]); a track may have no instrument (silent).
     pub channel: Channel,
     /// Record arm ("R"). Arming also switches [`Track::monitor`] on (S02).
     pub arm: bool,
@@ -319,9 +320,41 @@ pub struct Channel {
     pub mute: bool,
     /// Solo ("S"). Ignored on the master.
     pub solo: bool,
-    /// Device chain, processed in order. On MIDI tracks `devices[0]` is the instrument when its role
-    /// is [`DeviceRole::Instrument`]; all others are effects.
+    /// Device chain, processed in order. On MIDI tracks: first the MIDI effects
+    /// ([`DeviceRole::MidiEffect`], they rewrite the note events), then the instrument when there
+    /// is one ([`DeviceRole::Instrument`]), then the audio effects. Master chains hold audio
+    /// effects only.
     pub devices: Vec<Arc<Device>>,
+}
+
+impl Channel {
+    /// Number of leading MIDI effects (0 for a project saved before WP-88).
+    pub fn midi_effect_count(&self) -> usize {
+        self.devices
+            .iter()
+            .take_while(|d| d.role == DeviceRole::MidiEffect)
+            .count()
+    }
+
+    /// Index and device of the instrument, right behind the MIDI effects.
+    pub fn instrument(&self) -> Option<(usize, &Arc<Device>)> {
+        let index = self.midi_effect_count();
+        self.devices
+            .get(index)
+            .filter(|d| d.role == DeviceRole::Instrument)
+            .map(|d| (index, d))
+    }
+
+    /// Index of the first audio effect: behind the MIDI effects and the instrument.
+    pub fn first_effect_index(&self) -> usize {
+        let index = self.midi_effect_count();
+        index
+            + usize::from(
+                self.devices
+                    .get(index)
+                    .is_some_and(|d| d.role == DeviceRole::Instrument),
+            )
+    }
 }
 
 impl Default for Channel {
@@ -360,10 +393,14 @@ pub struct Device {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceRole {
-    /// Makes sound from notes; only at index 0 of a track chain.
+    /// Makes sound from notes; on a track chain right behind the MIDI effects.
     Instrument,
     /// Processes audio.
     Effect,
+    /// Rewrites note events before the instrument (WP-88: arpeggiator, scale). Only at the head of a
+    /// track chain; never on the master. Bypassed: the events pass through unchanged.
+    #[serde(rename = "midieffect")]
+    MidiEffect,
 }
 
 /// Identifies a plugin independent of where it is installed.

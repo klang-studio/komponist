@@ -357,7 +357,7 @@ impl DeviceHost for BuiltinHost {
         if is_builtin_instrument(plugin) {
             Some(DeviceRole::Instrument)
         } else {
-            Internal::from_plugin(plugin).map(|_| DeviceRole::Effect)
+            Internal::from_plugin(plugin).map(Internal::role)
         }
     }
 
@@ -463,6 +463,7 @@ impl DeviceHost for PluginHost {
         match self.manager.catalog().resolve(plugin)?.kind {
             PluginKind::Instrument => Some(DeviceRole::Instrument),
             PluginKind::Effect => Some(DeviceRole::Effect),
+            PluginKind::MidiEffect => Some(DeviceRole::MidiEffect),
             PluginKind::Other => None,
         }
     }
@@ -611,7 +612,18 @@ mod tests {
             .iter()
             .map(|e| e.plugin.name.as_str())
             .collect();
-        assert_eq!(names, ["pisynth", "EQ", "Delay", "Hall", "Limiter"]);
+        assert_eq!(
+            names,
+            [
+                "pisynth",
+                "EQ",
+                "Delay",
+                "Hall",
+                "Limiter",
+                "Arpeggiator",
+                "Tonleiter"
+            ]
+        );
         let missing = host.missing_plugins(&project);
         let pisynths = project
             .tracks

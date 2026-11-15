@@ -4,6 +4,8 @@
 //!   amplitude `TEST_SINE_LEVEL × velocity / 127`, starting at its peak and stopping dead at its
 //!   note-off, so note starts and ends are visible sample-exactly in the output. Optionally logs
 //!   every call, event and reset with absolute frame numbers ([`TestSine::logged`]).
+//! - [`TestMidiFx`]: a MIDI effect (WP-88): transposes notes by a parameter, or misbehaves on purpose
+//!   (swallows note-offs) to prove that the engine ends every note it started anyway.
 //! - [`TestGain`]: an effect multiplying by a gain (parameter [`TEST_GAIN_PARAM`]), optionally
 //!   delaying by a fixed latency (for delay compensation tests).
 //!
@@ -13,8 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::processor::{
-    Event, EventKind, NOTE_ID_NONE, ProcessContext, ProcessStatus, Processor, ProcessorError,
-    StereoIo, TransportInfo,
+    Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext, ProcessStatus,
+    Processor, ProcessorError, StereoIo, TransportInfo,
 };
 
 /// Peak amplitude of a [`TestSine`] note at velocity 127.
@@ -25,6 +27,9 @@ pub const TEST_SINE_VOICES: usize = 32;
 
 /// Parameter id of [`TestGain`]'s gain (linear).
 pub const TEST_GAIN_PARAM: u32 = 0;
+
+/// Parameter id of [`TestMidiFx`]'s transposition in semitones.
+pub const TEST_TRANSPOSE_PARAM: u32 = 0;
 
 /// What a logged [`TestSine`] saw. Frames count from the processor's first call (the sum of all
 /// call lengths before), so they equal engine output frames while the processor runs every call.
@@ -338,6 +343,143 @@ impl Processor for TestGain {
     fn reset(&mut self) {
         self.line.fill(0.0);
         self.pos = 0;
+    }
+}
+
+/// How a [`TestMidiFx`] misbehaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestMidiMode {
+    /// Passes events on, keys moved by the transposition parameter.
+    Transpose,
+    /// Passes note-ons (transposed) and drops every note-off: left alone, notes would hang.
+    SwallowOffs,
+    /// Plays every note-on twice, a fifth apart (a second note per key, no note-offs for it).
+    Fifth,
+}
+
+/// A MIDI effect for tests (see the module docs). Its audio `process` is never called by the
+/// engine; it passes audio through.
+#[derive(Debug)]
+pub struct TestMidiFx {
+    mode: TestMidiMode,
+    semitones: i32,
+    resets: Arc<AtomicU32>,
+}
+
+impl TestMidiFx {
+    /// A MIDI effect in `mode`, transposition 0.
+    pub fn new(mode: TestMidiMode) -> TestMidiFx {
+        TestMidiFx {
+            mode,
+            semitones: 0,
+            resets: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// A transposing MIDI effect by `semitones`.
+    pub fn transposing(semitones: i32) -> TestMidiFx {
+        TestMidiFx {
+            semitones,
+            ..TestMidiFx::new(TestMidiMode::Transpose)
+        }
+    }
+
+    /// How often the engine called [`Processor::reset`] (shared counter).
+    pub fn resets(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.resets)
+    }
+
+    fn moved(&self, key: u8, by: i32) -> u8 {
+        (i32::from(key) + by).clamp(0, 127) as u8
+    }
+}
+
+impl Processor for TestMidiFx {
+    fn activate(&mut self, _sample_rate: f32, _max_block: usize) -> Result<(), ProcessorError> {
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        _ctx: &ProcessContext,
+        _events: &[Event],
+        io: &mut StereoIo<'_>,
+    ) -> ProcessStatus {
+        io.passthrough();
+        ProcessStatus::Continue
+    }
+
+    fn latency(&self) -> u32 {
+        0
+    }
+
+    fn reset(&mut self) {
+        self.resets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
+        Some(self)
+    }
+}
+
+impl EventProcessor for TestMidiFx {
+    fn set_param(&mut self, id: u32, value: f64) {
+        if id == TEST_TRANSPOSE_PARAM {
+            self.semitones = value as i32;
+        }
+    }
+
+    fn process_events(&mut self, _ctx: &ProcessContext, input: &[Event], out: &mut EventSink<'_>) {
+        for e in input {
+            match e.kind {
+                EventKind::NoteOn {
+                    key,
+                    velocity,
+                    channel,
+                    note_id,
+                } => {
+                    let kinds = [self.semitones, self.semitones + 7];
+                    let count = if self.mode == TestMidiMode::Fifth {
+                        2
+                    } else {
+                        1
+                    };
+                    for by in &kinds[..count] {
+                        out.push(
+                            e.offset,
+                            EventKind::NoteOn {
+                                key: self.moved(key, *by),
+                                velocity,
+                                channel,
+                                note_id,
+                            },
+                        );
+                    }
+                }
+                EventKind::NoteOff {
+                    key,
+                    channel,
+                    note_id,
+                } if self.mode == TestMidiMode::Transpose => {
+                    out.push(
+                        e.offset,
+                        EventKind::NoteOff {
+                            key: self.moved(key, self.semitones),
+                            channel,
+                            note_id,
+                        },
+                    );
+                }
+                EventKind::NoteOff { .. } => {}
+                other => {
+                    out.push(e.offset, other);
+                }
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.resets.fetch_add(1, Ordering::Relaxed);
     }
 }
 

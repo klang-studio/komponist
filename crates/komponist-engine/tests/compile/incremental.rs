@@ -353,3 +353,48 @@ fn demo_compile_time() {
     eprintln!("demo project compile: full {full:?}, one track changed {incremental:?}");
     assert!(full.as_millis() < 100, "full build took {full:?}");
 }
+
+/// WP-88: MIDI effects only at the head of a track chain (at most `MAX_STAGES`), the instrument
+/// right behind them; everything else in the wrong place is left out.
+#[test]
+fn midi_effects_compile_in_front_of_the_instrument_and_misplaced_ones_are_left_out() {
+    use komponist_engine::MAX_STAGES;
+    let mut t = track(1, "Arp", vec![]);
+    t.channel.devices = vec![
+        device(10, DeviceRole::MidiEffect, "Scale"),
+        device(11, DeviceRole::MidiEffect, "Arp"),
+        device(12, DeviceRole::Instrument, "Synth"),
+        device(13, DeviceRole::Effect, "EQ"),
+        // Wrong places: behind the instrument, a second instrument.
+        device(14, DeviceRole::MidiEffect, "Late"),
+        device(15, DeviceRole::Instrument, "Second"),
+    ];
+    let mut master = track(2, "Other", vec![]);
+    master.channel.devices = vec![device(20, DeviceRole::MidiEffect, "Stray")];
+    let program = compile::build(&project(vec![t, master]), None, &NoEnv);
+    let ids =
+        |i: usize| -> Vec<u64> { program.tracks[i].chain.iter().map(|s| s.device.0).collect() };
+    assert_eq!(ids(0), [10, 11, 12, 13]);
+    // A MIDI effect without an instrument in a track chain is valid (the chain is then silent).
+    assert_eq!(ids(1), [20]);
+    let first = &program.tracks[0];
+    assert_eq!(first.stage_count(), 2);
+    assert_eq!(first.instrument().map(|s| s.device.0), Some(12));
+    assert_eq!(program.tracks[1].instrument(), None);
+
+    // The master never takes one, and the stage count is capped.
+    let mut p = project(vec![track(3, "Viele", vec![])]);
+    let many: Vec<_> = (0..MAX_STAGES as u64 + 3)
+        .map(|i| device(100 + i, DeviceRole::MidiEffect, "Fx"))
+        .chain([device(200, DeviceRole::Instrument, "Synth")])
+        .collect();
+    Arc::make_mut(&mut p.tracks[0]).channel.devices = many;
+    Arc::make_mut(&mut p.master).devices = vec![device(300, DeviceRole::MidiEffect, "Stray")];
+    let program = compile::build(&p, None, &NoEnv);
+    assert_eq!(program.tracks[0].stage_count(), MAX_STAGES);
+    assert_eq!(
+        program.tracks[0].instrument().map(|s| s.device.0),
+        Some(200)
+    );
+    assert!(program.master.chain.is_empty());
+}

@@ -9,8 +9,8 @@
 //! 3. Transport: the block's tick range, split at the loop end and at the end of the count-in;
 //!    metronome clicks (accent on beat 1).
 //! 4. Per track: sequencer notes from the program (note-offs from the active-notes table) + live
-//!    events → processor chain → fader gain ramp → balance → meter → master bus (after the PDC
-//!    delay).
+//!    events → MIDI effect stage (`stage`, WP-88) → processor chain → fader gain ramp → balance →
+//!    meter → master bus (after the PDC delay).
 //! 5. Master: inserts → master fader → meter → output; the metronome is added after the master
 //!    fader with its own level.
 //! 6. Telemetry and events.
@@ -47,13 +47,15 @@
 //!   still down get their `RecordedNoteOff` at the playhead on `Stop`, `StopRecording` and
 //!   `Locate`, and at the loop end when the loop wraps (each lap is a take of its own).
 //! - Instruments get note, MIDI, parameter and `AllNotesOff` events; effects get their parameters
-//!   and `AllNotesOff`.
+//!   and `AllNotesOff`. On a track with MIDI effects the instrument gets what the stage chain makes
+//!   of the track's events, with note ids and note-offs guaranteed by the stage's guard
+//!   (ARCHITECTURE §6.4.2); recording still captures the input.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use klang_dsp::buffer::{add, peak};
-use komponist_model::{DeviceRole, Tick, TrackId};
+use komponist_model::{Tick, TrackId};
 
 use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TransportState};
 use crate::garbage::Outbox;
@@ -63,6 +65,7 @@ use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, Process
 use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Bufs, SharedSlots, Slot, chains_exclusive, run_chain};
+use crate::stage::{self, StageLists, StageSig, StageState};
 use crate::transport::{Song, Transport};
 use crate::workers::{MAX_WORKERS, Pool, WorkerStats, WorkerStatus};
 use crate::{
@@ -329,6 +332,10 @@ struct TrackState {
     out: [Box<[f32]>; 2],
     /// A processor of the chain failed in the current segment.
     failed: bool,
+    /// The MIDI effect stage: the note guard and the signature of the installed chain (WP-88).
+    stage: StageState,
+    /// Events the stage dropped in the current segment (counted in the sum phase).
+    stage_dropped: u32,
 }
 
 impl TrackState {
@@ -348,6 +355,8 @@ impl TrackState {
                 vec![0.0; MAX_BLOCK].into_boxed_slice(),
             ],
             failed: false,
+            stage: StageState::new(),
+            stage_dropped: 0,
         }
     }
 
@@ -409,6 +418,7 @@ struct Core {
 struct Lane {
     bufs: Bufs,
     fx_events: EventList,
+    stage: StageLists,
 }
 
 impl Lane {
@@ -417,6 +427,7 @@ impl Lane {
         Lane {
             bufs: Bufs::new(),
             fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
+            stage: StageLists::new(MAX_EVENTS_PER_BLOCK),
         }
     }
 }
@@ -457,15 +468,38 @@ impl TrackJobs<'_> {
         // no other job reaches this state; the lane belongs to the calling thread.
         let (state, lane) = unsafe { (&mut *self.states.add(state), &mut *self.lanes.add(lane)) };
         let n = self.n;
-        let Lane { bufs, fx_events } = lane;
+        let Lane {
+            bufs,
+            fx_events,
+            stage: stage_lists,
+        } = lane;
         bufs.a[0][..n].fill(0.0);
         bufs.a[1][..n].fill(0.0);
         let mut slots = self.slots;
+        // The MIDI effect stage rewrites the track's events for the instrument (a track without
+        // MIDI effects and without notes left over from some goes straight on).
+        let stages = track.stage_count();
+        let events: &[Event] = if stages > 0 || state.stage.holds_notes() {
+            let (events, dropped) = stage::run(
+                &track.chain,
+                stages,
+                &mut slots,
+                self.ctx,
+                &state.events,
+                &mut state.stage,
+                stage_lists,
+            );
+            state.stage_dropped = dropped;
+            events
+        } else {
+            state.stage_dropped = 0;
+            &state.events
+        };
         let (result, failed) = run_chain(
             &track.chain,
             &mut slots,
             self.ctx,
-            &state.events,
+            events,
             fx_events,
             bufs,
             n,
@@ -484,6 +518,31 @@ impl TrackJobs<'_> {
         state.out[0][..n].copy_from_slice(l);
         state.out[1][..n].copy_from_slice(r);
     }
+}
+
+/// RT. A track's stage signature changed from `state.stage.sig` to `new`: the instrument's sounding
+/// notes get note-offs at the next call, whichever table holds them.
+fn restage(state: &mut TrackState, new: StageSig) {
+    let old = state.stage.sig;
+    if old.stages == 0
+        && new.stages > 0
+        && let Some(instrument) = old.instrument
+    {
+        // Stages now stand in front of an instrument that holds sequencer notes: the guard owns
+        // their note-offs from here on.
+        let stage = &mut state.stage;
+        state
+            .seq
+            .drain_slot(instrument, |key, channel, id| stage.adopt(key, channel, id));
+    }
+    if let Some(head) = old.head()
+        && new.head() != Some(head)
+    {
+        // Notes that entered the old stage chain were tagged with its first slot.
+        state.seq.forget_slot(head);
+    }
+    state.stage.flush_all();
+    state.stage.sig = new;
 }
 
 /// Whether a command retires an object (and therefore needs room in the garbage holding list).
@@ -751,8 +810,19 @@ impl Core {
     /// RT. Drops the active notes of every track held by `slot`.
     fn forget_slot(&mut self, slot: SlotId) {
         let count = self.track_count();
-        for &index in &self.map[..count] {
-            self.tracks[usize::from(index)].seq.forget_slot(slot);
+        let tracks = self
+            .program
+            .as_deref()
+            .map_or(&[][..], |p| &p.tracks[..count]);
+        for (track, &index) in tracks.iter().zip(&self.map[..count]) {
+            let state = &mut self.tracks[usize::from(index)];
+            state.seq.forget_slot(slot);
+            // A replaced or removed MIDI effect or instrument: what the instrument got through the
+            // stage ends.
+            let stages = track.stage_count();
+            if track.chain.iter().take(stages + 1).any(|d| d.slot == slot) {
+                state.stage.flush_all();
+            }
         }
     }
 
@@ -873,6 +943,8 @@ impl Core {
             let state = &mut self.tracks[free];
             state.id = Some(track.id);
             state.seq.clear();
+            state.stage.clear();
+            state.stage.sig = StageSig::of(&track.chain);
             state.seq.reseed(track_seed(self.seed, track.id));
             state.clear_fast_path();
             let audible = audible(track.mute, track.solo, any_solo);
@@ -895,6 +967,26 @@ impl Core {
                     processor.reset();
                 }
                 slot.bypassed = device.bypass;
+            }
+        }
+        // A track whose MIDI effect stage changed (effect added, removed, bypassed, reordered, or the
+        // instrument replaced) loses the notes it sounds: the instrument's end at once, the stages
+        // are reset.
+        for (track, &state) in program.tracks[..count].iter().zip(&self.map[..count]) {
+            let sig = StageSig::of(&track.chain);
+            let state = &mut self.tracks[usize::from(state)];
+            if state.stage.sig == sig {
+                continue;
+            }
+            restage(state, sig);
+            for device in &track.chain[..usize::from(sig.stages)] {
+                if let Some(processor) = self
+                    .slots
+                    .get_mut(device.slot.0 as usize)
+                    .and_then(|s| s.processor.as_mut())
+                {
+                    processor.reset();
+                }
             }
         }
         let master = &program.master;
@@ -1051,11 +1143,11 @@ impl Core {
                             });
                         }
                     }
-                    // The instrument's events.
-                    let first = track
-                        .chain
-                        .first()
-                        .filter(|d| d.role == DeviceRole::Instrument);
+                    // The instrument's events. On a track with MIDI effects, the sequencer's and
+                    // the live notes enter the stage chain instead (tagged with the first stage's
+                    // slot), and the track's job (`stage::run`) makes the instrument's events.
+                    let staged = track.stage_count() > 0;
+                    let first = track.instrument();
                     let instrument = first
                         .filter(|d| {
                             slots
@@ -1063,9 +1155,15 @@ impl Core {
                                 .is_some_and(|s| s.runs(d.bypass))
                         })
                         .map(|d| d.slot);
+                    let target = if staged {
+                        track.chain.first().map(|d| d.slot)
+                    } else {
+                        instrument
+                    };
                     events.clear();
-                    state.seq.flushed_offs(instrument, events);
-                    if let Some(device) = first
+                    state.seq.flushed_offs(target, events);
+                    if !staged
+                        && let Some(device) = first
                         && let Some(slot) = slots.get_mut(device.slot.0 as usize)
                     {
                         let all_off = core::mem::take(&mut slot.all_off);
@@ -1081,7 +1179,7 @@ impl Core {
                         &track.notes,
                         live,
                         &win,
-                        instrument,
+                        target,
                         note_ids,
                         events,
                         &mut |captured| {
@@ -1107,7 +1205,8 @@ impl Core {
                     );
                     state.events.clear();
                     state.events.extend_from_slice(events.finish());
-                    if let Some(slot) = instrument
+                    if !staged
+                        && let Some(slot) = instrument
                         && let Some(processor) = slots
                             .get_mut(slot.0 as usize)
                             .and_then(|s| s.processor.as_mut())
@@ -1162,6 +1261,7 @@ impl Core {
                 for &state in &map[..count] {
                     let state = &tracks[usize::from(state)];
                     *unreported |= state.failed;
+                    *dropped += state.stage_dropped;
                     add(&mut bufs.bus[0][..n], &state.out[0][..n]);
                     add(&mut bufs.bus[1][..n], &state.out[1][..n]);
                 }

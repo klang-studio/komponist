@@ -756,6 +756,7 @@ mod tests {
             name: "Test".into(),
             tag: "INTERN",
             instrument: false,
+            midi_effect: false,
             bypass: false,
             state: super::super::model::CardState::Ok,
             warning: None,

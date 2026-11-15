@@ -46,6 +46,14 @@ pub fn instrument(slot: u32) -> ChainSlot {
     }
 }
 
+/// A MIDI effect device in `slot` (WP-88).
+pub fn midi_effect(slot: u32) -> ChainSlot {
+    ChainSlot {
+        role: DeviceRole::MidiEffect,
+        ..instrument(slot)
+    }
+}
+
 /// An effect device in `slot`.
 pub fn effect(slot: u32) -> ChainSlot {
     ChainSlot {

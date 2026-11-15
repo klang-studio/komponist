@@ -83,7 +83,7 @@ pub struct TrackProgram {
     /// ratchets) and clip transpose/velocity applied, cut at clip and loop-repetition ends; sorted by
     /// `start`, then `key`. Absolute timeline ticks.
     pub notes: Arc<[SeqNote]>,
-    /// The processor chain in order (instrument first).
+    /// The processor chain in order: MIDI effects, the instrument, audio effects.
     pub chain: Vec<ChainSlot>,
     /// Fader gain, linear (from `volume_db`; `VOLUME_DB_MIN` → 0.0). Ramped by the engine.
     pub gain: f32,
@@ -104,6 +104,23 @@ pub struct TrackProgram {
     pub pdc_delay: u32,
     /// Peak meter after fader and pan; the same `Arc` survives rebuilds of the track.
     pub meter: Arc<TrackMeter>,
+}
+
+impl TrackProgram {
+    /// Number of MIDI effects at the head of the chain (WP-88).
+    pub fn stage_count(&self) -> usize {
+        self.chain
+            .iter()
+            .take_while(|d| d.role == DeviceRole::MidiEffect)
+            .count()
+    }
+
+    /// The instrument device: right behind the MIDI effects.
+    pub fn instrument(&self) -> Option<&ChainSlot> {
+        self.chain
+            .get(self.stage_count())
+            .filter(|d| d.role == DeviceRole::Instrument)
+    }
 }
 
 /// The master strip of a program.

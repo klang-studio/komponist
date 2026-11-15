@@ -38,6 +38,15 @@ impl ParamQueue {
         true
     }
 
+    /// Hands every queued change to `f` in queue order and forgets it (MIDI effect stages take
+    /// their parameters this way, before their next call).
+    pub(crate) fn drain_with(&mut self, mut f: impl FnMut(u32, f64)) {
+        for &(id, value) in &self.items[..self.len] {
+            f(id, value);
+        }
+        self.len = 0;
+    }
+
     /// Forgets everything queued.
     pub(crate) fn clear(&mut self) {
         self.len = 0;
@@ -200,7 +209,8 @@ impl Bufs {
 /// RT. Runs `chain` over the first `n` frames of `bufs.a` and returns the buffer with the result
 /// and whether a processor failed in this call.
 ///
-/// On a track (`track`), a first device with the instrument role is the instrument: it gets
+/// On a track (`track`), the first device with the instrument role (behind the MIDI effects, which
+/// are skipped) is the instrument: it gets
 /// `instrument_events` and silence as input. Its `AllNotesOff` and parameters are already in
 /// `instrument_events`. Every other device is an effect and gets its own pending `AllNotesOff` and
 /// parameters as events.
@@ -221,7 +231,15 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized>(
         let Some(slot) = slots.slot_mut(device.slot.0 as usize) else {
             continue;
         };
-        let instrument = track && index == 0 && device.role == DeviceRole::Instrument;
+        // MIDI effects run in front of the instrument (`crate::stage`), never as audio.
+        if device.role == DeviceRole::MidiEffect {
+            continue;
+        }
+        let instrument = track
+            && device.role == DeviceRole::Instrument
+            && chain[..index]
+                .iter()
+                .all(|d| d.role == DeviceRole::MidiEffect);
         let all_off = !instrument && core::mem::take(&mut slot.all_off);
         let runs = slot.runs(device.bypass);
         let Some(processor) = slot.processor.as_mut().filter(|_| runs) else {

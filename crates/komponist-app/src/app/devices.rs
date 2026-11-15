@@ -75,7 +75,7 @@ impl App {
             .filter(|(_, id)| self.ui.selection.devices.contains(id))
             .filter_map(|(i, id)| {
                 let (_, _, d) = p.find_device(*id)?;
-                (d.role == DeviceRole::Effect).then(|| (i, spec(d)))
+                (d.role != DeviceRole::Instrument).then(|| (i, spec(d)))
             })
             .collect();
         if chosen.is_empty() {
@@ -107,7 +107,7 @@ impl App {
             .iter()
             .filter(|id| self.ui.selection.devices.contains(id))
             .filter_map(|id| p.find_device(*id).map(|(_, _, d)| (**d).clone()))
-            .filter(|d| d.role == DeviceRole::Effect)
+            .filter(|d| d.role != DeviceRole::Instrument)
             .collect();
         if !copied.is_empty() {
             self.ui.devices.clipboard = copied;

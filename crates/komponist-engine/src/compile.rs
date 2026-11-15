@@ -40,7 +40,7 @@ use crate::program::{
     ChainSlot, InputFilter, MasterProgram, MidiPort, PROBABILITY_FOLLOW, Program, SeqNote, SlotId,
     SlotMap, TrackProgram,
 };
-use crate::{MAX_PDC_FRAMES, MAX_SLOTS, MAX_TRACKS};
+use crate::{MAX_PDC_FRAMES, MAX_SLOTS, MAX_STAGES, MAX_TRACKS};
 
 /// What the compiler needs from outside the document. Implemented by the app (from
 /// `komponist-audio`'s MIDI ports and `komponist-plugins`' latencies); [`NoEnv`] for tests.
@@ -74,7 +74,8 @@ impl CompileEnv for NoEnv {
 /// Invalid data is skipped: notes outside `0 ..= 127` after transposition, notes shorter than one
 /// tick or before tick 0, a MIDI clip whose active take does not exist, tracks and devices whose
 /// id appeared before (the first occurrence in project order wins, the master comes last),
-/// instruments anywhere but first in a track chain, instruments on the master, and devices that
+/// instruments anywhere but right behind the MIDI effects of a track chain, MIDI effects anywhere
+/// but at the head of a track chain, instruments on the master, and devices that
 /// find no free slot below [`crate::MAX_SLOTS`].
 pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv) -> Program {
     let mut track_ids = HashSet::new();
@@ -168,24 +169,31 @@ pub fn slot_changes(previous: Option<&Program>, next: &Program) -> SlotChanges {
 /// Which chain a device list belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChainKind {
-    /// A track chain: an instrument may come first.
+    /// A track chain: MIDI effects, then an instrument may come first.
     Track,
     /// The master inserts: effects only.
     Master,
 }
 
-/// The devices of `devices` that may play: each id once across the project (`seen` collects them),
-/// an instrument only first in a track chain.
+/// The devices of `devices` that may play: each id once across the project (`seen` collects them);
+/// MIDI effects only at the head of a track chain (at most [`MAX_STAGES`]), an instrument only
+/// right behind them.
 fn valid_chain<'a>(
     devices: &'a [Arc<Device>],
     kind: ChainKind,
     seen: &mut HashSet<DeviceId>,
 ) -> Vec<&'a Device> {
+    let midi = devices
+        .iter()
+        .take_while(|d| d.role == DeviceRole::MidiEffect)
+        .count();
     devices
         .iter()
         .enumerate()
-        .filter(|(index, d)| {
-            d.role == DeviceRole::Effect || (kind == ChainKind::Track && *index == 0)
+        .filter(|(index, d)| match d.role {
+            DeviceRole::Effect => true,
+            DeviceRole::MidiEffect => kind == ChainKind::Track && *index < midi.min(MAX_STAGES),
+            DeviceRole::Instrument => kind == ChainKind::Track && *index == midi,
         })
         .filter(|(_, d)| seen.insert(d.id))
         .map(|(_, d)| &**d)

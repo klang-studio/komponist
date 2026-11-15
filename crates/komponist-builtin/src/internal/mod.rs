@@ -1,4 +1,5 @@
-//! Internal devices: effects that run in process as an engine [`Processor`] (WP-85).
+//! Internal devices: effects and MIDI effects that run in process as an engine [`Processor`] (WP-85,
+//! WP-88).
 //!
 //! An internal device is one [`Internal`] variant plus a [`Spec`]: the catalog name (**the only
 //! place** a device's name is written; the names are working names until the owner decides), the
@@ -23,6 +24,13 @@
 //! Adding a device: a module with `spec()`, one variant of [`Internal`] and its arms in
 //! [`Internal::spec`] — nothing else in the workspace names the device.
 //!
+//! **MIDI effects (WP-88):** [`arpeggiator`] and [`tonleiter`] are [`Internal`]s whose
+//! [`Internal::is_midi_effect`] is true. They have the same spec, parameters, layout and state as
+//! the audio effects, but an event stage ([`komponist_engine::EventProcessor`], via
+//! [`Processor::event_processor`]) instead of a [`Dsp`]: their `Spec::dsp` is a pass-through the
+//! engine never calls. Their role in a chain is [`Internal::role`] (`MidiEffect`); the engine runs
+//! them in front of the instrument (ARCHITECTURE §6.4.2) and keeps notes from hanging.
+//!
 //! The DSP of the four effects is a placeholder (EQ, Hall: pass-through, EQ with its output gain;
 //! Delay: a plain stereo delay; Limiter: a hard clip at the ceiling). The real algorithms are
 //! WP-90 (`klang-dsp`).
@@ -30,7 +38,8 @@
 use std::sync::OnceLock;
 
 use komponist_engine::{
-    Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+    Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor, ProcessorError,
+    StereoIo,
 };
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo};
@@ -38,10 +47,13 @@ use komponist_model::{PluginFormat, PluginRef};
 
 use crate::SAMPLE_RATES;
 
+pub mod arpeggiator;
 pub mod delay;
 pub mod eq;
 pub mod hall;
 pub mod limiter;
+pub mod midi;
+pub mod tonleiter;
 
 /// The DSP of an internal device. Created and activated on the UI thread, then used by one thread
 /// at a time on the audio side.
@@ -91,15 +103,21 @@ pub enum Internal {
     Hall,
     /// Peak limiter; an ordinary device, also for the master chain.
     Limiter,
+    /// MIDI effect: held notes as a pattern in time with the song (WP-88).
+    Arpeggiator,
+    /// MIDI effect: forces notes onto a scale (WP-88).
+    Tonleiter,
 }
 
 impl Internal {
     /// All devices, in browser order.
-    pub const ALL: [Internal; 4] = [
+    pub const ALL: [Internal; 6] = [
         Internal::Eq,
         Internal::Delay,
         Internal::Hall,
         Internal::Limiter,
+        Internal::Arpeggiator,
+        Internal::Tonleiter,
     ];
 
     fn spec(self) -> &'static Spec {
@@ -108,9 +126,35 @@ impl Internal {
             Internal::Delay => &delay::SPEC,
             Internal::Hall => &hall::SPEC,
             Internal::Limiter => &limiter::SPEC,
+            Internal::Arpeggiator => &arpeggiator::SPEC,
+            Internal::Tonleiter => &tonleiter::SPEC,
         }
     }
 
+    /// The event stage of a MIDI effect, `None` for the audio effects. Allocates; not RT-safe.
+    fn stage(self) -> Option<Box<dyn EventProcessor + Send>> {
+        match self {
+            Internal::Arpeggiator => Some(arpeggiator::stage()),
+            Internal::Tonleiter => Some(tonleiter::stage()),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a MIDI effect: it rewrites note events in front of the instrument
+    /// ([`DeviceRole::MidiEffect`](komponist_model::DeviceRole::MidiEffect)) instead of
+    /// processing audio.
+    pub fn is_midi_effect(self) -> bool {
+        matches!(self, Internal::Arpeggiator | Internal::Tonleiter)
+    }
+
+    /// The role of the device in a chain.
+    pub fn role(self) -> komponist_model::DeviceRole {
+        if self.is_midi_effect() {
+            komponist_model::DeviceRole::MidiEffect
+        } else {
+            komponist_model::DeviceRole::Effect
+        }
+    }
     fn index(self) -> usize {
         Internal::ALL
             .iter()
@@ -240,9 +284,16 @@ impl Internal {
         for (i, p) in params.iter().enumerate() {
             dsp.set_param(i, p.snap(values.get(i).copied().unwrap_or(p.default)));
         }
+        let mut stage = self.stage().map(|s| midi::Stage::new(params, s));
+        if let Some(stage) = &mut stage {
+            for (i, p) in params.iter().enumerate() {
+                stage.set_param(i as u32, values.get(i).copied().unwrap_or(p.default));
+            }
+        }
         InternalProcessor {
             params,
             dsp,
+            stage,
             sample_rate: INITIAL_RATE,
         }
     }
@@ -278,7 +329,8 @@ impl core::fmt::Display for StateError {
 
 impl std::error::Error for StateError {}
 
-/// An internal effect as an engine [`Processor`].
+/// An internal device as an engine [`Processor`]: an audio effect, or a MIDI effect whose event
+/// stage the engine runs in front of the instrument ([`Processor::event_processor`]).
 ///
 /// `EventKind::Param { id, value }` sets the parameter with wire id `id` (unknown ids are ignored)
 /// at its frame: the block is processed in pieces between the events. Note and MIDI events are
@@ -286,6 +338,8 @@ impl std::error::Error for StateError {}
 pub struct InternalProcessor {
     params: &'static [ParamInfo],
     dsp: Box<dyn Dsp>,
+    /// The event stage of a MIDI effect ([`Processor::event_processor`]).
+    stage: Option<midi::Stage>,
     sample_rate: f32,
 }
 
@@ -340,6 +394,13 @@ impl Processor for InternalProcessor {
 
     fn reset(&mut self) {
         self.dsp.reset();
+        if let Some(stage) = &mut self.stage {
+            stage.reset();
+        }
+    }
+
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
+        self.stage.as_mut().map(|s| s as &mut dyn EventProcessor)
     }
 }
 
@@ -397,5 +458,7 @@ fn db_to_gain(db: f64) -> f32 {
     10f64.powf(db / 20.0) as f32
 }
 
+#[cfg(test)]
+mod midi_tests;
 #[cfg(test)]
 mod tests;

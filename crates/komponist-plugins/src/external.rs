@@ -128,7 +128,8 @@ impl ExternalProcessor {
     fn fallback(&self, io: &mut StereoIo<'_>) {
         match self.role {
             DeviceRole::Instrument => io.silence(),
-            DeviceRole::Effect => io.passthrough(),
+            // A MIDI effect is never hosted in a bridge; it would not be run as audio either.
+            DeviceRole::Effect | DeviceRole::MidiEffect => io.passthrough(),
         }
     }
 
