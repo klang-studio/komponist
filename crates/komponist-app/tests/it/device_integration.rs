@@ -198,6 +198,67 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
     }
 }
 
+/// Owner decision 2026-11-15: double-click resets a knob; the wheel over it turns it (Shift
+/// fine); elsewhere the wheel keeps scrolling the chain.
+#[test]
+fn double_click_resets_a_knob_and_the_wheel_turns_it() {
+    let (app, _, hall) = app_with_hall();
+    let mut h = harness(app);
+    h.run_steps(30);
+    let decay = knob(&h, "Decay");
+    press_and_move(
+        &mut h,
+        decay.center(),
+        decay.center() - vec2(0.0, 40.0),
+        Modifiers::NONE,
+    );
+    release(&mut h, decay.center() - vec2(0.0, 40.0), Modifiers::NONE);
+    let default = Internal::Hall.defaults()[decay_wire()];
+    let turned = hall_values(h.state(), hall)[decay_wire()];
+    assert_ne!(turned, default);
+
+    // The wheel over the knob: one notch up = 1 % of the range up, Shift a tenth of it.
+    let wheel = |h: &mut Harness<'_, App>, at: Pos2, delta: f32, m: Modifiers| {
+        h.run_steps(30);
+        h.hover_at(at);
+        h.step();
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, delta),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: m,
+        });
+        h.run_steps(5);
+    };
+    wheel(&mut h, decay.center(), 1.0, Modifiers::NONE);
+    let up = hall_values(h.state(), hall)[decay_wire()];
+    assert!(up > turned, "{turned} -> {up}");
+    wheel(&mut h, decay.center(), 1.0, Modifiers::SHIFT);
+    let fine = hall_values(h.state(), hall)[decay_wire()];
+    assert!(fine > up && (fine - up) < (up - turned), "{up} -> {fine}");
+    // The chain did not scroll sideways under Shift + wheel.
+    assert_eq!(h.state().ui().devices.scroll_x, 0.0);
+    // Not hovered: nothing.
+    wheel(&mut h, pos2(900.0, 500.0), 3.0, Modifiers::NONE);
+    assert_eq!(hall_values(h.state(), hall)[decay_wire()], fine);
+
+    // Double-click: back to the default, no text entry.
+    let at = decay.center();
+    h.run_steps(30);
+    h.hover_at(at);
+    h.step();
+    for _ in 0..2 {
+        button(&mut h, at, PointerButton::Primary, true, Modifiers::NONE);
+        button(&mut h, at, PointerButton::Primary, false, Modifiers::NONE);
+        h.step();
+    }
+    h.run_steps(3);
+    let reset = hall_values(h.state(), hall)[decay_wire()];
+    assert!((reset - default).abs() < 1e-6, "{reset} vs {default}");
+    assert!(h.query_by_label("Decay Eingabe").is_none());
+}
+
 #[test]
 fn touching_another_parameter_replaces_the_selection() {
     let (app, _, _) = app_with_hall();

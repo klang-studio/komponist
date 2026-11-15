@@ -13,6 +13,7 @@
 //! | Double-click, Alt-click (thumb) | 0.0 dB (owner decision 2026-11-15) |
 //! | Enter (focused), context menu "Wert eingeben" ([`super::value_menu`]) | text entry in dB |
 //! | Double-click on the value under the fader ([`DbValue`]) | text entry in dB (a text readout, like a number field) |
+//! | Wheel (hovered) | 1 dB per notch, Shift 0.1 dB, Ctrl 10 dB; touchpads accumulate (owner decision 2026-11-15) |
 //! | ↑ ↓ (focused) | ±1 dB, Shift 0.1 dB, Ctrl 10 dB (keyboard access, not in `ix.fader`) |
 //!
 //! The level is in dB, `−70` ([`VOLUME_DB_MIN`]) meaning −∞, as stored in the project
@@ -35,7 +36,7 @@ use super::metrics::meter as meter_metrics;
 use super::number_field::{
     accesskit_requests, caption, column, drag_gesture, entry, expose_value, galley, is_still,
     key_steps, paint_entry_ring, sense, snap_to, take_focus_on_press, text_pos, text_width,
-    value_label,
+    value_label, wheel_steps,
 };
 use crate::drag::{ClickAction, ValueDrag};
 use crate::state::State;
@@ -422,7 +423,7 @@ impl Widget for Fader<'_> {
             if let Some(u) = drag_gesture(&response, || ValueDrag::span(up, 0.0, 1.0, len)) {
                 db = p_to_db(1.0 - u as f32);
             }
-            let steps = key_steps(ui, &response);
+            let steps = key_steps(ui, &response) + wheel_steps(ui, &response);
             if steps != 0.0 {
                 db = db.max(VOLUME_DB_MIN) + steps as f32;
             }

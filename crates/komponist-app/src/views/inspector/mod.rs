@@ -14,7 +14,8 @@
 //! | Projekt, Auswahl ([`project`]) | with nothing selected: Tempo, Taktart, Spuren, Länge | `SetProjectProp(Tempo)` |
 //!
 //! Number fields drag (1 px = one step), Shift fine, Alt-click default, double-click text entry;
-//! a drag is one undo step. The panel scrolls with the wheel when the sections are taller.
+//! a drag is one undo step. The panel scrolls with the wheel when the sections are taller (not over
+//! the channel fader or pan knob: they take the wheel, owner decision 2026-11-15).
 
 mod channel;
 mod clip;

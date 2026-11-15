@@ -156,6 +156,45 @@ mod behaviour {
     }
 
     #[test]
+    fn double_click_resets_knob_cells_and_mini_faders() {
+        use egui::{Event, Modifiers, PointerButton};
+        // Frames of a 60 Hz display, so two clicks fit egui's double-click window.
+        let mut app = |ui: &mut Ui, s: &mut (f64, f64)| {
+            ui.add(KnobCell::new(&mut s.0, "Cutoff").default_value(0.5));
+            ui.add(MiniFader::new(&mut s.1, "Op 1").default_value(0.7));
+        };
+        let mut h = snapshot::builder::<(f64, f64)>(1.0)
+            .with_size(vec2(480.0, 320.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(
+                move |ui, s| snapshot::padded(ui, |ui| app(ui, s)),
+                (0.9, 0.2),
+            );
+        h.run();
+        for (label, want) in [("Cutoff", 0.5), ("Op 1", 0.7)] {
+            let at = h.get_by_label(label).rect().center();
+            h.run_steps(30);
+            h.event(Event::PointerMoved(at));
+            for pressed in [true, false, true, false] {
+                h.event(Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            h.run();
+            let got = if label == "Cutoff" {
+                h.state().0
+            } else {
+                h.state().1
+            };
+            assert!((got - want).abs() < 1e-9, "{label}: {got}");
+            assert!(h.query_by_label(&format!("{label} Eingabe")).is_none());
+        }
+    }
+
+    #[test]
     fn meter_click_is_reported() {
         let mut h = harness(0_u32, |ui, n| {
             if ui.add(MeterGr::new([0.0; 3], "0.0")).clicked() {

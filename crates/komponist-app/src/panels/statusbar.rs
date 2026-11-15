@@ -28,7 +28,7 @@ use crate::ui_state::{FocusArea, StatusKind};
 pub const NO_REALTIME: &str = "ohne Echtzeit-Priorität";
 
 /// The hint while a device parameter is dragged.
-pub const PARAM_HINT: &str = "Alt-Klick: Standard · Doppelklick: Wert eingeben";
+pub const PARAM_HINT: &str = "Alt-Klick: Standard · Rechtsklick: Wert eingeben";
 
 /// The three texts of the status bar and their colours.
 #[derive(Debug, Clone, PartialEq, Eq)]

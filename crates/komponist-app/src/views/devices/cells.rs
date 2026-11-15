@@ -166,9 +166,10 @@ enum ParamMenu {
 
 /// A parameter's control was touched: the inspector and the status line follow (`TouchParam`).
 /// `r` is the control's response; `entry` is the text its entry opens with (`None`: a choice, a
-/// switch: no "Wert eingeben").
+/// switch: no "Wert eingeben"); `double_click_resets` is true for knobs and faders (the menu's
+/// shortcut column says "Doppelklick"), false for the others ("Alt-Klick").
 ///
-/// The right-click menu: "Auf Standard" (the Alt-click) and, for a control with text entry, "Wert
+/// The right-click menu: "Auf Standard" (the reset) and, for a control with text entry, "Wert
 /// eingeben". Nothing else yet (automation, MIDI learn and macros are prepared, not built).
 fn touch(
     cu: &Ui,
@@ -177,6 +178,7 @@ fn touch(
     p: &Param,
     r: &egui::Response,
     entry: Option<String>,
+    double_click_resets: bool,
 ) {
     if r.is_pointer_button_down_on() || r.drag_stopped() || r.clicked() {
         out.push(touch_action(card, p, r.dragged()));
@@ -186,7 +188,11 @@ fn touch(
         enter = enter.disabled();
     }
     let entries = [
-        Entry::action(names::TO_DEFAULT, ParamMenu::Default).shortcut(names::TO_DEFAULT_SHORTCUT),
+        Entry::action(names::TO_DEFAULT, ParamMenu::Default).shortcut(if double_click_resets {
+            names::TO_DEFAULT_SHORTCUT
+        } else {
+            names::TO_DEFAULT_ALT_SHORTCUT
+        }),
         enter,
     ];
     match ContextMenu::new(names::PARAMETER, &entries).show_on(r) {
@@ -252,7 +258,7 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
     if r.changed() {
         set(out, card, p, info.to_plain(value));
     }
-    touch(cu, out, card, p, &r, Some(p.text_at(p.value)));
+    touch(cu, out, card, p, &r, Some(p.text_at(p.value)), true);
 }
 
 /// A compact number field: plain values for integer and stepped parameters, normalised for
@@ -296,7 +302,7 @@ fn number(
             if r.changed() {
                 set(out, card, p, value);
             }
-            touch(cu, out, card, p, &r, Some(plain_text(p.value)));
+            touch(cu, out, card, p, &r, Some(plain_text(p.value)), false);
         }
         None => {
             let mut value = info.to_normalized(p.value);
@@ -310,7 +316,7 @@ fn number(
             if r.changed() {
                 set(out, card, p, info.to_plain(value));
             }
-            touch(cu, out, card, p, &r, Some(plain_text(p.value)));
+            touch(cu, out, card, p, &r, Some(plain_text(p.value)), false);
         }
     }
     true
@@ -347,7 +353,7 @@ fn segment(
     if r.changed() {
         set(out, card, p, selected as f64);
     }
-    touch(cu, out, card, p, &r, None);
+    touch(cu, out, card, p, &r, None, false);
     true
 }
 
@@ -367,7 +373,7 @@ fn toggle(
     if r.changed() {
         set(out, card, p, if on { 1.0 } else { 0.0 });
     }
-    touch(cu, out, card, p, &r, None);
+    touch(cu, out, card, p, &r, None, false);
     true
 }
 
@@ -391,7 +397,7 @@ fn dropdown(
     if r.changed() {
         set(out, card, p, selected as f64);
     }
-    touch(cu, out, card, p, &r, None);
+    touch(cu, out, card, p, &r, None, false);
     true
 }
 
@@ -419,7 +425,7 @@ fn mini_fader(
     if r.changed() {
         set(out, card, p, info.to_plain(value));
     }
-    touch(cu, out, card, p, &r, Some(p.text_at(p.value)));
+    touch(cu, out, card, p, &r, Some(p.text_at(p.value)), true);
 }
 
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the

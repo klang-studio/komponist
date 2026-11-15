@@ -353,7 +353,9 @@ fn below_a_320_px_dock_the_chain_scrolls_vertically() {
     app.ui_mut().layout.dock_height = size::dock::MIN;
     let mut h = harness(app);
     let before = frame(&h, "pisynth");
-    h.hover_at(before.center());
+    // Over the frame's left edge: no knob, fader or field takes the wheel there.
+    h.hover_at(before.left_center() + vec2(1.0, 0.0));
+    h.step();
     h.event(Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: vec2(0.0, -40.0),

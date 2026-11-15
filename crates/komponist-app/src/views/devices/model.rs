@@ -64,10 +64,12 @@ pub mod names {
     pub const PAGES: &str = "Seiten";
     /// The accessible name of the operator switch on pisynth's envelope page.
     pub const OPERATOR: &str = "Operator";
-    /// Context menu of a parameter: set it to its default (the Alt-click).
+    /// Context menu of a parameter: set it to its default (knobs and faders: the double-click).
     pub const TO_DEFAULT: &str = "Auf Standard";
     /// Its shortcut column.
     pub const TO_DEFAULT_SHORTCUT: &str = "Doppelklick";
+    /// … for the controls where only the Alt-click resets (number fields, choices).
+    pub const TO_DEFAULT_ALT_SHORTCUT: &str = "Alt-Klick";
     /// Context menu of a parameter: open the text entry.
     pub const ENTER_VALUE: &str = "Wert eingeben";
     /// Accessible name of a parameter's context menu.

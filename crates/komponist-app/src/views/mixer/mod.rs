@@ -13,7 +13,7 @@
 //! | Input | What happens (S04 notes) |
 //! |---|---|
 //! | click on a strip | selects the track (Strg toggles, Shift extends), synchronous with the arrangement |
-//! | fader / pan | drag relative, Shift fine, Alt-click default, double-click text entry; a drag is one undo step, fast-path commands while it lasts |
+//! | fader / pan | drag relative, Shift fine, double-click or Alt-click default, Enter or right-click „Wert eingeben“ text entry, wheel one step (Shift fine); a drag or a wheel burst is one undo step, fast-path commands while it lasts |
 //! | M S R | as in the track headers: press, drag across strips, Alt-click S / R exclusive |
 //! | insert slot | click opens the plugin window (an internal device: the Geräte tab, scrolled to it), drag reorders (2 px accent line), Alt-click bypass |
 //! | "+" | opens the browser on Effekte |
@@ -34,6 +34,7 @@ use komponist_model::edits::ExclusiveFlag;
 use komponist_tokens::color;
 use komponist_tokens::egui_support::color32;
 use komponist_ui::px;
+use komponist_ui::widgets::number_field::{WHEEL_GESTURE_IDLE, wheel_turned};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind};
 
 use self::metrics::{MASTER_WIDTH, STRIP_GAP, STRIP_WIDTH, Tier};
@@ -45,7 +46,8 @@ use crate::views::{View, ViewCtx};
 
 /// Sends the change of a continuous control (fader, knob, number field) as an undo step:
 /// `BeginGesture { label }` when its drag starts, `action` on every change, `EndGesture` when the
-/// drag stops. A change without a drag (Alt-click, text entry, keys) is one undo step of its own.
+/// drag stops. A change without a drag (double-click, text entry, keys) is one undo step of its own;
+/// a burst of wheel notches is one undo step (one gesture).
 /// Fader, pan, mute and solo inside a gesture reach the engine on the fast path (the dispatcher).
 pub fn send_gesture(
     ctx: &mut ViewCtx<'_>,
@@ -58,12 +60,44 @@ pub fn send_gesture(
             label: label.to_owned(),
         }));
     }
+    // A burst of wheel notches is one gesture: it opens with the first notch and closes after
+    // [`WHEEL_GESTURE_IDLE`] without one, or when the pointer leaves the control.
+    let wheel = response.id.with("komponist_wheel_gesture");
+    let turned = !response.dragged() && wheel_turned(response);
+    let now = response.ctx.input(|i| i.time);
+    let mut open: Option<f64> = response.ctx.data(|d| d.get_temp(wheel));
+    if turned {
+        if open.is_none() {
+            ctx.send(Action::Edit(EditAction::BeginGesture {
+                label: label.to_owned(),
+            }));
+        }
+        open = Some(now);
+    }
     if response.changed() {
         ctx.send(action());
     }
     if response.drag_stopped() {
         ctx.send(Action::Edit(EditAction::EndGesture));
     }
+    if let Some(last) = open {
+        if !turned && (now - last >= WHEEL_GESTURE_IDLE || !response.hovered()) {
+            ctx.send(Action::Edit(EditAction::EndGesture));
+            open = None;
+        } else if !turned {
+            response
+                .ctx
+                .request_repaint_after_secs((WHEEL_GESTURE_IDLE - (now - last)).max(0.0) as f32);
+        }
+    }
+    response.ctx.data_mut(|d| match open {
+        Some(t) => {
+            d.insert_temp(wheel, t);
+        }
+        None => {
+            d.remove::<f64>(wheel);
+        }
+    });
 }
 
 /// The mixer view. Its view state is [`crate::ui_state::MixerView`] (scroll).

@@ -18,7 +18,7 @@
 //! | ⋯ / right-click on the head | Öffnen, Bypass, Neu laden, Einklappen, Duplizieren, Entfernen |
 //! | knob | `SetParam` (pisynth: also into the device state) |
 //! | touching a parameter (press, drag, click) | `Ui(TouchParam)`: the inspector's „Parameter“ section and, while dragging, the status line show it |
-//! | right-click on a parameter | „Auf Standard“ (the Alt-click) and „Wert eingeben“ (text entry; not for choices and switches); no automation, MIDI learn or macro entries (prepared, not built) |
+//! | right-click on a parameter | „Auf Standard“ (the reset) and „Wert eingeben“ (text entry; not for choices and switches); no automation, MIDI learn or macro entries (prepared, not built) |
 //! | click on the head | selects the device (Strg C / V / D, Entf, ← → act on it) |
 //! | double-click on the head | collapses or expands; with Alt every device of the chain |
 //! | click on a collapsed strip | expands it |
@@ -165,7 +165,8 @@ impl View for Devices {
         let scroll_y = ctx.ui.devices.scroll_y.clamp(0.0, max_y);
 
         // The wheel: over the head sideways, in the body sideways with Shift (or a horizontal
-        // wheel) and up and down while the chain scrolls vertically.
+        // wheel) and up and down while the chain scrolls vertically. Over a knob, fader or number
+        // field the control takes it (Shift: fine adjust), so the body leaves it alone there.
         let (mut scroll_x, mut scroll_y) = (scroll_x, scroll_y);
         let pointer = ui.input(|i| i.pointer.hover_pos());
         if let Some(pos) = pointer {
@@ -173,7 +174,9 @@ impl View for Devices {
             if header.contains(pos) && max_x > 0.0 && delta != egui::Vec2::ZERO {
                 scroll_x = (scroll_x - (delta.x + delta.y)).clamp(0.0, max_x);
                 ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-            } else if body.contains(pos) {
+            } else if body.contains(pos)
+                && !komponist_ui::widgets::number_field::wheel_over_control(ui.ctx())
+            {
                 let mut used = egui::Vec2::ZERO;
                 if max_x > 0.0 && delta.x != 0.0 {
                     scroll_x = (scroll_x - delta.x).clamp(0.0, max_x);

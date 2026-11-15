@@ -57,6 +57,15 @@ by a contract change when those need them:
   recheck in WP-62.
 - `#34363b`, `#4d5056`, `#5a5d63`: fader thumb greys (WP-21 maps them to the nearest tokens).
 
+## Knob and fader interaction (owner decision 2026-11-15)
+
+The design system's `ix.knob` / `ix.fader` and `DEVICES-HANDOFF.md` §4 list Alt-click = default and
+double-click = text entry. komponist deviates for knobs and faders (not for number fields): a
+**double-click resets to the default** (Alt-click still does), text entry is **Enter** on the focused
+control or the right-click menu „Wert eingeben“, and the **mouse wheel over the control** changes
+the value (1 % of the range per notch, Shift fine, Ctrl coarse). Details: `docs/ARCHITECTURE.md`
+§13 item 10.
+
 ## Track toggles M S R I (owner decision 2026-11-14, contract change request C3)
 
 The design system's toggle table lets "monitoring on" use the accent blue. The owner decided

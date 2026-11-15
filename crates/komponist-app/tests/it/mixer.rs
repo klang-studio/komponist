@@ -132,6 +132,41 @@ fn double_click(h: &mut Harness<'_, App>, pos: Pos2) {
     h.run_steps(2);
 }
 
+/// A right-click at `pos`, then a click on the menu entry `label`.
+fn menu_choice(h: &mut Harness<'_, App>, pos: Pos2, label: &str) {
+    settle(h);
+    h.event(Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run_steps(3);
+    let item = h.get_by_role_and_label(Role::MenuItem, label).rect();
+    click(h, item.center());
+    h.run_steps(2);
+}
+
+/// `notches` wheel lines over `pos` in one burst (one frame each), with `modifiers`.
+fn wheel(h: &mut Harness<'_, App>, pos: Pos2, notches: &[f32], modifiers: Modifiers) {
+    h.event(Event::PointerMoved(pos));
+    h.step();
+    for n in notches {
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, *n),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers,
+        });
+        h.run_steps(2);
+    }
+}
+
 /// Press at `from` and move to `to` in eight frames, without releasing.
 fn drag_to(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
     settle(h);
@@ -314,7 +349,7 @@ fn the_lean_dock_strip_has_a_pan_knob_that_costs_the_fader_no_height() {
     assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_PAN));
     click_with(&mut h, knob.center(), Modifiers::ALT);
     assert_eq!(h.state().project().tracks[1].channel.pan, 0.0);
-    double_click(&mut h, knob.center());
+    menu_choice(&mut h, knob.center(), "Wert eingeben");
     h.get_by_role_and_label(Role::TextInput, &format!("{name} Eingabe"))
         .type_text("L 20");
     h.key_press(egui::Key::Enter);
@@ -465,7 +500,7 @@ fn fader_and_pan_take_alt_click_and_text_entry() {
         "\u{2212}12.0 dB"
     );
 
-    // Pan: drag up turns right, Alt-click centres, double-click takes "L 20".
+    // Pan: drag up turns right, Alt-click centres, the menu's "Wert eingeben" takes "L 20".
     let knob = in_strip(&h, "Bass", Role::Slider, &names::pan("Bass"));
     drag(&mut h, knob.center(), knob.center() - vec2(0.0, 50.0));
     let pan = h.state().project().tracks[1].channel.pan;
@@ -477,7 +512,7 @@ fn fader_and_pan_take_alt_click_and_text_entry() {
     );
     click_with(&mut h, knob.center(), Modifiers::ALT);
     assert_eq!(h.state().project().tracks[1].channel.pan, 0.0);
-    double_click(&mut h, knob.center());
+    menu_choice(&mut h, knob.center(), "Wert eingeben");
     let entry = format!("{} Eingabe", names::pan("Bass"));
     h.get_by_role_and_label(Role::TextInput, &entry)
         .type_text("L 20");
@@ -490,6 +525,101 @@ fn fader_and_pan_take_alt_click_and_text_entry() {
     drag(&mut h, master.center(), master.center() + vec2(0.0, 80.0));
     assert!(h.state().project().master.volume_db < -3.0);
     assert!(!edits_of(h.state(), |e| matches!(e, EditAction::SetMasterProp(_))).is_empty());
+}
+
+/// Owner decision 2026-11-15: a double-click on a fader or pan knob resets it (one undo step) and
+/// opens no text entry; text entry is the right-click menu or Enter.
+#[test]
+fn double_click_resets_fader_and_pan_in_one_undo_step() {
+    let mut app = App::headless(demo_project());
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    let before_db = h.state().project().tracks[0].channel.volume_db;
+    assert_ne!(before_db, 0.0);
+    let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
+    double_click(&mut h, fader.center());
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
+    assert_eq!(h.state().doc().undo_label(), Some("Spur ändern"));
+    assert!(
+        h.query_by_label(&format!("{} Eingabe", names::volume("Drums")))
+            .is_none()
+    );
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::BeginGesture { .. })).is_empty());
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, before_db);
+
+    let knob = in_strip(&h, "Bass", Role::Slider, &names::pan("Bass"));
+    drag(&mut h, knob.center(), knob.center() - vec2(0.0, 50.0));
+    let pan = h.state().project().tracks[1].channel.pan;
+    assert!(pan > 0.3);
+    double_click(&mut h, knob.center());
+    assert_eq!(h.state().project().tracks[1].channel.pan, 0.0);
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(h.state().project().tracks[1].channel.pan, pan);
+}
+
+#[test]
+fn fader_menu_and_enter_reset_and_enter_values() {
+    let mut app = App::headless(demo_project());
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    let name = names::volume("Drums");
+    let fader = in_strip(&h, "Drums", Role::Slider, &name);
+    menu_choice(&mut h, fader.center(), "Auf Standard");
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, 0.0);
+    assert_eq!(h.state().doc().undo_label(), Some("Spur ändern"));
+    menu_choice(&mut h, fader.center(), "Wert eingeben");
+    h.get_by_role_and_label(Role::TextInput, &format!("{name} Eingabe"))
+        .type_text("-9");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, -9.0);
+    // Enter on the focused fader opens the entry too.
+    click(&mut h, fader.center());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, &format!("{name} Eingabe"));
+}
+
+#[test]
+fn wheel_over_a_fader_is_one_undo_step_and_needs_the_pointer_on_it() {
+    let mut app = App::headless(demo_project());
+    app.dispatch(Action::Ui(UiAction::ToggleMixer));
+    let mut h = harness(app);
+    let before = h.state().project().tracks[0].channel.volume_db;
+    let fader = in_strip(&h, "Drums", Role::Slider, &names::volume("Drums"));
+    let name_row = h
+        .get_by_role_and_label(Role::Group, &names::strip("Drums"))
+        .rect()
+        .center_top()
+        + vec2(0.0, 12.0);
+    // Off the fader: nothing.
+    wheel(&mut h, name_row, &[1.0, 1.0], Modifiers::NONE);
+    h.run_steps(60);
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, before);
+    // A burst of three notches up: +3 dB, one gesture, one undo step.
+    wheel(&mut h, fader.center(), &[1.0, 1.0, 1.0], Modifiers::NONE);
+    h.run_steps(60);
+    let after = h.state().project().tracks[0].channel.volume_db;
+    assert!((after - (before + 3.0)).abs() < 1e-4, "{before} -> {after}");
+    assert_eq!(
+        edits_of(h.state(), |e| matches!(e, EditAction::BeginGesture { .. })).len(),
+        1
+    );
+    assert_eq!(
+        edits_of(h.state(), |e| matches!(e, EditAction::EndGesture)).len(),
+        1
+    );
+    assert_eq!(h.state().doc().undo_label(), Some(names::UNDO_VOLUME));
+    // Shift: fine (0.1 dB); a second burst after the pause is a second step.
+    wheel(&mut h, fader.center(), &[-1.0], Modifiers::SHIFT);
+    h.run_steps(60);
+    let fine = h.state().project().tracks[0].channel.volume_db;
+    assert!((fine - (after - 0.1)).abs() < 1e-3, "{after} -> {fine}");
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert!((h.state().project().tracks[0].channel.volume_db - after).abs() < 1e-4);
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, before);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -806,8 +936,9 @@ fn many_strips_scroll_sideways_and_the_master_stays() {
         h.query_by_role_and_label(Role::Group, &names::strip("Spur 20"))
             .is_none()
     );
+    // Over the name row: the fader and the pan knob take the wheel themselves.
     let drums = strip(&h, &names::strip("Drums")).rect();
-    h.hover_at(drums.center());
+    h.hover_at(drums.center_top() + vec2(0.0, 12.0));
     h.step();
     h.event(Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,

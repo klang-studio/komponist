@@ -10,8 +10,8 @@ use komponist_tokens::{color, size, typography};
 use komponist_ui::widgets::fader::{Fader, FaderSize, Layout as FaderLayout, db_text};
 use komponist_ui::widgets::knob::Knob;
 use komponist_ui::widgets::meter::{Meter, MeterState};
-use komponist_ui::widgets::value_menu;
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
+use komponist_ui::widgets::value_menu;
 
 use super::model::names;
 use super::{Meta, access_label, frame, label, metrics as m, place};

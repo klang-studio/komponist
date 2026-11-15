@@ -495,13 +495,65 @@ fn knob_alt_click_and_text_entry() {
     let p = center(&h, "Pan");
     click(&mut h, p, Modifiers::ALT);
     assert_eq!(h.state().pan, 0.0, "Pan: Alt-click = centre");
-    // Double-click: text entry in the tooltip's place.
-    double_click(&mut h, p);
+    // Enter on the focused knob: text entry in the tooltip's place.
+    h.get_by_label("Pan").focus();
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
     let entry = h.get_by_label("Pan Eingabe");
     assert!(entry.rect().bottom() < p.y);
     assert_eq!(entry.value().as_deref(), Some("C"));
     type_and(&mut h, "L 12", Key::Enter);
     assert!((h.state().pan + 0.24).abs() < 1e-6);
+}
+
+/// Owner decision 2026-11-15: a double-click resets, and neither starts text entry nor a drag.
+#[test]
+fn knob_double_click_resets_and_does_not_open_text_entry() {
+    let mut h = knob_harness(0.9, 0.6);
+    let c = center(&h, "Cutoff");
+    double_click(&mut h, c);
+    assert!(
+        (h.state().cutoff - 0.5).abs() < 1e-9,
+        "{}",
+        h.state().cutoff
+    );
+    assert!(h.query_by_label("Cutoff Eingabe").is_none());
+    let p = center(&h, "Pan");
+    double_click(&mut h, p);
+    assert_eq!(h.state().pan, 0.0, "Pan: double-click = centre");
+    assert!(h.query_by_label("Pan Eingabe").is_none());
+}
+
+#[test]
+fn knob_wheel_steps_one_percent_shift_fine_ctrl_coarse_and_only_when_hovered() {
+    let mut h = knob_harness(0.5, 0.0);
+    let c = center(&h, "Cutoff");
+    wheel(&mut h, c, 1.0, Modifiers::NONE);
+    assert!(near(h.state().cutoff, 0.51), "{}", h.state().cutoff);
+    wheel(&mut h, c, -2.0, Modifiers::NONE);
+    assert!(near(h.state().cutoff, 0.50), "{}", h.state().cutoff);
+    wheel(&mut h, c, 1.0, Modifiers::SHIFT);
+    assert!(near(h.state().cutoff, 0.501), "{}", h.state().cutoff);
+    wheel(&mut h, c, -1.0, Modifiers::CTRL);
+    assert!(near(h.state().cutoff, 0.401), "{}", h.state().cutoff);
+    // Not hovered: nothing happens.
+    wheel(&mut h, pos2(350.0, 310.0), 3.0, Modifiers::NONE);
+    assert!(near(h.state().cutoff, 0.401), "{}", h.state().cutoff);
+    // A touchpad: pixel deltas accumulate to whole lines.
+    let line = h.ctx.options(|o| o.input_options.line_scroll_speed);
+    h.event(Event::PointerMoved(c));
+    for _ in 0..2 {
+        h.event(Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0.0, line / 2.0),
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        });
+        h.run_steps(20);
+    }
+    assert!(near(h.state().cutoff, 0.411), "{}", h.state().cutoff);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -591,9 +643,11 @@ fn fader_alt_click_keys_and_text_entry() {
     click(&mut h, t, Modifiers::ALT);
     assert_eq!(h.state().db, 0.0, "Alt-click: 0.0 dB");
 
-    // Double-click on the thumb: dB entry above it.
-    let t = thumb_center(&h, 0.0);
-    double_click(&mut h, t);
+    // Enter on the focused fader: dB entry above the thumb.
+    h.get_by_label("Lautstärke").focus();
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
     let entry = h.get_by_label("Lautstärke Eingabe");
     assert_eq!(entry.value().as_deref(), Some("0.0"));
     type_and(&mut h, "−12,5", Key::Enter);
@@ -618,6 +672,34 @@ fn fader_alt_click_keys_and_text_entry() {
     h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
     h.run();
     assert_eq!(h.state().db, -68.9);
+}
+
+#[test]
+fn fader_double_click_resets_and_does_not_open_text_entry() {
+    let mut h = fader_harness(-12.0);
+    let t = thumb_center(&h, -12.0);
+    double_click(&mut h, t);
+    assert_eq!(h.state().db, 0.0);
+    assert_eq!(h.state().changes, 1, "one change");
+    assert!(h.query_by_label("Lautstärke Eingabe").is_none());
+}
+
+#[test]
+fn fader_wheel_steps_one_db_shift_fine_ctrl_coarse() {
+    let mut h = fader_harness(-12.0);
+    let t = thumb_center(&h, -12.0);
+    wheel(&mut h, t, 1.0, Modifiers::NONE);
+    assert_eq!(h.state().db, -11.0);
+    wheel(&mut h, t, -1.0, Modifiers::SHIFT);
+    assert!((h.state().db + 11.1).abs() < 1e-4, "{}", h.state().db);
+    let t = thumb_center(&h, h.state().db);
+    wheel(&mut h, t, -1.0, Modifiers::CTRL);
+    assert!((h.state().db + 21.1).abs() < 1e-3, "{}", h.state().db);
+    // Over the value readout (not a fader) the wheel does nothing here.
+    let v = center(&h, "Lautstärke, Wert");
+    let before = h.state().db;
+    wheel(&mut h, v, 1.0, Modifiers::NONE);
+    assert_eq!(h.state().db, before);
 }
 
 // ---------------------------------------------------------------------------------------------

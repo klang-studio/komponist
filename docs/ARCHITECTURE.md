@@ -704,8 +704,9 @@ activation, so `Ok` means "renders real audio now"; the export waits for it (WP-
   offset; only after keyboard input, tracked as "focus-visible" in `komponist-ui`), selection, disabled.
   One function per widget computes the colours from `(state) → style`, tested by snapshots.
 - **Interaction helpers** (`komponist-ui::drag`): number field 1 px = 1 step, knob 200 px = full range,
-  Shift × 0.1, Ctrl × 10, Alt-click = default, double-click = text entry. The fader is relative from
-  the thumb, with the DBT taper. While dragging, the cursor is hidden and grabbed
+  Shift × 0.1, Ctrl × 10, Alt-click = default; number fields: double-click = text entry; knobs and
+  faders: double-click = default, text entry by Enter or the right-click menu, wheel = one step
+  (§13 item 10). The fader is relative from the thumb, with the DBT taper. While dragging, the cursor is hidden and grabbed
   (`ViewportCommand::CursorGrab` + `CursorVisible(false)`), and raw mouse deltas drive the value.
   Value tooltip at once while dragging. Hover tooltips after 600 ms; neighbours appear without delay
   (egui `tooltip_delay` + grace time).
@@ -887,6 +888,25 @@ These need a decision (the handoff says: report contradictions; the design syste
    maximised mixer always, even over a focus ring (Shift Tab and arrows still move between
    widgets; dialogs and text fields are unchanged, item 1). Q10 the plugin-frame position is saved
    on close only.
+
+10. **Double-click and wheel on knobs and faders (owner decision 2026-11-15).** The design system
+    and the devices handoff (§4) say Alt-click = default, double-click = text entry. Changed for
+    **knobs and faders** (flat knob, pan knobs, fader, device knob cells, large knob, mini fader):
+    **double-click resets to the default**, like Alt-click, as one undo step and without starting a
+    drag or a text entry. **Text entry** moves to Enter on the focused control and to the
+    right-click menu „Auf Standard“ / „Wert eingeben“ (device cards since WP-89; mixer and
+    inspector faders and pan knobs and the plugin frame's generic knobs through
+    `komponist_ui::widgets::value_menu`). **Unchanged:** number fields (double-click = text entry),
+    the dB value under a fader (`DbValue`, a text readout: double-click = text entry), segments,
+    toggles, dropdowns, graph handles (Alt-click default; the double-click on the graph area keeps
+    its configured meaning). Also **the wheel over a knob or fader changes its value**: one notch =
+    1 % of the range (fader: 1 dB; stepped number cells: one step), Shift × 0.1, Ctrl × 10, touchpads
+    accumulate to whole lines. A burst of notches is one undo step (`send_gesture` opens a gesture on
+    the first notch and closes it after 0.4 s without one or when the pointer leaves). While the
+    pointer is over such a control it takes the wheel (the device chain does not scroll then, also
+    not with Shift; it still scrolls over its head and outside controls). Hints and gallery texts
+    follow; the status-bar hint while dragging a device parameter reads „Alt-Klick: Standard ·
+    Rechtsklick: Wert eingeben“, true for every control.
 
 ---
 

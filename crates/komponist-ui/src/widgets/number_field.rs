@@ -705,6 +705,8 @@ pub(crate) fn wheel_steps(ui: &mut Ui, response: &Response) -> f64 {
     if !response.hovered() {
         return 0.0;
     }
+    let frame = ui.ctx().cumulative_frame_nr();
+    ui.data_mut(|d| d.insert_temp(Id::NULL.with(WHEEL_OVER), frame));
     let key = response.id.with("komponist_wheel");
     let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
     let mut acc: f64 = ui.data(|d| d.get_temp(key)).unwrap_or(0.0);
@@ -737,8 +739,36 @@ pub(crate) fn wheel_steps(ui: &mut Ui, response: &Response) -> f64 {
         i.smooth_scroll_delta = Vec2::ZERO;
     });
     ui.data_mut(|d| d.insert_temp(key, acc));
+    if steps != 0.0 {
+        ui.data_mut(|d| d.insert_temp(response.id.with(WHEEL_TURNED), frame));
+    }
     steps
 }
+
+const WHEEL_OVER: &str = "komponist_wheel_over";
+const WHEEL_TURNED: &str = "komponist_wheel_turned";
+
+/// Whether the pointer was over a control that takes the mouse wheel in this or the last frame
+/// (knob, fader, number field, graph handle). A scroll area that lays out before its controls
+/// asks this and leaves the wheel alone then.
+pub fn wheel_over_control(ctx: &Context) -> bool {
+    let now = ctx.cumulative_frame_nr();
+    ctx.data(|d| d.get_temp::<u64>(Id::NULL.with(WHEEL_OVER)))
+        .is_some_and(|f| now.saturating_sub(f) <= 1)
+}
+
+/// Whether the wheel changed the control behind `response` in this frame. A caller that makes
+/// undo steps turns a burst of such frames into one gesture ([`WHEEL_GESTURE_IDLE`]).
+pub fn wheel_turned(response: &Response) -> bool {
+    let now = response.ctx.cumulative_frame_nr();
+    response
+        .ctx
+        .data(|d| d.get_temp::<u64>(response.id.with(WHEEL_TURNED)))
+        == Some(now)
+}
+
+/// Seconds without a wheel notch after which a wheel gesture ends.
+pub const WHEEL_GESTURE_IDLE: f64 = 0.4;
 
 /// AccessKit requests for the control `id` in this pass: increments minus decrements, and the
 /// last requested value.
