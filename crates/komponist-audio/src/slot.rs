@@ -109,6 +109,16 @@ pub struct EngineSlot<P: AudioProcess> {
     seen_xruns: u32,
 }
 
+/// Result of [`SlotHandle::detach_step`].
+pub(crate) enum DetachStep<P> {
+    /// The engine is out.
+    Engine(Box<P>),
+    /// The slot holds an engine; a detach was requested, the callback has not served it yet.
+    Pending,
+    /// The slot holds no engine and none is on its way out.
+    Empty,
+}
+
 /// The UI's side of an [`EngineSlot`].
 pub struct SlotHandle<P: AudioProcess> {
     shared: Arc<Shared<P>>,
@@ -266,6 +276,32 @@ impl<P: AudioProcess> SlotHandle<P> {
         })
     }
 
+    /// One step of a detach: the engine if it is out, else (while the slot still holds one or
+    /// one is on its way in) a detach request and `DetachStep::Pending`, else `DetachStep::Empty`.
+    pub(crate) fn detach_step(&mut self) -> DetachStep<P> {
+        self.detach_step_with(|| {})
+    }
+
+    /// [`SlotHandle::detach_step`] with `between` run after the occupancy was read and before the
+    /// engine is looked for (tests use it to run the callback exactly there).
+    ///
+    /// The order matters: the callback puts the engine into the `detached` mailbox *before* it
+    /// clears `occupied`. Reading `occupied` first means "not occupied" implies the engine is
+    /// already in the mailbox when it is looked for. The reverse order could see an empty mailbox,
+    /// then the callback finishing, then "not occupied": a hand-out nobody notices.
+    pub(crate) fn detach_step_with(&mut self, between: impl FnOnce()) -> DetachStep<P> {
+        let occupied = self.is_occupied();
+        between();
+        if let Some(engine) = self.try_take_engine() {
+            DetachStep::Engine(engine)
+        } else if occupied {
+            self.request_detach();
+            DetachStep::Pending
+        } else {
+            DetachStep::Empty
+        }
+    }
+
     /// The MIDI receiver, once the slot was dropped at stream teardown.
     pub fn try_take_midi(&mut self) -> Option<MidiReceiver> {
         self.returned().midi.take()
@@ -379,6 +415,25 @@ mod tests {
 
     fn address(engine: &TestEngine) -> usize {
         engine as *const TestEngine as usize
+    }
+
+    /// The race behind a flaky `Detached`: the callback serves the detach request exactly between
+    /// the UI's occupancy check and its look into the hand-out mailbox. The step must still find
+    /// the engine (it used to report "nothing to detach").
+    #[test]
+    fn detach_step_finds_an_engine_handed_out_between_its_checks() {
+        let (engine, _probe) = TestEngine::boxed(0.5);
+        let (_sender, receiver) = queue(4);
+        let (mut slot, mut handle) =
+            EngineSlot::new(engine, receiver, Arc::new(StreamStats::new()));
+        run(&mut slot);
+        assert!(matches!(handle.detach_step(), DetachStep::Pending));
+        let step = handle.detach_step_with(|| {
+            run(&mut slot);
+        });
+        assert!(matches!(step, DetachStep::Engine(_)));
+        assert!(!handle.is_occupied());
+        assert!(matches!(handle.detach_step(), DetachStep::Empty));
     }
 
     #[test]
