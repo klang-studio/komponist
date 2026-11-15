@@ -56,6 +56,7 @@ pub mod record;
 pub mod samples;
 pub mod settings;
 mod shell;
+pub mod showcase;
 pub mod spectrum;
 pub mod step_rows;
 pub mod ui_state;

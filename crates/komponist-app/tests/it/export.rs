@@ -48,7 +48,7 @@ const W: f32 = 1920.0;
 const H: f32 = 1080.0;
 
 /// A fresh scratch folder for one test.
-fn scratch(name: &str) -> PathBuf {
+pub(crate) fn scratch(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("komponist-export-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -134,12 +134,12 @@ fn settings_path(dir: &Path) -> PathBuf {
     dir.join("config").join(settings::FILE_NAME)
 }
 
-fn app_in(dir: &Path, project: Project) -> (App, Opened) {
+pub(crate) fn app_in(dir: &Path, project: Project) -> (App, Opened) {
     app_with(dir, project, Box::new(BuiltinHost::new()))
 }
 
 /// Export settings into `dir/out`: the defaults, `range`, "Nachtfahrt.wav".
-fn export_settings(dir: &Path, range: ExportRange) -> ExportSettings {
+pub(crate) fn export_settings(dir: &Path, range: ExportRange) -> ExportSettings {
     ExportSettings {
         range,
         file_name: "Nachtfahrt.wav".into(),
@@ -148,7 +148,7 @@ fn export_settings(dir: &Path, range: ExportRange) -> ExportSettings {
 }
 
 /// Steps `app` until `done` holds; panics after [`PATIENCE`].
-fn step_until(app: &mut App, what: &str, mut done: impl FnMut(&App) -> bool) {
+pub(crate) fn step_until(app: &mut App, what: &str, mut done: impl FnMut(&App) -> bool) {
     let deadline = Instant::now() + PATIENCE;
     loop {
         app.step();
@@ -161,19 +161,19 @@ fn step_until(app: &mut App, what: &str, mut done: impl FnMut(&App) -> bool) {
 }
 
 /// Starts the export of `settings` and steps until the engine is back.
-fn export(app: &mut App, settings: ExportSettings) {
+pub(crate) fn export(app: &mut App, settings: ExportSettings) {
     app.dispatch(Action::Project(ProjectAction::StartExport(settings)));
     step_until(app, "end of the export", |a| !a.is_exporting());
 }
 
 /// A WAV file as f32 samples.
-struct Wav {
-    spec: hound::WavSpec,
-    frames: u64,
-    samples: Vec<f32>,
+pub(crate) struct Wav {
+    pub(crate) spec: hound::WavSpec,
+    pub(crate) frames: u64,
+    pub(crate) samples: Vec<f32>,
 }
 
-fn read(path: &Path) -> Wav {
+pub(crate) fn read(path: &Path) -> Wav {
     let mut reader = hound::WavReader::open(path).unwrap();
     let spec = reader.spec();
     let frames = u64::from(reader.duration());
@@ -194,7 +194,7 @@ fn read(path: &Path) -> Wav {
     }
 }
 
-fn peak_db(samples: &[f32]) -> f32 {
+pub(crate) fn peak_db(samples: &[f32]) -> f32 {
     let peak = samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
     20.0 * peak.log10()
 }
