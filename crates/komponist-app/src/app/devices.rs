@@ -8,12 +8,14 @@ use super::App;
 use crate::actions::{PluginAction, SelectMode, SelectionChange, UiAction};
 use crate::ui_state::{DockTab, ParamTouch, Reveal};
 
-/// A device as the spec of a copy: plugin and state, not bypassed.
+/// A device as the spec of a copy: plugin, state and sidechain (kept where its source can still
+/// feed the copy, #7), not bypassed.
 fn spec(device: &Device) -> NewDevice {
     NewDevice {
         role: device.role,
         plugin: device.plugin.clone(),
         state: device.state.clone(),
+        sidechain: device.sidechain,
     }
 }
 

@@ -357,6 +357,7 @@ impl Song {
             role: DeviceRole::Effect,
             plugin: plugin("fx"),
             state: None,
+            sidechain: None,
         };
         let (project, id) = edits::insert_device(&self.project, channel, index, spec).unwrap();
         self.project = project;

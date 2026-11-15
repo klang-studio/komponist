@@ -11,9 +11,9 @@
 //! During a gesture, fader, pan, mute and solo go to the engine as fast-path commands
 //! ([`EngineSync::fast_path`]); the recompile waits for the gesture's end. A device parameter
 //! (`SetParam`) is the same: the running processor already has the value, so the app stores it
-//! in the document without [`EngineSync::sync_device_states`], which would hand hexa a fresh
-//! processor; only undo, redo, cancelled gestures, presets and pastes follow the document that
-//! way.
+//! in the document without [`EngineSync::sync_device_states`]; only undo, redo, cancelled
+//! gestures, presets and pastes follow the document that way (as `SetParam`s where the change
+//! allows, so hexa keeps sounding).
 //!
 //! The engine runs inside [`EngineProcess`], the app's [`AudioProcess`]: it maps live MIDI to
 //! engine input and writes the engine's planar output into the device buffer. Garbage the engine
@@ -42,7 +42,8 @@ use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::workers::{DEFAULT_WORKER_PRIORITY, WorkerStats, WorkerStatus, auto_workers};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
-    MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, Telemetry, TrackMeter, TransportState,
+    MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
+    TransportState,
 };
 use komponist_model::{Document, Project, Tick, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
@@ -430,9 +431,9 @@ impl EngineSync {
         }
     }
 
-    /// How many fresh processors [`EngineSync::reload_device`] made (a preset, undo or redo of a
-    /// hexa state, "Neu laden"). A knob turn must not count here: it reaches the running
-    /// processor as `SetParam`.
+    /// How many fresh processors [`EngineSync::reload_device`] made ("Neu laden", a found plugin,
+    /// a hexa state change no card parameter reaches). A knob turn and its undo or redo must not
+    /// count here: they reach the running processor as `SetParam`.
     pub fn device_reloads(&self) -> u64 {
         self.reloads
     }
@@ -441,7 +442,11 @@ impl EngineSync {
     /// replaced states outside the dispatcher's own paths (undo, redo, a preset, a paste over):
     /// every device in both `before` and `after` whose state differs follows `after`.
     ///
-    /// - hexa gets a fresh processor made from its patch (like a preset load);
+    /// - hexa gets the patch fields that differ as `SetParam`s of its card parameters
+    ///   (`komponist_builtin::device::param_changes`), so a sounding note goes on; a change no
+    ///   parameter reaches (filters, effects, modulation, … as between most presets), more than
+    ///   [`komponist_engine::MAX_PENDING_PARAMS`] changes or a state that does not decode give a
+    ///   fresh processor made from the patch (like "Neu laden");
     /// - an internal device gets the parameters that differ as `SetParam`, so tails and sounding
     ///   notes go on; the Sampler also loads or clears the pads whose sample link differs (into
     ///   `project_dir`'s samples); a state that does not decode gives a fresh processor;
@@ -467,14 +472,15 @@ impl EngineSync {
             if Arc::ptr_eq(old, device) || old.state == device.state {
                 continue;
             }
-            let has_slot = self
-                .previous
-                .as_ref()
-                .is_some_and(|p| p.slots.slot(device.id).is_some());
-            if has_slot {
+            if self.slot_of(device.id).is_some() {
                 self.follow_state(old, device, after, project_dir);
             }
         }
+    }
+
+    /// The slot of `device` in the program last sent.
+    fn slot_of(&self, device: komponist_model::DeviceId) -> Option<SlotId> {
+        self.previous.as_ref().and_then(|p| p.slots.slot(device))
     }
 
     fn follow_state(
@@ -486,7 +492,24 @@ impl EngineSync {
     ) {
         use crate::device_host::{internal_kind, is_hexa};
         if is_hexa(device) {
-            self.reload_device(project, device.id);
+            // The patch fields that differ, as the card's parameters, so a sounding note goes on
+            // (#19); a change no parameter reaches (a preset with other filters, say) needs a
+            // fresh processor.
+            let decode = |d: &komponist_model::Device| {
+                komponist_builtin::decode_state(d.state.as_deref()).ok()
+            };
+            let changes = decode(old)
+                .zip(decode(device))
+                .and_then(|(was, now)| komponist_builtin::device::param_changes(&was, &now))
+                .filter(|c| c.len() <= komponist_engine::MAX_PENDING_PARAMS);
+            let Some(changes) = changes else {
+                self.reload_device(project, device.id);
+                return;
+            };
+            let slot = self.slot_of(device.id).expect("checked by the caller");
+            for (id, value) in changes {
+                self.send(Command::SetParam { slot, id, value });
+            }
         } else if let Some(kind) = internal_kind(device) {
             // A state with only sample links has no `params`: its values are the defaults (as
             // the processor made from it has them).
@@ -498,11 +521,7 @@ impl EngineSync {
                 self.reload_device(project, device.id);
                 return;
             };
-            let slot = self
-                .previous
-                .as_ref()
-                .and_then(|p| p.slots.slot(device.id))
-                .expect("checked by the caller");
+            let slot = self.slot_of(device.id).expect("checked by the caller");
             for (id, (a, b)) in was.iter().zip(&now).enumerate() {
                 if a != b {
                     self.send(Command::SetParam {

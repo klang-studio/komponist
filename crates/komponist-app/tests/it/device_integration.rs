@@ -662,6 +662,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
             role: DeviceRole::Instrument,
             plugin: hexa,
             state: Some(encode_state(&patch).into()),
+            sidechain: None,
         },
     )
     .unwrap();
@@ -746,6 +747,7 @@ fn snapshot_of_the_fm_display_with_free_routing() {
             role: DeviceRole::Instrument,
             plugin: hexa,
             state: Some(encode_state(&patch).into()),
+            sidechain: None,
         },
     )
     .unwrap();
@@ -798,6 +800,7 @@ fn snapshot_of_the_fm_display_with_a_cycle() {
             role: DeviceRole::Instrument,
             plugin: hexa,
             state: Some(encode_state(&patch).into()),
+            sidechain: None,
         },
     )
     .unwrap();

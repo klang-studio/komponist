@@ -531,6 +531,7 @@ mod tests {
             role: DeviceRole::MidiEffect,
             plugin: project.tracks[0].channel.devices[0].plugin.clone(),
             state: Some(Arc::from(&b"{}"[..])),
+            sidechain: None,
         };
         let (with, id) =
             edits::insert_device(&project, crate::ChannelRef::Track(track), 0, spec).unwrap();
@@ -705,6 +706,7 @@ mod tests {
             role: crate::DeviceRole::Effect,
             plugin: p.track(t[0]).unwrap().channel.devices[0].plugin.clone(),
             state: None,
+            sidechain: None,
         };
         let (p, limiter) = edits::insert_device(&p, crate::ChannelRef::Master, 0, spec).unwrap();
         let sc = Sidechain {

@@ -6,10 +6,11 @@
 //! - **hexa and the internal devices** (EQ, Delay, Hall, Limiter, presse, volt, Arpeggiator,
 //!   Tonleiter, Sampler): `PluginAction::SetParam` writes the value into the device state and
 //!   sends it to the running processor as `Command::SetParam`. The processor already has the
-//!   value, so the app does not run [`EngineSync::sync_device_states`] for it (that would hand
-//!   hexa a fresh processor on every frame of a drag): the change goes through the engine's
-//!   fast path, which also defers the recompile to the gesture's end. Undo, redo, a cancelled
-//!   gesture, presets and pastes do follow the document that way.
+//!   value, so the app does not run [`EngineSync::sync_device_states`] for it: the change goes
+//!   through the engine's fast path, which also defers the recompile to the gesture's end. Undo,
+//!   redo, a cancelled gesture, presets and pastes do follow the document that way, again as
+//!   `SetParam`s of the values that differ, so a sounding hexa note goes on (#19); only a hexa
+//!   change no card parameter reaches (most presets) gives hexa a fresh processor.
 //! - **Gestures:** the view brackets a drag or a burst of wheel notches in
 //!   `PluginAction::BeginParamGesture` … `Edit(EndGesture)`
 //!   ([`crate::views::mixer::gesture_actions`]), so it is one undo step named after the parameter

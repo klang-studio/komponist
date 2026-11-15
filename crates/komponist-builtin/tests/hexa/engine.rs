@@ -1,10 +1,11 @@
 //! hexa inside the real engine: timing through the sequencer, preset switch by replacing the
-//! processor, no allocation in `Engine::process`.
+//! processor, undo and redo as parameters to the running processor, no allocation in
+//! `Engine::process`.
 
 use std::sync::Arc;
 
 use assert_no_alloc::assert_no_alloc;
-use komponist_builtin::{HexaProcessor, preset_patch};
+use komponist_builtin::{HexaProcessor, device, preset_patch};
 use komponist_engine::program::{
     ChainSlot, InputFilter, MasterProgram, SeqNote, SlotMap, TrackProgram,
 };
@@ -17,7 +18,9 @@ use komponist_model::{
     TickRange, Track, TrackId, TrackKind,
 };
 
-use crate::common::{AUDIBLE, MAX_BLOCK, Out, RATE};
+use komponist_model::params::ParamId;
+
+use crate::common::{AUDIBLE, MAX_BLOCK, Out, RATE, frames};
 
 const BAR: i64 = 3840;
 
@@ -239,4 +242,75 @@ fn replacing_the_processor_switches_the_preset() {
     let range = second..second + 24_000;
     assert!(switched.out.peak(range.clone()) > 0.05);
     assert_ne!(&switched.out.l[range.clone()], &piano.out.l[range]);
+}
+
+/// Sends `changes` (from `device::param_changes`) to slot 0, as the app does on undo and redo.
+fn send_changes(rig: &mut Rig, changes: &[(u32, f64)]) {
+    for &(id, value) in changes {
+        rig.send(Command::SetParam {
+            slot: SlotId(0),
+            id,
+            value,
+        });
+    }
+}
+
+#[test]
+fn undo_and_redo_as_parameters_keep_a_held_note_sounding() {
+    // #19: a knob turn, its undo and its redo reach the running processor as parameters, so a
+    // note held across all three sounds on (a fresh processor would be silent until the next
+    // note) and follows each patch.
+    let original = preset_patch(0).unwrap().sanitized();
+    let volume = device::param(&ParamId::new("volume")).unwrap().field;
+    let mut turned = original;
+    volume.set(&mut turned, volume.get(&original) * 0.5);
+    let undo = device::param_changes(&turned, &original).expect("a knob turn is parameters");
+    let redo = device::param_changes(&original, &turned).expect("a knob turn is parameters");
+    assert_eq!(undo.len(), 1);
+    assert_eq!(redo.len(), 1);
+
+    // One note over all four phases; each phase is 0.5 s.
+    let p = program(120.0, vec![note(0, 4 * BAR, 60)]);
+    let phase = frames(0.5);
+    let run = |changes: &[&[(u32, f64)]]| {
+        let mut rig = Rig::new(512);
+        rig.send(Command::InsertProcessor {
+            slot: SlotId(0),
+            processor: hexa(0, 512),
+        });
+        rig.send(Command::SetProgram(Box::new(p.clone())));
+        rig.send(Command::Play);
+        rig.process(phase, 512);
+        for change in changes {
+            send_changes(&mut rig, change);
+            rig.process(phase, 512);
+        }
+        assert_eq!(rig.garbage, 0, "the processor stays the same");
+        rig.out
+    };
+    let reference = run(&[&[], &[], &[]]);
+    let changed = run(&[&redo, &undo, &redo]);
+
+    // The level of each phase after its glide (hexa glides the volume over 10 ms).
+    let ratio = |n: usize| {
+        let range = n * phase + frames(0.05)..(n + 1) * phase;
+        let (a, b) = (changed.rms(range.clone()), reference.rms(range));
+        assert!(b > 1e-3, "the reference note sounds in phase {n}: {b}");
+        a / b
+    };
+    assert!(
+        (ratio(0) - 1.0).abs() < 1e-6,
+        "before the turn: {}",
+        ratio(0)
+    );
+    assert!((0.4..0.6).contains(&ratio(1)), "turned: {}", ratio(1));
+    assert!((0.95..1.05).contains(&ratio(2)), "undo: {}", ratio(2));
+    assert!((0.4..0.6).contains(&ratio(3)), "redo: {}", ratio(3));
+    // No gap at the changes: every 10 ms of the changed run sound.
+    for start in (0..4 * phase).step_by(frames(0.01)) {
+        let end = (start + frames(0.01)).min(4 * phase);
+        if start >= frames(0.05) {
+            assert!(changed.peak(start..end) > 1e-3, "silence at frame {start}");
+        }
+    }
 }

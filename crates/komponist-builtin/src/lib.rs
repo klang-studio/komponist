@@ -33,10 +33,13 @@
 //!   and `field.set(&mut patch, value)` on the document's copy (state = `encode_state(&patch)`),
 //!   with `field = Field::from_wire(id)`. Both run the same function, so the running patch and the
 //!   document stay equal.
-//! - **Preset or any other state change (also undo/redo):** build a new processor from the new
-//!   state and insert it into the same slot; the engine retires the old one. Sounding notes and
-//!   effect tails of the old processor end there. A preset is the state
-//!   `encode_state(&preset_patch(index)?)`.
+//! - **Undo, redo or any other state change:** [`device::param_changes`] diffs the running patch
+//!   against the new one into card parameters; sent as `SetParam`s in that order they turn the
+//!   running patch into the new one, and sounding notes and effect tails go on (#19).
+//! - **A change no card parameter reaches** (filters, effects, modulation, … as between most
+//!   presets; `param_changes` gives `None`): build a new processor from the new state and insert
+//!   it into the same slot; the engine retires the old one. Sounding notes and effect tails of
+//!   the old processor end there. A preset is the state `encode_state(&preset_patch(index)?)`.
 //!
 //! # Realtime
 //!

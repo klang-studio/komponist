@@ -8,12 +8,10 @@
 
 use komponist_model::DeviceRole;
 
+use crate::MAX_PENDING_PARAMS;
 use crate::processor::{Event, EventKind, ProcessContext, ProcessStatus, Processor, StereoIo};
 use crate::program::ChainSlot;
 use crate::sequencer::EventList;
-
-/// Distinct parameters that can wait for one slot; further `SetParam`s are dropped and counted.
-pub(crate) const MAX_PENDING_PARAMS: usize = 16;
 
 /// Parameter changes waiting for the slot's next processor call. A newer value for the same id
 /// replaces the queued one.

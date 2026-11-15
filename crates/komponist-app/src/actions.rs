@@ -362,7 +362,8 @@ pub enum EditAction {
     },
     /// `edits::remove_send`.
     RemoveSend(SendId),
-    /// Alt-drag on a device head: a copy of `device` (plugin, state, bypass) at `index` of `to`.
+    /// Alt-drag on a device head: a copy of `device` (plugin, state; its sidechain where the
+    /// source can feed `to`, #7) at `index` of `to`.
     CopyDevice {
         /// The device to copy.
         device: DeviceId,
