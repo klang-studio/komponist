@@ -8,7 +8,7 @@ This document fixes the structure that the work packages in `PLAN.md` build on.
 Anything marked **Decision** needs the owner's approval before code is written.
 
 **Naming:** the DAW is called **komponist**. *klang-studio* is the umbrella name for all projects in
-the workspace (`<workspace>/`: komponist, pisynth, klopfer, klang-dsp). The design
+the workspace (the parent folder of this repo: komponist, pisynth, klopfer, klang-dsp). The design
 handoff still says "klang-studio" where it means the DAW. In the UI, read it as "komponist" (§13.6).
 
 ---

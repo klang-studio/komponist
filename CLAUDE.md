@@ -1,21 +1,22 @@
 # komponist
 
 A MIDI DAW for Linux in Rust (egui/eframe, cpal, CLAP and VST3 hosting in bridge processes).
-Architecture: `docs/ARCHITECTURE.md`. Work packages and orchestration: `<workspace>/.claude/komponist/PLAN.md`.
+Architecture: `docs/ARCHITECTURE.md`. Work packages and orchestration: `../.claude/komponist/PLAN.md`.
 
-**Internal notes live outside the repo (owner, 2026-11-15):** plans, progress, proposals (with mockups), owner
-questions, evaluations, spikes and reviews go to `<workspace>/.claude/komponist/` (`PLAN.md`,
+**Internal notes live outside the repo (owner, 2026-11-15):** paths like `../.claude/komponist/` are relative to the
+repo root and resolve in worktrees too (`.claude/worktrees/.claude` links back to `.claude/`). plans, progress, proposals (with mockups), owner
+questions, evaluations, spikes and reviews go to the internal notes folder `../.claude/komponist/` next to the repo (`PLAN.md`,
 `PROGRESS.md`, `proposals/<topic>/`, …), never into `docs/`. `docs/` holds only public documentation
 (`ARCHITECTURE.md`, `I18N.md`, `INSTALL.md`, `PERFORMANCE.md`). In code and public docs, cite such notes without a
 `docs/` path, e.g. „fader-thumb proposal, variant D (internal notes)“.
 
 **Naming:** the DAW is called **komponist**. *klang-studio* is the umbrella name of the workspace
-`<workspace>/` (komponist, pisynth, klopfer, klang-dsp, the design handoff). The
+(the parent folder of this repo: komponist, pisynth, klopfer, klang-dsp, the design handoff). The
 design handoff still says "klang-studio" where it means the DAW; read it as "komponist" (rule 1).
 
 ## Worktrees
 
-All worktrees live in **`<workspace>/.claude/worktrees/`** (owner's rule, 2026-11-14).
+All worktrees live in **`../.claude/worktrees/`** of the workspace (owner's rule, 2026-11-14).
 The workspace depends on siblings by relative path (`../klang-dsp`, `../pisynth`, `../klopfer`, the
 handoffs). That folder therefore holds symlinks to every sibling (`klang-dsp`, `pisynth`, `klopfer`,
 `komponist`, `klang-studio-handoff`, `klang-studio-geraete-handoff`, `daw-design-briefing.md`), so
@@ -23,13 +24,14 @@ handoffs). That folder therefore holds symlinks to every sibling (`klang-dsp`, `
 use the Agent tool's `isolation: "worktree"` (it puts the worktree where the symlinks are missing).
 
 ```bash
-cd <workspace>/komponist
+cd komponist                                       # the main checkout
 scripts/worktree.sh add kp-wt-WP-60 wp/WP-60      # → ../.claude/worktrees/kp-wt-WP-60
 scripts/worktree.sh remove kp-wt-WP-60            # after the merge
 ```
 
-Each worktree builds into its own `target/`, which `scripts/worktree.sh` makes a symlink to the NVMe
-(`<build-root>/<name>/`), so build I/O stays off the encrypted system disk. The first
+Each worktree builds into its own `target/`, which `scripts/worktree.sh` makes a symlink into
+`$KOMPONIST_TARGET_ROOT/<name>/` when that variable is set (on the owner's machine an NVMe folder, set in the
+untracked `scripts/local.env`), so build I/O stays off the encrypted system disk. The first
 build of egui/wgpu takes a few minutes.
 
 **Build load (owner, 2026-11-14):** builds froze the owner's desktop. Therefore: at most **2 agents
@@ -57,7 +59,7 @@ the child processes of the test process (`plugin_exit`). Run one module:
 | `scripts/run.sh [args]` | Builds `komponist` (release) and starts it with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). The plugin bridge is part of the executable (`komponist --bridge`, WP-94), so `cargo run -p komponist-app` works as well. |
 | `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
-| `<workspace>/.claude/komponist/scripts/render-reference.sh` | (internal) Renders the handoff `.dc.html` files with headless Chromium into `<workspace>/.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |
+| `../.claude/komponist/scripts/render-reference.sh` | (internal) Renders the handoff `.dc.html` files with headless Chromium into `../.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |
 | `scripts/build-klopfer.sh` | Bundles klopfer in `../klopfer` (`cargo xtask bundle klopfer --release`) and prints the paths of `Klopfer.clap` and `Klopfer.vst3` in `../klopfer/target/bundled/`. Does not touch klopfer's submodules. |
 
 The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is configured in
@@ -67,8 +69,8 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
 ## Design references
 
 - `design/tokens.json`: all design tokens, the single source of truth (copy of the handoff file).
-- Reference screens (internal, outside the repo since 2026-11-15) in `<workspace>/.claude/komponist/design/reference/*.png`, rendered by
-  `<workspace>/.claude/komponist/scripts/render-reference.sh`; the device handoff copy is `<workspace>/.claude/komponist/design/DEVICES-HANDOFF.md` + `devices.json`:
+- Reference screens (internal, outside the repo since 2026-11-15) in `../.claude/komponist/design/reference/*.png`, rendered by
+  `../.claude/komponist/scripts/render-reference.sh`; the device handoff copy is `../.claude/komponist/design/DEVICES-HANDOFF.md` + `devices.json`:
   - `Screens-01.png` … `Screens-10.png`: screen S01 … S10, each with its notes. The 1920 × 1080
     frame starts at x = 56 (1 px border around it).
   - `Designsystem-01.png` … `-04.png`: tokens and components, cut between sections.
@@ -95,7 +97,7 @@ From `PLAN.md` §2 (internal notes). `HS/` = `../klang-studio-handoff/`.
    of the app shell or of one view live in that crate's or view's own `metrics` module, with sources too.
 3. **Design sources:** the `.dc.html` files render only with their runtime. Values are in the
    `<script>` blocks (`renderVals()`, `ix`, `notes:ixs([...])`, `headers`, `clips`, `notes`, …), so read
-   those, not the markup. Visual reference: `<workspace>/.claude/komponist/design/reference/*.png`. If a screen and the design
+   those, not the markup. Visual reference: `../.claude/komponist/design/reference/*.png`. If a screen and the design
    system disagree, the **design system wins**; report the contradiction.
 4. **Realtime:** inside `Engine::process`, `Processor::process` and the bridge RT loop: no allocation
    or freeing, no locks, no logging, no IO, no blocking syscalls except the specified futex wait
