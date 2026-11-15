@@ -10,6 +10,7 @@
 
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_builtin::algorithms::ALGORITHMS;
+use komponist_builtin::internal::knurr;
 use komponist_model::DeviceId;
 use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
@@ -18,7 +19,9 @@ use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius};
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
 use komponist_ui::widgets::device::KnobCellOptions;
-use komponist_ui::widgets::device::choice::{DropdownCell, Segment, SegmentOption, ToggleButton};
+use komponist_ui::widgets::device::choice::{
+    DropdownCell, Glyph, Segment, SegmentOption, ToggleButton, Wave,
+};
 use komponist_ui::widgets::device::fm_algorithm::{FmAlgorithm, Topology};
 use komponist_ui::widgets::device::graph::configs::{self, band};
 use komponist_ui::widgets::device::graph::{
@@ -33,7 +36,9 @@ use komponist_ui::widgets::dropdown::Item;
 use komponist_ui::widgets::number_field::{open_value_entry, parse_number};
 use komponist_ui::{fonts, px};
 
-use super::layout::{BAND, Cell, CellParam, ENV_OP, GraphBinding, GraphConfig, SEL, WidgetKind};
+use super::layout::{
+    BAND, Cell, CellParam, ENV_OP, ENV_VIEW, GraphBinding, GraphConfig, LFO_VIEW, SEL, WidgetKind,
+};
 use super::metrics;
 use super::model::{Card, Param, names};
 use crate::actions::{Action, PluginAction, UiAction};
@@ -48,10 +53,23 @@ fn context_id(device: DeviceId) -> Id {
 /// The placeholders a device's layout resolves with until a view sets them: operator 1, band 1,
 /// pad 1.
 pub(super) fn default_context() -> ParamContext {
-    ParamContext::new()
+    let mut ctx = ParamContext::new()
         .with(ENV_OP, 1)
         .with(BAND, 1)
-        .with(SEL, 1)
+        .with(SEL, 1);
+    // knurr's switches start on their first entry (Amp envelope, LFO 1).
+    choose(&mut ctx, ENV_VIEW, knurr::ENVELOPES, 0);
+    choose(&mut ctx, LFO_VIEW, knurr::LFOS, 0);
+    ctx
+}
+
+/// Sets placeholder `key` to the value of entry `index` of `options` and `{key}_label` to its
+/// label ([`CellParam::Choice`]).
+fn choose(ctx: &mut ParamContext, key: &str, options: &[(&str, &str)], index: usize) {
+    if let Some((value, label)) = options.get(index) {
+        ctx.set(key, value);
+        ctx.set(&format!("{key}_label"), label);
+    }
 }
 
 /// The context of `device`'s cells: the defaults with what the views set ([`set_context`]).
@@ -107,11 +125,27 @@ pub(super) fn draw_cell(
         }
         return;
     }
+    if let CellParam::Choice {
+        key,
+        label,
+        options,
+    } = &cell.param
+    {
+        match cell.widget {
+            WidgetKind::Segment => {
+                choice_segment(cu, card, cell, (key, label), options, &ctx, rect)
+            }
+            _ => placeholder(cu, cell, None, rect),
+        }
+        return;
+    }
     let param = match &cell.param {
         CellParam::Id(id) => card.param(id),
         CellParam::Template(t) => resolve(t, &ctx).ok().and_then(|id| card.param(&id)),
         _ => None,
     };
+    // The rate knob of a synced LFO shows its divider instead.
+    let param = param.map(|p| synced_divider(card, p));
     let drawn = match (cell.widget, param) {
         (WidgetKind::Knob | WidgetKind::KnobLarge, Some(p)) => {
             knob(cu, out, card, cell, p, rect);
@@ -357,7 +391,14 @@ fn segment(
     let Some(names) = choices(p) else {
         return false;
     };
-    let options: Vec<SegmentOption<'_>> = names.iter().map(|n| SegmentOption::text(n)).collect();
+    // The four oscillator waves are drawn as their icons (their names stay the accessible ones).
+    let options: Vec<SegmentOption<'_>> = names
+        .iter()
+        .map(|n| match wave_of(n) {
+            Some(wave) => SegmentOption::glyph(n, Glyph::Wave(wave)),
+            None => SegmentOption::text(n),
+        })
+        .collect();
     let mut selected = index_of(p, names.len());
     let r = cu.put(
         rect,
@@ -368,6 +409,17 @@ fn segment(
     }
     touch(cu, out, card, p, &r, None, false);
     true
+}
+
+/// The icon of an oscillator wave's German name.
+fn wave_of(name: &str) -> Option<Wave> {
+    match name {
+        "Sinus" => Some(Wave::Sine),
+        "Dreieck" => Some(Wave::Triangle),
+        "Säge" => Some(Wave::Saw),
+        "Rechteck" => Some(Wave::Square),
+        _ => None,
+    }
 }
 
 fn toggle(
@@ -478,6 +530,63 @@ fn select_segment(
     if r.changed() && set_context(cu.ctx(), card.device, key, selected + 1) {
         cu.ctx().request_repaint();
     }
+}
+
+/// A switch with named entries bound to context placeholder `key` ([`CellParam::Choice`]): the
+/// selected entry's value is `{key}`, its label `{key}_label`.
+fn choice_segment(
+    cu: &mut Ui,
+    card: &Card,
+    cell: &Cell,
+    (key, label): (&str, &str),
+    options: &[(&str, &str)],
+    ctx: &ParamContext,
+    rect: Rect,
+) {
+    let entries: Vec<SegmentOption<'_>> = options
+        .iter()
+        .map(|(_, name)| SegmentOption::text(name))
+        .collect();
+    let mut selected = ctx
+        .get(key)
+        .and_then(|v| options.iter().position(|(value, _)| *value == v))
+        .unwrap_or(0);
+    let r = cu.put(
+        rect,
+        Segment::new(label, &entries, &mut selected).cols(cell.cols),
+    );
+    if r.changed() {
+        let changed = set_context(cu.ctx(), card.device, key, options[selected].0)
+            | set_context(
+                cu.ctx(),
+                card.device,
+                &format!("{key}_label"),
+                options[selected].1,
+            );
+        if changed {
+            cu.ctx().request_repaint();
+        }
+    }
+}
+
+/// The parameter a cell for `p` shows: for the rate of an LFO whose `Sync` is on (`lfoN_rate` with
+/// `lfoN_sync`), the divider `lfoN_div`.
+fn synced_divider<'c>(card: &'c Card, p: &'c Param) -> &'c Param {
+    let Some(prefix) = p.info.id.as_str().strip_suffix("_rate") else {
+        return p;
+    };
+    let on = card
+        .param(&komponist_model::params::ParamId::new(format!(
+            "{prefix}_sync"
+        )))
+        .is_some_and(|sync| sync.value >= 0.5);
+    if !on {
+        return p;
+    }
+    card.param(&komponist_model::params::ParamId::new(format!(
+        "{prefix}_div"
+    )))
+    .unwrap_or(p)
 }
 
 /// The columns of a [`WidgetKind::ColumnSelect`] overlay: a press anywhere in a column (also on
@@ -783,6 +892,9 @@ fn spec_of<'c>(
             configs::xy(axis_of(x), axis_of(y), x.name(), y.name())
         }
         GraphConfig::Lfo { points } => configs::lfo(usize::from(points)),
+        GraphConfig::FilterVa => configs::filter_va(),
+        GraphConfig::Signal => configs::signal(),
+        GraphConfig::LfoShape => configs::lfo_shape(),
     };
     Some(if title.is_empty() {
         spec
@@ -810,6 +922,21 @@ fn graph(
     };
     let lookup = |slot: &str| slot_param(card, binding, ctx, slot);
     let mut title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
+    // knurr: the filter names its type, the LFO its number and shape.
+    let text_of = |slot: &str| lookup(slot).map(|p| p.text_at(p.value));
+    match binding.config {
+        GraphConfig::FilterVa => {
+            if let Some(kind) = text_of("type") {
+                title = format!("{} · {kind}", names::FILTER);
+            }
+        }
+        GraphConfig::LfoShape => {
+            if let (Some(shape), Some(n)) = (text_of("shape"), ctx.get(LFO_VIEW)) {
+                title = format!("{} {n} · {shape}", names::LFO);
+            }
+        }
+        _ => {}
+    }
     // The sampler's waveform: the selected pad's real sample (length, peaks, playhead).
     let pad = selected_entry(ctx, SEL, 255) - 1;
     let sample = (binding.config == GraphConfig::Waveform)

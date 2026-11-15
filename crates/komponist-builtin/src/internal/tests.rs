@@ -3,7 +3,7 @@
 
 use assert_no_alloc::assert_no_alloc;
 use komponist_engine::{Event, EventKind, ProcessContext, Processor, StereoIo, TransportInfo};
-use komponist_model::params::layout::{BAND, SEL, validate};
+use komponist_model::params::layout::{BAND, ENV_VIEW, LFO_VIEW, SEL, validate};
 use komponist_model::params::{ParamContext, ParamId};
 use komponist_model::{Meter, Tick, TickRange};
 
@@ -78,7 +78,8 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
             "Limiter",
             "presse",
             "Arpeggiator",
-            "Tonleiter"
+            "Tonleiter",
+            "knurr"
         ]
     );
     for kind in Internal::ALL {
@@ -131,7 +132,11 @@ fn layouts_validate_for_every_band() {
         let known = |id: &ParamId| kind.wire(id).is_some();
         for band in 1..=eq::BANDS {
             // `sel` is the sampler's selected pad.
-            let ctx = ParamContext::new().with(BAND, band).with(SEL, band);
+            let ctx = ParamContext::new()
+                .with(BAND, band)
+                .with(SEL, band)
+                .with(ENV_VIEW, "amp")
+                .with(LFO_VIEW, "1");
             let errors = validate(kind.layout(), &ctx, &known);
             assert!(errors.is_empty(), "{kind:?} band {band}: {errors:?}");
         }

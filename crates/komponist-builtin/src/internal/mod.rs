@@ -37,6 +37,11 @@
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
 //!
+//! **Instruments (WP-87, WP-95):** the sampler and [`knurr`] are [`Internal`]s whose `Dsp` is an
+//! instrument ([`Dsp::is_instrument`]): the processor hands them the note events at their frame
+//! and, from `EventKind::Midi`, pitch bend, the mod wheel (CC 1) and channel pressure
+//! ([`Dsp::pitch_bend`], [`Dsp::mod_wheel`], [`Dsp::pressure`]).
+//!
 //! **Sample tap (WP-92):** a [`Dsp`] can offer a [`komponist_engine::SampleTap`] ([`Dsp::tap`]); the
 //! processor puts it into its [`DeviceMeter`] and the UI reads the latest samples from there (the EQ's
 //! live spectrum). The DSP copies only while the UI looks (`SampleTap::begin`).
@@ -58,6 +63,7 @@ pub mod delay;
 pub mod dsp;
 pub mod eq;
 pub mod hall;
+pub mod knurr;
 pub mod limiter;
 pub mod midi;
 pub mod presse;
@@ -124,6 +130,22 @@ pub trait Dsp: Send {
     /// RT, instruments only. Every sounding note ends now.
     fn all_notes_off(&mut self) {}
 
+    /// RT, instruments only. The pitch wheel moved: −1 (all the way down) … +1 (all the way up),
+    /// 0 at rest. The processor turns the 14-bit MIDI value into this (WP-95).
+    fn pitch_bend(&mut self, value: f32) {
+        let _ = value;
+    }
+
+    /// RT, instruments only. The mod wheel (CC 1) moved: 0 … 1 (WP-95).
+    fn mod_wheel(&mut self, value: f32) {
+        let _ = value;
+    }
+
+    /// RT, instruments only. Channel pressure (aftertouch): 0 … 1 (WP-95).
+    fn pressure(&mut self, value: f32) {
+        let _ = value;
+    }
+
     /// The sampler's UI side (loading samples, what the pads show); `None` for every other
     /// device. Not RT.
     fn sampler(&self) -> Option<crate::sampler::SamplerHandle> {
@@ -166,11 +188,13 @@ pub enum Internal {
     Arpeggiator,
     /// MIDI effect: forces notes onto a scale (WP-88).
     Tonleiter,
+    /// Virtual-analog synthesizer, an instrument (WP-95).
+    Knurr,
 }
 
 impl Internal {
     /// All devices, in browser order.
-    pub const ALL: [Internal; 8] = [
+    pub const ALL: [Internal; 9] = [
         Internal::Sampler,
         Internal::Eq,
         Internal::Delay,
@@ -179,6 +203,7 @@ impl Internal {
         Internal::Presse,
         Internal::Arpeggiator,
         Internal::Tonleiter,
+        Internal::Knurr,
     ];
 
     fn spec(self) -> &'static Spec {
@@ -191,6 +216,7 @@ impl Internal {
             Internal::Presse => &presse::SPEC,
             Internal::Arpeggiator => &arpeggiator::SPEC,
             Internal::Tonleiter => &tonleiter::SPEC,
+            Internal::Knurr => &knurr::SPEC,
         }
     }
 
@@ -221,9 +247,9 @@ impl Internal {
         }
     }
 
-    /// Whether this is an instrument (the sampler): notes in, audio out.
+    /// Whether this is an instrument (the sampler, knurr): notes in, audio out.
     pub fn is_instrument(self) -> bool {
-        matches!(self, Internal::Sampler)
+        matches!(self, Internal::Sampler | Internal::Knurr)
     }
     fn index(self) -> usize {
         Internal::ALL
@@ -398,6 +424,25 @@ impl Internal {
     }
 }
 
+/// Hands a channel message to an instrument: pitch bend (14 bit, −1 … +1), the mod wheel (CC 1),
+/// channel pressure and "all sound/notes off" (CC 120, 123). Other controllers and polyphonic
+/// aftertouch are ignored; the channel does not matter (WP-95).
+fn midi_to_dsp(dsp: &mut dyn Dsp, [status, d1, d2]: [u8; 3]) {
+    match status & 0xF0 {
+        0xE0 => {
+            let value = (i32::from(d2 & 0x7F) << 7 | i32::from(d1 & 0x7F)) - 8192;
+            dsp.pitch_bend((value as f32 / 8192.0).clamp(-1.0, 1.0));
+        }
+        0xB0 => match d1 {
+            1 => dsp.mod_wheel(f32::from(d2 & 0x7F) / 127.0),
+            120 | 123 => dsp.all_notes_off(),
+            _ => {}
+        },
+        0xD0 => dsp.pressure(f32::from(d1 & 0x7F) / 127.0),
+        _ => {}
+    }
+}
+
 /// Sample rate a processor is built for before its first [`Processor::activate`].
 const INITIAL_RATE: f32 = 48_000.0;
 
@@ -426,7 +471,8 @@ impl std::error::Error for StateError {}
 ///
 /// `EventKind::Param { id, value }` sets the parameter with wire id `id` (unknown ids are ignored)
 /// at its frame: the block is processed in pieces between the events. Note and MIDI events are
-/// ignored. [`Processor::latency`] is the DSP's.
+/// ignored, except for an instrument: it gets them, plus pitch bend, mod wheel and channel pressure
+/// (`EventKind::Midi`, WP-95). [`Processor::latency`] is the DSP's.
 pub struct InternalProcessor {
     params: &'static [ParamInfo],
     dsp: Box<dyn Dsp>,
@@ -487,6 +533,7 @@ impl Processor for InternalProcessor {
                         EventKind::NoteOn { .. }
                             | EventKind::NoteOff { .. }
                             | EventKind::AllNotesOff
+                            | EventKind::Midi(_)
                     ))
             {
                 continue;
@@ -508,7 +555,7 @@ impl Processor for InternalProcessor {
                 EventKind::NoteOn { key, velocity, .. } => self.dsp.note_on(key, velocity),
                 EventKind::NoteOff { key, .. } => self.dsp.note_off(key),
                 EventKind::AllNotesOff => self.dsp.all_notes_off(),
-                _ => {}
+                EventKind::Midi(bytes) => midi_to_dsp(self.dsp.as_mut(), bytes),
             }
         }
         if done < frames {

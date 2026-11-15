@@ -712,7 +712,7 @@ mod tests {
         );
         let n = names_of(&rows);
         assert_eq!(
-            &n[..7],
+            &n[..8],
             [
                 "Favoriten",
                 "pisynth",
@@ -720,6 +720,7 @@ mod tests {
                 "Instrumente",
                 "pisynth",
                 "Sampler",
+                "knurr",
                 "Surge XT"
             ]
         );

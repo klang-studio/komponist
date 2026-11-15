@@ -29,6 +29,7 @@ pub mod eq_curve;
 mod format;
 pub mod layout;
 mod scale;
+pub mod va_curve;
 
 use std::fmt;
 

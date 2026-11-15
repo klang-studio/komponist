@@ -258,6 +258,19 @@ pub mod metrics {
         /// Graph (`W_env`, `W_eq`, `W_wave`, `W_lfo`, `W_xy`, `W_transfer`, `handle()`, `display()`
         /// of `geraete_page_generator.py`): the numbers the device tokens do not carry.
         pub mod graph {
+            /// Size and look of the cutoff modulation bar ([`MOD_BAR`]).
+            #[derive(Clone, Copy, Debug)]
+            pub struct MetricModBar {
+                /// Height.
+                pub height: f32,
+                /// Distance of its bottom edge from the bottom of the graph.
+                pub above_bottom: f32,
+                /// Opacity of the track colour.
+                pub opacity: f32,
+                /// Corner radius.
+                pub radius: f32,
+            }
+
             /// Position of the title from the top left (`left:6px;top:4px`; token `widget.graph.title`).
             pub const TITLE_POS: [f32; 2] = [6.0, 4.0];
             /// Extra reach of a handle's hit area around its circle (interaction, not in the handoff).
@@ -290,6 +303,15 @@ pub mod metrics {
             /// Opacity of the region outside the sample's start–end (token `widget.graph.region_outside`
             /// = `surface.1 @ 75 %`).
             pub const REGION_OPACITY: f32 = 0.75;
+            /// The bar under knurr's filter curve that marks how far the matrix moves the cutoff
+            /// (`docs/proposals/va-synth/standard-klang.svg`: 3 px high, 12 px above the bottom
+            /// edge of the graph, the track colour at 45 %).
+            pub const MOD_BAR: MetricModBar = MetricModBar {
+                height: 3.0,
+                above_bottom: 12.0,
+                opacity: 0.45,
+                radius: 1.0,
+            };
             /// Gap between a readout's name and its value (the space between the spans of `W_xy`).
             pub const READOUT_GAP: f32 = 3.0;
             /// Distance of the XY readouts from the corners (`right:5px;bottom:3px`, `left:5px;top:3px`).

@@ -2498,6 +2498,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "hound",
+ "klang-dsp",
  "klopfer_dsp",
  "komponist-engine",
  "komponist-model",

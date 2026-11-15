@@ -33,6 +33,7 @@ mod export_bridges;
 mod hardware_midi;
 mod inspector;
 mod internal_devices;
+mod knurr;
 mod mixer;
 mod params_project;
 mod piano_roll;
