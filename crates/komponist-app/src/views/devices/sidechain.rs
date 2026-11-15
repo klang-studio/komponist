@@ -510,5 +510,5 @@ fn tap_section(ui: &mut Ui, current: Option<Sidechain>) -> Option<Tap> {
         galley,
         color32(color::TEXT_3),
     );
-    (changed && index != before).then(|| if index == 0 { Tap::Pre } else { Tap::Post })
+    (changed && index != before).then_some(if index == 0 { Tap::Pre } else { Tap::Post })
 }
