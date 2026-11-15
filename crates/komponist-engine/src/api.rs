@@ -12,7 +12,7 @@ use core::fmt;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use komponist_model::{Tick, TrackId};
+use komponist_model::{SendId, Tick, TrackId};
 
 use crate::processor::Processor;
 use crate::program::{Program, SlotId};
@@ -102,6 +102,14 @@ pub enum Command {
         /// Solo.
         solo: bool,
     },
+    /// Fast path during a send-level gesture: linear level of a send (ramped by its edge state),
+    /// until the next program. Ignored when the program has no such send.
+    SetSendGain {
+        /// The send.
+        send: SendId,
+        /// Linear gain ≥ 0.
+        gain: f32,
+    },
     /// Fast path: master fader, linear gain ≥ 0, until the next program.
     SetMasterGain(f32),
     /// Fast path: mute and solo of every output and send of the current program
@@ -165,6 +173,11 @@ impl fmt::Debug for Command {
                 .debug_struct("SetTrackSolo")
                 .field("track", track)
                 .field("solo", solo)
+                .finish(),
+            Command::SetSendGain { send, gain } => f
+                .debug_struct("SetSendGain")
+                .field("send", send)
+                .field("gain", gain)
                 .finish(),
             Command::SetMasterGain(g) => f.debug_tuple("SetMasterGain").field(g).finish(),
             Command::SetGates(_) => f.write_str("SetGates(..)"),

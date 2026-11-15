@@ -1090,3 +1090,36 @@ fn bench_routing_16_tracks_4_buses() {
         }
     }
 }
+
+#[test]
+fn the_send_gain_fast_path_ramps_and_lasts_until_the_next_program() {
+    let mut s = Song::new();
+    let t = s.track(Dev::Dc(0.5));
+    let fx = s.fx_bus(&[t]);
+    let send = s.send_to(t, fx);
+    s.send(t, fx, -6.0, Tap::Post);
+    let mut rig = Rig::new(RATE, 256);
+    let program = s.load(&mut rig, None);
+    rig.process(1024, 256);
+    assert_close(meter(&program, fx), 0.5 * db(-6.0), "compiled level");
+    // The fast path moves the level without a program; the unknown send is ignored.
+    rig.send(Command::SetSendGain {
+        send,
+        gain: db(-12.0),
+    });
+    rig.send(Command::SetSendGain {
+        send: SendId(9999),
+        gain: 1.0,
+    });
+    rig.process(1024, 256);
+    rig.process(1024, 256);
+    meter(&program, fx);
+    rig.process(256, 256);
+    assert_close(meter(&program, fx), 0.5 * db(-12.0), "fast path level");
+    // The next program (same project, compiled level) takes over again.
+    let next = s.load(&mut rig, Some(&program));
+    rig.process(1024, 256);
+    meter(&next, fx);
+    rig.process(256, 256);
+    assert_close(meter(&next, fx), 0.5 * db(-6.0), "compiled again");
+}
