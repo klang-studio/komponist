@@ -551,7 +551,8 @@ mod tests {
         assert_eq!(title(Lang::De, 2), "2 Plugins fehlen");
         assert_eq!(title(Lang::De, 1), "1 Plugin fehlt");
         assert!(
-            text(Lang::De, "Night Drive", 2).starts_with("„Night Drive“ ist geöffnet. Diese Geräte")
+            text(Lang::De, "Night Drive", 2)
+                .starts_with("„Night Drive“ ist geöffnet. Diese Geräte")
         );
         assert!(text(Lang::De, "Night Drive", 1).contains("Dieses Gerät ist nicht installiert"));
     }

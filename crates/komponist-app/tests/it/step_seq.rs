@@ -711,7 +711,8 @@ fn toolbar_fields_change_the_pattern_and_the_selected_step() {
     h.run_steps(2);
     assert_eq!(step_of(h.state(), clip, 3, 10).ratchet, 1);
     // An off step under the cursor: the fields go away.
-    h.get_by_label_contains(&step_label("Closed Hat", 10)).click();
+    h.get_by_label_contains(&step_label("Closed Hat", 10))
+        .click();
     h.run_steps(2);
     assert!(!step_of(h.state(), clip, 3, 10).on);
     assert!(h.query_by_label(de::STEP_SEQ_VELOCITY).is_none());
