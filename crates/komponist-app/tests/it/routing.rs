@@ -421,6 +421,66 @@ fn deleting_a_group_dissolves_it() {
     assert_eq!(routing::group_members(p, group), vec![drums, bass]);
 }
 
+/// Deleting an effect bus acts at once (owner, 2026-11-15): no dialog, one undo step that brings
+/// back the bus, the sends to it and the outputs into it.
+fn deleted_bus_comes_back_with_one_undo(
+    mut h: Harness<'static, App>,
+    delete: impl Fn(&mut Harness<'_, App>),
+) {
+    let before = Arc::clone(h.state().project());
+    let hall = id_of(&before, "Hall");
+    let keys = id_of(&before, "Keys");
+    assert_eq!(before.track(keys).unwrap().output, TrackOutput::Bus(hall));
+    delete(&mut h);
+    assert!(h.state().ui().dialog.is_none(), "no confirmation dialog");
+    let p = h.state().project();
+    assert!(p.tracks.iter().all(|t| t.name != "Hall"), "the bus is gone");
+    assert!(
+        p.tracks
+            .iter()
+            .flat_map(|t| &t.sends)
+            .all(|s| s.target != hall),
+        "its sends are gone"
+    );
+    assert_eq!(p.track(keys).unwrap().output, TrackOutput::Master);
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    let p = h.state().project();
+    assert_eq!(p.tracks.len(), before.tracks.len());
+    for t in &before.tracks {
+        let now = p.track(t.id).expect("track is back");
+        assert_eq!(now.output, t.output, "{}", t.name);
+        assert_eq!(now.sends, t.sends, "{}", t.name);
+    }
+}
+
+fn routed_with_output_to_hall() -> Project {
+    let p = routed();
+    let (keys, hall) = (id_of(&p, "Keys"), id_of(&p, "Hall"));
+    edits::set_output(&p, &[keys], TrackOutput::Bus(hall)).unwrap()
+}
+
+#[test]
+fn deleting_a_bus_from_its_menu_needs_no_confirmation() {
+    let h = harness(app_with(routed_with_output_to_hall()));
+    deleted_bus_comes_back_with_one_undo(h, |h| {
+        let at = header_rect(h, "Hall").center();
+        menu_choice(h, at, names::DELETE_BUS);
+    });
+}
+
+#[test]
+fn del_deletes_the_selected_bus_at_once() {
+    let p = routed_with_output_to_hall();
+    let hall = id_of(&p, "Hall");
+    let mut app = app_with(p);
+    select(&mut app, hall);
+    let h = harness(app);
+    deleted_bus_comes_back_with_one_undo(h, |h| {
+        h.key_press(egui::Key::Delete);
+        h.run_steps(3);
+    });
+}
+
 #[test]
 fn clips_are_refused_on_buses() {
     let mut h = harness(app_with(routed()));

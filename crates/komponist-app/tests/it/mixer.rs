@@ -969,7 +969,10 @@ fn sends_are_there_before_the_first_bus() {
         s.query_by_role_and_label(Role::Label, names::SENDS)
             .is_some()
     );
-    s.get_by_role_and_label(Role::Button, &komponist_app::views::routing::names::add_send("Lead"));
+    s.get_by_role_and_label(
+        Role::Button,
+        &komponist_app::views::routing::names::add_send("Lead"),
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
