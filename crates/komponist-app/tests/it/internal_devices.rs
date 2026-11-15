@@ -489,12 +489,13 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
         names_of(h.state(), track),
         ["Tonleiter", "Arpeggiator", "pisynth", "EQ"]
     );
-    // Dragged to the very end, a MIDI effect stops at the instrument.
-    let eq = h
-        .get_by_role_and_label(Role::Group, &names::card("EQ"))
+    // Dragged behind the instrument (pisynth's card is wide, so EQ may lie off screen), a MIDI
+    // effect stops at the instrument.
+    let synth = h
+        .get_by_role_and_label(Role::Group, &names::card("pisynth"))
         .rect();
     let from = head(&h, "Tonleiter");
-    drag(&mut h, from, pos2(eq.right() - 10.0, eq.center().y));
+    drag(&mut h, from, pos2(synth.right() - 10.0, synth.center().y));
     assert_eq!(
         names_of(h.state(), track),
         ["Arpeggiator", "Tonleiter", "pisynth", "EQ"]
