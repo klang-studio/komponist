@@ -235,6 +235,9 @@ pub struct EngineSync {
     previous: Option<Program>,
     /// Document revision `previous` was compiled from.
     synced: Option<u64>,
+    /// How many programs [`EngineSync::send_project`] compiled and sent (tests: a gesture must not
+    /// recompile per frame).
+    programs_sent: u64,
     /// The latest revision whose changes reached the engine through fast-path commands only
     /// (during a gesture); the recompile waits for the gesture's end.
     fast: Option<u64>,
@@ -317,6 +320,7 @@ impl EngineSync {
             host,
             previous: None,
             synced: None,
+            programs_sent: 0,
             fast: None,
             reloads: 0,
             pending: VecDeque::new(),
@@ -366,6 +370,11 @@ impl EngineSync {
         self.fast = None;
     }
 
+    /// How many programs were compiled and sent so far (tests).
+    pub fn programs_sent(&self) -> u64 {
+        self.programs_sent
+    }
+
     /// Compiles `project` against the program last sent and sends it (steps of the module docs).
     pub fn send_project(&mut self, project: &Project) {
         let mut next = {
@@ -397,6 +406,7 @@ impl EngineSync {
             next = compile::build(project, Some(&next), &env);
         }
         self.send(Command::SetProgram(Box::new(next.clone())));
+        self.programs_sent += 1;
         self.previous = Some(next);
         for (device, slot) in changes.removed {
             self.send(Command::RemoveProcessor { slot });

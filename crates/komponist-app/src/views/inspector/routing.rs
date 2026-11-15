@@ -13,7 +13,7 @@ use komponist_ui::px;
 use komponist_ui::state::{self, State};
 use komponist_ui::widgets as w;
 
-use super::{Col, Meta, field_key, frame, label, metrics as m};
+use super::{Col, Meta, access_label, field_key, frame, label, metrics as m};
 use crate::actions::{Action, SelectMode, SelectionChange, UiAction};
 use crate::views::ViewCtx;
 use crate::views::mixer::model::base_color;
@@ -78,6 +78,7 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
     let title = format!("{} ({})", names::INPUTS, rt::inputs_line(project, bus));
     let head = col.take(typography::SMALL.line_height);
     label(ui, head, &title, &typography::SMALL, None, color::TEXT_3);
+    access_label(ui, head, "inputs", &title);
     let inputs = rt::inputs_of(project, bus.id);
     if inputs.is_empty() {
         let row = col.take(rm::ROW_HEIGHT);
