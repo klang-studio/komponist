@@ -160,7 +160,6 @@ komponist/
     komponist-app/              bin `komponist`: shell, views, dialogs, actions, keymap
   test-plugins/              own Cargo workspace: nice-plug test plugins (CLAP + VST3 each): synth, fx, crash, slow
   scripts/                   check.sh, build-klopfer.sh
-  spikes/                    throwaway risk spikes (not in the workspace)
 ```
 
 ```mermaid
@@ -897,7 +896,7 @@ thread that runs the track; with workers, several of them wait at once.
 
 The bridge talks to plugins only through the `HostedPlugin` trait (load, activate, process, params,
 state, latency, GUI, render mode) and offers them a `HostLoop` (fds and timers). Behind it sits our own
-layer on clack-host and vst3 (D3). The spike code in `spikes/gui-embed/` (`clap_child.rs`,
+layer on clack-host and vst3 (D3). The spike code (gui-embed, kept with the internal notes) (`clap_child.rs`,
 `vst3_child.rs`) is a working prototype of both formats plus `HostLoop`; nexus (poucet/nexus) and
 truce-rack serve as further reference code.
 

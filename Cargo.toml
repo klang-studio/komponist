@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*"]
 # Own workspaces or throwaway code, never part of this build (ARCHITECTURE §4).
-exclude = ["spikes", "test-plugins"]
+exclude = ["test-plugins"]
 
 [workspace.package]
 version = "0.1.0"
