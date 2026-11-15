@@ -354,3 +354,25 @@ fn variant_snapshots() {
     s.finish();
     let _ = widgets::metrics::MEDIUM;
 }
+
+/// A hidden badge keeps its room: the count-in button has the same width with and without
+/// its bar count, so the transport bar does not jump (owner, 2026-11-15).
+#[test]
+fn a_hidden_icon_badge_keeps_the_button_width() {
+    let width = |shown: bool| {
+        let h = harness(0.0_f32, move |ui, w| {
+            *w = ui
+                .add(
+                    Button::icon(komponist_tokens::Icon::Timer, "Vorzähler")
+                        .on(shown)
+                        .badge("1")
+                        .badge_shown(shown),
+                )
+                .rect
+                .width();
+        });
+        *h.state()
+    };
+    assert_eq!(width(true), width(false));
+    assert!(width(true) > size::CONTROL);
+}

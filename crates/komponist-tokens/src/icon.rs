@@ -95,6 +95,8 @@ icons! {
     Pencil => "pencil",
     /// `eraser`: piano-roll tool "Radierer".
     Eraser => "eraser",
+    /// `magnet`: the Snap toggle in the arrangement header and the piano roll toolbar.
+    Magnet => "magnet",
     /// `metronome`: metronome toggle in the transport bar.
     Metronome => "metronome",
     /// `repeat`: loop toggle in the transport bar.
@@ -140,7 +142,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 28);
+        assert_eq!(Icon::ALL.len(), 29);
     }
 
     #[test]

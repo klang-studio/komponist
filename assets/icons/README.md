@@ -55,6 +55,7 @@ table maps each one to a Lucide icon. Play, Stop and Record stay geometric shape
 | `MousePointer` | `mouse-pointer` | tool "Zeiger" | piano roll toolbar (S01, S02; Designsystem §06) |
 | `Pencil` | `pencil` | tool "Stift" | piano roll toolbar (S01, S02, S10; Designsystem §06) |
 | `Eraser` | `eraser` | tool "Radierer" | piano roll toolbar (S01, S02; Designsystem §06) |
+| `Magnet` | `magnet` | "Snap" | arrangement panel header and piano roll toolbar (S01–S03, S05; owner decision 2026-11-15: icon button instead of the text) |
 | `Metronome` | `metronome` | "Metronom" | transport bar (S01–S08, S10) |
 | `Repeat` | `repeat` | "Loop" | transport bar (S01–S08, S10); looped clip (Designsystem §05) |
 | `Timer` | `timer` | "Vorzähler 1" | transport bar (S01–S08, S10); icon with the bar count beside it (owner decision 2026-11-15, no Lucide icon says count-in; `timer` = time before the start) |

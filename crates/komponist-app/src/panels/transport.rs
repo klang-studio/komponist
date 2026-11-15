@@ -341,8 +341,8 @@ fn toggles(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let p = model.project;
     let t = model.lang;
     // Icon toggles: the German label stays the AccessKit name, the tooltip carries it with the
-    // shortcut. The count-in shows its bar count beside the icon (1 while it is off, as the
-    // next click turns on one bar).
+    // shortcut. The count-in shows its bar count beside the icon only while it is on; the room
+    // for the digit stays reserved while it is off, so the bar does not jump (owner, 2026-11-15).
     let bars = p.count_in_bars;
     let bars_text = bars.max(1).to_string();
     let count_in_tip = if bars > 0 {
@@ -378,7 +378,7 @@ fn toggles(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         let shortcut = model.keymap.label_for(&action, t);
         let mut button = Button::icon(icon, name).on(on);
         if let Some(badge) = badge {
-            button = button.badge(badge);
+            button = button.badge(badge).badge_shown(on);
         }
         if badge.is_some() {
             let mut tip = Tip::new(&count_in_tip);

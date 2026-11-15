@@ -1,5 +1,5 @@
 //! The arrangement's tools in its panel header (`Screens.dc.html` shell markup): "Raster" with
-//! the grid dropdown, the Snap toggle, then on the right the selection info ("Aufnahme · Lead"
+//! the grid dropdown, the Snap icon toggle, then on the right the selection info ("Aufnahme · Lead"
 //! while recording), a separator and the zoom buttons − +.
 
 use egui::{Align, Layout, Role, Sense, Ui, WidgetInfo, vec2};
@@ -36,7 +36,11 @@ pub fn show(ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         }));
     }
 
-    let snap = Button::new(names::SNAP).on(view.snap).compact().small();
+    // Icon toggle (owner, 2026-11-15): "Snap" stays the AccessKit name and the tooltip; no
+    // shortcut is bound to it, so the tooltip is the name alone.
+    let snap = Button::icon(Icon::Magnet, names::SNAP)
+        .on(view.snap)
+        .compact();
     if ui.add(snap).clicked() {
         ctx.send(Action::Ui(UiAction::ToggleSnap(GridTarget::Arrangement)));
     }
