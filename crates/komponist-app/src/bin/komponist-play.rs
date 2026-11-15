@@ -1259,9 +1259,9 @@ mod tests {
         let expected = [
             ("Drums", "Sampler", "kit of 6"),
             ("Drums", "LSP Compressor", "bypass"),
-            ("Bass", "hexa", "preset \"Analog-Bass\""),
+            ("Bass", "hexa", "preset \"Analog Bass\""),
             ("Bass", "LSP Para EQ x8", "bypass"),
-            ("Lead", "hexa", "preset \"Poly-Synth\""),
+            ("Lead", "hexa", "preset \"Poly Synth\""),
             ("Lead", "LSP Para EQ x8", "bypass"),
             ("Lead", "TAL-Chorus-LX", "bypass"),
             ("Lead", "Dragonfly Hall Reverb", "bypass"),
@@ -1269,7 +1269,7 @@ mod tests {
             ("Pad", "LSP Para EQ x8", "bypass"),
             ("Pad", "Dragonfly Hall Reverb", "bypass"),
             ("Keys", "Dexed", "preset \"E-Piano\""),
-            ("Arp", "Vital", "preset \"Arp-Bleep\""),
+            ("Arp", "Vital", "preset \"Arp Bleep\""),
         ];
         let expected: Vec<(&str, &str, String)> = expected
             .iter()
