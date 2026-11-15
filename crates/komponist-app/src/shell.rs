@@ -163,6 +163,7 @@ impl App {
             &mut self.queue,
         );
         ctx.focused = focused;
+        ctx.lang = self.lang;
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
         ctx.exports = &self.export.done;
@@ -367,6 +368,7 @@ impl App {
             &self.ui,
             self.recording.is_some(),
             &self.keymap,
+            self.lang,
             &mut self.queue,
         );
         if !self.ui.layout.dock_open {

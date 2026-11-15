@@ -2,14 +2,16 @@
 //!
 //! ```text
 //! komponist [PROJECT.komponist] [--demo] [--null-audio] [--scale N] [--settings PATH]
-//!           [--open-plugin NAME]
+//!           [--open-plugin NAME] [--lang de|en]
 //! ```
 //!
 //! Opens `PROJECT`, or shows the start screen (S09) with the recent projects
 //! (`recent.json` next to the settings file). `--demo` opens the demo project "Nachtfahrt". The
 //! audio output comes from the settings (`~/.config/komponist/settings.json`);
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
-//! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. `--open-plugin`
+//! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. `--lang` overrides
+//! the UI language of the settings (`language`: `system`, `de`, `en`; `system` is German on a
+//! German desktop and English otherwise). `--open-plugin`
 //! opens the plugin window (S05 frame) of the first device whose plugin is called `NAME` in the
 //! opened project (checks of the frame without clicking). With
 //! `EGUI_INSPECTION=127.0.0.1:<port>` the window serves the inspection protocol for `egui-mcp`.
@@ -28,6 +30,7 @@ use komponist_app::panels::transport::WORDMARK;
 use komponist_app::settings::{self, Settings};
 use komponist_app::{Action, App, ProjectAction};
 use komponist_audio::{HostKind, StreamConfig};
+use komponist_i18n::Lang;
 use komponist_model::{Document, fixtures};
 use komponist_plugins::PluginManagerConfig;
 use komponist_ui::RunOptions;
@@ -44,7 +47,8 @@ usage: komponist [PROJECT.komponist] [options]
   --null-audio     no audio or MIDI device: the engine runs on a timer (also KOMPONIST_NULL_AUDIO=1)
   --scale N        UI scale (pixels per point), e.g. 1 or 2
   --settings PATH  settings file (default ~/.config/komponist/settings.json)
-  --open-plugin NAME  open the plugin window of the first device whose plugin is NAME";
+  --open-plugin NAME  open the plugin window of the first device whose plugin is NAME
+  --lang de|en     UI language (default: the setting; \"system\" is German on a German desktop, else English)";
 
 #[derive(Debug, Default)]
 struct Args {
@@ -54,6 +58,7 @@ struct Args {
     scale: Option<f32>,
     settings: Option<PathBuf>,
     open_plugin: Option<String>,
+    lang: Option<Lang>,
 }
 
 fn parse_args() -> Result<Option<Args>, String> {
@@ -77,6 +82,16 @@ fn parse_args() -> Result<Option<Args>, String> {
             }
             "--settings" => args.settings = Some(PathBuf::from(value()?)),
             "--open-plugin" => args.open_plugin = Some(value()?),
+            "--lang" => {
+                let v = value()?;
+                args.lang = Some(Lang::from_code(&v).ok_or_else(|| {
+                    let codes: Vec<_> = Lang::ALL.iter().map(|l| l.code()).collect();
+                    format!(
+                        "--lang: unknown language \"{v}\" (one of {})",
+                        codes.join(", ")
+                    )
+                })?);
+            }
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if args.project.is_none() => args.project = Some(PathBuf::from(path)),
             extra => return Err(format!("unexpected argument {extra}")),
@@ -161,7 +176,13 @@ fn main() -> eframe::Result {
     let title = komponist_app::app::window_title(&first.name);
     let mut options = RunOptions::new(WORDMARK, title);
     options.pixels_per_point = args.scale.or(settings.ui_scale);
-    let mut app = App::new(Document::new(first), engine, settings, settings_path);
+    // The one place that reads the desktop's language; `App::new` stays German for the tests.
+    let lang = args.lang.unwrap_or_else(|| {
+        settings
+            .language
+            .resolve(sys_locale::get_locale().as_deref())
+    });
+    let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
     if let Some(exe) = &missing_bridge {
         app.report_missing_bridge(exe);
     }

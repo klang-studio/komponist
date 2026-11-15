@@ -5,13 +5,15 @@
 //! "Maximieren" / "Maximiert" (Ctrl ↑) and the caret that collapses the dock to this strip or
 //! opens it again (Ctrl 3). The editor tab is titled with the open clip's name, its editor kind
 //! as secondary text and the track colour as mark ("■ Lead A  Piano Roll"), else "Kein Clip";
-//! while recording "● Aufnahme  Piano Roll · live" with a `state.record` mark (S02). A
+//! while recording "● Aufnahme  Piano Roll · live" with a `state.record` mark (S02). The texts
+//! come from `locales/*/dock.ftl` (`docs/I18N.md`); German is quoted here. A
 //! click on a tab of a collapsed dock opens it. The active tab carries the accent line while
 //! the dock has the focus.
 
 use egui::{
     Align, Color32, Layout, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
+use komponist_i18n::Lang;
 use komponist_model::{ClipContent, Project};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, TrackPalette, color, size};
@@ -28,40 +30,18 @@ use crate::keymap::Keymap;
 use crate::metrics::dock as m;
 use crate::ui_state::{DockTab, Panel, UiState};
 
-/// Accessible names of the strip's controls.
-pub mod names {
-    /// The tab list.
-    pub const TABS: &str = "Dock";
-    /// Editor tab without an open clip (`editorTabs('Kein Clip', …)`).
-    pub const NO_CLIP: &str = "Kein Clip";
-    /// Devices tab.
-    pub const DEVICES: &str = "Geräte";
-    /// Mixer tab.
-    pub const MIXER: &str = "Mixer";
-    /// The "+" for later views.
-    pub const MORE: &str = "Weitere Ansichten";
-    /// Maximise button, off.
-    pub const MAXIMIZE: &str = "Maximieren";
-    /// Maximise button, on.
-    pub const MAXIMIZED: &str = "Maximiert";
-    /// The caret while the dock is open.
-    pub const COLLAPSE: &str = "Dock einklappen";
-    /// The caret while the dock is collapsed.
-    pub const EXPAND: &str = "Dock ausklappen";
-    /// Secondary text of the editor tab for MIDI clips.
-    pub const PIANO_ROLL: &str = "Piano Roll";
-    /// Secondary text of the editor tab for step clips.
-    pub const STEP_SEQUENCER: &str = "Step Sequencer";
-}
-
 /// Title, secondary text and colour mark of the editor tab.
-pub fn editor_tab(project: &Project, ui: &UiState) -> (String, &'static str, Option<Color32>) {
+pub fn editor_tab(
+    project: &Project,
+    ui: &UiState,
+    t: Lang,
+) -> (String, &'static str, Option<Color32>) {
     let Some((track, clip)) = ui.editor.clip.and_then(|c| project.find_clip(c)) else {
-        return (names::NO_CLIP.to_owned(), "", None);
+        return (t.dock_no_clip().to_owned(), "", None);
     };
     let kind = match clip.content {
-        ClipContent::Midi(_) => names::PIANO_ROLL,
-        ClipContent::Step(_) => names::STEP_SEQUENCER,
+        ClipContent::Midi(_) => t.dock_piano_roll(),
+        ClipContent::Step(_) => t.dock_step_sequencer(),
     };
     let mark = color32(TrackPalette::new(track.hue.0).base);
     (clip.name.clone(), kind, Some(mark))
@@ -77,6 +57,7 @@ pub fn tab_strip(
     state: &UiState,
     recording: bool,
     keymap: &Keymap,
+    t: Lang,
     actions: &mut Vec<Action>,
 ) {
     px::fill(ui.painter(), rect, 0.0, color32(color::SURFACE_0));
@@ -89,17 +70,17 @@ pub fn tab_strip(
     row.spacing_mut().item_spacing.x = 0.0;
     let (title, kind, mark) = if recording {
         (
-            crate::record::names::TAB.to_owned(),
-            crate::record::names::TAB_KIND,
+            t.dock_recording().to_owned(),
+            t.dock_recording_kind(),
             Some(color32(color::STATE_RECORD)),
         )
     } else {
-        editor_tab(project, state)
+        editor_tab(project, state, t)
     };
     let items = [
         Item::new(&title),
-        Item::new(names::DEVICES),
-        Item::new(names::MIXER),
+        Item::new(t.dock_devices()),
+        Item::new(t.dock_mixer()),
     ];
     let extras = [TabExtra::new(mark, kind)];
     let current = TABS.iter().position(|t| *t == layout.dock_tab).unwrap_or(0);
@@ -112,7 +93,7 @@ pub fn tab_strip(
     let before = selected;
     let focused = layout.dock_open && state.focus.in_dock();
     row.add(
-        TabBar::new(names::TABS, &mut selected, &items)
+        TabBar::new(t.dock_tabs(), &mut selected, &items)
             .extras(&extras)
             .accent_line(focused),
     );
@@ -122,16 +103,16 @@ pub fn tab_strip(
         actions.push(Action::Ui(UiAction::SetDockTab(tab)));
     }
     row.add_space(m::PLUS_PADDING_X - wm::BUTTON_PADDING_X);
-    row.add_enabled(false, Button::icon(Icon::Plus, names::MORE).frameless(0));
+    row.add_enabled(false, Button::icon(Icon::Plus, t.dock_more()).frameless(0));
 
     row.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.add_space(m::ACTIONS_PADDING_RIGHT);
         ui.spacing_mut().item_spacing.x = m::ACTIONS_GAP;
         let toggle = Action::Ui(UiAction::TogglePanel(Panel::Dock));
         let (name, caret) = if layout.dock_open {
-            (names::COLLAPSE, Caret::Down)
+            (t.dock_collapse(), Caret::Down)
         } else {
-            (names::EXPAND, Caret::Right)
+            (t.dock_expand(), Caret::Right)
         };
         let shortcut = keymap.label_for(&toggle);
         if caret_button(ui, name, caret, layout.dock_open, shortcut.as_deref()).clicked() {
@@ -140,9 +121,9 @@ pub fn tab_strip(
         let max = Action::Ui(UiAction::ToggleDockMaximized);
         let maximized = layout.dock_open && layout.dock_maximized;
         let label = if maximized {
-            names::MAXIMIZED
+            t.dock_maximized()
         } else {
-            names::MAXIMIZE
+            t.dock_maximize()
         };
         let shortcut = keymap.label_for(&max);
         let mut button = Button::new(label)

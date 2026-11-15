@@ -33,11 +33,6 @@ use komponist_model::{
 
 /// German texts of the recording (`Screens.dc.html` S02, `Prototyp.dc.html`).
 pub mod names {
-    /// Title of the dock's editor tab while recording (`editorTabs('● Aufnahme', …)`); the tab
-    /// draws the ● as a circle, the fonts lack it.
-    pub const TAB: &str = "● Aufnahme";
-    /// Its secondary text.
-    pub const TAB_KIND: &str = "Piano Roll · live";
     /// The piano roll's selection info while recording (`selT:'live'`).
     pub const LIVE: &str = "live";
     /// R without an armed or selected track (`toggleRec`).

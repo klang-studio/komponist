@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, FontId, Galley, Rect, Ui};
+use komponist_i18n::Lang;
 use komponist_model::{PluginFormat, Project};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
@@ -70,6 +71,8 @@ pub struct ViewCtx<'a> {
     /// telemetry, `Telemetry::held_input_keys`): the piano roll's keyboard lights them like the
     /// prototype's `app.held`.
     pub held_notes: Vec<u8>,
+    /// The language of the UI: views read their texts as `ctx.lang.xxx()` (`docs/I18N.md`).
+    pub lang: Lang,
     actions: &'a mut Vec<Action>,
 }
 
@@ -106,6 +109,7 @@ impl<'a> ViewCtx<'a> {
             recording: None,
             exports: &[],
             held_notes: Vec::new(),
+            lang: Lang::default(),
             actions,
         }
     }

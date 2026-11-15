@@ -79,6 +79,8 @@ From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
    (U+2212 minus, „…“, ·). One exception: the DAW is called **komponist**. Where the screens show
    "klang-studio" for the DAW (wordmark, window title, "Rahmen von klang-studio"), write "komponist".
    klang-studio is the umbrella name of the workspace.
+   New UI texts go into `crates/komponist-i18n/locales/` (`de` source + `en` draft) once a view has been
+   migrated; see `docs/I18N.md`.
 2. **Tokens:** no hard-coded colours, sizes, radii or font sizes. Always use `komponist-tokens`. Missing
    colour or type token → contract change request. Component metrics the handoff defines only in the
    design data (e.g. caret size, menu paddings, swatch size) go into `komponist_ui::widgets::metrics`,

@@ -11,11 +11,11 @@ use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::ProjectAction;
 use komponist_app::app::key_to_egui;
 use komponist_app::keymap::{KeyScope, Keymap};
-use komponist_app::panels::dock::names as dock_names;
 use komponist_app::panels::transport::names as tp;
 use komponist_app::ui_state::{DockTab, FocusArea, Panel, SettingsSection};
 use komponist_app::{Action, App, UiAction, names};
 use komponist_engine::TransportState;
+use komponist_i18n::{Lang, de, en};
 use komponist_model::Tick;
 use komponist_model::fixtures::demo_project;
 use komponist_tokens::size;
@@ -189,24 +189,40 @@ fn panels_collapse_and_open_again() {
     h.run_steps(2);
     assert!(h.state().ui().layout.inspector_open);
     // The dock's caret collapses it to its tab strip, a tab opens it.
-    h.get_by_role_and_label(Role::Button, dock_names::COLLAPSE)
+    h.get_by_role_and_label(Role::Button, de::DOCK_COLLAPSE)
         .click();
     h.run_steps(2);
     assert!(!h.state().ui().layout.dock_open);
-    h.get_by_role_and_label(Role::Tab, dock_names::MIXER)
-        .click();
+    h.get_by_role_and_label(Role::Tab, de::DOCK_MIXER).click();
     h.run_steps(2);
     let l = h.state().ui().layout;
     assert!(l.dock_open);
     assert_eq!(l.dock_tab, DockTab::Mixer);
-    h.get_by_role_and_label(Role::Button, dock_names::MAXIMIZE)
+    h.get_by_role_and_label(Role::Button, de::DOCK_MAXIMIZE)
         .click();
     h.run_steps(2);
     assert!(h.state().ui().layout.dock_maximized);
-    h.get_by_role_and_label(Role::Button, dock_names::MAXIMIZED)
+    h.get_by_role_and_label(Role::Button, de::DOCK_MAXIMIZED)
         .click();
     h.run_steps(2);
     assert!(!h.state().ui().layout.dock_maximized);
+}
+
+/// The dock strip is the i18n pilot: in English its tabs, buttons and accessible names switch.
+#[test]
+fn dock_strip_speaks_english() {
+    let mut h = harness(demo().with_lang(Lang::En));
+    assert_eq!(h.state().lang(), Lang::En);
+    h.get_by_role_and_label(Role::Tab, en::DOCK_DEVICES);
+    h.get_by_role_and_label(Role::Tab, en::DOCK_MIXER);
+    h.get_by_role_and_label(Role::Button, en::DOCK_MAXIMIZE);
+    h.get_by_role_and_label(Role::Button, en::DOCK_MORE);
+    h.get_by_role_and_label(Role::Button, en::DOCK_COLLAPSE)
+        .click();
+    h.run_steps(2);
+    assert!(!h.state().ui().layout.dock_open);
+    h.get_by_role_and_label(Role::Button, en::DOCK_EXPAND);
+    assert!(h.query_by_label(de::DOCK_DEVICES).is_none());
 }
 
 #[test]

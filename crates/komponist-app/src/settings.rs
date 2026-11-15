@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use komponist_audio::StreamConfig;
+use komponist_i18n::Lang;
 use komponist_model::project::{BUILTIN_PISYNTH, BUILTIN_SAMPLER};
 use komponist_model::{PluginFormat, PluginRef};
 use komponist_plugins::PluginDirs;
@@ -57,6 +58,35 @@ pub struct Settings {
     /// file only, no S07 control yet): `null` = automatic (one per core minus two, 4 on a
     /// 6-core machine), `0` = off (single-threaded), `n` = `n` threads (at most 15).
     pub worker_threads: Option<u32>,
+    /// The UI language (WP-71; the control in S07 "Darstellung" follows in WP-77, until then the
+    /// settings file and `--lang`).
+    pub language: Language,
+}
+
+/// The language setting: follow the system, or one language explicitly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    /// The language of the desktop; English unless it is German (owner, 2026-11-15).
+    #[default]
+    System,
+    /// Deutsch.
+    De,
+    /// English.
+    En,
+}
+
+impl Language {
+    /// The language to show. `system` is the desktop's locale (`de-DE`, `en_US`), read by
+    /// `main()` only: [`Language::System`] gives German for a German desktop and English for
+    /// anything else, the explicit values give themselves.
+    pub fn resolve(self, system: Option<&str>) -> Lang {
+        match self {
+            Language::System => system.and_then(Lang::from_code).unwrap_or(Lang::En),
+            Language::De => Lang::De,
+            Language::En => Lang::En,
+        }
+    }
 }
 
 /// What a plugin's frame window remembers between sessions (WP-50): "Oben halten" and where it
@@ -396,6 +426,26 @@ mod tests {
         assert_eq!(s.worker_threads, Some(0));
         let s: Settings = serde_json::from_str(r#"{"worker_threads": null}"#).unwrap();
         assert_eq!(s.worker_threads, None);
+    }
+
+    #[test]
+    fn language_defaults_to_the_system_and_resolves() {
+        assert_eq!(Settings::default().language, Language::System);
+        let s: Settings = serde_json::from_str(r#"{"language": "en"}"#).unwrap();
+        assert_eq!(s.language, Language::En);
+        let s: Settings = serde_json::from_str(r#"{"language": "system"}"#).unwrap();
+        assert_eq!(s.language, Language::System);
+        assert_eq!(serde_json::to_string(&Language::De).unwrap(), "\"de\"");
+        // The system: German gives German, everything else (and nothing) English.
+        assert_eq!(Language::System.resolve(Some("de_DE.UTF-8")), Lang::De);
+        assert_eq!(Language::System.resolve(Some("de-AT")), Lang::De);
+        assert_eq!(Language::System.resolve(Some("en-US")), Lang::En);
+        assert_eq!(Language::System.resolve(Some("fr-FR")), Lang::En);
+        assert_eq!(Language::System.resolve(Some("C")), Lang::En);
+        assert_eq!(Language::System.resolve(None), Lang::En);
+        // Explicit values ignore the system.
+        assert_eq!(Language::De.resolve(Some("en-US")), Lang::De);
+        assert_eq!(Language::En.resolve(Some("de-DE")), Lang::En);
     }
 
     #[test]
