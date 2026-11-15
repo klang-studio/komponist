@@ -192,10 +192,9 @@ impl SpectrumAnalyzer {
         self.last_written = written;
         if fresh && written >= self.started_at + len as u64 {
             self.samples.resize(len, 0.0);
-            match tap.read_latest(&mut self.samples) {
-                Some(_) => self.analyze(),
-                // The audio thread overwrote the window while it was copied: keep the picture.
-                None => {}
+            // If the audio thread overwrote the window while it was copied, keep the picture.
+            if tap.read_latest(&mut self.samples).is_some() {
+                self.analyze();
             }
         } else {
             self.target.fill(DB_FLOOR);
