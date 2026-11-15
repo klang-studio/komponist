@@ -66,6 +66,23 @@ pub fn install(ctx: &egui::Context) {
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
 }
 
+/// The application icon: the 256 px render of `assets/icons/hicolor` (concept "Zeiger").
+const APP_ICON_PNG: &[u8] =
+    include_bytes!("../../../assets/icons/hicolor/256x256/apps/komponist.png");
+
+/// The window icon for every komponist window (root viewport, plugin frames), decoded once.
+/// It shows in the title bar and task bar even where the icon theme has no `komponist` icon.
+pub fn app_icon() -> std::sync::Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        // The bytes are embedded and covered by a unit test, so a decode error is a build defect.
+        std::sync::Arc::new(
+            eframe::icon_data::from_png_bytes(APP_ICON_PNG).expect("embedded app icon is a PNG"),
+        )
+    })
+    .clone()
+}
+
 /// Window and scale settings for [`run`].
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -105,6 +122,7 @@ impl RunOptions {
         let mut viewport = egui::ViewportBuilder::default()
             .with_title(self.title.clone())
             .with_app_id(self.app_id.clone())
+            .with_icon(app_icon())
             .with_inner_size(self.inner_size);
         if let Some(min) = self.min_inner_size {
             viewport = viewport.with_min_inner_size(min);
@@ -159,6 +177,39 @@ mod tests {
         assert!(o.event_loop_builder.is_some());
         assert_eq!(o.viewport.title.as_deref(), Some("komponist · Test"));
         assert_eq!(o.viewport.app_id.as_deref(), Some("komponist-test"));
+    }
+
+    #[test]
+    fn embedded_icon_decodes_to_256_px_rgba() {
+        let icon = app_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        // Rounded plate: the corner is transparent, the centre is not.
+        assert_eq!(icon.rgba[3], 0);
+        assert!(icon.rgba[(128 * 256 + 128) * 4 + 3] > 0);
+        let o = RunOptions::new("komponist-test", "t").native_options();
+        assert!(o.viewport.icon.is_some());
+    }
+
+    /// Every hicolor PNG exists with the dimensions its folder names (read from the IHDR chunk).
+    #[test]
+    fn hicolor_pngs_have_the_size_of_their_folder() {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/icons/hicolor");
+        for n in [16u32, 24, 32, 48, 64, 128, 256, 512] {
+            let path = root.join(format!("{n}x{n}/apps/komponist.png"));
+            let b = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(&b[..8], b"\x89PNG\r\n\x1a\n", "{}", path.display());
+            let w = u32::from_be_bytes(b[16..20].try_into().unwrap());
+            let h = u32::from_be_bytes(b[20..24].try_into().unwrap());
+            assert_eq!((w, h), (n, n), "{}", path.display());
+        }
+        for f in [
+            "scalable/apps/komponist.svg",
+            "symbolic/apps/komponist-symbolic.svg",
+        ] {
+            assert!(root.join(f).is_file(), "{f}");
+        }
     }
 
     #[test]
