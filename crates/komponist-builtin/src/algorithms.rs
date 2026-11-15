@@ -73,6 +73,32 @@ fn targets(patch: &Patch, op: usize) -> u8 {
         .fold(0, |m, t| m | 1 << t)
 }
 
+/// The routing `patch` really has, fixed algorithm or not: what the FM display draws for free
+/// routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Routing {
+    /// Per operator index: bit mask of the operator indices it modulates.
+    pub modulates: [u8; OPERATORS],
+    /// The operator with the most feedback (the lowest number on a tie); `None` without feedback.
+    pub feedback: Option<usize>,
+}
+
+/// The routing of `patch` as it is (the `modulates` masks and the feedback operator).
+pub fn routing(patch: &Patch) -> Routing {
+    let mut feedback = None;
+    let mut most = 0.0_f32;
+    for (op, p) in patch.operators.iter().enumerate() {
+        if p.feedback > most {
+            most = p.feedback;
+            feedback = Some(op);
+        }
+    }
+    Routing {
+        modulates: std::array::from_fn(|op| targets(patch, op)),
+        feedback,
+    }
+}
+
 /// The fixed algorithm (0-based index into [`ALGORITHMS`]) whose routing `patch` has, if any.
 /// Among algorithms differing only in the feedback operator, the one whose feedback operator has
 /// feedback wins.
@@ -127,6 +153,24 @@ pub fn apply(patch: &mut Patch, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_routing_is_the_patch_as_it_is() {
+        let mut patch = Patch::default();
+        apply(&mut patch, 4);
+        assert_eq!(routing(&patch).modulates, ALGORITHMS[4].modulates);
+        // A route no algorithm has: operator 1 modulates operator 6.
+        patch.operators[0].modulates[5] = true;
+        patch.operators[2].feedback = 0.3;
+        patch.operators[4].feedback = 0.8;
+        assert_eq!(detect(&patch), None);
+        let r = routing(&patch);
+        assert_eq!(r.modulates[0], 0b100000);
+        assert_eq!(r.feedback, Some(4));
+        patch.operators[4].feedback = 0.0;
+        patch.operators[2].feedback = 0.0;
+        assert_eq!(routing(&patch).feedback, None);
+    }
 
     #[test]
     fn applied_algorithms_are_detected() {

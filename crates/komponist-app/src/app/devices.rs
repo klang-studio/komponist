@@ -6,7 +6,7 @@ use komponist_model::{ChannelRef, Device, DeviceId, DeviceRole, TrackId};
 
 use super::App;
 use crate::actions::{PluginAction, SelectMode, SelectionChange, UiAction};
-use crate::ui_state::{DockTab, Reveal};
+use crate::ui_state::{DockTab, ParamTouch, Reveal};
 
 /// A device as the spec of a copy: plugin and state, not bypassed.
 fn spec(device: &Device) -> NewDevice {
@@ -54,12 +54,22 @@ impl App {
         }
     }
 
-    /// Alt-drag: a copy of `device` at `index` of `to`.
+    /// Alt-drag: a copy of `device` at `index` of `to` (`usize::MAX`: the end of its part of the
+    /// chain). The chain keeps its order: a MIDI effect lands in the MIDI part, an effect behind the
+    /// instrument; an instrument goes right behind the MIDI effects of a track that has none (a
+    /// track with one refuses: one instrument per track).
     pub(super) fn copy_device(&mut self, device: DeviceId, to: ChannelRef, index: usize) {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
         let specs = vec![spec(d)];
+        let index = match (d.role, to) {
+            (DeviceRole::Instrument, ChannelRef::Track(track)) => self
+                .project()
+                .track(track)
+                .map_or(index, |t| t.channel.midi_effect_count()),
+            _ => index,
+        };
         self.insert_copies("Gerät kopieren", to, index, specs);
     }
 
@@ -235,6 +245,17 @@ impl App {
             }
             UiAction::ScrollToDevice(device) => {
                 self.ui.devices.reveal = Some((*device, Reveal::Start));
+            }
+            UiAction::TouchParam {
+                device,
+                param,
+                dragging,
+            } => {
+                self.ui.devices.touched = Some(ParamTouch {
+                    device: *device,
+                    param: param.clone(),
+                    dragging: *dragging,
+                });
             }
             _ => return false,
         }

@@ -20,7 +20,8 @@
 //! | click on the head | selects the device (Strg C / V / D, Entf, ← → act on it) |
 //! | double-click on the head | collapses or expands; with Alt every device of the chain |
 //! | click on a collapsed strip | expands it |
-//! | drag a head | reorder: a 2 px accent line marks the slot, the drop is `MoveDevice`; with Alt a copy (`CopyDevice`) |
+//! | drag a head | reorder: a 2 px accent line marks the slot, the drop is `MoveDevice`; with Alt a copy (`CopyDevice`), also onto another track in the arrangement (the instrument only with Alt, onto a track without one) |
+//! | Strg C / Strg V | copy the selected devices / paste behind the selected device; both arrive as `Event::Copy` / `Event::Paste` from egui-winit (it swallows the key press), so the view reads them ([`clipboard_events`]); the keymap keeps the keys for kittest |
 //! | drop a browser plugin | effect: `Add` at the marked slot; MIDI effect: `Add` into the MIDI part left of the instrument; instrument: replaces the instrument |
 //! | click on a name in the chain head | scrolls to the device |
 //! | wheel over the chain head, Shift-wheel in the body | scrolls the chain sideways |
@@ -110,6 +111,7 @@ impl View for Devices {
         for c in &mut cards {
             let running = c.state == model::CardState::Ok;
             c.late = self.late.state(ctx.engine.host(), c.device, running, now);
+            c.levels = ctx.meters.device(c.device);
         }
         let ids: Vec<DeviceId> = cards.iter().map(|c| c.device).collect();
         self.late.retain(&ids);
@@ -119,6 +121,7 @@ impl View for Devices {
         };
         self.seen = Some((track.id, ids));
 
+        clipboard_events(ui, ctx);
         let rect = ui.max_rect();
         let header = Rect::from_min_size(rect.min, vec2(rect.width(), metrics::HEADER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
@@ -197,6 +200,29 @@ impl View for Devices {
         let (sx, sy) = chain(ui, ctx, &view, track, &cards);
         ctx.ui.devices.scroll_x = sx;
         ctx.ui.devices.scroll_y = sy;
+    }
+}
+
+/// Strg C and Strg V as the desktop delivers them: egui-winit turns the key press into
+/// `Event::Copy` / `Event::Paste(text)` and sends no key event, so the keymap never sees it (kittest
+/// sends the keys, which the keymap handles). With the chain focused and no text field holding the
+/// keyboard, a copy event copies the selected devices and a paste event pastes them. Paste only
+/// arrives while the system clipboard holds text.
+fn clipboard_events(ui: &Ui, ctx: &mut ViewCtx<'_>) {
+    if !ctx.focused || ui.memory(|m| m.focused().is_some()) {
+        return;
+    }
+    let (copy, paste) = ui.input(|i| {
+        (
+            i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
+            i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+        )
+    });
+    if copy {
+        ctx.send(Action::Ui(UiAction::CopyDevices));
+    }
+    if paste {
+        ctx.send(Action::Edit(EditAction::PasteDevices));
     }
 }
 
@@ -389,7 +415,8 @@ fn chain(
                 all: alt,
             }));
         }
-        if !card.instrument {
+        // The instrument stays where it is; with Alt it can still be copied (onto another track).
+        if !card.instrument || alt {
             head.dnd_set_drag_payload(CardDrag {
                 device: card.device,
                 track: track.id,
@@ -569,7 +596,7 @@ fn drop_over(
     let first = model::first_effect_slot(cards);
     let midi = model::midi_slots(cards);
     if let Some(drag) = egui::DragAndDrop::payload::<CardDrag>(&dnd) {
-        if drag.track != track.id {
+        if drag.track != track.id || cards.get(drag.from).is_some_and(|c| c.instrument) {
             return None;
         }
         // A MIDI effect goes into the MIDI part, any other effect behind the instrument.

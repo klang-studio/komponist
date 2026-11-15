@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use komponist_builtin::{Internal, PisynthProcessor};
-use komponist_engine::Processor;
+use komponist_engine::{DeviceMeter, Processor};
 use komponist_ipc::{GuiSize, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
 use komponist_model::project::{BUILTIN_KLOPFER, BUILTIN_PISYNTH};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
@@ -109,6 +109,12 @@ pub trait DeviceHost {
     /// The last finished scan (S07: found, per folder, skipped).
     fn last_scan(&self) -> Option<&ScanReport> {
         None
+    }
+
+    /// Calls `f` with the level meter of every in-process device that has one (internal devices,
+    /// WP-89); the UI takes their values once per frame ([`DeviceMeter::take`]).
+    fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
+        let _ = f;
     }
 
     /// Whether [`DeviceHost::poll`] has work even while the UI is idle (bridges running, a scan in
@@ -259,6 +265,8 @@ fn missing_in(catalog: &Catalog, project: &Project) -> Vec<MissingPlugin> {
 #[derive(Debug)]
 pub struct BuiltinHost {
     devices: HashMap<DeviceId, Known>,
+    /// The level meters of the internal devices' processors.
+    meters: HashMap<DeviceId, Arc<DeviceMeter>>,
     events: Vec<PluginManagerEvent>,
     /// pisynth only.
     catalog: Catalog,
@@ -274,6 +282,7 @@ impl Default for BuiltinHost {
     fn default() -> BuiltinHost {
         BuiltinHost {
             devices: HashMap::new(),
+            meters: HashMap::new(),
             events: Vec::new(),
             catalog: Catalog::builtin(None),
         }
@@ -312,7 +321,9 @@ impl DeviceHost for BuiltinHost {
                     .unwrap_or_else(|_| PisynthProcessor::new(komponist_builtin::default_patch())),
             )
         } else if let Some(kind) = internal_kind(device) {
-            Box::new(kind.processor_from_state(device.state.as_deref()))
+            let processor = kind.processor_from_state(device.state.as_deref());
+            self.meters.insert(device.id, processor.meter());
+            Box::new(processor)
         } else {
             self.set(device.id, DeviceStatus::Missing, 0);
             return None;
@@ -335,6 +346,13 @@ impl DeviceHost for BuiltinHost {
 
     fn release(&mut self, device: DeviceId) {
         self.devices.remove(&device);
+        self.meters.remove(&device);
+    }
+
+    fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
+        for (id, meter) in &self.meters {
+            f(*id, meter);
+        }
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {
@@ -435,6 +453,10 @@ impl DeviceHost for PluginHost {
         } else {
             self.builtin.release(device);
         }
+    }
+
+    fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {
+        self.builtin.for_each_meter(f);
     }
 
     fn status(&self, device: DeviceId) -> DeviceStatus {

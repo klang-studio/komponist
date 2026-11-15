@@ -9,6 +9,7 @@
 //! | Clip ([`clip`]) | name (double-click renames), Start, Länge, Loop an/aus, Loop-Länge, Transponieren, Velocity; the takes after loop recording; step clips: Pattern, Auflösung, Swing; the take being recorded ("nimmt auf") | `SetClipProp`, `SetClipLength`, `SetClipLoop`, `SetStepClipProp`, `SelectTake` |
 //! | Spur ([`track`]) | name, colour swatches, Instrument, Eingang, Kanal | `SetTrackProp` (Name, Hue, Input, MidiChannel), `Plugin(Add)` replaces the instrument |
 //! | Geräte ([`track`]) | the chain with power square, status and format tag; "+ Effekt" | `OpenWindow`, `SetDeviceBypass`, browser on Effekte |
+//! | Parameter ([`param`]) | the device parameter touched last: name, device · band/op · track, Wert, Standard, Bereich | – |
 //! | Kanal ([`channel`]) | compact strip: fader, meter, level, pan, M S; "im Mixer zeigen" | as the mixer strip |
 //! | Projekt, Auswahl ([`project`]) | with nothing selected: Tempo, Taktart, Spuren, Länge | `SetProjectProp(Tempo)` |
 //!
@@ -19,6 +20,7 @@ mod channel;
 mod clip;
 pub mod metrics;
 pub mod model;
+mod param;
 mod project;
 mod track;
 
@@ -124,6 +126,9 @@ impl View for Inspector {
         if let Some(track) = sections.track.and_then(|t| project.track(t)) {
             track::section(self, ui, ctx, &project, x, &mut y, track);
             track::devices_section(self, ui, ctx, x, &mut y, track);
+            if let Some(touched) = param::touched(ctx, track.id) {
+                param::section(ui, x, &mut y, &touched);
+            }
             if sections.channel {
                 channel::section(ui, ctx, x, &mut y, track);
             }

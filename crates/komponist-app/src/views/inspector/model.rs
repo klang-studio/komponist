@@ -25,6 +25,14 @@ pub mod names {
     pub const TRACK: &str = "Spur";
     /// Section "Geräte".
     pub const DEVICES: &str = "Geräte";
+    /// Section "Parameter" (a touched device parameter, WP-89).
+    pub const PARAMETER: &str = "Parameter";
+    /// Its field "Wert".
+    pub const VALUE: &str = "Wert";
+    /// Its field "Standard".
+    pub const DEFAULT: &str = "Standard";
+    /// Its field "Bereich".
+    pub const RANGE: &str = "Bereich";
     /// Section "Kanal".
     pub const CHANNEL: &str = "Kanal";
     /// Section "Projekt" (nothing selected).

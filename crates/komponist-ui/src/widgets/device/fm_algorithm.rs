@@ -192,6 +192,7 @@ pub struct FmAlgorithm<'a> {
     selected: Option<usize>,
     cols: u8,
     rows: u8,
+    title: Option<String>,
 }
 
 impl<'a> FmAlgorithm<'a> {
@@ -205,7 +206,16 @@ impl<'a> FmAlgorithm<'a> {
             selected: None,
             cols: 2,
             rows: 2,
+            title: None,
         }
+    }
+
+    /// A title of its own instead of „Algorithmus {number}“ („Algorithmus Frei“ for a free routing,
+    /// which has no number).
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
     }
 
     /// The selected operator (0-based).
@@ -225,7 +235,9 @@ impl<'a> FmAlgorithm<'a> {
 
     /// The title: „Algorithmus 5“.
     pub fn title(&self) -> String {
-        format!("Algorithmus {}", self.number)
+        self.title
+            .clone()
+            .unwrap_or_else(|| format!("Algorithmus {}", self.number))
     }
 
     /// Draws the display and handles clicks on the operators.

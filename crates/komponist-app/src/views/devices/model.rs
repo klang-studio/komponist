@@ -5,7 +5,7 @@
 use komponist_builtin::Macro;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
-use komponist_model::params::{ParamId, ParamInfo, auto_layout};
+use komponist_model::params::{ParamId, ParamInfo, ParamKind, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
 use komponist_plugins::params::{is_listed, param_info};
 use komponist_plugins::{DeviceStatus, FailReason};
@@ -14,6 +14,7 @@ use komponist_tokens::device;
 use super::layout::{self, DeviceLayout};
 use super::metrics;
 use crate::device_host::{DeviceHost, internal_kind, is_pisynth};
+use crate::meters::DeviceLevels;
 use crate::ui_state::{PluginWindow, Reveal};
 use crate::views::format_tag;
 
@@ -62,6 +63,22 @@ pub mod names {
     pub const PAGES: &str = "Seiten";
     /// The accessible name of the operator switch on pisynth's envelope page.
     pub const OPERATOR: &str = "Operator";
+    /// Context menu of a parameter: set it to its default (the Alt-click).
+    pub const TO_DEFAULT: &str = "Auf Standard";
+    /// Its shortcut column.
+    pub const TO_DEFAULT_SHORTCUT: &str = "Alt-Klick";
+    /// Context menu of a parameter: open the text entry.
+    pub const ENTER_VALUE: &str = "Wert eingeben";
+    /// Accessible name of a parameter's context menu.
+    pub const PARAMETER: &str = "Parameter";
+    /// Title of the FM display with free routing.
+    pub const FM_FREE: &str = "Algorithmus Frei";
+    /// Band of an EQ, in the place of a parameter („EQ · Band 2 · Spur 1“).
+    pub const BAND: &str = "Band";
+    /// The range's „bis“ („20 Hz bis 20 kHz“).
+    pub const TO: &str = "bis";
+    /// The master channel in the place of a parameter.
+    pub const MASTER: &str = "Master";
     /// Context menu: collapse the frame to its 28 px strip.
     pub const COLLAPSE: &str = "Einklappen";
     /// Context menu: expand a collapsed frame.
@@ -254,6 +271,11 @@ pub struct Card {
     pub width: f32,
     /// Blocks that missed their deadline, while the head shows "zu spät" (set by the view).
     pub late: Option<u64>,
+    /// pisynth's routing as the patch has it: the FM display draws it for algorithm 0 („Frei“).
+    pub routing: Option<komponist_builtin::algorithms::Routing>,
+    /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
+    /// for a device without a level feed.
+    pub levels: Option<DeviceLevels>,
 }
 
 impl Card {
@@ -289,6 +311,79 @@ impl Card {
             _ => None,
         }
     }
+}
+
+/// The parameter the user touched last, as the inspector's "Parameter" section and the status
+/// line show it (WP-89).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchedParam {
+    /// The device's track (`None`: the master chain).
+    pub track: Option<komponist_model::TrackId>,
+    /// Parameter name ("Frequenz 2").
+    pub name: String,
+    /// "EQ · Band 2 · Spur 1": device, band or operator if the id has one, track.
+    pub place: String,
+    /// The current value as text.
+    pub value: String,
+    /// The default as text.
+    pub default: String,
+    /// "20 Hz bis 20 kHz".
+    pub range: String,
+}
+
+/// The band or operator an id belongs to: `b2_freq` → „Band 2“, `op3_ratio` → „Operator 3“.
+pub fn place_of(id: &ParamId) -> Option<String> {
+    let (head, _) = id.as_str().split_once('_')?;
+    let number = |prefix: &str| {
+        head.strip_prefix(prefix)
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if let Some(n) = number("op") {
+        Some(format!("{} {n}", names::OPERATOR))
+    } else {
+        number("b").map(|n| format!("{} {n}", names::BAND))
+    }
+}
+
+/// The text of a parameter's range: „20 Hz bis 20 kHz“, „Aus · An“, the choices of an enum.
+pub fn range_text(info: &ParamInfo) -> String {
+    match &info.kind {
+        ParamKind::Bool => format!("{} · {}", info.format(0.0), info.format(1.0)),
+        ParamKind::Enum(choices) => choices.join(" · "),
+        _ => {
+            let (min, max) = info.range();
+            format!("{} {} {}", info.format(min), names::TO, info.format(max))
+        }
+    }
+}
+
+/// What the touched parameter `touch` is now, `None` when its device is gone, not running, or the
+/// parameter is unknown to it.
+pub fn touched(
+    project: &komponist_model::Project,
+    host: &dyn DeviceHost,
+    windows: &[PluginWindow],
+    touch: &crate::ui_state::ParamTouch,
+) -> Option<TouchedParam> {
+    use komponist_model::ChannelRef;
+    let (channel, _, device) = project.find_device(touch.device)?;
+    let card = card(device, host, windows);
+    let p = card.param(&touch.param)?;
+    let (track, track_name) = match channel {
+        ChannelRef::Track(t) => (Some(t), project.track(t)?.name.clone()),
+        ChannelRef::Master => (None, names::MASTER.to_owned()),
+    };
+    let mut parts = vec![card.name.clone()];
+    parts.extend(place_of(&p.info.id));
+    parts.push(track_name);
+    Some(TouchedParam {
+        track,
+        name: p.name().to_owned(),
+        place: parts.join(" · "),
+        value: p.text.clone(),
+        default: p.info.format(p.info.default),
+        range: range_text(&p.info),
+    })
 }
 
 /// The cards of `track`'s chain, left to right.
@@ -372,6 +467,12 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         preset,
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
+        levels: None,
+        routing: presets.then(|| {
+            let patch = komponist_builtin::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_builtin::default_patch());
+            komponist_builtin::algorithms::routing(&patch)
+        }),
         state,
     }
 }

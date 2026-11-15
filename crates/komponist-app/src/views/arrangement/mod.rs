@@ -30,6 +30,7 @@
 //! | clip corner top right | drag | `Edit(SetClipLoop)` |
 //! | clip / empty lane | double-click | `Ui(OpenClip)` / `Edit(AddClip)` (1 bar) |
 //! | header, lane, empty area | drop a `PluginRef` | `Plugin(Add)` on the track / a new track |
+//! | header, lane | drop a device head dragged with Alt (`CardDrag`, copy) | `Edit(CopyDevice)` on that track |
 //! | everywhere | wheel / Shift wheel / Strg wheel | scroll ↕ / ↔ / zoom around the mouse |
 //!
 //! Keys (Strg D, Strg E, 0, Entf, +, −, Z, Strg [ ]) are the keymap's.
@@ -46,10 +47,11 @@ mod toolbar;
 use std::sync::Arc;
 
 use egui::{Key, Pos2, Rect, Ui, UiBuilder};
-use komponist_model::{ClipId, PluginRef, Project, Tick, TrackId};
+use komponist_model::{ChannelRef, ClipId, PluginRef, Project, Tick, TrackId};
 
 use self::cache::{Palettes, PreviewCache};
 use self::geometry::Geometry;
+use super::devices::CardDrag;
 use super::{View, ViewCtx};
 use crate::actions::{Action, DropTarget, EditAction, PluginAction};
 use crate::metrics::arrangement::{PX_PER_BAR_MAX, PX_PER_BAR_MIN, V_ZOOM};
@@ -491,6 +493,10 @@ impl Arrangement {
     /// and released over a header or lane goes onto that track; over the empty area it makes a
     /// new track (S10). Prototype `dropTrack`, `dropNew`.
     fn drop_target(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, project: &Project, g: &Geometry) {
+        if egui::DragAndDrop::has_payload_of_type::<CardDrag>(ui.ctx()) {
+            self.drop_device(ui, ctx, project, g);
+            return;
+        }
         if !egui::DragAndDrop::has_payload_of_type::<PluginRef>(ui.ctx()) {
             return;
         }
@@ -507,6 +513,36 @@ impl Arrangement {
             ctx.send(Action::Plugin(PluginAction::Add {
                 plugin: PluginRef::clone(&plugin),
                 target,
+            }));
+        }
+    }
+}
+
+impl Arrangement {
+    /// A device head dragged out of the chain with Alt (a copy) and released over a track's header or
+    /// lane puts a copy on that track (device handoff §9: "Alt-Ziehen kopiert, auch auf eine andere
+    /// Spur im Arrangement"); the chain keeps its order and one instrument per track
+    /// (`EditAction::CopyDevice`). Without Alt, and over the empty area, nothing happens.
+    fn drop_device(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, project: &Project, g: &Geometry) {
+        let Some(drag) = egui::DragAndDrop::payload::<CardDrag>(ui.ctx()) else {
+            return;
+        };
+        if !drag.copy {
+            return;
+        }
+        let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
+            return;
+        };
+        let Some(target @ DropTarget::Track(track)) = drop_target_at(project, g, pos) else {
+            return;
+        };
+        overlay::paint_drop_target(ui, g, &target);
+        if ui.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            ctx.send(Action::Edit(EditAction::CopyDevice {
+                device: drag.device,
+                to: ChannelRef::Track(track),
+                index: usize::MAX,
             }));
         }
     }
