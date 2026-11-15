@@ -203,10 +203,7 @@ impl Engine {
             routed: false,
             gates: None,
             edges: (0..MAX_LINES).map(|_| EdgeState::new()).collect(),
-            side: [
-                vec![0.0; MAX_BLOCK].into_boxed_slice(),
-                vec![0.0; MAX_BLOCK].into_boxed_slice(),
-            ],
+            side: stereo(),
             stats: Arc::new(WorkerStats::default()),
         };
         let engine = Box::new(Engine {

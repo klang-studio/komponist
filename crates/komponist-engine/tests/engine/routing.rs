@@ -141,6 +141,9 @@ enum Dev {
     Pulse(u64, f32),
     /// Instrument: deterministic noise with this seed (left and right differ).
     Noise(u32),
+    /// Instrument: noise that costs about as much as a synth voice per sample (`k` rounds of
+    /// work per sample), for the timing bench.
+    Busy(u32),
     /// Effect: gain and latency (`TestGain`).
     Gain(f32, u32),
     /// Effect: reads its sidechain (`TestSidechain`).
@@ -182,6 +185,16 @@ impl Processor for Source {
                     };
                     (next(), next())
                 }
+                Dev::Busy(k) => {
+                    let mut x = self.state;
+                    for _ in 0..k {
+                        x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        x ^= x >> 13;
+                    }
+                    self.state = x;
+                    let v = (x >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+                    (v * 0.1, v * 0.1)
+                }
                 Dev::Gain(..) | Dev::Side(_) => (0.0, 0.0),
             };
             l[i] = a;
@@ -202,7 +215,7 @@ fn processor(dev: Dev) -> Box<dyn Processor> {
     match dev {
         Dev::Gain(gain, latency) => Box::new(TestGain::with_latency(gain, latency)),
         Dev::Side(mode) => Box::new(TestSidechain::new(mode)),
-        Dev::Noise(seed) => Box::new(Source {
+        Dev::Noise(seed) | Dev::Busy(seed) => Box::new(Source {
             dev,
             frame: 0,
             state: seed,
@@ -882,4 +895,114 @@ fn a_sidechained_device_is_called_with_its_input_every_call() {
     rig.set_program(&program);
     rig.process(1000, 100);
     assert_eq!(probe.unwrap().load(Ordering::Relaxed), 10);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Timing
+// ------------------------------------------------------------------------------------------------
+
+/// 16 tracks, each `instrument` → `TestGain` (latencies 0 … 75 frames). Routed: two groups of six
+/// tracks, a group around both (nested), two effect buses (a `TestGain` each) fed by a post send
+/// from every track and a pre send from every other track, and a sidechain from track 0 to an
+/// effect on track 12. Flat: every track straight into the master.
+fn bench_song(routed: bool, instrument: impl Fn(u32) -> Dev) -> Song {
+    let mut s = Song::new();
+    let t: Vec<TrackId> = (0..16).map(|i| s.track(instrument(i))).collect();
+    for (i, &id) in t.iter().enumerate() {
+        s.fx(ChannelRef::Track(id), Dev::Gain(0.9, 5 * (i as u32 % 16)));
+    }
+    if routed {
+        let a = s.group(&t[0..6]);
+        let b = s.group(&t[6..12]);
+        s.group(&[a, b]);
+        let hall = s.fx_bus(&t);
+        s.fx(ChannelRef::Track(hall), Dev::Gain(0.5, 64));
+        let echo = s.fx_bus(&[]);
+        s.fx(ChannelRef::Track(echo), Dev::Gain(0.5, 0));
+        for &id in t.iter().step_by(2) {
+            s.send(id, echo, -10.0, Tap::Pre);
+        }
+        let duck = s.fx(
+            ChannelRef::Track(t[12]),
+            Dev::Side(TestSidechainMode::Split),
+        );
+        s.sidechain(duck, t[0], Tap::Pre);
+    }
+    s
+}
+
+/// Mean and worst wall time of one 256-frame `process` call over 20 s, with `workers` workers.
+fn bench_run(song: &Song, workers: usize) -> (std::time::Duration, std::time::Duration) {
+    use std::time::{Duration, Instant};
+    const BLOCK: usize = 256;
+    const BLOCKS: usize = 20 * 48_000 / BLOCK;
+    let mut rig = Rig::new(RATE, BLOCK);
+    let status = rig.engine.set_workers(
+        workers,
+        Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY),
+    );
+    if let Some(e) = status.realtime_error {
+        eprintln!("workers without SCHED_FIFO: {e}");
+    }
+    song.load(&mut rig, None);
+    rig.process(96_000, BLOCK);
+    rig.l.reserve(BLOCKS * BLOCK);
+    rig.r.reserve(BLOCKS * BLOCK);
+    let (mut total, mut worst) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..BLOCKS {
+        let t0 = Instant::now();
+        rig.process_with(BLOCK, &[], 0);
+        let t = t0.elapsed();
+        total += t;
+        worst = worst.max(t);
+    }
+    (total / BLOCKS as u32, worst)
+}
+
+/// CPU per block of 16 tracks + 4 buses + sends + a sidechain against the same 16 tracks without
+/// routing (ARCHITECTURE §6.8.4, PERFORMANCE §9). Release build:
+///
+/// ```text
+/// cargo test --release -p komponist-engine --test engine routing::bench -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "timing: run in release with --ignored --nocapture"]
+fn bench_routing_16_tracks_4_buses() {
+    let period = std::time::Duration::from_secs_f64(256.0 / f64::from(RATE));
+    let share = |d: std::time::Duration| d.as_secs_f64() / period.as_secs_f64() * 100.0;
+    let counts: Vec<usize> = std::env::var("KOMPONIST_BENCH_WORKERS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|w| w.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![0, 4]);
+    let loads: [(&str, fn(u32) -> Dev); 2] = [
+        ("constant instruments", |_| Dev::Dc(0.01)),
+        ("busy instruments", |i| Dev::Busy(i + 1)),
+    ];
+    for (name, instrument) in loads {
+        let busy = name.starts_with("busy");
+        for workers in &counts {
+            for routed in [false, true] {
+                let mut song = bench_song(routed, instrument);
+                if busy {
+                    // About 150 µs per track and block in release builds.
+                    for dev in song.devs.values_mut() {
+                        if let Dev::Busy(seed) = dev {
+                            *dev = Dev::Busy(*seed % 7 + 320);
+                        }
+                    }
+                }
+                let (mean, worst) = bench_run(&song, *workers);
+                eprintln!(
+                    "{name}, {}, {workers} workers: mean {mean:.1?} ({:.2} %), worst {worst:.1?} ({:.1} %) per 256 frames",
+                    if routed {
+                        "16 tracks + 4 buses + sends"
+                    } else {
+                        "16 tracks, flat"
+                    },
+                    share(mean),
+                    share(worst),
+                );
+            }
+        }
+    }
 }

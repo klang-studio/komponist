@@ -340,6 +340,11 @@ pub trait Processor: Send {
     fn activate(&mut self, sample_rate: f32, max_block: usize) -> Result<(), ProcessorError>;
     /// RT. `events` are sorted by `offset` (< frames). Stereo in/out; instruments ignore input.
     fn process(&mut self, ctx: &ProcessContext, events: &[Event], io: &mut StereoIo) -> ProcessStatus;
+    /// RT, optional (WP-102). `process` with the device's sidechain input (§6.8.2), aligned with
+    /// `io.input`; called instead of `process` for a device whose sidechain is set. Default:
+    /// ignore the sidechain, call `process`.
+    fn process_sidechain(&mut self, ctx: &ProcessContext, events: &[Event], io: &mut StereoIo,
+                         sidechain: [&[f32]; 2]) -> ProcessStatus { self.process(ctx, events, io) }
     /// RT, optional (WP-65). Start the next `process` early (bridges); default: no-op, `false`.
     fn begin(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> bool { false }
     fn latency(&self) -> u32;
@@ -368,8 +373,8 @@ pub struct ProcessContext { pub frames: u32, pub sample_rate: f32, pub transport
 
 Implementations: `PisynthProcessor` (`komponist-builtin`), `InternalProcessor` (`komponist-builtin`, the
 internal audio effects and, with an event stage, the MIDI effects Arpeggiator and Tonleiter),
-`ExternalProcessor` (`komponist-plugins`, talks to a bridge), `TestSine` / `TestGain` / `TestMidiFx`
-(public module `komponist_engine::testing`, usable by other crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
+`ExternalProcessor` (`komponist-plugins`, talks to a bridge), `TestSine` / `TestGain` / `TestMidiFx` /
+`TestSidechain` (public module `komponist_engine::testing`, usable by other crates' tests). The metronome is engine-internal (fixed level 0.3 in v0.1).
 
 ### 6.3 Program, commands, telemetry
 
@@ -381,7 +386,8 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
   `Box<Program>` over rtrb. The old program goes back through the garbage queue.
 - **Commands** (UI → engine, rtrb): `Play`, `Stop`, `Locate(Tick)`, `SetLoop`, `Record{…}`,
   `SetProgram(Box<Program>)`, `InsertProcessor{slot, Box<dyn Processor>}`, `RemoveProcessor{slot}`,
-  `SetTrackGain/Pan/Mute/Solo` (fast path without recompiling), `LiveNote{track, …}`
+  `SetTrackGain/Pan/Mute/Solo` (fast path without recompiling), `SetGates(GateTable)` (mute and solo
+  of every output and send along the routing graph, §6.8.6), `LiveNote{track, …}`
   (computer keyboard, step row audition), `Detach` (export, see 6.7).
 - **Events** (engine → UI, rtrb): `RecordedNoteOn/Off{track, tick, …}`, `LoopWrapped`,
   `CountInDone`, `ProcessorFailed{slot}`, `Retired(Garbage)`.
@@ -453,10 +459,11 @@ stays single-threaded.
 - **Same path offline:** the export's render thread dispatches to the same pool (`Engine::render`).
 - **RT checks:** workers run their loop inside `assert_no_alloc`; a panicking job is reported to
   the audio thread, which re-raises it (never a silent hang).
-- **Later (sends, busses):** the three phases become a dependency graph: a bus job may start when
-  the jobs of all its sources are done (a per-job counter of missing inputs, decremented by the
-  finishing source, replaces the single claim word's order). Phase 3 then sums into busses in a
-  fixed order, which keeps the output deterministic. Designed in §6.8.4, built by WP-102.
+- **Dependencies (WP-102, §6.8.4):** the claim word became a **ready set** (one bit per job, at most
+  128 = `MAX_TRACKS`): dispatch publishes the jobs without inputs, threads claim the lowest ready
+  bit by an atomic `fetch_and`, and a finishing job decrements the missing-input counters of the
+  jobs that read it and publishes those that reach zero (also when it unwinds). A project without
+  buses publishes every job at dispatch and schedules exactly as before.
 
 #### 6.4.2 MIDI effect stage (WP-88)
 
@@ -670,32 +677,60 @@ rejects a cycle or a bus with clips or an instrument as malformed. A build from 
 
 #### 6.8.4 Engine: compiling and scheduling the graph (WP-102)
 
-`compile::build` turns the project into a **job graph**:
+`compile::build` turns the project into a **job graph**, `Program::routing: Arc<route::Routing>` (module
+`komponist_engine::route`; the compiler part is `compile/graph.rs`, the run-time part `graph.rs` and the jobs in
+`engine.rs`). A project without buses, sends and sidechains compiles to the **flat** routing
+(`Routing::default()`): every track into the master in display order, the old mute and solo rule with the per-track
+fast paths, and the same output bit for bit (golden test against a render of the base commit,
+`tests/engine/routing.rs`).
 
 - **Order:** `routing::topo_order` (Kahn's algorithm; among ready nodes the higher track first, the master last).
   Without buses it is the display order, so today's programs compile to the same order and the same output.
 - **Jobs:** one per node except the master. A MIDI track job is today's chain job (6.4 phase 2: MIDI effect stage,
   instrument, effects) plus fader, pan, mute, meter, taps and its input delays. A **bus job** first sums its inputs
   (a join node), then runs its effects and strip the same way. The master stays on the audio thread after all jobs.
-- **Buffers, all preallocated in the program at compile time** (UI thread), each `MAX_BLOCK` stereo frames:
-  per node an output buffer (post tap = what the output carries); a separate pre-tap buffer only for nodes with a
-  pre send or pre sidechain; per bus a sum buffer. Sends and outputs are not buffers of their own: the consuming
-  bus job reads the source's pre or post buffer, applies send level or delay, and adds. Sidechain inputs are read
-  from the source's tap buffer by the holder's job (internal devices get it as `Dsp` aux input in WP-104, plugins
-  through the bridge's extra channels in WP-105).
+- **Buffers** (as built): every buffer is preallocated, none in the program. Per node, in the engine's per-track
+  state (preallocated for `MAX_TRACKS` nodes when the engine is created, kept by track id across swaps): the output
+  buffer (behind fader, pan, mute, solo and the output's delay), a pre-tap buffer and a post-tap buffer, written
+  only when the routing marks the node's `pre` / `post` as read. The post tap has its **own fader** (gain, pan,
+  mute, no solo) because the output also closes for solo while a send from it may stay open (a soloed effect bus).
+  A bus sums its inputs into its job's lane scratch (no per-bus sum buffer). Sends and outputs are not buffers of
+  their own: the consuming bus job reads the source's output (already delayed for this target) or its pre / post
+  tap, applies the send's delay and gain ramp, and adds. Sidechain inputs are read from the source's tap buffer by
+  the holder's job into a lane buffer and passed to `Processor::process_sidechain` (internal devices consume it in
+  WP-104, plugins through the bridge's extra channels in WP-105). The program carries only indices: per node
+  `NodeRoute` (bus, output, input / sidechain / dependent spans, number of inputs, taps, head delay, latencies),
+  the input list (`RouteInput`: source, optional `SendRoute` with gate index, linear level, tap and delay), the
+  sidechain list (`SidechainRoute`: chain position, source, tap, delay), the dependents, the master's inputs and
+  sidechains, the send ids by gate index, the compiled gates and the line map.
+- **Edge states:** every send, sidechain and MIDI-track head delay has an edge state (delay line and send gain)
+  in an engine-owned table of `route::MAX_LINES` (512), addressed by `LineId`. The compiler assigns lines per
+  `LineKey` (send id, device id, track id) and keeps an edge's line from one program to the next (`LineMap`, like
+  the slot map); installing a program resets a line whose key changed. A recompile therefore keeps the delayed
+  audio and the gains: swapping in a recompiled program is bit-identical to not swapping (tested). Send gains ramp
+  over a segment (`add_ramped`); a new send fades in from 0. The output edge's delay stays on the source
+  (`TrackProgram::pdc_delay`, today's line), since every node has exactly one output.
 - **Determinism:** a job writes only its own buffers and state; a bus sums its inputs in topological order of the
   sources (fixed per program), so the output stays bit-exact with and without workers, like 6.4.1.
-- **Worker pool as a DAG scheduler** (6.4.1 "later" made concrete): each job has a counter of missing inputs
-  (output, send and sidechain edges into it), set from the program at dispatch. A finishing job decrements the
-  counters of its targets (release) and publishes those that reach zero to the ready set; threads claim ready jobs
-  by CAS as today. Independent branches (all MIDI tracks into the master, the normal case) are all ready at once,
+- **Worker pool as a DAG scheduler** (6.4.1): each job has a counter of missing inputs (distinct sources over
+  output, send and sidechain edges into it), set from the program at dispatch. A finishing job decrements the
+  counters of its targets (release) and publishes those that reach zero to the ready set (a bit per job); threads
+  claim the lowest ready bit atomically. The thread that publishes goes on claiming (so it usually runs the bus
+  itself) and wakes the dispatcher, which claims what is left. Among ready jobs the earlier in topological order
+  goes first, bridge-started tracks last. The serial path runs the same ready set on one thread. Independent branches (all MIDI tracks into the master, the normal case) are all ready at once,
   so a project without buses schedules exactly like WP-65. The audio thread keeps the deadline fallback: it claims
   every ready job no worker has started and waits (futex with deadline) only for jobs a worker is running, now also
   when a job it needs next depends on them. Bridged instruments still start early (`Processor::begin`) in phase 1.
 - **Serial fallback** stays per segment (no pool, fewer than two jobs, segments under 32 frames).
 - **Solo and mute fast path:** solo now depends on the graph (6.8.6), so `SetTrackSolo` can no longer be decided per
-  track on the audio thread. The UI thread computes `routing::gates` and sends a gate table (one bit per output and
-  send, fixed capacity) through a fast-path command; the faders keep ramping as today.
+  track on the audio thread. The UI thread computes `routing::gates` and sends a gate table through
+  `Command::SetGates(route::GateTable)` (`compile::gates(project, program)`; bits per program track: muted, output
+  open; per send: open; 48 bytes, fixed capacity `MAX_TRACKS` tracks and `route::MAX_SENDS` = 256 sends); the
+  faders keep ramping as today. The app sends it with every mute or solo change on the fast path
+  (`EngineSync::gates`). The program carries the compiled table; `SetTrackMute` / `SetTrackSolo` still work for flat
+  programs while no table is active.
+- **Bridges:** an instrument whose own sidechain is set is not started early (`Processor::begin`): its input exists
+  only once its source is done.
 
 #### 6.8.5 Latency compensation across the graph
 
@@ -713,9 +748,14 @@ Generalises 6.6 (today: one delay per track before the master, `max chain latenc
   signal at `in(h) + chain(h)[..k]`. A tap from s arrives at `out(s)`. If it arrives early it is delayed by the
   difference; if it would arrive late, `in(h)` is raised so that it is not (a sidechain may delay its holder, never
   the reverse). This is the extra term in `in(v)` above.
-- Delay lines are preallocated at compile time (`MAX_PDC_FRAMES` each, 6.1) and clamped there (a warning in the UI
-  when a path exceeds it). Path latencies are recomputed on every compile; `EngineSync` already recompiles when a
-  plugin reports a new latency.
+- Delay lines are preallocated when the engine is created (`MAX_PDC_FRAMES` each, 6.1: one per node for its output,
+  one per edge state) and delays are clamped there (a warning in the UI when a path exceeds it is still to come).
+  Path latencies are recomputed on every compile; `EngineSync` already recompiles when a plugin reports a new
+  latency, and the lines keep their contents, so a latency change moves a read position like today's PDC.
+- **As built:** a MIDI track's raised `in(h)` is a **head delay** in front of its first audio effect (behind the
+  instrument; MIDI tracks have no audio inputs to delay). A sidechain into the instrument itself (a vocoder) cannot
+  be aligned that way and arrives as it is; on buses and the master the raise delays their inputs. `route::NodeRoute`
+  carries `latency_in` / `latency_out`, `Routing::latency()` is `in(master)`.
 
 #### 6.8.6 Mute, solo, meters
 
@@ -732,19 +772,24 @@ Generalises 6.6 (today: one delay per track before the master, `max chain latenc
   (WP-100 §7); `Gate::solo_muted` is the „stumm durch Solo“ state.
 - No solo-safe flag: buses behind a soloed track stay audible by the rule above (12 A).
 - **Meters:** every node meters after fader, pan and mute, as tracks do today (`TrackMeter` per job; buses get one
-  too). The master meter is unchanged. Send levels have no meters in v1.
+  too). As built the meter sits behind the output's gate, so a solo-muted node shows silence, as tracks did before.
+  The master meter is unchanged. Send levels have no meters in v1.
 
 #### 6.8.7 Export
 
 Offline render runs the same program and job graph through `Engine::render` (6.7, same worker pool), so buses,
-sends, sidechains and PDC render exactly as they play; the export's latency compensation uses `out(master)`.
+sends, sidechains and PDC render exactly as they play (tested bit-exact against realtime processing). As built, the
+export does not shift by the project latency (`Routing::latency()`, `out(master)`), as it did not before wave 9
+either: projects without buses export exactly as before. Compensating it (discard the first `out(master)` frames,
+render as many more) is an open question (6.8.10).
 Per-bus stems later are one more output: copy a node's post buffer into a second render target.
 
 #### 6.8.8 Realtime constraints
 
 - The program carries the job graph (topological order, per-job input lists, edge delays, gain targets) in boxed
-  slices built on the UI thread. Capacities are fixed: `MAX_TRACKS` nodes (buses count), a fixed maximum of sends
-  per track and of edges per job; the compiler drops what does not fit, like devices beyond `MAX_SLOTS` today.
+  slices built on the UI thread. Capacities are fixed: `MAX_TRACKS` nodes (buses count), `route::MAX_SENDS` (256)
+  sends per program and `route::MAX_LINES` (512) edge states; the compiler drops what does not fit, like devices
+  beyond `MAX_SLOTS` today. Input lists per job are not capped (they are slices of the program).
 - **No allocation on program swap:** `SetProgram` swaps one pointer; the old program returns through the garbage
   queue. State that must survive a swap (PDC delay lines, bus sum history for tails, meters, fader ramps) lives in
   engine-owned tables indexed by node, preallocated when the engine is created (like processor slots), and the
@@ -771,6 +816,11 @@ must not output back into that bus).
    pre-fader sends alive. Confirm with the owner when WP-103 shows it.
 5. **Device copy and paste with a sidechain** start without one today (`NewDevice` has no field). WP-104 can carry
    it with `set_sidechain` after the insert in the same undo step.
+6. **Export and the project latency** (WP-102): should the export discard the first `out(master)` frames so the
+   file starts on time? It would change the export of projects without buses that have latency (today the whole
+   file is late by the longest chain latency).
+7. **Send level fast path** (WP-102): a send level drag recompiles every frame (cheap, and the gain ramps, so no
+   click). A `SetSendGain` fast path like `SetTrackGain` can come with WP-103 if it is needed.
 
 ---
 
