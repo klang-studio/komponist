@@ -1033,7 +1033,10 @@ impl App {
                     self.commit_take();
                     self.engine.send(Command::Stop);
                 } else {
+                    // Stop while stopped: the hard cut (tails end at once), then back to the
+                    // start.
                     let start = self.start_tick();
+                    self.engine.send(Command::Stop);
                     self.engine.send(Command::Locate(start));
                 }
             }
