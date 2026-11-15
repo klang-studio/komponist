@@ -48,7 +48,7 @@ the child processes of the test process (`plugin_exit`). Run one module:
 
 | Command | What it does |
 |---|---|
-| `scripts/run.sh [args]` | Builds `komponist` and `komponist-bridge` (release) and starts komponist with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). Plain `cargo run -p komponist-app` does not build the bridge. |
+| `scripts/run.sh [args]` | Builds `komponist` (release) and starts it with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). The plugin bridge is part of the executable (`komponist --bridge`, WP-94), so `cargo run -p komponist-app` works as well. |
 | `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
 | `scripts/render-reference.sh` | Renders the handoff `.dc.html` files with headless Chromium into `design/reference/*.png` (needs network for the Google fonts). |

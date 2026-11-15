@@ -155,7 +155,7 @@ komponist/
     komponist-builtin/          pisynth adapter (Processor), metronome voice
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
-    komponist-bridge/           bin `komponist-bridge`: instance mode and scan mode
+    komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
     komponist-plugins/          app side: catalog, scan cache, bridge lifecycle, ExternalProcessor
     komponist-ui/               design system on egui: theme, widgets, paint fns, bin `komponist-gallery`
     komponist-app/              bin `komponist`: shell, views, dialogs, actions, keymap
@@ -547,9 +547,17 @@ a lookahead plugin is in use. It can move behind v0.1 if time is short (WP-23 ma
 
 ### 8.1 Bridge processes (D4)
 
-Each external plugin instance runs in `komponist-bridge --instance`. The app starts it, passes a
+Each external plugin instance runs in `komponist --bridge --instance`. The app starts it, passes a
 memfd (shared memory) and a socket, and sends `Load`, `Activate{rate, max_block}` and `SetState`.
 While loading, the device reads "Lädt" and the engine passes audio through (S05).
+
+*As built (WP-94):* there is one executable. `komponist-bridge` is a library (`run(args) -> ExitCode`);
+`komponist` calls it first thing in `main()` when `argv[1] == "--bridge"` (before settings, eframe,
+audio) and the app spawns `current_exe()` with `--bridge` (`PluginManagerConfig::bridge_exe` +
+`bridge_args`, also used by scans). The bridge stays a process of its own per plugin instance, with
+unchanged settings (non-dumpable, RT priority, signals, exit codes); it sets its process name to
+`komponist-bridge` (`prctl(PR_SET_NAME)`, shown as `komponist-bridg` in `comm`). A small
+`komponist-bridge` binary remains for the bridge's own tests and tools; the app does not need it.
 
 **Shared memory per instance** (fixed size): header with futex words `request_seq` and `done_seq`,
 `frames`, transport info, status, latency; SPSC rings for input events (notes, params) and output
@@ -616,7 +624,7 @@ truce-rack serve as further reference code.
 
 ### 8.3 Scanning
 
-`komponist-bridge --scan <bundle>` prints JSON descriptors (format, id, name, vendor, version,
+`komponist --bridge --scan <bundle>` prints JSON descriptors (format, id, name, vendor, version,
 instrument/effect, features/subcategories). The app runs scans in parallel as separate processes with
 a 10 s timeout and caches them by path + mtime. Default folders: CLAP `~/.clap`, `/usr/lib/clap`,
 `/usr/local/lib/clap`, `$CLAP_PATH`; VST3 `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`.
