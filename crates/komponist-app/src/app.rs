@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use egui::{Context, Event, FocusDirection, Ui};
 use komponist_audio::AudioState;
 use komponist_engine::{Command, EngineEvent, TransportState};
+use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
 use komponist_model::edits::{
     self, ChannelProp, EditResult, NewDevice, NewTrack, ProjectProp, TrackProp, VelocityChange,
@@ -125,6 +126,9 @@ pub struct App {
     pub(crate) frames: PluginFrames,
     /// The WAV export in progress and this session's exports (WP-53b, [`crate::export`]).
     pub(crate) export: crate::export::Exports,
+    /// The language of the UI (`docs/I18N.md`). [`App::new`] starts in German, the test language;
+    /// `main()` sets the resolved language with [`App::with_lang`].
+    pub(crate) lang: Lang,
 }
 
 /// Per-session state of the shell that is not view state.
@@ -212,7 +216,20 @@ impl App {
             recording: None,
             frames: PluginFrames::default(),
             export: Default::default(),
+            lang: Lang::default(),
         }
+    }
+
+    /// The app in language `lang`. [`App::new`] never reads the environment (tests run in
+    /// German whatever `LANG` says); `main()` resolves the language and calls this.
+    pub fn with_lang(mut self, lang: Lang) -> App {
+        self.lang = lang;
+        self
+    }
+
+    /// The language of the UI.
+    pub fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// The app on the null backend with `project` open, default settings (with the null driver,
@@ -409,6 +426,7 @@ impl App {
     /// One frame: engine, keys, shell and views, dispatch, sync (module docs).
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        komponist_ui::set_lang(&ctx, self.lang);
         if let Some(scale) = self.shell.pending_scale.take() {
             ctx.set_pixels_per_point(scale.unwrap_or(1.0));
         }

@@ -35,7 +35,24 @@ pub mod widgets;
 #[cfg(feature = "snapshot")]
 pub mod snapshot;
 
+pub use komponist_i18n::Lang;
 pub use state::State;
+
+/// Where the UI language lives in an egui [`Context`](egui::Context).
+const LANG_ID: &str = "komponist_lang";
+
+/// The language of the UI in `ctx`: [`Lang::De`] (the source language and the test default)
+/// until [`set_lang`] sets another. Each context has its own, so parallel tests do not share it.
+pub fn lang(ctx: &egui::Context) -> Lang {
+    ctx.data(|d| d.get_temp::<Lang>(egui::Id::unique(LANG_ID)))
+        .unwrap_or_default()
+}
+
+/// Sets the language of the UI in `ctx` (the app does it once per frame). Widgets that own
+/// texts read it with [`lang`].
+pub fn set_lang(ctx: &egui::Context, lang: Lang) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(LANG_ID), lang));
+}
 
 /// Sets up `ctx` for komponist: fonts, theme (dark, no animation), icon loaders, focus-visible
 /// tracking, and no egui zoom shortcuts (Ctrl +/− belong to the arrangement zoom).
@@ -156,5 +173,17 @@ mod tests {
         assert!(ctx.style_of(egui::Theme::Light).visuals.dark_mode);
         assert_eq!(ctx.theme(), egui::Theme::Dark);
         install(&ctx);
+    }
+
+    #[test]
+    fn language_is_per_context_and_german_by_default() {
+        let a = egui::Context::default();
+        let b = egui::Context::default();
+        assert_eq!(lang(&a), Lang::De);
+        set_lang(&a, Lang::En);
+        assert_eq!(lang(&a), Lang::En);
+        assert_eq!(lang(&b), Lang::De);
+        set_lang(&a, Lang::De);
+        assert_eq!(lang(&a), Lang::De);
     }
 }
