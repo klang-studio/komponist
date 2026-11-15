@@ -1,8 +1,9 @@
 //! The fader ("Fader und Pegelanzeige"; design system `scaleDb`, `scale`, `fader`, `faders`,
 //! `ix.fader`; taper `DBT`, `dbToP`, `pToDb` of `ks-engine.js`).
 //!
-//! A 4 px track (`size.fader-track`, `surface.0`) and a double-trapezoid thumb: 32 × 44 with
-//! waist 22 (`size.fader-thumb`) or compact 24 × 28 with waist 15 (`size.fader-thumb-compact`).
+//! A 4 px track (`size.fader-track`, `surface.0`) and a barrel-shaped thumb ("Tonne", variant D of
+//! `docs/proposals/fader-thumb/README.md`): one closed body, 32 × 44 with waist 26
+//! (`size.fader-thumb`) or compact 24 × 28 with waist 20 (`size.fader-thumb-compact`).
 //! The value line across the thumb's waist sits at the level; the dB scale (+6 … −∞) can stand
 //! on the left.
 //!
@@ -21,8 +22,8 @@
 //! as text ("−3.2 dB").
 
 use egui::{
-    Align, Color32, CursorIcon, Id, Painter, Rect, Response, Role, Sense, Shape, Stroke, Ui, Vec2,
-    Widget, WidgetInfo, pos2, vec2,
+    Align, Color32, CursorIcon, Id, Painter, Pos2, Rect, Response, Role, Sense, Shape, Stroke, Ui,
+    Vec2, Widget, WidgetInfo, pos2, vec2,
 };
 use komponist_model::format::{MINUS, fmt_db, parse_db};
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
@@ -77,10 +78,10 @@ pub fn scale_label(db: f32) -> String {
 /// The two thumb sizes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FaderSize {
-    /// Thumb 32 × 44, waist 22, two grooves per half.
+    /// Thumb 32 × 44, waist 26, two grooves per half.
     #[default]
     Normal,
-    /// Thumb 24 × 28, waist 15, one groove per half.
+    /// Thumb 24 × 28, waist 20, no grooves.
     Compact,
 }
 
@@ -130,11 +131,12 @@ pub struct Look {
     pub focus_ring: bool,
 }
 
-/// The look of a fader in `state` (`fader()`). The design gives the thumb colours as hex values
-/// between the tokens (`#34363b`, `#4d5056`, `#5a5d63`, …); they map to the nearest tokens
-/// (contract change request): rest `surface.4` / edge `text.4` / grooves `text.4`, hover
-/// `surface.5` with grooves `text.3`, drag `line.2` with edge and grooves `text.3` and the value
-/// line accent, disabled `surface.3` / `surface.4` with value line `text.4`.
+/// The look of a fader in `state`: proposal D "Tonne" (`docs/proposals/fader-thumb/README.md`,
+/// owner-approved 2026-11-15; colours of `barrel()` in `make_mockups.py`). Rest `surface.4` /
+/// edge `line.2` / grooves `text.3`; hover `surface.5` / edge `text.3` (so hover shows on a
+/// selected strip too) / grooves `text.2`; drag `line.2` / edge and value line accent / grooves `text.2`
+/// (README rule "Ziehen: Akzentkante", owner brief; the D mockup PNG still draws a `text.3` edge); disabled
+/// `surface.3` / `surface.4` with value line `text.4`.
 pub fn look(state: State) -> Look {
     let track = color32(color::SURFACE_0);
     if state.disabled {
@@ -151,8 +153,8 @@ pub fn look(state: State) -> Look {
     if state.pressed {
         Look {
             thumb: color32(color::LINE_2),
-            edge: color32(color::TEXT_3),
-            grip: color32(color::TEXT_3),
+            edge: color32(color::ACCENT),
+            grip: color32(color::TEXT_2),
             value_line: color32(color::ACCENT),
             track,
             focus_ring,
@@ -160,8 +162,8 @@ pub fn look(state: State) -> Look {
     } else if state.hovered {
         Look {
             thumb: color32(color::SURFACE_5),
-            edge: color32(color::TEXT_4),
-            grip: color32(color::TEXT_3),
+            edge: color32(color::TEXT_3),
+            grip: color32(color::TEXT_2),
             value_line: color32(color::TEXT_1),
             track,
             focus_ring,
@@ -169,8 +171,8 @@ pub fn look(state: State) -> Look {
     } else {
         Look {
             thumb: color32(color::SURFACE_4),
-            edge: color32(color::TEXT_4),
-            grip: color32(color::TEXT_4),
+            edge: color32(color::LINE_2),
+            grip: color32(color::TEXT_3),
             value_line: color32(color::TEXT_1),
             track,
             focus_ring,
@@ -267,42 +269,72 @@ pub fn paint_scale(painter: &Painter, layout: &Layout, right: f32) {
     }
 }
 
-/// Paints the thumb of `size` into `rect` (its size): two trapezoids meeting at the waist,
-/// grooves, the value line across the waist.
+/// The thumb outline in thumb coordinates (origin top left): corners rounded by
+/// [`metrics::CORNER_RADIUS`] through quadratic curves, the waist corners sharp. Returns the
+/// points clockwise from the top left plus the indices of the right and left waist points.
+fn barrel_outline(w: f32, h: f32, inset: f32, half: f32) -> (Vec<Pos2>, usize, usize) {
+    const STEPS: usize = 4;
+    let corner = |pts: &mut Vec<Pos2>, prev: Pos2, c: Pos2, next: Pos2| {
+        let toward = |a: Pos2, b: Pos2| {
+            let d = b - a;
+            a + d / d.length() * metrics::CORNER_RADIUS.min(d.length() / 2.0)
+        };
+        let (a, b) = (toward(c, prev), toward(c, next));
+        for i in 0..=STEPS {
+            let t = i as f32 / STEPS as f32;
+            let (u, v) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t));
+            let q = a.to_vec2() * u + c.to_vec2() * v + b.to_vec2() * (t * t);
+            pts.push(q.to_pos2());
+        }
+    };
+    let (tl, tr) = (pos2(half, half), pos2(w - half, half));
+    let (br, bl) = (pos2(w - half, h - half), pos2(half, h - half));
+    let (wr, wl) = (pos2(w - inset - half, h / 2.0), pos2(inset + half, h / 2.0));
+    let mut pts = Vec::new();
+    corner(&mut pts, wl, tl, tr);
+    corner(&mut pts, tl, tr, wr);
+    let ir = pts.len();
+    pts.push(wr);
+    corner(&mut pts, wr, br, bl);
+    corner(&mut pts, br, bl, wl);
+    let il = pts.len();
+    pts.push(wl);
+    (pts, ir, il)
+}
+
+/// Paints the thumb of `size` into `rect` (its size): proposal D "Tonne", one closed body with a
+/// waist, grooves on the normal thumb, the value line across the waist.
+///
+/// The body is concave, so the fill is two convex halves (the seam lies under the outline) and
+/// the 1 px outline one closed path on top. Straight edges (grooves, value line) go through the
+/// [`px`] helpers, so they are crisp at 1× and 2×.
 pub fn paint_thumb(painter: &Painter, rect: Rect, size: FaderSize, look: &Look) {
     let ppp = painter.pixels_per_point();
     let rect = px::snap_rect(rect, ppp);
     let (w, h) = (rect.width(), rect.height());
-    let o = rect.min;
-    let p = |x: f32, y: f32| pos2(o.x + x, o.y + y);
-    let inset = (w - size.waist()) / 2.0;
-    // The design's SVG: 1 px outline on half-pixel coordinates, the halves 2 px apart.
-    let half = 0.5 * line::WIDTH;
-    let mid = h / 2.0;
-    let edge = Stroke::new(line::WIDTH, look.edge);
-    let top = vec![
-        p(half, half),
-        p(w - half, half),
-        p(w - inset - half, mid - line::WIDTH),
-        p(inset + half, mid - line::WIDTH),
-    ];
-    let bottom = vec![
-        p(inset + half, mid + line::WIDTH),
-        p(w - inset - half, mid + line::WIDTH),
-        p(w - half, h - half),
-        p(half, h - half),
-    ];
-    painter.add(Shape::convex_polygon(top, look.thumb, edge));
-    painter.add(Shape::convex_polygon(bottom, look.thumb, edge));
+    let o = rect.min.to_vec2();
+    let lw = px::line_width(ppp);
+    let half = 0.5 * lw;
+    let (pts, ir, il) = barrel_outline(w, h, (w - size.waist()) / 2.0, half);
+    let pts: Vec<Pos2> = pts.into_iter().map(|p| p + o).collect();
+    // Top half: from the first point to the right waist point, closed through the left waist
+    // point; bottom half: from the right waist point round to the left one.
+    let mut top = pts[..=ir].to_vec();
+    top.push(pts[il]);
+    let bottom = pts[ir..=il].to_vec();
+    painter.add(Shape::convex_polygon(top, look.thumb, Stroke::NONE));
+    painter.add(Shape::convex_polygon(bottom, look.thumb, Stroke::NONE));
+    painter.add(Shape::closed_line(pts, Stroke::new(lw, look.edge)));
     for &(dy, dx) in size.grooves() {
-        let x = o.x + dx..=o.x + w - dx;
-        px::hline(painter, x.clone(), o.y + dy - half, look.grip);
-        px::hline(painter, x, o.y + h - dy - half, look.grip);
+        let x = rect.left() + dx..=rect.right() - dx;
+        px::hline(painter, x.clone(), rect.top() + dy, look.grip);
+        px::hline(painter, x, rect.bottom() - dy - lw, look.grip);
     }
     let li = size.value_line_inset();
+    let mid = rect.center().y;
     let line_rect = Rect::from_min_max(
-        p(li, mid - metrics::VALUE_LINE / 2.0),
-        p(w - li, mid + metrics::VALUE_LINE / 2.0),
+        pos2(rect.left() + li, mid - metrics::VALUE_LINE / 2.0),
+        pos2(rect.right() - li, mid + metrics::VALUE_LINE / 2.0),
     );
     px::fill(painter, line_rect, 0.0, look.value_line);
 }
@@ -317,7 +349,7 @@ pub fn paint(painter: &Painter, rect: Rect, size: FaderSize, scale: bool, db: f3
     let thumb = layout.thumb_rect(db);
     paint_thumb(painter, thumb, size, look);
     if look.focus_ring {
-        focus::paint_ring(painter, thumb, 0.0);
+        focus::paint_ring(painter, thumb, metrics::CORNER_RADIUS);
     }
 }
 

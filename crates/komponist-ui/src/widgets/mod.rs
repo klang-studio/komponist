@@ -127,9 +127,11 @@ pub mod metrics {
         pub const SAMPLE_MIN_WIDTH: f32 = 56.0;
     }
 
-    /// Fader (WP-21): `scale`, `fader()`, `faders`; card spec "Bahn 4 · Knopf 32 × 44,
-    /// Doppeltrapez (Taille 22) · kompakt 24 × 28 (Taille 15, 1 Rille je Hälfte)". Track width
-    /// and thumb sizes are the tokens `size.fader-track`, `size.fader-thumb(-compact)`.
+    /// Fader (WP-21): `scale`, `fader()`, `faders`; card spec "Bahn 4 · Knopf 32 × 44 ·
+    /// kompakt 24 × 28". The thumb shape is variant D "Tonne" of the owner-approved proposal
+    /// `docs/proposals/fader-thumb/README.md`; its numbers are the `barrel()` function of
+    /// `docs/proposals/fader-thumb/make_mockups.py`. Track width and thumb sizes are the tokens
+    /// `size.fader-track`, `size.fader-thumb(-compact)`.
     pub mod fader {
         use komponist_tokens::space;
 
@@ -141,17 +143,22 @@ pub mod metrics {
         pub const SCALE_GAP: f32 = space::SPACE_0_5;
         /// Thickness of the value line ("Wertlinie", `midS` `strokeWidth: 2`).
         pub const VALUE_LINE: f32 = 2.0;
-        /// Inset of the value line from the thumb's sides: normal (`x1=4 … x2=28`), compact.
-        pub const VALUE_LINE_INSET: [f32; 2] = [4.0, 3.0];
-        /// Waist of the normal thumb ("Taille 22"; polygon `5.5 … 26.5`).
-        pub const WAIST: f32 = 22.0;
-        /// Waist of the compact thumb ("Taille 15").
-        pub const WAIST_COMPACT: f32 = 15.0;
+        /// Inset of the value line from the thumb's sides: normal, compact (proposal D:
+        /// "Linien-Inset 5/4", `barrel()` `li`).
+        pub const VALUE_LINE_INSET: [f32; 2] = [5.0, 4.0];
+        /// Waist of the normal thumb, outer edge to outer edge (proposal D "Taille 26";
+        /// `barrel()` `ins = 3`).
+        pub const WAIST: f32 = 26.0;
+        /// Waist of the compact thumb (proposal D "Taille 19" between the outline centres, 20 outer
+        /// edge to outer edge; `barrel()` `ins = 2`).
+        pub const WAIST_COMPACT: f32 = 20.0;
+        /// Corner radius of the thumb body (proposal D "ca. `radius.s`"; `barrel()` `rounded_poly(…, 2, …)`).
+        pub const CORNER_RADIUS: f32 = komponist_tokens::radius::S;
         /// Grooves of the normal thumb per half: (distance from the top or bottom edge, inset
-        /// from the side), from the SVG lines at y 6 / 11 / 33 / 38.
-        pub const GROOVES: [(f32, f32); 2] = [(6.0, 5.0), (11.0, 6.0)];
-        /// The one groove per half of the compact thumb ("1 Rille je Hälfte").
-        pub const GROOVES_COMPACT: [(f32, f32); 1] = [(7.0, 6.0)];
+        /// from the side), `barrel()` `for dy in (9, 14)` with `vline(8, w - 8, …)`.
+        pub const GROOVES: [(f32, f32); 2] = [(9.0, 8.0), (14.0, 8.0)];
+        /// The compact thumb has no grooves (proposal D "keine").
+        pub const GROOVES_COMPACT: [(f32, f32); 0] = [];
         /// Gap between the sample columns of the card (`gap: 28px`).
         pub const SAMPLE_GAP: f32 = space::SPACE_6 + space::SPACE_1;
     }
