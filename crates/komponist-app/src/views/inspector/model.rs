@@ -23,6 +23,8 @@ pub mod names {
     pub const CLIP: &str = "Clip";
     /// Section "Spur".
     pub const TRACK: &str = "Spur";
+    /// Section "Bus" of a selected bus or group (routing proposal 07-inspektor C).
+    pub const BUS: &str = "Bus";
     /// Section "Geräte".
     pub const DEVICES: &str = "Geräte";
     /// Section "Parameter" (a touched device parameter, WP-89).

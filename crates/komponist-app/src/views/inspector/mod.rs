@@ -11,6 +11,7 @@
 //! | Geräte ([`track`]) | the chain with power square, status and format tag; "+ Effekt" | `OpenWindow`, `SetDeviceBypass`, browser on Effekte |
 //! | Parameter ([`param`]) | the device parameter touched last: name, device · band/op · track, Wert, Standard, Bereich | – |
 //! | Kanal ([`channel`]) | compact strip: fader, meter, level, pan, M S; "im Mixer zeigen" | as the mixer strip |
+//! | Routing ([`routing`], WP-103) | with a bus in the project: Ausgang, the sends (level, pre / post, ×, "+"), "Sidechain-Quelle für:"; a bus lists its inputs and shows "Bus" instead of "Spur" | `SetOutput`, `AddSend`, `SetSend`, `RemoveSend` |
 //! | Projekt, Auswahl ([`project`]) | with nothing selected: Tempo, Taktart, Spuren, Länge | `SetProjectProp(Tempo)` |
 //!
 //! Number fields drag (1 px = one step), Shift fine, Alt-click default, double-click text entry;
@@ -23,6 +24,7 @@ pub mod metrics;
 pub mod model;
 mod param;
 mod project;
+mod routing;
 mod track;
 
 use std::sync::Arc;
@@ -132,6 +134,9 @@ impl View for Inspector {
             }
             if sections.channel {
                 channel::section(ui, ctx, x, &mut y, track);
+            }
+            if routing::shown(&project) {
+                routing::section(ui, ctx, &project, x, &mut y, track);
             }
         }
         if sections.is_empty() {

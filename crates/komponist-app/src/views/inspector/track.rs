@@ -32,7 +32,15 @@ pub(super) fn section(
     let index = project.track_index(track.id).unwrap_or(0);
     let position = names::position(index, project.tracks.len());
     let chip = crate::views::mixer::model::base_color(track.hue.0);
-    frame(ui, x, y, names::TRACK, Meta::Text(&position), |ui, col| {
+    let (title, meta) = if track.is_bus() {
+        (
+            names::BUS,
+            crate::views::routing::names::bus_line(track.folder).to_owned(),
+        )
+    } else {
+        (names::TRACK, position)
+    };
+    frame(ui, x, y, title, Meta::Text(&meta), |ui, col| {
         let target = RenameTarget::Track(track.id);
         let (name_rect, rename) =
             super::name_row(ui, col, &track.name, chip, true, !insp.renaming(&target));
@@ -47,7 +55,10 @@ pub(super) fn section(
             }));
         });
         swatches(ui, ctx, col, track);
-        dropdowns(ui, ctx, col, track);
+        // A bus has no instrument, no MIDI input and no MIDI channel.
+        if !track.is_bus() {
+            dropdowns(ui, ctx, col, track);
+        }
     });
 }
 

@@ -79,7 +79,7 @@ use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
 use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
 use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
-use crate::route::{Delay, GateTable, MAX_LINES, NodeRoute, Routing, SidechainRoute};
+use crate::route::{Delay, GateTable, MAX_LINES, MAX_SENDS, NodeRoute, Routing, SidechainRoute};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
 use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
 use crate::stage::{self, StageLists, StageSig, StageState};
@@ -202,6 +202,7 @@ impl Engine {
             exclusive: true,
             routed: false,
             gates: None,
+            send_gains: vec![f32::NAN; MAX_SENDS].into_boxed_slice(),
             edges: (0..MAX_LINES).map(|_| EdgeState::new()).collect(),
             side: stereo(),
             stats: Arc::new(WorkerStats::default()),
@@ -527,6 +528,9 @@ struct Core {
     routed: bool,
     /// Fast-path gate table (`Command::SetGates`) until the next program.
     gates: Option<GateTable>,
+    /// Fast-path send levels (`Command::SetSendGain`) by gate index, NaN = as compiled; cleared
+    /// with every program.
+    send_gains: Box<[f32]>,
     /// Edge states of sends, sidechains and head delays, by `LineId`.
     edges: Box<[EdgeState]>,
     /// The sidechain input of the master's devices.
@@ -574,6 +578,8 @@ struct TrackJobs<'a> {
     routed: bool,
     /// Mute and solo by table; `None`: the flat rule with `any_solo`.
     gates: Option<&'a GateTable>,
+    /// Fast-path send levels by gate index (NaN = as compiled).
+    send_gains: &'a [f32],
     ctx: &'a ProcessContext,
     any_solo: bool,
     n: usize,
@@ -820,7 +826,16 @@ impl TrackJobs<'_> {
                 [&tap[0][..n], &tap[1][..n]],
                 [&mut bl[..n], &mut br[..n]],
                 send.delay.frames,
-                if open { send.gain } else { 0.0 },
+                if open {
+                    let fast = self
+                        .send_gains
+                        .get(usize::from(send.gate))
+                        .copied()
+                        .filter(|g| !g.is_nan());
+                    fast.unwrap_or(send.gain)
+                } else {
+                    0.0
+                },
             );
         }
     }
@@ -1114,6 +1129,14 @@ impl Core {
             }
             Command::SetMasterGain(gain) => self.master_gain = Some(gain),
             Command::SetGates(gates) => self.gates = Some(gates),
+            Command::SetSendGain { send, gain } => {
+                if let Some(program) = self.program.as_deref()
+                    && let Some(gate) = program.routing.sends.iter().position(|s| *s == send)
+                    && let Some(slot) = self.send_gains.get_mut(gate)
+                {
+                    *slot = gain.max(0.0);
+                }
+            }
             Command::LiveNote {
                 track,
                 key,
@@ -1331,6 +1354,7 @@ impl Core {
         self.routed =
             !routing.is_flat() && routing.order.len() == count && routing.nodes.len() == count;
         self.gates = None;
+        self.send_gains.fill(f32::NAN);
         // Edges keep their delay lines and gains across the swap; a line that changed hands
         // starts over.
         for &(key, line) in program.routing.lines.entries() {
@@ -1474,6 +1498,7 @@ impl Core {
             exclusive,
             routed,
             gates,
+            send_gains,
             edges,
             side,
             ..
@@ -1661,6 +1686,7 @@ impl Core {
                     routing,
                     routed,
                     gates: gate_table,
+                    send_gains,
                     ctx: &ctx,
                     any_solo,
                     n,

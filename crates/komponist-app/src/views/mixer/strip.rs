@@ -30,6 +30,8 @@ use crate::meters::Meters;
 use crate::views::devices::add_menu;
 use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
+use crate::views::routing::widgets as routing_widgets;
+use crate::views::routing::{metrics as rm, names as routing_names};
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
 /// The drag payload of an insert slot being reordered.
@@ -69,6 +71,8 @@ pub struct Rows {
     pub fader: Rect,
     /// The values row (level left; peak right, or the pan knob in the lean strip).
     pub values: Rect,
+    /// The output button above the values row (a project with buses, full strip).
+    pub output: Option<Rect>,
 }
 
 impl Rows {
@@ -97,7 +101,7 @@ impl Rows {
             let label = inner(y + m::SENDS_LABEL_TOP, LABEL.line_height);
             let rows = inner(
                 label.bottom() + m::LABEL_BOTTOM,
-                m::rows_height(m::SEND_ROWS),
+                m::rows_height(tier.send_rows.max(m::SEND_ROWS)),
             );
             y = rows.bottom();
             (label, rows)
@@ -119,7 +123,11 @@ impl Rows {
             VALUE_M.line_height,
         );
         let fader_top = toggles.bottom() + m::TOGGLES_BOTTOM;
-        let fader_bottom = (rect.bottom() - values_h).max(fader_top);
+        let output = tier
+            .output
+            .then(|| inner(rect.bottom() - values_h - m::SLOT_HEIGHT, m::SLOT_HEIGHT));
+        let out_h = if tier.output { m::OUTPUT_ROW } else { 0.0 };
+        let fader_bottom = (rect.bottom() - values_h - out_h).max(fader_top);
         let fader = full(fader_top, fader_bottom - fader_top);
         Rows {
             bar,
@@ -133,6 +141,7 @@ impl Rows {
             toggles,
             fader,
             values,
+            output,
         }
     }
 
@@ -176,6 +185,7 @@ impl Rows {
             toggles,
             fader: Rect::from_x_y_ranges(l..=r, fader_top..=fader_bottom),
             values,
+            output: None,
         }
     }
 }
@@ -221,7 +231,7 @@ fn text(
 }
 
 /// A 1 px dashed border inside `rect` (`1px dashed`).
-pub(super) fn dashed_rect(ui: &Ui, rect: Rect, color: egui::Color32) {
+pub(crate) fn dashed_rect(ui: &Ui, rect: Rect, color: egui::Color32) {
     let ppp = ui.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
     let lw = px::line_width(ppp);
@@ -296,6 +306,19 @@ fn select(ctx: &mut ViewCtx<'_>, s: &Strip, mods: Modifiers) {
     })));
 }
 
+/// The "Busse" label over the bus strips, in `text.4` like the other section labels.
+pub(super) fn bus_label(ui: &mut Ui, rect: Rect) {
+    let g = w::styled_galley(ui, routing_names::BUSSES, &typography::LABEL);
+    let pos = w::text_pos(rect, &g, rect.left() + m::PAD_X, ui.pixels_per_point());
+    ui.painter().galley(pos, g, color32(color::TEXT_4));
+    let r = ui.interact(
+        rect,
+        ui.scope_id().with("komponist_mixer_bus_label"),
+        Sense::hover(),
+    );
+    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, routing_names::BUSSES));
+}
+
 /// Draws strip `s` at `rect` (clipped to `clip`) and handles its controls. Returns the toggle
 /// events of a track strip; the mixer applies them (drag across strips needs all strips).
 pub(super) fn show(
@@ -315,7 +338,11 @@ pub(super) fn show(
             .max_rect(rect)
             .id_salt(("komponist_mixer_strip", key))
             .accessibility_role(Role::Group)
-            .accessibility_label(names::strip(&s.name)),
+            .accessibility_label(if s.is_bus() {
+                routing_names::bus_strip(&s.name)
+            } else {
+                names::strip(&s.name)
+            }),
     );
     let ui = &mut ui;
     ui.set_clip_rect(rect.intersect(clip));
@@ -343,7 +370,11 @@ pub(super) fn show(
     }
     inserts(ui, ctx, s, rows.inserts, tier);
     if let Some((label, sends)) = rows.sends {
-        sends_area(ui, label, sends);
+        sends_area(ui, ctx, s, label, sends, tier);
+    }
+    if let (Some(out), Some(track)) = (rows.output, s.track().and_then(|t| ctx.project.track(t))) {
+        let track = std::sync::Arc::clone(track);
+        routing_widgets::output_button(ui, ctx, &track, out, "strip");
     }
     pan(ui, ctx, s, &rows, tier);
     let events = toggles(ui, ctx, s, rows.toggles);
@@ -355,7 +386,7 @@ pub(super) fn show(
 /// Background, colour bar and the name row's selection fill.
 fn paint_frame(ui: &Ui, s: &Strip, rows: &Rows, rect: Rect) {
     let painter = ui.painter();
-    let ground = if s.is_master() {
+    let ground = if s.is_master() || (s.is_bus() && !s.selected) {
         color::SURFACE_2
     } else if s.selected {
         color::CANVAS_STRIP_SELECTED
@@ -384,8 +415,23 @@ fn name_and_line(
     tier: Tier,
 ) {
     let style = typography::UI;
+    // The lean (dock) strip's routing chip stands at the right end of the name row.
+    let chip = tier
+        .lean
+        .then(|| s.routing.as_ref().and_then(|r| r.chip.as_ref()))
+        .flatten();
+    let chip_rect = chip.map(|_| {
+        Rect::from_min_size(
+            pos2(
+                rows.name.right() - m::PAD_X - rm::CHIP[0],
+                rows.name.top() + m::NAME_TOP + style.line_height / 2.0 - rm::CHIP[1] / 2.0,
+            ),
+            vec2(rm::CHIP[0], rm::CHIP[1]),
+        )
+    });
+    let text_right = chip_rect.map_or(rows.name.right() - m::PAD_X, |c| c.left() - m::PAD_X);
     let text_x = if tier.lean {
-        rows.name.left() + m::PAD_X..=rows.name.right() - m::PAD_X
+        rows.name.left() + m::PAD_X..=text_right
     } else {
         rows.line.x_range().into()
     };
@@ -412,6 +458,13 @@ fn name_and_line(
         if r.clicked() {
             select(ctx, s, mods);
         }
+    }
+    if let (Some(chip), Some(rect), Some(track)) = (
+        chip,
+        chip_rect,
+        s.track().and_then(|t| ctx.project.track(t)).cloned(),
+    ) {
+        routing_widgets::routing_chip(ui, ctx, &track, rect, chip);
     }
     // The lean strip has no instrument line (owner decision 2026-11-14): the name's tooltip and
     // its AccessKit description carry it.
@@ -666,20 +719,81 @@ fn drop_over(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, spans: &
     }
 }
 
-/// "Sends" in `text.4` and two empty dashed rows: the place is reserved for busses.
-fn sends_area(ui: &mut Ui, label: Rect, rows: Rect) {
-    let g = w::styled_galley(ui, names::SENDS, &typography::LABEL);
+/// "Sends" (a bus: "Eingänge") in `text.4`, then the send rows (WP-103, routing proposal 02-mixer-voll,
+/// send variant B): one compact row per send, then the dashed "+" row. A bus has one info row
+/// ("2 Spuren", "3 Sends") instead; it has no sends (owner decision 11 A). The list scrolls with
+/// the wheel when it has more rows than the strips show.
+fn sends_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, label: Rect, rows: Rect, tier: Tier) {
+    let title = if s.is_bus() {
+        routing_names::INPUTS
+    } else {
+        routing_names::SENDS
+    };
+    let g = w::styled_galley(ui, title, &typography::LABEL);
     let pos = w::text_pos(label, &g, label.left(), ui.pixels_per_point());
     ui.painter().galley(pos, g, color32(color::TEXT_4));
-    for i in 0..m::SEND_ROWS {
-        let top = rows.top() + i as f32 * (m::SLOT_HEIGHT + m::SLOT_GAP);
-        let r = Rect::from_min_size(pos2(rows.left(), top), vec2(rows.width(), m::SLOT_HEIGHT));
-        dashed_rect(ui, r, color32(color::LINE_1));
-    }
     let area = label.union(rows);
     let r = ui.interact(area, ui.scope_id().with("sends"), Sense::hover());
-    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::SENDS));
-    Tip::new(names::SENDS).detail(names::SENDS_LATER).attach(&r);
+    r.widget_info(|| WidgetInfo::labeled(Role::Label, true, title));
+    let Some(r) = s.routing.as_ref() else {
+        return;
+    };
+    let row_at = |i: usize| {
+        let top = rows.top() + i as f32 * (rm::ROW_HEIGHT + rm::ROW_GAP);
+        Rect::from_min_size(pos2(rows.left(), top), vec2(rows.width(), rm::ROW_HEIGHT))
+    };
+    if let Some(inputs) = &r.inputs {
+        // A bus: what feeds it, as text in a quiet row.
+        let rect = row_at(0);
+        px::fill(ui.painter(), rect, radius::S, color32(color::SURFACE_2));
+        let style = m::TEXT_10;
+        text(
+            ui,
+            rect.shrink2(vec2(m::SLOT_PAD_X, 0.0)),
+            inputs,
+            fonts::font_id(&style),
+            style.line_height,
+            color32(color::TEXT_2),
+            false,
+        );
+        let info = ui.interact(rect, ui.scope_id().with("inputs"), Sense::hover());
+        info.widget_info(|| WidgetInfo::labeled(Role::Label, true, inputs));
+        return;
+    }
+    let Some(track) = s.track().and_then(|t| ctx.project.track(t)).cloned() else {
+        return;
+    };
+    // The list: the sends, then the "+" row; scrolled by whole rows.
+    let items = r.sends.len() + 1;
+    let visible = tier
+        .send_rows
+        .max(m::SEND_ROWS)
+        .min(items.max(m::SEND_ROWS));
+    let scroll_id = ui.scope_id().with("send_scroll");
+    let mut first: usize = ui.data(|d| d.get_temp(scroll_id)).unwrap_or(0);
+    let max_first = items.saturating_sub(visible);
+    if ui.rect_contains_pointer(rows) && max_first > 0 {
+        let delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if delta != 0.0 {
+            first = if delta < 0.0 {
+                (first + 1).min(max_first)
+            } else {
+                first.saturating_sub(1)
+            };
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+        }
+    }
+    first = first.min(max_first);
+    ui.data_mut(|d| d.insert_temp(scroll_id, first));
+    for slot in 0..visible {
+        let item = first + slot;
+        let rect = row_at(slot);
+        if let Some(info) = r.sends.get(item) {
+            routing_widgets::send_row(ui, ctx, info, rect, routing_widgets::RowKind::Compact);
+        } else if item == r.sends.len() {
+            routing_widgets::add_send_row(ui, ctx, &track, rect, false);
+        }
+    }
 }
 
 /// The pan knob ("Ziehen relativ, Shift fein, Doppelklick oder Alt-Klick Standard, Enter oder
@@ -722,6 +836,8 @@ fn toggles(
 ) -> Vec<(ToggleKind, ToggleEvent)> {
     let kinds: &[ToggleKind] = if s.is_master() {
         &[ToggleKind::Mute]
+    } else if s.is_bus() {
+        &[ToggleKind::Mute, ToggleKind::Solo]
     } else {
         &[ToggleKind::Mute, ToggleKind::Solo, ToggleKind::Arm]
     };
@@ -747,6 +863,15 @@ fn toggles(
                 .size(vec2(tw, th))
                 .show(ui)
         });
+        if kind == ToggleKind::Solo && s.follows_solo {
+            // A bus that only follows a solo: a dashed yellow frame around the S (WP-100 §7).
+            dashed_rect(ui, r, color32(color::STATE_SOLO));
+            let hint = ui.interact(r, ui.scope_id().with("solo_follows"), Sense::hover());
+            hint.widget_info(|| {
+                WidgetInfo::labeled(Role::Label, true, routing_names::solo_follows(&s.name))
+            });
+            Tip::new(routing_names::SOLO_FOLLOWS).attach(&hint);
+        }
         match (shown.event, s.channel) {
             (Some(ToggleEvent::Set { value, .. }), ChannelRef::Master) => {
                 ctx.send(Action::Edit(EditAction::SetMasterProp(ChannelProp::Mute(

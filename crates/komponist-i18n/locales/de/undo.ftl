@@ -147,6 +147,35 @@ undo-sample-clear = Sample entfernen
 # Undo step: Tempo.
 undo-tempo = Tempo
 
+## Routing (wave 9)
+
+# Undo step: Spuren in eine Gruppe zusammenfassen (Strg G).
+undo-group-tracks = Spuren gruppieren
+
+# Undo step: Send zu einem neuen Bus anlegen.
+undo-send-to-new-bus = Send zu neuem Bus
+
+# Undo step: einen Bus anlegen (Dialog „Neue Spur“).
+undo-add-bus = Bus anlegen
+
+# Undo step: den Ausgang einer Spur ändern.
+undo-set-output = Ausgang ändern
+
+# Undo step: einen Send anlegen.
+undo-add-send = Send anlegen
+
+# Undo step: einen Send ändern (Pegel, Abgriff, Ziel, ein/aus).
+undo-change-send = Send ändern
+
+# Undo step: einen Send entfernen.
+undo-remove-send = Send entfernen
+
+# Undo step: den Send-Pegel ziehen.
+undo-send-level = Send-Pegel
+
+# Undo step: eine Gruppe falten oder entfalten.
+undo-fold-group = Gruppe falten
+
 ## Labels with a name in them (the name is plugin-provided text).
 
 # A card parameter changed; `$name` is the parameter's name ("Cutoff").

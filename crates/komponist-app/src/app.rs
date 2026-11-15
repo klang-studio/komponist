@@ -1548,6 +1548,34 @@ impl App {
                     edits::set_sidechain(p, device, sidechain)
                 });
             }
+            EditAction::GroupSelection => {
+                let tracks = self.selected_track_order();
+                self.group_tracks(tracks);
+            }
+            EditAction::GroupTracks(tracks) => self.group_tracks(tracks),
+            EditAction::SendToNewBus(senders) => {
+                if let Some(id) = self.apply_with("undo-send-to-new-bus", |p| {
+                    edits::add_bus(p, edits::NewBus::effect(senders))
+                }) {
+                    self.select_tracks(vec![id], SelectMode::Replace);
+                    self.ui.arrangement.rename_request = Some(id);
+                }
+            }
+            EditAction::AddBus(spec) => {
+                if let Some(id) = self.apply_with("undo-add-bus", |p| edits::add_bus(p, spec)) {
+                    self.select_tracks(vec![id], SelectMode::Replace);
+                }
+            }
+            EditAction::SetOutput { tracks, output } => {
+                self.apply("undo-set-output", |p| edits::set_output(p, &tracks, output));
+            }
+            EditAction::AddSend { track, target } => {
+                self.apply_with("undo-add-send", |p| edits::add_send(p, track, target));
+            }
+            EditAction::SetSend { send, prop } => self.set_send(send, prop),
+            EditAction::RemoveSend(send) => {
+                self.apply("undo-remove-send", |p| edits::remove_send(p, send));
+            }
             EditAction::CopyDevice { device, to, index } => self.copy_device(device, to, index),
             EditAction::DuplicateDevices => self.duplicate_devices(),
             EditAction::PasteDevices => self.paste_devices(),
@@ -1588,6 +1616,55 @@ impl App {
         }
         if let Some(command) = gates {
             self.engine.fast_path(command, before, after);
+        }
+    }
+
+    /// The selected tracks in display order.
+    fn selected_track_order(&self) -> Vec<TrackId> {
+        self.project()
+            .tracks
+            .iter()
+            .map(|t| t.id)
+            .filter(|t| self.ui.selection.tracks.contains(t))
+            .collect()
+    }
+
+    /// Strg G: `tracks` into a new group (one undo step); the group is selected and its name goes
+    /// into the edit mode of the arrangement (WP-100 §6).
+    fn group_tracks(&mut self, tracks: Vec<TrackId>) {
+        if tracks.is_empty() {
+            return;
+        }
+        if let Some(id) = self.apply_with("undo-group-tracks", |p| {
+            edits::add_bus(p, edits::NewBus::group(tracks))
+        }) {
+            self.select_tracks(vec![id], SelectMode::Replace);
+            self.ui.arrangement.rename_request = Some(id);
+        }
+    }
+
+    /// A send change; a level change inside a gesture reaches the engine on the fast path
+    /// (`Command::SetSendGain`, ramped by the send's edge state), so dragging a send level does not
+    /// recompile the program per frame.
+    fn set_send(&mut self, send: komponist_model::SendId, prop: edits::SendProp) {
+        let before = self.doc.revision();
+        if !self.apply("undo-change-send", |p| edits::set_send(p, send, prop)) {
+            return;
+        }
+        if let (edits::SendProp::LevelDb(_), true) = (prop, self.doc.in_gesture()) {
+            let after = self.doc.revision();
+            let db = self
+                .project()
+                .find_send(send)
+                .map_or(0.0, |(t, i)| t.sends[i].level_db);
+            self.engine.fast_path(
+                Command::SetSendGain {
+                    send,
+                    gain: fader_gain(db),
+                },
+                before,
+                after,
+            );
         }
     }
 
@@ -1644,6 +1721,9 @@ impl App {
     /// step, all selected, the last one armed. One track is exactly what an instrument drop onto
     /// the "Neue Spur" box makes.
     pub(crate) fn create_tracks(&mut self, spec: &crate::dialogs::new_track::Spec) {
+        if spec.bus {
+            return self.create_buses(spec);
+        }
         let tracks = spec.tracks();
         let label = if tracks.len() > 1 {
             "undo-add-tracks"
@@ -1655,6 +1735,38 @@ impl App {
             let mut ids = Vec::with_capacity(tracks.len());
             for spec in tracks {
                 let (next, id) = edits::add_track(&p, spec)?;
+                p = next;
+                ids.push(id);
+            }
+            Ok((p, ids))
+        });
+        if let Some(ids) = made {
+            self.select_tracks(ids, SelectMode::Replace);
+        }
+    }
+
+    /// "Anlegen" with the type „Bus“: effect buses (no group, no senders, no members) after the
+    /// last track, one undo step, the last one selected.
+    fn create_buses(&mut self, spec: &crate::dialogs::new_track::Spec) {
+        let count = spec.count;
+        let made = self.apply_with("undo-add-bus", |p| {
+            let mut p = p.clone();
+            let mut ids = Vec::with_capacity(count);
+            for i in 1..=count {
+                let name = spec.name.as_ref().map(|n| {
+                    if count == 1 {
+                        n.clone()
+                    } else {
+                        format!("{n} {i}")
+                    }
+                });
+                let (next, id) = edits::add_bus(
+                    &p,
+                    edits::NewBus {
+                        name,
+                        ..edits::NewBus::default()
+                    },
+                )?;
                 p = next;
                 ids.push(id);
             }

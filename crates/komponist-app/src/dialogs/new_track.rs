@@ -3,9 +3,9 @@
 //!
 //! | Row | Control |
 //! |---|---|
-//! | Spurtyp | a segmented control; today only "MIDI". The row stays visible with its single selected segment, so "Bus" (WP-103) and "Audio" are one more [`KINDS`] entry each, not a layout change |
-//! | Instrument | a search field over the instruments of the catalog (the browser's matching, [`crate::views::browser::model::instrument_rows`]) and "Kein Instrument" at the top; ↑ ↓ choose, typing selects the first hit |
-//! | Name | prefilled with the name the app would give ([`auto_name`], "hexa", "MIDI 2"); it follows the instrument until it is edited; blank = automatic |
+//! | Spurtyp | a segmented control: "MIDI" or "Bus" (an effect bus, WP-103); "Audio" is one more [`KINDS`] entry later, not a layout change |
+//! | Instrument | a search field over the instruments of the catalog (the browser's matching, [`crate::views::browser::model::instrument_rows`]) and "Kein Instrument" at the top; ↑ ↓ choose, typing selects the first hit. Hidden for a Bus |
+//! | Name | prefilled with the name the app would give ([`auto_name`], "hexa", "MIDI 2", "Bus 1"); it follows the instrument until it is edited; blank = automatic |
 //! | Anzahl | 1 – [`COUNT_MAX`]; several tracks get numbered names ("Lead 1", "Lead 2", or the automatic names "MIDI", "MIDI 2", …) |
 //!
 //! Enter (not while a button or the count field has the focus) creates, Esc and "Abbrechen" cancel.
@@ -36,8 +36,10 @@ pub mod names {
     pub const TITLE: &str = "Neue Spur";
     /// Row label and name of the track type control.
     pub const KIND: &str = "Spurtyp";
-    /// The only track type today.
+    /// The MIDI track type.
     pub const MIDI: &str = "MIDI";
+    /// The bus type: an effect bus (WP-103).
+    pub const BUS: &str = "Bus";
     /// Row label and name of the instrument list.
     pub const INSTRUMENT: &str = "Instrument";
     /// Name and hint of the search field.
@@ -54,9 +56,11 @@ pub mod names {
     pub const CREATE: &str = "Anlegen";
 }
 
-/// The track types the dialog offers, in segment order. Only MIDI exists; WP-103 adds "Bus" and a
-/// later wave "Audio" here.
-const KINDS: [&str; 1] = [names::MIDI];
+/// The track types the dialog offers, in segment order; a later wave adds "Audio" here.
+const KINDS: [&str; 2] = [names::MIDI, names::BUS];
+
+/// Index of "Bus" in [`KINDS`].
+pub const KIND_BUS: usize = 1;
 
 /// Most tracks one dialog creates.
 pub const COUNT_MAX: u32 = 16;
@@ -103,8 +107,10 @@ impl State {
     /// What "Anlegen" creates.
     pub fn spec(&self) -> Spec {
         let name = self.name.trim();
+        let bus = self.kind == KIND_BUS;
         Spec {
-            instrument: self.instrument.clone(),
+            bus,
+            instrument: if bus { None } else { self.instrument.clone() },
             name: (self.name_touched && !name.is_empty()).then(|| name.to_owned()),
             count: self.count.clamp(1, COUNT_MAX) as usize,
         }
@@ -114,6 +120,8 @@ impl State {
 /// What "Anlegen" creates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
+    /// An effect bus instead of a MIDI track (no instrument).
+    pub bus: bool,
     /// The instrument, `None` = none.
     pub instrument: Option<PluginRef>,
     /// The typed name; `None` = the automatic names.
@@ -161,6 +169,11 @@ pub struct View<'a> {
     pub instruments: &'a dyn Fn(&str) -> Vec<Row>,
 }
 
+/// The name a new bus gets when none is given: „Bus 1“, „Bus 2“, … (`edits::add_bus`).
+pub fn auto_bus_name(project: &Project) -> String {
+    edits::numbered_track_name(project, edits::DEFAULT_BUS_NAME)
+}
+
 /// The name a new track with `instrument` gets when none is given (`edits::add_track`).
 pub fn auto_name(project: &Project, instrument: Option<&PluginRef>) -> String {
     let spec = NewTrack {
@@ -190,11 +203,15 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
     let focused = ctx.memory(|mem| mem.focused());
     // Enter and ↑ ↓ belong to the dialog while no button and no number entry has the focus.
     let keys = focused.is_none() || focused == Some(search_id) || focused == Some(name_id);
+    let bus = s.kind == KIND_BUS;
     let (mut up, mut down, mut enter) = (false, false, false);
     if keys {
         ctx.input_mut(|i| {
-            up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-            down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
+            // The instrument list is hidden for a bus: ↑ ↓ have nothing to move over.
+            if !bus {
+                up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
+                down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
+            }
             enter = i.consume_key(Modifiers::NONE, Key::Enter);
         });
     }
@@ -238,10 +255,16 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                     ui.add(Segmented::new(names::KIND, &mut s.kind, &items));
                 });
                 gap(ui);
-                instrument_row(ui, s, view, &mut rows, control, search_id);
-                gap(ui);
+                if s.kind != KIND_BUS {
+                    instrument_row(ui, s, view, &mut rows, control, search_id);
+                    gap(ui);
+                }
                 row(ui, names::NAME, |ui| {
-                    let hint = auto_name(view.project, s.instrument.as_ref());
+                    let hint = if s.kind == KIND_BUS {
+                        auto_bus_name(view.project)
+                    } else {
+                        auto_name(view.project, s.instrument.as_ref())
+                    };
                     if !s.name_touched {
                         s.name.clone_from(&hint);
                     }
@@ -455,6 +478,16 @@ mod tests {
         assert_eq!(s.spec().name, None);
         s.count = 99;
         assert_eq!(s.spec().count, COUNT_MAX as usize);
+    }
+
+    #[test]
+    fn a_bus_has_no_instrument_and_gets_a_bus_name() {
+        let mut s = State::new(Some(crate::app::hexa_ref()));
+        s.kind = KIND_BUS;
+        let spec = s.spec();
+        assert!(spec.bus && spec.instrument.is_none());
+        let p = Project::new("x");
+        assert_eq!(auto_bus_name(&p), "Bus 1");
     }
 
     #[test]

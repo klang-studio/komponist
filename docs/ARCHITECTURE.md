@@ -387,7 +387,8 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
 - **Commands** (UI → engine, rtrb): `Play`, `Stop`, `Locate(Tick)`, `SetLoop`, `Record{…}`,
   `SetProgram(Box<Program>)`, `InsertProcessor{slot, Box<dyn Processor>}`, `RemoveProcessor{slot}`,
   `SetTrackGain/Pan/Mute/Solo` (fast path without recompiling), `SetGates(GateTable)` (mute and solo
-  of every output and send along the routing graph, §6.8.6), `LiveNote{track, …}`
+  of every output and send along the routing graph, §6.8.6), `SetSendGain{send, gain}` (a send level while
+  its drag lasts, §6.8.4), `LiveNote{track, …}`
   (computer keyboard, step row audition), `Detach` (export, see 6.7).
 - **Events** (engine → UI, rtrb): `RecordedNoteOn/Off{track, tick, …}`, `LoopWrapped`,
   `CountInDone`, `ProcessorFailed{slot}`, `Retired(Garbage)`.
@@ -624,6 +625,20 @@ For the record, the two rejected variants would have mapped onto the same model 
 and group as two kinds) = a group is a `folder` bus, a return is a non-folder bus that only sends feed (the UI hides
 it from output menus); **B** (generic bus, no folders) = every bus has `folder = false`.
 
+**Where the UI shows it (WP-103).** Mixer: bus strips (80 px, `surface.2`) right before the master under a „Busse“
+label, a send list of compact rows (dot, name, level fill, value; orange = pre) and the output button at the foot
+of each track strip, „Eingänge“ (`2 Spuren`, `3 Sends`) on a bus strip; they appear once the project has a bus.
+The normal dock's lean strip gets a routing chip (arrow + dot of the output bus, or the dots of the sends) that
+opens a popover with the output and the send rows. Arrangement: a group is a 36 px folder row (fold triangle,
+`n Spuren`), its members are indented 14 px with a 3 px bracket in the group colour; effect buses stand in the
+„Busse“ section below „Neue Spur“ (32 px rows, hatched lane, no clips; a clip dragged or a double-click over a bus is
+refused with the reason „Busse nehmen keine Clips auf.“). Inspector: a „Routing“ section (output, sends with
+„pre“ / „post“ and „×“, „Sidechain-Quelle für:“) and, for a bus, „Bus“ with the list of its inputs. Strg G groups the
+selected tracks (`EditAction::GroupSelection`); the context menu of a header offers „In Gruppe zusammenfassen“,
+„Send zu neuem Bus“, „Send an …“ and „Ausgang“; deleting a group dissolves it. Mute and solo in the views read
+`routing::gates` (a group stays lit while a member is soloed). „Bus aufnehmen“ (owner decision 16 A) needs audio
+tracks and comes with wave 10.
+
 #### 6.8.2 Signal flow of a node and the tap points
 
 ```
@@ -739,6 +754,13 @@ fast paths, and the same output bit for bit (golden test against a render of the
   faders keep ramping as today. The app sends it with every mute or solo change on the fast path
   (`EngineSync::gates`). The program carries the compiled table; `SetTrackMute` / `SetTrackSolo` still work for flat
   programs while no table is active.
+- **Send level fast path (WP-103):** dragging a send level sends `Command::SetSendGain { send, gain }` per change
+  (the app applies `SetSend { LevelDb }` inside a gesture and calls `EngineSync::fast_path`, so the recompile waits
+  for the gesture's end, like a fader). The engine keeps one `f32` per gate index in a table allocated at start
+  (`NaN` = as compiled; no allocation on the audio thread: the send is found by its `SendId` in `Routing::sends`,
+  at most 256 entries). `sum_inputs` uses the override as the gain target of the send's edge state, which already
+  ramps from its last gain over the next segment, so a drag does not click. Every `SetProgram` clears the table;
+  the program compiled at the gesture's end carries the same level.
 - **Bridges:** an instrument whose own sidechain is set is not started early (`Processor::begin`): its input exists
   only once its source is done.
 

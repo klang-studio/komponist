@@ -3,7 +3,8 @@
 //! `mixView`).
 //!
 //! One strip per track, 80 wide, left to right in track order on `surface.0` with 1 px gaps,
-//! and the master strip (96) at the right edge. A strip ([`strip`]) shows the colour bar, name,
+//! then (WP-103) the bus strips right before the master under a "Busse" label, and the master strip
+//! (96) at the right edge. A strip ([`strip`]) shows the colour bar, name,
 //! instrument, the insert slots with "+", the reserved sends, the pan knob, M S R, the fader with
 //! the meter and the level and peak values. The strip of the selected track is
 //! `canvas.strip-selected` with its name row in `accent.surface`; selection is the same as the
@@ -20,7 +21,9 @@
 //! | browser plugin dropped on a strip | effect: inserted at the line; instrument: replaces the track's instrument |
 //! | peak value / meter (LED) | click resets peak and clip, Alt-click all strips |
 //! | level value | double-click text entry, Alt-click 0 dB, click clears the clip indicator |
-//! | sends | reserved, empty (busses come later) |
+//! | sends (WP-103, once the project has a bus) | one compact row per send ([`crate::views::routing::widgets::send_row`]): drag sets the level (one undo step, fast path while it lasts), click on the name changes the bus, right click pre / post / off / remove; the dashed "+" adds a send; a bus strip shows its inputs instead |
+//! | output button (WP-103) | above the level: the dropdown of the master, groups and buses; targets that would close a loop are grey with the reason |
+//! | routing chip (WP-103) | normal dock only: right end of the name row, opens the routing popover; Strg+click selects the track |
 
 pub mod metrics;
 pub mod model;
@@ -37,7 +40,8 @@ use komponist_ui::px;
 use komponist_ui::widgets::number_field::{WHEEL_GESTURE_IDLE, wheel_turned};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind};
 
-use self::metrics::{MASTER_WIDTH, STRIP_GAP, STRIP_WIDTH, Tier};
+use self::metrics::{self as m, MASTER_WIDTH, STRIP_GAP, STRIP_WIDTH, Tier};
+pub(crate) use self::strip::dashed_rect;
 use self::strip::toggle_prop;
 pub use self::strip::{Rows, SlotDrag};
 use crate::actions::{Action, EditAction};
@@ -266,17 +270,43 @@ impl View for Mixer {
         self.late.retain(&live);
         let body = ui.max_rect();
         px::fill(ui.painter(), body, 0.0, color32(color::SURFACE_0));
-        let tier = Tier::for_height(body.height());
-        let Some((master, tracks)) = strips.split_last() else {
+        let Some((master, rest)) = strips.split_last() else {
             return;
         };
+        // Tracks scroll; the buses stand right before the master and stay where they are (owner
+        // decision 3 A). With buses a label band "Busse" lies over the buses and the strips below
+        // it start lower; without them nothing changes.
+        let bus_from = rest
+            .iter()
+            .position(model::Strip::is_bus)
+            .unwrap_or(rest.len());
+        let (tracks, buses) = rest.split_at(bus_from);
+        let send_rows = model::send_rows(&strips);
+        let band = if buses.is_empty() {
+            0.0
+        } else {
+            m::BUS_LABEL_BAND
+        };
+        let strips_top = body.top() + band;
+        let tier = if send_rows > 0 {
+            Tier::for_routed_height(body.height() - band, send_rows)
+        } else {
+            Tier::for_height(body.height())
+        };
         let master_rect =
-            Rect::from_min_max(pos2(body.right() - MASTER_WIDTH, body.top()), body.max);
-        let area = Rect::from_min_max(
-            body.min,
-            pos2(master_rect.left() - STRIP_GAP, body.bottom()),
-        );
+            Rect::from_min_max(pos2(body.right() - MASTER_WIDTH, strips_top), body.max);
         let pitch = STRIP_WIDTH + STRIP_GAP;
+        let buses_width = buses.len() as f32 * pitch;
+        let buses_left = master_rect.left() - STRIP_GAP - buses_width + STRIP_GAP;
+        let area_right = if buses.is_empty() {
+            master_rect.left() - STRIP_GAP
+        } else {
+            buses_left - m::BUS_GAP
+        };
+        let area = Rect::from_min_max(
+            pos2(body.left(), strips_top),
+            pos2(area_right, body.bottom()),
+        );
         let content = tracks.len() as f32 * pitch - STRIP_GAP;
         let max_scroll = (content - area.width()).max(0.0);
         let mut scroll = ctx.ui.mixer.scroll_x.clamp(0.0, max_scroll);
@@ -295,7 +325,7 @@ impl View for Mixer {
         }
         ctx.ui.mixer.scroll_x = scroll;
 
-        let spans: Vec<(TrackId, Rangef)> = tracks
+        let mut spans: Vec<(TrackId, Rangef)> = tracks
             .iter()
             .enumerate()
             .filter_map(|(i, s)| {
@@ -303,20 +333,42 @@ impl View for Mixer {
                 Some((s.track()?, Rangef::new(x, x + STRIP_WIDTH)))
             })
             .collect();
+        spans.extend(buses.iter().enumerate().filter_map(|(i, s)| {
+            let x = buses_left + i as f32 * pitch;
+            Some((s.track()?, Rangef::new(x, x + STRIP_WIDTH)))
+        }));
         let mut events = Vec::new();
-        for (s, (track, span)) in tracks.iter().zip(&spans) {
-            if span.max < area.left() || span.min > area.right() {
+        let bus_clip = Rect::from_min_max(pos2(buses_left, strips_top), body.max);
+        for (s, (track, span)) in rest.iter().zip(&spans) {
+            let clip = if s.is_bus() { bus_clip } else { area };
+            if span.max < clip.left() || span.min > clip.right() {
                 continue;
             }
-            let rect = Rect::from_x_y_ranges(*span, body.y_range());
-            let rect = Rect::from_min_size(rect.min, vec2(STRIP_WIDTH, body.height()));
-            for (kind, event) in strip::show(ui, ctx, s, rect, area, tier) {
+            let rect = Rect::from_x_y_ranges(*span, strips_top..=body.bottom());
+            let rect = Rect::from_min_size(rect.min, vec2(STRIP_WIDTH, body.bottom() - strips_top));
+            for (kind, event) in strip::show(ui, ctx, s, rect, clip, tier) {
                 events.push((*track, kind, event));
             }
         }
-        strip::show(ui, ctx, master, master_rect, body, tier);
+        // The master has neither sends nor an output button.
+        let master_tier = Tier {
+            sends: false,
+            send_rows: 0,
+            output: false,
+            ..tier
+        };
+        strip::show(ui, ctx, master, master_rect, body, master_tier);
+        if !buses.is_empty() {
+            strip::bus_label(
+                ui,
+                Rect::from_min_max(
+                    pos2(buses_left, body.top()),
+                    pos2(master_rect.left(), strips_top),
+                ),
+            );
+        }
         for (track, kind, event) in events {
-            self.toggle(ctx, tracks, &spans, track, kind, event);
+            self.toggle(ctx, rest, &spans, track, kind, event);
         }
 
         // The wheel scrolls the strips sideways.

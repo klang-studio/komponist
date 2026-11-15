@@ -29,12 +29,16 @@
 //! | clip end | drag | `Edit(SetClipLength)`, length tooltip |
 //! | clip corner top right | drag | `Edit(SetClipLoop)` |
 //! | clip / empty lane | double-click | `Ui(OpenClip)` / `Edit(AddClip)` (1 bar) |
+//! | group header (WP-103) | fold triangle (Alt: all groups) | `Edit(SetTrackProp(Folded))`; members are indented with a bracket, effect buses stand in the "Busse" section ([`buses`]) |
+//! | header | right click | context menu: rename, colour, "In Gruppe zusammenfassen" (Strg G), "Send zu neuem Bus", "Send an …", "Ausgang", "Gruppe auflösen" / delete |
+//! | lane of a bus | double-click, a clip dragged over it | refused with "Busse nehmen keine Clips auf." |
 //! | header, lane, empty area | drop a `PluginRef` | `Plugin(Add)` on the track / a new track |
 //! | header, lane | drop a device head dragged with Alt (`CardDrag`, copy) | `Edit(CopyDevice)` on that track |
 //! | everywhere | wheel / Shift wheel / Strg wheel | scroll ↕ / ↔ / zoom around the mouse |
 //!
 //! Keys (Strg D, Strg E, 0, Entf, +, −, Z, Strg [ ]) are the keymap's.
 
+mod buses;
 mod cache;
 pub mod geometry;
 mod headers;
@@ -145,6 +149,32 @@ pub mod names {
         } else {
             format!("{n} Spuren")
         }
+    }
+
+    /// The count box: "6 Spuren", with buses "8 Spuren · 1 Gruppe · 2 Busse" (`05-arrangement`).
+    /// Groups and effect buses are not counted as tracks.
+    pub fn count_line(project: &komponist_model::Project) -> String {
+        let groups = project.tracks.iter().filter(|t| t.is_group()).count();
+        let buses = project
+            .tracks
+            .iter()
+            .filter(|t| t.is_bus() && !t.folder)
+            .count();
+        let tracks = project.tracks.len() - groups - buses;
+        let mut line = track_count(tracks);
+        if groups > 0 {
+            line.push_str(&format!(
+                " · {groups} {}",
+                if groups == 1 { "Gruppe" } else { "Gruppen" }
+            ));
+        }
+        if buses > 0 {
+            line.push_str(&format!(
+                " · {buses} {}",
+                if buses == 1 { "Bus" } else { "Busse" }
+            ));
+        }
+        line
     }
 
     /// "1 Clip ausgewählt", "3 Clips ausgewählt" (S01 `info`).
@@ -318,6 +348,16 @@ impl View for Arrangement {
             .is_some_and(|r| project.track(r.track).is_none())
         {
             self.rename = None;
+        }
+        // A bus made by Strg G or „Send zu neuem Bus“: its name goes into the edit mode.
+        if let Some(id) = ctx.ui.arrangement.rename_request.take()
+            && let Some(track) = project.track(id)
+        {
+            self.rename = Some(Rename {
+                track: id,
+                text: track.name.clone(),
+                fresh: true,
+            });
         }
 
         self.ruler(ui, ctx, &project, &g);
@@ -508,6 +548,29 @@ impl Arrangement {
         let Some(target) = drop_target_at(project, g, pos) else {
             return;
         };
+        // A bus takes audio effects only: an instrument or a MIDI effect dropped on it is refused,
+        // with the reason at the pointer.
+        if let DropTarget::Track(id) = &target
+            && project.track(*id).is_some_and(|t| t.is_bus())
+            && let Some(plugin) = egui::DragAndDrop::payload::<PluginRef>(ui.ctx())
+            && ctx
+                .engine
+                .host()
+                .role(&plugin)
+                .is_some_and(|r| r != komponist_model::DeviceRole::Effect)
+        {
+            if let Some(i) = g.row_at(pos.y) {
+                let r = Rect::from_x_y_ranges(egui::Rangef::point(pos.x), g.rows[i].y);
+                komponist_ui::tooltip::show_value(
+                    ui.ctx(),
+                    egui::Id::unique("komponist_arrangement_effects_only"),
+                    r,
+                    komponist_ui::tooltip::Placement::Above,
+                    super::routing::names::EFFECTS_ONLY,
+                );
+            }
+            return;
+        }
         overlay::paint_drop_target(ui, g, &target);
         if ui.input(|i| i.pointer.any_released())
             && let Some(plugin) = egui::DragAndDrop::take_payload::<PluginRef>(ui.ctx())
