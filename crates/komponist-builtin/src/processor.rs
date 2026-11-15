@@ -1,11 +1,11 @@
 //! [`PisynthProcessor`]: pisynth's `Synth<1>` as an in-process engine [`Processor`].
 
+use hexa_core::midi::CC_ALL_NOTES_OFF;
+use hexa_core::oversampling::DELAY;
+use hexa_core::{MidiMessage, Patch, Synth};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
-use synth_core::midi::CC_ALL_NOTES_OFF;
-use synth_core::oversampling::DELAY;
-use synth_core::{MidiMessage, Patch, Synth};
 
 use crate::device::Field;
 use crate::state::{self, StateError};
@@ -22,7 +22,7 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 
 /// pisynth as an instrument in a komponist chain (ARCHITECTURE §8.5).
 ///
-/// Wraps one `synth_core::Synth<1>` on the heap (about 2 MB, mostly the master effects' delay
+/// Wraps one `hexa_core::Synth<1>` on the heap (about 2 MB, mostly the master effects' delay
 /// lines). Create it on the UI thread with [`PisynthProcessor::new`] or
 /// [`PisynthProcessor::from_state`], activate it, send it to the engine.
 ///
@@ -42,7 +42,7 @@ const _: () = assert!(!core::mem::needs_drop::<Synth<1>>());
 /// it rewrites the 2 MB, see the crate docs for the cost).
 ///
 /// [`Processor::latency`] is the delay of pisynth's 2× oversampling filter,
-/// [`synth_core::oversampling::DELAY`] = 17 frames at any sample rate: a note-on at offset `n`
+/// [`hexa_core::oversampling::DELAY`] = 17 frames at any sample rate: a note-on at offset `n`
 /// is heard from frame `n + 17` on (the filter's pre-ringing, below −100 dBFS, starts at `n`).
 ///
 /// Output is stereo and clamped to −1 ..= 1 by pisynth; `ctx.offline` changes nothing (pisynth

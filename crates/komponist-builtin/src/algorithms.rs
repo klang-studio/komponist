@@ -9,7 +9,7 @@
 //! the same algorithm number here as on the synth. komponist cannot depend on `synth-ui` (it links
 //! LVGL), hence the copy.
 
-use synth_core::{OPERATORS, Patch};
+use hexa_core::{OPERATORS, Patch};
 
 /// A fixed algorithm: per operator the operators it modulates (bit mask, bit `t` = operator
 /// index `t`), and the index of the operator with feedback. Carriers modulate nothing.

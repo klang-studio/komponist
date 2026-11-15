@@ -24,7 +24,7 @@ From `HANDOFF.md` §3 and the screens:
 | R3 | A plugin crash must not stop the track (S05 "abgestürzt → Neu laden") | **Plugins run out of process.** In-process hosting cannot survive a segfault. |
 | R4 | The realtime audio thread is separate from the UI | No locks, allocation or blocking syscalls on the audio thread. Lock-free queues. |
 | R5 | Pixel-exact custom UI, 1×/2× scaling, 1 px lines, 60 fps with thousands of notes | GPU-drawn custom widgets, our own hit testing for canvases, culling and level of detail. |
-| R6 | Built-in instruments pisynth (6-op FM) and klopfer (drum sampler) | pisynth's `synth-core` runs in process. klopfer is already a CLAP plugin. |
+| R6 | Built-in instruments pisynth (6-op FM) and klopfer (drum sampler) | pisynth's `hexa-core` runs in process. klopfer is already a CLAP plugin. |
 | R7 | Tokens are never hard-coded; `tokens.json` is the single source of truth | Code generation from `tokens.json` at build time. |
 | R8 | Keyboard first; every frequent action has a shortcut | Central action and keymap layer, independent of widgets. |
 | R9 | Later: audio tracks, automation, buses/sends, CC lanes | Extension points in the model, the engine events and the program, without building them now. |
@@ -86,7 +86,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 | D3 | Plugin format layer | **decided after WP-15:** own layer behind `HostedPlugin` on clack-host 0.2 (CLAP) + vst3 0.3 (VST3); CLAP first. Test plugins with nice-plug |
 | D4 | Plugin isolation | out of process, one bridge per instance |
 | D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN". **Superseded by WP-87:** komponist has its own Sampler (internal device, `klopfer_dsp` engine); klopfer is an ordinary scanned CLAP plugin |
-| D6 | pisynth integration | in process via `synth-core` (`alloc` + `serde` features), as a built-in `Processor` |
+| D6 | pisynth integration | in process via `hexa-core` (`alloc` + `serde` features), as a built-in `Processor` |
 | D7 | Project format | one JSON file `*.komponist` with schema version; plugin states as base64 |
 | D8 | Undo | immutable snapshots with `Arc` structural sharing (copy on write) |
 | D9 | Musical time | `i64` ticks at 960 PPQ; display `Takt.Schlag.Tick` with 240 ticks/beat (= PPQ/4) |
@@ -136,7 +136,7 @@ Threads and their rules:
 
 New repository `komponist/` (this folder), Cargo workspace, edition 2024, resolver 3 (as in pisynth).
 Sibling repositories are referenced by **relative path** and must stay at their places:
-`../klang-dsp`, `../pisynth/crates/synth-core`, `../klopfer` (bundle build only).
+`../klang-dsp`, `../pisynth/crates/hexa-core`, `../klopfer` (bundle build only).
 
 ```
 komponist/
@@ -171,7 +171,7 @@ graph TD
   dsp --> engine[komponist-engine]
   model[komponist-model] --> engine
   engine --> builtin[komponist-builtin]
-  synth[(pisynth synth-core)] --> builtin
+  synth[(pisynth hexa-core)] --> builtin
   ipc[komponist-ipc] --> bridge[komponist-bridge]
   hosting[komponist-hosting] --> bridge
   ipc --> plugins[komponist-plugins]
@@ -961,9 +961,9 @@ table of CLAP features / VST3 subcategories.
 
 ### 8.5 Built-in instruments
 
-- **pisynth (D6):** `komponist-builtin::PisynthProcessor` wraps `synth_core::Synth<1>` (`Synth::boxed`,
+- **pisynth (D6):** `komponist-builtin::PisynthProcessor` wraps `hexa_core::Synth<1>` (`Synth::boxed`,
   features `alloc` + `serde`). Events are applied sample-accurately by splitting `render` at event
-  offsets. State = `Patch` (serde). The browser shows the factory presets (`synth_core::presets`)
+  offsets. State = `Patch` (serde). The browser shows the factory presets (`hexa_core::presets`)
   under "Presets · pisynth". The device card shows 8 macros (S05: Algorithmus, Ratio 2, Index,
   Feedback, Attack, Decay, Sustain, Release) mapped to patch fields. The mapping is documented in WP-25.
   pisynth has no own GUI in v0.1 (generic view only). An idea for later: the HEXA-6 display
@@ -1063,7 +1063,7 @@ with `Painter`:
 ### 10.1 Current state
 
 `no_std`, no allocation, `f32`, math via `libm`. Modules: `biquad`, `crush`, `one_pole`, `phase`, `rng`,
-`sine`, `svf`, `units`, `wave` (≈ 1 200 lines with tests). Users: pisynth (`synth-core`, `synth-ui`)
+`sine`, `svf`, `units`, `wave` (≈ 1 200 lines with tests). Users: pisynth (`hexa-core`, `synth-ui`)
 and klopfer (`klopfer_dsp`, plugin). Rule from the crate doc: *building blocks only, no parameter
 mapping; something moves in once at least two projects need it.*
 **klang-dsp is not under version control yet.** That must change before agents edit it (WP-00).

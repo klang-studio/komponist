@@ -80,7 +80,7 @@ fn a_parameter_writes_the_patch_field_the_table_names() {
     };
     set(&mut p, "op3_ratio", 3.5);
     assert_eq!(p.operators[2].ratio, 3.5);
-    assert_eq!(p.operators[2].pitch_mode, synth_core::PitchMode::Ratio);
+    assert_eq!(p.operators[2].pitch_mode, hexa_core::PitchMode::Ratio);
     set(&mut p, "op4_level", 0.4);
     set(&mut p, "op5_attack", 2.0);
     set(&mut p, "op5_sustain", 0.25);
@@ -104,13 +104,13 @@ fn a_parameter_writes_the_patch_field_the_table_names() {
         (p.volume, p.portamento, p.unison, p.unison_spread, p.tune),
         (0.5, 0.2, 4, 0.8, -2.0)
     );
-    assert_eq!(p.voice_mode, synth_core::VoiceMode::Mono);
+    assert_eq!(p.voice_mode, hexa_core::VoiceMode::Mono);
     // Mono off is poly; legato stays legato while mono is on.
     set(&mut p, "mono", 0.0);
-    assert_eq!(p.voice_mode, synth_core::VoiceMode::Poly);
-    p.voice_mode = synth_core::VoiceMode::Legato;
+    assert_eq!(p.voice_mode, hexa_core::VoiceMode::Poly);
+    p.voice_mode = hexa_core::VoiceMode::Legato;
     set(&mut p, "mono", 1.0);
-    assert_eq!(p.voice_mode, synth_core::VoiceMode::Legato);
+    assert_eq!(p.voice_mode, hexa_core::VoiceMode::Legato);
 }
 
 #[test]

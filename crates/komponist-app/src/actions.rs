@@ -367,7 +367,7 @@ pub enum PluginAction {
         /// Where.
         target: DropTarget,
     },
-    /// Load factory preset `preset` (index in `synth_core::presets`) into a pisynth device
+    /// Load factory preset `preset` (index in `hexa_core::presets`) into a pisynth device
     /// ("Presets · pisynth" in the browser); an undoable state change.
     ApplyPisynthPreset {
         /// The pisynth device.

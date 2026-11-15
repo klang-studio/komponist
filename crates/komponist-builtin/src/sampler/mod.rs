@@ -14,7 +14,7 @@
 //! pad's start/end, tune, drive, pan, gain, amp envelope and choke group are its `PadSettings`;
 //! the interpolation is Hermite and resamples any sample rate. What the sampler does not use
 //! (filter, LFO, modulation slots, layers, slicing, stretch) stays off. Copying it would only fork
-//! it, so it is a path dependency like `synth-core`.
+//! it, so it is a path dependency like `hexa-core`.
 //!
 //! # Parameters
 //!

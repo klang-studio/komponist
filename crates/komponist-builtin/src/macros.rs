@@ -40,14 +40,14 @@
 //! is not invertible in general (Algorithmus rewrites the routing, proportions collapse at 0):
 //! to restore an earlier patch (undo), load its state.
 
+use hexa_core::{EnvelopeParams, MAX_RATIO, MAX_TIME, OPERATORS, Patch, PitchMode};
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
-use synth_core::{EnvelopeParams, MAX_RATIO, MAX_TIME, OPERATORS, Patch, PitchMode};
 
 use crate::algorithms::{self, ALGORITHMS};
 
 /// Shortest time of the time macros, seconds (pisynth's shortest stage time).
 pub const TIME_MIN: f64 = 0.001;
-/// Longest time of the time macros, seconds (`synth_core::MAX_TIME`).
+/// Longest time of the time macros, seconds (`hexa_core::MAX_TIME`).
 pub const TIME_MAX: f64 = MAX_TIME as f64;
 
 /// One of pisynth's 8 macros. The discriminant is the stable parameter id ([`Macro::id`]).
@@ -340,7 +340,7 @@ fn time_to_knob(seconds: f32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synth_core::{PRESET_COUNT, preset};
+    use hexa_core::{PRESET_COUNT, preset};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-5

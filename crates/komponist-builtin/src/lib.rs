@@ -1,6 +1,6 @@
 //! Built-in instruments of komponist: pisynth in process (ARCHITECTURE §8.5, D6).
 //!
-//! pisynth is the owner's 6-operator FM synthesizer (`../pisynth/crates/synth-core`, read-only
+//! pisynth is the owner's 6-operator FM synthesizer (`../pisynth/crates/hexa-core`, read-only
 //! here). [`PisynthProcessor`] runs its `Synth<1>` as an engine `Processor`. The metronome voice
 //! of the architecture sketch lives in the engine instead (`komponist_engine`'s metronome).
 //!
@@ -64,6 +64,7 @@ mod processor;
 pub mod sampler;
 pub mod state;
 
+pub use hexa_core::Patch;
 pub use internal::{Internal, InternalProcessor, Preset};
 pub use macros::Macro;
 pub use processor::{PisynthProcessor, SAMPLE_RATES};
@@ -71,4 +72,3 @@ pub use state::{
     PRESET_COUNT, PresetInfo, StateError, categories, decode_state, default_patch, encode_state,
     preset_patch, presets,
 };
-pub use synth_core::Patch;

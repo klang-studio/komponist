@@ -6,10 +6,10 @@
 //! clamped, non-finite ones replaced), so a state from a file never puts invalid values into the
 //! engine. All functions here allocate and run on the UI thread.
 
-use synth_core::Patch;
+use hexa_core::Patch;
 
-/// Number of factory presets (`synth_core::PRESET_COUNT`).
-pub const PRESET_COUNT: usize = synth_core::PRESET_COUNT;
+/// Number of factory presets (`hexa_core::PRESET_COUNT`).
+pub const PRESET_COUNT: usize = hexa_core::PRESET_COUNT;
 
 /// A factory preset as the browser lists it ("Presets · pisynth").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,20 +27,20 @@ pub fn presets() -> impl Iterator<Item = PresetInfo> {
     (0..PRESET_COUNT).filter_map(|index| {
         Some(PresetInfo {
             index,
-            name: synth_core::preset_name(index)?,
-            category: synth_core::preset_category(index)?,
+            name: hexa_core::preset_name(index)?,
+            category: hexa_core::preset_category(index)?,
         })
     })
 }
 
 /// The preset categories in menu order ("Init", "Tasten", …).
 pub fn categories() -> impl Iterator<Item = &'static str> {
-    synth_core::categories()
+    hexa_core::categories()
 }
 
 /// The patch of factory preset `index`, `None` if out of range.
 pub fn preset_patch(index: usize) -> Option<Patch> {
-    synth_core::preset(index).map(|preset| preset.patch)
+    hexa_core::preset(index).map(|preset| preset.patch)
 }
 
 /// The patch of a device without state: factory preset 0, "Init" (the default patch with the

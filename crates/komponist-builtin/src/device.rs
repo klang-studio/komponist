@@ -39,7 +39,7 @@
 //! | `op{n}_key_scale` | Key Scale n | `key_scaling.right`: ±24 dB per octave above the break point (shown in dB) |
 //! | `op{n}_output` | Träger n | `operators[n-1].output` (carrier: heard); on the card only the fill of the level fader |
 //!
-//! Not in the table because `synth-core` has no field for them (only free routes of the modulation
+//! Not in the table because `hexa-core` has no field for them (only free routes of the modulation
 //! matrix, which a card parameter cannot own): per-operator velocity sensitivity and the pitch
 //! envelope.
 //!
@@ -48,15 +48,15 @@
 
 use std::sync::OnceLock;
 
+use hexa_core::{
+    MAX_KEY_SCALING, MAX_PORTAMENTO, MAX_RATIO, MAX_TIME, MAX_TUNE, MAX_UNISON, OPERATORS, Patch,
+    PitchMode, VoiceMode,
+};
 use komponist_model::format::MINUS;
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, ENV_OP, GraphBinding, GraphConfig, Half, Page, WidgetKind,
 };
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
-use synth_core::{
-    MAX_KEY_SCALING, MAX_PORTAMENTO, MAX_RATIO, MAX_TIME, MAX_TUNE, MAX_UNISON, OPERATORS, Patch,
-    PitchMode, VoiceMode,
-};
 
 use crate::algorithms::ALGORITHMS;
 use crate::macros::Macro;
@@ -502,7 +502,7 @@ fn id(key: &str) -> ParamId {
 /// *Hüllkurven:* the envelope graph of the selected operator with its attack, decay, sustain, release,
 /// attack curve and key scale knobs below; on the right the operator switch, loop, delay, hold and
 /// the decay and release curves. The handoff's velocity and pitch envelope cells are left
-/// out, `synth-core` has no field for them.
+/// out, `hexa-core` has no field for them.
 pub fn layout() -> DeviceLayout {
     let select = || CellParam::Select {
         key: ENV_OP,
