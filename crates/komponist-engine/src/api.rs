@@ -367,9 +367,14 @@ pub struct DeviceMeter {
     output: AtomicU32,
     /// The processor's current latency in frames (WP-91).
     latency: AtomicU32,
+    /// Full scale of the gain-reduction bar in dB (f32 bits; 0 = [`DeviceMeter::DEFAULT_GR_RANGE_DB`]).
+    gr_range: AtomicU32,
 }
 
 impl DeviceMeter {
+    /// The gain-reduction range shown when the device sets none.
+    pub const DEFAULT_GR_RANGE_DB: f32 = 24.0;
+
     /// All values 0.
     pub const fn new() -> DeviceMeter {
         DeviceMeter {
@@ -377,6 +382,23 @@ impl DeviceMeter {
             reduction: AtomicU32::new(0),
             output: AtomicU32::new(0),
             latency: AtomicU32::new(0),
+            gr_range: AtomicU32::new(0),
+        }
+    }
+
+    /// Sets the reduction (in dB) at which the gain-reduction bar is full; a limiter with typical
+    /// reductions of a few dB wants a small range. Non-positive or non-finite values are ignored.
+    pub fn set_gr_range_db(&self, db: f32) {
+        if db.is_finite() && db > 0.0 {
+            self.gr_range.store(db.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// UI. The reduction at which the bar is full ([`DeviceMeter::DEFAULT_GR_RANGE_DB`] unless set).
+    pub fn gr_range_db(&self) -> f32 {
+        match self.gr_range.load(Ordering::Relaxed) {
+            0 => Self::DEFAULT_GR_RANGE_DB,
+            bits => f32::from_bits(bits),
         }
     }
 

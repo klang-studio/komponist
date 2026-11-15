@@ -78,6 +78,11 @@ pub trait Dsp: Send {
         0
     }
 
+    /// Non-RT. The reduction in dB at which the device's gain-reduction bar is full.
+    fn gr_range_db(&self) -> f32 {
+        DeviceMeter::DEFAULT_GR_RANGE_DB
+    }
+
     /// RT. The tempo of the transport in quarter notes per minute, delivered at the start of every
     /// call (constant within one). Tempo-synced effects follow it; the default ignores it.
     fn set_tempo(&mut self, _bpm: f64) {}
@@ -381,6 +386,7 @@ impl Processor for InternalProcessor {
         self.sample_rate = sample_rate;
         self.dsp.activate(sample_rate);
         self.meter.set_latency(self.dsp.latency());
+        self.meter.set_gr_range_db(self.dsp.gr_range_db());
         Ok(())
     }
 

@@ -8,13 +8,15 @@
 
 use std::collections::HashMap;
 
+use komponist_engine::DeviceMeter;
 use komponist_model::{DeviceId, TrackId};
 use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;
 
-/// The largest gain reduction the display scale shows (the GR bar is full at this many dB).
-pub const GR_RANGE_DB: f32 = 24.0;
+/// The largest gain reduction the display scale shows by default (the GR bar is full at this many
+/// dB); a device can set its own range ([`DeviceMeter::gr_range_db`], the limiter shows 12 dB).
+pub const GR_RANGE_DB: f32 = DeviceMeter::DEFAULT_GR_RANGE_DB;
 /// How fast the gain reduction bar falls back, dB per second.
 pub const GR_FALL_DB_PER_S: f32 = 40.0;
 
@@ -30,11 +32,24 @@ pub struct DeviceLevels {
 
 /// Ballistics of one device's meter: In and Out as a [`MeterState`] (channel 0 and 1), the
 /// reduction falling at [`GR_FALL_DB_PER_S`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct DeviceBallistics {
     io: MeterState,
     reduction_db: f32,
+    /// Reduction in dB at which the GR bar is full.
+    range_db: f32,
     last: Option<f64>,
+}
+
+impl Default for DeviceBallistics {
+    fn default() -> Self {
+        DeviceBallistics {
+            io: MeterState::default(),
+            reduction_db: 0.0,
+            range_db: GR_RANGE_DB,
+            last: None,
+        }
+    }
 }
 
 impl DeviceBallistics {
@@ -51,7 +66,7 @@ impl DeviceBallistics {
         DeviceLevels {
             bars: [
                 fraction(self.io.level_db(0)),
-                (self.reduction_db / GR_RANGE_DB).clamp(0.0, 1.0),
+                (self.reduction_db / self.range_db).clamp(0.0, 1.0),
                 fraction(self.io.level_db(1)),
             ],
             reduction_db: self.reduction_db,
@@ -89,7 +104,9 @@ impl Meters {
         // The internal devices' meters; devices that left the host are dropped.
         let mut seen = Vec::new();
         engine.host().for_each_meter(&mut |id, meter| {
-            self.devices.entry(id).or_default().tick(meter.take(), now);
+            let ballistics = self.devices.entry(id).or_default();
+            ballistics.range_db = meter.gr_range_db();
+            ballistics.tick(meter.take(), now);
             seen.push(id);
         });
         self.devices.retain(|id, _| seen.contains(id));
@@ -142,5 +159,25 @@ impl Meters {
         self.master.is_active()
             || self.tracks.values().any(MeterState::is_active)
             || self.devices.values().any(DeviceBallistics::is_active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_gr_bar_is_full_at_the_devices_range() {
+        let mut b = DeviceBallistics {
+            range_db: 12.0,
+            ..DeviceBallistics::default()
+        };
+        b.tick((0.0, 6.0, 0.0), 0.0);
+        assert!((b.levels().bars[1] - 0.5).abs() < 1e-6);
+        b.tick((0.0, 20.0, 0.0), 0.0);
+        assert_eq!(b.levels().bars[1], 1.0);
+        let mut default = DeviceBallistics::default();
+        default.tick((0.0, 6.0, 0.0), 0.0);
+        assert!((default.levels().bars[1] - 0.25).abs() < 1e-6);
     }
 }

@@ -198,6 +198,11 @@ impl Dsp for Limiter {
         self.delay as u32
     }
 
+    /// Typical reductions are 1–6 dB (WP-90), so the bar is full at 12 dB.
+    fn gr_range_db(&self) -> f32 {
+        12.0
+    }
+
     fn take_reduction_db(&mut self) -> f32 {
         let db = -20.0 * self.deepest.max(1e-6).log10();
         self.deepest = 1.0;

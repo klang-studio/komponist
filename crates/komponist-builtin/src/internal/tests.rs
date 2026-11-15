@@ -295,3 +295,33 @@ fn the_meter_feed_reports_input_reduction_and_output_without_allocating() {
     let (i, gr, _) = m.take();
     assert_eq!((i, gr), (0.25, 0.0));
 }
+
+#[test]
+fn the_limiter_meter_is_full_at_12_db_and_the_others_keep_24() {
+    let limiter = activated(Internal::Limiter, &Internal::Limiter.defaults());
+    assert_eq!(limiter.meter().gr_range_db(), 12.0);
+    let eq = activated(Internal::Eq, &Internal::Eq.defaults());
+    assert_eq!(eq.meter().gr_range_db(), 24.0);
+}
+
+fn param_event(id: u32, value: f64) -> Event {
+    Event {
+        offset: 0,
+        kind: EventKind::Param { id, value },
+    }
+}
+
+#[test]
+fn a_param_that_changes_the_latency_publishes_it_in_the_meter() {
+    let kind = Internal::Limiter;
+    let mut p = activated(kind, &kind.defaults());
+    let meter = p.meter();
+    let on = meter.latency();
+    assert!(on > 0 && on == p.latency());
+    let wire = kind.wire(&ParamId::new("lookahead")).unwrap() as u32;
+    let silence: [Vec<f32>; 2] = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    run(&mut p, &[param_event(wire, 0.0)], &silence);
+    assert_eq!(meter.latency(), 0);
+    run(&mut p, &[param_event(wire, 1.0)], &silence);
+    assert_eq!(meter.latency(), on);
+}
