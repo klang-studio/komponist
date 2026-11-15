@@ -16,7 +16,7 @@
 //! | fader / pan | drag relative, Shift fine, double-click or Alt-click default, Enter or right-click „Wert eingeben“ text entry, wheel one step (Shift fine); a drag or a wheel burst is one undo step, fast-path commands while it lasts |
 //! | M S R | as in the track headers: press, drag across strips, Alt-click S / R exclusive |
 //! | insert slot | click opens the plugin window (an internal device: the Geräte tab, scrolled to it), drag reorders (2 px accent line), Alt-click bypass |
-//! | "+" | opens the browser on Effekte |
+//! | "+" | opens the add menu below the slot ([`crate::views::devices::add_menu`]); on the master it lists audio effects only |
 //! | browser plugin dropped on a strip | effect: inserted at the line; instrument: replaces the track's instrument |
 //! | peak value / meter (LED) | click resets peak and clip, Alt-click all strips |
 //! | level value | double-click text entry, Alt-click 0 dB, click clears the clip indicator |

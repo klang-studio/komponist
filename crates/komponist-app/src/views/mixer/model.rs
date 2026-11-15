@@ -27,10 +27,10 @@ pub mod names {
     pub const OUTPUT: &str = "Ausgang 1–2";
     /// The "+" slot.
     pub const ADD: &str = "+";
-    /// Accessible name and tooltip of the "+" slot ("„+“ öffnet Browser gefiltert auf Effekte").
+    /// Accessible name and tooltip of the "+" slot ("„+“ öffnet die Gerätesuche").
     pub const ADD_EFFECT: &str = "Effekt hinzufügen";
     /// Its tooltip detail.
-    pub const ADD_EFFECT_DETAIL: &str = "Öffnet den Browser gefiltert auf Effekte";
+    pub const ADD_EFFECT_DETAIL: &str = "Öffnet die Gerätesuche für diesen Kanal";
     /// Tooltip detail of an insert slot (S04 "Insert-Slot").
     pub const SLOT_DETAIL: &str = "Klick öffnet · Ziehen sortiert um · Alt-Klick Bypass";
     /// Tooltip of the peak value (S04 "Peak-Wert / LED").

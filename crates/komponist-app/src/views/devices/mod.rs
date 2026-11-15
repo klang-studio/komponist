@@ -19,6 +19,7 @@
 //! | knob | `SetParam` (pisynth: also into the device state) |
 //! | touching a parameter (press, drag, click) | `Ui(TouchParam)`: the inspector's „Parameter“ section and, while dragging, the status line show it |
 //! | right-click on a parameter | „Auf Standard“ (the reset) and „Wert eingeben“ (text entry; not for choices and switches); no automation, MIDI learn or macro entries (prepared, not built) |
+//! | „+ Gerät“ in the head | opens the add menu ([`add_menu`]) below the button, for the selected track's chain |
 //! | click on the head | selects the device (Strg C / V / D, Entf, ← → act on it) |
 //! | double-click on the head | collapses or expands; with Alt every device of the chain |
 //! | click on a collapsed strip | expands it |
@@ -32,7 +33,7 @@
 //! | wheel in the body | scrolls up and down while the dock is lower than the chain (< 292 px area) |
 //! | Neu laden | `Reload` |
 
-mod add_menu;
+pub(crate) mod add_menu;
 mod cells;
 pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
@@ -54,7 +55,7 @@ use self::model::{Card, Placement, names};
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
-use crate::ui_state::{BrowserSegment, Reveal};
+use crate::ui_state::Reveal;
 use crate::views::browser::model::selected_track;
 use crate::views::late::LateTracker;
 use crate::views::{View, ViewCtx, group_bounds};
@@ -237,7 +238,7 @@ fn clipboard_events(ui: &Ui, ctx: &mut ViewCtx<'_>) {
 }
 
 /// The chain head: colour mark, track name, the devices as `a › b › c` (visible ones on
-/// `surface.3`, a click scrolls there), „+ Gerät“ (opens the browser on Effekte).
+/// `surface.3`, a click scrolls there), „+ Gerät“ (opens the add menu below the button).
 fn header_row(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
@@ -297,12 +298,14 @@ fn header_row(
             .max_rect(right)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    if row.add(Button::new(names::ADD)).clicked() {
-        ctx.send(Action::Ui(UiAction::FocusBrowserSearch));
-        ctx.send(Action::Ui(UiAction::SetBrowserSegment(
-            BrowserSegment::Effects,
-        )));
-    }
+    let add = row.add(Button::new(names::ADD));
+    add_menu::show(
+        ui,
+        ctx,
+        &add,
+        ChannelRef::Track(track.id),
+        add_menu::Anchor::Below,
+    );
 
     // The chain, cut at the button.
     let chain_area = Rect::from_min_max(
@@ -438,7 +441,7 @@ fn chain(
     }
     let x = spans.last().map_or(origin + pad, |(_, r)| r + gap);
     let area = Rect::from_min_max(pos2(x, top), pos2(x + metrics::DROP_AREA_WIDTH, bottom));
-    drop_area(&mut cu, ctx, area, track, cards);
+    drop_area(&mut cu, ctx, area, track);
 
     if let Some(drop) = drop_over(&mut cu, ctx, body, track, cards, &spans) {
         match drop {
@@ -548,7 +551,7 @@ fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32,
 
 /// The drop area after the last card: a dashed `surface.4` frame with a „+“ and the hint. It is
 /// also a button: a click, Enter or Space opens the add menu ([`add_menu`]).
-fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, cards: &[Card]) {
+fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track) {
     let ppp = ui.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
     let id = ui.scope_id().with("komponist_devices_drop_area");
@@ -623,10 +626,8 @@ fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, card
         ui,
         ctx,
         &resp,
-        &add_menu::Target {
-            channel: ChannelRef::Track(track.id),
-            cards,
-        },
+        ChannelRef::Track(track.id),
+        add_menu::Anchor::TopLeft,
     );
 }
 

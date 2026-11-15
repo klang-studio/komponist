@@ -4,7 +4,7 @@
 use egui::{Rangef, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 use komponist_ipc::PluginKind;
 use komponist_model::edits::TrackProp;
-use komponist_model::{Hue, MidiChannelSel, MidiInputSel, PluginRef, Project, Track};
+use komponist_model::{ChannelRef, Hue, MidiChannelSel, MidiInputSel, PluginRef, Project, Track};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, typography};
 use komponist_ui::state::{self, State};
@@ -15,9 +15,9 @@ use komponist_ui::{focus, fonts, px};
 
 use super::model::{self, DeviceRow, RowStatus, names};
 use super::{Col, Inspector, Meta, RenameTarget, frame, label, metrics as m, place};
-use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
-use crate::ui_state::BrowserSegment;
+use crate::actions::{Action, DropTarget, EditAction, PluginAction};
 use crate::views::ViewCtx;
+use crate::views::devices::add_menu;
 
 /// The track section of `track`.
 pub(super) fn section(
@@ -248,7 +248,7 @@ fn no_instrument() -> PluginRef {
 
 /// The devices list of `track`: a row per device (power square, name, status or format); a
 /// click opens the plugin window, the square (or Alt-click) switches bypass; "+ Effekt" opens
-/// the browser on Effekte.
+/// the add menu below the link.
 pub(super) fn devices_section(
     insp: &mut Inspector,
     ui: &mut Ui,
@@ -281,11 +281,14 @@ pub(super) fn devices_section(
             }
         },
     );
-    if add.is_some_and(|r| r.clicked()) {
-        ctx.send(Action::Ui(UiAction::FocusBrowserSearch));
-        ctx.send(Action::Ui(UiAction::SetBrowserSegment(
-            BrowserSegment::Effects,
-        )));
+    if let Some(add) = add {
+        add_menu::show(
+            ui,
+            ctx,
+            &add,
+            ChannelRef::Track(track.id),
+            add_menu::Anchor::Below,
+        );
     }
 }
 

@@ -7,7 +7,7 @@ use egui::{
 };
 use komponist_model::edits::{ChannelProp, TrackProp};
 use komponist_model::format::{fmt_db, fmt_pan};
-use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginRef};
+use komponist_model::{ChannelRef, DeviceId, PluginRef};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, typography};
 use komponist_ui::state::{self, State};
@@ -27,7 +27,8 @@ use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
 use crate::meters::Meters;
-use crate::ui_state::BrowserSegment;
+use crate::views::devices::add_menu;
+use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
 
@@ -549,8 +550,8 @@ fn slot_widget(ui: &mut Ui, s: &Strip, insert: &Insert, rect: Rect) -> Response 
     response
 }
 
-/// The "+" slot: a dashed `line.1` frame; opens the browser on Effekte (and selects the track,
-/// so the browser's Enter adds to it).
+/// The "+" slot: a dashed `line.1` frame; opens the add menu ([`add_menu`]) below it for the
+/// strip's chain (audio effects only on the master).
 fn add_slot(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
     let response = ui.interact(rect, ui.scope_id().with("add"), Sense::click());
     let st = State::of(ui, &response);
@@ -575,20 +576,7 @@ fn add_slot(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rect: Rect) {
     Tip::new(names::ADD_EFFECT)
         .detail(names::ADD_EFFECT_DETAIL)
         .attach(&response);
-    if response.clicked() {
-        if let Some(track) = s.track()
-            && !s.selected
-        {
-            ctx.send(Action::Ui(UiAction::Select(SelectionChange::Tracks {
-                tracks: vec![track],
-                mode: SelectMode::Replace,
-            })));
-        }
-        ctx.send(Action::Ui(UiAction::FocusBrowserSearch));
-        ctx.send(Action::Ui(UiAction::SetBrowserSegment(
-            BrowserSegment::Effects,
-        )));
-    }
+    add_menu::show(ui, ctx, &response, s.channel, add_menu::Anchor::Below);
 }
 
 /// A slot of this strip or a browser plugin dragged over the strip: the 2 px accent line at the
@@ -652,29 +640,20 @@ fn drop_over(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, spans: &
         return;
     };
     let midi = s.midi_effect_count();
-    let index = match (role, s.channel) {
-        (DeviceRole::Instrument | DeviceRole::MidiEffect, ChannelRef::Master) => return,
-        (DeviceRole::Instrument, ChannelRef::Track(_)) => {
-            match spans.get(midi) {
-                Some((top, bottom)) if first > midi => {
-                    let r = Rect::from_x_y_ranges(area.x_range(), *top..=*bottom);
-                    state::paint_select_ring(ui.painter(), r, radius::S);
-                }
-                _ => line_at(ui, midi),
-            }
-            midi
-        }
-        (DeviceRole::MidiEffect, ChannelRef::Track(_)) => {
-            let at = slot.min(midi);
-            line_at(ui, at);
-            at
-        }
-        (DeviceRole::Effect, _) => {
-            let at = slot.max(first);
-            line_at(ui, at);
-            at
-        }
+    let Some(place) = place_plugin(role, s.is_master(), slot, first, midi) else {
+        return;
     };
+    match place {
+        Placement::Instrument(at) => match spans.get(at) {
+            Some((top, bottom)) => {
+                let r = Rect::from_x_y_ranges(area.x_range(), *top..=*bottom);
+                state::paint_select_ring(ui.painter(), r, radius::S);
+            }
+            None => line_at(ui, at),
+        },
+        Placement::Line(at) => line_at(ui, at),
+    }
+    let index = place.index();
     if released {
         egui::DragAndDrop::clear_payload(&dnd);
         ctx.send(Action::Plugin(PluginAction::Add {
