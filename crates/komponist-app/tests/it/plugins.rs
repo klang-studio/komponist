@@ -311,15 +311,30 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
     step_until(&mut app, "the reloaded device", all_ok);
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
 
-    // A state snapshot goes into the document without an undo step.
+    // A parameter turned on the card reaches the document with the plugin's state snapshot, as an
+    // undo step named after the parameter. (A snapshot of an unchanged plugin is no change.)
     let pad_synth = app.project().tracks[3].channel.devices[0].id;
     assert_eq!(app.project().tracks[3].channel.devices[0].state, None);
     let undo = app.doc().undo_label().map(str::to_owned);
-    app.engine_mut().host_mut().request_state(pad_synth);
+    let gain = app
+        .engine()
+        .host()
+        .params(pad_synth)
+        .unwrap()
+        .iter()
+        .find(|p| p.name == "Gain")
+        .expect("a gain parameter")
+        .id;
+    app.dispatch(Action::Plugin(PluginAction::SetParam {
+        device: pad_synth,
+        id: gain,
+        value: 0.5,
+    }));
     step_until(&mut app, "the Pad's state", |app| {
         app.project().tracks[3].channel.devices[0].state.is_some()
     });
-    assert_eq!(app.doc().undo_label().map(str::to_owned), undo);
+    assert_ne!(app.doc().undo_label().map(str::to_owned), undo);
+    assert_eq!(app.doc().undo_label(), Some("Gain ändern"));
     assert!(app.doc().is_dirty());
 
     // Saving snapshots every bridged device into the file.

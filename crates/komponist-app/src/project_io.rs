@@ -390,7 +390,7 @@ impl App {
             .host_mut()
             .snapshot_states(crate::app::SNAPSHOT_TIMEOUT)
         {
-            self.store_snapshot(device, &state);
+            self.store_snapshot_for_save(device, &state);
         }
         // The sample links get the paths for this file's folder.
         self.rebase_samples(&path);

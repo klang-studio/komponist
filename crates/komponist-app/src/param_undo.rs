@@ -392,6 +392,26 @@ impl App {
         }
     }
 
+    /// A snapshot taken for the file being saved: like [`App::store_snapshot`], but a device
+    /// that still holds what it came up with ([`App::device_up`]) gets that state into the
+    /// document too (untracked: it is no edit), so the file has it.
+    pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        let untouched = self
+            .param_undo
+            .baseline
+            .get(&device)
+            .is_some_and(|b| **b == **state)
+            && self
+                .project()
+                .find_device(device)
+                .is_some_and(|(_, _, d)| d.state.is_none());
+        if untouched {
+            self.store_state_untracked(device, state);
+        } else {
+            self.store_snapshot(device, state);
+        }
+    }
+
     /// Stores `state` outside the history, rebased into every undo step: for what is not an edit
     /// (sample paths rewritten for the file being saved, the echo of an undo).
     pub(crate) fn store_state_untracked(&mut self, device: DeviceId, state: &Arc<[u8]>) {
