@@ -148,6 +148,7 @@ komponist/
   assets/icons/              Lucide subset (ISC), SVG
   crates/
     komponist-tokens/           build.rs: tokens.json → Rust consts; oklch → sRGB; fonts
+    komponist-i18n/             build.rs: locales/*/*.ftl → typed text catalog (`Lang`, one method per message); leaf crate
     komponist-model/            project document, time, edits, undo, serde, formatting
     komponist-engine/           RT engine, Processor trait, program compiler, offline render, export
     komponist-audio/            cpal backends, midir inputs, stream lifecycle, CPU/xrun stats
@@ -176,6 +177,8 @@ graph TD
   ipc --> plugins[komponist-plugins]
   engine --> plugins
   model --> plugins
+  i18n[komponist-i18n] --> ui
+  i18n --> app
   audio[komponist-audio] --> app[komponist-app]
   ui --> app
   model --> app

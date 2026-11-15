@@ -105,13 +105,19 @@ struct Select {
     var: String,
     /// In source order; the `other` variant is separate.
     variants: Vec<(Key, Vec<Piece>)>,
+    /// The default variant (`*[other]` of a plural select, any `*[key]` of a text select).
     other: Vec<Piece>,
+    /// Key of the default variant.
+    default_key: String,
+    /// A select on a text value (`[on]`, `*[off]`) instead of a number.
+    text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Key {
     Number(i64),
     Category(&'static str),
+    Text(String),
 }
 
 struct Msg {
@@ -122,8 +128,12 @@ struct Msg {
     pieces: Vec<Piece>,
     /// Variables in order of first appearance.
     vars: Vec<String>,
-    /// Variables used as a selector.
+    /// Variables used as a plural selector.
     counts: BTreeSet<String>,
+    /// Variables used as a text selector.
+    strings: BTreeSet<String>,
+    /// `var[key,key]*default` of every text select, sorted: must be equal in all languages.
+    text_shapes: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -258,6 +268,13 @@ fn lower_expression<'a>(
                 );
                 return Vec::new();
             };
+            let is_text = variants.iter().any(|v| {
+                matches!(&v.key, VariantKey::Identifier { name }
+                    if *name != "other" && !CATEGORIES.contains(name))
+            });
+            if is_text {
+                return lower_text_select(ctx, site, id.name, variants);
+            }
             let mut keyed = Vec::new();
             let mut other = None;
             let mut seen: Vec<String> = Vec::new();
@@ -319,9 +336,55 @@ fn lower_expression<'a>(
                 var: id.name.to_owned(),
                 variants: keyed,
                 other,
+                default_key: "other".to_owned(),
+                text: false,
             })]
         }
     }
+}
+
+/// `{ $state -> [on] an *[off] aus }`: identifier keys that are not plural categories. Any key
+/// may be the default (it is the `_` arm); number keys cannot be mixed in.
+fn lower_text_select<'a>(
+    ctx: &mut Ctx<'a>,
+    site: &Site,
+    var: &str,
+    variants: &[fluent_syntax::ast::Variant<&'a str>],
+) -> Vec<Piece> {
+    let mut keyed = Vec::new();
+    let mut default = None;
+    let mut seen: Vec<String> = Vec::new();
+    for v in variants {
+        let VariantKey::Identifier { name } = &v.key else {
+            ctx.err(
+                site,
+                "a select on text values cannot have number keys; use identifiers only",
+            );
+            continue;
+        };
+        if seen.iter().any(|k| k == name) {
+            ctx.err(site, format!("select key [{name}] appears twice"));
+            continue;
+        }
+        seen.push(name.to_string());
+        let body = lower_pattern(ctx, site, &v.value);
+        if v.default {
+            default = Some((name.to_string(), body));
+        } else {
+            keyed.push((Key::Text(name.to_string()), body));
+        }
+    }
+    let Some((default_key, other)) = default else {
+        ctx.err(site, "select has no `*[…]` default variant");
+        return Vec::new();
+    };
+    vec![Piece::Select(Select {
+        var: var.to_owned(),
+        variants: keyed,
+        other,
+        default_key,
+        text: true,
+    })]
 }
 
 fn lower_inline<'a>(
@@ -428,7 +491,13 @@ fn term_text<'a>(ctx: &mut Ctx<'a>, site: &Site, name: &str) -> Option<String> {
     text
 }
 
-fn collect_vars(pieces: &[Piece], vars: &mut Vec<String>, counts: &mut BTreeSet<String>) {
+fn collect_vars(
+    pieces: &[Piece],
+    vars: &mut Vec<String>,
+    counts: &mut BTreeSet<String>,
+    strings: &mut BTreeSet<String>,
+    shapes: &mut Vec<String>,
+) {
     for p in pieces {
         match p {
             Piece::Text(_) => {}
@@ -441,11 +510,25 @@ fn collect_vars(pieces: &[Piece], vars: &mut Vec<String>, counts: &mut BTreeSet<
                 if !vars.contains(&s.var) {
                     vars.push(s.var.clone());
                 }
-                counts.insert(s.var.clone());
-                for (_, body) in &s.variants {
-                    collect_vars(body, vars, counts);
+                if s.text {
+                    strings.insert(s.var.clone());
+                    let mut keys: Vec<String> = s
+                        .variants
+                        .iter()
+                        .map(|(k, _)| match k {
+                            Key::Text(t) => t.clone(),
+                            _ => String::new(),
+                        })
+                        .collect();
+                    keys.sort();
+                    shapes.push(format!("${}[{}]*{}", s.var, keys.join(","), s.default_key));
+                } else {
+                    counts.insert(s.var.clone());
                 }
-                collect_vars(&s.other, vars, counts);
+                for (_, body) in &s.variants {
+                    collect_vars(body, vars, counts, strings, shapes);
+                }
+                collect_vars(&s.other, vars, counts, strings, shapes);
             }
         }
     }
@@ -550,7 +633,23 @@ fn parse_locale(locale: &Locale, errors: &mut Vec<Error>) -> Vec<Msg> {
             let pieces = lower_pattern(&mut ctx, &site, value);
             let mut vars = Vec::new();
             let mut counts = BTreeSet::new();
-            collect_vars(&pieces, &mut vars, &mut counts);
+            let mut strings = BTreeSet::new();
+            let mut text_shapes = Vec::new();
+            collect_vars(
+                &pieces,
+                &mut vars,
+                &mut counts,
+                &mut strings,
+                &mut text_shapes,
+            );
+            text_shapes.sort();
+            if let Some(v) = counts.intersection(&strings).next() {
+                ctx.err(
+                    &site,
+                    format!("${v} is used as a number and as text selector"),
+                );
+            }
+            lint_pieces(&mut ctx, &site, &locale.code, &pieces);
             msgs.push(Msg {
                 key,
                 path: file.path.clone(),
@@ -563,6 +662,8 @@ fn parse_locale(locale: &Locale, errors: &mut Vec<Error>) -> Vec<Msg> {
                 pieces,
                 vars,
                 counts,
+                strings,
+                text_shapes,
             });
         }
     }
@@ -573,6 +674,58 @@ fn parse_locale(locale: &Locale, errors: &mut Vec<Error>) -> Vec<Msg> {
 // ------------------------------------------------------------------------------------------------
 // Checks
 // ------------------------------------------------------------------------------------------------
+
+/// Typography lints on the text of a message (after terms and literals are substituted).
+fn lint_pieces(ctx: &mut Ctx<'_>, site: &Site, code: &str, pieces: &[Piece]) {
+    for p in pieces {
+        match p {
+            Piece::Text(t) => {
+                for problem in lint_text(code, t) {
+                    ctx.err(site, problem);
+                }
+            }
+            Piece::Var(_) => {}
+            Piece::Select(sel) => {
+                for (_, body) in &sel.variants {
+                    lint_pieces(ctx, site, code, body);
+                }
+                lint_pieces(ctx, site, code, &sel.other);
+            }
+        }
+    }
+}
+
+/// What is wrong with `text` typographically (docs/I18N.md §6):
+/// - ASCII `...` (write U+2026) in every language;
+/// - `„` (U+201E, German opening quote) or the word "Strg" in `en`;
+/// - an ASCII hyphen-minus that works as a minus sign, directly before a digit and not after a
+///   letter or digit (` -3`, `(-3`): write U+2212. Compounds and ranges like `24-Bit` or `1-4`
+///   have a letter or digit before the hyphen and pass.
+fn lint_text(code: &str, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if text.contains("...") {
+        out.push("ASCII \"...\" in text: write the ellipsis U+2026 (…)".to_owned());
+    }
+    if code == "en" {
+        if text.contains('„') {
+            out.push("„ (U+201E) in English text: use “…” (U+201C, U+201D)".to_owned());
+        }
+        if text.contains("Strg") {
+            out.push("\"Strg\" in English text: the key is called Ctrl".to_owned());
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '-'
+            && chars.get(i + 1).is_some_and(char::is_ascii_digit)
+            && !(i > 0 && chars[i - 1].is_alphanumeric())
+        {
+            out.push("ASCII hyphen before a digit: write the minus sign U+2212 (−)".to_owned());
+            break;
+        }
+    }
+    out
+}
 
 fn method_name(key: &str) -> String {
     key.replace('-', "_")
@@ -662,7 +815,21 @@ fn check_languages(locales: &[&Locale], parsed: &[(String, Vec<Msg>)], errors: &
                     });
                 }
                 Some(m) => {
-                    if var_set(m) != var_set(s) {
+                    if var_set(m) == var_set(s) && m.text_shapes != s.text_shapes {
+                        errors.push(Error {
+                            path: m.path.clone(),
+                            line: m.line,
+                            message: format!(
+                                "message `{}` selects on text differently in `{code}` ([{}]) and `{SOURCE_LANG}` ([{}], {}:{}); \
+                                 same variants and the same default are required",
+                                m.key,
+                                m.text_shapes.join("; "),
+                                s.text_shapes.join("; "),
+                                s.path,
+                                s.line
+                            ),
+                        });
+                    } else if var_set(m) != var_set(s) {
                         errors.push(Error {
                             path: m.path.clone(),
                             line: m.line,
@@ -761,9 +928,12 @@ fn preview(pieces: &[Piece]) -> String {
                         Key::Category(c) => {
                             let _ = write!(s, " [{c}] {}", preview(body));
                         }
+                        Key::Text(c) => {
+                            let _ = write!(s, " [{c}] {}", preview(body));
+                        }
                     }
                 }
-                let _ = write!(s, " *[other] {} }}", preview(&sel.other));
+                let _ = write!(s, " *[{}] {} }}", sel.default_key, preview(&sel.other));
             }
         }
     }
@@ -796,12 +966,27 @@ fn emit_pieces(out: &mut String, pieces: &[Piece], depth: usize) {
 fn emit_select(out: &mut String, s: &Select, depth: usize) {
     let pad = "    ".repeat(depth);
     let var = ident(&s.var);
+    if s.text {
+        let _ = writeln!(out, "{pad}match {var} {{");
+        for (k, body) in &s.variants {
+            if let Key::Text(k) = k {
+                let _ = writeln!(out, "{pad}    {} => {{", lit(k));
+                emit_pieces(out, body, depth + 2);
+                let _ = writeln!(out, "{pad}    }}");
+            }
+        }
+        let _ = writeln!(out, "{pad}    _ => {{");
+        emit_pieces(out, &s.other, depth + 2);
+        let _ = writeln!(out, "{pad}    }}");
+        let _ = writeln!(out, "{pad}}}");
+        return;
+    }
     let numbers: Vec<_> = s
         .variants
         .iter()
         .filter_map(|(k, b)| match k {
             Key::Number(n) => Some((n, b)),
-            Key::Category(_) => None,
+            _ => None,
         })
         .collect();
     let cats: Vec<_> = s
@@ -809,7 +994,7 @@ fn emit_select(out: &mut String, s: &Select, depth: usize) {
         .iter()
         .filter_map(|(k, b)| match k {
             Key::Category(c) => Some((*c, b)),
-            Key::Number(_) => None,
+            _ => None,
         })
         .collect();
     let inner_depth = if numbers.is_empty() { depth } else { depth + 2 };
@@ -937,6 +1122,8 @@ fn emit(parsed: &[(String, Vec<Msg>)]) -> String {
                 .map(|v| {
                     let ty = if s.counts.contains(v) {
                         "Count"
+                    } else if s.strings.contains(v) {
+                        "AsRef<str>"
                     } else {
                         "::core::fmt::Display"
                     };
@@ -956,6 +1143,10 @@ fn emit(parsed: &[(String, Vec<Msg>)]) -> String {
             for v in s.counts.iter() {
                 let v = ident(v);
                 let _ = writeln!(out, "        let {v} = Count::count(&{v});");
+            }
+            for v in s.strings.iter() {
+                let v = ident(v);
+                let _ = writeln!(out, "        let {v}: &str = {v}.as_ref();");
             }
             let _ = writeln!(out, "        let mut __out = String::with_capacity({cap});");
             out.push_str("        match self {\n");

@@ -107,6 +107,38 @@ impl Lang {
         __out
     }
 
+    #[doc = " - de: `{ $state -> [on] an *[off] aus }`"]
+    #[doc = " - en: `{ $state -> [on] on *[off] off }`"]
+    pub fn switch(self, state: impl AsRef<str>) -> String {
+        #[allow(unused_imports)]
+        use ::core::fmt::Write as _;
+        let state: &str = state.as_ref();
+        let mut __out = String::with_capacity(3);
+        match self {
+            Lang::De => {
+                match state {
+                    "on" => {
+                        __out.push_str("an");
+                    }
+                    _ => {
+                        __out.push_str("aus");
+                    }
+                }
+            }
+            Lang::En => {
+                match state {
+                    "on" => {
+                        __out.push_str("on");
+                    }
+                    _ => {
+                        __out.push_str("off");
+                    }
+                }
+            }
+        }
+        __out
+    }
+
     /// Resolves a stored message id (`undo-duplicate-clips`) to its text in this language;
     /// `None` for unknown ids and for messages with variables.
     pub fn by_id(self, id: &str) -> Option<&'static str> {

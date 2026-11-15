@@ -64,7 +64,7 @@ pub struct Settings {
 }
 
 /// The language setting: follow the system, or one language explicitly.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     /// The language of the desktop; English unless it is German (owner, 2026-11-15).
@@ -74,6 +74,19 @@ pub enum Language {
     De,
     /// English.
     En,
+}
+
+/// An unknown value (a language that was removed, a typo, a wrong type) means [`Language::System`];
+/// it must not fail the whole settings file.
+impl<'de> Deserialize<'de> for Language {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Language, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(match value.as_str() {
+            Some("de") => Language::De,
+            Some("en") => Language::En,
+            _ => Language::System,
+        })
+    }
 }
 
 impl Language {
@@ -436,6 +449,14 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"language": "system"}"#).unwrap();
         assert_eq!(s.language, Language::System);
         assert_eq!(serde_json::to_string(&Language::De).unwrap(), "\"de\"");
+        // Unknown values fall back to the system; the rest of the file still loads.
+        for bad in [r#""fr""#, "7", "null", r#"{"a":1}"#] {
+            let s: Settings =
+                serde_json::from_str(&format!(r#"{{"language": {bad}, "ui_scale": 2.0}}"#))
+                    .unwrap();
+            assert_eq!(s.language, Language::System, "{bad}");
+            assert_eq!(s.ui_scale, Some(2.0));
+        }
         // The system: German gives German, everything else (and nothing) English.
         assert_eq!(Language::System.resolve(Some("de_DE.UTF-8")), Lang::De);
         assert_eq!(Language::System.resolve(Some("de-AT")), Lang::De);

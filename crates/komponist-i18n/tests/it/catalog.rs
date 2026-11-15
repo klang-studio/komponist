@@ -64,6 +64,15 @@ fn nested_selects() {
 }
 
 #[test]
+fn text_selects() {
+    assert_eq!(F::De.switch("on"), "an");
+    assert_eq!(F::De.switch(String::from("off")), "aus");
+    assert_eq!(F::De.switch("anything"), "aus");
+    assert_eq!(F::En.switch("on"), "on");
+    assert_eq!(F::En.switch("whatever"), "off");
+}
+
+#[test]
 fn by_id_resolves_static_messages_only() {
     assert_eq!(F::De.by_id("undo-duplicate"), Some("Clips duplizieren"));
     assert_eq!(F::En.by_id("undo-duplicate"), Some("Duplicate Clips"));

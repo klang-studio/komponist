@@ -36,3 +36,9 @@ nested =
     }
 
 undo-duplicate = Clips duplizieren
+
+switch =
+    { $state ->
+        [on] an
+       *[off] aus
+    }

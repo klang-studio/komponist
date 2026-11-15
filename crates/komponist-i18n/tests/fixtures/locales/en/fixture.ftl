@@ -36,3 +36,9 @@ nested =
     }
 
 undo-duplicate = Duplicate Clips
+
+switch =
+    { $state ->
+        [on] on
+       *[off] off
+    }

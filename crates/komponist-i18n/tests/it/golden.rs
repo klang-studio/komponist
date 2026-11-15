@@ -29,6 +29,12 @@ count =
     }
 
 named = { $name } ist { $n }
+
+switch =
+    { $state ->
+        [on] an
+       *[off] aus
+    }
 ";
 
 const EN: &str = "\
@@ -44,6 +50,12 @@ count =
     }
 
 named = { $name } is { $n }
+
+switch =
+    { $state ->
+        [on] on
+       *[off] off
+    }
 ";
 
 #[test]
@@ -164,11 +176,6 @@ attr = Wert
 num = { 5 }
 termargs = { -t(case: \"x\") }
 undefined = { -nope }
-stringsel =
-    { $state ->
-        [on] an
-       *[other] aus
-    }
 numsel =
     { 5 ->
         [one] x
@@ -185,8 +192,7 @@ numsel =
         "locales/de/x.ftl:5: message `num`: number literal { 5 } is not supported; write the number as text",
         "locales/de/x.ftl:6: message `termargs`: term -t: attributes and arguments are not supported",
         "locales/de/x.ftl:7: message `undefined`: term -nope is not defined in this language",
-        "locales/de/x.ftl:8: message `stringsel`: select key [on] is neither a number nor a plural category (zero, one, two, few, many, other)",
-        "locales/de/x.ftl:13: message `numsel`: a select needs a variable as selector, like `{ $n -> … }`",
+        "locales/de/x.ftl:8: message `numsel`: a select needs a variable as selector, like `{ $n -> … }`",
     ] {
         assert!(text.contains(want), "missing: {want}\nin:\n{text}");
     }
@@ -260,4 +266,82 @@ fn keyword_variable() {
 fn source_language_is_required() {
     let e = errors(&[("en", "a.ftl", "a = A\n")]);
     assert_eq!(e, ["locales: the source language folder `de` is missing"]);
+}
+
+#[test]
+fn text_select_needs_the_same_variants_and_default_everywhere() {
+    let de = "s =\n    { $x ->\n        [on] an\n       *[off] aus\n    }\n";
+    let en = "s =\n    { $x ->\n        [off] off\n       *[on] on\n    }\n";
+    let e = errors(&[("de", "x.ftl", de), ("en", "x.ftl", en)]);
+    assert_eq!(
+        e,
+        [
+            "locales/en/x.ftl:1: message `s` selects on text differently in `en` ([$x[off]*on]) and `de` ([$x[on]*off], locales/de/x.ftl:1); same variants and the same default are required"
+        ]
+    );
+    let en = "s =\n    { $x ->\n        [on] on\n        [maybe] maybe\n       *[off] off\n    }\n";
+    let e = errors(&[("de", "x.ftl", de), ("en", "x.ftl", en)]);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert!(e[0].contains("selects on text differently"), "{e:?}");
+}
+
+#[test]
+fn text_select_without_default_and_with_number_keys() {
+    let e = errors(&[
+        (
+            "de",
+            "x.ftl",
+            "s =\n    { $x ->\n        [on] an\n        [off] aus\n    }\n",
+        ),
+        ("en", "x.ftl", "s = { $x }\n"),
+    ]);
+    assert!(
+        e.iter()
+            .any(|l| l.contains("select has no `*[other]` default variant")),
+        "{e:?}"
+    );
+    let e = errors(&[
+        (
+            "de",
+            "x.ftl",
+            "s =\n    { $x ->\n        [on] an\n        [1] eins\n       *[off] aus\n    }\n",
+        ),
+        ("en", "x.ftl", "s = { $x }\n"),
+    ]);
+    assert!(
+        e.iter().any(|l| l.contains("cannot have number keys")),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn typography_lints() {
+    let de = "a = Wert −3 dB\nb = Warte ...\nc = Pegel -3 dB\nd = (-12 dB)\ne = 24-Bit und 1-4\nf = -5\n";
+    let en =
+        "a = Value −3 dB\nb = Wait…\nc = Level −3 dB\nd = (−12 dB)\ne = 24-bit and 1-4\nf = −5\n";
+    let e = errors(&[("de", "x.ftl", de), ("en", "x.ftl", en)]);
+    assert_eq!(
+        e,
+        [
+            "locales/de/x.ftl:2: message `b`: ASCII \"...\" in text: write the ellipsis U+2026 (…)",
+            "locales/de/x.ftl:3: message `c`: ASCII hyphen before a digit: write the minus sign U+2212 (−)",
+            "locales/de/x.ftl:4: message `d`: ASCII hyphen before a digit: write the minus sign U+2212 (−)",
+            "locales/de/x.ftl:6: message `f`: ASCII hyphen before a digit: write the minus sign U+2212 (−)",
+        ]
+    );
+}
+
+#[test]
+fn english_must_not_use_german_quotes_or_strg() {
+    let e = errors(&[
+        ("de", "x.ftl", "a = „Hallo“\nb = Strg\n"),
+        ("en", "x.ftl", "a = „Hello“\nb = Strg\n"),
+    ]);
+    assert_eq!(
+        e,
+        [
+            "locales/en/x.ftl:1: message `a`: „ (U+201E) in English text: use “…” (U+201C, U+201D)",
+            "locales/en/x.ftl:2: message `b`: \"Strg\" in English text: the key is called Ctrl",
+        ]
+    );
 }
