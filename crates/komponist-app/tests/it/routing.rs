@@ -961,26 +961,89 @@ fn the_track_context_menu() {
 }
 
 #[test]
-fn a_project_without_buses_looks_as_before() {
-    // No routing section, no send list, no output button, no chip, no label band.
+fn a_project_without_buses_has_the_send_area_but_no_bus_furniture() {
+    // The routing section and the send area are there (owner, 2026-11-15); the label band over
+    // the buses and the dock chip need a bus or a route.
     let mut app = app_with(demo_project());
     let lead = id_of(app.project(), "Lead");
     select(&mut app, lead);
     let h = harness(app);
-    assert!(
-        h.query_by_role_and_label(Role::Group, names::ROUTING)
-            .is_none()
-    );
+    h.get_by_role_and_label(Role::Group, names::ROUTING);
+    h.get_by_role_and_label(Role::Button, &names::output("Master"));
+    plus_of(&h, "Lead");
     let mut app = mixer_app(demo_project());
     select(&mut app, lead);
     let h = harness(app);
-    assert!(h.query_all_by_role(Role::Button).all(|n| {
-        n.accesskit_node()
-            .label()
-            .is_none_or(|l| !l.starts_with("Ausgang:"))
-    }));
+    plus_of(&h, "Lead");
     assert!(
         h.query_by_role_and_label(Role::Label, names::BUSSES)
             .is_none()
     );
+}
+
+/// The „+“ of `track`'s send list; with the mixer and the inspector open the left one (the
+/// mixer's).
+fn plus_of(h: &Harness<'_, App>, track: &str) -> Rect {
+    h.get_all_by_role_and_label(Role::Button, &names::add_send(track))
+        .map(|n| n.rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+        .expect("a „+“")
+}
+
+/// The first bus without a menu: „+“ offers only „Neuer Effekt-Bus“; it creates the bus and a
+/// send at −6 dB post in one undo step.
+fn first_bus_through_the_plus(mut h: Harness<'static, App>, lead: TrackId) {
+    let plus = plus_of(&h, "Lead");
+    click(&mut h, plus.center());
+    assert!(
+        h.query_all_by_role(Role::MenuItemRadio).next().is_none(),
+        "no bus to list"
+    );
+    let item = h
+        .get_by_role_and_label(Role::MenuItem, names::NEW_EFFECT_BUS)
+        .rect();
+    let before = h.state().project().tracks.len();
+    click(&mut h, item.center());
+    let p = h.state().project();
+    let bus = p.tracks.iter().find(|t| t.is_bus()).expect("a bus");
+    assert!(!bus.folder);
+    let send = p.track(lead).unwrap().send_to(bus.id).expect("a send");
+    assert_eq!(
+        (send.level_db, send.tap, send.enabled),
+        (-6.0, Tap::Post, true)
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(h.state().project().tracks.len(), before);
+    assert!(h.state().project().track(lead).unwrap().sends.is_empty());
+}
+
+#[test]
+fn the_first_bus_comes_from_the_plus_in_the_mixer() {
+    let mut app = mixer_app(demo_project());
+    let lead = id_of(app.project(), "Lead");
+    select(&mut app, lead);
+    first_bus_through_the_plus(harness(app), lead);
+}
+
+#[test]
+fn the_first_bus_comes_from_the_plus_in_the_inspector() {
+    let mut app = app_with(demo_project());
+    let lead = id_of(app.project(), "Lead");
+    select(&mut app, lead);
+    first_bus_through_the_plus(harness(app), lead);
+}
+
+#[test]
+fn the_plus_lists_the_buses_and_the_new_bus_below() {
+    let p = routed();
+    let pad = id_of(&p, "Pad");
+    let mut app = app_with(p);
+    select(&mut app, pad);
+    let mut h = harness(app);
+    let plus = h
+        .get_by_role_and_label(Role::Button, &names::add_send("Pad"))
+        .rect();
+    click(&mut h, plus.center());
+    h.get_by_role_and_label(Role::MenuItemRadio, "Delay");
+    h.get_by_role_and_label(Role::MenuItem, names::NEW_EFFECT_BUS);
 }

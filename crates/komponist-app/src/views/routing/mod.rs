@@ -34,6 +34,8 @@ pub mod names {
     pub const MASTER: &str = "Master";
     /// Output menu: a new effect bus [New bus …].
     pub const NEW_BUS: &str = "Neuer Bus …";
+    /// Send popover: a new effect bus with a send to it (owner, 2026-11-15) [New effect bus].
+    pub const NEW_EFFECT_BUS: &str = "Neuer Effekt-Bus";
     /// Output menu: a new group around the track [New group …].
     pub const NEW_GROUP: &str = "Neue Gruppe …";
     /// The „+“ row of a send list [Add send].

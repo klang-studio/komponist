@@ -21,7 +21,7 @@
 //! | browser plugin dropped on a strip | effect: inserted at the line; instrument: replaces the track's instrument |
 //! | peak value / meter (LED) | click resets peak and clip, Alt-click all strips |
 //! | level value | double-click text entry, Alt-click 0 dB, click clears the clip indicator |
-//! | sends (WP-103, once the project has a bus) | one compact row per send ([`crate::views::routing::widgets::send_row`]): drag sets the level (one undo step, fast path while it lasts), click on the name changes the bus, right click pre / post / off / remove; the dashed "+" adds a send; a bus strip shows its inputs instead |
+//! | sends (WP-103, always; a project without bus offers „Neuer Effekt-Bus“ at the „+“) | one compact row per send ([`crate::views::routing::widgets::send_row`]): drag sets the level (one undo step, fast path while it lasts), click on the name changes the bus, right click pre / post / off / remove; the dashed "+" adds a send; a bus strip shows its inputs instead |
 //! | output button (WP-103) | above the level: the dropdown of the master, groups and buses; targets that would close a loop are grey with the reason |
 //! | routing chip (WP-103) | normal dock only: right end of the name row, opens the routing popover; Strg+click selects the track |
 

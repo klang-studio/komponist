@@ -135,9 +135,7 @@ impl View for Inspector {
             if sections.channel {
                 channel::section(ui, ctx, x, &mut y, track);
             }
-            if routing::shown(&project) {
-                routing::section(ui, ctx, &project, x, &mut y, track);
-            }
+            routing::section(ui, ctx, &project, x, &mut y, track);
         }
         if sections.is_empty() {
             project::section(ui, ctx, &project, x, &mut y);

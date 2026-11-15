@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(r.name.height(), 22.0);
         assert_eq!(r.line.left(), 6.0);
         assert_eq!(r.inserts.height(), m::INSERTS_HEIGHT);
-        // The reserved sends are hidden until busses exist.
+        // Tier::FULL alone has no send area; the view adds it with `routed`.
         assert!(r.sends.is_none());
         assert_eq!(r.knob.size(), vec2(28.0, 28.0));
         assert_eq!(r.knob.center().x, 20.0);

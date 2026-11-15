@@ -259,17 +259,13 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     h.key_press(egui::Key::Tab);
     h.run_steps(2);
     assert!(h.state().ui().layout.dock_maximized);
-    // Every track and the master; the empty sends stay hidden until busses exist (owner
-    // decision 2026-11-14).
+    // Every track and the master; the send area is there before the first bus (owner decision
+    // 2026-11-15).
     for name in ["Drums", "Bass", "Lead", "Pad", "Keys", "Arp", "Master"] {
         strip(&h, &names::strip(name));
     }
     let lead = names::strip("Lead");
-    assert!(
-        strip(&h, &lead)
-            .query_by_role_and_label(Role::Label, names::SENDS)
-            .is_none()
-    );
+    strip(&h, &lead).get_by_role_and_label(Role::Label, names::SENDS);
     strip(&h, &lead).get_by_role_and_label(Role::Label, names::INSERTS);
     strip(&h, &lead).get_by_role_and_label(Role::Slider, &names::pan("Lead"));
     h.key_press(egui::Key::Tab);
@@ -962,17 +958,18 @@ fn peak_value_and_led_reset_alt_for_all() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// S04 "Sends": hidden until busses exist (owner decision 2026-11-14, ARCHITECTURE §13.7).
+// S04 "Sends": the send area is there before the first bus (owner decision 2026-11-15).
 
 #[test]
-fn sends_stay_hidden_until_busses_exist() {
+fn sends_are_there_before_the_first_bus() {
     let h = harness(s04());
     let lead = names::strip("Lead");
     let s = strip(&h, &lead);
     assert!(
         s.query_by_role_and_label(Role::Label, names::SENDS)
-            .is_none()
+            .is_some()
     );
+    s.get_by_role_and_label(Role::Button, &komponist_app::views::routing::names::add_send("Lead"));
 }
 
 // ------------------------------------------------------------------------------------------------

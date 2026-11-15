@@ -390,20 +390,16 @@ pub fn strips(
 }
 
 /// The most rows any strip's send list needs, `sends + 1` for the „+“ row, at least
-/// [`super::metrics::SEND_ROWS`] and at most the strip's cap; 0 while the project has no bus (the
-/// strips then look as before).
+/// [`super::metrics::SEND_ROWS`] and at most the strip's cap. The send area is always there, also
+/// before the first bus (owner, 2026-11-15); 0 only without any track or bus strip.
 pub fn send_rows(strips: &[Strip]) -> usize {
     use super::metrics::{SEND_ROWS, send_rows_for};
-    if !strips.iter().any(Strip::is_bus) {
-        return 0;
-    }
     let most = strips
         .iter()
         .filter_map(|s| s.routing.as_ref())
         .map(|r| r.sends.len() + 1)
-        .max()
-        .unwrap_or(0);
-    send_rows_for(most).max(SEND_ROWS)
+        .max();
+    most.map_or(0, |most| send_rows_for(most).max(SEND_ROWS))
 }
 
 /// The insert slot (0 ..= slots) for a pointer at `y`, given each slot's `(top, bottom)`: before
