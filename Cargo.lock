@@ -2068,7 +2068,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 name = "hexa-core"
 version = "0.1.0"
 dependencies = [
- "klang-dsp",
+ "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
  "libm",
  "postcard",
  "serde",
@@ -2440,10 +2440,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "klang-dsp"
+version = "0.1.0"
+source = "git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f#e1737fbf04ba42a3501d14521c5d5125c9f09c2f"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "klopfer_dsp"
 version = "0.1.0"
 dependencies = [
- "klang-dsp",
+ "klang-dsp 0.1.0",
 ]
 
 [[package]]
@@ -2455,7 +2463,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "hound",
- "klang-dsp",
+ "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
  "komponist-audio",
  "komponist-bridge",
  "komponist-builtin",
@@ -2482,7 +2490,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "cpal",
- "klang-dsp",
+ "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
  "midir",
  "rtrb",
  "serde",
@@ -2509,7 +2517,7 @@ dependencies = [
  "assert_no_alloc",
  "hexa-core",
  "hound",
- "klang-dsp",
+ "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
  "klopfer_dsp",
  "komponist-engine",
  "komponist-model",
@@ -2523,7 +2531,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "hound",
- "klang-dsp",
+ "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
  "komponist-builtin",
  "komponist-model",
  "rtrb",
@@ -2606,7 +2614,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
- "klang-dsp",
+ "klang-dsp 0.1.0 (git+https://github.com/klang-studio/klang-dsp?rev=e1737fbf04ba42a3501d14521c5d5125c9f09c2f)",
  "komponist-i18n",
  "komponist-model",
  "komponist-tokens",

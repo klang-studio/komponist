@@ -16,8 +16,8 @@ design handoff still says "klang-studio" where it means the DAW; read it as "kom
 ## Worktrees
 
 All worktrees live in **`<workspace>/.claude/worktrees/`** (owner's rule, 2026-11-14).
-The workspace depends on siblings by relative path (`../klang-dsp`, `../pisynth`, `../klopfer`, the
-handoffs). That folder therefore holds symlinks to every sibling (`klang-dsp`, `pisynth`, `klopfer`,
+The workspace depends on siblings by relative path (`../klopfer`, the handoffs; `../klang-dsp` only for the
+local patch below; no longer `../pisynth`). That folder therefore holds symlinks to every sibling (`klang-dsp`, `pisynth`, `klopfer`,
 `komponist`, `klang-studio-handoff`, `klang-studio-geraete-handoff`, `daw-design-briefing.md`), so
 `../klang-dsp` resolves inside a worktree there. A new sibling project needs a new symlink. Do **not**
 use the Agent tool's `isolation: "worktree"` (it puts the worktree where the symlinks are missing).
@@ -49,6 +49,14 @@ each crate has **one** integration binary, `tests/it/main.rs`, with one `mod` pe
 perf suites that `docs/PERFORMANCE.md` names (`soak`, `engine_perf`, `arrangement_perf`), and tests that count
 the child processes of the test process (`plugin_exit`). Run one module:
 `cargo test -p komponist-app --test it piano_roll::`.
+
+**klang-dsp is a git dependency** (`Cargo.toml`, pinned `rev`). To change klang-dsp and komponist together, patch
+it to `../klang-dsp` without touching tracked files: either
+`cargo --config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path="../klang-dsp"' <cmd>`, or an
+untracked `.cargo/config.toml` in a *parent* folder of the clones (cargo merges the config files of all parent
+directories, so other clones are unaffected) with `[patch."https://github.com/klang-studio/klang-dsp"]` and
+`klang-dsp = { path = "../klang-dsp" }` (see `docs/INSTALL.md`). Never commit the resulting `Cargo.lock` change;
+after pushing klang-dsp, bump `rev`.
 
 ## Commands
 

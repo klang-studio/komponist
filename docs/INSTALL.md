@@ -1,5 +1,29 @@
 # Installing komponist
 
+## Build from source
+
+You need a Rust toolchain (`rust-toolchain.toml` pins the version) and the usual system libraries for egui/wgpu and
+ALSA/PipeWire/JACK. Everything else is fetched by cargo: komponist depends on the public DSP library
+[klang-dsp](https://github.com/klang-studio/klang-dsp) as a git dependency pinned to one commit (`Cargo.toml`,
+`[workspace.dependencies]`), so a plain clone builds without any sibling checkout.
+
+Working on komponist and klang-dsp together: check out klang-dsp next to komponist and patch the git dependency to
+the local path. Do **not** edit the tracked `Cargo.toml` or `.cargo/config.toml` for this. Pick one:
+
+```bash
+# once per command (nothing to remember afterwards, affects nothing else):
+cargo --config 'patch."https://github.com/klang-studio/klang-dsp".klang-dsp.path="../klang-dsp"' check --workspace
+
+# or for every clone below one folder: put this into <parent folder>/.cargo/config.toml
+# (cargo reads config files of all parent directories; clones elsewhere are not affected)
+[patch."https://github.com/klang-studio/klang-dsp"]
+klang-dsp = { path = "../klang-dsp" }   # relative to the folder that contains the .cargo directory
+```
+
+While the patch is active cargo rewrites the klang-dsp entry in `Cargo.lock`; do not commit that change
+(`git checkout Cargo.lock`). When a klang-dsp change is pushed, bump `rev` in the root `Cargo.toml` and commit it
+together with the komponist change that needs it.
+
 ## Executable
 
 ```bash
