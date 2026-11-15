@@ -27,6 +27,7 @@ use egui::{
     Color32, CursorIcon, Event, EventFilter, Id, Key, Painter, Pos2, Rect, Response, Role, Sense,
     Shape, Stroke, Ui, Vec2, WidgetInfo, pos2, vec2,
 };
+use komponist_model::params::va_curve;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography::{self, TypeStyle};
 use komponist_tokens::{color, radius, widget};
@@ -752,7 +753,7 @@ impl<'a> Graph<'a> {
                     paint_data(&painter, &plot, spec, *kind, data, track, values)
                 }
                 Layer::Data(_) => {}
-                Layer::Region(r) => paint_region(&painter, &plot, spec, *r, values, ppp),
+                Layer::Region(r) => paint_region(&painter, &plot, spec, *r, values, curve_col, ppp),
                 Layer::Curve(c) => paint_curve(&painter, &plot, spec, c, values, curve_col),
                 Layer::Guide(g) => paint_guide(&painter, &plot, spec, *g, values, curve_col, ppp),
                 Layer::Marker(mk) => {
@@ -1191,9 +1192,16 @@ fn paint_region(
     spec: &GraphSpec,
     region: Region,
     values: &[f64],
+    track: Color32,
     ppp: f32,
 ) {
-    let Region::Outside { start, end, scale } = region;
+    let (start, end, scale) = match region {
+        Region::Outside { start, end, scale } => (start, end, scale),
+        Region::CutoffMod { cutoff, matrix } => {
+            paint_cutoff_mod(painter, plot, spec, values, (cutoff, matrix), track, ppp);
+            return;
+        }
+    };
     let shade = with_opacity(color32(color::SURFACE_1), m::REGION_OPACITY);
     let sx = plot.x(&spec.x, values[start] * scale);
     let ex = plot.x(&spec.x, values[end] * scale);
@@ -1205,6 +1213,40 @@ fn paint_region(
             painter.rect_filled(px::snap_rect(part, ppp), 0.0, shade);
         }
     }
+}
+
+/// The bar of [`Region::CutoffMod`].
+fn paint_cutoff_mod(
+    painter: &Painter,
+    plot: &Plot,
+    spec: &GraphSpec,
+    values: &[f64],
+    (cutoff, matrix): (usize, usize),
+    track: Color32,
+    ppp: f32,
+) {
+    let Some(block) = values.get(matrix..) else {
+        return;
+    };
+    let (lo, hi) = va_curve::cutoff_mod_octaves(block);
+    if hi - lo < 1e-3 {
+        return;
+    }
+    let hz = values[cutoff];
+    let edge = |octaves: f64| plot.x(&spec.x, (hz * octaves.exp2()).clamp(spec.x.min, spec.x.max));
+    let r = plot.rect;
+    let bar = m::MOD_BAR;
+    let (left, right) = (edge(lo), edge(hi));
+    let bottom = r.bottom() - bar.above_bottom;
+    let rect = Rect::from_min_max(
+        pos2(left, bottom - bar.height),
+        pos2(right.max(left + 2.0), bottom),
+    );
+    painter.rect_filled(
+        px::snap_rect(rect, ppp),
+        bar.radius,
+        with_opacity(track, bar.opacity),
+    );
 }
 
 fn paint_curve(

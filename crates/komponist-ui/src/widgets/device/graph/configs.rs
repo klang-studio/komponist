@@ -19,6 +19,7 @@ use super::spec::{
 };
 use crate::widgets::metrics::device::graph as m;
 use komponist_model::params::eq_curve::CURVE_RATE;
+use komponist_model::params::va_curve;
 
 /// Slot indices of [`envelope`].
 pub mod env {
@@ -449,6 +450,97 @@ pub fn lfo(points: usize) -> GraphSpec {
                 .between(i.checked_sub(1), (i + 1 < points).then_some(i + 1))
         })
         .collect();
+    spec
+}
+
+// ---------------------------------------------------------------------------------------------
+// knurr (WP-95)
+
+/// The sample rate the curves of knurr's filter assume (the EQ takes its own from the device).
+const VA_RATE: f64 = 48_000.0;
+
+/// `graph::filter` for knurr: the response of the chosen filter type (the same transfer
+/// functions as the DSP, `va_curve::filter_response_db`), one handle (Cutoff ↔, Resonanz ↕) and
+/// under the curve the bar the matrix moves the cutoff over.
+///
+/// Slots: `cutoff` (Hz), `resonance` (0–1), `type` (index of `va_curve::FILTER_TYPES`), then
+/// `mod1_src`, `mod1_dst`, `mod1_amt` … `mod4_amt`, `at_cut`, `lfo1_uni`, `lfo2_uni` (what
+/// `va_curve::cutoff_mod_octaves` reads, from slot 3).
+pub fn filter_va() -> GraphSpec {
+    let (px, py) = m::pad::EQ;
+    let mut spec = GraphSpec::new(
+        "Filter",
+        padded(Axis::new(AxisKind::Log, 20.0, 20_000.0), px).labelled(),
+        padded(Axis::new(AxisKind::Db, -36.0, 12.0), py),
+    );
+    spec.slots = slots(&["cutoff", "resonance", "type"]);
+    for n in 1..=4 {
+        for what in ["src", "dst", "amt"] {
+            spec.slots.push(format!("mod{n}_{what}"));
+        }
+    }
+    spec.slots
+        .extend(["at_cut", "lfo1_uni", "lfo2_uni"].map(str::to_owned));
+    let response = |hz: f64, p: &[f64]| {
+        va_curve::filter_response_db(hz, p[0], p[1], p[2].round() as usize, VA_RATE)
+    };
+    spec.layers = vec![
+        Layer::Region(Region::CutoffMod {
+            cutoff: 0,
+            matrix: 3,
+        }),
+        // Filled down to the bottom of the plot, as the mockup draws it.
+        Layer::Curve(Curve {
+            f: CurveFn::new(move |x, p| response(x, p)),
+            baseline: None,
+            fill: true,
+        }),
+    ];
+    spec.handles = vec![
+        Handle::dot("Filter")
+            .x(Bind::axis(0, "Cutoff"))
+            .y(Bind::knob(1, "Resonanz", false))
+            .at(PosFn::new(move |p| (p[0], response(p[0], p)))),
+    ];
+    spec
+}
+
+/// The oscillator mix over two periods of oscillator A, display only. Slots: `wave_a`,
+/// `wave_b`, `pw_a`, `pw_b`, `b_oct`, `b_fine`, `mix`, `sub` (what `va_curve::signal_at` reads).
+pub fn signal() -> GraphSpec {
+    let (px, py) = m::pad::WAVEFORM;
+    let mut spec = GraphSpec::new(
+        "Signal",
+        padded(Axis::new(AxisKind::Lin, 0.0, va_curve::SIGNAL_PERIODS), px)
+            .grid(Grid::Divisions(2)),
+        padded(Axis::new(AxisKind::Lin, -1.0, 1.0), py).grid(Grid::Ticks(vec![Tick::minor(0.0)])),
+    );
+    spec.slots = slots(&[
+        "wave_a", "wave_b", "pw_a", "pw_b", "b_oct", "b_fine", "mix", "sub",
+    ]);
+    spec.layers = vec![Layer::Curve(Curve {
+        f: CurveFn::new(va_curve::signal_at),
+        baseline: Some(0.0),
+        fill: true,
+    })];
+    spec
+}
+
+/// One cycle of the LFO shape in slot `shape` (an index of `va_curve::LFO_SHAPES`), display
+/// only.
+pub fn lfo_shape() -> GraphSpec {
+    let (px, py) = m::pad::LFO;
+    let mut spec = GraphSpec::new(
+        "LFO · Form",
+        padded(Axis::new(AxisKind::Lin, 0.0, 1.0), px).grid(Grid::Divisions(4)),
+        padded(Axis::new(AxisKind::Lin, -1.0, 1.0), py).grid(Grid::Divisions(2)),
+    );
+    spec.slots = slots(&["shape"]);
+    spec.layers = vec![Layer::Curve(Curve {
+        f: CurveFn::new(|x, p| va_curve::lfo_shape_at(p[0].round() as usize, x)),
+        baseline: Some(0.0),
+        fill: true,
+    })];
     spec
 }
 

@@ -217,6 +217,7 @@ fn page_envelopes() -> Page {
             WidgetKind::Segment,
             CellParam::Choice {
                 key: ENV_VIEW,
+                label: "Hüllkurve",
                 options: ENVELOPES,
             },
         ),
@@ -233,6 +234,7 @@ fn page_envelopes() -> Page {
             WidgetKind::Segment,
             CellParam::Choice {
                 key: LFO_VIEW,
+                label: "LFO",
                 options: LFOS,
             },
         ),

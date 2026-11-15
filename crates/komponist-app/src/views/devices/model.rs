@@ -159,6 +159,11 @@ pub mod names {
         }
     }
 
+    /// The title of knurr's filter graph (followed by the type) and of its LFO graph.
+    pub const FILTER: &str = "Filter";
+    /// See [`FILTER`].
+    pub const LFO: &str = "LFO";
+
     /// The accessible name of operator column `n`: „Operator 3“.
     pub fn operator(n: usize) -> String {
         format!("{OPERATOR} {n}")

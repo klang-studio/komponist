@@ -293,7 +293,7 @@ pub fn params() -> Vec<ParamInfo> {
         percent("vel_filter", "Vel → Hk.", 0.0, 1.0, 0.3),
         ParamInfo::new("wheel_vib", "Rad → Vibr.", ParamKind::lin(0.0, 200.0), 50.0)
             .formatted(cents_text),
-        percent("at_cut", "Druck → Cut", -1.0, 1.0, 0.0),
+        percent("at_cut", "Druck→Cut", -1.0, 1.0, 0.0),
         ParamInfo::new("glide_legato", "Glide Legato", ParamKind::Bool, 0.0),
         ParamInfo::new("mode", "Modus", names(&MODES), 0.0),
         ParamInfo::new("voices", "Stimmen", ParamKind::Int { min: 1, max: 16 }, 8.0),

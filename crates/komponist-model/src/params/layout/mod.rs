@@ -89,6 +89,8 @@ pub enum CellParam {
     Choice {
         /// The placeholder (`ENV_VIEW`).
         key: &'static str,
+        /// The name above the switch and of its accessible group („Hüllkurve“).
+        label: &'static str,
         /// `(context value, label)` per entry; the first is the default.
         options: &'static [(&'static str, &'static str)],
     },

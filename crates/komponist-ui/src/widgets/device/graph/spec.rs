@@ -567,6 +567,16 @@ pub enum Region {
         /// Axis units per slot unit.
         scale: f64,
     },
+    /// A thin bar under a log frequency axis from `cutoff · 2^lo` to `cutoff · 2^hi`: the
+    /// range the modulation matrix moves the cutoff over (knurr). `cutoff` is the slot of the
+    /// cutoff in Hz, `matrix` the first of the 15 slots `va_curve::cutoff_mod_octaves` reads.
+    /// Nothing is drawn while the range is empty.
+    CutoffMod {
+        /// Slot of the cutoff.
+        cutoff: usize,
+        /// First slot of the matrix block.
+        matrix: usize,
+    },
 }
 
 /// A curve: `f(x, slots) -> y`, sampled per pixel, 1.5 px in the track colour, filled 14 % down
