@@ -287,7 +287,9 @@ fn workers_can_be_changed_and_switched_off() {
         before,
         "single-threaded: nothing dispatched"
     );
-    assert_eq!(stats.late(), 0);
+    // No assertion on `stats.late()`: whether a batch of 15 workers misses its period depends on
+    // the machine's load (it did once during a gate next to two builds); the late path has its own
+    // test in `workers.rs`.
 }
 
 /// Records how the engine drives a bridge-like instrument: `begin`, then `process` of the same
