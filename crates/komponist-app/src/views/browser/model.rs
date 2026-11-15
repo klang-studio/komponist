@@ -783,7 +783,7 @@ mod tests {
                 "Instrumente",
                 "hexa",
                 "Sampler",
-                "knurr",
+                "volt",
                 "Surge XT"
             ]
         );

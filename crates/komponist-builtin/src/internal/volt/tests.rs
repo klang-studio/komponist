@@ -1,4 +1,4 @@
-//! knurr's tests: parameters and layout, the oscillators' aliasing, the filter against the graph's
+//! volt's tests: parameters and layout, the oscillators' aliasing, the filter against the graph's
 //! curve, envelopes, LFOs, the matrix, unison, glide, stealing, the wheels, realtime safety and
 //! determinism. Rendering goes through the real [`InternalProcessor`].
 
@@ -69,16 +69,16 @@ pub(super) fn pressure(value: u8) -> EventKind {
 
 /// The wire id of parameter `key`.
 pub(super) fn wire(key: &str) -> u32 {
-    Internal::Knurr.wire(&ParamId::new(key)).expect(key)
+    Internal::Volt.wire(&ParamId::new(key)).expect(key)
 }
 
 /// A processor with the defaults, a few parameters changed, activated at [`RATE`].
 pub(super) fn processor(changes: &[(&str, f64)]) -> InternalProcessor {
-    let mut values = Internal::Knurr.defaults();
+    let mut values = Internal::Volt.defaults();
     for (key, value) in changes {
         values[wire(key) as usize] = *value;
     }
-    let mut p = Internal::Knurr.processor(&values);
+    let mut p = Internal::Volt.processor(&values);
     p.activate(RATE, BLOCK).unwrap();
     p
 }
@@ -293,7 +293,7 @@ fn context(env: &str, lfo: &str) -> ParamContext {
 
 #[test]
 fn the_layout_validates_for_every_envelope_and_lfo_and_shows_every_parameter() {
-    let kind = Internal::Knurr;
+    let kind = Internal::Volt;
     let known = |p: &ParamId| kind.wire(p).is_some();
     let mut shown = std::collections::BTreeSet::new();
     for env in ["amp", "filt", "mod"] {
@@ -328,10 +328,10 @@ fn the_layout_validates_for_every_envelope_and_lfo_and_shows_every_parameter() {
 }
 
 #[test]
-fn knurr_is_an_instrument_in_the_catalog() {
-    let kind = Internal::Knurr;
+fn volt_is_an_instrument_in_the_catalog() {
+    let kind = Internal::Volt;
     assert_eq!(kind.name(), NAME);
-    assert_eq!(kind.name(), "knurr");
+    assert_eq!(kind.name(), "volt");
     assert!(kind.is_instrument());
     assert_eq!(kind.role(), komponist_model::DeviceRole::Instrument);
     assert!(!kind.is_midi_effect());
@@ -624,7 +624,7 @@ fn an_lfo_runs_at_its_rate_and_follows_the_tempo_when_synced() {
     }
     assert!((7..=8).contains(&crossings), "{crossings}");
     // Sync: 1/4 at 120 bpm is 2 Hz, at 90 bpm 1.5 Hz; 1 bar at 120 is 0.5 Hz.
-    let mut k = Knurr::new();
+    let mut k = Volt::new();
     k.set_param(id::LFO1_SYNC, 1.0);
     k.set_param(id::LFO1_DIV, 4.0);
     k.set_tempo(120.0);
@@ -1012,7 +1012,7 @@ fn mono_keeps_a_note_stack_and_legato_keeps_the_envelope() {
 
 #[test]
 fn poly_steals_the_quietest_released_voice_then_the_oldest() {
-    let mut k = Knurr::new();
+    let mut k = Volt::new();
     k.activate(RATE);
     k.set_param(id::VOICES, 3.0);
     for key in [60, 62, 64] {
@@ -1077,7 +1077,7 @@ fn nothing_allocates_and_every_value_stays_finite_under_abuse() {
     let mut p = processor(&[]);
     // Every parameter to both ends of its range in turn, notes, wheels, panic, reset, inside
     // `assert_no_alloc` (render() wraps every call).
-    let count = Internal::Knurr.params().len() as u32;
+    let count = Internal::Volt.params().len() as u32;
     let mut rng = klang_dsp::rng::Rng::new(77);
     for round in 0..40 {
         let mut events: Vec<(u32, EventKind)> = Vec::new();
@@ -1091,7 +1091,7 @@ fn nothing_allocates_and_every_value_stays_finite_under_abuse() {
                 7 => pressure(rng.below(128) as u8),
                 _ => {
                     let wire = rng.below(count as usize) as u32;
-                    let info = &Internal::Knurr.params()[wire as usize];
+                    let info = &Internal::Volt.params()[wire as usize];
                     let (min, max) = info.range();
                     let value = if rng.below(2) == 0 { min } else { max };
                     EventKind::Param {
@@ -1233,10 +1233,10 @@ fn the_ten_presets_load_and_sound() {
     for (index, preset) in list.iter().enumerate() {
         // Every key exists, every value is inside its range.
         for (key, value) in preset.changes {
-            let wire = Internal::Knurr
+            let wire = Internal::Volt
                 .wire(&ParamId::new(*key))
                 .unwrap_or_else(|| panic!("{}: unknown parameter {key}", preset.name));
-            let info = &Internal::Knurr.params()[wire as usize];
+            let info = &Internal::Volt.params()[wire as usize];
             assert_eq!(
                 info.snap(*value),
                 *value,
@@ -1245,11 +1245,11 @@ fn the_ten_presets_load_and_sound() {
             );
         }
         let state = presets::state(index).unwrap();
-        let values = Internal::Knurr.decode_state(Some(&state)).unwrap();
-        assert_eq!(Some(values.clone()), Internal::Knurr.preset_values(index));
-        assert_ne!(values, Internal::Knurr.defaults(), "{}", preset.name);
+        let values = Internal::Volt.decode_state(Some(&state)).unwrap();
+        assert_eq!(Some(values.clone()), Internal::Volt.preset_values(index));
+        assert_ne!(values, Internal::Volt.defaults(), "{}", preset.name);
         // A single note and a chord sound, finite and within reach of full scale.
-        let mut p = Internal::Knurr.processor(&values);
+        let mut p = Internal::Volt.processor(&values);
         p.activate(RATE, BLOCK).unwrap();
         let chord = [
             (0, on(40, 100)),
@@ -1269,11 +1269,11 @@ fn the_ten_presets_load_and_sound() {
 #[test]
 fn every_supported_sample_rate_plays_in_tune() {
     for rate in [22_050.0f32, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
-        let mut values = Internal::Knurr.defaults();
+        let mut values = Internal::Volt.defaults();
         for (key, value) in merged(&[("lfo1_rate", 0.02)]) {
             values[wire(key) as usize] = value;
         }
-        let mut p = Internal::Knurr.processor(&values);
+        let mut p = Internal::Volt.processor(&values);
         p.activate(rate, BLOCK).unwrap();
         let frames = 16_384 + 4096;
         let input = [vec![0.0f32; frames], vec![0.0f32; frames]];

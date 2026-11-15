@@ -1,4 +1,4 @@
-//! The factory presets of knurr (the ten of the proposal, variant B). A preset is the parameters
+//! The factory presets of volt (the ten of the proposal, variant B). A preset is the parameters
 //! that differ from the defaults, by model id; [`Preset::values`] gives all of them by wire id, so
 //! a preset keeps working when a parameter is added later (it gets its default).
 //!
@@ -232,5 +232,5 @@ pub fn presets() -> &'static [Preset] {
 
 /// The device state (as the project saves it) of preset `index`.
 pub fn state(index: usize) -> Option<Vec<u8>> {
-    Some(Internal::Knurr.encode_state(&Internal::Knurr.preset_values(index)?))
+    Some(Internal::Volt.encode_state(&Internal::Volt.preset_values(index)?))
 }

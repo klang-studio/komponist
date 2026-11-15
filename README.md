@@ -47,9 +47,9 @@ devices behind it:
 
 ![hexa (FM synth) with the EQ, Delay and Hall devices behind it](docs/media/device-hexa.png)
 
-**knurr** is a subtractive synth with two oscillators, a filter and a sub oscillator:
+**volt** is a subtractive synth with two oscillators, a filter and a sub oscillator:
 
-![knurr, a subtractive synth, with an EQ](docs/media/device-knurr.png)
+![volt, a subtractive synth, with an EQ](docs/media/device-volt.png)
 
 The **Sampler** is a pad sampler with layers, envelopes, filters and slicing. The demo kit is synthesized, so it needs
 no sample files. Next to it, the presse compressor with its sidechain chip:
@@ -108,7 +108,7 @@ All texts live in [Fluent](https://projectfluent.org/) `.ftl` files, see [docs/I
 komponist is **early software (v0.1)**. The MIDI workflow works end to end: arrange, edit, play, record, mix, save,
 export. Expect rough edges and file-format changes.
 
-What works: MIDI and step clips, piano roll, step sequencer, hexa / knurr / Sampler, the built-in effects, sidechains,
+What works: MIDI and step clips, piano roll, step sequencer, hexa / volt / Sampler, the built-in effects, sidechains,
 CLAP and VST3 hosting, mixer with groups, buses and sends, recording, undo and redo, project files, export.
 
 What is coming: **audio tracks**, automation.

@@ -1,4 +1,4 @@
-//! One key of knurr: up to [`MAX_UNISON`] pairs of oscillators, sub and noise, the high-pass,
+//! One key of volt: up to [`MAX_UNISON`] pairs of oscillators, sub and noise, the high-pass,
 //! the filter (two channels when the unison is spread), three envelopes, two LFOs, the matrix
 //! and the analog drift. [`Voice::control`] runs once per control interval and turns the
 //! smoothed globals ([`Control`]) into increments, coefficients and gains; [`Voice::render`] is

@@ -80,11 +80,11 @@ mod tests {
     }
 
     #[test]
-    fn the_sampler_and_knurr_are_instruments_the_effects_are_not() {
+    fn the_sampler_and_volt_are_instruments_the_effects_are_not() {
         for e in entries() {
             let instrument = e.plugin.name == "hexa"
                 || e.plugin.name == komponist_builtin::sampler::NAME
-                || e.plugin.name == komponist_builtin::internal::knurr::NAME;
+                || e.plugin.name == komponist_builtin::internal::volt::NAME;
             assert_eq!(
                 e.kind == PluginKind::Instrument,
                 instrument,

@@ -339,7 +339,7 @@ lookahead `presse` on every track.
 cargo test --release -p komponist-builtin --lib cpu_ -- --ignored --nocapture
 ```
 
-## 8. knurr (WP-95)
+## 8. volt (WP-95)
 
 Measured 2026-11-15 on `wp/WP-95` (load average 6–11 on 12 threads, other agents building), release
 profile, 48 kHz, calls of 256 frames (5.33 ms period), keys held (envelopes in sustain), one thread.
@@ -361,18 +361,18 @@ spread) per key; the numbers below are better, on a machine that was busy.
 - The matrix, the LFOs and the drift run at the control rate (every 32 samples) and are below the
   noise of the measurement; the unison oscillators (two PolyBLEP/PolyBLAMP oscillators per pair,
   about 8 ns each) and the second filter channel (spread) are what costs.
-- **Cap:** `voices × unison` is limited to 48 oscillator groups (`knurr::MAX_GROUPS`): unison 7
+- **Cap:** `voices × unison` is limited to 48 oscillator groups (`volt::MAX_GROUPS`): unison 7
   leaves 6 keys, 5 leaves 9, 3 or less all 16. At the cap a track costs about 2.2–2.5 % of the
   period, so 16 tracks at the cap are about 40 % of one core, 10 % per worker with four workers
   (WP-65). 16 tracks with the default 8 keys and unison 1: 18 %, 4–5 % per worker.
 - One parameter event per call (which splits the render): below 0.3 µs.
 - No allocation: every `process` and `reset` of the unit tests runs inside `assert_no_alloc`
-  (`internal::knurr::tests`, the generic `processing_and_reset_do_not_allocate_in_any_device`) and
-  the engine tests (`komponist-engine` `tests/engine/knurr.rs`: 12 tracks with presets, live notes,
+  (`internal::volt::tests`, the generic `processing_and_reset_do_not_allocate_in_any_device`) and
+  the engine tests (`komponist-engine` `tests/engine/volt.rs`: 12 tracks with presets, live notes,
   pitch bend, mod wheel and pressure, bit-exact output with 0, 2 and 4 workers).
 
 ```bash
-cargo test --release -p komponist-builtin --lib knurr::bench -- --ignored --nocapture
+cargo test --release -p komponist-builtin --lib volt::bench -- --ignored --nocapture
 ```
 
 ## 9. Routing graph (WP-102)

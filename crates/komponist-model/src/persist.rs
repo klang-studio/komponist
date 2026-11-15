@@ -19,7 +19,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::project::{BUILTIN_HEXA, ClipContent, HEXA_NAME, Project};
+use crate::project::{BUILTIN_HEXA, BUILTIN_VOLT, ClipContent, HEXA_NAME, Project, VOLT_NAME};
 use crate::routing;
 
 /// Value of the `format` field.
@@ -105,7 +105,7 @@ pub fn from_json(text: &str) -> Result<Project, PersistError> {
         .remove("project")
         .ok_or_else(|| PersistError::Malformed("missing project".to_owned()))?;
     let mut project = migrate(project, version)?;
-    rename_hexa(&mut project);
+    rename_builtins(&mut project);
     let mut project: Project = serde_json::from_value(project).map_err(malformed)?;
     check_and_repair(&mut project).map_err(PersistError::Malformed)?;
     Ok(project)
@@ -138,20 +138,31 @@ struct FileOut<'a> {
     project: &'a Project,
 }
 
-/// The built-in synth was called "pisynth" before it became hexa. Its stored id stays (so every
-/// existing project loads); the stored display name of such a plugin reference is replaced here,
-/// without a format version bump, so every view shows [`HEXA_NAME`] and a later save writes it.
-fn rename_hexa(value: &mut Value) {
+/// Built-in devices whose display name changed: `(stored id, old name, new name)`. The stored id stays (so
+/// every existing project loads); the stored display name of such a plugin reference is replaced on load,
+/// without a format version bump, so every view shows the new name and a later save writes it.
+/// "pisynth" became hexa, "knurr" became volt.
+const RENAMED_BUILTINS: [(&str, &str, &str); 2] = [
+    (BUILTIN_HEXA, "pisynth", HEXA_NAME),
+    (BUILTIN_VOLT, "knurr", VOLT_NAME),
+];
+
+fn rename_builtins(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            let is_hexa = map.get("format").and_then(Value::as_str) == Some("builtin")
-                && map.get("id").and_then(Value::as_str) == Some(BUILTIN_HEXA);
-            if is_hexa && map.get("name").and_then(Value::as_str) == Some("pisynth") {
-                map.insert("name".to_owned(), Value::from(HEXA_NAME));
+            if map.get("format").and_then(Value::as_str) == Some("builtin") {
+                let id = map.get("id").and_then(Value::as_str);
+                let name = map.get("name").and_then(Value::as_str);
+                let renamed = RENAMED_BUILTINS
+                    .iter()
+                    .find(|(rid, old, _)| Some(*rid) == id && Some(*old) == name);
+                if let Some((_, _, new)) = renamed {
+                    map.insert("name".to_owned(), Value::from(*new));
+                }
             }
-            map.values_mut().for_each(rename_hexa);
+            map.values_mut().for_each(rename_builtins);
         }
-        Value::Array(items) => items.iter_mut().for_each(rename_hexa),
+        Value::Array(items) => items.iter_mut().for_each(rename_builtins),
         _ => {}
     }
 }
@@ -608,11 +619,22 @@ mod tests {
         let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
         let mut v =
             serde_json::json!({"a": [file("pisynth", "pisynth"), file("pisynth", "sampler")]});
-        rename_hexa(&mut v);
+        rename_builtins(&mut v);
         assert_eq!(v["a"][0]["plugin"]["name"], "hexa");
         assert_eq!(v["a"][0]["plugin"]["id"], "pisynth");
         // Only the built-in hexa is renamed; anything else keeps what it stored.
         assert_eq!(v["a"][1]["plugin"]["name"], "pisynth");
+    }
+
+    #[test]
+    fn a_stored_knurr_name_loads_as_volt_with_the_same_id() {
+        let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
+        let mut v = serde_json::json!({"a": [file("knurr", "knurr"), file("knurr", "sampler"), file("volt", "knurr")]});
+        rename_builtins(&mut v);
+        assert_eq!(v["a"][0]["plugin"]["name"], "volt");
+        assert_eq!(v["a"][0]["plugin"]["id"], "knurr");
+        assert_eq!(v["a"][1]["plugin"]["name"], "knurr");
+        assert_eq!(v["a"][2]["plugin"]["name"], "volt");
     }
 
     #[test]

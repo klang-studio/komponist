@@ -8,9 +8,9 @@
 //! | Track | Volume | Chain (preset) |
 //! |---|---|---|
 //! | Drums | −6 dB | Sampler (test kit), presse („Drums fest“) |
-//! | Bass | −4 dB | knurr („Fette Säge“), EQ („Bass Wärme“) |
+//! | Bass | −4 dB | volt („Fette Säge“), EQ („Bass Wärme“) |
 //! | Lead | −3 dB | hexa („Saw-Lead“), EQ („Low Cut 80 Hz“), Delay („Punktierte Achtel“), Hall („Studio-Platte“) |
-//! | Pad | −9 dB | knurr („Breiter Pad“), EQ („Low Cut 80 Hz“), Hall („Große Halle“) |
+//! | Pad | −9 dB | volt („Breiter Pad“), EQ („Low Cut 80 Hz“), Hall („Große Halle“) |
 //! | Keys | −8 dB | hexa („E-Piano“), Delay („Weiches Band“) |
 //! | Arp | −10 dB | Tonleiter („A-Moll-Pentatonik“), Arpeggiator („Sechzehntel Auf/Ab“), hexa („Synth-Pluck“), Delay („Achtel Ping-Pong“) |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
@@ -131,7 +131,7 @@ pub fn showcase_project() -> Project {
     let chains = [
         vec![d.sampler(), d.internal(Internal::Presse, "Drums fest")],
         vec![
-            d.internal(Internal::Knurr, "Fette Säge"),
+            d.internal(Internal::Volt, "Fette Säge"),
             d.internal(Internal::Eq, "Bass Wärme"),
         ],
         vec![
@@ -141,7 +141,7 @@ pub fn showcase_project() -> Project {
             d.internal(Internal::Hall, "Studio-Platte"),
         ],
         vec![
-            d.internal(Internal::Knurr, "Breiter Pad"),
+            d.internal(Internal::Volt, "Breiter Pad"),
             d.internal(Internal::Eq, "Low Cut 80 Hz"),
             d.internal(Internal::Hall, "Große Halle"),
         ],

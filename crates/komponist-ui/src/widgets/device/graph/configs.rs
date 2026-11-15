@@ -14,8 +14,8 @@
 //! | [`waveform`] | `start`, `end` | milliseconds |
 //! | [`xy`] | `x`, `y` | the axes' own units |
 //! | [`lfo`] | `x1`, `y1`, `x2`, `y2`, … | phase 0–1, −1…1 |
-//! | [`filter_va`] | `cutoff`, `resonance`, `type`, `mod1_src` … `lfo2_uni` | Hz, 0–1, knurr's filter list (0 LP 24 · 1 LP 12 · 2 BP 12 · 3 HP 12 · 4 notch), the matrix |
-//! | [`signal`] | `wave_a`, `wave_b`, `pw_a`, `pw_b`, `b_oct`, `b_fine`, `mix`, `sub` | knurr's oscillator parameters |
+//! | [`filter_va`] | `cutoff`, `resonance`, `type`, `mod1_src` … `lfo2_uni` | Hz, 0–1, volt's filter list (0 LP 24 · 1 LP 12 · 2 BP 12 · 3 HP 12 · 4 notch), the matrix |
+//! | [`signal`] | `wave_a`, `wave_b`, `pw_a`, `pw_b`, `b_oct`, `b_fine`, `mix`, `sub` | volt's oscillator parameters |
 //! | [`lfo_shape`] | `shape` | index of `va_curve::LFO_SHAPES` |
 
 use super::spec::{
@@ -554,12 +554,12 @@ pub fn lfo(t: Lang, points: usize) -> GraphSpec {
 }
 
 // ---------------------------------------------------------------------------------------------
-// knurr (WP-95)
+// volt (WP-95)
 
-/// The sample rate the curves of knurr's filter assume (the EQ takes its own from the device).
+/// The sample rate the curves of volt's filter assume (the EQ takes its own from the device).
 const VA_RATE: f64 = 48_000.0;
 
-/// `graph::filter` for knurr: the response of the chosen filter type (the same transfer
+/// `graph::filter` for volt: the response of the chosen filter type (the same transfer
 /// functions as the DSP, `va_curve::filter_response_db`), one handle (Cutoff ↔, Resonanz ↕) and
 /// under the curve the bar the matrix moves the cutoff over.
 ///

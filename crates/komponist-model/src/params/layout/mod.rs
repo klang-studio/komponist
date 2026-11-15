@@ -121,11 +121,11 @@ pub enum GraphConfig {
         /// Points.
         points: u8,
     },
-    /// The response of knurr's filter (WP-95): slots `cutoff`, `resonance`, `type`, `mod1_src` …
+    /// The response of volt's filter (WP-95): slots `cutoff`, `resonance`, `type`, `mod1_src` …
     /// `mod4_amt`, `at_cut`, `lfo1_uni`, `lfo2_uni`; the bar under the curve is the range the
     /// matrix moves the cutoff over.
     FilterVa,
-    /// The mix of knurr's oscillators over two periods (WP-95), display only.
+    /// The mix of volt's oscillators over two periods (WP-95), display only.
     Signal,
     /// One cycle of an LFO shape (WP-95), display only; slot `shape`.
     LfoShape,

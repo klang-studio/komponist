@@ -57,6 +57,12 @@ pub const BUILTIN_HEXA: &str = "pisynth";
 /// Display name of [`BUILTIN_HEXA`]. Project files written before the rename store "pisynth" as the plugin
 /// name; loading replaces it (`persist::from_json`).
 pub const HEXA_NAME: &str = "hexa";
+/// Catalog id of the built-in volt instrument. The value is what project files store; it keeps the synth's
+/// former name "knurr" so existing projects load.
+pub const BUILTIN_VOLT: &str = "knurr";
+/// Display name of [`BUILTIN_VOLT`]. Project files written before the rename store "knurr" as the plugin
+/// name; loading replaces it (`persist::from_json`).
+pub const VOLT_NAME: &str = "volt";
 /// Catalog id of the built-in drum sampler (`komponist_builtin::sampler`, in process, WP-87).
 pub const BUILTIN_SAMPLER: &str = "sampler";
 /// Catalog id klopfer had as a built-in ("klopfer · INTERN", the bundled `Klopfer.clap`) before

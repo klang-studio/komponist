@@ -20,8 +20,8 @@
 //!   four-page layout ([`device::layout`]). The macros keep their wire ids 0–7; the card's own
 //!   start at 8.
 //! - [`algorithms`]: the 32 fixed algorithms the Algorithmus macro writes.
-//! - [`internal::knurr`]: the virtual-analog synthesizer „knurr“ (WP-95), an internal instrument
-//!   ([`Internal::Knurr`]) written for komponist on `klang-dsp`'s primitives.
+//! - [`internal::volt`]: the virtual-analog synthesizer „volt“ (WP-95), an internal instrument
+//!   ([`Internal::Volt`]) written for komponist on `klang-dsp`'s primitives.
 //! - [`sampler`]: the drum sampler (WP-87), an internal instrument ([`Internal::Sampler`]) on
 //!   `sampler_core`'s engine, with sample links in its state, a loader thread and a test kit.
 //!
