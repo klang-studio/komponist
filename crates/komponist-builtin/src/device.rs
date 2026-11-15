@@ -52,6 +52,7 @@ use hexa_core::{
     MAX_KEY_SCALING, MAX_PORTAMENTO, MAX_RATIO, MAX_TIME, MAX_TUNE, MAX_UNISON, OPERATORS, Patch,
     PitchMode, VoiceMode,
 };
+use komponist_i18n::Lang;
 use komponist_model::format::MINUS;
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, ENV_OP, GraphBinding, GraphConfig, Half, Page, WidgetKind,
@@ -148,24 +149,24 @@ impl OpField {
         }
     }
 
-    /// The name before the operator number ("Ratio", "Kurve A").
-    fn name(self) -> &'static str {
+    /// The name before the operator number in `t` ("Ratio", "Kurve A" / "Curve A").
+    fn name_in(self, t: Lang) -> &'static str {
         match self {
-            OpField::Ratio => "Ratio",
+            OpField::Ratio => t.param_ratio(),
             // The level fader of operator n is labelled "Op n" (handoff).
-            OpField::Level => "Op",
-            OpField::Attack => "Attack",
-            OpField::Decay => "Decay",
-            OpField::Sustain => "Sustain",
-            OpField::Release => "Release",
-            OpField::Delay => "Delay",
-            OpField::Hold => "Hold",
-            OpField::Loop => "Loop",
-            OpField::AttackCurve => "Kurve A",
-            OpField::DecayCurve => "Kurve D",
-            OpField::ReleaseCurve => "Kurve R",
-            OpField::KeyScale => "Key Scale",
-            OpField::Output => "Träger",
+            OpField::Level => t.param_hexa_op_level(),
+            OpField::Attack => t.param_attack(),
+            OpField::Decay => t.param_decay(),
+            OpField::Sustain => t.param_sustain(),
+            OpField::Release => t.param_release(),
+            OpField::Delay => t.param_hexa_op_delay(),
+            OpField::Hold => t.param_hexa_op_hold(),
+            OpField::Loop => t.param_hexa_op_loop(),
+            OpField::AttackCurve => t.param_hexa_op_attack_curve(),
+            OpField::DecayCurve => t.param_hexa_op_decay_curve(),
+            OpField::ReleaseCurve => t.param_hexa_op_release_curve(),
+            OpField::KeyScale => t.param_hexa_op_key_scale(),
+            OpField::Output => t.param_hexa_op_output(),
         }
     }
 }
@@ -350,8 +351,13 @@ impl Field {
 
     /// The parameter in the model: id, name, kind, default (the "Init" patch's), unit and text.
     pub fn info(self) -> ParamInfo {
+        self.info_in(Lang::De)
+    }
+
+    /// [`Field::info`] with the name and the value texts of `t`.
+    pub fn info_in(self, t: Lang) -> ParamInfo {
         if let Field::Macro(m) = self {
-            return m.param_info();
+            return m.param_info_in(t);
         }
         let (min, max) = self.range();
         // A delay or hold of 0 is the knob's lowest position.
@@ -362,25 +368,33 @@ impl Field {
         };
         let (name, kind, unit): (String, ParamKind, Unit) = match self {
             Field::Macro(_) => unreachable!("returned above"),
-            Field::Volume => ("Lautstärke".into(), ParamKind::lin(min, max), Unit::Percent),
-            Field::Glide => ("Glide".into(), ParamKind::lin(min, max), Unit::S),
+            Field::Volume => (
+                t.param_volume().into(),
+                ParamKind::lin(min, max),
+                Unit::Percent,
+            ),
+            Field::Glide => (t.param_glide().into(), ParamKind::lin(min, max), Unit::S),
             Field::Voices => (
-                "Unison".into(),
+                t.param_unison().into(),
                 ParamKind::Int {
                     min: min as i32,
                     max: max as i32,
                 },
                 Unit::None,
             ),
-            Field::Mono => ("Mono".into(), ParamKind::Bool, Unit::None),
-            Field::Spread => ("Spread".into(), ParamKind::lin(min, max), Unit::Percent),
+            Field::Mono => (t.param_mono().into(), ParamKind::Bool, Unit::None),
+            Field::Spread => (
+                t.param_spread().into(),
+                ParamKind::lin(min, max),
+                Unit::Percent,
+            ),
             Field::Tune => (
-                "Tune".into(),
+                t.param_tune().into(),
                 ParamKind::scaled(min, max, Scale::Pan),
                 Unit::Semitones,
             ),
             Field::Op(_, f) => {
-                let name = format!("{} {number}", f.name());
+                let name = format!("{} {number}", f.name_in(t));
                 match f {
                     OpField::Ratio => (name, ParamKind::scaled(min, max, Scale::Log), Unit::None),
                     OpField::Level | OpField::Sustain => {
@@ -402,13 +416,16 @@ impl Field {
                 }
             }
         };
-        let info = ParamInfo::new(ParamId::new(self.key()), name, kind, default).unit(unit);
+        let info = ParamInfo::new(ParamId::new(self.key()), name, kind, default)
+            .unit(unit)
+            .texts(crate::value_texts(t));
+        let (off, percent) = (t.value_off(), t.value_percent());
         match self {
             Field::Tune => info.formatted(|v| format!("{} st", signed(v, 1))),
             Field::Op(_, OpField::Ratio) => info.formatted(|v| format!("{v:.2}")),
-            Field::Op(_, OpField::Delay | OpField::Hold) => info.formatted(|v| {
+            Field::Op(_, OpField::Delay | OpField::Hold) => info.formatted(move |v| {
                 if v <= TIME_MIN {
-                    "Aus".to_owned()
+                    off.to_owned()
                 } else if v < 1.0 {
                     format!("{:.0} ms", v * 1000.0)
                 } else if v < 10.0 {
@@ -418,7 +435,7 @@ impl Field {
                 }
             }),
             Field::Op(_, OpField::AttackCurve | OpField::DecayCurve | OpField::ReleaseCurve) => {
-                info.formatted(|v| format!("{} %", signed((v * 100.0).round(), 0)))
+                info.formatted(move |v| format!("{}{percent}", signed((v * 100.0).round(), 0)))
             }
             Field::Op(_, OpField::KeyScale) => info.formatted(|v| format!("{} dB", signed(v, 1))),
             _ => info,
@@ -454,8 +471,15 @@ pub struct CardParam {
 /// The card's parameters: the globals (Algorithmus and Feedback first), then the 14 of every
 /// operator.
 pub fn params() -> &'static [CardParam] {
-    static PARAMS: OnceLock<Vec<CardParam>> = OnceLock::new();
-    PARAMS.get_or_init(|| {
+    params_in(Lang::De)
+}
+
+/// [`params`] with the names and value texts of `t`. Wire ids, keys, kinds and defaults are the
+/// same in every language.
+pub fn params_in(t: Lang) -> &'static [CardParam] {
+    static PARAMS: [OnceLock<Vec<CardParam>>; Lang::ALL.len()] =
+        [const { OnceLock::new() }; Lang::ALL.len()];
+    PARAMS[t as usize].get_or_init(|| {
         let globals = [
             Field::Macro(Macro::Algorithm),
             Field::Macro(Macro::Feedback),
@@ -469,7 +493,7 @@ pub fn params() -> &'static [CardParam] {
             .map(|field| CardParam {
                 wire: field.wire(),
                 field,
-                info: field.info(),
+                info: field.info_in(t),
             })
             .collect()
     })
@@ -478,6 +502,11 @@ pub fn params() -> &'static [CardParam] {
 /// The parameter with model id `id`.
 pub fn param(id: &ParamId) -> Option<&'static CardParam> {
     params().iter().find(|p| p.info.id == *id)
+}
+
+/// [`param`] with the names and value texts of `t`.
+pub fn param_in(t: Lang, id: &ParamId) -> Option<&'static CardParam> {
+    params_in(t).iter().find(|p| p.info.id == *id)
 }
 
 /// Whether operator `op` (0–5) is a carrier of algorithm `number` (1–32).
@@ -504,6 +533,11 @@ fn id(key: &str) -> ParamId {
 /// the decay and release curves. The handoff's velocity and pitch envelope cells are left
 /// out, `hexa-core` has no field for them.
 pub fn layout() -> DeviceLayout {
+    layout_in(Lang::De)
+}
+
+/// [`layout`] with the page names and the graph title of `t`.
+pub fn layout_in(t: Lang) -> DeviceLayout {
     let select = || CellParam::Select {
         key: ENV_OP,
         count: OPERATORS as u8,
@@ -578,7 +612,7 @@ pub fn layout() -> DeviceLayout {
     cells.push(Cell::knob(8, 2, id("tune")));
     cells.push(Cell::knob(9, 2, id("spread")));
     let operators = Page {
-        name: "Operatoren".into(),
+        name: t.page_hexa_operators().into(),
         cols: 10,
         cells,
         dividers: vec![5, 7],
@@ -593,7 +627,7 @@ pub fn layout() -> DeviceLayout {
         6,
         2,
         GraphBinding::new(GraphConfig::Envelope)
-            .titled(format!("Op {{{ENV_OP}}} · Amplitude"))
+            .titled(t.graph_title_hexa_amp(format!("{{{ENV_OP}}}")))
             .bind("attack", format!("op{{{ENV_OP}}}_attack"))
             .bind("decay", format!("op{{{ENV_OP}}}_decay"))
             .bind("sustain", format!("op{{{ENV_OP}}}_sustain"))
@@ -632,7 +666,7 @@ pub fn layout() -> DeviceLayout {
     cells.push(tknob(6, 2, "decay_curve"));
     cells.push(tknob(7, 2, "release_curve"));
     let envelopes = Page {
-        name: "Hüllkurven".into(),
+        name: t.page_hexa_envelopes().into(),
         cols: 8,
         cells,
         dividers: vec![5],
@@ -645,6 +679,11 @@ pub fn layout() -> DeviceLayout {
         dividers: Vec::new(),
     };
     DeviceLayout {
-        pages: vec![operators, envelopes, empty("LFO"), empty("Global")],
+        pages: vec![
+            operators,
+            envelopes,
+            empty(t.page_hexa_lfo()),
+            empty(t.page_hexa_global()),
+        ],
     }
 }

@@ -5,13 +5,13 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Synth-Pluck", 0.514, synth_pluck),
-    entry("Glocken-Pluck", 0.398, bell_pluck),
+    entry("Synth Pluck", 0.514, synth_pluck),
+    entry("Bell Pluck", 0.398, bell_pluck),
     entry("Stab", 0.181, stab),
-    entry("Poly-Synth", 0.565, poly_synth),
-    entry("Clav-Wah", 0.418, clav_wah),
-    entry("Arp-Bleep", 0.187, arp_bleep),
-    entry("Zufallsfilter", 0.205, random_filter),
+    entry("Poly Synth", 0.565, poly_synth),
+    entry("Clav Wah", 0.418, clav_wah),
+    entry("Arp Bleep", 0.187, arp_bleep),
+    entry("Random Filter", 0.205, random_filter),
     entry("Hoover", 0.912, hoover),
 ];
 

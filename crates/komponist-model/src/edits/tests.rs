@@ -520,6 +520,52 @@ fn add_track_names() {
     );
 }
 
+/// The words of an English app: the model writes no language of its own.
+const EN: DefaultNames = DefaultNames {
+    track: "MIDI",
+    drums: "Drums",
+    bus: "Bus",
+    group: "Group",
+};
+
+#[test]
+fn default_names_come_from_the_names_the_caller_passes() {
+    // Without names the model writes German, as it always did.
+    assert_eq!(DefaultNames::default(), DefaultNames::DE);
+    assert_eq!(DefaultNames::DE.group, "Gruppe");
+    let p = demo_project();
+    let spec = |instrument| NewTrack {
+        name: None,
+        hue: None,
+        instrument,
+        index: None,
+        arm_exclusive: false,
+    };
+    let last = |p: &Project| p.tracks.last().unwrap().name.clone();
+    assert_eq!(last(&add_track_in(&p, spec(None), &EN).unwrap().0), "MIDI");
+    let words = DefaultNames {
+        track: "Spur",
+        drums: "Schlagzeug",
+        ..EN
+    };
+    assert_eq!(
+        last(&add_track_in(&p, spec(None), &words).unwrap().0),
+        "Spur"
+    );
+    let (q, _) = add_track_in(&p, spec(Some(sampler())), &words).unwrap();
+    assert_eq!(last(&q), "Schlagzeug");
+    // An explicit name wins over the words.
+    let (q, _) = add_track_in(&p, new_track("Bass", None), &words).unwrap();
+    assert_eq!(last(&q), "Bass");
+    // Buses and groups: the base word, numbered from 1.
+    let (q, group) = add_bus_in(&p, NewBus::group(vec![p.tracks[0].id]), &EN).unwrap();
+    assert_eq!(q.track(group).unwrap().name, "Group 1");
+    let (q, bus) = add_bus_in(&q, NewBus::effect(vec![]), &EN).unwrap();
+    assert_eq!(q.track(bus).unwrap().name, "Bus 1");
+    let (q, again) = add_bus_in(&q, NewBus::group(vec![q.tracks[2].id]), &EN).unwrap();
+    assert_eq!(q.track(again).unwrap().name, "Group 2");
+}
+
 #[test]
 fn add_track_hue_index_and_arm() {
     let f = fixture();

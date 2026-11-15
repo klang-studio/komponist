@@ -41,6 +41,7 @@
 //! to restore an earlier patch (undo), load its state.
 
 use hexa_core::{EnvelopeParams, MAX_RATIO, MAX_TIME, OPERATORS, Patch, PitchMode};
+use komponist_i18n::Lang;
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
 use crate::algorithms::{self, ALGORITHMS};
@@ -94,7 +95,23 @@ impl Macro {
         Macro::ALL.get(id as usize).copied()
     }
 
-    /// Name on the device card (S05, verbatim from the prototype's catalog).
+    /// Name on the device card in `t` (the German one is S05's, verbatim from the prototype's
+    /// catalog).
+    pub fn name_in(self, t: Lang) -> &'static str {
+        match self {
+            Macro::Algorithm => t.param_hexa_algorithm(),
+            Macro::Ratio2 => t.param_hexa_ratio2(),
+            Macro::Index => t.param_hexa_index(),
+            Macro::Feedback => t.param_feedback(),
+            Macro::Attack => t.param_attack(),
+            Macro::Decay => t.param_decay(),
+            Macro::Sustain => t.param_sustain(),
+            Macro::Release => t.param_release(),
+        }
+    }
+
+    /// The German name on the device card (S05, verbatim from the prototype's catalog); views
+    /// use [`Macro::name_in`].
     pub fn name(self) -> &'static str {
         match self {
             Macro::Algorithm => "Algorithmus",
@@ -127,6 +144,11 @@ impl Macro {
     /// own (algorithm number, ratio, knob position 0 ..= 1 for the time macros: `Lin`, the
     /// knob position already is the curve) and the text is [`Macro::text`].
     pub fn param_info(self) -> ParamInfo {
+        self.param_info_in(Lang::De)
+    }
+
+    /// [`Macro::param_info`] with the name and the value texts of `t`.
+    pub fn param_info_in(self, t: Lang) -> ParamInfo {
         let (kind, unit): (ParamKind, Unit) = match self {
             Macro::Algorithm => (
                 ParamKind::Int {
@@ -149,19 +171,10 @@ impl Macro {
             }
             Macro::Attack | Macro::Decay | Macro::Release => (ParamKind::lin(0.0, 1.0), Unit::S),
         };
-        let text: fn(f64) -> String = match self {
-            Macro::Algorithm => |v| Macro::Algorithm.text(v),
-            Macro::Ratio2 => |v| Macro::Ratio2.text(v),
-            Macro::Index => |v| Macro::Index.text(v),
-            Macro::Feedback => |v| Macro::Feedback.text(v),
-            Macro::Attack => |v| Macro::Attack.text(v),
-            Macro::Decay => |v| Macro::Decay.text(v),
-            Macro::Sustain => |v| Macro::Sustain.text(v),
-            Macro::Release => |v| Macro::Release.text(v),
-        };
-        ParamInfo::new(self.key(), self.name(), kind, self.default_value())
+        ParamInfo::new(self.key(), self.name_in(t), kind, self.default_value())
             .unit(unit)
-            .formatted(text)
+            .texts(crate::value_texts(t))
+            .formatted(move |v| self.text_in(t, v))
             .flags(true, self != Macro::Algorithm)
     }
 
@@ -254,6 +267,11 @@ impl Macro {
     /// Display text of a plain value: "Frei" or "1"…"32" (Algorithmus), "3.50" (Ratio 2),
     /// "35 %" (Index, Feedback, Sustain), "12 ms" / "1.20 s" / "12.0 s" (times). Not RT-safe.
     pub fn text(self, value: f64) -> String {
+        self.text_in(Lang::De, value)
+    }
+
+    /// [`Macro::text`] in `t`: "Free" and "35%" in English.
+    pub fn text_in(self, t: Lang, value: f64) -> String {
         let value = if value.is_finite() {
             value.clamp(self.min(), self.max())
         } else {
@@ -261,12 +279,12 @@ impl Macro {
         };
         match self {
             Macro::Algorithm => match value.round() as u32 {
-                0 => "Frei".to_owned(),
+                0 => t.value_free().to_owned(),
                 n => n.to_string(),
             },
             Macro::Ratio2 => format!("{value:.2}"),
             Macro::Index | Macro::Feedback | Macro::Sustain => {
-                format!("{} %", (value * 100.0).round())
+                format!("{}{}", (value * 100.0).round(), t.value_percent())
             }
             Macro::Attack | Macro::Decay | Macro::Release => {
                 let seconds = f64::from(knob_to_time(value));

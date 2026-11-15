@@ -143,10 +143,10 @@ fn loading_a_preset_is_one_undo_step_and_the_engine_follows_it_and_its_undo() {
     let hard = Internal::Presse
         .presets()
         .iter()
-        .position(|p| p.name == "Limitieren (hart)")
+        .position(|p| p.name == "Hard Limit")
         .unwrap();
 
-    // "Limitieren (hart)" switches the lookahead on: the processor got the values.
+    // "Hard Limit" switches the lookahead on: the processor got the values.
     app.dispatch(Action::Plugin(PluginAction::ApplyInternalPreset {
         device: presse,
         index: hard,

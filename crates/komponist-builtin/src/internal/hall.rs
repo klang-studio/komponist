@@ -23,6 +23,7 @@
 // The loops index several parallel per-line arrays at once.
 #![allow(clippy::needless_range_loop)]
 
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
@@ -45,7 +46,7 @@ pub(super) static SPEC: Spec = Spec {
 fn presets() -> &'static [Preset] {
     static LIST: [Preset; 4] = [
         Preset::new(
-            "Kleiner Raum",
+            "Small Room",
             &[
                 ("room", 0.0),
                 ("size", 6.0),
@@ -56,7 +57,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Studio-Platte",
+            "Studio Plate",
             &[
                 ("size", 20.0),
                 ("decay", 1.8),
@@ -67,7 +68,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Große Halle",
+            "Large Hall",
             &[
                 ("size", 40.0),
                 ("decay", 4.5),
@@ -76,7 +77,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Kirche",
+            "Church",
             &[
                 ("room", 2.0),
                 ("size", 55.0),
@@ -91,50 +92,60 @@ fn presets() -> &'static [Preset] {
     &LIST
 }
 
-fn params() -> Vec<ParamInfo> {
+fn params(t: Lang) -> Vec<ParamInfo> {
     let percent = |id: &str, name: &str, default: f64| {
         ParamInfo::new(id, name, ParamKind::lin(0.0, 1.0), default).unit(Unit::Percent)
     };
     vec![
         ParamInfo::new(
             "size",
-            "Größe",
+            t.param_hall_size(),
             ParamKind::scaled(1.0, 60.0, Scale::Log),
             28.0,
         )
         .unit(Unit::Meters),
         ParamInfo::new(
             "decay",
-            "Decay",
+            t.param_decay(),
             ParamKind::scaled(0.1, 20.0, Scale::Log),
             2.4,
         )
         .unit(Unit::S),
-        ParamInfo::new("predelay", "Pre-Delay", ParamKind::lin(0.0, 250.0), 18.0).unit(Unit::Ms),
+        ParamInfo::new(
+            "predelay",
+            t.param_pre_delay(),
+            ParamKind::lin(0.0, 250.0),
+            18.0,
+        )
+        .unit(Unit::Ms),
         ParamInfo::new(
             "damping",
-            "Dämpfung",
+            t.param_hall_damping(),
             ParamKind::scaled(500.0, 20_000.0, Scale::Log),
             5200.0,
         )
         .unit(Unit::Hz),
-        percent("diffusion", "Diffusion", 0.7),
-        percent("width", "Breite", 0.9),
-        percent("modulation", "Modul.", 0.25),
-        percent("mix", "Mix", 0.22),
+        percent("diffusion", t.param_diffusion(), 0.7),
+        percent("width", t.param_width(), 0.9),
+        percent("modulation", t.param_hall_modulation(), 0.25),
+        percent("mix", t.param_mix(), 0.22),
         ParamInfo::new(
             "room",
-            "Raum",
-            ParamKind::Enum(vec!["Zimmer".into(), "Halle".into(), "Kirche".into()]),
+            t.param_hall_room(),
+            ParamKind::Enum(vec![
+                t.choice_hall_room_chamber().into(),
+                t.choice_hall_room_hall().into(),
+                t.choice_hall_room_church().into(),
+            ]),
             1.0,
         ),
-        ParamInfo::new("freeze", "Einfrieren", ParamKind::Bool, 0.0),
-        ParamInfo::new("wet_only", "Nur Hall", ParamKind::Bool, 0.0),
+        ParamInfo::new("freeze", t.param_hall_freeze(), ParamKind::Bool, 0.0),
+        ParamInfo::new("wet_only", t.param_hall_wet_only(), ParamKind::Bool, 0.0),
     ]
 }
 
 /// Four columns of knobs, no graph.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     let id = |key: &str| CellParam::Id(ParamId::new(key));
     single_page(
         4,

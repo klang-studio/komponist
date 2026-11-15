@@ -17,7 +17,7 @@ pub fn presets() -> &'static [Preset] {
     // Wave: 0 sine, 1 triangle, 2 saw, 3 pulse. Filter: 0 LP 24, 1 LP 12, 2 BP 12.
     static LIST: [Preset; 10] = [
         Preset {
-            name: "Fette Säge",
+            name: "Fat Saw",
             category: Some("Bass"),
             changes: &[
                 ("osc_b_oct", -1.0),
@@ -27,7 +27,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Sub-Brumm",
+            name: "Sub Rumble",
             category: Some("Bass"),
             changes: &[
                 ("osc_a_wave", 0.0),
@@ -50,7 +50,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Acid-Zupf",
+            name: "Acid Pluck",
             category: Some("Bass"),
             changes: &[
                 ("mode", 1.0),
@@ -72,7 +72,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Mono-Lead",
+            name: "Mono Lead",
             category: Some("Lead"),
             changes: &[
                 ("mode", 2.0),
@@ -93,7 +93,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Breiter Pad",
+            name: "Wide Pad",
             category: Some("Pad"),
             changes: &[
                 ("osc_a_wave", 3.0),
@@ -120,7 +120,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Blechstab",
+            name: "Brass Stab",
             category: Some("Brass"),
             changes: &[
                 ("osc_a_wave", 2.0),
@@ -160,7 +160,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Zufalls-Zupf",
+            name: "Random Pluck",
             category: Some("Pluck"),
             changes: &[
                 ("osc_b_wave", 3.0),
@@ -181,7 +181,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Kick-Bass",
+            name: "Kick Bass",
             category: Some("Bass"),
             changes: &[
                 ("osc_a_wave", 0.0),
@@ -203,7 +203,7 @@ pub fn presets() -> &'static [Preset] {
             ],
         },
         Preset {
-            name: "Rauschwind",
+            name: "Noise Wind",
             category: Some("FX"),
             changes: &[
                 ("osc_a_wave", 0.0),

@@ -5,19 +5,19 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("FM-Bass", 0.337, fm_bass),
-    entry("Slap-Bass", 0.351, slap_bass),
-    entry("E-Bass", 0.386, finger_bass),
+    entry("FM Bass", 0.337, fm_bass),
+    entry("Slap Bass", 0.351, slap_bass),
+    entry("Electric Bass", 0.386, finger_bass),
     entry("Fretless", 0.464, fretless),
-    entry("Acid-Bass", 0.087, acid_bass),
-    entry("Square-Bass", 0.558, square_bass),
-    entry("Analog-Bass", 0.493, analog_bass),
-    entry("Reese-Bass", 0.280, reese_bass),
-    entry("Sub-Bass", 0.894, sub_bass),
-    entry("Wobble-Bass", 0.114, wobble_bass),
-    entry("Pluck-Bass", 0.287, pluck_bass),
-    entry("Sync-Bass", 0.579, sync_bass),
-    entry("Verzerrter Bass", 0.270, distorted_bass),
+    entry("Acid Bass", 0.087, acid_bass),
+    entry("Square Bass", 0.558, square_bass),
+    entry("Analog Bass", 0.493, analog_bass),
+    entry("Reese Bass", 0.280, reese_bass),
+    entry("Sub Bass", 0.894, sub_bass),
+    entry("Wobble Bass", 0.114, wobble_bass),
+    entry("Pluck Bass", 0.287, pluck_bass),
+    entry("Sync Bass", 0.579, sync_bass),
+    entry("Distorted Bass", 0.270, distorted_bass),
 ];
 
 fn fm_bass() -> Patch {

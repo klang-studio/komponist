@@ -18,6 +18,7 @@
 //! pattern keeps the notes it was written for.
 
 use komponist_builtin::sampler;
+use komponist_i18n::Lang;
 use komponist_ipc::NoteName;
 use komponist_model::PluginFormat;
 use komponist_model::edits::StepRowSpec;
@@ -44,12 +45,31 @@ pub fn is_sampler_track(track: &Track) -> bool {
     instrument(track).is_some_and(|d| is_sampler(&d.plugin))
 }
 
-/// The rows of a new step clip for `instrument` with the `note_names` it reports now (see the
-/// module docs).
+/// [`DEFAULT_STEP_ROWS`] with the names of `t`: the same notes, "Hat zu" and "Hat offen" are
+/// "Closed Hat" and "Open Hat" in English. The names are content once a clip has them.
+pub fn default_rows(t: Lang) -> [(&'static str, u8); 8] {
+    let mut rows = DEFAULT_STEP_ROWS;
+    rows[3].0 = t.default_name_hat_closed();
+    rows[4].0 = t.default_name_hat_open();
+    rows
+}
+
+/// The rows of a new step clip in German; see [`rows_for_in`].
 pub fn rows_for(instrument: Option<&PluginRef>, note_names: &[NoteName]) -> Vec<StepRowSpec> {
+    rows_for_in(Lang::De, instrument, note_names)
+}
+
+/// The rows of a new step clip for `instrument` with the `note_names` it reports now (see the
+/// module docs); the default names are those of `t`.
+pub fn rows_for_in(
+    t: Lang,
+    instrument: Option<&PluginRef>,
+    note_names: &[NoteName],
+) -> Vec<StepRowSpec> {
+    let defaults = default_rows(t);
     if instrument.is_some_and(is_sampler) {
         // All eight pads, whatever is loaded.
-        return DEFAULT_STEP_ROWS
+        return defaults
             .iter()
             .zip(sampler::FIRST_NOTE..)
             .map(|(&(default, _), note)| {
@@ -74,7 +94,7 @@ pub fn rows_for(instrument: Option<&PluginRef>, note_names: &[NoteName]) -> Vec<
             .map(|n| spec(n.name.trim(), n.key))
             .collect();
     }
-    DEFAULT_STEP_ROWS
+    defaults
         .iter()
         .map(|&(name, note)| spec(name, note))
         .collect()
@@ -183,6 +203,34 @@ mod tests {
         let clap = plugin(PluginFormat::Clap, "com.klopfer.drum-sampler");
         let gm: Vec<(&str, u8)> = DEFAULT_STEP_ROWS.to_vec();
         assert_eq!(pairs(&rows_for(Some(&clap), &[])), gm);
+    }
+
+    #[test]
+    fn the_default_rows_are_named_in_the_language() {
+        assert_eq!(default_rows(Lang::De), DEFAULT_STEP_ROWS);
+        let en = rows_for_in(Lang::En, Some(&sampler()), &[]);
+        assert_eq!(
+            pairs(&en),
+            [
+                ("Kick", 36),
+                ("Snare", 37),
+                ("Clap", 38),
+                ("Closed Hat", 39),
+                ("Open Hat", 40),
+                ("Tom", 41),
+                ("Rim", 42),
+                ("Perc", 43),
+            ]
+        );
+        let gm = default_rows(Lang::En).to_vec();
+        assert_eq!(pairs(&rows_for_in(Lang::En, None, &[])), gm);
+        assert_eq!(gm[3], ("Closed Hat", 42));
+        // A name the instrument reports wins in every language.
+        let named = [name(36, "808 Kick")];
+        assert_eq!(
+            rows_for_in(Lang::En, Some(&sampler()), &named)[0].name,
+            "808 Kick"
+        );
     }
 
     #[test]

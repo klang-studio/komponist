@@ -7,15 +7,15 @@ use crate::{EnvelopeParams, ModSource, Patch};
 
 pub(super) const LIST: &[Entry] = &[
     entry("Supersaw", 0.964, supersaw),
-    entry("Trance-Pluck", 0.628, trance_pluck),
-    entry("Hardstyle-Lead", 0.906, hardstyle_lead),
-    entry("Euro-Stab", 0.932, euro_stab),
-    entry("Offbeat-Bass", 0.521, offbeat_bass),
-    entry("Hands-Up-Lead", 0.785, hands_up_lead),
+    entry("Trance Pluck", 0.628, trance_pluck),
+    entry("Hardstyle Lead", 0.906, hardstyle_lead),
+    entry("Euro Stab", 0.932, euro_stab),
+    entry("Offbeat Bass", 0.521, offbeat_bass),
+    entry("Hands-Up Lead", 0.785, hands_up_lead),
     entry("Riser", 0.274, riser),
-    entry("Psy-Rollbass", 0.537, psy_roll_bass),
-    entry("Euphorie-Pad", 0.684, euphoria_pad),
-    entry("Rave-Sirene", 0.253, rave_siren),
+    entry("Psy Rolling Bass", 0.537, psy_roll_bass),
+    entry("Euphoria Pad", 0.684, euphoria_pad),
+    entry("Rave Siren", 0.253, rave_siren),
 ];
 
 fn supersaw() -> Patch {

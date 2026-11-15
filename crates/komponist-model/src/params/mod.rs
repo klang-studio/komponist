@@ -32,6 +32,7 @@ mod scale;
 pub mod va_curve;
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -173,22 +174,54 @@ pub enum Unit {
 }
 
 /// A custom text for a plain value, for devices whose values need their own words ("Frei").
-pub type FormatFn = fn(f64) -> String;
+/// It may capture the texts of one language (`docs/I18N.md`): a device builds its parameters per
+/// language ([`ParamInfo::formatted`] takes any closure).
+pub type FormatFn = Arc<dyn Fn(f64) -> String + Send + Sync>;
 
-/// A [`FormatFn`] that compares by address (two parameters with the same function are equal; a
-/// duplicated function counting as different only costs a redundant redraw).
-#[derive(Clone, Copy)]
+/// A [`FormatFn`] that compares by identity (a clone of a parameter is equal to it; two separately
+/// built functions count as different, which only costs a redundant redraw).
+#[derive(Clone)]
 pub struct Format(pub FormatFn);
 
 impl PartialEq for Format {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::fn_addr_eq(self.0, other.0)
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
 impl fmt::Debug for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Format(..)")
+    }
+}
+
+/// The words of a value text that depend on the language: the switch states and the percent
+/// suffix. German by default (what the model always wrote); the catalog's texts for another
+/// language come from the app or the device that builds the [`ParamInfo`] ([`ParamInfo::texts`]).
+/// Units (`Hz`, `ms`, `dB`, `st` …) and the note and pan notation are the same in every language
+/// and stay in [`ParamInfo::format`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueTexts {
+    /// A switch that is on.
+    pub on: &'static str,
+    /// A switch that is off.
+    pub off: &'static str,
+    /// What follows the number of a percent, with its space: `" %"` (German), `"%"` (English).
+    pub percent: &'static str,
+}
+
+impl ValueTexts {
+    /// German: `Ein`, `Aus`, `40 %`.
+    pub const DE: ValueTexts = ValueTexts {
+        on: "Ein",
+        off: "Aus",
+        percent: " %",
+    };
+}
+
+impl Default for ValueTexts {
+    fn default() -> Self {
+        ValueTexts::DE
     }
 }
 
@@ -208,6 +241,9 @@ pub struct ParamInfo {
     /// Own text for a plain value instead of the unit's; not saved.
     #[serde(skip)]
     pub format: Option<Format>,
+    /// The language-dependent words of the value text; not saved, German unless set.
+    #[serde(skip)]
+    pub texts: ValueTexts,
     /// May be automated (carried only).
     pub automatable: bool,
     /// May be modulated (carried only).
@@ -231,6 +267,7 @@ impl ParamInfo {
             default,
             unit: Unit::None,
             format: None,
+            texts: ValueTexts::DE,
             automatable: true,
             modulatable: false,
             is_macro: false,
@@ -244,10 +281,17 @@ impl ParamInfo {
         self
     }
 
-    /// Sets an own text function.
+    /// Sets an own text function (a closure may capture the texts of one language).
     #[must_use]
-    pub fn formatted(mut self, format: FormatFn) -> Self {
-        self.format = Some(Format(format));
+    pub fn formatted(mut self, format: impl Fn(f64) -> String + Send + Sync + 'static) -> Self {
+        self.format = Some(Format(Arc::new(format)));
+        self
+    }
+
+    /// Sets the language-dependent words of the value text.
+    #[must_use]
+    pub fn texts(mut self, texts: ValueTexts) -> Self {
+        self.texts = texts;
         self
     }
 
@@ -334,7 +378,7 @@ impl ParamInfo {
     /// The text of a plain value: the own [`ParamInfo::format`] if set, else per kind and unit
     /// (`420 Hz`, `1.2 kHz`, `−4.0 dB`, `L 14`, `C`).
     pub fn format(&self, plain: f64) -> String {
-        match self.format {
+        match &self.format {
             Some(Format(f)) => f(plain),
             None => format::value_text(self, plain),
         }

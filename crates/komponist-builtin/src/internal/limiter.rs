@@ -17,6 +17,7 @@
 //! (the delay line is cleared), and the host has to read [`Dsp::latency`] again for delay
 //! compensation.
 
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
 
@@ -48,37 +49,49 @@ const LOOKAHEAD: usize = 3;
 fn presets() -> &'static [Preset] {
     static LIST: [Preset; 4] = [
         Preset::new(
-            "Master sanft",
+            "Gentle Master",
             &[("gain", 2.0), ("ceiling", -1.0), ("release", 200.0)],
         ),
-        Preset::new("Master laut", &[("gain", 6.0), ("release", 80.0)]),
-        Preset::new("Spitzenschutz", &[("ceiling", -1.0), ("release", 150.0)]),
+        Preset::new("Loud Master", &[("gain", 6.0), ("release", 80.0)]),
+        Preset::new("Peak Guard", &[("ceiling", -1.0), ("release", 150.0)]),
         Preset::new(
-            "Drums hart",
+            "Hard Drums",
             &[("gain", 10.0), ("ceiling", -0.1), ("release", 30.0)],
         ),
     ];
     &LIST
 }
 
-fn params() -> Vec<ParamInfo> {
+fn params(t: Lang) -> Vec<ParamInfo> {
     vec![
-        ParamInfo::new("gain", "Eingang", ParamKind::lin(0.0, 24.0), 0.0).unit(Unit::Db),
-        ParamInfo::new("ceiling", "Ceiling", ParamKind::lin(-12.0, 0.0), -0.3).unit(Unit::Db),
+        ParamInfo::new(
+            "gain",
+            t.param_limiter_gain(),
+            ParamKind::lin(0.0, 24.0),
+            0.0,
+        )
+        .unit(Unit::Db),
+        ParamInfo::new(
+            "ceiling",
+            t.param_ceiling(),
+            ParamKind::lin(-12.0, 0.0),
+            -0.3,
+        )
+        .unit(Unit::Db),
         ParamInfo::new(
             "release",
-            "Release",
+            t.param_release(),
             ParamKind::scaled(10.0, 1000.0, Scale::Log),
             100.0,
         )
         .unit(Unit::Ms),
-        ParamInfo::new("lookahead", "Lookahead", ParamKind::Bool, 1.0),
+        ParamInfo::new("lookahead", t.param_lookahead(), ParamKind::Bool, 1.0),
     ]
 }
 
 /// Four columns: input and ceiling as large knobs, release, the lookahead switch below and the
 /// gain-reduction meter on the right.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     single_page(
         4,
         vec![

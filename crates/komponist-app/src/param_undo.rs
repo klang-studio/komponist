@@ -256,13 +256,16 @@ impl App {
     fn param_name(&self, device: DeviceId, id: u32) -> Option<String> {
         let (_, _, d) = self.project().find_device(device)?;
         if is_hexa(d) {
-            return komponist_builtin::device::params()
+            return komponist_builtin::device::params_in(self.lang)
                 .iter()
                 .find(|p| p.wire == id)
                 .map(|p| p.info.name.clone());
         }
         if let Some(kind) = internal_kind(d) {
-            return kind.params().get(id as usize).map(|p| p.name.clone());
+            return kind
+                .params_in(self.lang)
+                .get(id as usize)
+                .map(|p| p.name.clone());
         }
         self.engine
             .host()

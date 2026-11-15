@@ -34,6 +34,7 @@ pub mod testkit;
 
 mod dsp;
 
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, Page, WidgetKind,
 };
@@ -178,85 +179,114 @@ fn time_text(ms: f64) -> String {
     }
 }
 
-fn end_text(v: f64) -> String {
-    if v >= MAX_MS {
-        "Ende".to_owned()
-    } else {
-        time_text(v)
+/// The text of an end point: "Ende" ("End") at the maximum, else a time.
+fn end_text(t: Lang) -> impl Fn(f64) -> String + Send + Sync + 'static {
+    let end = t.value_end();
+    move |v| {
+        if v >= MAX_MS {
+            end.to_owned()
+        } else {
+            time_text(v)
+        }
     }
 }
 
-fn decay_text(v: f64) -> String {
-    if v >= MAX_DECAY_S {
-        "Aus".to_owned()
-    } else {
-        time_text(v * 1000.0)
+/// The text of a decay: "Aus" ("Off") at the maximum, else a time.
+fn decay_text(t: Lang) -> impl Fn(f64) -> String + Send + Sync + 'static {
+    let off = t.value_off();
+    move |v| {
+        if v >= MAX_DECAY_S {
+            off.to_owned()
+        } else {
+            time_text(v * 1000.0)
+        }
     }
 }
 
-fn params() -> Vec<ParamInfo> {
+fn params(t: Lang) -> Vec<ParamInfo> {
     let mut list = vec![
-        ParamInfo::new("kit_tune", "Kit-Tune", ParamKind::lin(-24.0, 24.0), 0.0)
-            .unit(Unit::Semitones),
-        ParamInfo::new("follow", "Pad folgt Eingang", ParamKind::Bool, 0.0),
+        ParamInfo::new(
+            "kit_tune",
+            t.param_sampler_kit_tune(),
+            ParamKind::lin(-24.0, 24.0),
+            0.0,
+        )
+        .unit(Unit::Semitones),
+        ParamInfo::new("follow", t.param_sampler_follow(), ParamKind::Bool, 0.0),
     ];
     for pad in 1..=PADS {
         let key = |f: PadField| format!("pad{pad}_{}", f.key());
         for field in PadField::ALL {
             let id = ParamId::new(key(field));
             list.push(match field {
-                PadField::Start => {
-                    ParamInfo::new(id, format!("Start {pad}"), ParamKind::lin(0.0, MAX_MS), 0.0)
-                        .unit(Unit::Ms)
-                }
+                PadField::Start => ParamInfo::new(
+                    id,
+                    t.param_sampler_start(pad),
+                    ParamKind::lin(0.0, MAX_MS),
+                    0.0,
+                )
+                .unit(Unit::Ms),
                 PadField::End => ParamInfo::new(
                     id,
-                    format!("Ende {pad}"),
+                    t.param_sampler_end(pad),
                     ParamKind::lin(0.0, MAX_MS),
                     MAX_MS,
                 )
                 .unit(Unit::Ms)
-                .formatted(end_text),
+                .formatted(end_text(t)),
                 PadField::Mode => ParamInfo::new(
                     id,
-                    format!("Modus {pad}"),
-                    ParamKind::Enum(vec!["1×".into(), "Gate".into()]),
+                    t.param_sampler_mode(pad),
+                    ParamKind::Enum(vec![
+                        t.choice_sampler_mode_one_shot().into(),
+                        t.choice_sampler_mode_gate().into(),
+                    ]),
                     0.0,
                 ),
-                PadField::Tune => {
-                    ParamInfo::new(id, format!("Tune {pad}"), ParamKind::lin(-24.0, 24.0), 0.0)
-                        .unit(Unit::Semitones)
-                }
+                PadField::Tune => ParamInfo::new(
+                    id,
+                    t.param_sampler_tune(pad),
+                    ParamKind::lin(-24.0, 24.0),
+                    0.0,
+                )
+                .unit(Unit::Semitones),
                 PadField::Decay => ParamInfo::new(
                     id,
-                    format!("Decay {pad}"),
+                    t.param_sampler_decay(pad),
                     ParamKind::scaled(0.01, MAX_DECAY_S, Scale::Log),
                     MAX_DECAY_S,
                 )
                 .unit(Unit::S)
-                .formatted(decay_text),
-                PadField::Drive => {
-                    ParamInfo::new(id, format!("Drive {pad}"), ParamKind::lin(0.0, 1.0), 0.0)
-                        .unit(Unit::Percent)
-                }
+                .formatted(decay_text(t)),
+                PadField::Drive => ParamInfo::new(
+                    id,
+                    t.param_sampler_drive(pad),
+                    ParamKind::lin(0.0, 1.0),
+                    0.0,
+                )
+                .unit(Unit::Percent),
                 PadField::Pan => ParamInfo::new(
                     id,
-                    format!("Pan {pad}"),
+                    t.param_sampler_pan(pad),
                     ParamKind::scaled(-1.0, 1.0, Scale::Pan),
                     0.0,
                 ),
                 PadField::Level => ParamInfo::new(
                     id,
-                    format!("Pegel {pad}"),
+                    t.param_sampler_level(pad),
                     ParamKind::scaled(-70.0, 6.0, Scale::Db),
                     0.0,
                 )
                 .unit(Unit::Db),
-                PadField::Mute => ParamInfo::new(id, format!("Mute {pad}"), ParamKind::Bool, 0.0),
-                PadField::Solo => ParamInfo::new(id, format!("Solo {pad}"), ParamKind::Bool, 0.0),
+                PadField::Mute => {
+                    ParamInfo::new(id, t.param_sampler_mute(pad), ParamKind::Bool, 0.0)
+                }
+                PadField::Solo => {
+                    ParamInfo::new(id, t.param_sampler_solo(pad), ParamKind::Bool, 0.0)
+                }
                 PadField::Choke => ParamInfo::new(
                     id,
-                    format!("Choke {pad}"),
+                    t.param_sampler_choke(pad),
                     ParamKind::Int {
                         min: 0,
                         max: CHOKE_GROUPS,
@@ -272,7 +302,7 @@ fn params() -> Vec<ParamInfo> {
 /// Nine columns as in the device handoff: the pads and the kit on the left, the selected pad's
 /// waveform and knobs in the middle, its level fader on the right. Every per-pad cell is a
 /// template on `{sel}`, the pad the pad grid (or the step sequencer's row) selected.
-fn layout() -> DeviceLayout {
+fn layout(t: Lang) -> DeviceLayout {
     use komponist_model::params::layout::SEL;
     let pad = |field: &str| CellParam::Template(format!("pad{{{SEL}}}_{field}"));
     let id = |key: &str| CellParam::Id(ParamId::new(key));
@@ -290,7 +320,7 @@ fn layout() -> DeviceLayout {
             4,
             1,
             GraphBinding::new(GraphConfig::Waveform)
-                .titled(format!("Pad {{{SEL}}}"))
+                .titled(t.graph_title_sampler_pad(format!("{{{SEL}}}")))
                 .bind("start", format!("pad{{{SEL}}}_start"))
                 .bind("end", format!("pad{{{SEL}}}_end")),
         ),

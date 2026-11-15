@@ -2505,6 +2505,7 @@ dependencies = [
  "hound",
  "klang-dsp",
  "komponist-engine",
+ "komponist-i18n",
  "komponist-model",
  "rtrb",
  "sampler-core",

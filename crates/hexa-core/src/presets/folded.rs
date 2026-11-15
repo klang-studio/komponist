@@ -6,11 +6,11 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("West-Coast-Pluck", 0.387, west_coast_pluck),
-    entry("Fold-Bass", 0.545, fold_bass),
-    entry("Buchla-Bongo", 0.395, bongo),
-    entry("Sweep-Fold-Lead", 0.500, fold_sweep_lead),
-    entry("Fold-Pad", 0.520, fold_pad),
+    entry("West Coast Pluck", 0.387, west_coast_pluck),
+    entry("Fold Bass", 0.545, fold_bass),
+    entry("Buchla Bongo", 0.395, bongo),
+    entry("Sweep Fold Lead", 0.500, fold_sweep_lead),
+    entry("Fold Pad", 0.520, fold_pad),
 ];
 
 fn west_coast_pluck() -> Patch {

@@ -21,6 +21,7 @@
 //! The engine keeps notes from hanging whatever this stage does (`komponist_engine::EventProcessor`).
 
 use komponist_engine::{Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext};
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Unit};
 
@@ -66,13 +67,13 @@ pub const MAX_HELD: usize = 32;
 /// The factory presets (WP-96): a small starter set.
 fn presets() -> &'static [Preset] {
     static LIST: [Preset; 5] = [
-        Preset::new("Achtel auf", &[("rate", 2.0)]),
+        Preset::new("Eighths Up", &[("rate", 2.0)]),
         Preset::new(
-            "Sechzehntel Auf/Ab",
+            "Sixteenths Up/Down",
             &[("mode", 2.0), ("gate", 0.5), ("octaves", 2.0)],
         ),
         Preset::new(
-            "Triolen ab",
+            "Triplets Down",
             &[
                 ("mode", 1.0),
                 ("rate", 3.0),
@@ -80,38 +81,54 @@ fn presets() -> &'static [Preset] {
                 ("octaves", 2.0),
             ],
         ),
-        Preset::new("Zufall", &[("mode", 3.0), ("gate", 0.5), ("octaves", 2.0)]),
+        Preset::new("Random", &[("mode", 3.0), ("gate", 0.5), ("octaves", 2.0)]),
         Preset::new(
-            "Gespielt weich",
+            "Soft As Played",
             &[("mode", 4.0), ("rate", 2.0), ("gate", 0.8)],
         ),
     ];
     &LIST
 }
 
-fn params() -> Vec<ParamInfo> {
+/// The names of the pattern modes in `t`, in the order of [`MODES`].
+fn mode_names(t: Lang) -> [&'static str; 5] {
+    [
+        t.choice_arp_up(),
+        t.choice_arp_down(),
+        t.choice_arp_up_down(),
+        t.choice_arp_random(),
+        t.choice_arp_as_played(),
+    ]
+}
+
+fn params(t: Lang) -> Vec<ParamInfo> {
     vec![
         ParamInfo::new(
             "mode",
-            "Muster",
-            ParamKind::Enum(MODES.iter().map(|m| (*m).to_owned()).collect()),
+            t.param_arp_pattern(),
+            ParamKind::Enum(mode_names(t).iter().map(|m| (*m).to_owned()).collect()),
             0.0,
         ),
         ParamInfo::new(
             "rate",
-            "Rate",
+            t.param_rate(),
             ParamKind::Enum(RATES.iter().map(|r| r.0.to_owned()).collect()),
             4.0,
         ),
-        ParamInfo::new("gate", "Gate", ParamKind::lin(0.05, 1.0), 0.6).unit(Unit::Percent),
-        ParamInfo::new("octaves", "Oktaven", ParamKind::Int { min: 1, max: 4 }, 1.0),
-        ParamInfo::new("hold", "Halten", ParamKind::Bool, 0.0),
+        ParamInfo::new("gate", t.param_gate(), ParamKind::lin(0.05, 1.0), 0.6).unit(Unit::Percent),
+        ParamInfo::new(
+            "octaves",
+            t.param_arp_octaves(),
+            ParamKind::Int { min: 1, max: 4 },
+            1.0,
+        ),
+        ParamInfo::new("hold", t.param_arp_hold(), ParamKind::Bool, 0.0),
     ]
 }
 
 /// Five columns (the head of the card needs the room for the name): pattern and rate as dropdowns,
 /// the latch and the octave count below them, the gate as a knob on the right.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     let id = |key: &str| CellParam::Id(ParamId::new(key));
     single_page(
         5,

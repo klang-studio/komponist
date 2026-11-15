@@ -36,8 +36,8 @@ use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 mod routes;
 
 pub use routes::{
-    DEFAULT_BUS_NAME, DEFAULT_GROUP_NAME, NewBus, SendProp, add_bus, add_send, duplicate_tracks,
-    numbered_track_name, remove_send, set_output, set_send, set_sidechain,
+    DEFAULT_BUS_NAME, DEFAULT_GROUP_NAME, NewBus, SendProp, add_bus, add_bus_in, add_send,
+    duplicate_tracks, numbered_track_name, remove_send, set_output, set_send, set_sidechain,
 };
 
 #[cfg(test)]
@@ -429,6 +429,46 @@ pub fn set_master_prop(project: &Project, prop: ChannelProp) -> EditResult {
 /// 0 dB, centred, input "all", Omni. Inserted before a group member, it joins that member's group
 /// (outputs to the group bus); elsewhere it outputs to the master.
 pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId), EditError> {
+    add_track_in(project, spec, &DefaultNames::DE)
+}
+
+/// The words default names are made of (`MIDI 2`, `Bus 1`, `Gruppe 1`, `Drums`). The model has no
+/// language: it writes German unless the caller passes the words of its own ([`add_track_in`],
+/// [`add_bus_in`]). Once made, a name is content and never changes with the language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefaultNames {
+    /// Base of a track without instrument: „MIDI“, „MIDI 2“, …
+    pub track: &'static str,
+    /// Name of a track with the drum sampler.
+    pub drums: &'static str,
+    /// Base of an effect bus: „Bus 1“, …
+    pub bus: &'static str,
+    /// Base of a group: „Gruppe 1“, …
+    pub group: &'static str,
+}
+
+impl DefaultNames {
+    /// German: `MIDI`, `Drums`, `Bus`, `Gruppe`.
+    pub const DE: DefaultNames = DefaultNames {
+        track: DEFAULT_TRACK_NAME,
+        drums: DRUMS_TRACK_NAME,
+        bus: DEFAULT_BUS_NAME,
+        group: DEFAULT_GROUP_NAME,
+    };
+}
+
+impl Default for DefaultNames {
+    fn default() -> Self {
+        DefaultNames::DE
+    }
+}
+
+/// [`add_track`] with the name bases of `names` for a track without a name.
+pub fn add_track_in(
+    project: &Project,
+    spec: NewTrack,
+    names: &DefaultNames,
+) -> Result<(Project, TrackId), EditError> {
     let hue = match spec.hue {
         Some(hue) => valid_hue(hue)?,
         None => next_hue(project),
@@ -437,9 +477,9 @@ pub fn add_track(project: &Project, spec: NewTrack) -> Result<(Project, TrackId)
         Some(name) => valid_name(name)?,
         None => {
             let base = match &spec.instrument {
-                Some(plugin) if is_drum_sampler(plugin) => DRUMS_TRACK_NAME,
+                Some(plugin) if is_drum_sampler(plugin) => names.drums,
                 Some(plugin) if !plugin.name.trim().is_empty() => plugin.name.trim(),
-                _ => DEFAULT_TRACK_NAME,
+                _ => names.track,
             };
             unique_track_name(project, base)
         }

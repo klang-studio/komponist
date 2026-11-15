@@ -6,16 +6,16 @@ use super::{Entry, entry};
 use crate::{EnvelopeParams, ModSource, Patch};
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Kristallregen", 0.437, crystal_rain),
-    entry("Granular-Wolke", 0.755, granular_cloud),
-    entry("Tiefsee", 0.629, deep_sea),
-    entry("Sternenfeld", 0.838, star_field),
-    entry("Atem-Pad", 0.813, breath_pad),
-    entry("Zeitlupen-Pad", 0.307, slow_motion_pad),
-    entry("Glitch-Stotter", 0.234, glitch_stutter),
-    entry("Datenstrom", 0.359, data_stream),
-    entry("Glitch-Pluck", 0.213, glitch_pluck),
-    entry("Störsignal", 0.219, interference),
+    entry("Crystal Rain", 0.437, crystal_rain),
+    entry("Granular Cloud", 0.755, granular_cloud),
+    entry("Deep Sea", 0.629, deep_sea),
+    entry("Star Field", 0.838, star_field),
+    entry("Breath Pad", 0.813, breath_pad),
+    entry("Slow-Motion Pad", 0.307, slow_motion_pad),
+    entry("Glitch Stutter", 0.234, glitch_stutter),
+    entry("Data Stream", 0.359, data_stream),
+    entry("Glitch Pluck", 0.213, glitch_pluck),
+    entry("Interference", 0.219, interference),
 ];
 
 fn crystal_rain() -> Patch {

@@ -5,22 +5,22 @@ use super::{Entry, entry};
 use crate::Patch;
 
 pub(super) const LIST: &[Entry] = &[
-    entry("Bassdrum", 0.181, kick),
+    entry("Bass Drum", 0.181, kick),
     entry("Snare", 0.476, snare),
     entry("Hi-Hat", 0.288, hi_hat),
     entry("Tom", 0.232, tom),
-    entry("Becken", 0.289, cymbal),
+    entry("Cymbal", 0.289, cymbal),
     entry("Laser", 0.233, laser),
     entry("Wind", 1.000, wind),
     entry("Computer", 0.145, computer),
     entry("Drone", 0.555, drone),
     entry("UFO", 0.195, ufo),
-    entry("Ringglocke", 0.496, ring_bell),
-    entry("Roboter", 0.445, robot),
-    entry("Ring-Lead", 0.333, ring_lead),
-    entry("Brandung", 0.446, surf),
+    entry("Ring Bell", 0.496, ring_bell),
+    entry("Robot", 0.445, robot),
+    entry("Ring Lead", 0.333, ring_lead),
+    entry("Surf", 0.446, surf),
     entry("Clap", 0.747, clap),
-    entry("Rausch-Sweep", 1.000, noise_sweep),
+    entry("Noise Sweep", 1.000, noise_sweep),
 ];
 
 fn kick() -> Patch {

@@ -91,8 +91,9 @@ pub enum CellParam {
         key: &'static str,
         /// The name above the switch and of its accessible group („Hüllkurve“).
         label: &'static str,
-        /// `(context value, label)` per entry; the first is the default.
-        options: &'static [(&'static str, &'static str)],
+        /// `(context value, label)` per entry; the first is the default. The value is a language-free
+        /// id, the label a text of the device's language.
+        options: Vec<(&'static str, &'static str)>,
     },
     /// A widget that edits no single parameter (a label, a meter).
     None,

@@ -6,6 +6,7 @@ use assert_no_alloc::assert_no_alloc;
 use komponist_engine::{
     Event, EventKind, NOTE_ID_NONE, ProcessContext, Processor, StereoIo, TransportInfo,
 };
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{BAND, ENV_VIEW, LFO_VIEW, SEL, validate};
 use komponist_model::params::va_curve::{self, dst, src};
 use komponist_model::params::{ParamContext, ParamId};
@@ -239,7 +240,7 @@ fn hz(key: f64) -> f64 {
 
 #[test]
 fn the_parameter_table_matches_the_wire_ids_and_the_proposal() {
-    let list = params();
+    let list = params(Lang::De);
     assert_eq!(list.len(), COUNT);
     for (i, info) in list.iter().enumerate() {
         assert_eq!(info.id.as_str(), KEYS[i], "wire id {i}");
@@ -264,7 +265,7 @@ fn the_parameter_table_matches_the_wire_ids_and_the_proposal() {
 
 #[test]
 fn texts_read_like_the_mockups() {
-    let list = params();
+    let list = params(Lang::De);
     let text = |k: &str, v: f64| list.iter().find(|p| p.id.as_str() == k).unwrap().format(v);
     assert_eq!(text("cutoff", 1200.0), "1.2 kHz");
     assert_eq!(text("osc_b_fine", 7.0), "7 ct");

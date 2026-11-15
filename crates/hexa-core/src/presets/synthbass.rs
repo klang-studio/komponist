@@ -5,16 +5,16 @@ use super::{Entry, entry};
 use crate::{ModSource, Patch};
 
 pub(super) const LIST: &[Entry] = &[
-    entry("808-Bass", 0.501, bass_808),
-    entry("Neuro-Bass", 0.154, neuro_bass),
-    entry("Growl-Bass", 0.739, growl_bass),
-    entry("Wheel-Wobble", 0.135, wheel_wobble),
-    entry("Donk-Bass", 0.837, donk_bass),
-    entry("Foghorn-Bass", 0.613, foghorn_bass),
-    entry("TX-Bass", 0.760, tx_bass),
-    entry("PWM-Bass", 0.426, pwm_bass),
-    entry("Electro-Bass", 0.274, electro_bass),
-    entry("Gummi-Bass", 0.533, rubber_bass),
+    entry("808 Bass", 0.501, bass_808),
+    entry("Neuro Bass", 0.154, neuro_bass),
+    entry("Growl Bass", 0.739, growl_bass),
+    entry("Wheel Wobble", 0.135, wheel_wobble),
+    entry("Donk Bass", 0.837, donk_bass),
+    entry("Foghorn Bass", 0.613, foghorn_bass),
+    entry("TX Bass", 0.760, tx_bass),
+    entry("PWM Bass", 0.426, pwm_bass),
+    entry("Electro Bass", 0.274, electro_bass),
+    entry("Rubber Bass", 0.533, rubber_bass),
 ];
 
 fn bass_808() -> Patch {
