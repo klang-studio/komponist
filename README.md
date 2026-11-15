@@ -86,6 +86,7 @@ does not take your project down with it. Plugin windows open as native X11 windo
 - Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain presse from any
   track or bus.
 - Every edit is undoable, including parameter changes.
+- The transport bar shows the master output as an oscilloscope or a spectrum; a click switches between them.
 
 The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (Rhythmus) and the effect bus (Hall) have strips of their own on the right, next to the master channel:
 
