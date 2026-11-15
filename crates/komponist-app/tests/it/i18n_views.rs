@@ -572,7 +572,7 @@ fn searching_the_browser_finds_a_device_by_its_english_name() {
     let collapsed = std::collections::BTreeSet::new();
     let favorites = Favorites::default();
     let input = |query| Input {
-        catalog: &catalog,
+        catalog,
         favorites: &favorites,
         segment: komponist_app::ui_state::BrowserSegment::All,
         query,
