@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-komponist-project">
+    <comment>komponist project</comment>
+    <comment xml:lang="de">komponist-Projekt</comment>
+    <icon name="komponist"/>
+    <glob pattern="*.komponist"/>
+  </mime-type>
+</mime-info>

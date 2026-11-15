@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=komponist
+GenericName=Digital Audio Workstation
+GenericName[de]=Digital Audio Workstation (DAW)
+Comment=Compose and arrange music with MIDI and plugins
+Comment[de]=Musik mit MIDI und Plugins komponieren und arrangieren
+Exec=komponist %F
+Icon=komponist
+Terminal=false
+Categories=AudioVideo;Audio;Midi;Sequencer;Music;
+Keywords=DAW;MIDI;Sequencer;Music;Audio;CLAP;VST3;
+Keywords[de]=DAW;MIDI;Sequencer;Musik;Audio;CLAP;VST3;
+MimeType=application/x-komponist-project;
+StartupWMClass=komponist
