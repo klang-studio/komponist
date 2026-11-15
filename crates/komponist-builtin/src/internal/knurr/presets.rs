@@ -2,23 +2,12 @@
 //! that differ from the defaults, by model id; [`Preset::values`] gives all of them by wire id, so
 //! a preset keeps working when a parameter is added later (it gets its default).
 //!
-//! Internal devices have no preset menu yet (the device card's preset button is pisynth's), so
-//! these are data and tests for now; [`state`] is the device state a menu would store.
+//! The device head's preset menu lists them (WP-96, [`Internal::presets`]); [`state`] is the plain
+//! state without the loaded preset's name.
 
 use komponist_model::params::va_curve::{dst, src};
 
-use crate::internal::Internal;
-
-/// One preset.
-#[derive(Clone, Copy, Debug)]
-pub struct Preset {
-    /// Name in the menu.
-    pub name: &'static str,
-    /// Folder in the menu.
-    pub category: &'static str,
-    /// The parameters that differ from the defaults: model id, plain value.
-    pub changes: &'static [(&'static str, f64)],
-}
+use crate::internal::{Internal, Preset};
 
 /// The presets, in menu order.
 pub fn presets() -> &'static [Preset] {
@@ -29,7 +18,7 @@ pub fn presets() -> &'static [Preset] {
     static LIST: [Preset; 10] = [
         Preset {
             name: "Fette Säge",
-            category: "Bass",
+            category: Some("Bass"),
             changes: &[
                 ("osc_b_oct", -1.0),
                 ("cutoff", 900.0),
@@ -39,7 +28,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Sub-Brumm",
-            category: "Bass",
+            category: Some("Bass"),
             changes: &[
                 ("osc_a_wave", 0.0),
                 ("osc_b_wave", 0.0),
@@ -62,7 +51,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Acid-Zupf",
-            category: "Bass",
+            category: Some("Bass"),
             changes: &[
                 ("mode", 1.0),
                 ("glide", 0.06),
@@ -84,7 +73,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Mono-Lead",
-            category: "Lead",
+            category: Some("Lead"),
             changes: &[
                 ("mode", 2.0),
                 ("glide", 0.04),
@@ -105,7 +94,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Breiter Pad",
-            category: "Pad",
+            category: Some("Pad"),
             changes: &[
                 ("osc_a_wave", 3.0),
                 ("osc_b_wave", 2.0),
@@ -132,7 +121,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Blechstab",
-            category: "Brass",
+            category: Some("Brass"),
             changes: &[
                 ("osc_a_wave", 2.0),
                 ("osc_b_wave", 2.0),
@@ -153,7 +142,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Wobble",
-            category: "Bass",
+            category: Some("Bass"),
             changes: &[
                 ("mode", 1.0),
                 ("osc_b_oct", -1.0),
@@ -172,7 +161,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Zufalls-Zupf",
-            category: "Pluck",
+            category: Some("Pluck"),
             changes: &[
                 ("osc_b_wave", 3.0),
                 ("cutoff", 800.0),
@@ -193,7 +182,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Kick-Bass",
-            category: "Bass",
+            category: Some("Bass"),
             changes: &[
                 ("osc_a_wave", 0.0),
                 ("osc_mix", 0.0),
@@ -215,7 +204,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             name: "Rauschwind",
-            category: "FX",
+            category: Some("FX"),
             changes: &[
                 ("osc_a_wave", 0.0),
                 ("osc_b_wave", 0.0),
@@ -241,22 +230,7 @@ pub fn presets() -> &'static [Preset] {
     &LIST
 }
 
-impl Preset {
-    /// All parameters by wire id: the defaults with this preset's changes.
-    pub fn values(&self) -> Vec<f64> {
-        let kind = Internal::Knurr;
-        let mut values = kind.defaults();
-        for (key, value) in self.changes {
-            if let Some(wire) = kind.wire(&komponist_model::params::ParamId::new(*key)) {
-                values[wire as usize] = kind.params()[wire as usize].snap(*value);
-            }
-        }
-        values
-    }
-}
-
 /// The device state (as the project saves it) of preset `index`.
 pub fn state(index: usize) -> Option<Vec<u8>> {
-    let preset = presets().get(index)?;
-    Some(Internal::Knurr.encode_state(&preset.values()))
+    Some(Internal::Knurr.encode_state(&Internal::Knurr.preset_values(index)?))
 }

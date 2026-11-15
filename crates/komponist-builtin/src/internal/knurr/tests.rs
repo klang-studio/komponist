@@ -1246,7 +1246,7 @@ fn the_ten_presets_load_and_sound() {
         }
         let state = presets::state(index).unwrap();
         let values = Internal::Knurr.decode_state(Some(&state)).unwrap();
-        assert_eq!(values, preset.values());
+        assert_eq!(Some(values.clone()), Internal::Knurr.preset_values(index));
         assert_ne!(values, Internal::Knurr.defaults(), "{}", preset.name);
         // A single note and a chord sound, finite and within reach of full scale.
         let mut p = Internal::Knurr.processor(&values);

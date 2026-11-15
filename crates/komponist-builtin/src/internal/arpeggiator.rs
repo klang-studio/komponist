@@ -24,7 +24,7 @@ use komponist_engine::{Event, EventKind, EventProcessor, EventSink, NOTE_ID_NONE
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Unit};
 
-use super::{Spec, midi, single_page, toggle};
+use super::{Preset, Spec, midi, single_page, toggle};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -34,6 +34,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp: midi::passthrough,
+    presets,
 };
 
 /// Wire ids.
@@ -60,6 +61,32 @@ pub const RATES: [(&str, f64); 8] = [
 
 /// Most keys the pattern holds at once.
 pub const MAX_HELD: usize = 32;
+
+/// The factory presets (WP-96): a small starter set.
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 5] = [
+        Preset::new("Achtel auf", &[("rate", 2.0)]),
+        Preset::new(
+            "Sechzehntel Auf/Ab",
+            &[("mode", 2.0), ("gate", 0.5), ("octaves", 2.0)],
+        ),
+        Preset::new(
+            "Triolen ab",
+            &[
+                ("mode", 1.0),
+                ("rate", 3.0),
+                ("gate", 0.7),
+                ("octaves", 2.0),
+            ],
+        ),
+        Preset::new("Zufall", &[("mode", 3.0), ("gate", 0.5), ("octaves", 2.0)]),
+        Preset::new(
+            "Gespielt weich",
+            &[("mode", 4.0), ("rate", 2.0), ("gate", 0.8)],
+        ),
+    ];
+    &LIST
+}
 
 fn params() -> Vec<ParamInfo> {
     vec![

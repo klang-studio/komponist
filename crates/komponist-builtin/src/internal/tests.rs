@@ -340,3 +340,102 @@ fn a_param_that_changes_the_latency_publishes_it_in_the_meter() {
     run(&mut p, &[param_event(wire, 1.0)], &silence);
     assert_eq!(meter.latency(), on);
 }
+
+// ------------------------------------------------------------------------------------------------
+// Presets (WP-96)
+
+#[test]
+fn every_factory_preset_is_valid_for_its_device() {
+    for kind in Internal::ALL {
+        let list = kind.presets();
+        let mut names: Vec<&str> = list.iter().map(|p| p.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), list.len(), "{}: names are unique", kind.name());
+        for (index, preset) in list.iter().enumerate() {
+            for (key, value) in preset.changes {
+                let wire = kind.wire(&ParamId::new(*key)).unwrap_or_else(|| {
+                    panic!("{} / {}: unknown parameter {key}", kind.name(), preset.name)
+                });
+                let info = &kind.params()[wire as usize];
+                assert_eq!(
+                    info.snap(*value),
+                    *value,
+                    "{} / {}: {key} = {value} is outside the range or between steps",
+                    kind.name(),
+                    preset.name
+                );
+            }
+            let values = kind.preset_values(index).unwrap();
+            assert_eq!(values.len(), kind.params().len());
+            // The state a preset stores decodes to exactly these values and names the preset.
+            let state = kind.preset_state(None, index).unwrap();
+            assert_eq!(kind.decode_state(Some(&state)).unwrap(), values);
+            assert_eq!(kind.loaded_preset(Some(&state)), Some((index, false)));
+        }
+        assert!(kind.preset_values(list.len()).is_none());
+        assert!(kind.preset_state(None, list.len()).is_none());
+    }
+}
+
+#[test]
+fn the_starter_sets_have_the_agreed_sizes() {
+    let count = |k: Internal| k.presets().len();
+    assert_eq!(count(Internal::Sampler), 0);
+    assert_eq!(count(Internal::Presse), 10);
+    assert_eq!(count(Internal::Knurr), 10);
+    for kind in [
+        Internal::Eq,
+        Internal::Delay,
+        Internal::Hall,
+        Internal::Limiter,
+        Internal::Arpeggiator,
+        Internal::Tonleiter,
+    ] {
+        assert!((3..=6).contains(&count(kind)), "{}", kind.name());
+    }
+}
+
+#[test]
+fn a_loaded_preset_is_changed_once_a_value_differs_and_plain_again_when_it_matches() {
+    let kind = Internal::Delay;
+    let state = kind.preset_state(None, 1).unwrap();
+    assert_eq!(kind.loaded_preset(Some(&state)), Some((1, false)));
+    let mix = kind.wire(&ParamId::new("mix")).unwrap();
+    let original = kind.decode_state(Some(&state)).unwrap()[mix as usize];
+    // A knob turn keeps the name and makes the state differ …
+    let turned = kind.with_value(Some(&state), mix, 0.9).unwrap();
+    assert_eq!(kind.loaded_preset(Some(&turned)), Some((1, true)));
+    // … and turning it back makes it match again.
+    let back = kind.with_value(Some(&turned), mix, original).unwrap();
+    assert_eq!(kind.loaded_preset(Some(&back)), Some((1, false)));
+}
+
+#[test]
+fn states_without_a_known_preset_report_none_and_old_states_still_load() {
+    let kind = Internal::Hall;
+    assert_eq!(kind.loaded_preset(None), None);
+    // A state saved before presets existed: parameters only.
+    let old = kind.encode_state(&kind.defaults());
+    assert_eq!(kind.loaded_preset(Some(&old)), None);
+    assert_eq!(kind.decode_state(Some(&old)).unwrap(), kind.defaults());
+    // A preset name that no longer exists, a name of the wrong type and a broken state.
+    let gone = br#"{"params":{},"preset":"Gibt es nicht"}"#;
+    assert_eq!(kind.loaded_preset(Some(gone)), None);
+    assert_eq!(kind.decode_state(Some(gone)).unwrap(), kind.defaults());
+    assert_eq!(
+        kind.loaded_preset(Some(br#"{"params":{},"preset":3}"#)),
+        None
+    );
+    assert_eq!(kind.loaded_preset(Some(b"nope")), None);
+}
+
+#[test]
+fn loading_a_preset_keeps_the_other_keys_of_the_state() {
+    let kind = Internal::Limiter;
+    let old = br#"{"params":{},"links":[1,2]}"#;
+    let state = kind.preset_state(Some(old), 0).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&state).unwrap();
+    assert_eq!(json["links"], serde_json::json!([1, 2]));
+    assert_eq!(json["preset"], kind.presets()[0].name);
+}

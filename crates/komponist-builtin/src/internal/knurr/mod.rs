@@ -85,6 +85,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp,
+    presets: presets::presets,
 };
 
 fn params() -> Vec<ParamInfo> {

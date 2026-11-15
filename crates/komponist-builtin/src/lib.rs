@@ -64,7 +64,7 @@ mod processor;
 pub mod sampler;
 pub mod state;
 
-pub use internal::{Internal, InternalProcessor};
+pub use internal::{Internal, InternalProcessor, Preset};
 pub use macros::Macro;
 pub use processor::{PisynthProcessor, SAMPLE_RATES};
 pub use state::{

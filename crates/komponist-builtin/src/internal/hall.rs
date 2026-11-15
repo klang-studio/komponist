@@ -27,7 +27,7 @@ use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Widge
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, Scale, Unit};
 
 use super::dsp::{CONTROL, Glide, OnePole, Ring, finite, flush, pole, smooth_coeff};
-use super::{Dsp, INITIAL_RATE, Spec, knob, knob_large, single_page, toggle};
+use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, single_page, toggle};
 
 /// The device.
 pub(super) static SPEC: Spec = Spec {
@@ -37,7 +37,58 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp,
+    presets,
 };
+
+/// The factory presets (WP-96): a small starter set.
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 4] = [
+        Preset::new(
+            "Kleiner Raum",
+            &[
+                ("room", 0.0),
+                ("size", 6.0),
+                ("decay", 0.6),
+                ("predelay", 5.0),
+                ("damping", 6000.0),
+                ("mix", 0.15),
+            ],
+        ),
+        Preset::new(
+            "Studio-Platte",
+            &[
+                ("size", 20.0),
+                ("decay", 1.8),
+                ("predelay", 10.0),
+                ("damping", 8000.0),
+                ("diffusion", 0.9),
+                ("mix", 0.2),
+            ],
+        ),
+        Preset::new(
+            "Große Halle",
+            &[
+                ("size", 40.0),
+                ("decay", 4.5),
+                ("predelay", 30.0),
+                ("mix", 0.25),
+            ],
+        ),
+        Preset::new(
+            "Kirche",
+            &[
+                ("room", 2.0),
+                ("size", 55.0),
+                ("decay", 9.0),
+                ("predelay", 40.0),
+                ("damping", 3500.0),
+                ("modulation", 0.35),
+                ("mix", 0.3),
+            ],
+        ),
+    ];
+    &LIST
+}
 
 fn params() -> Vec<ParamInfo> {
     let percent = |id: &str, name: &str, default: f64| {

@@ -52,7 +52,7 @@ use super::dsp::{
     CONTROL, DB_PER_OCTAVE, Glide, Ring, fast_exp2, fast_log2, finite, flush, smooth_coeff,
 };
 use super::eq::Df1;
-use super::{Dsp, INITIAL_RATE, Spec, knob, knob_large, param, toggle};
+use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, param, toggle};
 
 /// The device. The name is the working name of the proposal; this is the one place it is written.
 pub(super) static SPEC: Spec = Spec {
@@ -62,6 +62,7 @@ pub(super) static SPEC: Spec = Spec {
     params,
     layout,
     dsp,
+    presets,
 };
 
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.
@@ -202,126 +203,117 @@ fn lookahead_frames(rate: f32) -> usize {
     (f64::from(rate) * LOOKAHEAD_MS / 1000.0).round() as usize
 }
 
-/// The factory presets of the proposal: name and the values that differ from the defaults.
-pub const PRESETS: [(&str, &[(&str, f64)]); 10] = [
-    (
-        "Gesang weich",
-        &[
-            ("ratio", 3.0),
-            ("attack", 15.0),
-            ("release", 150.0),
-            ("knee", 8.0),
-            ("detector", 1.0),
-            ("auto_release", 1.0),
-            ("auto_makeup", 1.0),
-        ],
-    ),
-    (
-        "Gesang vorn",
-        &[
-            ("ratio", 4.0),
-            ("attack", 5.0),
-            ("release", 80.0),
-            ("knee", 4.0),
-            ("detector", 0.0),
-            ("auto_release", 0.0),
-            ("mix", 1.0),
-        ],
-    ),
-    (
-        "Drums fest",
-        &[
-            ("ratio", 4.0),
-            ("attack", 30.0),
-            ("release", 100.0),
-            ("detector", 0.0),
-            ("auto_release", 0.0),
-            ("auto_makeup", 1.0),
-        ],
-    ),
-    (
-        "Drums parallel",
-        &[
-            ("ratio", 10.0),
-            ("attack", 2.0),
-            ("release", 60.0),
-            ("threshold", -30.0),
-            ("mix", 0.4),
-            ("auto_release", 0.0),
-        ],
-    ),
-    (
-        "Bus Glue",
-        &[
-            ("ratio", 2.0),
-            ("attack", 30.0),
-            ("auto_release", 1.0),
-            ("knee", 12.0),
-            ("detector", 1.0),
-            ("sc_hpf", 80.0),
-            ("mix", 1.0),
-        ],
-    ),
-    (
-        "Bass stabil",
-        &[
-            ("ratio", 4.0),
-            ("attack", 20.0),
-            ("release", 200.0),
-            ("detector", 1.0),
-            ("sc_hpf", 60.0),
-            ("knee", 6.0),
-            ("auto_release", 0.0),
-        ],
-    ),
-    (
-        "Gitarre/Keys sanft",
-        &[
-            ("ratio", 2.5),
-            ("attack", 20.0),
-            ("release", 250.0),
-            ("knee", 10.0),
-            ("detector", 1.0),
-            ("auto_release", 0.0),
-        ],
-    ),
-    (
-        "Limitieren (hart)",
-        &[
-            ("ratio", 20.0),
-            ("attack", 0.1),
-            ("release", 50.0),
-            ("knee", 0.0),
-            ("threshold", -6.0),
-            ("lookahead", 1.0),
-            ("auto_release", 0.0),
-        ],
-    ),
-    (
-        "Pumpen",
-        &[
-            ("ratio", 8.0),
-            ("attack", 1.0),
-            ("release", 40.0),
-            ("threshold", -30.0),
-            ("detector", 0.0),
-            ("mix", 0.8),
-            ("auto_release", 0.0),
-        ],
-    ),
-    ("Neutral", &[("ratio", 1.0)]),
-];
-
-/// The plain values (by wire id) of preset `index`: the defaults with the preset's changes.
-pub fn preset_values(index: usize) -> Option<Vec<f64>> {
-    let (_, changes) = PRESETS.get(index)?;
-    let list = params();
-    let mut values: Vec<f64> = list.iter().map(|p| p.default).collect();
-    for (key, v) in *changes {
-        let at = list.iter().position(|p| p.id.as_str() == *key)?;
-        values[at] = list[at].snap(*v);
-    }
-    Some(values)
+/// The factory presets of the proposal (WP-93, a menu since WP-96).
+fn presets() -> &'static [Preset] {
+    static LIST: [Preset; 10] = [
+        Preset::new(
+            "Gesang weich",
+            &[
+                ("ratio", 3.0),
+                ("attack", 15.0),
+                ("release", 150.0),
+                ("knee", 8.0),
+                ("detector", 1.0),
+                ("auto_release", 1.0),
+                ("auto_makeup", 1.0),
+            ],
+        ),
+        Preset::new(
+            "Gesang vorn",
+            &[
+                ("ratio", 4.0),
+                ("attack", 5.0),
+                ("release", 80.0),
+                ("knee", 4.0),
+                ("detector", 0.0),
+                ("auto_release", 0.0),
+                ("mix", 1.0),
+            ],
+        ),
+        Preset::new(
+            "Drums fest",
+            &[
+                ("ratio", 4.0),
+                ("attack", 30.0),
+                ("release", 100.0),
+                ("detector", 0.0),
+                ("auto_release", 0.0),
+                ("auto_makeup", 1.0),
+            ],
+        ),
+        Preset::new(
+            "Drums parallel",
+            &[
+                ("ratio", 10.0),
+                ("attack", 2.0),
+                ("release", 60.0),
+                ("threshold", -30.0),
+                ("mix", 0.4),
+                ("auto_release", 0.0),
+            ],
+        ),
+        Preset::new(
+            "Bus Glue",
+            &[
+                ("ratio", 2.0),
+                ("attack", 30.0),
+                ("auto_release", 1.0),
+                ("knee", 12.0),
+                ("detector", 1.0),
+                ("sc_hpf", 80.0),
+                ("mix", 1.0),
+            ],
+        ),
+        Preset::new(
+            "Bass stabil",
+            &[
+                ("ratio", 4.0),
+                ("attack", 20.0),
+                ("release", 200.0),
+                ("detector", 1.0),
+                ("sc_hpf", 60.0),
+                ("knee", 6.0),
+                ("auto_release", 0.0),
+            ],
+        ),
+        Preset::new(
+            "Gitarre/Keys sanft",
+            &[
+                ("ratio", 2.5),
+                ("attack", 20.0),
+                ("release", 250.0),
+                ("knee", 10.0),
+                ("detector", 1.0),
+                ("auto_release", 0.0),
+            ],
+        ),
+        Preset::new(
+            "Limitieren (hart)",
+            &[
+                ("ratio", 20.0),
+                ("attack", 0.1),
+                ("release", 50.0),
+                ("knee", 0.0),
+                ("threshold", -6.0),
+                ("lookahead", 1.0),
+                ("auto_release", 0.0),
+            ],
+        ),
+        Preset::new(
+            "Pumpen",
+            &[
+                ("ratio", 8.0),
+                ("attack", 1.0),
+                ("release", 40.0),
+                ("threshold", -30.0),
+                ("detector", 0.0),
+                ("mix", 0.8),
+                ("auto_release", 0.0),
+            ],
+        ),
+        Preset::new("Neutral", &[("ratio", 1.0)]),
+    ];
+    &LIST
 }
 
 /// One smoothed reduction in dB (≤ 0): the branching smoother `fast` and, for auto-release, a
