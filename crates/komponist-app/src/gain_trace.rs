@@ -156,7 +156,7 @@ impl GainTrace {
         );
         input.fill(0.0);
         reduction.fill(0.0);
-        for (i, pair) in have.chunks_exact(2).enumerate() {
+        for (i, pair) in have.as_chunks::<2>().0.iter().enumerate() {
             // Age in pairs from the newest, then the column in a history that is `all` pairs long.
             let age = pairs - 1 - i;
             let column = POINTS - 1 - (age * POINTS / all).min(POINTS - 1);
@@ -173,7 +173,9 @@ impl GainTrace {
         let recent = ((INTERVAL * f64::from(rate) / pair_frames(rate) as f64).ceil() as usize)
             .clamp(1, pairs);
         self.level_db = have[2 * (pairs - recent)..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| p[0])
             .filter(|l| l.is_finite())
             .reduce(f32::max);

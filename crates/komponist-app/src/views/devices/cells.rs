@@ -1636,7 +1636,7 @@ mod tests {
 
     #[test]
     fn the_compressor_card_has_both_graphs_and_a_makeup_that_auto_makeup_dims() {
-        let mut h = presse_harness(presse_card(&[], Some(some_dynamics(Some(-9.0)))));
+        let h = presse_harness(presse_card(&[], Some(some_dynamics(Some(-9.0)))));
         h.check_accessibility();
         h.get_by_role_and_label(Role::Group, "Kennlinie");
         h.get_by_role_and_label(Role::Group, "Reduktion \u{b7} 4 s");
@@ -1662,7 +1662,7 @@ mod tests {
                 .is_disabled(),
             "manual makeup is live"
         );
-        let mut auto = presse_harness(presse_card(&[("auto_makeup", 1.0)], None));
+        let auto = presse_harness(presse_card(&[("auto_makeup", 1.0)], None));
         assert!(
             auto.get_by_role_and_label(Role::Slider, "Makeup")
                 .accesskit_node()
