@@ -2066,7 +2066,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hexa-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "klang-dsp",
  "libm",
@@ -2442,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "eframe",
@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "cpal",
@@ -2485,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-bridge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-hosting",
@@ -2498,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-builtin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "hexa-core",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "hound",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-hosting"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "clack-extensions",
@@ -2542,14 +2542,14 @@ dependencies = [
 
 [[package]]
 name = "komponist-i18n"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fluent-syntax",
 ]
 
 [[package]]
 name = "komponist-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "postcard",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "komponist-tokens",
@@ -2570,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-plugins"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "komponist-builtin",
@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-tokens"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "egui_extras",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "komponist-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
@@ -4238,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "sampler-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "klang-dsp",
 ]
