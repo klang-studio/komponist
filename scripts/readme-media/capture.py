@@ -7,7 +7,8 @@ records the GIFs with `ffmpeg -f x11grab` from the private Xvfb display.
 
     capture.py --bin target/release/komponist --out docs/media --work <scratch dir> [--only NAME ...]
 
-The UI runs in German (`--lang de`, the complete language), so the locators below are the German accessible names.
+The UI runs in English (`--lang en`, owner decision: README media in English), so the locators below are the
+English accessible names (`crates/komponist-i18n/locales/en`; `--lang de` needs the German ones).
 When a view changes, fix the locator or the layout constant of the one scenario that broke; every scenario is a
 function at the bottom of this file and is independent of the others (each starts from a fresh app state).
 """
@@ -58,11 +59,11 @@ class Session:
         )
         self.app = subprocess.Popen(
             # No plugin scan: the browser shows only the built-in devices, not the plugins of this machine.
-            [a.bin, "--demo", "--null-audio", "--no-plugin-scan", "--scale", "1", "--lang", "de"],
+            [a.bin, "--demo", "--null-audio", "--no-plugin-scan", "--scale", "1", "--lang", "en"],
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self.c = Client(PORT, 60)
-        self.wait_for(role="Button", label="Wiedergabe")
+        self.wait_for(role="Button", label="Play")
         time.sleep(1.5)
 
     def stop(self):
@@ -209,28 +210,28 @@ def open_dock(s, y=DOCK_Y):
 
 
 def select_track(s, name):
-    """Selects a track by its header (AccessKit row "Spur <name>, <instrument>").
+    """Selects a track by its header (AccessKit row "Track <name>, <instrument>").
 
     The row's centre is not safe: tracks inside a group are indented and the centre then lands on the M/S
     toggles (it muted Bass and never selected it). Click on the name, 36 px right of the row's left edge.
     """
-    b = s.bounds(role="Row", contains=f"Spur {name},")
+    b = s.bounds(role="Row", contains=f"Track {name},")
     s.click_pos({"x": b["x"] + 36, "y": b["y"] + b["h"] / 2})
     s.pause(0.3)
 
 
 def open_devices(s, track):
     select_track(s, track)
-    s.click(role="Tab", label="Geräte")
+    s.click(role="Tab", label="Devices")
     s.pause(0.8)
 
 
 def play(s):
-    s.click(role="Button", label="Wiedergabe")
+    s.click(role="Button", label="Play")
 
 
 def stop(s):
-    s.click(role="Button", label="Stopp")
+    s.click(role="Button", label="Stop")
 
 
 DOCK_X = 261  # left edge of the dock (right of the browser at its default width)
@@ -238,7 +239,7 @@ DOCK_X = 261  # left edge of the dock (right of the browser at its default width
 
 def dock_top(s):
     """y of the dock's top edge, from its first tab (the tab strip sits 6 px below the edge)."""
-    return int(s.bounds(role="Tab", label="Geräte")["y"]) - 6
+    return int(s.bounds(role="Tab", label="Devices")["y"]) - 6
 
 
 # -- scenarios ---------------------------------------------------------------------------------------------------------
@@ -257,7 +258,7 @@ def hero(s):
 
 def arrangement(s):
     """The arrangement alone (dock folded), playing."""
-    s.click(role="Button", label="Dock einklappen")
+    s.click(role="Button", label="Collapse dock")
     s.pause(0.5)
     play(s)
     s.pause(3.5)
@@ -278,19 +279,19 @@ def piano_roll(s):
     beat = bar / 4
 
     def key_y(name):
-        b = s.bounds(role="Button", label=f"Taste {name}")
+        b = s.bounds(role="Button", label=f"Key {name}")
         return b["y"] + b["h"] / 2
 
     s.rec_start()
     s.pause(0.6)
-    s.click(role="RadioButton", label="Stift")
+    s.click(role="RadioButton", label="Pencil")
     s.pause(0.4)
     melody = [("C3", 0.0), ("D3", 1.0), ("C3", 2.0), ("B2", 3.0)]
     for key, b in melody:
         y = key_y(key)
         s.drag({"x": x0 + b * beat + 6, "y": y}, {"x": x0 + (b + 0.75) * beat, "y": y}, steps=6)
         s.pause(0.45)
-    s.click(role="RadioButton", label="Zeiger")
+    s.click(role="RadioButton", label="Pointer")
     s.pause(0.5)
     # move the third note down a semitone, then remove the last one
     s.drag({"x": x0 + 2 * beat + 20, "y": key_y("C3")}, {"x": x0 + 2 * beat + 20, "y": key_y("A#2")}, steps=8)
@@ -305,7 +306,7 @@ def piano_roll(s):
 
 def step_sequencer(s):
     """Step sequencer: toggle steps on three rows while the pattern plays (GIF + PNG)."""
-    s.click(role="GridCell", contains="Clip Beat A, Takt 1", count=2)
+    s.click(role="GridCell", contains="Clip Beat A, bars 1", count=2)
     open_dock(s, 380)
     s.pause(0.6)
     top = dock_top(s)
@@ -314,7 +315,7 @@ def step_sequencer(s):
     s.pause(0.8)
     for row, steps in (("Clap", (5, 13)), ("Tom", (10, 11, 12)), ("Rim", (3, 7, 11, 15))):
         for st in steps:
-            s.click(role="CheckBox", contains=f"Step {st}, {row}, aus")
+            s.click(role="CheckBox", contains=f"Step {st}, {row}, off")
             s.pause(0.3)
     s.pause(1.5)
     stop(s)
@@ -340,7 +341,7 @@ def sidechain(s):
     s.pause(0.4)
     # The demo already has presse on the Bass, keyed by the Drums (pre-fader): open the SC chip's popover briefly.
     s.click(role="Button", label="Sidechain: Drums")
-    s.wait_for(role="Menu", label="Sidechain-Quelle")
+    s.wait_for(role="Menu", label="Sidechain source")
     s.pause(0.5)
     chip = s.bounds(role="Button", label="Sidechain: Drums")
     s.key("Escape")
@@ -388,7 +389,7 @@ def add_device(s):
     top = dock_top(s)
     s.rec_start()
     s.pause(0.8)
-    s.click(role="Button", label="+ Gerät")
+    s.click(role="Button", label="+ Device")
     s.pause(0.8)
     for ch in "lim":
         s.type(ch)
