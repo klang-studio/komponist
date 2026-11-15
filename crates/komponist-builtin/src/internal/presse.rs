@@ -41,6 +41,7 @@
 use std::sync::Arc;
 
 use komponist_engine::SampleTap;
+use komponist_i18n::Lang;
 use komponist_model::params::comp_curve::{self, RATIO_MAX};
 use komponist_model::params::eq_curve::{self, Coefs};
 use komponist_model::params::layout::{
@@ -105,54 +106,54 @@ const FLOOR_DB: f32 = -120.0;
 const AUTO_FAST: f32 = 0.3;
 const AUTO_SLOW: f32 = 3.0;
 
-fn params() -> Vec<ParamInfo> {
+fn params(t: Lang) -> Vec<ParamInfo> {
     vec![
-        ParamInfo::new("threshold", "Threshold", ParamKind::lin(-60.0, 0.0), -18.0).unit(Unit::Db),
+        ParamInfo::new("threshold", t.param_threshold(), ParamKind::lin(-60.0, 0.0), -18.0).unit(Unit::Db),
         ParamInfo::new(
             "ratio",
-            "Ratio",
+            t.param_ratio(),
             ParamKind::scaled(1.0, RATIO_MAX, Scale::Log),
             4.0,
         )
         .unit(Unit::Ratio),
-        ParamInfo::new("knee", "Knie", ParamKind::lin(0.0, 24.0), 6.0)
+        ParamInfo::new("knee", t.param_presse_knee(), ParamKind::lin(0.0, 24.0), 6.0)
             .unit(Unit::Db)
             // A width, not a gain: no sign.
             .formatted(|v| format!("{v:.0} dB")),
         ParamInfo::new(
             "attack",
-            "Attack",
+            t.param_attack(),
             ParamKind::scaled(0.1, 200.0, Scale::Log),
             10.0,
         )
         .unit(Unit::Ms),
         ParamInfo::new(
             "release",
-            "Release",
+            t.param_release(),
             ParamKind::scaled(5.0, 2000.0, Scale::Log),
             120.0,
         )
         .unit(Unit::Ms),
-        ParamInfo::new("makeup", "Makeup", ParamKind::lin(-12.0, 24.0), 0.0).unit(Unit::Db),
-        ParamInfo::new("mix", "Mix", ParamKind::lin(0.0, 1.0), 1.0).unit(Unit::Percent),
+        ParamInfo::new("makeup", t.param_makeup(), ParamKind::lin(-12.0, 24.0), 0.0).unit(Unit::Db),
+        ParamInfo::new("mix", t.param_mix(), ParamKind::lin(0.0, 1.0), 1.0).unit(Unit::Percent),
         ParamInfo::new(
             "detector",
-            "Detektor",
+            t.param_presse_detector(),
             ParamKind::Enum(vec!["Peak".into(), "RMS".into()]),
             1.0,
         ),
-        ParamInfo::new("link", "Link", ParamKind::lin(0.0, 1.0), 1.0).unit(Unit::Percent),
-        ParamInfo::new("lookahead", "Lookahead", ParamKind::Bool, 0.0),
+        ParamInfo::new("link", t.param_link(), ParamKind::lin(0.0, 1.0), 1.0).unit(Unit::Percent),
+        ParamInfo::new("lookahead", t.param_lookahead(), ParamKind::Bool, 0.0),
         ParamInfo::new(
             "sc_hpf",
-            "SC-HP",
+            t.param_presse_sc_hpf(),
             ParamKind::scaled(SC_OFF_HZ, 500.0, Scale::Log),
             SC_OFF_HZ,
         )
         .unit(Unit::Hz),
-        ParamInfo::new("sc_listen", "SC hören", ParamKind::Bool, 0.0),
-        ParamInfo::new("auto_release", "Auto-Rel.", ParamKind::Bool, 1.0),
-        ParamInfo::new("auto_makeup", "Auto-Mkp.", ParamKind::Bool, 0.0),
+        ParamInfo::new("sc_listen", t.param_presse_sc_listen(), ParamKind::Bool, 0.0),
+        ParamInfo::new("auto_release", t.param_presse_auto_release(), ParamKind::Bool, 1.0),
+        ParamInfo::new("auto_makeup", t.param_presse_auto_makeup(), ParamKind::Bool, 0.0),
     ]
 }
 
@@ -160,7 +161,7 @@ fn params() -> Vec<ParamInfo> {
 /// (3 × 2) and below it knee, link, detector and lookahead; threshold, ratio, makeup, attack and
 /// release; the reduction history, sidechain high-pass, mix, auto switches and „SC hören“; the
 /// gain-reduction meter on the right.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     let transfer = GraphBinding::new(GraphConfig::Compressor)
         .bind("threshold", "threshold")
         .bind("ratio", "ratio")
@@ -208,7 +209,7 @@ fn lookahead_frames(rate: f32) -> usize {
 fn presets() -> &'static [Preset] {
     static LIST: [Preset; 11] = [
         Preset::new(
-            "Gesang weich",
+            "Soft Vocal",
             &[
                 ("ratio", 3.0),
                 ("attack", 15.0),
@@ -220,7 +221,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Gesang vorn",
+            "Forward Vocal",
             &[
                 ("ratio", 4.0),
                 ("attack", 5.0),
@@ -232,7 +233,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Drums fest",
+            "Tight Drums",
             &[
                 ("ratio", 4.0),
                 ("attack", 30.0),
@@ -243,7 +244,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Drums parallel",
+            "Parallel Drums",
             &[
                 ("ratio", 10.0),
                 ("attack", 2.0),
@@ -266,7 +267,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Bass stabil",
+            "Steady Bass",
             &[
                 ("ratio", 4.0),
                 ("attack", 20.0),
@@ -278,7 +279,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Gitarre/Keys sanft",
+            "Gentle Guitar & Keys",
             &[
                 ("ratio", 2.5),
                 ("attack", 20.0),
@@ -289,7 +290,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Limitieren (hart)",
+            "Hard Limit",
             &[
                 ("ratio", 20.0),
                 ("attack", 0.1),
@@ -301,7 +302,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Pumpen",
+            "Pumping",
             &[
                 ("ratio", 8.0),
                 ("attack", 1.0),

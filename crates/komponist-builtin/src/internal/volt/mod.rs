@@ -49,6 +49,7 @@
 //! [`Dsp::pitch_bend`], [`Dsp::mod_wheel`] and [`Dsp::pressure`], which the processor fills from
 //! `EventKind::Midi`.
 
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, ENV_VIEW, GraphBinding, GraphConfig, Half, LFO_VIEW, Page,
     WidgetKind,
@@ -93,8 +94,8 @@ pub(super) static SPEC: Spec = Spec {
     sidechain: false,
 };
 
-fn params() -> Vec<ParamInfo> {
-    params::params()
+fn params(t: Lang) -> Vec<ParamInfo> {
+    params::params(t)
 }
 
 fn dsp() -> Box<dyn Dsp> {
@@ -153,8 +154,8 @@ fn signal_graph(col: u8) -> Cell {
     Cell::graph_half(col, 0, 3, 1, binding)
 }
 
-/// Page 1, "Klang": oscillators, filter, output (10 columns, `LAYOUTS.md`).
-fn page_sound() -> Page {
+/// Page 1, "Klang" ("Sound"): oscillators, filter, output (10 columns, `LAYOUTS.md`).
+fn page_sound(t: Lang) -> Page {
     let cells = vec![
         half(0, 0, 2, Half::Top, WidgetKind::Segment, "osc_a_wave"),
         half(0, 0, 2, Half::Bottom, WidgetKind::Segment, "osc_b_wave"),
@@ -180,22 +181,23 @@ fn page_sound() -> Page {
         knob(9, 2, "analog"),
     ];
     Page {
-        name: "Klang".into(),
+        name: t.page_volt_sound().into(),
         cols: 10,
         cells,
         dividers: vec![2, 6],
     }
 }
 
-/// The envelopes the left switch of the second page chooses between: context value and label.
+/// The envelopes the left switch of the second page chooses between: context value and label
+/// (the names are the same in every language).
 pub const ENVELOPES: &[(&str, &str)] = &[("amp", "Amp"), ("filt", "Filter"), ("mod", "Mod")];
 /// The LFOs the right switch chooses between.
 pub const LFOS: &[(&str, &str)] = &[("1", "LFO 1"), ("2", "LFO 2")];
 
-/// Page 2, "Hüllkurven": the chosen envelope and the chosen LFO (8 columns).
-fn page_envelopes() -> Page {
+/// Page 2, "Hüllkurven" ("Envelopes"): the chosen envelope and the chosen LFO (8 columns).
+fn page_envelopes(t: Lang) -> Page {
     let envelope = GraphBinding::new(GraphConfig::Envelope)
-        .titled(format!("{{{ENV_VIEW}_label}}-Hk."))
+        .titled(t.graph_title_volt_envelope(format!("{{{ENV_VIEW}_label}}")))
         .bind("attack", format!("{{{ENV_VIEW}}}_a"))
         .bind("decay", format!("{{{ENV_VIEW}}}_d"))
         .bind("sustain", format!("{{{ENV_VIEW}}}_s"))
@@ -223,8 +225,8 @@ fn page_envelopes() -> Page {
             WidgetKind::Segment,
             CellParam::Choice {
                 key: ENV_VIEW,
-                label: "Hüllkurve",
-                options: ENVELOPES,
+                label: t.label_volt_envelope(),
+                options: ENVELOPES.to_vec(),
             },
         ),
         env(0, "a"),
@@ -240,8 +242,8 @@ fn page_envelopes() -> Page {
             WidgetKind::Segment,
             CellParam::Choice {
                 key: LFO_VIEW,
-                label: "LFO",
-                options: LFOS,
+                label: t.label_volt_lfo(),
+                options: LFOS.to_vec(),
             },
         ),
         Cell::half(4, 2, 2, Half::Top, WidgetKind::Dropdown, lfo_param("shape")),
@@ -273,7 +275,7 @@ fn page_envelopes() -> Page {
         Cell::span(7, 2, 1, 1, WidgetKind::Knob, lfo_param("fade")),
     ];
     Page {
-        name: "Hüllkurven".into(),
+        name: t.page_volt_envelopes().into(),
         cols: 8,
         cells,
         dividers: vec![3],
@@ -281,7 +283,7 @@ fn page_envelopes() -> Page {
 }
 
 /// Page 3, "Matrix": four slots, the fixed paths, the voices (8 columns).
-fn page_matrix() -> Page {
+fn page_matrix(t: Lang) -> Page {
     let slot = |n: usize| {
         let (row, h) = [
             (0, Half::Top),
@@ -318,15 +320,15 @@ fn page_matrix() -> Page {
         knob(7, 2, "velocity"),
     ]);
     Page {
-        name: "Matrix".into(),
+        name: t.page_volt_matrix().into(),
         cols: 8,
         cells,
         dividers: vec![4],
     }
 }
 
-fn layout() -> DeviceLayout {
+fn layout(t: Lang) -> DeviceLayout {
     DeviceLayout {
-        pages: vec![page_sound(), page_envelopes(), page_matrix()],
+        pages: vec![page_sound(t), page_envelopes(t), page_matrix(t)],
     }
 }

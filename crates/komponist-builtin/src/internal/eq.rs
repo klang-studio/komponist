@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use komponist_engine::{SampleTap, tap};
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{
     Cell, DeviceLayout, GraphBinding, GraphConfig, Half, WidgetKind,
 };
@@ -61,10 +62,10 @@ pub const ANALYSE: usize = 1 + BANDS * PER_BAND;
 /// The factory presets (WP-96): a small starter set.
 fn presets() -> &'static [Preset] {
     static LIST: [Preset; 6] = [
-        Preset::new("Flach", &[]),
+        Preset::new("Flat", &[]),
         Preset::new("Low Cut 80 Hz", &[("b1_type", 0.0), ("b1_freq", 80.0)]),
         Preset::new(
-            "Gesang Präsenz",
+            "Vocal Presence",
             &[
                 ("b1_type", 0.0),
                 ("b1_freq", 90.0),
@@ -79,7 +80,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Bass Wärme",
+            "Warm Bass",
             &[
                 ("b1_type", 1.0),
                 ("b1_freq", 80.0),
@@ -90,11 +91,11 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Höhen Glanz",
+            "Treble Sheen",
             &[("b5_type", 3.0), ("b5_freq", 8000.0), ("b5_gain", 3.0)],
         ),
         Preset::new(
-            "Telefon",
+            "Telephone",
             &[
                 ("b1_type", 0.0),
                 ("b1_freq", 400.0),
@@ -106,11 +107,22 @@ fn presets() -> &'static [Preset] {
     &LIST
 }
 
-fn params() -> Vec<ParamInfo> {
+/// The names of the band types in `lang`, in the order of [`TYPES`].
+fn type_names(t: Lang) -> [&'static str; 5] {
+    [
+        t.choice_eq_type_low_cut(),
+        t.choice_eq_type_low_shelf(),
+        t.choice_eq_type_bell(),
+        t.choice_eq_type_high_shelf(),
+        t.choice_eq_type_high_cut(),
+    ]
+}
+
+fn params(t: Lang) -> Vec<ParamInfo> {
     let mut list = vec![
         ParamInfo::new(
             "out",
-            "Ausgang",
+            t.param_eq_out(),
             ParamKind::scaled(-GAIN_RANGE, GAIN_RANGE, Scale::Lin),
             0.0,
         )
@@ -120,20 +132,20 @@ fn params() -> Vec<ParamInfo> {
         let id = |what: &str| ParamId::new(format!("b{n}_{what}"));
         list.push(ParamInfo::new(
             id("on"),
-            format!("Band {n} an"),
+            t.param_eq_band_on(n),
             ParamKind::Bool,
             f64::from(u8::from(n <= BANDS_ON)),
         ));
         list.push(ParamInfo::new(
             id("type"),
-            format!("Typ {n}"),
-            ParamKind::Enum(TYPES.iter().map(|t| (*t).to_owned()).collect()),
+            t.param_eq_band_type(n),
+            ParamKind::Enum(type_names(t).iter().map(|n| (*n).to_owned()).collect()),
             2.0,
         ));
         list.push(
             ParamInfo::new(
                 id("freq"),
-                format!("Frequenz {n}"),
+                t.param_eq_band_freq(n),
                 ParamKind::scaled(20.0, 20_000.0, Scale::Log),
                 FREQS[n - 1],
             )
@@ -142,7 +154,7 @@ fn params() -> Vec<ParamInfo> {
         list.push(
             ParamInfo::new(
                 id("gain"),
-                format!("Gain {n}"),
+                t.param_eq_band_gain(n),
                 ParamKind::scaled(-GAIN_RANGE, GAIN_RANGE, Scale::Lin),
                 0.0,
             )
@@ -150,20 +162,20 @@ fn params() -> Vec<ParamInfo> {
         );
         list.push(ParamInfo::new(
             id("q"),
-            format!("Q {n}"),
+            t.param_eq_band_q(n),
             ParamKind::scaled(0.1, 18.0, Scale::Log),
             0.71,
         ));
     }
     // The live spectrum behind the graph (WP-92). On by default, so a project saved before the
     // parameter existed shows it too.
-    list.push(ParamInfo::new("analyse", "Analyse", ParamKind::Bool, 1.0));
+    list.push(ParamInfo::new("analyse", t.param_eq_analyse(), ParamKind::Bool, 1.0));
     list
 }
 
 /// Six columns: the graph over two rows, below it the type and on switch of the selected band and
 /// its frequency, gain and Q, and the output gain.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     let mut binding = GraphBinding::new(GraphConfig::Eq { bands: BANDS as u8 }).selecting("band");
     for n in 1..=BANDS {
         for what in ["on", "freq", "gain", "q", "type"] {

@@ -8,6 +8,7 @@
 //! release. Other MIDI messages pass through.
 
 use komponist_engine::{Event, EventKind, EventProcessor, EventSink, ProcessContext};
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo, ParamKind};
 
@@ -106,33 +107,58 @@ pub fn map_key(key: u8, root: u8, scale: usize, snap: Snap) -> Option<u8> {
 /// The factory presets (WP-96): a small starter set.
 fn presets() -> &'static [Preset] {
     static LIST: [Preset; 6] = [
-        Preset::new("C-Dur", &[]),
-        Preset::new("A-Moll", &[("root", 9.0), ("scale", 1.0)]),
-        Preset::new("D-Dorisch", &[("root", 2.0), ("scale", 4.0)]),
-        Preset::new("A-Moll-Pentatonik", &[("root", 9.0), ("scale", 10.0)]),
-        Preset::new("C-Blues", &[("scale", 11.0)]),
-        Preset::new("C-Dur filtern", &[("mode", 3.0)]),
+        Preset::new("C Major", &[]),
+        Preset::new("A Minor", &[("root", 9.0), ("scale", 1.0)]),
+        Preset::new("D Dorian", &[("root", 2.0), ("scale", 4.0)]),
+        Preset::new("A Minor Pentatonic", &[("root", 9.0), ("scale", 10.0)]),
+        Preset::new("C Blues", &[("scale", 11.0)]),
+        Preset::new("C Major Filtered", &[("mode", 3.0)]),
     ];
     &LIST
 }
 
-fn params() -> Vec<ParamInfo> {
+/// The names of the scale types in `t`, in the order of [`SCALES`].
+fn scale_names(t: Lang) -> [&'static str; 14] {
+    [
+        t.choice_scale_major(),
+        t.choice_scale_minor(),
+        t.choice_scale_harmonic_minor(),
+        t.choice_scale_melodic_minor(),
+        t.choice_scale_dorian(),
+        t.choice_scale_phrygian(),
+        t.choice_scale_lydian(),
+        t.choice_scale_mixolydian(),
+        t.choice_scale_locrian(),
+        t.choice_scale_pentatonic_major(),
+        t.choice_scale_pentatonic_minor(),
+        t.choice_scale_blues(),
+        t.choice_scale_whole_tone(),
+        t.choice_scale_chromatic(),
+    ]
+}
+
+/// The names of the modes in `t`, in the order of [`MODES`].
+fn mode_names(t: Lang) -> [&'static str; 4] {
+    [
+        t.choice_scale_mode_nearest(),
+        t.choice_scale_mode_up(),
+        t.choice_scale_mode_down(),
+        t.choice_scale_mode_filter(),
+    ]
+}
+
+fn params(t: Lang) -> Vec<ParamInfo> {
     let names = |list: &[&str]| ParamKind::Enum(list.iter().map(|n| (*n).to_owned()).collect());
     vec![
-        ParamInfo::new("root", "Grundton", names(&PITCH_CLASSES), 0.0),
-        ParamInfo::new(
-            "scale",
-            "Tonleiter",
-            ParamKind::Enum(SCALES.iter().map(|s| s.0.to_owned()).collect()),
-            0.0,
-        ),
-        ParamInfo::new("mode", "Modus", names(&MODES), 0.0),
+        ParamInfo::new("root", t.param_scale_root(), names(&PITCH_CLASSES), 0.0),
+        ParamInfo::new("scale", t.param_scale_scale(), names(&scale_names(t)), 0.0),
+        ParamInfo::new("mode", t.param_mode(), names(&mode_names(t)), 0.0),
     ]
 }
 
 /// Five columns (the head of the card needs the room for the name): root and mode as dropdowns,
 /// the scale under them.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     let id = |key: &str| CellParam::Id(ParamId::new(key));
     single_page(
         5,

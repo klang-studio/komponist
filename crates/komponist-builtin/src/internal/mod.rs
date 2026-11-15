@@ -52,6 +52,7 @@ use komponist_engine::{
     DeviceMeter, Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor,
     ProcessorError, SampleTap, StereoIo,
 };
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo};
 use komponist_model::{PluginFormat, PluginRef};
@@ -170,14 +171,16 @@ pub trait Dsp: Send {
 pub struct Spec {
     /// Catalog id, saved in projects (never changes).
     pub id: &'static str,
-    /// Name in the browser and on the card.
+    /// The name stored in projects (`PluginRef::name`) and the German name. What the UI shows
+    /// comes from the catalog per language ([`Internal::name_in`]).
     pub name: &'static str,
     /// CLAP-style features for the browser's category and search.
     pub features: &'static [&'static str],
-    /// The parameters; the index is the wire id.
-    pub params: fn() -> Vec<ParamInfo>,
-    /// The body of the device frame.
-    pub layout: fn() -> DeviceLayout,
+    /// The parameters in a language; the index is the wire id and ids, kinds, ranges and defaults
+    /// are the same in every language.
+    pub params: fn(Lang) -> Vec<ParamInfo>,
+    /// The body of the device frame in a language (page names, graph titles, choice labels).
+    pub layout: fn(Lang) -> DeviceLayout,
     /// The DSP with its parameters at their defaults.
     pub dsp: fn() -> Box<dyn Dsp>,
     /// The factory presets in menu order (WP-96); none for [`no_presets`].
@@ -315,9 +318,26 @@ impl Internal {
         self.spec().id
     }
 
-    /// The name shown in the browser and on the card.
+    /// The name stored in projects, which is also the German name. Shown names come from
+    /// [`Internal::name_in`].
     pub fn name(self) -> &'static str {
         self.spec().name
+    }
+
+    /// The name shown in the browser and on the card in `lang` ("Hall" is "Reverb" in English;
+    /// brand names such as hexa, volt and presse stay).
+    pub fn name_in(self, lang: Lang) -> &'static str {
+        match self {
+            Internal::Sampler => lang.device_name_sampler(),
+            Internal::Eq => lang.device_name_eq(),
+            Internal::Delay => lang.device_name_delay(),
+            Internal::Hall => lang.device_name_hall(),
+            Internal::Limiter => lang.device_name_limiter(),
+            Internal::Presse => lang.device_name_presse(),
+            Internal::Arpeggiator => lang.device_name_arpeggiator(),
+            Internal::Tonleiter => lang.device_name_tonleiter(),
+            Internal::Volt => lang.device_name_volt(),
+        }
     }
 
     /// The browser features (CLAP style: `equalizer`, `delay`, `reverb`, `limiter`).
@@ -349,18 +369,39 @@ impl Internal {
         }
     }
 
-    /// The parameters; the index is the wire id.
+    /// The parameters in German; the index is the wire id. Ids, kinds, ranges and defaults are
+    /// the same in every language, so code that does not show a text uses this; views use
+    /// [`Internal::params_in`].
     pub fn params(self) -> &'static [ParamInfo] {
-        static CELLS: [OnceLock<Vec<ParamInfo>>; Internal::ALL.len()] =
-            [const { OnceLock::new() }; Internal::ALL.len()];
-        CELLS[self.index()].get_or_init(self.spec().params)
+        self.params_in(Lang::De)
     }
 
-    /// The layout of the device frame's body.
+    /// The parameters with the names, choices and value texts of `lang`; the index is the wire id.
+    pub fn params_in(self, lang: Lang) -> &'static [ParamInfo] {
+        static CELLS: [[OnceLock<Vec<ParamInfo>>; Internal::ALL.len()]; Lang::ALL.len()] =
+            [const { [const { OnceLock::new() }; Internal::ALL.len()] }; Lang::ALL.len()];
+        let spec = self.spec();
+        CELLS[lang as usize][self.index()].get_or_init(|| {
+            let texts = crate::value_texts(lang);
+            (spec.params)(lang)
+                .into_iter()
+                .map(|p| p.texts(texts))
+                .collect()
+        })
+    }
+
+    /// The layout of the device frame's body in German (see [`Internal::layout_in`]).
     pub fn layout(self) -> &'static DeviceLayout {
-        static CELLS: [OnceLock<DeviceLayout>; Internal::ALL.len()] =
-            [const { OnceLock::new() }; Internal::ALL.len()];
-        CELLS[self.index()].get_or_init(self.spec().layout)
+        self.layout_in(Lang::De)
+    }
+
+    /// The layout of the device frame's body with the page names, graph titles and choice labels
+    /// of `lang`.
+    pub fn layout_in(self, lang: Lang) -> &'static DeviceLayout {
+        static CELLS: [[OnceLock<DeviceLayout>; Internal::ALL.len()]; Lang::ALL.len()] =
+            [const { [const { OnceLock::new() }; Internal::ALL.len()] }; Lang::ALL.len()];
+        let spec = self.spec();
+        CELLS[lang as usize][self.index()].get_or_init(|| (spec.layout)(lang))
     }
 
     /// The factory presets in menu order (empty: the device has none).

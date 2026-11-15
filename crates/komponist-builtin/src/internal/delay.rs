@@ -11,6 +11,7 @@
 //! the side of the wet signal (0 mono, 100 % as the lines produce it). At 0 % mix the audio
 //! passes bit-exact.
 
+use komponist_i18n::Lang;
 use komponist_model::params::layout::{
     Cell, CellParam, DeviceLayout, GraphBinding, GraphConfig, Half, WidgetKind,
 };
@@ -81,11 +82,11 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Achtel Ping-Pong",
+            "Eighth Ping-Pong",
             &[("sync", 1.0), ("note", 5.0), ("feedback", 0.4)],
         ),
         Preset::new(
-            "Punktierte Achtel",
+            "Dotted Eighths",
             &[
                 ("sync", 1.0),
                 ("note", 6.0),
@@ -94,7 +95,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Dub-Echo",
+            "Dub Echo",
             &[
                 ("sync", 1.0),
                 ("note", 8.0),
@@ -105,7 +106,7 @@ fn presets() -> &'static [Preset] {
             ],
         ),
         Preset::new(
-            "Weiches Band",
+            "Soft Tape",
             &[
                 ("time", 300.0),
                 ("feedback", 0.35),
@@ -120,52 +121,52 @@ fn presets() -> &'static [Preset] {
     &LIST
 }
 
-fn params() -> Vec<ParamInfo> {
+fn params(t: Lang) -> Vec<ParamInfo> {
     vec![
         ParamInfo::new(
             "time",
-            "Zeit",
+            t.param_time(),
             ParamKind::scaled(1.0, MAX_TIME_MS, Scale::Log),
             375.0,
         )
         .unit(Unit::Ms),
         ParamInfo::new(
             "feedback",
-            "Feedback",
+            t.param_feedback(),
             ParamKind::lin(0.0, MAX_FEEDBACK),
             0.42,
         )
         .unit(Unit::Percent),
-        ParamInfo::new("ping_pong", "Ping-Pong", ParamKind::Bool, 1.0),
-        ParamInfo::new("mix", "Mix", ParamKind::lin(0.0, 1.0), 0.3).unit(Unit::Percent),
-        ParamInfo::new("sync", "Sync", ParamKind::Bool, 0.0),
+        ParamInfo::new("ping_pong", t.param_delay_ping_pong(), ParamKind::Bool, 1.0),
+        ParamInfo::new("mix", t.param_mix(), ParamKind::lin(0.0, 1.0), 0.3).unit(Unit::Percent),
+        ParamInfo::new("sync", t.param_sync(), ParamKind::Bool, 0.0),
         ParamInfo::new(
             "note",
-            "Notenwert",
+            t.param_delay_note(),
             ParamKind::Enum(NOTES.iter().map(|(n, _)| (*n).to_owned()).collect()),
             8.0,
         ),
         ParamInfo::new(
             "low_cut",
-            "Low Cut",
+            t.param_low_cut(),
             ParamKind::scaled(20.0, 2000.0, Scale::Log),
             20.0,
         )
         .unit(Unit::Hz),
         ParamInfo::new(
             "high_cut",
-            "High Cut",
+            t.param_high_cut(),
             ParamKind::scaled(500.0, 20_000.0, Scale::Log),
             20_000.0,
         )
         .unit(Unit::Hz),
-        ParamInfo::new("width", "Breite", ParamKind::lin(0.0, 1.0), 1.0).unit(Unit::Percent),
+        ParamInfo::new("width", t.param_width(), ParamKind::lin(0.0, 1.0), 1.0).unit(Unit::Percent),
     ]
 }
 
 /// Four columns: the XY field (time × feedback) with ping-pong, sync and the note value below it;
 /// time and feedback, the two cuts in the loop, width and mix as knobs.
-fn layout() -> DeviceLayout {
+fn layout(_: Lang) -> DeviceLayout {
     single_page(
         4,
         vec![
