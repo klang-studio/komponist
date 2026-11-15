@@ -189,6 +189,11 @@ impl View for Devices {
         }
 
         let visible = model::visible(&spans, scroll_x, body.width());
+        // The live spectrum of the visible frames (WP-92); hidden ones cost nothing.
+        for (c, on_screen) in cards.iter_mut().zip(&visible) {
+            let show = *on_screen && model::shows_spectrum(c);
+            c.analysis = ctx.meters.analysis(c.device, show, now);
+        }
         header_row(ui, ctx, header, track, &cards, &visible);
         let view = ChainView {
             body,

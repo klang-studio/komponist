@@ -9,13 +9,14 @@
 //!   UI frame. CPU load and xruns are measured by `komponist-audio` (`StreamStats`), not here.
 
 use core::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use komponist_model::{Tick, TrackId};
 
 use crate::processor::Processor;
 use crate::program::{Program, SlotId};
+use crate::tap::SampleTap;
 
 /// A request from the UI to the engine. Applied in send order at the start of a block.
 pub enum Command {
@@ -369,6 +370,8 @@ pub struct DeviceMeter {
     latency: AtomicU32,
     /// Full scale of the gain-reduction bar in dB (f32 bits; 0 = [`DeviceMeter::DEFAULT_GR_RANGE_DB`]).
     gr_range: AtomicU32,
+    /// The sample tap of a device that shows its signal (WP-92), set once when it is built.
+    tap: OnceLock<Arc<SampleTap>>,
 }
 
 impl DeviceMeter {
@@ -383,7 +386,19 @@ impl DeviceMeter {
             output: AtomicU32::new(0),
             latency: AtomicU32::new(0),
             gr_range: AtomicU32::new(0),
+            tap: OnceLock::new(),
         }
+    }
+
+    /// Attaches the device's sample tap (once, UI thread, when the processor is built; later calls
+    /// are ignored).
+    pub fn set_tap(&self, tap: Arc<SampleTap>) {
+        let _ = self.tap.set(tap);
+    }
+
+    /// UI. The device's sample tap, if it has one (the EQ's output for the live spectrum).
+    pub fn tap(&self) -> Option<&Arc<SampleTap>> {
+        self.tap.get()
     }
 
     /// Sets the reduction (in dB) at which the gain-reduction bar is full; a limiter with typical

@@ -602,3 +602,67 @@ fn toggling_the_limiter_lookahead_while_playing_updates_the_delay_compensation()
     assert_eq!(pdc(&app, plain), lookahead);
     assert_eq!(pdc(&app, with_limiter), 0);
 }
+
+// ------------------------------------------------------------------------------------------------
+// The EQ's live spectrum (WP-92): the tap runs only while the EQ is on screen and „Analyse“ is on
+
+/// How many samples the EQ of `app` has copied into its tap so far.
+fn tapped(app: &App, device: DeviceId) -> u64 {
+    let mut written = None;
+    app.engine().host().for_each_meter(&mut |id, meter| {
+        if id == device {
+            written = meter.tap().map(|t| t.written());
+        }
+    });
+    written.expect("the EQ has a tap")
+}
+
+#[test]
+fn the_eq_taps_its_output_only_while_it_is_shown_and_analyse_is_on() {
+    use komponist_engine::{MidiInEvent, MidiPort};
+    const SECOND: usize = 48_000;
+    let (mut app, track) = app_with_track();
+    add(&mut app, Internal::Eq, DropTarget::Track(track));
+    let eq = chain(&app, track)[1].0;
+    app.engine_mut().hold_engine().expect("engine held");
+    let mut h = harness(app);
+    let note = MidiInEvent {
+        frame: 0,
+        port: MidiPort(1),
+        data: [0x90, 57, 120],
+    };
+    let play = |h: &mut Harness<'_, App>, frames: usize, events: &[MidiInEvent]| {
+        for chunk in 0..frames.div_ceil(4800) {
+            let events = if chunk == 0 { events } else { &[] };
+            assert!(h.state_mut().engine_mut().run_held(4800, events, 0));
+            h.run_steps(2);
+        }
+    };
+
+    // The card is on screen but nobody has asked yet: the first blocks copy nothing.
+    assert_eq!(tapped(h.state(), eq), 0);
+    // Shown: the view renews the lease every frame, the audio thread copies.
+    play(&mut h, SECOND / 2, &[note]);
+    assert!(tapped(h.state(), eq) > 0, "visible EQ is tapped");
+
+    // „Analyse“ off: the tap stops at once.
+    set_param(h.state_mut(), eq, Internal::Eq, "analyse", 0.0);
+    h.run_steps(2);
+    play(&mut h, 4800, &[]);
+    let off = tapped(h.state(), eq);
+    play(&mut h, SECOND / 2, &[]);
+    assert_eq!(tapped(h.state(), eq), off, "analyse off stops the tap");
+
+    // Back on, then hidden (another dock tab): the lease runs out within half a second of audio.
+    set_param(h.state_mut(), eq, Internal::Eq, "analyse", 1.0);
+    h.run_steps(2);
+    play(&mut h, 4800, &[]);
+    assert!(tapped(h.state(), eq) > off, "analyse on again");
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Mixer)));
+    h.run_steps(3);
+    play(&mut h, SECOND, &[]);
+    let hidden = tapped(h.state(), eq);
+    play(&mut h, SECOND / 2, &[]);
+    assert_eq!(tapped(h.state(), eq), hidden, "a hidden EQ costs nothing");
+}

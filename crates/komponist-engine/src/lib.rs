@@ -40,6 +40,7 @@ mod sequencer;
 mod slots;
 mod stage;
 mod sys;
+pub mod tap;
 pub mod testing;
 mod transport;
 pub mod workers;
@@ -59,6 +60,7 @@ pub use processor::{
     ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,
 };
 pub use program::{MidiPort, Program, SlotId};
+pub use tap::SampleTap;
 
 /// Largest number of frames per processor call. Device buffers above it are processed in chunks;
 /// shared memory to the bridges is sized for it (`komponist_ipc::shm::MAX_BLOCK` must be equal).

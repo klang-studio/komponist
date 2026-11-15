@@ -8,11 +8,14 @@
 
 use std::collections::HashMap;
 
-use komponist_engine::DeviceMeter;
+use std::sync::Arc;
+
+use komponist_engine::{DeviceMeter, SampleTap};
 use komponist_model::{DeviceId, TrackId};
 use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;
+use crate::spectrum::{Analysis, SpectrumAnalyzer};
 
 /// The largest gain reduction the display scale shows by default (the GR bar is full at this many
 /// dB); a device can set its own range ([`DeviceMeter::gr_range_db`], the limiter shows 12 dB).
@@ -79,12 +82,16 @@ impl DeviceBallistics {
 }
 
 /// Ballistics of the master, the tracks of the current program and the internal devices.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Meters {
     /// The master strip (transport bar, mixer master).
     pub master: MeterState,
     tracks: HashMap<TrackId, MeterState>,
     devices: HashMap<DeviceId, DeviceBallistics>,
+    /// The sample taps of the devices that have one (WP-92) and the analyzers of the ones whose
+    /// spectrum is visible right now.
+    taps: HashMap<DeviceId, Arc<SampleTap>>,
+    spectra: HashMap<DeviceId, SpectrumAnalyzer>,
 }
 
 impl Meters {
@@ -107,9 +114,18 @@ impl Meters {
             let ballistics = self.devices.entry(id).or_default();
             ballistics.range_db = meter.gr_range_db();
             ballistics.tick(meter.take(), now);
+            if let Some(tap) = meter.tap() {
+                // A new processor (sample rate change) brings a new tap and a fresh analyzer.
+                if self.taps.get(&id).is_none_or(|old| !Arc::ptr_eq(old, tap)) {
+                    self.taps.insert(id, Arc::clone(tap));
+                    self.spectra.remove(&id);
+                }
+            }
             seen.push(id);
         });
         self.devices.retain(|id, _| seen.contains(id));
+        self.taps.retain(|id, _| seen.contains(id));
+        self.spectra.retain(|id, _| seen.contains(id));
         let Some(program) = engine.program() else {
             self.tracks.clear();
             return;
@@ -125,6 +141,28 @@ impl Meters {
     /// What the level meter of internal device `device` shows; `None` for a device without one.
     pub fn device(&self, device: DeviceId) -> Option<DeviceLevels> {
         self.devices.get(&device).map(DeviceBallistics::levels)
+    }
+
+    /// What the card of `device` shows of its signal (WP-92); `None` for a device without a sample
+    /// tap. `show` says whether the spectrum is visible now (the EQ's frame is on screen, running,
+    /// not bypassed, „Analyse“ on): only then the analyzer runs and the tap's lease is renewed, so
+    /// everything else costs nothing; otherwise the spectrum is empty and the analyzer is dropped.
+    pub fn analysis(&mut self, device: DeviceId, show: bool, now: f64) -> Option<Analysis> {
+        let tap = self.taps.get(&device)?;
+        let rate = tap.rate();
+        if !show {
+            self.spectra.remove(&device);
+            return Some(Analysis {
+                rate,
+                spectrum: Arc::default(),
+            });
+        }
+        let analyzer = self.spectra.entry(device).or_default();
+        analyzer.update(now, tap);
+        Some(Analysis {
+            rate,
+            spectrum: Arc::clone(analyzer.values()),
+        })
     }
 
     /// The meter of `track`, if it is in the program.
@@ -159,6 +197,7 @@ impl Meters {
         self.master.is_active()
             || self.tracks.values().any(MeterState::is_active)
             || self.devices.values().any(DeviceBallistics::is_active)
+            || self.spectra.values().any(SpectrumAnalyzer::is_active)
     }
 }
 
@@ -179,5 +218,26 @@ mod tests {
         let mut default = DeviceBallistics::default();
         default.tick((0.0, 6.0, 0.0), 0.0);
         assert!((default.levels().bars[1] - 0.25).abs() < 1e-6);
+    }
+    #[test]
+    fn a_hidden_spectrum_costs_nothing_and_a_visible_one_renews_the_taps_lease() {
+        let mut meters = Meters::new();
+        let device = DeviceId(1);
+        assert!(
+            meters.analysis(device, true, 0.0).is_none(),
+            "no tap, no analysis"
+        );
+        let tap = Arc::new(SampleTap::new(16_384));
+        tap.set_rate(44_100.0);
+        meters.taps.insert(device, Arc::clone(&tap));
+        let hidden = meters.analysis(device, false, 0.0).unwrap();
+        assert_eq!((hidden.rate, hidden.spectrum.len()), (44_100.0, 0));
+        assert!(!tap.is_wanted() && meters.spectra.is_empty());
+        let shown = meters.analysis(device, true, 0.1).unwrap();
+        assert_eq!(shown.spectrum.len(), crate::spectrum::POINTS);
+        assert!(tap.is_wanted());
+        // Hiding it again drops the analyzer (the lease runs out by itself).
+        meters.analysis(device, false, 0.2);
+        assert!(meters.spectra.is_empty());
     }
 }

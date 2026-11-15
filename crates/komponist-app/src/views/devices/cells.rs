@@ -11,6 +11,7 @@
 use egui::{Id, Rect, Role, Sense, Ui, WidgetInfo};
 use komponist_builtin::algorithms::ALGORITHMS;
 use komponist_model::DeviceId;
+use komponist_model::params::eq_curve::CURVE_RATE;
 use komponist_model::params::{ParamContext, ParamKind, Scale, resolve};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
@@ -621,6 +622,7 @@ fn slot_param<'c>(
 fn spec_of<'c>(
     binding: &GraphBinding,
     title: &str,
+    rate: Option<f32>,
     lookup: &dyn Fn(&str) -> Option<&'c Param>,
 ) -> Option<GraphSpec> {
     let spec = match binding.config {
@@ -628,7 +630,12 @@ fn spec_of<'c>(
         GraphConfig::Eq { bands } => {
             // ±12 or ±24 dB, from the range of the gain parameters.
             let range = lookup("b1_gain").map_or(18.0, |p| p.info.range().1.abs());
-            configs::eq(usize::from(bands), range)
+            // The curve is the filters' response at the device's sample rate (WP-92).
+            configs::eq_at(
+                usize::from(bands),
+                range,
+                rate.map_or(CURVE_RATE, f64::from),
+            )
         }
         GraphConfig::Filter => configs::filter(),
         GraphConfig::Transfer => configs::transfer(),
@@ -668,7 +675,8 @@ fn graph(
     };
     let lookup = |slot: &str| slot_param(card, binding, ctx, slot);
     let title = resolve(&binding.title, ctx).map_or(String::new(), |t| t.as_str().to_owned());
-    let Some(spec) = spec_of(binding, &title, &lookup) else {
+    let rate = card.analysis.as_ref().map(|a| a.rate).filter(|r| *r > 0.0);
+    let Some(spec) = spec_of(binding, &title, rate, &lookup) else {
         return false;
     };
     let normalized = binding.config == GraphConfig::Envelope;
@@ -698,9 +706,12 @@ fn graph(
     };
     let id = slot(cu, cell, "graph");
     let size = rect.size();
+    // The live spectrum; empty while hidden, bypassed or switched off.
+    let data: &[f32] = card.analysis.as_ref().map_or(&[], |a| &a.spectrum);
     let shown = cu
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |gu| {
             Graph::new(&spec, &mut values, &infos, size)
+                .data(data)
                 .track(color32(palette.base))
                 .look(look)
                 .id(id)
@@ -890,6 +901,7 @@ mod tests {
             width: 244.0,
             late: None,
             levels: None,
+            analysis: None,
             routing: None,
         }
     }
@@ -1316,5 +1328,69 @@ mod tests {
             results.extend_harness(&mut h);
         }
         results.unwrap();
+    }
+    /// A spectrum like music: a sawtooth at 220 Hz at -14 dB over a quiet noise floor, analyzed the
+    /// way the app does (tap, window, FFT, ballistics) at `rate`.
+    fn test_spectrum(rate: f32) -> std::sync::Arc<[f32]> {
+        let tap = komponist_engine::SampleTap::new(16_384);
+        tap.set_rate(rate);
+        let mut analyzer = crate::spectrum::SpectrumAnalyzer::new();
+        analyzer.update(0.0, &tap);
+        let mut seed = 12_345_u32;
+        let signal: Vec<f32> = (0..8192)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                let phase = (220.0 * i as f32 / rate).fract();
+                0.2 * (2.0 * phase - 1.0) + 0.004 * noise
+            })
+            .collect();
+        tap.push(&signal);
+        analyzer.update(0.05, &tap);
+        std::sync::Arc::clone(analyzer.values())
+    }
+
+    fn with_spectrum(rate: f32, bypass: bool) -> Card {
+        let mut card = graph_card();
+        card.bypass = bypass;
+        card.analysis = Some(crate::spectrum::Analysis {
+            rate,
+            spectrum: test_spectrum(rate),
+        });
+        card
+    }
+
+    #[test]
+    fn the_eq_graph_shows_the_live_spectrum_behind_its_curve() {
+        let mut results = egui_kittest::SnapshotResults::new();
+        let mut h = graph_harness(with_spectrum(48_000.0, false));
+        h.snapshot_options(
+            "device-eq-spectrum-1x",
+            &egui_kittest::SnapshotOptions::new(),
+        );
+        results.extend_harness(&mut h);
+        results.unwrap();
+    }
+
+    #[test]
+    fn bypass_and_an_empty_spectrum_show_no_data() {
+        let image = |card: Card| graph_harness(card).render().unwrap();
+        let mut none = graph_card();
+        none.analysis = Some(crate::spectrum::Analysis {
+            rate: 48_000.0,
+            spectrum: std::sync::Arc::default(),
+        });
+        let plain = image(none);
+        assert!(
+            image(with_spectrum(48_000.0, false)) != plain,
+            "the spectrum is drawn"
+        );
+        let mut bypassed = graph_card();
+        bypassed.bypass = true;
+        let bypassed_plain = image(bypassed);
+        assert!(
+            image(with_spectrum(48_000.0, true)) == bypassed_plain,
+            "bypass hides the data"
+        );
     }
 }

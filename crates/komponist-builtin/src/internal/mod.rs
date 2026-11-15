@@ -36,12 +36,16 @@
 //! limiter) are written for komponist on top of the small parts in [`dsp`] and `klang-dsp`'s
 //! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
 //! calls, so the output does not depend on how the host splits blocks.
+//!
+//! **Sample tap (WP-92):** a [`Dsp`] can offer a [`komponist_engine::SampleTap`] ([`Dsp::tap`]); the
+//! processor puts it into its [`DeviceMeter`] and the UI reads the latest samples from there (the EQ's
+//! live spectrum). The DSP copies only while the UI looks (`SampleTap::begin`).
 
 use std::sync::{Arc, OnceLock};
 
 use komponist_engine::{
     DeviceMeter, Event, EventKind, EventProcessor, ProcessContext, ProcessStatus, Processor,
-    ProcessorError, StereoIo,
+    ProcessorError, SampleTap, StereoIo,
 };
 use komponist_model::params::layout::{Cell, CellParam, DeviceLayout, Half, Page, WidgetKind};
 use komponist_model::params::{ParamId, ParamInfo};
@@ -86,6 +90,12 @@ pub trait Dsp: Send {
     /// RT. The tempo of the transport in quarter notes per minute, delivered at the start of every
     /// call (constant within one). Tempo-synced effects follow it; the default ignores it.
     fn set_tempo(&mut self, _bpm: f64) {}
+
+    /// Non-RT. The tap of the device's output samples for a live display (WP-92), if it has one.
+    /// The DSP copies into it only while the UI looks ([`komponist_engine::SampleTap::begin`]).
+    fn tap(&self) -> Option<Arc<SampleTap>> {
+        None
+    }
 
     /// RT. The largest gain reduction in dB (≥ 0) since the last call, then resets it. Only
     /// dynamics devices (the limiter) report one; the meter feed ([`InternalProcessor::meter`])
@@ -309,12 +319,16 @@ impl Internal {
                 stage.set_param(i as u32, values.get(i).copied().unwrap_or(p.default));
             }
         }
+        let meter = Arc::new(DeviceMeter::new());
+        if let Some(tap) = dsp.tap() {
+            meter.set_tap(tap);
+        }
         InternalProcessor {
             params,
             dsp,
             stage,
             sample_rate: INITIAL_RATE,
-            meter: Arc::new(DeviceMeter::new()),
+            meter,
         }
     }
 
@@ -493,6 +507,8 @@ fn single_page(cols: u8, cells: Vec<Cell>) -> DeviceLayout {
     })
 }
 
+#[cfg(test)]
+mod eq_tap_tests;
 #[cfg(test)]
 mod fx_tests;
 #[cfg(test)]
