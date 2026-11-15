@@ -9,7 +9,7 @@
 //! - 1: up to WP-100; every track plays into the master.
 //! - 2 (WP-101, wave 9): routing. Every track has an `output` (`"master"` or `{"bus": id}`);
 //!   optional `sends`, `folder`, `folded` on tracks and `sidechain` on devices; track kind `"bus"`.
-//!   [`migrate_v1_to_v2`] gives every track `"output": "master"`.
+//!   `migrate_v1_to_v2` gives every track `"output": "master"`.
 //!
 //! Thread: any non-RT thread (loading and saving run on workers).
 

@@ -556,7 +556,8 @@ impl Gate {
 }
 
 /// Which outputs and sends carry signal under the current mute and solo states (ARCHITECTURE
-/// §6.8.6). Sidechain taps are never gated: a muted or solo-muted track still feeds sidechains.
+/// §6.8.6). Sidechain taps are not gates: a pre tap ignores the source's fader, mute and solo, a
+/// post tap follows its fader and mute (the engine's fader stage) but never solo (§6.8.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Gates {
     outputs: HashMap<TrackId, Gate>,
