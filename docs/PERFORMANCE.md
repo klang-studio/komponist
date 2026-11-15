@@ -311,9 +311,8 @@ the other in the same call, as one worker of the engine would.
 | Hall, Kirche, modulation 100 % | 16.7 µs (0.31 %) | 32 µs | 272 µs (5.1 %) | 402 µs |
 | Limiter, lookahead 2 ms, +12 dB input | 5.7 µs (0.11 %) | 12 µs | 62 µs (1.2 %) | 105 µs |
 
-All effects together on one track cost about 0.7 % of the period; the Hall is the largest and costs
-about one third of a pisynth voice set, so a Hall per track (16 tracks: 5 %) fits the budget without
-sends. The worst cases are scheduler noise on a loaded machine (no effect allocates, locks or loops
+All effects together on one track cost about 0.7 % of the period; the Hall is the largest; a Hall per
+track (16 tracks: 5 % of the period) fits the budget without sends. The worst cases are scheduler noise on a loaded machine (no effect allocates, locks or loops
 data-dependently); every effect runs inside `assert_no_alloc` in the unit tests, and the engine test
 `internal_effects_are_bit_exact_with_workers` (8 tracks × 4 effects, 0/2/4 workers, realtime and
 offline) is bit-exact.
