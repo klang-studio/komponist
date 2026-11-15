@@ -81,3 +81,18 @@ transport-count-in-tip = Vorzähler: { $bars } { $bars ->
 
 # Tooltip of the count-in toggle while it is off.
 transport-count-in-off-tip = Vorzähler: aus
+
+## The master display left of the CPU readout (#34, master-scope proposal, variant A): its accessible name says
+## the picture, the tooltip (also its accessible description) what it shows and how to switch.
+
+# Name of the master display while it shows the waveform.
+transport-scope-oscilloscope = Master-Anzeige: Oszilloskop
+
+# Name of the master display while it shows the spectrum.
+transport-scope-spectrum = Master-Anzeige: Spektrum
+
+# Tooltip and description of the master display while it shows the waveform.
+transport-scope-oscilloscope-tip = Zeigt den Master-Ausgang als Wellenform. Klick wechselt zur Spektrum-Anzeige.
+
+# Tooltip and description of the master display while it shows the spectrum.
+transport-scope-spectrum-tip = Zeigt das Frequenzspektrum des Master-Ausgangs. Klick wechselt zur Wellenform.

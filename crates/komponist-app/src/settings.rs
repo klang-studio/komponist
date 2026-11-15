@@ -26,6 +26,7 @@ use komponist_plugins::PluginDirs;
 use komponist_tokens::size;
 
 use crate::actions::{BitDepth, ExportRange, ExportSettings};
+use crate::master_scope::MasterDisplay;
 use crate::ui_state::PanelLayout;
 
 /// File name inside the config directory.
@@ -60,6 +61,8 @@ pub struct Settings {
     pub worker_threads: Option<u32>,
     /// The UI language (S07 "Darstellung", applied at once; `--lang` overrides it for one run).
     pub language: Language,
+    /// What the master display of the transport bar shows (#34; a click on it switches).
+    pub master_display: MasterDisplay,
 }
 
 /// The language setting: follow the system, or one language explicitly.

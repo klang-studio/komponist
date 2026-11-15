@@ -566,6 +566,9 @@ pub enum SettingsAction {
     SetLanguage(crate::settings::Language),
     /// The star of a browser row: make the plugin a favourite, or remove it from the favourites.
     ToggleFavorite(PluginRef),
+    /// A click (or Space / Enter) on the transport bar's master display: oscilloscope ↔ spectrum
+    /// (#34, remembered in the settings).
+    ToggleMasterDisplay,
 }
 
 /// View actions.

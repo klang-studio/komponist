@@ -2613,6 +2613,10 @@ impl App {
                 self.ui.browser.favorites = self.settings.favorites.clone();
                 self.save_settings();
             }
+            SettingsAction::ToggleMasterDisplay => {
+                self.settings.master_display = self.settings.master_display.toggled();
+                self.save_settings();
+            }
         }
     }
 

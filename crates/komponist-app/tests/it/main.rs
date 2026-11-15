@@ -38,6 +38,7 @@ mod i18n_views;
 mod inspector;
 mod internal_devices;
 mod internal_presets;
+mod master_scope;
 mod mixer;
 mod param_undo;
 mod params_project;

@@ -58,6 +58,7 @@ impl App {
             audio: self.engine.audio_state(),
             keymap: &self.keymap,
             lang: self.lang,
+            master_display: self.settings.master_display,
         };
         transport::show(ui, l.transport, &model, &mut self.meters, &mut self.queue);
 

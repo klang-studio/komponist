@@ -4,14 +4,15 @@
 //! project name (`type.ui`, `text.2`) and the unsaved dot; Play / Stop / Record (30 × 28,
 //! geometric shapes); Loop, Metronom, Vorzähler 1 (icon toggle buttons, count-in with its bar count); the padded position
 //! `fmt_pos` (`type.value.l`) and the time (`type.value.m`, `text.3`); the tempo field (BPM);
-//! the meter "4/4". On the right: "Kein Audio-Gerät" (only without device), CPU load, the master
-//! meter, the "⋯" menu. The texts come from `locales/*/transport.ftl` (`docs/I18N.md`); German
+//! the meter "4/4". On the right: "Kein Audio-Gerät" (only without device), the master display
+//! (oscilloscope or spectrum, #34), CPU load, the master meter, the "⋯" menu. The texts come from `locales/*/transport.ftl` (`docs/I18N.md`); German
 //! is quoted here.
 
 use std::sync::Arc;
 
 use egui::{
-    Align, Galley, Layout, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+    Align, CursorIcon, Galley, Layout, Mesh, Painter, Rect, Response, Role, Sense, Stroke,
+    StrokeKind, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
 use komponist_audio::AudioState;
 use komponist_engine::TransportState;
@@ -21,6 +22,7 @@ use komponist_model::{Project, Tempo, Tick};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, space, typography};
 use komponist_ui::state::{self, State};
+use komponist_ui::theme::corner_radius;
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
 use komponist_ui::widgets::meter::Meter;
@@ -29,8 +31,9 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, icons, px};
 
-use crate::actions::{Action, EditAction, ProjectAction, TransportAction};
+use crate::actions::{Action, EditAction, ProjectAction, SettingsAction, TransportAction};
 use crate::keymap::Keymap;
+use crate::master_scope::{MasterDisplay, Picture};
 use crate::meters::Meters;
 use crate::metrics::transport as m;
 
@@ -55,6 +58,8 @@ pub struct TransportModel<'a> {
     pub keymap: &'a Keymap,
     /// The language of the bar's texts.
     pub lang: Lang,
+    /// What the master display shows (the settings' choice).
+    pub master_display: MasterDisplay,
 }
 
 impl TransportModel<'_> {
@@ -111,6 +116,7 @@ pub fn show(
             .length(m::MASTER_METER_LENGTH),
         );
         cpu(ui, model);
+        master_scope(ui, model, meters, actions);
         if !model.audio_ok() {
             no_device_chip(ui, model.lang);
         }
@@ -524,6 +530,147 @@ fn cpu(ui: &mut Ui, model: &TransportModel<'_>) {
             .galley(pos, label, fonts::style_color(&typography::LABEL));
         readout(ui, lr.union(vr), t.transport_cpu(), &text);
     });
+}
+
+/// The master display (#34; master-scope proposal, variant A „Fenster“, internal notes): a
+/// `size.control` high box on `surface.0` with a 1 px `line.1` frame (`line.2` on hover) and
+/// `radius.m`, the picture [`m::SCOPE_INSET`] inside. A click, or Space / Enter while it has
+/// focus, switches between oscilloscope and spectrum. AccessKit: a button named after the picture
+/// („Master-Anzeige: Oszilloskop“) whose description, the tooltip, says how to switch; the curve
+/// itself is decorative.
+fn master_scope(
+    ui: &mut Ui,
+    model: &TransportModel<'_>,
+    meters: &mut Meters,
+    actions: &mut Vec<Action>,
+) {
+    let (t, mode) = (model.lang, model.master_display);
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(m::SCOPE_WIDTH, size::CONTROL), Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let st = State::of(ui, &response);
+    let now = ui.input(|i| i.time);
+    let picture = meters.master_scope.update(now, mode);
+    paint_master_scope(ui.painter(), rect, mode, picture, st);
+    let (name, tip) = match mode {
+        MasterDisplay::Oscilloscope => (
+            t.transport_scope_oscilloscope(),
+            t.transport_scope_oscilloscope_tip(),
+        ),
+        MasterDisplay::Spectrum => (
+            t.transport_scope_spectrum(),
+            t.transport_scope_spectrum_tip(),
+        ),
+    };
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
+    Tip::new(tip).attach(&response);
+    if response.clicked() {
+        actions.push(Action::Settings(SettingsAction::ToggleMasterDisplay));
+    }
+}
+
+/// Paints the master display into `rect` (see [`master_scope`]). Oscilloscope: the centre line
+/// in `line.1` and the curve, 1 px `accent.default`. Spectrum: the grid at
+/// [`m::SCOPE_GRID_HZ`] in `line.1`, covered by the fill in `accent.surface` under a 1 px
+/// `accent.default` edge. Silence: one flat `text.4` line, in the middle (oscilloscope) or on the
+/// floor (spectrum).
+fn paint_master_scope(
+    painter: &Painter,
+    rect: Rect,
+    mode: MasterDisplay,
+    picture: Picture<'_>,
+    st: State,
+) {
+    let ppp = painter.pixels_per_point();
+    let lw = px::line_width(ppp);
+    px::fill(painter, rect, radius::M, color32(color::SURFACE_0));
+    let inner = px::snap_rect(rect.shrink(m::SCOPE_INSET), ppp);
+    let clip = painter.with_clip_rect(inner);
+    let middle = px::snap(inner.center().y - lw / 2.0, ppp);
+    // The curve's 1 px stroke stays inside the picture at full scale.
+    let (top, bottom) = (inner.top() + lw / 2.0, inner.bottom() - lw / 2.0);
+    let x_at = |f: f32| inner.left() + f * inner.width();
+    match mode {
+        MasterDisplay::Oscilloscope => match picture {
+            Picture::Wave(values) => {
+                px::hline(&clip, inner.x_range(), middle, color32(color::LINE_1));
+                let half = (bottom - top) / 2.0;
+                let centre = middle + lw / 2.0;
+                let last = (values.len().max(2) - 1) as f32;
+                let points = values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| pos2(x_at(i as f32 / last), centre - v * half))
+                    .collect();
+                clip.add(egui::Shape::line(
+                    points,
+                    Stroke::new(lw, color32(color::ACCENT)),
+                ));
+            }
+            _ => px::hline(&clip, inner.x_range(), middle, color32(color::TEXT_4)),
+        },
+        MasterDisplay::Spectrum => {
+            let span = (crate::spectrum::F_MAX / crate::spectrum::F_MIN).ln();
+            for hz in m::SCOPE_GRID_HZ {
+                let x = px::snap(x_at((hz / crate::spectrum::F_MIN).ln() / span), ppp);
+                px::vline(&clip, x, inner.y_range(), color32(color::LINE_1));
+            }
+            match picture {
+                Picture::Spectrum(values) => {
+                    // One point per device pixel column, the highest value it covers: the
+                    // 256 points are about three per pixel at 1×, which would zigzag.
+                    let columns = ((inner.width() * ppp).round() as usize).clamp(2, values.len());
+                    let points: Vec<_> = (0..columns)
+                        .map(|c| {
+                            let from = c * values.len() / columns;
+                            let to = ((c + 1) * values.len() / columns).max(from + 1);
+                            let v = values[from..to].iter().fold(0.0_f32, |m, v| m.max(*v));
+                            // At the centre frequency of the points it covers.
+                            let f = (from + to - 1) as f32 / 2.0 / (values.len() - 1) as f32;
+                            pos2(x_at(f), bottom - v * (bottom - top))
+                        })
+                        .collect();
+                    // The fill as a strip of quads down to the floor (the curve is not convex).
+                    let fill = color32(color::ACCENT_SURFACE);
+                    let mut mesh = Mesh::default();
+                    for (i, p) in points.iter().enumerate() {
+                        mesh.colored_vertex(*p, fill);
+                        mesh.colored_vertex(pos2(p.x, inner.bottom()), fill);
+                        if i > 0 {
+                            let k = 2 * i as u32;
+                            mesh.add_triangle(k - 2, k - 1, k);
+                            mesh.add_triangle(k - 1, k + 1, k);
+                        }
+                    }
+                    clip.add(mesh);
+                    clip.add(egui::Shape::line(
+                        points,
+                        Stroke::new(lw, color32(color::ACCENT)),
+                    ));
+                }
+                _ => px::hline(
+                    &clip,
+                    inner.x_range(),
+                    inner.bottom() - lw,
+                    color32(color::TEXT_4),
+                ),
+            }
+        }
+    }
+    let frame = if st.hovered {
+        color::LINE_2
+    } else {
+        color::LINE_1
+    };
+    painter.rect_stroke(
+        px::snap_rect(rect, ppp),
+        corner_radius(radius::M),
+        Stroke::new(lw, color32(frame)),
+        StrokeKind::Inside,
+    );
+    if st.focused {
+        focus::paint_ring(painter, rect, radius::M);
+    }
 }
 
 fn no_device_chip(ui: &mut Ui, t: Lang) {

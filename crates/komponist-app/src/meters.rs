@@ -16,6 +16,7 @@ use komponist_ui::widgets::meter::{MeterState, fraction};
 
 use crate::engine_sync::EngineSync;
 use crate::gain_trace::{Dynamics, GainTrace};
+use crate::master_scope::MasterScope;
 use crate::spectrum::{Analysis, SpectrumAnalyzer};
 
 /// The largest gain reduction the display scale shows by default (the GR bar is full at this many
@@ -95,6 +96,8 @@ pub struct Meters {
     spectra: HashMap<DeviceId, SpectrumAnalyzer>,
     /// The traces of the compressors whose card is visible right now (WP-93).
     traces: HashMap<DeviceId, GainTrace>,
+    /// The transport bar's oscilloscope and spectrum of the master (#34).
+    pub master_scope: MasterScope,
 }
 
 impl Meters {
@@ -111,6 +114,7 @@ impl Meters {
     pub fn update(&mut self, engine: &EngineSync, now: f64) {
         let (l, r) = engine.telemetry().master_meter().take();
         self.master.tick([l, r], now);
+        self.master_scope.set_tap(engine.telemetry().master_tap());
         // The internal devices' meters; devices that left the host are dropped.
         let mut seen = Vec::new();
         engine.host().for_each_meter(&mut |id, meter| {
@@ -220,6 +224,7 @@ impl Meters {
             || self.devices.values().any(DeviceBallistics::is_active)
             || self.spectra.values().any(SpectrumAnalyzer::is_active)
             || self.traces.values().any(GainTrace::is_active)
+            || self.master_scope.is_active()
     }
 }
 
