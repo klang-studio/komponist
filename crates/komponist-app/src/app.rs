@@ -15,7 +15,7 @@
 //! through `egui_kittest` or call [`App::dispatch`] and [`App::step`] directly.
 //!
 //! Device host events (step 1): state snapshots go into the
-//! document outside the history (`Document::apply_untracked`), a latency change recompiles the
+//! document as tracked, coalesced undo steps ([`crate::param_undo`]), a latency change recompiles the
 //! program (delay compensation), a finished scan retries the devices that were missing, crashes
 //! and the warnings the user can act on go to the status bar (all warnings and errors also to
 //! stderr). Saving takes a state snapshot of every bridged device first; [`App::shutdown`] shuts
@@ -114,6 +114,8 @@ pub struct App {
     pub(crate) queue: Vec<Action>,
     log: VecDeque<Action>,
     pub(crate) shell: ShellState,
+    /// How device changes are grouped into undo steps ([`crate::param_undo`]).
+    pub(crate) param_undo: crate::param_undo::ParamUndo,
     /// Overlays, pending steps and caches of the dialogs and the start screen (WP-52).
     pub(crate) dialogs: DialogState,
     /// Recent projects (`recent.json` next to the settings file).
@@ -211,6 +213,7 @@ impl App {
                 saved_panels,
                 ..ShellState::default()
             },
+            param_undo: Default::default(),
             dialogs: DialogState::default(),
             recent,
             recent_path,
@@ -542,6 +545,7 @@ impl App {
             // Delay compensation follows the new latencies; the slots stay as they are.
             self.engine.send_project(self.doc.project());
         }
+        self.flush_deferred();
     }
 
     /// The recording's part of an engine event: the count-in's end starts the take, captured
@@ -619,8 +623,12 @@ impl App {
     fn handle_device_event(&mut self, event: &PluginManagerEvent) {
         match event {
             PluginManagerEvent::StateSnapshot { device, state } => {
-                self.store_state(*device, state);
+                self.store_snapshot(*device, state);
             }
+            PluginManagerEvent::StatusChanged {
+                device,
+                status: DeviceStatus::Ok,
+            } => self.device_up(*device),
             PluginManagerEvent::StatusChanged {
                 device,
                 status: DeviceStatus::Crashed(reason),
@@ -671,58 +679,6 @@ impl App {
         }
     }
 
-    /// Stores a plugin's state snapshot in the document, outside the history: a plugin's own
-    /// state is not an undo step, and undo must not revert it. An unchanged state is skipped, so
-    /// closing a GUI without edits leaves the document clean.
-    pub(crate) fn store_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
-        let unchanged = self
-            .project()
-            .find_device(device)
-            .is_none_or(|(_, _, d)| d.state.as_deref() == Some(&state[..]));
-        if unchanged {
-            return;
-        }
-        let _ = self
-            .doc
-            .apply_untracked(|p| edits::set_device_state(p, device, Some(Arc::clone(state))));
-    }
-
-    /// A pisynth parameter turned on the device card (or a macro in the plugin window): the same
-    /// `Field::set` the processor applies goes into the device state in the document, outside the
-    /// history like every plugin state, so the card shows the value and saving keeps it
-    /// (`komponist_builtin::device` module docs).
-    fn store_macro(&mut self, device: DeviceId, id: u32, value: f64) {
-        let Some(field) = komponist_builtin::device::Field::from_wire(id) else {
-            return;
-        };
-        let Some((_, _, d)) = self.project().find_device(device) else {
-            return;
-        };
-        if !crate::device_host::is_pisynth(d) {
-            return;
-        }
-        let mut patch = komponist_builtin::decode_state(d.state.as_deref())
-            .unwrap_or_else(|_| komponist_builtin::default_patch());
-        field.set(&mut patch, value);
-        let state: Arc<[u8]> = komponist_builtin::encode_state(&patch).into();
-        self.store_state(device, &state);
-    }
-
-    /// A knob of an internal effect turned: the value goes into the device state in the document,
-    /// outside the history like every device state, so the card shows it and saving keeps it.
-    fn store_internal_param(&mut self, device: DeviceId, wire: u32, value: f64) {
-        let Some((_, _, d)) = self.project().find_device(device) else {
-            return;
-        };
-        let Some(kind) = crate::device_host::internal_kind(d) else {
-            return;
-        };
-        let Some(state) = kind.with_value(d.state.as_deref(), wire, value) else {
-            return;
-        };
-        self.store_state(device, &state.into());
-    }
-
     /// Loads factory preset `index` into an internal device (WP-96): the preset's values and name
     /// go into the device state as one undo step, and the running processor gets every value as
     /// a `SetParam`, so tails and sounding notes go on.
@@ -743,10 +699,11 @@ impl App {
         });
     }
 
-    /// After a tracked document change (an edit, undo, redo): every device whose state changed
-    /// is brought in sync with the running processor (`EngineSync::sync_device_states`), since
+    /// After a tracked document change that did not come from the running processors (an edit, undo,
+    /// redo, a cancelled gesture; not a knob turn, which `PluginAction::SetParam` has sent already):
+    /// every device whose state changed is brought in sync with the running processor (`EngineSync::sync_device_states`), since
     /// a state change is not otherwise sent to the engine.
-    fn follow_device_states(&mut self, before: &Arc<Project>) {
+    pub(crate) fn follow_device_states(&mut self, before: &Arc<Project>) {
         let after = Arc::clone(self.doc.project());
         if Arc::ptr_eq(before, &after) {
             return;
@@ -754,6 +711,7 @@ impl App {
         let dir = self.project_dir();
         self.engine
             .sync_device_states(before, &after, dir.as_deref());
+        self.expect_echo(before, &after);
     }
 
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
@@ -776,7 +734,7 @@ impl App {
     }
 
     /// The plugin name of `device` for messages ("Surge XT"), its id if it is gone.
-    fn device_name(&self, device: DeviceId) -> String {
+    pub(crate) fn device_name(&self, device: DeviceId) -> String {
         self.project().find_device(device).map_or_else(
             || format!("Gerät {}", device.0),
             |(_, _, d)| d.plugin.name.clone(),
@@ -1286,18 +1244,24 @@ impl App {
     fn edit_action(&mut self, action: EditAction) {
         match action {
             EditAction::Undo => {
+                // A gesture that is still open ends first (a step of its own).
+                self.end_gesture();
                 let before = Arc::clone(self.doc.project());
                 self.doc.undo();
                 self.follow_device_states(&before);
             }
             EditAction::Redo => {
+                self.end_gesture();
                 let before = Arc::clone(self.doc.project());
                 self.doc.redo();
                 self.follow_device_states(&before);
             }
-            EditAction::BeginGesture { label } => self.doc.begin_gesture(label),
-            EditAction::EndGesture => self.doc.end_gesture(),
-            EditAction::CancelGesture => self.doc.cancel_gesture(),
+            EditAction::BeginGesture { label } => {
+                self.end_gesture();
+                self.doc.begin_gesture(label);
+            }
+            EditAction::EndGesture => self.end_gesture(),
+            EditAction::CancelGesture => self.cancel_gesture(),
             EditAction::DeleteSelection => self.delete_selection(),
             EditAction::DuplicateSelection => {
                 let clips: Vec<_> = self.ui.selection.clips.iter().copied().collect();
@@ -2205,18 +2169,8 @@ impl App {
             | PluginAction::AuditionPad { .. } => {
                 self.sampler_action(&action);
             }
-            PluginAction::SetParam { device, id, value } => {
-                // Bridged devices take parameters over their control socket; pisynth through the
-                // engine.
-                if self.engine.host_mut().set_param(device, id, value) {
-                    return;
-                }
-                if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
-                    self.engine.send(Command::SetParam { slot, id, value });
-                }
-                self.store_macro(device, id, value);
-                self.store_internal_param(device, id, value);
-            }
+            PluginAction::BeginParamGesture { device, id } => self.begin_param_gesture(device, id),
+            PluginAction::SetParam { device, id, value } => self.set_param(device, id, value),
         }
     }
 
@@ -2336,6 +2290,7 @@ impl App {
         self.engine.send(Command::Locate(Tick::ZERO));
         self.engine.reset();
         self.doc = doc;
+        self.param_undo.forget();
         self.project_path = path;
         // Relative sample paths resolve against the project file's folder, before the devices of
         // the project get their processors.

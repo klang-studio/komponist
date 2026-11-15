@@ -16,7 +16,10 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px};
 
 use super::metrics as m;
+use crate::actions::{Action, PluginAction};
 use crate::views::devices::model::{Param, failure_texts};
+use crate::views::mixer::gesture_actions;
+use komponist_model::DeviceId;
 use komponist_plugins::FailReason;
 
 /// Texts of the body (S05 `card()`, `Prototyp.dc.html` `pw.guiT`).
@@ -78,6 +81,13 @@ pub enum BodyModel {
 pub enum BodyEvent {
     /// "Neu laden".
     Reload,
+    /// A drag or wheel burst on parameter `id` starts: one undo step until [`BodyEvent::EndGesture`].
+    BeginGesture {
+        /// Parameter id.
+        id: u32,
+    },
+    /// The drag or wheel burst ended.
+    EndGesture,
     /// A knob moved.
     SetParam {
         /// Parameter id.
@@ -320,14 +330,34 @@ fn cell(ui: &mut Ui, width: f32, p: &mut Param, events: &mut Vec<BodyEvent>) {
                 value = p.info.default_normalized();
                 changed = true;
             }
-            if changed {
-                let value = p.info.to_plain(value);
-                if value != p.value {
-                    p.text = p.info.format(value);
-                    p.value = value;
-                    events.push(BodyEvent::SetParam { id: p.wire, value });
-                }
+            let plain = p.info.to_plain(value);
+            let moved = changed && plain != p.value;
+            // A drag or a burst of wheel notches is one undo step; a click or a reset is one by
+            // itself (`gesture_actions`).
+            let mut actions = Vec::new();
+            let id = p.wire;
+            gesture_actions(
+                &r,
+                moved,
+                || {
+                    Action::Plugin(PluginAction::BeginParamGesture {
+                        device: DeviceId(0),
+                        id,
+                    })
+                },
+                &mut actions,
+                |_| {},
+            );
+            let (begin, end): (Vec<_>, Vec<_>) = actions
+                .into_iter()
+                .partition(|a| matches!(a, Action::Plugin(_)));
+            events.extend(begin.iter().map(|_| BodyEvent::BeginGesture { id }));
+            if moved {
+                p.text = p.info.format(plain);
+                p.value = plain;
+                events.push(BodyEvent::SetParam { id, value: plain });
             }
+            events.extend(end.iter().map(|_| BodyEvent::EndGesture));
             let name = fonts::rich_text(p.name(), &name_style).color(color32(color::TEXT_2));
             ui.add(egui::Label::new(name).truncate());
             let value_text = fonts::rich_text(&p.text, &value_style).color(color32(color::TEXT_3));

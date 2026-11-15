@@ -55,42 +55,108 @@ pub fn send_gesture(
     label: &str,
     action: impl FnOnce() -> Action,
 ) {
-    if response.drag_started() {
-        ctx.send(Action::Edit(EditAction::BeginGesture {
-            label: label.to_owned(),
-        }));
+    let mut out = Vec::new();
+    gesture_actions(
+        response,
+        response.changed(),
+        || {
+            Action::Edit(EditAction::BeginGesture {
+                label: label.to_owned(),
+            })
+        },
+        &mut out,
+        |out| out.push(action()),
+    );
+    for action in out {
+        ctx.send(action);
+    }
+}
+
+/// The gesture bracket of [`send_gesture`] for views that collect their actions in a `Vec` (the
+/// device cards): `begin` is pushed when the drag starts or the first wheel notch comes, `change`
+/// runs when `changed` (and pushes the edits), `Edit(EndGesture)` follows when the drag stops or the
+/// wheel burst ends. A change without drag or wheel is not bracketed: one undo step of its own.
+pub fn gesture_actions(
+    response: &Response,
+    changed: bool,
+    begin: impl Fn() -> Action,
+    out: &mut Vec<Action>,
+    change: impl FnOnce(&mut Vec<Action>),
+) {
+    let input = Touch {
+        drag_started: response.drag_started(),
+        dragged: response.dragged(),
+        drag_stopped: response.drag_stopped(),
+        wheel: !response.dragged() && wheel_turned(response),
+        hovered: response.hovered(),
+    };
+    gesture_touch(
+        &response.ctx,
+        response.id,
+        input,
+        changed,
+        begin,
+        out,
+        change,
+    );
+}
+
+/// What the pointer did to one control in a frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Touch {
+    /// A drag started.
+    pub drag_started: bool,
+    /// A drag is going on.
+    pub dragged: bool,
+    /// A drag ended.
+    pub drag_stopped: bool,
+    /// A wheel notch turned the control.
+    pub wheel: bool,
+    /// The pointer is over the control.
+    pub hovered: bool,
+}
+
+/// [`gesture_actions`] for a control whose several parts have no response of their own to ask
+/// (the device graph's handles): `id` keeps the wheel burst's state.
+pub fn gesture_touch(
+    ctx: &egui::Context,
+    id: egui::Id,
+    touch: Touch,
+    changed: bool,
+    begin: impl Fn() -> Action,
+    out: &mut Vec<Action>,
+    change: impl FnOnce(&mut Vec<Action>),
+) {
+    if touch.drag_started {
+        out.push(begin());
     }
     // A burst of wheel notches is one gesture: it opens with the first notch and closes after
     // [`WHEEL_GESTURE_IDLE`] without one, or when the pointer leaves the control.
-    let wheel = response.id.with("komponist_wheel_gesture");
-    let turned = !response.dragged() && wheel_turned(response);
-    let now = response.ctx.input(|i| i.time);
-    let mut open: Option<f64> = response.ctx.data(|d| d.get_temp(wheel));
+    let wheel = id.with("komponist_wheel_gesture");
+    let turned = !touch.dragged && touch.wheel;
+    let now = ctx.input(|i| i.time);
+    let mut open: Option<f64> = ctx.data(|d| d.get_temp(wheel));
     if turned {
         if open.is_none() {
-            ctx.send(Action::Edit(EditAction::BeginGesture {
-                label: label.to_owned(),
-            }));
+            out.push(begin());
         }
         open = Some(now);
     }
-    if response.changed() {
-        ctx.send(action());
+    if changed {
+        change(out);
     }
-    if response.drag_stopped() {
-        ctx.send(Action::Edit(EditAction::EndGesture));
+    if touch.drag_stopped {
+        out.push(Action::Edit(EditAction::EndGesture));
     }
     if let Some(last) = open {
-        if !turned && (now - last >= WHEEL_GESTURE_IDLE || !response.hovered()) {
-            ctx.send(Action::Edit(EditAction::EndGesture));
+        if !turned && (now - last >= WHEEL_GESTURE_IDLE || !touch.hovered) {
+            out.push(Action::Edit(EditAction::EndGesture));
             open = None;
         } else if !turned {
-            response
-                .ctx
-                .request_repaint_after_secs((WHEEL_GESTURE_IDLE - (now - last)).max(0.0) as f32);
+            ctx.request_repaint_after_secs((WHEEL_GESTURE_IDLE - (now - last)).max(0.0) as f32);
         }
     }
-    response.ctx.data_mut(|d| match open {
+    ctx.data_mut(|d| match open {
         Some(t) => {
             d.insert_temp(wheel, t);
         }

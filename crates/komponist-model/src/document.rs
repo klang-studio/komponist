@@ -9,6 +9,10 @@
 //! mechanism: the take grows inside a gesture, stop ends it as one undo step "Take n", Esc cancels it
 //! ([`Document::cancel_gesture`]).
 //!
+//! Device parameters and plugin states are tracked like everything else (owner decision
+//! 2026-11-15): the app wraps a knob drag or a wheel burst in a gesture. Only transport settings
+//! and the like go through [`Document::apply_untracked`].
+//!
 //! Thread: UI thread only. The engine and workers get `Arc<Project>` snapshots.
 
 use std::sync::Arc;
@@ -22,6 +26,9 @@ pub const UNDO_LIMIT: usize = 500;
 /// One entry of the undo or redo stack.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UndoStep {
+    /// Identifies the step in this document ([`Document::top_step`], [`Document::amend`]); unique,
+    /// never reused.
+    pub id: u64,
     /// Label of the edit for the UI ("Clip verschieben"), chosen by the caller.
     pub label: String,
     /// The root to restore.
@@ -46,6 +53,7 @@ pub struct Document {
     gesture: Option<Gesture>,
     revision: u64,
     saved_revision: u64,
+    next_step: u64,
 }
 
 impl Document {
@@ -58,6 +66,7 @@ impl Document {
             gesture: None,
             revision: 0,
             saved_revision: 0,
+            next_step: 0,
         }
     }
 
@@ -94,10 +103,7 @@ impl Document {
         let (next, value) = edit(&self.current)?;
         let previous = std::mem::replace(&mut self.current, Arc::new(next));
         if self.gesture.is_none() {
-            self.push_undo(UndoStep {
-                label: label.into(),
-                project: previous,
-            });
+            self.push_undo(label.into(), previous);
         }
         self.revision += 1;
         Ok(value)
@@ -108,8 +114,10 @@ impl Document {
     /// snapshot stays as it was).
     ///
     /// For values that must not be undone and must not be reverted by undo: transport settings
-    /// (loop on/off, metronome, count-in), plugin state snapshots (`edits::set_device_state`) and
-    /// the loop range set from the ruler. Marks the document dirty.
+    /// (loop on/off, metronome, count-in), the loop range set from the ruler, sample paths
+    /// rewritten for the file being saved and the plugin state snapshots that merely echo an undo
+    /// (`edits::set_device_state`). Device parameters and a plugin's own edits are tracked, not
+    /// untracked. Marks the document dirty.
     pub fn apply_untracked(
         &mut self,
         edit: impl Fn(&Project) -> Result<Project, EditError>,
@@ -185,10 +193,7 @@ impl Document {
             return;
         };
         if !Arc::ptr_eq(&gesture.before, &self.current) {
-            self.push_undo(UndoStep {
-                label: gesture.label,
-                project: gesture.before,
-            });
+            self.push_undo(gesture.label, gesture.before);
         }
     }
 
@@ -213,6 +218,7 @@ impl Document {
         };
         let current = std::mem::replace(&mut self.current, step.project);
         self.redo.push(UndoStep {
+            id: step.id,
             label: step.label,
             project: current,
         });
@@ -230,11 +236,34 @@ impl Document {
         };
         let current = std::mem::replace(&mut self.current, step.project);
         self.undo.push(UndoStep {
+            id: step.id,
             label: step.label,
             project: current,
         });
         self.revision += 1;
         true
+    }
+
+    /// Id of the step [`Document::undo`] would revert.
+    pub fn top_step(&self) -> Option<u64> {
+        self.undo.last().map(|s| s.id)
+    }
+
+    /// Applies `edit` to the current root as part of the newest undo step instead of a new one, if
+    /// that step still has id `step`: nothing was pushed since, no gesture is open and the redo
+    /// stack is empty. Returns `Ok(false)` (nothing changes) if not. For a change that follows
+    /// its own step closely, such as the plugin GUI's state snapshots (one step per editing burst).
+    pub fn amend(
+        &mut self,
+        step: u64,
+        edit: impl FnOnce(&Project) -> Result<Project, EditError>,
+    ) -> Result<bool, EditError> {
+        if self.gesture.is_some() || !self.redo.is_empty() || self.top_step() != Some(step) {
+            return Ok(false);
+        }
+        self.current = Arc::new(edit(&self.current)?);
+        self.revision += 1;
+        Ok(true)
     }
 
     /// Label of the step [`Document::undo`] would revert.
@@ -260,9 +289,14 @@ impl Document {
 
     /// Pushes a new undo step: clears the redo stack and drops the oldest step beyond
     /// [`UNDO_LIMIT`].
-    fn push_undo(&mut self, step: UndoStep) {
+    fn push_undo(&mut self, label: String, project: Arc<Project>) {
         self.redo.clear();
-        self.undo.push(step);
+        self.next_step += 1;
+        self.undo.push(UndoStep {
+            id: self.next_step,
+            label,
+            project,
+        });
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
         }
@@ -335,6 +369,42 @@ mod tests {
         doc.apply("2", rename("C")).unwrap();
         assert_eq!(doc.redo_label(), None);
         assert!(!doc.redo());
+    }
+
+    #[test]
+    fn amend_joins_the_newest_step_only_while_it_is_the_newest() {
+        let mut doc = Document::new(Project::new("A"));
+        assert_eq!(doc.top_step(), None);
+        assert_eq!(doc.amend(1, rename("X")), Ok(false), "no step yet");
+        doc.apply("1", rename("B")).unwrap();
+        let first = doc.top_step().unwrap();
+        // Amending replaces the root without a new step; undo goes back to before the step.
+        assert_eq!(doc.amend(first, rename("C")), Ok(true));
+        assert_eq!(doc.amend(first, rename("D")), Ok(true));
+        assert_eq!(name(&doc), "D");
+        assert_eq!(doc.top_step(), Some(first));
+        // Another step makes the first one history; a gesture or a redo stack refuses too.
+        doc.apply("2", rename("E")).unwrap();
+        assert_eq!(doc.amend(first, rename("F")), Ok(false));
+        let second = doc.top_step().unwrap();
+        assert_ne!(first, second);
+        doc.begin_gesture("g");
+        assert_eq!(doc.amend(second, rename("G")), Ok(false));
+        doc.end_gesture();
+        doc.undo();
+        assert_eq!(
+            doc.amend(first, rename("H")),
+            Ok(false),
+            "redo is not empty"
+        );
+        doc.redo();
+        assert_eq!(doc.amend(second, fail), Err(EditError::Invalid("test")));
+        assert_eq!(name(&doc), "E");
+        // One undo goes back to the root before the first step.
+        doc.undo();
+        doc.undo();
+        assert_eq!(name(&doc), "A");
+        assert!(!doc.undo());
     }
 
     #[test]

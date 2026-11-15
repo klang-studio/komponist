@@ -9,7 +9,8 @@
 //!
 //! State snapshots are taken on save ([`PluginManager::snapshot_states`]), on GUI close and,
 //! debounced, after "state dirty"; they arrive as [`PluginManagerEvent::StateSnapshot`] and the app
-//! stores them with `edits::set_device_state` through `Document::apply_untracked`.
+//! stores them with `edits::set_device_state` as tracked, coalesced undo steps (`komponist-app`'s
+//! `param_undo`).
 //!
 //! Built-in in-process devices (pisynth) are not managed here; the app creates their processors.
 //! Their status is always `Ok`.

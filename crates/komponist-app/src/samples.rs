@@ -1,6 +1,8 @@
 //! The sampler's samples in the app (WP-87): loading, dropping, relinking, saving, collecting and
 //! the pad selection that follows the step sequencer and the input.
 //!
+//! Linking, relinking and emptying a pad are undo steps (`crate::param_undo`).
+//!
 //! - **Link, don't copy** (owner, 2026-11-14, like Ableton): a sample dropped on a pad, chosen with
 //!   "Sample laden …" or found with "Suchen …" becomes a link in the device state
 //!   (`komponist_builtin::sampler::links`: absolute path and path relative to the project file);
@@ -32,6 +34,7 @@ use crate::actions::PluginAction;
 use crate::app::App;
 use crate::dialogs::file::Purpose;
 use crate::dialogs::missing_plugins::missing_samples;
+use crate::param_undo::names;
 use crate::step_rows;
 use crate::ui_state::{StatusKind, StepCursor};
 
@@ -144,11 +147,15 @@ impl App {
     }
 
     /// Links `path` to the pad: the pad's start and end return to the whole sample, the link goes
-    /// into the device state (outside the undo history like every device state), the sample loads.
+    /// into the device state, the sample loads. One undo step ("Sample laden").
     fn load_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
         if pad >= sampler::PADS {
             return;
         }
+        self.in_one_step(names::SAMPLE_LOAD, |app| app.link_sample(device, pad, path));
+    }
+
+    fn link_sample(&mut self, device: DeviceId, pad: usize, path: &Path) {
         let Some(state) = self.sampler_state(device) else {
             return;
         };
@@ -173,7 +180,7 @@ impl App {
         }
         let state = self.sampler_state(device).flatten();
         let new: Arc<[u8]> = links::write(state.as_deref(), pad, Some(&link)).into();
-        self.store_state(device, &new);
+        self.store_param_state(device, &new, names::SAMPLE_LOAD);
         if let Some(handle) = self.engine.host().sampler(device) {
             handle.load_link(pad, link.clone(), dir);
         }
@@ -193,7 +200,7 @@ impl App {
             return;
         };
         let new: Arc<[u8]> = links::write(state.as_deref(), pad, None).into();
-        self.store_state(device, &new);
+        self.store_param_state(device, &new, names::SAMPLE_CLEAR);
         if let Some(handle) = self.engine.host().sampler(device) {
             handle.clear(pad);
         }
@@ -258,17 +265,20 @@ impl App {
         } else {
             Vec::new()
         };
-        self.load_sample(device, pad, &path);
-        let Some(folder) = path.parent() else { return };
-        for other in others {
-            if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
-                continue;
+        // The chosen sample and the ones it finds with it are one undo step.
+        self.in_one_step(names::SAMPLE_LOAD, |app| {
+            app.load_sample(device, pad, &path);
+            let Some(folder) = path.parent() else { return };
+            for other in others {
+                if (other.device, other.pad) == (device, pad) || other.file.is_empty() {
+                    continue;
+                }
+                let candidate = folder.join(&other.file);
+                if candidate.is_file() {
+                    app.load_sample(other.device, other.pad, &candidate);
+                }
             }
-            let candidate = folder.join(&other.file);
-            if candidate.is_file() {
-                self.load_sample(other.device, other.pad, &candidate);
-            }
-        }
+        });
     }
 
     /// Before saving to `file`: every link that resolves gets its absolute path refreshed and its
@@ -283,7 +293,7 @@ impl App {
         let old_dir = self.project_dir();
         for (device, _, state) in self.samplers() {
             if let Some(new) = links::rebase(state.as_deref(), old_dir.as_deref(), &new_dir) {
-                self.store_state(device, &Arc::from(new));
+                self.store_state_untracked(device, &Arc::from(new));
             }
         }
     }
@@ -323,7 +333,7 @@ impl App {
         let old_dir = self.project_dir();
         for (device, _, state) in self.samplers() {
             if let Some(new) = collector.collect(state.as_deref(), old_dir.as_deref())? {
-                self.store_state(device, &Arc::from(new));
+                self.store_state_untracked(device, &Arc::from(new));
             }
         }
         Ok(collector)

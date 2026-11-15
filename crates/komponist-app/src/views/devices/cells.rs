@@ -3,7 +3,8 @@
 //! parameters of its slots, [`GraphBinding`]). Values
 //! travel as the parameter model gives them: knobs, mini faders and continuous number fields in
 //! normalised 0–1 space (so log and dB scales turn evenly), integer, stepped and enum parameters
-//! as plain values. Every change goes out as `PluginAction::SetParam`.
+//! as plain values. Every change goes out as `PluginAction::SetParam`, an undo step per drag (or
+//! wheel burst) and per click, key step, text entry or reset ([`touch`]).
 //!
 //! A widget that edits no parameter (the pad grid, the gain-reduction meter) keeps its small state
 //! (selected pad, held reduction) in egui memory until the device runtime (WP-85, WP-87) feeds it.
@@ -42,7 +43,8 @@ use super::layout::{
 };
 use super::metrics;
 use super::model::{Card, Param, names};
-use crate::actions::{Action, PluginAction, UiAction};
+use crate::actions::{Action, EditAction, PluginAction, UiAction};
+use crate::views::mixer::{Touch, gesture_actions, gesture_touch};
 use komponist_builtin::sampler::PadStatus;
 use komponist_model::format::note_name;
 
@@ -203,10 +205,16 @@ enum ParamMenu {
 /// A parameter's control was touched: the inspector and the status line follow (`TouchParam`).
 /// `r` is the control's response; `entry` is the text its entry opens with (`None`: a choice, a
 /// switch: no "Wert eingeben"); `double_click_resets` is true for knobs and faders (the menu's
-/// shortcut column says "Doppelklick"), false for the others ("Alt-Klick").
+/// shortcut column says "Doppelklick"), false for the others ("Alt-Klick"). `change` is the plain
+/// value the control just gave, if it changed.
+///
+/// The change is one undo step: a drag or a burst of wheel notches is bracketed into a gesture
+/// (`BeginParamGesture` … `EndGesture`, like the mixer's faders); a click, a key step, a text entry
+/// and the menu's reset are a step each.
 ///
 /// The right-click menu: "Auf Standard" (the reset) and, for a control with text entry, "Wert
 /// eingeben". Nothing else yet (automation, MIDI learn and macros are prepared, not built).
+#[allow(clippy::too_many_arguments)]
 fn touch(
     cu: &Ui,
     out: &mut Vec<Action>,
@@ -215,7 +223,19 @@ fn touch(
     r: &egui::Response,
     entry: Option<String>,
     double_click_resets: bool,
+    change: Option<f64>,
 ) {
+    gesture_actions(
+        r,
+        change.is_some(),
+        || begin_param(card, p.wire),
+        out,
+        |out| {
+            if let Some(plain) = change {
+                set(out, card, p, plain);
+            }
+        },
+    );
     if r.is_pointer_button_down_on() || r.drag_stopped() || r.clicked() {
         out.push(touch_action(card, p, r.dragged()));
     }
@@ -244,6 +264,14 @@ fn touch(
         }
         None => {}
     }
+}
+
+/// Opens the undo gesture of parameter `id` of the card's device.
+fn begin_param(card: &Card, id: u32) -> Action {
+    Action::Plugin(PluginAction::BeginParamGesture {
+        device: card.device,
+        id,
+    })
 }
 
 fn touch_action(card: &Card, p: &Param, dragging: bool) -> Action {
@@ -303,10 +331,16 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
         });
     }
     let r = cu.put(rect, w);
-    if r.changed() {
-        set(out, card, p, info.to_plain(value));
-    }
-    touch(cu, out, card, p, &r, Some(p.text_at(p.value)), true);
+    touch(
+        cu,
+        out,
+        card,
+        p,
+        &r,
+        Some(p.text_at(p.value)),
+        true,
+        r.changed().then(|| info.to_plain(value)),
+    );
 }
 
 /// A compact number field: plain values for integer and stepped parameters, normalised for
@@ -347,10 +381,16 @@ fn number(
                 .cols(cell.cols)
                 .format(plain_text);
             let r = cu.put(rect, w);
-            if r.changed() {
-                set(out, card, p, value);
-            }
-            touch(cu, out, card, p, &r, Some(plain_text(p.value)), false);
+            touch(
+                cu,
+                out,
+                card,
+                p,
+                &r,
+                Some(plain_text(p.value)),
+                false,
+                r.changed().then_some(value),
+            );
         }
         None => {
             let mut value = info.to_normalized(p.value);
@@ -361,10 +401,16 @@ fn number(
                 .format(|n| plain_text(info.to_plain(n)))
                 .parse(|t| parse_number(t, &unit).map(|v| info.to_normalized(v)));
             let r = cu.put(rect, w);
-            if r.changed() {
-                set(out, card, p, info.to_plain(value));
-            }
-            touch(cu, out, card, p, &r, Some(plain_text(p.value)), false);
+            touch(
+                cu,
+                out,
+                card,
+                p,
+                &r,
+                Some(plain_text(p.value)),
+                false,
+                r.changed().then(|| info.to_plain(value)),
+            );
         }
     }
     true
@@ -405,10 +451,16 @@ fn segment(
         rect,
         Segment::new(p.name(), &options, &mut selected).cols(cell.cols),
     );
-    if r.changed() {
-        set(out, card, p, selected as f64);
-    }
-    touch(cu, out, card, p, &r, None, false);
+    touch(
+        cu,
+        out,
+        card,
+        p,
+        &r,
+        None,
+        false,
+        r.changed().then_some(selected as f64),
+    );
     true
 }
 
@@ -436,10 +488,16 @@ fn toggle(
     }
     let mut on = p.value >= 0.5;
     let r = cu.put(rect, ToggleButton::new(p.name(), &mut on).cols(cell.cols));
-    if r.changed() {
-        set(out, card, p, if on { 1.0 } else { 0.0 });
-    }
-    touch(cu, out, card, p, &r, None, false);
+    touch(
+        cu,
+        out,
+        card,
+        p,
+        &r,
+        None,
+        false,
+        r.changed().then_some(if on { 1.0 } else { 0.0 }),
+    );
     true
 }
 
@@ -460,10 +518,16 @@ fn dropdown(
         rect,
         DropdownCell::new(p.name(), &items, &mut selected).cols(cell.cols),
     );
-    if r.changed() {
-        set(out, card, p, selected as f64);
-    }
-    touch(cu, out, card, p, &r, None, false);
+    touch(
+        cu,
+        out,
+        card,
+        p,
+        &r,
+        None,
+        false,
+        r.changed().then_some(selected as f64),
+    );
     true
 }
 
@@ -488,10 +552,16 @@ fn mini_fader(
         })
         .format(|n| p.text_at(info.to_plain(n)));
     let r = cu.put(rect, w);
-    if r.changed() {
-        set(out, card, p, info.to_plain(value));
-    }
-    touch(cu, out, card, p, &r, Some(p.text_at(p.value)), true);
+    touch(
+        cu,
+        out,
+        card,
+        p,
+        &r,
+        Some(p.text_at(p.value)),
+        true,
+        r.changed().then(|| info.to_plain(value)),
+    );
 }
 
 /// Whether the mini fader of `cell` fills as a carrier (the track colour): the Bool parameter the
@@ -1041,16 +1111,40 @@ fn graph(
                 .show(gu)
         })
         .inner;
-    for (i, v) in &shown.changed {
-        if let Some(p) = lookup(&spec.slots[*i]) {
-            set(
-                out,
-                card,
-                p,
-                if normalized { p.info.to_plain(*v) } else { *v },
-            );
-        }
-    }
+    // One undo step per drag of a handle (or burst of wheel notches); the first parameter the
+    // handle edits names it.
+    let first = shown.selected_slot.or(shown.changed.first().map(|c| c.0));
+    let first_wire = first
+        .and_then(|i| spec.slots.get(i))
+        .and_then(|s| lookup(s))
+        .map_or(u32::MAX, |p| p.wire);
+    let touch = Touch {
+        drag_started: shown.touch.drag_started,
+        dragged: shown.touch.dragging,
+        drag_stopped: shown.touch.drag_stopped,
+        wheel: shown.touch.wheel,
+        hovered: shown.response.hovered(),
+    };
+    gesture_touch(
+        cu.ctx(),
+        shown.response.id,
+        touch,
+        !shown.changed.is_empty(),
+        || begin_param(card, first_wire),
+        out,
+        |out| {
+            for (i, v) in &shown.changed {
+                if let Some(p) = lookup(&spec.slots[*i]) {
+                    set(
+                        out,
+                        card,
+                        p,
+                        if normalized { p.info.to_plain(*v) } else { *v },
+                    );
+                }
+            }
+        },
+    );
     // Touching a handle selects the parameter it edits (the axis moved last).
     let touched = shown.response.is_pointer_button_down_on()
         || shown.response.drag_stopped()
@@ -1090,11 +1184,16 @@ fn eq_event<'c>(
             let free = (1..=usize::from(bands))
                 .find(|&n| band_param(n, "on").is_some_and(|p| p.value < 0.5));
             let Some(n) = free else { return };
+            // Four parameters, one undo step.
+            out.push(Action::Edit(EditAction::BeginGesture {
+                label: names::UNDO_BAND_ADD.to_owned(),
+            }));
             for (what, v) in [("freq", x), ("gain", y), ("type", band::BELL), ("on", 1.0)] {
                 if let Some(p) = band_param(n, what) {
                     set(out, card, p, v);
                 }
             }
+            out.push(Action::Edit(EditAction::EndGesture));
         }
         GraphEvent::Delete(i) => {
             if let Some(p) = band_param(i + 1, "on") {
@@ -1456,6 +1555,64 @@ mod tests {
             })
             .expect("attack set");
         assert!(attack > 0.1 && attack < 10.0, "{attack}");
+    }
+
+    #[test]
+    fn dragging_a_graph_handle_is_bracketed_into_one_gesture() {
+        let mut h = graph_harness(graph_card());
+        let handle = h
+            .get_by_role_and_label(Role::Slider, "Band 1 Frequenz")
+            .rect()
+            .center();
+        h.hover_at(handle);
+        h.step();
+        for pressed in [true, false] {
+            if !pressed {
+                for i in 1..=6 {
+                    h.hover_at(handle + egui::vec2(6.0 * i as f32, 0.0));
+                    h.step();
+                }
+            }
+            h.event(egui::Event::PointerButton {
+                pos: if pressed {
+                    handle
+                } else {
+                    handle + egui::vec2(36.0, 0.0)
+                },
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+        }
+        h.run_steps(3);
+        let actions = &h.state().1;
+        let begins = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Plugin(PluginAction::BeginParamGesture { .. })))
+            .count();
+        let ends = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Edit(EditAction::EndGesture)))
+            .count();
+        let sets = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Plugin(PluginAction::SetParam { .. })))
+            .count();
+        assert!(sets >= 2, "the handle moved: {actions:?}");
+        assert_eq!((begins, ends), (1, 1), "{actions:?}");
+        let first = actions
+            .iter()
+            .position(|a| matches!(a, Action::Plugin(PluginAction::BeginParamGesture { .. })))
+            .unwrap();
+        let first_set = actions
+            .iter()
+            .position(|a| matches!(a, Action::Plugin(PluginAction::SetParam { .. })))
+            .unwrap();
+        assert!(
+            first < first_set,
+            "the gesture opens before the first value"
+        );
     }
 
     #[test]

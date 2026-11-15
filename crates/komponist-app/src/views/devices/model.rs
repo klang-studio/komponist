@@ -23,6 +23,8 @@ use crate::views::format_tag;
 /// German texts of the device chain (`Screens.dc.html` `card()`, the `isDevices` markup, S05/S06
 /// notes).
 pub mod names {
+    /// Undo step of a band the EQ graph's double-click turns on.
+    pub const UNDO_BAND_ADD: &str = "Band hinzufügen";
     /// "Öffnen" (`openT` default).
     pub const OPEN: &str = "Öffnen";
     /// The open button while the plugin window is open (`openT:'Geöffnet'`).

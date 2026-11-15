@@ -9,7 +9,11 @@
 //! and emptied only after the program that used it is gone.
 //!
 //! During a gesture, fader, pan, mute and solo go to the engine as fast-path commands
-//! ([`EngineSync::fast_path`]); the recompile waits for the gesture's end.
+//! ([`EngineSync::fast_path`]); the recompile waits for the gesture's end. A device parameter
+//! (`SetParam`) is the same: the running processor already has the value, so the app stores it
+//! in the document without [`EngineSync::sync_device_states`], which would hand pisynth a fresh
+//! processor; only undo, redo, cancelled gestures, presets and pastes follow the document that
+//! way.
 //!
 //! The engine runs inside [`EngineProcess`], the app's [`AudioProcess`]: it maps live MIDI to
 //! engine input and writes the engine's planar output into the device buffer. Garbage the engine
@@ -234,6 +238,8 @@ pub struct EngineSync {
     /// The latest revision whose changes reached the engine through fast-path commands only
     /// (during a gesture); the recompile waits for the gesture's end.
     fast: Option<u64>,
+    /// How many times [`EngineSync::reload_device`] made a fresh processor.
+    reloads: u64,
     /// Commands the full queue did not take yet, in order.
     pending: VecDeque<Command>,
     /// Device host events that survived a [`EngineSync::reset`], delivered by the next poll.
@@ -312,6 +318,7 @@ impl EngineSync {
             previous: None,
             synced: None,
             fast: None,
+            reloads: 0,
             pending: VecDeque::new(),
             carried: Vec::new(),
             rate,
@@ -408,8 +415,16 @@ impl EngineSync {
         };
         let setup = self.setup();
         if let Some(processor) = self.host.create_processor(d, setup) {
+            self.reloads += 1;
             self.send(Command::InsertProcessor { slot, processor });
         }
+    }
+
+    /// How many fresh processors [`EngineSync::reload_device`] made (a preset, undo or redo of a
+    /// pisynth state, "Neu laden"). A knob turn must not count here: it reaches the running
+    /// processor as `SetParam`.
+    pub fn device_reloads(&self) -> u64 {
+        self.reloads
     }
 
     /// Brings the running devices in line with their document state after a change that
@@ -463,7 +478,12 @@ impl EngineSync {
         if is_pisynth(device) {
             self.reload_device(project, device.id);
         } else if let Some(kind) = internal_kind(device) {
-            let values = |d: &komponist_model::Device| kind.decode_state(d.state.as_deref());
+            // A state with only sample links has no `params`: its values are the defaults (as
+            // the processor made from it has them).
+            let values = |d: &komponist_model::Device| match kind.decode_state(d.state.as_deref()) {
+                Err(komponist_builtin::internal::StateError::NoParams) => Ok(kind.defaults()),
+                other => other,
+            };
             let (Ok(was), Ok(now)) = (values(old), values(device)) else {
                 self.reload_device(project, device.id);
                 return;

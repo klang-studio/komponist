@@ -16,7 +16,7 @@
 //! | page switch | `SetDevicePage` |
 //! | preset button (pisynth, every internal device with presets; it replaces the tag and „Öffnen“, which stay in the ⋯ menu) | menu of the factory presets: `ApplyPisynthPreset` / `ApplyInternalPreset` (one undo step; the loaded name is saved in the device state and „ *“ follows a changed value) |
 //! | ⋯ / right-click on the head | Öffnen, Bypass, Neu laden, Einklappen, Duplizieren, Entfernen |
-//! | knob | `SetParam` (pisynth: also into the device state) |
+//! | knob, fader, graph handle, number field | `SetParam` into the device state, one undo step per drag or wheel burst (`BeginParamGesture` … `EndGesture`), one per click, key step, entry or reset |
 //! | touching a parameter (press, drag, click) | `Ui(TouchParam)`: the inspector's „Parameter“ section and, while dragging, the status line show it |
 //! | right-click on a parameter | „Auf Standard“ (the reset) and „Wert eingeben“ (text entry; not for choices and switches); no automation, MIDI learn or macro entries (prepared, not built) |
 //! | click on the head | selects the device (Strg C / V / D, Entf, ← → act on it) |

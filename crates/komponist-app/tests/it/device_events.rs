@@ -1,5 +1,5 @@
 //! How the app handles its device host (WP-46), with a scripted host and no processes: state
-//! snapshots go into the document outside the history, latency changes recompile, a finished
+//! snapshots go into the document as coalesced undo steps, latency changes recompile, a finished
 //! scan loads the devices it found, crashes and warnings reach the status bar, plugin actions,
 //! saving and exit reach the host.
 
@@ -245,56 +245,120 @@ fn a_finished_scan_loads_the_devices_it_found() {
     assert!(app.device_events().is_empty(), "events live one frame");
 }
 
+/// Undo steps of `app` that are left, counted by undoing them all (and redoing them again).
+fn undo_depth(app: &mut App) -> usize {
+    let mut n = 0;
+    while app.doc().undo_label().is_some() {
+        app.dispatch(Action::Edit(EditAction::Undo));
+        n += 1;
+    }
+    for _ in 0..n {
+        app.dispatch(Action::Edit(EditAction::Redo));
+    }
+    n
+}
+
+fn snapshot(script: &Rc<RefCell<Script>>, device: DeviceId, bytes: &[u8]) {
+    push(
+        script,
+        PluginManagerEvent::StateSnapshot {
+            device,
+            state: Arc::from(bytes),
+        },
+    );
+}
+
 #[test]
-fn state_snapshots_are_stored_outside_the_history() {
+fn state_snapshots_are_undo_steps_that_follow_each_other_into_one() {
     let (mut app, script) = app();
     let surge = device(&app, "Surge XT");
+    let original = state(&app, surge);
     app.dispatch(Action::Edit(EditAction::SetProjectProp(ProjectProp::Name(
         "Nachtfahrt 2".into(),
     ))));
-    let undo = app.doc().undo_label().map(str::to_owned);
-    assert!(undo.is_some());
+    let depth = undo_depth(&mut app);
 
+    // The plugin's own edit is a step, named after the plugin.
     let blob: Arc<[u8]> = Arc::from(&[1u8, 2, 3][..]);
-    push(
-        &script,
-        PluginManagerEvent::StateSnapshot {
-            device: surge,
-            state: Arc::clone(&blob),
-        },
-    );
+    snapshot(&script, surge, &blob);
     app.step();
     assert_eq!(state(&app, surge).as_deref(), Some(&blob[..]));
-    assert_eq!(
-        app.doc().undo_label().map(str::to_owned),
-        undo,
-        "no undo step"
-    );
+    assert_eq!(app.doc().undo_label(), Some("Surge XT: Zustand ändern"));
     assert!(app.doc().is_dirty());
 
-    // The same state again changes nothing; one for a device that is gone is ignored.
+    // More edits right after it amend the same step.
+    snapshot(&script, surge, &[1, 2, 4]);
+    app.step();
+    snapshot(&script, surge, &[1, 2, 5]);
+    app.step();
+    assert_eq!(state(&app, surge).as_deref(), Some(&[1u8, 2, 5][..]));
+
+    // The same state again, and one for a device that is gone, change nothing.
     let revision = app.doc().revision();
-    push(
-        &script,
-        PluginManagerEvent::StateSnapshot {
-            device: surge,
-            state: Arc::from(&[1u8, 2, 3][..]),
-        },
-    );
-    push(
-        &script,
-        PluginManagerEvent::StateSnapshot {
-            device: DeviceId(99_999),
-            state: Arc::clone(&blob),
-        },
-    );
+    snapshot(&script, surge, &[1, 2, 5]);
+    snapshot(&script, DeviceId(99_999), &blob);
     app.step();
     assert_eq!(app.doc().revision(), revision);
+    // (Counting undoes the steps; a state handed back to the plugin starts an echo window.)
+    assert_eq!(undo_depth(&mut app), depth + 1, "one step for the burst");
 
-    // Undo reverts the rename, not the plugin's state.
+    // Undo reverts the plugin's state first, then the rename.
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(state(&app, surge), original);
+    assert_eq!(app.project().name, "Nachtfahrt 2");
     app.dispatch(Action::Edit(EditAction::Undo));
     assert_eq!(app.project().name, "Nachtfahrt");
-    assert_eq!(state(&app, surge).as_deref(), Some(&blob[..]));
+    app.dispatch(Action::Edit(EditAction::Redo));
+    app.dispatch(Action::Edit(EditAction::Redo));
+    assert_eq!(state(&app, surge).as_deref(), Some(&[1u8, 2, 5][..]));
+}
+
+#[test]
+fn a_snapshot_after_the_window_is_a_step_of_its_own_and_the_echo_of_an_undo_is_no_step() {
+    let (mut app, script) = app();
+    app.set_snapshot_window(Duration::ZERO);
+    let surge = device(&app, "Surge XT");
+    let depth = undo_depth(&mut app);
+    snapshot(&script, surge, &[1]);
+    app.step();
+    snapshot(&script, surge, &[2]);
+    app.step();
+    assert_eq!(undo_depth(&mut app), depth + 2, "the window is over");
+
+    // Undo hands the plugin its old state; the snapshot it answers with (other bytes, same
+    // sound) is stored without a step and does not end the redo.
+    app.dispatch(Action::Edit(EditAction::Undo));
+    snapshot(&script, surge, &[9, 9]);
+    app.step();
+    assert_eq!(state(&app, surge).as_deref(), Some(&[9u8, 9][..]));
+    assert!(app.doc().redo_label().is_some(), "redo survives the echo");
+    assert_eq!(undo_depth(&mut app), depth + 1);
+}
+
+#[test]
+fn a_snapshot_during_another_gesture_waits_for_its_end() {
+    let (mut app, script) = app();
+    let surge = device(&app, "Surge XT");
+    let track = app.project().tracks[0].id;
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "Lautstärke".into(),
+    }));
+    app.dispatch(Action::Edit(EditAction::SetTrackProp {
+        tracks: vec![track],
+        prop: komponist_model::edits::TrackProp::Channel(
+            komponist_model::edits::ChannelProp::VolumeDb(-6.0),
+        ),
+    }));
+    snapshot(&script, surge, &[7]);
+    app.step();
+    assert_ne!(state(&app, surge).as_deref(), Some(&[7u8][..]), "waits");
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+    app.step();
+    assert_eq!(state(&app, surge).as_deref(), Some(&[7u8][..]));
+    // The fader and the plugin are two steps.
+    assert_eq!(app.doc().undo_label(), Some("Surge XT: Zustand ändern"));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(app.doc().undo_label(), Some("Lautstärke"));
 }
 
 #[test]

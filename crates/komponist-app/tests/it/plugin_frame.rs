@@ -316,13 +316,25 @@ fn knobs_report_plain_values_on_the_step_grid() {
     h.run();
     let events = &h.state().body_events;
     assert!(!events.is_empty(), "the drag set the parameter");
+    let algorithm = komponist_builtin::Macro::Algorithm.id();
+    let mut sets = 0;
     for e in events {
-        let BodyEvent::SetParam { id, value } = *e else {
-            panic!("{e:?}");
-        };
-        assert_eq!(id, komponist_builtin::Macro::Algorithm.id());
-        assert_eq!(value.fract(), 0.0, "stepped: {value}");
+        match *e {
+            // The drag is one undo gesture around the values.
+            BodyEvent::BeginGesture { id } => assert_eq!(id, algorithm),
+            BodyEvent::EndGesture => {}
+            BodyEvent::SetParam { id, value } => {
+                assert_eq!(id, algorithm);
+                assert_eq!(value.fract(), 0.0, "stepped: {value}");
+                sets += 1;
+            }
+            other => panic!("{other:?}"),
+        }
     }
+    assert!(sets > 0, "{events:?}");
+    let count = |f: fn(&BodyEvent) -> bool| events.iter().filter(|e| f(e)).count();
+    assert_eq!(count(|e| matches!(e, BodyEvent::BeginGesture { .. })), 1);
+    assert_eq!(count(|e| matches!(e, BodyEvent::EndGesture)), 1);
 }
 
 fn exited() -> FailReason {

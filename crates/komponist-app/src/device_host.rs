@@ -3,7 +3,7 @@
 //! [`EngineSync`](crate::engine_sync::EngineSync) asks a [`DeviceHost`] for a processor whenever a
 //! device gets a slot, tells it when a device leaves, reads latencies for the compiler and status
 //! for the UI, and forwards its events every frame. The app handles those events
-//! (`App::show` step 1): state snapshots go into the document outside the history, a latency
+//! (`App::show` step 1): state snapshots go into the document as coalesced undo steps (`crate::param_undo`), a latency
 //! change recompiles the program, a finished scan retries the devices that were missing, crashes
 //! and warnings go to the status bar.
 //!
