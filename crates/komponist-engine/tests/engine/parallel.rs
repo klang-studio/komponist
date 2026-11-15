@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use komponist_builtin::{PisynthProcessor, preset_patch, presets};
+use komponist_builtin::{Internal, PisynthProcessor, preset_patch, presets};
 use komponist_engine::testing::{TestGain, TestSine};
 use komponist_engine::{
     Command, Event, MidiInEvent, MidiPort, ProcessContext, ProcessStatus, Processor,
@@ -70,6 +70,47 @@ fn pisynths() -> Setup {
         .collect();
     let mut p = program(120.0, tracks);
     p.loop_range = TickRange::new(Tick::ZERO, Tick(4 * BAR));
+    p.loop_on = true;
+    (p, processors)
+}
+
+/// 8 tracks, each a `TestSine` and the four internal effects in a chain (EQ with active bands,
+/// tempo-synced Delay, Hall, lookahead Limiter; WP-90), so the transport tempo, the Limiter's
+/// latency and the effects' control-rate counters all go through the worker pool.
+fn effects() -> Setup {
+    let mut tracks = Vec::new();
+    let mut processors: Vec<(u32, Box<dyn Processor>)> = Vec::new();
+    for i in 0..8u32 {
+        let mut t = track(u64::from(i) + 1, i, material(i));
+        let mut eq = Internal::Eq.defaults();
+        eq[Internal::Eq.wire(&"b1_type".into()).unwrap() as usize] = 0.0;
+        eq[Internal::Eq.wire(&"b3_gain".into()).unwrap() as usize] = 6.0 - f64::from(i);
+        let mut delay = Internal::Delay.defaults();
+        delay[Internal::Delay.wire(&"sync".into()).unwrap() as usize] = 1.0;
+        delay[Internal::Delay.wire(&"note".into()).unwrap() as usize] = f64::from(2 + i % 6);
+        delay[Internal::Delay.wire(&"mix".into()).unwrap() as usize] = 0.5;
+        let mut limiter = Internal::Limiter.defaults();
+        limiter[Internal::Limiter.wire(&"gain".into()).unwrap() as usize] = 12.0;
+        let chain = [
+            (Internal::Eq, eq),
+            (Internal::Delay, delay),
+            (Internal::Hall, Internal::Hall.defaults()),
+            (Internal::Limiter, limiter),
+        ];
+        for (k, (kind, values)) in chain.into_iter().enumerate() {
+            let slot = 100 + i * 4 + k as u32;
+            let mut p = kind.processor(&values);
+            p.activate(RATE, 256).unwrap();
+            t.chain.push(effect(slot));
+            processors.push((slot, Box::new(p)));
+        }
+        // All tracks have the same latency (the limiter's lookahead): nothing to compensate.
+        t.pdc_delay = 0;
+        tracks.push(t);
+        processors.push((i, Box::new(TestSine::new())));
+    }
+    let mut p = program(127.0, tracks);
+    p.loop_range = TickRange::new(Tick::ZERO, Tick(2 * BAR));
     p.loop_on = true;
     (p, processors)
 }
@@ -151,6 +192,16 @@ fn test_processors_are_bit_exact_with_workers() {
     for workers in [1, 2, 4] {
         let parallel = play(workers, frames, sines);
         assert_bit_exact(&single, &parallel, &format!("{workers} workers"));
+    }
+}
+
+#[test]
+fn internal_effects_are_bit_exact_with_workers() {
+    let frames = 2 * 48_000;
+    let single = play(0, frames, effects);
+    for workers in [2, 4] {
+        let parallel = play(workers, frames, effects);
+        assert_bit_exact(&single, &parallel, &format!("effects, {workers} workers"));
     }
 }
 

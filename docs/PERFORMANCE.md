@@ -296,3 +296,28 @@ above:
 cargo test --release -p komponist-app --test soak --no-run   # prints the binary
 cd crates/komponist-app && KOMPONIST_SOAK_SECS=1800 chrt -f 70 <soak binary> --nocapture
 ```
+
+## 7. Effect DSP (WP-90)
+
+Measured 2026-11-15 on `wp/WP-90` (load average 3–4 on 12 threads), release profile, 48 kHz, calls of
+256 frames (5.33 ms period) on 10 s of white noise, one thread; "16×" runs 16 instances one after
+the other in the same call, as one worker of the engine would.
+
+| Effect (settings) | 1 instance, mean | worst | 16 instances, mean | worst |
+|---|---|---|---|---|
+| EQ, 6 bands active (every type, +6 dB) | 6.5 µs (0.12 %) | 79 µs | 103 µs (1.9 %) | 140 µs |
+| Delay, ping-pong, feedback 0.6, mix 50 % | 6.2 µs (0.12 %) | 56 µs | 103 µs (1.9 %) | 302 µs |
+| Hall, defaults (Halle, modulation 25 %) | 16.6 µs (0.31 %) | 26 µs | 270 µs (5.1 %) | 401 µs |
+| Hall, Kirche, modulation 100 % | 16.7 µs (0.31 %) | 32 µs | 272 µs (5.1 %) | 402 µs |
+| Limiter, lookahead 2 ms, +12 dB input | 5.7 µs (0.11 %) | 12 µs | 62 µs (1.2 %) | 105 µs |
+
+All effects together on one track cost about 0.7 % of the period; the Hall is the largest and costs
+about one third of a pisynth voice set, so a Hall per track (16 tracks: 5 %) fits the budget without
+sends. The worst cases are scheduler noise on a loaded machine (no effect allocates, locks or loops
+data-dependently); every effect runs inside `assert_no_alloc` in the unit tests, and the engine test
+`internal_effects_are_bit_exact_with_workers` (8 tracks × 4 effects, 0/2/4 workers, realtime and
+offline) is bit-exact.
+
+```bash
+cargo test --release -p komponist-builtin --lib cpu_ -- --ignored --nocapture
+```
