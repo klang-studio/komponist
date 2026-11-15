@@ -159,7 +159,8 @@ fn stop_ends_notes_without_reset_and_keeps_the_position() {
     assert_eq!(t.playhead(), Tick(11_000 / 25));
     // The sine has no release: its notes ended, silence. (Tails: `tails.rs`.)
     assert!(rig.l[11_000..].iter().all(|&x| x == 0.0));
-    // A second Stop is the hard cut: every processor is reset, the position stays.
+    // A second Stop is the hard cut: every processor is reset after the 5 ms fade, i.e. after the
+    // block that contains the fade's end (the sine's clock is at 13 000 then); the position stays.
     rig.send(Command::Stop);
     rig.process(1000, 1000);
     let resets: Vec<_> = drain(log_handle)
@@ -169,7 +170,7 @@ fn stop_ends_notes_without_reset_and_keeps_the_position() {
             _ => None,
         })
         .collect();
-    assert_eq!(resets, [12_000]);
+    assert_eq!(resets, [13_000]);
     assert_eq!(rig.handle.telemetry().playhead(), Tick(11_000 / 25));
 }
 
