@@ -1091,6 +1091,9 @@ fn graph(
         }
         _ => {}
     }
+    // presse with an external sidechain source: the detector listens to that source.
+    let detector_note = (binding.config == GraphConfig::Compressor && card.sidechain.is_some())
+        .then_some((names::DETECTOR, names::DETECTOR_EXTERNAL));
     let look = if card.bypass {
         Look::Bypass
     } else {
@@ -1106,6 +1109,7 @@ fn graph(
                 .data(peaks)
                 .trace(trace)
                 .level(level)
+                .levels_note(detector_note)
                 .playhead(playhead)
                 .id(id)
                 .show(gu)

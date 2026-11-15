@@ -298,6 +298,37 @@ impl Engine {
         self.core.pool.as_ref().map_or(0, Pool::threads)
     }
 
+    /// Non-RT. The project latency of `program` in frames: the delay at which a note's sound
+    /// reaches the output, `out(master)` of ARCHITECTURE §6.8.5. With a routing graph it is
+    /// [`Routing::latency`] (every path lined up at the master); in a flat program (which has no
+    /// routing latency) it is the longest track chain, the one the other tracks are delayed to.
+    /// The master's active effects come on top. Chain latencies are read from the processors in
+    /// their slots (a failed or missing one adds none), so they are the ones at the current rate.
+    /// The export skips this many frames so the file lines up with the song timeline.
+    pub fn project_latency(&self, program: &Program) -> u64 {
+        let chain = |chain: &[ChainSlot]| -> u64 {
+            chain
+                .iter()
+                .filter(|s| !s.bypass)
+                .filter_map(|s| self.core.slots.get(s.slot.0 as usize))
+                .filter(|slot| !slot.failed)
+                .filter_map(|slot| slot.processor.as_ref())
+                .map(|p| u64::from(p.latency()))
+                .sum()
+        };
+        let tracks = if program.routing.is_flat() {
+            program
+                .tracks
+                .iter()
+                .map(|t| chain(&t.chain))
+                .max()
+                .unwrap_or(0)
+        } else {
+            u64::from(program.routing.latency())
+        };
+        tracks + chain(&program.master.chain)
+    }
+
     /// The worker pool's counters (shared; they survive [`Engine::set_workers`]).
     pub fn worker_stats(&self) -> Arc<WorkerStats> {
         Arc::clone(&self.core.stats)

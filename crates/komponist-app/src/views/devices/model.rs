@@ -172,6 +172,11 @@ pub mod names {
         }
     }
 
+    /// Readout name in the compressor graph's strip while an external sidechain source is set
+    /// (shown over [`DETECTOR_EXTERNAL`]; reads „Detektor: Extern“). en draft: "Detector: External".
+    pub const DETECTOR: &str = "Detektor";
+    /// Readout value for [`DETECTOR`]. en draft: "External".
+    pub const DETECTOR_EXTERNAL: &str = "Extern";
     /// The title of knurr's filter graph (followed by the type) and of its LFO graph.
     pub const FILTER: &str = "Filter";
     /// See [`FILTER`].
@@ -217,7 +222,7 @@ pub mod names {
     /// Hint under the tap while it is „Vor Fader“.
     pub const SC_PRE_HINT: &str = "Vor Fader: Mute der Quelle ändert nichts";
     /// Hint under the tap while it is „Nach Fader“.
-    pub const SC_POST_HINT: &str = "Nach Fader: folgt Fader und Mute der Quelle";
+    pub const SC_POST_HINT: &str = "Nach Fader: folgt Fader und Stumm, nicht Solo";
     /// Context menu of the chip: back to the internal input.
     pub const SC_REMOVE: &str = "Quelle entfernen";
     /// „Bass (diese Spur)“: the track that holds the device.
