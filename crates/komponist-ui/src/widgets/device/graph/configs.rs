@@ -153,14 +153,8 @@ pub fn eq_band_response(p: &[f64], i: usize, hz: f64) -> f64 {
         return 0.0;
     }
     let (fc, gain, q, typ) = (p[o + 1], p[o + 2], p[o + 3], p[o + 4]);
-    let x = (hz / fc).log2();
-    match typ.round() as i32 {
-        0 => -24.0 / (1.0 + (x * 5.0).exp()),
-        1 => gain / (1.0 + (x * 4.0).exp()),
-        3 => gain / (1.0 + (-x * 4.0).exp()),
-        4 => -24.0 / (1.0 + (-x * 5.0).exp()),
-        _ => gain * (-(x * q * 1.4).powi(2)).exp(),
-    }
+    // The real filter's response (WP-90): the device runs the same coefficients.
+    komponist_model::params::eq_curve::band_response_db(typ, fc, gain, q, hz)
 }
 
 /// The summed response of `bands` bands at `hz`.
