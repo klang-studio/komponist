@@ -241,26 +241,27 @@ fn add_routing(project: &mut Project) {
     };
     let (drums, bass) = (id_of(project, "Drums"), id_of(project, "Bass"));
     let (lead, pad) = (id_of(project, "Lead"), id_of(project, "Pad"));
-    let routing = |what: &str| format!("the demo routing is valid: {what}");
 
     // Drums and Bass output to the group „Rhythmus“, which takes the place of Drums.
     let mut spec = NewBus::group(vec![drums, bass]);
     spec.name = Some(GROUP_NAME.to_owned());
-    let (p, _) = edits::add_bus(project, spec).expect(&routing("group"));
+    let (p, _) = edits::add_bus(project, spec).expect("the demo routing is valid: group");
     *project = p;
 
     // The effect bus „Hall“ with the reverb; Lead and Pad send to it, post-fader.
     let mut spec = NewBus::effect(vec![lead, pad]);
     spec.name = Some(HALL_BUS_NAME.to_owned());
-    let (mut p, hall) = edits::add_bus(project, spec).expect(&routing("bus"));
+    let (mut p, hall) = edits::add_bus(project, spec).expect("the demo routing is valid: bus");
     for (track, db) in [lead, pad].into_iter().zip(HALL_SENDS_DB) {
         let send = p
             .track(track)
             .and_then(|t| t.send_to(hall))
             .expect("the send exists")
             .id;
-        p = edits::set_send(&p, send, SendProp::LevelDb(db)).expect(&routing("level"));
-        p = edits::set_send(&p, send, SendProp::Tap(Tap::Post)).expect(&routing("tap"));
+        p = edits::set_send(&p, send, SendProp::LevelDb(db))
+            .expect("the demo routing is valid: level");
+        p = edits::set_send(&p, send, SendProp::Tap(Tap::Post))
+            .expect("the demo routing is valid: tap");
     }
     let mut d = Devices { next: p.next_id };
     let reverb = d.internal(Internal::Hall, "Große Halle");
@@ -282,5 +283,6 @@ fn add_routing(project: &mut Project) {
         source: drums,
         tap: Tap::Pre,
     };
-    *project = edits::set_sidechain(&p, presse, Some(sidechain)).expect(&routing("sidechain"));
+    *project = edits::set_sidechain(&p, presse, Some(sidechain))
+        .expect("the demo routing is valid: sidechain");
 }
