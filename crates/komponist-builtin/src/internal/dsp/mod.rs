@@ -27,6 +27,38 @@ pub fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db * 0.05)
 }
 
+/// `log2(x)` for a positive, finite, normal `x`: the exponent from the bits plus the logarithm of
+/// the mantissa from the series of `atanh` (error below `2e-5`, i.e. 0.0001 dB in `20·log10`).
+/// Used where `ln` per sample would cost too much (the compressor's level detection).
+#[inline]
+pub fn fast_log2(x: f32) -> f32 {
+    let bits = x.to_bits();
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127;
+    let m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    let t = (m - 1.0) / (m + 1.0);
+    let t2 = t * t;
+    // 2/ln 2 · (t + t³/3 + t⁵/5 + t⁷/7)
+    let series = t * (2.885_39 + t2 * (0.961_796_7 + t2 * (0.577_078 + t2 * 0.412_198_6)));
+    exponent as f32 + series
+}
+
+/// `2^x`, for `x` within ±126 (clamped); relative error below `2e-4` (0.002 dB in a gain).
+#[inline]
+pub fn fast_exp2(x: f32) -> f32 {
+    let x = x.clamp(-126.0, 126.0);
+    let whole = x.floor();
+    let f = x - whole;
+    let poly = 1.0
+        + f * (0.693_147_2
+            + f * (0.240_226_5
+                + f * (0.055_504_11
+                    + f * (0.009_618_129 + f * (0.001_333_355 + f * 0.000_154_035)))));
+    poly * f32::from_bits(((whole as i32 + 127) as u32) << 23)
+}
+
+/// Decibels per octave of amplitude: `20·log10(2)`.
+pub const DB_PER_OCTAVE: f32 = 6.020_6;
+
 /// Pole of a one-pole smoother that covers 63 % of the distance in `seconds`, updated every
 /// `step` samples.
 #[inline]
@@ -305,6 +337,23 @@ mod tests {
             let want = xs[from..=i].iter().copied().fold(f32::MAX, f32::min);
             assert_eq!(got, want, "at {i}");
         }
+    }
+
+    #[test]
+    fn fast_log2_and_exp2_are_close_to_the_exact_functions() {
+        let mut worst_log = 0.0f32;
+        let mut worst_exp = 0.0f32;
+        for i in 0..20_000 {
+            let x = 1e-6 * 1.001f32.powi(i);
+            worst_log = worst_log.max((fast_log2(x) - x.log2()).abs());
+        }
+        for i in -4000..4000 {
+            let x = i as f32 * 0.01;
+            worst_exp = worst_exp.max((fast_exp2(x) / x.exp2() - 1.0).abs());
+        }
+        assert!(worst_log < 2e-5, "log2 error {worst_log}");
+        assert!(worst_exp < 2e-4, "exp2 error {worst_exp}");
+        assert!(fast_exp2(-500.0) > 0.0 && fast_exp2(500.0).is_finite());
     }
 
     #[test]

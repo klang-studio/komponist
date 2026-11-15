@@ -110,6 +110,9 @@ pub enum GraphConfig {
         /// Points.
         points: u8,
     },
+    /// `graph::gr_history` (WP-93): the input level and the gain reduction of the last four
+    /// seconds, display only (no slots, no handles).
+    GrHistory,
 }
 
 /// What a graph cell shows and edits: the configuration, its title, and for every slot of the
@@ -193,6 +196,10 @@ pub struct Cell {
     /// (WP-86). A carrier fills in the track colour, a modulator in `text.2`; without it the
     /// fader is a carrier. See [`Cell::carrier`].
     pub carrier: Option<ParamId>,
+    /// A knob only (WP-93): the Bool parameter that, while on, makes this knob inoperable and
+    /// dimmed because the value is not used (makeup while auto-makeup is on). See
+    /// [`Cell::disabled_by`].
+    pub disabled_by: Option<ParamId>,
 }
 
 impl Cell {
@@ -207,6 +214,7 @@ impl Cell {
             widget: WidgetKind::Knob,
             param: CellParam::Id(param),
             carrier: None,
+            disabled_by: None,
         }
     }
 
@@ -228,6 +236,7 @@ impl Cell {
             widget,
             param,
             carrier: None,
+            disabled_by: None,
         }
     }
 
@@ -261,6 +270,7 @@ impl Cell {
             widget,
             param,
             carrier: None,
+            disabled_by: None,
         }
     }
 
@@ -269,6 +279,13 @@ impl Cell {
     #[must_use]
     pub fn carrier(mut self, carrier: ParamId) -> Cell {
         self.carrier = Some(carrier);
+        self
+    }
+
+    /// The knob of this cell is dimmed and does nothing while the Bool parameter `flag` is on.
+    #[must_use]
+    pub fn disabled_by(mut self, flag: ParamId) -> Cell {
+        self.disabled_by = Some(flag);
         self
     }
 
@@ -544,14 +561,14 @@ pub fn validate(
                 }),
                 _ => {}
             }
-            if let Some(id) = &cell.carrier
-                && !exists(id)
-            {
-                errors.push(LayoutError::UnknownParam {
-                    page: p,
-                    cell: c,
-                    id: id.clone(),
-                });
+            for id in [&cell.carrier, &cell.disabled_by].into_iter().flatten() {
+                if !exists(id) {
+                    errors.push(LayoutError::UnknownParam {
+                        page: p,
+                        cell: c,
+                        id: id.clone(),
+                    });
+                }
             }
             if let CellParam::Graph(binding) = &cell.param {
                 for (slot, _) in &binding.bind {
