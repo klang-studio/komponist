@@ -90,19 +90,6 @@ The mixer shows every track with its inserts, pan, mute/solo, faders and level m
 
 ![The mixer with the arrangement above it, playing](docs/media/mixer.png)
 
-### Tracks, German and English
-
-Click the "Neue Spur" box below the tracks to open the new-track dialog: choose an instrument, a name and a count:
-
-![The new-track dialog](docs/media/new-track-dialog.png)
-
-Or drag an instrument from the browser onto the box:
-
-![Dragging knurr from the browser onto the "Neue Spur" box creates a track](docs/media/new-track.gif)
-
-The UI is available in **German** (the source language) and **English** (a draft that is still being completed).
-All texts live in [Fluent](https://projectfluent.org/) `.ftl` files, see [docs/I18N.md](docs/I18N.md).
-
 ## Status
 
 komponist is **early software (v0.1)**. The MIDI workflow works end to end: arrange, edit, play, record, mix, save,
