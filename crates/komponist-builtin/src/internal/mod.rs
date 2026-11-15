@@ -31,9 +31,11 @@
 //! engine never calls. Their role in a chain is [`Internal::role`] (`MidiEffect`); the engine runs
 //! them in front of the instrument (ARCHITECTURE §6.4.2) and keeps notes from hanging.
 //!
-//! The DSP of the four effects is a placeholder (EQ, Hall: pass-through, EQ with its output gain;
-//! Delay: a plain stereo delay; Limiter: a hard clip at the ceiling). The real algorithms are
-//! WP-90 (`klang-dsp`).
+//! **Effect DSP (WP-90):** [`eq`] (six RBJ biquad bands), [`delay`] (tempo-synced stereo delay with
+//! filtered feedback), [`hall`] (8-line feedback delay network) and [`limiter`] (lookahead peak
+//! limiter) are written for komponist on top of the small parts in [`dsp`] and `klang-dsp`'s
+//! biquad. Parameters are smoothed at a control rate of [`dsp::CONTROL`] samples that counts across
+//! calls, so the output does not depend on how the host splits blocks.
 
 use std::sync::OnceLock;
 
@@ -49,6 +51,7 @@ use crate::SAMPLE_RATES;
 
 pub mod arpeggiator;
 pub mod delay;
+pub mod dsp;
 pub mod eq;
 pub mod hall;
 pub mod limiter;
@@ -73,6 +76,16 @@ pub trait Dsp: Send {
     /// RT-safe, cached. Latency in frames.
     fn latency(&self) -> u32 {
         0
+    }
+
+    /// RT. The tempo of the transport in quarter notes per minute, delivered at the start of every
+    /// call (constant within one). Tempo-synced effects follow it; the default ignores it.
+    fn set_tempo(&mut self, _bpm: f64) {}
+
+    /// RT-safe. The deepest gain reduction in dB (0 or negative) since the last call of this
+    /// method; 0 for devices that do not reduce gain. The hook for the GR meter's telemetry.
+    fn take_gain_reduction_db(&mut self) -> f32 {
+        0.0
     }
 }
 
@@ -362,10 +375,11 @@ impl Processor for InternalProcessor {
 
     fn process(
         &mut self,
-        _ctx: &ProcessContext,
+        ctx: &ProcessContext,
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
+        self.dsp.set_tempo(ctx.transport.tempo_bpm);
         let frames = io.frames();
         let mut done = 0;
         for event in events {
@@ -453,11 +467,8 @@ fn single_page(cols: u8, cells: Vec<Cell>) -> DeviceLayout {
     })
 }
 
-/// `dB` as a linear gain.
-fn db_to_gain(db: f64) -> f32 {
-    10f64.powf(db / 20.0) as f32
-}
-
+#[cfg(test)]
+mod fx_tests;
 #[cfg(test)]
 mod midi_tests;
 #[cfg(test)]
