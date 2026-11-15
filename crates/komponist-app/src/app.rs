@@ -1543,6 +1543,11 @@ impl App {
                     edits::set_device_bypass(p, device, bypass)
                 });
             }
+            EditAction::SetSidechain { device, sidechain } => {
+                self.apply("undo-set-sidechain", |p| {
+                    edits::set_sidechain(p, device, sidechain)
+                });
+            }
             EditAction::CopyDevice { device, to, index } => self.copy_device(device, to, index),
             EditAction::DuplicateDevices => self.duplicate_devices(),
             EditAction::PasteDevices => self.paste_devices(),

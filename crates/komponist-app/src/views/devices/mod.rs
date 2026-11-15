@@ -40,6 +40,7 @@ pub mod frame;
 pub mod layout;
 pub mod metrics;
 pub mod model;
+mod sidechain;
 
 use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
 use komponist_model::{ChannelRef, DeviceId, PluginRef, Track, TrackId};

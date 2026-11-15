@@ -29,6 +29,7 @@ use komponist_ui::{focus, fonts, px, state};
 use super::layout::Page;
 use super::metrics;
 use super::model::{Card, CardState, failure_texts, names};
+use super::sidechain;
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
 use crate::views::late;
 use crate::views::{ViewCtx, elided_galley, group_bounds};
@@ -366,6 +367,9 @@ pub(super) fn head_width(ui: &Ui, card: &Card) -> f32 {
             width += gap + g.size().x.ceil() + 2.0 * wm::BUTTON_PADDING_X;
         }
     }
+    if card.has_sidechain {
+        width += gap + sidechain::chip_width(ui);
+    }
     if let Some(pages) =
         (card.layout.pages.len() > 1).then(|| page_switch_width(ui, &card.layout.pages))
     {
@@ -445,7 +449,13 @@ fn head_controls(
     let more = more_button(&mut row);
     if card.presets {
         preset_button(&mut row, ctx, card);
+        if card.has_sidechain {
+            sidechain::chip(&mut row, ctx, card);
+        }
     } else {
+        if card.has_sidechain {
+            sidechain::chip(&mut row, ctx, card);
+        }
         if let Some(label) = card.open_label() {
             let b = row.add(Button::new(label).compact().on(card.open));
             if b.clicked() {

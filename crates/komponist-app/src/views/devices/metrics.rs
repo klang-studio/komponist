@@ -116,3 +116,9 @@ pub const ADD_GLYPH: f32 = 12.0;
 pub const ADD_GLYPH_STROKE: f32 = 1.5;
 /// … and the gap to the hint.
 pub const ADD_GLYPH_GAP: f32 = space::SPACE_2;
+
+/// The sidechain chip in a device head (WP-104, routing proposal 08-sidechain-kopf (internal notes),
+/// variant C, not in the handoff): the source dot's diameter …
+pub const SC_DOT: f32 = 6.0;
+/// … and the caret (like the preset button's `border-left/right:3px`, `border-top:4px`).
+pub const SC_CARET: [f32; 2] = [6.0, 4.0];

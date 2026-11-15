@@ -113,6 +113,14 @@ pub trait DeviceHost {
         None
     }
 
+    /// Whether `device` has a sidechain input the "SC" chip in its head can set (WP-104). Internal
+    /// devices answer through [`Internal::has_sidechain`](komponist_builtin::Internal::has_sidechain)
+    /// without the host; a host reports it for plugins with a sidechain port (WP-105).
+    fn has_sidechain(&self, device: DeviceId) -> bool {
+        let _ = device;
+        false
+    }
+
     /// Calls `f` with the level meter of every in-process device that has one (internal devices,
     /// WP-89); the UI takes their values once per frame ([`DeviceMeter::take`]).
     fn for_each_meter(&self, f: &mut dyn FnMut(DeviceId, &DeviceMeter)) {

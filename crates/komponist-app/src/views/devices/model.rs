@@ -198,6 +198,56 @@ pub mod names {
         format!("Pad {pad} · {sample}")
     }
 
+    /// The sidechain chip's text (`SC`).
+    pub const SC: &str = "SC";
+    /// Tooltip of the chip.
+    pub const SC_TIP: &str = "Sidechain: Das Signal einer anderen Spur steuert dieses Gerät.";
+    /// Accessible name of the chip without a source.
+    pub const SC_OFF: &str = "Sidechain: aus";
+    /// Accessible name and name of the popover's list.
+    pub const SC_SOURCE: &str = "Sidechain-Quelle";
+    /// The popover's first row: the device's own input.
+    pub const SC_INTERNAL: &str = "— (intern: Eingangssignal)";
+    /// The popover's section of the tap.
+    pub const SC_TAP: &str = "Abgriff";
+    /// Tap before the source's fader (the default).
+    pub const SC_PRE: &str = "Vor Fader";
+    /// Tap after the source's fader.
+    pub const SC_POST: &str = "Nach Fader";
+    /// Hint under the tap while it is „Vor Fader“.
+    pub const SC_PRE_HINT: &str = "Vor Fader: Mute der Quelle ändert nichts";
+    /// Hint under the tap while it is „Nach Fader“.
+    pub const SC_POST_HINT: &str = "Nach Fader: folgt Fader und Mute der Quelle";
+    /// Context menu of the chip: back to the internal input.
+    pub const SC_REMOVE: &str = "Quelle entfernen";
+    /// „Bass (diese Spur)“: the track that holds the device.
+    pub const SC_THIS_TRACK: &str = "diese Spur";
+
+    /// „Sidechain: Drums“.
+    pub fn sc_chip(source: &str) -> String {
+        format!("Sidechain: {source}")
+    }
+
+    /// The accessible name of a source row that cannot be chosen: „Hall, nicht möglich: Rückkopplung“.
+    pub fn sc_blocked(name: &str) -> String {
+        format!("{name}, nicht möglich: Rückkopplung")
+    }
+
+    /// The reason for the tooltip when the source is the track that holds the device.
+    pub fn sc_reason_self(name: &str) -> String {
+        format!("Nicht möglich: „{name}“ ist die Spur dieses Geräts (Rückkopplung).")
+    }
+
+    /// … when the source is a group that contains it.
+    pub fn sc_reason_group(name: &str) -> String {
+        format!("Nicht möglich: „{name}“ enthält diese Spur (Rückkopplung).")
+    }
+
+    /// … when the source is fed by the device's track.
+    pub fn sc_reason_fed(name: &str, holder: &str) -> String {
+        format!("Nicht möglich: „{holder}“ gibt schon an „{name}“ aus (Rückkopplung).")
+    }
+
     /// The accessible name of a card: „Gerät Surge XT“.
     pub fn card(name: &str) -> String {
         format!("{DEVICE} {name}")
@@ -338,6 +388,11 @@ pub struct Card {
     ///
     /// [`Internal::presets`]: komponist_builtin::Internal::presets
     pub internal_presets: Option<komponist_builtin::Internal>,
+    /// The device has a sidechain input: the head shows the "SC" chip (WP-104). Internal devices
+    /// say so in their spec, plugins through [`DeviceHost::has_sidechain`].
+    pub has_sidechain: bool,
+    /// The sidechain source and tap the device has now, if any.
+    pub sidechain: Option<komponist_model::Sidechain>,
     /// The loaded internal preset was changed since („ *“): a value differs from it now.
     pub preset_changed: bool,
     /// Width in design px (set by the view: page columns, head, collapsed).
@@ -553,6 +608,9 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         preset,
         internal_presets,
         preset_changed,
+        has_sidechain: internal_kind(device)
+            .map_or_else(|| host.has_sidechain(device.id), |k| k.has_sidechain()),
+        sidechain: device.sidechain,
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,

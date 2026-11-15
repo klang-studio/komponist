@@ -31,6 +31,7 @@ pub(super) static SPEC: Spec = Spec {
     layout,
     dsp,
     presets,
+    sidechain: false,
 };
 
 /// Bands of the EQ.

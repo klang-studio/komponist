@@ -1324,6 +1324,8 @@ mod tests {
             preset: None,
             internal_presets: None,
             preset_changed: false,
+            has_sidechain: false,
+            sidechain: None,
             width: 244.0,
             late: None,
             levels: None,

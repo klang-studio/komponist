@@ -38,6 +38,7 @@ pub(super) static SPEC: Spec = Spec {
     layout,
     dsp,
     presets,
+    sidechain: false,
 };
 
 /// The factory presets (WP-96): a small starter set.

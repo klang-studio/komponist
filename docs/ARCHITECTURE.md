@@ -695,8 +695,9 @@ fast paths, and the same output bit for bit (golden test against a render of the
   A bus sums its inputs into its job's lane scratch (no per-bus sum buffer). Sends and outputs are not buffers of
   their own: the consuming bus job reads the source's output (already delayed for this target) or its pre / post
   tap, applies the send's delay and gain ramp, and adds. Sidechain inputs are read from the source's tap buffer by
-  the holder's job into a lane buffer and passed to `Processor::process_sidechain` (internal devices consume it in
-  WP-104, plugins through the bridge's extra channels in WP-105). The program carries only indices: per node
+  the holder's job into a lane buffer and passed to `Processor::process_sidechain` (internal devices consume it since
+  WP-104: `Spec::sidechain` marks the device, `Dsp::process_sidechain` gets the buffer slice of each piece between
+  parameter events, presse feeds its detector with it instead of the input; plugins through the bridge's extra channels in WP-105). The program carries only indices: per node
   `NodeRoute` (bus, output, input / sidechain / dependent spans, number of inputs, taps, head delay, latencies),
   the input list (`RouteInput`: source, optional `SendRoute` with gate index, linear level, tap and delay), the
   sidechain list (`SidechainRoute`: chain position, source, tap, delay), the dependents, the master's inputs and
