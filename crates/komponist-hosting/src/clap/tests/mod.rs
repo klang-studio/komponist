@@ -185,12 +185,8 @@ pub(crate) fn sidechain_reaches_the_port(plugin: &mut dyn HostedPlugin) {
         blocks.sidechain = Some([wave(0.03, phase), wave(-0.05, phase)]);
         assert_eq!(blocks.run(processor.as_mut(), &[]), ProcessStatus::Continue);
         let sidechain = blocks.sidechain.as_ref().unwrap();
-        for ch in 0..2 {
-            let sum: Vec<f32> = blocks.input[ch]
-                .iter()
-                .zip(&sidechain[ch])
-                .map(|(a, b)| a + b)
-                .collect();
+        for (ch, (input, side)) in blocks.input.iter().zip(sidechain).enumerate() {
+            let sum: Vec<f32> = input.iter().zip(side).map(|(a, b)| a + b).collect();
             assert_eq!(blocks.output[ch], sum, "block {block}, channel {ch}");
         }
     }

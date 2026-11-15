@@ -269,9 +269,11 @@ fn sidechain_through_the_ipc_path() {
             let result = bridge.block(&[]);
             assert_eq!(result.status, BlockStatus::Ok as u32);
             let sidechain = bridge.sidechain.as_ref().unwrap();
-            for ch in 0..2 {
-                let sum: Vec<f32> = (0..BLOCK)
-                    .map(|i| bridge.input[ch][i] + sidechain[ch][i])
+            for (ch, (input, side)) in bridge.input.iter().zip(sidechain).enumerate() {
+                let sum: Vec<f32> = input[..BLOCK]
+                    .iter()
+                    .zip(&side[..BLOCK])
+                    .map(|(a, b)| a + b)
                     .collect();
                 assert_eq!(bridge.output[ch][..BLOCK], sum, "{format}, channel {ch}");
             }

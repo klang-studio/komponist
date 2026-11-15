@@ -14,3 +14,4 @@ mod gui;
 mod installed;
 mod lifecycle;
 mod scan;
+mod sidechain;

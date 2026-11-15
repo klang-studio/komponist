@@ -589,6 +589,10 @@ impl core::fmt::Debug for ShmRegion {
     }
 }
 
+/// The audio of the open request, from [`BridgeServer::audio_with_sidechain`]: input, sidechain
+/// (`None` without one), output.
+pub type BlockAudio<'a> = ([&'a [f32]; 2], Option<[&'a [f32]; 2]>, [&'a mut [f32]; 2]);
+
 /// Copies `frames` samples of each channel of `src` into the stereo buffer `dst`.
 ///
 /// # Safety
@@ -903,10 +907,7 @@ impl BridgeServer {
     /// # Panics
     ///
     /// If `frames > MAX_BLOCK`.
-    pub fn audio_with_sidechain(
-        &mut self,
-        frames: usize,
-    ) -> ([&[f32]; 2], Option<[&[f32]; 2]>, [&mut [f32]; 2]) {
+    pub fn audio_with_sidechain(&mut self, frames: usize) -> BlockAudio<'_> {
         assert!(frames <= MAX_BLOCK, "audio: frames > MAX_BLOCK");
         let frames = if self.busy { frames } else { 0 };
         let layout = self.region.layout();
