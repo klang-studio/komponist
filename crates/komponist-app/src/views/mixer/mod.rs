@@ -39,6 +39,7 @@ use komponist_tokens::color;
 use komponist_tokens::egui_support::color32;
 use komponist_ui::px;
 use komponist_ui::widgets::number_field::{WHEEL_GESTURE_IDLE, wheel_turned};
+use komponist_ui::widgets::rename_field::RenameState;
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind};
 
 use self::metrics::{self as m, MASTER_WIDTH, STRIP_GAP, STRIP_WIDTH, Tier};
@@ -175,9 +176,7 @@ pub fn gesture_touch(
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Rename {
     track: TrackId,
-    text: String,
-    /// Focus and select all in the next frame.
-    fresh: bool,
+    edit: RenameState,
 }
 
 /// The mixer view. Its view state is [`crate::ui_state::MixerView`] (scroll).
@@ -284,8 +283,7 @@ impl View for Mixer {
         {
             self.rename = Some(Rename {
                 track: id,
-                text: track.name.clone(),
-                fresh: true,
+                edit: RenameState::new(&track.name),
             });
         }
         let now = ui.input(|i| i.time);

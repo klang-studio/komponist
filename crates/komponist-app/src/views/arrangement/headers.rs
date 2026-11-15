@@ -4,21 +4,19 @@
 
 use std::sync::Arc;
 
-use egui::text::CCursorRange;
 use egui::{
-    Align, CursorIcon, Frame, Id, Layout, Margin, Rangef, Rect, Role, Sense, TextEdit, Ui,
-    UiBuilder, WidgetInfo, pos2,
+    Align, CursorIcon, Id, Layout, Rangef, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2,
 };
 use komponist_i18n::Lang;
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
 use komponist_model::{Project, Track, TrackId, routing};
 use komponist_plugins::{DeviceStatus, FailReason};
-use komponist_tokens::egui_support::color32;
-use komponist_tokens::{color, radius, space, typography};
+use komponist_tokens::typography;
 use komponist_ui::State;
 use komponist_ui::timeline::{HeaderModel, header_access, header_layout, paint_track_header};
 use komponist_ui::widgets::meter::{Meter, MeterState};
 use komponist_ui::widgets::metrics::timeline as tm;
+use komponist_ui::widgets::rename_field::{RenameField, RenameOutcome, RenameState};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::{fonts, px};
 
@@ -203,8 +201,7 @@ impl Arrangement {
         {
             self.rename = Some(Rename {
                 track: track.id,
-                text: track.name.clone(),
-                fresh: true,
+                edit: RenameState::new(&track.name),
             });
         } else if response.clicked() {
             let mode = click_mode(mods);
@@ -351,48 +348,19 @@ impl Arrangement {
         let Some(rename) = self.rename.as_mut() else {
             return;
         };
-        let field = rect.expand2(egui::vec2(space::SPACE_1, 0.0));
-        px::fill(ui.painter(), field, radius::S, color32(color::SURFACE_0));
-        px::outline(ui.painter(), field, radius::S, 0.0, color32(color::ACCENT));
-        let edit = Id::unique(("komponist_arrangement_rename", track.id.0));
-        let mut text = rename.text.clone();
-        let response = ui.put(
-            rect,
-            TextEdit::singleline(&mut text)
-                .id(edit)
-                .frame(Frame::NONE)
-                .margin(Margin::ZERO)
-                .font(fonts::font_id(&typography::TRACK))
-                .text_color(color32(color::TEXT_1))
-                .desired_width(rect.width()),
-        );
-        let rename_label = ctx.lang.arrangement_rename();
-        ui.ctx()
-            .accesskit_node_builder(response.id, |n| n.set_label(rename_label));
-        if rename.fresh {
-            // Focus after the field exists: the double-click that opened it would otherwise
-            // count as a click elsewhere.
-            let mut st = TextEdit::load_state(ui.ctx(), response.id).unwrap_or_default();
-            st.cursor
-                .set_char_range(Some(CCursorRange::select_all_str(&text)));
-            TextEdit::store_state(ui.ctx(), response.id, st);
-            response.request_focus();
-            rename.fresh = false;
-            rename.text = text;
-            return;
-        }
-        if response.lost_focus() {
-            let escape = super::escape_pressed(ui);
-            let name = text.trim();
-            if !escape && !name.is_empty() && name != track.name {
+        let id = Id::unique(("komponist_arrangement_rename", track.id.0));
+        let font = fonts::font_id(&typography::TRACK);
+        let label = ctx.lang.arrangement_rename();
+        match RenameField::new(&mut rename.edit, id, label, &track.name, font).show(ui, rect) {
+            RenameOutcome::Editing => {}
+            RenameOutcome::Commit(name) => {
                 ctx.send(Action::Edit(EditAction::SetTrackProp {
                     tracks: vec![track.id],
-                    prop: TrackProp::Name(name.to_owned()),
+                    prop: TrackProp::Name(name),
                 }));
+                self.rename = None;
             }
-            self.rename = None;
-        } else {
-            rename.text = text;
+            RenameOutcome::Cancel => self.rename = None,
         }
     }
 

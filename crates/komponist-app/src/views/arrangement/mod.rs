@@ -60,6 +60,7 @@ use super::{View, ViewCtx};
 use crate::actions::{Action, DropTarget, EditAction, PluginAction};
 use crate::metrics::arrangement::{PX_PER_BAR_MAX, PX_PER_BAR_MIN, V_ZOOM};
 use crate::ui_state::ArrangementView;
+use komponist_ui::widgets::rename_field::RenameState;
 
 /// The count box: "6 Spuren", with buses "8 Spuren · 1 Gruppe · 2 Busse" (`05-arrangement`).
 /// Groups and effect buses are not counted as tracks.
@@ -176,8 +177,7 @@ struct EdgeDrag {
 #[derive(Clone, Debug, PartialEq)]
 struct Rename {
     track: TrackId,
-    text: String,
-    fresh: bool,
+    edit: RenameState,
 }
 
 /// Zoom and scroll at the end of the last frame (to anchor zoom changes made by the dispatcher).
@@ -254,8 +254,7 @@ impl View for Arrangement {
         {
             self.rename = Some(Rename {
                 track: id,
-                text: track.name.clone(),
-                fresh: true,
+                edit: RenameState::new(&track.name),
             });
         }
 

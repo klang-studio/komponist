@@ -19,6 +19,9 @@
 //!   hover only, so it takes no clicks and no keyboard focus ([`sense`]). The gallery shows its
 //!   samples that way, so Tab skips them; every gallery card also has a live row.
 //!
+//! Inline rename (WP #37): [`rename_field`], the one field of the track header, the inspector and
+//! the mixer strip.
+//!
 //! Floating parts (dropdown list, context menu) are egui [`Area`](egui::Area)s on the
 //! foreground layer; at most one is open at a time ([`floating`]).
 
@@ -31,6 +34,7 @@ pub mod knob;
 pub mod meter;
 pub mod number_field;
 pub mod panel_header;
+pub mod rename_field;
 pub mod switch;
 pub mod tabs;
 pub mod text_field;
