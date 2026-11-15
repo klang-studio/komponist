@@ -28,6 +28,7 @@ pub(super) static SPEC: Spec = Spec {
     layout,
     dsp,
     presets,
+    sidechain: false,
 };
 
 /// Longest delay time in milliseconds.

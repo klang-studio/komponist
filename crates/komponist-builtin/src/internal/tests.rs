@@ -439,3 +439,35 @@ fn loading_a_preset_keeps_the_other_keys_of_the_state() {
     assert_eq!(json["links"], serde_json::json!([1, 2]));
     assert_eq!(json["preset"], kind.presets()[0].name);
 }
+
+#[test]
+fn process_sidechain_does_not_allocate_and_ducks() {
+    let mut p = activated(Internal::Presse, &Internal::Presse.defaults());
+    let audio = signal(BLOCK, 0);
+    let sc = signal(BLOCK, 100);
+    let mut out = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    // A parameter event in the middle splits the block into two pieces.
+    let events = [Event {
+        offset: 100,
+        kind: EventKind::Param {
+            id: 0,
+            value: -30.0,
+        },
+    }];
+    for _ in 0..4 {
+        let [ol, or] = &mut out;
+        let mut io = StereoIo {
+            input: [&audio[0], &audio[1]],
+            output: [ol, or],
+        };
+        assert_no_alloc(|| {
+            p.process_sidechain(
+                &ctx(BLOCK),
+                &events,
+                &mut io,
+                [&sc[0][..], &sc[1][..]],
+            )
+        });
+    }
+    assert!(out[0].iter().all(|x| x.is_finite()));
+}

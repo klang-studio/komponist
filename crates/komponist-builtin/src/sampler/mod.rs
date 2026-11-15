@@ -84,6 +84,7 @@ pub(crate) static SPEC: Spec = Spec {
     layout,
     dsp,
     presets: crate::internal::no_presets,
+    sidechain: false,
 };
 
 /// Wire id of the kit tune.

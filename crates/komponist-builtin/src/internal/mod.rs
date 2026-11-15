@@ -81,6 +81,19 @@ pub trait Dsp: Send {
     /// RT. Processes `input` into `output` (same length, never aliasing).
     fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2]);
 
+    /// RT. Like [`Dsp::process`] with an external sidechain signal (WP-104), aligned with `input`
+    /// and of the same length. Only called on devices whose [`Spec::sidechain`] is set; the default
+    /// ignores the sidechain.
+    fn process_sidechain(
+        &mut self,
+        input: [&[f32]; 2],
+        sidechain: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+    ) {
+        let _ = sidechain;
+        self.process(input, output);
+    }
+
     /// RT. Clears tails and filter state without allocating.
     fn reset(&mut self);
 
@@ -169,6 +182,9 @@ pub struct Spec {
     pub dsp: fn() -> Box<dyn Dsp>,
     /// The factory presets in menu order (WP-96); none for [`no_presets`].
     pub presets: fn() -> &'static [Preset],
+    /// Whether the device has a sidechain input (WP-104): the UI offers the "SC" chip and the DSP
+    /// gets the signal through [`Dsp::process_sidechain`].
+    pub sidechain: bool,
 }
 
 /// A factory preset of an internal device (WP-96): the parameters that differ from the defaults,
@@ -287,6 +303,11 @@ impl Internal {
             .iter()
             .position(|k| *k == self)
             .unwrap_or_default()
+    }
+
+    /// Whether the device has a sidechain input (the "SC" chip in its head, WP-104).
+    pub fn has_sidechain(self) -> bool {
+        self.spec().sidechain
     }
 
     /// The catalog id.
@@ -592,6 +613,44 @@ impl Processor for InternalProcessor {
         events: &[Event],
         io: &mut StereoIo<'_>,
     ) -> ProcessStatus {
+        self.run(ctx, events, io, None)
+    }
+
+    fn process_sidechain(
+        &mut self,
+        ctx: &ProcessContext,
+        events: &[Event],
+        io: &mut StereoIo<'_>,
+        sidechain: [&[f32]; 2],
+    ) -> ProcessStatus {
+        self.run(ctx, events, io, Some(sidechain))
+    }
+
+    fn latency(&self) -> u32 {
+        self.dsp.latency()
+    }
+
+    fn reset(&mut self) {
+        self.dsp.reset();
+        if let Some(stage) = &mut self.stage {
+            stage.reset();
+        }
+    }
+
+    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
+        self.stage.as_mut().map(|s| s as &mut dyn EventProcessor)
+    }
+}
+
+impl InternalProcessor {
+    /// `process` and `process_sidechain`: the block in pieces between the parameter events.
+    fn run(
+        &mut self,
+        ctx: &ProcessContext,
+        events: &[Event],
+        io: &mut StereoIo<'_>,
+        sc: Option<[&[f32]; 2]>,
+    ) -> ProcessStatus {
         self.dsp.set_tempo(ctx.transport.tempo_bpm);
         let frames = io.frames();
         let mut done = 0;
@@ -612,7 +671,7 @@ impl Processor for InternalProcessor {
             }
             let at = (event.offset as usize).clamp(done, frames);
             if at > done {
-                self.render(io, done, at);
+                self.render(io, sc, done, at);
                 done = at;
             }
             match event.kind {
@@ -631,35 +690,23 @@ impl Processor for InternalProcessor {
             }
         }
         if done < frames {
-            self.render(io, done, frames);
+            self.render(io, sc, done, frames);
         }
         ProcessStatus::Continue
     }
 
-    fn latency(&self) -> u32 {
-        self.dsp.latency()
-    }
-
-    fn reset(&mut self) {
-        self.dsp.reset();
-        if let Some(stage) = &mut self.stage {
-            stage.reset();
-        }
-    }
-
-    fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
-        self.stage.as_mut().map(|s| s as &mut dyn EventProcessor)
-    }
-}
-
-impl InternalProcessor {
-    fn render(&mut self, io: &mut StereoIo<'_>, from: usize, to: usize) {
+    fn render(&mut self, io: &mut StereoIo<'_>, sc: Option<[&[f32]; 2]>, from: usize, to: usize) {
         let [il, ir] = io.input;
         let [ol, or] = &mut io.output;
-        self.dsp.process(
-            [&il[from..to], &ir[from..to]],
-            [&mut ol[from..to], &mut or[from..to]],
-        );
+        let input = [&il[from..to], &ir[from..to]];
+        let output = [&mut ol[from..to], &mut or[from..to]];
+        match sc {
+            Some([sl, sr]) if sl.len() >= to && sr.len() >= to => {
+                self.dsp
+                    .process_sidechain(input, [&sl[from..to], &sr[from..to]], output);
+            }
+            _ => self.dsp.process(input, output),
+        }
         let peak = |a: &[f32], b: &[f32]| a.iter().chain(b).fold(0.0_f32, |m, s| m.max(s.abs()));
         self.meter.record(
             peak(&il[from..to], &ir[from..to]),

@@ -63,6 +63,7 @@ pub(super) static SPEC: Spec = Spec {
     layout,
     dsp,
     presets,
+    sidechain: true,
 };
 
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.
@@ -205,7 +206,7 @@ fn lookahead_frames(rate: f32) -> usize {
 
 /// The factory presets of the proposal (WP-93, a menu since WP-96).
 fn presets() -> &'static [Preset] {
-    static LIST: [Preset; 10] = [
+    static LIST: [Preset; 11] = [
         Preset::new(
             "Gesang weich",
             &[
@@ -308,6 +309,19 @@ fn presets() -> &'static [Preset] {
                 ("threshold", -30.0),
                 ("detector", 0.0),
                 ("mix", 0.8),
+                ("auto_release", 0.0),
+            ],
+        ),
+        // For a sidechain source (WP-104): the kick pushes a pad or bass down.
+        Preset::new(
+            "Ducking",
+            &[
+                ("ratio", 6.0),
+                ("attack", 2.0),
+                ("release", 150.0),
+                ("threshold", -24.0),
+                ("knee", 4.0),
+                ("detector", 0.0),
                 ("auto_release", 0.0),
             ],
         ),
@@ -664,6 +678,41 @@ impl Dsp for Presse {
     }
 
     fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
+        self.run(input, None, output);
+    }
+
+    fn process_sidechain(
+        &mut self,
+        input: [&[f32]; 2],
+        sidechain: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+    ) {
+        self.run(input, Some(sidechain), output);
+    }
+
+    fn reset(&mut self) {
+        self.hp = [Df1::default(); 2];
+        self.mean_square = [0.0; 2];
+        self.reduction = [Reduction::default(); 2];
+        self.deepest = 0.0;
+        self.pair_ticks = 0;
+        self.pair_level = FLOOR_DB;
+        self.pair_reduction = 0.0;
+        self.countdown = 0;
+        self.snap();
+        self.apply_lookahead();
+    }
+}
+
+impl Presse {
+    /// The block: `sidechain`, when given, feeds the detector in place of `input` (the audio path
+    /// and the lookahead stay on `input`).
+    fn run(
+        &mut self,
+        input: [&[f32]; 2],
+        sidechain: Option<[&[f32]; 2]>,
+        output: [&mut [f32]; 2],
+    ) {
         let [il, ir] = input;
         let [ol, or] = output;
         let tapping = self.tap.begin(il.len());
@@ -696,14 +745,19 @@ impl Dsp for Presse {
             let xl = finite(il[n]);
             let xr = finite(ir[n]);
 
-            // Detector side: sidechain high-pass, level in dB, link.
+            // Detector side: sidechain high-pass, level in dB, link. The detector hears the
+            // external sidechain when there is one.
+            let (detl, detr) = match sidechain {
+                Some([a, b]) => (finite(a[n]), finite(b[n])),
+                None => (xl, xr),
+            };
             let (sl, sr) = if self.hp_on {
                 (
-                    self.hp[0].tick(xl, &self.hp_coefs),
-                    self.hp[1].tick(xr, &self.hp_coefs),
+                    self.hp[0].tick(detl, &self.hp_coefs),
+                    self.hp[1].tick(detr, &self.hp_coefs),
                 )
             } else {
-                (xl, xr)
+                (detl, detr)
             };
             let lvl_l = self.level(0, sl);
             let lvl_r = self.level(1, sr);
@@ -775,18 +829,5 @@ impl Dsp for Presse {
         if filled > 0 {
             self.tap.push(&batch[..filled]);
         }
-    }
-
-    fn reset(&mut self) {
-        self.hp = [Df1::default(); 2];
-        self.mean_square = [0.0; 2];
-        self.reduction = [Reduction::default(); 2];
-        self.deepest = 0.0;
-        self.pair_ticks = 0;
-        self.pair_level = FLOOR_DB;
-        self.pair_reduction = 0.0;
-        self.countdown = 0;
-        self.snap();
-        self.apply_lookahead();
     }
 }

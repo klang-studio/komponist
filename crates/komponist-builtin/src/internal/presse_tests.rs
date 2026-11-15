@@ -480,7 +480,7 @@ fn an_impulse_through_silence_stays_finite_and_the_curve_below_the_threshold_is_
 #[test]
 fn the_presets_are_valid_and_play() {
     let list = KIND.params();
-    assert_eq!(KIND.presets().len(), 10);
+    assert_eq!(KIND.presets().len(), 11);
     for (i, preset) in KIND.presets().iter().enumerate() {
         let name = preset.name;
         for (key, _) in preset.changes {
@@ -506,7 +506,7 @@ fn the_presets_are_valid_and_play() {
             "{name}"
         );
     }
-    assert!(KIND.preset_values(10).is_none());
+    assert!(KIND.preset_values(11).is_none());
 }
 
 #[test]
@@ -514,4 +514,99 @@ fn the_layout_is_valid_and_has_one_page_of_eight_columns() {
     let layout = KIND.layout();
     assert_eq!(layout.pages.len(), 1);
     assert_eq!(layout.pages[0].cols, 8);
+}
+
+// ------------------------------------------------------------------------------------------------
+// External sidechain (WP-104)
+// ------------------------------------------------------------------------------------------------
+
+/// `play` with a sidechain signal, in calls of `chunk` frames.
+fn play_sc(d: &mut dyn Dsp, input: &Stereo, sc: &Stereo, chunk: usize) -> Stereo {
+    let frames = input[0].len();
+    let mut out = [vec![0.0; frames], vec![0.0; frames]];
+    for a in (0..frames).step_by(chunk) {
+        let b = (a + chunk).min(frames);
+        let [ol, or] = &mut out;
+        assert_no_alloc::assert_no_alloc(|| {
+            d.process_sidechain(
+                [&input[0][a..b], &input[1][a..b]],
+                [&sc[0][a..b], &sc[1][a..b]],
+                [&mut ol[a..b], &mut or[a..b]],
+            )
+        });
+    }
+    out
+}
+
+#[test]
+fn the_spec_flags_the_sidechain_input_of_presse_only() {
+    for kind in Internal::ALL {
+        assert_eq!(kind.has_sidechain(), kind == Internal::Presse, "{kind:?}");
+    }
+}
+
+#[test]
+fn the_sidechain_feeds_the_detector_instead_of_the_input() {
+    let pad = dc(-30.0, 24_000);
+    let silent = silence(24_000);
+    let loud = dc(-6.0, 24_000);
+    let set = [("threshold", -20.0), ("ratio", 8.0), ("knee", 0.0)];
+    // A quiet input with a loud sidechain is reduced; a loud input with a silent sidechain is not.
+    let ducked = play_sc(&mut *plain(&set), &pad, &loud, 256);
+    assert!(db(ducked[0][23_999]) - (-30.0) < -10.0, "ducked");
+    let free = play_sc(&mut *plain(&set), &loud, &silent, 256);
+    assert_same(&free, &loud, "silent sidechain");
+}
+
+#[test]
+fn a_sidechain_equal_to_the_input_is_the_same_as_none() {
+    let x = noise(20_000, 7);
+    let sets: [&[(&str, f64)]; 3] = [
+        &[("threshold", -30.0)],
+        &[("sc_hpf", 120.0), ("detector", 1.0), ("link", 0.5)],
+        &[("lookahead", 1.0), ("mix", 0.5), ("auto_release", 1.0)],
+    ];
+    for set in sets {
+        let alone = play(&mut *plain(set), &x, 200, &[]);
+        let with = play_sc(&mut *plain(set), &x, &x, 200);
+        assert_same(&alone, &with, "sidechain = input");
+    }
+}
+
+#[test]
+fn the_filter_and_listen_work_on_the_sidechain() {
+    // 50 Hz in the sidechain, 1 kHz as the audio; the high-pass at 500 Hz removes the sidechain.
+    let audio = sine(1000.0, 0.01, 24_000, RATE);
+    let sc = sine(50.0, 0.5, 24_000, RATE);
+    let set = [("threshold", -30.0), ("ratio", 10.0)];
+    let hard = play_sc(&mut *plain(&set), &audio, &sc, 256);
+    let mut filtered = set.to_vec();
+    filtered.push(("sc_hpf", 500.0));
+    let soft = play_sc(&mut *plain(&filtered), &audio, &sc, 256);
+    let tail = |y: &Stereo| peak(&y[0][12_000..]);
+    assert!(tail(&hard) < 0.5 * tail(&soft), "high-pass lets the audio through");
+    // Listen: the output is the filtered sidechain, not the audio.
+    filtered.push(("sc_listen", 1.0));
+    let heard = play_sc(&mut *plain(&filtered), &audio, &sc, 256);
+    let alone = play(&mut *plain(&filtered), &sc, 256, &[]);
+    assert_same(&heard, &alone, "listen = filtered sidechain");
+}
+
+#[test]
+fn the_ducking_preset_pushes_a_pad_down_by_a_kick() {
+    let index = KIND
+        .presets()
+        .iter()
+        .position(|p| p.name == "Ducking")
+        .expect("a Ducking preset");
+    let values = KIND.preset_values(index).unwrap();
+    let mut d = (KIND.spec().dsp)();
+    for (i, v) in values.iter().enumerate() {
+        d.set_param(i, *v);
+    }
+    d.activate(RATE);
+    let pad = dc(-20.0, 24_000);
+    let kick = dc(-3.0, 24_000);
+    let y = play_sc(&mut *d, &pad, &kick, 256);
+    assert!(db(y[0][23_999]) < -20.0 - 12.0, "ducks by more than 12 dB");
 }

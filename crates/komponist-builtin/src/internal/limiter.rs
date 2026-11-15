@@ -32,6 +32,7 @@ pub(super) static SPEC: Spec = Spec {
     layout,
     dsp,
     presets,
+    sidechain: false,
 };
 
 /// Lookahead (and latency) in milliseconds when `lookahead` is on.

@@ -35,6 +35,7 @@ pub(super) static SPEC: Spec = Spec {
     layout,
     dsp: midi::passthrough,
     presets,
+    sidechain: false,
 };
 
 /// Wire ids.
