@@ -68,7 +68,7 @@ system widgets and pixel-exact rendering.
 | Candidate | What it is | Verdict for komponist |
 |---|---|---|
 | **nice-plug** 0.4 (codeberg RustAudio, successor of NIH-plug) | Framework for **writing** plugins: exports CLAP, VST3 and standalone. klopfer is built with it. It has no code that loads foreign plugins. Its README still calls it experimental. | **Cannot host.** Used for the test plugins (WP-27). Its wrappers are good reading for what plugins expect from a host. Option for later: pisynth as a nice-plug plugin, so it works in other DAWs too. |
-| **truce-rack** 1.1.5 (2026-06-19, MIT/Apache) | In-process host library for CLAP and VST3 (plus AU/LV2). Pure Rust on clap-sys and vst3. `Plugin` trait with sample-accurate `EventList`, `PluginEditor` with an `X11(u64)` parent handle, versioned state envelope, scanners. | **Out (spike WP-15, `docs/spikes/WP-15.md` §2):** CLAP loads 0 of 5 plugins (NULL `clap_host`), VST3 instruments stay silent, state restore fails for 4 of 5, 8–12 allocations per `process`, no IRunLoop, IPlugFrame, IComponentHandler, latency or render mode, unmaintained since June. Useful only as reference code. |
+| **truce-rack** 1.1.5 (2026-06-19, MIT/Apache) | In-process host library for CLAP and VST3 (plus AU/LV2). Pure Rust on clap-sys and vst3. `Plugin` trait with sample-accurate `EventList`, `PluginEditor` with an `X11(u64)` parent handle, versioned state envelope, scanners. | **Out (spike WP-15, spike notes `WP-15.md` (internal notes) §2):** CLAP loads 0 of 5 plugins (NULL `clap_host`), VST3 instruments stay silent, state restore fails for 4 of 5, 8–12 allocations per `process`, no IRunLoop, IPlugFrame, IComponentHandler, latency or render mode, unmaintained since June. Useful only as reference code. |
 | **plughost** 0.2.5 (2026-11-13, 6 weeks old) | Host library with crash isolation: one helper process per chain, shared memory, one buffer of pipelining (the callback never waits). | **Out: no Linux support** ("Linux … not supported"). Its design confirms our approach. Its pipelining costs one buffer of latency per hop. komponist waits synchronously with a deadline instead, to keep monitoring latency low. |
 | **Carla** 2.5.10 (C++, GPL) | Mature host with bridges. VST3 through JUCE. CLAP only in the unreleased main branch. | **Out:** C++ and GPL in the core, CLAP not released, little control over the realtime handshake. |
 | **nexus** (GitHub poucet/nexus) | App and hosting engine on clack + vst3, not a published library. | **Reference code** for WP-26/32 if we write the core ourselves. |
@@ -560,7 +560,7 @@ special case.
 ### 6.8 Routing: buses, sends, sidechains (wave 9)
 
 Designed by WP-101 (model, this section), built in the engine by WP-102, shown by WP-103 to WP-105. Owner
-decisions on WP-100 (2026-11-15, `docs/proposals/routing/README.md`, numbered there): one bus kind with two ways to
+decisions on WP-100 (2026-11-15, the routing/README.md proposal (internal notes), numbered there): one bus kind with two ways to
 make one (1 C), sends post-fader at −6 dB (8 B, 9 A), sidechains tapped pre-fader (10 A), no sends on buses in v1
 (11 A), solo follows the signal path without a solo-safe flag (12 A), deleting a group dissolves it (13 A), bus
 colours from the palette (14 A). Model code: `komponist_model::routing` (pure queries) and
@@ -1132,7 +1132,7 @@ in `../pisynth/design_handoff/`. Copied next to them, headless Chromium renders 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Cross-process X11 embedding (eframe viewport + foreign child) behaves badly with some plugins / XWayland | S05 | Spike WP-15: works under Xvfb with and without a reparenting WM for 5 CLAP and 5 VST3 plugins. Open: checks on a real XWayland desktop (Vulkan, focus, fractional scaling, `docs/spikes/WP-15.md` §6) |
+| Cross-process X11 embedding (eframe viewport + foreign child) behaves badly with some plugins / XWayland | S05 | Spike WP-15: works under Xvfb with and without a reparenting WM for 5 CLAP and 5 VST3 plugins. Open: checks on a real XWayland desktop (Vulkan, focus, fractional scaling, spike notes `WP-15.md` (internal notes) §6) |
 | IPC roundtrip too slow at small buffers | CPU, dropouts | Spike WP-15 measures p50/p99; fan-out optimisation prepared (§8.1) |
 | clack-host 0.2 is new, the vst3 bindings are raw and unsafe | effort, bugs | spike prototypes for both formats exist; everything behind `HostedPlugin`; test plugins for CLAP and VST3; CLAP first; VST3 fallback: C++ SDK helpers (MIT) |
 | egui: pixel crispness, tabular digits, text styling | look | pixel snapping helpers, Mono for values, `tnum` freeze; gate G2 on the gallery before the views; option B as fallback |
@@ -1183,7 +1183,7 @@ These need a decision (the handoff says: report contradictions; the design syste
    design system's accent blue. Size, hit area, tooltips and German AccessKit names ("Record-Arm",
    "Monitoring") are unchanged.
 
-9. **Owner UI decisions 2026-11-14** (WP-62 questions Q1–Q10, `docs/OWNER-QUESTIONS.md`):
+9. **Owner UI decisions 2026-11-14** (WP-62 questions Q1–Q10, owner questions, internal notes):
    Q1 every bar line stays `line.2`. Q2 no „Falten“ button. Q3 dialogs stay vertically centred.
    Q4 the missing-plugins list (S06) shows the module file name („Vital.vst3“) under a plugin;
    `PluginRef.module` stores it (filled from the scan, `#[serde(default)]`, not written when

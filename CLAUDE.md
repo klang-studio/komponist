@@ -1,7 +1,13 @@
 # komponist
 
 A MIDI DAW for Linux in Rust (egui/eframe, cpal, CLAP and VST3 hosting in bridge processes).
-Architecture: `docs/ARCHITECTURE.md`. Work packages and orchestration: `docs/PLAN.md`.
+Architecture: `docs/ARCHITECTURE.md`. Work packages and orchestration: `<workspace>/.claude/komponist/PLAN.md`.
+
+**Internal notes live outside the repo (owner, 2026-11-15):** plans, progress, proposals (with mockups), owner
+questions, evaluations, spikes and reviews go to `<workspace>/.claude/komponist/` (`PLAN.md`,
+`PROGRESS.md`, `proposals/<topic>/`, …), never into `docs/`. `docs/` holds only public documentation
+(`ARCHITECTURE.md`, `I18N.md`, `INSTALL.md`, `PERFORMANCE.md`). In code and public docs, cite such notes without a
+`docs/` path, e.g. „fader-thumb proposal, variant D (internal notes)“.
 
 **Naming:** the DAW is called **komponist**. *klang-studio* is the umbrella name of the workspace
 `<workspace>/` (komponist, pisynth, klopfer, klang-dsp, the design handoff). The
@@ -72,7 +78,7 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
 
 ## Rules for all agents
 
-From `docs/PLAN.md` §2. `HS/` = `../klang-studio-handoff/`.
+From `PLAN.md` §2 (internal notes). `HS/` = `../klang-studio-handoff/`.
 
 1. **Language:** code, comments, docs, commits in English. UI texts are German and are taken
    **verbatim** from the screens (`HS/reference/Screens.dc.html`), including typographic characters

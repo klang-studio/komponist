@@ -1,6 +1,6 @@
 //! **knurr** (WP-95): a virtual-analog synthesizer, an internal instrument.
 //!
-//! Variant B „standard“ of `docs/proposals/va-synth/README.md` (owner decision 2026-11-15): two
+//! Variant B „standard“ of the VA-synth proposal (internal notes) (owner decision 2026-11-15): two
 //! oscillators with a sub and noise, a high-pass, one multimode filter, three envelopes, two
 //! tempo-syncable LFOs, a four-slot matrix with fixed paths for velocity, mod wheel and pressure,
 //! unison with detune and spread, analog drift, glide, poly, mono and legato. The name is

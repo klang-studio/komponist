@@ -1,4 +1,4 @@
-//! The catalog generator (`docs/I18N.md`, `docs/I18N-EVALUATION.md` §4.4).
+//! The catalog generator (`docs/I18N.md`, i18n evaluation §4.4, internal notes).
 //!
 //! Shared by `build.rs` and the golden tests (`tests/it/golden.rs`): it takes the text of every
 //! `.ftl` file of every language and returns the Rust source of the catalog, or every error with

@@ -2,7 +2,7 @@
 //! `ix.fader`; taper `DBT`, `dbToP`, `pToDb` of `ks-engine.js`).
 //!
 //! A 4 px track (`size.fader-track`, `surface.0`) and a barrel-shaped thumb ("Tonne", variant D of
-//! `docs/proposals/fader-thumb/README.md`): one closed body, 32 × 44 with waist 26
+//! the fader-thumb proposal (internal notes)): one closed body, 32 × 44 with waist 26
 //! (`size.fader-thumb`) or compact 24 × 28 with waist 20 (`size.fader-thumb-compact`).
 //! The value line across the thumb's waist sits at the level; the dB scale (+6 … −∞) can stand
 //! on the left.
@@ -131,7 +131,7 @@ pub struct Look {
     pub focus_ring: bool,
 }
 
-/// The look of a fader in `state`: proposal D "Tonne" (`docs/proposals/fader-thumb/README.md`,
+/// The look of a fader in `state`: proposal D "Tonne" (the fader-thumb proposal (internal notes),
 /// owner-approved 2026-11-15; colours of `barrel()` in `make_mockups.py`). Rest `surface.4` /
 /// edge `line.2` / grooves `text.3`; hover `surface.5` / edge `text.3` (so hover shows on a
 /// selected strip too) / grooves `text.2`; drag `line.2` / edge and value line accent / grooves `text.2`

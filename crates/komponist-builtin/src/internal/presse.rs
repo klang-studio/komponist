@@ -155,7 +155,7 @@ fn params() -> Vec<ParamInfo> {
     ]
 }
 
-/// Eight columns, one page, after `docs/proposals/compressor/standard-1.svg`: the transfer graph
+/// Eight columns, one page, after the compressor proposal, `standard-1` mockup (internal notes): the transfer graph
 /// (3 × 2) and below it knee, link, detector and lookahead; threshold, ratio, makeup, attack and
 /// release; the reduction history, sidechain high-pass, mix, auto switches and „SC hören“; the
 /// gain-reduction meter on the right.

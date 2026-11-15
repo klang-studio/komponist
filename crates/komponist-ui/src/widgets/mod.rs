@@ -129,8 +129,8 @@ pub mod metrics {
 
     /// Fader (WP-21): `scale`, `fader()`, `faders`; card spec "Bahn 4 · Knopf 32 × 44 ·
     /// kompakt 24 × 28". The thumb shape is variant D "Tonne" of the owner-approved proposal
-    /// `docs/proposals/fader-thumb/README.md`; its numbers are the `barrel()` function of
-    /// `docs/proposals/fader-thumb/make_mockups.py`. Track width and thumb sizes are the tokens
+    /// the fader-thumb proposal (internal notes); its numbers are the `barrel()` function of
+    /// its mockup generator `make_mockups.py`. Track width and thumb sizes are the tokens
     /// `size.fader-track`, `size.fader-thumb(-compact)`.
     pub mod fader {
         use komponist_tokens::space;
@@ -311,7 +311,7 @@ pub mod metrics {
             /// = `surface.1 @ 75 %`).
             pub const REGION_OPACITY: f32 = 0.75;
             /// The bar under knurr's filter curve that marks how far the matrix moves the cutoff
-            /// (`docs/proposals/va-synth/standard-klang.svg`: 3 px high, 12 px above the bottom
+            /// (VA-synth proposal, `standard-klang` mockup, internal notes: 3 px high, 12 px above the bottom
             /// edge of the graph, the track colour at 45 %).
             pub const MOD_BAR: MetricModBar = MetricModBar {
                 height: 3.0,

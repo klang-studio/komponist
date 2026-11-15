@@ -1,4 +1,4 @@
-//! Undo labels as message ids (WP-73, `docs/I18N-EVALUATION.md` §7.7, `docs/I18N.md`).
+//! Undo labels as message ids (WP-73, i18n evaluation §7.7 (internal notes), `docs/I18N.md`).
 //!
 //! The model keeps a step's label as an opaque `String` and stays free of texts. The app passes
 //! a **message id** from `locales/*/undo.ftl` (`"undo-quantize"`) when it applies an edit or
