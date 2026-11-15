@@ -20,7 +20,8 @@
 
 komponist is a MIDI DAW written in Rust with [egui](https://github.com/emilk/egui). You arrange clips, edit notes and
 steps, shape sounds with built-in instruments and effects, host CLAP and VST3 plugins, and mix it all on the same
-screen. Everything above is the demo project that ships with the app (`komponist --demo`).
+screen. Everything above is the demo project that ships with the app (`komponist --demo`). The interface is available in
+English and German; it follows your desktop language, and Settings › Appearance (or `--lang de|en`) switches it.
 
 ## Features
 
@@ -43,10 +44,10 @@ The step sequencer is made for drums and Sampler kits. Toggle steps while the pa
 
 No plugins needed to make a sound.
 
-**hexa** is a six-operator FM synth with envelopes, LFOs and a large preset library. Here with the EQ, Delay and Hall
-devices behind it:
+**hexa** is a six-operator FM synth with envelopes, LFOs and a large preset library. Here with an EQ and a Delay behind
+it:
 
-![hexa (FM synth) with the EQ, Delay and Hall devices behind it](docs/media/device-hexa.png)
+![hexa (FM synth) with an EQ and a Delay behind it](docs/media/device-hexa.png)
 
 **volt** is a subtractive synth with two oscillators, a filter and a sub oscillator. Here on the bass, with an EQ and a presse keyed by the drums:
 
@@ -59,8 +60,8 @@ no sample files. Next to it, the presse compressor:
 
 ### Built-in effects
 
-**EQ**, **Delay**, **Hall** (reverb), **presse** (compressor with sidechain) and **Limiter**, plus the MIDI effects
-**Arpeggiator** and **Tonleiter** (scale). The EQ shows the live spectrum of the signal it processes:
+**EQ**, **Delay**, **Reverb**, **presse** (compressor with sidechain) and **Limiter**, plus the MIDI effects
+**Arpeggiator** and **Scale**. The EQ shows the live spectrum of the signal it processes:
 
 ![The EQ's spectrum moving while the lead plays](docs/media/eq-spectrum.gif)
 
@@ -87,7 +88,7 @@ does not take your project down with it. Plugin windows open as native X11 windo
   track or bus.
 - Every edit is undoable, including parameter changes.
 
-The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (Rhythmus) and the effect bus (Hall) have strips of their own on the right, next to the master channel:
+The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (named Rhythmus in the demo) and the effect bus (named Hall) have strips of their own on the right, next to the master channel:
 
 ![The mixer with the arrangement above it, playing](docs/media/mixer.png)
 
@@ -139,8 +140,8 @@ scripts/readme-media.sh            # everything into docs/media/
 scripts/readme-media.sh hero mixer # only these scenarios
 ```
 
-It runs komponist under a private Xvfb with `--null-audio` (no audio or MIDI hardware, no sound) and drives the UI
-through its accessibility tree. It needs `xvfb-run`, `ffmpeg`, ImageMagick, Python 3 and `egui-mcp`.
+It runs komponist in English (`--lang en`) under a private Xvfb with `--null-audio` (no audio or MIDI hardware, no
+sound) and drives the UI through its accessibility tree. It needs `xvfb-run`, `ffmpeg`, ImageMagick, Python 3 and `egui-mcp`.
 
 ## Architecture
 

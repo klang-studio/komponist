@@ -476,7 +476,7 @@ param-volt-noise = Noise
 param-volt-hp = HP
 
 # volt: how far the filter envelope moves the cutoff.
-param-volt-env-amount = Env Amount
+param-volt-env-amount = Env Amt.
 
 # volt: LFO waveform.
 param-volt-lfo-shape = Shape
