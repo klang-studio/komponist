@@ -40,7 +40,7 @@ pub(crate) struct PortLayout {
     pub(crate) channels: Vec<u32>,
     pub(crate) main: Option<usize>,
     /// Inputs only: the sidechain port, the first port besides the main one with at least one
-    /// channel (#6). CLAP has no sidechain flag; hosts (Bitwig, Reaper) take the non-main input.
+    /// channel (#6). CLAP has no sidechain flag, so the non-main input is taken.
     pub(crate) sidechain: Option<usize>,
 }
 
