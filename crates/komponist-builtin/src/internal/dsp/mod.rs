@@ -49,7 +49,7 @@ pub fn fast_exp2(x: f32) -> f32 {
     let whole = x.floor();
     let f = x - whole;
     let poly = 1.0
-        + f * (0.693_147_2
+        + f * (core::f32::consts::LN_2
             + f * (0.240_226_5
                 + f * (0.055_504_11
                     + f * (0.009_618_129 + f * (0.001_333_355 + f * 0.000_154_035)))));
