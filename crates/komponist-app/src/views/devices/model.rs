@@ -57,6 +57,14 @@ pub mod names {
     pub const STATE_WARNING: &str = "Zustand konnte nicht geladen werden";
     /// The drop area after the last card.
     pub const DROP_HINT: &str = "Effekt aus dem Browser hierher ziehen";
+    /// Accessible name of the drop box, which also opens the add menu.
+    pub const ADD_DEVICE: &str = "Gerät hinzufügen";
+    /// The add menu's search field: hint and accessible name.
+    pub const ADD_SEARCH: &str = "Gerät suchen …";
+    /// The add menu with no match.
+    pub const ADD_NO_MATCH: &str = "Keine Treffer";
+    /// Accessible name of the add menu's list.
+    pub const ADD_LIST: &str = "Geräte";
     /// Accessible name and tooltip of the ⋯ button (handoff `aria-label="Weitere Aktionen"`).
     pub const MORE: &str = "Weitere Aktionen";
     /// The preset button without a matching factory preset, and the menu's name.
@@ -761,6 +769,46 @@ pub fn slot_at(cards: &[(f32, f32)], x: f32) -> usize {
         .iter()
         .position(|(l, r)| x < (l + r) / 2.0)
         .unwrap_or(cards.len())
+}
+
+/// Where a plugin of some role goes in a chain, and how the chain marks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Insert line at this slot.
+    Line(usize),
+    /// Replace the instrument (ring around its card, at this index).
+    Instrument(usize),
+}
+
+impl Placement {
+    /// The index for `PluginAction::Add`'s `DropTarget::Chain`.
+    pub fn index(self) -> usize {
+        match self {
+            Placement::Line(i) | Placement::Instrument(i) => i,
+        }
+    }
+}
+
+/// The one rule for adding a plugin of `role` at `slot` (the slot under the pointer, or the chain's
+/// length for the end): an instrument replaces the instrument, or goes in front of the audio
+/// effects of a track without one; a MIDI effect stays in the MIDI part (`midi` = its length);
+/// an audio effect stays behind the instrument (`first` = [`first_effect_slot`]). The master
+/// chain (`master`) takes audio effects only, so the other roles give `None`. Used by the drop of
+/// a browser plugin and by the add menu.
+pub fn place_plugin(
+    role: DeviceRole,
+    master: bool,
+    slot: usize,
+    first: usize,
+    midi: usize,
+) -> Option<Placement> {
+    Some(match role {
+        DeviceRole::Instrument | DeviceRole::MidiEffect if master => return None,
+        DeviceRole::Instrument if first > midi => Placement::Instrument(midi),
+        DeviceRole::Instrument => Placement::Line(midi),
+        DeviceRole::MidiEffect => Placement::Line(slot.min(midi)),
+        DeviceRole::Effect => Placement::Line(slot.max(first)),
+    })
 }
 
 /// The number of MIDI effects at the head of the chain: the last insert slot a MIDI effect may take.

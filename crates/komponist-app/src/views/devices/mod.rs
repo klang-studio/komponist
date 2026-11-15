@@ -25,12 +25,14 @@
 //! | drag a head | reorder: a 2 px accent line marks the slot, the drop is `MoveDevice`; with Alt a copy (`CopyDevice`), also onto another track in the arrangement (the instrument only with Alt, onto a track without one) |
 //! | Strg C / Strg V | copy the selected devices / paste behind the selected device; both arrive as `Event::Copy` / `Event::Paste` from egui-winit (it swallows the key press), so the view reads them ([`clipboard_events`]); the keymap keeps the keys for kittest |
 //! | drop a browser plugin | effect: `Add` at the marked slot; MIDI effect: `Add` into the MIDI part left of the instrument; instrument: replaces the instrument |
+//! | click, Enter or Space on the drop slot | opens the add menu ([`add_menu`]): search field, the catalog's devices, Enter or click adds one at the end of the chain with the drop's rule ([`model::place_plugin`]), Esc closes |
 //! | click on a name in the chain head | scrolls to the device |
 //! | wheel over the chain head, Shift-wheel in the body | scrolls the chain sideways |
 //! | dock maximised | the frames stay 244 high at the top of the chain area; the space below stays empty and reserved for the automation of a later wave |
 //! | wheel in the body | scrolls up and down while the dock is lower than the chain (< 292 px area) |
 //! | Neu laden | `Reload` |
 
+mod add_menu;
 mod cells;
 pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
@@ -39,7 +41,7 @@ pub mod metrics;
 pub mod model;
 
 use egui::{Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2};
-use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginRef, Track, TrackId};
+use komponist_model::{ChannelRef, DeviceId, PluginRef, Track, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_tokens::{TrackPalette, color, device, radius, size};
@@ -48,7 +50,7 @@ use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{fonts, px, state};
 
 use self::frame::Placed;
-use self::model::{Card, names};
+use self::model::{Card, Placement, names};
 use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
@@ -68,15 +70,6 @@ pub struct CardDrag {
     pub from: usize,
     /// Alt was held when the drag began: the drop copies.
     pub copy: bool,
-}
-
-/// What a drag over the chain would do.
-#[derive(Debug, Clone, PartialEq)]
-enum Drop {
-    /// Insert line at this slot.
-    Line(usize),
-    /// Replace the instrument (ring around its card, at this index).
-    Instrument(usize),
 }
 
 /// The device chain view. Its view state is [`crate::ui_state::DevicesView`] (scroll, collapsed,
@@ -445,11 +438,11 @@ fn chain(
     }
     let x = spans.last().map_or(origin + pad, |(_, r)| r + gap);
     let area = Rect::from_min_max(pos2(x, top), pos2(x + metrics::DROP_AREA_WIDTH, bottom));
-    drop_area(&mut cu, area);
+    drop_area(&mut cu, ctx, area, track, cards);
 
     if let Some(drop) = drop_over(&mut cu, ctx, body, track, cards, &spans) {
         match drop {
-            Drop::Line(slot) => {
+            Placement::Line(slot) => {
                 let x = match spans.get(slot) {
                     Some((left, _)) => left - gap / 2.0,
                     None => spans
@@ -462,7 +455,7 @@ fn chain(
                 );
                 px::fill(cu.painter(), line, 0.0, color32(color::ACCENT));
             }
-            Drop::Instrument(index) => {
+            Placement::Instrument(index) => {
                 if let Some((l, r)) = spans.get(index) {
                     let rect = Rect::from_min_max(pos2(*l, top), pos2(*r, bottom));
                     state::paint_select_ring(cu.painter(), rect, radius::M);
@@ -553,12 +546,27 @@ fn scrollbar(ui: &mut Ui, body: Rect, vertical: bool, content: f32, scroll: f32,
     scroll
 }
 
-/// The drop area after the last card: a dashed `surface.4` frame with the hint.
-fn drop_area(ui: &mut Ui, rect: Rect) {
+/// The drop area after the last card: a dashed `surface.4` frame with a „+“ and the hint. It is
+/// also a button: a click, Enter or Space opens the add menu ([`add_menu`]).
+fn drop_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect, track: &Track, cards: &[Card]) {
     let ppp = ui.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
+    let id = ui.scope_id().with("komponist_devices_drop_area");
+    let resp = ui.interact(rect, id, Sense::click());
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, names::ADD_DEVICE));
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let open = komponist_ui::widgets::floating::is_open(ui.ctx(), id.with("add_menu"));
+    let hot = resp.hovered() || open;
+    let (edge, ink) = if hot {
+        (color::SURFACE_5, color::TEXT_2)
+    } else {
+        (color::SURFACE_4, color::TEXT_3)
+    };
+    if hot {
+        px::fill(ui.painter(), r, 0.0, color32(color::SURFACE_2));
+    }
     let painter = ui.painter();
-    let stroke = egui::Stroke::new(px::line_width(ppp), color32(color::SURFACE_4));
+    let stroke = egui::Stroke::new(px::line_width(ppp), color32(edge));
     let [dash, gap] = metrics::DASH;
     let half = px::line_width(ppp) / 2.0;
     let (l, t, rr, b) = (
@@ -575,23 +583,51 @@ fn drop_area(ui: &mut Ui, rect: Rect) {
     ] {
         painter.extend(egui::Shape::dashed_line(&side, stroke, dash, gap));
     }
+    if komponist_ui::focus::ring_visible(&resp) {
+        komponist_ui::focus::paint_ring(ui.painter(), r, 0.0);
+    }
     let style = typography::SMALL;
-    let mut job = fonts::layout_job(names::DROP_HINT, &style, color32(color::TEXT_3));
+    let mut job = fonts::layout_job(names::DROP_HINT, &style, color32(ink));
     job.wrap.max_width = rect.width() - 2.0 * metrics::DROP_AREA_PAD;
     job.halign = egui::Align::Center;
     let g = ui.painter().layout_job(job);
+    // The „+“ above the hint, both centred as one block.
+    let block = metrics::ADD_GLYPH + metrics::ADD_GLYPH_GAP + g.size().y;
+    let top = rect.center().y - block / 2.0;
+    let glyph = Rect::from_center_size(
+        pos2(rect.center().x, top + metrics::ADD_GLYPH / 2.0),
+        vec2(metrics::ADD_GLYPH, metrics::ADD_GLYPH),
+    );
+    let glyph = px::snap_rect(glyph, ppp);
+    let plus = egui::Stroke::new(metrics::ADD_GLYPH_STROKE, color32(ink));
+    ui.painter().line_segment(
+        [
+            pos2(glyph.left(), glyph.center().y),
+            pos2(glyph.right(), glyph.center().y),
+        ],
+        plus,
+    );
+    ui.painter().line_segment(
+        [
+            pos2(glyph.center().x, glyph.top()),
+            pos2(glyph.center().x, glyph.bottom()),
+        ],
+        plus,
+    );
     let pos = pos2(
         px::snap(rect.center().x, ppp),
-        px::snap(rect.center().y - g.size().y / 2.0, ppp),
+        px::snap(top + metrics::ADD_GLYPH + metrics::ADD_GLYPH_GAP, ppp),
     );
-    let label = Rect::from_center_size(rect.center(), g.size());
-    let resp = ui.interact(
-        label,
-        ui.scope_id().with("komponist_devices_drop_hint"),
-        Sense::hover(),
+    ui.painter().galley(pos, g, color32(ink));
+    add_menu::show(
+        ui,
+        ctx,
+        &resp,
+        &add_menu::Target {
+            channel: ChannelRef::Track(track.id),
+            cards,
+        },
     );
-    resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, names::DROP_HINT));
-    ui.painter().galley(pos, g, color32(color::TEXT_3));
 }
 
 /// A card or a browser plugin dragged over the chain: where it would go; on release, the action.
@@ -602,7 +638,7 @@ fn drop_over(
     track: &Track,
     cards: &[Card],
     spans: &[(f32, f32)],
-) -> Option<Drop> {
+) -> Option<Placement> {
     let dnd = ui.ctx().clone();
     let pos = ui.input(|i| i.pointer.hover_pos())?;
     if !body.contains(pos) {
@@ -628,7 +664,7 @@ fn drop_over(
                     index: at,
                 }));
             }
-            return Some(Drop::Line(at));
+            return Some(Placement::Line(at));
         }
         let to = model::move_target_in(drag.from, slot, lo, hi)?;
         if released {
@@ -638,23 +674,18 @@ fn drop_over(
                 to_index: to,
             }));
         }
-        return Some(Drop::Line(at));
+        return Some(Placement::Line(at));
     }
     let plugin = egui::DragAndDrop::payload::<PluginRef>(&dnd)?;
     let role = ctx.engine.host().role(&plugin)?;
-    let (drop, index) = match role {
-        DeviceRole::Instrument if first > midi => (Drop::Instrument(midi), midi),
-        DeviceRole::Instrument => (Drop::Line(midi), midi),
-        DeviceRole::MidiEffect => (Drop::Line(slot.min(midi)), slot.min(midi)),
-        DeviceRole::Effect => (Drop::Line(slot.max(first)), slot.max(first)),
-    };
+    let drop = model::place_plugin(role, false, slot, first, midi)?;
     if released {
         egui::DragAndDrop::clear_payload(&dnd);
         ctx.send(Action::Plugin(PluginAction::Add {
             plugin: PluginRef::clone(&plugin),
             target: DropTarget::Chain {
                 channel: ChannelRef::Track(track.id),
-                index,
+                index: drop.index(),
             },
         }));
     }
