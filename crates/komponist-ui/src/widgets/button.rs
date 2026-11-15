@@ -208,6 +208,7 @@ pub struct Button<'a> {
     ground: Option<usize>,
     trailing: Option<Trailing<'a>>,
     badge: Option<&'a str>,
+    badge_shown: bool,
     fixed_width: Option<f32>,
     name: Option<&'a str>,
     shortcut: Option<&'a str>,
@@ -225,6 +226,7 @@ impl<'a> Button<'a> {
             ground: None,
             trailing: None,
             badge: None,
+            badge_shown: true,
             fixed_width: None,
             name: None,
             shortcut: None,
@@ -323,9 +325,17 @@ impl<'a> Button<'a> {
     }
 
     /// A short value after an icon button's icon, in Mono 10 like a chip, in the icon's colour
-    /// (count-in "1"). The button grows by the gap and the text's width.
+    /// (count-in "1"). The button grows by the gap and the text's width, also while the badge is
+    /// hidden ([`Self::badge_shown`]).
     pub fn badge(mut self, badge: &'a str) -> Self {
         self.badge = Some(badge);
+        self
+    }
+
+    /// Whether the badge is drawn. A hidden badge still keeps its room, so the button does not
+    /// change its width (count-in: the bar count shows only while the count-in is on).
+    pub fn badge_shown(mut self, shown: bool) -> Self {
+        self.badge_shown = shown;
         self
     }
 
@@ -530,7 +540,9 @@ impl Widget for Button<'_> {
                         );
                         icons::paint(ui, icon_rect, icon, l.text);
                         let x = icon_rect.right() + metrics::ICON_BADGE_GAP;
-                        painter.galley(super::text_pos(rect, &badge, x, ppp), badge, l.text);
+                        if self.badge_shown {
+                            painter.galley(super::text_pos(rect, &badge, x, ppp), badge, l.text);
+                        }
                     } else {
                         icons::paint(ui, rect, icon, l.text);
                     }

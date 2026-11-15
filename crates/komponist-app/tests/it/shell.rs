@@ -433,6 +433,42 @@ fn snapshots_of_the_shell() {
     results.unwrap();
 }
 
+/// The count-in button keeps its width without the bar count (owner, 2026-11-15): the icon
+/// alone while it is off, the icon and "1" while it is on.
+#[test]
+fn the_count_in_button_shows_no_digit_while_off() {
+    use komponist_app::TransportAction;
+    let mut results = SnapshotResults::new();
+    let mut widths = Vec::new();
+    for off in [false, true] {
+        for ppp in [1.0, 2.0] {
+            let mut app = demo();
+            for panel in [Panel::Browser, Panel::Inspector, Panel::Dock] {
+                app.dispatch(Action::Ui(UiAction::TogglePanel(panel)));
+            }
+            if off {
+                app.dispatch(Action::Transport(TransportAction::ToggleCountIn));
+            }
+            let mut h = harness_at(app, ppp);
+            h.run_steps(3);
+            mask_cpu(&mut h);
+            let width = h
+                .get_by_role_and_label(Role::Button, de::TRANSPORT_COUNT_IN)
+                .rect()
+                .width();
+            if ppp == 1.0 {
+                widths.push(width);
+            }
+            if off {
+                h.snapshot(format!("shell-count-in-off-{ppp}x"));
+                results.extend_harness(&mut h);
+            }
+        }
+    }
+    assert_eq!(widths[0], widths[1], "the button does not change its width");
+    results.unwrap();
+}
+
 #[test]
 fn an_armed_track_turns_letters_into_notes() {
     use komponist_app::{EditAction, TransportAction};
