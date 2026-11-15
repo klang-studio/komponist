@@ -29,6 +29,9 @@
 //! | clip end | drag | `Edit(SetClipLength)`, length tooltip |
 //! | clip corner top right | drag | `Edit(SetClipLoop)` |
 //! | clip / empty lane | double-click | `Ui(OpenClip)` / `Edit(AddClip)` (1 bar) |
+//! | group header (WP-103) | fold triangle (Alt: all groups) | `Edit(SetTrackProp(Folded))`; members are indented with a bracket, effect buses stand in the "Busse" section ([`buses`]) |
+//! | header | right click | context menu: rename, colour, "In Gruppe zusammenfassen" (Strg G), "Send zu neuem Bus", "Send an …", "Ausgang", "Gruppe auflösen" / delete |
+//! | lane of a bus | double-click, a clip dragged over it | refused with "Busse nehmen keine Clips auf." |
 //! | header, lane, empty area | drop a `PluginRef` | `Plugin(Add)` on the track / a new track |
 //! | header, lane | drop a device head dragged with Alt (`CardDrag`, copy) | `Edit(CopyDevice)` on that track |
 //! | everywhere | wheel / Shift wheel / Strg wheel | scroll ↕ / ↔ / zoom around the mouse |

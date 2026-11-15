@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use std::sync::Arc;
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::views::routing::names;
@@ -18,6 +17,7 @@ use komponist_app::{Action, App, EditAction, UiAction};
 use komponist_model::edits::{self, NewBus, SendProp};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Project, Tap, TrackId, TrackOutput, routing};
+use std::sync::Arc;
 
 use fake_host::FakeHost;
 
@@ -240,13 +240,6 @@ fn strip_rect(h: &Harness<'_, App>, label: &str) -> Rect {
     h.get_by_role_and_label(Role::Group, label).rect()
 }
 
-fn header_label(name: &str, group: Option<bool>) -> String {
-    match group {
-        Some(folded) => names::group(name, folded),
-        None => format!("Spur {name}"),
-    }
-}
-
 /// The arrangement's header row of a track (`Spur Drums, Sampler`) or a group.
 fn header_rect(h: &Harness<'_, App>, name: &str) -> Rect {
     let prefixes = [
@@ -257,9 +250,11 @@ fn header_rect(h: &Harness<'_, App>, name: &str) -> Rect {
     ];
     h.get_all_by_role(Role::Row)
         .find(|n| {
-            n.accesskit_node()
-                .label()
-                .is_some_and(|l| prefixes.iter().any(|p| l == *p || l.starts_with(&format!("{p},"))))
+            n.accesskit_node().label().is_some_and(|l| {
+                prefixes
+                    .iter()
+                    .any(|p| l == *p || l.starts_with(&format!("{p},")))
+            })
         })
         .unwrap_or_else(|| panic!("no header {name}"))
         .rect()
@@ -304,7 +299,8 @@ fn ctrl_g_groups_the_selected_tracks_in_one_undo_step() {
     // The group is selected and its name is in the edit mode.
     assert!(h.state().ui().selection.tracks.contains(&group.id));
     assert!(
-        h.query_by_role_and_label(Role::TextInput, "Spurname").is_some(),
+        h.query_by_role_and_label(Role::TextInput, "Spurname")
+            .is_some(),
         "the name field is open"
     );
     // One undo step for all of it.
@@ -332,10 +328,14 @@ fn send_to_new_bus_creates_a_bus_and_a_send_at_minus_6_post() {
     assert!(!bus.folder, "an effect bus");
     assert_eq!(bus.name, "Bus 1");
     let send = p.track(lead).unwrap().send_to(bus.id).expect("a send");
-    assert_eq!((send.level_db, send.tap, send.enabled), (-6.0, Tap::Post, true));
+    assert_eq!(
+        (send.level_db, send.tap, send.enabled),
+        (-6.0, Tap::Post, true)
+    );
     // It stands in the „Busse“ section and one undo removes both.
     assert!(
-        h.query_by_role_and_label(Role::Label, names::SECTION).is_some()
+        h.query_by_role_and_label(Role::Label, names::SECTION)
+            .is_some()
     );
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
     assert!(h.state().project().tracks.iter().all(|t| !t.is_bus()));
@@ -375,7 +375,10 @@ fn a_group_folds_and_unfolds() {
     click(&mut h, fold.center());
     let rhythmus = id_of(h.state().project(), "Rhythmus");
     assert!(h.state().project().track(rhythmus).unwrap().folded);
-    assert!(!has_header(&h, "Drums") && !has_header(&h, "Bass"), "members are folded away");
+    assert!(
+        !has_header(&h, "Drums") && !has_header(&h, "Bass"),
+        "members are folded away"
+    );
     assert!(
         h.query_by_role_and_label(Role::Row, &names::group("Rhythmus", true))
             .is_some()
@@ -393,13 +396,23 @@ fn a_group_folds_and_unfolds() {
 #[test]
 fn deleting_a_group_dissolves_it() {
     let mut h = harness(app_with(routed()));
-    let (drums, bass) = (id_of(h.state().project(), "Drums"), id_of(h.state().project(), "Bass"));
+    let (drums, bass) = (
+        id_of(h.state().project(), "Drums"),
+        id_of(h.state().project(), "Bass"),
+    );
     let at = header_rect(&h, "Rhythmus").center();
     menu_choice(&mut h, at, names::UNGROUP);
     let p = h.state().project();
-    assert!(p.tracks.iter().all(|t| t.name != "Rhythmus"), "the group is gone");
+    assert!(
+        p.tracks.iter().all(|t| t.name != "Rhythmus"),
+        "the group is gone"
+    );
     for t in [drums, bass] {
-        assert_eq!(p.track(t).unwrap().output, TrackOutput::Master, "the tracks stay");
+        assert_eq!(
+            p.track(t).unwrap().output,
+            TrackOutput::Master,
+            "the tracks stay"
+        );
     }
     // One undo brings the group back with its members.
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
@@ -472,10 +485,15 @@ fn bus_strips_stand_right_of_the_tracks_before_the_master() {
     // M and S, no R: the strip of a track has the „Record-Arm“ toggle, a bus's has not.
     let record = |label: &str| {
         h.get_all_by_role(Role::Button)
-            .filter(|n| n.accesskit_node().label().is_some_and(|l| l.contains("Record-Arm")))
+            .filter(|n| {
+                n.accesskit_node()
+                    .label()
+                    .is_some_and(|l| l.contains("Record-Arm"))
+            })
             .any(|n| {
                 let r = n.rect();
-                r.center().x > strip_rect(&h, label).left() && r.center().x < strip_rect(&h, label).right()
+                r.center().x > strip_rect(&h, label).left()
+                    && r.center().x < strip_rect(&h, label).right()
             })
     };
     assert!(record("Kanal Lead"));
@@ -510,8 +528,9 @@ fn a_send_drag_is_one_undo_step_and_uses_the_fast_path() {
         .dispatch(Action::Transport(komponist_app::TransportAction::Locate(
             komponist_model::Tick(9 * 3840),
         )));
-    h.state_mut()
-        .dispatch(Action::Transport(komponist_app::TransportAction::TogglePlay));
+    h.state_mut().dispatch(Action::Transport(
+        komponist_app::TransportAction::TogglePlay,
+    ));
     h.run_steps(2);
     let loud = peak_while(&mut h, bus, 24_000);
     assert!(loud > 0.005, "the bus hears Lead through the send: {loud}");
@@ -530,7 +549,14 @@ fn a_send_drag_is_one_undo_step_and_uses_the_fast_path() {
     let to = pos2(from.x - 300.0, from.y);
     drag_to(&mut h, from, to);
     assert!(h.state().doc().in_gesture());
-    let level = h.state().project().track(lead).unwrap().send_to(bus).unwrap().level_db;
+    let level = h
+        .state()
+        .project()
+        .track(lead)
+        .unwrap()
+        .send_to(bus)
+        .unwrap()
+        .level_db;
     assert!(level < -60.0, "the level followed the pointer: {level}");
     assert_eq!(
         h.state().engine().programs_sent(),
@@ -543,7 +569,11 @@ fn a_send_drag_is_one_undo_step_and_uses_the_fast_path() {
 
     release(&mut h, to);
     assert!(!h.state().doc().in_gesture());
-    assert_eq!(h.state().engine().programs_sent(), sent + 1, "one compile at the end");
+    assert_eq!(
+        h.state().engine().programs_sent(),
+        sent + 1,
+        "one compile at the end"
+    );
     let begins = edits_of(h.state(), |e| matches!(e, EditAction::BeginGesture { .. }));
     assert_eq!(
         begins,
@@ -559,7 +589,14 @@ fn a_send_drag_is_one_undo_step_and_uses_the_fast_path() {
     assert_eq!(h.state().undo_text().as_deref(), Some("Send-Pegel"));
     // One undo brings the level back.
     h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-    let back = h.state().project().track(lead).unwrap().send_to(bus).unwrap().level_db;
+    let back = h
+        .state()
+        .project()
+        .track(lead)
+        .unwrap()
+        .send_to(bus)
+        .unwrap()
+        .level_db;
     assert_eq!(back, -6.0);
 }
 
@@ -595,7 +632,14 @@ fn the_send_row_sets_the_default_with_alt_click_and_names_pre_and_post() {
         modifiers: Modifiers::ALT,
     });
     h.run_steps(3);
-    let level = h.state().project().track(lead).unwrap().send_to(hall).unwrap().level_db;
+    let level = h
+        .state()
+        .project()
+        .track(lead)
+        .unwrap()
+        .send_to(hall)
+        .unwrap()
+        .level_db;
     assert_eq!(level, -6.0);
 }
 
@@ -609,7 +653,14 @@ fn the_pre_post_switch_of_the_inspector_flips_the_tap() {
     let name = names::send_tap("Lead", "Hall", Tap::Pre);
     let chip = h.get_by_role_and_label(Role::Button, &name).rect();
     click(&mut h, chip.center());
-    let tap = h.state().project().track(lead).unwrap().send_to(hall).unwrap().tap;
+    let tap = h
+        .state()
+        .project()
+        .track(lead)
+        .unwrap()
+        .send_to(hall)
+        .unwrap()
+        .tap;
     assert_eq!(tap, Tap::Post);
     assert_eq!(h.state().undo_text().as_deref(), Some("Send ändern"));
     // And back.
@@ -617,7 +668,13 @@ fn the_pre_post_switch_of_the_inspector_flips_the_tap() {
     let chip = h.get_by_role_and_label(Role::Button, &name).rect();
     click(&mut h, chip.center());
     assert_eq!(
-        h.state().project().track(lead).unwrap().send_to(hall).unwrap().tap,
+        h.state()
+            .project()
+            .track(lead)
+            .unwrap()
+            .send_to(hall)
+            .unwrap()
+            .tap,
         Tap::Pre
     );
 }
@@ -662,7 +719,9 @@ fn the_output_list_offers_only_valid_targets() {
         .rect();
     click(&mut h, button.center());
     let item = |h: &Harness<'_, App>, label: &str| {
-        h.get_by_role_and_label(Role::MenuItemRadio, label).accesskit_node().is_disabled()
+        h.get_by_role_and_label(Role::MenuItemRadio, label)
+            .accesskit_node()
+            .is_disabled()
     };
     assert!(!item(&h, "Master"));
     assert!(item(&h, &names::blocked("Rhythmus")), "the loop is greyed");
@@ -676,7 +735,10 @@ fn the_output_list_offers_only_valid_targets() {
         .rect();
     click(&mut h, blocked.center());
     assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
-    assert_eq!(h.state().project().track(hall).unwrap().output, TrackOutput::Master);
+    assert_eq!(
+        h.state().project().track(hall).unwrap().output,
+        TrackOutput::Master
+    );
 }
 
 #[test]
@@ -689,7 +751,9 @@ fn choosing_an_output_routes_the_track_into_the_group() {
         .get_by_role_and_label(Role::Button, &names::output("Master"))
         .rect();
     click(&mut h, button.center());
-    let rhythmus_row = h.get_by_role_and_label(Role::MenuItemRadio, "Rhythmus").rect();
+    let rhythmus_row = h
+        .get_by_role_and_label(Role::MenuItemRadio, "Rhythmus")
+        .rect();
     click(&mut h, rhythmus_row.center());
     assert_eq!(
         h.state().project().track(pad).unwrap().output,
@@ -712,12 +776,13 @@ fn solo_of_a_member_keeps_the_group_audible_through_the_gate_table() {
         h.run_steps(2);
         h
     };
-    h.state_mut().dispatch(Action::Edit(EditAction::SetTrackProp {
-        tracks: vec![drums],
-        prop: komponist_model::edits::TrackProp::Channel(
-            komponist_model::edits::ChannelProp::Solo(true),
-        ),
-    }));
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::SetTrackProp {
+            tracks: vec![drums],
+            prop: komponist_model::edits::TrackProp::Channel(
+                komponist_model::edits::ChannelProp::Solo(true),
+            ),
+        }));
     h.run_steps(3);
     // The engine's table: the group's output is open, Pad's is not.
     let program = h.state().engine().program().expect("a program");
@@ -729,7 +794,10 @@ fn solo_of_a_member_keeps_the_group_audible_through_the_gate_table() {
         panic!("a gate table");
     };
     assert!(table.output_open(drums_i), "the soloed member");
-    assert!(table.output_open(group_i), "the group it feeds stays audible");
+    assert!(
+        table.output_open(group_i),
+        "the group it feeds stays audible"
+    );
     assert!(!table.output_open(pad_i), "Pad is solo-muted");
     // The mixer says the same: the group strip is not dimmed, Pad's is (stumm durch Solo).
     let strips = komponist_app::views::mixer::model::strips(
@@ -741,7 +809,10 @@ fn solo_of_a_member_keeps_the_group_audible_through_the_gate_table() {
     assert!(!by("Rhythmus").dim && !by("Rhythmus").implied);
     assert!(by("Pad").implied);
     assert!(by("Melodie").implied, "a group that is not on the path");
-    assert!(by("Rhythmus").follows_solo, "its S shows that it only follows");
+    assert!(
+        by("Rhythmus").follows_solo,
+        "its S shows that it only follows"
+    );
 }
 
 fn mixer_app_from(app: &mut App) -> App {
@@ -758,15 +829,18 @@ fn the_new_track_dialog_creates_a_bus() {
     app.dispatch(Action::Ui(UiAction::OpenNewTrackDialog));
     let mut h = harness(app);
     assert!(
-        h.query_by_role_and_label(Role::ListBox, "Instrument").is_some(),
+        h.query_by_role_and_label(Role::ListBox, "Instrument")
+            .is_some(),
         "a MIDI track has an instrument list"
     );
     let bus = h.get_by_role_and_label(Role::RadioButton, "Bus").rect();
     click(&mut h, bus.center());
     assert!(
-        h.query_by_role_and_label(Role::ListBox, "Instrument").is_none(),
+        h.query_by_role_and_label(Role::ListBox, "Instrument")
+            .is_none(),
         "the instrument picker is hidden for a bus"
     );
+    mask_cpu(&mut h);
     h.snapshot("routing-new-bus-dialog-1x");
     let create = h.get_by_role_and_label(Role::Button, "Anlegen").rect();
     click(&mut h, create.center());
@@ -788,27 +862,37 @@ fn the_dock_strips_show_the_routing_chip_and_its_popover() {
     let lead = id_of(&p, "Lead");
     let mut app = app_with(p);
     select(&mut app, lead);
-    app.dispatch(Action::Ui(UiAction::SetDockTab(komponist_app::ui_state::DockTab::Mixer)));
+    app.dispatch(Action::Ui(UiAction::SetDockTab(
+        komponist_app::ui_state::DockTab::Mixer,
+    )));
     let mut h = harness(app);
     h.run_steps(2);
     // Drums outputs to a group: chip with arrow and dot; Pad has sends only: dots; Arp is in a
     // group; the master and buses have no chip unless they output to a bus.
     let chip = |name: &str, output: &str, sends: usize| names::chip(name, output, sends);
-    for (n, o, s) in [("Drums", "Rhythmus", 1), ("Pad", "Master", 1), ("Keys", "Master", 1)] {
+    for (n, o, s) in [
+        ("Drums", "Rhythmus", 1),
+        ("Pad", "Master", 1),
+        ("Keys", "Master", 1),
+    ] {
         h.get_by_role_and_label(Role::Button, &chip(n, o, s));
     }
     // A track without routing has no chip.
-    assert!(
-        h.query_all_by_role(Role::Button)
-            .all(|n| n.accesskit_node().label().is_none_or(|l| !l.starts_with("Routing Hall")))
-    );
+    assert!(h.query_all_by_role(Role::Button).all(|n| {
+        n.accesskit_node()
+            .label()
+            .is_none_or(|l| !l.starts_with("Routing Hall"))
+    }));
     mask_cpu(&mut h);
     h.snapshot("routing-dock-1x");
-    let lead_chip = h.get_by_role_and_label(Role::Button, &chip("Lead", "Melodie", 2)).rect();
+    let lead_chip = h
+        .get_by_role_and_label(Role::Button, &chip("Lead", "Melodie", 2))
+        .rect();
     click(&mut h, lead_chip.center());
     // The popover has its own output button; the inspector shows another one.
     let outputs = |h: &Harness<'_, App>| {
-        h.query_all_by_role_and_label(Role::Button, &names::output("Melodie")).count()
+        h.query_all_by_role_and_label(Role::Button, &names::output("Melodie"))
+            .count()
     };
     assert_eq!(outputs(&h), 2, "the popover is open");
     mask_cpu(&mut h);
@@ -846,7 +930,9 @@ fn the_inspector_of_a_bus_lists_its_inputs() {
     mask_cpu(&mut h);
     h.snapshot("routing-inspector-bus-1x");
     // A click on an input selects its track.
-    let input = h.get_by_role_and_label(Role::Button, "Eingang Drums, \u{2212}10.0 dB").rect();
+    let input = h
+        .get_by_role_and_label(Role::Button, "Eingang Drums, \u{2212}10.0 dB")
+        .rect();
     click(&mut h, input.center());
     let drums = id_of(h.state().project(), "Drums");
     assert!(h.state().ui().selection.tracks.contains(&drums));
@@ -881,13 +967,20 @@ fn a_project_without_buses_looks_as_before() {
     let lead = id_of(app.project(), "Lead");
     select(&mut app, lead);
     let h = harness(app);
-    assert!(h.query_by_role_and_label(Role::Group, names::ROUTING).is_none());
+    assert!(
+        h.query_by_role_and_label(Role::Group, names::ROUTING)
+            .is_none()
+    );
     let mut app = mixer_app(demo_project());
     select(&mut app, lead);
     let h = harness(app);
+    assert!(h.query_all_by_role(Role::Button).all(|n| {
+        n.accesskit_node()
+            .label()
+            .is_none_or(|l| !l.starts_with("Ausgang:"))
+    }));
     assert!(
-        h.query_all_by_role(Role::Button)
-            .all(|n| n.accesskit_node().label().is_none_or(|l| !l.starts_with("Ausgang:")))
+        h.query_by_role_and_label(Role::Label, names::BUSSES)
+            .is_none()
     );
-    assert!(h.query_by_role_and_label(Role::Label, names::BUSSES).is_none());
 }

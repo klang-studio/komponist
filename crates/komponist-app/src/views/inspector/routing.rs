@@ -82,7 +82,14 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
     let inputs = rt::inputs_of(project, bus.id);
     if inputs.is_empty() {
         let row = col.take(rm::ROW_HEIGHT);
-        label(ui, row, names::NO_INPUTS, &typography::SMALL, None, color::TEXT_4);
+        label(
+            ui,
+            row,
+            names::NO_INPUTS,
+            &typography::SMALL,
+            None,
+            color::TEXT_4,
+        );
         return;
     }
     for (track, send) in inputs {
@@ -90,7 +97,11 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
             continue;
         };
         let row = col.take(rm::ROW_HEIGHT);
-        let r = ui.interact(row, ui.scope_id().with(("input", track.0, send.map(|s| s.0))), Sense::click());
+        let r = ui.interact(
+            row,
+            ui.scope_id().with(("input", track.0, send.map(|s| s.0))),
+            Sense::click(),
+        );
         let st = State::of(ui, &r);
         px::fill(ui.painter(), row, radius::S, state::surface_for(2, st));
         let dot = pos2(row.left() + rm::ROW_PAD_X + rm::DOT / 2.0, row.center().y);
@@ -120,7 +131,12 @@ fn inputs(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, project: &Project, 
             komponist_ui::fonts::font_id(&typography::VALUE_S),
             typography::VALUE_S.line_height,
         );
-        let pos = w::text_pos(row, &g, row.right() - rm::ROW_PAD_X - g.size().x, ui.pixels_per_point());
+        let pos = w::text_pos(
+            row,
+            &g,
+            row.right() - rm::ROW_PAD_X - g.size().x,
+            ui.pixels_per_point(),
+        );
         ui.painter().galley(pos, g, color32(color::TEXT_3));
         let name = format!("Eingang {}, {detail}", t.name);
         r.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
@@ -144,7 +160,11 @@ fn sidechain_line(ui: &mut Ui, col: &mut Col, project: &Project, track: &Track) 
     for user in users {
         let row = col.take(typography::SMALL.line_height);
         label(ui, row, &user, &typography::SMALL, None, color::TEXT_2);
-        let r = ui.interact(row, ui.scope_id().with(("sidechain_user", &user)), Sense::hover());
+        let r = ui.interact(
+            row,
+            ui.scope_id().with(("sidechain_user", &user)),
+            Sense::hover(),
+        );
         r.widget_info(|| WidgetInfo::labeled(Role::Label, true, &user));
     }
 }

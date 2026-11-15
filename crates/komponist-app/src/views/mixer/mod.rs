@@ -3,7 +3,8 @@
 //! `mixView`).
 //!
 //! One strip per track, 80 wide, left to right in track order on `surface.0` with 1 px gaps,
-//! and the master strip (96) at the right edge. A strip ([`strip`]) shows the colour bar, name,
+//! then (WP-103) the bus strips right before the master under a "Busse" label, and the master strip
+//! (96) at the right edge. A strip ([`strip`]) shows the colour bar, name,
 //! instrument, the insert slots with "+", the reserved sends, the pan knob, M S R, the fader with
 //! the meter and the level and peak values. The strip of the selected track is
 //! `canvas.strip-selected` with its name row in `accent.surface`; selection is the same as the
@@ -20,7 +21,9 @@
 //! | browser plugin dropped on a strip | effect: inserted at the line; instrument: replaces the track's instrument |
 //! | peak value / meter (LED) | click resets peak and clip, Alt-click all strips |
 //! | level value | double-click text entry, Alt-click 0 dB, click clears the clip indicator |
-//! | sends | reserved, empty (busses come later) |
+//! | sends (WP-103, once the project has a bus) | one compact row per send ([`crate::views::routing::widgets::send_row`]): drag sets the level (one undo step, fast path while it lasts), click on the name changes the bus, right click pre / post / off / remove; the dashed "+" adds a send; a bus strip shows its inputs instead |
+//! | output button (WP-103) | above the level: the dropdown of the master, groups and buses; targets that would close a loop are grey with the reason |
+//! | routing chip (WP-103) | normal dock only: right end of the name row, opens the routing popover; Strg+click selects the track |
 
 pub mod metrics;
 pub mod model;

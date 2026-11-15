@@ -511,22 +511,20 @@ mod tests {
         let rows = output_targets(&p, drums);
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|r| r.blocked.is_none()));
-        // The group outputs to the master; it cannot output to the bus it feeds, nor to itself.
-        let (p, _) = edits::add_send(&p, group, fx)
-            .map(|(p, s)| (p, s))
-            .unwrap_or((p, SendId(0)));
+        // The group outputs to the effect bus: the bus cannot go back into the group, nor into
+        // itself.
+        let p = edits::set_output(&p, &[group], TrackOutput::Bus(fx)).unwrap();
         let rows = output_targets(&p, fx);
-        let this = rows.iter().find(|r| r.id == Some(fx)).unwrap();
-        assert!(this.blocked.as_deref().unwrap().contains("sich selbst"));
-        // The group's members feed the group; the group cannot go into one of them (they are no buses).
-        let rows = output_targets(&p, group);
-        assert!(
+        let blocked = |id| {
             rows.iter()
-                .find(|r| r.id == Some(group))
+                .find(|r| r.id == Some(id))
                 .unwrap()
                 .blocked
-                .is_some()
-        );
+                .clone()
+        };
+        assert!(blocked(fx).unwrap().contains("sich selbst"));
+        assert!(blocked(group).unwrap().contains("speist"));
+        assert!(rows[0].blocked.is_none(), "the master is always open");
     }
 
     #[test]
