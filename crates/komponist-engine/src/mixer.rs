@@ -76,6 +76,11 @@ impl DelayLine {
         }
     }
 
+    /// RT. Forgets the line's contents: its next use with a delay starts from silence.
+    pub(crate) fn forget(&mut self) {
+        self.in_use = false;
+    }
+
     /// RT. Delays the segment in place by `delay` frames (clamped to `MAX_PDC_FRAMES`).
     pub(crate) fn process(&mut self, l: &mut [f32], r: &mut [f32], delay: u32) {
         let delay = (delay as usize).min(crate::MAX_PDC_FRAMES);

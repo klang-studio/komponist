@@ -10,7 +10,10 @@
 //!    metronome clicks (accent on beat 1).
 //! 4. Per track: sequencer notes from the program (note-offs from the active-notes table) + live
 //!    events → MIDI effect stage (`stage`, WP-88) → processor chain → fader gain ramp → balance →
-//!    meter → master bus (after the PDC delay).
+//!    meter → master bus (after the PDC delay). With routing (WP-102, ARCHITECTURE §6.8.4) the
+//!    tracks and buses are jobs of a graph in topological order: a bus first sums its inputs
+//!    (outputs and sends of its sources, delay-compensated, in a fixed order), devices with a
+//!    sidechain get their source's tap, and the master sums what outputs to it.
 //! 5. Master: inserts → master fader → meter → output; the metronome is added after the master
 //!    fader with its own level.
 //! 6. Telemetry and events.
@@ -64,22 +67,24 @@
 //!   (ARCHITECTURE §6.4.2); recording still captures the input.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use klang_dsp::buffer::{add, peak};
-use komponist_model::{Tick, TrackId};
+use komponist_model::{Tap, Tick, TrackId};
 
 use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TransportState};
 use crate::garbage::Outbox;
+use crate::graph::EdgeState;
 use crate::metronome::Metronome;
 use crate::mixer::{DelayLine, Fader, audible, targets};
 use crate::processor::{DEADLINE_SHARE, Event, EventKind, ProcessContext, ProcessorError};
 use crate::program::{ChainSlot, InputFilter, MidiPort, Program, SlotId, TrackProgram};
+use crate::route::{Delay, GateTable, MAX_LINES, NodeRoute, Routing, SidechainRoute};
 use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, track_seed};
-use crate::slots::{Bufs, SharedSlots, Slot, chains_exclusive, run_chain};
+use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
 use crate::stage::{self, StageLists, StageSig, StageState};
 use crate::transport::{Song, Transport};
-use crate::workers::{MAX_WORKERS, Pool, WorkerStats, WorkerStatus};
+use crate::workers::{MAX_WORKERS, Pool, Publisher, WorkerStats, WorkerStatus, run_serial};
 use crate::{
     COMMAND_CAPACITY, EVENT_CAPACITY, MAX_BLOCK, MAX_COMMANDS_PER_BLOCK, MAX_EVENTS_PER_BLOCK,
     MAX_SLOTS, MAX_TRACKS,
@@ -192,7 +197,16 @@ impl Engine {
             lanes: vec![Lane::new()].into_boxed_slice(),
             pool: None,
             order: vec![0; MAX_TRACKS].into_boxed_slice(),
+            pos: vec![0; MAX_TRACKS].into_boxed_slice(),
+            missing: (0..MAX_TRACKS).map(|_| AtomicU16::new(0)).collect(),
             exclusive: true,
+            routed: false,
+            gates: None,
+            edges: (0..MAX_LINES).map(|_| EdgeState::new()).collect(),
+            side: [
+                vec![0.0; MAX_BLOCK].into_boxed_slice(),
+                vec![0.0; MAX_BLOCK].into_boxed_slice(),
+            ],
             stats: Arc::new(WorkerStats::default()),
         };
         let engine = Box::new(Engine {
@@ -327,7 +341,16 @@ impl core::fmt::Debug for Engine {
     }
 }
 
-/// Runtime state of one track, kept across program swaps by track id.
+/// Non-RT. A zeroed stereo buffer of `MAX_BLOCK` frames.
+fn stereo() -> [Box<[f32]>; 2] {
+    [
+        vec![0.0; MAX_BLOCK].into_boxed_slice(),
+        vec![0.0; MAX_BLOCK].into_boxed_slice(),
+    ]
+}
+
+/// Runtime state of one track or bus (a node of the routing graph), kept across program swaps by
+/// track id.
 struct TrackState {
     /// The track this state belongs to (`None`: free).
     id: Option<TrackId>,
@@ -342,8 +365,16 @@ struct TrackState {
     /// The instrument's events of the current segment (capacity `MAX_EVENTS_PER_BLOCK`).
     events: Vec<Event>,
     /// The track's output of the current segment (after fader, balance and delay compensation),
-    /// left and right, summed into the master bus in track order.
+    /// left and right, summed into the master bus in track order or into its bus.
     out: [Box<[f32]>; 2],
+    /// The pre-fader tap of the current segment, when a send or sidechain reads it (WP-102).
+    pre: [Box<[f32]>; 2],
+    /// The post-fader tap (fader, pan, mute; not solo) of the current segment, when read.
+    post: [Box<[f32]>; 2],
+    /// The fader of the post tap (the main fader also closes for solo).
+    post_fader: Fader,
+    /// The post tap was made in the last segment (else its fader starts at its target).
+    post_on: bool,
     /// A processor of the chain failed in the current segment.
     failed: bool,
     /// The MIDI effect stage: the note guard and the signature of the installed chain (WP-88).
@@ -364,10 +395,11 @@ impl TrackState {
             solo: None,
             pdc: DelayLine::new(),
             events: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
-            out: [
-                vec![0.0; MAX_BLOCK].into_boxed_slice(),
-                vec![0.0; MAX_BLOCK].into_boxed_slice(),
-            ],
+            out: stereo(),
+            pre: stereo(),
+            post: stereo(),
+            post_fader: Fader::at((0.0, 0.0)),
+            post_on: false,
             failed: false,
             stage: StageState::new(),
             stage_dropped: 0,
@@ -433,10 +465,23 @@ struct Core {
     lanes: Box<[Lane]>,
     /// The worker pool, if any ([`Engine::set_workers`]).
     pool: Option<Pool>,
-    /// Order in which the track jobs of a segment are claimed (program track indices).
+    /// Jobs of a segment: job `j` processes program track `order[j]`; lower jobs are claimed
+    /// first when ready.
     order: Box<[u16]>,
+    /// The job of each program track (`pos[order[j]] == j`).
+    pos: Box<[u16]>,
+    /// Per program track: inputs not done yet in the running segment (routing graph).
+    missing: Box<[AtomicU16]>,
     /// No slot appears in two track chains of the program, so the chains may run in parallel.
     exclusive: bool,
+    /// The program has a routing graph that fits its tracks (else: flat).
+    routed: bool,
+    /// Fast-path gate table (`Command::SetGates`) until the next program.
+    gates: Option<GateTable>,
+    /// Edge states of sends, sidechains and head delays, by `LineId`.
+    edges: Box<[EdgeState]>,
+    /// The sidechain input of the master's devices.
+    side: [Box<[f32]>; 2],
     stats: Arc<WorkerStats>,
 }
 
@@ -445,6 +490,8 @@ struct Lane {
     bufs: Bufs,
     fx_events: EventList,
     stage: StageLists,
+    /// The sidechain input of the device being processed.
+    side: [Box<[f32]>; 2],
 }
 
 impl Lane {
@@ -454,39 +501,147 @@ impl Lane {
             bufs: Bufs::new(),
             fx_events: EventList::new(MAX_EVENTS_PER_BLOCK),
             stage: StageLists::new(MAX_EVENTS_PER_BLOCK),
+            side: stereo(),
         }
     }
 }
 
-/// One segment's track jobs (chain, fader, balance, meter, delay compensation into the track's
-/// `out`), shared by the threads that run them. Job `j` processes program track `order[j]`.
+/// One segment's jobs (a bus's input sum, chain, fader, balance, meter, taps, delay compensation
+/// into the track's `out`), shared by the threads that run them. Job `j` processes program track
+/// `order[j]`; with routing it may run once the jobs it reads are done (`missing`).
 struct TrackJobs<'a> {
     tracks: &'a [Arc<TrackProgram>],
     map: &'a [u16],
     order: &'a [u16],
+    pos: &'a [u16],
+    missing: &'a [AtomicU16],
     states: *mut TrackState,
     slots: SharedSlots,
     lanes: *mut Lane,
     lane_count: usize,
+    edges: Edges,
+    routing: &'a Routing,
+    /// The program's routing applies (else every track is a flat source into the master).
+    routed: bool,
+    /// Mute and solo by table; `None`: the flat rule with `any_solo`.
+    gates: Option<&'a GateTable>,
     ctx: &'a ProcessContext,
     any_solo: bool,
     n: usize,
 }
 
 // SAFETY: the raw pointers are only dereferenced in `TrackJobs::run`, whose contract keeps the
-// track states, slots and lanes of concurrent jobs disjoint; everything else is shared read-only
-// (`TrackProgram` and `ProcessContext` are `Sync`).
+// track states, slots, edge states and lanes of concurrent jobs disjoint and reads other jobs'
+// states only after they are done; everything else is shared read-only (`TrackProgram`,
+// `Routing` and `ProcessContext` are `Sync`).
 unsafe impl Sync for TrackJobs<'_> {}
 
+/// The engine's edge states, seen by the jobs: each line is used by one job (the compiler gives
+/// every send, sidechain and head delay its own line).
+#[derive(Clone, Copy)]
+struct Edges {
+    ptr: *mut EdgeState,
+    len: usize,
+}
+
+impl Edges {
+    /// # Safety
+    /// No other reference to line `delay.line` exists while the result is used.
+    unsafe fn get<'e>(self, delay: Delay) -> &'e mut EdgeState {
+        let index = usize::from(delay.line.0);
+        assert!(index < self.len);
+        // SAFETY: in bounds; exclusive per the caller.
+        unsafe { &mut *self.ptr.add(index) }
+    }
+}
+
+/// Publishes a finished job's dependents (also when it unwinds, so the batch always ends).
+struct Release<'j, 'p> {
+    jobs: &'j TrackJobs<'j>,
+    route: NodeRoute,
+    publisher: &'j Publisher<'p>,
+}
+
+impl Drop for Release<'_, '_> {
+    fn drop(&mut self) {
+        let mut ready = 0u128;
+        for &d in self.jobs.routing.dependents(self.route.dependents) {
+            let d = usize::from(d);
+            if self.jobs.missing[d].fetch_sub(1, Ordering::AcqRel) == 1 {
+                ready |= 1 << self.jobs.pos[d];
+            }
+        }
+        self.publisher.publish(ready);
+    }
+}
+
+/// The routing a chain sees while it runs: its devices' sidechain inputs and a MIDI track's head
+/// delay.
+struct Hook<'h> {
+    sidechains: &'h [SidechainRoute],
+    head: Option<Delay>,
+    /// Finished nodes (sidechain sources), read only.
+    states: *const TrackState,
+    map: &'h [u16],
+    edges: Edges,
+    side: &'h mut [Box<[f32]>; 2],
+    n: usize,
+}
+
+impl ChainHook for Hook<'_> {
+    fn head(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if let Some(delay) = self.head {
+            // SAFETY: the head delay's line belongs to this job's track.
+            let edge = unsafe { self.edges.get(delay) };
+            edge.line.process(l, r, delay.frames);
+        }
+    }
+
+    fn sidechain(&mut self, index: usize) -> Option<[&[f32]; 2]> {
+        let route = self
+            .sidechains
+            .iter()
+            .find(|s| usize::from(s.device) == index)?;
+        // SAFETY: the source is another node whose job is done (it is an input of this one, or
+        // every job is done for the master); nobody writes it until the next segment.
+        let source = unsafe { &*self.states.add(usize::from(self.map[usize::from(route.from)])) };
+        let tap = match route.tap {
+            Tap::Pre => &source.pre,
+            Tap::Post => &source.post,
+        };
+        // SAFETY: the sidechain's line belongs to its holder, which runs this chain.
+        let edge = unsafe { self.edges.get(route.delay) };
+        let n = self.n;
+        let [l, r] = &mut *self.side;
+        edge.delayed(
+            [&mut l[..n], &mut r[..n]],
+            [&tap[0][..n], &tap[1][..n]],
+            route.delay.frames,
+        );
+        Some([&l[..n], &r[..n]])
+    }
+}
+
 impl TrackJobs<'_> {
-    /// RT. Runs job `j` on `lane`.
+    /// RT. Runs job `j` on `lane`; publishes the jobs that become ready with it.
     ///
     /// # Safety
-    /// No other thread uses `lane` meanwhile, each job runs at most once per segment, nothing
-    /// else touches the track states, slots and lanes while jobs run, and the program's track
-    /// chains are slot-exclusive if jobs run concurrently.
-    unsafe fn run(&self, j: usize, lane: usize) {
+    /// No other thread uses `lane` meanwhile, each job runs at most once per segment and only
+    /// after the jobs it reads (routing), nothing else touches the track states, slots, edge
+    /// states and lanes while jobs run, and the program's track chains are slot-exclusive if jobs
+    /// run concurrently.
+    unsafe fn run(&self, j: usize, lane: usize, publisher: &Publisher<'_>) {
         let index = usize::from(self.order[j]);
+        let route = if self.routed {
+            self.routing.node(index)
+        } else {
+            NodeRoute::default()
+        };
+        let _release = Release {
+            jobs: self,
+            route,
+            publisher,
+        };
         let track = &*self.tracks[index];
         let state = usize::from(self.map[index]);
         assert!(state < MAX_TRACKS && lane < self.lane_count);
@@ -498,9 +653,13 @@ impl TrackJobs<'_> {
             bufs,
             fx_events,
             stage: stage_lists,
+            side,
         } = lane;
         bufs.a[0][..n].fill(0.0);
         bufs.a[1][..n].fill(0.0);
+        if route.bus {
+            self.sum_inputs(route, bufs);
+        }
         let mut slots = self.slots;
         // The MIDI effect stage rewrites the track's events for the instrument (a track without
         // MIDI effects and without notes left over from some goes straight on).
@@ -521,6 +680,15 @@ impl TrackJobs<'_> {
             state.stage_dropped = 0;
             &state.events
         };
+        let mut hook = Hook {
+            sidechains: self.routing.sidechains(route.sidechains),
+            head: route.head,
+            states: self.states,
+            map: self.map,
+            edges: self.edges,
+            side,
+            n,
+        };
         let (result, failed) = run_chain(
             &track.chain,
             &mut slots,
@@ -529,20 +697,76 @@ impl TrackJobs<'_> {
             fx_events,
             bufs,
             n,
-            true,
+            !route.bus,
+            &mut hook,
         );
         state.failed = failed;
         let gain = state.gain.unwrap_or(track.gain);
         let pan = state.pan.unwrap_or(track.pan);
-        let mute = state.mute.unwrap_or(track.mute);
-        let solo = state.solo.unwrap_or(track.solo);
-        let target = targets(gain, pan, audible(mute, solo, self.any_solo));
+        let (open, muted) = match self.gates {
+            Some(gates) => (gates.output_open(index), gates.muted(index)),
+            None => {
+                let mute = state.mute.unwrap_or(track.mute);
+                let solo = state.solo.unwrap_or(track.solo);
+                (audible(mute, solo, self.any_solo), mute)
+            }
+        };
         let (l, r) = bufs.pair(result, n);
-        state.fader.apply(l, r, target);
+        if route.pre {
+            state.pre[0][..n].copy_from_slice(l);
+            state.pre[1][..n].copy_from_slice(r);
+        }
+        if route.post {
+            let target = targets(gain, pan, !muted);
+            if !state.post_on {
+                state.post_fader = Fader::at(target);
+            }
+            let [pl, pr] = &mut state.post;
+            pl[..n].copy_from_slice(l);
+            pr[..n].copy_from_slice(r);
+            state.post_fader.apply(&mut pl[..n], &mut pr[..n], target);
+        }
+        state.post_on = route.post;
+        state.fader.apply(l, r, targets(gain, pan, open));
         track.meter.record(peak(l), peak(r));
         state.pdc.process(l, r, track.pdc_delay);
         state.out[0][..n].copy_from_slice(l);
         state.out[1][..n].copy_from_slice(r);
+    }
+
+    /// RT. A bus's input sum into `bufs.a` (zeroed): its sources' outputs and sends, in the
+    /// program's order. `bufs.b` is scratch.
+    fn sum_inputs(&self, route: NodeRoute, bufs: &mut Bufs) {
+        let n = self.n;
+        let Bufs { a, b, .. } = bufs;
+        let [al, ar] = a;
+        let [bl, br] = b;
+        for input in self.routing.inputs(route.inputs) {
+            // SAFETY: an input's job is done before this one runs; nobody writes it meanwhile.
+            let source =
+                unsafe { &*self.states.add(usize::from(self.map[usize::from(input.from)])) };
+            let Some(send) = input.send else {
+                add(&mut al[..n], &source.out[0][..n]);
+                add(&mut ar[..n], &source.out[1][..n]);
+                continue;
+            };
+            let tap = match send.tap {
+                Tap::Pre => &source.pre,
+                Tap::Post => &source.post,
+            };
+            let open = self
+                .gates
+                .is_none_or(|g| g.send_open(usize::from(send.gate)));
+            // SAFETY: the send's line belongs to its target bus, which runs this job.
+            let edge = unsafe { self.edges.get(send.delay) };
+            edge.add_send(
+                [&mut al[..n], &mut ar[..n]],
+                [&tap[0][..n], &tap[1][..n]],
+                [&mut bl[..n], &mut br[..n]],
+                send.delay.frames,
+                if open { send.gain } else { 0.0 },
+            );
+        }
     }
 }
 
@@ -833,6 +1057,7 @@ impl Core {
                 }
             }
             Command::SetMasterGain(gain) => self.master_gain = Some(gain),
+            Command::SetGates(gates) => self.gates = Some(gates),
             Command::LiveNote {
                 track,
                 key,
@@ -1031,8 +1256,12 @@ impl Core {
             state.stage.sig = StageSig::of(&track.chain);
             state.seq.reseed(track_seed(self.seed, track.id));
             state.clear_fast_path();
-            let audible = audible(track.mute, track.solo, any_solo);
-            state.fader = Fader::at(targets(track.gain, track.pan, audible));
+            let open = match &program.routing.gates {
+                Some(gates) => gates.output_open(i),
+                None => audible(track.mute, track.solo, any_solo),
+            };
+            state.fader = Fader::at(targets(track.gain, track.pan, open));
+            state.post_on = false;
         }
         for (index, state) in self.tracks.iter_mut().enumerate() {
             if !used[index] {
@@ -1041,6 +1270,19 @@ impl Core {
         }
         self.map[..count].copy_from_slice(&map[..count]);
         self.exclusive = chains_exclusive(program.tracks[..count].iter().map(|t| &t.chain[..]));
+        // The routing graph, if it fits the program (the compiler always makes one that does).
+        let routing = &*program.routing;
+        self.routed = !routing.is_flat()
+            && routing.order.len() == count
+            && routing.nodes.len() == count;
+        self.gates = None;
+        // Edges keep their delay lines and gains across the swap; a line that changed hands
+        // starts over.
+        for &(key, line) in program.routing.lines.entries() {
+            if let Some(edge) = self.edges.get_mut(usize::from(line.0)) {
+                edge.assign(key);
+            }
+        }
         // A device whose bypass turns on is reset once.
         for device in Core::program_slots(&program) {
             if let Some(slot) = self.slots.get_mut(device.slot.0 as usize) {
@@ -1172,7 +1414,13 @@ impl Core {
             lanes,
             pool,
             order,
+            pos,
+            missing,
             exclusive,
+            routed,
+            gates,
+            edges,
+            side,
             ..
         } = self;
 
@@ -1189,9 +1437,12 @@ impl Core {
                     .iter()
                     .zip(&map[..count])
                     .any(|(t, &s)| tracks[usize::from(s)].solo.unwrap_or(t.solo));
+                let routing = &*program.routing;
+                let routed = *routed;
                 // 1. Every track's events, on this thread in track order (note ids, probability
                 // rolls and captured input stay deterministic). A bridge instrument at the head of
-                // a chain starts at once (`Processor::begin`), so it works while the chains run.
+                // a chain starts at once (`Processor::begin`), so it works while the chains run;
+                // not one with a sidechain, whose input exists only when its source is done.
                 let mut kicked = [false; MAX_TRACKS];
                 let tracks_and_states = program.tracks[..count].iter().zip(&map[..count]);
                 for (index, (track, &state)) in tracks_and_states.enumerate() {
@@ -1292,7 +1543,13 @@ impl Core {
                     );
                     state.events.clear();
                     state.events.extend_from_slice(events.finish());
+                    let sidechained = routed
+                        && routing
+                            .sidechains(routing.node(index).sidechains)
+                            .iter()
+                            .any(|s| usize::from(s.device) == track.stage_count());
                     if !staged
+                        && !sidechained
                         && let Some(slot) = instrument
                         && let Some(processor) = slots
                             .get_mut(slot.0 as usize)
@@ -1302,36 +1559,69 @@ impl Core {
                         kicked[index] = processor.begin(&ctx, &state.events, [silence, silence]);
                     }
                 }
-                // 2. The chains (fader, balance, meter, delay compensation into each track's
-                // `out`): on the worker pool if there is one, no slot is in two chains and the
-                // segment is not tiny, else here. Kicked tracks go last: their bridges work
-                // meanwhile.
+                // 2. The jobs (bus sums, chains, fader, balance, meter, taps, delay compensation
+                // into each track's `out`): on the worker pool if there is one, no slot is in two
+                // chains and the segment is not tiny, else here. A job may start when the jobs it
+                // reads are done; among ready jobs the earlier in the routing's order first, kicked
+                // tracks last: their bridges work meanwhile.
+                let job_order: &[u16] = if routed { &routing.order } else { &[] };
                 let mut next = 0;
                 for late in [false, true] {
-                    for (index, _) in kicked[..count].iter().enumerate().filter(|k| *k.1 == late) {
+                    let indices = (0..count).map(|i| match job_order.get(i) {
+                        Some(&index) => usize::from(index),
+                        None => i,
+                    });
+                    for index in indices.filter(|&i| kicked[i] == late) {
                         order[next] = index as u16;
+                        pos[index] = next as u16;
                         next += 1;
                     }
                 }
+                let mut ready = 0u128;
+                for j in 0..count {
+                    let index = usize::from(order[j]);
+                    let waits = if routed {
+                        routing.node(index).waits
+                    } else {
+                        0
+                    };
+                    missing[index].store(waits, Ordering::Relaxed);
+                    if waits == 0 {
+                        ready |= 1 << j;
+                    }
+                }
+                let gate_table = gates.as_ref().or(routing.gates.as_ref());
                 let jobs = TrackJobs {
                     tracks: &program.tracks[..count],
                     map: &map[..count],
                     order: &order[..count],
+                    pos: &pos[..count],
+                    missing: &missing[..count],
                     states: tracks.as_mut_ptr(),
                     // SAFETY: the slots are only reached through `jobs` until the jobs are done;
                     // concurrent jobs only when the chains are exclusive (checked below).
                     slots: unsafe { SharedSlots::new(slots) },
                     lanes: lanes.as_mut_ptr(),
                     lane_count: lanes.len(),
+                    edges: Edges {
+                        ptr: edges.as_mut_ptr(),
+                        len: edges.len(),
+                    },
+                    routing,
+                    routed,
+                    gates: gate_table,
                     ctx: &ctx,
                     any_solo,
                     n,
                 };
-                // SAFETY: `Pool::run` gives every thread its own lane (0 here, 1 ..= threads for
-                // the workers, all < `lanes.len()`) and claims every job once; the chains are
-                // exclusive when it runs; nothing else touches the states, slots and lanes until
-                // it returns. The serial loop runs one job at a time on lane 0.
-                let job = |j: usize, lane: usize| unsafe { jobs.run(j, lane) };
+                // SAFETY: `Pool::run_graph` gives every thread its own lane (0 here, 1 ..= threads
+                // for the workers, all < `lanes.len()`) and claims every job once, when it was
+                // published as ready (its inputs done); the chains are exclusive when it runs;
+                // nothing else touches the states, slots, edges and lanes until it returns.
+                // `run_serial` runs one job at a time on lane 0, also only when ready.
+                let job = |j: usize, lane: usize, publisher: &Publisher<'_>| unsafe {
+                    jobs.run(j, lane, publisher)
+                };
                 match pool.as_mut() {
                     Some(pool) if *exclusive && count > 1 && n >= PARALLEL_MIN_FRAMES => {
                         // Waits for running jobs in slices of one period (counted when exceeded).
@@ -1340,23 +1630,51 @@ impl Core {
                         } else {
                             OFFLINE_WAIT
                         };
-                        pool.run(count, &job, period);
+                        pool.run_graph(count, ready, &job, period);
                     }
-                    _ => (0..count).for_each(|j| job(j, 0)),
+                    _ => run_serial(count, ready, &job),
                 }
-                // 3. The master bus: tracks summed in track order, whichever thread ran them.
+                // 3. The master bus: what outputs to it, summed in a fixed order (track order
+                // without routing), whichever thread ran the jobs.
                 for &state in &map[..count] {
                     let state = &tracks[usize::from(state)];
                     *unreported |= state.failed;
                     *dropped += state.stage_dropped;
-                    add(&mut bufs.bus[0][..n], &state.out[0][..n]);
-                    add(&mut bufs.bus[1][..n], &state.out[1][..n]);
+                }
+                let [bus_l, bus_r] = &mut bufs.bus;
+                let mut sum = |from: usize| {
+                    let state = &tracks[usize::from(map[from])];
+                    add(&mut bus_l[..n], &state.out[0][..n]);
+                    add(&mut bus_r[..n], &state.out[1][..n]);
+                };
+                if routed {
+                    for input in routing.inputs(routing.master.inputs) {
+                        sum(usize::from(input.from));
+                    }
+                } else {
+                    (0..count).for_each(sum);
                 }
                 // Master inserts, fader, meter, output.
                 let Bufs { a, bus, .. } = &mut *bufs;
                 a[0][..n].copy_from_slice(&bus[0][..n]);
                 a[1][..n].copy_from_slice(&bus[1][..n]);
                 let master = &program.master;
+                let mut hook = Hook {
+                    sidechains: if routed {
+                        routing.sidechains(routing.master.sidechains)
+                    } else {
+                        &[]
+                    },
+                    head: None,
+                    states: tracks.as_ptr(),
+                    map: &map[..count],
+                    edges: Edges {
+                        ptr: edges.as_mut_ptr(),
+                        len: edges.len(),
+                    },
+                    side,
+                    n,
+                };
                 let (result, failed) = run_chain(
                     &master.chain,
                     &mut **slots,
@@ -1366,6 +1684,7 @@ impl Core {
                     bufs,
                     n,
                     false,
+                    &mut hook,
                 );
                 *unreported |= failed;
                 let (l, r) = bufs.pair(result, n);

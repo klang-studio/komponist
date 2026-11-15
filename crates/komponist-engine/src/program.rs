@@ -15,6 +15,7 @@ use komponist_model::{DeviceId, DeviceRole, Tick, TickRange, TrackId};
 use komponist_model::{TempoMap, Track};
 
 use crate::api::TrackMeter;
+use crate::route::Routing;
 
 /// [`SeqNote::probability`] value meaning "plays if and only if the last rolled note with the same
 /// key on this track played". Ratchet hits after the first carry it, so a step with ratchets rolls
@@ -57,6 +58,9 @@ pub struct Program {
     pub master: MasterProgram,
     /// Device → slot assignment of this program. UI thread only.
     pub slots: Arc<SlotMap>,
+    /// Buses, sends, sidechains, job order, gates and the delays between nodes (ARCHITECTURE
+    /// §6.8.4). `Routing::default()` is the flat graph: every track straight into the master.
+    pub routing: Arc<Routing>,
 }
 
 impl Program {
@@ -89,7 +93,8 @@ pub struct TrackProgram {
     pub gain: f32,
     /// Balance `-1.0 ..= 1.0`, applied with `klang_dsp::pan::balance`.
     pub pan: f32,
-    /// Mute. Audible = `!mute && (!any_solo || solo)`, evaluated by the engine.
+    /// Mute. In a flat program audible = `!mute && (!any_solo || solo)`, evaluated by the engine;
+    /// with routing the program's [`Routing::gates`] decide.
     pub mute: bool,
     /// Solo.
     pub solo: bool,
@@ -99,10 +104,13 @@ pub struct TrackProgram {
     pub monitor: bool,
     /// Which live MIDI input the track listens to.
     pub input: InputFilter,
-    /// Delay in frames before the master bus so all tracks line up (max chain latency − own chain
-    /// latency), ≤ [`crate::MAX_PDC_FRAMES`]. 0 when compensation is off.
+    /// Delay of the main output in frames, so that it lines up with everything else reaching its
+    /// target (the master or a bus): `in(target) − out(track)` of ARCHITECTURE §6.8.5, without
+    /// buses the max chain latency − own chain latency. ≤ [`crate::MAX_PDC_FRAMES`]; 0 when
+    /// compensation is off.
     pub pdc_delay: u32,
-    /// Peak meter after fader and pan; the same `Arc` survives rebuilds of the track.
+    /// Peak meter after fader, pan, mute and solo (buses too); the same `Arc` survives rebuilds of
+    /// the track.
     pub meter: Arc<TrackMeter>,
 }
 

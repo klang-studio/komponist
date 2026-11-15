@@ -9,7 +9,8 @@
 //! - [`processor`]: the [`Processor`] trait, the [`EventProcessor`] stage of MIDI effects, events,
 //!   [`ProcessContext`], [`StereoIo`].
 //! - [`program`]: the compiled [`Program`] the engine plays.
-//! - [`compile`]: project → program, with processor-slot mapping.
+//! - [`compile`]: project → program, with processor-slot mapping and the routing graph.
+//! - [`route`]: the compiled routing graph of a program (buses, sends, sidechains, gates).
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`], [`DeviceMeter`],
 //!   [`EngineHandle`].
 //! - [`engine`]: [`Engine::new`], [`Engine::process`], [`Engine::render`].
@@ -32,10 +33,12 @@ pub mod compile;
 pub mod engine;
 pub mod export;
 mod garbage;
+mod graph;
 mod metronome;
 mod mixer;
 pub mod processor;
 pub mod program;
+pub mod route;
 mod sequencer;
 mod slots;
 mod stage;

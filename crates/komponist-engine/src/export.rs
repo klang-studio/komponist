@@ -881,6 +881,7 @@ mod tests {
                 mute: false,
             },
             slots: Arc::new(SlotMap::default()),
+            routing: Default::default(),
         };
         let export = export_program(&program, Tick(1000));
         assert!(!export.loop_on && !export.metronome);

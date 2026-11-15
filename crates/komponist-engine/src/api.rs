@@ -16,6 +16,7 @@ use komponist_model::{Tick, TrackId};
 
 use crate::processor::Processor;
 use crate::program::{Program, SlotId};
+use crate::route::GateTable;
 use crate::tap::SampleTap;
 
 /// A request from the UI to the engine. Applied in send order at the start of a block.
@@ -83,14 +84,18 @@ pub enum Command {
         /// Balance.
         pan: f32,
     },
-    /// Fast path: mute of a track, until the next program.
+    /// Fast path: mute of a track, until the next program. Applies to programs with the flat
+    /// routing only (without buses, sends and sidechains), and only while no `SetGates` table is
+    /// active; otherwise mute and solo come from the gate table.
     SetTrackMute {
         /// The track.
         track: TrackId,
         /// Mute.
         mute: bool,
     },
-    /// Fast path: solo of a track, until the next program.
+    /// Fast path: solo of a track, until the next program. Like `SetTrackMute`, for flat
+    /// programs without an active `SetGates` table: with buses solo follows the signal path, which
+    /// only the UI can work out (ARCHITECTURE §6.8.6).
     SetTrackSolo {
         /// The track.
         track: TrackId,
@@ -99,6 +104,11 @@ pub enum Command {
     },
     /// Fast path: master fader, linear gain ≥ 0, until the next program.
     SetMasterGain(f32),
+    /// Fast path: mute and solo of every output and send of the current program
+    /// (`compile::gates`, from `komponist_model::routing::gates`), until the next program. While
+    /// it is active, `SetTrackMute` and `SetTrackSolo` have no effect. Faders ramp to the new
+    /// gates, so nothing clicks.
+    SetGates(GateTable),
     /// A note from the computer keyboard or a step-row audition, played on `track`'s chain at
     /// offset 0 of the next block (and captured if the track is armed and recording).
     LiveNote {
@@ -157,6 +167,7 @@ impl fmt::Debug for Command {
                 .field("solo", solo)
                 .finish(),
             Command::SetMasterGain(g) => f.debug_tuple("SetMasterGain").field(g).finish(),
+            Command::SetGates(_) => f.write_str("SetGates(..)"),
             Command::LiveNote {
                 track,
                 key,
