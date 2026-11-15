@@ -3,7 +3,7 @@
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, Id, Painter, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
-use komponist_model::Project;
+use komponist_model::{Project, TrackId};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
 use komponist_ui::state::State;
@@ -85,14 +85,53 @@ impl Arrangement {
         &mut self,
         ui: &mut Ui,
         _ctx: &mut ViewCtx<'_>,
-        _project: &Project,
+        project: &Project,
         g: &Geometry,
     ) {
-        if let Some(Drag::Reorder {
-            slot: Some(slot), ..
-        }) = &self.drag
-        {
-            insert_line(ui.painter(), g, g.slot_y(*slot));
+        match &self.drag {
+            Some(Drag::Reorder {
+                slot: Some(slot), ..
+            }) => insert_line(ui.painter(), g, g.slot_y(*slot)),
+            Some(Drag::Reorder {
+                tracks,
+                onto: Some(bus),
+                ..
+            }) => self.paint_output_drop(ui, project, g, tracks, *bus),
+            _ => {}
+        }
+    }
+
+    /// Headers dragged onto a group or effect bus: the accent frame around its header (the look
+    /// of a plugin drop target), or, when the output would close a loop, no frame and the reason
+    /// at the pointer.
+    fn paint_output_drop(
+        &self,
+        ui: &Ui,
+        project: &Project,
+        g: &Geometry,
+        tracks: &[TrackId],
+        bus: TrackId,
+    ) {
+        let Some(i) = g.rows.iter().position(|r| r.track == bus) else {
+            return;
+        };
+        match crate::views::routing::output_drop(project, tracks, bus) {
+            crate::views::routing::OutputDrop::Set => {
+                px::inner_border(ui.painter(), g.header(i), color32(color::ACCENT));
+            }
+            crate::views::routing::OutputDrop::Unchanged => {}
+            crate::views::routing::OutputDrop::Refused(reason) => {
+                if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                    let r = Rect::from_x_y_ranges(egui::Rangef::point(p.x), g.rows[i].y);
+                    komponist_ui::tooltip::show_value(
+                        ui.ctx(),
+                        Id::unique("komponist_arrangement_output_refused"),
+                        r,
+                        komponist_ui::tooltip::Placement::Above,
+                        &reason,
+                    );
+                }
+            }
         }
     }
 

@@ -352,6 +352,14 @@ impl Geometry {
         })
     }
 
+    /// The group or effect bus whose row's middle band lies under `y`: a dragged track header
+    /// dropped there sets its output to that bus instead of moving.
+    pub fn drop_onto_at(&self, y: f32) -> Option<TrackId> {
+        let row = &self.rows[self.bus_row_at(y)?];
+        let margin = row.y.span() * (1.0 - metrics::DROP_ONTO_MIDDLE) / 2.0;
+        (row.y.min + margin <= y && y < row.y.max - margin).then_some(row.track)
+    }
+
     /// The insert position (0 ..= track count) for a track dragged to `y`: before the first row of
     /// the flow whose middle lies below `y`, else behind the last row of the flow.
     pub fn insert_slot(&self, y: f32) -> usize {

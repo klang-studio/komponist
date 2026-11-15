@@ -519,6 +519,162 @@ fn del_deletes_the_selected_bus_at_once() {
     });
 }
 
+// ------------------------------------------------------------------------------------------------
+// Dragging a track onto a bus: the arrangement's group header, the mixer's bus strip
+
+fn status_text(h: &Harness<'_, App>) -> Option<String> {
+    h.state().ui().status.as_ref().map(|s| s.text.clone())
+}
+
+/// `routed()` with the group „Rhythmus“ inside „Melodie“: dropping „Melodie“ on „Rhythmus“ would
+/// close a loop.
+fn nested_groups() -> Project {
+    let p = routed();
+    let (rhythmus, melodie) = (id_of(&p, "Rhythmus"), id_of(&p, "Melodie"));
+    edits::set_output(&p, &[rhythmus], TrackOutput::Bus(melodie)).unwrap()
+}
+
+#[test]
+fn a_header_dragged_onto_a_group_sets_its_output_in_one_undo_step() {
+    let mut h = harness(app_with(routed()));
+    let (pad, rhythmus) = (
+        id_of(h.state().project(), "Pad"),
+        id_of(h.state().project(), "Rhythmus"),
+    );
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+    let from = header_rect(&h, "Pad").center();
+    let onto = header_rect(&h, "Rhythmus").center();
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, onto);
+    mask_cpu(&mut h);
+    h.snapshot("routing-drop-on-group-1x");
+    release(&mut h, onto);
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Bus(rhythmus)
+    );
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::MoveTracks { .. })).is_empty());
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+}
+
+#[test]
+fn a_header_dragged_between_rows_still_reorders() {
+    let mut h = harness(app_with(routed()));
+    let pad = id_of(h.state().project(), "Pad");
+    let from = header_rect(&h, "Pad").center();
+    // The top edge of the „Rhythmus“ header: the insert slot, not the group.
+    let rhythmus = header_rect(&h, "Rhythmus");
+    let at = pos2(rhythmus.center().x, rhythmus.top() + 3.0);
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, at);
+    release(&mut h, at);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+    assert_eq!(
+        edits_of(h.state(), |e| matches!(e, EditAction::MoveTracks { .. })).len(),
+        1
+    );
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+}
+
+#[test]
+fn a_header_dropped_on_a_group_that_would_loop_is_refused_with_the_reason() {
+    let mut h = harness(app_with(nested_groups()));
+    let (rhythmus, melodie) = (
+        id_of(h.state().project(), "Rhythmus"),
+        id_of(h.state().project(), "Melodie"),
+    );
+    let from = header_rect(&h, "Melodie").center();
+    let onto = header_rect(&h, "Rhythmus").center();
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, onto);
+    release(&mut h, onto);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+    assert_eq!(
+        h.state().project().track(melodie).unwrap().output,
+        TrackOutput::Master
+    );
+    assert_eq!(
+        status_text(&h).as_deref(),
+        Some(names::reason_feedback("Rhythmus", "Melodie").as_str())
+    );
+    assert_eq!(
+        h.state().project().track(rhythmus).unwrap().output,
+        TrackOutput::Bus(melodie)
+    );
+}
+
+/// The point on the name row of a mixer strip.
+fn strip_name_at(h: &Harness<'_, App>, label: &str) -> Pos2 {
+    let r = strip_rect(h, label);
+    pos2(r.center().x, r.top() + 14.0)
+}
+
+#[test]
+fn a_strip_dragged_onto_a_bus_strip_sets_its_output() {
+    let mut h = harness(mixer_app(routed()));
+    let (pad, rhythmus) = (
+        id_of(h.state().project(), "Pad"),
+        id_of(h.state().project(), "Rhythmus"),
+    );
+    let from = strip_name_at(&h, &komponist_app::views::mixer::model::names::strip("Pad"));
+    let onto = strip_rect(&h, &names::bus_strip("Rhythmus")).center();
+    drag_to(&mut h, from, onto);
+    // The accent ring is up while the pointer is over the strip.
+    mask_cpu(&mut h);
+    h.snapshot("routing-drop-on-bus-strip-1x");
+    release(&mut h, onto);
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Bus(rhythmus)
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(
+        h.state().project().track(pad).unwrap().output,
+        TrackOutput::Master
+    );
+}
+
+#[test]
+fn a_strip_dropped_elsewhere_or_on_a_looping_bus_changes_nothing() {
+    let mut h = harness(mixer_app(nested_groups()));
+    let melodie = id_of(h.state().project(), "Melodie");
+    // On a bus that would loop: refused with the reason.
+    let from = strip_name_at(&h, &names::bus_strip("Melodie"));
+    let onto = strip_rect(&h, &names::bus_strip("Rhythmus")).center();
+    h.state_mut().clear_dispatched();
+    drag_to(&mut h, from, onto);
+    release(&mut h, onto);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+    assert_eq!(
+        status_text(&h).as_deref(),
+        Some(names::reason_feedback("Rhythmus", "Melodie").as_str())
+    );
+    assert_eq!(
+        h.state().project().track(melodie).unwrap().output,
+        TrackOutput::Master
+    );
+    // On a track strip: nothing.
+    let from = strip_name_at(&h, &komponist_app::views::mixer::model::names::strip("Pad"));
+    let onto = strip_rect(
+        &h,
+        &komponist_app::views::mixer::model::names::strip("Keys"),
+    )
+    .center();
+    drag_to(&mut h, from, onto);
+    release(&mut h, onto);
+    assert!(edits_of(h.state(), |e| matches!(e, EditAction::SetOutput { .. })).is_empty());
+}
+
 #[test]
 fn clips_are_refused_on_buses() {
     let mut h = harness(app_with(routed()));

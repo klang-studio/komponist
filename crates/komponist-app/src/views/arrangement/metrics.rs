@@ -67,6 +67,9 @@ pub const GRID_MIN_SPACING: f32 = space::SPACE_2;
 /// A group's row (WP-103, routing proposal 05-arrangement, „Gruppe“): 36 px, the folder row. Folded
 /// it is as high as a track row, with the silhouette of its members' clips drawn larger.
 pub const GROUP_ROW: f32 = 36.0;
+/// The part of a group's or effect bus's row height, centred, in which a dragged track header
+/// sets the output to that bus; the outer quarters keep reordering (owner decision 2026-11-15).
+pub const DROP_ONTO_MIDDLE: f32 = 0.5;
 /// A folded group's row (`05-arrangement`: 56 px).
 pub const GROUP_ROW_FOLDED: f32 = size::track::DEFAULT;
 /// An effect bus's row in the „Busse“ section (`05-arrangement`: 32 px, `size.track.min`).

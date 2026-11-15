@@ -220,6 +220,9 @@ enum Drag {
         tracks: Vec<TrackId>,
         /// Insert position under the pointer.
         slot: Option<usize>,
+        /// The group or effect bus under the pointer's middle band: dropping sets the tracks'
+        /// output to it instead of moving them (then `slot` is `None`).
+        onto: Option<TrackId>,
     },
     /// The bottom edge of a header.
     Height {
@@ -520,7 +523,26 @@ impl Arrangement {
             Drag::Trim(_) | Drag::Loop(_) | Drag::Height { .. } => {
                 ctx.send(Action::Edit(EditAction::EndGesture));
             }
-            Drag::Reorder { tracks, slot } => {
+            Drag::Reorder {
+                tracks,
+                onto: Some(bus),
+                ..
+            } => match super::routing::output_drop(ctx.project, &tracks, bus) {
+                super::routing::OutputDrop::Set => {
+                    ctx.send(Action::Edit(EditAction::SetOutput {
+                        tracks,
+                        output: komponist_model::TrackOutput::Bus(bus),
+                    }));
+                }
+                super::routing::OutputDrop::Refused(reason) => {
+                    ctx.send(Action::Ui(crate::actions::UiAction::ShowStatus {
+                        text: reason,
+                        kind: crate::ui_state::StatusKind::Info,
+                    }));
+                }
+                super::routing::OutputDrop::Unchanged => {}
+            },
+            Drag::Reorder { tracks, slot, .. } => {
                 if let Some(slot) = slot
                     && let Some(to_index) = reorder_target(ctx.project, &tracks, slot)
                 {

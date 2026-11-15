@@ -213,13 +213,18 @@ impl Arrangement {
                 ctx.send(select_tracks(vec![track.id], SelectMode::Replace));
                 vec![track.id]
             };
-            self.drag = Some(Drag::Reorder { tracks, slot: None });
+            self.drag = Some(Drag::Reorder {
+                tracks,
+                slot: None,
+                onto: None,
+            });
         }
         if response.dragged()
-            && let Some(Drag::Reorder { slot, .. }) = &mut self.drag
+            && let Some(Drag::Reorder { tracks, slot, onto }) = &mut self.drag
             && let Some(p) = ui.input(|i| i.pointer.interact_pos())
         {
-            *slot = Some(g.insert_slot(p.y));
+            *onto = g.drop_onto_at(p.y).filter(|b| !tracks.contains(b));
+            *slot = onto.is_none().then(|| g.insert_slot(p.y));
         }
         if response.drag_stopped() {
             self.finish_drag(ctx);

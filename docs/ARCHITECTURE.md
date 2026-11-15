@@ -634,8 +634,8 @@ opens a popover with the output and the send rows. Arrangement: a group is a 36 
 „Busse“ section below „Neue Spur“ (32 px rows, hatched lane, no clips; a clip dragged or a double-click over a bus is
 refused with the reason „Busse nehmen keine Clips auf.“). Inspector: a „Routing“ section (output, sends with
 „pre“ / „post“ and „×“, „Sidechain-Quelle für:“) and, for a bus, „Bus“ with the list of its inputs. Strg G groups the
-selected tracks (`EditAction::GroupSelection`); the context menu of a header offers „In Gruppe zusammenfassen“,
-„Send zu neuem Bus“, „Send an …“ and „Ausgang“; deleting a group dissolves it. Mute and solo in the views read
+selected tracks (`EditAction::GroupSelection`; the new group's name field opens only while the arrangement is visible, else it keeps its automatic name); the context menu of a header offers „In Gruppe zusammenfassen“,
+„Send zu neuem Bus“, „Send an …“ and „Ausgang“; deleting a group dissolves it, deleting an effect bus acts at once (no dialog, one undo step). Dragging a track header onto the middle half of a group or effect-bus header (arrangement) or a track strip's name onto a bus strip (mixer) sets the output (`SetOutput`, one undo step, accent frame as the drop highlight); a drop that would close a loop is refused with the reason as tooltip and status text, and the outer quarters of a row keep reordering. Mute and solo in the views read
 `routing::gates` (a group stays lit while a member is soloed). „Bus aufnehmen“ (owner decision 16 A) needs audio
 tracks and comes with wave 10.
 
