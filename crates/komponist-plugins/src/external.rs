@@ -9,10 +9,9 @@
 //! for it. A device whose sidechain is set gets `Processor::process_sidechain` instead (#6): the
 //! sidechain travels in the block's extra shared-memory channels into the plugin's sidechain port;
 //! a plain `process` sends none, so the port gets silence. Fallbacks (passthrough for effects,
-//! silence for instruments): while the bridge loads
-//! (`Loading`), when a block is late or the bridge busy (counted as "late"), and permanently once
-//! the bridge died (then `ProcessStatus::Failed`). Undelivered note-offs are kept and sent with
-//! the next block that reaches the bridge.
+//! silence for instruments): while the bridge loads (`Loading`), when a block is late or the bridge
+//! busy (counted as "late"), and permanently once the bridge died (then `ProcessStatus::Failed`).
+//! Undelivered note-offs are kept and sent with the next block that reaches the bridge.
 //!
 //! Created only by [`crate::PluginManager`]; lives on the audio thread; dropped on the UI thread
 //! (engine garbage).
