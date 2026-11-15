@@ -15,14 +15,14 @@ use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange, TransportAction};
-use komponist_app::device_host::PluginHost;
+use komponist_app::device_host::{DeviceHost as _, PluginHost};
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_builtin::Internal;
 use komponist_builtin::sampler::{PadStatus, SampleLink, links, testkit};
 use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
 use komponist_model::project::DEFAULT_PROJECT_NAME;
-use komponist_model::{DeviceId, Project, Tick, TrackId, persist};
+use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -628,4 +628,157 @@ fn pad_folgt_eingang_selects_the_pad_a_note_hit() {
         }));
     run_for(&mut h, Duration::from_millis(500));
     assert_eq!(selected_pad(&h), "Pad Rim");
+}
+
+// ------------------------------------------------------------------------------------------------
+// The beat in an offline render
+
+/// The rate of the kit's files: the render runs at it, so the samples play without resampling and
+/// the onsets compare 1:1.
+const RATE: u32 = testkit::RATE;
+const BAR: i64 = 3840;
+/// Ticks per 1/16 step.
+const STEP: i64 = 240;
+
+/// `(row, step)` hits: kick, snare, clap, closed hat, open hat, tom, rim, perc, each on its own
+/// step so the onsets do not overlap.
+const BEAT: [(usize, usize); 8] = [
+    (0, 0),
+    (3, 2),
+    (1, 4),
+    (3, 6),
+    (2, 8),
+    (5, 10),
+    (6, 12),
+    (7, 14),
+];
+
+struct Env<'a>(&'a PluginHost);
+
+impl komponist_engine::compile::CompileEnv for Env<'_> {
+    fn midi_port(&self, _device_name: &str) -> Option<komponist_engine::MidiPort> {
+        None
+    }
+
+    fn device_latency(&self, device: DeviceId) -> u32 {
+        self.0.latency(device)
+    }
+}
+
+/// Renders `project` (one sampler track) for bar 1 plus a tail through the export pipeline at
+/// [`RATE`]; returns the mono mix and the first frame of each 1/16 step.
+fn render(project: &Project, dir: &Path) -> (Vec<f32>, Vec<usize>) {
+    use komponist_engine::compile;
+    use komponist_engine::export::{BitDepth, ExportJob, export};
+    use komponist_engine::{Command, Engine, EngineConfig};
+    use komponist_plugins::ProcessorSetup;
+    let mut host = PluginHost::new(config(dir));
+    host.set_project_dir(None);
+    let (mut engine, mut handle) = Engine::new(EngineConfig {
+        sample_rate: RATE as f32,
+        max_block: komponist_engine::MAX_BLOCK,
+        seed: 1,
+    });
+    let program = compile::build(project, None, &Env(&host));
+    let device = project.tracks[0].channel.devices[0].clone();
+    let setup = ProcessorSetup {
+        sample_rate: RATE as f32,
+        max_block: komponist_engine::MAX_BLOCK,
+    };
+    for (id, slot) in compile::slot_changes(None, &program).added {
+        assert_eq!(id, device.id);
+        let processor = host.create_processor(&device, setup).expect("the sampler");
+        handle
+            .send(Command::InsertProcessor { slot, processor })
+            .expect("command queue");
+    }
+    handle
+        .send(Command::SetProgram(Box::new(program.clone())))
+        .expect("command queue");
+    // The export waits until the samples are in (the device is `Loading` until then).
+    let sampler = host.sampler(device.id).expect("a sampler").clone();
+    assert!(sampler.wait_idle(Duration::from_secs(5)));
+    host.poll();
+    assert_eq!(host.status(device.id), komponist_plugins::DeviceStatus::Ok);
+    engine.render(256);
+    while handle.poll().is_some() {}
+
+    let map = &program.tempo_map;
+    let job = ExportJob {
+        path: dir.join("beat.wav"),
+        sample_rate: RATE,
+        range: ExportJob::frames_of(map, TickRange::new(Tick::ZERO, Tick(BAR)), RATE),
+        tail: ExportJob::tail_frames(0.5, RATE),
+        bit_depth: BitDepth::Float32,
+        normalize: None,
+        dither: false,
+    };
+    export(
+        &mut engine,
+        &mut handle,
+        &program,
+        &job,
+        &std::sync::atomic::AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("export");
+    let mut wav = hound::WavReader::open(&job.path).expect("wav");
+    assert_eq!((wav.spec().sample_rate, wav.spec().channels), (RATE, 2));
+    let samples: Vec<f32> = wav.samples::<f32>().map(Result::unwrap).collect();
+    let mono = samples.chunks(2).map(|f| (f[0] + f[1]) / 2.0).collect();
+    let steps = (0..16)
+        .map(|s| {
+            let ticks = TickRange::new(Tick::ZERO, Tick(s * STEP));
+            ExportJob::frames_of(map, ticks, RATE).end as usize
+        })
+        .collect();
+    (mono, steps)
+}
+
+/// The best normalised cross-correlation of `audio` from `at + lag` with the start of `sample`
+/// over a few frames around `at`: `(correlation, lag)`.
+fn correlate(audio: &[f32], at: usize, sample: &[f32]) -> (f32, i64) {
+    let n = 512.min(sample.len());
+    let y = &sample[..n];
+    let yy: f32 = y.iter().map(|v| v * v).sum();
+    (-16i64..=16)
+        .filter_map(|lag| {
+            let start = usize::try_from(at as i64 + lag).ok()?;
+            let x = audio.get(start..start + n)?;
+            let xy: f32 = x.iter().zip(y).map(|(a, b)| a * b).sum();
+            let xx: f32 = x.iter().map(|v| v * v).sum();
+            (xx > 0.0).then(|| (xy / (xx * yy).sqrt(), lag))
+        })
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap_or((0.0, 0))
+}
+
+#[test]
+fn an_offline_render_plays_the_expected_pad_exactly_on_its_step() {
+    let dir = scratch("sampler-render");
+    let (mut project, clip) = step_clip_project(&dir);
+    // The beat: one hit per step in `BEAT`.
+    for (row, step) in BEAT {
+        project = edits::set_step(&project, clip, row, step, edits::StepProp::On(true)).unwrap();
+    }
+    let (audio, steps) = render(&project, &dir);
+    let kit = testkit::kit();
+    for (step, &frame) in steps.iter().enumerate() {
+        let Some(&(row, _)) = BEAT.iter().find(|&&(_, s)| s == step) else {
+            continue;
+        };
+        // The pad whose sample matches best is the one that was hit, at the step's frame.
+        let (best, (corr, lag)) = kit
+            .iter()
+            .enumerate()
+            .map(|(pad, s)| (pad, correlate(&audio, frame, s)))
+            .max_by(|a, b| a.1.0.total_cmp(&b.1.0))
+            .unwrap();
+        assert_eq!(best, row, "step {}: pad {} expected", step + 1, row + 1);
+        assert!(corr > 0.9, "step {}: correlation {corr}", step + 1);
+        assert_eq!(lag, 0, "step {}: the hit starts {lag} frames off", step + 1);
+    }
+    // An off step starts nothing: before the first hit and in the gap after the kick's tail the
+    // render is quiet.
+    assert!(audio[..steps[0]].iter().all(|v| v.abs() < 1e-6));
 }

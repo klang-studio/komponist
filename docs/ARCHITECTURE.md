@@ -85,7 +85,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 | D2 | Audio/MIDI I/O | cpal 0.18 (pipewire/jack/alsa) + midir |
 | D3 | Plugin format layer | **decided after WP-15:** own layer behind `HostedPlugin` on clack-host 0.2 (CLAP) + vst3 0.3 (VST3); CLAP first. Test plugins with nice-plug |
 | D4 | Plugin isolation | out of process, one bridge per instance |
-| D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN" |
+| D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN". **Superseded by WP-87:** komponist has its own Sampler (internal device, `klopfer_dsp` engine); klopfer is an ordinary scanned CLAP plugin |
 | D6 | pisynth integration | in process via `synth-core` (`alloc` + `serde` features), as a built-in `Processor` |
 | D7 | Project format | one JSON file `*.komponist` with schema version; plugin states as base64 |
 | D8 | Undo | immutable snapshots with `Arc` structural sharing (copy on write) |

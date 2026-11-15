@@ -16,7 +16,7 @@
 //! brightens (`surface.4`) and set steps in it glow (`TrackPalette::play`) with a `text.1`
 //! contour. Row names come from the instrument's note names when it reports them
 //! (`DeviceHost::note_names`), else from the model; the small label right of the name is the
-//! klopfer pad ("P1", S03) on a klopfer track, else the note name ([`crate::step_rows`]).
+//! sampler pad ("P1", S03) on a sampler track, else the note name ([`crate::step_rows`]).
 //!
 //! The view never changes the document: steps, rows and pattern properties change through
 //! [`EditAction::SetStep`](crate::actions::EditAction::SetStep), `SetStepRow`,
@@ -99,7 +99,7 @@ pub struct Open<'p> {
     pub pattern: &'p StepClip,
     /// Row names shown: the instrument's note names where it has one, else the model's.
     pub names: Vec<String>,
-    /// The label right of each row's name: klopfer pad ("P1") or note name ("C2").
+    /// The label right of each row's name: sampler pad ("P1") or note name ("C2").
     pub labels: Vec<String>,
     /// The step cursor, if it is in this clip.
     pub cursor: Option<StepCursor>,

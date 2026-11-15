@@ -131,7 +131,7 @@ pub mod names {
         format!("{plugin} · aus")
     }
 
-    /// "Pattern 3": a new step clip on a klopfer track (prototype `newClip`).
+    /// "Pattern 3": a new step clip on a sampler track (prototype `newClip`).
     pub fn pattern(n: usize) -> String {
         format!("Pattern {n}")
     }

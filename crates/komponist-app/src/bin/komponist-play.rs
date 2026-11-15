@@ -20,7 +20,7 @@
 //!
 //! komponist hosts no plugins yet, so pisynth stands in for every instrument: a pisynth device with
 //! a stored state plays that state; other instruments get a factory preset chosen by the track's
-//! role (track name), and drum tracks (klopfer, step clips) get [`DrumKit`], one pisynth per drum
+//! role (track name), and drum tracks (the Sampler, step clips) get [`DrumKit`], one pisynth per drum
 //! note. Effects get no processor, so the engine passes their input through. The table is printed
 //! at start.
 //!
@@ -504,7 +504,7 @@ fn print_plans(plans: &[DevicePlan]) {
 // Drum kit
 // ------------------------------------------------------------------------------------------------
 
-/// One pisynth per drum note, summed: a stand-in for klopfer.
+/// One pisynth per drum note, summed: a stand-in for the Sampler.
 ///
 /// A note-on/off for a pad's note goes to that pad's pisynth at the pad's key; other notes are
 /// ignored. MIDI messages and `AllNotesOff` go to every pad; parameters to none. A pad without
