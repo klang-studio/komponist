@@ -17,12 +17,12 @@ use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
 use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
-use komponist_app::settings::Settings;
+use komponist_app::settings::{Language, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartView};
 use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
 use komponist_audio::{DeviceId as AudioDeviceId, HostKind, StreamConfig};
 use komponist_engine::Processor;
-use komponist_i18n::{Lang, de};
+use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project};
 use komponist_plugins::{Catalog, DeviceStatus, MissingPlugin, PluginManagerEvent, ProcessorSetup};
@@ -765,6 +765,55 @@ fn without_a_device_play_is_off_and_s07_offers_a_retry() {
     );
 }
 
+/// S07 "Darstellung" › Sprache: the segments switch the UI language in the next frame, the
+/// choice is saved in `settings.json`, the AccessKit root names the language.
+#[test]
+fn the_language_row_switches_the_ui_at_once_and_is_saved() {
+    let dir = scratch("language-row");
+    let file = dir.join("config/settings.json");
+    let mut app = app_in(&dir, demo_project());
+    app.dispatch(Action::Ui(UiAction::OpenSettings(SettingsSection::Display)));
+    let mut h = harness(app);
+    assert_eq!(h.root().accesskit_node().language(), Some("de"));
+    h.get_by_role_and_label(Role::Label, de::SETTINGS_LANGUAGE);
+    h.get_by_role_and_label(Role::RadioGroup, de::SETTINGS_LANGUAGE);
+    h.get_by_role_and_label(Role::RadioButton, de::SETTINGS_LANGUAGE_SYSTEM);
+    h.get_by_label(de::SETTINGS_TITLE);
+
+    h.get_by_role_and_label(Role::RadioButton, en::SETTINGS_LANGUAGE_EN)
+        .click();
+    // One frame after the click: the dialog, the transport bar and the root are English.
+    h.run_steps(2);
+    assert_eq!(h.state().lang(), Lang::En);
+    h.get_by_label(en::SETTINGS_TITLE);
+    h.get_by_role_and_label(Role::RadioGroup, en::SETTINGS_LANGUAGE);
+    h.get_by_role_and_label(Role::Button, en::TRANSPORT_PLAY);
+    assert!(h.query_by_label(de::SETTINGS_TITLE).is_none());
+    assert!(h.query_by_label(de::TRANSPORT_PLAY).is_none());
+    assert_eq!(h.root().accesskit_node().language(), Some("en"));
+    assert_eq!(h.state().settings().language, Language::En);
+    assert_eq!(Settings::load(&file).unwrap().language, Language::En);
+
+    h.get_by_role_and_label(Role::RadioButton, de::SETTINGS_LANGUAGE_DE)
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state().lang(), Lang::De);
+    h.get_by_label(de::SETTINGS_TITLE);
+    assert_eq!(h.root().accesskit_node().language(), Some("de"));
+    assert_eq!(Settings::load(&file).unwrap().language, Language::De);
+}
+
+/// A status message is text of the old language: a switch clears it.
+#[test]
+fn a_language_switch_clears_the_status_message() {
+    let dir = scratch("language-status");
+    let mut app = app_in(&dir, demo_project());
+    app.set_status("Gespeichert", komponist_app::ui_state::StatusKind::Success);
+    app.dispatch(Action::Settings(SettingsAction::SetLanguage(Language::En)));
+    assert_eq!(app.lang(), Lang::En);
+    assert!(app.ui().status.is_none());
+}
+
 // ------------------------------------------------------------------------------------------------
 // Snapshots next to S06, S07, S09, S10
 // ------------------------------------------------------------------------------------------------
@@ -958,6 +1007,7 @@ fn s07_model() -> settings::Model {
             .into(),
         scanning: false,
         ui_scale: None,
+        language: Language::System,
         keyboard_midi: false,
     }
 }
