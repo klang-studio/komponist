@@ -911,4 +911,32 @@ mod tests {
         assert_eq!(move_target(1, 2, 1), None, "right after itself");
         assert_eq!(move_target(2, 0, 1), Some(1), "never before the instrument");
     }
+
+    #[test]
+    fn the_place_of_a_parameter_names_its_band_or_operator() {
+        let place = |id: &str| place_of(&ParamId::new(id));
+        assert_eq!(place("b2_freq").as_deref(), Some("Band 2"));
+        assert_eq!(place("op3_ratio").as_deref(), Some("Operator 3"));
+        assert_eq!(place("op12_level").as_deref(), Some("Operator 12"));
+        for none in ["gain", "feedback", "b_freq", "bass_level", "op_x", "p17"] {
+            assert_eq!(place(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn the_range_reads_as_text() {
+        use komponist_model::params::Unit;
+        let hz =
+            ParamInfo::new("f", "Frequenz", ParamKind::lin(20.0, 20_000.0), 1_000.0).unit(Unit::Hz);
+        assert_eq!(range_text(&hz), "20 Hz bis 20 kHz");
+        let on = ParamInfo::new("b", "Schalter", ParamKind::Bool, 0.0);
+        assert_eq!(range_text(&on), "Aus · Ein");
+        let mode = ParamInfo::new(
+            "m",
+            "Modus",
+            ParamKind::Enum(vec!["Auf".into(), "Ab".into()]),
+            0.0,
+        );
+        assert_eq!(range_text(&mode), "Auf · Ab");
+    }
 }
