@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Builds the klopfer plugin bundles (CLAP + VST3) in the sibling repository ../klopfer.
+# Optional dev script, not needed to build komponist: builds the klopfer plugin bundles (CLAP + VST3)
+# from a klopfer checkout for the plugin tests that use an installed Klopfer (those skip without it).
+# The checkout is $KLOPFER_DIR, default: a `klopfer` folder next to this repository.
 #
-# Only writes ../klopfer/target. It deliberately does not run `git submodule update`:
-# that could move the submodule commits the owner has checked out in ../klopfer/vendor.
+# Only writes <klopfer>/target. It deliberately does not run `git submodule update`:
+# that could move the submodule commits checked out in <klopfer>/vendor.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-klopfer="$(cd "$root/.." && pwd)/klopfer"
+klopfer="${KLOPFER_DIR:-$(cd "$root/.." && pwd)/klopfer}"
 
 if [[ ! -f "$klopfer/vendor/nice-plug/Cargo.toml" ]]; then
     echo "error: $klopfer/vendor/nice-plug is not checked out." >&2

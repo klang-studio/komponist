@@ -381,7 +381,7 @@ fn the_loader_hands_samples_over_and_takes_the_old_ones_back() {
 #[test]
 fn the_audio_thread_never_frees_a_sample() {
     let mut dsp = dsp::SamplerDsp::new();
-    let first = Arc::new(klopfer_dsp::Sample::mono(48_000.0, vec![0.5; 100]));
+    let first = Arc::new(sampler_core::Sample::mono(48_000.0, vec![0.5; 100]));
     let weak = Arc::downgrade(&first);
     assert!(assert_no_alloc(|| dsp.set_sample(0, Some(first))));
     // Replacing it hands the old one to the loader thread: not freed inside this call.

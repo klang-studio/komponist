@@ -23,7 +23,7 @@
 //! - [`internal::knurr`]: the virtual-analog synthesizer „knurr“ (WP-95), an internal instrument
 //!   ([`Internal::Knurr`]) written for komponist on `klang-dsp`'s primitives.
 //! - [`sampler`]: the drum sampler (WP-87), an internal instrument ([`Internal::Sampler`]) on
-//!   `klopfer_dsp`'s engine, with sample links in its state, a loader thread and a test kit.
+//!   `sampler_core`'s engine, with sample links in its state, a loader thread and a test kit.
 //!
 //! # How the app drives it
 //!

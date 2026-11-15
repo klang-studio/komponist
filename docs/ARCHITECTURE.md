@@ -2,7 +2,7 @@
 
 Status: **proposal, waiting for approval** (stack decision, gate G0 in `PLAN.md`).
 Date: 2026-11-13. Inputs: `../klang-studio-handoff/` (design v0.1 "Graphit"),
-`../daw-design-briefing.md`, klang-dsp, pisynth (origin of hexa), `../klopfer`.
+`../daw-design-briefing.md`, klang-dsp, pisynth (origin of hexa), klopfer (origin of the Sampler engine).
 
 This document fixes the structure that the work packages in `PLAN.md` build on.
 Anything marked **Decision** needs the owner's approval before code is written.
@@ -85,7 +85,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 | D2 | Audio/MIDI I/O | cpal 0.18 (pipewire/jack/alsa) + midir |
 | D3 | Plugin format layer | **decided after WP-15:** own layer behind `HostedPlugin` on clack-host 0.2 (CLAP) + vst3 0.3 (VST3); CLAP first. Test plugins with nice-plug |
 | D4 | Plugin isolation | out of process, one bridge per instance |
-| D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN". **Superseded by WP-87:** komponist has its own Sampler (internal device, `klopfer_dsp` engine); klopfer is an ordinary scanned CLAP plugin |
+| D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN". **Superseded by WP-87:** komponist has its own Sampler (internal device, `sampler-core` engine); klopfer is an ordinary scanned CLAP plugin |
 | D6 | hexa integration | in process via `hexa-core` (`alloc` + `serde` features), as a built-in `Processor` |
 | D7 | Project format | one JSON file `*.komponist` with schema version; plugin states as base64 |
 | D8 | Undo | immutable snapshots with `Arc` structural sharing (copy on write) |
@@ -136,7 +136,7 @@ Threads and their rules:
 
 New repository `komponist/` (this folder), Cargo workspace, edition 2024, resolver 3 (as in pisynth).
 klang-dsp is a git dependency pinned to a commit (`docs/INSTALL.md` for the local override). `crates/hexa-core` is
-vendored from pisynth's `synth-core`. `../klopfer` is referenced by relative path.
+vendored from pisynth's `synth-core`, `crates/sampler-core` from klopfer's `dsp` crate (klopfer commit `190581c`, 2026-11-15); both are developed independently since. A plain clone builds without any sibling folder.
 
 ```
 komponist/
@@ -151,6 +151,8 @@ komponist/
     komponist-model/            project document, time, edits, undo, serde, formatting
     komponist-engine/           RT engine, Processor trait, program compiler, offline render, export
     komponist-audio/            cpal backends, midir inputs, stream lifecycle, CPU/xrun stats
+    hexa-core/                  vendored 6-op FM engine of hexa (from pisynth)
+    sampler-core/               vendored sampler engine of the Sampler (from klopfer's dsp crate)
     komponist-builtin/          hexa adapter (Processor), metronome voice
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
@@ -557,8 +559,11 @@ special case.
   the whole mix by the project latency `out(master)` (6.8.5). The export renders that many frames more and drops
   the first ones, so the sound of song frame `f` is file frame `f − range.start` and the tail is complete
   (`Engine::project_latency`: `Routing::latency()` with a routing graph, else the longest track chain, plus the
-  master's active effects). Projects without latency export exactly as before. The export rate must equal the
-  rate the program was compiled at for a routing graph's latency to be exact (see 6.8.10 item 8).
+  master's active effects). Projects without latency export exactly as before. Skip and compensation must come from
+  the same processors at the export rate: once the devices run at it, the worker compiles the project again against the
+  engine's processors (`komponist_engine::export::recompile`, after `Engine::settle` applied the queued commands, e.g. a
+  lookahead switched a moment before), so the program's delay compensation and `Routing::latency()` are in export-rate
+  frames (see 6.8.10 item 8). The stream gets the program the app compiled back afterwards.
 - Dither and PCM quantisation stay in `komponist-engine::export` (only one user, see §10).
 
 ### 6.8 Routing: buses, sends, sidechains (wave 9)
@@ -825,10 +830,11 @@ must not output back into that bus).
    `out(master)` frames and renders as many more (6.7), so the file starts on time.
 7. **Send level fast path** (WP-102): a send level drag recompiles every frame (cheap, and the gain ramps, so no
    click). A `SetSendGain` fast path like `SetTrackGain` can come with WP-103 if it is needed.
-8. **Export at another rate and the routing latency.** With a routing graph `Routing::latency()` (and the delay
-   compensation itself) holds frames of the rate the program was compiled at; an export at another rate re-activates
-   the processors but does not recompile, so the skipped latency is off by the rate ratio there. Flat programs read
-   the live processor latencies and are exact. A recompile after `set_sample_rate` in the export worker would fix both.
+8. **Export at another rate and the routing latency:** resolved (2026-11-15). The export worker compiles the project
+   again against the engine's processors after the re-activation (`komponist_engine::export::recompile`), so the
+   routing latency and the delay compensation are in frames of the export rate and agree with the skipped latency.
+   The same step fixed a race at the same rate: a latency published after the app's last compile (a lookahead switched
+   right before the export) made the skip and the compensation disagree.
 
 ---
 
@@ -979,7 +985,8 @@ table of CLAP features / VST3 subcategories.
   Feedback, Attack, Decay, Sustain, Release) mapped to patch fields. The mapping is documented in WP-25.
   hexa has no own GUI in v0.1 (generic view only). An idea for later: the HEXA-6 display
   (`synth-ui`, LVGL) rendered into a texture in a frame window.
-- **klopfer (D5):** `../klopfer` builds `Klopfer.clap` (`cargo xtask bundle klopfer --release`).
+- **klopfer (D5):** klopfer's repository builds `Klopfer.clap` (`cargo xtask bundle klopfer --release`;
+  `scripts/build-klopfer.sh` is an optional helper for it).
   The catalog contains it as a built-in entry ("INTERN") with a fixed path. It runs through the
   normal bridge, including crash isolation and its own egui GUI. Step rows: 8 rows. Notes and names
   come from CLAP note-name if klopfer provides it (nice-plug fork), otherwise pads 1–8 = notes 36–43.
@@ -1075,7 +1082,7 @@ with `Painter`:
 
 `no_std`, no allocation, `f32`, math via `libm`. Modules: `biquad`, `crush`, `one_pole`, `phase`, `rng`,
 `sine`, `svf`, `units`, `wave` (≈ 1 200 lines with tests). Users: pisynth (`synth-core`, `synth-ui`), hexa-core
-and klopfer (`klopfer_dsp`, plugin). Rule from the crate doc: *building blocks only, no parameter
+and klopfer (`dsp` crate, now vendored as `sampler-core`; plugin). Rule from the crate doc: *building blocks only, no parameter
 mapping; something moves in once at least two projects need it.*
 **klang-dsp is not under version control yet.** That must change before agents edit it (WP-00).
 

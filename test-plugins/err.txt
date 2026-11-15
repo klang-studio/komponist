@@ -1,0 +1,13 @@
+    Updating git repository `https://github.com/klang-studio/baseview`
+    Updating git repository `https://github.com/klang-studio/egui-baseview`
+    Updating git repository `https://github.com/klang-studio/nice-plug`
+    Updating crates.io index
+     Locking 8 packages to highest Rust 1.99.0 compatible versions
+      Adding baseview v0.3.7 (https://github.com/klang-studio/baseview?rev=2b8211d4c43e78ed93c4deb35f1a9b54fea6d6d3#2b8211d4)
+      Adding egui-baseview v0.7.2 (https://github.com/klang-studio/egui-baseview?rev=0bea7196e0e09032ece85401e2b34cd036942595#0bea7196)
+      Adding nice-log v0.3.1 (https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41)
+      Adding nice-plug v0.4.2 (https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41)
+      Adding nice-plug-core v0.4.2 (https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41)
+      Adding nice-plug-derive v0.1.2 (https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41)
+      Adding nice-plug-egui v0.5.1 (https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41)
+      Adding nice-plug-xtask v0.1.1 (https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41)

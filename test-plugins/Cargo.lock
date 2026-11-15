@@ -129,6 +129,7 @@ dependencies = [
 [[package]]
 name = "baseview"
 version = "0.3.7"
+source = "git+https://github.com/klang-studio/baseview?rev=2b8211d4c43e78ed93c4deb35f1a9b54fea6d6d3#2b8211d4c43e78ed93c4deb35f1a9b54fea6d6d3"
 dependencies = [
  "block2 0.6.2",
  "bytemuck",
@@ -544,6 +545,7 @@ dependencies = [
 [[package]]
 name = "egui-baseview"
 version = "0.7.2"
+source = "git+https://github.com/klang-studio/egui-baseview?rev=0bea7196e0e09032ece85401e2b34cd036942595#0bea7196e0e09032ece85401e2b34cd036942595"
 dependencies = [
  "baseview",
  "copypasta",
@@ -1152,6 +1154,7 @@ dependencies = [
 [[package]]
 name = "nice-log"
 version = "0.3.1"
+source = "git+https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41cf84f98762d86b83abdb9c422fcb58a5"
 dependencies = [
  "tracing-appender",
  "windows",
@@ -1160,6 +1163,7 @@ dependencies = [
 [[package]]
 name = "nice-plug"
 version = "0.4.2"
+source = "git+https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41cf84f98762d86b83abdb9c422fcb58a5"
 dependencies = [
  "anyhow",
  "anymap3",
@@ -1191,6 +1195,7 @@ dependencies = [
 [[package]]
 name = "nice-plug-core"
 version = "0.4.2"
+source = "git+https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41cf84f98762d86b83abdb9c422fcb58a5"
 dependencies = [
  "atomic_float",
  "atomic_refcell",
@@ -1211,6 +1216,7 @@ dependencies = [
 [[package]]
 name = "nice-plug-derive"
 version = "0.1.2"
+source = "git+https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41cf84f98762d86b83abdb9c422fcb58a5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1220,6 +1226,7 @@ dependencies = [
 [[package]]
 name = "nice-plug-egui"
 version = "0.5.1"
+source = "git+https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41cf84f98762d86b83abdb9c422fcb58a5"
 dependencies = [
  "crossbeam",
  "egui",
@@ -1233,6 +1240,7 @@ dependencies = [
 [[package]]
 name = "nice-plug-xtask"
 version = "0.1.1"
+source = "git+https://github.com/klang-studio/nice-plug?rev=39e9ad41cf84f98762d86b83abdb9c422fcb58a5#39e9ad41cf84f98762d86b83abdb9c422fcb58a5"
 dependencies = [
  "anyhow",
  "cargo_metadata",

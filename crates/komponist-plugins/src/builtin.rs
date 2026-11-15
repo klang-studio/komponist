@@ -14,7 +14,7 @@ use komponist_builtin::Internal;
 
 use crate::catalog::{BuiltinKind, CatalogEntry, EffectCategory, PluginLocation};
 
-/// CLAP id of klopfer (`../klopfer/src/lib.rs`), the scanned plugin that projects with the old
+/// CLAP id of klopfer (klopfer's `src/lib.rs`), the scanned plugin that projects with the old
 /// built-in klopfer entry resolve to.
 pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
 

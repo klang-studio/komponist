@@ -157,7 +157,7 @@ only in the first call after the event (10 000 notes scan inside `assert_no_allo
   so it is treated the same way. Before WP-61 the export's second run could render silence when it
   started right after the first one (found by the updated `export_bridges` test).
 - `komponist_plugins::WARM_UP` (250 ms): after every activation the device stays `Loading` while
-  audio already flows. It answers klopfer's cold start without touching `../klopfer` (WP-54 saw
+  audio already flows. It answers klopfer's cold start (WP-54 saw
   ~70 ms of silence; WP-61 measured 0.2–1.1 ms realtime and 9 ms offline, so 250 ms leaves margin
   for a loaded machine and a cold disk). `PluginManager::set_warm_up` changes it (tests).
 - The export (app) no longer blocks the UI on a `snapshot_states` barrier (up to 2 s): it holds the

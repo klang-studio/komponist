@@ -4,11 +4,9 @@ Fixtures for komponist's plugin hosting, IPC and crash handling (PLAN WP-27). Ea
 with [nice-plug](https://codeberg.org/RustAudio/nice-plug) 0.4.2 from crates.io and exported as
 CLAP and VST3 from one source.
 
-The workspace patches baseview, egui-baseview and the nice-plug crates to klang-studio's forks in
-`../../klopfer/vendor/` (`[patch.crates-io]` in `Cargo.toml`, the same list as klopfer's), because
-the crates.io baseview lacks the X11 Present/MapNotify fix and kp-test-synth's embedded GUI stayed
-empty. The forks are only read from there; the workspace needs a klopfer checkout with its
-submodules next to komponist.
+The workspace patches baseview, egui-baseview and the nice-plug crates to klang-studio's forks on GitHub
+(`[patch.crates-io]` in `Cargo.toml`, pinned `rev`s, the same list as klopfer's), because the crates.io baseview lacks
+the X11 Present/MapNotify fix and kp-test-synth's embedded GUI stayed empty.
 
 This is a Cargo workspace of its own, excluded from komponist's, so that nice-plug's egui (0.36) and
 baseview never meet the DAW's.

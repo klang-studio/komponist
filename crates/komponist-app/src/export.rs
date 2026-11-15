@@ -13,7 +13,10 @@
 //!    offline processing ([`DeviceHost::set_render_mode`](crate::device_host::DeviceHost)) and a
 //!    worker thread takes engine, program and job.
 //! 4. **Worker**: sets the export rate when it differs from the device's
-//!    (`Engine::set_sample_rate` re-activates every processor), then waits for the UI. A bridge
+//!    (`Engine::set_sample_rate` re-activates every processor) and compiles the program again
+//!    against the processors in the engine (`komponist_engine::export::recompile`: delay
+//!    compensation and routing latency in frames of the export rate, from the latencies the export
+//!    skips), then waits for the UI. A bridge
 //!    re-activates through the plugin manager's poll on the UI thread (and for the switch to
 //!    offline processing in step 3) and renders its silent fallback until the bridge confirms;
 //!    its status is `Loading` from the moment the processor or the render mode asked for it until
@@ -46,12 +49,12 @@ use std::time::{Duration, Instant};
 
 use komponist_engine::export::{
     BitDepth as EngineBitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB,
-    Progress, export,
+    Progress, export, recompile,
 };
-use komponist_engine::{Program, SlotId, TransportState};
+use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
 use komponist_model::format::fmt_bar_pos;
-use komponist_model::{Tick, TickRange};
+use komponist_model::{Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
@@ -203,10 +206,16 @@ impl SharedProgress {
     }
 }
 
+/// What the worker renders: the document's project and the program the engine plays.
+struct Input {
+    project: Arc<Project>,
+    program: Program,
+}
+
 /// The worker: export rate, wait for the UI, render, device rate, engine back.
 fn work(
     mut engine: DetachedEngine,
-    program: Program,
+    input: Input,
     job: ExportJob,
     cancel: Arc<AtomicBool>,
     progress: Arc<SharedProgress>,
@@ -220,18 +229,28 @@ fn work(
     if changed && let Err(errors) = engine.engine().set_sample_rate(export_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
+    let Input { project, program } = input;
     let _ = to_ui.send(Message::Prepared);
     let go_on = go.recv().unwrap_or(false);
     let result = if go_on {
+        // The UI waited until the devices run at the export rate: now the compensation and the
+        // skip come from the same processors, in frames of the export rate.
+        let export_program = recompile(engine.engine(), &project, &program);
         let (e, h) = engine.parts();
-        export(e, h, &program, &job, &cancel, |p| progress.store(p))
+        export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
     } else {
         Err(ExportError::Cancelled)
     };
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
-    // `export` queued Stop, the caller's program and the old playhead; one frame lets them take
+    // `export` queued the recompiled program behind its Stop: the stream plays the program the
+    // app sent, as before the export (its slots are the same).
+    let _ = engine
+        .parts()
+        .1
+        .send(Command::SetProgram(Box::new(program)));
+    // `export` queued Stop, the program and the old playhead; one frame lets them take
     // effect here, so the transport and the playhead the UI reads are right as soon as the
     // engine is back (else a Play right after the export could see the export's "playing" and
     // stop instead).
@@ -537,6 +556,7 @@ impl App {
         let Some(program) = self.engine.program().cloned() else {
             return;
         };
+        let project = Arc::clone(self.doc.project());
         let detached = match self.engine.detach() {
             Ok(d) => d,
             Err(e) => {
@@ -555,7 +575,10 @@ impl App {
             let (cancel, progress) = (Arc::clone(&cancel), Arc::clone(&progress));
             std::thread::Builder::new()
                 .name("komponist-export".into())
-                .spawn(move || work(detached, program, job, cancel, progress, to_ui, from_ui))
+                .spawn(move || {
+                    let input = Input { project, program };
+                    work(detached, input, job, cancel, progress, to_ui, from_ui)
+                })
         };
         let thread = match thread {
             Ok(t) => t,

@@ -41,10 +41,13 @@
 //!   (2 s per block) because render calls carry no [`crate::ProcessContext::deadline`].
 //! - A range that starts inside a long note renders it from the first frame: `Play` chases the
 //!   notes sounding at the range start (see [`crate::engine`]).
-//! - Pass the program the engine plays now (the app's last compiled program).
+//! - Compile the project again with [`recompile`] once the devices run at the export rate (the
+//!   latency skip reads the processors, so the program's delay compensation and routing latency
+//!   must come from them too, in frames of the export rate), and pass that program.
 //!
 //! **After** [`export`] (on success, cancel and error alike):
 //! - Restore the device rate with [`Engine::set_sample_rate`] if it was changed.
+//! - Queue the program the engine played before ([`export`] queued the one it was given).
 //! - Put the engine back into the audio callback and the handle back on the UI thread.
 //! - Poll the handle as usual: both replaced programs come back as garbage; a
 //!   `ProcessorFailed` from the export means a device dropped out of the render.
@@ -65,12 +68,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use klang_dsp::buffer::scale;
 use klang_dsp::rng::Rng;
 use klang_dsp::units::{MIN_GAIN, db_to_gain, gain_to_db};
-use komponist_model::{TempoMap, Tick, TickRange};
+use komponist_model::{DeviceId, Project, TempoMap, Tick, TickRange};
 
 use crate::MAX_BLOCK;
 use crate::api::{Command, EngineHandle, TrackMeter};
+use crate::compile::{self, CompileEnv};
 use crate::engine::Engine;
-use crate::program::{Program, SeqNote, TrackProgram};
+use crate::program::{MidiPort, Program, SeqNote, TrackProgram};
 
 /// Peak level of "Normalisieren" (S08) in dBFS.
 pub const NORMALIZE_TARGET_DB: f32 = -1.0;
@@ -288,6 +292,44 @@ pub fn export(
     handle.telemetry().master_meter().take();
     let report = result?;
     restored.map(|()| report)
+}
+
+/// Non-RT, on the export worker, after the engine got its export rate and before [`export`]. The
+/// program the export renders with: `project` compiled again for the processors that sit in the
+/// engine now, so its delay compensation and routing latency are in frames of the engine's rate and
+/// come from exactly the latencies [`Engine::project_latency`] reads (a program compiled earlier,
+/// at the device rate or before a processor published its latency, would not line up with the
+/// skip). The engine's queued commands are applied first ([`Engine::settle`]).
+///
+/// Slots stay as `program` has them (same project). A track bound to a named MIDI input compiles
+/// as if the port were absent: the export plays clips only. Pass `program` to [`export`] as the
+/// program to restore, and queue it again afterwards: the live engine plays what the app compiled.
+pub fn recompile(engine: &mut Engine, project: &Project, program: &Program) -> Program {
+    engine.settle();
+    let env = EngineEnv {
+        engine,
+        slots: program,
+    };
+    compile::build(project, Some(program), &env)
+}
+
+/// The compiler's view of the engine on the export worker: latencies from the processors.
+struct EngineEnv<'a> {
+    engine: &'a Engine,
+    slots: &'a Program,
+}
+
+impl CompileEnv for EngineEnv<'_> {
+    fn midi_port(&self, _device_name: &str) -> Option<MidiPort> {
+        None
+    }
+
+    fn device_latency(&self, device: DeviceId) -> u32 {
+        self.slots
+            .slots
+            .slot(device)
+            .map_or(0, |slot| self.engine.processor_latency(slot))
+    }
 }
 
 /// Queues `commands` in order.
