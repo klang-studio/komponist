@@ -1138,7 +1138,7 @@ impl App {
                     ChannelRef::Master => self.lang.dialog_master(),
                 };
                 (
-                    d.plugin.name.clone(),
+                    crate::views::plugin_name(self.lang, &d.plugin),
                     format!(
                         "{track} · {}",
                         crate::dialogs::missing_plugins::format_label(self.lang, d.plugin.format)
@@ -1185,13 +1185,13 @@ impl App {
         let host = self.engine.host();
         if let Some(infos) = host.params(device) {
             return ParamGrid {
-                params: all_plugin_params(infos, |id| host.param_value(device, id)),
+                params: all_plugin_params(self.lang, infos, |id| host.param_value(device, id)),
             };
         }
         let params = match self.project().find_device(device) {
-            Some((_, _, d)) if is_hexa(d) => hexa_macro_params(d),
+            Some((_, _, d)) if is_hexa(d) => hexa_macro_params(self.lang, d),
             Some((_, _, d)) => crate::device_host::internal_kind(d)
-                .map(|kind| internal_params(kind, d))
+                .map(|kind| internal_params(self.lang, kind, d))
                 .unwrap_or_default(),
             None => Vec::new(),
         };
@@ -1202,7 +1202,9 @@ impl App {
     fn plugin_name(&self, device: DeviceId) -> String {
         self.project()
             .find_device(device)
-            .map_or_else(String::new, |(_, _, d)| d.plugin.name.clone())
+            .map_or_else(String::new, |(_, _, d)| {
+                crate::views::plugin_name(self.lang, &d.plugin)
+            })
     }
 
     /// `KOMPONIST_LOG_KEYS`: X focus changes while frames are open.

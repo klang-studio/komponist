@@ -401,7 +401,7 @@ fn list(ui: &mut Ui, t: Lang, s: &mut State, rows: &[Row], width: f32) {
                             continue;
                         };
                         let selected = s.instrument.as_ref() == Some(plugin);
-                        let r = entry(ui, inner, &row.name, format_tag(plugin.format), selected);
+                        let r = entry(ui, inner, &row.name, format_tag(t, plugin.format), selected);
                         if scroll_to && selected {
                             r.scroll_to_me(None);
                         }

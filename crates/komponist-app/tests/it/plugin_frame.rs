@@ -88,7 +88,7 @@ fn macro_grid() -> ParamGrid {
         .find(|d| d.plugin.name == "hexa")
         .unwrap();
     ParamGrid {
-        params: hexa_macro_params(hexa),
+        params: hexa_macro_params(Lang::De, hexa),
     }
 }
 

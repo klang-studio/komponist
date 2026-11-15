@@ -309,7 +309,7 @@ pub fn touched(
 ) -> Option<TouchedParam> {
     use komponist_model::ChannelRef;
     let (channel, _, device) = project.find_device(touch.device)?;
-    let card = card(device, host, windows);
+    let card = card(lang, device, host, windows);
     let p = card.param(&touch.param)?;
     let (track, track_name) = match channel {
         ChannelRef::Track(t) => (Some(t), project.track(t)?.name.clone()),
@@ -329,25 +329,30 @@ pub fn touched(
 }
 
 /// The cards of `track`'s chain, left to right.
-pub fn cards(track: &Track, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Vec<Card> {
+pub fn cards(
+    lang: Lang,
+    track: &Track,
+    host: &dyn DeviceHost,
+    windows: &[PluginWindow],
+) -> Vec<Card> {
     track
         .channel
         .devices
         .iter()
-        .map(|d| card(d, host, windows))
+        .map(|d| card(lang, d, host, windows))
         .collect()
 }
 
-fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
+fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Card {
     let state = CardState::from(host.status(device.id));
     let params = if state == CardState::Ok {
         if is_hexa(device) {
-            hexa_params(device)
+            hexa_params(lang, device)
         } else if let Some(kind) = internal_kind(device) {
-            internal_params(kind, device)
+            internal_params(lang, kind, device)
         } else {
             host.params(device.id)
-                .map(|infos| plugin_params(infos, |id| host.param_value(device.id, id)))
+                .map(|infos| plugin_params(lang, infos, |id| host.param_value(device.id, id)))
                 .unwrap_or_default()
         }
     } else {
@@ -358,7 +363,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
     // hexa and the internal devices bring their own layout; everything else gets the
     // auto-layout.
     let layout = if is_hexa(device) {
-        komponist_builtin::device::layout()
+        komponist_builtin::device::layout_in(lang)
     } else {
         internal_kind(device).map_or_else(
             || {
@@ -367,7 +372,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
                     metrics::COLUMNS as u8,
                 )
             },
-            |kind| kind.layout().clone(),
+            |kind| kind.layout_in(lang).clone(),
         )
     };
     #[cfg(debug_assertions)]
@@ -398,8 +403,8 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         .or(loaded.map(|(index, _)| index));
     Card {
         device: device.id,
-        name: device.plugin.name.clone(),
-        tag: format_tag(device.plugin.format),
+        name: crate::views::plugin_name(lang, &device.plugin),
+        tag: format_tag(lang, device.plugin.format),
         instrument,
         midi_effect,
         bypass: device.bypass,
@@ -445,11 +450,15 @@ pub fn sampler_view(host: &dyn DeviceHost, device: DeviceId) -> Option<SamplerVi
 
 /// The parameters of an internal effect with the values in its device state (the defaults for a
 /// state that does not load); the wire id is the index in `kind.params()`.
-pub fn internal_params(kind: komponist_builtin::Internal, device: &Device) -> Vec<Param> {
+pub fn internal_params(
+    lang: Lang,
+    kind: komponist_builtin::Internal,
+    device: &Device,
+) -> Vec<Param> {
     let values = kind
         .decode_state(device.state.as_deref())
         .unwrap_or_else(|_| kind.defaults());
-    kind.params()
+    kind.params_in(lang)
         .iter()
         .zip(values)
         .enumerate()
@@ -464,10 +473,10 @@ pub fn internal_params(kind: komponist_builtin::Internal, device: &Device) -> Ve
 
 /// The parameters of hexa's card (`komponist_builtin::device`), read from the patch in the
 /// device state; the wire id is `Field::wire`.
-pub fn hexa_params(device: &Device) -> Vec<Param> {
+pub fn hexa_params(lang: Lang, device: &Device) -> Vec<Param> {
     let patch = komponist_builtin::decode_state(device.state.as_deref())
         .unwrap_or_else(|_| komponist_builtin::default_patch());
-    komponist_builtin::device::params()
+    komponist_builtin::device::params_in(lang)
         .iter()
         .map(|p| {
             let value = p.field.get(&patch);
@@ -483,7 +492,7 @@ pub fn hexa_params(device: &Device) -> Vec<Param> {
 
 /// hexa's 8 macros, read from the patch in the device state (the plugin window's parameter
 /// view lists them; the card has its own parameters, [`hexa_params`]).
-pub fn hexa_macro_params(device: &Device) -> Vec<Param> {
+pub fn hexa_macro_params(lang: Lang, device: &Device) -> Vec<Param> {
     let patch = komponist_builtin::decode_state(device.state.as_deref())
         .unwrap_or_else(|_| komponist_builtin::default_patch());
     Macro::ALL
@@ -492,9 +501,9 @@ pub fn hexa_macro_params(device: &Device) -> Vec<Param> {
             let value = m.get(&patch);
             Param {
                 wire: m.id(),
-                info: m.param_info(),
+                info: m.param_info_in(lang),
                 value,
-                text: m.text(value),
+                text: m.text_in(lang, value),
             }
         })
         .collect()
@@ -504,11 +513,12 @@ pub fn hexa_macro_params(device: &Device) -> Vec<Param> {
 /// (not hidden, not read-only, not the plugin's own bypass): its macros if it reports any, else
 /// the first 12, with their last known value and text.
 pub fn plugin_params<'a>(
+    lang: Lang,
     infos: &[WireInfo],
     value: impl Fn(u32) -> Option<&'a ParamValue>,
 ) -> Vec<Param> {
     let listed: Vec<&WireInfo> = infos.iter().filter(|p| is_listed(p)).collect();
-    let models: Vec<ParamInfo> = listed.iter().map(|p| param_info(p)).collect();
+    let models: Vec<ParamInfo> = listed.iter().map(|p| plugin_info(lang, p)).collect();
     auto_layout(&models)
         .into_iter()
         .map(|i| plugin_param(listed[i], models[i].clone(), value(listed[i].id)))
@@ -517,14 +527,20 @@ pub fn plugin_params<'a>(
 
 /// Every parameter a generic view lists, for the plugin frame's grid (no auto-layout limit).
 pub fn all_plugin_params<'a>(
+    lang: Lang,
     infos: &[WireInfo],
     value: impl Fn(u32) -> Option<&'a ParamValue>,
 ) -> Vec<Param> {
     infos
         .iter()
         .filter(|p| is_listed(p))
-        .map(|p| plugin_param(p, param_info(p), value(p.id)))
+        .map(|p| plugin_param(p, plugin_info(lang, p), value(p.id)))
         .collect()
+}
+
+/// A bridged plugin's parameter: its own names, our value words ("Off", "40%").
+fn plugin_info(lang: Lang, wire: &WireInfo) -> ParamInfo {
+    param_info(wire).texts(komponist_builtin::value_texts(lang))
 }
 
 fn plugin_param(wire: &WireInfo, info: ParamInfo, known: Option<&ParamValue>) -> Param {
@@ -767,7 +783,7 @@ mod tests {
             value: 0.18,
             text: "80 Hz".into(),
         }];
-        let params = plugin_params(&many(20), |id| values.iter().find(|v| v.id == id));
+        let params = plugin_params(Lang::De, &many(20), |id| values.iter().find(|v| v.id == id));
         assert_eq!(params.len(), komponist_model::params::AUTO_MAX);
         assert_eq!(params[0].name(), "P10");
         assert_eq!((params[0].wire, params[0].info.id.as_str()), (10, "p10"));
@@ -775,8 +791,8 @@ mod tests {
         assert_eq!((params[1].value, params[1].text.as_str()), (0.5, "50 %"));
         assert_eq!(params[11].name(), "P21");
         // The plugin frame's grid keeps all of them.
-        assert_eq!(all_plugin_params(&many(20), |_| None).len(), 20);
-        assert_eq!(plugin_params(&many(5), |_| None).len(), 5);
+        assert_eq!(all_plugin_params(Lang::De, &many(20), |_| None).len(), 20);
+        assert_eq!(plugin_params(Lang::De, &many(5), |_| None).len(), 5);
     }
 
     #[test]
@@ -785,7 +801,7 @@ mod tests {
         for i in [15, 12] {
             infos[3 + (i - 10)].flags |= param_flags::MACRO;
         }
-        let names: Vec<_> = plugin_params(&infos, |_| None)
+        let names: Vec<_> = plugin_params(Lang::De, &infos, |_| None)
             .iter()
             .map(|p| p.name().to_owned())
             .collect();
@@ -800,6 +816,7 @@ mod tests {
     #[test]
     fn values_are_texted_and_snapped() {
         let algo = hexa_macro_params(
+            Lang::De,
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
                 .devices[0],
@@ -810,6 +827,7 @@ mod tests {
         assert_eq!(algo.snap(40.0), 32.0);
         assert_eq!(algo.text_at(0.0), "Frei");
         let ratio = hexa_macro_params(
+            Lang::De,
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
                 .devices[0],
@@ -822,7 +840,7 @@ mod tests {
             value: 0.18,
             text: "-12.0 dB".into(),
         };
-        let p = plugin_params(&[info(1, "Gain", 0)], |_| Some(&own)).remove(0);
+        let p = plugin_params(Lang::De, &[info(1, "Gain", 0)], |_| Some(&own)).remove(0);
         assert_eq!(p.text_at(0.18), "-12.0 dB");
         assert_eq!(p.text_at(0.25), "25 %");
     }
@@ -841,7 +859,7 @@ mod tests {
                 },
             );
         }
-        let cards = cards(lead, &host, &[]);
+        let cards = cards(Lang::De, lead, &host, &[]);
         let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -908,6 +926,7 @@ mod tests {
         use super::layout::Page;
         let project = demo_project();
         let mut card = card(
+            Lang::De,
             &project.tracks[2].channel.devices[0],
             &BuiltinHost::new(),
             &[],
@@ -1003,16 +1022,22 @@ mod tests {
         let host = BuiltinHost::new();
         // A project saved before „Analyse“ existed has no such parameter in its state: on.
         let old = br#"{"params": {"out": 0.0}}"#.to_vec();
-        let on = card(&device(Some(old), false), &host, &[]);
+        let on = card(Lang::De, &device(Some(old), false), &host, &[]);
         assert!(shows_spectrum(&on));
         let off_state = Internal::Eq.with_value(None, 31, 0.0).unwrap();
         assert_eq!(Internal::Eq.wire(&ParamId::new("analyse")), Some(31));
         assert!(!shows_spectrum(&card(
+            Lang::De,
             &device(Some(off_state), false),
             &host,
             &[]
         )));
-        assert!(!shows_spectrum(&card(&device(None, true), &host, &[])));
+        assert!(!shows_spectrum(&card(
+            Lang::De,
+            &device(None, true),
+            &host,
+            &[]
+        )));
         let mut collapsed = on.clone();
         collapsed.collapsed = true;
         assert!(!shows_spectrum(&collapsed));
@@ -1021,6 +1046,6 @@ mod tests {
             plugin: Internal::Delay.plugin_ref(),
             ..device(None, false)
         };
-        assert!(!shows_spectrum(&card(&delay, &host, &[])));
+        assert!(!shows_spectrum(&card(Lang::De, &delay, &host, &[])));
     }
 }

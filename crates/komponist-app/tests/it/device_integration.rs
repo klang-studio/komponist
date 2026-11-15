@@ -673,6 +673,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
     card.get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
     // The cards model carries the real masks (operator 1 → 6, operator 6 → 1).
     let cards = komponist_app::views::devices::model::cards(
+        Lang::De,
         h.state().project().track(track).unwrap(),
         h.state().engine().host(),
         &[],

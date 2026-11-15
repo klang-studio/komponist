@@ -99,7 +99,7 @@ impl View for Devices {
         else {
             return;
         };
-        let mut cards = model::cards(track, ctx.engine.host(), &ctx.ui.plugin_windows);
+        let mut cards = model::cards(ctx.lang, track, ctx.engine.host(), &ctx.ui.plugin_windows);
         for c in &mut cards {
             c.page = ctx.ui.devices.page(c.device);
             c.collapsed = ctx.ui.devices.collapsed.contains(&c.device);

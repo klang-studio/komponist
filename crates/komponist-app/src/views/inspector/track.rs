@@ -156,12 +156,15 @@ fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
             .resolve(c)
             .and_then(|e| plugins.iter().position(|p| *p == e.plugin))
     });
-    let mut labels: Vec<String> = plugins.iter().map(|p| p.name.clone()).collect();
+    let mut labels: Vec<String> = plugins
+        .iter()
+        .map(|p| crate::views::plugin_name(t, p))
+        .collect();
     let mut enabled = vec![true; labels.len()];
     let mut selected = match (selected_entry, &current) {
         (Some(i), _) => i,
         (None, Some(c)) => {
-            labels.insert(0, c.name.clone());
+            labels.insert(0, crate::views::plugin_name(t, c));
             plugins.insert(0, c.clone());
             enabled.insert(0, false);
             0
@@ -284,7 +287,7 @@ pub(super) fn devices_section(
     track: &Track,
 ) {
     let t = ctx.lang;
-    let rows = model::device_rows(&track.channel.devices, ctx.engine.host());
+    let rows = model::device_rows(ctx.lang, &track.channel.devices, ctx.engine.host());
     let now = ui.input(|i| i.time);
     let (_, add) = frame(
         ui,

@@ -21,7 +21,7 @@ fn an_old_file_loads_and_its_macros_read_the_saved_values() {
         .flat_map(|t| &t.channel.devices)
         .find(|d| komponist_app::device_host::is_hexa(d))
         .expect("a hexa device");
-    let params = hexa_macro_params(hexa);
+    let params = hexa_macro_params(komponist_i18n::Lang::De, hexa);
     let value = |m: Macro| params.iter().find(|p| p.wire == m.id()).unwrap().value;
     assert_eq!(value(Macro::Algorithm), 5.0);
     assert_eq!(value(Macro::Ratio2), 3.5);
@@ -67,7 +67,7 @@ fn an_old_file_shows_on_the_new_card_too() {
         .flat_map(|t| &t.channel.devices)
         .find(|d| komponist_app::device_host::is_hexa(d))
         .expect("a hexa device");
-    let params = komponist_app::views::devices::model::hexa_params(hexa);
+    let params = komponist_app::views::devices::model::hexa_params(komponist_i18n::Lang::De, hexa);
     let value = |key: &str| {
         params
             .iter()

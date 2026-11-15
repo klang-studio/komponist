@@ -65,11 +65,7 @@ pub enum Output {
 
 /// The format chip of a plugin format ("INTERN" / "BUILT-IN" for the built-in devices).
 pub fn format_label(t: Lang, format: PluginFormat) -> &'static str {
-    match format {
-        PluginFormat::Clap => "CLAP",
-        PluginFormat::Vst3 => "VST3",
-        PluginFormat::Builtin => t.missing_format_builtin(),
-    }
+    crate::views::format_tag(t, format)
 }
 
 /// The owner of a device in a place: "Spur Arp" ("Track Arp"), "Master".

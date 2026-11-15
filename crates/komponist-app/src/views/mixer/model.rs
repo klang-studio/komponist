@@ -205,13 +205,13 @@ impl Strip {
     }
 }
 
-fn inserts(channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
+fn inserts(lang: Lang, channel: &Channel, host: &dyn DeviceHost) -> Vec<Insert> {
     channel
         .devices
         .iter()
         .map(|d: &std::sync::Arc<Device>| Insert {
             device: d.id,
-            name: d.plugin.name.clone(),
+            name: crate::views::plugin_name(lang, &d.plugin),
             instrument: d.role == DeviceRole::Instrument,
             midi: d.role == DeviceRole::MidiEffect,
             bypass: d.bypass,
@@ -249,7 +249,7 @@ pub fn strips(
             .to_owned()
         } else {
             ch.instrument()
-                .map(|(_, d)| d.plugin.name.clone())
+                .map(|(_, d)| crate::views::plugin_name(lang, &d.plugin))
                 .unwrap_or_default()
         };
         Strip {
@@ -277,7 +277,7 @@ pub fn strips(
             mute: ch.mute,
             solo: ch.solo,
             arm: t.arm,
-            inserts: inserts(ch, host),
+            inserts: inserts(lang, ch, host),
         }
     };
     let mut out: Vec<Strip> = project
@@ -310,7 +310,7 @@ pub fn strips(
         mute: m.mute,
         solo: false,
         arm: false,
-        inserts: inserts(m, host),
+        inserts: inserts(lang, m, host),
     });
     out
 }
