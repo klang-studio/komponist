@@ -601,7 +601,7 @@ mod tests {
     fn new_clips_follow_the_instrument() {
         let p = demo_project();
         let v = ArrangementView::default();
-        // Drums has klopfer: a step clip with the eight pads from note 36.
+        // Drums has the Sampler: a step clip with the eight pads from note 36.
         let c = new_clip(&p, &p.tracks[0], Tick(5 * 3840 + 100), &v, &[]);
         assert_eq!(c.start, Tick(5 * 3840));
         assert_eq!(c.length, Tick(3840));
@@ -612,7 +612,8 @@ mod tests {
         assert_eq!(rows.len(), 8);
         assert_eq!((rows[0].name.as_str(), rows[0].note), ("Kick", 36));
         assert_eq!((rows[7].name.as_str(), rows[7].note), ("Perc", 43));
-        // Note names klopfer reports (CLAP note-name) decide the rows instead.
+        // The names of the pads that hold a sample (the device host reports them as note names)
+        // replace the defaults; the other pads keep theirs.
         let names: Vec<komponist_ipc::NoteName> = [(36, "Bassdrum"), (38, "Clap")]
             .into_iter()
             .map(|(key, name)| komponist_ipc::NoteName {
@@ -626,7 +627,16 @@ mod tests {
             panic!("step clip expected");
         };
         let rows: Vec<(&str, u8)> = rows.iter().map(|r| (r.name.as_str(), r.note)).collect();
-        assert_eq!(rows, [("Bassdrum", 36), ("Clap", 38)]);
+        assert_eq!(rows.len(), 8);
+        assert_eq!(
+            rows[..4],
+            [
+                ("Bassdrum", 36),
+                ("Snare", 37),
+                ("Clap", 38),
+                ("Hat zu", 39)
+            ]
+        );
         // Lead has pisynth: an empty MIDI clip.
         let c = new_clip(&p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
         assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));

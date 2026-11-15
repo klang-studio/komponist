@@ -197,7 +197,7 @@ fn params() -> Vec<ParamInfo> {
     let mut list = vec![
         ParamInfo::new("kit_tune", "Kit-Tune", ParamKind::lin(-24.0, 24.0), 0.0)
             .unit(Unit::Semitones),
-        ParamInfo::new("follow", "Pad folgt Eingang", ParamKind::Bool, 1.0),
+        ParamInfo::new("follow", "Pad folgt Eingang", ParamKind::Bool, 0.0),
     ];
     for pad in 1..=PADS {
         let key = |f: PadField| format!("pad{pad}_{}", f.key());

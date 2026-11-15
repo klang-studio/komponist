@@ -150,6 +150,8 @@ pub struct PadGridOutput {
     pub response: Response,
     /// The pad that was clicked: select it and play it.
     pub clicked: Option<usize>,
+    /// The response of every pad, in order (for a context menu on a pad).
+    pub pads: Vec<Response>,
 }
 
 /// What is called with a pad index and a file dropped on it.
@@ -217,6 +219,7 @@ impl<'a> PadGrid<'a> {
             )
         });
         let mut clicked = None;
+        let mut responses = Vec::with_capacity(self.pads.len());
         for (i, pad) in self.pads.iter().enumerate() {
             let rect = pad_rect(area.min, self.cols, i);
             let r = ui.interact(
@@ -238,6 +241,7 @@ impl<'a> PadGrid<'a> {
                 r.request_focus();
                 clicked = Some(i);
             }
+            responses.push(r.clone());
             if !still && r.hovered() {
                 ui.set_cursor_icon(CursorIcon::PointingHand);
             }
@@ -264,6 +268,10 @@ impl<'a> PadGrid<'a> {
                 }
             }
         }
-        PadGridOutput { response, clicked }
+        PadGridOutput {
+            response,
+            clicked,
+            pads: responses,
+        }
     }
 }

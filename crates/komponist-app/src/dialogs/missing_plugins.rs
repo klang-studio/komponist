@@ -5,9 +5,16 @@
 //! Instrument", "Spur Pad · Effekt 4") and module file name. "Ohne diese Plugins fortfahren" (Enter, Esc)
 //! keeps them as placeholders with their state; "Plugin-Ordner prüfen" opens the settings at
 //! "Plugins" and rescans.
+//!
+//! **Missing samples (WP-87)** are listed in the same dialog, in the same row style: the format
+//! chip says "SAMPLE", the place is "Spur Drums · Pad 3", the module line the file name, and
+//! "Suchen …" opens the file browser to relink it (the other missing samples of the project that
+//! are in the chosen folder follow). The rows come from the project every frame, so a found
+//! sample leaves the list; with nothing left the dialog closes. With samples only the title is
+//! "1 Sample fehlt" / "n Samples fehlen" and the primary action "Ohne diese Samples fortfahren".
 
 use egui::{Color32, Context, Rect, Role, Sense, Ui, pos2, vec2};
-use komponist_model::{ChannelRef, DeviceRole, PluginFormat, PluginRef, Project};
+use komponist_model::{ChannelRef, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::MissingPlugin;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, typography};
@@ -26,6 +33,14 @@ pub mod names {
     pub const CONTINUE_MANY: &str = "Ohne diese Plugins fortfahren";
     /// The primary action with one plugin.
     pub const CONTINUE_ONE: &str = "Ohne dieses Plugin fortfahren";
+    /// The primary action with samples only (several).
+    pub const CONTINUE_SAMPLES: &str = "Ohne diese Samples fortfahren";
+    /// The primary action with one sample only.
+    pub const CONTINUE_SAMPLE: &str = "Ohne dieses Sample fortfahren";
+    /// A missing sample's button: look for the file.
+    pub const SEARCH: &str = "Suchen …";
+    /// The format chip of a sample row.
+    pub const SAMPLE_CHIP: &str = "SAMPLE";
 }
 
 /// One missing device.
@@ -39,6 +54,8 @@ pub struct Row {
     pub place: String,
     /// Module file name ("Vital.vst3", "Surge XT.clap"); empty when the project does not know it.
     pub module: String,
+    /// A missing sample: the sampler device and pad (0-based) "Suchen …" relinks.
+    pub search: Option<(DeviceId, usize)>,
 }
 
 /// What the dialog shows.
@@ -48,6 +65,8 @@ pub struct Model {
     pub project: String,
     /// The missing devices in document order.
     pub rows: Vec<Row>,
+    /// The missing samples in document order (after the devices).
+    pub samples: Vec<Row>,
 }
 
 /// What the user chose.
@@ -57,6 +76,8 @@ pub enum Output {
     Continue,
     /// "Plugin-Ordner prüfen".
     CheckFolders,
+    /// "Suchen …" on a missing sample: the file browser for this pad.
+    Search(DeviceId, usize),
 }
 
 /// The format chip of a plugin format.
@@ -111,13 +132,93 @@ pub fn model(project: &Project, missing: &[MissingPlugin]) -> Model {
                 format: format_label(mp.plugin.format),
                 place: format!("{owner} · {role}"),
                 module: module_label(&mp.plugin),
+                search: None,
             }
         })
         .collect();
     Model {
         project: project.name.clone(),
         rows,
+        samples: Vec::new(),
     }
+}
+
+/// A sample the project links that is not at its path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingSample {
+    /// The sampler device.
+    pub device: DeviceId,
+    /// The track it is on (`None`: master).
+    pub track: Option<komponist_model::TrackId>,
+    /// The pad, 0-based.
+    pub pad: usize,
+    /// The pad's name (the sample's).
+    pub name: String,
+    /// The file the link names, for the module line.
+    pub file: String,
+}
+
+/// The missing samples of every sampler device of `project`, resolved against `project_dir`, in
+/// document order.
+pub fn missing_samples(
+    project: &Project,
+    project_dir: Option<&std::path::Path>,
+) -> Vec<MissingSample> {
+    let chains = project
+        .tracks
+        .iter()
+        .map(|t| (Some(t.id), &t.channel.devices))
+        .chain(std::iter::once((None, &project.master.devices)));
+    let mut out = Vec::new();
+    for (track, devices) in chains {
+        for device in devices.iter() {
+            if !crate::device_host::internal_kind(device).is_some_and(|k| k.is_instrument()) {
+                continue;
+            }
+            for (pad, link) in
+                komponist_builtin::sampler::links::missing(device.state.as_deref(), project_dir)
+            {
+                let file = link
+                    .abs
+                    .file_name()
+                    .or_else(|| link.rel.file_name())
+                    .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                out.push(MissingSample {
+                    device: device.id,
+                    track,
+                    pad,
+                    name: link.name.clone(),
+                    file,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The model with the missing samples added.
+pub fn with_samples(mut model: Model, project: &Project, samples: &[MissingSample]) -> Model {
+    model.samples = samples
+        .iter()
+        .map(|s| {
+            let owner = match s.track.and_then(|t| project.track(t)) {
+                Some(track) => format!("Spur {}", track.name),
+                None => "Master".to_owned(),
+            };
+            Row {
+                name: if s.name.is_empty() {
+                    s.file.clone()
+                } else {
+                    s.name.clone()
+                },
+                format: names::SAMPLE_CHIP,
+                place: format!("{owner} · Pad {}", s.pad + 1),
+                module: s.file.clone(),
+                search: Some((s.device, s.pad)),
+            }
+        })
+        .collect();
+    model
 }
 
 /// The line under the place: the module file name. A CLAP plugin from an old project falls back to
@@ -141,6 +242,42 @@ pub fn title(n: usize) -> String {
     }
 }
 
+/// The title for `plugins` missing plugins and `samples` missing samples: "1 Sample fehlt",
+/// "2 Plugins und 3 Samples fehlen".
+pub fn title_for(plugins: usize, samples: usize) -> String {
+    match (plugins, samples) {
+        (_, 0) => title(plugins),
+        (0, 1) => "1 Sample fehlt".to_owned(),
+        (0, n) => format!("{n} Samples fehlen"),
+        (p, s) => {
+            let plugins = if p == 1 {
+                "1 Plugin".to_owned()
+            } else {
+                format!("{p} Plugins")
+            };
+            let samples = if s == 1 {
+                "1 Sample".to_owned()
+            } else {
+                format!("{s} Samples")
+            };
+            format!("{plugins} und {samples} fehlen")
+        }
+    }
+}
+
+/// The explanation for samples only.
+pub fn samples_text(project: &str, n: usize) -> String {
+    let what = if n == 1 {
+        "Dieses Sample liegt nicht mehr an seinem Platz"
+    } else {
+        "Diese Samples liegen nicht mehr an ihrem Platz"
+    };
+    format!(
+        "„{project}“ ist geöffnet. {what}. Mit „Suchen“ verknüpfst du sie neu; die Pads bleiben \
+         im Projekt gespeichert."
+    )
+}
+
 /// The explanation under the title.
 pub fn text(project: &str, n: usize) -> String {
     if n == 1 {
@@ -159,8 +296,12 @@ pub fn text(project: &str, n: usize) -> String {
 }
 
 /// Draws the dialog; returns the user's choice in the frame it is made.
-pub fn show(ctx: &Context, model: &Model) -> Option<Output> {
+///
+/// `keys` is false while something is on top of the dialog (the file browser of "Suchen …"): Enter
+/// and Esc belong to it then.
+pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
     let n = model.rows.len();
+    let samples = model.samples.len();
     let mut out = None;
     let response = modal(ctx, "missing_plugins", color32(color::SURFACE_3), |ui| {
         let width = m::WIDTH;
@@ -168,9 +309,13 @@ pub fn show(ctx: &Context, model: &Model) -> Option<Output> {
         ui.add_space(dm::PADDING);
         let inner = width - 2.0 * dm::PADDING;
         indented(ui, dm::PADDING, |ui| {
-            title_row(ui, &title(n));
+            title_row(ui, &title_for(n, samples));
             ui.add_space(m::TEXT_GAP);
-            let body = text(&model.project, n);
+            let body = if n == 0 {
+                samples_text(&model.project, samples)
+            } else {
+                text(&model.project, n)
+            };
             let g = galley(
                 ui,
                 &body,
@@ -188,17 +333,20 @@ pub fn show(ctx: &Context, model: &Model) -> Option<Output> {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = m::LIST_GAP;
-                    for row in &model.rows {
-                        missing_row(ui, inner, row);
+                    for row in model.rows.iter().chain(&model.samples) {
+                        if let Some(search) = missing_row(ui, inner, row) {
+                            out = Some(search);
+                        }
                     }
                 });
         });
         ui.add_space(m::LIST_MARGIN_Y + m::FOOTER_PADDING_TOP);
         indented(ui, dm::PADDING, |ui| {
-            let primary = if n == 1 {
-                names::CONTINUE_ONE
-            } else {
-                names::CONTINUE_MANY
+            let primary = match (n, samples) {
+                (0, 1) => names::CONTINUE_SAMPLE,
+                (0, _) => names::CONTINUE_SAMPLES,
+                (1, 0) => names::CONTINUE_ONE,
+                _ => names::CONTINUE_MANY,
             };
             let r = button_row(
                 ui,
@@ -217,9 +365,10 @@ pub fn show(ctx: &Context, model: &Model) -> Option<Output> {
         });
         ui.add_space(dm::PADDING);
     });
-    let enter = ctx.memory(|mem| mem.focused().is_none())
+    let enter = keys
+        && ctx.memory(|mem| mem.focused().is_none())
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-    if out.is_none() && (enter || response.should_close()) {
+    if out.is_none() && (enter || (keys && response.should_close())) {
         out = Some(Output::Continue);
     }
     out
@@ -254,7 +403,7 @@ fn title_row(ui: &mut Ui, title: &str) {
 }
 
 /// One row: name and format chip, place and module file name (`gap:4px 12px`, `padding:10px 12px`).
-fn missing_row(ui: &mut Ui, width: f32, row: &Row) {
+fn missing_row(ui: &mut Ui, width: f32, row: &Row) -> Option<Output> {
     let ppp = ui.pixels_per_point();
     let name = galley(
         ui,
@@ -292,7 +441,8 @@ fn missing_row(ui: &mut Ui, width: f32, row: &Row) {
     let line2 = place.size().y.max(id.size().y);
     let height = pad_y * 2.0 + line1 + gap_y + line2;
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
+    let painter = &painter;
     px::fill(painter, rect, radius::M, color32(color::SURFACE_2));
     let inner = rect.shrink2(vec2(pad_x, pad_y));
     // The second column is as wide as its widest entry; the chip fills it (CSS grid stretch).
@@ -341,6 +491,23 @@ fn missing_row(ui: &mut Ui, width: f32, row: &Row) {
         format!("{} {}, {}, {}", row.name, row.format, row.place, row.module)
     };
     label_node(ui, rect, &label, Role::ListItem);
+    // "Suchen …" of a missing sample, left of the chip column, centred on the first line.
+    let (device, pad) = row.search?;
+    let size = vec2(m::SEARCH_WIDTH, m::SEARCH_HEIGHT);
+    // The buttons share one column, whatever the width of the file name beside them.
+    let button_right = (inner.right() - m::SAMPLE_COLUMN).min(col_x - gap_x);
+    let at = Rect::from_min_size(
+        pos2(button_right - size.x, row1.center().y - size.y / 2.0),
+        size,
+    );
+    // A child at a fixed place: `put` would move the list's cursor.
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(at));
+    let button = child.add(
+        komponist_ui::widgets::button::Button::new(names::SEARCH)
+            .small()
+            .ground(2),
+    );
+    button.clicked().then_some(Output::Search(device, pad))
 }
 
 #[cfg(test)]

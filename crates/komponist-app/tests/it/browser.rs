@@ -326,14 +326,14 @@ fn the_star_toggles_a_favourite_and_the_settings_keep_it() {
     let surge = plugin(&screens_catalog(), "surge");
     assert!(h.state().settings().favorites.contains(&surge));
     let rows = row_names(&h);
-    assert_eq!(&rows[..3], ["pisynth", "klopfer", "Surge XT"], "Favoriten");
+    assert_eq!(&rows[..3], ["pisynth", "Sampler", "Surge XT"], "Favoriten");
     // Saved: a new app with the file shows it as a favourite.
     let saved = Settings::load(&path).unwrap();
     assert!(saved.favorites.contains(&surge));
     let engine = komponist_app::engine_sync::EngineSync::null(Box::new(FakeHost::new()));
     let doc = komponist_model::Document::new(demo_project());
     let h2 = harness(App::new(doc, engine, saved, None));
-    assert_eq!(&row_names(&h2)[..3], ["pisynth", "klopfer", "Surge XT"]);
+    assert_eq!(&row_names(&h2)[..3], ["pisynth", "Sampler", "Surge XT"]);
     // And off again.
     let star = h
         .get_all_by_role_and_label(Role::Button, &star_label)

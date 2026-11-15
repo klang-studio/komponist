@@ -74,6 +74,12 @@ pub mod missing {
     pub const FOOTER_PADDING_TOP: f32 = space::SPACE_3;
     /// Most rows shown before the list scrolls (the design shows two; a project may miss many).
     pub const LIST_MAX_HEIGHT: f32 = 320.0;
+    /// The "Suchen …" button of a missing sample (WP-87; not in S06): width and height.
+    pub const SEARCH_WIDTH: f32 = 72.0;
+    /// See [`SEARCH_WIDTH`].
+    pub const SEARCH_HEIGHT: f32 = 24.0;
+    /// Width reserved right of the "Suchen …" buttons for the chip and the file name.
+    pub const SAMPLE_COLUMN: f32 = 140.0;
 }
 
 /// S07 "Einstellungen" (`ovSettings` markup, `setNav`, `buffers`, `sw`, `midiIns`, `pluginDirs`).

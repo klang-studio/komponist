@@ -397,6 +397,40 @@ pub enum PluginAction {
         /// Plain value.
         value: f64,
     },
+    /// Link the sample file `path` to pad `pad` (0-based) of a sampler: dropped on the pad, chosen
+    /// in the file browser ("Sample laden …", "Suchen …"). The link goes into the device state
+    /// (absolute path and the path relative to the project file), the sample loads in the
+    /// background, the pad's start and end return to the whole sample.
+    LoadSample {
+        /// The sampler device.
+        device: DeviceId,
+        /// The pad, 0-based.
+        pad: usize,
+        /// The WAV file.
+        path: PathBuf,
+    },
+    /// Empty pad `pad` of a sampler ("Sample entfernen").
+    ClearSample {
+        /// The sampler device.
+        device: DeviceId,
+        /// The pad, 0-based.
+        pad: usize,
+    },
+    /// "Sample laden …" / "Suchen …": open the file browser for pad `pad`; the choice becomes a
+    /// [`PluginAction::LoadSample`].
+    PickSample {
+        /// The sampler device.
+        device: DeviceId,
+        /// The pad, 0-based.
+        pad: usize,
+    },
+    /// A click on a sampler pad plays it (a short live note on the device's track).
+    AuditionPad {
+        /// The sampler device.
+        device: DeviceId,
+        /// The pad, 0-based.
+        pad: usize,
+    },
 }
 
 /// Project lifecycle actions.
@@ -412,6 +446,11 @@ pub enum ProjectAction {
     Save,
     /// Ctrl Shift S or "⋯": save under a new path (file dialog).
     SaveAs,
+    /// "Sammeln und speichern" (WP-87, project menu): copies every sample the project links from
+    /// outside `<project name> Samples/` into that folder next to the project file, points the
+    /// links there, then saves. The one action that creates a folder; a project without a file
+    /// asks for one first (the browser of "Speichern unter").
+    CollectAndSave,
     /// "⋯" › "Zum Startbildschirm": back to S09, asking to save a dirty project first.
     ShowStartScreen,
     /// Ctrl Shift E or "⋯": open the export dialog with the last settings.

@@ -5,9 +5,9 @@
 //!
 //! - an instrument that reports note names (CLAP note-name): its first [`ROWS`] named keys, in key
 //!   order, with their names;
-//! - the Sampler: its pads 1–8 = notes 36–43 with the pads' names (the device host reports them as
-//!   note names, [`komponist_builtin::sampler`]; an empty pad is "Pad 3"); before it reported
-//!   any, the rows of S03 (Kick, Snare, … Perc);
+//! - the Sampler: its pads 1–8 = notes 36–43, each named after its sample (the device host
+//!   reports the loaded pads' names as note names, [`komponist_builtin::sampler`]); an empty pad
+//!   gets the S03 name of its row (Kick, Snare, … Perc);
 //! - every other instrument (and a track without one): the prototype's General MIDI rows
 //!   ([`DEFAULT_STEP_ROWS`]).
 //!
@@ -17,14 +17,14 @@
 //! ("C1") elsewhere. Changing the instrument later does not remap the rows of existing clips: a
 //! pattern keeps the notes it was written for.
 
+use komponist_builtin::sampler;
 use komponist_ipc::NoteName;
+use komponist_model::PluginFormat;
 use komponist_model::edits::StepRowSpec;
 use komponist_model::format::note_name;
+use komponist_model::project::BUILTIN_SAMPLER;
 use komponist_model::project::DEFAULT_STEP_ROWS;
 use komponist_model::{Device, PluginRef, StepClip, Track};
-use komponist_builtin::sampler;
-use komponist_model::project::BUILTIN_SAMPLER;
-use komponist_model::PluginFormat;
 
 /// Rows of a new step clip (S03: 8 pads).
 pub const ROWS: usize = 8;
@@ -47,6 +47,20 @@ pub fn is_sampler_track(track: &Track) -> bool {
 /// The rows of a new step clip for `instrument` with the `note_names` it reports now (see the
 /// module docs).
 pub fn rows_for(instrument: Option<&PluginRef>, note_names: &[NoteName]) -> Vec<StepRowSpec> {
+    if instrument.is_some_and(is_sampler) {
+        // All eight pads, whatever is loaded.
+        return DEFAULT_STEP_ROWS
+            .iter()
+            .zip(sampler::FIRST_NOTE..)
+            .map(|(&(default, _), note)| {
+                let name = note_names
+                    .iter()
+                    .find(|n| n.key == note && !n.name.trim().is_empty())
+                    .map_or(default, |n| n.name.trim());
+                spec(name, note)
+            })
+            .collect();
+    }
     let mut named: Vec<&NoteName> = note_names
         .iter()
         .filter(|n| n.key <= 127 && !n.name.trim().is_empty())
@@ -58,13 +72,6 @@ pub fn rows_for(instrument: Option<&PluginRef>, note_names: &[NoteName]) -> Vec<
             .into_iter()
             .take(ROWS)
             .map(|n| spec(n.name.trim(), n.key))
-            .collect();
-    }
-    if instrument.is_some_and(is_sampler) {
-        return DEFAULT_STEP_ROWS
-            .iter()
-            .zip(sampler::FIRST_NOTE..)
-            .map(|(&(name, _), note)| spec(name, note))
             .collect();
     }
     DEFAULT_STEP_ROWS
@@ -121,8 +128,8 @@ pub fn pad_of_row(pattern: &StepClip, row: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use komponist_model::project::MAX_STEPS;
     use komponist_model::project::BUILTIN_PISYNTH;
+    use komponist_model::project::MAX_STEPS;
     use komponist_model::{PluginFormat, Step, StepResolution, StepRow};
 
     fn plugin(format: PluginFormat, id: &str) -> PluginRef {
@@ -201,8 +208,13 @@ mod tests {
             [("Kick", 36), ("Snare", 37), ("Hat", 40), ("Key 50", 50)]
         );
         assert_eq!(pairs(&rows[7..]), [("Key 54", 54)]);
-        // For the sampler too: its pad names reach it as note names.
-        assert_eq!(rows_for(Some(&sampler()), &names), rows);
+        // The sampler always has its eight pads, named by the pads that hold a sample.
+        let sampler_rows = rows_for(Some(&sampler()), &names);
+        assert_eq!(sampler_rows.len(), ROWS);
+        assert_eq!(
+            pairs(&sampler_rows[2..5]),
+            [("Clap", 38), ("Hat zu", 39), ("Hat", 40)]
+        );
     }
 
     #[test]
@@ -218,16 +230,18 @@ mod tests {
 
     #[test]
     fn the_samplers_pad_names_make_the_rows_and_pads_map_to_rows() {
-        // Pads with samples and one without, as the device host reports them.
-        let names: Vec<NoteName> = ["Kick", "Snare", "Pad 3", "Hat"]
-            .iter()
-            .enumerate()
-            .map(|(i, n)| name(36 + i as u8, n))
-            .collect();
+        // Pads 1, 2 and 4 hold samples, as the device host reports them; pad 3 is empty.
+        let names = [name(36, "808 Kick"), name(37, "Rimshot"), name(39, "Hat")];
         let rows = rows_for(Some(&sampler()), &names);
         assert_eq!(
-            pairs(&rows),
-            [("Kick", 36), ("Snare", 37), ("Pad 3", 38), ("Hat", 39)]
+            pairs(&rows[..5]),
+            [
+                ("808 Kick", 36),
+                ("Rimshot", 37),
+                ("Clap", 38),
+                ("Hat", 39),
+                ("Hat offen", 40)
+            ]
         );
         let row = |name: &str, note: u8| StepRow {
             name: name.into(),

@@ -32,6 +32,7 @@
 //! | Neu laden | `Reload` |
 
 mod cells;
+pub(crate) use cells::{select_pad, selected_pad};
 pub mod frame;
 pub mod layout;
 pub mod metrics;

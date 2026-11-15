@@ -52,6 +52,7 @@ pub mod metrics;
 pub mod panels;
 pub mod project_io;
 pub mod record;
+pub mod samples;
 pub mod settings;
 mod shell;
 pub mod step_rows;

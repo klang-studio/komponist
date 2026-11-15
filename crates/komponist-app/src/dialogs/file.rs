@@ -56,6 +56,12 @@ pub mod names {
     pub const NO_PROJECTS: &str = "Keine Projekte in diesem Ordner";
     /// Empty list when choosing a folder.
     pub const NO_FOLDERS: &str = "Keine Unterordner";
+    /// Title when choosing a sample.
+    pub const SAMPLE_TITLE: &str = "Sample laden";
+    /// Primary action when choosing a sample.
+    pub const LOAD: &str = "Laden";
+    /// Empty list when choosing a sample.
+    pub const NO_SAMPLES: &str = "Keine Samples in diesem Ordner";
 }
 
 /// What the browser is for.
@@ -69,6 +75,8 @@ pub enum Purpose {
     Folder,
     /// Choose the export folder (S08 "Ändern").
     ExportFolder,
+    /// Choose a sample (WAV) for a sampler pad: "Sample laden …", and "Suchen …" for a missing one.
+    Sample,
 }
 
 impl Purpose {
@@ -146,6 +154,7 @@ impl FileBrowser {
             Purpose::Save => names::SAVE_TITLE,
             Purpose::Folder => names::FOLDER_TITLE,
             Purpose::ExportFolder => super::export::names::FOLDER_TITLE,
+            Purpose::Sample => names::SAMPLE_TITLE,
         }
     }
 
@@ -156,6 +165,7 @@ impl FileBrowser {
             Purpose::Save if self.replace.is_some() => names::REPLACE,
             Purpose::Save => names::SAVE,
             Purpose::Folder | Purpose::ExportFolder => names::CHOOSE_FOLDER,
+            Purpose::Sample => names::LOAD,
         }
     }
 
@@ -217,7 +227,7 @@ impl FileBrowser {
             return None;
         }
         match self.purpose {
-            Purpose::Open => Some(Output::Chosen(entry.path)),
+            Purpose::Open | Purpose::Sample => Some(Output::Chosen(entry.path)),
             Purpose::Save => {
                 self.name = entry.name;
                 self.confirm()
@@ -229,7 +239,7 @@ impl FileBrowser {
     /// The primary button (or Enter without a highlighted row).
     pub fn confirm(&mut self) -> Option<Output> {
         match self.purpose {
-            Purpose::Open => {
+            Purpose::Open | Purpose::Sample => {
                 let i = self.selected?;
                 self.activate(i)
             }
@@ -281,13 +291,19 @@ impl FileBrowser {
         if path.is_dir() {
             self.go(path);
             None
-        } else if self.purpose == Purpose::Open && path.is_file() {
+        } else if matches!(self.purpose, Purpose::Open | Purpose::Sample) && path.is_file() {
             Some(Output::Chosen(path))
         } else {
             self.message = Some(format!("{} gibt es nicht", path.display()));
             None
         }
     }
+}
+
+/// Whether `path` is a sample the sampler can load (a WAV file, by its extension).
+pub fn is_sample_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
 }
 
 /// `~` and `~/…` with the home folder.
@@ -316,7 +332,10 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
         let is_dir = path.is_dir();
         if is_dir {
             dirs.push(Entry { name, path, is_dir });
-        } else if !purpose.is_folder() && is_project_file(&path) {
+        } else if match purpose {
+            Purpose::Sample => is_sample_file(&path),
+            _ => !purpose.is_folder() && is_project_file(&path),
+        } {
             files.push(Entry { name, path, is_dir });
         }
     }
@@ -473,6 +492,7 @@ fn file_list(ui: &mut Ui, b: &mut FileBrowser, width: f32) -> Option<Output> {
                     if b.entries.is_empty() {
                         let text = match b.purpose {
                             Purpose::Folder | Purpose::ExportFolder => names::NO_FOLDERS,
+                            Purpose::Sample => names::NO_SAMPLES,
                             _ => names::NO_PROJECTS,
                         };
                         let g = styled(ui, text, &typography::SMALL, color32(color::TEXT_3), None);

@@ -250,6 +250,7 @@ impl App {
                 None => self.open_file_browser(Purpose::Save),
             },
             ProjectAction::SaveAs => self.open_file_browser(Purpose::Save),
+            ProjectAction::CollectAndSave => self.collect_and_save(),
             ProjectAction::ShowStartScreen => self.guard(Pending::StartScreen),
             ProjectAction::ContinueWithMissing => {
                 if matches!(self.ui.dialog, Some(Dialog::MissingPlugins(_))) {
@@ -353,18 +354,19 @@ impl App {
         }
         self.dialogs.missing_check = false;
         let missing = self.engine.host().missing_plugins(self.project());
-        if missing.is_empty() {
+        let samples = crate::dialogs::missing_plugins::missing_samples(
+            self.project(),
+            self.project_dir().as_deref(),
+        )
+        .len();
+        if missing.is_empty() && samples == 0 {
             self.set_status(
                 format!("{name} geöffnet · Leertaste spielt"),
                 StatusKind::Info,
             );
             return;
         }
-        let n = crate::dialogs::format::plural(
-            missing.len() as i64,
-            "1 Plugin fehlt",
-            "{} Plugins fehlen",
-        );
+        let n = crate::dialogs::missing_plugins::title_for(missing.len(), samples);
         self.set_status(format!("{name} geöffnet · {n}"), StatusKind::Error);
         // A dialog the user opened meanwhile (a late check after a scan) is not replaced; the
         // status bar says it. A running export keeps its dialog on top: S06 waits for it.
@@ -390,6 +392,8 @@ impl App {
         {
             self.store_state(device, &state);
         }
+        // The sample links get the paths for this file's folder.
+        self.rebase_samples(&path);
         // A new file renames the project after it; the rename happens only if writing works.
         let rename = name_from_path(&path).filter(|name| {
             self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
@@ -409,6 +413,8 @@ impl App {
                 }
                 self.doc.mark_saved();
                 self.project_path = Some(path.clone());
+                let dir = self.project_dir();
+                self.engine.host_mut().set_project_dir(dir);
                 self.set_status(
                     format!("Gespeichert · {}", crate::dialogs::format::tilde(&path)),
                     StatusKind::Success,
@@ -527,12 +533,16 @@ impl App {
         match purpose {
             Purpose::Open => self.open_path(path),
             Purpose::Save => {
-                if self.save_to(&path)
-                    && let Some(next) = pending
-                {
+                let saved = self.save_to(&path);
+                // "Sammeln und speichern" of a project that had no file yet: now it has one.
+                if saved && std::mem::take(&mut self.dialogs.samples.collect_after_save) {
+                    self.collect_and_save();
+                }
+                if saved && let Some(next) = pending {
                     self.proceed(next);
                 }
             }
+            Purpose::Sample => self.sample_chosen(path),
             Purpose::ExportFolder => self.export_folder_chosen(path),
             Purpose::Folder => {
                 let (clap, vst3) = crate::dialogs::settings::folder_formats(&path);

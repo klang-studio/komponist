@@ -21,9 +21,7 @@ use komponist_app::{Action, App};
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{Command, Engine, EngineConfig, MAX_BLOCK, MidiPort, Program};
 use komponist_model::{DeviceId, DeviceRole, Project, Tick, TrackId, persist};
-use komponist_plugins::{
-    DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup,
-};
+use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
 
 const RATE: f32 = 48_000.0;
 

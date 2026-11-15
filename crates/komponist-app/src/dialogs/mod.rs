@@ -73,6 +73,8 @@ pub(crate) struct DialogState {
     pub(crate) settings: settings::Cache,
     /// The recent projects' summaries for the start screen.
     pub(crate) start: start::Cache,
+    /// The sampler's pending file choice, held audition notes and pad selection (WP-87).
+    pub(crate) samples: crate::samples::State,
 }
 
 /// A dialog without a [`crate::ui_state::Dialog`] variant.
@@ -423,17 +425,36 @@ impl crate::App {
                 }
             }
             Some(Dialog::MissingPlugins(missing)) => {
-                let model = missing_plugins::model(self.project(), &missing);
-                if let Some(output) = missing_plugins::show(ctx, &model) {
+                // The missing samples are read from the project every frame: a sample that was
+                // found leaves the list.
+                let samples =
+                    missing_plugins::missing_samples(self.project(), self.project_dir().as_deref());
+                if missing.is_empty() && samples.is_empty() {
+                    self.queue.push(Action::Project(
+                        crate::actions::ProjectAction::ContinueWithMissing,
+                    ));
+                    return;
+                }
+                let model = missing_plugins::with_samples(
+                    missing_plugins::model(self.project(), &missing),
+                    self.project(),
+                    &samples,
+                );
+                if let Some(output) =
+                    missing_plugins::show(ctx, &model, self.dialogs.overlay.is_none())
+                {
                     let action = match output {
                         missing_plugins::Output::Continue => {
-                            crate::actions::ProjectAction::ContinueWithMissing
+                            Action::Project(crate::actions::ProjectAction::ContinueWithMissing)
                         }
                         missing_plugins::Output::CheckFolders => {
-                            crate::actions::ProjectAction::CheckPluginFolders
+                            Action::Project(crate::actions::ProjectAction::CheckPluginFolders)
+                        }
+                        missing_plugins::Output::Search(device, pad) => {
+                            Action::Plugin(crate::actions::PluginAction::PickSample { device, pad })
                         }
                     };
-                    self.queue.push(Action::Project(action));
+                    self.queue.push(action);
                 }
             }
             Some(Dialog::Export(_)) | None => {}

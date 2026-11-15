@@ -25,10 +25,11 @@ use std::sync::Arc;
 
 use crate::ids::{ClipId, DeviceId, NoteId, TrackId};
 use crate::project::{
-    BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind, DEFAULT_STEP_ROWS, Device,
-    DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip, MidiInputSel, Note,
-    PluginFormat, PluginRef, Project, Step, StepClip, StepRow, TRACK_HEIGHT_DEFAULT,
-    TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind, VOLUME_DB_MAX, VOLUME_DB_MIN,
+    BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind,
+    DEFAULT_STEP_ROWS, Device, DeviceRole, Hue, MAX_STEPS, MAX_SWING, MidiChannelSel, MidiClip,
+    MidiInputSel, Note, PluginFormat, PluginRef, Project, Step, StepClip, StepRow,
+    TRACK_HEIGHT_DEFAULT, TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN, Take, Track, TrackKind,
+    VOLUME_DB_MAX, VOLUME_DB_MIN,
 };
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 

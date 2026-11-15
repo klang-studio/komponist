@@ -38,5 +38,6 @@ mod pisynth_device;
 mod plugin_frame;
 mod plugins;
 mod record;
+mod sampler;
 mod shell;
 mod step_seq;

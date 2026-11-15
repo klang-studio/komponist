@@ -148,7 +148,13 @@ fn main() -> eframe::Result {
         }
     }
     let first = if args.demo {
-        fixtures::demo_project()
+        // The demo's Sampler plays the synthesized test kit (written to the temporary folder).
+        let demo = fixtures::demo_project();
+        let kit_dir = std::env::temp_dir().join("komponist-demo-kit");
+        komponist_app::samples::demo_with_kit(demo.clone(), &kit_dir).unwrap_or_else(|e| {
+            eprintln!("komponist: demo kit not written ({e}); the Sampler stays empty");
+            demo
+        })
     } else {
         new_project::empty_project()
     };

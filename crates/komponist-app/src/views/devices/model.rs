@@ -97,6 +97,20 @@ pub mod names {
     pub const BYPASS: &str = "Bypass";
     /// Context menu: remove the device.
     pub const REMOVE: &str = "Entfernen";
+    /// Sampler pad context menu: pick a sample file.
+    pub const LOAD_SAMPLE: &str = "Sample laden …";
+    /// Sampler pad context menu for a missing sample: look for the file.
+    pub const SEARCH: &str = "Suchen …";
+    /// Sampler pad context menu: empty the pad.
+    pub const REMOVE_SAMPLE: &str = "Sample entfernen";
+    /// Under a pad whose sample file is gone.
+    pub const PAD_MISSING: &str = "fehlt";
+    /// Under a pad whose sample is loading.
+    pub const PAD_LOADING: &str = "Lädt …";
+    /// Under a pad whose sample could not be read.
+    pub const PAD_FAILED: &str = "Fehler";
+    /// The waveform's title for a pad without a sample.
+    pub const NO_SAMPLE: &str = "kein Sample";
     /// Accessible name of the context menu and prefix of a card's group.
     pub const DEVICE: &str = "Gerät";
     /// Accessible name of the card row.
@@ -145,6 +159,22 @@ pub mod names {
     /// The accessible name of operator column `n`: „Operator 3“.
     pub fn operator(n: usize) -> String {
         format!("{OPERATOR} {n}")
+    }
+
+    /// An empty sampler pad: „Pad 3“.
+    pub fn pad(n: usize) -> String {
+        format!("Pad {n}")
+    }
+
+    /// The accessible name of a pad's context menu: „Pad Kick“.
+    pub fn pad_menu(name: &str) -> String {
+        format!("Pad {name}")
+    }
+
+    /// The waveform's title: „Pad 1 · Kick“ or „Pad 1 · kein Sample“.
+    pub fn waveform_title(pad: usize, sample: &str) -> String {
+        let sample = if sample.is_empty() { NO_SAMPLE } else { sample };
+        format!("Pad {pad} · {sample}")
     }
 
     /// The accessible name of a card: „Gerät Surge XT“.
@@ -232,6 +262,20 @@ impl Param {
     }
 }
 
+/// What the sampler's pads show, read from the device host's [`SamplerHandle`] every frame (WP-87):
+/// the pad grid, the waveform's data layer, its playhead and the follow-input trigger.
+///
+/// [`SamplerHandle`]: komponist_builtin::sampler::SamplerHandle
+#[derive(Debug, Clone, PartialEq)]
+pub struct SamplerView {
+    /// Name, status, real length and peaks of every pad.
+    pub pads: Vec<komponist_builtin::sampler::PadView>,
+    /// The playhead of every pad (a fraction of its sample) while a voice plays it.
+    pub playheads: Vec<Option<f32>>,
+    /// The last note that hit a pad: a counter and the pad (0-based), for "Pad folgt Eingang".
+    pub last_hit: (u32, usize),
+}
+
 /// One device card.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Card {
@@ -276,6 +320,8 @@ pub struct Card {
     /// The levels of the device's gain-reduction meter (set by the view from `Meters`); `None`
     /// for a device without a level feed.
     pub levels: Option<DeviceLevels>,
+    /// The sampler's pads (only a running sampler has them).
+    pub sampler: Option<SamplerView>,
 }
 
 impl Card {
@@ -468,6 +514,7 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         width: layout::device_width(metrics::COLUMNS as u8),
         late: None,
         levels: None,
+        sampler: sampler_view(host, device.id),
         routing: presets.then(|| {
             let patch = komponist_builtin::decode_state(device.state.as_deref())
                 .unwrap_or_else(|_| komponist_builtin::default_patch());
@@ -475,6 +522,17 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
         }),
         state,
     }
+}
+
+/// The sampler's pads as the host's handle reports them now; `None` for any other device.
+pub fn sampler_view(host: &dyn DeviceHost, device: DeviceId) -> Option<SamplerView> {
+    let handle = host.sampler(device)?;
+    let pads = handle.views();
+    Some(SamplerView {
+        playheads: (0..pads.len()).map(|p| handle.playhead(p)).collect(),
+        last_hit: handle.last_hit(),
+        pads,
+    })
 }
 
 /// The parameters of an internal effect with the values in its device state (the defaults for a

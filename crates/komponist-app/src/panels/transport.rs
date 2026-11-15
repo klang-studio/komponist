@@ -573,6 +573,7 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         ("Projekt öffnen …", p(ProjectAction::Open)),
         ("Speichern", p(ProjectAction::Save)),
         ("Speichern unter …", p(ProjectAction::SaveAs)),
+        ("Sammeln und speichern", p(ProjectAction::CollectAndSave)),
         ("WAV exportieren …", p(ProjectAction::OpenExportDialog)),
         ("Zum Startbildschirm", p(ProjectAction::ShowStartScreen)),
     ];

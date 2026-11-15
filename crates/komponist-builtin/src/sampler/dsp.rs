@@ -178,7 +178,7 @@ impl SamplerDsp {
 impl Dsp for SamplerDsp {
     fn activate(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        self.engine = Box::new(Engine::new(sample_rate));
+        *self.engine = Engine::new(sample_rate);
         self.update_all();
     }
 
