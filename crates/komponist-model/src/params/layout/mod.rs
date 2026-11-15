@@ -48,6 +48,11 @@ pub enum WidgetKind {
     FmAlgorithm,
     /// `graph` (WP-84), bound by [`CellParam::Graph`].
     Graph,
+    /// An overlay over whole columns (WP-86: pisynth's operator columns): a click on a column
+    /// selects it (context placeholder of [`CellParam::Select`]) and the selected column gets an
+    /// accent outline. It draws and takes clicks *below* the cells above it, so
+    /// [`validate`] lets it share their grid slots.
+    ColumnSelect,
 }
 
 /// Which half of a row a half cell takes.
@@ -69,6 +74,15 @@ pub enum CellParam {
     Template(String),
     /// A graph: a configuration and the parameters its slots edit.
     Graph(GraphBinding),
+    /// A widget that edits no parameter but a context placeholder (WP-86): the selection `key`
+    /// (`env_op`) among `count` entries, 1-based. A segment shows it as a switch, a
+    /// [`WidgetKind::ColumnSelect`] as the selected column.
+    Select {
+        /// The placeholder (`ENV_OP`).
+        key: &'static str,
+        /// How many entries there are (operators).
+        count: u8,
+    },
     /// A widget that edits no single parameter (a label, a meter).
     None,
 }
@@ -175,6 +189,10 @@ pub struct Cell {
     pub widget: WidgetKind,
     /// The parameter.
     pub param: CellParam,
+    /// A mini fader only: the Bool parameter that says whether this fader's operator is a carrier
+    /// (WP-86). A carrier fills in the track colour, a modulator in `text.2`; without it the
+    /// fader is a carrier. See [`Cell::carrier`].
+    pub carrier: Option<ParamId>,
 }
 
 impl Cell {
@@ -188,6 +206,7 @@ impl Cell {
             half: None,
             widget: WidgetKind::Knob,
             param: CellParam::Id(param),
+            carrier: None,
         }
     }
 
@@ -208,6 +227,7 @@ impl Cell {
             half: None,
             widget,
             param,
+            carrier: None,
         }
     }
 
@@ -240,7 +260,16 @@ impl Cell {
             half: Some(half),
             widget,
             param,
+            carrier: None,
         }
+    }
+
+    /// The mini fader of this cell fills as a carrier or a modulator as the Bool parameter
+    /// `carrier` says (on = carrier).
+    #[must_use]
+    pub fn carrier(mut self, carrier: ParamId) -> Cell {
+        self.carrier = Some(carrier);
+        self
     }
 
     /// The cell's bounds `[x, y, width, height]` in design px, relative to the top-left corner of
@@ -280,7 +309,7 @@ impl Cell {
         match &self.param {
             CellParam::Id(id) => Ok(Some(id.clone())),
             CellParam::Template(t) => resolve(t, context).map(Some),
-            CellParam::Graph(_) | CellParam::None => Ok(None),
+            CellParam::Graph(_) | CellParam::Select { .. } | CellParam::None => Ok(None),
         }
     }
 }
@@ -484,7 +513,9 @@ pub fn validate(
                 errors.push(LayoutError::BadCell { page: p, cell: c });
                 continue;
             }
-            for slot in cell.slots() {
+            // An overlay lies below the other cells and shares their slots.
+            let overlay = cell.widget == WidgetKind::ColumnSelect;
+            for slot in cell.slots().filter(|_| !overlay) {
                 let clash = taken.iter().find(|((col, row, part), _)| {
                     (*col, *row) == (slot.0, slot.1)
                         && (*part == slot.2 || *part == Part::Full || slot.2 == Part::Full)
@@ -512,6 +543,15 @@ pub fn validate(
                     error,
                 }),
                 _ => {}
+            }
+            if let Some(id) = &cell.carrier
+                && !exists(id)
+            {
+                errors.push(LayoutError::UnknownParam {
+                    page: p,
+                    cell: c,
+                    id: id.clone(),
+                });
             }
             if let CellParam::Graph(binding) = &cell.param {
                 for (slot, _) in &binding.bind {
@@ -648,6 +688,47 @@ mod tests {
                     b: 5
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_column_overlay_may_cover_cells_and_a_carrier_must_exist() {
+        let overlay = Cell::span(
+            0,
+            0,
+            2,
+            3,
+            WidgetKind::ColumnSelect,
+            CellParam::Select {
+                key: ENV_OP,
+                count: 2,
+            },
+        );
+        let known = |p: &ParamId| p.as_str() != "gone";
+        let l = page(
+            3,
+            vec![
+                overlay,
+                Cell::knob(0, 0, id("a")),
+                Cell::span(1, 1, 1, 2, WidgetKind::MiniFader, CellParam::Id(id("b")))
+                    .carrier(id("b_out")),
+            ],
+        );
+        assert_eq!(validate(&l, &ParamContext::new(), &known), vec![]);
+        let l = page(
+            3,
+            vec![
+                Cell::span(1, 1, 1, 2, WidgetKind::MiniFader, CellParam::Id(id("b")))
+                    .carrier(id("gone")),
+            ],
+        );
+        assert_eq!(
+            validate(&l, &ParamContext::new(), &known),
+            vec![LayoutError::UnknownParam {
+                page: 0,
+                cell: 0,
+                id: id("gone")
+            }]
         );
     }
 

@@ -60,6 +60,8 @@ pub mod names {
     pub const PRESET: &str = "Preset";
     /// The page switch's accessible name.
     pub const PAGES: &str = "Seiten";
+    /// The accessible name of the operator switch on pisynth's envelope page.
+    pub const OPERATOR: &str = "Operator";
     /// Context menu: collapse the frame to its 28 px strip.
     pub const COLLAPSE: &str = "Einklappen";
     /// Context menu: expand a collapsed frame.
@@ -118,8 +120,14 @@ pub mod names {
             K::MeterGr => "GR-Meter",
             K::PadGrid => "Pad-Raster",
             K::FmAlgorithm => "FM-Algorithmus",
+            K::ColumnSelect => "Spaltenwahl",
             K::Graph => "Graph",
         }
+    }
+
+    /// The accessible name of operator column `n`: „Operator 3“.
+    pub fn operator(n: usize) -> String {
+        format!("{OPERATOR} {n}")
     }
 
     /// The accessible name of a card: „Gerät Surge XT“.
@@ -310,16 +318,21 @@ fn card(device: &Device, host: &dyn DeviceHost, windows: &[PluginWindow]) -> Car
     };
     let instrument = device.role == DeviceRole::Instrument;
     let midi_effect = device.role == DeviceRole::MidiEffect;
-    // Internal devices bring their own layout; everything else gets the auto-layout.
-    let layout = internal_kind(device).map_or_else(
-        || {
-            DeviceLayout::knob_grid(
-                params.iter().map(|p| p.info.id.clone()),
-                metrics::COLUMNS as u8,
-            )
-        },
-        |kind| kind.layout().clone(),
-    );
+    // pisynth and the internal devices bring their own layout; everything else gets the
+    // auto-layout.
+    let layout = if is_pisynth(device) {
+        komponist_builtin::device::layout()
+    } else {
+        internal_kind(device).map_or_else(
+            || {
+                DeviceLayout::knob_grid(
+                    params.iter().map(|p| p.info.id.clone()),
+                    metrics::COLUMNS as u8,
+                )
+            },
+            |kind| kind.layout().clone(),
+        )
+    };
     #[cfg(debug_assertions)]
     if state == CardState::Ok {
         let known = |id: &ParamId| params.iter().any(|p| p.info.id == *id);
@@ -382,8 +395,28 @@ pub fn internal_params(kind: komponist_builtin::Internal, device: &Device) -> Ve
         .collect()
 }
 
-/// pisynth's 8 macros, read from the patch in the device state.
+/// The parameters of pisynth's card (`komponist_builtin::device`), read from the patch in the
+/// device state; the wire id is `Field::wire`.
 pub fn pisynth_params(device: &Device) -> Vec<Param> {
+    let patch = komponist_builtin::decode_state(device.state.as_deref())
+        .unwrap_or_else(|_| komponist_builtin::default_patch());
+    komponist_builtin::device::params()
+        .iter()
+        .map(|p| {
+            let value = p.field.get(&patch);
+            Param {
+                wire: p.wire,
+                text: p.info.format(value),
+                info: p.info.clone(),
+                value,
+            }
+        })
+        .collect()
+}
+
+/// pisynth's 8 macros, read from the patch in the device state (the plugin window's parameter
+/// view lists them; the card has its own parameters, [`pisynth_params`]).
+pub fn pisynth_macro_params(device: &Device) -> Vec<Param> {
     let patch = komponist_builtin::decode_state(device.state.as_deref())
         .unwrap_or_else(|_| komponist_builtin::default_patch());
     Macro::ALL
@@ -607,7 +640,7 @@ mod tests {
 
     #[test]
     fn values_are_texted_and_snapped() {
-        let algo = pisynth_params(
+        let algo = pisynth_macro_params(
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
                 .devices[0],
@@ -617,7 +650,7 @@ mod tests {
         assert_eq!(algo.snap(7.4), 7.0);
         assert_eq!(algo.snap(40.0), 32.0);
         assert_eq!(algo.text_at(0.0), "Frei");
-        let ratio = pisynth_params(
+        let ratio = pisynth_macro_params(
             &komponist_model::fixtures::demo_project().tracks[2]
                 .channel
                 .devices[0],
@@ -662,24 +695,22 @@ mod tests {
         );
         let pisynth = &cards[0];
         assert!(pisynth.instrument && pisynth.state == CardState::Ok);
-        assert_eq!(pisynth.frame_width(0.0), 252.0, "4 columns");
-        assert_eq!(pisynth.layout.pages[0].cells.len(), 8);
+        // WP-86: ten columns on the first page, eight on the envelope page.
+        assert_eq!(pisynth.frame_width(0.0), 612.0, "10 columns");
+        let pages: Vec<_> = pisynth
+            .layout
+            .pages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(pages, ["Operatoren", "Hüllkurven", "LFO", "Global"]);
         assert!(pisynth.presets);
         assert_eq!(pisynth.tag, "INTERN");
-        let macros: Vec<&str> = pisynth.params.iter().map(|p| p.name()).collect();
         assert_eq!(
-            macros,
-            [
-                "Algorithmus",
-                "Ratio 2",
-                "Index",
-                "Feedback",
-                "Attack",
-                "Decay",
-                "Sustain",
-                "Release"
-            ]
+            pisynth.params.len(),
+            komponist_builtin::device::params().len()
         );
+        assert_eq!(pisynth.params[0].name(), "Algorithmus");
         assert_eq!(pisynth.open_label(), Some(names::PARAMS));
         // Without plugin manager the effects are missing; TAL is bypassed.
         assert_eq!(cards[1].state, CardState::Missing);

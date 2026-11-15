@@ -29,11 +29,14 @@ fn finish_scan(manager: &mut PluginManager) -> ScanReport {
     .0
 }
 
+/// The catalog's names: pisynth and the scanned plugins. The internal devices (WP-85, WP-88) are
+/// built-ins like pisynth but not what these tests are about, so they are left out.
 fn names(manager: &PluginManager) -> Vec<String> {
     manager
         .catalog()
         .entries()
         .iter()
+        .filter(|e| !e.is_builtin() || e.plugin.name == "pisynth")
         .map(|e| e.plugin.name.clone())
         .collect()
 }
@@ -77,7 +80,9 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     };
 
     let mut manager = PluginManager::new(config(&dir));
-    assert_eq!(names(&manager), ["pisynth"]);
+    // The built-in entries (pisynth and the internal devices of WP-85) come before any scan.
+    let builtins = names(&manager);
+    assert_eq!(builtins[0], "pisynth");
     assert!(!manager.is_scanning());
     let t0 = Instant::now();
     manager.start_scan(&dirs);
@@ -106,16 +111,17 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     assert_eq!(report.skipped.len(), 2, "{report:?}");
     assert!(report.finished <= SystemTime::now());
 
-    assert_eq!(
-        names(&manager),
+    let mut expected = builtins.clone();
+    expected.extend(
         [
-            "pisynth",
             "kp-test-crash",
             "kp-test-fx",
             "kp-test-slow",
-            "kp-test-synth"
+            "kp-test-synth",
         ]
+        .map(String::from),
     );
+    assert_eq!(names(&manager), expected);
     let catalog = manager.catalog();
     let synth = catalog.resolve(&clap_plugin(SYNTH)).unwrap();
     assert_eq!(synth.kind, PluginKind::Instrument);
