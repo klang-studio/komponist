@@ -326,7 +326,10 @@ pub fn sidechain_users(lang: Lang, project: &Project, track: TrackId) -> Vec<Str
                     Tap::Pre => lang.routing_pre(),
                     Tap::Post => lang.routing_post(),
                 };
-                out.push(format!("{name} › {} ({tap})", d.plugin.name));
+                out.push(format!(
+                    "{name} › {} ({tap})",
+                    crate::views::plugin_name(lang, &d.plugin)
+                ));
             }
         }
     }

@@ -48,7 +48,7 @@ pub fn instrument_line(
     let Some((_, device)) = ch.instrument() else {
         return (lang.arrangement_no_instrument().to_owned(), false);
     };
-    let name = &device.plugin.name;
+    let name = &crate::views::plugin_name(lang, &device.plugin);
     match engine.device_status(device.id) {
         DeviceStatus::Missing => (lang.arrangement_plugin_missing(name), true),
         DeviceStatus::Crashed(FailReason::Exited { .. }) => {

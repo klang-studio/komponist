@@ -365,7 +365,7 @@ fn list(ui: &mut Ui, rows: &[Row], mem: &mut Memory, choose: &mut Option<PluginR
                 let g = w::galley(ui, &row.name, fonts::font_id(&style), style.line_height);
                 let pos = w::text_pos(rect, &g, left, ppp);
                 ui.painter().galley(pos, g, look.text);
-                let tag = format_tag(plugin.format);
+                let tag = format_tag(t, plugin.format);
                 let small = typography::SMALL;
                 let g = w::galley(ui, tag, fonts::font_id(&small), small.line_height);
                 let x = rect.right() - space::SPACE_2 - g.size().x;

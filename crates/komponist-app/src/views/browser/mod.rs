@@ -615,7 +615,11 @@ fn drag_ghost(ctx: &egui::Context) {
         .show(ctx, |ui| {
             tooltip::frame().show(ui, |ui| {
                 ui.label(
-                    fonts::rich_text(&plugin.name, &tooltip::TEXT).color(color32(color::TEXT_1)),
+                    fonts::rich_text(
+                        &crate::views::plugin_name(komponist_ui::lang(ctx), &plugin),
+                        &tooltip::TEXT,
+                    )
+                    .color(color32(color::TEXT_1)),
                 );
             });
         });

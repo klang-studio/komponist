@@ -444,7 +444,8 @@ fn segment(
     // The four oscillator waves are drawn as their icons (their names stay the accessible ones).
     let options: Vec<SegmentOption<'_>> = names
         .iter()
-        .map(|n| match wave_of(n) {
+        .enumerate()
+        .map(|(i, n)| match wave_of(p, i) {
             Some(wave) => SegmentOption::glyph(n, Glyph::Wave(wave)),
             None => SegmentOption::text(n),
         })
@@ -467,15 +468,16 @@ fn segment(
     true
 }
 
-/// The icon of an oscillator wave's German name.
-fn wave_of(name: &str) -> Option<Wave> {
-    match name {
-        "Sinus" => Some(Wave::Sine),
-        "Dreieck" => Some(Wave::Triangle),
-        "Säge" => Some(Wave::Saw),
-        "Rechteck" => Some(Wave::Square),
-        _ => None,
+/// The icon of choice `index` of an oscillator wave or LFO shape parameter: the first four choices
+/// are sine, triangle, saw and square in every language (`va_curve::WAVES`); anything else is text.
+fn wave_of(p: &Param, index: usize) -> Option<Wave> {
+    const WAVE_PARAMS: [&str; 4] = ["osc_a_wave", "osc_b_wave", "lfo1_shape", "lfo2_shape"];
+    if !WAVE_PARAMS.contains(&p.info.id.as_str()) {
+        return None;
     }
+    [Wave::Sine, Wave::Triangle, Wave::Saw, Wave::Square]
+        .get(index)
+        .copied()
 }
 
 fn toggle(
@@ -2015,5 +2017,34 @@ mod tests {
         h.snapshot_options("device-presse-1x", &egui_kittest::SnapshotOptions::new());
         results.extend_harness(&mut h);
         results.unwrap();
+    }
+
+    #[test]
+    fn waves_are_icons_by_choice_index_in_every_language() {
+        use komponist_builtin::Internal;
+        use komponist_i18n::Lang;
+        for lang in Lang::ALL {
+            let info = |key: &str| {
+                Internal::Volt
+                    .params_in(lang)
+                    .iter()
+                    .find(|i| i.id.as_str() == key)
+                    .unwrap_or_else(|| panic!("volt has {key}"))
+                    .clone()
+            };
+            let param = |key: &str| Param {
+                wire: 0,
+                text: String::new(),
+                info: info(key),
+                value: 0.0,
+            };
+            for key in ["osc_a_wave", "osc_b_wave", "lfo1_shape", "lfo2_shape"] {
+                let p = param(key);
+                let waves: Vec<bool> = (0..6).map(|i| wave_of(&p, i).is_some()).collect();
+                assert_eq!(waves[..4], [true; 4], "{key} in {lang:?}");
+                assert!(!waves[4], "choice 5 is not a wave");
+            }
+            assert!(wave_of(&param("filter_type"), 0).is_none());
+        }
     }
 }

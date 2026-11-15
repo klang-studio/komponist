@@ -743,11 +743,8 @@ impl App {
     pub(crate) fn device_name(&self, device: DeviceId) -> String {
         self.project().find_device(device).map_or_else(
             || self.lang.status_device_unnamed(device.0),
-            |(_, _, d)| {
-                // A built-in device shows its name in the UI language ("Hall" is "Reverb").
-                komponist_builtin::device_name(self.lang, &d.plugin)
-                    .map_or_else(|| d.plugin.name.clone(), str::to_owned)
-            },
+            // A built-in device shows its name in the UI language ("Hall" is "Reverb").
+            |(_, _, d)| crate::views::plugin_name(self.lang, &d.plugin),
         )
     }
 

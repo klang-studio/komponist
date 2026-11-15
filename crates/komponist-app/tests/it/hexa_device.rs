@@ -261,6 +261,7 @@ fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
     }
     // The fader colours are in the snapshot; here the card's own carrier values.
     let params = komponist_app::views::devices::model::hexa_params(
+        Lang::De,
         &app.project().find_device(device).unwrap().2.clone(),
     );
     let carrier = |n: usize| {

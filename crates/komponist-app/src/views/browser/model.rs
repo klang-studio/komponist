@@ -24,7 +24,7 @@ use crate::actions::{Action, DropTarget, EditAction, PluginAction, UiAction};
 use crate::device_host::is_hexa;
 use crate::settings::Favorites;
 use crate::ui_state::{BrowserSegment, DockTab};
-use crate::views::format_tag;
+use crate::views::{format_tag, plugin_name};
 
 /// Hint in the search field while it has text (`searchHint`): a key name.
 pub const SEARCH_CLEAR: &str = "Esc";
@@ -240,15 +240,15 @@ pub fn rows(lang: Lang, input: &Input<'_>) -> Vec<Row> {
     }
 }
 
-fn plugin_row(input: &Input<'_>, entry: &CatalogEntry, level: u8) -> Row {
+fn plugin_row(lang: Lang, input: &Input<'_>, entry: &CatalogEntry, level: u8) -> Row {
     Row::new(
         RowKind::Plugin {
             plugin: entry.plugin.clone(),
             kind: entry.kind,
             favorite: input.favorites.contains(&entry.plugin),
         },
-        entry.plugin.name.clone(),
-        format_tag(entry.plugin.format),
+        plugin_name(lang, &entry.plugin),
+        format_tag(lang, entry.plugin.format),
         level,
     )
 }
@@ -291,14 +291,14 @@ fn browse(lang: Lang, input: &Input<'_>) -> Vec<Row> {
             .collect();
         if !favorites.is_empty() {
             rows.push(Row::section(lang.browser_favorites()));
-            rows.extend(favorites.iter().map(|e| plugin_row(input, e, 0)));
+            rows.extend(favorites.iter().map(|e| plugin_row(lang, input, e, 0)));
         }
     }
     if all || input.segment == BrowserSegment::Instruments {
         let instruments: Vec<&CatalogEntry> = entries.iter().filter(|e| is_instrument(e)).collect();
         if !instruments.is_empty() {
             rows.push(Row::section(lang.browser_instruments()));
-            rows.extend(instruments.iter().map(|e| plugin_row(input, e, 0)));
+            rows.extend(instruments.iter().map(|e| plugin_row(lang, input, e, 0)));
         }
     }
     if all || input.segment == BrowserSegment::Effects {
@@ -306,7 +306,7 @@ fn browse(lang: Lang, input: &Input<'_>) -> Vec<Row> {
         let midi: Vec<&CatalogEntry> = entries.iter().filter(|e| is_midi_effect(e)).collect();
         if !midi.is_empty() {
             rows.push(Row::section(lang.browser_midi_effects()));
-            rows.extend(midi.iter().map(|e| plugin_row(input, e, 0)));
+            rows.extend(midi.iter().map(|e| plugin_row(lang, input, e, 0)));
         }
     }
     if all || input.segment == BrowserSegment::Instruments {
@@ -352,18 +352,18 @@ fn effects(
         if folders {
             let key = folder_key(section::EFFECTS, category_id(category));
             if folder(input, key, label, members.len(), rows) {
-                rows.extend(members.iter().map(|e| plugin_row(input, e, 1)));
+                rows.extend(members.iter().map(|e| plugin_row(lang, input, e, 1)));
             }
         } else {
             rows.push(Row::plain(label, 0));
-            rows.extend(members.iter().map(|e| plugin_row(input, e, 0)));
+            rows.extend(members.iter().map(|e| plugin_row(lang, input, e, 0)));
         }
     }
     rows.extend(
         entries
             .iter()
             .filter(|e| in_category(e, EffectCategory::Other))
-            .map(|e| plugin_row(input, e, 0)),
+            .map(|e| plugin_row(lang, input, e, 0)),
     );
 }
 
@@ -383,7 +383,8 @@ fn presets(lang: Lang, input: &Input<'_>, rows: &mut Vec<Row>) {
         let members: Vec<&komponist_builtin::PresetInfo> =
             all.iter().filter(|p| p.category == category).collect();
         let key = folder_key(section::PRESETS, category);
-        if folder(input, key, category, members.len(), rows) {
+        let label = komponist_builtin::category_text(lang, category);
+        if folder(input, key, label, members.len(), rows) {
             rows.extend(
                 members
                     .iter()
@@ -465,14 +466,21 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
         BrowserSegment::Effects => is_effect(e) || is_midi_effect(e),
         _ => true,
     };
+    // The catalog matches the stored (German) names; the shown name counts as well, so "reverb" finds Hall.
+    let found = input.catalog.search(query);
+    let shown = query.to_lowercase();
     let hits: Vec<&CatalogEntry> = input
         .catalog
-        .search(query)
-        .into_iter()
+        .entries()
+        .iter()
+        .filter(|e| {
+            found.iter().any(|f| f.plugin == e.plugin)
+                || plugin_name(lang, &e.plugin).to_lowercase().contains(&shown)
+        })
         .filter(|e| segment_has(e))
         .collect();
     let mut rows = vec![Row::section(lang.browser_hits(hits.len(), query))];
-    rows.extend(hits.iter().map(|e| plugin_row(input, e, 0)));
+    rows.extend(hits.iter().map(|e| plugin_row(lang, input, e, 0)));
 
     let lower = query.to_lowercase();
     if input.segment != BrowserSegment::Effects {
@@ -504,7 +512,7 @@ fn search(lang: Lang, input: &Input<'_>, query: &str) -> Vec<Row> {
                 .iter()
                 .filter(|e| in_category(e, category))
                 .filter(|e| !hits.iter().any(|h| h.plugin == e.plugin))
-                .map(|e| plugin_row(input, e, 0))
+                .map(|e| plugin_row(lang, input, e, 0))
                 .collect();
             if !more.is_empty() {
                 rows.push(Row::section(lang.browser_category(label)));
@@ -1004,7 +1012,7 @@ mod tests {
         let f = Favorites::default();
         let collapsed = BTreeSet::new();
         let i = input(&c, &f, &collapsed, &p, BrowserSegment::All, "");
-        let surge = plugin_row(&i, entry("surge"), 0);
+        let surge = plugin_row(Lang::De, &i, entry("surge"), 0);
         assert_eq!(
             activate(&surge, &p, Some(lead)),
             [Action::Plugin(PluginAction::Add {
@@ -1012,7 +1020,7 @@ mod tests {
                 target: DropTarget::NewTrack { index: None }
             })]
         );
-        let hall = plugin_row(&i, entry("hall"), 0);
+        let hall = plugin_row(Lang::De, &i, entry("hall"), 0);
         assert_eq!(
             activate(&hall, &p, Some(lead)),
             [

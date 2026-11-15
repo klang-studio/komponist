@@ -189,13 +189,20 @@ pub fn centered_text(ui: &mut Ui, rect: Rect, title: &str, detail: Option<&str>)
     }
 }
 
-/// The format tag of a plugin: "INTERN" (built-ins), "CLAP", "VST3" (`B()`, `card()`).
-pub fn format_tag(format: PluginFormat) -> &'static str {
+/// The format tag of a plugin: "INTERN" / "BUILT-IN" (built-ins, `missing-format-builtin`, the
+/// same chip as the missing-plugins dialog), "CLAP", "VST3" (`B()`, `card()`).
+pub fn format_tag(lang: Lang, format: PluginFormat) -> &'static str {
     match format {
-        PluginFormat::Builtin => "INTERN",
+        PluginFormat::Builtin => lang.missing_format_builtin(),
         PluginFormat::Clap => "CLAP",
         PluginFormat::Vst3 => "VST3",
     }
+}
+
+/// The name a device is shown under: a built-in device's name in `lang` ("Hall" is "Reverb" in
+/// English), any other plugin's own name. The stored [`komponist_model::PluginRef::name`] stays German.
+pub fn plugin_name(lang: Lang, plugin: &komponist_model::PluginRef) -> String {
+    komponist_builtin::device_name(lang, plugin).map_or_else(|| plugin.name.clone(), str::to_owned)
 }
 
 /// The name of track hue `index` (0 ..= 13, the order of `komponist_tokens::track::HUES`) in `lang`.

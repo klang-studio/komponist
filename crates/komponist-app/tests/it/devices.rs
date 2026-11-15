@@ -919,7 +919,7 @@ fn a_card_that_appears_is_scrolled_into_view() {
     use komponist_app::views::devices::{metrics, model};
     let (p, c) = s05_project();
     let track = p.track(c.pad).unwrap();
-    let mut cards = model::cards(track, &FakeHost::new(), &[]);
+    let mut cards = model::cards(Lang::De, track, &FakeHost::new(), &[]);
     for card in &mut cards {
         card.width = card.frame_width(0.0);
     }

@@ -739,7 +739,7 @@ fn hexa_preset_menu(t: Lang, r: &Response) -> Option<usize> {
     let entries: Vec<Entry<'_, usize>> = categories
         .iter()
         .zip(&groups)
-        .map(|(c, g)| Entry::submenu(c, g))
+        .map(|(c, g)| Entry::submenu(komponist_builtin::category_text(t, c), g))
         .collect();
     ContextMenu::new(t.devices_preset(), &entries).show_on(r)
 }
@@ -768,7 +768,7 @@ fn internal_preset_menu(t: Lang, r: &Response, kind: komponist_builtin::Internal
     let mut entries: Vec<Entry<'_, usize>> = categories
         .iter()
         .zip(&groups)
-        .map(|(c, g)| Entry::submenu(c, g))
+        .map(|(c, g)| Entry::submenu(komponist_builtin::category_text(t, c), g))
         .collect();
     entries.extend(
         presets

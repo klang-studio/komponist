@@ -137,6 +137,7 @@ impl DeviceRow {
 
 /// The rows of `devices` with their status from `host`, and each one's format tag.
 pub fn device_rows(
+    lang: Lang,
     devices: &[std::sync::Arc<Device>],
     host: &dyn DeviceHost,
 ) -> Vec<(DeviceRow, &'static str)> {
@@ -154,12 +155,12 @@ pub fn device_rows(
             (
                 DeviceRow {
                     device: d.id,
-                    name: d.plugin.name.clone(),
+                    name: crate::views::plugin_name(lang, &d.plugin),
                     instrument: d.role == DeviceRole::Instrument,
                     bypass: d.bypass,
                     status,
                 },
-                format_tag(d.plugin.format),
+                format_tag(lang, d.plugin.format),
             )
         })
         .collect()
@@ -385,7 +386,7 @@ mod tests {
     fn device_rows_carry_status_and_tag() {
         let p = demo_project();
         let host = host_for(&p);
-        let rows = device_rows(&p.tracks[2].channel.devices, &host);
+        let rows = device_rows(Lang::De, &p.tracks[2].channel.devices, &host);
         assert_eq!(rows.len(), 4);
         let (hexa, tag) = &rows[0];
         assert!(hexa.instrument && hexa.status == RowStatus::Ok);

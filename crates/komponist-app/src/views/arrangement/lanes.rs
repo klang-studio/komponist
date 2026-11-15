@@ -52,7 +52,7 @@ fn min_length(view: &ArrangementView, free: bool, project: &Project) -> Tick {
 
 /// What a double-click on empty space of `track` at tick `at` creates: a one-bar clip starting on
 /// the grid (prototype `newClip`): a step clip "Pattern n" on a sampler track, whose rows the sampler
-/// decides ([`crate::step_rows::rows_for`] with the `note_names` it reports now: its eight pads,
+/// decides ([`crate::step_rows::rows_for_in`] with the `note_names` it reports now: its eight pads,
 /// notes 36–43, without note names; ARCHITECTURE §13.3), else an empty MIDI clip "MIDI-Clip".
 pub fn new_clip(
     lang: Lang,
@@ -72,7 +72,7 @@ pub fn new_clip(
     let length = Grid::Bar.ticks(meter);
     if step_rows::is_sampler_track(track) {
         let instrument = step_rows::instrument(track).map(|d| &d.plugin);
-        let rows = step_rows::rows_for(instrument, note_names);
+        let rows = step_rows::rows_for_in(lang, instrument, note_names);
         NewClip {
             start,
             length,
@@ -696,5 +696,18 @@ mod tests {
         let c = new_clip(Lang::De, &p, &p.tracks[2], Tick(3840 * 2 + 10), &v, &[]);
         assert_eq!((c.start, c.name.as_str()), (Tick(2 * 3840), "MIDI-Clip"));
         assert!(matches!(c.content, NewClipContent::Midi { ref notes, .. } if notes.is_empty()));
+    }
+
+    #[test]
+    fn new_step_clips_name_their_rows_in_the_language() {
+        let p = demo_project();
+        let v = ArrangementView::default();
+        let c = new_clip(Lang::En, &p, &p.tracks[0], Tick(0), &v, &[]);
+        assert_eq!(c.name, "Pattern 5", "after four clips");
+        let NewClipContent::Step { rows } = &c.content else {
+            panic!("step clip expected");
+        };
+        assert_eq!((rows[3].name.as_str(), rows[3].note), ("Closed Hat", 39));
+        assert_eq!((rows[4].name.as_str(), rows[4].note), ("Open Hat", 40));
     }
 }
