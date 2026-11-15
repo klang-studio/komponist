@@ -1,3 +1,4 @@
 /target
 /test-plugins/target
 /scripts/local.env
+__pycache__/
