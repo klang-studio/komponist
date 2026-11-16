@@ -1,38 +1,54 @@
-//! The plugin frame window the bridge owns on macOS (#52; spike #42, ARCHITECTURE §8.4).
+//! The plugin frame window the bridge owns on macOS (#52; spike #42) and Windows (port W6)
+//! (ARCHITECTURE §8.4).
 //!
-//! The app cannot embed another process's `NSView`, so on macOS the bridge opens the frame itself:
-//! one eframe window whose top [`HEADER`] points are the header (drawn with the same code as the
-//! app's Linux frame, `komponist_ui::plugin_frame::header`, from the model the app sends) and whose
-//! body is a plain container `NSView`, a subview of winit's view, that the plugin attaches to
-//! (CLAP `set_parent` cocoa, VST3 `attached` with `kPlatformTypeNSView`; no scale on either). The
-//! app keeps the frame model and every decision: it gets `HeaderAction`, `Shortcut`, `HeaderKey`,
+//! The app cannot embed another process's `NSView` (macOS), and a parent/child window pair across
+//! processes would tie the app's input queue to a plugin's (Windows: a hung plugin would freeze the
+//! app), so the bridge opens the frame itself: one eframe window whose top [`metrics::HEADER`]
+//! points are the header (drawn with the same code as the app's Linux frame,
+//! `komponist_ui::plugin_frame::header`, from the model the app sends) and whose body is a plain
+//! container the plugin attaches to: an `NSView`, a subview of winit's view (CLAP `set_parent`
+//! cocoa, VST3 `attached` with `kPlatformTypeNSView`; no scale on either), or a child `HWND` of
+//! winit's window (CLAP win32, VST3 `kPlatformTypeHWND`, with the window's DPI scale). The app
+//! keeps the frame model and every decision: it gets `HeaderAction`, `Shortcut`, `HeaderKey`,
 //! `FrameMoved`, `CloseRequested` and answers with `HeaderState` and `CloseGui`.
+//!
+//! This module is the frame logic both OSes share; `appkit.rs` (macOS) and `win32.rs` (Windows)
+//! are the OS halves ([`os`]): container, sizes, activation, "Oben halten", key hook.
 //!
 //! # Run loop
 //!
-//! `OpenGui` records a [`Request`] and stops `CFRunLoopRun`; the outer loop of
-//! `Bridge::run` then calls [`run`], which runs `eframe::run_native` with run-and-return (one winit
-//! event loop, reused for every open) until the window closes. All bridge sources stay in the
-//! common modes, so control messages, plugin timers and notifications keep being served inside
-//! `[NSApp run]` and during live resize. Nothing the protocol needs is driven from egui's `ui()`
-//! (eframe skips it for occluded windows, spike #42 Q5): the close button and moves are seen in
-//! `logic()`, which runs for hidden windows too, and debounced work (the plugin's size after a
-//! drag, `FrameMoved`) is due on the bridge's deadline timer ([`deadline`], [`tick`]).
+//! `OpenGui` records a [`Request`] and stops the bridge's outer loop (`CFRunLoopRun` on macOS, the
+//! message pump on Windows); the outer loop of `Bridge::run` then calls [`run`], which runs
+//! `eframe::run_native` with run-and-return (one winit event loop, reused for every open) until
+//! the window closes. Control messages, plugin timers and notifications keep being served inside
+//! eframe's event loop and during live resize: on macOS all bridge sources stay in the common
+//! modes, on Windows the wake relay posts to a window of the main thread that winit's loop (and
+//! the move and size loop, and a plugin's modal dialog) dispatches (`win_loop`). Nothing the
+//! protocol needs is driven from egui's `ui()` (eframe skips it for occluded windows, spike #42
+//! Q5): the close button, moves and new scales are seen in `logic()`, which runs for hidden
+//! windows too, and debounced work (the plugin's size after a drag, `FrameMoved`) is due on the
+//! bridge's deadline timer ([`deadline`], [`tick`]).
 //!
 //! # Sizes
 //!
-//! Plugins size in points (CLAP `cocoa` `get_size`, VST3 `getSize`); the window follows the
-//! screen's backing scale by itself. A plugin's resize request sets the window's content size
-//! **first**, then the container (the other order lets the container grow too much, spike #42 Q1).
-//! A user drag of a resizable plugin's frame stretches the container at once and asks the plugin
-//! for the new size [`DRAG_SETTLE`] after the drag rests (CLAP `adjust_size` + `set_size`, VST3
+//! The frame works in the plugin's units: points on macOS (CLAP `cocoa` `get_size`, VST3
+//! `getSize`; the window follows the screen's backing scale by itself), physical pixels on Windows
+//! (CLAP `win32`, VST3 on Windows), where the plugin gets the window's scale (CLAP `set_scale`,
+//! VST3 `setContentScaleFactor`) and the header is [`metrics::HEADER`] × scale pixels high. The
+//! protocol stays in points: `GuiOpened`, `SetGuiSize`, `GuiSizeRequest` and [`FrameRect`] are
+//! divided by the scale. A plugin's resize request sets the window's content size **first**, then
+//! the container (the other order lets the container grow too much, spike #42 Q1). A user drag of
+//! a resizable plugin's frame stretches the container at once and asks the plugin for the new size
+//! [`DRAG_SETTLE`] after the drag rests (CLAP `adjust_size` + `set_size`, VST3
 //! `checkSizeConstraint` + `onSize`); the window then snaps to what the plugin took. A fixed-size
 //! plugin's frame is not resizable. The frame is at least as wide as the header needs; a narrower
-//! plugin is centred.
+//! plugin is centred. Windows: when the frame moves to a monitor with another DPI, winit keeps its
+//! size in points; the plugin gets the new scale and is asked for its size at that scale (a
+//! fixed-size plugin reports what it took).
 //!
 //! # Close
 //!
-//! The traffic light sends `CloseRequested` (the app answers `CloseGui`, after its state
+//! The window's close button sends `CloseRequested` (the app answers `CloseGui`, after its state
 //! snapshot request). `CloseGui`: the bridge yields its activation to the app, reads the frame's
 //! rect, closes the plugin's GUI (`gui_close`: CLAP `destroy`, VST3 `removed`), removes the
 //! container, answers `GuiClosed{rect}` and only then closes the window, so the plugin never sees
@@ -40,36 +56,42 @@
 //!
 //! # Off-screen mode
 //!
-//! `KOMPONIST_FRAME_OFFSCREEN=1` (tests and agents on the owner's Mac): frames open at
-//! x/y = −20000, AppKit may not pull them back on screen, and the process can never activate
-//! itself, also when a plugin asks ([`appkit::install_offscreen_mode`]).
+//! `KOMPONIST_FRAME_OFFSCREEN=1` (tests and agents on the owner's machine): frames open at
+//! x/y = −20000 and the process never activates itself. macOS: AppKit may not pull them back on
+//! screen, and activation is blocked also when a plugin asks ([`os::install_offscreen_mode`]).
+//! Windows: no taskbar button, and `ActivateFrame` and the yield are skipped.
+//!
+//! # Cost
+//!
+//! egui draws the whole window, header and body, so each open frame costs a wgpu surface and
+//! eframe's renderer in its bridge: +40–60 MiB per visible frame on macOS (spike #42), measured on
+//! Windows in ARCHITECTURE §8.4.
 
+#[cfg(target_os = "macos")]
 mod appkit;
 mod keys;
+#[cfg(windows)]
+mod win32;
+
+#[cfg(target_os = "macos")]
+use appkit as os;
+#[cfg(windows)]
+use win32 as os;
 
 use std::cell::RefCell;
-use std::ffi::c_void;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use egui::{Event, Rect, ViewportCommand, vec2};
-use komponist_hosting::{GuiParent, GuiSize};
+use komponist_hosting::GuiSize;
 use komponist_i18n::Lang;
 use komponist_ipc::frame::{FrameKeyEvent, FrameRect, HeaderModel, KeyMods, keys::Typing};
 use komponist_ipc::{BridgeChannel, BridgeMsg, ErrorContext};
 use komponist_tokens::color;
 use komponist_tokens::egui_support::color32;
 use komponist_ui::plugin_frame::{header, metrics, window_title};
-use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSView, NSWindow};
-use objc2_foundation::{NSPoint, NSRect, NSSize};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::Bridge;
-
-/// Height of the header, points.
-const HEADER: f64 = metrics::HEADER as f64;
 
 /// How long a user's drag of a resizable frame rests before the plugin is asked for the size.
 pub(super) const DRAG_SETTLE: Duration = Duration::from_millis(100);
@@ -77,13 +99,14 @@ pub(super) const DRAG_SETTLE: Duration = Duration::from_millis(100);
 /// How long a frame rests after a move or resize before `FrameMoved` reports it.
 const MOVE_SETTLE: Duration = Duration::from_millis(300);
 
-/// The plugin area before the plugin reports its size: S05 "820 × 524" (as the app's frame).
+/// The plugin area before the plugin reports its size, points: S05 "820 × 524" (as the app's
+/// frame).
 const DEFAULT_BODY: (f64, f64) = (820.0, 524.0);
 
 /// Set to `1`: frames open off-screen and nothing activates (module docs).
 pub(super) const OFFSCREEN_ENV: &str = "KOMPONIST_FRAME_OFFSCREEN";
 
-/// Where off-screen frames open (left of and above every screen).
+/// Where off-screen frames open, points (left of and above every screen).
 const OFFSCREEN_POS: f32 = -20_000.0;
 
 /// Whether [`OFFSCREEN_ENV`] is set.
@@ -100,6 +123,17 @@ fn log(line: impl AsRef<str>) {
     if log_enabled() {
         eprintln!("komponist-bridge frame: {}", line.as_ref());
     }
+}
+
+/// Whether the active process `pid` is komponist: the app `app_pid`, this bridge `own_pid`, or
+/// another bridge of the app (`parent` looks up a parent pid; 0 if unknown).
+pub(super) fn is_komponist(
+    pid: u32,
+    app_pid: u32,
+    own_pid: u32,
+    parent: impl Fn(u32) -> u32,
+) -> bool {
+    pid == app_pid || pid == own_pid || (app_pid > 1 && parent(pid) == app_pid)
 }
 
 /// An `OpenGui{OwnFrame}` waiting for the outer loop.
@@ -127,7 +161,16 @@ impl Slot {
     }
 }
 
-/// The open frame, shared by the bridge, eframe's app and the key monitor (through [`CURRENT`]).
+/// The frame's native window and the plugin's container in it (the OS's handles, cheap to clone:
+/// no borrow of the frame is held while the OS calls back, see [`fit`]).
+#[derive(Clone)]
+struct Native {
+    window: os::Window,
+    /// Removed when the plugin's GUI closed.
+    container: Option<os::Container>,
+}
+
+/// The open frame, shared by the bridge, eframe's app and the key hook (through [`CURRENT`]).
 pub(super) struct Frame {
     header: HeaderModel,
     lang: Lang,
@@ -135,18 +178,19 @@ pub(super) struct Frame {
     initial: Option<FrameRect>,
     channel: std::sync::Arc<BridgeChannel>,
     /// The app (the bridge's parent), to yield the activation back to.
-    app_pid: i32,
+    app_pid: u32,
     ctx: Option<egui::Context>,
-    window: Option<Retained<NSWindow>>,
-    container: Option<Retained<NSView>>,
+    native: Option<Native>,
     /// The plugin's GUI is open in the container.
     gui_open: bool,
-    /// The plugin's size, points.
+    /// The plugin's size, in its units (module docs, "Sizes").
     body: (f64, f64),
     resizable: bool,
     /// Width the header needs, points (0 before the first draw).
     header_width: f64,
-    /// The content size the bridge set last, points.
+    /// Plugin units per point: 1 on macOS, the window's DPI scale on Windows.
+    scale: f64,
+    /// The content size the bridge set last, plugin units.
     content: (f64, f64),
     /// Closing: the window may go.
     closing: bool,
@@ -154,16 +198,18 @@ pub(super) struct Frame {
     resize_due: Option<Instant>,
     /// `FrameMoved` is sent then.
     moved_due: Option<Instant>,
+    /// The scale changed from this one (another monitor's DPI): the plugin gets the new one.
+    rescale_from: Option<f64>,
     /// The viewport's rects seen last by `logic()`.
     seen: Option<(Option<Rect>, Option<Rect>)>,
     /// The typing heuristic of the key policy.
     typing: Typing,
     /// Key codes whose key-down komponist took: their key-up is swallowed too.
-    taken: Vec<u16>,
+    taken: Vec<u32>,
 }
 
 thread_local! {
-    /// The open frame, for the key monitor and the activation observer (main thread).
+    /// The open frame, for the key hook and the activation observer (main thread).
     static CURRENT: RefCell<Weak<RefCell<Frame>>> = const { RefCell::new(Weak::new()) };
 }
 
@@ -175,88 +221,107 @@ impl Frame {
 
     /// The frame's rect now (`None` before the window exists).
     fn rect(&self) -> Option<FrameRect> {
-        let window = self.window.as_ref()?;
-        Some(appkit::frame_rect(window))
+        let native = self.native.as_ref()?;
+        Some(os::frame_rect(&native.window))
+    }
+
+    /// The header's height in plugin units.
+    fn header_units(&self) -> f64 {
+        (f64::from(metrics::HEADER) * self.scale).round()
+    }
+
+    /// `size` in plugin units as points (the protocol's unit).
+    fn points(&self, size: (f64, f64)) -> GuiSize {
+        GuiSize {
+            width: (size.0 / self.scale).round() as u32,
+            height: (size.1 / self.scale).round() as u32,
+        }
     }
 
     /// The content size the frame needs: the plugin's size below the header, at least as wide as
     /// the header.
     fn wanted_content(&self) -> (f64, f64) {
-        (self.body.0.max(self.header_width), self.body.1 + HEADER)
+        (
+            self.body.0.max(self.header_width * self.scale),
+            self.body.1 + self.header_units(),
+        )
     }
 
     /// Places the container below the header, centred when the window is wider than the plugin.
     fn layout(&self) {
-        let (Some(window), Some(container)) = (&self.window, &self.container) else {
+        let Some(Native {
+            window,
+            container: Some(container),
+        }) = &self.native
+        else {
             return;
         };
-        let Some(content) = window.contentView() else {
-            return;
-        };
-        let size = content.frame().size;
-        let x = ((size.width - self.body.0) / 2.0).max(0.0).floor();
-        // winit's view is flipped: y grows downwards from the header's top.
-        let y = if content.isFlipped() {
-            HEADER
-        } else {
-            size.height - HEADER - self.body.1
-        };
-        container.setFrame(NSRect::new(
-            NSPoint::new(x, y),
-            NSSize::new(self.body.0, self.body.1),
-        ));
+        os::layout(window, container, self.body, self.header_units());
     }
 
     /// The earliest debounced work.
     fn due(&self) -> Option<Instant> {
-        match (self.resize_due, self.moved_due) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
-    }
-
-    /// Applies "Oben halten" for whether komponist (the app or one of its bridges) is active.
-    fn apply_level(&self) {
-        if let Some(window) = &self.window {
-            appkit::set_floating(
-                window,
-                self.header.keep_on_top && appkit::komponist_active(self.app_pid),
-            );
-        }
+        let rescale = self.rescale_from.map(|_| Instant::now());
+        [self.resize_due, self.moved_due, rescale]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
-/// Window first, then the container (module docs, "Sizes"). No borrow of `frame` is held while
-/// AppKit resizes the window: winit may hand the resize to eframe at once, whose `logic()`
-/// borrows the frame.
-fn fit(frame: &RefCell<Frame>) {
-    let (window, content, min) = {
-        let mut f = frame.borrow_mut();
-        let Some(window) = f.window.clone() else {
+/// Applies "Oben halten" for whether komponist (the app or one of its bridges) is active. No
+/// borrow of the frame is held while the OS changes the window's level.
+fn apply_level(frame: &RefCell<Frame>) {
+    let (window, keep_on_top, app_pid) = {
+        let Ok(f) = frame.try_borrow() else {
             return;
         };
+        let Some(native) = &f.native else {
+            return;
+        };
+        (native.window.clone(), f.header.keep_on_top, f.app_pid)
+    };
+    os::set_level(&window, keep_on_top, os::komponist_active(app_pid));
+}
+
+/// Window first, then the container (module docs, "Sizes"). No borrow of `frame` is held while
+/// the OS resizes the window: winit may hand the resize to eframe at once, whose `logic()`
+/// borrows the frame.
+fn fit(frame: &RefCell<Frame>) {
+    let (window, content, min, ctx, scale) = {
+        let mut f = frame.borrow_mut();
+        let Some(native) = &f.native else {
+            return;
+        };
+        let window = native.window.clone();
         let (w, h) = f.wanted_content();
         let changed = (w - f.content.0).abs() > 0.5 || (h - f.content.1).abs() > 0.5;
         if changed {
             f.content = (w, h);
         }
         let min = f.resizable.then(|| {
-            NSSize::new(
-                f.header_width.max(1.0),
-                HEADER + f64::from(metrics::MIN_BODY_HEIGHT),
+            (
+                (f.header_width * f.scale).max(1.0),
+                f.header_units() + f64::from(metrics::MIN_BODY_HEIGHT) * f.scale,
             )
         });
         log(format!(
-            "fit: content {w}×{h} pt, plugin {}×{} pt",
-            f.body.0, f.body.1
+            "fit: content {w}×{h}, plugin {}×{} (scale {})",
+            f.body.0, f.body.1, f.scale
         ));
-        (window, changed.then(|| NSSize::new(w, h)), min)
+        (
+            window,
+            changed.then_some((w, h)),
+            min,
+            f.ctx.clone(),
+            f.scale,
+        )
     };
     if let Some(size) = content {
-        window.setContentSize(size);
+        os::set_content_size(&window, size);
     }
     if let Some(min) = min {
-        window.setContentMinSize(min);
+        os::set_min_content_size(&window, ctx.as_ref(), scale, min);
     }
     frame.borrow().layout();
 }
@@ -295,18 +360,20 @@ pub(super) fn set_header(bridge: &mut Bridge, header: HeaderModel, lang: &str) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
     };
-    let mut f = frame.borrow_mut();
-    let title = window_title(&header);
-    let retitle = window_title(&f.header) != title;
-    f.header = header;
-    f.lang = lang;
-    f.apply_level();
-    if let Some(ctx) = &f.ctx {
-        if retitle {
-            ctx.send_viewport_cmd(ViewportCommand::Title(title));
+    {
+        let mut f = frame.borrow_mut();
+        let title = window_title(&header);
+        let retitle = window_title(&f.header) != title;
+        f.header = header;
+        f.lang = lang;
+        if let Some(ctx) = &f.ctx {
+            if retitle {
+                ctx.send_viewport_cmd(ViewportCommand::Title(title));
+            }
+            ctx.request_repaint();
         }
-        ctx.request_repaint();
     }
+    apply_level(&frame);
 }
 
 /// `ActivateFrame`: the app yielded its activation to this process; take it and come forward.
@@ -314,14 +381,14 @@ pub(super) fn activate(bridge: &mut Bridge) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
     };
-    let window = frame.borrow().window.clone();
+    let window = frame.borrow().native.as_ref().map(|n| n.window.clone());
     if let Some(window) = window {
-        appkit::activate(&window);
+        os::activate(&window);
     }
 }
 
 /// `RaiseFrame`: komponist became active; the frame comes to the front of its level, the bridge
-/// stays inactive and the frame does not become key (the app's main window keeps the keyboard).
+/// stays inactive and the frame does not take the keyboard (the app's main window keeps it).
 pub(super) fn raise(bridge: &mut Bridge) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
@@ -331,12 +398,11 @@ pub(super) fn raise(bridge: &mut Bridge) {
         if f.closing || !f.gui_open {
             return;
         }
-        f.window.clone()
+        f.native.as_ref().map(|n| n.window.clone())
     };
     if let Some(window) = window
-        && window.isVisible()
+        && os::raise(&window)
     {
-        window.orderFrontRegardless();
         log("raised");
     }
 }
@@ -346,20 +412,26 @@ pub(super) fn set_body_size(bridge: &mut Bridge, size: GuiSize) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
     };
-    let resizable = frame.borrow().resizable;
+    let (resizable, kept) = {
+        let f = frame.borrow();
+        (f.resizable, f.points(f.body))
+    };
     if !resizable {
-        frame.borrow().send(&BridgeMsg::GuiSizeRequest(GuiSize {
-            width: frame.borrow().body.0.round() as u32,
-            height: frame.borrow().body.1.round() as u32,
-        }));
+        frame.borrow().send(&BridgeMsg::GuiSizeRequest(kept));
         return;
     }
-    frame.borrow_mut().body = (f64::from(size.width), f64::from(size.height));
+    {
+        let mut f = frame.borrow_mut();
+        f.body = (
+            f64::from(size.width) * f.scale,
+            f64::from(size.height) * f.scale,
+        );
+    }
     fit(&frame);
     ask_plugin(bridge, &frame);
 }
 
-/// The plugin asked for `size` (points): window first, then the container.
+/// The plugin asked for `size` (its units): window first, then the container.
 pub(super) fn plugin_resized(bridge: &mut Bridge, size: GuiSize) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
@@ -393,7 +465,7 @@ pub(super) fn close(bridge: &mut Bridge, quiet: bool) {
         }
         return;
     };
-    let (rect, was_open, ctx) = {
+    let (rect, was_open, ctx, app_pid) = {
         let mut f = frame.borrow_mut();
         if f.closing {
             return;
@@ -401,15 +473,25 @@ pub(super) fn close(bridge: &mut Bridge, quiet: bool) {
         f.closing = true;
         f.resize_due = None;
         f.moved_due = None;
-        appkit::yield_to(f.app_pid);
-        (f.rect(), std::mem::take(&mut f.gui_open), f.ctx.clone())
+        f.rescale_from = None;
+        (
+            f.rect(),
+            std::mem::take(&mut f.gui_open),
+            f.ctx.clone(),
+            f.app_pid,
+        )
     };
+    os::yield_to(app_pid);
     if was_open && let Some(plugin) = bridge.plugin.as_mut() {
         plugin.gui_close();
     }
-    let container = frame.borrow_mut().container.take();
+    let container = frame
+        .borrow_mut()
+        .native
+        .as_mut()
+        .and_then(|n| n.container.take());
     if let Some(container) = container {
-        container.removeFromSuperview();
+        os::remove_container(container);
     }
     if !quiet {
         bridge.send(BridgeMsg::GuiClosed { rect });
@@ -426,11 +508,15 @@ pub(super) fn deadline(bridge: &Bridge) -> Option<Instant> {
     bridge.frame.open.as_ref().and_then(|f| f.borrow().due())
 }
 
-/// Debounced work that is due: the plugin's size after a drag, `FrameMoved`.
+/// Debounced work that is due: a new scale, the plugin's size after a drag, `FrameMoved`.
 pub(super) fn tick(bridge: &mut Bridge) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
     };
+    let rescale = frame.borrow_mut().rescale_from.take();
+    if let Some(from) = rescale {
+        rescale_plugin(bridge, &frame, from);
+    }
     let now = Instant::now();
     let resize = {
         let mut f = frame.borrow_mut();
@@ -480,6 +566,48 @@ fn ask_plugin(bridge: &mut Bridge, frame: &Rc<RefCell<Frame>>) {
     fit(frame);
 }
 
+/// The frame moved to a monitor with another scale (Windows; `logic()` set the new one): the
+/// plugin gets it and is asked for its size at that scale; a fixed-size plugin reports its own.
+fn rescale_plugin(bridge: &mut Bridge, frame: &Rc<RefCell<Frame>>, from: f64) {
+    let (body, open, scale, resizable) = {
+        let f = frame.borrow();
+        (f.body, f.gui_open, f.scale, f.resizable)
+    };
+    if !open {
+        return;
+    }
+    let Some(plugin) = bridge.plugin.as_mut() else {
+        return;
+    };
+    let took = plugin.gui_set_scale(scale);
+    let ratio = scale / from;
+    let wanted = if resizable {
+        GuiSize {
+            width: (body.0 * ratio).round().max(1.0) as u32,
+            height: (body.1 * ratio).round().max(1.0) as u32,
+        }
+    } else {
+        // A fixed-size plugin keeps its size: `gui_set_size` reports what it has now.
+        GuiSize {
+            width: body.0.round().max(1.0) as u32,
+            height: body.1.round().max(1.0) as u32,
+        }
+    };
+    let taken = plugin.gui_set_size(wanted);
+    log(format!(
+        "scale {from} -> {scale} (plugin took it: {took}): {wanted:?} -> {taken:?}"
+    ));
+    {
+        let mut f = frame.borrow_mut();
+        f.body = match taken {
+            Ok(taken) => (f64::from(taken.width), f64::from(taken.height)),
+            Err(_) => (f64::from(wanted.width), f64::from(wanted.height)),
+        };
+        f.moved_due = Some(Instant::now() + MOVE_SETTLE);
+    }
+    fit(frame);
+}
+
 // ------------------------------------------------------------------------------------------------
 // The window
 // ------------------------------------------------------------------------------------------------
@@ -491,29 +619,32 @@ pub(super) fn run(bridge: &Rc<RefCell<Bridge>>, request: Request) {
         (b.channel.clone(), offscreen())
     };
     if quiet {
-        appkit::install_offscreen_mode();
+        os::install_offscreen_mode();
     }
-    // SAFETY: plain syscall.
-    let app_pid = unsafe { libc::getppid() };
     let frame = Rc::new(RefCell::new(Frame {
         header: request.header,
         lang: request.lang,
         initial: request.rect,
         channel,
-        app_pid,
+        app_pid: os::app_pid(),
         ctx: None,
-        window: None,
-        container: None,
+        native: None,
         gui_open: false,
+        // Points until the window's scale is known (`create`).
         body: request.rect.map_or(DEFAULT_BODY, |r| {
-            (f64::from(r.width), f64::from(r.height) - HEADER)
+            (
+                f64::from(r.width),
+                f64::from(r.height) - f64::from(metrics::HEADER),
+            )
         }),
         resizable: true,
         header_width: 0.0,
+        scale: 1.0,
         content: (0.0, 0.0),
         closing: false,
         resize_due: None,
         moved_due: None,
+        rescale_from: None,
         seen: None,
         typing: Typing::default(),
         taken: Vec::new(),
@@ -550,11 +681,11 @@ pub(super) fn run(bridge: &Rc<RefCell<Bridge>>, request: Request) {
     }
     b.frame.open = None;
     CURRENT.with(|c| *c.borrow_mut() = Weak::new());
+    os::unhook_keys();
     {
         let mut f = frame.borrow_mut();
         f.ctx = None;
-        f.container = None;
-        f.window = None;
+        f.native = None;
     }
     b.drain_ready();
 }
@@ -581,19 +712,11 @@ fn native_options(frame: &Frame, quiet: bool) -> eframe::NativeOptions {
         viewport = viewport.with_position(position);
     }
     eframe::NativeOptions {
-        viewport,
+        viewport: os::viewport(viewport, quiet),
         renderer: eframe::Renderer::Wgpu,
         run_and_return: true,
         centered: position.is_none(),
-        event_loop_builder: Some(Box::new(|builder| {
-            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-            // No Dock icon, no menu bar of its own, no activation by winit (spike #42 Q3). The
-            // hook runs once: run-and-return reuses the event loop.
-            builder
-                .with_activation_policy(ActivationPolicy::Accessory)
-                .with_default_menu(false)
-                .with_activate_ignoring_other_apps(false);
-        })),
+        event_loop_builder: os::event_loop_hook(),
         ..Default::default()
     }
 }
@@ -607,45 +730,35 @@ fn create(
     let ctx = cc.egui_ctx.clone();
     komponist_ui::install(&ctx);
     komponist_ui::set_lang(&ctx, frame.borrow().lang);
-    // egui draws in winit's Metal layer, below the plugin's view: a tooltip below a header control
-    // would be hidden behind the plugin (owner test, #52). Header tooltips go beside their control.
+    // egui draws below the plugin's view (winit's Metal layer on macOS, the parent window's
+    // swapchain below a child `HWND` on Windows): a tooltip below a header control would be hidden
+    // behind the plugin (owner test, #52). Header tooltips go beside their control.
     komponist_ui::tooltip::set_hover_side(&ctx, komponist_ui::tooltip::HoverSide::Beside);
-    let view = match cc.window_handle().map(|h| h.as_raw()) {
-        // SAFETY: winit's view of this window, alive while the window is.
-        Ok(RawWindowHandle::AppKit(h)) => unsafe { h.ns_view.cast::<NSView>().as_ref() },
-        _ => {
-            fail(bridge, frame, &ctx, "no AppKit window".into());
+    let body_points = frame.borrow().body;
+    let (window, container, scale) = match os::attach(cc, body_points) {
+        Ok(attached) => attached,
+        Err(message) => {
+            fail(frame, &ctx, message);
             return;
         }
     };
-    let Some(window) = view.window() else {
-        fail(bridge, frame, &ctx, "the view has no window".into());
-        return;
-    };
-    let mtm = MainThreadMarker::new().expect("the bridge's frame runs on the main thread");
-    // Never replace winit's content view (winit casts it); the container is a subview of it.
-    let body = frame.borrow().body;
-    let container = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(NSPoint::new(0.0, HEADER), NSSize::new(body.0, body.1)),
-    );
-    view.addSubview(&container);
     {
         let mut f = frame.borrow_mut();
         f.ctx = Some(ctx.clone());
-        f.window = Some(window.clone());
-        f.container = Some(container.clone());
+        f.scale = scale;
+        f.body = (body_points.0 * scale, body_points.1 * scale);
+        f.native = Some(Native {
+            window: window.clone(),
+            container: Some(container.clone()),
+        });
     }
-    keys::install();
-    appkit::watch_activation();
-    let parent = Retained::as_ptr(&container).cast_mut().cast::<c_void>();
+    os::install_hooks();
+    let parent = os::parent(&container, scale);
     let opened = match bridge.upgrade() {
         Some(bridge) => {
             let mut b = bridge.borrow_mut();
             let opened = match b.plugin.as_mut() {
-                Some(plugin) => plugin
-                    .gui_open(GuiParent::Cocoa(parent))
-                    .map_err(|e| e.to_string()),
+                Some(plugin) => plugin.gui_open(parent).map_err(|e| e.to_string()),
                 None => Err("no plugin loaded".into()),
             };
             drop(b);
@@ -661,48 +774,44 @@ fn create(
                 f.body = (f64::from(info.size.width), f64::from(info.size.height));
                 f.resizable = info.resizable;
             }
+            // After the plugin's own hooks (Windows: thread hooks run newest first).
+            os::hook_keys();
             fit(frame);
+            apply_level(frame);
             let f = frame.borrow();
-            f.apply_level();
             f.send(&BridgeMsg::GuiOpened {
-                size: info.size,
+                size: f.points(f.body),
                 resizable: info.resizable,
             });
-            f.send(&BridgeMsg::FrameWindow(window.windowNumber() as i64));
+            f.send(&BridgeMsg::FrameWindow(os::window_id(&window)));
             log(format!(
-                "opened: plugin {}×{} pt, resizable {}, backing scale {}, plugin view {}",
+                "opened: plugin {}×{}, resizable {}, scale {scale}, {}",
                 info.size.width,
                 info.size.height,
                 info.resizable,
-                window.backingScaleFactor(),
-                container
-                    .subviews()
-                    .firstObject()
-                    .map_or("none".into(), |v| v
-                        .class()
-                        .name()
-                        .to_string_lossy()
-                        .into_owned())
+                os::describe(&window, &container),
             ));
             ctx.send_viewport_cmd(ViewportCommand::Resizable(info.resizable));
+            // Windows keeps the maximize button of a window that cannot be resized.
+            #[cfg(windows)]
+            ctx.send_viewport_cmd(ViewportCommand::EnableButtons {
+                close: true,
+                minimized: true,
+                maximize: info.resizable,
+            });
         }
-        Err(message) => fail(bridge, frame, &ctx, message),
+        Err(message) => fail(frame, &ctx, message),
     }
     if let Some(bridge) = bridge.upgrade()
         && let Ok(mut b) = bridge.try_borrow_mut()
     {
-        b.drain_ready();
+        b.reschedule();
     }
 }
 
 /// The GUI did not open: `Error` for the app (which shows the parameters), and the window goes.
-fn fail(
-    bridge: &Weak<RefCell<Bridge>>,
-    frame: &Rc<RefCell<Frame>>,
-    ctx: &egui::Context,
-    message: String,
-) {
-    {
+fn fail(frame: &Rc<RefCell<Frame>>, ctx: &egui::Context, message: String) {
+    let container = {
         let mut f = frame.borrow_mut();
         f.closing = true;
         f.send(&BridgeMsg::Error {
@@ -710,11 +819,11 @@ fn fail(
             message,
             fatal: false,
         });
-        if let Some(container) = f.container.take() {
-            container.removeFromSuperview();
-        }
+        f.native.as_mut().and_then(|n| n.container.take())
+    };
+    if let Some(container) = container {
+        os::remove_container(container);
     }
-    let _ = bridge;
     ctx.request_repaint();
 }
 
@@ -725,19 +834,20 @@ struct FrameApp {
 }
 
 impl FrameApp {
-    /// Lets the bridge handle what queued meanwhile and re-arm its timers (if it is not busy:
-    /// the busy caller drains itself).
-    fn drain(&self) {
+    /// Lets the bridge re-arm its timers for new debounced work (if it is not busy: the busy
+    /// caller re-arms itself).
+    fn reschedule(&self) {
         if let Some(bridge) = self.bridge.upgrade()
             && let Ok(mut b) = bridge.try_borrow_mut()
         {
-            b.drain_ready();
+            b.reschedule();
         }
     }
 }
 
 impl eframe::App for FrameApp {
-    /// Runs for hidden and occluded windows too: the close button, moves and user resizes.
+    /// Runs for hidden and occluded windows too: the close button, moves, user resizes and new
+    /// scales.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut schedule = false;
         {
@@ -750,7 +860,7 @@ impl eframe::App for FrameApp {
                 return;
             }
             if ctx.input(|i| i.viewport().close_requested()) {
-                // The traffic light: the app decides (and answers `CloseGui`).
+                // The window's close button: the app decides (and answers `CloseGui`).
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 f.send(&BridgeMsg::CloseRequested);
             }
@@ -760,16 +870,29 @@ impl eframe::App for FrameApp {
                 schedule = true;
             }
             f.seen = Some(rects);
-            if let Some(inner) = rects.1
+            let native = f.native.clone();
+            let scale = native.as_ref().map(|n| os::scale(&n.window));
+            if let Some(scale) = scale
+                && f.gui_open
+                && (scale - f.scale).abs() > 1e-3
+            {
+                // Another monitor's DPI (Windows): the plugin follows from the bridge's tick.
+                log(format!("scale {} -> {scale}", f.scale));
+                f.rescale_from = Some(f.rescale_from.unwrap_or(f.scale));
+                f.scale = scale;
+                f.content = (0.0, 0.0);
+                f.resize_due = None;
+                schedule = true;
+            } else if let (Some(native), Some(inner)) = (native, rects.1)
                 && f.gui_open
                 && f.resizable
-                && !f.closing
+                && f.rescale_from.is_none()
             {
-                let (w, h) = (f64::from(inner.width()), f64::from(inner.height()));
+                let (w, h) = os::content_size(&native.window, inner);
                 if (w - f.content.0).abs() > 0.5 || (h - f.content.1).abs() > 0.5 {
                     // A user drag: the container stretches now, the plugin follows when it rests.
                     f.content = (w, h);
-                    f.body = (w, (h - HEADER).max(1.0));
+                    f.body = (w, (h - f.header_units()).max(1.0));
                     f.layout();
                     f.resize_due = Some(Instant::now() + DRAG_SETTLE);
                     schedule = true;
@@ -777,7 +900,7 @@ impl eframe::App for FrameApp {
             }
         }
         if schedule {
-            self.drain();
+            self.reschedule();
         }
     }
 
@@ -871,4 +994,20 @@ fn header_keys(ctx: &egui::Context) -> Vec<FrameKeyEvent> {
             })
             .collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn komponist_is_the_app_this_bridge_or_a_sibling_bridge() {
+        let parent = |pid: u32| if pid == 300 { 100 } else { 1 };
+        assert!(is_komponist(100, 100, 200, parent));
+        assert!(is_komponist(200, 100, 200, parent));
+        assert!(is_komponist(300, 100, 200, parent));
+        assert!(!is_komponist(400, 100, 200, parent));
+        // Without a real parent (launchd), no stranger counts as a sibling.
+        assert!(!is_komponist(400, 1, 200, |_| 1));
+    }
 }

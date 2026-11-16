@@ -86,12 +86,10 @@ pub struct GuiInfo {
 
 /// Whether this build embeds plugin GUIs: on Linux into an X11 child of the app's frame window
 /// (WP-50), on macOS into an `NSView` of the bridge's own frame window (#52; CLAP `cocoa`, VST3
-/// `kPlatformTypeNSView`). Where it is false, no plugin reports a GUI, whatever it offers, and
-/// `gui_open` fails.
-///
-/// Windows (port W5): false until the bridge has its frame window (W6). The format layers already
-/// speak the Win32 API there ([`GuiParent::Win32`], CLAP `win32`, VST3 `kPlatformTypeHWND`).
-pub const GUI_EMBEDDING: bool = cfg!(any(target_os = "linux", target_os = "macos"));
+/// `kPlatformTypeNSView`), on Windows into a child `HWND` of the bridge's own frame window (port
+/// W6; [`GuiParent::Win32`], CLAP `win32`, VST3 `kPlatformTypeHWND`). Where it is false, no plugin
+/// reports a GUI, whatever it offers, and `gui_open` fails.
+pub const GUI_EMBEDDING: bool = cfg!(any(target_os = "linux", target_os = "macos", windows));
 
 /// Where [`HostedPlugin::gui_open`] attaches the plugin's GUI.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -193,6 +191,15 @@ pub trait HostedPlugin {
     /// Asks the GUI to take `size` (physical pixels on X11 and Win32, points on Cocoa); returns the size it
     /// adopted (it may round to its constraints).
     fn gui_set_size(&mut self, size: GuiSize) -> Result<GuiSize, HostingError>;
+
+    /// The open GUI's scale changed (Win32: the frame moved to a monitor with another DPI, port
+    /// W6): CLAP `set_scale`, VST3 `setContentScaleFactor`. Returns whether the plugin took it (a
+    /// plugin may follow the window's DPI itself). Not for Cocoa, whose GUIs take no scale. The
+    /// default does nothing.
+    fn gui_set_scale(&mut self, scale: f64) -> bool {
+        let _ = scale;
+        false
+    }
 
     /// Hides and destroys the GUI. No-op if closed.
     fn gui_close(&mut self);

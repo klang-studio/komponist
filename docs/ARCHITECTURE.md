@@ -209,14 +209,13 @@ them (`komponist-app`, `komponist-bridge`, `komponist-hosting`; `cargo::rustc-ch
 | cfg | Set on | Meaning |
 |---|---|---|
 | `x11_embed` | Linux | The app owns the plugin frame window and the plugin attaches to an X11 child of it (`GuiTarget::X11Child`, `GuiParent::X11`, CLAP `x11`, VST3 `kPlatformTypeX11EmbedWindowID`); X11 key grabs (WP-50). |
-| `bridge_frame` | macOS (Windows joins in W6) | The bridge owns the plugin frame window (`GuiTarget::OwnFrame`, `komponist-bridge/src/frame`, #52): header model and actions, `RaiseFrame`, activation hand-over. |
+| `bridge_frame` | macOS, Windows | The bridge owns the plugin frame window (`GuiTarget::OwnFrame`, `komponist-bridge/src/frame`; #52, port W6): header model and actions, `RaiseFrame`, activation hand-over. |
 
 Plain `target_os = "linux"` / `"macos"` stays where the code is about one OS's API: futex, memfd, pidfd, eventfd,
 `prctl`, `SCHED_FIFO`, `/proc` (Linux); AppKit, CoreFoundation, mach, kqueue, `os_sync`, `shm_open` (macOS). The
-frame code of the bridge and the activation hand-over of the app are `bridge_frame` code with AppKit calls inside:
-AppKit parts (`frame/appkit.rs`, `activation.rs::macos`) are the seam where a Windows backend plugs in. On
-Windows the app's `activation.rs` is a no-op for now (frames never open while `GUI_EMBEDDING` is false); W6
-adds `AllowSetForegroundWindow` and `SetForegroundWindow` there.
+frame code of the bridge and the activation hand-over of the app are `bridge_frame` code with the OS calls in one
+module per OS: `frame/mod.rs` and `frame/keys.rs` are the shared frame logic, `frame/appkit.rs` (macOS) and
+`frame/win32.rs` (Windows, W6) the OS halves; in the app `activation.rs` has a `macos` and a `win32` module.
 
 Every per-OS backend module (`komponist-ipc` `shm`, `signal`, `control`, `process`; `komponist-engine` `sys`;
 `komponist-hosting` `library`, `host_loop::wake`, `vst3::module`, the GUI platform types; `komponist-bridge`'s main
@@ -1217,8 +1216,8 @@ truce-rack serve as further reference code.
   operating systems. The bindings' enums are signed on Windows (`c_int`, MSVC) and unsigned elsewhere;
   `vst3::enum_u32` / `enum_i32` convert. GUI API: CLAP `win32`, VST3 `kPlatformTypeHWND`
   (`GuiParent::Win32 { hwnd, scale }`), with the scale passed (CLAP `set_scale`, VST3
-  `setContentScaleFactor`); sizes are physical pixels. `GUI_EMBEDDING` stays false until the bridge has
-  its frame window (W6), so no plugin reports a GUI yet. No CLAP posix-fd-support and no VST3 `IRunLoop`
+  `setContentScaleFactor`, again through `gui_set_scale` when the frame changes monitors); sizes are physical
+  pixels. `GUI_EMBEDDING` is true since W6 (the bridge-owned frame, §8.4). No CLAP posix-fd-support and no VST3 `IRunLoop`
   (see §4.1).
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
   On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): the control socket, the
@@ -1232,19 +1231,26 @@ truce-rack serve as further reference code.
   seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native` (run-and-return) and
   resumes the run loop when the frame closes.
   The frame is the seam's user (#52, §8.4).
-  On Windows (W5, `win_loop`) the main thread must pump Win32 messages even without a visible GUI
-  (plugins create hidden windows, `SetTimer` timers and COM objects on it). Each tick is one
-  `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)` over the control reader's event, the
+  On Windows (W5, W6, `win_loop`) the main thread must pump Win32 messages even without a visible GUI
+  (plugins create hidden windows, `SetTimer` timers and COM objects on it), and it does nothing else: it
+  waits in `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)` and dispatches what comes (a
+  plugin's `WM_QUIT` is dropped). A **relay thread** waits for the control reader's event, the
   notification event (a manual-reset event the RT and plugin threads set with one `SetEvent`) and a
-  high-resolution waitable timer armed for the next host timer or `ParamValues` deadline (a millisecond
-  timeout would be up to 15.6 ms late); every queued window message is dispatched inside the wait (a
-  plugin's `WM_QUIT` is dropped), everything else after it, outside every borrow, at most
-  `MESSAGES_PER_TICK` control messages per tick. A pipe cannot be waited on for "readable", so a reader
+  high-resolution waitable timer armed for the next host timer, `ParamValues` or frame deadline (a
+  millisecond timeout would be up to 15.6 ms late), posts one `WM_APP` message to a message-only window
+  of the main thread, and waits until the main thread hands back. The window's procedure runs the
+  bridge's tick outside every borrow (at most `MESSAGES_PER_TICK` control messages), re-arms the timer and
+  hands back; a tick that finds the bridge busy is retried with a 5 ms `SetTimer`. Because it is a window
+  message, every loop that pumps the thread serves the bridge: eframe's while the plugin frame is open, the
+  window manager's move and size loop during a drag, and a plugin's modal dialog loop opened from its GUI.
+  Only a modal loop inside a plugin call the bridge itself made (`Load`, `gui_open`, a state call) holds
+  control messages and timers back until it returns, as a long plugin call does on Linux. The bridge makes
+  itself per-monitor-v2 DPI aware before that window exists (as the manifest of `komponist.exe` does). A pipe cannot be waited on for "readable", so a reader
   thread blocks in `Channel::recv` and queues whole messages (at most 256, then the app's writer waits),
   setting the event while the queue is not empty; the main thread sends on the same overlapped pipe.
-  The seam for W6 is the outer loop of `Bridge::run`, as on macOS; while eframe's (winit's) message loop
-  or a plugin's modal loop runs, this wait does not, so W6 has to wake that loop for the same events and
-  deadline. `komponist_hosting::host_loop::wake` holds the wait, the event and the timer, shared with
+  The frame (W6, §8.4) uses the outer loop of `Bridge::run` as on macOS: `OpenGui` stops the pump, the
+  bridge runs `eframe::run_native` (run-and-return) and pumps again when the frame closes.
+  `komponist_hosting::host_loop::wake` holds the wait, the event and the timer, shared with
   the reference `PollLoop` of the hosting tests.
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
   honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
@@ -1342,6 +1348,44 @@ table of CLAP features / VST3 subcategories.
   the bridge frame's position. Costs (spike #42): +40–60 MiB per visible frame (egui draws the
   whole window). `KOMPONIST_FRAME_OFFSCREEN=1` opens frames at −20000 and blocks every activation
   (tests). The bridge clears its task-level crash exception ports at start.
+
+- **Windows (port W6): the bridge owns the frame window, as on macOS.** The app could create the frame and let
+  the plugin attach a child window across processes (the Linux model), but a cross-process parent/child pair
+  attaches the input queues of both threads, so a hung plugin would freeze the app (Windows port evaluation
+  §3.6, internal notes). The frame logic is shared with macOS (`komponist-bridge/src/frame/mod.rs`, `keys.rs`);
+  `frame/win32.rs` is the OS half. The body is a container child window of winit's window (`WS_CLIPCHILDREN`,
+  background `surface.0`) the plugin attaches to (CLAP `win32`, VST3 `kPlatformTypeHWND`). Sizes are physical
+  pixels at the window's DPI scale (`GetDpiForWindow / 96`), passed to the plugin (CLAP `set_scale`, VST3
+  `setContentScaleFactor`); the header is 28 × scale pixels; the protocol (`GuiOpened`, `SetGuiSize`, `FrameRect`)
+  stays in points. The window's size is set with `SetWindowPos` for the outer rect `AdjustWindowRectExForDpi`
+  gives, then the container; a user drag of a resizable plugin asks it 100 ms after the drag rests; fixed-size
+  plugins get a frame without resize border or maximize button. When the frame moves to a monitor with another
+  DPI (winit keeps its size in points), `logic()` sees the new scale and the bridge passes it to the plugin
+  (`HostedPlugin::gui_set_scale`) and asks for its size at that scale. The bridge process is per-monitor-v2 DPI
+  aware (the manifest; the bridge sets it before its first window too). The event loop: §8.1, the wake relay
+  posts to a window of the main thread, which winit's loop dispatches. Keys: a `WH_GETMESSAGE` hook on the main
+  thread, installed after the plugin's GUI opened (plugins hook the thread too: baseview, under the egui GUIs
+  of the test plugins, handles key messages for its windows in its own `WH_GETMESSAGE` hook, so winit's message
+  hook never sees them; hooks run newest first), applies the WP-50 policy while the focus is in the container
+  (Strg = Ctrl as on Linux, the Windows key is "other", AltGr is Ctrl + Alt and never a shortcut; Space, Esc,
+  Return, Tab, Backspace, Delete by virtual-key code, letters by the layout's character) and turns a taken key into
+  `WM_NULL` and a `Shortcut`; while another visible top-level window of the bridge lies above the frame (tooltips:
+  `WS_EX_TRANSPARENT`, `tooltips_class32` do not count) every key passes.  Activation (the foreground lock): the
+  app calls `AllowSetForegroundWindow(bridge pid)` before `ActivateFrame`, the bridge calls `SetForegroundWindow`;
+  on close the bridge allows the app, and the app brings its front window forward if the bridge still had the
+  foreground. `RaiseFrame` is `SetWindowPos(HWND_TOP, SWP_NOACTIVATE)`; the app sends it when one of its windows
+  comes to the foreground from a process that is not komponist (a foreground `SetWinEventHook`; switching from a
+  frame to the main window raises nothing, so the clicked window stays in front), back to front by the `HWND`s
+  the bridges report in `FrameWindow`. "Oben halten" is `HWND_TOPMOST` while komponist (the app or one of its
+  bridges) is the foreground process (a foreground hook in the bridge); when another application comes to the
+  front the frame leaves the topmost band and goes right below its window. The frames run from `komponist.exe
+  --bridge`, the app's own executable, which is what the taskbar groups by when no `AppUserModelID` is set;
+  none is set. Costs, measured with the debug build (wgpu on DX12): a bridge without a frame has a 34 MiB
+  working set, with the kp-test-synth frame open about 200 MiB (private bytes about 400 MiB), mostly the GPU
+  device and swapchain of eframe; release builds were not measured. `KOMPONIST_FRAME_OFFSCREEN=1` opens frames
+  at −20000 points without a taskbar button and skips every activation (tests). Tests: `komponist-bridge`
+  `tests/it/frame_win` (the test synth as CLAP and VST3, close and reopen at the rect, shutdown, a dying bridge,
+  the key hook; Surge XT and Dexed `#[ignore]`d).
 
 ### 8.5 Built-in instruments
 

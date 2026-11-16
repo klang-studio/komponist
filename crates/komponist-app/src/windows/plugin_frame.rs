@@ -28,10 +28,11 @@
 //!    under it. Esc in the main window leaves the frames open. Opening another project closes
 //!    every frame before `EngineSync::reset` releases the bridges.
 //!
-//! # macOS: the bridge owns the frame (#52)
+//! # macOS and Windows: the bridge owns the frame (#52, port W6)
 //!
-//! An app cannot embed another process's `NSView`, so on macOS the plugin view of a frame is a
-//! window of the bridge: `DeviceHost::open_gui` with `GuiTarget::OwnFrame` (the header model, the
+//! An app cannot embed another process's `NSView` (macOS), and a parent/child window pair across
+//! processes would tie the app's input to the plugin's (Windows), so there the plugin view of a
+//! frame is a window of the bridge: `DeviceHost::open_gui` with `GuiTarget::OwnFrame` (the header model, the
 //! language, where the frame was). The bridge draws the same header (`komponist_ui::plugin_frame`)
 //! and reports what happens in it; the app keeps every decision, as on Linux:
 //!
@@ -45,9 +46,10 @@
 //! While the bridge shows the frame the app shows no viewport for it. The parameter view and the
 //! device states (loading, crashed, missing) are the app's own viewport as on Linux, at the
 //! bridge frame's last position; switching "Ansicht" swaps the windows. Activation follows
-//! macOS's cooperative rules (spike #42 Q3): the app yields to the bridge's pid and sends
-//! `ActivateFrame` when the frame opens or is opened again; when the bridge closes a frame it
-//! yields back, and the app activates itself if the bridge was the active app.
+//! macOS's cooperative rules (spike #42 Q3) and Windows' foreground lock ([`activation`]): the app
+//! yields to the bridge's pid (Windows: `AllowSetForegroundWindow`) and sends `ActivateFrame`
+//! when the frame opens or is opened again; when the bridge closes a frame it yields back, and the
+//! app activates itself if the bridge was the active app.
 //!
 //! Without native viewports (`egui_kittest`, `Context::embed_viewports`) frames run without X11 and
 //! are not drawn, so other views' snapshots stay as they are; frame tests turn on
@@ -145,9 +147,9 @@ pub struct PluginFrames {
     counter: u64,
     /// Draw frames as embedded egui windows where there are no native viewports (frame tests).
     embedded: bool,
-    /// Tests: the bridge owns the plugin frames (as on macOS) also without native viewports.
+    /// Tests: the bridge owns the plugin frames (as on macOS and Windows) also without native viewports.
     force_bridge_frames: bool,
-    /// This pass: the bridge owns the plugin frames (macOS with native viewports, or forced).
+    /// This pass: the bridge owns the plugin frames (macOS and Windows with native viewports, or forced).
     bridge_frames: bool,
     /// Last X focus logged (`KOMPONIST_LOG_KEYS`).
     logged_focus: Option<u32>,
@@ -216,9 +218,9 @@ struct Frame {
     keep_on_top: bool,
     /// Where the frame opens (outer position, points), if remembered.
     pos: Option<(i32, i32)>,
-    /// Where the bridge's own frame was last (macOS).
+    /// Where the bridge's own frame was last (macOS, Windows).
     remote_rect: Option<FrameRect>,
-    /// The window number of the bridge's own frame (macOS).
+    /// The window number of the bridge's own frame (macOS; Windows: its `HWND`).
     remote_window: Option<i64>,
     /// The view the window was last sized for.
     sized_for: Option<PluginView>,
@@ -300,7 +302,7 @@ impl App {
         self.frames.embedded = on;
     }
 
-    /// Tests: the bridge owns the plugin view of a frame (`GuiTarget::OwnFrame`, as on macOS)
+    /// Tests: the bridge owns the plugin view of a frame (`GuiTarget::OwnFrame`, as on macOS and Windows)
     /// also without native viewports and on Linux.
     pub fn use_bridge_frames(&mut self, on: bool) {
         self.frames.force_bridge_frames = on;
@@ -656,7 +658,7 @@ impl App {
         self.expire_parked(now);
         if native || self.frames.embedded {
             for frame in &self.frames.frames {
-                // The bridge shows this one (macOS).
+                // The bridge shows this one (macOS, Windows).
                 if remote && frame.gui != Gui::Idle {
                     continue;
                 }
@@ -821,7 +823,7 @@ impl App {
         self.frame_chord(device, chord, false);
     }
 
-    /// A key the bridge's own frame took from its plugin (macOS, the X11 grab's counterpart).
+    /// A key the bridge's own frame took from its plugin (macOS, Windows; the X11 grab's counterpart).
     fn frame_shortcut(&mut self, device: DeviceId, chord: &komponist_ipc::frame::FrameChord) {
         let Some(chord) = keys::chord_from_frame(chord) else {
             return;
@@ -834,7 +836,7 @@ impl App {
         self.frame_chord(device, chord, false);
     }
 
-    /// A key event of the bridge's own frame while its header has the focus (macOS): applied as a
+    /// A key event of the bridge's own frame while its header has the focus (macOS, Windows): applied as a
     /// key of the frame's own window.
     fn frame_bridge_key(&mut self, device: DeviceId, key: &FrameKeyEvent) {
         let Some(logical) = egui::Key::from_name(&key.key) else {
@@ -948,7 +950,8 @@ impl App {
                 f.gui = Gui::Open;
                 f.had_gui = true;
                 if remote {
-                    // The bridge's frame is up: to the front (macOS cooperative activation).
+                    // The bridge's frame is up: to the front (macOS cooperative activation, the
+                    // Windows foreground lock).
                     activation::bring_to_front(self.engine.host_mut(), device);
                     return;
                 }
@@ -1077,7 +1080,7 @@ impl App {
         }
     }
 
-    /// Frame `i` where the bridge owns the plugin view (macOS, module docs): opens and closes the
+    /// Frame `i` where the bridge owns the plugin view (macOS, Windows; module docs): opens and closes the
     /// bridge's frame with the view and the device's state; `true` while it waits for the bridge.
     fn step_remote(&mut self, i: usize) -> bool {
         let device = self.frames.frames[i].device;
@@ -1704,7 +1707,7 @@ fn resize_viewport(
 }
 
 /// Registers frame `frame`'s viewport for this pass. Its title is the token until X11 found the
-/// window (Linux); where the bridges own the plugin frames (macOS) there is no lookup, and the
+/// window (Linux); where the bridges own the plugin frames (macOS, Windows) there is no lookup, and the
 /// app's own frame (parameter view, device states) carries its real title from the start, as the
 /// Window and Dock menus expect (#95).
 fn show_viewport(ctx: &Context, frame: &Frame, native: bool, remote: bool) {

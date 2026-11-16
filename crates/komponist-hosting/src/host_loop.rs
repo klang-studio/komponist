@@ -265,7 +265,9 @@ pub mod wake {
         }
     }
 
-    /// A high-resolution waitable timer for the next deadline of a main loop (Windows 10 1803+).
+    /// A high-resolution waitable timer for the next deadline of a main loop (Windows 10 1803+). A
+    /// synchronization timer: a wait that it satisfies resets it, and so does arming it again. Any
+    /// thread may arm it and wait on it ([`AsHandle`]; the bridge's wake relay, port W6).
     #[derive(Debug)]
     pub struct DeadlineTimer(OwnedHandle);
 
@@ -285,7 +287,7 @@ pub mod wake {
         }
 
         /// Arms the timer for `deadline` (at least 100 ns from now); `false` if that failed.
-        fn arm(&self, deadline: Instant) -> bool {
+        pub fn arm(&self, deadline: Instant) -> bool {
             let after = deadline.saturating_duration_since(Instant::now());
             let ticks = after.as_nanos().div_ceil(100).clamp(1, i64::MAX as u128) as i64;
             // Negative: relative to now.
@@ -304,9 +306,16 @@ pub mod wake {
             }
         }
 
-        fn cancel(&self) {
+        /// Disarms the timer (its signalled state stays as it is).
+        pub fn cancel(&self) {
             // SAFETY: a valid timer handle.
             unsafe { CancelWaitableTimer(self.0.as_raw_handle()) };
+        }
+    }
+
+    impl AsHandle for DeadlineTimer {
+        fn as_handle(&self) -> BorrowedHandle<'_> {
+            self.0.as_handle()
         }
     }
 
