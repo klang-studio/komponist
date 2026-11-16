@@ -448,7 +448,8 @@ follows the signal path (`routing::gates`, §6.8.6); without buses that rule red
 callback by `Engine::set_workers(threads, rt)`; the app calls it from
 `AudioProcess::prepare`, i.e. when a stream starts (and after export re-attach), and keeps the pool
 while the count and the realtime set-up (`WorkerRt`) do not change. Count: settings file `worker_threads` (`null` = automatic: one
-per core minus two, at most 8, 4 on the owner's 6-core machine; `0` = off; S07 has no control yet).
+per core minus two, at most 8, 4 on the owner's 6-core machine; on Apple silicon one per performance core
+minus the IO thread, capped by the device workgroup's `max_parallel_threads`, 7 on an M1 Pro (#79); `0` = off; S07 has no control yet).
 Workers run at `SCHED_FIFO` 80 (the bridges' priority) when the system allows it; otherwise they run
 normally and `EngineSync::worker_status` / a startup line say so. If no thread starts, the engine
 stays single-threaded.
