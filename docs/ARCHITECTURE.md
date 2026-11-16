@@ -1167,8 +1167,8 @@ komponist.app/Contents/
 ```
 
 Fonts, the window icon and all texts are compiled in, so nothing else goes into the bundle. The bundle id is
-`studio.klang.komponist`; `LSMinimumSystemVersion` is 14.4 (Apple Silicon only), the category is music, and the plist
-exports the type `studio.klang.komponist.project` for `*.komponist`. Opening a project by double-click (Apple Event
+`io.github.klang-studio.komponist`; `LSMinimumSystemVersion` is 14.4 (Apple Silicon only), the category is music, and the plist
+exports the type `io.github.klang-studio.komponist.project` for `*.komponist`. Opening a project by double-click (Apple Event
 `odoc`) is not handled yet, so the plist declares the type but no `CFBundleDocumentTypes`.
 
 **Signing:** hardened runtime (`codesign --options runtime`) with `assets/macos/komponist.entitlements`:

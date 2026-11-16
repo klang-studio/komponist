@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>studio.klang.komponist</string>
+    <string>io.github.klang-studio.komponist</string>
     <key>CFBundleName</key>
     <string>komponist</string>
     <key>CFBundleDisplayName</key>
@@ -42,7 +42,7 @@
     <array>
         <dict>
             <key>UTTypeIdentifier</key>
-            <string>studio.klang.komponist.project</string>
+            <string>io.github.klang-studio.komponist.project</string>
             <key>UTTypeDescription</key>
             <string>komponist project</string>
             <key>UTTypeConformsTo</key>
