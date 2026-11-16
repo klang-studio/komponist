@@ -10,7 +10,8 @@
 //! it first thing in `main()` when its first argument is `--bridge` (the app starts bridges from
 //! its own executable, so a bridge can never be missing or stale next to it), and the small
 //! `komponist-bridge` binary calls it with all its arguments. Either way the process is separate
-//! from the app and initialises no GUI, graphics or audio.
+//! from the app and initialises no GUI, graphics or audio (on macOS: no Dock icon, no App Nap,
+//! `macos_app`, #100).
 //!
 //! - **Instance mode** ([`instance`]): talks to the app over the inherited control socket, hosts
 //!   one plugin on its main thread and processes blocks on an RT thread ([`rt`]) through the
@@ -30,6 +31,8 @@ mod cf_loop;
 #[cfg(not(target_os = "macos"))]
 mod event_loop;
 mod instance;
+#[cfg(target_os = "macos")]
+mod macos_app;
 mod notify;
 mod rt;
 mod scan;
@@ -144,7 +147,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         std::process::abort();
     }));
     match parse_args(args) {
-        Ok(Mode::Instance(options)) => exit_now(instance::run(options)),
+        Ok(Mode::Instance(options)) => {
+            #[cfg(target_os = "macos")]
+            macos_app::setup();
+            exit_now(instance::run(options))
+        }
         Ok(Mode::Scan(bundle)) => exit_now(scan::run(&bundle)),
         Ok(Mode::Help) => {
             println!("{USAGE}");
