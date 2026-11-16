@@ -1,7 +1,10 @@
 # egui_kittest settings (read from the workspace root).
 #
-# Linux (lavapipe) is the reference for snapshots. macOS renders with Metal, whose pixels differ,
-# so macOS renders every snapshot without comparing: the failed-pixel budget is unbounded there
-# (owner decision 5 of epic #41).
+# Linux (lavapipe) is the reference for snapshots. macOS renders with Metal and Windows with the GPU's driver
+# (wgpu DX12/Vulkan), whose pixels differ, so both render every snapshot without comparing: the failed-pixel
+# budget is unbounded there (owner decision 5 of epic #41 for macOS; the same rule for Windows).
 [mac]
+max_failed_pixels = 9223372036854775807
+
+[windows]
 max_failed_pixels = 9223372036854775807
