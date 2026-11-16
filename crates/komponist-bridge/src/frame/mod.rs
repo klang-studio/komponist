@@ -792,6 +792,13 @@ fn create(
                 os::describe(&window, &container),
             ));
             ctx.send_viewport_cmd(ViewportCommand::Resizable(info.resizable));
+            // Windows keeps the maximize button of a window that cannot be resized.
+            #[cfg(windows)]
+            ctx.send_viewport_cmd(ViewportCommand::EnableButtons {
+                close: true,
+                minimized: true,
+                maximize: info.resizable,
+            });
         }
         Err(message) => fail(frame, &ctx, message),
     }

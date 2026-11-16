@@ -86,7 +86,7 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
 ## Windows (port in progress)
 
 komponist is being ported to Windows 11 x86_64 (MSVC; integration branch `windows`; no GitHub issues yet). The workspace
-builds and its gate passes there; plugin GUI frames are not done yet (W6). What is true now:
+builds and its gate passes there; plugin GUI frames are bridge-owned as on macOS (W6). What is true now:
 
 - **Shell:** the scripts are bash: run them in Git Bash (`scripts/check.sh`, `scripts/build-test-plugins.sh`). The gate is
   the same as on Linux: `scripts/check.sh`, which sets `WGPU_BACKEND=vulkan` on Windows (DX12 crashed parallel kittest

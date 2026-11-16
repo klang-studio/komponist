@@ -68,7 +68,9 @@ and on again.
 
 **Plugins:** CLAP plugins are searched in `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP` and
 `%CLAP_PATH%` (separated by `;`); VST3 plugins in `%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3`.
-More folders can be added in the settings.
+More folders can be added in the settings. A plugin's own window (S05 "Öffnen") is a window of its plugin process
+with komponist's header on top, so it is a window of its own in the taskbar and in Alt-Tab; the "Fenster" (Window)
+submenu of the "⋯" menu lists every open plugin window.
 
 **Where komponist keeps its files:** settings and recent projects in `%APPDATA%\komponist\` (`settings.json`,
 `recent.json`). Remove the folder to reset komponist.
