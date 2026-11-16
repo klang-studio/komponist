@@ -11,6 +11,7 @@
 //! are accepted and never fire). A plugin that fails to instantiate is still listed, without a
 //! sidechain.
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::Path;
 use std::rc::Rc;
@@ -19,7 +20,9 @@ use std::time::Duration;
 
 use komponist_ipc::{LogLevel, PluginDescriptor, PluginFormat, PluginKind};
 
-use crate::host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::{HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 use crate::plugin::HostingError;
 
 /// The host context of a scan's short-lived instances: timers and fds are accepted and never
@@ -50,14 +53,17 @@ impl HostLoop for ProbeLoop {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn register_fd(&self, _fd: RawFd, _events: FdEvents) -> Result<(), HostingError> {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn modify_fd(&self, _fd: RawFd, _events: FdEvents) -> Result<(), HostingError> {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn unregister_fd(&self, _fd: RawFd) -> Result<(), HostingError> {
         Ok(())
     }

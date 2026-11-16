@@ -144,7 +144,7 @@ impl IEventListTrait for EventList {
     }
 }
 
-fn event(offset: u32, kind: u32, body: Event__type0) -> Event {
+fn event(offset: u32, kind: super::VstEnum, body: Event__type0) -> Event {
     Event {
         busIndex: 0,
         sampleOffset: offset as i32,

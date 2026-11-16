@@ -479,9 +479,27 @@ fn the_library_stays_mapped_after_unload() {
         assert_eq!(binary, bundle);
     }
     drop(load(&bundle, FX));
-    let c = std::ffi::CString::new(binary.as_os_str().as_encoded_bytes()).unwrap();
-    // SAFETY: RTLD_NOLOAD loads nothing; the extra reference is dropped again.
-    let handle = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
-    assert!(!handle.is_null(), "{} was unmapped", binary.display());
-    unsafe { libc::dlclose(handle) };
+    #[cfg(unix)]
+    {
+        let c = std::ffi::CString::new(binary.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: RTLD_NOLOAD loads nothing; the extra reference is dropped again.
+        let handle = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
+        assert!(!handle.is_null(), "{} was unmapped", binary.display());
+        unsafe { libc::dlclose(handle) };
+    }
+    // Windows: the DLL is still loaded (`crate::library` pinned it).
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = std::path::absolute(&binary)
+            .unwrap()
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        // SAFETY: looks a loaded module up by its path; loads nothing.
+        let module =
+            unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(wide.as_ptr()) };
+        assert!(!module.is_null(), "{} was unloaded", binary.display());
+    }
 }

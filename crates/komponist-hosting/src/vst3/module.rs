@@ -9,6 +9,9 @@
 //! |---|---|---|---|
 //! | Linux | `X.vst3/Contents/<arch>-linux/X.so` | `ModuleEntry(dlopen handle)` | `ModuleExit()` |
 //! | macOS | `X.vst3/Contents/MacOS/X` (Mach-O, named by `Info.plist`) | `bundleEntry(CFBundleRef)` | `bundleExit()` |
+//! | Windows | `X.vst3/Contents/x86_64-win/X.vst3` (a DLL), or a single-file `X.vst3` DLL | `InitDll()` | `ExitDll()` |
+//!
+//! On Windows both functions are optional (the module spec says so; most modules export them).
 //!
 //! On macOS the `CFBundleRef` stays alive until after `bundleExit` (plugins keep it to find their
 //! resources). A [`Module`] is shared through an [`Arc`] by everything that holds a COM pointer
@@ -19,7 +22,9 @@
 //! function and `dlclose` (see there why); loading the module again afterwards calls the entry
 //! function again.
 
-use std::ffi::{CStr, c_char, c_void};
+#[cfg(unix)]
+use std::ffi::c_void;
+use std::ffi::{CStr, c_char};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
@@ -48,9 +53,14 @@ const ENTRY_SYMBOL: &CStr = c"bundleEntry";
 #[cfg(target_os = "macos")]
 const EXIT_SYMBOL: &CStr = c"bundleExit";
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+const ENTRY_SYMBOL: &CStr = c"InitDll";
+#[cfg(windows)]
+const EXIT_SYMBOL: &CStr = c"ExitDll";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!(
-    "komponist-hosting: no VST3 bundle layout or module entry (vst3/module.rs) for this OS yet (Windows: W5, X.vst3/Contents/x86_64-win + InitDll)"
+    "komponist-hosting: no VST3 bundle layout or module entry (vst3/module.rs) for this OS"
 );
 
 /// The shared library of a bundle (see the module docs for the layouts). A `.vst3` that is a plain
@@ -107,6 +117,38 @@ fn bundle_binary(bundle: &Path) -> Result<PathBuf, HostingError> {
         .ok_or_else(|| HostingError::Load(format!("{}: no shared library", dir.display())))
 }
 
+/// Windows: `Contents/<arch>-win/X.vst3` (`x86_64-win`, `arm64-win` on ARM), or any single
+/// `.vst3` file in that directory when it is named differently.
+#[cfg(windows)]
+fn bundle_binary(bundle: &Path) -> Result<PathBuf, HostingError> {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        arch => arch,
+    };
+    let dir = bundle.join("Contents").join(format!("{arch}-win"));
+    if let Some(name) = bundle.file_name() {
+        let preferred = dir.join(name);
+        if preferred.is_file() {
+            return Ok(preferred);
+        }
+    }
+    let mut libraries: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| HostingError::Load(format!("{}: {e}", dir.display())))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("vst3"))
+                && path.is_file()
+        })
+        .collect();
+    libraries.sort();
+    libraries
+        .into_iter()
+        .next()
+        .ok_or_else(|| HostingError::Load(format!("{}: no module DLL", dir.display())))
+}
+
 /// One loaded VST3 library with its entry function done. Dropping it calls the exit function and
 /// `dlclose` (which leaves the code mapped, see [`crate::library`]).
 #[derive(Debug)]
@@ -121,17 +163,21 @@ pub(crate) struct Module {
 }
 
 /// `ModuleEntry(void* sharedLibraryHandle)` (Linux) or `bundleEntry(CFBundleRef)` (macOS).
+#[cfg(unix)]
 type ModuleEntryFn = unsafe extern "C" fn(*mut c_void) -> bool;
-/// `ModuleExit()` (Linux) or `bundleExit()` (macOS).
-type ModuleExitFn = unsafe extern "C" fn() -> bool;
-type GetPluginFactoryFn = unsafe extern "C" fn() -> *mut IPluginFactory;
+/// `InitDll()` (Windows; `PLUGIN_API` is the system calling convention).
+#[cfg(windows)]
+type ModuleEntryFn = unsafe extern "system" fn() -> bool;
+/// `ModuleExit()` (Linux), `bundleExit()` (macOS) or `ExitDll()` (Windows).
+type ModuleExitFn = unsafe extern "system" fn() -> bool;
+type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut IPluginFactory;
 
 impl Module {
     fn open(bundle: &Path, binary: &Path) -> Result<Module, HostingError> {
         // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain
         // it.
         let library = unsafe { Library::open(binary) }?;
-        #[cfg(target_os = "linux")]
+        #[cfg(not(target_os = "macos"))]
         let _ = bundle;
         let mut module = Module {
             binary: binary.to_path_buf(),
@@ -143,10 +189,15 @@ impl Module {
         // Older modules do not export it; the spec makes it mandatory only for new ones.
         // SAFETY: the VST3 module spec's signature.
         if let Some(entry) = unsafe { module.library.symbol::<ModuleEntryFn>(ENTRY_SYMBOL) } {
+            #[cfg(unix)]
             let argument = module.entry_argument()?;
             // SAFETY: called once after dlopen with the dlopen handle (Linux) or the module's
-            // bundle (macOS), as the VST3 module spec says.
-            if !unsafe { entry(argument) } {
+            // bundle (macOS), or without an argument (Windows), as the VST3 module spec says.
+            #[cfg(unix)]
+            let entered = unsafe { entry(argument) };
+            #[cfg(windows)]
+            let entered = unsafe { entry() };
+            if !entered {
                 return Err(HostingError::Load(format!(
                     "{}: {} failed",
                     binary.display(),
@@ -233,9 +284,33 @@ pub(crate) fn load_module(bundle: &Path) -> Result<Arc<Module>, HostingError> {
     Ok(module)
 }
 
-/// A class id as komponist's plugin id: 32 upper-case hex digits in byte order.
+/// Byte `i` of the canonical class id is byte `CANONICAL[i]` of a `TUID` in memory. On Windows the
+/// SDK lays a `TUID` out as a COM `GUID` (`COM_COMPATIBLE`: `Data1` little-endian `u32`, `Data2`
+/// and `Data3` little-endian `u16`, then 8 bytes), elsewhere in plain byte order. The permutation is
+/// its own inverse.
+#[cfg(windows)]
+const CANONICAL: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+#[cfg(not(windows))]
+const CANONICAL: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// A class id as komponist's plugin id: 32 upper-case hex digits in the canonical byte order
+/// (the order `FUID::toString` prints and Linux and macOS keep in memory), so a project names a
+/// VST3 plugin the same way on every OS.
 pub(crate) fn cid_hex(cid: &TUID) -> String {
-    cid.iter().map(|b| format!("{:02X}", *b as u8)).collect()
+    cid_to_canonical(cid)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect()
+}
+
+/// The bytes of a class id in the canonical order (see [`cid_hex`]).
+pub(crate) fn cid_to_canonical(cid: &TUID) -> [u8; 16] {
+    CANONICAL.map(|i| cid[i] as u8)
+}
+
+/// A class id from its bytes in the canonical order.
+pub(crate) fn cid_from_canonical(bytes: &[u8; 16]) -> TUID {
+    CANONICAL.map(|i| bytes[i] as c_char)
 }
 
 /// Parses a plugin id from [`cid_hex`] (case-insensitive).
@@ -244,8 +319,8 @@ pub(crate) fn parse_cid(id: &str) -> Option<TUID> {
         return None;
     }
     let mut cid: TUID = [0; 16];
-    for (i, byte) in cid.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&id[2 * i..2 * i + 2], 16).ok()? as c_char;
+    for (i, &at) in CANONICAL.iter().enumerate() {
+        cid[at] = u8::from_str_radix(&id[2 * i..2 * i + 2], 16).ok()? as c_char;
     }
     Some(cid)
 }
@@ -327,7 +402,12 @@ mod tests {
 
     #[test]
     fn class_ids_round_trip_as_hex() {
-        let cid: TUID = b"kpTestSynth00001".map(|b| b as c_char);
+        // The id the SDK's `uid` macro makes from "kpTe" "stSy" "nth0" "0001" (a COM GUID on
+        // Windows).
+        let mut cid: TUID = b"kpTestSynth00001".map(|b| b as c_char);
+        if cfg!(windows) {
+            cid = CANONICAL.map(|i| cid[i]);
+        }
         let hex = cid_hex(&cid);
         assert_eq!(hex, "6B705465737453796E74683030303031");
         assert_eq!(parse_cid(&hex), Some(cid));
@@ -372,6 +452,35 @@ mod tests {
         assert!(matches!(
             load_module(&bundle),
             Err(HostingError::Load(m)) if m.contains("Odd Name.so")
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundle_layout() {
+        let dir = std::env::temp_dir().join(format!("kp-vst3-layout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let arch = dir.join(r"Odd Name.vst3\Contents\x86_64-win");
+        std::fs::create_dir_all(&arch).unwrap();
+        let bundle = dir.join("Odd Name.vst3");
+        assert!(matches!(binary_path(&bundle), Err(HostingError::Load(_))));
+        std::fs::write(arch.join("other.VST3"), b"").unwrap();
+        assert_eq!(binary_path(&bundle).unwrap(), arch.join("other.VST3"));
+        std::fs::write(arch.join("Odd Name.vst3"), b"").unwrap();
+        assert_eq!(binary_path(&bundle).unwrap(), arch.join("Odd Name.vst3"));
+        // A legacy single-file module, and a path that does not exist.
+        let file = dir.join("Single.vst3");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(binary_path(&file).unwrap(), file);
+        assert!(matches!(
+            binary_path(&dir.join("Missing.vst3")),
+            Err(HostingError::Load(_))
+        ));
+        // Not a DLL: LoadLibraryExW fails cleanly.
+        assert!(matches!(
+            load_module(&bundle),
+            Err(HostingError::Load(m)) if m.contains("Odd Name.vst3")
         ));
         std::fs::remove_dir_all(&dir).unwrap();
     }

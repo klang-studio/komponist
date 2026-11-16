@@ -34,6 +34,20 @@ pub(super) const DEXED: &str = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3";
 pub(super) const DECENT_SAMPLER: &str = "/Library/Audio/Plug-Ins/VST3/DecentSampler.vst3";
 #[cfg(target_os = "macos")]
 pub(super) const SHORTCIRCUIT_XT: &str = "/Library/Audio/Plug-Ins/VST3/Shortcircuit XT.vst3";
+#[cfg(windows)]
+pub(super) const KLOPFER: &str = "~/AppData/Local/Programs/Common/VST3/Klopfer.vst3";
+#[cfg(windows)]
+pub(super) const SURGE_XT: &str =
+    "C:/Program Files/Common Files/VST3/Surge Synth Team/Surge XT.vst3";
+#[cfg(windows)]
+pub(super) const SURGE_XT_FX: &str =
+    "C:/Program Files/Common Files/VST3/Surge Synth Team/Surge XT Effects.vst3";
+#[cfg(windows)]
+pub(super) const DEXED: &str = "C:/Program Files/Common Files/VST3/Dexed.vst3";
+#[cfg(windows)]
+pub(super) const DECENT_SAMPLER: &str = "C:/Program Files/Common Files/VST3/DecentSampler.vst3";
+#[cfg(windows)]
+pub(super) const SHORTCIRCUIT_XT: &str = "C:/Program Files/Common Files/VST3/Shortcircuit XT.vst3";
 
 /// What a plugin should do in [`exercise`].
 struct Expect {

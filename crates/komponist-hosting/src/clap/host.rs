@@ -2,12 +2,13 @@
 //! [`HostNotify`] notifications and [`HostLoop`] registrations.
 //!
 //! - [`SharedHost`] (any thread): `request_*`, log, thread-check, gui, `params.request_flush`.
-//! - [`MainThreadHost`] (main thread): timer-support, posix-fd-support, params rescan, latency,
+//! - [`MainThreadHost`] (main thread): timer-support, posix-fd-support (Unix), params rescan, latency,
 //!   state, audio-ports, note-ports, note-name. It remembers the timers and fds of its plugin so
 //!   that the format layer only dispatches its own, and unregisters leftovers when the instance is
 //!   destroyed.
 
 use std::cell::{Cell, RefCell};
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use clack_extensions::note_ports::{
 use clack_extensions::params::{
     HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamRescanFlags,
 };
+#[cfg(unix)]
 use clack_extensions::posix_fd::{FdFlags, HostPosixFd, HostPosixFdImpl};
 use clack_extensions::state::{HostState, HostStateImpl};
 use clack_extensions::thread_check::{HostThreadCheck, HostThreadCheckImpl};
@@ -32,7 +34,9 @@ use clack_extensions::timer::{HostTimer, HostTimerImpl, TimerId as ClapTimerId};
 use clack_host::prelude::*;
 use komponist_ipc::{GuiSize, LogLevel};
 
-use crate::host::{FdEvents, HostLoop, HostNotification, HostNotify, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::{HostLoop, HostNotification, HostNotify, TimerId};
 
 std::thread_local! {
     /// Set while the current thread runs a `HostedProcessor` method (CLAP thread-check
@@ -65,12 +69,14 @@ impl HostHandlers for KpHost {
     type AudioProcessor<'a> = ();
 
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
+        // Windows offers no posix-fd-support (no fds there; the extension is Unix-only).
+        #[cfg(unix)]
+        builder.register::<HostPosixFd>();
         builder
             .register::<HostLog>()
             .register::<HostThreadCheck>()
             .register::<HostGui>()
             .register::<HostTimer>()
-            .register::<HostPosixFd>()
             .register::<HostParams>()
             .register::<HostLatency>()
             .register::<HostState>()
@@ -178,6 +184,7 @@ pub(crate) struct MainThreadHost<'a> {
     shared: &'a SharedHost,
     host_loop: Rc<dyn HostLoop>,
     timers: RefCell<Vec<TimerId>>,
+    #[cfg(unix)]
     fds: RefCell<Vec<RawFd>>,
 }
 
@@ -187,6 +194,7 @@ impl<'a> MainThreadHost<'a> {
             shared,
             host_loop,
             timers: RefCell::new(Vec::new()),
+            #[cfg(unix)]
             fds: RefCell::new(Vec::new()),
         }
     }
@@ -197,6 +205,7 @@ impl<'a> MainThreadHost<'a> {
     }
 
     /// Whether this instance registered `fd`.
+    #[cfg(unix)]
     pub(crate) fn owns_fd(&self, fd: RawFd) -> bool {
         self.fds.borrow().contains(&fd)
     }
@@ -216,6 +225,7 @@ impl Drop for MainThreadHost<'_> {
         for timer in self.timers.take() {
             let _ = self.host_loop.unregister_timer(timer);
         }
+        #[cfg(unix)]
         for fd in self.fds.take() {
             let _ = self.host_loop.unregister_fd(fd);
         }
@@ -254,6 +264,7 @@ impl HostTimerImpl for MainThreadHost<'_> {
 }
 
 /// CLAP posix-fd flags as [`FdEvents`].
+#[cfg(unix)]
 pub(crate) fn fd_events(flags: FdFlags) -> FdEvents {
     let mut events = FdEvents::NONE;
     if flags.contains(FdFlags::READ) {
@@ -269,6 +280,7 @@ pub(crate) fn fd_events(flags: FdFlags) -> FdEvents {
 }
 
 /// [`FdEvents`] as CLAP posix-fd flags.
+#[cfg(unix)]
 pub(crate) fn fd_flags(events: FdEvents) -> FdFlags {
     let mut flags = FdFlags::empty();
     if events.contains(FdEvents::READ) {
@@ -283,6 +295,7 @@ pub(crate) fn fd_flags(events: FdEvents) -> FdFlags {
     flags
 }
 
+#[cfg(unix)]
 impl HostPosixFdImpl for MainThreadHost<'_> {
     fn register_fd(&self, fd: RawFd, flags: FdFlags) -> Result<(), HostError> {
         if self.owns_fd(fd) {
@@ -378,6 +391,7 @@ impl HostNoteNameImpl for MainThreadHost<'_> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn fd_flags_round_trip() {
         for bits in 0..8u8 {

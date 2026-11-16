@@ -9,22 +9,26 @@
 //!   as [`HostNotification::ParamEdited`]. Thread-safe (plugins should call it on the main thread).
 //! - [`PlugFrame`] (`IPlugFrame`, `Linux::IRunLoop` on one object, as the spike did): resize
 //!   requests of an open view and the plugin's fds and timers, served by the bridge's
-//!   [`HostLoop`] through [`RunLoop`]. Main thread only.
+//!   [`HostLoop`] through [`RunLoop`]. Main thread only. Windows offers no `IRunLoop` (port W5:
+//!   plugins there pump their own window messages and timers), so `RunLoop` stays empty there.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_void};
+#[cfg(unix)]
 use std::os::fd::{BorrowedFd, RawFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+#[cfg(unix)]
 use std::time::Duration;
 
 use komponist_ipc::{GuiSize, LogLevel};
+#[cfg(unix)]
 use vst3::Steinberg::Linux::{
-    FileDescriptor, IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, ITimerHandler,
-    ITimerHandlerTrait, TimerInterval,
+    FileDescriptor, IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, TimerInterval,
 };
+use vst3::Steinberg::Linux::{ITimerHandler, ITimerHandlerTrait};
 use vst3::Steinberg::Vst::IAttributeList_::AttrID;
 use vst3::Steinberg::Vst::RestartFlags_::{
     kIoChanged, kLatencyChanged, kMidiCCAssignmentChanged, kParamIDMappingChanged,
@@ -45,7 +49,9 @@ use vst3::Steinberg::{kInvalidArgument, kNoInterface, kResultFalse, kResultOk, k
 use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
 
 use super::strings::{utf16_ptr, write_utf16};
-use crate::host::{FdEvents, HostLoop, HostNotification, HostNotify, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::{HostLoop, HostNotification, HostNotify, TimerId};
 
 /// Capacity of the main-thread → processor parameter ring.
 pub(crate) const EDIT_RING: usize = 1024;
@@ -561,25 +567,33 @@ impl IComponentHandler2Trait for ComponentHandler {
 /// releasing a handler may run plugin code that does so.
 pub(crate) struct RunLoop {
     host_loop: Rc<dyn HostLoop>,
+    #[cfg(unix)]
     notify: Arc<dyn HostNotify>,
+    #[cfg(unix)]
     fds: RefCell<Vec<(RawFd, ComPtr<IEventHandler>)>>,
     timers: RefCell<Vec<(TimerId, ComPtr<ITimerHandler>)>>,
 }
 
 impl RunLoop {
     pub(crate) fn new(host_loop: Rc<dyn HostLoop>, notify: Arc<dyn HostNotify>) -> RunLoop {
+        #[cfg(windows)]
+        let _ = notify;
         RunLoop {
             host_loop,
+            #[cfg(unix)]
             notify,
+            #[cfg(unix)]
             fds: RefCell::new(Vec::new()),
             timers: RefCell::new(Vec::new()),
         }
     }
 
+    #[cfg(unix)]
     fn warn(&self, message: &str) {
         self.notify.log(LogLevel::Warning, message);
     }
 
+    #[cfg(unix)]
     fn register_event_handler(&self, handler: *mut IEventHandler, fd: FileDescriptor) -> tresult {
         // SAFETY: the plugin passes a live handler (or NULL).
         let Some(handler) = (unsafe { ComRef::from_raw(handler) }) else {
@@ -607,6 +621,7 @@ impl RunLoop {
         kResultOk
     }
 
+    #[cfg(unix)]
     fn unregister_event_handler(&self, handler: *mut IEventHandler) -> tresult {
         if handler.is_null() {
             return kInvalidArgument;
@@ -630,6 +645,7 @@ impl RunLoop {
         if found { kResultOk } else { kInvalidArgument }
     }
 
+    #[cfg(unix)]
     fn register_timer(&self, handler: *mut ITimerHandler, ms: TimerInterval) -> tresult {
         // SAFETY: the plugin passes a live handler (or NULL).
         let Some(handler) = (unsafe { ComRef::from_raw(handler) }) else {
@@ -648,6 +664,7 @@ impl RunLoop {
         }
     }
 
+    #[cfg(unix)]
     fn unregister_timer(&self, handler: *mut ITimerHandler) -> tresult {
         if handler.is_null() {
             return kInvalidArgument;
@@ -669,6 +686,7 @@ impl RunLoop {
     }
 
     /// Whether a handler is registered for `fd`.
+    #[cfg(unix)]
     pub(crate) fn owns_fd(&self, fd: RawFd) -> bool {
         self.fds.borrow().iter().any(|(f, _)| *f == fd)
     }
@@ -679,6 +697,7 @@ impl RunLoop {
     }
 
     /// Calls the handlers of a ready `fd`.
+    #[cfg(unix)]
     pub(crate) fn dispatch_fd(&self, fd: RawFd, events: FdEvents) {
         let handlers: Vec<ComPtr<IEventHandler>> = self
             .fds
@@ -725,28 +744,34 @@ impl RunLoop {
 
     /// Unregisters everything and releases the handlers; before the plugin's library goes away.
     pub(crate) fn clear(&self) {
+        #[cfg(unix)]
         let fds = std::mem::take(&mut *self.fds.borrow_mut());
         let timers = std::mem::take(&mut *self.timers.borrow_mut());
-        let mut unique: Vec<RawFd> = fds.iter().map(|(fd, _)| *fd).collect();
-        unique.dedup();
-        for fd in unique {
-            let _ = self.host_loop.unregister_fd(fd);
+        #[cfg(unix)]
+        {
+            let mut unique: Vec<RawFd> = fds.iter().map(|(fd, _)| *fd).collect();
+            unique.dedup();
+            for fd in unique {
+                let _ = self.host_loop.unregister_fd(fd);
+            }
         }
         for (id, _) in &timers {
             let _ = self.host_loop.unregister_timer(*id);
         }
+        #[cfg(unix)]
         drop(fds);
         drop(timers);
     }
 
     /// Registered (fds, timers), for tests.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn counts(&self) -> (usize, usize) {
         (self.fds.borrow().len(), self.timers.borrow().len())
     }
 }
 
 /// Whether `fd` is readable right now (zero-timeout `poll`).
+#[cfg(unix)]
 fn readable_now(fd: RawFd) -> bool {
     // SAFETY: the plugin keeps a registered fd open while it is registered.
     let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
@@ -771,19 +796,30 @@ fn readable_now(fd: RawFd) -> bool {
 
 /// The frame of an open view: resize requests, and the run loop plugins query from it.
 pub(crate) struct PlugFrame {
+    #[cfg(unix)]
     run_loop: Rc<RunLoop>,
     notify: Arc<dyn HostNotify>,
     /// Inside `resizeView` (guards against a plugin that answers `onSize` with another request).
     resizing: Cell<bool>,
 }
 
+#[cfg(unix)]
 impl Class for PlugFrame {
     type Interfaces = (IPlugFrame, IRunLoop);
 }
 
+/// Windows: no `IRunLoop` (plugins there use window messages and `SetTimer`).
+#[cfg(windows)]
+impl Class for PlugFrame {
+    type Interfaces = (IPlugFrame,);
+}
+
 impl PlugFrame {
     pub(crate) fn new(run_loop: Rc<RunLoop>, notify: Arc<dyn HostNotify>) -> ComWrapper<PlugFrame> {
+        #[cfg(windows)]
+        let _ = run_loop;
         ComWrapper::new(PlugFrame {
+            #[cfg(unix)]
             run_loop,
             notify,
             resizing: Cell::new(false),
@@ -817,6 +853,7 @@ impl IPlugFrameTrait for PlugFrame {
     }
 }
 
+#[cfg(unix)]
 impl IRunLoopTrait for PlugFrame {
     unsafe fn registerEventHandler(
         &self,
@@ -843,6 +880,7 @@ impl IRunLoopTrait for PlugFrame {
 mod tests {
     use super::*;
     use crate::host_loop::{PollLoop, notification_bits as bits};
+    #[cfg(unix)]
     use std::sync::atomic::AtomicU32;
     use vst3::Steinberg::Vst::IMessage;
 
@@ -1002,26 +1040,31 @@ mod tests {
     }
 
     /// A plugin-side timer and fd handler that counts calls and unregisters itself on request.
+    #[cfg(unix)]
     struct Counter {
         calls: AtomicU32,
     }
 
+    #[cfg(unix)]
     impl Class for Counter {
         type Interfaces = (ITimerHandler, IEventHandler);
     }
 
+    #[cfg(unix)]
     impl ITimerHandlerTrait for Counter {
         unsafe fn onTimer(&self) {
             self.calls.fetch_add(1, Ordering::Relaxed);
         }
     }
 
+    #[cfg(unix)]
     impl IEventHandlerTrait for Counter {
         unsafe fn onFDIsSet(&self, _fd: FileDescriptor) {
             self.calls.fetch_add(100, Ordering::Relaxed);
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_loop_registers_with_the_host_loop() {
         use std::io::Write;

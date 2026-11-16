@@ -11,18 +11,20 @@
 //!   [`HostContext`].
 //! - [`load`] and [`scan`]: entry points, dispatching on the bundle format.
 //! - [`host_loop`]: [`host_loop::PollLoop`], a reference `poll()` implementation of [`HostLoop`]
-//!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop).
+//!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop);
+//!   on Windows a message-pumping wait (`host_loop::wake`) shared with the bridge.
 //! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26).
-//! - `library` (private): `dlopen` for both layers; plugin libraries are never unmapped.
+//! - `library` (private): `dlopen` (Windows: `LoadLibraryExW` + pin) for both layers; plugin
+//!   libraries are never unmapped.
 //! - `bundle` (private, macOS): `CFBundle` of a `.clap` / `.vst3` directory and its executable.
 //! - `vst3` (private): the VST3 format layer on the raw vst3 0.3 bindings (WP-32). Its parameters
 //!   are normalized (`0..=1`); its state blob format is documented in `vst3::stream`.
 //!
 //! Format checklist for either implementation (ARCHITECTURE §8.2): CLAP audio-ports, note-ports,
-//! params, state, latency, gui (x11 or cocoa, embedded), timer-support, posix-fd-support, thread-check, log,
-//! render, note-name; VST3 IComponent / IAudioProcessor / IEditController (+ IConnectionPoint),
+//! params, state, latency, gui (x11, cocoa or win32, embedded), timer-support, posix-fd-support (Unix),
+//! thread-check, log, render, note-name; VST3 IComponent / IAudioProcessor / IEditController (+ IConnectionPoint),
 //! IHostApplication, IComponentHandler, IParameterChanges / IEventList, IBStream, IPlugView (X11
-//! or NSView embed), IPlugFrame, Linux IRunLoop, IPlugViewContentScaleSupport.
+//! or NSView embed), IPlugFrame, Linux IRunLoop (Unix), IPlugViewContentScaleSupport.
 //!
 //! Shared vocabulary comes from `komponist-ipc` and is re-exported here: [`PluginDescriptor`],
 //! [`ParamInfo`], [`NoteName`], [`RenderMode`], [`GuiSize`].

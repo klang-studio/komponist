@@ -30,6 +30,18 @@ pub(super) const SURGE_XT_FX: &str = "/Library/Audio/Plug-Ins/CLAP/Surge XT Effe
 pub(super) const DEXED: &str = "/Library/Audio/Plug-Ins/CLAP/Dexed.clap";
 #[cfg(target_os = "macos")]
 pub(super) const SHORTCIRCUIT_XT: &str = "/Library/Audio/Plug-Ins/CLAP/Shortcircuit XT.clap";
+#[cfg(windows)]
+pub(super) const KLOPFER: &str = "~/AppData/Local/Programs/Common/CLAP/Klopfer.clap";
+#[cfg(windows)]
+pub(super) const SURGE_XT: &str =
+    "C:/Program Files/Common Files/CLAP/Surge Synth Team/Surge XT.clap";
+#[cfg(windows)]
+pub(super) const SURGE_XT_FX: &str =
+    "C:/Program Files/Common Files/CLAP/Surge Synth Team/Surge XT Effects.clap";
+#[cfg(windows)]
+pub(super) const DEXED: &str = "C:/Program Files/Common Files/CLAP/Dexed.clap";
+#[cfg(windows)]
+pub(super) const SHORTCIRCUIT_XT: &str = "C:/Program Files/Common Files/CLAP/Shortcircuit XT.clap";
 
 /// What a plugin should do in [`exercise`].
 struct Expect {
