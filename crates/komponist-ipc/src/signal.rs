@@ -1,23 +1,22 @@
-//! Futex signalling on shared 32-bit words, with deadlines (ARCHITECTURE §8.1).
+//! Cross-process wait and wake on shared 32-bit words, with deadlines (ARCHITECTURE §8.1).
 //!
 //! Both words of the block handshake (`request_seq`, `done_seq`) live in the shared memory of one
-//! bridge, so the futexes are *shared* (not `FUTEX_PRIVATE`). Waits use an absolute
-//! `CLOCK_MONOTONIC` deadline (`FUTEX_WAIT_BITSET`), which is what `std::time::Instant` measures on
-//! Linux, so a deadline computed once per block stays valid across spurious wake-ups.
+//! bridge, so the waits are *shared* (they find waiters in other processes). A deadline is turned
+//! once into an absolute time of the clock `std::time::Instant` measures, so a deadline computed
+//! once per block stays valid across spurious wake-ups. Per OS:
 //!
-//! RT use: [`wait_while`] is the only blocking syscall the engine's audio thread may make, always
-//! with a deadline; [`wake`] never blocks.
+//! - Linux: a shared futex, `FUTEX_WAIT_BITSET` with an absolute `CLOCK_MONOTONIC` deadline
+//!   (what `Instant` reads on Linux).
+//! - macOS (14.4+): `os_sync_wait_on_address_with_deadline` / `os_sync_wake_by_address_all` with
+//!   the `SHARED` flags and an absolute `OS_CLOCK_MACH_ABSOLUTE_TIME` deadline. `Instant` reads
+//!   `CLOCK_UPTIME_RAW`, which is `mach_absolute_time` in nanoseconds, so the deadline is the
+//!   current `mach_absolute_time` plus the remaining time in mach ticks (rounded up).
+//!
+//! RT use: [`wait_while`] is the only blocking call the engine's audio thread may make, always
+//! with a deadline; [`wake`] never blocks. Neither allocates or takes a lock.
 
-use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
-
-use rustix::io::Errno;
-use rustix::thread::futex;
-use rustix::time::{ClockId, Timespec, clock_gettime};
-
-/// `FUTEX_BITSET_MATCH_ANY`: wait for any wake-up on the word.
-const MATCH_ANY: NonZeroU32 = NonZeroU32::MAX;
 
 /// Outcome of [`wait_while`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,6 +27,18 @@ pub enum WaitOutcome {
     TimedOut,
 }
 
+/// What one kernel wait returned, independent of the OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    /// Woken (possibly spuriously), the word changed before the kernel looked, or a signal or a
+    /// transient condition ended the wait early: look at the word again.
+    Retry,
+    /// The deadline passed.
+    TimedOut,
+    /// An unexpected error (bad alignment or arguments); retrying would spin.
+    Failed,
+}
+
 /// Blocks while `word == current`, until another thread or process changes it and calls
 /// [`wake`], or until `deadline` (`None` = no deadline). Returns at once if the word already
 /// differs. Handles spurious wake-ups and `EINTR` internally.
@@ -36,21 +47,13 @@ pub fn wait_while(word: &AtomicU32, current: u32, deadline: Option<Instant>) -> 
     if value != current {
         return WaitOutcome::Changed(value);
     }
-    // Translate the deadline once into an absolute CLOCK_MONOTONIC time; FUTEX_WAIT_BITSET takes
-    // it as is, so retries after spurious wake-ups or EINTR keep the same deadline.
-    let timeout = deadline.map(monotonic_deadline);
+    // Translate the deadline once into an absolute time of the kernel's clock, so retries after
+    // spurious wake-ups or EINTR keep the same deadline.
+    let timeout = deadline.map(sys::absolute_deadline);
     loop {
-        match futex::wait_bitset(
-            word,
-            futex::Flags::empty(),
-            current,
-            timeout.as_ref(),
-            MATCH_ANY,
-        ) {
-            // Woken (possibly spuriously), the word changed before the kernel looked (EAGAIN), or a
-            // signal interrupted the wait: look at the word again.
-            Ok(()) | Err(Errno::AGAIN) | Err(Errno::INTR) => {}
-            Err(Errno::TIMEDOUT) => {
+        match sys::wait(word, current, timeout) {
+            Wait::Retry => {}
+            Wait::TimedOut => {
                 let value = word.load(Ordering::Acquire);
                 return if value != current {
                     WaitOutcome::Changed(value)
@@ -58,9 +61,9 @@ pub fn wait_while(word: &AtomicU32, current: u32, deadline: Option<Instant>) -> 
                     WaitOutcome::TimedOut
                 };
             }
-            // Not expected for an aligned word and a valid timeout (EFAULT, EINVAL, ENOSYS). Do not
-            // spin: with a deadline report a timeout, without one fall back to yielding.
-            Err(_) => {
+            // Not expected for an aligned word and a valid deadline. Do not spin: with a deadline
+            // report a timeout, without one fall back to yielding.
+            Wait::Failed => {
                 let value = word.load(Ordering::Acquire);
                 if value != current {
                     return WaitOutcome::Changed(value);
@@ -79,26 +82,170 @@ pub fn wait_while(word: &AtomicU32, current: u32, deadline: Option<Instant>) -> 
 }
 
 /// Wakes every waiter on `word` (in any process). Call after storing the new value with release
-/// ordering. Returns the number of woken waiters. Never blocks.
+/// ordering. Never blocks.
+///
+/// Returns the number of woken waiters on Linux; on macOS, where the kernel does not report a
+/// count, 1 if it woke at least one waiter and 0 if there was none.
 pub fn wake(word: &AtomicU32) -> usize {
-    // A shared futex (no FUTEX_PRIVATE_FLAG): the waiter may sit in another process.
-    futex::wake(word, futex::Flags::empty(), i32::MAX as u32).unwrap_or(0)
+    sys::wake(word)
 }
 
-/// `deadline` as an absolute `CLOCK_MONOTONIC` time (the clock `Instant` reads on Linux). Two vDSO
-/// clock reads, no syscall, no allocation.
-fn monotonic_deadline(deadline: Instant) -> Timespec {
-    let now = clock_gettime(ClockId::Monotonic);
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let mut sec = now.tv_sec.saturating_add(remaining.as_secs() as i64);
-    let mut nsec = now.tv_nsec + i64::from(remaining.subsec_nanos());
-    if nsec >= 1_000_000_000 {
-        nsec -= 1_000_000_000;
-        sec = sec.saturating_add(1);
+#[cfg(target_os = "linux")]
+mod sys {
+    use core::num::NonZeroU32;
+    use core::sync::atomic::AtomicU32;
+    use std::time::Instant;
+
+    use rustix::io::Errno;
+    use rustix::thread::futex;
+    use rustix::time::{ClockId, Timespec, clock_gettime};
+
+    use super::Wait;
+
+    /// `FUTEX_BITSET_MATCH_ANY`: wait for any wake-up on the word.
+    const MATCH_ANY: NonZeroU32 = NonZeroU32::MAX;
+
+    /// An absolute `CLOCK_MONOTONIC` time.
+    pub(super) type Deadline = Timespec;
+
+    /// `deadline` as an absolute `CLOCK_MONOTONIC` time (the clock `Instant` reads on Linux). Two
+    /// vDSO clock reads, no syscall, no allocation.
+    pub(super) fn absolute_deadline(deadline: Instant) -> Timespec {
+        let now = clock_gettime(ClockId::Monotonic);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut sec = now.tv_sec.saturating_add(remaining.as_secs() as i64);
+        let mut nsec = now.tv_nsec + i64::from(remaining.subsec_nanos());
+        if nsec >= 1_000_000_000 {
+            nsec -= 1_000_000_000;
+            sec = sec.saturating_add(1);
+        }
+        Timespec {
+            tv_sec: sec,
+            tv_nsec: nsec,
+        }
     }
-    Timespec {
-        tv_sec: sec,
-        tv_nsec: nsec,
+
+    /// One `FUTEX_WAIT_BITSET` on a shared futex (no `FUTEX_PRIVATE_FLAG`).
+    pub(super) fn wait(word: &AtomicU32, current: u32, deadline: Option<Deadline>) -> Wait {
+        match futex::wait_bitset(
+            word,
+            futex::Flags::empty(),
+            current,
+            deadline.as_ref(),
+            MATCH_ANY,
+        ) {
+            Ok(()) | Err(Errno::AGAIN) | Err(Errno::INTR) => Wait::Retry,
+            Err(Errno::TIMEDOUT) => Wait::TimedOut,
+            // EFAULT, EINVAL, ENOSYS.
+            Err(_) => Wait::Failed,
+        }
+    }
+
+    pub(super) fn wake(word: &AtomicU32) -> usize {
+        // A shared futex (no FUTEX_PRIVATE_FLAG): the waiter may sit in another process.
+        futex::wake(word, futex::Flags::empty(), i32::MAX as u32).unwrap_or(0)
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod sys {
+    use core::ffi::c_void;
+    use core::sync::atomic::AtomicU32;
+    use std::time::{Duration, Instant};
+
+    use super::Wait;
+
+    /// Size of the waited-on word in bytes.
+    const WORD: usize = size_of::<AtomicU32>();
+
+    /// An absolute `mach_absolute_time` value (ticks).
+    pub(super) type Deadline = u64;
+
+    /// `struct mach_timebase_info` (`<mach/mach_time.h>`): nanoseconds per tick as a fraction.
+    #[repr(C)]
+    struct MachTimebaseInfo {
+        numer: u32,
+        denom: u32,
+    }
+
+    // Declared here: libc marks its Mach bindings deprecated in favour of the `mach2` crate, which
+    // would be a dependency for two functions.
+    unsafe extern "C" {
+        fn mach_absolute_time() -> u64;
+        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+    }
+
+    /// The current `mach_absolute_time` (ticks since boot, not counting sleep).
+    pub(super) fn now() -> u64 {
+        // SAFETY: no arguments, no side effects; reads the commpage.
+        unsafe { mach_absolute_time() }
+    }
+
+    /// `remaining` in mach ticks, rounded up (so a wait never ends before its deadline).
+    pub(super) fn ticks(remaining: Duration) -> u64 {
+        let mut timebase = MachTimebaseInfo { numer: 0, denom: 0 };
+        // SAFETY: writes the two fields of a valid struct. Reads the commpage: no syscall, no
+        // lock, no allocation (std's own deadline conversion calls it the same way).
+        unsafe { mach_timebase_info(&mut timebase) };
+        if timebase.numer == 0 || timebase.denom == 0 {
+            // Never seen; 1:1 is the timebase of Intel Macs.
+            timebase = MachTimebaseInfo { numer: 1, denom: 1 };
+        }
+        let ticks = (remaining.as_nanos() * u128::from(timebase.denom))
+            .div_ceil(u128::from(timebase.numer));
+        u64::try_from(ticks).unwrap_or(u64::MAX)
+    }
+
+    /// `deadline` as an absolute `mach_absolute_time` (the clock behind `Instant`, which reads
+    /// `CLOCK_UPTIME_RAW` = `mach_absolute_time` in nanoseconds). `Instant::now()` is read before
+    /// `mach_absolute_time()`, so the result is never earlier than `deadline`.
+    pub(super) fn absolute_deadline(deadline: Instant) -> u64 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        now().saturating_add(ticks(remaining))
+    }
+
+    /// One `os_sync_wait_on_address[_with_deadline]` with the `SHARED` flag (the word may sit in
+    /// shared memory and be woken from another process).
+    pub(super) fn wait(word: &AtomicU32, current: u32, deadline: Option<Deadline>) -> Wait {
+        let addr = word.as_ptr().cast::<c_void>();
+        let flags = libc::OS_SYNC_WAIT_ON_ADDRESS_SHARED;
+        // SAFETY: `addr` points to a live, 4-byte aligned word for the duration of the call; the
+        // kernel only reads it. A deadline is never 0 (`mach_absolute_time` counts from boot).
+        let rc = unsafe {
+            match deadline {
+                Some(deadline) => libc::os_sync_wait_on_address_with_deadline(
+                    addr,
+                    u64::from(current),
+                    WORD,
+                    flags,
+                    libc::OS_CLOCK_MACH_ABSOLUTE_TIME,
+                    deadline.max(1),
+                ),
+                None => libc::os_sync_wait_on_address(addr, u64::from(current), WORD, flags),
+            }
+        };
+        if rc >= 0 {
+            return Wait::Retry;
+        }
+        // SAFETY: the calling thread's errno; reading it allocates nothing.
+        match unsafe { *libc::__error() } {
+            libc::ETIMEDOUT => Wait::TimedOut,
+            // Interrupted or spurious, or transient kernel conditions the header says to retry
+            // (the word itself is always a valid address here).
+            libc::EINTR | libc::EFAULT | libc::ENOMEM => Wait::Retry,
+            // EINVAL.
+            _ => Wait::Failed,
+        }
+    }
+
+    pub(super) fn wake(word: &AtomicU32) -> usize {
+        let addr = word.as_ptr().cast::<c_void>();
+        // SAFETY: as in `wait`; the flag matches the waiters' `SHARED` flag, as required.
+        let rc = unsafe {
+            libc::os_sync_wake_by_address_all(addr, WORD, libc::OS_SYNC_WAKE_BY_ADDRESS_SHARED)
+        };
+        // 0: woke at least one waiter; -1 with ENOENT: nobody waited.
+        usize::from(rc == 0)
     }
 }
 
@@ -171,11 +318,62 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn monotonic_deadline_matches_instant() {
+        use rustix::time::{ClockId, clock_gettime};
         let now = clock_gettime(ClockId::Monotonic);
-        let ts = monotonic_deadline(Instant::now() + Duration::from_millis(1500));
+        let ts = sys::absolute_deadline(Instant::now() + Duration::from_millis(1500));
         let diff = (ts.tv_sec - now.tv_sec) as f64 + (ts.tv_nsec - now.tv_nsec) as f64 * 1e-9;
         assert!((1.499..1.6).contains(&diff), "{diff}");
         assert!((0..1_000_000_000).contains(&ts.tv_nsec));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn mach_deadline_matches_instant() {
+        // One second in ticks, converted back: the timebase round trip is exact to a tick.
+        let second = sys::ticks(Duration::from_secs(1));
+        let per_tick = 1e9 / second as f64;
+        assert!(
+            per_tick > 0.0 && per_tick <= 1000.0,
+            "{per_tick} ns per tick"
+        );
+        assert_eq!(sys::ticks(Duration::ZERO), 0);
+        assert_eq!(sys::ticks(Duration::from_nanos(1)), 1, "rounded up");
+        assert_eq!(sys::ticks(Duration::MAX), u64::MAX);
+        let now = sys::now();
+        let deadline = sys::absolute_deadline(Instant::now() + Duration::from_millis(1500));
+        let diff = (deadline - now) as f64 * per_tick * 1e-9;
+        assert!((1.499..1.6).contains(&diff), "{diff}");
+        // A past deadline is "now", not an underflow.
+        let past = sys::absolute_deadline(Instant::now() - Duration::from_secs(1));
+        assert!(past <= sys::now());
+    }
+
+    #[test]
+    fn waits_and_wakes_allocate_nothing() {
+        let word = Arc::new(AtomicU32::new(0));
+        let other = Arc::clone(&word);
+        let waker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            other.store(1, Ordering::Release);
+            wake(&other);
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let outcome = assert_no_alloc::assert_no_alloc(|| {
+            let differs = wait_while(&AtomicU32::new(3), 7, Some(Instant::now()));
+            let soon = Instant::now() + Duration::from_millis(1);
+            let late = wait_while(&AtomicU32::new(2), 2, Some(soon));
+            (differs, late, wait_while(&word, 0, Some(deadline)))
+        });
+        assert_eq!(
+            outcome,
+            (
+                WaitOutcome::Changed(3),
+                WaitOutcome::TimedOut,
+                WaitOutcome::Changed(1)
+            )
+        );
+        waker.join().unwrap();
     }
 }
