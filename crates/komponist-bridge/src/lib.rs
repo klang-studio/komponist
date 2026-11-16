@@ -27,13 +27,18 @@
 
 #[cfg(target_os = "macos")]
 mod cf_loop;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 mod event_loop;
 mod instance;
 mod notify;
 mod rt;
 mod scan;
 mod sched;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-bridge: no main loop (event_loop.rs / cf_loop.rs) for this OS yet (Windows: W5, a Win32 message pump)"
+);
 
 use std::ffi::OsString;
 use std::os::fd::RawFd;
@@ -188,6 +193,10 @@ fn harden_process() {
             );
         }
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    compile_error!(
+        "komponist-bridge: no process hardening (harden_process) for this OS yet (Windows: W5, SetErrorMode + WerSetFlags)"
+    );
 }
 
 /// Detaches the bridge from ReportCrash as far as a task can (#52): clears the task-level crash

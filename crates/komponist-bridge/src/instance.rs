@@ -29,7 +29,7 @@
 //! - **Shutdown** (spike WP-15 §4): close the GUI → stop the RT thread and deactivate → destroy
 //!   and unload the plugin → `_exit(0)` (the caller, `crate::run`).
 
-#[cfg(target_os = "macos")]
+#[cfg(bridge_frame)]
 #[path = "frame/mod.rs"]
 mod frame;
 
@@ -41,7 +41,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(x11_embed)]
 use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
@@ -54,12 +54,12 @@ use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
     GuiTarget, LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
 };
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use rustix::event::{PollFd, PollFlags};
 
 #[cfg(target_os = "macos")]
 use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, LOG_PENDING};
 use crate::rt::{Fallback, RtConfig, RtThread, StartReport};
@@ -73,7 +73,7 @@ pub const RT_LOG_PREFIX: &str = "RT priority:";
 pub const VALUES_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Longest `poll()` when nothing is scheduled; the control socket and the eventfd wake it earlier.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 
 /// Control messages handled per tick before plugin fds and timers get their turn again.
@@ -162,7 +162,7 @@ struct Bridge {
     values_sent: Option<Instant>,
     shutdown: bool,
     /// The plugin frame window this bridge owns (macOS, #52).
-    #[cfg(target_os = "macos")]
+    #[cfg(bridge_frame)]
     frame: frame::Slot,
 }
 
@@ -185,14 +185,14 @@ impl Bridge {
             values_due: None,
             values_sent: None,
             shutdown: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             frame: frame::Slot::default(),
         })
     }
 
     /// The main loop (Linux): one `poll()` per tick; returns after `Shutdown` or when the app is
     /// gone.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn run(mut self) -> u8 {
         while !self.shutdown {
             let now = Instant::now();
@@ -306,7 +306,7 @@ impl Bridge {
         }
         self.forward_logs();
         self.send_values_if_due();
-        #[cfg(target_os = "macos")]
+        #[cfg(bridge_frame)]
         frame::tick(self);
     }
 
@@ -473,11 +473,11 @@ impl Bridge {
         if pending & bits::GUI_RESIZE_REQUESTED != 0
             && let Some(size) = gui_size
         {
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             if frame::owns_gui(self) {
                 frame::plugin_resized(self, size);
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(x11_embed)]
             self.send(BridgeMsg::GuiSizeRequest(size));
         }
         if pending & bits::GUI_CLOSED != 0 {
@@ -595,7 +595,7 @@ impl Bridge {
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(bridge_frame)]
                 if frame::owns_gui(self) {
                     return frame::set_body_size(self, size);
                 }
@@ -611,13 +611,13 @@ impl Bridge {
             }
             ControlMsg::CloseGui => self.close_gui(),
             // The own frame's messages; there is none on Linux.
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             ControlMsg::HeaderState { header, lang } => frame::set_header(self, header, &lang),
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             ControlMsg::ActivateFrame => frame::activate(self),
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             ControlMsg::RaiseFrame => frame::raise(self),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(x11_embed)]
             ControlMsg::HeaderState { .. } | ControlMsg::ActivateFrame | ControlMsg::RaiseFrame => {
             }
             ControlMsg::SetRenderMode(mode) => self.set_render_mode(mode),
@@ -636,7 +636,7 @@ impl Bridge {
             return self.error(ErrorContext::Gui, "the plugin has no embeddable GUI");
         }
         match target {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(x11_embed)]
             GuiTarget::X11Child { xid, scale } => {
                 match plugin.gui_open(GuiParent::X11 { xid, scale }) {
                     Ok(info) => self.send(BridgeMsg::GuiOpened {
@@ -646,7 +646,7 @@ impl Bridge {
                     Err(e) => self.error(ErrorContext::Gui, e.to_string()),
                 }
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             GuiTarget::OwnFrame { header, lang, rect } => {
                 if let Err(message) = frame::request(self, header, &lang, rect) {
                     self.error(ErrorContext::Gui, message);
@@ -659,7 +659,7 @@ impl Bridge {
     /// `CloseGui`, or the plugin closed its GUI: closes it (and the own frame) and answers
     /// `GuiClosed`.
     fn close_gui(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(bridge_frame)]
         if frame::owns_gui(self) {
             return frame::close(self, false);
         }
@@ -888,7 +888,7 @@ impl Bridge {
 
     /// Shutdown order: GUI, RT thread and deactivation, then destroy and unload.
     fn close(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(bridge_frame)]
         frame::close(self, true);
         if let Some(plugin) = self.plugin.as_mut() {
             plugin.gui_close();

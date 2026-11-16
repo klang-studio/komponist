@@ -15,7 +15,7 @@
 //!   ```
 
 mod fixtures;
-#[cfg(target_os = "linux")]
+#[cfg(x11_embed)]
 pub(crate) mod gui;
 mod installed;
 
@@ -85,7 +85,7 @@ pub(super) fn load(bundle: &Path, plugin_id: &str) -> Rig {
 }
 
 /// Loads the first plugin of a bundle.
-#[cfg(target_os = "linux")]
+#[cfg(x11_embed)]
 pub(super) fn load_first(bundle: &Path) -> Rig {
     let descriptors = crate::scan(bundle).unwrap();
     let first = descriptors.first().expect("no plugin in the bundle");

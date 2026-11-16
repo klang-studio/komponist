@@ -245,7 +245,7 @@ fn run_app() -> eframe::Result {
         let menu = komponist_app::macos_menu::MacMenu::install(&cc.egui_ctx, app.lang());
         #[cfg(target_os = "macos")]
         komponist_app::macos_delegate::set_waker(&cc.egui_ctx);
-        #[cfg(not(target_os = "macos"))]
+        // Only the macOS menu and delegate use the creation context.
         let _ = cc;
         Shell {
             app,

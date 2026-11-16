@@ -10,17 +10,17 @@ use komponist_ipc::{ParamInfo, PluginKind, WireEvent, WireEventKind};
 use super::*;
 
 // Install paths per OS (the user and system plugin folders).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const KLOPFER: &str = "~/.vst3/Klopfer.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SURGE_XT: &str = "/usr/lib/vst3/Surge XT.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SURGE_XT_FX: &str = "/usr/lib/vst3/Surge XT Effects.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const DEXED: &str = "/usr/lib/vst3/Dexed.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const DECENT_SAMPLER: &str = "/usr/lib/vst3/DecentSampler.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SHORTCIRCUIT_XT: &str = "/usr/local/lib/vst3/Shortcircuit XT.vst3";
 #[cfg(target_os = "macos")]
 pub(super) const KLOPFER: &str = "~/Library/Audio/Plug-Ins/VST3/Klopfer.vst3";

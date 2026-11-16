@@ -56,7 +56,7 @@ const HOST_VENDOR: &str = "klang-studio";
 
 /// The embedded GUI API of this OS: X11 (Linux) or Cocoa (macOS, #52; no `set_scale` there, JUCE
 /// plugins then double their size in points, spike #42 Q1).
-#[cfg(not(target_os = "macos"))]
+#[cfg(x11_embed)]
 const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
     api_type: GuiApiType::X11,
     is_floating: false,
@@ -66,6 +66,11 @@ const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
     api_type: GuiApiType::COCOA,
     is_floating: false,
 };
+
+#[cfg(not(any(x11_embed, target_os = "macos")))]
+compile_error!(
+    "komponist-hosting: no embedded CLAP GUI API (clap/mod.rs) for this OS yet (Windows: W6, the win32 API)"
+);
 
 /// Loads a bundle's entry (dlopen + `clap_entry.init`). clack caches entries per library, so
 /// loading the same bundle twice in one process shares one initialised entry. The library stays
@@ -556,7 +561,7 @@ impl HostedPlugin for ClapPlugin {
             .map_err(|e| HostingError::Gui(format!("create: {e}")))?;
         let opened = (|| {
             let window = match parent {
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(x11_embed)]
                 GuiParent::X11 { xid, scale } => {
                     // Allowed to fail on X11 (Shortcircuit XT picks its own scale).
                     if gui.set_scale(&handle, scale).is_err() {

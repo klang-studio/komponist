@@ -101,10 +101,15 @@ use vst3::{ComPtr, ComWrapper, Interface};
 
 /// The `IPlugView` platform type of this OS: an X11 window id (Linux) or an `NSView` (macOS, #52;
 /// no `setContentScaleFactor` there, plugins refuse it, spike #42 Q1).
-#[cfg(not(target_os = "macos"))]
+#[cfg(x11_embed)]
 const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 #[cfg(target_os = "macos")]
 const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeNSView;
+
+#[cfg(not(any(x11_embed, target_os = "macos")))]
+compile_error!(
+    "komponist-hosting: no VST3 IPlugView platform type (vst3/mod.rs) for this OS yet (Windows: W6, kPlatformTypeHWND)"
+);
 
 use self::events::MidiMap;
 use self::host::{
@@ -989,7 +994,7 @@ impl HostedPlugin for Vst3Plugin {
             return Err(HostingError::Gui("the plugin has no embeddable GUI".into()));
         }
         let (window, scale): (*mut c_void, Option<f64>) = match parent {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(x11_embed)]
             GuiParent::X11 { xid, scale } => (xid as *mut c_void, Some(scale)),
             #[cfg(target_os = "macos")]
             GuiParent::Cocoa(view) => (view, None),

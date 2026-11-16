@@ -21,6 +21,11 @@ use libc::{RTLD_LOCAL, RTLD_NODELETE, RTLD_NOLOAD, RTLD_NOW, dlclose, dlerror, d
 
 use crate::plugin::HostingError;
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-hosting: no plugin-library loader (library.rs) for this OS yet (Windows: W5, LoadLibraryExW + GetModuleHandleExW pin)"
+);
+
 /// The last `dlerror()` message.
 fn last_error() -> String {
     // SAFETY: dlerror returns NULL or a NUL-terminated string valid until the next dl* call on
@@ -71,7 +76,7 @@ impl Library {
     }
 
     /// The raw handle (for VST3 `ModuleEntry` on Linux).
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn handle(&self) -> *mut c_void {
         self.handle
     }
