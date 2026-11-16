@@ -245,6 +245,7 @@ cargo test -p komponist-app --test soak -- --nocapture
 KOMPONIST_SOAK_SECS=1800 cargo test --release -p komponist-app --test soak -- --nocapture
 KOMPONIST_SOAK_SEED=<seed> …   # replays a run
 KOMPONIST_SOAK_WORKERS=0 …     # single-threaded engine (default: the app's automatic count)
+KOMPONIST_SOAK_MIN_CALLBACKS=50 … # callback minimum in % (default 75 debug, 90 release; macOS CI VM)
 
 # klopfer cold start (needs scripts/build-klopfer.sh and klopfer's test kit)
 cargo test --release -p komponist-plugins --test it installed::klopfer_cold_start -- --ignored --nocapture

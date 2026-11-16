@@ -1150,14 +1150,16 @@ mod tests {
     #[test]
     fn worker_threads_follow_the_setting() {
         let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let realtime = Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY);
         let status = sync.worker_status().expect("prepared at stream start");
+        // The automatic count depends on the machine: none on a small one (a 3-core CI VM before
+        // #79 counted performance cores), and no pool has no priority (#94).
         assert_eq!(status.threads, auto_workers());
-        assert_eq!(
-            status.priority,
-            Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY)
-        );
+        let expected = if status.threads > 0 { realtime } else { None };
+        assert_eq!(status.priority, expected, "{status:?}");
         let status = sync.set_workers(Some(2)).unwrap().unwrap();
         assert_eq!(status.threads, 2);
+        assert_eq!(status.priority, realtime);
         let doc = Document::new(demo_project());
         sync.sync(&doc);
         sync.send(Command::Play);

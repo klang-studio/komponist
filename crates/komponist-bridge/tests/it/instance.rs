@@ -546,9 +546,12 @@ fn slow_plugin_is_late_without_blocking() {
         "passthrough"
     );
 
-    // Note 126: the plugin sleeps 50 ms inside `process`; the app waits for its deadline only.
+    // Note 126: the plugin sleeps 50 ms inside `process` per note-on (400 ms here); the app waits
+    // for its deadline only.
+    let stall = SLOW_STALL * SLOW_NOTES;
+    realtime_test_thread();
     let t0 = Instant::now();
-    let late = bridge.begin(&[note_on(0, 126)]).unwrap();
+    let late = bridge.begin(&stalling_notes()).unwrap();
     let [left, right] = &mut bridge.output;
     let outcome = bridge
         .client
@@ -561,12 +564,22 @@ fn slow_plugin_is_late_without_blocking() {
         "the app waited for the plugin: {waited:?}"
     );
 
-    // The bridge main loop is not blocked by the sleeping RT thread: the heartbeat comes back.
+    // The bridge main loop is not blocked by the sleeping RT thread: the heartbeat comes back
+    // while the RT thread still sleeps, so the next block finds the bridge busy.
     let heartbeat = bridge.heartbeat();
     let heartbeat_done = t0.elapsed();
+    assert!(
+        heartbeat_done < stall / 2,
+        "heartbeat answered only after the slow block: {heartbeat_done:?}"
+    );
+    assert_eq!(
+        bridge.begin(&[]),
+        Err(BlockError::Busy),
+        "the heartbeat came back while the RT thread slept"
+    );
 
     // The next blocks find the bridge busy and publish nothing until it finished the late one.
-    let mut busy = 0;
+    let mut busy = 1;
     let next = loop {
         match bridge.begin(&[]) {
             Err(BlockError::Busy) => {
@@ -577,12 +590,8 @@ fn slow_plugin_is_late_without_blocking() {
         }
     };
     let resynchronised = t0.elapsed();
-    assert!(busy >= 1);
     assert_eq!(next, late.wrapping_add(1), "Busy blocks published nothing");
-    assert!(
-        resynchronised >= Duration::from_millis(45),
-        "{resynchronised:?}"
-    );
+    assert!(resynchronised >= stall, "{resynchronised:?}");
     let [left, right] = &mut bridge.output;
     let result = bridge
         .client
@@ -590,10 +599,6 @@ fn slow_plugin_is_late_without_blocking() {
         .unwrap();
     assert_eq!(result.status, BlockStatus::Ok as u32);
     assert_eq!(bridge.output[0][..BLOCK], bridge.input[0][..BLOCK]);
-    assert!(
-        heartbeat_done < Duration::from_millis(45),
-        "heartbeat answered only after the slow block: {heartbeat_done:?}"
-    );
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!(
         "slow: Late after {waited:.1?} (deadline {RT_DEADLINE:?}), heartbeat {heartbeat:.1?} \

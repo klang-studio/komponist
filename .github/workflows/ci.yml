@@ -168,6 +168,15 @@ jobs:
         run: scripts/build-test-plugins.sh
 
       # No gdb and no /proc on macOS for a watchdog like the Linux job's: the step timeout ends a hang.
+      # --no-fail-fast: every test binary runs and a red run lists all its failures, not only the
+      # first binary's (until #94 the crates after komponist-app never ran here).
       - name: Test
         timeout-minutes: 40
-        run: cargo test --workspace
+        env:
+          # The soak's callback minimum (75 % in debug builds) measures the scheduler of this 3-vCPU
+          # shared VM, not the app: the null backend's normal-priority timer thread woke too late
+          # and lost 27-35 % of its callbacks, with 0-1 overruns (#94). 50 % still catches a stalled
+          # or deadlocked audio thread; the timing checks are the release soak and the perf suites
+          # (docs/PERFORMANCE.md).
+          KOMPONIST_SOAK_MIN_CALLBACKS: "50"
+        run: cargo test --workspace --no-fail-fast

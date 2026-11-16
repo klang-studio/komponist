@@ -21,6 +21,10 @@ rustix = { workspace = true, features = ["event"] }
 # Integration tests run `Engine::process` and `ExternalProcessor::process` inside `assert_no_alloc`.
 assert_no_alloc.workspace = true
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The deadline test runs its callback on a time-constraint thread, as the audio device's is.
+komponist-rt.workspace = true
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows and fake pointer input for the GUI routing tests (run under Xvfb only).
 x11rb = { workspace = true, features = ["xtest"] }

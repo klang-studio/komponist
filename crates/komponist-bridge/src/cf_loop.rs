@@ -854,21 +854,57 @@ mod tests {
     use std::os::fd::{AsFd, AsRawFd};
     use std::os::unix::net::UnixStream;
 
+    /// How long a test waits for something the loop should report. Timers and timeouts are only
+    /// a lower bound for the tests: a process under a QoS clamp (the GitHub macOS runner) gets
+    /// them up to ~80 ms late (timer coalescing, #94; `taskpolicy -c utility` shows the same), so
+    /// the tests wait for what they expect and check the timing from one side only.
+    const PATIENCE: Duration = Duration::from_secs(5);
+
     /// A loop whose dispatcher collects everything that became ready and rearms.
     fn collecting() -> (Rc<CfEventLoop>, Rc<RefCell<Vec<Ready>>>) {
+        let (lp, seen, _) = collecting_timed();
+        (lp, seen)
+    }
+
+    /// [`collecting`] that also records when each dispatch ran.
+    #[expect(clippy::type_complexity, reason = "test helper")]
+    fn collecting_timed() -> (
+        Rc<CfEventLoop>,
+        Rc<RefCell<Vec<Ready>>>,
+        Rc<RefCell<Vec<Instant>>>,
+    ) {
         let lp = CfEventLoop::new();
         let seen = Rc::new(RefCell::new(Vec::new()));
+        let times = Rc::new(RefCell::new(Vec::new()));
         let weak = Rc::downgrade(&lp);
-        let sink = seen.clone();
+        let (sink, at) = (seen.clone(), times.clone());
         lp.set_dispatch(Some(Rc::new(move || {
             let Some(lp) = weak.upgrade() else {
                 return;
             };
             let ready = lp.take_ready();
             sink.borrow_mut().push(ready);
+            at.borrow_mut().push(Instant::now());
             lp.rearm(None);
         })));
-        (lp, seen)
+        (lp, seen, times)
+    }
+
+    /// Runs the loop in `mode` in short slices until `done` holds, at most [`PATIENCE`]; whether
+    /// it did.
+    fn run_until(
+        lp: &CfEventLoop,
+        mode: Option<CFStringRef>,
+        mut done: impl FnMut() -> bool,
+    ) -> bool {
+        let end = Instant::now() + PATIENCE;
+        while !done() {
+            if Instant::now() >= end {
+                return false;
+            }
+            lp.run_for(mode, Duration::from_millis(5));
+        }
+        true
     }
 
     fn timers(seen: &RefCell<Vec<Ready>>) -> Vec<TimerId> {
@@ -884,22 +920,30 @@ mod tests {
 
     #[test]
     fn timers_fire_periodically_and_stop() {
-        let (lp, seen) = collecting();
+        let (lp, seen, at) = collecting_timed();
+        let t0 = Instant::now();
         let id = lp.register_timer(Duration::from_millis(10)).unwrap();
-        lp.run_for(None, Duration::from_millis(105));
-        let fired = timers(&seen);
         assert!(
-            (7..=11).contains(&fired.len()),
+            run_until(&lp, None, || timers(&seen).len() >= 5),
             "{} timer calls",
+            timers(&seen).len()
+        );
+        let fired = timers(&seen);
+        assert!(fired.iter().all(|t| *t == id));
+        // Never more often than the period: a late timer skips the missed periods instead of
+        // catching up.
+        let span = at.borrow().last().unwrap().duration_since(t0);
+        assert!(
+            fired.len() as u128 <= span.as_millis() / 10 + 1,
+            "{} timer calls in {span:?}",
             fired.len()
         );
-        assert!(fired.iter().all(|t| *t == id));
         assert!(lp.timer_registered(id));
         lp.unregister_timer(id).unwrap();
         assert!(!lp.timer_registered(id));
         assert!(lp.unregister_timer(id).is_err());
         seen.borrow_mut().clear();
-        lp.run_for(None, Duration::from_millis(30));
+        lp.run_for(None, Duration::from_millis(100));
         assert!(timers(&seen).is_empty());
         assert_eq!(lp.registrations(), (0, 0));
     }
@@ -1002,24 +1046,33 @@ mod tests {
     /// Spike WP-15 §1.7: an always-writable fd with WRITE interest must not make the loop spin.
     #[test]
     fn write_interest_is_rate_limited() {
-        let (lp, seen) = collecting();
+        let (lp, seen, at) = collecting_timed();
         let (ours, _theirs) = UnixStream::pair().unwrap();
         let fd = ours.as_raw_fd();
+        let t0 = Instant::now();
         lp.register_fd(fd, FdEvents::READ.union(FdEvents::WRITE))
             .unwrap();
-        lp.run_for(None, Duration::from_millis(500));
-        let reported = fds(&seen);
-        // 500 ms / 50 ms = 10 cooldowns; allow for timing slack.
+        // It keeps being reported after each cooldown …
         assert!(
-            (5..=12).contains(&reported.len()),
+            run_until(&lp, None, || fds(&seen).len() >= 5),
             "{} WRITE reports",
+            fds(&seen).len()
+        );
+        let reported = fds(&seen);
+        assert!(reported.iter().all(|r| *r == (fd, FdEvents::WRITE)));
+        // … but at most once per cooldown (50 ms; the first at once), and the loop does not spin
+        // in between (a report and the deadline timer at the end of its cooldown).
+        let span = at.borrow().last().unwrap().duration_since(t0);
+        assert!(
+            reported.len() as u128 <= span.as_millis() / 50 + 1,
+            "{} WRITE reports in {span:?}",
             reported.len()
         );
-        assert!(reported.iter().all(|r| *r == (fd, FdEvents::WRITE)));
         assert!(
-            seen.borrow().len() < 40,
-            "{} dispatches",
-            seen.borrow().len()
+            seen.borrow().len() <= 4 * reported.len(),
+            "{} dispatches for {} reports",
+            seen.borrow().len(),
+            reported.len()
         );
         // Without WRITE interest: nothing at all.
         lp.modify_fd(fd, FdEvents::READ).unwrap();
@@ -1073,13 +1126,17 @@ mod tests {
     /// The deadline timer fires at the deadline `rearm` set, and not again until the next one.
     #[test]
     fn rearm_sets_the_deadline() {
-        let (lp, seen) = collecting();
+        let (lp, seen, at) = collecting_timed();
         lp.run_for(None, Duration::from_millis(30));
         assert!(seen.borrow().is_empty());
         let t0 = Instant::now();
         lp.rearm(Some(t0 + Duration::from_millis(20)));
-        // The collecting dispatcher rearms with no deadline after each dispatch.
-        lp.run_for(None, Duration::from_millis(60));
+        assert!(run_until(&lp, None, || !seen.borrow().is_empty()));
+        // Not before the deadline (CF's clock and `Instant` may differ by a few microseconds).
+        let fired = at.borrow()[0].duration_since(t0);
+        assert!(fired >= Duration::from_millis(19), "fired after {fired:?}");
+        // The collecting dispatcher rearms with no deadline after each dispatch: no second one.
+        lp.run_for(None, Duration::from_millis(100));
         let seen = seen.borrow();
         assert_eq!(seen.len(), 1, "{seen:?}");
         assert!(seen[0].deadline);
@@ -1104,9 +1161,9 @@ mod tests {
         let (control, mut app) = UnixStream::pair().unwrap();
         lp.watch(control.as_fd(), Owner::Control).unwrap();
         app.write_all(b"x").unwrap();
-        lp.run_for(Some(mode), Duration::from_millis(40));
-        assert!(timers(&seen).contains(&id));
-        assert!(seen.borrow().iter().any(|r| r.control));
+        assert!(run_until(&lp, Some(mode), || {
+            timers(&seen).contains(&id) && seen.borrow().iter().any(|r| r.control)
+        }));
         // SAFETY: created above.
         unsafe { CFRelease(mode) };
     }

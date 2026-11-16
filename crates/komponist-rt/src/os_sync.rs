@@ -183,36 +183,36 @@ mod tests {
     }
 
     /// The leeway compensation, guarded (the leeway is undocumented kernel policy): on a
-    /// time-constraint thread, a 1 ms wait that times out ends less than 60 µs after its deadline
-    /// (uncompensated: 125–260 µs). The median of 40 waits, so a preemption on a busy machine does
-    /// not decide it. Skipped if the kernel refuses the policy.
+    /// time-constraint thread, a 1 ms wait that times out ends at most 50 µs later than the
+    /// machine's plainest timed wait does ([`mach_time::timer_baseline`], a few µs on Apple
+    /// silicon; uncompensated: 125–260 µs more), in both scopes (the bridges wait in the shared
+    /// one). Medians of 40 waits, so a preemption on a busy machine does not decide it. Skipped
+    /// if the kernel refuses the policy, or if the machine's timers are too coarse for the check
+    /// (a virtual machine, #94).
     #[test]
     fn a_timed_out_wait_ends_close_to_its_deadline() {
-        let overshoot = std::thread::spawn(|| {
-            if let Err(e) = crate::set_current_thread_realtime(Duration::from_millis(2), 80) {
-                eprintln!("skipped: {e}");
-                return None;
-            }
-            let word = AtomicU32::new(0);
-            let mut late: Vec<Duration> = (0..40)
-                .map(|_| {
-                    let deadline = Instant::now() + Duration::from_millis(1);
-                    let outcome =
-                        wait_until(&word, 0, mach_time::deadline(deadline), Scope::Process);
-                    assert_eq!(outcome, Wait::TimedOut);
-                    Instant::now().duration_since(deadline)
+        for scope in [Scope::Process, Scope::Shared] {
+            let overshoot = std::thread::spawn(move || {
+                if let Err(e) = crate::set_current_thread_realtime(Duration::from_millis(2), 80) {
+                    eprintln!("skipped: {e}");
+                    return None;
+                }
+                let word = AtomicU32::new(0);
+                mach_time::against_baseline(|| {
+                    mach_time::median_overshoot(|at| {
+                        let outcome = wait_until(&word, 0, mach_time::deadline(at), scope);
+                        assert_eq!(outcome, Wait::TimedOut);
+                    })
                 })
-                .collect();
-            late.sort();
-            Some(late[late.len() / 2])
-        })
-        .join()
-        .unwrap();
-        if let Some(median) = overshoot {
-            assert!(
-                median < Duration::from_micros(60),
-                "median overshoot {median:?}"
-            );
+            })
+            .join()
+            .unwrap();
+            if let Some((baseline, median)) = overshoot {
+                assert!(
+                    median < baseline + Duration::from_micros(50),
+                    "{scope:?}: median overshoot {median:?}, the machine's timers {baseline:?}"
+                );
+            }
         }
     }
 
