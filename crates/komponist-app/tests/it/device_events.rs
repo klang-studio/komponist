@@ -341,6 +341,78 @@ fn a_snapshot_after_the_window_is_a_step_of_its_own_and_the_echo_of_an_undo_is_n
 }
 
 #[test]
+fn the_echo_of_an_undo_changes_no_other_step() {
+    let (mut app, script) = app();
+    app.set_snapshot_window(Duration::ZERO);
+    let surge = device(&app, "Surge XT");
+    let original = state(&app, surge);
+    snapshot(&script, surge, &[1]);
+    app.step();
+    snapshot(&script, surge, &[2]);
+    app.step();
+    // Undo, and the plugin's echo of the state it got.
+    app.dispatch(Action::Edit(EditAction::Undo));
+    snapshot(&script, surge, &[9, 9]);
+    app.step();
+    assert_eq!(state(&app, surge).as_deref(), Some(&[9u8, 9][..]));
+    // Redo still restores the later state, and undo the earlier ones: the echo stays where it
+    // came.
+    app.dispatch(Action::Edit(EditAction::Redo));
+    assert_eq!(state(&app, surge).as_deref(), Some(&[2u8][..]), "redo");
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(state(&app, surge).as_deref(), Some(&[9u8, 9][..]));
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert_eq!(state(&app, surge), original, "undo to the start");
+}
+
+#[test]
+fn saving_a_devices_baseline_changes_no_other_step() {
+    let (mut app, script) = app();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "komponist-app-device-events-baseline-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("Night Drive.komponist");
+    std::fs::write(&file, persist::to_json(app.project()).unwrap()).unwrap();
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    app.step();
+    app.set_snapshot_window(Duration::ZERO);
+    let surge = device(&app, "Surge XT");
+    assert!(state(&app, surge).is_none());
+    // The plugin comes up; what it holds then is its baseline, kept aside.
+    push(
+        &script,
+        PluginManagerEvent::StatusChanged {
+            device: surge,
+            status: DeviceStatus::Ok,
+        },
+    );
+    app.step();
+    let baseline: &[u8] = b"baseline";
+    snapshot(&script, surge, baseline);
+    app.step();
+    assert!(state(&app, surge).is_none(), "the baseline is no edit");
+    // An edit, undone: the device holds its baseline again.
+    snapshot(&script, surge, &[1]);
+    app.step();
+    app.dispatch(Action::Edit(EditAction::Undo));
+    assert!(state(&app, surge).is_none());
+
+    // Saving takes the baseline into the document and the file, outside the history …
+    script.borrow_mut().snapshot = vec![(surge, Arc::from(baseline))];
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert_eq!(state(&app, surge).as_deref(), Some(baseline));
+    let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let (_, _, d) = saved.find_device(surge).unwrap();
+    assert_eq!(d.state.as_deref(), Some(baseline));
+    // … and the undone edit is still there to redo.
+    app.dispatch(Action::Edit(EditAction::Redo));
+    assert_eq!(state(&app, surge).as_deref(), Some(&[1u8][..]), "redo");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_snapshot_during_another_gesture_waits_for_its_end() {
     let (mut app, script) = app();
     let surge = device(&app, "Surge XT");

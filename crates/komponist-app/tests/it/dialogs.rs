@@ -491,6 +491,229 @@ fn opening_another_project_drops_a_running_recording() {
 }
 
 // ------------------------------------------------------------------------------------------------
+// #85: a running take is unsaved material, also in a saved project
+// ------------------------------------------------------------------------------------------------
+
+/// Runs the held engine for a tenth of a second with `midi`, then one frame.
+fn run_held(h: &mut Harness<'_, App>, midi: &[komponist_engine::MidiInEvent]) {
+    assert!(h.state_mut().engine_mut().run_held(48_000 / 10, midi, 0));
+    h.step();
+}
+
+/// Key `key` down (`true`) or up on the virtual input.
+fn key_event(key: u8, down: bool) -> komponist_engine::MidiInEvent {
+    komponist_engine::MidiInEvent {
+        frame: 100,
+        port: komponist_engine::MidiPort(1),
+        data: if down {
+            [0x90, key, 100]
+        } else {
+            [0x80, key, 0]
+        },
+    }
+}
+
+/// Recording into "Aufnahme" (`dir/sub/Aufnahme.komponist`): the project was just opened from its
+/// file (clean), its one track is armed, the count-in off, the engine held; one note (C4) was
+/// played and released.
+fn recording_into_a_saved_project(dir: &Path) -> (Harness<'static, App>, PathBuf) {
+    use komponist_model::edits::{self, ExclusiveFlag, NewTrack};
+    let (project, track) = edits::add_track(
+        &new_project::empty_project(Lang::De),
+        NewTrack {
+            name: Some("Keys".into()),
+            hue: None,
+            instrument: Some(komponist_app::app::hexa_ref()),
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let mut project = edits::set_exclusive(&project, track, ExclusiveFlag::Arm).unwrap();
+    project.count_in_bars = 0;
+    project.name = "Aufnahme".into();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let file = dir.join("sub/Aufnahme.komponist");
+    save_and_open(&file, &project);
+    let mut app = app_in(dir, new_project::empty_project(Lang::De));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
+    app.engine_mut().hold_engine().expect("engine held");
+    let mut h = harness(app);
+    run_held(&mut h, &[]);
+    press(&mut h, Modifiers::NONE, Key::R);
+    run_held(&mut h, &[key_event(60, true)]);
+    run_held(&mut h, &[key_event(60, false)]);
+    assert_eq!(
+        h.state().transport(),
+        komponist_engine::TransportState::Recording
+    );
+    assert!(h.state().recording().is_some());
+    assert!(
+        !h.state().doc().is_dirty(),
+        "the take is not in the document"
+    );
+    (h, file)
+}
+
+/// The pitches of the notes in the clips of the first track of `project`, clip by clip (active
+/// takes).
+fn recorded(project: &Project) -> Vec<Vec<u8>> {
+    project.tracks[0]
+        .clips
+        .iter()
+        .map(|c| match &c.content {
+            komponist_model::ClipContent::Midi(m) => m.takes[m.active_take]
+                .notes
+                .iter()
+                .map(|n| n.pitch)
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn recorded_in(file: &Path) -> Vec<Vec<u8>> {
+    recorded(&project_io::load_project(file).unwrap())
+}
+
+#[test]
+fn a_running_take_in_a_saved_project_asks_before_a_new_project() {
+    let dir = scratch("take-new");
+    let (mut h, file) = recording_into_a_saved_project(&dir);
+    press(&mut h, Modifiers::COMMAND, Key::N);
+    h.get_by_value("Änderungen speichern?");
+    // Cancel: the take keeps recording.
+    h.get_by_label("Abbrechen").click();
+    h.run_steps(2);
+    assert!(h.query_by_value("Änderungen speichern?").is_none());
+    assert!(h.state().recording().is_some());
+    assert_eq!(
+        h.state().transport(),
+        komponist_engine::TransportState::Recording
+    );
+    assert_eq!(h.state().project().name, "Aufnahme");
+    // "Nicht speichern": the take goes, the new project opens, the file stays as it was.
+    press(&mut h, Modifiers::COMMAND, Key::N);
+    h.get_by_label("Nicht speichern").click();
+    h.run_steps(2);
+    assert!(h.state().recording().is_none());
+    assert_eq!(h.state().project().name, "Unbenannt");
+    assert_eq!(recorded_in(&file), Vec::<Vec<u8>>::new());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_running_take_in_a_saved_project_asks_before_opening_another() {
+    let dir = scratch("take-open");
+    let mut other = new_project::empty_project(Lang::De);
+    other.name = "Anderes".into();
+    let other_file = dir.join("Anderes.komponist");
+    save_and_open(&other_file, &other);
+    let (mut h, file) = recording_into_a_saved_project(&dir);
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(other_file.clone())));
+    h.run_steps(2);
+    h.get_by_value("Änderungen speichern?");
+    h.get_by_label("Abbrechen").click();
+    h.run_steps(2);
+    assert!(h.state().recording().is_some());
+    assert_eq!(h.state().project().name, "Aufnahme");
+    // "Speichern": the take goes into the file, then the other project opens.
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(other_file)));
+    h.run_steps(2);
+    h.get_by_label("Speichern").click();
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "Anderes");
+    assert!(h.state().recording().is_none());
+    assert_eq!(recorded_in(&file), vec![vec![60]]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_running_take_in_a_saved_project_asks_before_quitting() {
+    let dir = scratch("take-quit");
+    let (mut h, file) = recording_into_a_saved_project(&dir);
+    assert!(!h.state_mut().close_requested(), "the take asks first");
+    h.run_steps(2);
+    h.get_by_value("Änderungen speichern?");
+    h.get_by_label("Abbrechen").click();
+    h.run_steps(2);
+    assert!(h.state().recording().is_some());
+    // The quit action asks the same; "Speichern" writes the take, then the window may close.
+    h.state_mut().dispatch(Action::Project(ProjectAction::Quit));
+    h.run_steps(2);
+    h.get_by_label("Speichern").click();
+    h.run_steps(2);
+    assert_eq!(recorded_in(&file), vec![vec![60]]);
+    assert!(h.state_mut().close_requested());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_failed_save_of_a_running_take_does_not_quit() {
+    let dir = scratch("take-save-fails");
+    let (mut h, file) = recording_into_a_saved_project(&dir);
+    // The project's folder is gone: saving fails (saving never creates folders).
+    std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    h.state_mut().dispatch(Action::Project(ProjectAction::Quit));
+    h.run_steps(2);
+    h.get_by_label("Speichern").click();
+    h.run_steps(2);
+    assert!(!file.exists());
+    assert!(
+        !h.state_mut().close_requested(),
+        "no quit after a failed save"
+    );
+    // Nothing of the take is lost: it is in the document, which is still unsaved.
+    assert_eq!(recorded(h.state().project()), vec![vec![60]]);
+    assert!(h.state().doc().is_dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn saving_while_recording_writes_the_take_and_records_on() {
+    let dir = scratch("take-save");
+    let (mut h, file) = recording_into_a_saved_project(&dir);
+    // Ctrl S while capturing: the file holds the take so far, capture goes on.
+    press(&mut h, Modifiers::COMMAND, Key::S);
+    assert_eq!(recorded_in(&file), vec![vec![60]]);
+    assert!(h.state().recording().is_some());
+    assert_eq!(
+        h.state().transport(),
+        komponist_engine::TransportState::Recording
+    );
+    // The file holds more than the document: still unsaved, so leaving asks.
+    assert!(h.state().doc().is_dirty());
+    run_held(&mut h, &[key_event(64, true)]);
+    run_held(&mut h, &[key_event(64, false)]);
+    // Stop: one take with both notes; saving again writes it once.
+    press(&mut h, Modifiers::NONE, Key::R);
+    assert!(h.state().recording().is_none());
+    assert_eq!(recorded(h.state().project()), vec![vec![60, 64]]);
+    assert!(h.state().doc().is_dirty());
+    press(&mut h, Modifiers::COMMAND, Key::S);
+    assert_eq!(recorded_in(&file), vec![vec![60, 64]]);
+    assert!(!h.state().doc().is_dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_take_discarded_after_saving_it_leaves_the_project_unsaved() {
+    let dir = scratch("take-save-discard");
+    let (mut h, file) = recording_into_a_saved_project(&dir);
+    press(&mut h, Modifiers::COMMAND, Key::S);
+    assert_eq!(recorded_in(&file), vec![vec![60]]);
+    // Esc throws the take away; the file still has it, so the project differs from its file.
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    assert!(h.state().recording().is_none());
+    assert!(h.state().project().tracks[0].clips.is_empty());
+    assert!(h.state().doc().is_dirty());
+    assert!(!h.state_mut().close_requested(), "leaving asks");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------------------------------------------
 // S06: a plugin that does not exist
 // ------------------------------------------------------------------------------------------------
 

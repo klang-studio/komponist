@@ -8,7 +8,9 @@
 //!   (`komponist_builtin::sampler::links`: absolute path and path relative to the project file);
 //!   the device host loads it in the background.
 //! - **Saving** rewrites the links that resolve for the file being written ([`App::rebase_samples`]),
-//!   so "Speichern unter" into another folder keeps relative paths right.
+//!   so "Speichern unter" into another folder keeps relative paths right. The rewrite is outside the
+//!   history and reaches every undo and redo step, each from its own state: undo after a save
+//!   still restores that step's parameters and samples, with paths for the new folder (#86).
 //! - **"Sammeln und speichern"** ([`ProjectAction::CollectAndSave`]) copies every sample that lies
 //!   outside `<project name> Samples/` into it, next to the project file, and saves. Identical
 //!   files are copied once. It is the only action that creates a folder.
@@ -28,7 +30,8 @@ use egui::Context;
 use komponist_builtin::Internal;
 use komponist_builtin::sampler::{self, Collector, PadField, SampleLink, links};
 use komponist_engine::Command;
-use komponist_model::{ChannelRef, ClipContent, DeviceId, TrackId};
+use komponist_model::edits;
+use komponist_model::{ChannelRef, ClipContent, DeviceId, Project, TrackId};
 
 use crate::actions::PluginAction;
 use crate::app::App;
@@ -290,11 +293,11 @@ impl App {
             sampler::links::absolute(new_dir)
         };
         let old_dir = self.project_dir();
-        for (device, _, state) in self.samplers() {
-            if let Some(new) = links::rebase(state.as_deref(), old_dir.as_deref(), &new_dir) {
-                self.store_state_untracked(device, &Arc::from(new));
-            }
-        }
+        self.doc.rewrite_untracked(|p| {
+            rewrite_samplers(p, |state| {
+                links::rebase(state, old_dir.as_deref(), &new_dir)
+            })
+        });
     }
 
     /// "Sammeln und speichern": collects into the samples folder of the project file, then saves.
@@ -325,15 +328,19 @@ impl App {
     }
 
     /// Copies the samples of every sampler into the samples folder of `file` and points the links
-    /// there; returns the collector (its log says what was copied).
+    /// there; returns the collector (its log says what was copied). The steps of the undo history
+    /// follow, each from its own state: links to collected files point to the copies, the others
+    /// are rebased; a sample only an earlier step uses is not copied (#86). A failed copy leaves
+    /// the document as it was.
     fn collect_samples(&mut self, file: &Path) -> std::io::Result<Collector> {
         let mut collector = Collector::new(file);
         let old_dir = self.project_dir();
-        for (device, _, state) in self.samplers() {
-            if let Some(new) = collector.collect(state.as_deref(), old_dir.as_deref())? {
-                self.store_state_untracked(device, &Arc::from(new));
-            }
+        for (_, _, state) in self.samplers() {
+            collector.collect(state.as_deref(), old_dir.as_deref())?;
         }
+        self.doc.rewrite_untracked(|p| {
+            rewrite_samplers(p, |state| collector.relink(state, old_dir.as_deref()))
+        });
         Ok(collector)
     }
 
@@ -422,4 +429,28 @@ impl App {
             );
         }
     }
+}
+
+/// `project` with `rewrite` applied to the state of every sampler (tracks and master); `None` if
+/// no state changed. `rewrite` returns the new state, `None` for "as it is".
+fn rewrite_samplers(
+    project: &Project,
+    mut rewrite: impl FnMut(Option<&[u8]>) -> Option<Vec<u8>>,
+) -> Option<Project> {
+    let changes: Vec<(DeviceId, Arc<[u8]>)> = project
+        .tracks
+        .iter()
+        .flat_map(|t| t.channel.devices.iter())
+        .chain(project.master.devices.iter())
+        .filter(|d| Internal::from_plugin(&d.plugin) == Some(Internal::Sampler))
+        .filter_map(|d| rewrite(d.state.as_deref()).map(|s| (d.id, Arc::from(s))))
+        .collect();
+    if changes.is_empty() {
+        return None;
+    }
+    let mut next = project.clone();
+    for (device, state) in changes {
+        next = edits::set_device_state(&next, device, Some(state)).ok()?;
+    }
+    Some(next)
 }

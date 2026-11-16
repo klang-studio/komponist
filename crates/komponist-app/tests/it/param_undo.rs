@@ -9,7 +9,7 @@
 
 use crate::common::*;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,9 +20,9 @@ use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
 use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
-use komponist_app::{Action, App, EditAction, PluginAction, UiAction};
+use komponist_app::{Action, App, EditAction, PluginAction, ProjectAction, UiAction};
 use komponist_builtin::device::{self, Field};
-use komponist_builtin::sampler::{self, PadField, SampleLink, testkit};
+use komponist_builtin::sampler::{self, PadField, SampleLink, links, testkit};
 use komponist_builtin::{Internal, Patch};
 use komponist_engine::Command;
 use komponist_model::fixtures::demo_project;
@@ -562,6 +562,255 @@ fn clearing_and_relinking_a_sample_are_one_step_each_and_undo_reaches_the_sample
     );
     redo(&mut app);
     assert!(pad_names(&app, drums)[0].is_empty(), "redo: empty again");
+}
+
+// ------------------------------------------------------------------------------------------------
+// The Sampler: saving rewrites the sample paths of every undo step, each from its own state (#86)
+
+/// The synthesized kit written into `dir` (created).
+fn kit_in(dir: &Path) -> Vec<PathBuf> {
+    std::fs::create_dir_all(dir).unwrap();
+    testkit::write_kit(dir).unwrap()
+}
+
+/// A project with one sampler track whose pads link the kit in `kit` (absolute paths only).
+fn sampler_project(kit: &Path) -> Project {
+    use komponist_model::edits::{self, NewTrack};
+    let spec = NewTrack {
+        name: Some("Drums".into()),
+        hue: None,
+        instrument: Some(Internal::Sampler.plugin_ref()),
+        index: None,
+        arm_exclusive: false,
+    };
+    let (mut p, _) = edits::add_track(&Project::new("Song"), spec).unwrap();
+    let mut state: Option<Vec<u8>> = None;
+    for (pad, path) in kit_in(kit).iter().enumerate() {
+        state = Some(links::write(
+            state.as_deref(),
+            pad,
+            Some(&SampleLink::new(path, None)),
+        ));
+    }
+    let track = Arc::make_mut(&mut p.tracks[0]);
+    Arc::make_mut(&mut track.channel.devices[0]).state = state.map(Arc::from);
+    p
+}
+
+/// [`sampler_project`] with its kit in `kit`, written to `file` and opened from there: the
+/// history starts empty. The sample of pad 8 is deleted (missing) before.
+fn opened_sampler_app(kit: &Path, file: &Path) -> (App, DeviceId) {
+    let project = sampler_project(kit);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, komponist_model::persist::to_json(&project).unwrap()).unwrap();
+    std::fs::remove_file(kit.join(format!("{}.wav", testkit::NAMES[7]))).unwrap();
+    let mut app = App::headless(Project::new("leer"));
+    app.dispatch(Action::Project(ProjectAction::OpenPath(file.to_owned())));
+    app.step();
+    let drums = app.project().tracks[0].channel.devices[0].id;
+    (app, drums)
+}
+
+/// The links of the sampler in the document, by pad.
+fn links_of(app: &App, drums: DeviceId) -> Vec<(usize, SampleLink)> {
+    links::read(state_of(app, drums).as_deref())
+}
+
+fn link_of(app: &App, drums: DeviceId, pad: usize) -> SampleLink {
+    links_of(app, drums)
+        .into_iter()
+        .find(|(p, _)| *p == pad)
+        .map(|(_, l)| l)
+        .unwrap_or_else(|| panic!("no link on pad {pad}"))
+}
+
+/// The tuning of `pad` (a state without parameters has the defaults).
+fn tune_of(app: &App, drums: DeviceId, pad: usize) -> f64 {
+    Internal::Sampler
+        .decode_state(state_of(app, drums).as_deref())
+        .unwrap_or_else(|_| Internal::Sampler.defaults())[PadField::Tune.wire(pad)]
+}
+
+/// Tunes pad 1 to +12 (one step), then links `other` to pad 2 (one step).
+fn tune_and_relink(app: &mut App, drums: DeviceId, other: &Path) {
+    set(app, drums, PadField::Tune.wire(0) as u32, 12.0);
+    app.step();
+    app.dispatch(Action::Plugin(PluginAction::LoadSample {
+        device: drums,
+        pad: 1,
+        path: other.to_owned(),
+    }));
+    app.step();
+    assert_eq!(tune_of(app, drums, 0), 12.0);
+    assert_eq!(link_of(app, drums, 1).abs, other);
+}
+
+/// `dir.join(rel)` with `..` resolved: where a relative link points from `dir`.
+fn resolved(dir: &Path, link: &SampleLink) -> Option<PathBuf> {
+    link.resolve(Some(dir))
+}
+
+#[test]
+fn undo_after_save_restores_the_samplers_parameters_and_samples() {
+    let dir = scratch("param-undo-save-rebase");
+    let one = dir.join("one");
+    let (mut app, drums) = opened_sampler_app(&one.join("Kit"), &one.join("Song.komponist"));
+    let first = links_of(&app, drums);
+    assert_eq!(first.len(), 8);
+    let other = kit_in(&one.join("More"))[3].clone();
+    tune_and_relink(&mut app, drums, &other);
+
+    // Save: the links get their paths relative to the file's folder.
+    app.dispatch(Action::Project(ProjectAction::Save));
+    assert!(!app.doc().is_dirty());
+    let kick = Path::new("Kit").join(format!("{}.wav", testkit::NAMES[0]));
+    let snare = Path::new("Kit").join(format!("{}.wav", testkit::NAMES[1]));
+    assert_eq!(link_of(&app, drums, 0).rel, kick);
+    assert_eq!(
+        link_of(&app, drums, 1).rel,
+        Path::new("More").join(format!("{}.wav", testkit::NAMES[3]))
+    );
+
+    // Undo the link: the first sample is back, with its relative path for the file too; the
+    // tuning stays.
+    undo(&mut app);
+    assert_eq!(
+        link_of(&app, drums, 1).abs,
+        first[1].1.abs,
+        "undo: pad 2's sample"
+    );
+    assert_eq!(
+        link_of(&app, drums, 1).rel,
+        snare,
+        "rebased in this step too"
+    );
+    assert_eq!(tune_of(&app, drums, 0), 12.0);
+    // Undo the tuning: back to 0, the links still rebased.
+    undo(&mut app);
+    assert_eq!(tune_of(&app, drums, 0), 0.0, "undo: the old tuning");
+    assert_eq!(link_of(&app, drums, 0).rel, kick);
+    // The missing sample's link is as it was, in every step.
+    assert_eq!(link_of(&app, drums, 7), first[7].1);
+    // Redo: the tuning and the other sample again.
+    redo(&mut app);
+    assert_eq!(tune_of(&app, drums, 0), 12.0, "redo: the tuning");
+    assert_eq!(link_of(&app, drums, 1).abs, first[1].1.abs);
+    redo(&mut app);
+    assert_eq!(link_of(&app, drums, 1).abs, other, "redo: the other sample");
+    assert_eq!(link_of(&app, drums, 7), first[7].1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_after_save_as_into_another_folder_resolves_the_old_steps_links_from_there() {
+    let dir = scratch("param-undo-save-as-rebase");
+    let one = dir.join("one");
+    let (mut app, drums) = opened_sampler_app(&one.join("Kit"), &one.join("Song.komponist"));
+    let first = links_of(&app, drums);
+    let other = kit_in(&one.join("More"))[3].clone();
+    tune_and_relink(&mut app, drums, &other);
+
+    // "Speichern unter" into another folder, through the file browser.
+    let two = dir.join("two");
+    std::fs::create_dir_all(&two).unwrap();
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::SaveAs));
+    h.run_steps(3);
+    h.get_by_label("Dateiname").focus();
+    h.run_steps(1);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label("Dateiname")
+        .type_text(two.join("Kopie").to_str().unwrap());
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let app = h.state_mut();
+    assert_eq!(
+        app.project_path(),
+        Some(two.join("Kopie.komponist").as_path())
+    );
+    assert_eq!(
+        link_of(app, drums, 0).rel,
+        Path::new("../one/Kit").join(format!("{}.wav", testkit::NAMES[0]))
+    );
+
+    undo(app);
+    assert_eq!(tune_of(app, drums, 0), 12.0);
+    let pad2 = link_of(app, drums, 1);
+    assert_eq!(pad2.abs, first[1].1.abs, "undo: pad 2's sample");
+    // The old step's relative link resolves from the new folder, not only through the absolute
+    // path.
+    assert_eq!(
+        resolved(
+            &two,
+            &SampleLink {
+                abs: PathBuf::new(),
+                ..pad2
+            }
+        ),
+        Some(first[1].1.abs.clone())
+    );
+    undo(app);
+    assert_eq!(tune_of(app, drums, 0), 0.0, "undo: the old tuning");
+    assert_eq!(link_of(app, drums, 7), first[7].1, "the missing link stays");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_after_collect_and_save_keeps_each_steps_samples_and_copies_only_the_current_ones() {
+    let dir = scratch("param-undo-collect");
+    let library = dir.join("library");
+    let home = dir.join("proj");
+    let (mut app, drums) = opened_sampler_app(&library, &home.join("Song.komponist"));
+    let first = links_of(&app, drums);
+    let other = kit_in(&dir.join("more"))[3].clone();
+    tune_and_relink(&mut app, drums, &other);
+
+    app.dispatch(Action::Project(ProjectAction::CollectAndSave));
+    let folder = home.join("Song Samples");
+    let mut copied: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    copied.sort();
+    // Pads 1, 3 … 7 (the other sample on pad 2 is the same sound as pad 4's: one copy); not pad
+    // 2's first sample (only the history has it), not the missing one.
+    let mut expected: Vec<String> = [0, 2, 3, 4, 5, 6]
+        .iter()
+        .map(|&i| format!("{}.wav", testkit::NAMES[i]))
+        .collect();
+    expected.sort();
+    assert_eq!(copied, expected);
+    let other_copy = folder.join(format!("{}.wav", testkit::NAMES[3]));
+    assert_eq!(link_of(&app, drums, 1).abs, other_copy);
+
+    undo(&mut app);
+    assert_eq!(tune_of(&app, drums, 0), 12.0);
+    let pad2 = link_of(&app, drums, 1);
+    assert_eq!(pad2.abs, first[1].1.abs, "undo: pad 2's first sample");
+    assert_eq!(resolved(&home, &pad2), Some(first[1].1.abs.clone()));
+    // The samples the project still uses point into the samples folder in the old step too.
+    let kick = format!("{}.wav", testkit::NAMES[0]);
+    assert_eq!(link_of(&app, drums, 0).abs, folder.join(&kick));
+    assert_eq!(
+        link_of(&app, drums, 0).rel,
+        Path::new("Song Samples").join(&kick)
+    );
+    undo(&mut app);
+    assert_eq!(tune_of(&app, drums, 0), 0.0, "undo: the old tuning");
+    assert_eq!(link_of(&app, drums, 0).abs, folder.join(&kick));
+    assert_eq!(
+        link_of(&app, drums, 7),
+        first[7].1,
+        "the missing link stays"
+    );
+    redo(&mut app);
+    redo(&mut app);
+    assert_eq!(tune_of(&app, drums, 0), 12.0);
+    assert_eq!(link_of(&app, drums, 1).abs, other_copy);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ------------------------------------------------------------------------------------------------
