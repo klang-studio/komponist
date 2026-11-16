@@ -59,6 +59,9 @@ mod apple {
             data: *mut c_void,
         ) -> c_int;
         fn os_workgroup_interval_finish(wg: *mut c_void, data: *mut c_void) -> c_int;
+        /// `attr` NULL: the number of threads that can run in parallel in the workgroup at the
+        /// same time (the realtime-capable cores for an audio device's IO workgroup).
+        fn os_workgroup_max_parallel_threads(wg: *mut c_void, attr: *mut c_void) -> c_int;
         fn os_retain(object: *mut c_void) -> *mut c_void;
         fn os_release(object: *mut c_void);
     }
@@ -144,6 +147,17 @@ mod apple {
         /// RT. Leaves the workgroup; `token` is the calling thread's join of this workgroup.
         pub fn leave(&self, token: JoinToken) {
             leave(self.0, token);
+        }
+
+        /// Non-RT. How many threads can run in this workgroup in parallel (8 for the IO workgroup
+        /// of the built-in output of an M1 Pro: its performance cores), `None` if the system
+        /// reports nothing useful. The audio IO thread counts as one.
+        pub fn max_parallel_threads(&self) -> Option<usize> {
+            // SAFETY: `self.0` is a live workgroup; a null attribute asks for the plain count.
+            let n = unsafe {
+                os_workgroup_max_parallel_threads(self.0.as_ptr(), core::ptr::null_mut())
+            };
+            usize::try_from(n).ok().filter(|&n| n > 0)
         }
     }
 
@@ -283,6 +297,11 @@ mod other {
         pub fn leave(&self, token: JoinToken) {
             match token.0 {}
         }
+
+        /// See the macOS implementation.
+        pub fn max_parallel_threads(&self) -> Option<usize> {
+            match self.0 {}
+        }
     }
 
     impl WorkInterval {
@@ -377,6 +396,14 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn a_workgroup_reports_how_many_threads_run_in_parallel() {
+        let interval = WorkInterval::new(c"komponist-rt-test").expect("work interval");
+        let n = interval.workgroup().max_parallel_threads().expect("count");
+        let cpus = std::thread::available_parallelism().unwrap().get();
+        assert!((1..=cpus).contains(&n), "{n} of {cpus} CPUs");
     }
 
     #[test]
