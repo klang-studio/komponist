@@ -33,7 +33,8 @@ fn main() {
 fn windows_resources() {
     use std::path::PathBuf;
 
-    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let assets = manifest_dir.join("../../assets/windows");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let version = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
@@ -57,7 +58,8 @@ fn windows_resources() {
             .replace('\\', "/")
     };
     println!("cargo::rerun-if-changed=../../assets/windows");
-    let template = std::fs::read_to_string(assets.join("komponist.rc.in")).expect("komponist.rc.in");
+    let template =
+        std::fs::read_to_string(assets.join("komponist.rc.in")).expect("komponist.rc.in");
     let rc = template
         .replace("@VERSION_NUM@", &numbers.join(","))
         .replace("@VERSION@", &version)

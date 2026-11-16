@@ -27,6 +27,9 @@
 //! scan, so the browser lists only the built-in devices (screenshots, checks). Closing the window shuts
 //! every bridge down.
 
+// Windows release builds: no console window; `attach_parent_console` gives `--help` its output back (§8.8).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -114,6 +117,8 @@ fn parse_args() -> Result<Option<Args>, String> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    attach_parent_console();
     // Bridge mode first, before anything of the app starts (no settings, GUI, graphics or audio):
     // the app starts its plugin bridges as `komponist --bridge …` (WP-94).
     let mut argv = std::env::args_os().skip(1).peekable();
@@ -285,5 +290,44 @@ impl eframe::App for Shell {
 
     fn on_exit(&mut self) {
         self.app.shutdown();
+    }
+}
+
+/// Windows release builds use the `windows` subsystem (no console window), so a start from a terminal has no
+/// stdout or stderr: `komponist --help` would print nothing. When a standard handle is missing, attach to the
+/// console of the parent process (if there is one) and point the missing handles at it. Handles the parent
+/// passes (pipes or files, e.g. the bridge's, or a redirect in a script) are left alone. Without a parent
+/// console (Explorer, the Start menu) nothing changes and the app has no console, as intended.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use std::fs::OpenOptions;
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        SetStdHandle,
+    };
+
+    let missing = |which| {
+        // SAFETY: `GetStdHandle` only reads the process' standard handle slot.
+        let handle = unsafe { GetStdHandle(which) };
+        handle.is_null() || handle == INVALID_HANDLE_VALUE
+    };
+    if !missing(STD_OUTPUT_HANDLE) && !missing(STD_ERROR_HANDLE) {
+        return;
+    }
+    // SAFETY: no pointers; fails (returns 0) when the parent has no console.
+    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 {
+        return;
+    }
+    for which in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        if !missing(which) {
+            continue;
+        }
+        if let Ok(conout) = OpenOptions::new().write(true).open("CONOUT$") {
+            // The handle stays open for the life of the process, like the standard handles themselves.
+            // SAFETY: `into_raw_handle` hands over a valid, owned console handle.
+            unsafe { SetStdHandle(which, conout.into_raw_handle()) };
+        }
     }
 }
