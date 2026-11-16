@@ -1,6 +1,6 @@
 //! Audio and MIDI I/O of komponist.
 //!
-//! cpal backends (PipeWire, JACK, ALSA) and a null backend for tests and "Kein Audio-Gerät", the
+//! cpal backends (CoreAudio on macOS; PipeWire, JACK, ALSA on Linux) and a null backend for tests and "Kein Audio-Gerät", the
 //! stream lifecycle with an engine handoff that survives a stream rebuild, midir MIDI inputs with
 //! timestamps, and CPU load and xrun statistics.
 //!
@@ -25,6 +25,7 @@ pub mod slot;
 pub mod system;
 #[cfg(test)]
 mod testing;
+mod workgroup;
 
 // Unit tests run the RT paths inside `assert_no_alloc`, which needs its allocator (debug builds
 // only; in release builds `assert_no_alloc` is a no-op).

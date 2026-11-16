@@ -29,22 +29,65 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostKind {
-    /// PipeWire (cpal feature `pipewire`), the default on current desktops.
+    /// CoreAudio, the only device host on macOS.
+    CoreAudio,
+    /// PipeWire (cpal feature `pipewire`), the default on current Linux desktops. Always
+    /// unavailable off Linux.
     PipeWire,
-    /// JACK (cpal feature `jack`).
+    /// JACK (cpal feature `jack`). Unavailable off Linux.
     Jack,
-    /// ALSA.
+    /// ALSA. Unavailable off Linux.
     Alsa,
     /// No device: a timer thread drives the engine and discards the output (tests, "Kein
     /// Audio-Gerät").
     Null,
 }
 
+impl HostKind {
+    /// Whether this driver exists on the operating system the crate was built for: CoreAudio on
+    /// macOS; PipeWire, JACK and ALSA on Linux; `Null` everywhere. The variants of the other
+    /// systems stay in the enum so that a settings file written on Linux still loads on macOS
+    /// (see [`StreamConfig`]); they are never available there.
+    pub const fn is_supported_here(self) -> bool {
+        match self {
+            HostKind::Null => true,
+            HostKind::CoreAudio => cfg!(target_os = "macos"),
+            HostKind::PipeWire | HostKind::Jack | HostKind::Alsa => cfg!(target_os = "linux"),
+        }
+    }
+
+    /// The driver a fresh configuration starts with: CoreAudio on macOS, PipeWire elsewhere.
+    pub const fn platform_default() -> HostKind {
+        if cfg!(target_os = "macos") {
+            HostKind::CoreAudio
+        } else {
+            HostKind::PipeWire
+        }
+    }
+
+    /// `self` if it exists on this system, else [`HostKind::platform_default`].
+    fn or_platform_default(self) -> HostKind {
+        if self.is_supported_here() {
+            self
+        } else {
+            HostKind::platform_default()
+        }
+    }
+}
+
+/// Reads a driver and replaces one this system does not have by the platform default.
+fn deserialize_host<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HostKind, D::Error> {
+    HostKind::deserialize(deserializer).map(HostKind::or_platform_default)
+}
+
 /// Stable identity of an output device, persisted in [`StreamConfig::device_id`].
 ///
 /// cpal's `DeviceId` in its string form `"<host>:<id>"`: the PipeWire node name
 /// (`"pipewire:alsa_output.usb-Focusrite_Scarlett_2i2-00.analog-stereo"`), the ALSA PCM name
-/// (`"alsa:hw:CARD=USB,DEV=0"`), `"jack:output"`. Unlike [`DeviceInfo::name`] it is unique and
+/// (`"alsa:hw:CARD=USB,DEV=0"`), `"jack:output"`, the CoreAudio device UID
+/// (`"coreaudio:BuiltInSpeakerDevice"`). Unlike [`DeviceInfo::name`] it is unique and
 /// does not depend on enumeration order. Serialised as a plain string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -81,7 +124,10 @@ pub struct DeviceInfo {
 /// The stream the user picked in S07. Persisted in the settings.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StreamConfig {
-    /// Driver.
+    /// Driver. When a saved configuration names a driver this system does not have (PipeWire,
+    /// JACK or ALSA on macOS, CoreAudio on Linux), it loads as [`HostKind::platform_default`].
+    /// The device id then belongs to another host and never matches; the device name still does.
+    #[serde(deserialize_with = "deserialize_host")]
     pub host: HostKind,
     /// Output device name (display, and fallback for the lookup); `None` together with
     /// `device_id: None` = the host's default device.
@@ -98,10 +144,11 @@ pub struct StreamConfig {
 }
 
 impl Default for StreamConfig {
-    /// PipeWire, default device, 48000 Hz, 256 frames.
+    /// [`HostKind::platform_default`] (CoreAudio on macOS, PipeWire elsewhere), default device,
+    /// 48000 Hz, 256 frames.
     fn default() -> StreamConfig {
         StreamConfig {
-            host: HostKind::PipeWire,
+            host: HostKind::platform_default(),
             device: None,
             device_id: None,
             sample_rate: 48_000,
@@ -250,7 +297,8 @@ impl StreamStats {
     ///
     /// `false` does not prove real-time scheduling: the null backend and server-backed ALSA devices
     /// (such as ALSA's PipeWire default) are not promoted and report nothing. PipeWire is promoted
-    /// through RTKit; JACK threads are the server's.
+    /// through RTKit; JACK threads are the server's. CoreAudio never reports it (its I/O thread
+    /// is the system's).
     pub fn realtime_denied(&self) -> bool {
         self.realtime_denied.load(Ordering::Relaxed)
     }
@@ -335,8 +383,8 @@ impl<P: AudioProcess> AudioSystem<P> {
         }
     }
 
-    /// Hosts available on this machine, in preference order (PipeWire, JACK, ALSA; `Null` always
-    /// last).
+    /// Hosts available on this machine, in preference order (CoreAudio on macOS; PipeWire, JACK,
+    /// ALSA on Linux; `Null` always last).
     ///
     /// JACK counts as available when a JACK server (or PipeWire's JACK emulation) answers; the
     /// check opens a short-lived JACK client.
@@ -347,7 +395,8 @@ impl<P: AudioProcess> AudioSystem<P> {
     /// Output devices of `host`.
     ///
     /// `Null` lists one device, `"null"`. PipeWire lists the graph's allowed rates as
-    /// `sample_rates`; other rates still open (PipeWire converts).
+    /// `sample_rates`; other rates still open (PipeWire converts). CoreAudio lists the rates and
+    /// the buffer range the device reports; starting a stream sets the device's nominal rate.
     pub fn devices(host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
         backend::devices(host)
     }
@@ -886,11 +935,28 @@ mod tests {
         assert!(runs(&probe, 3));
     }
 
+    /// A host of this system whose device lookup only enumerates (nothing is opened).
+    fn test_host() -> HostKind {
+        if cfg!(target_os = "macos") {
+            HostKind::CoreAudio
+        } else {
+            HostKind::Alsa
+        }
+    }
+
+    fn test_host_prefix() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "coreaudio"
+        } else {
+            "alsa"
+        }
+    }
+
     #[test]
     fn missing_device_falls_back_to_the_null_backend() {
         let (mut system, probe, _sender) = system(0.0);
         let config = StreamConfig {
-            host: HostKind::Alsa,
+            host: test_host(),
             device: Some("komponist test: no such device".to_owned()),
             device_id: None,
             sample_rate: 44_100,
@@ -1019,9 +1085,12 @@ mod tests {
         let (mut system, probe, _sender) = system(0.0);
         system.set_retry_interval(Duration::from_millis(5));
         let config = StreamConfig {
-            host: HostKind::Alsa,
+            host: test_host(),
             device: Some("komponist test: no such device".to_owned()),
-            device_id: Some(DeviceId("alsa:komponist-test-missing".to_owned())),
+            device_id: Some(DeviceId(format!(
+                "{}:komponist-test-missing",
+                test_host_prefix()
+            ))),
             sample_rate: 48_000,
             buffer_frames: 64,
         };
@@ -1143,7 +1212,45 @@ mod tests {
     #[test]
     fn default_stream_config_matches_s07() {
         let config = StreamConfig::default();
-        assert_eq!(config.host, HostKind::PipeWire);
+        assert_eq!(config.host, HostKind::platform_default());
+        assert!(config.host.is_supported_here());
         assert_eq!((config.sample_rate, config.buffer_frames), (48_000, 256));
+    }
+
+    #[test]
+    fn a_driver_of_another_system_loads_as_the_platform_default() {
+        let json = |host: &str| {
+            format!(
+                r#"{{"host":"{host}","device":"X","device_id":"{host}:x","sample_rate":44100,"buffer_frames":128}}"#
+            )
+        };
+        for kind in [
+            HostKind::CoreAudio,
+            HostKind::PipeWire,
+            HostKind::Jack,
+            HostKind::Alsa,
+            HostKind::Null,
+        ] {
+            let name = serde_json::to_string(&kind).unwrap();
+            let name = name.trim_matches('"');
+            let config: StreamConfig = serde_json::from_str(&json(name)).unwrap();
+            let expected = if kind.is_supported_here() {
+                kind
+            } else {
+                HostKind::platform_default()
+            };
+            assert_eq!(config.host, expected, "{name}");
+            assert_eq!((config.sample_rate, config.buffer_frames), (44_100, 128));
+            assert_eq!(config.device.as_deref(), Some("X"));
+        }
+        assert!(serde_json::from_str::<StreamConfig>(&json("wasapi")).is_err());
+    }
+
+    #[test]
+    fn host_names_are_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&HostKind::CoreAudio).unwrap(),
+            r#""coreaudio""#
+        );
     }
 }
