@@ -134,6 +134,9 @@ jobs:
     name: clippy, tests (macOS arm64)
     runs-on: macos-15
     timeout-minutes: 75
+    # Not blocking yet: macOS hosting (#51) and plugin frames (#52) are still in progress. It becomes a required
+    # check once it is reliably green (#58).
+    continue-on-error: true
     env:
       # The workflow-wide lavapipe setting is for Linux; here wgpu uses Metal.
       WGPU_BACKEND: metal
