@@ -165,7 +165,9 @@ fn context(app: &App, s: &mut StatusModel) {
         )
     {
         s.left = format!("{} · {}", param.name, param.value);
-        s.mid = t.status_param_hint().to_owned();
+        s.mid = Platform::current()
+            .pick(t.status_param_hint(), t.status_param_hint_mac())
+            .to_owned();
         return;
     }
     let open = ui.editor.clip.and_then(|c| p.find_clip(c));
@@ -187,7 +189,9 @@ fn context(app: &App, s: &mut StatusModel) {
                 match sel.step.and_then(|c| c.step) {
                     Some(step) => {
                         s.left = t.status_step_selected(&clip.name, step + 1, len);
-                        s.mid = t.status_step_hint().to_owned();
+                        s.mid = Platform::current()
+                            .pick(t.status_step_hint(), t.status_step_hint_mac())
+                            .to_owned();
                     }
                     None => {
                         let set: usize = steps
@@ -212,7 +216,9 @@ fn context(app: &App, s: &mut StatusModel) {
         (FocusArea::Devices, _) => {
             if let Some(tr) = track {
                 s.left = t.status_devices(&tr.name, tr.channel.devices.len());
-                s.mid = t.status_devices_hint().to_owned();
+                s.mid = Platform::current()
+                    .pick(t.status_devices_hint(), t.status_devices_hint_mac())
+                    .to_owned();
                 return;
             }
         }

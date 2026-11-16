@@ -44,6 +44,7 @@ use super::layout::{
 use super::metrics;
 use super::model::{self, Card, Param};
 use crate::actions::{Action, EditAction, PluginAction, UiAction};
+use crate::platform::Platform;
 use crate::views::mixer::{Touch, gesture_actions, gesture_touch};
 use komponist_builtin::sampler::PadStatus;
 use komponist_model::format::note_name;
@@ -249,7 +250,10 @@ fn touch(
             if double_click_resets {
                 t.devices_to_default_shortcut()
             } else {
-                t.devices_to_default_alt_shortcut()
+                Platform::current().pick(
+                    t.devices_to_default_alt_shortcut(),
+                    t.devices_to_default_alt_shortcut_mac(),
+                )
             },
         ),
         enter,

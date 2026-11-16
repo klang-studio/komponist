@@ -18,11 +18,17 @@ mixer-add-effect-detail = Opens the device search for this channel
 # Tooltip detail of an insert slot (S04 "Insert-Slot").
 mixer-slot-detail = Click opens · Drag reorders · Alt+click bypass
 
+# Same on macOS: ⌥ instead of Alt.
+mixer-slot-detail-mac = Click opens · Drag reorders · ⌥+click bypass
+
 # Tooltip of the peak value (S04 "Peak-Wert / LED").
 mixer-peak-tip = Reset peak and clip
 
 # Tooltip detail of the peak value.
 mixer-peak-detail = Alt+click for all channels
+
+# Same on macOS: ⌥ instead of Alt.
+mixer-peak-detail-mac = ⌥+click for all channels
 
 # Status of a loading insert.
 mixer-slot-loading = loading…

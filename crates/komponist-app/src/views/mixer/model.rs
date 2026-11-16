@@ -12,6 +12,7 @@ use komponist_model::{
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::device_host::DeviceHost;
+use crate::platform::Platform;
 use crate::views::routing::{self, ChipInfo, SendInfo, Target};
 
 /// The `base` colour of track hue `hue` (colour bar, chips, swatches), without building a whole
@@ -105,7 +106,9 @@ impl Insert {
             SlotState::Unresponsive => lang.mixer_slot_unresponsive(),
             SlotState::Missing => lang.mixer_slot_missing(),
             SlotState::Ok if self.bypass => lang.mixer_slot_bypass(),
-            SlotState::Ok => lang.mixer_slot_detail(),
+            SlotState::Ok => {
+                Platform::current().pick(lang.mixer_slot_detail(), lang.mixer_slot_detail_mac())
+            }
         }
     }
 }

@@ -25,6 +25,7 @@ pub mod focus;
 pub mod fonts;
 pub mod gallery_shell;
 pub mod icons;
+pub mod platform;
 pub mod px;
 pub mod state;
 pub mod theme;
