@@ -1,10 +1,12 @@
 # CI: formatting, clippy, tests (incl. the test plugins and the GUI tests under Xvfb) on every push to
-# main and on every pull request. Local equivalent: scripts/check.sh + scripts/check-gui.sh.
+# main and on every pull request, on Linux; clippy and tests (incl. the test plugins) on macOS arm64 too
+# (epic #41: macOS 14.4+, Apple Silicon only). Local equivalent: scripts/check.sh + scripts/check-gui.sh.
 #
 # Snapshot tests (egui_kittest, wgpu) render with lavapipe, the software Vulkan driver of Mesa, on the runner,
 # while the committed PNGs come from the owner's GPU. Anti-aliasing can differ in single pixels, so this
 # workflow writes a kittest.toml with a tolerance (SNAPSHOT_* below) before the tests. Local runs keep kittest's strict
-# defaults. If the first CI run fails on snapshots, look at the "snapshot-diffs" artifact first.
+# defaults. If the first CI run fails on snapshots, look at the "snapshot-diffs" artifact first. On macOS the
+# committed kittest.toml ([mac]) renders every snapshot without comparing it (Metal pixels differ).
 name: CI
 
 # Documentation and README media changes need no build.
@@ -125,3 +127,43 @@ jobs:
             crates/**/tests/snapshots/*.diff.png
           if-no-files-found: ignore
           retention-days: 14
+
+  # macOS arm64 (epic #41, issue #48). Formatting is checked once, on Linux. No GUI tests: they need Xvfb
+  # (scripts/check-gui.sh is Linux only). Snapshots render with Metal and are not compared (kittest.toml [mac]).
+  macos:
+    name: clippy, tests (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      # The workflow-wide lavapipe setting is for Linux; here wgpu uses Metal.
+      WGPU_BACKEND: metal
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Xcode command line tools, bash and rustup come with the runner image; no system packages needed.
+      # rust-toolchain.toml: stable + rustfmt + clippy.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            test-plugins -> target
+          cache-on-failure: true
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Without the bundles the plugin tests skip silently.
+      - name: Build test plugins
+        run: scripts/build-test-plugins.sh
+
+      # No gdb and no /proc on macOS for a watchdog like the Linux job's: the step timeout ends a hang.
+      - name: Test
+        timeout-minutes: 40
+        run: cargo test --workspace

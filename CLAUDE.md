@@ -66,6 +66,23 @@ directories, so other clones are unaffected) with `[patch."https://github.com/kl
 `klang-dsp = { path = "../klang-dsp" }` (see `docs/INSTALL.md`). Never commit the resulting `Cargo.lock` change;
 after pushing klang-dsp, bump `rev`.
 
+## macOS (epic #41)
+
+komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents on a Mac:
+
+- **macOS gate:** `scripts/check.sh` as on Linux (the lock uses `mkdir` where `flock` is missing; scripts run with the
+  stock bash 3.2, so no bash-4 features in them). `scripts/check-gui.sh` is Linux only and exits cleanly with a note.
+  Run `scripts/build-test-plugins.sh` once before it when you touch catalog, plugins, devices, browser or engine.
+- **Linux gate:** the Linux side is checked in Docker (aarch64), with the Linux gate (internal notes), which mounts the
+  worktree and runs the commands you give it. Linux and macOS test plugins coexist in one worktree: bundles live in
+  `target/test-plugins/<os>/{clap,vst3}` (`<os>` = `std::env::consts::OS`, i.e. `linux` or `macos`) and the plugin
+  workspace builds into `test-plugins/target/<os>`. Test helpers look them up through that path.
+- **Snapshots:** Linux (lavapipe) is the reference. On macOS `kittest.toml` `[mac]` renders every snapshot without
+  comparing; **never run `UPDATE_SNAPSHOTS` on macOS**, it would overwrite the reference PNGs with Metal pixels.
+- **No `/proc` on macOS:** tests that list or inspect processes have a `cfg(target_os)` path (`ps`, `kill -0`) or
+  are gated with a reason.
+- CI has a macOS arm64 job (clippy, tests, test plugins; no GUI tests, no format check).
+
 ## Commands
 
 | Command | What it does |
