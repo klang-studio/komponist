@@ -438,6 +438,9 @@ pub enum PluginAction {
     OpenWindow(DeviceId),
     /// Close the plugin window.
     CloseWindow(DeviceId),
+    /// A plugin window picked in the Window, Dock or "⋯" menu (#95): it comes to the front with
+    /// the keyboard focus. Nothing happens if it closed meanwhile.
+    FocusWindow(DeviceId),
     /// "Neu laden" on a crashed device.
     Reload(DeviceId),
     /// A drag or a wheel burst on parameter `id` of `device` starts: opens a gesture whose one undo

@@ -151,7 +151,20 @@ pub struct PluginFrames {
     bridge_frames: bool,
     /// Last X focus logged (`KOMPONIST_LOG_KEYS`).
     logged_focus: Option<u32>,
+    /// A frame to bring to the front with the focus in the next root pass (menus, `OpenWindow`).
+    focus: Option<FocusRequest>,
 }
+
+/// A pending [`App::focus_plugin_window`].
+#[derive(Debug, Clone, Copy)]
+struct FocusRequest {
+    device: DeviceId,
+    /// The app asked to become active first (macOS, the app was not active) at this time.
+    claimed: Option<Instant>,
+}
+
+/// How long a focus request waits for the app's own activation before it goes ahead anyway.
+const CLAIM_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default)]
 enum X11State {
@@ -332,11 +345,72 @@ impl App {
         }
     }
 
-    /// `OpenWindow` for a window that is open already: a frame the bridge shows comes to the
-    /// front (macOS).
+    /// `OpenWindow` for a window that is open already: it comes to the front.
     pub(crate) fn raise_plugin_window(&mut self, device: DeviceId) {
-        if self.plugin_frame_in_bridge(device) {
-            activation::bring_to_front(self.engine.host_mut(), device);
+        self.focus_plugin_window(device);
+    }
+
+    /// `PluginAction::FocusWindow` (the Window, Dock or "⋯" menu, #95): `device`'s window comes to
+    /// the front with the keyboard focus in the next root pass ([`Self::update_plugin_frames`]).
+    /// A frame the bridge shows gets the yield + `ActivateFrame` handshake (macOS; if the app is not
+    /// active, as from the Dock menu, it activates itself first and waits for that); an app-owned
+    /// frame gets `ViewportCommand::Focus`. A window that is not open is ignored.
+    pub(crate) fn focus_plugin_window(&mut self, device: DeviceId) {
+        if self.ui.plugin_windows.iter().any(|w| w.device == device) {
+            self.frames.focus = Some(FocusRequest {
+                device,
+                claimed: None,
+            });
+        }
+    }
+
+    /// Carries out a pending [`Self::focus_plugin_window`] (module docs).
+    fn apply_focus(&mut self, ctx: &Context, native: bool, now: Instant) {
+        let Some(mut request) = self.frames.focus.take() else {
+            return;
+        };
+        let Some(frame) = self
+            .frames
+            .frames
+            .iter()
+            .find(|f| f.device == request.device)
+        else {
+            // Not drawn yet: try again in the next pass.
+            if self
+                .ui
+                .plugin_windows
+                .iter()
+                .any(|w| w.device == request.device)
+            {
+                self.frames.focus = Some(request);
+            }
+            return;
+        };
+        if self.frames.bridge_frames && frame.gui != Gui::Idle {
+            if frame.gui == Gui::Opening {
+                // `GuiOpened` brings it to the front.
+                return;
+            }
+            if native && !activation::is_active() {
+                match request.claimed {
+                    None => {
+                        activation::activate();
+                        request.claimed = Some(now);
+                        self.frames.focus = Some(request);
+                        ctx.request_repaint_after(CLAIM_TIMEOUT);
+                        return;
+                    }
+                    Some(at) if now.duration_since(at) < CLAIM_TIMEOUT => {
+                        self.frames.focus = Some(request);
+                        ctx.request_repaint_after(CLAIM_TIMEOUT - now.duration_since(at));
+                        return;
+                    }
+                    Some(_) => {}
+                }
+            }
+            activation::bring_to_front(self.engine.host_mut(), request.device);
+        } else if native {
+            ctx.send_viewport_cmd_to(frame.viewport, ViewportCommand::Focus);
         }
     }
 
@@ -568,6 +642,8 @@ impl App {
             self.frame_event(event, ctx);
         }
         let now = Instant::now();
+        // After the raise on activation, so the picked frame ends up in front.
+        self.apply_focus(ctx, native, now);
         let mut busy = false;
         for i in 0..self.frames.frames.len() {
             if remote {

@@ -235,6 +235,9 @@ fn run_app() -> eframe::Result {
     {
         eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
     }
+    // The Dock menu (#95): methods on winit's application delegate, added when the app launches.
+    #[cfg(target_os = "macos")]
+    komponist_app::macos_delegate::install();
     komponist_ui::run(options, move |cc| {
         // After winit's own default menu exists: this replaces it.
         #[cfg(target_os = "macos")]
@@ -261,7 +264,7 @@ impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.menu {
-            menu.set_lang(self.app.lang());
+            menu.update(self.app.lang(), &self.app.plugin_window_entries());
             for command in menu.drain() {
                 self.app.dispatch(command.action());
             }

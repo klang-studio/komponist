@@ -54,6 +54,8 @@ pub mod gain_trace;
 pub mod keymap;
 pub mod layout;
 #[cfg(target_os = "macos")]
+pub mod macos_delegate;
+#[cfg(target_os = "macos")]
 pub mod macos_menu;
 pub mod master_scope;
 pub mod meters;

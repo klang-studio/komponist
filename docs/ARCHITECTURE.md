@@ -1109,7 +1109,14 @@ table of CLAP features / VST3 subcategories.
   main window would bring only the app forward: when the app becomes active
   (`NSApplicationDidBecomeActiveNotification`) it sends every open frame `RaiseFrame`, back to front
   by the window numbers the bridges reported (`FrameWindow`), and each bridge orders its frame
-  front (`orderFrontRegardless`) without activating itself or taking key. Header tooltips go
+  front (`orderFrontRegardless`) without activating itself or taking key. macOS lists none of
+  these frames under komponist, so the app lists them itself (#95, `windows::window_list`): the
+  "Fenster" menu of the native menu bar (Minimize, Zoom, then the frames), the Dock menu
+  (`applicationDockMenu:`, a method komponist adds to winit's application delegate at
+  `applicationWillFinishLaunching`, `macos_delegate`) and the "Fenster" submenu of the "⋯" menu (all
+  platforms). A pick sends `FocusWindow`: the same yield + `ActivateFrame`, after the app's own
+  activation when it was not active (the Dock menu); an app-owned frame gets
+  `ViewportCommand::Focus`. Header tooltips go
   beside their control (`komponist_ui::tooltip::HoverSide::Beside`): egui draws in winit's Metal
   layer, below the plugin's view, which would hide a tooltip below the header. "Oben halten"
   floats the frame only while komponist (the app or one of its bridges) is the active

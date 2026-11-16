@@ -11,6 +11,10 @@
 //! (`NSApplicationDidBecomeActiveNotification`, [`became_active`]) every open bridge frame gets
 //! `RaiseFrame`, back to front ([`front_to_back`]), and orders itself front without taking the
 //! activation or the keyboard.
+//!
+//! A frame picked in a menu (#95, `App::focus_plugin_window`) gets the same yield +
+//! `ActivateFrame`; from the Dock menu the app may not be active, and an inactive app cannot yield,
+//! so it asks for its own activation first ([`activate`]) and yields once it is active.
 
 use komponist_model::DeviceId;
 
@@ -56,6 +60,21 @@ pub(super) fn front_to_back() -> Vec<i64> {
     return macos::front_to_back();
     #[cfg(not(target_os = "macos"))]
     Vec::new()
+}
+
+/// Whether the app is the active application (macOS; always `true` elsewhere).
+pub(super) fn is_active() -> bool {
+    #[cfg(target_os = "macos")]
+    return macos::is_active();
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+/// Asks macOS to make the app active (a pick in the Dock menu while another app is active, #95);
+/// [`became_active`] reports when it is. No-op elsewhere.
+pub(super) fn activate() {
+    #[cfg(target_os = "macos")]
+    macos::activate();
 }
 
 fn yield_to(pid: u32) {
@@ -131,6 +150,18 @@ mod macos {
         };
         if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
             NSApplication::sharedApplication(mtm).yieldActivationToApplication(&app);
+        }
+    }
+
+    /// Whether the app is active (`true` off the main thread: nothing to do there).
+    pub(super) fn is_active() -> bool {
+        MainThreadMarker::new().is_none_or(|mtm| NSApplication::sharedApplication(mtm).isActive())
+    }
+
+    /// Asks for the app's activation.
+    pub(super) fn activate() {
+        if let Some(mtm) = MainThreadMarker::new() {
+            NSApplication::sharedApplication(mtm).activate();
         }
     }
 
