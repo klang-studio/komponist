@@ -49,7 +49,7 @@ winit = { version = "0.30.13", default-features = false, features = ["x11"] }
 # blocks; raw-window-handle: the frame window's `NSView` from eframe (both already in the tree).
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphics", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSURL", "NSValue"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSGeometry", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "NSValue"] }
 block2 = "0.6.2"
 raw-window-handle = "0.6.2"
 
