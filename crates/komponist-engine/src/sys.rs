@@ -5,8 +5,8 @@
 //! The wait per OS:
 //! - Linux: a private futex (`FUTEX_WAIT` with a relative timeout, `FUTEX_WAKE`).
 //! - macOS (14.4+): `os_sync_wait_on_address_with_deadline` / `os_sync_wake_by_address_*` without
-//!   the `SHARED` flag, through `komponist_rt::os_sync`, which arms each wait at 8/9 of the
-//!   remaining time against the kernel's timer leeway (spike #43).
+//!   the `SHARED` flag, through `komponist_rt::os_sync`, which arms each wait short of the
+//!   deadline against the kernel's timer leeway (spike #43).
 //!
 //! The engine knows no IPC, so it does not use `komponist-ipc`'s waits (which work on shared,
 //! cross-process words).

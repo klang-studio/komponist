@@ -460,8 +460,10 @@ stream and handed over in `StreamParams::workgroup`). Each worker sets the time-
 reported like a refused `SCHED_FIFO`), joins the workgroup and leaves it before it ends; since
 every stream brings a new workgroup reference, the pool is rebuilt per stream. The callback
 thread itself does not join: it is the HAL's IO thread, a member already. Waits and wakes use
-`os_sync_wait_on_address` / `os_sync_wake_by_address_*` on process-private words; each timed wait
-is armed at 8/9 of the remaining time, because the kernel ends timed waits about 12.5 % late.
+`os_sync_wait_on_address` / `os_sync_wake_by_address_*` on process-private words. The kernel ends
+timed waits 12.5–25 % of the wait late (timer leeway; 25 % while nobody uses the desktop), so each
+kernel wait is armed at 3/4 of the remaining time and repeated for the rest, the last one (under
+50 µs) at the deadline (`komponist_rt::os_sync`).
 
 - **Dispatch, per segment:** the audio thread writes a batch descriptor, publishes it with one
   release store of a claim word (`epoch << 32 | count << 16 | next`) and wakes as many workers as

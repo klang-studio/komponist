@@ -11,9 +11,9 @@
 //!   the `SHARED` flags and an absolute `OS_CLOCK_MACH_ABSOLUTE_TIME` deadline, through
 //!   `komponist_rt::os_sync` (#45). `Instant` reads `CLOCK_UPTIME_RAW`, which is
 //!   `mach_absolute_time` in nanoseconds, so the deadline is the current `mach_absolute_time` plus
-//!   the remaining time in mach ticks (rounded up). Each kernel wait is armed at 8/9 of the
-//!   remaining time: the kernel ends timed waits about 12.5 % late (spike #43), and a wait that
-//!   still ends early waits again for the rest.
+//!   the remaining time in mach ticks (rounded up). The kernel ends timed waits 12.5–25 % of the
+//!   wait late (timer leeway, spike #43), so each kernel wait is armed at 3/4 of the remaining
+//!   time and repeated for the rest, the last one (under 50 µs) at the deadline.
 //!
 //! RT use: [`wait_while`] is the only blocking call the engine's audio thread may make, always
 //! with a deadline; [`wake`] never blocks. Neither allocates or takes a lock.
@@ -170,8 +170,8 @@ mod sys {
     }
 
     /// One `os_sync_wait_on_address[_with_deadline]` with the `SHARED` flag (the word may sit in
-    /// shared memory and be woken from another process), armed at 8/9 of the remaining time to
-    /// make up for the kernel's timer leeway ([`os_sync`]).
+    /// shared memory and be woken from another process), armed short of the deadline to make up
+    /// for the kernel's timer leeway ([`os_sync`]).
     pub(super) fn wait(word: &AtomicU32, current: u32, deadline: Option<Deadline>) -> Wait {
         match os_sync::wait(word, current, deadline, Scope::Shared) {
             os_sync::Wait::Retry => Wait::Retry,
@@ -276,8 +276,8 @@ mod tests {
     }
 
     /// The kernel's timer leeway is compensated (spike #43, Q4): on a time-constraint thread a
-    /// 1 ms wait that times out ends less than 60 µs after its deadline (uncompensated: about
-    /// 125 µs). The median of 40 waits; skipped if the kernel refuses the policy.
+    /// 1 ms wait that times out ends less than 60 µs after its deadline (uncompensated: 125–260
+    /// µs). The median of 40 waits; skipped if the kernel refuses the policy.
     #[test]
     #[cfg(target_os = "macos")]
     fn a_timed_out_wait_ends_close_to_its_deadline() {

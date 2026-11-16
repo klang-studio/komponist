@@ -1419,10 +1419,11 @@ mod tests {
             #[cfg(target_os = "macos")]
             match given {
                 Some(_) => {
+                    // Converted again here, a little later: equal up to rounding.
                     let ticks = komponist_rt::mach_time::deadline(deadline);
-                    let slack = komponist_rt::mach_time::ticks(Duration::from_millis(1));
+                    let slack = komponist_rt::mach_time::ticks(Duration::from_micros(10));
                     assert!(
-                        request.deadline_ticks <= ticks && request.deadline_ticks + slack >= ticks,
+                        request.deadline_ticks.abs_diff(ticks) <= slack,
                         "{} vs {ticks}",
                         request.deadline_ticks
                     );

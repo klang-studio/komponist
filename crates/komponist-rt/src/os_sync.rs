@@ -2,20 +2,28 @@
 //! of a Linux futex. The engine's worker pool waits on process-private words, komponist-ipc on
 //! words in shared memory ([`Scope`]).
 //!
-//! **Timer leeway:** a timed-out `os_sync_wait_on_address_with_deadline` returns about 12.5 % of
-//! the wait late, also on time-constraint threads (spike #43, Q4: 103 µs late for 800 µs). [`wait`]
-//! therefore arms the kernel wait at 8/9 of the remaining time ([`armed`]): 8/9 × 1.125 = 1, so it
-//! times out close to the deadline. A wait that still ends before the deadline is reported as
-//! [`Wait::Retry`] and the caller waits again for the rest (with 8/9 of it, and so on), so it never
-//! reports a timeout early.
+//! **Timer leeway:** a timed-out `os_sync_wait_on_address_with_deadline` returns a share of the
+//! wait late, also on time-constraint threads, and the share varies: 12.5 % in spike #43 (Q4:
+//! 103 µs late for 800 µs), 25 % on the same Mac a few hours later with nobody at the desktop
+//! (257 µs for 1 ms; the kernel coalesces timers more while the user is idle). A fixed
+//! compensation therefore fails. [`wait`] arms the kernel wait at 3/4 of the remaining time
+//! ([`armed`]), which ends before the deadline for any leeway up to 33 %, and the caller waits
+//! again for the rest (a wait that times out early is reported as [`Wait::Retry`]); once less
+//! than [`FINAL_WAIT`] is left it arms the deadline itself. So a timeout is never reported early,
+//! and it comes at most a quarter of [`FINAL_WAIT`] late, after two or three kernel waits for a
+//! 1 ms wait.
 
 use core::ffi::c_void;
 use core::sync::atomic::AtomicU32;
+use std::time::Duration;
 
 use crate::mach_time;
 
 /// Size of the waited-on word in bytes.
 const WORD: usize = size_of::<AtomicU32>();
+
+/// Below this remaining time a wait is armed at its deadline (and ends up to a quarter of it late).
+pub const FINAL_WAIT: Duration = Duration::from_micros(50);
 
 /// Who may wake a waiter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,12 +46,16 @@ pub enum Wait {
     Failed,
 }
 
-/// RT. The absolute time to arm a kernel wait at, `now` + 8/9 of the time to `deadline` (rounded
-/// up), so that the kernel's leeway of about 1/8 of the wait ends it at the deadline. `deadline` if
-/// it has passed.
+/// RT. The absolute time to arm a kernel wait at: `now` + 3/4 of the time to `deadline`, so that
+/// the kernel's leeway (12.5–25 % of the wait) ends it before the deadline; the deadline itself
+/// when less than [`FINAL_WAIT`] is left or it has passed.
 pub fn armed(now: u64, deadline: u64) -> u64 {
     let remaining = deadline.saturating_sub(now);
-    deadline - remaining / 9
+    if remaining <= mach_time::ticks(FINAL_WAIT) {
+        deadline
+    } else {
+        deadline - remaining / 4
+    }
 }
 
 /// RT. One wait while `word == current`, until a wake-up or the absolute Mach `deadline` (`None`:
@@ -124,7 +136,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     /// Waits until `deadline` the way the callers do: retry until changed or timed out.
     fn wait_until(word: &AtomicU32, current: u32, deadline: u64, scope: Scope) -> Wait {
@@ -140,11 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn armed_time_is_eight_ninths_of_the_rest() {
-        assert_eq!(armed(1000, 1900), 1800);
-        assert_eq!(armed(0, 9), 8);
-        // Less than nine ticks left: the whole rest.
-        assert_eq!(armed(100, 108), 108);
+    fn armed_time_is_three_quarters_of_the_rest() {
+        let final_wait = mach_time::ticks(FINAL_WAIT);
+        let long = 100 * final_wait;
+        assert_eq!(armed(1000, 1000 + long), 1000 + long * 3 / 4);
+        // Little left: the deadline itself.
+        assert_eq!(armed(1000, 1000 + final_wait), 1000 + final_wait);
         assert_eq!(armed(500, 400), 400);
     }
 
@@ -169,10 +182,10 @@ mod tests {
         );
     }
 
-    /// The leeway compensation, guarded (spike #43: the 12.5 % is undocumented kernel policy): on
-    /// a time-constraint thread, a 1 ms wait that times out ends less than 60 µs after its
-    /// deadline (uncompensated: about 125 µs). The median of 40 waits, so a preemption on a busy
-    /// machine does not decide it. Skipped if the kernel refuses the policy.
+    /// The leeway compensation, guarded (the leeway is undocumented kernel policy): on a
+    /// time-constraint thread, a 1 ms wait that times out ends less than 60 µs after its deadline
+    /// (uncompensated: 125–260 µs). The median of 40 waits, so a preemption on a busy machine does
+    /// not decide it. Skipped if the kernel refuses the policy.
     #[test]
     fn a_timed_out_wait_ends_close_to_its_deadline() {
         let overshoot = std::thread::spawn(|| {
