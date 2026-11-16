@@ -67,8 +67,8 @@ use std::process::ExitCode;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-/// Whether bridges embed plugin GUIs on this OS (Linux: into the app's frame, macOS: into the
-/// bridge's own frame window, #52; Windows: not before W6). For the app and its tests, which do not
+/// Whether bridges embed plugin GUIs on this OS (Linux: into the app's frame; macOS and Windows:
+/// into the bridge's own frame window, #52 and port W6). For the app and its tests, which do not
 /// link the hosting crate directly.
 pub use komponist_hosting::GUI_EMBEDDING;
 

@@ -30,21 +30,32 @@ rustix = { workspace = true, features = ["event", "stdio"] }
 [target.'cfg(windows)'.dependencies]
 # Foundation (handles), Console (the standard handles), Storage_FileSystem (GetFileType),
 # Diagnostics_Debug (SetErrorMode), ErrorReporting (WerSetFlags: no crash dialog), Threading
-# (thread names, TerminateProcess).
+# (thread names, TerminateProcess, the wake relay's wait). The plugin frame (port W6):
+# WindowsAndMessaging (the container window, the wake window, z-order, activation), Gdi (its
+# background brush), HiDpi (the frame's DPI), Input_KeyboardAndMouse (the key policy),
+# Accessibility (the foreground hook of "Oben halten"), ToolHelp (the app's pid and sibling bridges),
+# LibraryLoader (the module handle for window classes).
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ErrorReporting",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# The plugin frame window the bridge owns on macOS (#52): eframe (wgpu) for the window and the
-# header, drawn with komponist-ui's header code in the app's language (komponist-i18n), AppKit for
-# the plugin's container view, the key monitor, activation and "Oben halten". All already linked by
-# the `komponist` executable, which carries the bridge (WP-94).
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+# The plugin frame window the bridge owns on macOS (#52) and Windows (port W6): eframe (wgpu) for the
+# window and the header, drawn with komponist-ui's header code in the app's language
+# (komponist-i18n). All already linked by the `komponist` executable, which carries the bridge
+# (WP-94).
 komponist-ui.workspace = true
 komponist-i18n.workspace = true
 komponist-tokens = { workspace = true, features = ["egui"] }
@@ -52,12 +63,23 @@ egui.workspace = true
 eframe.workspace = true
 winit.workspace = true
 raw-window-handle.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# AppKit for the frame's container view, the key monitor, activation and "Oben halten" (#52).
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 block2.workspace = true
 
 [dev-dependencies]
+
+[target.'cfg(windows)'.dev-dependencies]
+# The frame tests look at the bridge's frame window (port W6).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows and fake pointer input for the GUI tests (run under Xvfb only).

@@ -8,9 +8,9 @@
 //! - **Main loop:** on Linux one `poll()` (`event_loop::EventLoop`) over the control socket, the
 //!   notification eventfd ([`BridgeNotify`]), the plugin's fds and timers; on macOS the main
 //!   thread's CFRunLoop (`cf_loop::CfEventLoop`) with all of them as common-mode sources; on Windows
-//!   a message-pumping `MsgWaitForMultipleObjectsEx` (`win_loop::WinEventLoop`) over the control
-//!   reader thread's event (`win_loop::ControlReader`), the notification event and a
-//!   high-resolution timer, without plugin fds. Each tick
+//!   the main thread's message pump (`win_loop::WinEventLoop`), woken by a relay thread that waits
+//!   for the control reader thread's event (`win_loop::ControlReader`), the notification event and
+//!   a high-resolution timer and posts to a window of the main thread, without plugin fds. Each tick
 //!   dispatches plugin fds and timers, handles notifications, reads control messages and forwards
 //!   queued log lines and parameter values. Only this thread sends on the control channel.
 //! - **Watchdog:** `Ping` is answered with `Pong` from this loop, in every state, between two
@@ -28,8 +28,9 @@
 //!   `ParamValues` with the plugin's text, coalesced to at most one message per
 //!   [`VALUES_INTERVAL`]. GUI edits during processing travel through the shared output ring.
 //! - **Plugin GUI:** on Linux the plugin attaches to the app's X11 child window (`OpenGui` with
-//!   `GuiTarget::X11Child`); on macOS the bridge opens a frame window of its own
-//!   (`GuiTarget::OwnFrame`, the `frame` module, #52), run from the outer loop of [`Bridge::run`].
+//!   `GuiTarget::X11Child`); on macOS (#52) and Windows (port W6) the bridge opens a
+//!   frame window of its own (`GuiTarget::OwnFrame`, the `frame` module), run from the outer loop of
+//!   [`Bridge::run`].
 //! - **Shutdown** (spike WP-15 §4): close the GUI → stop the RT thread and deactivate → destroy
 //!   and unload the plugin → `_exit(0)` (the caller, `crate::run`).
 
@@ -37,7 +38,7 @@
 #[path = "frame/mod.rs"]
 mod frame;
 
-#[cfg(target_os = "macos")]
+#[cfg(bridge_frame)]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 #[cfg(unix)]
@@ -80,9 +81,9 @@ pub const RT_LOG_PREFIX: &str = "RT priority:";
 /// At most one `ParamValues` message per interval (about 30 Hz).
 pub const VALUES_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Longest `poll()` (Windows: wait) when nothing is scheduled; the control socket and the eventfd
-/// wake it earlier.
-#[cfg(any(target_os = "linux", windows))]
+/// Longest `poll()` when nothing is scheduled; the control socket and the eventfd wake it earlier.
+/// (Windows: the relay's idle wait, `win_loop`.)
+#[cfg(target_os = "linux")]
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 
 /// Control messages handled per tick before plugin fds and timers get their turn again.
@@ -190,7 +191,7 @@ struct Bridge {
     // Drop order: the plugin (and with it the RT thread's processor) before the loop it uses.
     active: Option<Active>,
     plugin: Option<Box<dyn HostedPlugin>>,
-    /// Shared with the frame window (macOS), which reports its keys and header clicks itself, and
+    /// Shared with the frame window (macOS, Windows), which reports its keys and header clicks itself, and
     /// with the control reader thread (Windows).
     channel: Arc<BridgeChannel>,
     /// Windows: the thread that reads the control pipe and queues its messages.
@@ -208,7 +209,7 @@ struct Bridge {
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
     shutdown: bool,
-    /// The plugin frame window this bridge owns (macOS, #52).
+    /// The plugin frame window this bridge owns (macOS #52, Windows W6).
     #[cfg(bridge_frame)]
     frame: frame::Slot,
 }
@@ -269,34 +270,90 @@ impl Bridge {
         exit::SUCCESS
     }
 
-    /// The main loop (Windows, port W5): one message-pumping wait per tick
-    /// (`win_loop::WinEventLoop::wait`) over the control reader's event and the notification
-    /// event, until the next timer or `ParamValues` is due; returns after `Shutdown` or when the
-    /// app is gone. Window messages of the plugin's hidden windows are dispatched inside the wait;
-    /// everything else is dispatched here, outside every borrow.
+    /// The main loop (Windows, ports W5 and W6): the main thread pumps window messages
+    /// (`WinEventLoop::run`), and the relay thread of `win_loop` wakes it for the control reader's
+    /// event, the notification event and the next deadline with a message to its wake window,
+    /// whose procedure calls [`Bridge::drain_ready`] (outside every borrow of the loop; a busy
+    /// bridge is retried). Returns after `Shutdown` or when the app is gone.
     ///
-    /// **The plugin frame (W6):** the seam is this outer loop, as on macOS. `OpenGui` with the
-    /// bridge-owned frame will record a frame request; the loop then runs `eframe::run_native`
-    /// (run-and-return) instead of `wait` until the frame closes. While eframe's (winit's) message
-    /// loop runs, this wait does not, so W6 must wake that loop for the same two events and the
-    /// next deadline (e.g. a thread that waits on them and posts to the frame) and dispatch from
-    /// there, never from egui's `ui()`.
+    /// **The plugin frame (W6):** as on macOS, `OpenGui` records a frame request and stops the
+    /// pump; this loop then runs `eframe::run_native` (run-and-return, `frame::run`) right here,
+    /// outside every borrow of the bridge, and pumps again when the frame has closed. eframe's
+    /// (winit's) message loop dispatches the wake messages too, so control messages, plugin timers
+    /// and notifications keep being served while the frame is open, during the user's drags and
+    /// inside a plugin's modal dialog loop; protocol work never runs from egui's `ui()`.
     #[cfg(windows)]
-    fn run(mut self) -> u8 {
-        while !self.shutdown {
-            let now = Instant::now();
-            let wait = self
-                .values_due
-                .map_or(IDLE_WAIT, |due| due.saturating_duration_since(now))
-                .min(IDLE_WAIT);
-            let timers = self
-                .event_loop
-                .wait(&[self.control.event(), self.notify.wake_handle()], wait);
-            // Always look at the control queue: it is cheap, and the event says no more than that.
-            self.dispatch(timers, true);
+    fn run(self) -> u8 {
+        let event_loop = self.event_loop.clone();
+        // Before the first window of the process (the relay's wake window).
+        crate::win_loop::per_monitor_dpi();
+        if let Err(e) = event_loop.start_relay(&[self.control.event(), self.notify.wake_handle()]) {
+            eprintln!("komponist-bridge: wake relay: {e}");
+            return exit::FAILURE;
         }
-        self.close();
+        let bridge = Rc::new(RefCell::new(self));
+        let weak = Rc::downgrade(&bridge);
+        event_loop.set_dispatch(Some(Rc::new(move || {
+            let Some(bridge) = weak.upgrade() else {
+                return true;
+            };
+            let Ok(mut bridge) = bridge.try_borrow_mut() else {
+                return false;
+            };
+            bridge.drain_ready();
+            true
+        })));
+        while !bridge.borrow().shutdown {
+            let request = bridge.borrow_mut().frame.request.take();
+            match request {
+                Some(request) => frame::run(&bridge, request),
+                None => event_loop.run(),
+            }
+        }
+        event_loop.set_dispatch(None);
+        bridge.borrow_mut().close();
         exit::SUCCESS
+    }
+
+    /// One wake of the relay (Windows): due timers, notifications, control messages, then the
+    /// next deadline for the relay.
+    #[cfg(windows)]
+    fn drain_ready(&mut self) {
+        let timers = self.event_loop.take_due();
+        // Always look at the control queue: it is cheap, and the event says no more than that.
+        self.dispatch(timers, true);
+        if self.shutdown {
+            // An open frame closes first: its event loop runs inside the outer loop.
+            frame::close(self, true);
+            self.event_loop.stop();
+        }
+        self.rearm();
+    }
+
+    /// Arms the relay for the next deadline: a plugin timer, `ParamValues`, the frame's debounced
+    /// work (Windows).
+    #[cfg(windows)]
+    fn rearm(&mut self) {
+        let due = [
+            self.event_loop.next_timer(),
+            self.values_due,
+            frame::deadline(self),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        self.event_loop.rearm(due);
+    }
+
+    /// The frame changed its debounced work (a drag, a move, a new scale): macOS lets the bridge
+    /// handle what queued and re-arm its timer ([`Bridge::drain_ready`]); Windows only re-arms the
+    /// relay (the frame calls this from eframe's `logic()`, where no control message is handled).
+    #[cfg(bridge_frame)]
+    fn reschedule(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.drain_ready();
+        #[cfg(windows)]
+        self.rearm();
     }
 
     /// The main loop (macOS): the thread's CFRunLoop ([`EventLoop`] is `CfEventLoop`) with the
@@ -568,7 +625,7 @@ impl Bridge {
             if frame::owns_gui(self) {
                 frame::plugin_resized(self, size);
             }
-            // The app owns the frame (Linux), or there is none yet (Windows before W6).
+            // The app owns the frame (Linux).
             #[cfg(not(bridge_frame))]
             self.send(BridgeMsg::GuiSizeRequest(size));
         }
@@ -709,7 +766,7 @@ impl Bridge {
                 }
             }
             ControlMsg::CloseGui => self.close_gui(),
-            // The own frame's messages; there is none on Linux (nor on Windows before W6).
+            // The own frame's messages; there is none on Linux.
             #[cfg(bridge_frame)]
             ControlMsg::HeaderState { header, lang } => frame::set_header(self, header, &lang),
             #[cfg(bridge_frame)]
@@ -725,8 +782,8 @@ impl Bridge {
         }
     }
 
-    /// `OpenGui`: into the app's X11 child (Linux) or the bridge's own frame (macOS). Answer:
-    /// `GuiOpened` (for the own frame once the plugin is attached) or `Error`.
+    /// `OpenGui`: into the app's X11 child (Linux) or the bridge's own frame (macOS, Windows).
+    /// Answer: `GuiOpened` (for the own frame once the plugin is attached) or `Error`.
     fn open_gui(&mut self, target: GuiTarget) {
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::Gui, "no plugin loaded");

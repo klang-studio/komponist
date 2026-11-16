@@ -1,10 +1,15 @@
-//! The bridge main loop on Windows (port W5): [`WinEventLoop`] (the plugin's [`HostLoop`]) and
-//! [`ControlReader`] (the control pipe, read on a thread of its own).
+//! The bridge main loop on Windows (ports W5, W6): [`WinEventLoop`] (the plugin's [`HostLoop`]
+//! and the wake relay) and [`ControlReader`] (the control pipe, read on a thread of its own).
 //!
 //! Windows plugins need a message pump on their main thread even without a visible GUI: they
-//! create hidden windows, `SetTimer` timers and COM objects there and post work to them. So the main
-//! thread waits in `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)`
-//! (`komponist_hosting::host_loop::wake::wait`) over
+//! create hidden windows, `SetTimer` timers and COM objects there and post work to them. So the
+//! main thread does nothing but pump window messages ([`WinEventLoop::run`], a
+//! `MsgWaitForMultipleObjectsEx(QS_ALLINPUT)` through `komponist_hosting::host_loop::wake::wait`),
+//! and the bridge's work reaches it as a window message of its own.
+//!
+//! # The wake relay (port W6)
+//!
+//! A relay thread ([`WinEventLoop::start_relay`]) waits for
 //!
 //! - the control reader's event (a manual-reset event, set while control messages are queued),
 //! - the notification event of [`crate::notify::BridgeNotify`] (set by plugin threads and the RT
@@ -12,11 +17,22 @@
 //! - a high-resolution waitable timer armed for the next due host timer or deadline (a
 //!   millisecond timeout would end on the 15.6 ms clock tick),
 //!
-//! and every window message queued for the thread is dispatched before the wait returns. The
-//! caller then dispatches due timers, notifications and control messages, outside every borrow
-//! (a plugin registers timers re-entrantly), as on Linux (`event_loop.rs`) and macOS
-//! (`cf_loop.rs`). There is no fd registry: CLAP posix-fd-support and VST3 `IRunLoop` are not
-//! offered on Windows.
+//! and posts one `WM_APP` message to a message-only window of the main thread. Its window
+//! procedure calls the dispatcher the bridge installed ([`WinEventLoop::set_dispatch`]), which
+//! handles timers, notifications and control messages outside every borrow of this loop, then
+//! arms the timer for the next deadline and lets the relay wait again ([`WinEventLoop::rearm`]).
+//! The relay waits for that hand-back before it looks at the events again, so an event that stays
+//! set until the main thread drains it never makes it spin (the role of the suspended dispatch
+//! sources on macOS, `cf_loop.rs`).
+//!
+//! **Why a window message:** whoever pumps the main thread's messages dispatches it, not only this
+//! loop: eframe's (winit's) message loop while the bridge's plugin frame is open (`frame`), the
+//! window manager's move and size loop while the user drags the frame, and a plugin's own modal
+//! loop (a file dialog or message box opened from its GUI). Control messages, notifications and
+//! timers keep being served in all of them, as the common modes do on macOS. A wake that finds the
+//! bridge busy (a modal loop inside a plugin call the bridge made, such as `gui_open`) is retried
+//! with a 5 ms `SetTimer` until the call returns: messages then wait, as during a long plugin call
+//! on Linux.
 //!
 //! **Why a reader thread:** a pipe handle cannot be waited on for "readable", and the channel's
 //! overlapped reads are internal to `komponist-ipc`. The reader blocks in `Channel::recv` and
@@ -24,16 +40,12 @@
 //! reader stops reading and the app's writer blocks, as with a full socket on Linux). The main
 //! thread sends on the same channel at the same time; the overlapped pipe allows that.
 //!
-//! **Nested loops:** while a plugin call runs its own modal loop (a dialog), or later while eframe
-//! runs the frame window (W6), this wait does not run: window messages are still dispatched by
-//! that loop, but control messages, notifications and timers wait until it returns, as during a
-//! long plugin call on Linux. W6 has to serve them from inside eframe's loop (the seam is
-//! `Bridge::run` in `instance.rs`).
+//! There is no fd registry: CLAP posix-fd-support and VST3 `IRunLoop` are not offered on Windows.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
-use std::os::windows::io::{AsHandle, BorrowedHandle};
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -41,9 +53,29 @@ use std::time::{Duration, Instant};
 use komponist_hosting::host_loop::wake::{self, DeadlineTimer, WakeEvent};
 use komponist_hosting::{HostLoop, HostingError, TimerId};
 use komponist_ipc::{BridgeChannel, ChannelError, ControlMsg};
+use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WAIT_FAILED, WPARAM};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_MESSAGE, KillTimer, PostMessageW,
+    RegisterClassExW, SetTimer, WM_APP, WM_TIMER, WNDCLASSEXW,
+};
 
 /// Control messages the reader queues before it waits for the main thread.
 pub const QUEUE_CAPACITY: usize = 256;
+
+/// The relay's wake message to the main thread's wake window.
+const WM_WAKE: u32 = WM_APP + 0x4B50;
+
+/// The retry timer of a wake that found the bridge busy.
+const RETRY_TIMER: usize = 1;
+
+/// How often a busy bridge is tried again.
+const RETRY: Duration = Duration::from_millis(5);
+
+/// Longest the relay sleeps without a deadline (the bridge looks around once a second, as the W5
+/// loop did).
+const IDLE: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct TimerEntry {
@@ -58,19 +90,40 @@ struct LoopState {
     timers: Vec<TimerEntry>,
 }
 
+/// What the wake window calls on the main thread: `false` if the bridge was busy (the wake is
+/// retried, module docs).
+pub type Dispatch = Rc<dyn Fn() -> bool>;
+
+thread_local! {
+    /// The dispatcher of this thread's loop, for the wake window's procedure.
+    static DISPATCH: RefCell<Option<Dispatch>> = const { RefCell::new(None) };
+}
+
 /// See the module docs. Main thread only; shared with the plugin as `Rc<dyn HostLoop>`.
-#[derive(Debug)]
 pub struct WinEventLoop {
     state: RefCell<LoopState>,
     timer: DeadlineTimer,
+    relay: RefCell<Option<Relay>>,
+    stopped: Cell<bool>,
+}
+
+impl std::fmt::Debug for WinEventLoop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WinEventLoop")
+            .field("state", &self.state)
+            .field("relay", &self.relay.borrow().is_some())
+            .finish()
+    }
 }
 
 impl WinEventLoop {
-    /// A loop with its deadline timer.
+    /// A loop with its deadline timer and without a relay yet.
     pub fn new() -> io::Result<Rc<WinEventLoop>> {
         Ok(Rc::new(WinEventLoop {
             state: RefCell::new(LoopState::default()),
             timer: DeadlineTimer::new()?,
+            relay: RefCell::new(None),
+            stopped: Cell::new(false),
         }))
     }
 
@@ -85,16 +138,26 @@ impl WinEventLoop {
         self.state.borrow().timers.iter().any(|t| t.id == timer)
     }
 
-    /// One wait over `extra` (the caller's events) until one is signalled, a window message
-    /// arrives (it is dispatched), `max_wait` passes, or a timer is due. Returns the due timers
-    /// (each moves on by its period; missed periods are skipped instead of firing a burst).
+    /// One wait over `extra` until one is signalled, a window message arrives (it is dispatched),
+    /// `max_wait` passes, or a timer is due; returns the due timers ([`Self::take_due`]). The
+    /// bridge waits through the relay; this is the loop's own wait, for tests.
+    #[cfg(test)]
     pub fn wait(&self, extra: &[BorrowedHandle<'_>], max_wait: Duration) -> Vec<TimerId> {
-        let mut deadline = Instant::now() + max_wait;
-        for timer in &self.state.borrow().timers {
-            deadline = deadline.min(timer.next);
-        }
+        let limit = Instant::now() + max_wait;
+        let deadline = self.next_timer().map_or(limit, |t| t.min(limit));
         // No borrow is held here: plugin window procedures run inside.
         wake::wait(&self.timer, extra, Some(deadline));
+        self.take_due()
+    }
+
+    /// When the next timer is due.
+    pub fn next_timer(&self) -> Option<Instant> {
+        self.state.borrow().timers.iter().map(|t| t.next).min()
+    }
+
+    /// The timers that are due now; each moves on by its period (missed periods are skipped
+    /// instead of firing a burst).
+    pub fn take_due(&self) -> Vec<TimerId> {
         let now = Instant::now();
         let mut state = self.state.borrow_mut();
         let mut due = Vec::new();
@@ -107,6 +170,201 @@ impl WinEventLoop {
         }
         due
     }
+
+    /// Starts the relay thread over `events` (the control reader's and the notification event;
+    /// duplicated for the thread) and creates the wake window (module docs).
+    pub fn start_relay(&self, events: &[BorrowedHandle<'_>]) -> io::Result<()> {
+        let events = events
+            .iter()
+            .map(|e| e.try_clone_to_owned())
+            .collect::<io::Result<Vec<OwnedHandle>>>()?;
+        let shared = Arc::new(RelayShared {
+            deadline: DeadlineTimer::new()?,
+            go: WakeEvent::new()?,
+            quit: WakeEvent::new()?,
+        });
+        let window = wake_window()?;
+        let thread = shared.clone();
+        let target = window as isize;
+        let spawned = std::thread::Builder::new()
+            .name("kp-bridge-relay".into())
+            .spawn(move || relay_loop(&events, &thread, target));
+        if let Err(e) = spawned {
+            // SAFETY: the window this call created.
+            unsafe { DestroyWindow(window) };
+            return Err(e);
+        }
+        *self.relay.borrow_mut() = Some(Relay { window, shared });
+        Ok(())
+    }
+
+    /// Installs (or removes) the dispatcher the wake window calls (module docs).
+    pub fn set_dispatch(&self, dispatch: Option<Dispatch>) {
+        DISPATCH.with(|d| *d.borrow_mut() = dispatch);
+    }
+
+    /// After a dispatch: arms the relay's timer for `due` (or [`IDLE`] from now) and lets the
+    /// relay wait again.
+    pub fn rearm(&self, due: Option<Instant>) {
+        if let Some(relay) = self.relay.borrow().as_ref() {
+            relay
+                .shared
+                .deadline
+                .arm(due.unwrap_or_else(|| Instant::now() + IDLE));
+            relay.shared.go.signal();
+        }
+    }
+
+    /// Pumps the thread's window messages until [`Self::stop`]; the bridge's work runs inside,
+    /// from the wake window.
+    pub fn run(&self) {
+        while !self.stopped.replace(false) {
+            wake::wait(&self.timer, &[], None);
+        }
+    }
+
+    /// Makes [`Self::run`] return after the message it is dispatching (also when it is not
+    /// running: then the next `run` returns at once).
+    pub fn stop(&self) {
+        self.stopped.set(true);
+    }
+}
+
+/// The relay's half on the main thread.
+struct Relay {
+    window: HWND,
+    shared: Arc<RelayShared>,
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.shared.quit.signal();
+        // SAFETY: the wake window this thread created.
+        unsafe { DestroyWindow(self.window) };
+    }
+}
+
+/// What the relay thread and the main thread share.
+struct RelayShared {
+    /// Armed by the main thread for its next deadline.
+    deadline: DeadlineTimer,
+    /// Signalled by the main thread when it handled a wake.
+    go: WakeEvent,
+    /// Ends the relay thread.
+    quit: WakeEvent,
+}
+
+/// The relay thread (module docs): waits for `events` or the deadline, posts the wake, waits for
+/// the hand-back.
+fn relay_loop(events: &[OwnedHandle], shared: &RelayShared, window: isize) {
+    let mut watched: Vec<HANDLE> = vec![shared.quit.as_handle().as_raw_handle()];
+    watched.extend(events.iter().map(|e| e.as_raw_handle()));
+    watched.push(shared.deadline.as_handle().as_raw_handle());
+    let back = [
+        shared.quit.as_handle().as_raw_handle(),
+        shared.go.as_handle().as_raw_handle(),
+    ];
+    loop {
+        // SAFETY: handles that live as long as this thread (owned by it or by `shared`).
+        let woke =
+            unsafe { WaitForMultipleObjects(watched.len() as u32, watched.as_ptr(), 0, INFINITE) };
+        if woke == 0 {
+            return;
+        }
+        if woke == WAIT_FAILED {
+            // A broken handle: do not spin.
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        // SAFETY: posting to a window of another thread; fails once the window is gone.
+        if unsafe { PostMessageW(window as HWND, WM_WAKE, 0, 0) } == 0 {
+            return;
+        }
+        // SAFETY: as above.
+        let woke = unsafe { WaitForMultipleObjects(2, back.as_ptr(), 0, INFINITE) };
+        if woke == 0 {
+            return;
+        }
+        shared.go.drain();
+    }
+}
+
+/// Makes the bridge per-monitor-v2 DPI aware, as `komponist.exe`'s manifest does (port W6): the
+/// frame works in physical pixels and passes the DPI scale to the plugin. Must run before the
+/// process's first window: Windows fixes a process's awareness when it creates one, after which
+/// winit's own call fails and `SetWindowPos` sizes would be scaled behind the frame's back.
+/// A process that is aware already (the manifest) keeps its setting.
+pub fn per_monitor_dpi() {
+    use windows_sys::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+    // SAFETY: a process-wide setting; failing (already set) changes nothing.
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+}
+
+/// The main thread's message-only wake window.
+fn wake_window() -> io::Result<HWND> {
+    let class: Vec<u16> = "komponist-bridge-wake\0".encode_utf16().collect();
+    // SAFETY: the module handle of this executable.
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let wc = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        lpfnWndProc: Some(wake_proc),
+        hInstance: instance,
+        lpszClassName: class.as_ptr(),
+        // SAFETY: all-zero is valid for the rest of this plain C struct.
+        ..unsafe { std::mem::zeroed() }
+    };
+    // SAFETY: a valid class description; registering twice fails harmlessly (tests start several
+    // loops in one process).
+    unsafe { RegisterClassExW(&wc) };
+    // SAFETY: a message-only window of a registered class.
+    let window = unsafe {
+        CreateWindowExW(
+            0,
+            class.as_ptr(),
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            std::ptr::null_mut(),
+            instance,
+            std::ptr::null(),
+        )
+    };
+    if window.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(window)
+}
+
+/// The wake window's procedure: a wake (or its retry) calls the dispatcher.
+unsafe extern "system" fn wake_proc(
+    window: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let wake = msg == WM_WAKE || (msg == WM_TIMER && wparam == RETRY_TIMER);
+    if !wake {
+        // SAFETY: the default procedure with the arguments Windows passed.
+        return unsafe { DefWindowProcW(window, msg, wparam, lparam) };
+    }
+    if msg == WM_TIMER {
+        // SAFETY: this window's own timer.
+        unsafe { KillTimer(window, RETRY_TIMER) };
+    }
+    // Cloned out: the dispatcher may install another one.
+    let dispatch = DISPATCH.with(|d| d.borrow().clone());
+    let handled = dispatch.is_none_or(|dispatch| dispatch());
+    if !handled {
+        // SAFETY: a timer of this window; replaces a pending one with the same id.
+        unsafe { SetTimer(window, RETRY_TIMER, RETRY.as_millis() as u32, None) };
+    }
+    0
 }
 
 impl HostLoop for WinEventLoop {
@@ -230,6 +488,55 @@ mod tests {
     fn pair() -> (AppChannel, Arc<BridgeChannel>) {
         let (app, bridge) = socket_pair().unwrap();
         (app, Arc::new(BridgeChannel::from_handle(bridge)))
+    }
+
+    /// The relay wakes the message loop for an event and for the deadline; the dispatcher runs
+    /// inside `run` (from the wake window), and a wake that finds the bridge busy is retried.
+    #[test]
+    fn the_relay_dispatches_events_and_deadlines_from_the_message_loop() {
+        let lp = WinEventLoop::new().unwrap();
+        let event = Arc::new(WakeEvent::new().unwrap());
+        lp.start_relay(&[event.as_handle()]).unwrap();
+        let calls = Rc::new(Cell::new(0u32));
+        let busy = Rc::new(Cell::new(1u32));
+        let weak = Rc::downgrade(&lp);
+        let (counted, refusals, drained) = (calls.clone(), busy.clone(), event.clone());
+        lp.set_dispatch(Some(Rc::new(move || {
+            if refusals.get() > 0 {
+                refusals.set(refusals.get() - 1);
+                return false;
+            }
+            drained.drain();
+            counted.set(counted.get() + 1);
+            let lp = weak.upgrade().unwrap();
+            // The first wake asks for a deadline 30 ms on, the second for none.
+            let due = (counted.get() == 1).then(|| Instant::now() + Duration::from_millis(30));
+            lp.rearm(due);
+            lp.stop();
+            true
+        })));
+
+        let signal = event.clone();
+        let start = Instant::now();
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            signal.signal();
+        });
+        lp.run();
+        setter.join().unwrap();
+        let first = start.elapsed();
+        assert_eq!((calls.get(), busy.get()), (1, 0));
+        assert!(first >= Duration::from_millis(15), "{first:?}");
+        assert!(first < Duration::from_secs(1), "{first:?}");
+
+        // Nothing is signalled: the deadline wakes the loop.
+        let start = Instant::now();
+        lp.run();
+        let second = start.elapsed();
+        assert_eq!(calls.get(), 2);
+        assert!(second >= Duration::from_millis(20), "{second:?}");
+        assert!(second < Duration::from_millis(500), "{second:?}");
+        lp.set_dispatch(None);
     }
 
     #[test]
