@@ -277,6 +277,38 @@ impl Collector {
         Ok(changed.then(|| write_all(state, &out)))
     }
 
+    /// `state` with its links pointed where this collector put their files, without copying: a
+    /// link to a file collected in this run gets its place in the samples folder, another link
+    /// that resolves (against `old_dir`) is rebased to the project's folder as by [`rebase`], a
+    /// missing one stays. `None` if nothing changes.
+    ///
+    /// For the device states of the undo history after collecting the current ones (#86): they
+    /// follow the collected project, and a sample only an earlier step uses is not copied.
+    pub fn relink(&self, state: Option<&[u8]>, old_dir: Option<&Path>) -> Option<Vec<u8>> {
+        let links = read(state);
+        if links.is_empty() {
+            return None;
+        }
+        let relinked: Vec<(usize, SampleLink)> = links
+            .iter()
+            .map(|(pad, link)| {
+                let moved = match link.resolve(old_dir) {
+                    Some(found) => {
+                        let abs = self.done.get(&normalize(&found)).cloned().unwrap_or(found);
+                        SampleLink {
+                            rel: relative(&abs, &self.project_dir),
+                            abs,
+                            name: link.name.clone(),
+                        }
+                    }
+                    None => link.clone(),
+                };
+                (*pad, moved)
+            })
+            .collect();
+        (relinked != links).then(|| write_all(state, &relinked))
+    }
+
     /// The path `file` has in the samples folder after collecting (copied if needed).
     fn place(&mut self, file: &Path) -> io::Result<PathBuf> {
         let file = normalize(file);
@@ -555,5 +587,48 @@ mod tests {
         let mut again = Collector::new(&project);
         assert!(again.collect(Some(&new), None).unwrap().is_none());
         assert!(again.log.iter().all(|e| !e.copied));
+    }
+
+    #[test]
+    fn relinking_follows_the_collected_files_without_copying_others() {
+        let dir = scratch("relink");
+        let project = dir.join("proj/Hafenlicht.komponist");
+        std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+        let kick = file(&dir, "lib/kick.wav", b"kick-bytes");
+        let snare = file(&dir, "lib/snare.wav", b"snare-bytes");
+        let current = write(None, 0, Some(&SampleLink::new(&kick, None)));
+        let mut c = Collector::new(&project);
+        c.collect(Some(&current), None).unwrap().unwrap();
+        // An earlier state: the kick on pad 1, the snare on pad 2, a missing sample on pad 3, and
+        // its parameters.
+        let gone = SampleLink {
+            abs: dir.join("gone.wav"),
+            rel: PathBuf::new(),
+            name: "gone".into(),
+        };
+        let earlier = br#"{"params":{"pad1_tune":12.0}}"#;
+        let earlier = write(Some(earlier), 0, Some(&SampleLink::new(&kick, None)));
+        let earlier = write(Some(&earlier), 1, Some(&SampleLink::new(&snare, None)));
+        let earlier = write(Some(&earlier), 2, Some(&gone));
+        let relinked = c.relink(Some(&earlier), None).unwrap();
+        let links = read(Some(&relinked));
+        let folder = dir.join("proj/Hafenlicht Samples");
+        assert_eq!(
+            links[0].1.abs,
+            folder.join("kick.wav"),
+            "collected: follows"
+        );
+        assert_eq!(links[0].1.rel, Path::new("Hafenlicht Samples/kick.wav"));
+        assert_eq!(links[1].1.abs, snare, "only the history has it: not copied");
+        assert_eq!(links[1].1.rel, Path::new("../lib/snare.wav"));
+        assert!(!folder.join("snare.wav").exists());
+        assert_eq!(links[2].1, gone, "missing: as it was");
+        let value: Value = serde_json::from_slice(&relinked).unwrap();
+        assert_eq!(
+            value["params"]["pad1_tune"], 12.0,
+            "the rest of the state stays"
+        );
+        // Relinking a relinked state changes nothing.
+        assert!(c.relink(Some(&relinked), None).is_none());
     }
 }

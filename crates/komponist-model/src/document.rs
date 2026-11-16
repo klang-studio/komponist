@@ -11,7 +11,9 @@
 //!
 //! Device parameters and plugin states are tracked like everything else (owner decision
 //! 2026-11-15): the app wraps a knob drag or a wheel burst in a gesture. Only transport settings
-//! and the like go through [`Document::apply_untracked`].
+//! and the like go through [`Document::apply_untracked`]; sample paths rewritten for a save go
+//! through [`Document::rewrite_untracked`] (every step from its own state), and a plugin's echo of
+//! an undo through [`Document::apply_untracked_to_root`] (#86).
 //!
 //! Thread: UI thread only. The engine and workers get `Arc<Project>` snapshots.
 
@@ -120,12 +122,13 @@ impl Document {
     /// every undo and redo snapshot and the open gesture's snapshot (errors there are ignored, that
     /// snapshot stays as it was).
     ///
-    /// For values that must not be undone and must not be reverted by undo: transport settings
-    /// (loop on/off, metronome, count-in), the loop range set from the ruler, sample paths
-    /// rewritten for the file being saved and the plugin state snapshots that merely echo an undo
-    /// (`edits::set_device_state`). Device parameters and a plugin's own edits are tracked, not
-    /// untracked. An edit that changes the root marks the document dirty until the next save
-    /// (undo cannot clear that); one that changes nothing leaves the dirty state alone.
+    /// For one value that must not be undone and must not be reverted by undo, the same in every
+    /// snapshot: transport settings (loop on/off, metronome, count-in), the loop range set from
+    /// the ruler, the project name a new file gives. Never for a whole device state: it would
+    /// overwrite what every step holds (#86); see [`Document::rewrite_untracked`] and
+    /// [`Document::apply_untracked_to_root`]. Device parameters and a plugin's own edits are
+    /// tracked, not untracked. An edit that changes the root marks the document dirty until the
+    /// next save (undo cannot clear that); one that changes nothing leaves the dirty state alone.
     pub fn apply_untracked(
         &mut self,
         edit: impl Fn(&Project) -> Result<Project, EditError>,
@@ -156,6 +159,74 @@ impl Document {
         }
         self.current = next;
         self.untracked_dirty |= changed;
+        self.revision += 1;
+        Ok(())
+    }
+
+    /// Rewrites, outside the history, the current root and every snapshot (undo, redo, the open
+    /// gesture's start), each from **its own** content: `rewrite` returns the new project, or
+    /// `None` to leave that one as it is (the same `Arc`).
+    ///
+    /// For a transformation of what each state holds rather than one value for all: the sample
+    /// paths rewritten for the file being saved, so every step keeps its own parameters and
+    /// samples (#86). Returns whether the root changed; that marks the document dirty until the
+    /// next save, like [`Document::apply_untracked`].
+    pub fn rewrite_untracked(
+        &mut self,
+        mut rewrite: impl FnMut(&Project) -> Option<Project>,
+    ) -> bool {
+        let next = rewrite(&self.current).map(Arc::new);
+        let mut rebase = |snapshot: &mut Arc<Project>| {
+            if let Some(p) = rewrite(snapshot) {
+                *snapshot = Arc::new(p);
+            }
+        };
+        self.undo.iter_mut().for_each(|s| rebase(&mut s.project));
+        self.redo.iter_mut().for_each(|s| rebase(&mut s.project));
+        if let Some(gesture) = &mut self.gesture {
+            if Arc::ptr_eq(&gesture.before, &self.current) {
+                // Nothing tracked happened in the gesture yet; keep it that way for `end_gesture`.
+                if let Some(next) = &next {
+                    gesture.before = Arc::clone(next);
+                }
+            } else {
+                rebase(&mut gesture.before);
+            }
+        }
+        let Some(next) = next else {
+            return false;
+        };
+        self.current = next;
+        self.untracked_dirty = true;
+        self.revision += 1;
+        true
+    }
+
+    /// Applies `edit` to the current root only, outside the history; the undo and redo snapshots
+    /// keep what they hold (its error is returned).
+    ///
+    /// For bytes that restate what the root already means, not an edit: a bridged plugin's echo of
+    /// the state undo or redo handed it, the baseline a bridged device came up with, taken for the
+    /// file. Undo does not revert it, and no other step takes it on (#86). An open gesture that
+    /// has changed nothing yet starts from the new root. An edit that changes the root marks the
+    /// document dirty until the next save, like [`Document::apply_untracked`]; one that changes
+    /// nothing changes nothing.
+    pub fn apply_untracked_to_root(
+        &mut self,
+        edit: impl FnOnce(&Project) -> Result<Project, EditError>,
+    ) -> Result<(), EditError> {
+        let edited = edit(&self.current)?;
+        if edited == *self.current {
+            return Ok(());
+        }
+        let next = Arc::new(edited);
+        if let Some(gesture) = &mut self.gesture
+            && Arc::ptr_eq(&gesture.before, &self.current)
+        {
+            gesture.before = Arc::clone(&next);
+        }
+        self.current = next;
+        self.untracked_dirty = true;
         self.revision += 1;
         Ok(())
     }
@@ -751,6 +822,104 @@ mod tests {
         // An untracked edit that changes nothing does not dirty the document.
         doc.apply_untracked(|p| Ok(p.clone())).unwrap();
         assert!(!doc.is_dirty());
+    }
+
+    /// Appends `suffix` to the name of a project whose name starts with one of `prefixes`;
+    /// others stay.
+    fn suffix_if<'a>(
+        prefixes: &'a [&'a str],
+        suffix: &'a str,
+    ) -> impl FnMut(&Project) -> Option<Project> + 'a {
+        move |p| {
+            prefixes.iter().any(|x| p.name.starts_with(x)).then(|| {
+                let mut p = p.clone();
+                p.name.push_str(suffix);
+                p
+            })
+        }
+    }
+
+    #[test]
+    fn a_rewrite_transforms_every_snapshot_from_its_own_content() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.apply("1", rename("B")).unwrap();
+        doc.apply("2", rename("C")).unwrap();
+        doc.undo();
+        doc.mark_saved();
+        let a = Arc::clone(&doc.undo[0].project);
+        // Rewrites B (the root) and C (redo), not A.
+        assert!(doc.rewrite_untracked(suffix_if(&["B", "C"], "'")));
+        assert_eq!(doc.project().name, "B'");
+        assert!(doc.is_dirty());
+        assert!(
+            Arc::ptr_eq(&doc.undo[0].project, &a),
+            "untouched: the same Arc"
+        );
+        doc.redo();
+        assert_eq!(doc.project().name, "C'");
+        doc.undo();
+        doc.undo();
+        assert_eq!(doc.project().name, "A");
+        // A rewrite that leaves the root alone does not dirty a clean document.
+        doc.mark_saved();
+        let revision = doc.revision();
+        assert!(!doc.rewrite_untracked(suffix_if(&["C"], "!")));
+        assert!(!doc.is_dirty());
+        assert_eq!(doc.revision(), revision);
+        doc.redo();
+        doc.redo();
+        assert_eq!(doc.project().name, "C'!");
+    }
+
+    #[test]
+    fn a_rewrite_keeps_an_untouched_gesture_untouched() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.begin_gesture("drag");
+        assert!(doc.rewrite_untracked(suffix_if(&["A"], "'")));
+        doc.end_gesture();
+        assert!(doc.undo_label().is_none(), "no step for the rewrite");
+        doc.begin_gesture("drag");
+        doc.apply("", rename("B")).unwrap();
+        doc.rewrite_untracked(suffix_if(&["A"], "!"));
+        doc.end_gesture();
+        doc.undo();
+        assert_eq!(
+            doc.project().name,
+            "A'!",
+            "the gesture's start was rewritten"
+        );
+    }
+
+    #[test]
+    fn an_edit_of_the_root_alone_leaves_every_snapshot_as_it_was() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.apply("1", rename("B")).unwrap();
+        doc.apply("2", rename("C")).unwrap();
+        doc.undo();
+        doc.apply_untracked_to_root(rename("B'")).unwrap();
+        assert_eq!(doc.project().name, "B'");
+        assert!(doc.is_dirty());
+        assert_eq!(doc.redo_label(), Some("2"), "the redo survives");
+        doc.redo();
+        assert_eq!(doc.project().name, "C");
+        doc.undo();
+        assert_eq!(doc.project().name, "B'");
+        doc.undo();
+        assert_eq!(doc.project().name, "A");
+        // An open gesture without changes starts from the new root: no step.
+        doc.mark_saved();
+        doc.begin_gesture("drag");
+        doc.apply_untracked_to_root(rename("A'")).unwrap();
+        doc.end_gesture();
+        assert!(doc.undo_label().is_none());
+        assert_eq!(doc.project().name, "A'");
+        // An equal root changes nothing; an error changes nothing either.
+        doc.mark_saved();
+        let revision = doc.revision();
+        doc.apply_untracked_to_root(rename("A'")).unwrap();
+        assert!(doc.apply_untracked_to_root(fail).is_err());
+        assert!(!doc.is_dirty());
+        assert_eq!(doc.revision(), revision);
     }
 
     #[test]

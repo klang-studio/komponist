@@ -33,11 +33,13 @@
 //!   edit.
 //! - **Echo of an undo:** undo, redo or a preset hands a bridged plugin its state (`SetState`),
 //!   and a plugin may answer with a snapshot whose bytes differ though nothing changed. Snapshots
-//!   of that device within [`ECHO_QUIET`] after such a hand-over are stored outside the history
-//!   (`Document::apply_untracked`); a real edit that fast is not undoable.
+//!   of that device within [`ECHO_QUIET`] after such a hand-over are stored outside the history,
+//!   in the current root only ([`App::store_root_state`]): the other undo and redo steps keep
+//!   their own states (#86). A real edit that fast is not undoable.
 //!
-//! Still outside the history: transport settings, and sample paths rewritten for the file being
-//! saved ([`App::store_state_untracked`]).
+//! Still outside the history: transport settings, the baseline of a bridged device taken for the
+//! file (root only, like the echo), and sample paths rewritten for the file being saved, which
+//! every step gets from its own state (`crate::samples`, `Document::rewrite_untracked`).
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -343,7 +345,7 @@ impl App {
         }
         let now = Instant::now();
         if self.param_undo.echo.get(&device).is_some_and(|&t| now < t) {
-            self.store_state_untracked(device, state);
+            self.store_root_state(device, state);
             return;
         }
         let in_gesture = self.doc.in_gesture();
@@ -388,21 +390,23 @@ impl App {
                 .find_device(device)
                 .is_some_and(|(_, _, d)| d.state.is_none());
         if untouched {
-            self.store_state_untracked(device, state);
+            self.store_root_state(device, state);
         } else {
             self.store_snapshot(device, state);
         }
     }
 
-    /// Stores `state` outside the history, rebased into every undo step: for what is not an edit
-    /// (sample paths rewritten for the file being saved, the echo of an undo).
-    pub(crate) fn store_state_untracked(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+    /// Stores `state` of `device` outside the history and in the current root only
+    /// (`Document::apply_untracked_to_root`): for bytes that restate what the root means, not an
+    /// edit (the echo of an undo, a baseline taken for the file). The undo and redo steps keep
+    /// their own states (#86).
+    pub(crate) fn store_root_state(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         if self.has_state(device, state) {
             return;
         }
-        let _ = self
-            .doc
-            .apply_untracked(|p| edits::set_device_state(p, device, Some(Arc::clone(state))));
+        let _ = self.doc.apply_untracked_to_root(|p| {
+            edits::set_device_state(p, device, Some(Arc::clone(state)))
+        });
     }
 
     /// A bridged device came up (`DeviceStatus::Ok`) without a state in the document: asks the
