@@ -30,6 +30,11 @@
     </array>
     <key>LSMinimumSystemVersion</key>
     <string>14.4</string>
+    <!-- The plugin bridges are this bundle's executable (`komponist --bridge`): as a UI element they never get a
+         Dock icon of their own (#100). The app makes itself a regular app (Dock icon, menu bar) when it has finished
+         launching (komponist-ui `RunOptions::native_options`). -->
+    <key>LSUIElement</key>
+    <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.music</string>
     <key>NSHighResolutionCapable</key>

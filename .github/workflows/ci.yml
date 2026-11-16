@@ -169,19 +169,39 @@ jobs:
         run: scripts/build-test-plugins.sh
 
       # No gdb and no /proc on macOS for a watchdog like the Linux job's: the step timeout ends a hang.
+      # --no-fail-fast: every test binary runs and a red run lists all its failures, not only the
+      # first binary's (until #94 the crates after komponist-app never ran here).
       - name: Test
         timeout-minutes: 40
-        run: cargo test --workspace
+        env:
+          # The soak's callback minimum (75 % in debug builds) measures the scheduler of this 3-vCPU
+          # shared VM, not the app: the null backend's normal-priority timer thread woke too late
+          # and lost 27-35 % of its callbacks, with 0-1 overruns (#94). 50 % still catches a stalled
+          # or deadlocked audio thread; the timing checks are the release soak and the perf suites
+          # (docs/PERFORMANCE.md).
+          KOMPONIST_SOAK_MIN_CALLBACKS: "50"
+        run: cargo test --workspace --no-fail-fast
+
+      # The timer leeway of os_sync waits differs between macOS versions and with how idle the
+      # machine is (#101); only this runner shows macOS 15. Print what the leeway checks measured
+      # (timer baseline, bare kernel wait, compensated wait, learned leeway), also when they pass.
+      - name: Timer leeway report
+        if: always()
+        timeout-minutes: 5
+        run: >-
+          cargo test -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
+          -- --nocapture
 
   # Windows x86_64 (port in progress, branch `windows`). Formatting is checked once, on Linux. No GUI tests
   # (scripts/check-gui.sh is Linux only). Snapshots render without a GPU (wgpu falls back to WARP on DX12) and are not
-  # compared (kittest.toml [windows]). Untested until the workspace builds on Windows.
+  # compared (kittest.toml [windows]). The gate passes locally on Windows 11 (with Vulkan, scripts/check.sh); this job
+  # has not run on a GitHub runner yet.
   windows-x86_64:
     name: "Windows x86_64: clippy, tests"
     runs-on: windows-2025
     timeout-minutes: 90
-    # Not blocking: the workspace does not build on Windows yet (hosting, bridge, plugins and the app are being
-    # ported). Remove this once the job is reliably green.
+    # Not blocking while the port is new: the job has never run on a runner (WARP, shared VM timing). Remove this
+    # once the job is reliably green.
     continue-on-error: true
     env:
       # The workflow-wide lavapipe setting is for Linux.
@@ -216,9 +236,10 @@ jobs:
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
 
+      # --no-fail-fast as on macOS: a red run lists the failures of every test binary.
       - name: Test
         timeout-minutes: 45
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
       # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images

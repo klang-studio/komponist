@@ -71,8 +71,9 @@ pub(crate) fn wake(word: &AtomicU32, count: usize) {
 
 /// RT. Blocks while `word == current`, until another thread changes it and calls [`wake`], or
 /// until `deadline`. Returns `false` if the deadline passed with the word unchanged. Spurious
-/// wake-ups, `EINTR` and early timer expiries are handled inside; the only blocking syscall is
-/// `os_sync_wait_on_address_with_deadline`.
+/// wake-ups, `EINTR` and early timer expiries are handled inside; the only blocking syscalls are
+/// `os_sync_wait_on_address_with_deadline` and, in the last stretch before the deadline,
+/// `mach_wait_until` slices of at most 25 µs (the timer-leeway compensation, `os_sync`).
 #[cfg(target_os = "macos")]
 pub(crate) fn wait_while(word: &AtomicU32, current: u32, deadline: Instant) -> bool {
     use komponist_rt::mach_time;

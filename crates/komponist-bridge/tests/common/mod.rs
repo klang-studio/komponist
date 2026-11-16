@@ -96,6 +96,30 @@ pub fn installed(path: &str) -> Option<PathBuf> {
     }
 }
 
+/// kp-test-slow sleeps this long inside `process` per note-on of key 126.
+pub const SLOW_STALL: Duration = Duration::from_millis(50);
+/// Note-ons of key 126 in the block of the slow-plugin tests: they keep the bridge's RT thread
+/// busy for 400 ms, far longer than a main-loop wake-up takes even on a QoS-clamped CI runner,
+/// whose wake-ups come up to ~80 ms late (#94), so "answered while the RT thread was busy" stays
+/// distinguishable from "answered after it".
+pub const SLOW_NOTES: u32 = 8;
+
+/// Gives the calling test thread the time-constraint policy (macOS) for the callback period of
+/// `BLOCK` frames, as komponist's audio thread has when it waits for a block: a timeshare thread's
+/// deadline wait wakes late on a QoS-clamped CI runner (#94). Elsewhere a no-op.
+pub fn realtime_test_thread() {
+    #[cfg(target_os = "macos")]
+    komponist_rt::policy::set_current_thread_time_constraint(Duration::from_secs_f64(
+        BLOCK as f64 / SAMPLE_RATE,
+    ))
+    .expect("time-constraint policy");
+}
+
+/// [`SLOW_NOTES`] note-ons of key 126, one per frame from the start of the block.
+pub fn stalling_notes() -> Vec<WireEvent> {
+    (0..SLOW_NOTES).map(|i| note_on(i, 126)).collect()
+}
+
 pub fn note_on(offset: u32, key: u8) -> WireEvent {
     WireEvent::new(
         offset,

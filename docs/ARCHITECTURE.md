@@ -496,9 +496,15 @@ reported like a refused `SCHED_FIFO`), joins the workgroup and leaves it before 
 every stream brings a new workgroup reference, the pool is rebuilt per stream. The callback
 thread itself does not join: it is the HAL's IO thread, a member already. Waits and wakes use
 `os_sync_wait_on_address` / `os_sync_wake_by_address_*` on process-private words. The kernel ends
-timed waits 12.5–25 % of the wait late (timer leeway; 25 % while nobody uses the desktop), so each
-kernel wait is armed at 3/4 of the remaining time and repeated for the rest, the last one (under
-50 µs) at the deadline (`komponist_rt::os_sync`).
+timed waits late by a timer leeway that is kernel policy: 12.5 % of the wait up to 1 ms on macOS 27,
+25 % while nobody uses the desktop, about 0.7 ms for any wait on the idle macOS 15 CI runner (#101).
+So each kernel wait is armed a quarter of the remaining time before the deadline (enough for a
+leeway up to a third of the wait) or, if longer, the leeway learned so far plus a quarter; a
+timed-out kernel wait more than a third of its length late teaches that leeway (per scope, a
+decaying maximum in an atomic, at most 2 ms). The last stretch (50 µs plus that margin) is slept in
+`mach_wait_until` slices of at most 25 µs, which the kernel does not delay on a time-constraint
+thread, with a look at the word between them; a wake-up there is seen up to one slice later
+(`komponist_rt::os_sync`).
 
 On Windows (W3; spike windows-wake S1, internal notes) workers register with MMCSS (`AvSetMmThreadCharacteristicsW("Pro Audio")`,
 `AVRT_PRIORITY_CRITICAL`, once per thread; `THREAD_PRIORITY_TIME_CRITICAL` if MMCSS refuses; a refusal of both is reported
@@ -1449,7 +1455,11 @@ MIME type (`assets/komponist-mime.xml`) and starts `komponist %f`, one file per 
 **Signing:** hardened runtime (`codesign --options runtime`) with `assets/macos/komponist.entitlements`:
 `com.apple.security.cs.disable-library-validation` (CLAP and VST3 plugins are signed by other teams or not at all and are
 loaded into the app and its bridge processes) and `com.apple.security.device.audio-input` (recording). The bridge is
-the same signed executable, so it carries the same entitlements. v0.3 is signed ad-hoc (`-s -`): Gatekeeper refuses the
+the same signed executable, so it carries the same entitlements. Being the bundle's executable, a bridge would be
+checked in by LaunchServices as a second regular komponist (a bouncing Dock icon while a frame opened, #100). The
+plist therefore declares `LSUIElement`: bridges are UI elements from their first AppKit call on, and the app makes
+itself regular (Dock icon, menu bar) when it has finished launching (`RunOptions::native_options`). An instance bridge
+holds an `NSProcessInfo` activity against App Nap (`komponist_bridge::macos_app`). v0.3 is signed ad-hoc (`-s -`): Gatekeeper refuses the
 downloaded app until the user allows it once (`docs/INSTALL.md`). With `KOMPONIST_SIGN_IDENTITY` (a Developer ID
 Application certificate) the script signs for distribution with a secure timestamp, and with notarytool credentials
 (`KOMPONIST_NOTARY_PROFILE`, or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`) it notarizes and staples; that path

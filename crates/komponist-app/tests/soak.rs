@@ -7,8 +7,9 @@
 //! - no callback whose own work took longer than its period (`StreamStats::overruns`: an xrun the
 //!   app caused); asserted in release builds, where the timing means something, and reported in
 //!   debug builds (unoptimised hexa),
-//! - the audio thread kept running: at least 90 % of the callbacks the elapsed time asks for (a
-//!   lock or a stall on the audio thread would show here),
+//! - the audio thread kept running: at least 90 % of the callbacks the elapsed time asks for in
+//!   release builds, 75 % in debug builds (a lock or a stall on the audio thread would show here;
+//!   `KOMPONIST_SOAK_MIN_CALLBACKS` overrides the percentage, see below),
 //! - the engine applied every command (none waiting at the end).
 //!
 //! `cargo test` runs a few seconds. The long version is opt-in:
@@ -20,6 +21,12 @@
 //! `KOMPONIST_SOAK_SEED` replays a run (the seed is printed). The engine runs with the app's
 //! default worker threads (WP-65: automatic, 4 on a 6-core machine); `KOMPONIST_SOAK_WORKERS`
 //! sets another count (0 = single-threaded).
+//!
+//! `KOMPONIST_SOAK_MIN_CALLBACKS` (percent) replaces the callback minimum. Only for machines whose
+//! scheduler, not the app, decides it: the null backend's timer thread runs at normal priority,
+//! and on a small shared CI VM (macOS runner: 3 vCPUs) it wakes late and drops callbacks (seen:
+//! 65–73 % of them, with a peak load of 70–93 % and 0–1 overruns, #94). The macOS CI job sets
+//! it; a deadlock or a stall of the audio thread still fails there.
 
 mod common;
 
@@ -384,7 +391,20 @@ fn random_edits_during_playback_cause_no_xrun() {
                 .as_nanos() as u64
                 | 1
         });
-    eprintln!("soak: {length:?}, seed {seed}");
+    // 90 % in release builds; debug builds on a loaded machine (parallel builds in `check.sh`) lose
+    // more callbacks without any stall in the app (seen: 83 % at load average 12), so they get 75 %.
+    // A real lock or stall on the audio thread drops far below either. A shared CI VM sets its own
+    // minimum (module docs).
+    let min_percent = std::env::var("KOMPONIST_SOAK_MIN_CALLBACKS")
+        .ok()
+        .map(|v| {
+            v.parse::<u64>()
+                .ok()
+                .filter(|p| (1..=100).contains(p))
+                .expect("KOMPONIST_SOAK_MIN_CALLBACKS: a percentage 1 ..= 100")
+        })
+        .unwrap_or(if cfg!(debug_assertions) { 75 } else { 90 });
+    eprintln!("soak: {length:?}, seed {seed}, callback minimum {min_percent} %");
     let mut rng = Rng(seed);
 
     let (midi, receiver) = TestMidiSource::new();
@@ -528,13 +548,9 @@ fn random_edits_during_playback_cause_no_xrun() {
         0,
         "commands left in the queue"
     );
-    // 90 % in release builds; debug builds on a loaded machine (parallel builds in `check.sh`) lose
-    // more callbacks without any stall in the app (seen: 83 % at load average 12), so they get 75 %.
-    // A real lock or stall on the audio thread drops far below either.
-    let min_percent = if cfg!(debug_assertions) { 75 } else { 90 };
     assert!(
         callbacks * 100 >= expected * min_percent,
-        "the audio thread stalled: {callbacks} of ~{expected} callbacks"
+        "the audio thread stalled: {callbacks} of ~{expected} callbacks (minimum {min_percent} %)"
     );
     if cfg!(debug_assertions) {
         eprintln!("(debug build: overruns are checked in release builds only)");

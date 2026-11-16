@@ -6,6 +6,12 @@
 //! process can never activate itself, so nothing shows on the desktop or takes the focus. The
 //! installed-plugin tests are `#[ignore]` (large third-party plugins):
 //! `cargo test -p komponist-bridge --test it frame_mac:: -- --ignored --test-threads=1`.
+//!
+//! kp-test-synth draws with OpenGL (nice-plug-egui on baseview). A Mac without an accelerated
+//! OpenGL renderer (the GitHub macOS runner, a VM whose paravirtual GPU has Metal only: "Failed to
+//! create editor: NSOpenGLPixelFormat initialization failed", #94) cannot show its GUI; there the
+//! tests check that the bridge reports the failed GUI without harm instead
+//! ([`gui_without_opengl`]).
 
 use crate::common;
 
@@ -88,7 +94,55 @@ fn process(bridge: &mut Bridge) {
     }
 }
 
+/// Whether this Mac has the accelerated OpenGL renderer kp-test-synth's GUI asks for: baseview's
+/// pixel format (3.2 core, 24-bit colour, 8 alpha, 24 depth, 8 stencil, accelerated, double
+/// buffered), chosen through CGL as `NSOpenGLPixelFormat` does.
+fn opengl_available() -> bool {
+    #[link(name = "OpenGL", kind = "framework")]
+    unsafe extern "C" {
+        fn CGLChoosePixelFormat(
+            attribs: *const i32,
+            pix: *mut *mut std::ffi::c_void,
+            npix: *mut i32,
+        ) -> i32;
+        fn CGLReleasePixelFormat(pix: *mut std::ffi::c_void);
+    }
+    // kCGLPFAOpenGLProfile = kCGLOGLPVersion_3_2_Core, kCGLPFAColorSize, kCGLPFAAlphaSize,
+    // kCGLPFADepthSize, kCGLPFAStencilSize, kCGLPFAAccelerated, kCGLPFADoubleBuffer (CGLTypes.h).
+    let attribs = [99, 0x3200, 8, 24, 11, 8, 12, 24, 13, 8, 73, 5, 0];
+    let mut pix = std::ptr::null_mut();
+    let mut npix = 0;
+    // SAFETY: a zero-terminated attribute list and two out-pointers that live for the call; a
+    // pixel format it returns is released once.
+    unsafe {
+        let error = CGLChoosePixelFormat(attribs.as_ptr(), &mut pix, &mut npix);
+        if pix.is_null() {
+            eprintln!("no accelerated OpenGL renderer (CGL error {error})");
+            return false;
+        }
+        CGLReleasePixelFormat(pix);
+    }
+    true
+}
+
+/// Without OpenGL: opening the frame is refused with a GUI error (not fatal), and the bridge keeps
+/// processing and shuts down cleanly. What a user on such a Mac sees for an OpenGL plugin.
+fn gui_without_opengl(bundle: &Path, id: &str) {
+    eprintln!("skipping the frame checks: kp-test-synth's GUI needs OpenGL (module docs)");
+    let mut bridge = offscreen_bridge();
+    bridge.load(bundle, id);
+    bridge.activate();
+    bridge.send(own_frame("kp-test-synth", None));
+    let error = bridge.expect_error(ErrorContext::Gui);
+    assert!(error.contains("GUI failed"), "{error}");
+    process(&mut bridge);
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
 fn synth_frame(bundle: &Path, id: &str) {
+    if !opengl_available() {
+        return gui_without_opengl(bundle, id);
+    }
     let mut bridge = offscreen_bridge();
     let info = bridge.load(bundle, id);
     assert!(info.has_gui, "kp-test-synth has a Cocoa GUI");
@@ -180,6 +234,9 @@ fn shutdown_closes_an_open_frame() {
     let Some(bundle) = fixture("kp-test-synth") else {
         return;
     };
+    if !opengl_available() {
+        return gui_without_opengl(&bundle, SYNTH);
+    }
     let mut bridge = offscreen_bridge();
     bridge.load(&bundle, SYNTH);
     bridge.activate();

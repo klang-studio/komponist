@@ -209,6 +209,15 @@ fn fallbacks_while_loading_late_and_busy() {
     assert_eq!(status, ProcessStatus::Continue);
     assert_eq!(output[0], input);
 
+    // The calls below run on a realtime thread, as the device's audio thread does: a timeshare
+    // thread's deadline wait gets the process's timer leeway, tens of milliseconds on a
+    // QoS-clamped process such as the GitHub macOS runner (a busy call took 27 ms there, #101).
+    #[cfg(target_os = "macos")]
+    komponist_rt::policy::set_current_thread_time_constraint(Duration::from_secs_f64(
+        BLOCK as f64 / f64::from(RATE),
+    ))
+    .expect("time-constraint policy");
+
     // Key 126 makes it sleep 50 ms in `process`: the call returns at its deadline (60 % of
     // 5.3 ms) with the dry input, and the next calls find the bridge busy and pass through too.
     let (status, took) = call(&mut *fx, &input, &mut output, &[note(0, 126, true)]);
@@ -407,6 +416,14 @@ fn bridges_in_series_share_the_callback_deadline() {
         midi: &[],
         output_latency: 0,
     };
+    // The callback runs on a realtime thread, as the device's audio thread does. A timeshare
+    // thread's deadline wait gets the process's timer leeway, which on a QoS-clamped process (the
+    // GitHub macOS runner) is tens of milliseconds: the callback took 40 ms there (#94).
+    #[cfg(target_os = "macos")]
+    komponist_rt::policy::set_current_thread_time_constraint(Duration::from_secs_f64(
+        frames as f64 / f64::from(RATE),
+    ))
+    .expect("time-constraint policy");
     let engine = &mut rig.engine;
     let before = Instant::now();
     assert_no_alloc(|| engine.process(&mut l, &mut r, &input));

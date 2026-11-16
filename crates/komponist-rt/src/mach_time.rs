@@ -21,6 +21,7 @@ struct MachTimebaseInfo {
 unsafe extern "C" {
     fn mach_absolute_time() -> u64;
     fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+    fn mach_wait_until(deadline: u64) -> i32;
 }
 
 /// RT. The current `mach_absolute_time` (ticks since boot, not counting sleep).
@@ -44,12 +45,63 @@ pub fn ticks(duration: Duration) -> u64 {
     u64::try_from(ticks).unwrap_or(u64::MAX)
 }
 
+/// RT. Sleeps until the absolute tick count `deadline` (returns at once if it has passed) with
+/// `mach_wait_until`, a timed wait the kernel barely delays on a time-constraint thread (macOS 27,
+/// M1 Pro: 1–16 µs late for 25 µs–100 ms, where an `os_sync` wait ends 12.5 % of the wait, up to
+/// 1 ms, late). Nothing wakes it early, so [`crate::os_sync`] uses it only in short slices.
+pub fn wait_until(deadline: u64) {
+    // SAFETY: a plain blocking wait until an absolute tick count; no memory is touched.
+    unsafe { mach_wait_until(deadline) };
+}
+
 /// RT. `deadline` as an absolute `mach_absolute_time`. `Instant::now()` is read before
 /// `mach_absolute_time()`, so the result is never earlier than `deadline`; a past deadline gives
 /// the current tick count.
 pub fn deadline(deadline: Instant) -> u64 {
     let remaining = deadline.saturating_duration_since(Instant::now());
     now().saturating_add(ticks(remaining))
+}
+
+/// Non-RT, for the leeway tests (here and in `komponist-ipc`). The median of 40 overshoots of
+/// `wait` past a deadline 1 ms ahead; `wait` gets the deadline and must not return before it.
+pub fn median_overshoot(mut wait: impl FnMut(Instant)) -> Duration {
+    let mut late: Vec<Duration> = (0..40)
+        .map(|_| {
+            let deadline = Instant::now() + Duration::from_millis(1);
+            wait(deadline);
+            Instant::now().saturating_duration_since(deadline)
+        })
+        .collect();
+    late.sort();
+    late[late.len() / 2]
+}
+
+/// Non-RT, for the leeway tests. [`median_overshoot`] of `mach_wait_until`, the plainest timed
+/// wait, on the calling thread: how precise this machine's timers are at best. On Apple silicon a
+/// time-constraint thread gets a few microseconds; a virtual machine's timers can be far coarser
+/// (the GitHub macOS runner, #94), and a leeway check means nothing there.
+pub fn timer_baseline() -> Duration {
+    median_overshoot(|at| wait_until(deadline(at)))
+}
+
+/// Above this [`timer_baseline`] the leeway compensation cannot be told from the timers' own
+/// imprecision.
+pub const COARSE_TIMERS: Duration = Duration::from_micros(100);
+
+/// Non-RT, for the leeway tests: `(baseline, measure())` with the [`timer_baseline`] taken first on
+/// the calling thread, or `None` (and a note on stderr) when the timers are too coarse.
+pub fn against_baseline(measure: impl FnOnce() -> Duration) -> Option<(Duration, Duration)> {
+    let baseline = timer_baseline();
+    if baseline > COARSE_TIMERS {
+        eprintln!(
+            "skipped: timers on this machine are too coarse to check the leeway compensation \
+             (mach_wait_until overshoots {baseline:?})"
+        );
+        return None;
+    }
+    let measured = measure();
+    eprintln!("median overshoot {measured:?}, mach_wait_until {baseline:?}");
+    Some((baseline, measured))
 }
 
 #[cfg(test)]

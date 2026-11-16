@@ -383,6 +383,22 @@ fn the_loader_hands_samples_over_and_takes_the_old_ones_back() {
     assert_eq!(sounding(&render(&mut p, &[on(0, 0, 127)], 500)), 0);
 }
 
+/// A note at the start of the first call after the loader handed the sample over plays it: the
+/// processor takes loaded samples before the note, not only when it renders (#94: the first hit
+/// after a load, or an export's first beat, was silent when no call ran in between; slow CI
+/// runners, whose audio thread had not run between the load and the note, showed it).
+#[test]
+fn a_note_in_the_call_its_sample_arrives_plays_it() {
+    let dir = scratch("first-hit");
+    let mut p = sampler();
+    let handle = p.sampler().unwrap();
+    let path = dc_wav(&dir, "dc.wav", 4800, 0.5, 48_000);
+    handle.load_link(0, SampleLink::new(&path, None), None);
+    assert!(handle.wait_idle(WAIT));
+    let out = render(&mut p, &[on(0, 0, 127)], BLOCK);
+    assert_eq!(sounding(&out), BLOCK, "the first hit sounds from its frame");
+}
+
 #[test]
 fn the_audio_thread_never_frees_a_sample() {
     let mut dsp = dsp::SamplerDsp::new();

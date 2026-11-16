@@ -332,9 +332,12 @@ fn vst3_slow_plugin_is_late_without_blocking() {
         "passthrough"
     );
 
-    // Note 126: the plugin sleeps 50 ms inside `process`; the app waits for its deadline only.
+    // Note 126: the plugin sleeps 50 ms inside `process` per note-on (400 ms here); the app waits
+    // for its deadline only.
+    let stall = SLOW_STALL * SLOW_NOTES;
+    realtime_test_thread();
     let t0 = Instant::now();
-    let late = bridge.begin(&[note_on(0, 126)]).unwrap();
+    let late = bridge.begin(&stalling_notes()).unwrap();
     let [left, right] = &mut bridge.output;
     let outcome = bridge
         .client
@@ -345,12 +348,18 @@ fn vst3_slow_plugin_is_late_without_blocking() {
         waited < Duration::from_millis(30),
         "the app waited for the plugin: {waited:?}"
     );
-    // The main loop is not blocked by the sleeping RT thread.
+    // The main loop is not blocked by the sleeping RT thread: the heartbeat comes back while the
+    // RT thread still sleeps, so the next block finds the bridge busy.
     let heartbeat = bridge.heartbeat();
     assert!(
-        t0.elapsed() < Duration::from_millis(45),
+        t0.elapsed() < stall / 2,
         "heartbeat answered only after the slow block: {:?}",
         t0.elapsed()
+    );
+    assert_eq!(
+        bridge.begin(&[]),
+        Err(BlockError::Busy),
+        "the heartbeat came back while the RT thread slept"
     );
     // The bridge catches up and passes audio through again.
     let next = loop {

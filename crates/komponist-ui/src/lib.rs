@@ -156,6 +156,15 @@ impl RunOptions {
                 use winit::platform::x11::EventLoopBuilderExtX11 as _;
                 builder.with_x11();
             })),
+            // macOS: a regular app with a Dock icon and the menu bar, set once launching finished.
+            // `komponist.app` declares `LSUIElement` so that its plugin bridges (the same
+            // executable) are never checked in as a regular app (#100); the app itself turns
+            // regular here. Unbundled, winit would do the same by itself.
+            #[cfg(target_os = "macos")]
+            event_loop_builder: Some(Box::new(|builder| {
+                use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS as _};
+                builder.with_activation_policy(ActivationPolicy::Regular);
+            })),
             ..Default::default()
         }
     }
@@ -240,8 +249,11 @@ mod tests {
     fn native_options_force_wgpu_and_x11() {
         let o = RunOptions::new("komponist-test", "komponist · Test").native_options();
         assert_eq!(o.renderer, eframe::Renderer::Wgpu);
-        // X11 is forced on Linux only.
-        assert_eq!(o.event_loop_builder.is_some(), cfg!(target_os = "linux"));
+        // X11 is forced on Linux, the regular activation policy on macOS (#100).
+        assert_eq!(
+            o.event_loop_builder.is_some(),
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
         assert_eq!(o.viewport.title.as_deref(), Some("komponist · Test"));
         assert_eq!(o.viewport.app_id.as_deref(), Some("komponist-test"));
     }
