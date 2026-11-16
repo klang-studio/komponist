@@ -17,8 +17,8 @@ never into `docs/`. `docs/` holds only public documentation
 `docs/` path, e.g. „fader-thumb proposal, variant D (internal notes)“.
 
 **Naming:** the DAW is called **komponist**. *klang-studio* is the umbrella name of the workspace
-(the parent folder of this repo: komponist, pisynth, klopfer, klang-dsp, the design handoff). The
-design handoff still says "klang-studio" where it means the DAW; read it as "komponist" (rule 1).
+(the parent folder of this repo: komponist, pisynth, klopfer, klang-dsp, the historical design handoff). The
+design handoff says "klang-studio" where it means the DAW; read it as "komponist".
 
 ## Worktrees
 
@@ -90,7 +90,7 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
 | `scripts/run.sh [args]` | Builds `komponist` (release) and starts it with the arguments (`--demo`, `--null-audio`, `--open-plugin NAME`, `--scale F`). The plugin bridge is part of the executable (`komponist --bridge`, WP-94), so `cargo run -p komponist-app` works as well. |
 | `scripts/worktree.sh add\|remove <name> [branch]` | Creates an agent worktree in `../.claude/worktrees/` with its build folders on the NVMe, or removes it with them. |
 | `scripts/check.sh` | The gate before every report: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. |
-| `../.claude/komponist/scripts/render-reference.sh` | (internal) Renders the handoff `.dc.html` files with headless Chromium into `../.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |
+| `../.claude/komponist/scripts/render-reference.sh` | (internal, historical) Renders the handoff `.dc.html` files with headless Chromium into `../.claude/komponist/design/reference/*.png` (needs network for the Google fonts). |
 | `scripts/build-klopfer.sh` | Optional, not needed to build komponist: bundles a klopfer checkout (`$KLOPFER_DIR`, default `../klopfer`) with `cargo xtask bundle klopfer --release` for the plugin tests that use an installed Klopfer (they skip without it), and prints the bundle paths. |
 
 The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is configured in
@@ -99,37 +99,33 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
 
 ## Design references
 
-- `design/tokens.json`: all design tokens, the single source of truth (copy of the handoff file).
-- Reference screens (internal, outside the repo since 2026-11-15) in `../.claude/komponist/design/reference/*.png`, rendered by
-  `../.claude/komponist/scripts/render-reference.sh`; the device handoff copy is `../.claude/komponist/design/DEVICES-HANDOFF.md` + `devices.json`:
-  - `Screens-01.png` … `Screens-10.png`: screen S01 … S10, each with its notes. The 1920 × 1080
-    frame starts at x = 56 (1 px border around it).
-  - `Designsystem-01.png` … `-04.png`: tokens and components, cut between sections.
-  - `Layout-01.png`: layout 2a with dock (variants 2b/2c are rejected).
-  - `Prototyp.png`: start screen of the clickable prototype, 1920 × 1080.
-- Sources: `../klang-studio-handoff/` (`HANDOFF.md`, `reference/*.dc.html`, `ks-engine.js`,
-  `ks-view.js`). The dc runtime `support.js` lies in `../pisynth/design_handoff/`.
+- **The app is the reference (owner, 2026-11-16).** komponist is ahead of the design handoff; the handoff is
+  historical and no longer a requirement. The reference for existing UI is the app itself and its Linux snapshots
+  (`crates/*/tests/snapshots/*.png`). New screens and larger UI changes get a proposal with mockups in the internal
+  notes (`proposals/<topic>/`) and the owner's approval before implementation.
+- `design/tokens.json` (+ `design/device-tokens.json`): all design tokens, the single source of truth, used through
+  `komponist-tokens`.
+- Historical only (to understand old decisions, never to override the app): the handoff sources
+  `../klang-studio-handoff/` (`HANDOFF.md`, `reference/*.dc.html`) and the rendered screens and device handoff copy in
+  `../.claude/komponist/design/`. Screen numbers S01 … S10 in code and tests come from there.
 
 ## Rules for all agents
 
-`HS/` = `../klang-studio-handoff/`.
-
 1. **Language:** code, comments, docs, commits in English. UI texts come from the catalogs in
    `crates/komponist-i18n/locales/` (`de` is the source, `en` the translation), never as literals in the app, the
-   dialogs or the widgets (the gallery is the one exception). The German texts are taken **verbatim** from the screens
-   (`HS/reference/Screens.dc.html`), including typographic characters (U+2212 minus, „…“, ·); the English texts follow the
-   style guide and glossary in `docs/I18N.md`. Every new text is added to both languages in the same change. One
-   exception to the screens: the DAW is called **komponist**. Where they show "klang-studio" for the DAW (wordmark,
-   window title, "Rahmen von klang-studio"), write "komponist". klang-studio is the umbrella name of the workspace.
+   dialogs or the widgets (the gallery is the one exception). New German texts follow the existing catalogs and the
+   style guide in `docs/I18N.md`, including typographic characters (U+2212 minus, „…“, ·); the English texts follow the
+   style guide and glossary there too. Every new text is added to both languages in the same change. The DAW is called
+   **komponist** (lowercase); klang-studio is the umbrella name of the workspace. Built-in device names start with a
+   capital: Hexa, Volt, Presse (owner, 2026-11-16).
 2. **Tokens:** no hard-coded colours, sizes, radii or font sizes. Always use `komponist-tokens`. Missing
-   colour or type token → contract change request. Component metrics the handoff defines only in the
-   design data (e.g. caret size, menu paddings, swatch size) go into `komponist_ui::widgets::metrics`,
-   one constant each with its source in the `.dc.html` data — never inline in widget code. Layout metrics
-   of the app shell or of one view live in that crate's or view's own `metrics` module, with sources too.
-3. **Design sources:** the `.dc.html` files render only with their runtime. Values are in the
-   `<script>` blocks (`renderVals()`, `ix`, `notes:ixs([...])`, `headers`, `clips`, `notes`, …), so read
-   those, not the markup. Visual reference: `../.claude/komponist/design/reference/*.png`. If a screen and the design
-   system disagree, the **design system wins**; report the contradiction.
+   colour or type token → contract change request. Component metrics (e.g. caret size, menu paddings, swatch size)
+   go into `komponist_ui::widgets::metrics`, one constant each with a comment on where the value comes from — never
+   inline in widget code. Layout metrics of the app shell or of one view live in that crate's or view's own `metrics`
+   module, with sources too.
+3. **Design consistency:** new UI follows the existing app and the design system (tokens, the `komponist-ui`
+   widgets). The design handoff is historical (see Design references); where it disagrees with the app, the app wins.
+   New screens or larger changes start with an approved proposal (mockups in the internal notes).
 4. **Realtime:** inside `Engine::process`, `Processor::process` and the bridge RT loop: no allocation
    or freeing, no locks, no logging, no IO, no blocking syscalls except the specified futex wait
    with a deadline. Tests wrap `process` in `assert_no_alloc`.
@@ -142,8 +138,8 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
    you touch the catalog, plugins, devices, browser or engine, run `scripts/build-test-plugins.sh` once
    before the final `check.sh` (a fresh worktree has none; WP-85 missed a broken test that way).
 7. **UI work:** render your component/view to PNG with `egui_kittest`, **look at the PNG** (Read
-   tool) and compare it with the reference before you report (German, verbatim). Look at the English rendering
-   too (`Lang::En`, snapshot name with `-en`): nothing may be cut off or overlap; where English does not fit,
+   tool) and compare it with the existing app (its snapshots) or the approved proposal before you report. Look at the
+   English rendering too (`Lang::En`, snapshot name with `-en`): nothing may be cut off or overlap; where English does not fit,
    shorten the English text, not the layout. Changing English never changes a German snapshot. Once a binary shows
    your work (gallery from WP-14, app from WP-30), also check it live: start it with `EGUI_INSPECTION=1` (under Xvfb
    if needed; `--lang de|en` picks the language), attach with the `egui` MCP server, read the AccessKit tree, click
