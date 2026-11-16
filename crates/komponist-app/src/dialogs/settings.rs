@@ -4,8 +4,10 @@
 //! The navigation (Audio, MIDI, Plugins, Darstellung, Tastatur) scrolls the page to its section;
 //! the page shows them all, as S07 shows "Audio", "MIDI-Eingänge" and "Plugin-Ordner" together.
 //!
-//! - **Audio:** driver (PipeWire, JACK, ALSA; unavailable ones disabled), output device, sample
-//!   rate, buffer size with the latency next to it. A change rebuilds the stream at once, the
+//! - **Audio:** driver (CoreAudio; WASAPI, ASIO; PipeWire, JACK, ALSA; unavailable ones disabled), output device, sample
+//!   rate, buffer size with the latency next to it ([`buffer_limit`]: WASAPI runs at one size, its
+//!   device period, so the segments are disabled and a hint names it; ASIO offers the sizes inside
+//!   the driver's range). A change rebuilds the stream at once, the
 //!   engine stays (`SettingsAction::SetAudio`). The device list shows one "Standardgerät" (the
 //!   driver's default) instead of PipeWire's pseudo devices (`default_sink`, `default_output`),
 //!   hides PipeWire application streams (named "unknown") and keeps the stored device id
@@ -13,7 +15,8 @@
 //!   "Gerät nicht verbunden …" with "Erneut suchen". A hint says when the audio thread runs
 //!   without real-time priority.
 //! - **MIDI-Eingänge:** a switch per input, the activity dot lights on incoming messages; a lone
-//!   " MIDI 1" suffix is cut ([`midi_label`]).
+//!   " MIDI 1" suffix is cut ([`midi_label`]). An input another program holds (WinMM is exclusive)
+//!   says "belegt …" instead of "aktiv".
 //! - **Plugin-Ordner:** the folders per format with their plugin count, "+ Ordner", "Neu scannen"
 //!   (background) and the summary of the last scan (folder rules: [`crate::settings`]).
 //! - **Darstellung:** UI scale and language (System, Deutsch, English). **Tastatur:** computer keyboard MIDI on or off.
@@ -271,6 +274,52 @@ pub fn device_entries(
     (entries, last)
 }
 
+/// The device `entry` stands for (the default device for "Standardgerät").
+fn find_device<'a>(devices: &'a [DeviceInfo], entry: &DeviceEntry) -> Option<&'a DeviceInfo> {
+    match (&entry.id, &entry.name) {
+        (None, None) => devices.iter().find(|d| d.is_default),
+        (Some(id), _) => devices.iter().find(|d| d.id.as_ref() == Some(id)),
+        (None, Some(name)) => devices.iter().find(|d| d.name == *name),
+    }
+}
+
+/// Which buffer sizes the driver of the stream allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferLimit {
+    /// Any size of [`BUFFERS`] (the driver honours the request).
+    Free,
+    /// Only sizes inside `min ..= max` (ASIO: the driver's range).
+    Range(u32, u32),
+    /// One size, whatever is asked: WASAPI's device period (shared mode), or an ASIO driver with
+    /// one size. The segments are disabled and the hint names this size.
+    Fixed(u32),
+}
+
+/// The buffer sizes `host` allows on `entry`. `running` is the configuration the stream really
+/// runs on (the engine's `AudioState::Running`): WASAPI's real size is the period it reports.
+/// Linux and macOS drivers stay [`BufferLimit::Free`] (JACK's server size shows in the latency).
+pub fn buffer_limit(
+    host: HostKind,
+    devices: &[DeviceInfo],
+    entry: &DeviceEntry,
+    running: Option<&StreamConfig>,
+) -> BufferLimit {
+    let range = find_device(devices, entry).and_then(|d| d.buffer_range);
+    match host {
+        HostKind::Wasapi => running
+            .filter(|r| r.host == HostKind::Wasapi)
+            .map(|r| r.buffer_frames)
+            .or(range.map(|(min, _)| min))
+            .map_or(BufferLimit::Free, BufferLimit::Fixed),
+        HostKind::Asio => match range {
+            Some((min, max)) if min == max => BufferLimit::Fixed(min),
+            Some((min, max)) => BufferLimit::Range(min, max),
+            None => BufferLimit::Free,
+        },
+        _ => BufferLimit::Free,
+    }
+}
+
 /// The sample rates offered for `entry` on `host`: the device's own, the configured one, and on
 /// PipeWire also 44.1, 48 and 96 kHz (PipeWire converts). Ascending. CoreAudio, like ALSA, offers
 /// only what the device reports (it switches the device's rate and does not convert).
@@ -280,11 +329,7 @@ pub fn rates(
     entry: &DeviceEntry,
     config: &StreamConfig,
 ) -> Vec<u32> {
-    let device = match (&entry.id, &entry.name) {
-        (None, None) => devices.iter().find(|d| d.is_default),
-        (Some(id), _) => devices.iter().find(|d| d.id.as_ref() == Some(id)),
-        (None, Some(name)) => devices.iter().find(|d| d.name == *name),
-    };
+    let device = find_device(devices, entry);
     let mut rates: Vec<u32> = device.map(|d| d.sample_rates.clone()).unwrap_or_default();
     rates.push(config.sample_rate);
     if host == HostKind::PipeWire || rates.len() == 1 {
@@ -324,6 +369,9 @@ pub struct MidiRow {
     pub connected: bool,
     /// A message arrived just now (the dot lights).
     pub active: bool,
+    /// Switched on and present, but the port could not be opened: another program holds it
+    /// (Windows: a WinMM input is exclusive). A message, not an error state.
+    pub busy: bool,
 }
 
 impl MidiRow {
@@ -331,6 +379,7 @@ impl MidiRow {
     pub fn info(&self, t: Lang) -> &'static str {
         match (self.enabled, self.connected) {
             (false, _) => t.settings_midi_off(),
+            (true, true) if self.busy => t.settings_midi_busy(),
             (true, true) => t.settings_midi_active(),
             (true, false) => t.settings_midi_disconnected(),
         }
@@ -369,6 +418,8 @@ pub struct Model {
     pub rates: Vec<u32>,
     /// Why there is no device, while there is none.
     pub no_device: Option<String>,
+    /// Which buffer sizes the driver allows ([`buffer_limit`]).
+    pub buffer: BufferLimit,
     /// "5.3 ms Latenz".
     pub latency: String,
     /// The audio thread got no real-time priority.
@@ -559,6 +610,16 @@ impl crate::App {
         let t = self.lang;
         let (devices, device) = device_entries(t, config.host, &cache.devices, &config);
         let rates = rates(config.host, &cache.devices, &devices[device], &config);
+        let running = match self.engine.audio_state() {
+            komponist_audio::AudioState::Running { config, .. } => Some(config.clone()),
+            _ => None,
+        };
+        let buffer = buffer_limit(
+            config.host,
+            &cache.devices,
+            &devices[device],
+            running.as_ref(),
+        );
         let (no_device, latency) = match self.engine.audio_state() {
             komponist_audio::AudioState::NoDevice { reason, .. } => (
                 Some(reason.clone()),
@@ -588,6 +649,7 @@ impl crate::App {
                     enabled: p.enabled,
                     connected: p.connected,
                     active: cache.activity(&p.name, hub.take_activity(p.id), now),
+                    busy: hub.port_busy(&p.name),
                 })
                 .collect()
         });
@@ -600,6 +662,7 @@ impl crate::App {
             device,
             rates,
             no_device,
+            buffer,
             latency,
             realtime_denied: self.engine.stats().realtime_denied(),
             midi,
@@ -893,10 +956,23 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
     });
 
     let buffer_labels: Vec<String> = BUFFERS.iter().map(u32::to_string).collect();
-    let buffer_items: Vec<Item<'_>> = buffer_labels.iter().map(|l| Item::new(l)).collect();
+    let allowed = |size: u32| match model.buffer {
+        BufferLimit::Free => true,
+        BufferLimit::Range(min, max) => (min..=max).contains(&size),
+        BufferLimit::Fixed(_) => false,
+    };
+    let buffer_items: Vec<Item<'_>> = buffer_labels
+        .iter()
+        .zip(BUFFERS)
+        .map(|(l, size)| {
+            let item = Item::new(l);
+            if allowed(size) { item } else { item.disabled() }
+        })
+        .collect();
+    // With one fixed size no segment is the stream's: the hint below names the real one.
     let mut buffer = BUFFERS
         .iter()
-        .position(|b| *b == config.buffer_frames)
+        .position(|b| *b == config.buffer_frames && !matches!(model.buffer, BufferLimit::Fixed(_)))
         .unwrap_or(BUFFERS.len());
     grid_row(ui, t.settings_buffer(), |ui| {
         ui.spacing_mut().item_spacing.x = m::LATENCY_GAP;
@@ -923,6 +999,19 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
         );
         super::paint_text(ui, g, &model.latency);
     });
+    if let BufferLimit::Fixed(frames) = model.buffer {
+        grid_row(ui, "", |ui| {
+            let text = t.settings_buffer_fixed(frames);
+            let g = styled(
+                ui,
+                &text,
+                &typography::SMALL,
+                color32(color::TEXT_3),
+                Some(field_width),
+            );
+            super::paint_text(ui, g, &text);
+        });
+    }
     if model.realtime_denied {
         grid_row(ui, "", |ui| {
             let g = styled(
@@ -1421,8 +1510,17 @@ mod tests {
             enabled: true,
             connected: true,
             active: false,
+            busy: false,
         };
         assert_eq!(row.info(Lang::De), "aktiv · Kanal 1–16");
+        assert_eq!(
+            MidiRow {
+                busy: true,
+                ..row.clone()
+            }
+            .info(Lang::De),
+            "belegt · ein anderes Programm nutzt den Eingang"
+        );
         assert_eq!(
             MidiRow {
                 enabled: false,

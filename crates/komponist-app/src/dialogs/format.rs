@@ -3,7 +3,7 @@
 //! (`dialog.ftl`).
 //!
 //! The formatting functions take [`LocalTime`] values, so tests give fixed times; [`local`]
-//! converts a [`SystemTime`] with the system's time zone (`localtime_r`).
+//! converts a [`SystemTime`] with the system's time zone (`localtime_r`; `localtime_s` on Windows).
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -74,9 +74,20 @@ pub fn local(time: SystemTime) -> Option<LocalTime> {
     let t: libc::time_t = unix.try_into().ok()?;
     // SAFETY: `localtime_r` writes only into `tm`, which lives on this stack frame, and reads
     // only `t`; a null result means failure and leaves nothing to clean up.
+    #[cfg(not(windows))]
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&t, &mut tm).is_null() {
+            return None;
+        }
+        tm
+    };
+    // Windows: the MSVC CRT has `localtime_s` (a non-zero `errno_t` is a failure) instead.
+    // SAFETY: as above, `localtime_s` writes only into `tm` and reads only `t`.
+    #[cfg(windows)]
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_s(&mut tm, &t) != 0 {
             return None;
         }
         tm
@@ -135,9 +146,10 @@ pub fn day_and_time(t: Lang, then: &LocalTime, now: &LocalTime) -> String {
     t.dialog_day_time(day, format!("{:02}:{:02}", then.hour, then.minute))
 }
 
-/// `path` with the home folder written as `~` ("~/Musik/klang/Night Drive.komponist").
+/// `path` with the home folder written as `~` ("~/Musik/klang/Night Drive.komponist"; on Windows
+/// `C:\Users\kim\Music\a.komponist` is "~\Music\a.komponist": the separator is the platform's).
 pub fn tilde(path: &Path) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = crate::dirs::home_dir();
     tilde_in(path, home.as_deref())
 }
 
@@ -145,7 +157,7 @@ pub fn tilde(path: &Path) -> String {
 pub fn tilde_in(path: &Path, home: Option<&Path>) -> String {
     match home.and_then(|h| path.strip_prefix(h).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-        Some(rest) => format!("~/{}", rest.display()),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => path.display().to_string(),
     }
 }
@@ -267,7 +279,15 @@ mod tests {
         let home = Path::new("/home/kim");
         assert_eq!(
             tilde_in(Path::new("/home/kim/Musik/a.komponist"), Some(home)),
-            "~/Musik/a.komponist"
+            format!("~{}Musik/a.komponist", std::path::MAIN_SEPARATOR)
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            tilde_in(
+                Path::new(r"C:\Users\kim\Music\a.komponist"),
+                Some(Path::new(r"C:\Users\kim"))
+            ),
+            r"~\Music\a.komponist"
         );
         assert_eq!(tilde_in(Path::new("/home/kim"), Some(home)), "~");
         assert_eq!(

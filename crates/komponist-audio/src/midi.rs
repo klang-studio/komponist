@@ -284,6 +284,8 @@ struct PortEntry {
     port: Option<MidiInputPort>,
     /// The open connection while enabled and present.
     connection: Option<MidiInputConnection<()>>,
+    /// The last attempt to open the port failed (on Windows: another program holds it).
+    busy: bool,
     flags: Arc<PortFlags>,
 }
 
@@ -414,6 +416,7 @@ impl MidiInputHub {
                         },
                         port: None,
                         connection: None,
+                        busy: false,
                         flags: Arc::new(PortFlags::default()),
                     });
                     self.ports.len() - 1
@@ -440,6 +443,13 @@ impl MidiInputHub {
     /// All ports seen since the hub was created, in enumeration order.
     pub fn ports(&self) -> Vec<MidiPortInfo> {
         self.ports.iter().map(|e| e.info.clone()).collect()
+    }
+
+    /// Whether the port named `name` is enabled and present but could not be opened. On Windows
+    /// this is a WinMM input another program holds (exclusive per process): the port stays listed
+    /// and a later [`MidiInputHub::refresh`] or [`MidiInputHub::set_enabled`] tries again.
+    pub fn port_busy(&self, name: &str) -> bool {
+        self.entry(name).is_some_and(|e| e.busy)
     }
 
     /// The id of the port named `name`, if seen.
@@ -495,6 +505,7 @@ impl MidiInputHub {
             },
             port: None,
             connection: None,
+            busy: false,
             flags,
         });
         id
@@ -525,6 +536,7 @@ impl MidiInputHub {
             return Ok(());
         };
         if !entry.info.enabled || entry.connection.is_some() {
+            entry.busy = false;
             return Ok(());
         }
         // midir's `connect` consumes its client, so every connection gets its own.
@@ -540,10 +552,12 @@ impl MidiInputHub {
         match input.connect(port, "komponist-in", callback, ()) {
             Ok(connection) => {
                 entry.connection = Some(connection);
+                entry.busy = false;
                 Ok(())
             }
             Err(e) => {
                 entry.flags.enabled.store(false, Ordering::Relaxed);
+                entry.busy = true;
                 Err(MidiError::Backend(format!("{}: {e}", entry.info.name)))
             }
         }
@@ -560,6 +574,7 @@ fn open_client() -> Result<MidiInput, MidiError> {
 /// Stops forwarding from `entry` and closes its connection (joins the midir thread).
 fn close(entry: &mut PortEntry) {
     entry.flags.enabled.store(false, Ordering::Relaxed);
+    entry.busy = false;
     if let Some(connection) = entry.connection.take() {
         connection.close();
     }

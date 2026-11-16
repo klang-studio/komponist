@@ -1,4 +1,5 @@
-//! The desktop platform as far as the UI text and the shortcut modifier differ (macOS issue #47).
+//! The desktop platform as far as the UI text and the shortcut modifier differ (macOS issue #47;
+//! Windows shortcuts like Linux).
 //!
 //! Shortcut labels and the hints that name a modifier exist once per platform in the catalogs
 //! (`key-*-mac`, `*-hint-mac`); this module only says which one applies. It is a value, not a
@@ -7,15 +8,16 @@
 /// Where the app runs, as far as shortcut labels care.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
-    /// Linux (and anything that is not macOS): shortcuts use Ctrl, labels are written out
-    /// ("Strg S", "Ctrl+S").
+    /// Linux and Windows (and anything that is not macOS): shortcuts use Ctrl, labels are written out
+    /// ("Strg S", "Ctrl+S"). Windows is `Pc` on purpose: its shortcut conventions are Linux's. A text
+    /// that names the OS itself picks Windows separately (`komponist_app::dialogs::start`).
     Pc,
     /// macOS: shortcuts use ⌘, labels are glyphs ("⌘S", "⇧⌘Z").
     Mac,
 }
 
 impl Platform {
-    /// The platform this build runs on.
+    /// The platform this build runs on: [`Platform::Mac`] on macOS, [`Platform::Pc`] on Linux and Windows.
     pub const fn current() -> Platform {
         if cfg!(target_os = "macos") {
             Platform::Mac
@@ -29,7 +31,7 @@ impl Platform {
         matches!(self, Platform::Mac)
     }
 
-    /// `pc` on Linux, `mac` on macOS: the text of the platform's modifier.
+    /// `pc` on Linux and Windows, `mac` on macOS: the text of the platform's modifier.
     pub fn pick<T>(self, pc: T, mac: T) -> T {
         match self {
             Platform::Pc => pc,

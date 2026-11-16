@@ -179,10 +179,17 @@ pub enum Output {
 }
 
 /// The file name the export writes: `name` trimmed, with `.wav` added unless it ends with it
-/// (any case). `None` for an empty name or one with a path separator.
+/// (any case). `None` for an empty name or one with a path separator (on Windows also `\` and
+/// the characters Windows reserves in file names).
 pub fn file_name(name: &str) -> Option<String> {
     let name = name.trim();
-    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+    let reserved = |c: char| cfg!(windows) && r#"\:*?"<>|"#.contains(c);
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains(reserved)
+        || name == "."
+        || name == ".."
+    {
         return None;
     }
     let lower = name.to_lowercase();
