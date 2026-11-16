@@ -155,6 +155,7 @@ komponist/
     sampler-core/               vendored sampler engine of the Sampler (from klopfer's dsp crate)
     komponist-builtin/          hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
+    komponist-rt/               realtime thread set-up: SCHED_FIFO, time-constraint policy, audio workgroups, os_sync waits (macOS); depends on libc only
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
     komponist-plugins/          app side: catalog, scan cache, bridge lifecycle, ExternalProcessor
@@ -173,6 +174,10 @@ graph TD
   engine --> builtin[komponist-builtin]
   synth[(hexa-core)] --> builtin
   ipc[komponist-ipc] --> bridge[komponist-bridge]
+  rt[komponist-rt] --> engine
+  rt --> audio
+  rt --> ipc
+  rt --> bridge
   hosting[komponist-hosting] --> bridge
   ipc --> plugins[komponist-plugins]
   engine --> plugins
@@ -438,13 +443,25 @@ follows the signal path (`routing::gates`, §6.8.6); without buses that rule red
 #### 6.4.1 Worker pool (WP-65)
 
 `komponist_engine::workers`. A fixed pool of worker threads per engine, started outside the audio
-callback by `Engine::set_workers(threads, priority)`; the app calls it from
+callback by `Engine::set_workers(threads, rt)`; the app calls it from
 `AudioProcess::prepare`, i.e. when a stream starts (and after export re-attach), and keeps the pool
-while the count does not change. Count: settings file `worker_threads` (`null` = automatic: one
+while the count and the realtime set-up (`WorkerRt`) do not change. Count: settings file `worker_threads` (`null` = automatic: one
 per core minus two, at most 8, 4 on the owner's 6-core machine; `0` = off; S07 has no control yet).
 Workers run at `SCHED_FIFO` 80 (the bridges' priority) when the system allows it; otherwise they run
 normally and `EngineSync::worker_status` / a startup line say so. If no thread starts, the engine
 stays single-threaded.
+
+On macOS (#45; realtime spike #43, internal notes) a priority is not enough: at light load Apple
+silicon runs realtime threads on efficiency cores or down-clocked performance cores unless they are
+in an audio workgroup. `WorkerRt` therefore carries the stream's period and the device's IO
+workgroup (`kAudioDevicePropertyIOThreadOSWorkgroup`, looked up by `komponist-audio` for every
+stream and handed over in `StreamParams::workgroup`). Each worker sets the time-constraint policy
+(period = callback period, computation 50 %, constraint = period, preemptible; a refusal is
+reported like a refused `SCHED_FIFO`), joins the workgroup and leaves it before it ends; since
+every stream brings a new workgroup reference, the pool is rebuilt per stream. The callback
+thread itself does not join: it is the HAL's IO thread, a member already. Waits and wakes use
+`os_sync_wait_on_address` / `os_sync_wake_by_address_*` on process-private words; each timed wait
+is armed at 8/9 of the remaining time, because the kernel ends timed waits about 12.5 % late.
 
 - **Dispatch, per segment:** the audio thread writes a batch descriptor, publishes it with one
   release store of a claim word (`epoch << 32 | count << 16 | next`) and wakes as many workers as
@@ -921,6 +938,14 @@ futex wait on `done_seq` with a deadline (about 60 % of the block period minus e
 The bridge RT thread waits on `request_seq`, calls `process`, writes the output, sets `done_seq` and
 wakes. If the deadline passes, the engine uses passthrough (effect) or silence (instrument) for this
 block, counts the device as "late", and ignores the stale result via the sequence number.
+
+**Deadline in shared memory** (`SHM_VERSION` 3, #45): the request carries the block's deadline as an
+absolute `mach_absolute_time` (`deadline_ticks`, 0 for offline blocks and on Linux). On macOS the
+bridge RT thread sets the time-constraint policy (period: the activated maximum block) and drives
+its own audio work interval (`AudioWorkIntervalCreate`): `interval_start(now, deadline_ticks)` before
+each block, `interval_finish` after it, so the CPU frequency controller knows the real deadline.
+Only the creating thread may start an interval (libdispatch traps otherwise). The app's timed waits
+compensate the kernel's timer leeway as the workers' do (§6.4.1).
 
 **RT priority is mandatory** for the bridge RT thread (SCHED_FIFO; the owner's machine allows it:
 realtime group, rtprio 98). Spike WP-15 measured the futex roundtrip with 4 × 2 KiB copied: p99
