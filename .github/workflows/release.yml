@@ -143,7 +143,9 @@ jobs:
           ditto -x -k "$NAME.zip" unpacked
           app=unpacked/komponist.app
           codesign --verify --deep --strict --verbose=2 "$app"
-          codesign -d --entitlements - "$app" 2>&1 | grep -q com.apple.security.cs.disable-library-validation
+          # Into a variable first: `grep -q` in a pipe can end early and fail the step under pipefail.
+          entitlements="$(codesign -d --entitlements - "$app" 2>&1)"
+          case "$entitlements" in *com.apple.security.cs.disable-library-validation*) ;; *) echo "::error::entitlement missing"; exit 1 ;; esac
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 14.4
           "$app/Contents/MacOS/komponist" --help
           "$app/Contents/MacOS/komponist" --bridge --help
