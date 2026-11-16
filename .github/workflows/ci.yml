@@ -180,3 +180,13 @@ jobs:
           # (docs/PERFORMANCE.md).
           KOMPONIST_SOAK_MIN_CALLBACKS: "50"
         run: cargo test --workspace --no-fail-fast
+
+      # The timer leeway of os_sync waits differs between macOS versions and with how idle the
+      # machine is (#101); only this runner shows macOS 15. Print what the leeway checks measured
+      # (timer baseline, bare kernel wait, compensated wait, learned leeway), also when they pass.
+      - name: Timer leeway report
+        if: always()
+        timeout-minutes: 5
+        run: >-
+          cargo test -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
+          -- --nocapture
