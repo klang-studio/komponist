@@ -49,6 +49,7 @@ impl App {
         let l = layout::compute(screen, &self.ui.layout);
         self.focus_on_press(ui, &l);
 
+        let plugin_windows = self.plugin_window_entries();
         let model = transport::TransportModel {
             project: self.doc.project(),
             dirty: self.doc.is_dirty(),
@@ -59,6 +60,7 @@ impl App {
             keymap: &self.keymap,
             lang: self.lang,
             master_display: self.settings.master_display,
+            plugin_windows: &plugin_windows,
         };
         transport::show(ui, l.transport, &model, &mut self.meters, &mut self.queue);
 

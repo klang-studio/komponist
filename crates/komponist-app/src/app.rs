@@ -2449,6 +2449,7 @@ impl App {
             }
             // Closes the plugin's GUI if it is open; a state snapshot follows (`StateSnapshot`).
             PluginAction::CloseWindow(device) => self.close_plugin_window(device),
+            PluginAction::FocusWindow(device) => self.focus_plugin_window(device),
             PluginAction::Reload(device) => {
                 self.engine.reload_device(self.doc.project(), device);
             }

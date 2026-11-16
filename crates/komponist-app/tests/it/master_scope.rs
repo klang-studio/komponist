@@ -173,6 +173,7 @@ fn bar(mode: MasterDisplay, ppp: f32) -> Harness<'static, Bar> {
                     keymap: &bar.keymap,
                     lang: Lang::De,
                     master_display: bar.mode,
+                    plugin_windows: &[],
                 };
                 let mut actions = Vec::new();
                 transport::show(ui, ui.max_rect(), &model, &mut bar.meters, &mut actions);

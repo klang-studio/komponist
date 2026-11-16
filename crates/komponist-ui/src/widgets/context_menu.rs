@@ -14,7 +14,8 @@
 //! | its submenu is open | surface.4 | text.1 | text.3 |
 //! | disabled | – | text.4 | text.4 |
 //!
-//! Submenus open to the right of their row: a list of entries, or the colour grid of "Farbe"
+//! Submenus open to the right of their row, or to the left where the screen ends on the right (the
+//! transport bar's "⋯" menu, #95): a list of entries, or the colour grid of "Farbe"
 //! (7 × 2 swatches 20 × 16, `radius.s`, padding 8, gap 4; the current colour with a 1 px text.1
 //! ring at 1 px distance).
 //!
@@ -469,13 +470,28 @@ impl<'a, A: Clone> ContextMenu<'a, A> {
         }
 
         // The submenu.
-        st.rects[1] = Rect::NOTHING;
+        let last_sub = std::mem::replace(&mut st.rects[1], Rect::NOTHING);
         if let Some(s) = st.sub
             && let Some(row) = out.rows.get(s)
         {
             let entry = &self.entries[s];
             let edge = shadow::EDGE.spread;
-            let x = st.rects[0].right() - 2.0 * edge + space::SPACE_1;
+            // Right of the menu if it fits (its width from the last pass, else the menu's),
+            // else left of it.
+            let width = if last_sub.is_positive() {
+                last_sub.width()
+            } else {
+                st.rects[0].width()
+            };
+            let right = st.rects[0].right() - 2.0 * edge + space::SPACE_1;
+            let (x, pivot) = if right + width <= ctx.content_rect().right() {
+                (right, egui::Align2::LEFT_TOP)
+            } else {
+                (
+                    st.rects[0].left() + 2.0 * edge - space::SPACE_1,
+                    egui::Align2::RIGHT_TOP,
+                )
+            };
             let y = match entry.kind {
                 Kind::Colors(_) => row.top() - 2.0 * edge,
                 _ => row.top() - edge - space::SPACE_1,
@@ -483,6 +499,7 @@ impl<'a, A: Clone> ContextMenu<'a, A> {
             let sub = Area::new(id.with("sub"))
                 .order(Order::Foreground)
                 .kind(UiKind::Menu)
+                .pivot(pivot)
                 .fixed_pos(egui::pos2(x, y))
                 .constrain(true)
                 .accessibility_parent(id)

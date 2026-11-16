@@ -1162,3 +1162,122 @@ fn becoming_active_raises_the_open_bridge_frames() {
     assert_eq!(script.borrow().raised, vec![surge]);
     assert_eq!(script.borrow().activated.len(), activated);
 }
+
+// ------------------------------------------------------------------------------------------------
+// The Window, Dock and "⋯" menus (#95)
+// ------------------------------------------------------------------------------------------------
+
+#[test]
+fn the_window_list_names_the_open_windows_in_project_order() {
+    use komponist_app::ui_state::PluginWindow;
+    use komponist_app::windows::window_list::{self, WindowEntry};
+
+    let mut project = demo_project();
+    let mut on_master = Device::clone(&project.tracks[3].channel.devices[0]);
+    on_master.id = DeviceId(9_000);
+    std::sync::Arc::make_mut(&mut project.master)
+        .devices
+        .push(std::sync::Arc::new(on_master));
+    let id = |track: usize, slot: usize| project.tracks[track].channel.devices[slot].id;
+    let (surge, hexa, eq) = (id(3, 0), id(1, 0), id(1, 1));
+    // Opened master first, then Surge XT, Hexa, the Bass EQ; one window of a device that is gone.
+    let windows: Vec<PluginWindow> = [DeviceId(9_000), surge, hexa, eq, DeviceId(77_777)]
+        .into_iter()
+        .map(|d| PluginWindow::new(d, PluginView::Params, None))
+        .collect();
+    let entry = |device, label: &str| WindowEntry {
+        device,
+        label: label.to_owned(),
+    };
+    assert_eq!(
+        window_list::entries(Lang::De, &project, &windows),
+        vec![
+            entry(hexa, "Hexa · Bass"),
+            entry(eq, "LSP Para EQ x8 · Bass"),
+            entry(surge, "Surge XT · Pad"),
+            entry(DeviceId(9_000), "Surge XT · Master"),
+        ]
+    );
+    let en = window_list::entries(Lang::En, &project, &windows);
+    assert_eq!(en[0].label, "Hexa · Bass");
+    assert!(window_list::entries(Lang::De, &project, &[]).is_empty());
+}
+
+#[test]
+fn the_window_menu_has_minimize_zoom_and_the_plugin_windows() {
+    use komponist_app::windows::window_list::{self, WindowEntry, WindowMenuItem};
+
+    assert_eq!(
+        window_list::window_menu(Lang::De, &[]),
+        vec![
+            WindowMenuItem::Minimize("Im Dock ablegen"),
+            WindowMenuItem::Zoom("Zoomen"),
+        ]
+    );
+    let surge = WindowEntry {
+        device: DeviceId(4),
+        label: "Surge XT · Pad".into(),
+    };
+    assert_eq!(
+        window_list::window_menu(Lang::En, std::slice::from_ref(&surge)),
+        vec![
+            WindowMenuItem::Minimize("Minimize"),
+            WindowMenuItem::Zoom("Zoom"),
+            WindowMenuItem::Separator,
+            WindowMenuItem::Window(&surge),
+        ]
+    );
+    assert_eq!(Lang::De.app_menu_window(), "Fenster");
+    assert_eq!(Lang::En.app_menu_window(), "Window");
+}
+
+#[test]
+fn the_app_lists_its_plugin_windows_as_they_open_and_close() {
+    let (app, _, surge) = app();
+    let mut h = harness(app);
+    assert!(h.state().plugin_window_entries().is_empty());
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(2);
+    let entries = h.state().plugin_window_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].device, surge);
+    assert_eq!(entries[0].label, "Surge XT · Pad");
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::CloseWindow(surge)));
+    h.run_steps(2);
+    assert!(h.state().plugin_window_entries().is_empty());
+}
+
+#[test]
+fn a_window_picked_in_a_menu_comes_to_the_front() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    // Still opening: `GuiOpened` brings it forward, the pick adds nothing.
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::FocusWindow(surge)));
+    h.run_steps(2);
+    assert!(script.borrow().activated.is_empty());
+    push(
+        &script,
+        PluginManagerEvent::GuiOpened {
+            device: surge,
+            size: GuiSize::default(),
+            resizable: false,
+        },
+    );
+    h.run_steps(2);
+    assert_eq!(script.borrow().activated, vec![surge]);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::FocusWindow(surge)));
+    h.run_steps(2);
+    assert_eq!(script.borrow().activated, vec![surge, surge]);
+    assert_eq!(script.borrow().targets.len(), 1, "no second OpenGui");
+    // A window that closed meanwhile (a stale menu entry) is not opened again.
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::CloseWindow(surge)));
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::FocusWindow(surge)));
+    h.run_steps(2);
+    assert!(h.state().ui().plugin_windows.is_empty());
+    assert_eq!(script.borrow().activated.len(), 2);
+}
