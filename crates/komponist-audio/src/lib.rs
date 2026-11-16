@@ -1,6 +1,7 @@
 //! Audio and MIDI I/O of komponist.
 //!
-//! cpal backends (CoreAudio on macOS; WASAPI on Windows; PipeWire, JACK, ALSA on Linux) and a null
+//! cpal backends (CoreAudio on macOS; WASAPI, and ASIO with the feature `asio`, on Windows; PipeWire,
+//! JACK, ALSA on Linux) and a null
 //! backend for tests and "Kein Audio-Gerät", the
 //! stream lifecycle with an engine handoff that survives a stream rebuild, midir MIDI inputs with
 //! timestamps, and CPU load and xrun statistics.

@@ -83,16 +83,18 @@ pub fn section_name(t: Lang, section: SettingsSection) -> &'static str {
 
 /// The drivers of the "Treiber" segments (all systems; the dialog lists those of this system, see
 /// [`drivers_here`]).
-pub const DRIVERS: [(HostKind, &str); 5] = [
+pub const DRIVERS: [(HostKind, &str); 6] = [
     (HostKind::CoreAudio, "CoreAudio"),
     (HostKind::Wasapi, "WASAPI"),
+    (HostKind::Asio, "ASIO"),
     (HostKind::PipeWire, "PipeWire"),
     (HostKind::Jack, "JACK"),
     (HostKind::Alsa, "ALSA"),
 ];
 
-/// The drivers this system has (CoreAudio on macOS; WASAPI on Windows; PipeWire, JACK, ALSA on
-/// Linux), in segment order. Those not currently available are shown disabled.
+/// The drivers this system has (CoreAudio on macOS; WASAPI, and ASIO in builds with the feature
+/// `asio`, on Windows; PipeWire, JACK, ALSA on Linux), in segment order. Those not currently
+/// available are shown disabled.
 pub fn drivers_here() -> Vec<(HostKind, &'static str)> {
     DRIVERS
         .into_iter()
@@ -1398,6 +1400,11 @@ mod tests {
                 "PipeWire"
             }
         )));
+        // ASIO is a driver of Windows builds with the feature `asio` only.
+        assert_eq!(
+            here.iter().any(|(h, _)| *h == HostKind::Asio),
+            HostKind::Asio.is_supported_here()
+        );
         assert!(DRIVERS.iter().all(|(h, _)| *h != HostKind::Null));
     }
 
