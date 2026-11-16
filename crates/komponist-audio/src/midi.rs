@@ -1,4 +1,4 @@
-//! MIDI inputs through midir (ALSA sequencer; JACK where enabled) with per-device enable, activity
+//! MIDI inputs through midir (ALSA sequencer, JACK where enabled; CoreMIDI on macOS) with per-device enable, activity
 //! flags and timestamps (ARCHITECTURE §7, S07 "MIDI-Eingänge").
 //!
 //! midir callbacks run on their own threads. They stamp each message with `Instant::now()` and push
@@ -179,11 +179,28 @@ pub(crate) fn channel_message(bytes: &[u8]) -> Option<[u8; 3]> {
     Some(out)
 }
 
-/// The settings name of a port reported by midir. The ALSA backend reports
+/// The settings name of a port reported by midir.
+///
+/// macOS: CoreMIDI reports the endpoint's display name (`kMIDIPropertyDisplayName`: the device
+/// name, plus the endpoint name when the device has several, e.g. `"Arturia KeyStep 37"`,
+/// `"IAC Driver Bus 1"`). It does not contain the endpoint's unique id, so it survives restarts
+/// and re-plugging; midir tells re-plugged ports apart by that unique id. Two identical devices
+/// get a " (2)" suffix from the hub.
+///
+/// Elsewhere (ALSA): see [`alsa_port_name`].
+fn port_name(raw: &str) -> String {
+    if cfg!(target_os = "macos") {
+        raw.trim().to_owned()
+    } else {
+        alsa_port_name(raw)
+    }
+}
+
+/// The settings name of an ALSA sequencer port. The ALSA backend reports
 /// `"client:port C:P"`; the numeric address changes when a device is re-plugged, so it is
 /// dropped, and the client prefix is dropped when the port name repeats it
 /// (`"Midi Through:Midi Through Port-0 14:0"` → `"Midi Through Port-0"`).
-fn port_name(raw: &str) -> String {
+fn alsa_port_name(raw: &str) -> String {
     let is_address = |s: &str| {
         s.split_once(':').is_some_and(|(client, port)| {
             !client.is_empty()
@@ -204,7 +221,7 @@ fn port_name(raw: &str) -> String {
     }
 }
 
-/// ALSA sequencer client name of the hub and its connections.
+/// Client name of the hub and its connections.
 const CLIENT_NAME: &str = "komponist";
 
 /// Flags shared between a port's midir callback and the hub.
@@ -240,6 +257,9 @@ pub struct MidiInputHub {
     /// Tests: only ports whose name starts with this start enabled (see
     /// [`MidiInputHub::only_connect_to`]).
     only: Option<String>,
+    /// Names the user disabled (settings) of ports not seen yet: they start disabled when they
+    /// first appear (see [`MidiInputHub::remember_disabled`]).
+    remembered_disabled: Vec<String>,
 }
 
 impl core::fmt::Debug for MidiInputHub {
@@ -262,6 +282,7 @@ impl MidiInputHub {
             ports: Vec::new(),
             waker: Arc::new(OnceLock::new()),
             only: None,
+            remembered_disabled: Vec::new(),
         };
         Ok((hub, receiver))
     }
@@ -271,6 +292,17 @@ impl MidiInputHub {
     /// [`MidiInputHub::refresh`].
     pub fn only_connect_to(&mut self, prefix: &str) {
         self.only = Some(prefix.to_owned());
+    }
+
+    /// Settings: the user disabled the port `name`. Disables it now if the hub knows it, and
+    /// otherwise when it first appears, so a device that is unplugged at startup stays disabled
+    /// once it is plugged in. Unknown names are harmless (settings written on another OS).
+    pub fn remember_disabled(&mut self, name: &str) {
+        if self.entry(name).is_some() {
+            let _ = self.set_enabled(name, false);
+        } else if !self.remembered_disabled.iter().any(|n| n == name) {
+            self.remembered_disabled.push(name.to_owned());
+        }
     }
 
     /// Re-enumerates the input ports, connects enabled ones that appeared and marks vanished ones
@@ -308,6 +340,7 @@ impl MidiInputHub {
                 None => {
                     let id = MidiPortId(self.ports.len() as u16);
                     let enabled = !name.starts_with("Midi Through")
+                        && !self.remembered_disabled.contains(&name)
                         && self.only.as_deref().is_none_or(|p| name.starts_with(p));
                     self.ports.push(PortEntry {
                         info: MidiPortInfo {
@@ -483,19 +516,31 @@ mod tests {
     #[test]
     fn port_names_drop_the_alsa_address_and_repeated_client() {
         assert_eq!(
-            port_name("Midi Through:Midi Through Port-0 14:0"),
+            alsa_port_name("Midi Through:Midi Through Port-0 14:0"),
             "Midi Through Port-0"
         );
         assert_eq!(
-            port_name("Arturia KeyStep 37:Arturia KeyStep 37 MIDI 1 20:0"),
+            alsa_port_name("Arturia KeyStep 37:Arturia KeyStep 37 MIDI 1 20:0"),
             "Arturia KeyStep 37 MIDI 1"
         );
         assert_eq!(
-            port_name("komponist-test:probe 130:0"),
+            alsa_port_name("komponist-test:probe 130:0"),
             "komponist-test:probe"
         );
-        assert_eq!(port_name("Some Device"), "Some Device");
-        assert_eq!(port_name("Synth:in 1:x"), "Synth:in 1:x");
+        assert_eq!(alsa_port_name("Some Device"), "Some Device");
+        assert_eq!(alsa_port_name("Synth:in 1:x"), "Synth:in 1:x");
+    }
+
+    #[test]
+    fn port_names_per_platform() {
+        if cfg!(target_os = "macos") {
+            // CoreMIDI display names pass through; the ALSA address rules do not apply.
+            assert_eq!(port_name("IAC Driver Bus 1"), "IAC Driver Bus 1");
+            assert_eq!(port_name("Synth 14:0"), "Synth 14:0");
+            assert_eq!(port_name(" Arturia KeyStep 37 "), "Arturia KeyStep 37");
+        } else {
+            assert_eq!(port_name("Synth:Synth 1 14:0"), "Synth 1");
+        }
     }
 
     #[test]
@@ -535,25 +580,31 @@ mod tests {
             .unwrap()
     }
 
-    /// End to end through the ALSA sequencer with a midir virtual port. Skipped where the
-    /// sequencer is unavailable.
+    /// End to end through the platform's MIDI backend (ALSA sequencer, CoreMIDI) with a midir
+    /// virtual port. Skipped where there is no backend. On macOS the virtual source
+    /// "komponist-test probe-<pid>" is visible system-wide while the test runs.
     #[test]
     fn virtual_port_round_trip() {
-        // CoreMIDI names virtual ports differently (no "client:port" form); the macOS MIDI
-        // backend (#50) makes this test portable.
-        if cfg!(target_os = "macos") {
-            eprintln!("CoreMIDI port names differ (#50): skipped");
-            return;
-        }
         let Ok((mut hub, mut receiver)) = MidiInputHub::new() else {
-            eprintln!("ALSA sequencer unavailable: skipped");
+            eprintln!("MIDI backend unavailable: skipped");
             return;
         };
         // Never subscribe to the machine's real devices.
-        hub.only_connect_to("komponist-test:");
+        let prefix = if cfg!(target_os = "macos") {
+            "komponist-test "
+        } else {
+            "komponist-test:"
+        };
+        hub.only_connect_to(prefix);
         let port = format!("probe-{}", std::process::id());
-        let name = format!("komponist-test:{port}");
-        let mut out = virtual_output(&port);
+        let name = format!("{prefix}{port}");
+        // The name the virtual port is created with: ALSA prefixes the client name itself.
+        let created = if cfg!(target_os = "macos") {
+            name.clone()
+        } else {
+            port.clone()
+        };
+        let mut out = virtual_output(&created);
         hub.refresh().unwrap();
         let id = hub.port_id(&name).expect("virtual port listed");
         let info = hub.ports().into_iter().find(|p| p.id == id).unwrap();
@@ -587,7 +638,7 @@ mod tests {
         hub.refresh().unwrap();
         let gone = hub.ports().into_iter().find(|p| p.id == id).unwrap();
         assert!(!gone.connected && gone.enabled);
-        let mut out = virtual_output(&port);
+        let mut out = virtual_output(&created);
         hub.refresh().unwrap();
         assert_eq!(hub.port_id(&name), Some(id));
         assert!(
@@ -599,6 +650,14 @@ mod tests {
         );
         out.send(&[0x80, 62, 0]).unwrap();
         assert_eq!(next_event(&mut receiver).unwrap().data, [0x80, 62, 0]);
+
+        // A name remembered from the settings disables the port when it appears, and a name from
+        // another OS is harmless.
+        hub.remember_disabled("Linux ALSA Name:Port 20:0");
+        drop(out);
+        hub.refresh().unwrap();
+        hub.remember_disabled(&name);
+        assert!(!hub.ports().iter().find(|p| p.id == id).unwrap().enabled);
 
         assert_eq!(
             hub.set_enabled("komponist test: no such port", true),
