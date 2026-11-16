@@ -14,6 +14,8 @@ komponist-rt.workspace = true
 # Workspace features (mm, thread, process, net) plus: event (poll, eventfd), stdio (scan mode keeps
 # plugin output off the JSON on stdout).
 rustix = { workspace = true, features = ["event", "stdio"] }
+# `_exit` after the plugin is torn down; the main thread's name on macOS (`pthread_setname_np`).
+libc.workspace = true
 # Scan mode: descriptors as JSON on stdout.
 serde_json.workspace = true
 # SetParam values from the main thread to the RT thread.

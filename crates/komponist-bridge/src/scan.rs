@@ -13,27 +13,26 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::process::ExitCode;
 
 use komponist_hosting::HostingError;
 
 use crate::exit;
 
-/// Runs a scan of `bundle`; the process exit code.
-pub fn run(bundle: &Path) -> ExitCode {
+/// Runs a scan of `bundle`; the process exit code ([`crate::exit`]).
+pub fn run(bundle: &Path) -> u8 {
     // The JSON travels as UTF-8 and the app keys its cache by the path (WP-45 note).
     if bundle.to_str().is_none() {
         eprintln!(
             "komponist-bridge: {}: path is not valid UTF-8",
             bundle.display()
         );
-        return ExitCode::from(exit::FAILURE);
+        return exit::FAILURE;
     }
     let mut out = match json_output() {
         Ok(out) => out,
         Err(e) => {
             eprintln!("komponist-bridge: stdout: {e}");
-            return ExitCode::from(exit::FAILURE);
+            return exit::FAILURE;
         }
     };
     match komponist_hosting::scan(bundle) {
@@ -43,10 +42,10 @@ pub fn run(bundle: &Path) -> ExitCode {
                 .and_then(|()| out.write_all(b"\n"))
                 .and_then(|()| out.flush());
             match written {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(()) => exit::SUCCESS,
                 Err(e) => {
                     eprintln!("komponist-bridge: writing the scan result: {e}");
-                    ExitCode::from(exit::FAILURE)
+                    exit::FAILURE
                 }
             }
         }
@@ -55,11 +54,11 @@ pub fn run(bundle: &Path) -> ExitCode {
                 "komponist-bridge: {}: unsupported: {reason}",
                 bundle.display()
             );
-            ExitCode::from(exit::UNSUPPORTED)
+            exit::UNSUPPORTED
         }
         Err(e) => {
             eprintln!("komponist-bridge: {}: {e}", bundle.display());
-            ExitCode::from(exit::FAILURE)
+            exit::FAILURE
         }
     }
 }

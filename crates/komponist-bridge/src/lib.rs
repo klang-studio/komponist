@@ -17,12 +17,17 @@
 //!   shared memory. A crashing plugin takes only this process down.
 //! - **Scan mode** ([`scan`]): prints the bundle's plugins as JSON and exits.
 //!
-//! Both modes first make the process non-dumpable (`PR_SET_DUMPABLE = 0`): plugins crash on
-//! purpose in tests and by accident in practice, and systemd-coredump would delay the crash
-//! detection to about 55 ms and pop up a crash reporter (PLAN WP-31). `KOMPONIST_BRIDGE_COREDUMP=1`
-//! keeps core dumps for debugging a plugin crash. Any panic in the bridge aborts it, so a failing
-//! bridge always looks like a crash to the app and never leaves a half-torn-down plugin running.
+//! Both modes first turn core dumps off (`PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` on
+//! macOS): plugins crash on purpose in tests and by accident in practice, and systemd-coredump
+//! would delay the crash detection to about 55 ms and pop up a crash reporter (PLAN WP-31).
+//! `KOMPONIST_BRIDGE_COREDUMP=1` keeps core dumps for debugging a plugin crash. Any panic in the
+//! bridge aborts it, so a failing bridge always looks like a crash to the app and never leaves a
+//! half-torn-down plugin running. Both modes end with `_exit` after the plugin is torn down
+//! ([`exit_now`]).
 
+#[cfg(target_os = "macos")]
+mod cf_loop;
+#[cfg(not(target_os = "macos"))]
 mod event_loop;
 mod instance;
 mod notify;
@@ -44,6 +49,8 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 /// Process exit codes.
 pub mod exit {
+    /// Done: shut down on request, or a scan printed its JSON.
+    pub const SUCCESS: u8 = 0;
     /// The scan failed, or instance mode could not start (control socket, shared memory).
     pub const FAILURE: u8 = 1;
     /// Bad command line.
@@ -54,16 +61,16 @@ pub mod exit {
 }
 
 /// Set to `1` to keep core dumps (the bridge is non-dumpable otherwise).
-#[cfg(target_os = "linux")]
 const COREDUMP_ENV: &str = "KOMPONIST_BRIDGE_COREDUMP";
 
 const USAGE: &str = "usage: komponist-bridge --instance --control-fd <fd> [--rt-priority <1..=99>]
        komponist-bridge --scan <bundle>
        komponist --bridge <the same arguments>";
 
-/// The process name in bridge mode (`comm`, at most 15 bytes): tools and tests find the bridges of
-/// an app by it, whichever executable they were started from.
-#[cfg(target_os = "linux")]
+/// The main thread's name in bridge mode. On Linux it is the process name (`comm`, at most 15
+/// bytes), by which tools and tests find the bridges of an app, whichever executable they were
+/// started from. macOS names processes by their executable; there it names the main thread
+/// (debuggers, `spindump`, crash reports).
 const PROCESS_NAME: &std::ffi::CStr = c"komponist-bridge";
 
 /// What the command line asks for.
@@ -122,28 +129,18 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
 }
 
 /// The bridge process: `args` are the command line without the program name (and without the
-/// `--bridge` of `komponist`). Returns the exit code of the process.
+/// `--bridge` of `komponist`). Returns the exit code of the process for `--help` and bad
+/// arguments; instance and scan mode end the process themselves ([`exit_now`]).
 pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
-    // `komponist --bridge` shows up as `komponist` otherwise.
-    // Linux only; macOS names the process by its executable and gets its core-dump policy with
-    // the bridge main loop (#51).
-    #[cfg(target_os = "linux")]
-    {
-        let _ = rustix::thread::set_name(PROCESS_NAME);
-        if std::env::var_os(COREDUMP_ENV).is_none_or(|v| v != "1") {
-            let _ = rustix::process::set_dumpable_behavior(
-                rustix::process::DumpableBehavior::NotDumpable,
-            );
-        }
-    }
+    harden_process();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default_hook(info);
         std::process::abort();
     }));
     match parse_args(args) {
-        Ok(Mode::Instance(options)) => instance::run(options),
-        Ok(Mode::Scan(bundle)) => scan::run(&bundle),
+        Ok(Mode::Instance(options)) => exit_now(instance::run(options)),
+        Ok(Mode::Scan(bundle)) => exit_now(scan::run(&bundle)),
         Ok(Mode::Help) => {
             println!("{USAGE}");
             ExitCode::SUCCESS
@@ -153,6 +150,51 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::from(exit::USAGE)
         }
     }
+}
+
+/// Names the process (or main thread) and keeps core dumps off, unless [`COREDUMP_ENV`] is `1`:
+/// `PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` (the soft limit) on macOS.
+fn harden_process() {
+    let keep_cores = std::env::var_os(COREDUMP_ENV).is_some_and(|v| v == "1");
+    #[cfg(target_os = "linux")]
+    {
+        // `komponist --bridge` shows up as `komponist` otherwise.
+        let _ = rustix::thread::set_name(PROCESS_NAME);
+        if !keep_cores {
+            let _ = rustix::process::set_dumpable_behavior(
+                rustix::process::DumpableBehavior::NotDumpable,
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: names the calling thread; the string is NUL-terminated and static.
+        unsafe { libc::pthread_setname_np(PROCESS_NAME.as_ptr()) };
+        if !keep_cores {
+            use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+            let hard = getrlimit(Resource::Core).maximum;
+            let _ = setrlimit(
+                Resource::Core,
+                Rlimit {
+                    current: Some(0),
+                    maximum: hard,
+                },
+            );
+        }
+    }
+}
+
+/// Ends the process with `code` after instance or scan mode tore the plugin down: `_exit`, not
+/// `exit`. Plugins register thread-local destructors and `atexit` handlers on the main thread, and
+/// some fail when they run after the plugin is gone (Klopfer panics in its TLS destructors on
+/// `process::exit`, spike #42); the bridge has nothing left to clean up by then. Rust's buffered
+/// stdout is flushed first (the scan writes its JSON unbuffered anyway).
+fn exit_now(code: u8) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: ends the process without running exit handlers; nothing in it is half-done.
+    unsafe { libc::_exit(i32::from(code)) }
 }
 
 #[cfg(test)]
@@ -184,6 +226,34 @@ mod tests {
             Ok(Mode::Scan("/usr/lib/clap/Dexed.clap".into()))
         );
         assert_eq!(parse(&["--help"]), Ok(Mode::Help));
+    }
+
+    /// macOS: the main thread is named and core dumps are off (the soft limit only).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hardening_names_the_thread_and_turns_core_dumps_off() {
+        if std::env::var_os(COREDUMP_ENV).is_some() {
+            return;
+        }
+        // On a thread of its own: the name is per thread.
+        std::thread::spawn(|| {
+            use rustix::process::{Resource, getrlimit};
+            let hard = getrlimit(Resource::Core).maximum;
+            harden_process();
+            let limit = getrlimit(Resource::Core);
+            assert_eq!((limit.current, limit.maximum), (Some(0), hard));
+            let mut name = [0 as std::ffi::c_char; 64];
+            // SAFETY: the buffer's length is passed.
+            let rc = unsafe {
+                libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr(), name.len())
+            };
+            assert_eq!(rc, 0);
+            // SAFETY: NUL-terminated by pthread_getname_np.
+            let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+            assert_eq!(name, PROCESS_NAME);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

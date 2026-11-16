@@ -2492,6 +2492,7 @@ dependencies = [
  "komponist-hosting",
  "komponist-ipc",
  "komponist-rt",
+ "libc",
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
