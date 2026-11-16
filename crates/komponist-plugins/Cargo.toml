@@ -34,10 +34,11 @@ assert_no_alloc.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 # Ending and stopping bridges from outside in the lifecycle tests (TerminateProcess,
-# DebugActiveProcess).
+# DebugActiveProcess); the scan tests list their child processes (Toolhelp).
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
 ] }
 

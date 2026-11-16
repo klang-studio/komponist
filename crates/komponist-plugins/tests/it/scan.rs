@@ -264,40 +264,72 @@ fn fake_bridge(dir: &Path) -> (PathBuf, Vec<std::ffi::OsString>) {
     (fake, Vec::new())
 }
 
-/// Windows: the stand-in is a PowerShell script (the crash: the exit code of an access
-/// violation). A hanging scan leaves `hang-<pid>.pid` in `dir`, for [`hanging_scans`].
+/// Windows: the stand-in is a batch script run by `cmd.exe`, which starts in milliseconds (a
+/// PowerShell script took longer than the 10 s scan timeout to start four times in parallel on
+/// the GitHub runner). The crash is the exit code of an access violation; the hang spins in
+/// `cmd.exe` itself (a sleeping child such as `ping` would outlive the killed scan), so the
+/// hanging scan is one `cmd.exe` child of this process ([`hanging_scans`]).
 #[cfg(windows)]
 fn fake_bridge(dir: &Path) -> (PathBuf, Vec<std::ffi::OsString>) {
-    let script = dir.join("fake-bridge.ps1");
+    let script = dir.join("fake-bridge.cmd");
     std::fs::write(
         &script,
-        "$bundle = $args[$args.Count - 1]\r\n\
-         if ($bundle -like '*Crash*') { exit -1073741819 }\r\n\
-         if ($bundle -like '*Hang*') {\r\n\
-         \x20 Set-Content -Path (Join-Path $PSScriptRoot \"hang-$PID.pid\") -Value $PID\r\n\
-         \x20 Start-Sleep -Seconds 60\r\n\
-         \x20 exit 0\r\n\
-         }\r\n\
-         if ($bundle -like '*Fail*') {\r\n\
-         \x20 [Console]::Error.WriteLine('komponist-bridge: no clap_entry')\r\n\
-         \x20 exit 1\r\n\
-         }\r\n\
-         [Console]::Out.WriteLine('[]')\r\n\
-         exit 0\r\n",
+        "@echo off\r\n\
+         set \"bundle=%~2\"\r\n\
+         if not \"%bundle:Crash=%\"==\"%bundle%\" exit /b -1073741819\r\n\
+         if not \"%bundle:Hang=%\"==\"%bundle%\" goto hang\r\n\
+         if not \"%bundle:Fail=%\"==\"%bundle%\" (\r\n\
+         \x20 echo komponist-bridge: no clap_entry 1>&2\r\n\
+         \x20 exit /b 1\r\n\
+         )\r\n\
+         echo []\r\n\
+         exit /b 0\r\n\
+         :hang\r\n\
+         goto hang\r\n",
     )
     .unwrap();
-    let args = [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-    ]
-    .into_iter()
-    .map(std::ffi::OsString::from)
-    .chain([script.into_os_string()])
-    .collect();
-    (PathBuf::from("powershell.exe"), args)
+    let args = ["/d", "/c"]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .chain([script.into_os_string()])
+        .collect();
+    (PathBuf::from("cmd.exe"), args)
+}
+
+/// Child processes of this test process with executable name `exe` (a Toolhelp snapshot).
+#[cfg(windows)]
+fn children_named(exe: &str) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    let me = std::process::id();
+    let mut found = Vec::new();
+    // SAFETY: a process snapshot read with a correctly sized entry and closed at the end.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return found;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+            if entry.th32ParentProcessID == me && name.eq_ignore_ascii_case(exe) {
+                found.push(entry.th32ProcessID);
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    found
 }
 
 /// Hanging scan processes still alive.
@@ -306,24 +338,11 @@ fn hanging_scans(_dir: &Path) -> usize {
     children_named("sleep").len()
 }
 
-/// Windows: the hanging scans whose process is still alive (by their pid files).
+/// Windows: scan processes still alive. Only the hanging one lives longer than a moment (the
+/// others answer at once), so after a scan this counts the hanging ones.
 #[cfg(windows)]
-fn hanging_scans(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .unwrap()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            name.strip_prefix("hang-")?
-                .strip_suffix(".pid")?
-                .parse::<u32>()
-                .ok()
-        })
-        .filter(|&pid| {
-            komponist_ipc::ProcessWatcher::new(pid)
-                .is_ok_and(|mut w| w.try_exit().is_ok_and(|exit| exit.is_none()))
-        })
-        .count()
+fn hanging_scans(_dir: &Path) -> usize {
+    children_named("cmd.exe").len()
 }
 
 /// What a crashing scan reads in the report: the signal, on Windows the exception code.
