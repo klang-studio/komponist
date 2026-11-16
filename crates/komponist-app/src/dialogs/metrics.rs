@@ -108,6 +108,12 @@ pub mod settings {
     pub const LABEL_COLUMN: f32 = 140.0;
     /// Grid gap: `gap:10px 16px`.
     pub const GRID_GAP: [f32; 2] = [space::SPACE_4, space::SPACE_2 + space::SPACE_0_5];
+    /// Height of the "ASIO Compatible" logo in the driver row. Not from the design handoff (the
+    /// logo is not in it): 32 px keeps the artwork's lettering legible and the row only 4 px
+    /// taller than a 28 px control. Width follows the artwork's aspect ratio.
+    pub const ASIO_LOGO_HEIGHT: f32 = 32.0;
+    /// Aspect ratio (width / height) of the ASIO logo's SVG `viewBox` (`0 0 112.77 71.85`).
+    pub const ASIO_LOGO_ASPECT: f32 = 112.77 / 71.85;
     /// Sample-rate field: `width:160px`.
     pub const RATE_WIDTH: f32 = 160.0;
     /// Gap between buffer segments and latency: `gap:12px`.

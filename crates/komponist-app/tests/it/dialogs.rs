@@ -1472,6 +1472,61 @@ fn s07_with_wasapi_shows_the_fixed_buffer_and_a_busy_midi_input() {
     }
 }
 
+/// S07 with ASIO listed (Windows build with the feature `asio`): the "ASIO Compatible" logo sits
+/// in the driver row with an accessible name; without ASIO in the build, it is not drawn at all
+/// (Linux, macOS, Windows without the feature). Fake devices (rule 14), nothing is opened. Set
+/// `KOMPONIST_RENDER_DIR` to also write the PNGs (`s07-asio-de.png`, `s07-asio-en.png`).
+#[test]
+fn s07_shows_the_asio_logo_where_asio_is_offered() {
+    for lang in [Lang::De, Lang::En] {
+        let config = StreamConfig {
+            host: HostKind::Asio,
+            device: Some("ASIO4ALL v2".into()),
+            device_id: None,
+            sample_rate: 48_000,
+            buffer_frames: 256,
+        };
+        let (devices, device) = settings::device_entries(lang, HostKind::Asio, &[], &config);
+        let mut model = s07_model_in(lang);
+        model.hosts = vec![HostKind::Wasapi, HostKind::Asio, HostKind::Null];
+        model.config = config;
+        model.devices = devices;
+        model.device = device;
+        model.rates = vec![44_100, 48_000, 96_000];
+        model.no_device = None;
+        model.buffer = settings::BufferLimit::Range(64, 2048);
+        let name = match lang {
+            Lang::De => de::SETTINGS_ASIO_LOGO,
+            Lang::En => en::SETTINGS_ASIO_LOGO,
+        };
+        let app = App::headless(demo_project()).with_lang(lang);
+        let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(vec2(W, H))
+            .build_ui_state(
+                move |ui, app: &mut App| {
+                    app.show(ui);
+                    let _ = settings::show(ui.ctx(), &model, None);
+                },
+                app,
+            );
+        h.run_steps(4);
+        let logo = h.query_by_label(name);
+        assert_eq!(
+            logo.is_some(),
+            HostKind::Asio.is_supported_here(),
+            "logo only where the ASIO segment is shown"
+        );
+        if let Some(logo) = logo {
+            assert_eq!(logo.accesskit_node().role(), Role::Image);
+        }
+        if let Some(dir) = std::env::var_os("KOMPONIST_RENDER_DIR") {
+            let img = h.render().expect("render");
+            let tag = if lang == Lang::De { "de" } else { "en" };
+            img.save(std::path::Path::new(&dir).join(format!("s07-asio-{tag}.png")))
+                .unwrap();
+        }
+    }
+}
 #[test]
 fn buffer_limits_follow_the_driver() {
     let device = |host, range| DeviceInfo {
