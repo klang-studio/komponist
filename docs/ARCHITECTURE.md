@@ -1349,42 +1349,43 @@ table of CLAP features / VST3 subcategories.
   whole window). `KOMPONIST_FRAME_OFFSCREEN=1` opens frames at −20000 and blocks every activation
   (tests). The bridge clears its task-level crash exception ports at start.
 
-- **Windows (port W6): the bridge owns the frame window, as on macOS.** The app could create the frame and let the
-  plugin attach a child window across processes (the Linux model), but a cross-process parent/child pair attaches
-  the input queues of both threads, so a hung plugin would freeze the app (Windows port evaluation §3.6, internal
-  notes). The frame logic is shared with macOS (`komponist-bridge/src/frame/mod.rs`, `keys.rs`); `frame/win32.rs`
-  is the OS half. The body is a container child window of winit's window (`WS_CLIPCHILDREN`, background
-  `surface.0`) the plugin attaches to (CLAP `win32`, VST3 `kPlatformTypeHWND`). Sizes are physical pixels at the window's DPI scale (`GetDpiForWindow / 96`),
-  passed to the plugin (CLAP `set_scale`, VST3 `setContentScaleFactor`); the header is 28 × scale pixels; the
-  protocol (`GuiOpened`, `SetGuiSize`, `FrameRect`) stays in points. The window's size is set with `SetWindowPos`
-  for the outer rect `AdjustWindowRectExForDpi` gives, then the container; a user drag of a resizable plugin asks it
-  100 ms after the drag rests; fixed-size plugins get a frame without resize border or maximize button. When the
-  frame moves to a monitor with another DPI (winit keeps its size in points), `logic()` sees the new scale and the
-  bridge passes it to the plugin (`HostedPlugin::gui_set_scale`) and asks for its size at that scale. The bridge
-  process is per-monitor-v2 DPI aware (the manifest; the bridge sets it before its first window too). The event
-  loop: §8.1, the wake relay posts to a window of the main thread, which winit's loop dispatches. Keys: a
-  `WH_GETMESSAGE` hook on the main thread, installed after the plugin's GUI opened (plugins hook the thread too:
-  baseview, under the egui GUIs of the test plugins, handles key messages for its windows in its own
-  `WH_GETMESSAGE` hook, so winit's message hook never sees them; hooks run newest first), applies the WP-50 policy
-  while the focus is in the container (Strg = Ctrl as on Linux, the Windows key is "other", AltGr is Ctrl + Alt and
-  never a shortcut; Space, Esc, Return, Tab, Backspace, Delete by virtual-key code, letters by the layout's
-  character) and turns a taken key into `WM_NULL` and a `Shortcut`; while another visible top-level window of the
-  bridge lies above the frame (tooltips: `WS_EX_TRANSPARENT`, `tooltips_class32` do not count) every key passes.
-  Activation (the foreground lock): the app calls `AllowSetForegroundWindow(bridge pid)` before `ActivateFrame`, the
-  bridge calls `SetForegroundWindow`; on close the bridge allows the app, and the app brings its front window
-  forward if the bridge still had the foreground. `RaiseFrame` is `SetWindowPos(HWND_TOP, SWP_NOACTIVATE)`; the app
-  sends it when one of its windows comes to the foreground from a process that is not komponist (a foreground
-  `SetWinEventHook`; switching from a frame to the main window raises nothing, so the clicked window stays in front),
-  back to front by the `HWND`s the bridges report in `FrameWindow`. "Oben halten" is `HWND_TOPMOST` while komponist
-  (the app or one of its bridges) is the foreground process (a foreground hook in the bridge); when another
-  application comes to the front the frame leaves the topmost band and goes right below its window. The frames run
-  from `komponist.exe --bridge`, the app's own executable, which is what the taskbar groups by when no
-  `AppUserModelID` is set; none is set. Costs, measured with the debug build (wgpu on DX12): a bridge without a frame has a 34 MiB working set, with
-  the kp-test-synth frame open about 200 MiB (private bytes about 400 MiB), mostly the GPU device and swapchain of
-  eframe; release builds were not measured. `KOMPONIST_FRAME_OFFSCREEN=1` opens frames at −20000 points without a
-  taskbar button and skips every activation (tests). Tests: `komponist-bridge` `tests/it/frame_win` (the test
-  synth as CLAP and VST3, close and reopen at the rect, shutdown, a dying bridge, the key hook; Surge XT and Dexed
-  `#[ignore]`d).
+- **Windows (port W6): the bridge owns the frame window, as on macOS.** The app could create the frame and let
+  the plugin attach a child window across processes (the Linux model), but a cross-process parent/child pair
+  attaches the input queues of both threads, so a hung plugin would freeze the app (Windows port evaluation
+  §3.6, internal notes). The frame logic is shared with macOS (`komponist-bridge/src/frame/mod.rs`, `keys.rs`);
+  `frame/win32.rs` is the OS half. The body is a container child window of winit's window (`WS_CLIPCHILDREN`,
+  background `surface.0`) the plugin attaches to (CLAP `win32`, VST3 `kPlatformTypeHWND`). Sizes are physical
+  pixels at the window's DPI scale (`GetDpiForWindow / 96`), passed to the plugin (CLAP `set_scale`, VST3
+  `setContentScaleFactor`); the header is 28 × scale pixels; the protocol (`GuiOpened`, `SetGuiSize`, `FrameRect`)
+  stays in points. The window's size is set with `SetWindowPos` for the outer rect `AdjustWindowRectExForDpi`
+  gives, then the container; a user drag of a resizable plugin asks it 100 ms after the drag rests; fixed-size
+  plugins get a frame without resize border or maximize button. When the frame moves to a monitor with another
+  DPI (winit keeps its size in points), `logic()` sees the new scale and the bridge passes it to the plugin
+  (`HostedPlugin::gui_set_scale`) and asks for its size at that scale. The bridge process is per-monitor-v2 DPI
+  aware (the manifest; the bridge sets it before its first window too). The event loop: §8.1, the wake relay
+  posts to a window of the main thread, which winit's loop dispatches. Keys: a `WH_GETMESSAGE` hook on the main
+  thread, installed after the plugin's GUI opened (plugins hook the thread too: baseview, under the egui GUIs
+  of the test plugins, handles key messages for its windows in its own `WH_GETMESSAGE` hook, so winit's message
+  hook never sees them; hooks run newest first), applies the WP-50 policy while the focus is in the container
+  (Strg = Ctrl as on Linux, the Windows key is "other", AltGr is Ctrl + Alt and never a shortcut; Space, Esc,
+  Return, Tab, Backspace, Delete by virtual-key code, letters by the layout's character) and turns a taken key into
+  `WM_NULL` and a `Shortcut`; while another visible top-level window of the bridge lies above the frame (tooltips:
+  `WS_EX_TRANSPARENT`, `tooltips_class32` do not count) every key passes.  Activation (the foreground lock): the
+  app calls `AllowSetForegroundWindow(bridge pid)` before `ActivateFrame`, the bridge calls `SetForegroundWindow`;
+  on close the bridge allows the app, and the app brings its front window forward if the bridge still had the
+  foreground. `RaiseFrame` is `SetWindowPos(HWND_TOP, SWP_NOACTIVATE)`; the app sends it when one of its windows
+  comes to the foreground from a process that is not komponist (a foreground `SetWinEventHook`; switching from a
+  frame to the main window raises nothing, so the clicked window stays in front), back to front by the `HWND`s
+  the bridges report in `FrameWindow`. "Oben halten" is `HWND_TOPMOST` while komponist (the app or one of its
+  bridges) is the foreground process (a foreground hook in the bridge); when another application comes to the
+  front the frame leaves the topmost band and goes right below its window. The frames run from `komponist.exe
+  --bridge`, the app's own executable, which is what the taskbar groups by when no `AppUserModelID` is set;
+  none is set. Costs, measured with the debug build (wgpu on DX12): a bridge without a frame has a 34 MiB
+  working set, with the kp-test-synth frame open about 200 MiB (private bytes about 400 MiB), mostly the GPU
+  device and swapchain of eframe; release builds were not measured. `KOMPONIST_FRAME_OFFSCREEN=1` opens frames
+  at −20000 points without a taskbar button and skips every activation (tests). Tests: `komponist-bridge`
+  `tests/it/frame_win` (the test synth as CLAP and VST3, close and reopen at the rect, shutdown, a dying bridge,
+  the key hook; Surge XT and Dexed `#[ignore]`d).
 
 ### 8.5 Built-in instruments
 
