@@ -35,8 +35,9 @@ env:
   SNAPSHOT_MAX_FAILED_PIXELS: "20"
 
 jobs:
-  check:
-    name: fmt, clippy, tests
+  # One job per platform, named "<OS> <arch>: <checks>" (like the release jobs), so further platforms slot in.
+  linux-x86_64:
+    name: "Linux x86_64: fmt, clippy, tests"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -130,8 +131,8 @@ jobs:
 
   # macOS arm64 (epic #41, issue #48). Formatting is checked once, on Linux. No GUI tests: they need Xvfb
   # (scripts/check-gui.sh is Linux only). Snapshots render with Metal and are not compared (kittest.toml [mac]).
-  macos:
-    name: clippy, tests (macOS arm64)
+  macos-arm64:
+    name: "macOS arm64: clippy, tests"
     runs-on: macos-15
     timeout-minutes: 75
     # Not blocking yet: macOS hosting (#51) and plugin frames (#52) are still in progress. It becomes a required
