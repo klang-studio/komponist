@@ -2477,6 +2477,7 @@ dependencies = [
  "assert_no_alloc",
  "cpal",
  "klang-dsp",
+ "komponist-rt",
  "midir",
  "rtrb",
  "serde",

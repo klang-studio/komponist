@@ -38,6 +38,7 @@ impl Probe {
             sample_rate: self.sample_rate.load(Ordering::SeqCst),
             max_frames: self.max_frames.load(Ordering::SeqCst),
             channels: self.channels.load(Ordering::SeqCst) as u16,
+            workgroup: None,
         }
     }
 }

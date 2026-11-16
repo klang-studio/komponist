@@ -26,7 +26,7 @@ pub trait AudioProcess: Send + 'static {
 }
 
 /// Parameters of the stream an [`AudioProcess`] is prepared for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamParams {
     /// Sample rate in Hz.
     pub sample_rate: u32,
@@ -35,6 +35,17 @@ pub struct StreamParams {
     pub max_frames: u32,
     /// Output channels of the device (≥ 1). Channel 0/1 carry left/right.
     pub channels: u16,
+    /// The device's audio IO workgroup (macOS, retained; #45): threads that work to the
+    /// callback's deadline besides the callback thread join it (the callback thread is a member
+    /// already). `None` on Linux, for the null backend and for devices without one.
+    pub workgroup: Option<komponist_rt::Workgroup>,
+}
+
+impl StreamParams {
+    /// The period of a full callback (`max_frames` at `sample_rate`).
+    pub fn period(&self) -> Duration {
+        crate::frames_to_duration(u64::from(self.max_frames), self.sample_rate)
+    }
 }
 
 /// Timing of one callback.

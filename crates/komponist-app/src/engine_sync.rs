@@ -74,18 +74,13 @@ pub struct EngineProcess {
     rate: Arc<AtomicU32>,
     /// Worker threads the engine should run (WP-65), started in `prepare`.
     workers: usize,
-    /// How they run in realtime: the period of the latest stream (#45).
+    /// How they run in realtime: the period and the audio workgroup of the latest stream (#45).
     rt: WorkerRt,
     /// Outcome of the last worker start, for the UI thread (only touched outside the callback).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
     /// Set by a worker start that ran without realtime priority; the app takes it once
     /// ([`EngineSync::take_worker_notice`]).
     worker_notice: Arc<AtomicBool>,
-}
-
-/// The duration of `frames` frames at `rate` Hz (a callback period).
-fn period(frames: u32, rate: u32) -> Duration {
-    Duration::from_secs_f64(f64::from(frames) / f64::from(rate.max(1)))
 }
 
 /// Whether a worker start deserves a status bar notice: workers run, but without the realtime
@@ -105,8 +100,8 @@ impl EngineProcess {
             midi: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             rate,
             workers: auto_workers(),
-            // Replaced by the stream's period in `prepare`.
-            rt: WorkerRt::new(period(HELD_BLOCK as u32, 48_000)),
+            // Replaced by the stream's in `prepare`.
+            rt: WorkerRt::new(Duration::from_secs_f64(HELD_BLOCK as f64 / 48_000.0)),
             worker_status: Arc::default(),
             worker_notice: Arc::default(),
         }
@@ -137,8 +132,10 @@ impl AudioProcess for EngineProcess {
         }
         self.rate.store(params.sample_rate, Ordering::Relaxed);
         // The worker pool is created when a stream starts (WP-65); unchanged it stays. On macOS the
-        // workers' time-constraint policy follows the stream's period (#45).
-        self.rt.period = period(params.max_frames, params.sample_rate);
+        // workers' time-constraint policy follows the stream's period and they join its device's
+        // IO workgroup, looked up anew for every stream, so the pool is rebuilt (#45).
+        self.rt.period = params.period();
+        self.rt.workgroup = params.workgroup.clone();
         self.apply_workers();
         let frames = (params.max_frames as usize).max(MAX_BLOCK);
         self.left.resize(frames, 0.0);

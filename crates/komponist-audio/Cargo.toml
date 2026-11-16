@@ -12,6 +12,8 @@ serde.workspace = true
 cpal = { workspace = true, features = ["realtime-dbus"] }
 midir.workspace = true
 rtrb.workspace = true
+# The device's audio workgroup handed to the engine's workers (macOS, #45).
+komponist-rt.workspace = true
 # The stream callback runs inside `assert_no_alloc` in debug builds (ARCHITECTURE §6.1); it only
 # reports when the binary installs `assert_no_alloc::AllocDisabler` as its allocator.
 assert_no_alloc.workspace = true
