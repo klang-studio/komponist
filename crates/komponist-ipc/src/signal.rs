@@ -276,34 +276,33 @@ mod tests {
     }
 
     /// The kernel's timer leeway is compensated (spike #43, Q4): on a time-constraint thread a
-    /// 1 ms wait that times out ends less than 60 µs after its deadline (uncompensated: 125–260
-    /// µs). The median of 40 waits; skipped if the kernel refuses the policy.
+    /// 1 ms wait that times out ends at most 50 µs later than the machine's plainest timed wait
+    /// (`mach_wait_until`: a few µs on Apple silicon; uncompensated: 125–260 µs more). Medians of
+    /// 40 waits; skipped if the kernel refuses the policy or the machine's timers are too coarse
+    /// for the check (the GitHub macOS runner's VM: 192 µs, #94).
     #[test]
     #[cfg(target_os = "macos")]
     fn a_timed_out_wait_ends_close_to_its_deadline() {
-        let median = std::thread::spawn(|| {
+        use komponist_rt::mach_time;
+        let overshoot = std::thread::spawn(|| {
             let period = Duration::from_millis(2);
             if let Err(e) = komponist_rt::set_current_thread_realtime(period, 80) {
                 eprintln!("skipped: {e}");
                 return None;
             }
             let word = AtomicU32::new(0);
-            let mut late: Vec<Duration> = (0..40)
-                .map(|_| {
-                    let deadline = Instant::now() + Duration::from_millis(1);
+            mach_time::against_baseline(|| {
+                mach_time::median_overshoot(|deadline| {
                     assert_eq!(wait_while(&word, 0, Some(deadline)), WaitOutcome::TimedOut);
-                    Instant::now().duration_since(deadline)
                 })
-                .collect();
-            late.sort();
-            Some(late[late.len() / 2])
+            })
         })
         .join()
         .unwrap();
-        if let Some(median) = median {
+        if let Some((baseline, median)) = overshoot {
             assert!(
-                median < Duration::from_micros(60),
-                "median overshoot {median:?}"
+                median < baseline + Duration::from_micros(50),
+                "median overshoot {median:?}, the machine's timers {baseline:?}"
             );
         }
     }
