@@ -1,5 +1,5 @@
-//! Hardware MIDI input through the real hub (midir, ALSA sequencer) into the app's engine: a
-//! virtual output port stands in for the keyboard. Skipped where the ALSA sequencer is missing.
+//! Hardware MIDI input through the real hub (midir: ALSA sequencer, CoreMIDI) into the app's engine: a
+//! virtual output port stands in for the keyboard. Skipped where there is no MIDI backend.
 //!
 //! The hub of these tests connects to the test's own virtual ports only
 //! (`MidiInputHub::only_connect_to`), never to the real devices of the machine. The stream is the
@@ -22,7 +22,7 @@ use midir::os::unix::VirtualOutput;
 
 use crate::acceptance_support::{ctrl, harness, key};
 
-/// ALSA client name of the test's virtual ports.
+/// Client name of the test's virtual ports (ALSA); on CoreMIDI the prefix of their names.
 const CLIENT: &str = "komponist-it";
 
 fn null_config() -> StreamConfig {
@@ -32,20 +32,30 @@ fn null_config() -> StreamConfig {
     }
 }
 
-/// A virtual output port named `port` in client [`CLIENT`], or `None` without ALSA sequencer.
+/// A virtual output port named `port` in client [`CLIENT`], or `None` without a MIDI backend.
 fn virtual_output(port: &str) -> Option<midir::MidiOutputConnection> {
     MidiInputHub::new().ok()?;
+    // ALSA prefixes the client name itself; a CoreMIDI source is named exactly as created.
+    let created = if cfg!(target_os = "macos") {
+        port_name(port)
+    } else {
+        port.to_owned()
+    };
     Some(
         MidiOutput::new(CLIENT)
             .unwrap()
-            .create_virtual(port)
+            .create_virtual(&created)
             .unwrap(),
     )
 }
 
 /// The settings name of the virtual port `port` (see `MidiInputHub::ports`).
 fn port_name(port: &str) -> String {
-    format!("{CLIENT}:{port}")
+    if cfg!(target_os = "macos") {
+        format!("{CLIENT} {port}")
+    } else {
+        format!("{CLIENT}:{port}")
+    }
 }
 
 /// A unique port name per test and process.
@@ -54,7 +64,7 @@ fn unique(test: &str) -> String {
 }
 
 fn sync_on(config: &StreamConfig, port: &str) -> (EngineSync, Result<(), AudioError>) {
-    let (mut hub, receiver) = MidiInputHub::new().expect("ALSA sequencer");
+    let (mut hub, receiver) = MidiInputHub::new().expect("MIDI backend");
     hub.only_connect_to(&port_name(port));
     let _ = hub.refresh();
     EngineSync::with_receiver(config, Some(hub), receiver, Box::new(BuiltinHost::new()))
@@ -103,7 +113,7 @@ fn signal_within(h: &mut Harness<'_, App>, track: TrackId, secs: u64) -> bool {
 fn plays_after(config: &StreamConfig, restarts: usize) {
     let port = unique("plays");
     let Some(mut out) = virtual_output(&port) else {
-        eprintln!("ALSA sequencer unavailable: skipped");
+        eprintln!("MIDI backend unavailable: skipped");
         return;
     };
     let mut app = app_on(config, &port);
@@ -157,7 +167,7 @@ fn the_app_monitors_and_records_a_virtual_port() {
 
     let port = unique("record");
     let Some(mut out) = virtual_output(&port) else {
-        eprintln!("ALSA sequencer unavailable: skipped");
+        eprintln!("MIDI backend unavailable: skipped");
         return;
     };
     let mut h = harness(app_on(&null_config(), &port));
@@ -204,7 +214,7 @@ fn the_app_monitors_and_records_a_virtual_port() {
 fn a_port_plugged_in_later_reaches_a_track_that_names_it() {
     let port = unique("hotplug");
     if MidiInputHub::new().is_err() {
-        eprintln!("ALSA sequencer unavailable: skipped");
+        eprintln!("MIDI backend unavailable: skipped");
         return;
     }
     let mut h = harness(app_on(&null_config(), &port));
@@ -283,7 +293,7 @@ fn the_status_bar_tells_when_a_midi_device_appears_and_vanishes() {
 
     let port = unique("notice");
     if MidiInputHub::new().is_err() {
-        eprintln!("ALSA sequencer unavailable: skipped");
+        eprintln!("MIDI backend unavailable: skipped");
         return;
     }
     let mut h = harness(app_on(&null_config(), &port));
