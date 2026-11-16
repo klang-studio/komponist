@@ -253,3 +253,10 @@ jobs:
         run: |
           cargo clippy -p komponist-audio --all-targets --features asio -- -D warnings
           cargo test -p komponist-audio --features asio
+
+      # The test scratch folders in target/tmp hold a file with a non-ASCII name (a plugins scan test), which
+      # Git for Windows' tar cannot read when rust-cache packs target/: "File removed before we read it", and the
+      # whole cache save failed, so every run built from scratch. Nothing in there is worth caching.
+      - name: Remove test scratch files
+        if: always()
+        run: rm -rf target/tmp
