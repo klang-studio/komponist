@@ -128,7 +128,19 @@ fn synth_frame(bundle: &Path, id: &str) {
         lang: "en".into(),
     });
     bridge.send(ControlMsg::ActivateFrame);
+    // komponist became active: the frame comes forward (off-screen: no activation either way).
+    bridge.send(ControlMsg::RaiseFrame);
     bridge.sync();
+    // The frame told its window number right after it opened.
+    let window = bridge
+        .seen
+        .iter()
+        .find_map(|m| match m {
+            BridgeMsg::FrameWindow(n) => Some(*n),
+            _ => None,
+        })
+        .expect("FrameWindow after GuiOpened");
+    assert!(window > 0, "{window}");
 
     let rect = close(&mut bridge);
     assert_eq!((rect.x, rect.y), (OFFSCREEN, OFFSCREEN), "{rect:?}");
@@ -190,6 +202,9 @@ fn x11_targets_and_plugins_without_gui_are_refused() {
         scale: 1.0,
     }));
     bridge.expect_error(ErrorContext::Gui);
+    // Raising without a frame does nothing.
+    bridge.send(ControlMsg::RaiseFrame);
+    bridge.sync();
     // Closing what never opened still answers.
     bridge.send(ControlMsg::CloseGui);
     bridge.expect("GuiClosed", |m| {

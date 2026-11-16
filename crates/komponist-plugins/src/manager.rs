@@ -183,6 +183,13 @@ pub enum PluginManagerEvent {
         /// The device.
         device: DeviceId,
     },
+    /// The window number of the bridge's own frame (macOS), for ordering frames.
+    FrameWindow {
+        /// The device.
+        device: DeviceId,
+        /// Window server id.
+        number: i64,
+    },
     /// A background scan finished; the catalog is updated.
     ScanFinished(ScanReport),
     /// A log line from a bridge or plugin.
@@ -736,6 +743,14 @@ impl PluginManager {
                 header,
                 lang: lang.to_owned(),
             });
+        }
+    }
+
+    /// Orders the bridge's own frame to the front without activating it (macOS; the app became
+    /// active).
+    pub fn raise_frame(&mut self, device: DeviceId) {
+        if let Some(bridge) = self.bridges.get(&device) {
+            bridge.send(ControlMsg::RaiseFrame);
         }
     }
 

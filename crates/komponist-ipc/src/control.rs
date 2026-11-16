@@ -61,7 +61,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// sidechain audio). 4 (#52): `OpenGui` takes a [`GuiTarget`] (an X11 child on Linux, the
 /// bridge's own frame window on macOS) and the frame messages (`HeaderState`, `ActivateFrame`,
 /// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
-/// frame's last rect).
+/// frame's last rect, `RaiseFrame` and `FrameWindow`).
 pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
@@ -338,6 +338,11 @@ pub enum ControlMsg {
     /// activation to the bridge's pid right before (`NSApplication::yieldActivationToApplication`),
     /// so the bridge's `activate` succeeds under cooperative activation (spike #42 Q3).
     ActivateFrame,
+    /// komponist became the active application (Dock icon, ⌘-Tab, a click on the main window):
+    /// order the bridge-owned frame to the front of its level without activating the bridge or
+    /// making the frame key (macOS). The app sends it to its frames back to front, so their order
+    /// stays.
+    RaiseFrame,
     /// Switch realtime / offline (export); the bridge deactivates and re-activates if needed.
     SetRenderMode(RenderMode),
     /// Deactivate, unload and exit.
@@ -416,6 +421,10 @@ pub enum BridgeMsg {
     FrameMoved(FrameRect),
     /// The window's close button of the bridge-owned frame: the app closes it like × (`CloseGui`).
     CloseRequested,
+    /// The bridge-owned frame's window number (the window server's id, the same in every
+    /// process), sent after `GuiOpened`: the app finds the frames' order in the window list with
+    /// it before it raises them (`RaiseFrame`).
+    FrameWindow(i64),
     /// The plugin's latency changed (frames).
     LatencyChanged(u32),
     /// The plugin asked for a restart; the bridge handles it and reports `Activated`.
@@ -1061,6 +1070,7 @@ mod tests {
                 lang: "en".into(),
             },
             ControlMsg::ActivateFrame,
+            ControlMsg::RaiseFrame,
             ControlMsg::SetGuiSize(GuiSize {
                 width: 800,
                 height: 600,
@@ -1164,6 +1174,7 @@ mod tests {
                 height: 4.0,
             }),
             BridgeMsg::CloseRequested,
+            BridgeMsg::FrameWindow(4711),
             BridgeMsg::LatencyChanged(128),
             BridgeMsg::RestartRequested,
             BridgeMsg::StateDirty,

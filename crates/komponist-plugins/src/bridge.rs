@@ -693,6 +693,9 @@ impl Bridge {
             BridgeMsg::CloseRequested => {
                 events.push(PluginManagerEvent::FrameCloseRequested { device });
             }
+            BridgeMsg::FrameWindow(number) => {
+                events.push(PluginManagerEvent::FrameWindow { device, number });
+            }
             BridgeMsg::LatencyChanged(latency) => self.update_latency(latency, events),
             BridgeMsg::RestartRequested => {}
             BridgeMsg::StateDirty => {

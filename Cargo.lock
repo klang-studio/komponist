@@ -2445,6 +2445,7 @@ name = "komponist-app"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
+ "block2 0.6.2",
  "eframe",
  "egui",
  "egui_kittest",

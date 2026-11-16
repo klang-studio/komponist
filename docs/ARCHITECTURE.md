@@ -973,12 +973,13 @@ state. State snapshots are taken on save, on GUI close, and debounced on "state 
 **Control protocol** (postcard over a Unix stream socket, length-prefixed frames; #44), app → bridge:
 `Load`, `Activate`, `Deactivate`, `GetState`, `SetState`, `ListParams`, `SetParam`,
 `OpenGui(GuiTarget)` (`X11Child{xid, scale}` on Linux, `OwnFrame{header, lang, rect}` on macOS, #52),
-`SetGuiSize`, `CloseGui`, `HeaderState{header, lang}`, `ActivateFrame`, `SetRenderMode`, `Shutdown`.
+`SetGuiSize`, `CloseGui`, `HeaderState{header, lang}`, `ActivateFrame`, `RaiseFrame`, `SetRenderMode`, `Shutdown`.
 Bridge → app: `Loaded{info, params, latency}`
 (the info's descriptor says whether the plugin has a sidechain port, `PluginDescriptor::sidechain`, #6),
 `State(bytes)`, `ParamValues(batch, ~30 Hz)`, `GuiOpened`, `GuiSizeRequest`, `GuiClosed{rect}`,
 `LatencyChanged`, `RestartRequested`, `StateDirty`, `Log`, `Error`, and from a bridge-owned frame
-(macOS) `HeaderAction`, `Shortcut{chord}`, `HeaderKey`, `FrameMoved(rect)`, `CloseRequested` (§8.4).
+(macOS) `HeaderAction`, `Shortcut{chord}`, `HeaderKey`, `FrameMoved(rect)`, `CloseRequested`,
+`FrameWindow(number)` (§8.4).
 
 **Parallelism:** bridges are separate processes, so each plugin runs on its own core. Since WP-65 an
 instrument bridge at the head of a chain is started before the engine runs any chain
@@ -1104,8 +1105,15 @@ table of CLAP features / VST3 subcategories.
   keys of the focused header go to egui and to the app as `HeaderKey`. Activation (cooperative,
   macOS 14+): the app yields to the bridge's pid, then `ActivateFrame` (`activate` +
   `makeKeyAndOrderFront`); the app activates itself again after `GuiClosed` if the bridge was
-  frontmost. "Oben halten" floats the frame only while komponist (the app or one of its bridges) is
-  the active application. The parameter view and the device states stay the app's own viewport at
+  frontmost. Frames are windows of other processes, so the Dock icon, ⌘-Tab or a click on the
+  main window would bring only the app forward: when the app becomes active
+  (`NSApplicationDidBecomeActiveNotification`) it sends every open frame `RaiseFrame`, back to front
+  by the window numbers the bridges reported (`FrameWindow`), and each bridge orders its frame
+  front (`orderFrontRegardless`) without activating itself or taking key. Header tooltips go
+  beside their control (`komponist_ui::tooltip::HoverSide::Beside`): egui draws in winit's Metal
+  layer, below the plugin's view, which would hide a tooltip below the header. "Oben halten"
+  floats the frame only while komponist (the app or one of its bridges) is the active
+  application. The parameter view and the device states stay the app's own viewport at
   the bridge frame's position. Costs (spike #42): +40–60 MiB per visible frame (egui draws the
   whole window). `KOMPONIST_FRAME_OFFSCREEN=1` opens frames at −20000 and blocks every activation
   (tests). The bridge clears its task-level crash exception ports at start.

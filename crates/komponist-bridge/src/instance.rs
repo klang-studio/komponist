@@ -615,8 +615,11 @@ impl Bridge {
             ControlMsg::HeaderState { header, lang } => frame::set_header(self, header, &lang),
             #[cfg(target_os = "macos")]
             ControlMsg::ActivateFrame => frame::activate(self),
+            #[cfg(target_os = "macos")]
+            ControlMsg::RaiseFrame => frame::raise(self),
             #[cfg(not(target_os = "macos"))]
-            ControlMsg::HeaderState { .. } | ControlMsg::ActivateFrame => {}
+            ControlMsg::HeaderState { .. } | ControlMsg::ActivateFrame | ControlMsg::RaiseFrame => {
+            }
             ControlMsg::SetRenderMode(mode) => self.set_render_mode(mode),
             ControlMsg::Shutdown => self.shutdown = true,
             ControlMsg::Ping { seq } => self.send(BridgeMsg::Pong { seq }),

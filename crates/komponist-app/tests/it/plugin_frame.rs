@@ -410,6 +410,7 @@ struct Script {
     targets: Vec<GuiTarget>,
     headers: Vec<(DeviceId, HeaderModel, String)>,
     activated: Vec<DeviceId>,
+    raised: Vec<DeviceId>,
 }
 
 /// Devices whose plugin the catalog knows run and have a GUI; the rest are missing.
@@ -499,6 +500,9 @@ impl DeviceHost for FakeHost {
     }
     fn activate_frame(&mut self, device: DeviceId) {
         self.script.borrow_mut().activated.push(device);
+    }
+    fn raise_frame(&mut self, device: DeviceId) {
+        self.script.borrow_mut().raised.push(device);
     }
     fn set_gui_size(&mut self, device: DeviceId, size: GuiSize) {
         self.script.borrow_mut().sizes.push((device, size));
@@ -1128,4 +1132,33 @@ fn header_tooltips_stay_in_the_header_where_a_native_view_lies_below() {
         beside.right() <= close.left(),
         "left of ×: {beside:?} {close:?}"
     );
+}
+
+/// The app became active (Dock icon, ⌘-Tab): the frames the bridges show come forward, not the
+/// ones still opening, and nothing takes the activation from the app.
+#[test]
+fn becoming_active_raises_the_open_bridge_frames() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    h.state_mut().raise_bridge_frames();
+    assert!(script.borrow().raised.is_empty(), "still opening");
+    push(
+        &script,
+        PluginManagerEvent::GuiOpened {
+            device: surge,
+            size: GuiSize::default(),
+            resizable: false,
+        },
+    );
+    push(
+        &script,
+        PluginManagerEvent::FrameWindow {
+            device: surge,
+            number: 4711,
+        },
+    );
+    h.run_steps(2);
+    let activated = script.borrow().activated.len();
+    h.state_mut().raise_bridge_frames();
+    assert_eq!(script.borrow().raised, vec![surge]);
+    assert_eq!(script.borrow().activated.len(), activated);
 }

@@ -205,6 +205,8 @@ struct Frame {
     pos: Option<(i32, i32)>,
     /// Where the bridge's own frame was last (macOS).
     remote_rect: Option<FrameRect>,
+    /// The window number of the bridge's own frame (macOS).
+    remote_window: Option<i64>,
     /// The view the window was last sized for.
     sized_for: Option<PluginView>,
     /// The user picked the view (the frame no longer switches it to "Plugin" by itself).
@@ -300,6 +302,34 @@ impl App {
                 .frames
                 .iter()
                 .any(|f| f.device == device && f.gui != Gui::Idle)
+    }
+
+    /// The app became active (macOS: `NSApplicationDidBecomeActiveNotification`): every frame the
+    /// bridges show comes to the front, back to front so their order stays, without taking the
+    /// activation from the app (module docs).
+    pub fn raise_bridge_frames(&mut self) {
+        if !self.frames.bridge_frames {
+            return;
+        }
+        let order = activation::front_to_back();
+        let mut open: Vec<(usize, DeviceId)> = self
+            .frames
+            .frames
+            .iter()
+            .filter(|f| f.gui == Gui::Open)
+            .map(|f| {
+                let at = f
+                    .remote_window
+                    .and_then(|n| order.iter().position(|o| *o == n))
+                    .unwrap_or(usize::MAX);
+                (at, f.device)
+            })
+            .collect();
+        // Back first: each raise lands on top of the ones before.
+        open.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        for (_, device) in open {
+            self.engine.host_mut().raise_frame(device);
+        }
     }
 
     /// `OpenWindow` for a window that is open already: a frame the bridge shows comes to the
@@ -482,6 +512,9 @@ impl App {
         let native = !ctx.embed_viewports();
         let remote = (native && cfg!(target_os = "macos")) || self.frames.force_bridge_frames;
         self.frames.bridge_frames = remote;
+        if remote && native && activation::became_active(ctx) {
+            self.raise_bridge_frames();
+        }
         self.log_focus();
         // Keys the key thread took back from plugins.
         let grabbed = self
@@ -603,6 +636,7 @@ impl App {
                 keep_on_top: window.keep_on_top,
                 pos: window.pos,
                 remote_rect: None,
+                remote_window: None,
                 sized_for: if native { None } else { Some(window.view) },
                 user_view: false,
                 had_gui: false,
@@ -947,6 +981,11 @@ impl App {
             }
             PluginManagerEvent::FrameKey { device, ref key } if self.has_frame(device) => {
                 self.frame_bridge_key(device, key);
+            }
+            PluginManagerEvent::FrameWindow { device, number } => {
+                if let Some(f) = self.frames.frame_mut(device) {
+                    f.remote_window = Some(number);
+                }
             }
             PluginManagerEvent::FrameMoved { device, rect } => {
                 if let Some(f) = self.frames.frame_mut(device) {

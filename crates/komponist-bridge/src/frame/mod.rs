@@ -320,6 +320,27 @@ pub(super) fn activate(bridge: &mut Bridge) {
     }
 }
 
+/// `RaiseFrame`: komponist became active; the frame comes to the front of its level, the bridge
+/// stays inactive and the frame does not become key (the app's main window keeps the keyboard).
+pub(super) fn raise(bridge: &mut Bridge) {
+    let Some(frame) = bridge.frame.open.clone() else {
+        return;
+    };
+    let window = {
+        let f = frame.borrow();
+        if f.closing || !f.gui_open {
+            return;
+        }
+        f.window.clone()
+    };
+    if let Some(window) = window
+        && window.isVisible()
+    {
+        window.orderFrontRegardless();
+        log("raised");
+    }
+}
+
 /// `SetGuiSize` for the own frame: the body takes `size` (points) as after a user drag.
 pub(super) fn set_body_size(bridge: &mut Bridge, size: GuiSize) {
     let Some(frame) = bridge.frame.open.clone() else {
@@ -647,6 +668,7 @@ fn create(
                 size: info.size,
                 resizable: info.resizable,
             });
+            f.send(&BridgeMsg::FrameWindow(window.windowNumber() as i64));
             log(format!(
                 "opened: plugin {}×{} pt, resizable {}, backing scale {}, plugin view {}",
                 info.size.width,

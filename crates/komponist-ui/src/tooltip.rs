@@ -55,12 +55,12 @@ const HOVER_SIDE_ID: &str = "komponist_tooltip_hover_side";
 
 /// Sets where hover tooltips go in `ctx`.
 pub fn set_hover_side(ctx: &Context, side: HoverSide) {
-    ctx.data_mut(|d| d.insert_temp(Id::new(HOVER_SIDE_ID), side));
+    ctx.data_mut(|d| d.insert_temp(Id::unique(HOVER_SIDE_ID), side));
 }
 
 /// Where hover tooltips go in `ctx` ([`HoverSide::Below`] unless [`set_hover_side`] said else).
 pub fn hover_side(ctx: &Context) -> HoverSide {
-    ctx.data(|d| d.get_temp(Id::new(HOVER_SIDE_ID)))
+    ctx.data(|d| d.get_temp(Id::unique(HOVER_SIDE_ID)))
         .unwrap_or_default()
 }
 

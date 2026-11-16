@@ -5,6 +5,12 @@
 //! the bridge has the app's bundle id) and sends `ActivateFrame`; the bridge then activates and
 //! orders its window front. When a frame closes the bridge yields back, and the app activates
 //! itself if the bridge was the active app. Elsewhere only `ActivateFrame` is sent (tests).
+//!
+//! Bridge frames belong to other processes, so the Dock icon, ⌘-Tab or a click on the main window
+//! bring only the app's own windows forward. When the app becomes active
+//! (`NSApplicationDidBecomeActiveNotification`, [`became_active`]) every open bridge frame gets
+//! `RaiseFrame`, back to front ([`front_to_back`]), and orders itself front without taking the
+//! activation or the keyboard.
 
 use komponist_model::DeviceId;
 
@@ -29,6 +35,29 @@ pub(super) fn take_back(bridge: Option<u32>) {
     let _ = bridge;
 }
 
+/// Whether the app became active since the last call (macOS; the observer is installed on the
+/// first call and wakes `ctx`). Always `false` elsewhere.
+pub(super) fn became_active(ctx: &egui::Context) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::watch(ctx);
+        macos::BECAME_ACTIVE.swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = ctx;
+        false
+    }
+}
+
+/// The window numbers of all applications' windows, front to back (macOS; empty elsewhere).
+pub(super) fn front_to_back() -> Vec<i64> {
+    #[cfg(target_os = "macos")]
+    return macos::front_to_back();
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
 fn yield_to(pid: u32) {
     #[cfg(target_os = "macos")]
     macos::yield_to(pid);
@@ -38,8 +67,59 @@ fn yield_to(pid: u32) {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::cell::Cell;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use block2::RcBlock;
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSRunningApplication, NSWorkspace};
+    use objc2_app_kit::{
+        NSApplication, NSApplicationDidBecomeActiveNotification, NSRunningApplication, NSWindow,
+        NSWindowNumberListOptions, NSWorkspace,
+    };
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+
+    /// Set by the observer, taken by [`super::became_active`].
+    pub(super) static BECAME_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+    thread_local! {
+        static WATCHING: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Installs the observer of `NSApplicationDidBecomeActiveNotification` once; it marks the
+    /// activation and wakes `ctx`, whose next pass raises the frames.
+    pub(super) fn watch(ctx: &egui::Context) {
+        if WATCHING.replace(true) {
+            return;
+        }
+        let ctx = ctx.clone();
+        let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
+            BECAME_ACTIVE.store(true, Ordering::Release);
+            ctx.request_repaint();
+        });
+        let center = NSNotificationCenter::defaultCenter();
+        // SAFETY: a valid static notification name; the block lives as long as the observer,
+        // which stays for the life of the process.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSApplicationDidBecomeActiveNotification),
+                None,
+                None,
+                &block,
+            )
+        };
+        std::mem::forget(observer);
+    }
+
+    /// All applications' window numbers, front to back.
+    pub(super) fn front_to_back() -> Vec<i64> {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Vec::new();
+        };
+        NSWindow::windowNumbersWithOptions(NSWindowNumberListOptions::AllApplications, mtm)
+            .map(|numbers| numbers.iter().map(|n| n.integerValue() as i64).collect())
+            .unwrap_or_default()
+    }
 
     /// The app's own activation goes to process `pid`.
     pub(super) fn yield_to(pid: u32) {

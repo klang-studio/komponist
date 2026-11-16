@@ -221,6 +221,12 @@ pub trait DeviceHost {
         let _ = device;
     }
 
+    /// Orders the bridge's own frame to the front without activating it (macOS; the app became
+    /// active).
+    fn raise_frame(&mut self, device: DeviceId) {
+        let _ = device;
+    }
+
     /// The process id of the device's bridge, if it has one.
     fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
         let _ = device;
@@ -719,6 +725,10 @@ impl DeviceHost for PluginHost {
 
     fn activate_frame(&mut self, device: DeviceId) {
         self.manager.activate_frame(device);
+    }
+
+    fn raise_frame(&mut self, device: DeviceId) {
+        self.manager.raise_frame(device);
     }
 
     fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
