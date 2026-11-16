@@ -391,6 +391,7 @@ impl Bridge {
             frames: BLOCK as u32,
             flags: std::mem::take(&mut self.next_flags),
             steady_time: self.steady_time,
+            deadline: None,
             transport: WireTransport {
                 tempo_bpm: 120.0,
                 meter_num: 4,

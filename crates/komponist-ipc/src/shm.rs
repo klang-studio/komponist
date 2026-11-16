@@ -49,8 +49,8 @@ use crate::signal::{self, WaitOutcome};
 pub const SHM_MAGIC: u32 = u32::from_le_bytes(*b"KPSM");
 
 /// Layout version; both sides must agree. 2 (#6): [`ShmLayout::audio_sidechain`] and
-/// [`BLOCK_FLAG_SIDECHAIN`].
-pub const SHM_VERSION: u32 = 2;
+/// [`BLOCK_FLAG_SIDECHAIN`]. 3 (#45): [`BlockRequest::deadline_ticks`].
+pub const SHM_VERSION: u32 = 3;
 
 /// Frames of audio per block the mapping holds. Must equal `komponist_engine::MAX_BLOCK`
 /// (`komponist-plugins` asserts it in a test).
@@ -152,6 +152,11 @@ pub struct BlockRequest {
     pub event_count: u32,
     /// Running sample counter of the engine (CLAP `steady_time`), reset only by the engine.
     pub steady_time: u64,
+    /// When the app stops waiting for this block ([`BlockSpec::deadline`]) as an absolute
+    /// `mach_absolute_time` (macOS): the bridge RT thread passes it to its audio work interval, so
+    /// the CPU frequency controller knows the real deadline (#45). 0 = none (offline render, and
+    /// always on Linux, where nothing reads it).
+    pub deadline_ticks: u64,
     /// Transport at frame 0.
     pub transport: WireTransport,
 }
@@ -756,8 +761,25 @@ pub struct BlockSpec {
     pub flags: u32,
     /// Running sample counter of the engine.
     pub steady_time: u64,
+    /// The deadline the app will wait for this block until ([`BridgeClient::wait_done`]), `None`
+    /// for an offline render. Goes to the bridge as [`BlockRequest::deadline_ticks`].
+    pub deadline: Option<Instant>,
     /// Transport at frame 0.
     pub transport: WireTransport,
+}
+
+/// RT. [`BlockRequest::deadline_ticks`] for `deadline`: the absolute `mach_absolute_time` on
+/// macOS, 0 without a deadline and on other systems (no reader; saves the clock reads).
+fn deadline_ticks(deadline: Option<Instant>) -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        deadline.map_or(0, komponist_rt::mach_time::deadline)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = deadline;
+        0
+    }
 }
 
 /// Why a block did not complete.
@@ -861,6 +883,7 @@ impl BridgeClient {
             flags,
             event_count: pushed,
             steady_time: spec.steady_time,
+            deadline_ticks: deadline_ticks(spec.deadline),
             transport: spec.transport,
         };
         let header = &layout.header;
@@ -1377,6 +1400,46 @@ mod tests {
         WireEvent::new(offset, WireEventKind::ParamValue { id, value })
     }
 
+    /// The block's deadline reaches the bridge in Mach ticks on macOS (for its work interval,
+    /// #45); without a deadline, and on Linux, the field is 0.
+    #[test]
+    fn the_deadline_travels_with_the_request() {
+        let (mut client, mut server, _monitor) = active();
+        let input = [[0.0f32; 16]; 2];
+        let deadline = Instant::now() + Duration::from_millis(3);
+        for given in [Some(deadline), None] {
+            let spec = BlockSpec {
+                deadline: given,
+                ..spec(16)
+            };
+            let seq =
+                assert_no_alloc(|| client.begin_block(&spec, [&input[0], &input[1]], None, &[]))
+                    .unwrap();
+            let request = server.wait_request(Some(Instant::now())).unwrap();
+            #[cfg(target_os = "macos")]
+            match given {
+                Some(_) => {
+                    let ticks = komponist_rt::mach_time::deadline(deadline);
+                    let slack = komponist_rt::mach_time::ticks(Duration::from_millis(1));
+                    assert!(
+                        request.deadline_ticks <= ticks && request.deadline_ticks + slack >= ticks,
+                        "{} vs {ticks}",
+                        request.deadline_ticks
+                    );
+                }
+                None => assert_eq!(request.deadline_ticks, 0),
+            }
+            #[cfg(not(target_os = "macos"))]
+            assert_eq!(request.deadline_ticks, 0);
+            server.finish(BlockResult::default());
+            let mut out = [[0f32; 16]; 2];
+            let [l, r] = &mut out;
+            client
+                .wait_done(seq, Instant::now() + Duration::from_secs(1), [l, r])
+                .unwrap();
+        }
+    }
+
     #[test]
     fn one_block_in_process() {
         let (mut client, mut server, mut monitor) = active();
@@ -1386,6 +1449,7 @@ mod tests {
             frames: 64,
             flags: BLOCK_FLAG_RESET,
             steady_time: 1234,
+            deadline: None,
             transport: WireTransport {
                 flags: TRANSPORT_PLAYING,
                 tempo_bpm: 120.0,
