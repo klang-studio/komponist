@@ -64,22 +64,6 @@ impl HostKind {
             HostKind::PipeWire
         }
     }
-
-    /// `self` if it exists on this system, else [`HostKind::platform_default`].
-    fn or_platform_default(self) -> HostKind {
-        if self.is_supported_here() {
-            self
-        } else {
-            HostKind::platform_default()
-        }
-    }
-}
-
-/// Reads a driver and replaces one this system does not have by the platform default.
-fn deserialize_host<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<HostKind, D::Error> {
-    HostKind::deserialize(deserializer).map(HostKind::or_platform_default)
 }
 
 /// Stable identity of an output device, persisted in [`StreamConfig::device_id`].
@@ -123,11 +107,12 @@ pub struct DeviceInfo {
 
 /// The stream the user picked in S07. Persisted in the settings.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "StoredStreamConfig")]
 pub struct StreamConfig {
-    /// Driver. When a saved configuration names a driver this system does not have (PipeWire,
-    /// JACK or ALSA on macOS, CoreAudio on Linux), it loads as [`HostKind::platform_default`].
-    /// The device id then belongs to another host and never matches; the device name still does.
-    #[serde(deserialize_with = "deserialize_host")]
+    /// Driver. A saved configuration that names a driver this system does not have (PipeWire,
+    /// JACK or ALSA on macOS, CoreAudio on Linux) loads as the default configuration of this
+    /// system: [`HostKind::platform_default`] with the default device (`device` and `device_id`
+    /// dropped, they belong to the other system), rate and buffer size kept.
     pub host: HostKind,
     /// Output device name (display, and fallback for the lookup); `None` together with
     /// `device_id: None` = the host's default device.
@@ -141,6 +126,35 @@ pub struct StreamConfig {
     pub sample_rate: u32,
     /// Buffer size in frames (segments 64 / 128 / 256 / 512 / 1024 in S07).
     pub buffer_frames: u32,
+}
+
+/// The on-disk shape of [`StreamConfig`]; the conversion migrates settings written on another
+/// system.
+#[derive(Deserialize)]
+struct StoredStreamConfig {
+    host: HostKind,
+    device: Option<String>,
+    #[serde(default)]
+    device_id: Option<DeviceId>,
+    sample_rate: u32,
+    buffer_frames: u32,
+}
+
+impl From<StoredStreamConfig> for StreamConfig {
+    fn from(stored: StoredStreamConfig) -> StreamConfig {
+        let (host, device, device_id) = if stored.host.is_supported_here() {
+            (stored.host, stored.device, stored.device_id)
+        } else {
+            (HostKind::platform_default(), None, None)
+        };
+        StreamConfig {
+            host,
+            device,
+            device_id,
+            sample_rate: stored.sample_rate,
+            buffer_frames: stored.buffer_frames,
+        }
+    }
 }
 
 impl Default for StreamConfig {
@@ -1154,17 +1168,25 @@ mod tests {
 
     #[test]
     fn stream_configs_without_device_id_still_load() {
-        let old = r#"{"host":"pipewire","device":"Scarlett 2i2","sample_rate":48000,"buffer_frames":256}"#;
-        let config: StreamConfig = serde_json::from_str(old).unwrap();
+        // A driver of this system (PipeWire or CoreAudio): other systems' drivers migrate.
+        let host = if cfg!(target_os = "macos") {
+            "coreaudio"
+        } else {
+            "pipewire"
+        };
+        let old = format!(
+            r#"{{"host":"{host}","device":"Scarlett 2i2","sample_rate":48000,"buffer_frames":256}}"#
+        );
+        let config: StreamConfig = serde_json::from_str(&old).unwrap();
         assert_eq!(config.device.as_deref(), Some("Scarlett 2i2"));
         assert_eq!(config.device_id, None);
         let with_id = StreamConfig {
-            device_id: Some(DeviceId("pipewire:alsa_output.usb-x".to_owned())),
+            device_id: Some(DeviceId(format!("{host}:alsa_output.usb-x"))),
             ..config
         };
         let json = serde_json::to_string(&with_id).unwrap();
         assert!(
-            json.contains(r#""device_id":"pipewire:alsa_output.usb-x""#),
+            json.contains(&format!(r#""device_id":"{host}:alsa_output.usb-x""#)),
             "{json}"
         );
         assert_eq!(
@@ -1241,7 +1263,13 @@ mod tests {
             };
             assert_eq!(config.host, expected, "{name}");
             assert_eq!((config.sample_rate, config.buffer_frames), (44_100, 128));
-            assert_eq!(config.device.as_deref(), Some("X"));
+            // A migrated configuration uses the system's default device.
+            if kind.is_supported_here() {
+                assert_eq!(config.device.as_deref(), Some("X"));
+                assert!(config.device_id.is_some());
+            } else {
+                assert_eq!((config.device, config.device_id), (None, None));
+            }
         }
         assert!(serde_json::from_str::<StreamConfig>(&json("wasapi")).is_err());
     }

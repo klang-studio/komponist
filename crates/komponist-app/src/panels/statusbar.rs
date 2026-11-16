@@ -59,6 +59,7 @@ pub fn fmt_rate(rate: u32) -> String {
 /// (`buffer / rate`): "PipeWire · 48 kHz · 256 Samples · 5.3 ms".
 pub fn fmt_output(config: &StreamConfig, t: Lang) -> String {
     let host = match config.host {
+        HostKind::CoreAudio => "CoreAudio",
         HostKind::PipeWire => "PipeWire",
         HostKind::Jack => "JACK",
         HostKind::Alsa => "ALSA",
