@@ -1080,3 +1080,52 @@ fn a_crash_takes_the_bridge_frame_and_the_app_shows_the_state() {
     h.run_steps(3);
     assert_eq!(script.borrow().targets.len(), 2);
 }
+
+/// The tooltip of the header's × after the hover delay: its rect, or `None` if it did not show.
+fn close_tooltip(side: komponist_ui::tooltip::HoverSide) -> (Rect, Option<Rect>) {
+    let mut h = frame_harness(
+        frame(
+            surge_header(),
+            BodyModel::Gui {
+                native: true,
+                name: String::new(),
+            },
+        ),
+        [900.0, 200.0],
+        1.0,
+    );
+    komponist_ui::tooltip::set_hover_side(&h.ctx, side);
+    h.run();
+    let close = h.get_by_label(de::DIALOG_CLOSE).rect();
+    h.hover_at(close.center());
+    for _ in 0..240 {
+        h.step();
+        if let Some(tip) = h.query_by_label_contains("Esc") {
+            return (close, Some(tip.rect()));
+        }
+    }
+    (close, None)
+}
+
+/// The bridge's frame on macOS (#52): the plugin's `NSView` covers everything below the header,
+/// so header tooltips go beside their element, inside the header strip.
+#[test]
+fn header_tooltips_stay_in_the_header_where_a_native_view_lies_below() {
+    use komponist_ui::tooltip::HoverSide;
+    let (close, below) = close_tooltip(HoverSide::Below);
+    let below = below.expect("the tooltip of × shows");
+    assert!(
+        below.top() >= metrics::HEADER,
+        "below the header: {below:?}"
+    );
+    let (close, beside) = close_tooltip(HoverSide::Beside);
+    let beside = beside.expect("the tooltip of × shows beside it");
+    assert!(
+        beside.top() >= 0.0 && beside.bottom() <= metrics::HEADER,
+        "inside the header strip: {beside:?}"
+    );
+    assert!(
+        beside.right() <= close.left(),
+        "left of ×: {beside:?} {close:?}"
+    );
+}

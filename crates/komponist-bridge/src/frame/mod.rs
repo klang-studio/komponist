@@ -586,6 +586,9 @@ fn create(
     let ctx = cc.egui_ctx.clone();
     komponist_ui::install(&ctx);
     komponist_ui::set_lang(&ctx, frame.borrow().lang);
+    // egui draws in winit's Metal layer, below the plugin's view: a tooltip below a header control
+    // would be hidden behind the plugin (owner test, #52). Header tooltips go beside their control.
+    komponist_ui::tooltip::set_hover_side(&ctx, komponist_ui::tooltip::HoverSide::Beside);
     let view = match cc.window_handle().map(|h| h.as_raw()) {
         // SAFETY: winit's view of this window, alive while the window is.
         Ok(RawWindowHandle::AppKit(h)) => unsafe { h.ns_view.cast::<NSView>().as_ref() },
