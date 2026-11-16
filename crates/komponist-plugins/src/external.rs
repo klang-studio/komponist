@@ -245,10 +245,20 @@ impl ExternalProcessor {
         if ctx.offline {
             flags |= BLOCK_FLAG_OFFLINE;
         }
+        let deadline = match ctx.deadline {
+            _ if ctx.offline => entered + OFFLINE_DEADLINE,
+            Some(deadline) => deadline,
+            None => {
+                let period = frames as f64 / f64::from(ctx.sample_rate);
+                entered + Duration::from_secs_f64(period * DEADLINE_SHARE)
+            }
+        };
         let spec = BlockSpec {
             frames: frames as u32,
             flags,
             steady_time: self.steady_time - frames as u64,
+            // The bridge's work interval targets it (macOS); offline renders have no pacing.
+            deadline: (!ctx.offline).then_some(deadline),
             transport: wire_transport(&ctx.transport),
         };
         let seq = match self.client.begin_block(&spec, input, sidechain, &self.wire) {
@@ -264,14 +274,6 @@ impl ExternalProcessor {
         };
         self.reset = false;
         self.wire.clear();
-        let deadline = match ctx.deadline {
-            _ if ctx.offline => entered + OFFLINE_DEADLINE,
-            Some(deadline) => deadline,
-            None => {
-                let period = frames as f64 / f64::from(ctx.sample_rate);
-                entered + Duration::from_secs_f64(period * DEADLINE_SHARE)
-            }
-        };
         outcome(Outcome::Sent { seq, deadline })
     }
 

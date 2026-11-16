@@ -28,9 +28,13 @@
 //!   copy the dispatcher's floating-point mode (flush-to-zero, rounding) before a batch; buses and
 //!   the master sum their inputs in a fixed order. The output is therefore bit-exact whatever
 //!   thread ran which job (tested against the single-threaded path).
-//! - **Realtime:** workers run at `SCHED_FIFO` (the bridges' default priority, 80) if the system
-//!   allows it, and run their jobs inside `assert_no_alloc`. Idle workers sleep in `FUTEX_WAIT`
-//!   (with a one-second deadline, to look at the shutdown flag).
+//! - **Realtime ([`WorkerRt`]):** on Linux workers run at `SCHED_FIFO` (the bridges' default
+//!   priority, 80) if the system allows it. On macOS (#45) they set the time-constraint policy for
+//!   the callback period and join the device's audio IO workgroup when the stream has one (without
+//!   it, a lightly loaded Apple silicon Mac runs them on slow cores; spike #43), and leave it
+//!   before they end. Jobs run inside `assert_no_alloc`. Idle workers sleep in the kernel wait
+//!   (`FUTEX_WAIT`, `os_sync_wait_on_address`) with a one-second deadline, to look at the shutdown
+//!   flag.
 
 use std::cell::{Cell, UnsafeCell};
 use std::sync::Arc;
@@ -46,9 +50,43 @@ pub const MAX_WORKERS: usize = 15;
 /// Most jobs in one batch (the bits of the ready set): one per track, [`crate::MAX_TRACKS`].
 pub const MAX_JOBS: usize = 128;
 
-/// `SCHED_FIFO` priority of the workers: the same as the bridge RT threads (below PipeWire's data
-/// loops, 88 for the server and 83 for clients on the owner's machine).
+/// `SCHED_FIFO` priority of the workers on Linux: the same as the bridge RT threads (below
+/// PipeWire's data loops, 88 for the server and 83 for clients on the owner's machine).
 pub const DEFAULT_WORKER_PRIORITY: i32 = 80;
+
+/// How the workers run in realtime ([`crate::Engine::set_workers`]); the app builds it for every
+/// stream from its period and the device's workgroup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerRt {
+    /// The callback period (buffer frames / rate): the period of the macOS time-constraint policy.
+    pub period: Duration,
+    /// `SCHED_FIFO` priority (1 ..= 99) on Linux.
+    pub fifo_priority: i32,
+    /// The audio device's IO workgroup the workers join (macOS; `None` elsewhere, and for streams
+    /// without one such as the null backend).
+    pub workgroup: Option<komponist_rt::Workgroup>,
+}
+
+impl WorkerRt {
+    /// Realtime for a callback `period`, at [`DEFAULT_WORKER_PRIORITY`] and without a workgroup.
+    pub fn new(period: Duration) -> WorkerRt {
+        WorkerRt {
+            period,
+            fifo_priority: DEFAULT_WORKER_PRIORITY,
+            workgroup: None,
+        }
+    }
+
+    /// Whether a pool started with `self` already runs as `other` asks: on Linux the priority
+    /// counts, on macOS the period and the workgroup (the same object).
+    pub(crate) fn same_as(&self, other: &WorkerRt) -> bool {
+        if cfg!(target_os = "macos") {
+            self.period == other.period && self.workgroup == other.workgroup
+        } else {
+            self.fifo_priority == other.fifo_priority
+        }
+    }
+}
 
 /// How long an idle worker sleeps before it looks at the shutdown flag again (shutdown also wakes
 /// it at once).
@@ -75,11 +113,16 @@ fn auto_workers_for(threads: usize) -> usize {
 pub struct WorkerStatus {
     /// Worker threads running (0: the engine processes every track on the calling thread).
     pub threads: usize,
-    /// The `SCHED_FIFO` priority asked for (`None`: normal scheduling).
+    /// The `SCHED_FIFO` priority asked for (`None`: normal scheduling). On macOS the workers use
+    /// the time-constraint policy instead whenever this is `Some`.
     pub priority: Option<i32>,
-    /// Why the workers run without `SCHED_FIFO` although it was asked for (e.g. "Operation not
-    /// permitted": no `RLIMIT_RTPRIO`).
+    /// Why the workers run without realtime scheduling although it was asked for (Linux:
+    /// "Operation not permitted", no `RLIMIT_RTPRIO`; macOS: the time-constraint policy refused).
     pub realtime_error: Option<String>,
+    /// The workers joined the audio device's workgroup (macOS).
+    pub joined_workgroup: bool,
+    /// Why a worker could not join the workgroup it was given (an `errno`, e.g. 37 `EALREADY`).
+    pub workgroup_error: Option<String>,
     /// Why fewer threads than asked for run (thread creation failed).
     pub spawn_error: Option<String>,
 }
@@ -252,6 +295,8 @@ pub(crate) struct Pool {
     threads: Vec<JoinHandle<()>>,
     epoch: u32,
     status: WorkerStatus,
+    /// What the pool was started with.
+    rt: Option<WorkerRt>,
 }
 
 impl Shared {
@@ -276,17 +321,18 @@ impl Shared {
 
 impl Pool {
     /// Non-RT. Starts `threads` workers (at most [`MAX_WORKERS`]) whose lanes are `1 ..= threads`,
-    /// at `SCHED_FIFO` `priority` if given. `None` if not a single thread could start (the status
-    /// says why).
+    /// in realtime per `rt` if given. `None` if not a single thread could start (the status says
+    /// why).
     pub(crate) fn start(
         threads: usize,
-        priority: Option<i32>,
+        rt: Option<WorkerRt>,
         stats: Arc<WorkerStats>,
     ) -> (Option<Pool>, WorkerStatus) {
         let threads = threads.min(MAX_WORKERS);
         let shared = Arc::new(Shared::new(stats));
         let mut status = WorkerStatus {
-            priority,
+            priority: rt.as_ref().map(|rt| rt.fifo_priority),
+            joined_workgroup: rt.as_ref().is_some_and(|rt| rt.workgroup.is_some()),
             ..WorkerStatus::default()
         };
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -299,12 +345,24 @@ impl Pool {
             // start and sleep through it (a pool dropped right after it started hung in `join` on
             // slow CI runners, 2026-11-15).
             let seen = shared.wake.0.load(Ordering::Acquire);
+            let rt = rt.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("komponist-worker-{lane}"))
                 .spawn(move || {
-                    let realtime = priority.map(sys::set_current_thread_fifo);
-                    let _ = ready.send(realtime);
+                    // `rt` ends with this block; the join keeps its own workgroup reference.
+                    let (realtime, joined) = {
+                        let rt = rt;
+                        let realtime = rt.as_ref().map(sys::set_current_thread_realtime);
+                        (realtime, rt.as_ref().and_then(sys::join_workgroup))
+                    };
+                    let refused = joined.as_ref().and_then(|j| j.as_ref().err().copied());
+                    let _ = ready.send((realtime, refused));
                     work(&shared, lane, seen);
+                    // Leave before the thread ends (the pool is replaced or dropped, e.g. when
+                    // the stream stops); the last reference to the workgroup goes here too.
+                    if let Some(Ok((workgroup, token))) = joined {
+                        workgroup.leave(token);
+                    }
                 });
             match spawned {
                 Ok(handle) => handles.push(handle),
@@ -316,8 +374,15 @@ impl Pool {
         }
         drop(ready_tx);
         for _ in 0..handles.len() {
-            if let Ok(Some(Err(e))) = ready_rx.recv() {
+            let Ok((realtime, refused)) = ready_rx.recv() else {
+                continue;
+            };
+            if let Some(Err(e)) = realtime {
                 status.realtime_error = Some(e.to_string());
+            }
+            if let Some(errno) = refused {
+                status.joined_workgroup = false;
+                status.workgroup_error = Some(std::io::Error::from_raw_os_error(errno).to_string());
             }
         }
         status.threads = handles.len();
@@ -329,6 +394,7 @@ impl Pool {
             threads: handles,
             epoch: 0,
             status: status.clone(),
+            rt,
         };
         (Some(pool), status)
     }
@@ -341,6 +407,15 @@ impl Pool {
     /// The status the pool started with.
     pub(crate) fn status(&self) -> &WorkerStatus {
         &self.status
+    }
+
+    /// Whether the pool runs as `rt` asks (see [`WorkerRt::same_as`]).
+    pub(crate) fn runs_as(&self, rt: Option<&WorkerRt>) -> bool {
+        match (&self.rt, rt) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same_as(b),
+            _ => false,
+        }
     }
 
     /// RT. Runs `job(j, lane)` for every `j` in `0 .. count` (≤ [`MAX_JOBS`], all independent),
@@ -551,6 +626,99 @@ mod tests {
             let (pool, _) = Pool::start(2, None, Arc::default());
             drop(pool);
         }
+    }
+
+    /// Realtime without a workgroup: the priority is reported, no workgroup is joined, and the
+    /// pool is kept for the same setting (Linux: same priority; macOS: same period).
+    #[test]
+    fn realtime_workers_report_their_scheduling() {
+        let rt = WorkerRt::new(Duration::from_micros(5333));
+        let (pool, status) = Pool::start(2, Some(rt.clone()), Arc::default());
+        let pool = pool.unwrap();
+        assert_eq!(status.priority, Some(DEFAULT_WORKER_PRIORITY));
+        if let Some(e) = &status.realtime_error
+            && cfg!(target_os = "macos")
+        {
+            // Linux machines without an RT rlimit refuse SCHED_FIFO; macOS needs no privilege.
+            panic!("time-constraint policy refused: {e}");
+        }
+        assert!(!status.joined_workgroup);
+        assert_eq!(status.workgroup_error, None);
+        assert!(pool.runs_as(Some(&rt)));
+        assert!(!pool.runs_as(None));
+        let other_period = WorkerRt::new(Duration::from_micros(2667));
+        let other_priority = WorkerRt {
+            fifo_priority: 70,
+            ..rt.clone()
+        };
+        if cfg!(target_os = "macos") {
+            assert!(!pool.runs_as(Some(&other_period)));
+            assert!(pool.runs_as(Some(&other_priority)));
+        } else {
+            assert!(pool.runs_as(Some(&other_period)));
+            assert!(!pool.runs_as(Some(&other_priority)));
+        }
+    }
+
+    /// macOS: workers join the workgroup they are given (a work interval of the test stands in
+    /// for the device's IO workgroup): on a worker, a second join is refused with `EALREADY`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workers_join_the_workgroup() {
+        const EALREADY: i32 = 37;
+        let interval = komponist_rt::WorkInterval::new(c"komponist-engine-test").unwrap();
+        let workgroup = interval.workgroup();
+        let rt = WorkerRt {
+            workgroup: Some(workgroup.clone()),
+            ..WorkerRt::new(Duration::from_micros(2667))
+        };
+        let (pool, status) = Pool::start(2, Some(rt.clone()), Arc::default());
+        let mut pool = pool.unwrap();
+        assert_eq!(status.realtime_error, None);
+        assert!(status.joined_workgroup);
+        assert_eq!(status.workgroup_error, None);
+        assert!(pool.runs_as(Some(&rt)));
+        // Another lookup of a workgroup is another object: the pool is rebuilt.
+        let other = WorkerRt {
+            workgroup: Some(
+                komponist_rt::WorkInterval::new(c"other")
+                    .unwrap()
+                    .workgroup(),
+            ),
+            ..rt.clone()
+        };
+        assert!(!pool.runs_as(Some(&other)));
+        let members = AtomicUsize::new(0);
+        let outsiders = AtomicUsize::new(0);
+        let job = |_: usize, lane: usize| {
+            if lane != 0 {
+                match workgroup.join() {
+                    Err(EALREADY) => members.fetch_add(1, Ordering::Relaxed),
+                    Ok(token) => {
+                        workgroup.leave(token);
+                        outsiders.fetch_add(1, Ordering::Relaxed)
+                    }
+                    Err(_) => outsiders.fetch_add(1, Ordering::Relaxed),
+                };
+            }
+            // Every lane sleeps, so the caller cannot take all jobs before a worker wakes.
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        for _ in 0..200 {
+            assert_no_alloc::assert_no_alloc(|| pool.run(3, &job, Duration::from_secs(1)));
+            if members.load(Ordering::Relaxed) > 0 {
+                break;
+            }
+        }
+        assert!(
+            members.load(Ordering::Relaxed) > 0,
+            "no job ran on a worker"
+        );
+        assert_eq!(outsiders.load(Ordering::Relaxed), 0);
+        // The workgroup outlives the pool, whose workers left it and dropped their references.
+        drop(pool);
+        let token = workgroup.join().expect("this thread joins after the pool");
+        workgroup.leave(token);
     }
 
     #[test]

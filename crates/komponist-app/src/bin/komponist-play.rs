@@ -1464,6 +1464,7 @@ mod tests {
             sample_rate: 48_000,
             max_frames: 256,
             channels: 2,
+            workgroup: None,
         });
         assert_eq!(player.rate.load(Ordering::Relaxed), 48_000);
         let mut data = vec![1.0f32; 512];

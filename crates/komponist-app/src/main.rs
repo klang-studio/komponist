@@ -180,6 +180,9 @@ fn run_app() -> eframe::Result {
         if let Some(e) = &status.realtime_error {
             eprintln!("komponist: worker threads run without realtime priority ({e})");
         }
+        if let Some(e) = &status.workgroup_error {
+            eprintln!("komponist: worker threads did not join the audio workgroup ({e})");
+        }
     }
     // The one place that reads the desktop's language; `App::new` stays German for the tests.
     let lang = komponist_app::settings::startup_lang(

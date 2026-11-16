@@ -285,6 +285,7 @@ impl Block {
             frames,
             flags: 0,
             steady_time: k * 256,
+            deadline: None,
             transport: WireTransport {
                 tempo_bpm: 120.0 + (k % 7) as f64,
                 ..WireTransport::default()

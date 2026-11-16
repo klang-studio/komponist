@@ -39,7 +39,7 @@ use komponist_audio::{
     StreamStats,
 };
 use komponist_engine::compile::{self, CompileEnv};
-use komponist_engine::workers::{DEFAULT_WORKER_PRIORITY, WorkerStats, WorkerStatus, auto_workers};
+use komponist_engine::workers::{WorkerRt, WorkerStats, WorkerStatus, auto_workers};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
     MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
@@ -74,6 +74,8 @@ pub struct EngineProcess {
     rate: Arc<AtomicU32>,
     /// Worker threads the engine should run (WP-65), started in `prepare`.
     workers: usize,
+    /// How they run in realtime: the period and the audio workgroup of the latest stream (#45).
+    rt: WorkerRt,
     /// Outcome of the last worker start, for the UI thread (only touched outside the callback).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
     /// Set by a worker start that ran without realtime priority; the app takes it once
@@ -98,6 +100,8 @@ impl EngineProcess {
             midi: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             rate,
             workers: auto_workers(),
+            // Replaced by the stream's in `prepare`.
+            rt: WorkerRt::new(Duration::from_secs_f64(HELD_BLOCK as f64 / 48_000.0)),
             worker_status: Arc::default(),
             worker_notice: Arc::default(),
         }
@@ -109,11 +113,10 @@ impl EngineProcess {
         self.workers = threads;
     }
 
-    /// Starts or replaces the engine's worker pool if the count changed (non-RT).
+    /// Starts or replaces the engine's worker pool if the count or the realtime set-up changed
+    /// (non-RT).
     fn apply_workers(&mut self) {
-        let status = self
-            .engine
-            .set_workers(self.workers, Some(DEFAULT_WORKER_PRIORITY));
+        let status = self.engine.set_workers(self.workers, Some(self.rt.clone()));
         self.worker_notice
             .store(lacks_realtime(&status), Ordering::Relaxed);
         *self.worker_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
@@ -128,7 +131,11 @@ impl AudioProcess for EngineProcess {
             let _ = self.engine.set_sample_rate(rate);
         }
         self.rate.store(params.sample_rate, Ordering::Relaxed);
-        // The worker pool is created when a stream starts (WP-65); unchanged it stays.
+        // The worker pool is created when a stream starts (WP-65); unchanged it stays. On macOS the
+        // workers' time-constraint policy follows the stream's period and they join its device's
+        // IO workgroup, looked up anew for every stream, so the pool is rebuilt (#45).
+        self.rt.period = params.period();
+        self.rt.workgroup = params.workgroup.clone();
         self.apply_workers();
         let frames = (params.max_frames as usize).max(MAX_BLOCK);
         self.left.resize(frames, 0.0);
@@ -1090,7 +1097,10 @@ mod tests {
         let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
         let status = sync.worker_status().expect("prepared at stream start");
         assert_eq!(status.threads, auto_workers());
-        assert_eq!(status.priority, Some(DEFAULT_WORKER_PRIORITY));
+        assert_eq!(
+            status.priority,
+            Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY)
+        );
         let status = sync.set_workers(Some(2)).unwrap().unwrap();
         assert_eq!(status.threads, 2);
         let doc = Document::new(demo_project());
@@ -1124,9 +1134,9 @@ mod tests {
     fn realtime_notice_only_for_running_workers_without_priority() {
         let status = |threads, realtime_error: Option<&str>| WorkerStatus {
             threads,
-            priority: Some(DEFAULT_WORKER_PRIORITY),
+            priority: Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY),
             realtime_error: realtime_error.map(str::to_owned),
-            spawn_error: None,
+            ..WorkerStatus::default()
         };
         assert!(lacks_realtime(&status(3, Some("Operation not permitted"))));
         assert!(!lacks_realtime(&status(3, None)));

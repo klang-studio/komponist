@@ -1,0 +1,13 @@
+[package]
+name = "komponist-rt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# pthread scheduling (Linux), Mach thread policy, os_sync wait/wake (macOS).
+libc.workspace = true
+
+[dev-dependencies]
+assert_no_alloc.workspace = true

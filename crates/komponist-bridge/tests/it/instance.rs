@@ -598,6 +598,40 @@ fn slow_plugin_is_late_without_blocking() {
     );
 }
 
+/// macOS (#45): the RT thread sets the time-constraint policy (no privilege needed) and joins its
+/// own audio work interval; both are reported as granted, and blocks run (each marked as one
+/// interval with the app's deadline).
+#[cfg(target_os = "macos")]
+#[test]
+fn rt_thread_runs_with_the_time_constraint_policy_and_a_work_interval() {
+    let Some(bundle) = fixture("kp-test-fx") else {
+        return;
+    };
+    let mut bridge = Bridge::spawn();
+    bridge.load(&bundle, FX);
+    bridge.activate();
+    let logs = bridge.rt_logs();
+    assert_eq!(
+        logs,
+        [(
+            LogLevel::Info,
+            "RT priority: the audio thread runs at the time-constraint policy".to_owned()
+        )],
+        "no work-interval warning either"
+    );
+    assert_eq!(bridge.rt_status(), [(true, 80, String::new())]);
+    // The effect delays by its latency (64 frames).
+    bridge.input[0][0] = 1.0;
+    bridge.block(&[]);
+    assert_eq!(bridge.output[0][64], 1.0);
+    for _ in 0..10 {
+        assert_eq!(bridge.block(&[]).status, BlockStatus::Ok as u32);
+    }
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
+/// Linux: `SCHED_FIFO` as `/proc` shows it.
+#[cfg(target_os = "linux")]
 #[test]
 fn rt_thread_runs_at_sched_fifo_or_says_why() {
     let Some(bundle) = fixture("kp-test-fx") else {
@@ -658,6 +692,8 @@ fn rt_thread_runs_at_sched_fifo_or_says_why() {
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 
+/// Linux only: macOS needs no privilege for the time-constraint policy.
+#[cfg(target_os = "linux")]
 #[test]
 fn refused_rt_priority_is_reported_and_processing_goes_on() {
     let Some(bundle) = fixture("kp-test-fx") else {

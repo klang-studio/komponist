@@ -91,10 +91,12 @@ fn run(workers: usize, make: impl Fn(u32) -> Box<dyn Processor>) -> (Duration, D
     let mut rig = Rig::new(RATE, BLOCK);
     let status = rig.engine.set_workers(
         workers,
-        Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY),
+        Some(komponist_engine::workers::WorkerRt::new(
+            std::time::Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE)),
+        )),
     );
     if let Some(e) = status.realtime_error {
-        eprintln!("workers without SCHED_FIFO: {e}");
+        eprintln!("workers without realtime scheduling: {e}");
     }
     let tracks = (0..TRACKS)
         .map(|i| track(u64::from(i) + 1, i, material(i)))

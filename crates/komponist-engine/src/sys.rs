@@ -1,21 +1,29 @@
-//! The few OS and CPU interfaces the worker pool needs (WP-65): a process-private futex with a
-//! deadline, the floating-point control register and `SCHED_FIFO`.
+//! The few OS and CPU interfaces the worker pool needs (WP-65, #45): a process-private wait with
+//! a deadline and its wake, the floating-point control register, and realtime set-up of a worker
+//! thread ([`set_current_thread_realtime`], [`join_workgroup`]).
 //!
-//! The engine knows no IPC, so it does not use `komponist-ipc`'s futex helpers (which work on
-//! shared, cross-process words); the bridge's `SCHED_FIFO` call is copied for the same reason.
+//! The wait per OS:
+//! - Linux: a private futex (`FUTEX_WAIT` with a relative timeout, `FUTEX_WAKE`).
+//! - macOS (14.4+): `os_sync_wait_on_address_with_deadline` / `os_sync_wake_by_address_*` without
+//!   the `SHARED` flag, through `komponist_rt::os_sync`, which arms each wait short of the
+//!   deadline against the kernel's timer leeway (spike #43).
+//!
+//! The engine knows no IPC, so it does not use `komponist-ipc`'s waits (which work on shared,
+//! cross-process words).
 
-use std::os::raw::c_int;
-use std::os::unix::thread::RawPthread;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
-use rustix::io::Errno;
-use rustix::thread::futex;
+use crate::workers::WorkerRt;
 
 /// RT. Blocks while `word == current`, until another thread changes it and calls [`wake`], or
 /// until `deadline`. Returns `false` if the deadline passed with the word unchanged. Spurious
-/// wake-ups and `EINTR` are handled inside; the only blocking syscall is `FUTEX_WAIT`.
+/// wake-ups and `EINTR` are handled inside; the only blocking syscall is the kernel wait.
+#[cfg(target_os = "linux")]
 pub(crate) fn wait_while(word: &AtomicU32, current: u32, deadline: Instant) -> bool {
+    use rustix::io::Errno;
+    use rustix::thread::futex;
+
     loop {
         if word.load(Ordering::Acquire) != current {
             return true;
@@ -39,10 +47,54 @@ pub(crate) fn wait_while(word: &AtomicU32, current: u32, deadline: Instant) -> b
 }
 
 /// RT. Wakes up to `count` threads waiting on `word`. Never blocks.
+#[cfg(target_os = "linux")]
 pub(crate) fn wake(word: &AtomicU32, count: usize) {
+    use rustix::thread::futex;
+
     // The kernel reads the count as a signed int: more than `i32::MAX` would wake one thread.
     let count = count.min(i32::MAX as usize) as u32;
     let _ = futex::wake(word, futex::Flags::PRIVATE, count);
+}
+
+/// RT. Blocks while `word == current`, until another thread changes it and calls [`wake`], or
+/// until `deadline`. Returns `false` if the deadline passed with the word unchanged. Spurious
+/// wake-ups, `EINTR` and early timer expiries are handled inside; the only blocking syscall is
+/// `os_sync_wait_on_address_with_deadline`.
+#[cfg(target_os = "macos")]
+pub(crate) fn wait_while(word: &AtomicU32, current: u32, deadline: Instant) -> bool {
+    use komponist_rt::mach_time;
+    use komponist_rt::os_sync::{self, Scope, Wait};
+
+    // Once, so retries keep the same deadline.
+    let deadline = mach_time::deadline(deadline);
+    loop {
+        if word.load(Ordering::Acquire) != current {
+            return true;
+        }
+        match os_sync::wait(word, current, Some(deadline), Scope::Process) {
+            Wait::Retry => {}
+            // Timed out, or an unexpected error (EINVAL); never spin on it.
+            Wait::TimedOut | Wait::Failed => return word.load(Ordering::Acquire) != current,
+        }
+    }
+}
+
+/// RT. Wakes up to `count` threads waiting on `word` (`usize::MAX`: all). Never blocks.
+#[cfg(target_os = "macos")]
+pub(crate) fn wake(word: &AtomicU32, count: usize) {
+    use komponist_rt::os_sync::{self, Scope};
+
+    // os_sync wakes one or all; `count` is at most the pool size (≤ 15) apart from "all", so
+    // wake one at a time and stop when nobody is left.
+    if count == usize::MAX {
+        os_sync::wake_all(word, Scope::Process);
+        return;
+    }
+    for _ in 0..count {
+        if !os_sync::wake_one(word, Scope::Process) {
+            break;
+        }
+    }
 }
 
 /// RT. The calling thread's floating-point control state (MXCSR on x86_64, FPCR on aarch64, 0
@@ -99,34 +151,20 @@ pub(crate) fn set_fp_state(state: u64) {
     }
 }
 
-/// `SCHED_FIFO` (`<sched.h>`, the same value on every Linux architecture).
-const SCHED_FIFO: c_int = 1;
-
-/// `struct sched_param` (`<sched.h>`): only the priority field on Linux.
-#[repr(C)]
-struct SchedParam {
-    sched_priority: c_int,
+/// Non-RT, on a new worker thread. Realtime scheduling per `rt`: `SCHED_FIFO` at
+/// [`WorkerRt::fifo_priority`] on Linux, the time-constraint policy for [`WorkerRt::period`] on
+/// macOS (`komponist_rt::set_current_thread_realtime`).
+pub(crate) fn set_current_thread_realtime(rt: &WorkerRt) -> std::io::Result<()> {
+    komponist_rt::set_current_thread_realtime(rt.period, rt.fifo_priority)
 }
 
-unsafe extern "C" {
-    fn pthread_self() -> RawPthread;
-    fn pthread_setschedparam(thread: RawPthread, policy: c_int, param: *const SchedParam) -> c_int;
-}
-
-/// Non-RT. Switches the calling thread to `SCHED_FIFO` at `priority` (1 ..= 99). Fails with
-/// `EPERM` when neither `RLIMIT_RTPRIO` nor `CAP_SYS_NICE` allows it.
-pub(crate) fn set_current_thread_fifo(priority: i32) -> std::io::Result<()> {
-    let param = SchedParam {
-        sched_priority: priority,
-    };
-    // SAFETY: `pthread_self` has no preconditions; `param` is a valid `sched_param` that lives for
-    // the call. `pthread_setschedparam` returns an errno value instead of setting `errno`.
-    let rc = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::from_raw_os_error(rc))
-    }
+/// Non-RT, on a new worker thread. Joins [`WorkerRt::workgroup`] (macOS: the device's IO
+/// workgroup). `None` without a workgroup; the worker leaves it with the token before it ends.
+pub(crate) fn join_workgroup(
+    rt: &WorkerRt,
+) -> Option<Result<(komponist_rt::Workgroup, komponist_rt::JoinToken), i32>> {
+    let workgroup = rt.workgroup.clone()?;
+    Some(workgroup.join().map(|token| (workgroup, token)))
 }
 
 #[cfg(test)]
@@ -195,17 +233,43 @@ mod tests {
     }
 
     #[test]
-    fn fifo_is_applied_or_refused_cleanly() {
-        let result = std::thread::spawn(|| set_current_thread_fifo(10))
-            .join()
-            .unwrap();
-        if let Err(e) = result {
-            // Machines without an RT rlimit refuse it.
-            assert_eq!(e.raw_os_error(), Some(1), "{e}");
+    fn waits_and_wakes_allocate_nothing() {
+        let word = AtomicU32::new(3);
+        let outcome = assert_no_alloc::assert_no_alloc(|| {
+            let changed = wait_while(&word, 2, Instant::now());
+            let timed_out = wait_while(&word, 3, Instant::now() + Duration::from_millis(1));
+            wake(&word, 1);
+            wake(&word, 3);
+            wake(&word, usize::MAX);
+            (changed, timed_out)
+        });
+        assert_eq!(outcome, (true, false));
+    }
+
+    /// Two of four waiters woken: (at least) two return (on macOS one `wake_one` each).
+    #[test]
+    fn wake_count_wakes_that_many() {
+        let word = Arc::new(AtomicU32::new(0));
+        let waiters: Vec<_> = (0..4)
+            .map(|_| {
+                let word = Arc::clone(&word);
+                std::thread::spawn(move || {
+                    wait_while(&word, 0, Instant::now() + Duration::from_secs(10))
+                })
+            })
+            .collect();
+        std::thread::sleep(Duration::from_millis(50));
+        word.store(1, Ordering::Release);
+        wake(&word, 2);
+        let t0 = Instant::now();
+        while waiters.iter().filter(|w| w.is_finished()).count() < 2 {
+            assert!(t0.elapsed() < Duration::from_secs(5), "fewer than two woke");
+            std::thread::sleep(Duration::from_millis(1));
         }
-        let invalid = std::thread::spawn(|| set_current_thread_fifo(1000))
-            .join()
-            .unwrap();
-        assert!(invalid.is_err());
+        // The rest, so the test ends.
+        wake(&word, usize::MAX);
+        for waiter in waiters {
+            assert!(waiter.join().unwrap());
+        }
     }
 }

@@ -1,12 +1,21 @@
 //! The bridge RT thread (ARCHITECTURE §8.1, "RT handshake per block").
 //!
-//! Started per activation by [`RtThread::start`]: it switches itself to `SCHED_FIFO`, starts
-//! processing (CLAP wants that on the audio thread) and then serves one block per request:
+//! Started per activation by [`RtThread::start`]: it switches itself to realtime scheduling
+//! (`SCHED_FIFO` on Linux, the time-constraint policy on macOS), on macOS creates and joins its own
+//! audio work interval (#45), starts processing (CLAP wants that on the audio thread) and then
+//! serves one block per request:
 //! futex-wait on `request_seq` → the parameter values the app set over the control socket
 //! ([`RtThread::set_param`]) at offset 0, then the block's input events → `process` (with the
 //! block's sidechain input, if the request carries one, #6) → output events into the shared ring →
 //! `finish`. [`RtThread::stop`] ends it and hands the processor back for
 //! deactivation.
+//!
+//! **Work interval (macOS, spike #43):** without an audio workgroup, a lightly loaded Apple
+//! silicon Mac runs the RT thread on efficiency cores or down-clocked performance cores and blocks
+//! come late. The thread therefore creates its own interval (`AudioWorkIntervalCreate`), joins it,
+//! and marks every block: `start` from now to the app's deadline
+//! ([`komponist_ipc::BlockRequest::deadline_ticks`]) before serving it, `finish` after. Blocks
+//! without a deadline (offline render) are not marked. It leaves the interval before it ends.
 //!
 //! Realtime rules (CLAUDE.md rule 4): everything is allocated before the loop; inside it there is
 //! no allocation, lock, logging or IO, and the only blocking call is the futex wait with a deadline.
@@ -28,10 +37,10 @@ use komponist_ipc::shm::{BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, OUTPUT_EVENT_CA
 use komponist_ipc::{
     BlockRequest, BlockResult, BlockStatus, BridgeServer, WireEvent, WireEventKind,
 };
+use komponist_rt::WorkInterval;
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::notify;
-use crate::sched;
 
 /// How long one futex wait lasts before the loop looks at the stop flag (bounds the time
 /// [`RtThread::stop`] takes).
@@ -56,8 +65,12 @@ pub enum Fallback {
 /// Settings of one RT thread.
 #[derive(Debug, Clone, Copy)]
 pub struct RtConfig {
-    /// `SCHED_FIFO` priority.
+    /// `SCHED_FIFO` priority (Linux).
     pub priority: i32,
+    /// The period of the time-constraint policy (macOS): the activated maximum block at the
+    /// activated rate. The bridge does not know the app's callback period; the work interval
+    /// carries each block's real deadline.
+    pub period: Duration,
     /// The activated maximum block size.
     pub max_frames: u32,
     /// Output for blocks the plugin did not process.
@@ -67,8 +80,12 @@ pub struct RtConfig {
 /// What the RT thread reports once it runs (or failed to start processing).
 #[derive(Debug)]
 pub struct StartReport {
-    /// Outcome of switching to `SCHED_FIFO` at [`RtConfig::priority`].
+    /// Outcome of switching to realtime scheduling (`SCHED_FIFO` at [`RtConfig::priority`] on
+    /// Linux, the time-constraint policy on macOS).
     pub priority: std::io::Result<()>,
+    /// The work interval (macOS): `None` where there is none, else whether the thread created and
+    /// joined it (the `errno` of a refused join, or 0 if the system created none).
+    pub work_interval: Option<Result<(), i32>>,
 }
 
 /// A refused start: the processor comes back for deactivation.
@@ -178,7 +195,23 @@ fn rt_main(
     report: mpsc::SyncSender<(StartReport, Result<(), HostingError>)>,
 ) -> Returned {
     notify::mark_rt_thread();
-    let priority = sched::set_current_thread_fifo(config.priority);
+    let priority = komponist_rt::set_current_thread_realtime(config.period, config.priority);
+    // Created here, not in the loop: creating allocates. `None` outside macOS.
+    let interval = WorkInterval::new(c"komponist-bridge");
+    let joined = interval.as_ref().map(WorkInterval::join);
+    let work_interval = if cfg!(target_os = "macos") {
+        Some(match &joined {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(errno)) => Err(*errno),
+            None => Err(0),
+        })
+    } else {
+        None
+    };
+    let (interval, token) = match (interval, joined) {
+        (Some(interval), Some(Ok(token))) => (Some(interval), Some(token)),
+        _ => (None, None),
+    };
     let started = processor.start_processing();
     let ok = started.is_ok();
     let mut scratch = Scratch {
@@ -191,12 +224,23 @@ fn rt_main(
         serve_stale(&mut server, config.fallback);
     }
     // The receiver waits for exactly this message.
-    let _ = report.send((StartReport { priority }, started));
+    let _ = report.send((
+        StartReport {
+            priority,
+            work_interval,
+        },
+        started,
+    ));
     drop(report);
     if ok {
         assert_no_alloc::assert_no_alloc(|| {
             while !stop.load(Ordering::Acquire) {
                 if let Some(request) = server.wait_request(Some(Instant::now() + STOP_POLL)) {
+                    // From now to the app's deadline; a block without one is not a cycle.
+                    let cycle = interval.as_ref().is_some_and(|interval| {
+                        request.deadline_ticks != 0
+                            && interval.start_now(request.deadline_ticks).is_ok()
+                    });
                     serve(
                         &mut server,
                         processor.as_mut(),
@@ -205,11 +249,17 @@ fn rt_main(
                         &request,
                         &config,
                     );
+                    if cycle && let Some(interval) = &interval {
+                        let _ = interval.finish();
+                    }
                 }
             }
             serve_stale(&mut server, config.fallback);
         });
         processor.stop_processing();
+    }
+    if let (Some(interval), Some(token)) = (&interval, token) {
+        interval.leave(token);
     }
     (processor, params)
 }

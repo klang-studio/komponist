@@ -12,7 +12,6 @@ use cpal::{BufferSize, SampleFormat, SupportedBufferSize, SupportedStreamConfigR
 use crate::process::{AudioProcess, CallbackInfo, OutputBuffer, StreamParams};
 use crate::slot::EngineSlot;
 use crate::system::{AudioError, DeviceId, DeviceInfo, HostKind, StreamConfig, StreamStats};
-use crate::workgroup;
 
 /// Sample rates offered in S07.
 const STANDARD_RATES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
@@ -115,8 +114,6 @@ pub(crate) struct StreamCallback<P: AudioProcess> {
     /// Interleaved, `max_frames × channels`.
     scratch: Vec<f32>,
     shared: Arc<StreamShared>,
-    /// Audio workgroup the callback thread joins on its first run (set by the device backend).
-    workgroup: Option<workgroup::Workgroup>,
 }
 
 impl<P: AudioProcess> StreamCallback<P> {
@@ -132,7 +129,6 @@ impl<P: AudioProcess> StreamCallback<P> {
             params,
             scratch,
             shared,
-            workgroup: None,
         }
     }
 
@@ -149,15 +145,12 @@ impl<P: AudioProcess> StreamCallback<P> {
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
-        // Once, on the audio thread of a device stream (the null backend has no workgroup).
-        if let Some(workgroup) = self.workgroup.take() {
-            workgroup.join_current_thread();
-        }
         let now = Instant::now();
         let StreamParams {
             sample_rate,
             max_frames,
             channels,
+            ..
         } = self.params;
         let channels = usize::from(channels);
         self.shared
@@ -204,6 +197,7 @@ impl NullStream {
             sample_rate,
             max_frames,
             channels,
+            ..
         } = callback.params;
         let period = crate::frames_to_duration(u64::from(max_frames), sample_rate);
         let stop = Arc::new(AtomicBool::new(false));
@@ -539,7 +533,6 @@ where
     P: AudioProcess,
 {
     let shared = Arc::clone(&callback.shared);
-    callback.workgroup = workgroup::lookup(device);
     device
         .build_output_stream::<T, _, _>(
             config,
@@ -589,6 +582,7 @@ mod tests {
             sample_rate: 48_000,
             max_frames,
             channels,
+            workgroup: None,
         };
         let callback = StreamCallback::new(slot, params, Arc::new(StreamShared::default()));
         (callback, handle)
@@ -640,6 +634,7 @@ mod tests {
                 sample_rate: 48_000,
                 max_frames,
                 channels: 2,
+                workgroup: None,
             };
             let mut cb = StreamCallback::new(slot, params, Arc::new(StreamShared::default()));
             let mut data = vec![0.0f32; total * 2];
@@ -693,6 +688,7 @@ mod tests {
             sample_rate: 48_000,
             max_frames: 32,
             channels: 2,
+            workgroup: None,
         };
         let stream = NullStream::start(StreamCallback::new(
             slot,

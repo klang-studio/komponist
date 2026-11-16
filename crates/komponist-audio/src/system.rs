@@ -12,6 +12,7 @@ use crate::backend::{self, NullStream, StreamCallback, StreamShared};
 use crate::midi::MidiReceiver;
 use crate::process::{AudioProcess, StreamParams};
 use crate::slot::{DetachStep, EngineSlot, SlotHandle};
+use crate::workgroup;
 
 /// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
 const LOAD_SMOOTHING: f32 = 0.05;
@@ -583,10 +584,16 @@ impl<P: AudioProcess> AudioSystem<P> {
             sample_rate: negotiated.effective.sample_rate,
             max_frames: negotiated.effective.buffer_frames,
             channels: negotiated.config.channels,
+            // For the engine's workers; the callback runs on the HAL's IO thread, a member already.
+            workgroup: workgroup::lookup(&device),
         };
         let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
         let shared = Arc::new(StreamShared::default());
-        let callback = StreamCallback::new(slot, params, Arc::clone(&shared));
+        let callback_params = StreamParams {
+            workgroup: None,
+            ..params.clone()
+        };
+        let callback = StreamCallback::new(slot, callback_params, Arc::clone(&shared));
         let stream =
             backend::build_stream(&device, &negotiated, callback, Arc::clone(&self.stats))?;
         stream.play().map_err(backend::map_err)?;
@@ -607,10 +614,12 @@ impl<P: AudioProcess> AudioSystem<P> {
             sample_rate: config.sample_rate,
             max_frames: config.buffer_frames,
             channels: 2,
+            workgroup: None,
         };
         let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
         let shared = Arc::new(StreamShared::default());
-        let stream = NullStream::start(StreamCallback::new(slot, params, Arc::clone(&shared)))?;
+        let callback = StreamCallback::new(slot, params.clone(), Arc::clone(&shared));
+        let stream = NullStream::start(callback)?;
         self.install(Current {
             backend: Backend::Null { _stream: stream },
             handle,
@@ -868,7 +877,8 @@ mod tests {
             StreamParams {
                 sample_rate: 48_000,
                 max_frames: 64,
-                channels: 2
+                channels: 2,
+                workgroup: None,
             }
         );
         assert_eq!(probe.prepares.load(Ordering::SeqCst), 1);
@@ -1001,7 +1011,8 @@ mod tests {
             StreamParams {
                 sample_rate: 44_100,
                 max_frames: 128,
-                channels: 2
+                channels: 2,
+                workgroup: None,
             }
         );
     }

@@ -8,9 +8,12 @@
 //! - Linux: a shared futex, `FUTEX_WAIT_BITSET` with an absolute `CLOCK_MONOTONIC` deadline
 //!   (what `Instant` reads on Linux).
 //! - macOS (14.4+): `os_sync_wait_on_address_with_deadline` / `os_sync_wake_by_address_all` with
-//!   the `SHARED` flags and an absolute `OS_CLOCK_MACH_ABSOLUTE_TIME` deadline. `Instant` reads
-//!   `CLOCK_UPTIME_RAW`, which is `mach_absolute_time` in nanoseconds, so the deadline is the
-//!   current `mach_absolute_time` plus the remaining time in mach ticks (rounded up).
+//!   the `SHARED` flags and an absolute `OS_CLOCK_MACH_ABSOLUTE_TIME` deadline, through
+//!   `komponist_rt::os_sync` (#45). `Instant` reads `CLOCK_UPTIME_RAW`, which is
+//!   `mach_absolute_time` in nanoseconds, so the deadline is the current `mach_absolute_time` plus
+//!   the remaining time in mach ticks (rounded up). The kernel ends timed waits 12.5–25 % of the
+//!   wait late (timer leeway, spike #43), so each kernel wait is armed at 3/4 of the remaining
+//!   time and repeated for the rest, the last one (under 50 µs) at the deadline.
 //!
 //! RT use: [`wait_while`] is the only blocking call the engine's audio thread may make, always
 //! with a deadline; [`wake`] never blocks. Neither allocates or takes a lock.
@@ -149,103 +152,36 @@ mod sys {
 
 #[cfg(target_os = "macos")]
 mod sys {
-    use core::ffi::c_void;
     use core::sync::atomic::AtomicU32;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
+
+    use komponist_rt::mach_time;
+    use komponist_rt::os_sync::{self, Scope};
 
     use super::Wait;
-
-    /// Size of the waited-on word in bytes.
-    const WORD: usize = size_of::<AtomicU32>();
 
     /// An absolute `mach_absolute_time` value (ticks).
     pub(super) type Deadline = u64;
 
-    /// `struct mach_timebase_info` (`<mach/mach_time.h>`): nanoseconds per tick as a fraction.
-    #[repr(C)]
-    struct MachTimebaseInfo {
-        numer: u32,
-        denom: u32,
-    }
-
-    // Declared here: libc marks its Mach bindings deprecated in favour of the `mach2` crate, which
-    // would be a dependency for two functions.
-    unsafe extern "C" {
-        fn mach_absolute_time() -> u64;
-        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
-    }
-
-    /// The current `mach_absolute_time` (ticks since boot, not counting sleep).
-    pub(super) fn now() -> u64 {
-        // SAFETY: no arguments, no side effects; reads the commpage.
-        unsafe { mach_absolute_time() }
-    }
-
-    /// `remaining` in mach ticks, rounded up (so a wait never ends before its deadline).
-    pub(super) fn ticks(remaining: Duration) -> u64 {
-        let mut timebase = MachTimebaseInfo { numer: 0, denom: 0 };
-        // SAFETY: writes the two fields of a valid struct. Reads the commpage: no syscall, no
-        // lock, no allocation (std's own deadline conversion calls it the same way).
-        unsafe { mach_timebase_info(&mut timebase) };
-        if timebase.numer == 0 || timebase.denom == 0 {
-            // Never seen; 1:1 is the timebase of Intel Macs.
-            timebase = MachTimebaseInfo { numer: 1, denom: 1 };
-        }
-        let ticks = (remaining.as_nanos() * u128::from(timebase.denom))
-            .div_ceil(u128::from(timebase.numer));
-        u64::try_from(ticks).unwrap_or(u64::MAX)
-    }
-
-    /// `deadline` as an absolute `mach_absolute_time` (the clock behind `Instant`, which reads
-    /// `CLOCK_UPTIME_RAW` = `mach_absolute_time` in nanoseconds). `Instant::now()` is read before
-    /// `mach_absolute_time()`, so the result is never earlier than `deadline`.
+    /// `deadline` as an absolute `mach_absolute_time` (the clock behind `Instant`), never earlier
+    /// than `deadline`.
     pub(super) fn absolute_deadline(deadline: Instant) -> u64 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        now().saturating_add(ticks(remaining))
+        mach_time::deadline(deadline)
     }
 
     /// One `os_sync_wait_on_address[_with_deadline]` with the `SHARED` flag (the word may sit in
-    /// shared memory and be woken from another process).
+    /// shared memory and be woken from another process), armed short of the deadline to make up
+    /// for the kernel's timer leeway ([`os_sync`]).
     pub(super) fn wait(word: &AtomicU32, current: u32, deadline: Option<Deadline>) -> Wait {
-        let addr = word.as_ptr().cast::<c_void>();
-        let flags = libc::OS_SYNC_WAIT_ON_ADDRESS_SHARED;
-        // SAFETY: `addr` points to a live, 4-byte aligned word for the duration of the call; the
-        // kernel only reads it. A deadline is never 0 (`mach_absolute_time` counts from boot).
-        let rc = unsafe {
-            match deadline {
-                Some(deadline) => libc::os_sync_wait_on_address_with_deadline(
-                    addr,
-                    u64::from(current),
-                    WORD,
-                    flags,
-                    libc::OS_CLOCK_MACH_ABSOLUTE_TIME,
-                    deadline.max(1),
-                ),
-                None => libc::os_sync_wait_on_address(addr, u64::from(current), WORD, flags),
-            }
-        };
-        if rc >= 0 {
-            return Wait::Retry;
-        }
-        // SAFETY: the calling thread's errno; reading it allocates nothing.
-        match unsafe { *libc::__error() } {
-            libc::ETIMEDOUT => Wait::TimedOut,
-            // Interrupted or spurious, or transient kernel conditions the header says to retry
-            // (the word itself is always a valid address here).
-            libc::EINTR | libc::EFAULT | libc::ENOMEM => Wait::Retry,
-            // EINVAL.
-            _ => Wait::Failed,
+        match os_sync::wait(word, current, deadline, Scope::Shared) {
+            os_sync::Wait::Retry => Wait::Retry,
+            os_sync::Wait::TimedOut => Wait::TimedOut,
+            os_sync::Wait::Failed => Wait::Failed,
         }
     }
 
     pub(super) fn wake(word: &AtomicU32) -> usize {
-        let addr = word.as_ptr().cast::<c_void>();
-        // SAFETY: as in `wait`; the flag matches the waiters' `SHARED` flag, as required.
-        let rc = unsafe {
-            libc::os_sync_wake_by_address_all(addr, WORD, libc::OS_SYNC_WAKE_BY_ADDRESS_SHARED)
-        };
-        // 0: woke at least one waiter; -1 with ENOENT: nobody waited.
-        usize::from(rc == 0)
+        usize::from(os_sync::wake_all(word, Scope::Shared))
     }
 }
 
@@ -331,23 +267,45 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn mach_deadline_matches_instant() {
-        // One second in ticks, converted back: the timebase round trip is exact to a tick.
-        let second = sys::ticks(Duration::from_secs(1));
-        let per_tick = 1e9 / second as f64;
-        assert!(
-            per_tick > 0.0 && per_tick <= 1000.0,
-            "{per_tick} ns per tick"
-        );
-        assert_eq!(sys::ticks(Duration::ZERO), 0);
-        assert_eq!(sys::ticks(Duration::from_nanos(1)), 1, "rounded up");
-        assert_eq!(sys::ticks(Duration::MAX), u64::MAX);
-        let now = sys::now();
+        use komponist_rt::mach_time;
+        let second = mach_time::ticks(Duration::from_secs(1)) as f64;
+        let now = mach_time::now();
         let deadline = sys::absolute_deadline(Instant::now() + Duration::from_millis(1500));
-        let diff = (deadline - now) as f64 * per_tick * 1e-9;
+        let diff = (deadline - now) as f64 / second;
         assert!((1.499..1.6).contains(&diff), "{diff}");
-        // A past deadline is "now", not an underflow.
-        let past = sys::absolute_deadline(Instant::now() - Duration::from_secs(1));
-        assert!(past <= sys::now());
+    }
+
+    /// The kernel's timer leeway is compensated (spike #43, Q4): on a time-constraint thread a
+    /// 1 ms wait that times out ends less than 60 µs after its deadline (uncompensated: 125–260
+    /// µs). The median of 40 waits; skipped if the kernel refuses the policy.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_timed_out_wait_ends_close_to_its_deadline() {
+        let median = std::thread::spawn(|| {
+            let period = Duration::from_millis(2);
+            if let Err(e) = komponist_rt::set_current_thread_realtime(period, 80) {
+                eprintln!("skipped: {e}");
+                return None;
+            }
+            let word = AtomicU32::new(0);
+            let mut late: Vec<Duration> = (0..40)
+                .map(|_| {
+                    let deadline = Instant::now() + Duration::from_millis(1);
+                    assert_eq!(wait_while(&word, 0, Some(deadline)), WaitOutcome::TimedOut);
+                    Instant::now().duration_since(deadline)
+                })
+                .collect();
+            late.sort();
+            Some(late[late.len() / 2])
+        })
+        .join()
+        .unwrap();
+        if let Some(median) = median {
+            assert!(
+                median < Duration::from_micros(60),
+                "median overshoot {median:?}"
+            );
+        }
     }
 
     #[test]
