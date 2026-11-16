@@ -56,7 +56,7 @@ fn header_heights() {
     // Smallest and largest track height: contents stay centred, bar and meter stretch.
     let palette = TrackPalette::new(150);
     let meter = gallery::demo_meter(0.5, 0.6);
-    let mut model = HeaderModel::new("Lead", "hexa", &palette);
+    let mut model = HeaderModel::new("Lead", "Hexa", &palette);
     model.meter = Some(&meter);
     snapshot::snapshot("timeline-header-heights", None, |ui| {
         ui.horizontal_top(|ui| {
@@ -397,12 +397,12 @@ fn cards_expose_painted_objects() {
     h.run();
     h.check_accessibility();
 
-    let lead = h.get_all_by_label("Spur Lead, hexa").count();
+    let lead = h.get_all_by_label("Spur Lead, Hexa").count();
     assert!(lead >= 6, "{lead} Lead headers");
     h.get_by_label("Spur Strings, Plugin fehlt: Vital");
     h.get_by_label("Spur Pad, stumm durch Solo");
     let selected = h
-        .get_all_by_label("Spur Bass, hexa")
+        .get_all_by_label("Spur Bass, Hexa")
         .next()
         .expect("Bass header");
     assert_eq!(

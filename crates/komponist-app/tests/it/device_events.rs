@@ -159,7 +159,7 @@ impl FakeHost {
             .tracks
             .iter()
             .flat_map(|t| &t.channel.devices)
-            .any(|d| d.id == device && d.plugin.name == "hexa")
+            .any(|d| d.id == device && d.plugin.name == "Hexa")
     }
 }
 
@@ -581,7 +581,7 @@ fn plugin_actions_reach_the_host() {
     }]);
     app.step();
     assert_eq!(app.engine().device_status(surge), DeviceStatus::Ok);
-    let hexa = device(&app, "hexa");
+    let hexa = device(&app, "Hexa");
 
     // Parameters: bridged devices through the host, hexa through the engine.
     app.dispatch(Action::Plugin(PluginAction::SetParam {

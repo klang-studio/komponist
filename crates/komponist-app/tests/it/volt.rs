@@ -52,7 +52,7 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2) {
 
 /// A project with one volt track and the dock on „Geräte“.
 fn app_with_volt() -> (App, DeviceId) {
-    let mut app = App::headless(Project::new("volt"));
+    let mut app = App::headless(Project::new("Volt"));
     app.dispatch(Action::Plugin(PluginAction::Add {
         plugin: Internal::Volt.plugin_ref(),
         target: DropTarget::NewTrack { index: None },
@@ -138,7 +138,7 @@ fn snapshot_of_the_three_pages() {
     );
 }
 
-const CARD: &str = "volt";
+const CARD: &str = "Volt";
 
 fn card<'h>(h: &'h Harness<'_, App>) -> egui_kittest::Node<'h> {
     // The accessible name of the card (`devices_card`) lives as long as the harness' tree.
@@ -160,14 +160,14 @@ fn press_label(h: &mut Harness<'_, App>, role: Role, label: &str) {
 
 #[test]
 fn volt_is_an_instrument_in_the_catalog_and_adding_it_makes_a_track() {
-    let mut app = App::headless(Project::new("volt"));
+    let mut app = App::headless(Project::new("Volt"));
     let entry = app
         .engine()
         .host()
         .catalog()
         .entries()
         .iter()
-        .find(|e| e.plugin.name == "volt")
+        .find(|e| e.plugin.name == "Volt")
         .expect("in the catalog")
         .clone();
     assert_eq!(entry.kind, komponist_ipc::PluginKind::Instrument);
@@ -177,7 +177,7 @@ fn volt_is_an_instrument_in_the_catalog_and_adding_it_makes_a_track() {
         target: DropTarget::NewTrack { index: None },
     }));
     let device = &app.project().tracks[0].channel.devices[0];
-    assert_eq!(device.plugin.name, "volt");
+    assert_eq!(device.plugin.name, "Volt");
     assert_eq!(device.role, DeviceRole::Instrument);
 }
 
@@ -257,7 +257,7 @@ fn knob_turns_and_routing_are_saved_in_the_project_and_load_again() {
     let json = komponist_model::persist::to_json(app.project()).unwrap();
     let loaded = komponist_model::persist::from_json(&json).unwrap();
     let (_, _, d) = loaded.find_device(device).unwrap();
-    assert_eq!(d.plugin.name, "volt");
+    assert_eq!(d.plugin.name, "Volt");
     let state: serde_json::Value = serde_json::from_slice(d.state.as_deref().unwrap()).unwrap();
     assert_eq!(state["params"]["cutoff"], 640.0);
     assert_eq!(state["params"]["mod2_amt"], -0.25);
@@ -286,7 +286,7 @@ fn an_old_file_that_calls_the_synth_knurr_shows_it_as_volt() {
     let project = komponist_model::persist::from_json(OLD_FILE).expect("the old file loads");
     let device = project.tracks[0].channel.devices.first().expect("a device");
     assert_eq!(device.plugin.id, "knurr");
-    assert_eq!(device.plugin.name, "volt");
+    assert_eq!(device.plugin.name, "Volt");
     assert_eq!(Internal::from_id(&device.plugin.id), Some(Internal::Volt));
     // Saving writes the new name and keeps the id.
     let saved = komponist_model::persist::to_json(&project).expect("saves");
@@ -294,6 +294,6 @@ fn an_old_file_that_calls_the_synth_knurr_shows_it_as_volt() {
     let plugin = &v["project"]["tracks"][0]["channel"]["devices"][0]["plugin"];
     assert_eq!(
         (plugin["id"].as_str(), plugin["name"].as_str()),
-        (Some("knurr"), Some("volt"))
+        (Some("knurr"), Some("Volt"))
     );
 }

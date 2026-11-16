@@ -290,13 +290,13 @@ fn tab_maximises_the_mixer_and_the_normal_dock_shows_it_too() {
     s.get_by_role_and_label(Role::Button, "Mute · Lead");
     s.get_by_role_and_label(Role::Button, "Solo · Lead");
     assert!(
-        s.query_by_role_and_label(Role::Button, &Lang::De.mixer_insert("hexa"))
+        s.query_by_role_and_label(Role::Button, &Lang::De.mixer_insert("Hexa"))
             .is_none()
     );
     // The instrument line is gone; the name carries it as its AccessKit description.
-    assert!(s.query_by_role_and_label(Role::Label, "hexa").is_none());
+    assert!(s.query_by_role_and_label(Role::Label, "Hexa").is_none());
     let name = s.get_by_role_and_label(Role::Button, "Lead");
-    assert_eq!(name.accesskit_node().description().as_deref(), Some("hexa"));
+    assert_eq!(name.accesskit_node().description().as_deref(), Some("Hexa"));
     let fader = s
         .get_by_role_and_label(Role::Slider, &Lang::De.mixer_volume("Lead"))
         .rect();
@@ -746,7 +746,7 @@ fn insert_slots_open_reorder_and_bypass() {
         .collect();
     assert_eq!(chain, [synth, hall, eq, tal]);
     // The instrument does not move.
-    let synth_slot = in_strip(&h, "Lead", Role::Button, &Lang::De.mixer_insert("hexa"));
+    let synth_slot = in_strip(&h, "Lead", Role::Button, &Lang::De.mixer_insert("Hexa"));
     let tal_slot = in_strip(
         &h,
         "Lead",
@@ -808,7 +808,7 @@ fn plus_opens_the_add_menu_and_a_dropped_effect_is_inserted() {
         .iter()
         .map(|d| d.plugin.name.clone())
         .collect();
-    assert_eq!(names_now, ["hexa", "LSP Para EQ x8", "LSP Delay"]);
+    assert_eq!(names_now, ["Hexa", "LSP Para EQ x8", "LSP Delay"]);
 }
 
 fn option_names(h: &Harness<'_, App>) -> Vec<String> {
@@ -842,7 +842,7 @@ fn the_master_plus_offers_audio_effects_only_and_adds_to_the_master_chain() {
     h.run_steps(3);
     let listed = option_names(&h);
     assert!(!listed.is_empty());
-    for name in ["hexa", "Arpeggiator", "Sampler"] {
+    for name in ["Hexa", "Arpeggiator", "Sampler"] {
         assert!(!listed.iter().any(|n| n == name), "{name} in {listed:?}");
     }
     assert!(listed.iter().any(|n| n == "LSP Delay"), "{listed:?}");

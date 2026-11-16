@@ -350,7 +350,7 @@ fn wheel(h: &mut Harness<'_, App>, pos: Pos2, notches: &[f32]) {
 }
 
 fn knob_rect(h: &Harness<'_, App>, name: &str) -> egui::Rect {
-    h.get_by_role_and_label(Role::Group, "Gerät hexa")
+    h.get_by_role_and_label(Role::Group, "Gerät Hexa")
         .get_by_role_and_label(Role::Slider, name)
         .rect()
 }

@@ -1,16 +1,16 @@
 ## Names of the built-in devices (`komponist-builtin`, `Internal::name_in`). Brand names stay; generic ones translate.
 
 # Name of the FM synthesizer (brand).
-device-name-hexa = hexa
+device-name-hexa = Hexa
 
 # Name of the virtual-analog synthesizer (brand).
-device-name-volt = volt
+device-name-volt = Volt
 
 # Name of the drum sampler.
 device-name-sampler = Sampler
 
 # Name of the compressor (brand).
-device-name-presse = presse
+device-name-presse = Presse
 
 # Name of the equalizer.
 device-name-eq = EQ
