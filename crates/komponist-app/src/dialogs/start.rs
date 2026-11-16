@@ -22,6 +22,7 @@ use komponist_ui::{focus, fonts, px, state};
 
 use super::metrics::{MONO_SMALL, WORDMARK, start as m};
 use super::{ActionButton, dot, format, label_node, section_label, styled};
+use crate::platform::Platform;
 use crate::project_io::ProjectSummary;
 use crate::ui_state::{SettingsSection, StartView};
 
@@ -102,9 +103,15 @@ pub enum Output {
     Settings(SettingsSection),
 }
 
-/// The version line: "0.1.0 · Linux · CLAP und VST3".
+/// The version line: "0.1.0 · Linux · CLAP und VST3", "0.1.0 · macOS · CLAP und VST3" on macOS.
 pub fn version_line(t: Lang) -> String {
-    t.start_version(env!("CARGO_PKG_VERSION"))
+    version_line_for(t, Platform::current())
+}
+
+/// [`version_line`] for a given platform.
+pub fn version_line_for(t: Lang, platform: Platform) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    platform.pick(t.start_version(version), t.start_version_mac(version))
 }
 
 /// Indices of the rows that match `filter` (name or path, case-insensitive).
