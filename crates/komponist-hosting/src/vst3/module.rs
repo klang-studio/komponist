@@ -1,17 +1,25 @@
-//! Loading a `.vst3` module: the Linux bundle layout, `dlopen`, `ModuleEntry` / `ModuleExit`, the
+//! Loading a `.vst3` module: the bundle layout, `dlopen`, the module entry and exit functions, the
 //! plugin factory and its class list.
 //!
-//! Host duties (VST3 module spec, spike WP-15 §1.7): call `ModuleEntry(handle)` right after
-//! `dlopen` and `ModuleExit()` right before `dlclose`, and keep the library mapped until every COM
-//! object it created is released. A [`Module`] is shared through an [`Arc`] by everything that holds
-//! a COM pointer into the library (the plugin, its processor), and modules are cached per binary, so
-//! two instances of one bundle in a process share one `ModuleEntry` / `ModuleExit` pair.
+//! Host duties (VST3 module spec, spike WP-15 §1.7): call the entry function right after `dlopen`
+//! and the exit function right before `dlclose`, and keep the library mapped until every COM
+//! object it created is released. The entry and exit functions are per OS:
 //!
-//! The library is opened through [`crate::library`], so its code stays mapped after `ModuleExit`
-//! and `dlclose` (see there why); loading the module again after `ModuleExit` calls `ModuleEntry`
-//! again.
+//! | OS | Binary | Entry | Exit |
+//! |---|---|---|---|
+//! | Linux | `X.vst3/Contents/<arch>-linux/X.so` | `ModuleEntry(dlopen handle)` | `ModuleExit()` |
+//! | macOS | `X.vst3/Contents/MacOS/X` (Mach-O, named by `Info.plist`) | `bundleEntry(CFBundleRef)` | `bundleExit()` |
+//!
+//! On macOS the `CFBundleRef` stays alive until after `bundleExit` (plugins keep it to find their
+//! resources). A [`Module`] is shared through an [`Arc`] by everything that holds a COM pointer
+//! into the library (the plugin, its processor), and modules are cached per binary, so two
+//! instances of one bundle in a process share one entry / exit pair.
+//!
+//! The library is opened through [`crate::library`], so its code stays mapped after the exit
+//! function and `dlclose` (see there why); loading the module again afterwards calls the entry
+//! function again.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::{CStr, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
@@ -30,9 +38,18 @@ use crate::plugin::HostingError;
 /// `PClassInfo::category` of the classes komponist hosts (`kVstAudioEffectClass`).
 const AUDIO_MODULE_CLASS: &str = "Audio Module Class";
 
-/// The shared library of a bundle: `X.vst3/Contents/<arch>-linux/X.so`, or any single `.so` in that
-/// directory when it is named differently. A `.vst3` that is a plain file (the pre-3.6.10 layout) is
-/// the library itself.
+/// The module entry and exit symbols of this OS (see the module docs).
+#[cfg(not(target_os = "macos"))]
+const ENTRY_SYMBOL: &CStr = c"ModuleEntry";
+#[cfg(not(target_os = "macos"))]
+const EXIT_SYMBOL: &CStr = c"ModuleExit";
+#[cfg(target_os = "macos")]
+const ENTRY_SYMBOL: &CStr = c"bundleEntry";
+#[cfg(target_os = "macos")]
+const EXIT_SYMBOL: &CStr = c"bundleExit";
+
+/// The shared library of a bundle (see the module docs for the layouts). A `.vst3` that is a plain
+/// file (the pre-3.6.10 layout) is the library itself.
 pub(crate) fn binary_path(bundle: &Path) -> Result<PathBuf, HostingError> {
     if bundle.is_file() {
         return Ok(bundle.to_path_buf());
@@ -43,6 +60,24 @@ pub(crate) fn binary_path(bundle: &Path) -> Result<PathBuf, HostingError> {
             bundle.display()
         )));
     }
+    bundle_binary(bundle)
+}
+
+/// macOS: `Contents/MacOS/<CFBundleExecutable>`, else `Contents/MacOS/<bundle name>`.
+#[cfg(target_os = "macos")]
+fn bundle_binary(bundle: &Path) -> Result<PathBuf, HostingError> {
+    crate::bundle::executable(bundle).ok_or_else(|| {
+        HostingError::Load(format!(
+            "{}: no executable in Contents/MacOS",
+            bundle.display()
+        ))
+    })
+}
+
+/// Linux: `Contents/<arch>-linux/X.so`, or any single `.so` in that directory when it is named
+/// differently.
+#[cfg(not(target_os = "macos"))]
+fn bundle_binary(bundle: &Path) -> Result<PathBuf, HostingError> {
     let dir = bundle
         .join("Contents")
         .join(format!("{}-linux", std::env::consts::ARCH));
@@ -67,42 +102,75 @@ pub(crate) fn binary_path(bundle: &Path) -> Result<PathBuf, HostingError> {
         .ok_or_else(|| HostingError::Load(format!("{}: no shared library", dir.display())))
 }
 
-/// One loaded VST3 library with `ModuleEntry` done. Dropping it calls `ModuleExit` and `dlclose`
-/// (which leaves the code mapped, see [`crate::library`]).
+/// One loaded VST3 library with its entry function done. Dropping it calls the exit function and
+/// `dlclose` (which leaves the code mapped, see [`crate::library`]).
 #[derive(Debug)]
 pub(crate) struct Module {
     binary: PathBuf,
     library: Library,
     entered: bool,
+    /// The bundle handed to `bundleEntry`: released after `bundleExit` and `dlclose` (declared
+    /// after `library`).
+    #[cfg(target_os = "macos")]
+    bundle: Option<crate::bundle::CfBundle>,
 }
 
+/// `ModuleEntry(void* sharedLibraryHandle)` (Linux) or `bundleEntry(CFBundleRef)` (macOS).
 type ModuleEntryFn = unsafe extern "C" fn(*mut c_void) -> bool;
+/// `ModuleExit()` (Linux) or `bundleExit()` (macOS).
 type ModuleExitFn = unsafe extern "C" fn() -> bool;
 type GetPluginFactoryFn = unsafe extern "C" fn() -> *mut IPluginFactory;
 
 impl Module {
-    fn open(binary: &Path) -> Result<Module, HostingError> {
+    fn open(bundle: &Path, binary: &Path) -> Result<Module, HostingError> {
         // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain
         // it.
         let library = unsafe { Library::open(binary) }?;
+        #[cfg(not(target_os = "macos"))]
+        let _ = bundle;
         let mut module = Module {
             binary: binary.to_path_buf(),
             library,
             entered: false,
+            #[cfg(target_os = "macos")]
+            bundle: crate::bundle::CfBundle::open(bundle),
         };
         // Older modules do not export it; the spec makes it mandatory only for new ones.
         // SAFETY: the VST3 module spec's signature.
-        if let Some(entry) = unsafe { module.library.symbol::<ModuleEntryFn>(c"ModuleEntry") } {
-            // SAFETY: called once after dlopen with the dlopen handle (VST3 module spec).
-            if !unsafe { entry(module.library.handle()) } {
+        if let Some(entry) = unsafe { module.library.symbol::<ModuleEntryFn>(ENTRY_SYMBOL) } {
+            let argument = module.entry_argument()?;
+            // SAFETY: called once after dlopen with the dlopen handle (Linux) or the module's
+            // bundle (macOS), as the VST3 module spec says.
+            if !unsafe { entry(argument) } {
                 return Err(HostingError::Load(format!(
-                    "{}: ModuleEntry failed",
-                    binary.display()
+                    "{}: {} failed",
+                    binary.display(),
+                    ENTRY_SYMBOL.to_string_lossy()
                 )));
             }
             module.entered = true;
         }
         Ok(module)
+    }
+
+    /// What the entry function gets: the dlopen handle.
+    #[cfg(not(target_os = "macos"))]
+    fn entry_argument(&self) -> Result<*mut c_void, HostingError> {
+        Ok(self.library.handle())
+    }
+
+    /// What the entry function gets: the bundle (a single-file module has none).
+    #[cfg(target_os = "macos")]
+    fn entry_argument(&self) -> Result<*mut c_void, HostingError> {
+        self.bundle
+            .as_ref()
+            .map(crate::bundle::CfBundle::as_ptr)
+            .ok_or_else(|| {
+                HostingError::Load(format!(
+                    "{}: bundleEntry needs a bundle directory",
+                    self.binary.display()
+                ))
+            })
     }
 
     /// The plugin factory (`GetPluginFactory`); each call holds its own reference.
@@ -129,10 +197,11 @@ impl Drop for Module {
     fn drop(&mut self) {
         // SAFETY: the VST3 module spec's signature.
         if self.entered
-            && let Some(exit) = unsafe { self.library.symbol::<ModuleExitFn>(c"ModuleExit") }
+            && let Some(exit) = unsafe { self.library.symbol::<ModuleExitFn>(EXIT_SYMBOL) }
         {
-            // SAFETY: balanced with the successful ModuleEntry; every COM object of this library
-            // is released by now (they hold the `Arc<Module>`). `dlclose` follows with `library`.
+            // SAFETY: balanced with the successful entry call; every COM object of this library
+            // is released by now (they hold the `Arc<Module>`). `dlclose` follows with `library`,
+            // the bundle (macOS) is released after it.
             unsafe { exit() };
         }
     }
@@ -154,7 +223,7 @@ pub(crate) fn load_module(bundle: &Path) -> Result<Arc<Module>, HostingError> {
     {
         return Ok(module);
     }
-    let module = Arc::new(Module::open(&binary)?);
+    let module = Arc::new(Module::open(bundle, &binary)?);
     modules.push((binary, Arc::downgrade(&module)));
     Ok(module)
 }
@@ -272,6 +341,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn bundle_layout() {
         let dir = std::env::temp_dir().join(format!("kp-vst3-layout-{}", std::process::id()));
@@ -297,6 +367,39 @@ mod tests {
         assert!(matches!(
             load_module(&bundle),
             Err(HostingError::Load(m)) if m.contains("Odd Name.so")
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_layout() {
+        let dir = std::env::temp_dir().join(format!("kp-vst3-layout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bundle = dir.join("Odd Name.vst3");
+        let macos = bundle.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        // The Linux layout is no macOS bundle.
+        let linux = bundle
+            .join("Contents")
+            .join(format!("{}-linux", std::env::consts::ARCH));
+        std::fs::create_dir_all(&linux).unwrap();
+        std::fs::write(linux.join("Odd Name.so"), b"").unwrap();
+        assert!(matches!(binary_path(&bundle), Err(HostingError::Load(_))));
+        std::fs::write(macos.join("Odd Name"), b"").unwrap();
+        assert_eq!(binary_path(&bundle).unwrap(), macos.join("Odd Name"));
+        // A single-file module, and a path that does not exist.
+        let file = dir.join("Single.vst3");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(binary_path(&file).unwrap(), file);
+        assert!(matches!(
+            binary_path(&dir.join("Missing.vst3")),
+            Err(HostingError::Load(_))
+        ));
+        // Not a library: dlopen fails cleanly.
+        assert!(matches!(
+            load_module(&bundle),
+            Err(HostingError::Load(m)) if m.contains("Odd Name")
         ));
         std::fs::remove_dir_all(&dir).unwrap();
     }

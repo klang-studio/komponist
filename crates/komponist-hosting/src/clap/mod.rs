@@ -47,13 +47,23 @@ use self::events::{InputEventList, WireSink};
 use self::host::{KpHost, MainThreadHost, SharedHost};
 use self::processor::{ClapProcessor, NoteTarget, PortLayout};
 use crate::host::{FdEvents, HostContext, TimerId};
-use crate::plugin::{ActivateConfig, GuiInfo, HostedPlugin, HostedProcessor, HostingError};
+use crate::plugin::{
+    ActivateConfig, GUI_EMBEDDING, GuiInfo, HostedPlugin, HostedProcessor, HostingError,
+};
 
 /// Vendor reported to plugins in `clap_host.vendor`.
 const HOST_VENDOR: &str = "klang-studio";
 
-const X11_EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
+/// The embedded GUI API of this OS: X11 (Linux) or Cocoa (macOS, for #52; note for it: do not
+/// call `set_scale` on Cocoa, JUCE plugins then double their size in points, spike #42 Q1).
+#[cfg(not(target_os = "macos"))]
+const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
     api_type: GuiApiType::X11,
+    is_floating: false,
+};
+#[cfg(target_os = "macos")]
+const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
+    api_type: GuiApiType::COCOA,
     is_floating: false,
 };
 
@@ -66,8 +76,19 @@ fn load_entry(bundle: &Path) -> Result<PluginEntry, HostingError> {
         .map_err(|e| HostingError::Load(format!("{}: {e}", bundle.display())))?;
     // clack-host unloads the library with its last entry; plugin code must stay mapped
     // (`crate::library`, WP-32).
-    crate::library::keep_mapped(bundle);
+    crate::library::keep_mapped(&binary_path(bundle));
     Ok(entry)
+}
+
+/// The library clack-host loaded for `bundle`: the bundle itself on Linux (a `.clap` is the
+/// shared library), the executable inside a `.clap` bundle directory on macOS (clack passes the
+/// bundle's path to `clap_entry.init`).
+fn binary_path(bundle: &Path) -> std::borrow::Cow<'_, Path> {
+    #[cfg(target_os = "macos")]
+    if let Some(executable) = crate::bundle::executable(bundle) {
+        return executable.into();
+    }
+    bundle.into()
 }
 
 /// A NUL-terminated C string field as UTF-8 (lossy), cut at the first NUL.
@@ -219,9 +240,10 @@ impl ClapPlugin {
 
         let handle = instance.plugin_handle();
         let ext = Extensions::query(&handle);
-        let has_gui = ext
-            .gui
-            .is_some_and(|gui| gui.is_api_supported(&handle, X11_EMBEDDED));
+        let has_gui = GUI_EMBEDDING
+            && ext
+                .gui
+                .is_some_and(|gui| gui.is_api_supported(&handle, EMBEDDED));
         let descriptor = PluginDescriptor {
             sidechain: PortLayout::query(ext.audio_ports, &handle, true)
                 .sidechain
@@ -527,10 +549,10 @@ impl HostedPlugin for ClapPlugin {
             .ext
             .gui
             .filter(|_| self.has_gui)
-            .ok_or_else(|| HostingError::Gui("the plugin has no embeddable X11 GUI".into()))?;
+            .ok_or_else(|| HostingError::Gui("the plugin has no embeddable GUI".into()))?;
         let mut instance = self.instance.borrow_mut();
         let handle = instance.plugin_handle();
-        gui.create(&handle, X11_EMBEDDED)
+        gui.create(&handle, EMBEDDED)
             .map_err(|e| HostingError::Gui(format!("create: {e}")))?;
         let opened = (|| {
             // Allowed to fail on X11 (Shortcircuit XT picks its own scale).

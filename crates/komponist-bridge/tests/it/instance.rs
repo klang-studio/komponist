@@ -144,7 +144,8 @@ fn synth_sounds_through_the_ipc_path() {
     let info = bridge.load(&bundle, SYNTH);
     assert_eq!(info.descriptor.id, SYNTH);
     assert_eq!(info.descriptor.kind, PluginKind::Instrument);
-    assert!(info.has_gui);
+    // No plugin GUIs on macOS until #52.
+    assert_eq!(info.has_gui, komponist_hosting::GUI_EMBEDDING);
     assert_eq!(info.latency, 0);
     let names: Vec<&str> = info.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["Gain", "Decay"]);

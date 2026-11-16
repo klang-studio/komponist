@@ -117,7 +117,7 @@ fn synth_plays_notes() {
     let mut rig = load(&bundle, SYNTH);
     let plugin = rig.plugin.as_mut();
     assert_eq!(plugin.descriptor().kind, PluginKind::Instrument);
-    assert!(plugin.has_gui());
+    assert_eq!(plugin.has_gui(), crate::GUI_EMBEDDING);
     assert!(!plugin.is_active());
 
     let mut processor = plugin.activate(CONFIG).unwrap();
@@ -456,4 +456,32 @@ fn dropping_an_active_plugin_cleans_up() {
     drop(processor);
     drop(plugin);
     assert_eq!(host_loop.registrations(), (0, 0));
+}
+
+/// `keep_mapped` gets the library clack-host loaded: on macOS the executable inside the `.clap`
+/// bundle directory (a `dlopen` of the directory itself finds nothing), on Linux the bundle. It
+/// stays mapped after its last instance and entry are gone. (On macOS dyld does not unload images
+/// with thread-local variables anyway, which every Rust plugin has, so the last check cannot fail
+/// there; it can on Linux.)
+#[test]
+fn the_library_stays_mapped_after_unload() {
+    let Some(bundle) = fixture("kp-test-fx") else {
+        return;
+    };
+    let binary = crate::clap::binary_path(&bundle).into_owned();
+    if cfg!(target_os = "macos") {
+        let macos = bundle.join("Contents/MacOS").canonicalize().unwrap();
+        assert!(
+            binary.canonicalize().unwrap().starts_with(macos),
+            "{binary:?}"
+        );
+    } else {
+        assert_eq!(binary, bundle);
+    }
+    drop(load(&bundle, FX));
+    let c = std::ffi::CString::new(binary.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: RTLD_NOLOAD loads nothing; the extra reference is dropped again.
+    let handle = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
+    assert!(!handle.is_null(), "{} was unmapped", binary.display());
+    unsafe { libc::dlclose(handle) };
 }

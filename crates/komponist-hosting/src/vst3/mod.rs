@@ -92,13 +92,19 @@ use vst3::Steinberg::Vst::{
     UnitInfo, ViewType,
 };
 use vst3::Steinberg::{
-    FUnknown, IPlugFrame, IPlugView, IPlugViewContentScaleSupport,
+    FIDString, FUnknown, IPlugFrame, IPlugView, IPlugViewContentScaleSupport,
     IPlugViewContentScaleSupportTrait, IPlugViewTrait, IPluginBaseTrait, IPluginFactory,
     IPluginFactory3, IPluginFactory3Trait, IPluginFactoryTrait, TUID, ViewRect,
-    kPlatformTypeX11EmbedWindowID,
 };
 use vst3::Steinberg::{kResultOk, kResultTrue};
 use vst3::{ComPtr, ComWrapper, Interface};
+
+/// The `IPlugView` platform type of this OS: an X11 window id (Linux) or an `NSView` (macOS, for
+/// #52; note for it: `setContentScaleFactor` is refused on macOS, skip it, spike #42 Q1).
+#[cfg(not(target_os = "macos"))]
+const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
+#[cfg(target_os = "macos")]
+const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeNSView;
 
 use self::events::MidiMap;
 use self::host::{
@@ -108,7 +114,9 @@ use self::module::{Module, audio_classes, load_module, parse_cid};
 use self::processor::{BusLayout, ProcessorSetup, TO_CONTROLLER_RING, Vst3Processor};
 use self::strings::utf16;
 use crate::host::{FdEvents, HostContext, TimerId};
-use crate::plugin::{ActivateConfig, GuiInfo, HostedPlugin, HostedProcessor, HostingError};
+use crate::plugin::{
+    ActivateConfig, GUI_EMBEDDING, GuiInfo, HostedPlugin, HostedProcessor, HostingError,
+};
 
 /// The configuration of a parameter flush on a plugin that was never activated.
 const FLUSH_CONFIG: ActivateConfig = ActivateConfig {
@@ -431,7 +439,8 @@ impl Vst3Plugin {
         // SAFETY: plain getter on the main thread.
         self.event_inputs = unsafe { self.component.getBusCount(kEvent as i32, kInput as i32) };
         self.descriptor.sidechain = sidechain_bus(&self.bus_infos(kAudio, kInput)).is_some();
-        self.has_gui = self.probe_gui();
+        // Not even probed where no GUI is embedded: JUCE builds its whole editor in `createView`.
+        self.has_gui = GUI_EMBEDDING && self.probe_gui();
         self.refresh_params();
         Ok(())
     }
@@ -454,13 +463,13 @@ impl Vst3Plugin {
         }
     }
 
-    /// Whether the controller creates an editor that embeds into X11. The view is released again.
+    /// Whether the controller creates an editor for [`PLATFORM_TYPE`]. The view is released again.
     fn probe_gui(&self) -> bool {
         let Some(view) = self.create_view() else {
             return false;
         };
         // SAFETY: a fresh view, never attached.
-        unsafe { view.isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) == kResultTrue }
+        unsafe { view.isPlatformTypeSupported(PLATFORM_TYPE) == kResultTrue }
     }
 
     fn create_view(&self) -> Option<ComPtr<IPlugView>> {
@@ -977,17 +986,15 @@ impl HostedPlugin for Vst3Plugin {
             return Err(HostingError::WrongState("the GUI is already open"));
         }
         if !self.has_gui {
-            return Err(HostingError::Gui(
-                "the plugin has no embeddable X11 GUI".into(),
-            ));
+            return Err(HostingError::Gui("the plugin has no embeddable GUI".into()));
         }
         let view = self
             .create_view()
             .ok_or_else(|| HostingError::Gui("createView returned no view".into()))?;
         // SAFETY: a fresh view on the main thread; the frame outlives it (we own both).
         unsafe {
-            if view.isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) != kResultTrue {
-                return Err(HostingError::Gui("X11 embedding not supported".into()));
+            if view.isPlatformTypeSupported(PLATFORM_TYPE) != kResultTrue {
+                return Err(HostingError::Gui("embedding not supported".into()));
             }
             let frame = self
                 .frame
@@ -1005,7 +1012,7 @@ impl HostedPlugin for Vst3Plugin {
             }
             // The parent is a live X11 window of the app's frame; the app keeps it until after
             // `gui_close` (or the bridge's death).
-            let result = view.attached(parent_xid as *mut c_void, kPlatformTypeX11EmbedWindowID);
+            let result = view.attached(parent_xid as *mut c_void, PLATFORM_TYPE);
             if result != kResultOk {
                 view.setFrame(std::ptr::null_mut());
                 return Err(HostingError::Gui(format!("attached returned {result}")));

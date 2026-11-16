@@ -121,7 +121,7 @@ fn synth_plays_notes() {
     let plugin = rig.plugin.as_mut();
     assert_eq!(plugin.descriptor().kind, PluginKind::Instrument);
     assert_eq!(plugin.descriptor().id, id);
-    assert!(plugin.has_gui());
+    assert_eq!(plugin.has_gui(), crate::GUI_EMBEDDING);
     assert!(!plugin.is_active());
 
     let mut processor = plugin.activate(CONFIG).unwrap();

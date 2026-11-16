@@ -81,6 +81,12 @@ pub struct GuiInfo {
     pub resizable: bool,
 }
 
+/// Whether this build embeds plugin GUIs. On Linux the app's frame window gives the plugin an X11
+/// parent (WP-50). On macOS the bridge will own the frame window and attach the plugin's `NSView`
+/// itself (#52; CLAP `cocoa`, VST3 `kPlatformTypeNSView`); until then no plugin reports a GUI
+/// there, whatever it offers, and `gui_open` fails.
+pub const GUI_EMBEDDING: bool = cfg!(not(target_os = "macos"));
+
 /// Main-thread half of one loaded plugin instance. Lives on the bridge's main thread from
 /// [`crate::load`] until drop (drop = deactivate if needed, destroy, unload).
 ///
@@ -90,8 +96,9 @@ pub trait HostedPlugin {
     /// What was loaded.
     fn descriptor(&self) -> &PluginDescriptor;
 
-    /// Whether the plugin offers an embeddable X11 GUI (CLAP `gui` with `x11` embedded, VST3
-    /// `IPlugView` with `kPlatformTypeX11EmbedWindowID`).
+    /// Whether the plugin offers a GUI this build embeds: on Linux one that embeds into X11 (CLAP
+    /// `gui` with `x11` embedded, VST3 `IPlugView` with `kPlatformTypeX11EmbedWindowID`). Always
+    /// false where [`GUI_EMBEDDING`] is (macOS until #52).
     fn has_gui(&self) -> bool;
 
     /// Activates for `config` and returns the audio-thread half, not yet processing. Fails if
