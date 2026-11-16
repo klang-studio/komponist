@@ -32,6 +32,9 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 pub enum HostKind {
     /// CoreAudio, the only device host on macOS.
     CoreAudio,
+    /// WASAPI in shared mode, the only device host on Windows for now (ASIO follows, W8). Always
+    /// unavailable off Windows.
+    Wasapi,
     /// PipeWire (cpal feature `pipewire`), the default on current Linux desktops. Always
     /// unavailable off Linux.
     PipeWire,
@@ -46,21 +49,25 @@ pub enum HostKind {
 
 impl HostKind {
     /// Whether this driver exists on the operating system the crate was built for: CoreAudio on
-    /// macOS; PipeWire, JACK and ALSA on Linux; `Null` everywhere. The variants of the other
-    /// systems stay in the enum so that a settings file written on Linux still loads on macOS
-    /// (see [`StreamConfig`]); they are never available there.
+    /// macOS; WASAPI on Windows; PipeWire, JACK and ALSA on Linux; `Null` everywhere. The variants
+    /// of the other systems stay in the enum so that a settings file written on one system still
+    /// loads on the others (see [`StreamConfig`]); they are never available there.
     pub const fn is_supported_here(self) -> bool {
         match self {
             HostKind::Null => true,
             HostKind::CoreAudio => cfg!(target_os = "macos"),
+            HostKind::Wasapi => cfg!(windows),
             HostKind::PipeWire | HostKind::Jack | HostKind::Alsa => cfg!(target_os = "linux"),
         }
     }
 
-    /// The driver a fresh configuration starts with: CoreAudio on macOS, PipeWire elsewhere.
+    /// The driver a fresh configuration starts with: CoreAudio on macOS, WASAPI on Windows,
+    /// PipeWire elsewhere.
     pub const fn platform_default() -> HostKind {
         if cfg!(target_os = "macos") {
             HostKind::CoreAudio
+        } else if cfg!(windows) {
+            HostKind::Wasapi
         } else {
             HostKind::PipeWire
         }
@@ -72,7 +79,8 @@ impl HostKind {
 /// cpal's `DeviceId` in its string form `"<host>:<id>"`: the PipeWire node name
 /// (`"pipewire:alsa_output.usb-Focusrite_Scarlett_2i2-00.analog-stereo"`), the ALSA PCM name
 /// (`"alsa:hw:CARD=USB,DEV=0"`), `"jack:output"`, the CoreAudio device UID
-/// (`"coreaudio:BuiltInSpeakerDevice"`). Unlike [`DeviceInfo::name`] it is unique and
+/// (`"coreaudio:BuiltInSpeakerDevice"`), the WASAPI endpoint id
+/// (`"wasapi:{0.0.0.00000000}.{guid}"`). Unlike [`DeviceInfo::name`] it is unique and
 /// does not depend on enumeration order. Serialised as a plain string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -111,8 +119,8 @@ pub struct DeviceInfo {
 #[serde(from = "StoredStreamConfig")]
 pub struct StreamConfig {
     /// Driver. A saved configuration that names a driver this system does not have (PipeWire,
-    /// JACK or ALSA on macOS, CoreAudio on Linux) loads as the default configuration of this
-    /// system: [`HostKind::platform_default`] with the default device (`device` and `device_id`
+    /// JACK or ALSA on macOS and Windows, CoreAudio on Linux and Windows, WASAPI on Linux and
+    /// macOS) loads as the default configuration of this system: [`HostKind::platform_default`] with the default device (`device` and `device_id`
     /// dropped, they belong to the other system), rate and buffer size kept.
     pub host: HostKind,
     /// Output device name (display, and fallback for the lookup); `None` together with
@@ -159,7 +167,7 @@ impl From<StoredStreamConfig> for StreamConfig {
 }
 
 impl Default for StreamConfig {
-    /// [`HostKind::platform_default`] (CoreAudio on macOS, PipeWire elsewhere), default device,
+    /// [`HostKind::platform_default`] (CoreAudio on macOS, WASAPI on Windows, PipeWire on Linux), default device,
     /// 48000 Hz, 256 frames.
     fn default() -> StreamConfig {
         StreamConfig {
@@ -959,7 +967,9 @@ mod tests {
         assert!(runs(&probe, 3));
     }
 
-    /// A host of this system whose device lookup only enumerates (nothing is opened).
+    /// A host whose device lookup only enumerates (nothing is opened). Windows has none: the
+    /// tests never enumerate the machine's WASAPI endpoints (rule 14), so they use ALSA, which is
+    /// unavailable there and fails with `HostUnavailable`.
     fn test_host() -> HostKind {
         if cfg!(target_os = "macos") {
             HostKind::CoreAudio
@@ -1179,9 +1189,11 @@ mod tests {
 
     #[test]
     fn stream_configs_without_device_id_still_load() {
-        // A driver of this system (PipeWire or CoreAudio): other systems' drivers migrate.
+        // A driver of this system (PipeWire, CoreAudio or WASAPI): other systems' drivers migrate.
         let host = if cfg!(target_os = "macos") {
             "coreaudio"
+        } else if cfg!(windows) {
+            "wasapi"
         } else {
             "pipewire"
         };
@@ -1217,8 +1229,9 @@ mod tests {
             null[0].sample_rates,
             [44_100, 48_000, 88_200, 96_000, 192_000]
         );
-        // Real devices depend on the machine: reported, not asserted.
-        for &host in &hosts {
+        // Real devices depend on the machine: reported, not asserted. Not on Windows: WASAPI
+        // enumeration would touch the machine's endpoints (rule 14).
+        for &host in hosts.iter().filter(|_| !cfg!(windows)) {
             match AudioSystem::<TestEngine>::devices(host) {
                 Ok(devices) => {
                     for d in devices {
@@ -1259,6 +1272,7 @@ mod tests {
         };
         for kind in [
             HostKind::CoreAudio,
+            HostKind::Wasapi,
             HostKind::PipeWire,
             HostKind::Jack,
             HostKind::Alsa,
@@ -1282,7 +1296,7 @@ mod tests {
                 assert_eq!((config.device, config.device_id), (None, None));
             }
         }
-        assert!(serde_json::from_str::<StreamConfig>(&json("wasapi")).is_err());
+        assert!(serde_json::from_str::<StreamConfig>(&json("asio")).is_err());
     }
 
     #[test]
@@ -1290,6 +1304,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&HostKind::CoreAudio).unwrap(),
             r#""coreaudio""#
+        );
+        assert_eq!(
+            serde_json::to_string(&HostKind::Wasapi).unwrap(),
+            r#""wasapi""#
         );
     }
 }

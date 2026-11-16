@@ -928,13 +928,33 @@ must not output back into that bus).
 
 ## 7. Audio and MIDI I/O (`komponist-audio`)
 
-- `AudioSystem::hosts()` → PipeWire, JACK, ALSA (cpal features `pipewire`, `jack`), devices, rates,
-  buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
+- `AudioSystem::available_hosts()` → the drivers of this OS (see below), devices, rates, buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
   over a channel. The new stream takes it over. A buffer change is "short dropout, engine untouched"
   (S07).
+- **Drivers per OS** (`HostKind`): CoreAudio on macOS, WASAPI (shared mode) on Windows, PipeWire / JACK / ALSA on
+  Linux; `Null` everywhere. The variants of the other systems stay in the enum so a settings file written on one
+  system loads on the others (it migrates to the platform default, see `StreamConfig`). cpal's backend features
+  are per target in `komponist-audio/Cargo.toml` (`pipewire`, `jack`, `realtime-dbus` Linux only; `realtime` on
+  Windows). ASIO joins in W8.
+- **Windows audio thread:** cpal's WASAPI thread registers itself with MMCSS (task "Audio", via
+  `audio_thread_priority`, fallback `THREAD_PRIORITY_TIME_CRITICAL`) when the stream starts, before the first
+  callback and outside `assert_no_alloc`, if cpal's `realtime` feature is on. When both MMCSS and the fallback
+  fail, cpal reports an error that is not `ErrorKind::RealtimeDenied` (it wraps the Win32 error), so
+  `StreamStats::realtime_denied` stays false on Windows and the stream runs at normal priority. The callback
+  itself makes no priority call: the thread is registered already, and a second MMCSS registration on it fails. (The engine's workers use "Pro Audio" through `komponist_rt`, §6.4.1.)
+- **WASAPI buffer sizes:** in shared mode the audio engine calls back once per device period (typically
+  10 ms: 480 frames at 48 kHz), whatever size is requested; cpal reports that period as the only supported
+  buffer size (`DeviceInfo::buffer_range` is `(period, period)`). `negotiate` therefore ignores the requested size,
+  runs on the default buffer and returns the period as `effective.buffer_frames`, so the S07 latency
+  (`buffer / rate` plus the reported latency) shows what really runs and the engine is prepared for it. Rates
+  are resampled by the Windows mixer (cpal's `AUTOCONVERTPCM`); the S07 rate list is cpal's.
+- **Windows MIDI:** midir uses WinMM: no virtual ports, and an input device is exclusive per process (opening one
+  another program holds fails with `MidiError::Backend`; the port stays listed). Port names are the names WinMM
+  reports. Tests feed the input path without a port (`TestMidiSource`, hub-internal injection) and never open a
+  real device.
 - No device / device lost → state `NoDevice`. The UI disables play and record and shows the red notice
   in the transport bar, the status bar and S07.
 - MIDI: midir inputs per device, switchable in S07, activity flag per device. Events carry
