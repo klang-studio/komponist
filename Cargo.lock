@@ -2542,6 +2542,7 @@ dependencies = [
  "komponist-rt",
  "rtrb",
  "rustix 1.1.6",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2610,6 +2611,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -34,7 +34,8 @@
 //!   it, a lightly loaded Apple silicon Mac runs them on slow cores; spike #43), and leave it
 //!   before they end. Jobs run inside `assert_no_alloc`. Idle workers sleep in the kernel wait
 //!   (`FUTEX_WAIT`, `os_sync_wait_on_address`) with a one-second deadline, to look at the shutdown
-//!   flag.
+//!   flag. On Windows (W3) workers register with MMCSS ("Pro Audio", `TIME_CRITICAL` as the fallback)
+//!   and wait with `WaitOnAddress` (`ceil(ms)` timeouts; see `sys.rs` for why that suffices).
 
 use std::cell::{Cell, UnsafeCell};
 use std::sync::Arc;

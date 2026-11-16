@@ -493,6 +493,14 @@ timed waits 12.5–25 % of the wait late (timer leeway; 25 % while nobody uses t
 kernel wait is armed at 3/4 of the remaining time and repeated for the rest, the last one (under
 50 µs) at the deadline (`komponist_rt::os_sync`).
 
+On Windows (W3; spike windows-wake S1, internal notes) workers register with MMCSS (`AvSetMmThreadCharacteristicsW("Pro Audio")`,
+`AVRT_PRIORITY_CRITICAL`, once per thread; `THREAD_PRIORITY_TIME_CRITICAL` if MMCSS refuses; a refusal of both is reported
+like a refused `SCHED_FIFO`). Waits and wakes use `WaitOnAddress` / `WakeByAddressSingle|All` on the same process-private
+words (round trip p50 0.5 µs). Their timeout is in whole milliseconds on the coarse system clock (a 1 ms timeout takes a
+median 12 ms at the default timer resolution), so each wait uses `ceil(remaining ms)` and re-checks word and clock. That is
+enough because a missed deadline only counts `WorkerStats::late` and the dispatcher waits again; the audio deadline itself
+is the device's. The pool therefore does not need `timeBeginPeriod`; `late` may be counted up to one timer tick late.
+
 - **Dispatch, per segment:** the audio thread writes a batch descriptor, publishes it with one
   release store of a claim word (`epoch << 32 | count << 16 | next`) and wakes as many workers as
   there are jobs beyond the first (one `FUTEX_WAKE`). Every thread claims jobs by compare-and-swap
