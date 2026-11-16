@@ -539,6 +539,12 @@ mod tests {
     /// sequencer is unavailable.
     #[test]
     fn virtual_port_round_trip() {
+        // CoreMIDI names virtual ports differently (no "client:port" form); the macOS MIDI
+        // backend (#50) makes this test portable.
+        if cfg!(target_os = "macos") {
+            eprintln!("CoreMIDI port names differ (#50): skipped");
+            return;
+        }
         let Ok((mut hub, mut receiver)) = MidiInputHub::new() else {
             eprintln!("ALSA sequencer unavailable: skipped");
             return;
