@@ -206,6 +206,8 @@ jobs:
     env:
       # The workflow-wide lavapipe setting is for Linux.
       WGPU_BACKEND: dx12
+      # A test binary ended abnormally once without a failing test (exit code 2173): show where.
+      RUST_BACKTRACE: "1"
     defaults:
       run:
         # Git Bash, for the bash scripts (the default on Windows runners is PowerShell).

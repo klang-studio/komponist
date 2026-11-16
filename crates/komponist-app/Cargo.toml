@@ -48,7 +48,7 @@ assert_no_alloc.workspace = true
 
 [features]
 # ASIO on Windows (W8): forwards to komponist-audio (needs LLVM; the ASIO SDK comes from vendor/asio-sdk,
-# ARCHITECTURE §7). Off by default; not yet built on Windows with the app.
+# ARCHITECTURE §7). Off by default; scripts/package-windows.sh turns it on.
 asio = ["komponist-audio/asio"]
 
 [dev-dependencies]
