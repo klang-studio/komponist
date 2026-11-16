@@ -170,9 +170,13 @@ impl Bridge {
                     maximum: Some(n),
                 };
                 rustix::process::setrlimit(rustix::process::Resource::Core, limit(0))?;
+                // RLIMIT_RTPRIO is Linux only; macOS has no equivalent to limit.
+                #[cfg(target_os = "linux")]
                 if let Some(n) = rtprio {
                     rustix::process::setrlimit(rustix::process::Resource::Rtprio, limit(n))?;
                 }
+                #[cfg(not(target_os = "linux"))]
+                let _ = rtprio;
                 // Let the bridge end of the socket survive exec.
                 let fd = BorrowedFd::borrow_raw(raw);
                 rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::empty())?;

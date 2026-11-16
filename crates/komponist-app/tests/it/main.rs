@@ -30,6 +30,8 @@ mod dialogs;
 mod dispatch;
 mod export;
 mod export_bridges;
+// ALSA sequencer virtual ports; the CoreMIDI equivalent comes with #50.
+#[cfg(target_os = "linux")]
 mod hardware_midi;
 mod hexa_device;
 mod i18n;

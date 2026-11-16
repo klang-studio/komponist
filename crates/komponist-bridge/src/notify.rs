@@ -10,14 +10,14 @@
 //!   the latest one, so edits of different parameters are not merged.
 
 use std::cell::Cell;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+use komponist_hosting::host_loop::wake::WakeFd;
 use komponist_hosting::host_loop::{notification_bit, notification_bits};
 use komponist_hosting::{GuiSize, HostNotification, HostNotify};
 use komponist_ipc::LogLevel;
-use rustix::event::EventfdFlags;
 
 /// Pending bit for queued log lines (above every `notification_bits` value).
 pub const LOG_PENDING: u32 = 1 << 31;
@@ -72,19 +72,23 @@ pub struct BridgeNotify {
     logs: Mutex<LogQueue>,
     dropped_rt_logs: AtomicU32,
     edits: Mutex<Vec<(u32, f64)>>,
-    wake: OwnedFd,
+    wake: WakeFd,
 }
 
 impl BridgeNotify {
-    /// Creates the wake eventfd.
+    /// Creates the wake fd (eventfd on Linux, pipe on macOS).
     pub fn new() -> std::io::Result<BridgeNotify> {
-        let wake = rustix::event::eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
+        let wake = WakeFd::new()?;
+        let edits = Mutex::new(Vec::with_capacity(MAX_EDITS));
+        // On macOS `std`'s mutex boxes its pthread mutex on first use: lock it once here, so that
+        // `notify` (`ParamEdited`) never allocates.
+        drop(edits.lock());
         Ok(BridgeNotify {
             pending: AtomicU32::new(0),
             gui_size: AtomicU64::new(NO_SIZE),
             logs: Mutex::new(LogQueue::default()),
             dropped_rt_logs: AtomicU32::new(0),
-            edits: Mutex::new(Vec::with_capacity(MAX_EDITS)),
+            edits,
             wake,
         })
     }
@@ -97,8 +101,8 @@ impl BridgeNotify {
     /// Sets `bit` and wakes the main loop if it was not set yet. RT-safe.
     fn raise(&self, bit: u32) {
         if self.pending.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
-            // Non-blocking eventfd: never blocks, at worst EAGAIN at a counter of 2^64 − 2.
-            let _ = rustix::io::write(&self.wake, &1u64.to_ne_bytes());
+            // Non-blocking: never blocks (EAGAIN only when a wake-up is pending anyway).
+            self.wake.signal();
         }
     }
 
@@ -106,8 +110,7 @@ impl BridgeNotify {
     /// and the latest GUI size request. Draining first means a notification that races with this
     /// call wakes the next `poll()`.
     pub fn take(&self) -> (u32, Option<GuiSize>) {
-        let mut buf = [0u8; 8];
-        let _ = rustix::io::read(&self.wake, &mut buf);
+        self.wake.drain();
         let pending = self.pending.swap(0, Ordering::AcqRel);
         let size = if pending & notification_bits::GUI_RESIZE_REQUESTED != 0 {
             let raw = self.gui_size.load(Ordering::Acquire);

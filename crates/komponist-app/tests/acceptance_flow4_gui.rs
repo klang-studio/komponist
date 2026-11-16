@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Acceptance flow 4, GUI part (HANDOFF §9): the loaded plugin's own window opens as a real X11
 //! frame, shows the plugin's GUI at its size, and closes again. The loading by double-click and
 //! drag is `acceptance_flow4.rs`; here the same `PluginAction::Add` the browser sends loads
