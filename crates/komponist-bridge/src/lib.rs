@@ -47,6 +47,10 @@ use std::process::ExitCode;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+/// Whether bridges embed plugin GUIs on this OS: not on macOS until the bridge owns the frame
+/// window (#52). For the app and its tests, which do not link the hosting crate directly.
+pub use komponist_hosting::GUI_EMBEDDING;
+
 /// Process exit codes.
 pub mod exit {
     /// Done: shut down on request, or a scan printed its JSON.
