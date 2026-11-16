@@ -6,12 +6,12 @@
   </picture>
 </p>
 
-<p align="center"><b>A MIDI DAW for Linux. Fast, small, and made for writing music.</b></p>
+<p align="center"><b>A MIDI DAW for Linux and macOS. Fast, small, and made for writing music.</b></p>
 
 <p align="center">
   <a href="https://github.com/klang-studio/komponist/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/klang-studio/komponist/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue"></a>
-  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-informational">
+  <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational">
   <img alt="Status: early, v0.2" src="https://img.shields.io/badge/status-early%20(v0.2)-orange">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
@@ -106,7 +106,9 @@ What is coming: **audio tracks**, automation.
 ## Install
 
 Every [release](https://github.com/klang-studio/komponist/releases) has a Linux x86_64 archive (built on Ubuntu 24.04):
-unpack it, run `./komponist --demo`, and `scripts/install-desktop.sh` adds the menu entry and icon. Or build from source,
+unpack it, run `./komponist --demo`, and `scripts/install-desktop.sh` adds the menu entry and icon. On macOS 14.4 or newer
+(Apple Silicon) take the `macos-arm64.zip`, move `komponist.app` to `/Applications` and allow it once in System Settings →
+Privacy & Security (the app is ad-hoc signed for now, see [docs/INSTALL.md](docs/INSTALL.md#macos)). Or build from source,
 see [docs/INSTALL.md](docs/INSTALL.md) for the details (executable, icon, desktop entry, working on klang-dsp together
 with komponist).
 

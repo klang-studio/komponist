@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements of the hardened runtime (scripts/bundle-macos.sh). -->
+<plist version="1.0">
+<dict>
+    <!-- CLAP and VST3 plugins are signed by other teams (or not at all): without this the hardened
+         runtime refuses to load them into komponist and its bridge processes. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Recording (audio tracks) and plugins with an audio input. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

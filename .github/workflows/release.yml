@@ -1,7 +1,8 @@
 # Release: runs when a GitHub release is published (the release, tag and notes are written by hand on GitHub).
 # Pre-releases (v0.2.0-rc.1, v0.2-beta1 ...) trigger it too, deliberately and unfiltered: publish a pre-release
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
-# komponist-<tag>-linux-x86_64.tar.gz and its .sha256 to that same release.
+# komponist-<tag>-linux-x86_64.tar.gz and komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53)
+# with their .sha256 files to that same release.
 name: Release
 
 on:
@@ -90,3 +91,64 @@ jobs:
 
       - name: Upload to the release
         run: gh release upload "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" --repo "$GITHUB_REPOSITORY"
+
+  # macOS 14.4+, Apple Silicon only. The app is signed ad-hoc (scripts/bundle-macos.sh); once an Apple Developer
+  # account exists, the script signs with a Developer ID and notarizes when KOMPONIST_SIGN_IDENTITY and the
+  # notarytool credentials are set (as secrets passed to the "Bundle" step).
+  macos-arm64:
+    name: macOS arm64 app bundle
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check the tag name
+        run: |
+          # The tag ends up in file names: letters, digits, dot, underscore, dash only.
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Unsupported tag name: $TAG"
+            exit 1
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      # Xcode command line tools and rustup come with the runner image; no system packages needed.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Bundle
+        run: scripts/bundle-macos.sh
+
+      # ditto keeps the signature, the resource forks and the symlinks of the bundle (zip(1) does not).
+      - name: Package
+        run: |
+          name="komponist-${TAG}-macos-arm64"
+          ditto -c -k --keepParent dist/komponist.app "$name.zip"
+          shasum -a 256 "$name.zip" > "$name.zip.sha256"
+          cat "$name.zip.sha256"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      # Unpack the archive as a user would and check what is in it. No window: a GUI start needs a display
+      # session, so this runs the command line paths (`--help` of the app and of the bridge mode, which the
+      # app starts for every plugin) and verifies the signature survived the zip.
+      - name: Check the unpacked app
+        run: |
+          mkdir unpacked
+          ditto -x -k "$NAME.zip" unpacked
+          app=unpacked/komponist.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # Into a variable first: `grep -q` in a pipe can end early and fail the step under pipefail.
+          entitlements="$(codesign -d --entitlements - "$app" 2>&1)"
+          case "$entitlements" in *com.apple.security.cs.disable-library-validation*) ;; *) echo "::error::entitlement missing"; exit 1 ;; esac
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 14.4
+          "$app/Contents/MacOS/komponist" --help
+          "$app/Contents/MacOS/komponist" --bridge --help
+
+      - name: Upload to the release
+        run: gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --repo "$GITHUB_REPOSITORY"
