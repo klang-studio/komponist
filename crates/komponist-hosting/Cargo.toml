@@ -32,12 +32,14 @@ rtrb.workspace = true
 # dlopen and its per-OS RTLD_* flags (`library.rs`).
 libc.workspace = true
 # poll() and eventfd for the reference `PollLoop`.
-rustix = { workspace = true, features = ["event"] }
+rustix = { workspace = true, features = ["event", "pipe"] }
 
 [dev-dependencies]
 # RT checks around `HostedProcessor::process`.
 assert_no_alloc.workspace = true
 # Klopfer's state (JSON) in the VST3 installed-plugin tests.
 serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows for the GUI tests (run under Xvfb only).
 x11rb = { workspace = true, features = ["xtest"] }
