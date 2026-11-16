@@ -677,6 +677,14 @@ impl HostedPlugin for ClapPlugin {
         }))
     }
 
+    fn gui_set_scale(&mut self, scale: f64) -> bool {
+        let Ok((gui, _)) = self.require_gui() else {
+            return false;
+        };
+        let mut instance = self.instance.borrow_mut();
+        gui.set_scale(&instance.plugin_handle(), scale).is_ok()
+    }
+
     fn gui_close(&mut self) {
         let Some(gui) = self.ext.gui else {
             return;

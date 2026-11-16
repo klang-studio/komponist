@@ -1107,6 +1107,18 @@ impl HostedPlugin for Vst3Plugin {
         Self::view_size(&open.view)
     }
 
+    fn gui_set_scale(&mut self, scale: f64) -> bool {
+        let Ok(open) = self.require_view() else {
+            return false;
+        };
+        // SAFETY: an open view on the main thread.
+        unsafe {
+            open.view
+                .cast::<IPlugViewContentScaleSupport>()
+                .is_some_and(|scaling| scaling.setContentScaleFactor(scale as f32) == kResultOk)
+        }
+    }
+
     fn gui_close(&mut self) {
         let Some(open) = self.view.take() else {
             return;
