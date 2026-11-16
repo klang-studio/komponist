@@ -37,8 +37,8 @@ use std::time::{Duration, Instant};
 use komponist_ipc::control::{PROTOCOL_VERSION, socket_pair};
 use komponist_ipc::{
     AppChannel, BridgeClient, BridgeMonitor, BridgeMsg, ChannelError, ControlMsg, ErrorContext,
-    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
-    WireEventKind,
+    GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode,
+    ShmRegion, WireEventKind,
 };
 use komponist_model::{DeviceId, DeviceRole};
 
@@ -417,7 +417,7 @@ impl Bridge {
     }
 
     /// Sends `OpenGui`; the watchdog waits while it is outstanding.
-    pub(crate) fn open_gui(&mut self, parent_xid: u64, scale: f64) -> Result<(), PluginError> {
+    pub(crate) fn open_gui(&mut self, target: GuiTarget) -> Result<(), PluginError> {
         if !self.has_gui {
             return Err(PluginError::NoGui);
         }
@@ -426,7 +426,7 @@ impl Bridge {
         }
         self.gui_requests += 1;
         self.long_call_since.get_or_insert_with(Instant::now);
-        self.send(ControlMsg::OpenGui { parent_xid, scale });
+        self.send(ControlMsg::OpenGui(target));
         Ok(())
     }
 
@@ -671,14 +671,27 @@ impl Bridge {
             BridgeMsg::GuiSizeRequest(size) => {
                 events.push(PluginManagerEvent::GuiSizeRequest { device, size });
             }
-            BridgeMsg::GuiClosed => {
+            BridgeMsg::GuiClosed { rect } => {
                 let snapshot = self.gui_open || self.gui_closing;
                 self.gui_open = false;
                 self.gui_closing = false;
-                events.push(PluginManagerEvent::GuiClosed { device });
+                events.push(PluginManagerEvent::GuiClosed { device, rect });
                 if snapshot {
                     self.request_state(StatePurpose::Event);
                 }
+            }
+            BridgeMsg::HeaderAction(event) => {
+                events.push(PluginManagerEvent::FrameHeaderAction { device, event });
+            }
+            BridgeMsg::Shortcut { chord, .. } => {
+                events.push(PluginManagerEvent::FrameShortcut { device, chord });
+            }
+            BridgeMsg::HeaderKey(key) => events.push(PluginManagerEvent::FrameKey { device, key }),
+            BridgeMsg::FrameMoved(rect) => {
+                events.push(PluginManagerEvent::FrameMoved { device, rect });
+            }
+            BridgeMsg::CloseRequested => {
+                events.push(PluginManagerEvent::FrameCloseRequested { device });
             }
             BridgeMsg::LatencyChanged(latency) => self.update_latency(latency, events),
             BridgeMsg::RestartRequested => {}
@@ -759,6 +772,7 @@ impl Bridge {
                 self.gui_answered();
                 events.push(PluginManagerEvent::GuiClosed {
                     device: self.device,
+                    rect: None,
                 });
             }
             _ => {}

@@ -56,17 +56,19 @@ fn protocol_errors_keep_the_bridge_alive() {
     bridge.expect_error(ErrorContext::State);
     bridge.send(ControlMsg::SetParam { id: 0, value: 0.0 });
     bridge.expect_error(ErrorContext::Params);
-    bridge.send(ControlMsg::OpenGui {
-        parent_xid: 1,
+    bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
+        xid: 1,
         scale: 1.0,
-    });
+    }));
     bridge.expect_error(ErrorContext::Gui);
     bridge.send(ControlMsg::SetRenderMode(RenderMode::Offline));
     bridge.expect_error(ErrorContext::Activate);
     // Nothing to deactivate or close: no answer, no harm.
     bridge.send(ControlMsg::Deactivate);
     bridge.send(ControlMsg::CloseGui);
-    bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
+    bridge.expect("GuiClosed", |m| {
+        matches!(m, BridgeMsg::GuiClosed { .. }).then_some(())
+    });
 
     bridge.send(ControlMsg::Load {
         format: PluginFormat::Clap,

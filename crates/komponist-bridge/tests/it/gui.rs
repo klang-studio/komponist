@@ -209,10 +209,10 @@ fn exercise(bundle: &Path, plugin_id: &str, name: &str) {
     bridge.activate();
 
     let opened = Instant::now();
-    bridge.send(ControlMsg::OpenGui {
-        parent_xid: u64::from(parent.window),
+    bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
+        xid: u64::from(parent.window),
         scale: 1.0,
-    });
+    }));
     let (size, resizable) = bridge.expect("GuiOpened", |m| match m {
         BridgeMsg::GuiOpened { size, resizable } => Some((*size, *resizable)),
         _ => None,
@@ -262,7 +262,9 @@ fn exercise(bundle: &Path, plugin_id: &str, name: &str) {
     run_blocks(&mut bridge, Duration::from_millis(500));
 
     bridge.send(ControlMsg::CloseGui);
-    bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
+    bridge.expect("GuiClosed", |m| {
+        matches!(m, BridgeMsg::GuiClosed { .. }).then_some(())
+    });
     run_blocks(&mut bridge, Duration::from_millis(300));
     let t0 = Instant::now();
     assert_eq!(bridge.shutdown(), EXIT_OK);
@@ -350,10 +352,10 @@ fn gui_dexed_edits_reach_the_app() {
     let parent = Parent::new(1600, 1000);
     let mut bridge = Bridge::spawn();
     let info = bridge.load(&bundle, "com.digital-suburban.dexed");
-    bridge.send(ControlMsg::OpenGui {
-        parent_xid: u64::from(parent.window),
+    bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
+        xid: u64::from(parent.window),
         scale: 1.0,
-    });
+    }));
     bridge.expect("GuiOpened", |m| {
         matches!(m, BridgeMsg::GuiOpened { .. }).then_some(())
     });
@@ -406,7 +408,9 @@ fn gui_dexed_edits_reach_the_app() {
         .count();
 
     bridge.send(ControlMsg::CloseGui);
-    bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
+    bridge.expect("GuiClosed", |m| {
+        matches!(m, BridgeMsg::GuiClosed { .. }).then_some(())
+    });
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!(
         "GUI edits through the bridge (Dexed): inactive {} ParamValues entries, last {} = \
@@ -495,10 +499,10 @@ fn gui_dexed_vst3_edits_reach_the_app() {
     let parent = Parent::new(1600, 1000);
     let mut bridge = Bridge::spawn();
     let info = bridge.load(&bundle, "ABCDEF019182FAEB4447534244657864");
-    bridge.send(ControlMsg::OpenGui {
-        parent_xid: u64::from(parent.window),
+    bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
+        xid: u64::from(parent.window),
         scale: 1.0,
-    });
+    }));
     bridge.expect("GuiOpened", |m| {
         matches!(m, BridgeMsg::GuiOpened { .. }).then_some(())
     });
@@ -544,7 +548,9 @@ fn gui_dexed_vst3_edits_reach_the_app() {
     );
 
     bridge.send(ControlMsg::CloseGui);
-    bridge.expect("GuiClosed", |m| (*m == BridgeMsg::GuiClosed).then_some(()));
+    bridge.expect("GuiClosed", |m| {
+        matches!(m, BridgeMsg::GuiClosed { .. }).then_some(())
+    });
     assert_eq!(bridge.shutdown(), EXIT_OK);
     eprintln!(
         "VST3 GUI edits through the bridge (Dexed): inactive {} values, last {} = {first:.3}; \

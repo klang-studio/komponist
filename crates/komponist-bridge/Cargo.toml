@@ -23,6 +23,23 @@ rtrb.workspace = true
 # Debug builds: the RT loop runs inside `assert_no_alloc` (no-op in release builds).
 assert_no_alloc.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The plugin frame window the bridge owns on macOS (#52): eframe (wgpu) for the window and the
+# header, drawn with komponist-ui's header code in the app's language (komponist-i18n), AppKit for
+# the plugin's container view, the key monitor, activation and "Oben halten". All already linked by
+# the `komponist` executable, which carries the bridge (WP-94).
+komponist-ui.workspace = true
+komponist-i18n.workspace = true
+komponist-tokens = { workspace = true, features = ["egui"] }
+egui.workspace = true
+eframe.workspace = true
+winit.workspace = true
+raw-window-handle.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+block2.workspace = true
+
 [dev-dependencies]
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

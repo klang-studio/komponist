@@ -18,7 +18,7 @@
 //! - **Scan mode** ([`scan`]): prints the bundle's plugins as JSON and exits.
 //!
 //! Both modes first turn core dumps off (`PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` on
-//! macOS): plugins crash on purpose in tests and by accident in practice, and systemd-coredump
+//! macOS, where the bridge also drops its crash exception ports, so ReportCrash shows no dialog): plugins crash on purpose in tests and by accident in practice, and systemd-coredump
 //! would delay the crash detection to about 55 ms and pop up a crash reporter (PLAN WP-31).
 //! `KOMPONIST_BRIDGE_COREDUMP=1` keeps core dumps for debugging a plugin crash. Any panic in the
 //! bridge aborts it, so a failing bridge always looks like a crash to the app and never leaves a
@@ -47,8 +47,9 @@ use std::process::ExitCode;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-/// Whether bridges embed plugin GUIs on this OS: not on macOS until the bridge owns the frame
-/// window (#52). For the app and its tests, which do not link the hosting crate directly.
+/// Whether bridges embed plugin GUIs on this OS (Linux: into the app's frame, macOS: into the
+/// bridge's own frame window, #52). For the app and its tests, which do not link the hosting crate
+/// directly.
 pub use komponist_hosting::GUI_EMBEDDING;
 
 /// Process exit codes.
@@ -175,6 +176,7 @@ fn harden_process() {
         // SAFETY: names the calling thread; the string is NUL-terminated and static.
         unsafe { libc::pthread_setname_np(PROCESS_NAME.as_ptr()) };
         if !keep_cores {
+            detach_from_crash_reporter();
             use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
             let hard = getrlimit(Resource::Core).maximum;
             let _ = setrlimit(
@@ -185,6 +187,49 @@ fn harden_process() {
                 },
             );
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn task_set_exception_ports(
+        task: libc::mach_port_t,
+        exception_mask: u32,
+        new_port: libc::mach_port_t,
+        behavior: i32,
+        new_flavor: i32,
+    ) -> i32;
+    /// The task's own port (what `mach_task_self()` returns).
+    static mach_task_self_: libc::mach_port_t;
+}
+
+#[cfg(target_os = "macos")]
+/// `EXC_MASK_CRASH`.
+const EXC_MASK_CRASH: u32 = 1 << 10;
+#[cfg(target_os = "macos")]
+/// `EXC_MASK_CORPSE_NOTIFY`.
+const EXC_MASK_CORPSE_NOTIFY: u32 = 1 << 13;
+#[cfg(target_os = "macos")]
+/// `EXCEPTION_DEFAULT`.
+const EXCEPTION_DEFAULT: i32 = 1;
+#[cfg(target_os = "macos")]
+/// `THREAD_STATE_NONE` on arm64.
+const THREAD_STATE_NONE: i32 = 5;
+
+/// Detaches the bridge from ReportCrash: a crashing plugin shows komponist's own crash state, not
+/// the macOS "quit unexpectedly" dialog (the app reports bridge crashes itself). The task's crash
+/// exception ports, inherited from launchd, are cleared.
+#[cfg(target_os = "macos")]
+fn detach_from_crash_reporter() {
+    // SAFETY: changes only this task's exception ports; a null port removes the handler.
+    unsafe {
+        task_set_exception_ports(
+            mach_task_self_,
+            EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY,
+            0,
+            EXCEPTION_DEFAULT,
+            THREAD_STATE_NONE,
+        );
     }
 }
 

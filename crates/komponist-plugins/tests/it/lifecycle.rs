@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
+use komponist_ipc::GuiTarget;
 use komponist_ipc::LogLevel;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
 use komponist_plugins::manager::STATE_LOG_PREFIX;
@@ -489,7 +490,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
     assert_eq!(manager.status(DeviceId(9)), DeviceStatus::Ok);
     assert_eq!(manager.status(DeviceId(99)), DeviceStatus::Ok);
     assert_eq!(
-        manager.open_gui(DeviceId(99), 1, 1.0),
+        manager.open_gui(DeviceId(99), GuiTarget::X11Child { xid: 1, scale: 1.0 }),
         Err(PluginError::UnknownDevice(DeviceId(99)))
     );
     let pids: Vec<u32> = (1..=3)
@@ -502,7 +503,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(
-        manager.open_gui(DeviceId(1), 1, 1.0),
+        manager.open_gui(DeviceId(1), GuiTarget::X11Child { xid: 1, scale: 1.0 }),
         Err(PluginError::NoGui)
     );
 

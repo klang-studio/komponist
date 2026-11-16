@@ -23,8 +23,15 @@
 //!   outside processing (flush output, VST3 edits) and all values after a state load go back as
 //!   `ParamValues` with the plugin's text, coalesced to at most one message per
 //!   [`VALUES_INTERVAL`]. GUI edits during processing travel through the shared output ring.
+//! - **Plugin GUI:** on Linux the plugin attaches to the app's X11 child window (`OpenGui` with
+//!   `GuiTarget::X11Child`); on macOS the bridge opens a frame window of its own
+//!   (`GuiTarget::OwnFrame`, the `frame` module, #52), run from the outer loop of [`Bridge::run`].
 //! - **Shutdown** (spike WP-15 §4): close the GUI → stop the RT thread and deactivate → destroy
 //!   and unload the plugin → `_exit(0)` (the caller, `crate::run`).
+
+#[cfg(target_os = "macos")]
+#[path = "frame/mod.rs"]
+mod frame;
 
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
@@ -34,6 +41,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "macos"))]
+use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
     ActivateConfig, FdEvents, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode,
@@ -43,7 +52,7 @@ use komponist_ipc::control::PROTOCOL_VERSION;
 use komponist_ipc::shm::MAX_BLOCK;
 use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
-    LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
+    GuiTarget, LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
 };
 #[cfg(not(target_os = "macos"))]
 use rustix::event::{PollFd, PollFlags};
@@ -138,7 +147,8 @@ struct Bridge {
     // Drop order: the plugin (and with it the RT thread's processor) before the loop it uses.
     active: Option<Active>,
     plugin: Option<Box<dyn HostedPlugin>>,
-    channel: BridgeChannel,
+    /// Shared with the frame window (macOS), which reports its keys and header clicks itself.
+    channel: Rc<BridgeChannel>,
     region: Arc<ShmRegion>,
     event_loop: Rc<EventLoop>,
     notify: Arc<BridgeNotify>,
@@ -151,6 +161,9 @@ struct Bridge {
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
     shutdown: bool,
+    /// The plugin frame window this bridge owns (macOS, #52).
+    #[cfg(target_os = "macos")]
+    frame: frame::Slot,
 }
 
 impl Bridge {
@@ -162,7 +175,7 @@ impl Bridge {
         Ok(Bridge {
             active: None,
             plugin: None,
-            channel,
+            channel: Rc::new(channel),
             region,
             event_loop: EventLoop::new(),
             notify: Arc::new(BridgeNotify::new()?),
@@ -172,6 +185,8 @@ impl Bridge {
             values_due: None,
             values_sent: None,
             shutdown: false,
+            #[cfg(target_os = "macos")]
+            frame: frame::Slot::default(),
         })
     }
 
@@ -206,14 +221,13 @@ impl Bridge {
     /// Every callout ends in [`Bridge::drain_ready`] unless the bridge is busy already (a plugin
     /// call running a nested run loop); the busy dispatch then drains what queued up.
     ///
-    /// **Seam for the plugin frame (#52):** the outer `while` is where the bridge will leave
-    /// `CFRunLoopRun` for the frame window. `OpenGui` will record a frame request and call
-    /// `event_loop.stop()`; this loop then runs `eframe::run_native` (run-and-return) right here,
-    /// outside every borrow of the bridge, and enters `event_loop.run()` again when the frame has
-    /// closed. All sources stay installed in the common modes, so control messages, plugin timers
-    /// and notifications keep being served inside eframe's event loop and during live resize;
-    /// protocol work never runs from egui's `ui()` (eframe skips it for occluded windows, spike #42
-    /// Q5).
+    /// **The plugin frame (#52):** the outer loop leaves `CFRunLoopRun` for the frame window.
+    /// `OpenGui` records a frame request and calls `event_loop.stop()`; this loop then runs
+    /// `eframe::run_native` (run-and-return, `frame::run`) right here, outside every borrow of the
+    /// bridge, and enters `event_loop.run()` again when the frame has closed. All sources stay
+    /// installed in the common modes, so control messages, plugin timers and notifications keep
+    /// being served inside eframe's event loop and during live resize; protocol work never runs
+    /// from egui's `ui()` (eframe skips it for occluded windows, spike #42 Q5).
     #[cfg(target_os = "macos")]
     fn run(self) -> u8 {
         let event_loop = self.event_loop.clone();
@@ -234,7 +248,11 @@ impl Bridge {
             }
         })));
         while !bridge.borrow().shutdown {
-            event_loop.run();
+            let request = bridge.borrow_mut().frame.request.take();
+            match request {
+                Some(request) => frame::run(&bridge, request),
+                None => event_loop.run(),
+            }
         }
         event_loop.set_dispatch(None);
         bridge.borrow_mut().close();
@@ -252,11 +270,18 @@ impl Bridge {
             }
             self.dispatch(ready.fds, ready.timers, ready.control);
             if self.shutdown {
+                // An open frame closes first: its event loop runs inside this run loop.
+                frame::close(self, true);
                 self.event_loop.stop();
                 return;
             }
         }
-        self.event_loop.rearm(self.values_due);
+        let frame_due = frame::deadline(self);
+        let due = match (self.values_due, frame_due) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        self.event_loop.rearm(due);
     }
 
     /// One tick: ready plugin fds and due timers (each only while still registered), plugin
@@ -281,6 +306,8 @@ impl Bridge {
         }
         self.forward_logs();
         self.send_values_if_due();
+        #[cfg(target_os = "macos")]
+        frame::tick(self);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -446,14 +473,15 @@ impl Bridge {
         if pending & bits::GUI_RESIZE_REQUESTED != 0
             && let Some(size) = gui_size
         {
+            #[cfg(target_os = "macos")]
+            if frame::owns_gui(self) {
+                frame::plugin_resized(self, size);
+            }
+            #[cfg(not(target_os = "macos"))]
             self.send(BridgeMsg::GuiSizeRequest(size));
         }
         if pending & bits::GUI_CLOSED != 0 {
-            // CLAP: the host destroys a GUI the plugin closed.
-            if let Some(plugin) = self.plugin.as_mut() {
-                plugin.gui_close();
-            }
-            self.send(BridgeMsg::GuiClosed);
+            self.close_gui();
         }
         if pending & bits::RESTART_REQUESTED != 0 {
             self.restart();
@@ -565,19 +593,12 @@ impl Bridge {
                 self.send(BridgeMsg::Params(params));
             }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
-            ControlMsg::OpenGui { parent_xid, scale } => {
-                let Some(plugin) = self.plugin.as_mut() else {
-                    return self.error(ErrorContext::Gui, "no plugin loaded");
-                };
-                match plugin.gui_open(parent_xid, scale) {
-                    Ok(info) => self.send(BridgeMsg::GuiOpened {
-                        size: info.size,
-                        resizable: info.resizable,
-                    }),
-                    Err(e) => self.error(ErrorContext::Gui, e.to_string()),
-                }
-            }
+            ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
+                #[cfg(target_os = "macos")]
+                if frame::owns_gui(self) {
+                    return frame::set_body_size(self, size);
+                }
                 let Some(plugin) = self.plugin.as_mut() else {
                     return self.error(ErrorContext::Gui, "no plugin loaded");
                 };
@@ -588,16 +609,62 @@ impl Bridge {
                     Err(e) => self.error(ErrorContext::Gui, e.to_string()),
                 }
             }
-            ControlMsg::CloseGui => {
-                if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.gui_close();
-                }
-                self.send(BridgeMsg::GuiClosed);
-            }
+            ControlMsg::CloseGui => self.close_gui(),
+            // The own frame's messages; there is none on Linux.
+            #[cfg(target_os = "macos")]
+            ControlMsg::HeaderState { header, lang } => frame::set_header(self, header, &lang),
+            #[cfg(target_os = "macos")]
+            ControlMsg::ActivateFrame => frame::activate(self),
+            #[cfg(not(target_os = "macos"))]
+            ControlMsg::HeaderState { .. } | ControlMsg::ActivateFrame => {}
             ControlMsg::SetRenderMode(mode) => self.set_render_mode(mode),
             ControlMsg::Shutdown => self.shutdown = true,
             ControlMsg::Ping { seq } => self.send(BridgeMsg::Pong { seq }),
         }
+    }
+
+    /// `OpenGui`: into the app's X11 child (Linux) or the bridge's own frame (macOS). Answer:
+    /// `GuiOpened` (for the own frame once the plugin is attached) or `Error`.
+    fn open_gui(&mut self, target: GuiTarget) {
+        let Some(plugin) = self.plugin.as_mut() else {
+            return self.error(ErrorContext::Gui, "no plugin loaded");
+        };
+        if !plugin.has_gui() {
+            return self.error(ErrorContext::Gui, "the plugin has no embeddable GUI");
+        }
+        match target {
+            #[cfg(not(target_os = "macos"))]
+            GuiTarget::X11Child { xid, scale } => {
+                match plugin.gui_open(GuiParent::X11 { xid, scale }) {
+                    Ok(info) => self.send(BridgeMsg::GuiOpened {
+                        size: info.size,
+                        resizable: info.resizable,
+                    }),
+                    Err(e) => self.error(ErrorContext::Gui, e.to_string()),
+                }
+            }
+            #[cfg(target_os = "macos")]
+            GuiTarget::OwnFrame { header, lang, rect } => {
+                if let Err(message) = frame::request(self, header, &lang, rect) {
+                    self.error(ErrorContext::Gui, message);
+                }
+            }
+            _ => self.error(ErrorContext::Gui, "this GUI target is for another platform"),
+        }
+    }
+
+    /// `CloseGui`, or the plugin closed its GUI: closes it (and the own frame) and answers
+    /// `GuiClosed`.
+    fn close_gui(&mut self) {
+        #[cfg(target_os = "macos")]
+        if frame::owns_gui(self) {
+            return frame::close(self, false);
+        }
+        // CLAP: the host destroys a GUI the plugin closed.
+        if let Some(plugin) = self.plugin.as_mut() {
+            plugin.gui_close();
+        }
+        self.send(BridgeMsg::GuiClosed { rect: None });
     }
 
     fn load(
@@ -818,6 +885,8 @@ impl Bridge {
 
     /// Shutdown order: GUI, RT thread and deactivation, then destroy and unload.
     fn close(&mut self) {
+        #[cfg(target_os = "macos")]
+        frame::close(self, true);
         if let Some(plugin) = self.plugin.as_mut() {
             plugin.gui_close();
         }
