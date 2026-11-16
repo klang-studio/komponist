@@ -73,3 +73,11 @@ x11rb.workspace = true
 # (X-Resource).
 winit.workspace = true
 x11rb = { workspace = true, features = ["xtest", "res"] }
+
+[target.'cfg(windows)'.build-dependencies]
+# Icon, version information and manifest of komponist.exe (`build.rs`, ARCHITECTURE §8.8).
+embed-resource.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Console attach for `--help` in the windows-subsystem build (`main.rs`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
