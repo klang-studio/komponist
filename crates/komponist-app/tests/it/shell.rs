@@ -63,7 +63,7 @@ fn egui_mods(m: komponist_app::Modifiers) -> Modifiers {
     // `COMMAND` is Ctrl on Linux and ⌘ on macOS, as in the real input.
     let mut mods = Modifiers::NONE;
     if m.command {
-        mods = mods | Modifiers::COMMAND;
+        mods |= Modifiers::COMMAND;
     }
     Modifiers {
         alt: m.alt,
