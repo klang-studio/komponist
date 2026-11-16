@@ -1302,8 +1302,9 @@ It contains:
   `assets/windows/make-ico.sh` regenerates it.
 - Version information: product name komponist, file description "komponist - MIDI DAW", licence GPL-3.0-or-later.
 - `assets/windows/komponist.manifest`: per-monitor v2 DPI awareness (the egui window and the bridge-owned plugin frames,
-  §8.4, scale per monitor), `longPathAware`, Windows 10 and 11 as supported OS, `asInvoker` (no elevation) and the UTF-8
-  active code page (for plugins that call ANSI APIs). The bridge is the same executable, so it has the same manifest.
+  §8.4, scale per monitor), `longPathAware`, Windows 10 and 11 as supported OS, `asInvoker` (no elevation), and deliberately
+  no UTF-8 active code page: the bridge is the same executable, so it has the same manifest, and plugins expect the
+  system's ANSI code page as in every other host.
 
 **Subsystem and console:** release builds use `#![windows_subsystem = "windows"]` (`main.rs`; debug builds keep the console),
 so Explorer starts no console window. That leaves the process without stdout and stderr when a terminal starts it, which would

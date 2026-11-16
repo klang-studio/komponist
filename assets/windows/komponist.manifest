@@ -29,9 +29,8 @@
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
       <!-- Paths longer than MAX_PATH (260) in project, plugin and sample folders (needs the LongPathsEnabled policy too). -->
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
-      <!-- UTF-8 as the process' ANSI code page (Windows 10 1903+): plugins that call the ANSI APIs with UTF-8 paths
-           work, and komponist's own wide-character calls are unaffected. -->
-      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <!-- No activeCodePage: the manifest also applies to the bridge processes, and plugins there expect the
+           system's ANSI code page as in every other host. komponist itself only uses the wide-character APIs. -->
     </windowsSettings>
   </application>
 </assembly>
