@@ -6,7 +6,8 @@
 //! ```
 //!
 //! Opens `PROJECT`, or shows the start screen (S09) with the recent projects
-//! (`recent.json` next to the settings file). `--demo` opens the demo project "Night Drive". The
+//! (`recent.json` next to the settings file). On macOS, projects opened from Finder or dropped on
+//! the Dock icon (also at launch) take the same way (`App::open_files`, #96). `--demo` opens the demo project "Night Drive". The
 //! audio output comes from the settings (`~/.config/komponist/settings.json`, on macOS
 //! `~/Library/Application Support/komponist/settings.json`);
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
@@ -34,7 +35,7 @@ use komponist_app::dialogs::new_project;
 use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::panels::transport::WORDMARK;
 use komponist_app::settings::{self, Settings};
-use komponist_app::{APP_ID, Action, App, ProjectAction};
+use komponist_app::{APP_ID, App};
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_i18n::Lang;
 use komponist_model::Document;
@@ -226,8 +227,7 @@ fn run_app() -> eframe::Result {
         // a file that cannot be read leaves the start screen with the reason.
         app.show_start_screen();
         if let Some(path) = args.project {
-            let path = std::path::absolute(&path).unwrap_or(path);
-            app.dispatch(Action::Project(ProjectAction::OpenPath(path)));
+            app.open_files(&[path]);
         }
     }
     if let Some(name) = &args.open_plugin
@@ -235,13 +235,16 @@ fn run_app() -> eframe::Result {
     {
         eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
     }
-    // The Dock menu (#95): methods on winit's application delegate, added when the app launches.
+    // The Dock menu (#95) and documents from Finder (#96): methods on winit's application
+    // delegate, added when the app launches.
     #[cfg(target_os = "macos")]
     komponist_app::macos_delegate::install();
     komponist_ui::run(options, move |cc| {
         // After winit's own default menu exists: this replaces it.
         #[cfg(target_os = "macos")]
         let menu = komponist_app::macos_menu::MacMenu::install(&cc.egui_ctx, app.lang());
+        #[cfg(target_os = "macos")]
+        komponist_app::macos_delegate::set_waker(&cc.egui_ctx);
         #[cfg(not(target_os = "macos"))]
         let _ = cc;
         Shell {
@@ -267,6 +270,14 @@ impl eframe::App for Shell {
             menu.update(self.app.lang(), &self.app.plugin_window_entries());
             for command in menu.drain() {
                 self.app.dispatch(command.action());
+            }
+        }
+        // Documents from Finder or the Dock icon (#96), also those of the launch.
+        #[cfg(target_os = "macos")]
+        {
+            let files = komponist_app::macos_delegate::take_opened_files();
+            if !files.is_empty() {
+                self.app.open_files(&files);
             }
         }
         self.app.show(ui);
