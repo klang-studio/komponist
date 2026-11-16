@@ -286,7 +286,7 @@ fn chains_and_routing_golden() {
     use DeviceRole::{Effect, Instrument};
 
     let mut synth = track(1, "Synth", vec![]);
-    synth.channel.devices = vec![device(11, Instrument, "hexa"), device(12, Effect, "EQ")];
+    synth.channel.devices = vec![device(11, Instrument, "Hexa"), device(12, Effect, "EQ")];
     synth.channel.volume_db = 6.0;
     synth.input = MidiInputSel::Device("Keystep 37".to_owned());
     synth.midi_channel = MidiChannelSel::Channel(2);

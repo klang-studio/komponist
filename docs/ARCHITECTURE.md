@@ -2,7 +2,7 @@
 
 Status: **proposal, waiting for approval** (stack decision, gate G0 in `PLAN.md`).
 Date: 2026-11-13. Inputs: `../klang-studio-handoff/` (design v0.1 "Graphit"),
-`../daw-design-briefing.md`, klang-dsp, pisynth (origin of hexa), klopfer (origin of the Sampler engine).
+`../daw-design-briefing.md`, klang-dsp, pisynth (origin of Hexa), klopfer (origin of the Sampler engine).
 
 This document fixes the structure that the work packages in `PLAN.md` build on.
 Anything marked **Decision** needs the owner's approval before code is written.
@@ -24,7 +24,7 @@ From `HANDOFF.md` §3 and the screens:
 | R3 | A plugin crash must not stop the track (S05 "abgestürzt → Neu laden") | **Plugins run out of process.** In-process hosting cannot survive a segfault. |
 | R4 | The realtime audio thread is separate from the UI | No locks, allocation or blocking syscalls on the audio thread. Lock-free queues. |
 | R5 | Pixel-exact custom UI, 1×/2× scaling, 1 px lines, 60 fps with thousands of notes | GPU-drawn custom widgets, our own hit testing for canvases, culling and level of detail. |
-| R6 | Built-in instruments hexa (6-op FM) and klopfer (drum sampler) | hexa (the built-in FM synth, derived from the pisynth hardware synth) runs in process as `hexa-core`. klopfer is already a CLAP plugin. |
+| R6 | Built-in instruments Hexa (6-op FM) and klopfer (drum sampler) | Hexa (the built-in FM synth, derived from the pisynth hardware synth) runs in process as `hexa-core`. klopfer is already a CLAP plugin. |
 | R7 | Tokens are never hard-coded; `tokens.json` is the single source of truth | Code generation from `tokens.json` at build time. |
 | R8 | Keyboard first; every frequent action has a shortcut | Central action and keymap layer, independent of widgets. |
 | R9 | Later: audio tracks, automation, buses/sends, CC lanes | Extension points in the model, the engine events and the program, without building them now. |
@@ -86,7 +86,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 | D3 | Plugin format layer | **decided after WP-15:** own layer behind `HostedPlugin` on clack-host 0.2 (CLAP) + vst3 0.3 (VST3); CLAP first. Test plugins with nice-plug |
 | D4 | Plugin isolation | out of process, one bridge per instance |
 | D5 | klopfer integration | load the bundled `Klopfer.clap` through the normal bridge, shown as "INTERN". **Superseded by WP-87:** komponist has its own Sampler (internal device, `sampler-core` engine); klopfer is an ordinary scanned CLAP plugin |
-| D6 | hexa integration | in process via `hexa-core` (`alloc` + `serde` features), as a built-in `Processor` |
+| D6 | Hexa integration | in process via `hexa-core` (`alloc` + `serde` features), as a built-in `Processor` |
 | D7 | Project format | one JSON file `*.komponist` with schema version; plugin states as base64 |
 | D8 | Undo | immutable snapshots with `Arc` structural sharing (copy on write) |
 | D9 | Musical time | `i64` ticks at 960 PPQ; display `Takt.Schlag.Tick` with 240 ticks/beat (= PPQ/4) |
@@ -103,7 +103,7 @@ clack-host and vst3 directly (D3, decided after spike WP-15).
 │  │ App: Document (model +   │ ──rtrb──────▶   │ Engine                        │  │
 │  │ undo), UiState, Keymap,  │                 │  transport · sequencer ·      │  │
 │  │ panels, dialogs, plugin  │ ◀──rtrb──────── │  mixer · metronome · record   │  │
-│  │ frame windows            │   events +      │  processors: hexa (in-proc)│  │
+│  │ frame windows            │   events +      │  processors: Hexa (in-proc)│  │
 │  │ EngineSync (compile)     │   garbage       │  ExternalProcessor ──┐        │  │
 │  └────────────┬─────────────┘ ◀── atomics ─── │  telemetry (meters…) │        │  │
 │               │                 (telemetry)   └──────────────────────┼────────┘  │
@@ -151,9 +151,9 @@ komponist/
     komponist-model/            project document, time, edits, undo, serde, formatting
     komponist-engine/           RT engine, Processor trait, program compiler, offline render, export
     komponist-audio/            cpal backends, midir inputs, stream lifecycle, CPU/xrun stats
-    hexa-core/                  vendored 6-op FM engine of hexa (from pisynth)
+    hexa-core/                  vendored 6-op FM engine of Hexa (from pisynth)
     sampler-core/               vendored sampler engine of the Sampler (from klopfer's dsp crate)
-    komponist-builtin/          hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
+    komponist-builtin/          Hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-rt/               realtime thread set-up: SCHED_FIFO, time-constraint policy, audio workgroups, os_sync waits (macOS); depends on libc only
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
@@ -298,14 +298,14 @@ without buses has every track's output on the master and no sends, which is the 
 - **Device parameters and plugin states are tracked** (owner decision 2026-11-15). A knob, fader,
   XY or graph-handle drag is one gesture, a wheel burst is one gesture, a click, key step, text
   entry, reset or dropdown choice is one step; a sample load, replace or clear is one step. The
-  value goes into the device state (`edits::set_device_state`) and, for hexa and the internal
+  value goes into the device state (`edits::set_device_state`) and, for Hexa and the internal
   devices, to the running processor as `SetParam` on the engine's fast path: the app does **not**
   run `EngineSync::sync_device_states` for it, so a drag neither clicks nor recompiles per frame.
   Undo, redo, a cancelled gesture, presets and pastes do follow the document that way: the values
-  that differ go to the running processor as `SetParam`s, for hexa its card parameters
+  that differ go to the running processor as `SetParam`s, for Hexa its card parameters
   (`komponist_builtin::device::param_changes`, #19), so a held note sounds on through undo and
-  redo; only a hexa change no card parameter reaches (filters, effects, modulation, as between most
-  presets) or one larger than the engine's per-slot parameter queue gives hexa a fresh processor.
+  redo; only a Hexa change no card parameter reaches (filters, effects, modulation, as between most
+  presets) or one larger than the engine's per-slot parameter queue gives Hexa a fresh processor.
   A bridged plugin's own edits and card parameters arrive as state snapshots; they are tracked
   too, **coalesced** per device (snapshots within 1 s amend one step, `Document::amend`), named „<Parameter> ändern“ or „<Plugin>: Zustand ändern“, and a snapshot
   equal to the stored state is skipped. Only transport settings, sample paths rewritten on save
@@ -584,7 +584,7 @@ special case.
 - Render into an in-memory f32 buffer (≈ 23 MB per stereo minute at 48 kHz) → peak → optional
   normalisation to −1 dBFS → TPDF dither for 16/24 bit → `hound`. The progress dialog shows the
   peak level. Tail 2 s. Range: song (up to the end of the last clip), loop, selection.
-- **The file is aligned with the song timeline.** Lookahead devices (presse, Limiter) and plugin latency delay
+- **The file is aligned with the song timeline.** Lookahead devices (Presse, Limiter) and plugin latency delay
   the whole mix by the project latency `out(master)` (6.8.5). The export renders that many frames more and drops
   the first ones, so the sound of song frame `f` is file frame `f − range.start` and the tail is complete
   (`Engine::project_latency`: `Routing::latency()` with a routing graph, else the longest track chain, plus the
@@ -755,7 +755,7 @@ fast paths, and the same output bit for bit (golden test against a render of the
   tap, applies the send's delay and gain ramp, and adds. Sidechain inputs are read from the source's tap buffer by
   the holder's job into a lane buffer and passed to `Processor::process_sidechain` (internal devices consume it since
   WP-104: `Spec::sidechain` marks the device, `Dsp::process_sidechain` gets the buffer slice of each piece between
-  parameter events, presse feeds its detector with it instead of the input; bridged CLAP and VST3 plugins with a sidechain port through the bridge's extra
+  parameter events, Presse feeds its detector with it instead of the input; bridged CLAP and VST3 plugins with a sidechain port through the bridge's extra
   shared-memory channels since #6, see §8.1 and §8.2). The program carries only indices: per node
   `NodeRoute` (bus, output, input / sidechain / dependent spans, number of inputs, taps, head delay, latencies),
   the input list (`RouteInput`: source, optional `SendRoute` with gate index, linear level, tap and delay), the
@@ -1083,7 +1083,7 @@ table of CLAP features / VST3 subcategories.
   dedicated thread — Strg S always goes to komponist; Leertaste, Esc, Strg Z, Strg Shift Z go to komponist unless
   the user is typing in the plugin (heuristic: text keys start a typing session, Enter/Tab/Esc or 5 s idle end it);
   everything else goes to the plugin. `KOMPONIST_LOG_KEYS=1` logs keys, grab decisions and focus changes.
-  `komponist --open-plugin NAME` opens a frame directly (for checks). Presets work for hexa only until a
+  `komponist --open-plugin NAME` opens a frame directly (for checks). Presets work for Hexa only until a
   CLAP/VST3 preset API exists (post v0.1).
 
 - **macOS (#52): the bridge owns the frame window.** An app cannot embed another process's `NSView`,
@@ -1112,15 +1112,16 @@ table of CLAP features / VST3 subcategories.
 
 ### 8.5 Built-in instruments
 
-- **hexa (D6):** the built-in FM synth, called pisynth until 2026-11-15 (its stored plugin id is still
-  `"pisynth"`; older files that store the name "pisynth" show "hexa" after loading, `persist::from_json`).
+- **Hexa (D6):** the built-in FM synth, called pisynth until 2026-11-15 (its stored plugin id is still
+  `"pisynth"`; older files that store the name "pisynth" (or, before 2026-11-16, the lowercase "hexa") show "Hexa" after
+  loading, `persist::from_json`; Volt and Presse are capitalised the same way).
   It derives from the pisynth hardware synth's engine (`crates/hexa-core`, copied from `synth-core`).
   `komponist-builtin::HexaProcessor` wraps `hexa_core::Synth<1>` (`Synth::boxed`,
   features `alloc` + `serde`). Events are applied sample-accurately by splitting `render` at event
   offsets. State = `Patch` (serde). The browser shows the factory presets (`hexa_core::presets`)
-  under "Presets · hexa". The device card shows 8 macros (S05: Algorithmus, Ratio 2, Index,
+  under "Presets · Hexa". The device card shows 8 macros (S05: Algorithmus, Ratio 2, Index,
   Feedback, Attack, Decay, Sustain, Release) mapped to patch fields. The mapping is documented in WP-25.
-  hexa has no own GUI in v0.1 (generic view only). An idea for later: the HEXA-6 display
+  Hexa has no own GUI in v0.1 (generic view only). An idea for later: the HEXA-6 display
   (`synth-ui`, LVGL) rendered into a texture in a frame window.
 - **klopfer (D5):** klopfer's repository builds `Klopfer.clap` (`cargo xtask bundle klopfer --release`;
   `scripts/build-klopfer.sh` is an optional helper for it).

@@ -776,7 +776,7 @@ mod tests {
             }
         }
         for (name, has_processor, status) in &made {
-            if name == "hexa" || name == komponist_builtin::sampler::NAME {
+            if name == "Hexa" || name == komponist_builtin::sampler::NAME {
                 assert!(has_processor);
                 assert_eq!(*status, DeviceStatus::Ok);
             } else {
@@ -807,16 +807,16 @@ mod tests {
         assert_eq!(
             names,
             [
-                "hexa",
+                "Hexa",
                 "Sampler",
                 "EQ",
                 "Delay",
                 "Hall",
                 "Limiter",
-                "presse",
+                "Presse",
                 "Arpeggiator",
                 "Tonleiter",
-                "volt"
+                "Volt"
             ]
         );
         let missing = host.missing_plugins(&project);
@@ -832,7 +832,7 @@ mod tests {
             .map(|t| t.channel.devices.len())
             .sum::<usize>();
         assert_eq!(missing.len(), all - in_process);
-        assert!(missing.iter().all(|m| m.plugin.name != "hexa"));
+        assert!(missing.iter().all(|m| m.plugin.name != "Hexa"));
         // Drums: the Sampler (in process) is at index 0, so the compressor behind it is the
         // first missing device.
         assert_eq!(missing[0].track, Some(project.tracks[0].id));

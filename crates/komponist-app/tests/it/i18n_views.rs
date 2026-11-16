@@ -257,7 +257,7 @@ fn the_devices_speak_english() {
     // A card of the lead chain: its name with the English prefix, the bypass switch with its
     // tooltip detail.
     assert!(
-        h.query_all_by_label_contains("Device hexa")
+        h.query_all_by_label_contains("Device Hexa")
             .next()
             .is_some()
     );
@@ -532,7 +532,7 @@ fn english_chain() -> App {
 fn the_device_cards_show_english_names_parameters_and_value_words() {
     let h = harness_of(english_chain());
     // Names: hexa stays, Hall is Reverb; the chip is the same BUILT-IN as in the dialogs.
-    for name in ["hexa", "EQ", "Reverb"] {
+    for name in ["Hexa", "EQ", "Reverb"] {
         h.get_by_role_and_label(Role::Group, &Lang::En.devices_card(name));
     }
     assert!(
@@ -565,7 +565,7 @@ fn the_device_cards_show_english_names_parameters_and_value_words() {
         eq.get_by_role_and_label(Role::RadioButton, &format!("Type 1: {kind}"));
     }
     // hexa's pages and macros.
-    let hexa_label = Lang::En.devices_card("hexa");
+    let hexa_label = Lang::En.devices_card("Hexa");
     let hexa = h.get_by_role_and_label(Role::Group, &hexa_label);
     hexa.get_by_role_and_label(Role::RadioButton, "Operators");
     assert_eq!(

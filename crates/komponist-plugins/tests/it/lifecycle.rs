@@ -476,7 +476,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
         plugin: PluginRef {
             format: PluginFormat::Builtin,
             id: komponist_model::project::BUILTIN_HEXA.into(),
-            name: "hexa".into(),
+            name: "Hexa".into(),
             vendor: "klang-studio".into(),
             version: "0.1.0".into(),
             module: Box::default(),

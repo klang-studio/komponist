@@ -76,7 +76,7 @@ mod bench;
 mod tests;
 
 /// The device's name in the browser and on the card. The only place it is written.
-pub const NAME: &str = "volt";
+pub const NAME: &str = "Volt";
 
 /// The stored id of the device in project files. It keeps the synth's former name "knurr" so existing
 /// projects load; only [`NAME`] is shown to users.

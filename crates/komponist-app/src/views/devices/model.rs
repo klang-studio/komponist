@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "hexa",
+                "Hexa",
                 "LSP Para EQ x8",
                 "TAL-Chorus-LX",
                 "Dragonfly Hall Reverb"

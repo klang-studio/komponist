@@ -232,7 +232,7 @@ fn row(name: &'static str, instrument: &'static str, hue: u16) -> HeaderRow {
 pub fn header_demos() -> Vec<HeaderDemo> {
     let lead = || HeaderRow {
         meter: (0.5, 0.6),
-        ..row("Lead", "hexa", HUE)
+        ..row("Lead", "Hexa", HUE)
     };
     let with = |state| HeaderRow { state, ..lead() };
     let demo = |label, slug, rows| HeaderDemo { label, slug, rows };
@@ -253,7 +253,7 @@ pub fn header_demos() -> Vec<HeaderDemo> {
                 HeaderRow {
                     state: State::SELECTED,
                     meter: (0.62, 0.7),
-                    ..row("Bass", "hexa", 250)
+                    ..row("Bass", "Hexa", 250)
                 },
             ],
         ),
@@ -280,7 +280,7 @@ pub fn header_demos() -> Vec<HeaderDemo> {
             "muted",
             vec![HeaderRow {
                 toggles: [true, false, false, false],
-                ..row("Pad", "hexa", 300)
+                ..row("Pad", "Hexa", 300)
             }],
         ),
         demo(

@@ -368,7 +368,7 @@ fn sidechains_take_any_source_that_closes_no_cycle() {
         &p,
         ChannelRef::Track(t[1]),
         1,
-        effect("presse"),
+        effect("Presse"),
     ));
     let kick = Sidechain::new(t[0]);
     assert_eq!(kick.tap, Tap::Pre, "owner decision 10 A");
@@ -389,7 +389,7 @@ fn sidechains_take_any_source_that_closes_no_cycle() {
         &p,
         ChannelRef::Track(t[0]),
         1,
-        effect("presse"),
+        effect("Presse"),
     ));
     assert_eq!(
         set_sidechain(&p, kick_comp, Some(Sidechain::new(t[1]))),
@@ -425,7 +425,7 @@ fn sidechains_take_any_source_that_closes_no_cycle() {
         &p,
         ChannelRef::Track(b2),
         0,
-        effect("presse"),
+        effect("Presse"),
     ));
     let p = ok(set_sidechain(&p, kick_comp, Some(Sidechain::new(b2))));
     assert!(set_sidechain(&p, b2_comp, Some(Sidechain::new(t[0]))).is_err());
@@ -447,7 +447,7 @@ fn deleting_a_bus_repairs_every_reference_in_one_undo_step() {
         &p,
         ChannelRef::Track(t[3]),
         1,
-        effect("presse"),
+        effect("Presse"),
     ));
     let p = ok(set_sidechain(&p, comp, Some(Sidechain::new(b1))));
     let (p, limiter) = ok_with(insert_device(&p, ChannelRef::Master, 0, effect("Limiter")));
@@ -519,7 +519,7 @@ fn a_device_copy_keeps_its_sidechain_unless_the_source_is_gone_or_closes_a_cycle
         &p,
         ChannelRef::Track(t[1]),
         1,
-        effect("presse"),
+        effect("Presse"),
     ));
     let from_kick = Sidechain {
         source: t[0],
@@ -528,7 +528,7 @@ fn a_device_copy_keeps_its_sidechain_unless_the_source_is_gone_or_closes_a_cycle
     let p = ok(set_sidechain(&p, comp, Some(from_kick)));
     let copy_of = |p: &Project, d: DeviceId| NewDevice {
         sidechain: p.find_device(d).unwrap().2.sidechain,
-        ..effect("presse")
+        ..effect("Presse")
     };
     let sidechain = |p: &Project, d: DeviceId| p.find_device(d).unwrap().2.sidechain;
     // Behind itself, on another track, on the master: the source and the tap stay.
@@ -555,7 +555,7 @@ fn a_device_copy_keeps_its_sidechain_unless_the_source_is_gone_or_closes_a_cycle
         &p,
         ChannelRef::Track(t[2]),
         9,
-        effect("presse"),
+        effect("Presse"),
     ));
     let p = ok(set_sidechain(&p, pad_comp, Some(Sidechain::new(b))));
     let (q, copy) = ok_with(insert_device(
@@ -660,7 +660,7 @@ fn topological_order_follows_every_edge() {
         &p,
         ChannelRef::Track(t[0]),
         1,
-        effect("presse"),
+        effect("Presse"),
     ));
     let p = ok(set_sidechain(&p, comp, Some(Sidechain::new(t[2]))));
     let order = routing::topo_order(&p).unwrap();

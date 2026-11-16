@@ -193,7 +193,7 @@ fn ctrl_t_adds_an_armed_hexa_track() {
     assert_eq!(p.tracks.len(), n + 1);
     let t = p.tracks.last().unwrap();
     assert!(t.arm && t.monitor);
-    assert_eq!(t.channel.devices[0].plugin.name, "hexa");
+    assert_eq!(t.channel.devices[0].plugin.name, "Hexa");
     assert!(p.tracks.iter().filter(|x| x.arm).count() == 1);
     assert_eq!(a.ui().selection.tracks.iter().next(), Some(&t.id));
     assert!(

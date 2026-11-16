@@ -478,7 +478,7 @@ fn print_plans(plans: &[DevicePlan]) {
         last_track = Some(track);
         let device = format!("{} [{:?}]", p.plugin, p.format);
         let what = match &p.stand_in {
-            StandIn::Synth { label, .. } => format!("hexa, {label}"),
+            StandIn::Synth { label, .. } => format!("Hexa, {label}"),
             StandIn::Kit(pads) => format!("drum kit, a hexa per note ({} notes)", pads.len()),
             StandIn::Bypass => "bypass (no processor, audio passes through)".to_owned(),
         };
@@ -1259,9 +1259,9 @@ mod tests {
         let expected = [
             ("Drums", "Sampler", "kit of 6"),
             ("Drums", "LSP Compressor", "bypass"),
-            ("Bass", "hexa", "preset \"Analog Bass\""),
+            ("Bass", "Hexa", "preset \"Analog Bass\""),
             ("Bass", "LSP Para EQ x8", "bypass"),
-            ("Lead", "hexa", "preset \"Poly Synth\""),
+            ("Lead", "Hexa", "preset \"Poly Synth\""),
             ("Lead", "LSP Para EQ x8", "bypass"),
             ("Lead", "TAL-Chorus-LX", "bypass"),
             ("Lead", "Dragonfly Hall Reverb", "bypass"),

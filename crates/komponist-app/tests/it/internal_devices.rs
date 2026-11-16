@@ -345,7 +345,7 @@ fn a_dropped_midi_effect_goes_into_the_midi_part_in_front_of_the_instrument() {
     let (app, track) = app_with_midi_effects();
     assert_eq!(
         names_of(&app, track),
-        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
+        ["Arpeggiator", "Tonleiter", "Hexa", "EQ"]
     );
     let channel = &app.project().track(track).unwrap().channel;
     assert_eq!(channel.midi_effect_count(), 2);
@@ -389,7 +389,7 @@ fn a_dropped_midi_effect_goes_into_the_midi_part_in_front_of_the_instrument() {
     }));
     assert_eq!(
         names_of(app, track),
-        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
+        ["Arpeggiator", "Tonleiter", "Hexa", "EQ"]
     );
 }
 
@@ -486,18 +486,18 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
     assert_eq!(
         names_of(h.state(), track),
-        ["Tonleiter", "Arpeggiator", "hexa", "EQ"]
+        ["Tonleiter", "Arpeggiator", "Hexa", "EQ"]
     );
     // Dragged behind the instrument (hexa's card is wide, so EQ may lie off screen), a MIDI
     // effect stops at the instrument.
     let synth = h
-        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("hexa"))
+        .get_by_role_and_label(Role::Group, &Lang::De.devices_card("Hexa"))
         .rect();
     let from = head(&h, "Tonleiter");
     drag(&mut h, from, pos2(synth.right() - 10.0, synth.center().y));
     assert_eq!(
         names_of(h.state(), track),
-        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
+        ["Arpeggiator", "Tonleiter", "Hexa", "EQ"]
     );
     // An effect dragged in front of the instrument stops behind it; the instrument stays.
     let arp = h
@@ -507,7 +507,7 @@ fn midi_effects_reorder_inside_their_part_and_never_behind_the_instrument() {
     drag(&mut h, from, pos2(arp.left() + 10.0, arp.center().y));
     assert_eq!(
         names_of(h.state(), track),
-        ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
+        ["Arpeggiator", "Tonleiter", "Hexa", "EQ"]
     );
 }
 
@@ -527,7 +527,7 @@ fn snapshot_of_a_chain_with_midi_effects_left_of_the_instrument() {
             .rect()
             .left()
     };
-    let xs: Vec<f32> = ["Arpeggiator", "Tonleiter", "hexa", "EQ"]
+    let xs: Vec<f32> = ["Arpeggiator", "Tonleiter", "Hexa", "EQ"]
         .iter()
         .map(|n| x(&h, n))
         .collect();
@@ -677,17 +677,17 @@ fn the_browser_lists_presse_under_dynamics_and_a_double_click_adds_it() {
     )));
     let mut h = harness(app);
     h.state_mut()
-        .dispatch(Action::Ui(UiAction::SetBrowserQuery("presse".into())));
+        .dispatch(Action::Ui(UiAction::SetBrowserQuery("Presse".into())));
     h.run_steps(2);
-    let row = h.get_by_role_and_label(Role::ListItem, "presse").rect();
+    let row = h.get_by_role_and_label(Role::ListItem, "Presse").rect();
     double_click(&mut h, row.center());
     let devices = chain(h.state(), track);
-    assert_eq!(devices.last().unwrap().1, "presse");
+    assert_eq!(devices.last().unwrap().1, "Presse");
     let (_, _, d) = h.state().project().find_device(devices[1].0).unwrap();
     assert_eq!(d.plugin.format, PluginFormat::Builtin);
     assert_eq!(d.plugin.id, "presse");
     assert_eq!(h.state().engine().host().status(d.id), DeviceStatus::Ok);
-    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("presse"));
+    h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Presse"));
     // The card has the two graphs and the meter.
     h.get_by_role_and_label(Role::Group, "Kennlinie");
     h.get_by_role_and_label(Role::Group, "Reduktion \u{b7} 4 s");

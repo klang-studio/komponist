@@ -341,7 +341,7 @@ fn hexa_shows_its_card_and_turning_a_knob_is_saved() {
     })));
     app.dispatch(Action::Ui(UiAction::SetDockTab(DockTab::Devices)));
     let mut h = harness(app);
-    let label = Lang::De.devices_card("hexa");
+    let label = Lang::De.devices_card("Hexa");
     let names: Vec<String> = card(&h, &label)
         .get_all_by_role(Role::Slider)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
@@ -1025,7 +1025,7 @@ mod add_menu {
         let field = search(&h).expect("the search field");
         assert!(field.accesskit_node().is_focused(), "focused right away");
         let listed = option_names(&h);
-        for name in ["hexa", Internal::Eq.name(), Internal::Arpeggiator.name()] {
+        for name in ["Hexa", Internal::Eq.name(), Internal::Arpeggiator.name()] {
             assert!(listed.iter().any(|n| n == name), "{name} in {listed:?}");
         }
     }
@@ -1055,7 +1055,7 @@ mod add_menu {
         );
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none(), "the menu closes");
-        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Delay.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Delay.name()]);
     }
 
     #[test]
@@ -1067,7 +1067,7 @@ mod add_menu {
         assert!(option_names(&h).is_empty());
         h.get_by_role_and_label(Role::Label, de::DEVICES_ADD_NO_MATCH);
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), ["hexa"]);
+        assert_eq!(names_of(h.state(), track), ["Hexa"]);
     }
 
     #[test]
@@ -1093,7 +1093,7 @@ mod add_menu {
         key(&mut h, Key::ArrowUp);
         key(&mut h, Key::ArrowDown);
         key(&mut h, Key::Enter);
-        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Hall.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Hall.name()]);
     }
 
     #[test]
@@ -1109,7 +1109,7 @@ mod add_menu {
         assert!(search(&h).is_none());
         assert_eq!(
             names_of(h.state(), track),
-            ["hexa", Internal::Limiter.name()]
+            ["Hexa", Internal::Limiter.name()]
         );
     }
 
@@ -1122,7 +1122,7 @@ mod add_menu {
         key(&mut h, Key::Enter);
         assert_eq!(
             names_of(h.state(), track),
-            [Internal::Arpeggiator.name(), "hexa"]
+            [Internal::Arpeggiator.name(), "Hexa"]
         );
     }
 
@@ -1192,12 +1192,12 @@ mod add_menu {
         type_text(&mut h, "delay");
         key(&mut h, Key::Escape);
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["hexa"]);
+        assert_eq!(names_of(h.state(), track), ["Hexa"]);
         open_by_click(&mut h);
         assert!(search(&h).is_some());
         click_at(&mut h, pos2(60.0, 300.0));
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["hexa"]);
+        assert_eq!(names_of(h.state(), track), ["Hexa"]);
     }
 
     #[test]
@@ -1209,7 +1209,7 @@ mod add_menu {
         key(&mut h, Key::Enter);
         assert_eq!(names_of(h.state(), track).len(), 2);
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-        assert_eq!(names_of(h.state(), track), ["hexa"]);
+        assert_eq!(names_of(h.state(), track), ["Hexa"]);
     }
 
     #[test]
@@ -1250,7 +1250,7 @@ mod add_menu {
         press(&mut h, slot_rect.center(), PointerButton::Primary, false);
         h.run_steps(3);
         assert!(search(&h).is_none(), "a drop is not a click");
-        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Eq.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Eq.name()]);
     }
 
     #[test]
@@ -1303,9 +1303,9 @@ mod add_menu {
         type_text(&mut h, "delay");
         key(&mut h, Key::Enter);
         assert!(search(&h).is_none());
-        assert_eq!(names_of(h.state(), track), ["hexa", Internal::Delay.name()]);
+        assert_eq!(names_of(h.state(), track), ["Hexa", Internal::Delay.name()]);
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
-        assert_eq!(names_of(h.state(), track), ["hexa"]);
+        assert_eq!(names_of(h.state(), track), ["Hexa"]);
         // A second click on the button closes an open menu.
         click_at(&mut h, button.center());
         h.run_steps(3);

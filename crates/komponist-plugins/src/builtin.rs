@@ -22,7 +22,7 @@ pub const KLOPFER_CLAP_ID: &str = "com.klopfer.drum-sampler";
 /// effects) in the order of [`Internal::ALL`].
 pub(crate) fn entries() -> Vec<CatalogEntry> {
     let mut entries = vec![CatalogEntry {
-        plugin: builtin_ref(BUILTIN_HEXA, "hexa", "klang-studio"),
+        plugin: builtin_ref(BUILTIN_HEXA, "Hexa", "klang-studio"),
         kind: PluginKind::Instrument,
         category: None,
         features: vec!["instrument".into(), "synthesizer".into()],
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn the_builtin_entries_are_hexa_then_the_internal_devices() {
         let names: Vec<String> = entries().into_iter().map(|e| e.plugin.name).collect();
-        let mut expected = vec!["hexa".to_owned()];
+        let mut expected = vec!["Hexa".to_owned()];
         expected.extend(Internal::ALL.iter().map(|k| k.name().to_owned()));
         assert_eq!(names, expected);
         assert!(
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn the_sampler_and_volt_are_instruments_the_effects_are_not() {
         for e in entries() {
-            let instrument = e.plugin.name == "hexa"
+            let instrument = e.plugin.name == "Hexa"
                 || e.plugin.name == komponist_builtin::sampler::NAME
                 || e.plugin.name == komponist_builtin::internal::volt::NAME;
             assert_eq!(

@@ -102,7 +102,7 @@ fn card<'h>(h: &'h Harness<'_, App>) -> egui_kittest::Node<'h> {
 }
 
 /// The accessible name of the hexa card.
-const CARD: &str = "Gerät hexa";
+const CARD: &str = "Gerät Hexa";
 
 /// Whether the column button of operator `n` is the selected one.
 fn op_selected(h: &Harness<'_, App>, n: usize) -> bool {
