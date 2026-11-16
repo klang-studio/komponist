@@ -221,6 +221,14 @@ fn alsa_port_name(raw: &str) -> String {
     }
 }
 
+/// Whether a newly seen port starts disabled: the system-wide virtual MIDI ports, which would
+/// otherwise feed komponist with whatever other programs send. "Midi Through" (ALSA) everywhere,
+/// the IAC Driver buses (CoreMIDI display name "IAC Driver Bus 1", midir exposes no driver
+/// property) only on macOS (`mac`).
+fn starts_disabled(name: &str, mac: bool) -> bool {
+    name.starts_with("Midi Through") || (mac && name.starts_with("IAC"))
+}
+
 /// Client name of the hub and its connections.
 const CLIENT_NAME: &str = "komponist";
 
@@ -260,6 +268,9 @@ pub struct MidiInputHub {
     /// Names the user disabled (settings) of ports not seen yet: they start disabled when they
     /// first appear (see [`MidiInputHub::remember_disabled`]).
     remembered_disabled: Vec<String>,
+    /// Names the user enabled (settings) although they start disabled by default (see
+    /// [`starts_disabled`]): the stored choice wins when such a port first appears.
+    remembered_enabled: Vec<String>,
 }
 
 impl core::fmt::Debug for MidiInputHub {
@@ -283,6 +294,7 @@ impl MidiInputHub {
             waker: Arc::new(OnceLock::new()),
             only: None,
             remembered_disabled: Vec::new(),
+            remembered_enabled: Vec::new(),
         };
         Ok((hub, receiver))
     }
@@ -305,8 +317,22 @@ impl MidiInputHub {
         }
     }
 
+    /// Settings: the user enabled the port `name`. Enables it now if the hub knows it, and
+    /// otherwise when it first appears, so a port that starts disabled by default
+    /// ([`starts_disabled`]) stays enabled once the user switched it on. Unknown names are harmless.
+    pub fn remember_enabled(&mut self, name: &str) {
+        self.remembered_disabled.retain(|n| n != name);
+        if self.entry(name).is_some() {
+            let _ = self.set_enabled(name, true);
+        } else if !self.remembered_enabled.iter().any(|n| n == name) {
+            self.remembered_enabled.push(name.to_owned());
+        }
+    }
+
     /// Re-enumerates the input ports, connects enabled ones that appeared and marks vanished ones
-    /// as not connected. New ports start enabled, except names starting with "Midi Through".
+    /// as not connected. New ports start enabled, except the system-wide virtual ones
+    /// ([`starts_disabled`]: "Midi Through" on Linux, the IAC Driver buses on macOS) unless the
+    /// user enabled them before.
     ///
     /// A port that cannot be connected stays listed; the first such error is returned after all
     /// ports were processed.
@@ -339,7 +365,8 @@ impl MidiInputHub {
                 Some(index) => index,
                 None => {
                     let id = MidiPortId(self.ports.len() as u16);
-                    let enabled = !name.starts_with("Midi Through")
+                    let enabled = (self.remembered_enabled.contains(&name)
+                        || !starts_disabled(&name, cfg!(target_os = "macos")))
                         && !self.remembered_disabled.contains(&name)
                         && self.only.as_deref().is_none_or(|p| name.starts_with(p));
                     self.ports.push(PortEntry {
@@ -529,6 +556,18 @@ mod tests {
         );
         assert_eq!(alsa_port_name("Some Device"), "Some Device");
         assert_eq!(alsa_port_name("Synth:in 1:x"), "Synth:in 1:x");
+    }
+
+    #[test]
+    fn virtual_system_ports_start_disabled() {
+        for mac in [false, true] {
+            assert!(starts_disabled("Midi Through Port-0", mac));
+            assert!(!starts_disabled("Arturia KeyStep 37", mac));
+            assert!(!starts_disabled("Synth IAC", mac), "prefix, not substring");
+        }
+        assert!(starts_disabled("IAC Driver Bus 1", true));
+        assert!(starts_disabled("IAC-Treiber Bus 2", true));
+        assert!(!starts_disabled("IAC Driver Bus 1", false), "Linux unchanged");
     }
 
     #[test]

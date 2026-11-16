@@ -216,6 +216,11 @@ fn run_app() -> eframe::Result {
             hub.remember_disabled(&name);
         }
     }
+    for name in app.settings().midi_enabled.clone() {
+        if let Some(hub) = app.engine_mut().midi_mut() {
+            hub.remember_enabled(&name);
+        }
+    }
     if !args.demo {
         // The start screen; a project argument opens through it (recent list, S06 check), and
         // a file that cannot be read leaves the start screen with the reason.
