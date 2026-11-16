@@ -1034,6 +1034,32 @@ Bridge → app: `Loaded{info, params, latency}`
 (macOS) `HeaderAction`, `Shortcut{chord}`, `HeaderKey`, `FrameMoved(rect)`, `CloseRequested`,
 `FrameWindow(number)` (§8.4).
 
+**Windows (`komponist-ipc`, port W2):** the same layout, handshake and framing on other primitives.
+The shared memory is a pagefile-backed section of exactly `SHM_SIZE` (`CreateFileMappingW`; its size
+cannot change, so nothing needs sealing), prefaulted with `VirtualLock` or by touching the pages.
+There is no cross-process address wait (`WaitOnAddress` is per process), so each region also owns two
+auto-reset events, one per handshake word; the words stay the truth and are re-read after every wake.
+Deadlines use one high-resolution waitable timer per waiting role, armed before each wait and waited
+on together with the event (`WaitForMultipleObjects`); a millisecond timeout would be 12 ms late at
+the default clock resolution, and `timeBeginPeriod` is never called. Spike S1 (internal notes) measured
+an event round trip of p50 4–8 µs, p99 6–13 µs under MMCSS, a timer that fires p50 +13–20 µs late
+but 1–2 % of the time a whole 0.5 ms quantum late, and a rare 0.3–0.4 ms stall about once per 10 000
+round trips. So the app's `wait_done` spins 20 µs on `done_seq` before it blocks, arms its timer
+600 µs before the deadline and spins the rest (a timed-out block ends within µs of its deadline, and
+spins only when the bridge is that late), while the bridge's `wait_request` neither spins nor
+corrects the timer (its deadline only polls for shutdown). The control channel is a duplex
+byte-mode named pipe with a random name and one instance, both ends opened at once and overlapped
+(a blocked `recv` does not hold up a `send` on another thread). Handles cannot travel in-band: the
+app duplicates the section and both events into the bridge through the bridge's process handle
+(`Channel::send_region(region, watcher)`) and sends their values in `TAG_FD` frames with an 8-byte
+payload; the bridge opens them with `recv_region` and `ShmRegion::open`. The bridge's end of the pipe
+is its stdin, so no handle value goes on the command line and std's spawn lock keeps it from leaking
+into other children. The process watcher holds a process handle (`WaitForSingleObject`,
+`GetExitCodeProcess`, `TerminateProcess`); an NTSTATUS error code (`0xC000_0005` access violation,
+`0xC000_0409` fast fail from `abort`, …) is reported as a crash in `ProcessExit::signal`, and a
+process the watcher killed as signal 9, as on Unix. Both ends of a channel run on the same OS, so
+`PROTOCOL_VERSION` does not change for the Windows framing.
+
 **Parallelism:** bridges are separate processes, so each plugin runs on its own core. Since WP-65 an
 instrument bridge at the head of a chain is started before the engine runs any chain
 (`Processor::begin`: build the wire events, `begin_block`, wake) and collected by whichever thread
