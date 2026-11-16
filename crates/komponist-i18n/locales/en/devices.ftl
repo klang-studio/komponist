@@ -234,7 +234,7 @@ devices-preset-name = Preset: { $name }
 # The accessible name of a collapsed frame (handoff `collapsed()`: "… aufklappen").
 devices-expand-name = Expand { $name }
 
-# The accessible name of a chain head entry: "Gerät hexa anzeigen".
+# The accessible name of a chain head entry: "Gerät Hexa anzeigen".
 devices-reveal = Show device { $name }
 
 # The accessible name of operator column `n`: "Operator 3".

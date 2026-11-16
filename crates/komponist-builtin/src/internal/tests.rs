@@ -76,10 +76,10 @@ fn the_catalog_data_is_unique_and_resolves_both_ways() {
             "Delay",
             "Hall",
             "Limiter",
-            "presse",
+            "Presse",
             "Arpeggiator",
             "Tonleiter",
-            "volt"
+            "Volt"
         ]
     );
     for kind in Internal::ALL {

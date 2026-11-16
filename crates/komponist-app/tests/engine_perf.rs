@@ -66,7 +66,7 @@ fn hexa() -> PluginRef {
     PluginRef {
         format: PluginFormat::Builtin,
         id: BUILTIN_HEXA.into(),
-        name: "hexa".into(),
+        name: "Hexa".into(),
         vendor: "klang-studio".into(),
         version: "0.1.0".into(),
         module: Box::default(),

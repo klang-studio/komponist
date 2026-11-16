@@ -469,7 +469,7 @@ fn the_track_section_sets_colour_instrument_input_and_channel() {
 
     assert_eq!(
         value_in(&h, t, Role::ComboBox, de::INSPECTOR_TRACK_INSTRUMENT),
-        "hexa"
+        "Hexa"
     );
     choose(&mut h, t, de::INSPECTOR_TRACK_INSTRUMENT, "Surge XT");
     assert_eq!(track(h.state()).channel.devices[0].plugin.name, "Surge XT");

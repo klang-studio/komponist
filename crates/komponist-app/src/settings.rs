@@ -609,7 +609,7 @@ mod tests {
         let hexa = PluginRef {
             format: PluginFormat::Builtin,
             id: BUILTIN_HEXA.into(),
-            name: "hexa".into(),
+            name: "Hexa".into(),
             vendor: String::new(),
             version: "9".into(),
             module: Box::default(),

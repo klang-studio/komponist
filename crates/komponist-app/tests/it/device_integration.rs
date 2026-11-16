@@ -455,7 +455,7 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
     }));
     let names_of =
         |app: &App, t| -> Vec<String> { chain(app, t).into_iter().map(|c| c.1).collect() };
-    assert_eq!(names_of(&app, a), ["Arpeggiator", "hexa", "Hall"]);
+    assert_eq!(names_of(&app, a), ["Arpeggiator", "Hexa", "Hall"]);
     let ids: Vec<DeviceId> = chain(&app, a).into_iter().map(|c| c.0).collect();
     // A second track with an instrument refuses the instrument; MIDI effect and effect go to
     // their parts.
@@ -477,21 +477,21 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
         to: ChannelRef::Track(empty),
         index: usize::MAX,
     }));
-    assert_eq!(names_of(&app, empty), ["hexa", "Hall"]);
+    assert_eq!(names_of(&app, empty), ["Hexa", "Hall"]);
     // A MIDI effect lands in the MIDI part, in front of the instrument.
     app.dispatch(Action::Edit(EditAction::CopyDevice {
         device: ids[0],
         to: ChannelRef::Track(empty),
         index: usize::MAX,
     }));
-    assert_eq!(names_of(&app, empty), ["Arpeggiator", "hexa", "Hall"]);
+    assert_eq!(names_of(&app, empty), ["Arpeggiator", "Hexa", "Hall"]);
     // The track has an instrument now: another copy is refused, nothing changes.
     app.dispatch(Action::Edit(EditAction::CopyDevice {
         device: ids[1],
         to: ChannelRef::Track(empty),
         index: usize::MAX,
     }));
-    assert_eq!(names_of(&app, empty), ["Arpeggiator", "hexa", "Hall"]);
+    assert_eq!(names_of(&app, empty), ["Arpeggiator", "Hexa", "Hall"]);
     assert!(app.last_error().is_some());
     // An effect goes behind the instrument.
     app.dispatch(Action::Edit(EditAction::CopyDevice {
@@ -501,7 +501,7 @@ fn copying_an_instrument_needs_a_track_without_one_and_a_midi_effect_goes_before
     }));
     assert_eq!(
         names_of(&app, empty),
-        ["Arpeggiator", "hexa", "Hall", "Hall"]
+        ["Arpeggiator", "Hexa", "Hall", "Hall"]
     );
 }
 
@@ -669,7 +669,7 @@ fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
     let mut app = App::headless(project);
     select_track(&mut app, track);
     let h = harness(app);
-    let label = Lang::De.devices_card("hexa");
+    let label = Lang::De.devices_card("Hexa");
     let card = h.get_by_role_and_label(Role::Group, &label);
     card.get_by_role_and_label(Role::Group, de::DEVICES_FM_FREE);
     // The cards model carries the real masks (operator 1 → 6, operator 6 → 1).

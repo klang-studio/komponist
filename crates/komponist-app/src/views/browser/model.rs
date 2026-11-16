@@ -4,8 +4,8 @@
 //!
 //! | Segment | Without search (`browserAll`, `browserView`) | With search (`browserSearch`) |
 //! |---|---|---|
-//! | Alle | Favoriten · Instrumente · Effekte (category folders, then uncategorised effects) · Presets · hexa (category folders) · Projekt (Takes, Exporte) | „n Treffer für „q““ · Presets mit „q“ · Kategorie … |
-//! | Instr. | Instrumente · Presets · hexa | hits among the instruments · presets |
+//! | Alle | Favoriten · Instrumente · Effekte (category folders, then uncategorised effects) · Presets · Hexa (category folders) · Projekt (Takes, Exporte) | „n Treffer für „q““ · Presets mit „q“ · Kategorie … |
+//! | Instr. | Instrumente · Presets · Hexa | hits among the instruments · presets |
 //! | Effekte | Effekte with a sub-header per category (prototype) | hits among the effects · Kategorie … |
 //! | Dateien | Takes · Exporte | the takes and exports whose name contains the text |
 //!
@@ -765,7 +765,7 @@ mod tests {
                 "Instrumente",
                 "Effekte",
                 "MIDI-Effekte",
-                "Presets · hexa",
+                "Presets · Hexa",
                 "Projekt"
             ]
         );
@@ -774,12 +774,12 @@ mod tests {
             &n[..8],
             [
                 "Favoriten",
-                "hexa",
+                "Hexa",
                 "Sampler",
                 "Instrumente",
-                "hexa",
+                "Hexa",
                 "Sampler",
-                "volt",
+                "Volt",
                 "Surge XT"
             ]
         );
@@ -940,7 +940,7 @@ mod tests {
         let rows = rows_for(&c, &f, &p, BrowserSegment::All, "glocke");
         assert_eq!(rows[0].name, "0 Treffer für „glocke“");
         assert!(rows.iter().any(|r| r.name == "Presets mit „glocke“"));
-        assert!(rows.iter().any(|r| r.name.ends_with(" · hexa")));
+        assert!(rows.iter().any(|r| r.name.ends_with(" · Hexa")));
     }
 
     fn rows_for(

@@ -413,7 +413,7 @@ mod tests {
         );
         let lead = &strips[2];
         assert!(lead.selected && !lead.dim);
-        assert_eq!(lead.line, "hexa");
+        assert_eq!(lead.line, "Hexa");
         assert_eq!(lead.first_effect_slot(), 1);
         assert!(lead.inserts[0].instrument);
         // Without plugin manager the effects are missing; TAL is bypassed.
