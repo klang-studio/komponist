@@ -135,9 +135,7 @@ jobs:
     name: "macOS arm64: clippy, tests"
     runs-on: macos-15
     timeout-minutes: 75
-    # Not blocking yet: macOS hosting (#51) and plugin frames (#52) are still in progress. It becomes a required
-    # check once it is reliably green (#58).
-    continue-on-error: true
+    # A required check for main, like the Linux job (#58, branch protection).
     env:
       # The workflow-wide lavapipe setting is for Linux; here wgpu uses Metal.
       WGPU_BACKEND: metal
