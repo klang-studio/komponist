@@ -8,10 +8,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source scripts/build-lock.sh
 
-(
-    low_priority
-    cargo fmt --all --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace --no-run
-)
+lowprio cargo fmt --all --check
+lowprio cargo clippy --workspace --all-targets -- -D warnings
+lowprio cargo test --workspace --no-run
 cargo test --workspace
