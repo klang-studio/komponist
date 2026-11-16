@@ -1,0 +1,202 @@
+//! What komponist adds to the application delegate (macOS): the Dock menu (`applicationDockMenu:`,
+//! #95) and opening documents (`application:openURLs:`, #96: a double-click in Finder, files dropped
+//! on the Dock icon, a launch with files).
+//!
+//! winit 0.30 owns `NSApplication`'s delegate: its class `WinitApplicationDelegate` implements only
+//! `applicationDidFinishLaunching:` and `applicationWillTerminate:`, and winit offers no hook to
+//! add more. komponist therefore **adds methods to that class at runtime** (`class_addMethod`):
+//!
+//! - [`install`] (called in `main` before eframe starts the event loop) observes
+//!   `NSApplicationWillFinishLaunchingNotification`. When it arrives winit has set its delegate,
+//!   and AppKit has not yet asked it anything this module answers: the documents of a launch
+//!   arrive after it, before `applicationDidFinishLaunching:`.
+//! - The observer adds the missing methods to the delegate's class, never replacing one the class
+//!   already implements (a later winit that adds its own keeps it, and the log says so), and sets
+//!   the delegate again so AppKit reads anew which methods it implements.
+//! - The methods only hand out what the app prepared ([`set_dock_menu`]) or queue what happened
+//!   ([`take_opened_files`], drained by the eframe shell at the start of a frame, which
+//!   [`set_waker`] asks for); nothing acts inside them. Documents of a launch wait in the queue
+//!   until the first frame.
+//!
+//! Alternatives: a proxy delegate that forwards everything else to winit's would have to be put in
+//! place at the same moment and answer `respondsToSelector:` for winit's methods too, which is more
+//! code for the same effect; a fork of winit is far heavier; `NSAppleEventManager` handlers cover
+//! opening documents but not the Dock menu.
+
+use std::cell::RefCell;
+use std::ffi::CStr;
+use std::path::PathBuf;
+use std::ptr::NonNull;
+
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::{MainThreadMarker, sel};
+use objc2_app_kit::{NSApplication, NSApplicationWillFinishLaunchingNotification, NSMenu};
+use objc2_foundation::{NSArray, NSNotification, NSNotificationCenter, NSURL};
+
+thread_local! {
+    /// What `applicationDockMenu:` returns ([`set_dock_menu`]).
+    static DOCK_MENU: RefCell<Option<Retained<NSMenu>>> = const { RefCell::new(None) };
+    /// Files macOS asked to open, oldest first ([`take_opened_files`]).
+    static OPENED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// Woken when files arrive ([`set_waker`]).
+    static WAKER: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
+}
+
+/// The files macOS asked the app to open since the last call, oldest first (main thread).
+pub fn take_opened_files() -> Vec<PathBuf> {
+    OPENED.with(|o| std::mem::take(&mut *o.borrow_mut()))
+}
+
+/// The context to wake when files arrive: the window may not be redrawing.
+pub fn set_waker(ctx: &egui::Context) {
+    WAKER.with(|w| *w.borrow_mut() = Some(ctx.clone()));
+}
+
+/// Sets the menu the Dock shows below the app's windows (`None`: none).
+pub fn set_dock_menu(menu: Option<Retained<NSMenu>>) {
+    DOCK_MENU.with(|m| *m.borrow_mut() = menu);
+}
+
+/// Adds komponist's methods to the application delegate once winit has set it (module docs). Call
+/// on the main thread before the event loop runs; does nothing elsewhere.
+pub fn install() {
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
+    let block = RcBlock::new(|_note: NonNull<NSNotification>| {
+        if let Some(mtm) = MainThreadMarker::new() {
+            extend_delegate(mtm);
+        }
+    });
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: a valid static notification name; the block lives as long as the observer, which
+    // stays for the life of the process (the notification comes once).
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationWillFinishLaunchingNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    std::mem::forget(observer);
+}
+
+/// One method komponist adds: selector, implementation, Objective-C type encoding.
+struct Method {
+    sel: Sel,
+    imp: Imp,
+    types: &'static CStr,
+}
+
+/// The methods to add.
+fn methods() -> [Method; 2] {
+    [
+        Method {
+            sel: sel!(applicationDockMenu:),
+            // SAFETY: the signature matches the encoding `@@:@` (returns an object, takes `self`,
+            // `_cmd` and the application); the runtime calls it only through that signature.
+            imp: unsafe {
+                std::mem::transmute::<
+                    unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> *mut NSMenu,
+                    Imp,
+                >(dock_menu)
+            },
+            types: c"@@:@",
+        },
+        Method {
+            sel: sel!(application:openURLs:),
+            // SAFETY: the signature matches the encoding `v@:@@` (returns nothing, takes `self`,
+            // `_cmd`, the application and the array of URLs).
+            imp: unsafe {
+                std::mem::transmute::<
+                    unsafe extern "C-unwind" fn(
+                        *mut AnyObject,
+                        Sel,
+                        *mut AnyObject,
+                        *mut NSArray<NSURL>,
+                    ),
+                    Imp,
+                >(open_urls)
+            },
+            types: c"v@:@@",
+        },
+    ]
+}
+
+fn extend_delegate(mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(delegate) = app.delegate() else {
+        eprintln!("komponist: no application delegate; no Dock menu, no documents from Finder");
+        return;
+    };
+    let object: &AnyObject = (*delegate).as_ref();
+    let class: &AnyClass = object.class();
+    for m in methods() {
+        if class.responds_to(m.sel) {
+            eprintln!(
+                "komponist: the application delegate implements {} itself; komponist's is not added",
+                m.sel.name().to_string_lossy()
+            );
+            continue;
+        }
+        // SAFETY: `class` is a registered class; `imp` has the signature `types` names.
+        let added = unsafe {
+            objc2::ffi::class_addMethod(
+                std::ptr::from_ref(class).cast_mut(),
+                m.sel,
+                m.imp,
+                m.types.as_ptr(),
+            )
+        };
+        if !added.as_bool() {
+            eprintln!(
+                "komponist: {} not added to the application delegate",
+                m.sel.name().to_string_lossy()
+            );
+        }
+    }
+    // AppKit may remember which methods a delegate implements when it is set.
+    app.setDelegate(None);
+    app.setDelegate(Some(&delegate));
+}
+
+/// `applicationDockMenu:`: the menu [`set_dock_menu`] set, or none.
+unsafe extern "C-unwind" fn dock_menu(
+    _this: *mut AnyObject,
+    _cmd: Sel,
+    _app: *mut AnyObject,
+) -> *mut NSMenu {
+    // Not autoreleased: `DOCK_MENU` keeps the menu alive, and the caller does not own the result
+    // (Cocoa's naming rules).
+    DOCK_MENU.with(|m| {
+        m.borrow().as_ref().map_or(std::ptr::null_mut(), |menu| {
+            Retained::as_ptr(menu).cast_mut()
+        })
+    })
+}
+
+/// `application:openURLs:`: queues the file URLs and wakes the app.
+unsafe extern "C-unwind" fn open_urls(
+    _this: *mut AnyObject,
+    _cmd: Sel,
+    _app: *mut AnyObject,
+    urls: *mut NSArray<NSURL>,
+) {
+    // SAFETY: AppKit passes a valid `NSArray<NSURL *> *` for the duration of the call.
+    let Some(urls) = (unsafe { urls.as_ref() }) else {
+        return;
+    };
+    let paths: Vec<PathBuf> = urls.iter().filter_map(|url| url.to_file_path()).collect();
+    if paths.is_empty() {
+        return;
+    }
+    OPENED.with(|o| o.borrow_mut().extend(paths));
+    WAKER.with(|w| {
+        if let Some(ctx) = w.borrow().as_ref() {
+            ctx.request_repaint();
+        }
+    });
+}

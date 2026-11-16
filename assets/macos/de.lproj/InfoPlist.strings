@@ -1,2 +1,4 @@
 /* Texts of komponist.app/Contents/Info.plist, German. */
 "NSMicrophoneUsageDescription" = "komponist braucht Zugriff auf das Mikrofon, um Audiospuren aufzunehmen.";
+/* The document type name and the project UTI's description (the value of both in Info.plist, #96). */
+"komponist project" = "komponist-Projekt";

@@ -67,8 +67,9 @@ done
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 printf 'APPL????' >"$app/Contents/PkgInfo"
 
-# Icon: the iconset wants 16 32 128 256 512 and their @2x. The hicolor PNGs have 16 24 32 48 64 128 256 512,
-# so every size but 512@2x (1024 px) is a real render. That one is left out: macOS scales the 512 px image.
+# Icon: the iconset wants 16 32 128 256 512 and their @2x. The hicolor PNGs have 16 24 32 48 64 128 256 512;
+# 512@2x (1024 px, #96) is assets/macos/icon_512x512@2x.png, rendered from the hicolor SVG with headless Chrome
+# (an <img> of 1024 × 1024 px, transparent background).
 iconset="$(mktemp -d)/komponist.iconset"
 mkdir -p "$iconset"
 src=assets/icons/hicolor
@@ -76,6 +77,7 @@ for pair in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x 128:ic
     256:icon_128x128@2x 256:icon_256x256 512:icon_256x256@2x 512:icon_512x512; do
     cp "$src/${pair%%:*}x${pair%%:*}/apps/komponist.png" "$iconset/${pair#*:}.png"
 done
+cp "assets/macos/icon_512x512@2x.png" "$iconset/icon_512x512@2x.png"
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/komponist.icns"
 rm -rf "$(dirname "$iconset")"
 

@@ -1729,3 +1729,61 @@ fn s07_enumerates_devices_off_the_ui_thread() {
     let threads = threads.lock().unwrap().clone();
     assert_eq!(threads, ["komponist-audio-devices"; 2]);
 }
+
+// ------------------------------------------------------------------------------------------------
+// Files from the desktop (#96: Finder, the Dock icon, a launch with files)
+// ------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_file_from_the_desktop_opens_like_one_of_the_recent_list() {
+    let dir = scratch("desktop-open");
+    let mut other = new_project::empty_project(Lang::De);
+    other.name = "Hafenlicht".into();
+    let file = dir.join("Hafenlicht.komponist");
+    save_and_open(&file, &other);
+    // From the start screen (a launch with the file): it opens and joins the recent list.
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De));
+    app.show_start_screen();
+    app.open_files(std::slice::from_ref(&file));
+    assert_eq!(app.ui().screen, Screen::Project);
+    assert_eq!(app.project().name, "Hafenlicht");
+    assert_eq!(app.recent(), std::slice::from_ref(&file));
+    // The open project's file again (a second double-click): nothing is loaded again.
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    app.open_files(std::slice::from_ref(&file));
+    assert_eq!(app.project().tracks.len(), 1, "the unsaved track stays");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_from_the_desktop_asks_to_save_a_dirty_project_first() {
+    let dir = scratch("desktop-dirty");
+    let mut other = new_project::empty_project(Lang::De);
+    other.name = "Hafenlicht".into();
+    let file = dir.join("Hafenlicht.komponist");
+    save_and_open(&file, &other);
+    let mut app = app_in(&dir, new_project::empty_project(Lang::De));
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    let mut h = harness(app);
+    // Several files: the first one is opened, after the unsaved-changes prompt.
+    h.state_mut()
+        .open_files(&[file.clone(), dir.join("Zweites.komponist")]);
+    h.run_steps(2);
+    assert_ne!(h.state().project().name, "Hafenlicht");
+    h.get_by_label("Nicht speichern").click();
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "Hafenlicht");
+    // A file that cannot be read: the reason in the status bar, the project stays.
+    let broken = dir.join("Kaputt.komponist");
+    std::fs::write(&broken, "kein json").unwrap();
+    h.state_mut().open_files(&[broken]);
+    h.run_steps(2);
+    assert_eq!(h.state().project().name, "Hafenlicht");
+    let status = h.state().ui().status.as_ref().unwrap();
+    assert!(
+        status
+            .text
+            .starts_with("„Kaputt.komponist“ lässt sich nicht öffnen")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

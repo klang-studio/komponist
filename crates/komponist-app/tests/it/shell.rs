@@ -700,3 +700,70 @@ fn the_esc_after_a_text_field_lost_focus_is_not_a_shortcut() {
     h.run_steps(2);
     assert!(h.state().ui().selection.clips.is_empty());
 }
+
+/// The demo with plugin windows open for Surge XT (Pad), Hexa (Bass) and Dexed (Keys), in that
+/// order, in `lang`.
+fn with_plugin_windows(lang: Lang) -> (App, [komponist_model::DeviceId; 3]) {
+    let mut app = demo().with_lang(lang);
+    let device = |app: &App, track: usize| app.project().tracks[track].channel.devices[0].id;
+    let devices = [device(&app, 3), device(&app, 1), device(&app, 4)];
+    for d in devices {
+        app.dispatch(Action::Plugin(komponist_app::PluginAction::OpenWindow(d)));
+    }
+    (app, devices)
+}
+
+#[test]
+fn the_menu_lists_the_open_plugin_windows_under_fenster() {
+    // No window open: no "Fenster" in the menu.
+    let mut h = harness(demo());
+    open_menu(&mut h);
+    assert!(h.query_by_label(de::APP_MENU_WINDOW).is_none());
+
+    let mut results = SnapshotResults::new();
+    for lang in [Lang::De, Lang::En] {
+        let (app, [surge, ..]) = with_plugin_windows(lang);
+        let mut h = harness(app);
+        let menu = match lang {
+            Lang::De => de::TRANSPORT_MENU,
+            Lang::En => en::TRANSPORT_MENU,
+        };
+        let at = h.get_by_role_and_label(Role::Button, menu).rect().center();
+        h.event(Event::PointerMoved(at));
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.run_steps(60);
+        h.get_by_label(lang.app_menu_window()).click();
+        h.run_steps(3);
+        // Project order: Bass, Pad, Keys; built-in names capitalised.
+        let pad = lang.app_menu_plugin_window("Surge XT", "Pad");
+        for label in [
+            lang.app_menu_plugin_window("Hexa", "Bass"),
+            pad.clone(),
+            lang.app_menu_plugin_window("Dexed", "Keys"),
+        ] {
+            assert!(h.query_by_label(&label).is_some(), "{label}");
+        }
+        let suffix = match lang {
+            Lang::De => "",
+            Lang::En => "-en",
+        };
+        mask_cpu(&mut h);
+        h.snapshot(format!("shell-menu-windows{suffix}-1x"));
+        results.extend_harness(&mut h);
+        // A pick brings that window forward.
+        h.get_by_label(&pad).click();
+        h.run_steps(3);
+        assert!(
+            h.state()
+                .dispatched()
+                .any(|a| *a == Action::Plugin(komponist_app::PluginAction::FocusWindow(surge)))
+        );
+    }
+}

@@ -18,12 +18,16 @@ or newer, Apple Silicon only) and its `.sha256`.
    it follows once an Apple Developer account exists.
 4. The first recording asks for microphone access (System Settings → Privacy & Security → Microphone).
 
+**Projects:** a double-click on a `.komponist` file in Finder opens it in komponist, and so does dropping it on
+komponist's Dock icon; with unsaved changes komponist asks first, as for a project from the recent list.
+
 **Plugins** downloaded in a browser carry the same quarantine flag and may be refused or silently skipped. If a
 downloaded CLAP or VST3 plugin does not show up or does not load, remove the flag from the bundle, e.g.
 `xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/CLAP/Name.clap"`, then rescan. komponist itself is signed with
 `com.apple.security.cs.disable-library-validation`, so plugins signed by other teams (or ad-hoc) can load into it.
 Plugin folders: `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP` and `$CLAP_PATH`;
-`~/Library/Audio/Plug-Ins/VST3` and `/Library/Audio/Plug-Ins/VST3`.
+`~/Library/Audio/Plug-Ins/VST3` and `/Library/Audio/Plug-Ins/VST3`. A plugin that compiles code at run time (JIT,
+some WebView GUIs) could fail under komponist's hardened runtime; please report such a plugin.
 
 **Where komponist keeps its files:** settings and recent projects in `~/Library/Application Support/komponist/`
 (`settings.json`, `recent.json`), the plugin scan cache in `~/Library/Caches/komponist/plugins.json`. Delete the cache
@@ -111,7 +115,8 @@ update-mime-database $PREFIX/share/mime
 
 `Exec=komponist` needs the executable on `PATH`. The window shows its icon without any of this
 (embedded 256 px PNG); the files are for launchers, task bars matching the desktop entry, and
-`.komponist` file associations.
+`.komponist` file associations: the file manager opens a project with `komponist <file>` (`%f`, one project per
+start).
 
 Validate: `desktop-file-validate assets/io.github.klang_studio.komponist.desktop`,
 `appstreamcli validate --no-net assets/io.github.klang_studio.komponist.metainfo.xml`.

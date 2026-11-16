@@ -31,11 +31,14 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, icons, px};
 
-use crate::actions::{Action, EditAction, ProjectAction, SettingsAction, TransportAction};
+use crate::actions::{
+    Action, EditAction, PluginAction, ProjectAction, SettingsAction, TransportAction,
+};
 use crate::keymap::Keymap;
 use crate::master_scope::{MasterDisplay, Picture};
 use crate::meters::Meters;
 use crate::metrics::transport as m;
+use crate::windows::window_list::WindowEntry;
 
 /// The DAW's name in the wordmark and window title (ARCHITECTURE §13.6).
 pub const WORDMARK: &str = komponist_ui::WORDMARK;
@@ -60,6 +63,8 @@ pub struct TransportModel<'a> {
     pub lang: Lang,
     /// What the master display shows (the settings' choice).
     pub master_display: MasterDisplay,
+    /// The open plugin windows: the "⋯" menu's "Fenster" submenu (#95), absent when empty.
+    pub plugin_windows: &'a [WindowEntry],
 }
 
 impl TransportModel<'_> {
@@ -710,7 +715,8 @@ fn no_device_chip(ui: &mut Ui, t: Lang) {
     text_node(ui, rect, "no_device", t.transport_no_device());
 }
 
-/// The "⋯" menu (prototype `menu`): new, open, save, export, start screen.
+/// The "⋯" menu (prototype `menu`): new, open, save, export, start screen; then "Fenster" with the
+/// open plugin windows (#95) while there are any.
 fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let response = ui.add(Button::icon(Icon::Ellipsis, model.lang.transport_menu()));
     // The menu opens one frame after the click: a press and release delivered in one frame
@@ -746,7 +752,17 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         .iter()
         .map(|(_, a)| model.keymap.label_for(a, t))
         .collect();
-    let entries: Vec<Entry<'_, Action>> = entries_spec
+    let windows: Vec<Entry<'_, Action>> = model
+        .plugin_windows
+        .iter()
+        .map(|w| {
+            Entry::action(
+                &w.label,
+                Action::Plugin(PluginAction::FocusWindow(w.device)),
+            )
+        })
+        .collect();
+    let mut entries: Vec<Entry<'_, Action>> = entries_spec
         .iter()
         .zip(&labels)
         .map(|((name, action), label)| {
@@ -757,6 +773,10 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
             }
         })
         .collect();
+    if !windows.is_empty() {
+        entries.push(Entry::separator());
+        entries.push(Entry::submenu(t.app_menu_window(), &windows));
+    }
     if let Some(action) = ContextMenu::new(t.transport_menu(), &entries).show_on(&response) {
         actions.push(action);
     }

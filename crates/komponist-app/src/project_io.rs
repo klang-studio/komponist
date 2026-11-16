@@ -16,6 +16,11 @@
 //! - Saving while recording writes the document plus the take as Stop would commit it at that
 //!   moment, and capture goes on into the same take. No root of the undo history equals that
 //!   file, so the project stays unsaved until it is saved again after Stop.
+//! - Files the desktop asks to open (macOS: a double-click in Finder, files dropped on the Dock
+//!   icon, a launch with files, #96; Linux: the command line of the desktop file's `%f`) take the
+//!   same path as the recent list: [`App::open_files`] → `ProjectAction::OpenPath` (the unsaved
+//!   prompt, the recent list, the reason a file cannot be read). One project is open at a time, so
+//!   of several files the first is opened; the project that is open already is not loaded again.
 //! - Saving under a new path renames the project after the file ("Unbenannt" saved as
 //!   `Hafenlicht.komponist` becomes "Hafenlicht"), outside the undo history.
 //!
@@ -278,6 +283,35 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Files the desktop asked to open (module docs): the first one opens through
+    /// `ProjectAction::OpenPath`, unless it is the open project's file.
+    pub fn open_files(&mut self, paths: &[PathBuf]) {
+        let Some(first) = paths.first() else {
+            return;
+        };
+        if paths.len() > 1 {
+            eprintln!(
+                "komponist: {} files to open; opening {} only",
+                paths.len(),
+                first.display()
+            );
+        }
+        let path = std::path::absolute(first).unwrap_or_else(|_| first.clone());
+        let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        };
+        if self.ui.screen == Screen::Project
+            && self
+                .project_path
+                .as_deref()
+                .is_some_and(|open| same(open, &path))
+        {
+            return;
+        }
+        self.dispatch(Action::Project(ProjectAction::OpenPath(path)));
     }
 
     /// Whether leaving the project loses something: unsaved changes or a running take with notes.

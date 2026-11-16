@@ -1109,7 +1109,14 @@ table of CLAP features / VST3 subcategories.
   main window would bring only the app forward: when the app becomes active
   (`NSApplicationDidBecomeActiveNotification`) it sends every open frame `RaiseFrame`, back to front
   by the window numbers the bridges reported (`FrameWindow`), and each bridge orders its frame
-  front (`orderFrontRegardless`) without activating itself or taking key. Header tooltips go
+  front (`orderFrontRegardless`) without activating itself or taking key. macOS lists none of
+  these frames under komponist, so the app lists them itself (#95, `windows::window_list`): the
+  "Fenster" menu of the native menu bar (Minimize, Zoom, then the frames), the Dock menu
+  (`applicationDockMenu:`, a method komponist adds to winit's application delegate at
+  `applicationWillFinishLaunching`, `macos_delegate`) and the "Fenster" submenu of the "⋯" menu (all
+  platforms). A pick sends `FocusWindow`: the same yield + `ActivateFrame`, after the app's own
+  activation when it was not active (the Dock menu); an app-owned frame gets
+  `ViewportCommand::Focus`. Header tooltips go
   beside their control (`komponist_ui::tooltip::HoverSide::Beside`): egui draws in winit's Metal
   layer, below the plugin's view, which would hide a tooltip below the header. "Oben halten"
   floats the frame only while komponist (the app or one of its bridges) is the active
@@ -1162,14 +1169,20 @@ komponist.app/Contents/
   Info.plist                      from assets/macos/Info.plist.in (version = [workspace.package] version)
   PkgInfo
   MacOS/komponist                 the one executable; the plugin bridge is `komponist --bridge` (§8.1)
-  Resources/komponist.icns        iconutil, from assets/icons/hicolor (16 … 512 px; no 1024 px render exists)
-  Resources/{de,en}.lproj/InfoPlist.strings   the microphone text in both UI languages
+  Resources/komponist.icns        iconutil, from assets/icons/hicolor (16 … 512 px) and
+                                  assets/macos/icon_512x512@2x.png (1024 px, rendered from the SVG, #96)
+  Resources/{de,en}.lproj/InfoPlist.strings   the microphone text and the project type's name in both UI languages
 ```
 
 Fonts, the window icon and all texts are compiled in, so nothing else goes into the bundle. The bundle id is
 `io.github.klang-studio.komponist`; `LSMinimumSystemVersion` is 14.4 (Apple Silicon only), the category is music, and the plist
-exports the type `io.github.klang-studio.komponist.project` for `*.komponist`. Opening a project by double-click (Apple Event
-`odoc`) is not handled yet, so the plist declares the type but no `CFBundleDocumentTypes`.
+exports the type `io.github.klang-studio.komponist.project` for `*.komponist` and claims it in `CFBundleDocumentTypes`
+(role Editor, rank Owner, #96), so Finder opens projects with komponist. A double-click in Finder, files dropped on the
+Dock icon and the files of a launch arrive as `application:openURLs:`, a method komponist adds to winit's application
+delegate (`macos_delegate`, shared with the Dock menu of #95); the eframe shell takes them at the start of a frame and
+opens the first through `App::open_files`, the path of the recent list (unsaved-changes prompt, recent list, the reason a
+file cannot be read). The project that is open already is not loaded again. On Linux the desktop file registers the same
+MIME type (`assets/komponist-mime.xml`) and starts `komponist %f`, one file per start.
 
 **Signing:** hardened runtime (`codesign --options runtime`) with `assets/macos/komponist.entitlements`:
 `com.apple.security.cs.disable-library-validation` (CLAP and VST3 plugins are signed by other teams or not at all and are
@@ -1178,7 +1191,9 @@ the same signed executable, so it carries the same entitlements. v0.3 is signed 
 downloaded app until the user allows it once (`docs/INSTALL.md`). With `KOMPONIST_SIGN_IDENTITY` (a Developer ID
 Application certificate) the script signs for distribution with a secure timestamp, and with notarytool credentials
 (`KOMPONIST_NOTARY_PROFILE`, or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`) it notarizes and staples; that path
-waits for an Apple Developer account.
+waits for an Apple Developer account. Plugins that compile code at run time (JIT, some WebView GUIs) may need
+`com.apple.security.cs.allow-unsigned-executable-memory`; it is not granted until a plugin is seen to fail without it
+(#96).
 
 **Release:** the `macos-arm64` job of `.github/workflows/release.yml` runs the script on a macOS arm64 runner, packs
 `komponist-<tag>-macos-arm64.zip` with `ditto -c -k --keepParent` (keeps the signature), unpacks it again to verify the
