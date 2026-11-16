@@ -111,11 +111,11 @@ fn saving_an_old_file_keeps_every_device_state_byte() {
 fn lowercase_builtin_names(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
-            if map.get("format").and_then(|f| f.as_str()) == Some("builtin") {
-                if let Some(name) = map.get("name").and_then(|n| n.as_str()) {
-                    let lower = name.to_lowercase();
-                    map.insert("name".into(), lower.into());
-                }
+            if map.get("format").and_then(|f| f.as_str()) == Some("builtin")
+                && let Some(name) = map.get("name").and_then(|n| n.as_str())
+            {
+                let lower = name.to_lowercase();
+                map.insert("name".into(), lower.into());
             }
             map.values_mut().for_each(lowercase_builtin_names);
         }
