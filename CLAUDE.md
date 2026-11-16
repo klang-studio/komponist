@@ -81,7 +81,9 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
   comparing; **never run `UPDATE_SNAPSHOTS` on macOS**, it would overwrite the reference PNGs with Metal pixels.
 - **No `/proc` on macOS:** tests that list or inspect processes have a `cfg(target_os)` path (`ps`, `kill -0`) or
   are gated with a reason.
-- CI has a macOS arm64 job (clippy, tests, test plugins; no GUI tests, no format check).
+- CI has a macOS arm64 job (clippy, tests, test plugins; no GUI tests, no format check). Both jobs ("Linux x86_64:
+  fmt, clippy, tests" and "macOS arm64: clippy, tests") are required checks for `main` (branch protection, #58): changes
+  land through pull requests that are green on both.
 
 ## Commands
 
