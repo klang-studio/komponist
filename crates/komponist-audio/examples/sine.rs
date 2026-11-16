@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! cargo run -p komponist-audio --example sine -- [--tone] [--seconds N]
-//!     [--host pipewire|jack|alsa|null] [--device NAME] [--rate HZ]
+//!     [--host coreaudio|pipewire|jack|alsa|null] [--device NAME] [--rate HZ]
 //! ```
 //!
 //! Debug builds install `assert_no_alloc`'s allocator: any allocation or free inside the audio
@@ -121,7 +121,7 @@ fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         tone: false,
         seconds: 10,
-        host: HostKind::PipeWire,
+        host: HostKind::platform_default(),
         device: None,
         rate: None,
     };
@@ -137,6 +137,7 @@ fn parse_args() -> Result<Args, String> {
             "--device" => args.device = Some(value()?),
             "--host" => {
                 args.host = match value()?.as_str() {
+                    "coreaudio" => HostKind::CoreAudio,
                     "pipewire" => HostKind::PipeWire,
                     "jack" => HostKind::Jack,
                     "alsa" => HostKind::Alsa,

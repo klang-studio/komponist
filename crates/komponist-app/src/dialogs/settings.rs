@@ -81,12 +81,23 @@ pub fn section_name(t: Lang, section: SettingsSection) -> &'static str {
     }
 }
 
-/// The drivers of the "Treiber" segments.
-pub const DRIVERS: [(HostKind, &str); 3] = [
+/// The drivers of the "Treiber" segments (all systems; the dialog lists those of this system, see
+/// [`drivers_here`]).
+pub const DRIVERS: [(HostKind, &str); 4] = [
+    (HostKind::CoreAudio, "CoreAudio"),
     (HostKind::PipeWire, "PipeWire"),
     (HostKind::Jack, "JACK"),
     (HostKind::Alsa, "ALSA"),
 ];
+
+/// The drivers this system has (CoreAudio on macOS; PipeWire, JACK, ALSA on Linux), in segment
+/// order. Those not currently available are shown disabled.
+pub fn drivers_here() -> Vec<(HostKind, &'static str)> {
+    DRIVERS
+        .into_iter()
+        .filter(|(host, _)| host.is_supported_here())
+        .collect()
+}
 
 /// How long the MIDI activity dot stays lit after a message.
 const ACTIVITY_HOLD: Duration = Duration::from_millis(150);
@@ -258,7 +269,8 @@ pub fn device_entries(
 }
 
 /// The sample rates offered for `entry` on `host`: the device's own, the configured one, and on
-/// PipeWire also 44.1, 48 and 96 kHz (PipeWire converts). Ascending.
+/// PipeWire also 44.1, 48 and 96 kHz (PipeWire converts). Ascending. CoreAudio, like ALSA, offers
+/// only what the device reports (it switches the device's rate and does not convert).
 pub fn rates(
     host: HostKind,
     devices: &[DeviceInfo],
@@ -804,7 +816,8 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
     let field_width = width - m::LABEL_COLUMN - m::GRID_GAP[0];
     let config = &model.config;
 
-    let drivers: Vec<Item<'_>> = DRIVERS
+    let here = drivers_here();
+    let drivers: Vec<Item<'_>> = here
         .iter()
         .map(|(host, label)| {
             let item = Item::new(label);
@@ -815,15 +828,15 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
             }
         })
         .collect();
-    let mut driver = DRIVERS
+    let mut driver = here
         .iter()
         .position(|(h, _)| *h == config.host)
-        .unwrap_or(DRIVERS.len());
+        .unwrap_or(here.len());
     grid_row(ui, t.settings_driver(), |ui| {
         if ui
             .add(Segmented::new(t.settings_driver(), &mut driver, &drivers))
             .changed()
-            && let Some((host, _)) = DRIVERS.get(driver)
+            && let Some((host, _)) = here.get(driver)
         {
             out.push(set_audio(StreamConfig {
                 host: *host,
@@ -1345,6 +1358,42 @@ mod tests {
             rates(HostKind::Alsa, &alsa, &entry, &StreamConfig::default()),
             [44_100, 48_000, 96_000, 192_000]
         );
+    }
+
+    #[test]
+    fn coreaudio_offers_only_the_rates_of_the_device() {
+        let devices = vec![DeviceInfo {
+            sample_rates: vec![44_100, 48_000, 96_000],
+            ..device(HostKind::CoreAudio, "Speakers", "coreaudio:spk", true)
+        }];
+        let entry = DeviceEntry {
+            label: "Speakers".into(),
+            name: Some("Speakers".into()),
+            id: Some(DeviceId("coreaudio:spk".into())),
+        };
+        let config = StreamConfig {
+            host: HostKind::CoreAudio,
+            ..StreamConfig::default()
+        };
+        assert_eq!(
+            rates(HostKind::CoreAudio, &devices, &entry, &config),
+            [44_100, 48_000, 96_000]
+        );
+    }
+
+    #[test]
+    fn the_driver_list_has_only_drivers_of_this_system() {
+        let here = drivers_here();
+        assert!(here.iter().all(|(h, _)| h.is_supported_here()));
+        assert!(here.contains(&(
+            HostKind::platform_default(),
+            if cfg!(target_os = "macos") {
+                "CoreAudio"
+            } else {
+                "PipeWire"
+            }
+        )));
+        assert!(DRIVERS.iter().all(|(h, _)| *h != HostKind::Null));
     }
 
     #[test]

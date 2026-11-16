@@ -12,6 +12,7 @@ use cpal::{BufferSize, SampleFormat, SupportedBufferSize, SupportedStreamConfigR
 use crate::process::{AudioProcess, CallbackInfo, OutputBuffer, StreamParams};
 use crate::slot::EngineSlot;
 use crate::system::{AudioError, DeviceId, DeviceInfo, HostKind, StreamConfig, StreamStats};
+use crate::workgroup;
 
 /// Sample rates offered in S07.
 const STANDARD_RATES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
@@ -114,6 +115,8 @@ pub(crate) struct StreamCallback<P: AudioProcess> {
     /// Interleaved, `max_frames × channels`.
     scratch: Vec<f32>,
     shared: Arc<StreamShared>,
+    /// Audio workgroup the callback thread joins on its first run (set by the device backend).
+    workgroup: Option<workgroup::Workgroup>,
 }
 
 impl<P: AudioProcess> StreamCallback<P> {
@@ -129,6 +132,7 @@ impl<P: AudioProcess> StreamCallback<P> {
             params,
             scratch,
             shared,
+            workgroup: None,
         }
     }
 
@@ -145,6 +149,10 @@ impl<P: AudioProcess> StreamCallback<P> {
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
+        // Once, on the audio thread of a device stream (the null backend has no workgroup).
+        if let Some(workgroup) = self.workgroup.take() {
+            workgroup.join_current_thread();
+        }
         let now = Instant::now();
         let StreamParams {
             sample_rate,
@@ -238,13 +246,19 @@ impl Drop for NullStream {
     }
 }
 
-/// cpal's id of a host.
+/// cpal's id of a host; `None` for the null host and for hosts this system does not have (cpal
+/// only has the PipeWire, JACK and ALSA ids on Linux, and CoreAudio on macOS).
 fn host_id(kind: HostKind) -> Option<cpal::HostId> {
     match kind {
+        #[cfg(target_os = "macos")]
+        HostKind::CoreAudio => Some(cpal::HostId::CoreAudio),
+        #[cfg(target_os = "linux")]
         HostKind::PipeWire => Some(cpal::HostId::PipeWire),
+        #[cfg(target_os = "linux")]
         HostKind::Jack => Some(cpal::HostId::Jack),
+        #[cfg(target_os = "linux")]
         HostKind::Alsa => Some(cpal::HostId::Alsa),
-        HostKind::Null => None,
+        _ => None,
     }
 }
 
@@ -259,15 +273,20 @@ pub(crate) fn host(kind: HostKind) -> Result<cpal::Host, AudioError> {
 
 /// Hosts available on this machine, in preference order, `Null` last.
 pub(crate) fn available_hosts() -> Vec<HostKind> {
-    let mut hosts: Vec<HostKind> = [HostKind::PipeWire, HostKind::Jack, HostKind::Alsa]
-        .into_iter()
-        .filter(|&kind| match host(kind) {
-            // cpal always lists JACK; it is usable only when a server answers.
-            Ok(host) if kind == HostKind::Jack => host.default_output_device().is_some(),
-            Ok(_) => true,
-            Err(_) => false,
-        })
-        .collect();
+    let mut hosts: Vec<HostKind> = [
+        HostKind::CoreAudio,
+        HostKind::PipeWire,
+        HostKind::Jack,
+        HostKind::Alsa,
+    ]
+    .into_iter()
+    .filter(|&kind| match host(kind) {
+        // cpal always lists JACK; it is usable only when a server answers.
+        Ok(host) if kind == HostKind::Jack => host.default_output_device().is_some(),
+        Ok(_) => true,
+        Err(_) => false,
+    })
+    .collect();
     hosts.push(HostKind::Null);
     hosts
 }
@@ -410,7 +429,9 @@ pub(crate) struct Negotiated {
 ///
 /// Rules: `f32` before `i32` before `i16`; the device's default channel count, else stereo. JACK
 /// runs at the server's rate and buffer size whatever was requested. PipeWire accepts rates
-/// outside its allowed list (it converts). ALSA must support the rate and buffer size.
+/// outside its allowed list (it converts). ALSA and CoreAudio must support the rate and buffer
+/// size (CoreAudio then sets the device's nominal rate and its IO buffer frame size; cpal
+/// checks the buffer against the device's range).
 pub(crate) fn negotiate(
     kind: HostKind,
     device: &cpal::Device,
@@ -518,6 +539,7 @@ where
     P: AudioProcess,
 {
     let shared = Arc::clone(&callback.shared);
+    callback.workgroup = workgroup::lookup(device);
     device
         .build_output_stream::<T, _, _>(
             config,
@@ -691,9 +713,21 @@ mod tests {
 mod lookup_tests {
     use super::*;
 
+    /// The device host of this system; the lookup tests only enumerate its devices.
+    const HOST: HostKind = if cfg!(target_os = "macos") {
+        HostKind::CoreAudio
+    } else {
+        HostKind::Alsa
+    };
+    const PREFIX: &str = if cfg!(target_os = "macos") {
+        "coreaudio"
+    } else {
+        "alsa"
+    };
+
     fn config(device: Option<&str>, device_id: Option<&str>) -> StreamConfig {
         StreamConfig {
-            host: HostKind::Alsa,
+            host: HOST,
             device: device.map(str::to_owned),
             device_id: device_id.map(|id| DeviceId(id.to_owned())),
             ..StreamConfig::default()
@@ -704,25 +738,29 @@ mod lookup_tests {
         device.id().unwrap().to_string()
     }
 
-    /// Uses the machine's ALSA devices (enumeration only, nothing is opened); skipped without any.
+    /// Uses the machine's devices of the system's host (ALSA, CoreAudio) (enumeration only, nothing is opened); skipped without any.
     #[test]
     fn devices_are_found_by_id_before_name() {
-        let (Ok(host), Ok(devices)) = (host(HostKind::Alsa), devices(HostKind::Alsa)) else {
-            eprintln!("no ALSA host: skipped");
+        let (Ok(host), Ok(devices)) = (host(HOST), devices(HOST)) else {
+            eprintln!("no {HOST:?} host: skipped");
             return;
         };
         let Some(info) = devices.iter().find(|d| d.id.is_some()) else {
-            eprintln!("no ALSA device with an id: skipped");
+            eprintln!("no {HOST:?} device with an id: skipped");
             return;
         };
         let id = info.id.as_ref().unwrap().0.as_str();
-        let missing = "alsa:komponist-test-missing";
+        let missing = format!("{PREFIX}:komponist-test-missing");
+        let missing = missing.as_str();
 
         let by_id = find_device(&host, &config(Some("komponist test: wrong name"), Some(id)));
         assert_eq!(id_of(&by_id.unwrap()), id);
         let by_name = find_device(&host, &config(Some(&info.name), Some(missing)));
         assert_eq!(id_of(&by_name.unwrap()), id);
-        let other_host = find_device(&host, &config(Some(&info.name), Some("pipewire:x")));
+        let other_host = find_device(
+            &host,
+            &config(Some(&info.name), Some("komponist-other-host:x")),
+        );
         assert_eq!(id_of(&other_host.unwrap()), id);
         assert!(matches!(
             find_device(&host, &config(None, Some(missing))),
@@ -730,6 +768,24 @@ mod lookup_tests {
         ));
         assert!(device_present(&config(None, Some(id))));
         assert!(!device_present(&config(None, Some(missing))));
+    }
+
+    #[test]
+    fn hosts_of_other_systems_are_unavailable() {
+        for kind in [
+            HostKind::CoreAudio,
+            HostKind::PipeWire,
+            HostKind::Jack,
+            HostKind::Alsa,
+        ] {
+            if kind.is_supported_here() {
+                continue;
+            }
+            assert!(matches!(host(kind), Err(AudioError::HostUnavailable(k)) if k == kind));
+            assert!(matches!(devices(kind), Err(AudioError::HostUnavailable(_))));
+            assert!(!available_hosts().contains(&kind));
+        }
+        assert_eq!(available_hosts().last(), Some(&HostKind::Null));
     }
 
     #[test]
