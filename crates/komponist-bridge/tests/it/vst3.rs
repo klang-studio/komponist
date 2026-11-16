@@ -42,7 +42,8 @@ fn vst3_synth_sounds_through_the_ipc_path() {
     assert_eq!(info.descriptor.format, PluginFormat::Vst3);
     assert_eq!(info.descriptor.id, SYNTH_VST3);
     assert_eq!(info.descriptor.kind, PluginKind::Instrument);
-    assert!(info.has_gui);
+    // No plugin GUIs on macOS until #52.
+    assert_eq!(info.has_gui, komponist_hosting::GUI_EMBEDDING);
     assert_eq!(info.latency, 0);
     let names: Vec<&str> = info.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["Gain", "Decay"]);
@@ -228,10 +229,10 @@ fn vst3_state_round_trips_between_bridges() {
         id: gain,
         value: 1.0,
     });
-    second.expect_value(gain);
+    second.expect_value_of(gain, 1.0);
     assert!(play(&mut second, 70) > 0.5);
     second.send(ControlMsg::SetState { state });
-    second.expect_value(gain);
+    second.expect_value_of(gain, 0.5);
     let level = play(&mut second, 71);
     assert!(
         (0.025..0.04).contains(&level),

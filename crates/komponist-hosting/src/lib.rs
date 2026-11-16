@@ -14,6 +14,7 @@
 //!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop).
 //! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26).
 //! - `library` (private): `dlopen` for both layers; plugin libraries are never unmapped.
+//! - `bundle` (private, macOS): `CFBundle` of a `.clap` / `.vst3` directory and its executable.
 //! - `vst3` (private): the VST3 format layer on the raw vst3 0.3 bindings (WP-32). Its parameters
 //!   are normalized (`0..=1`); its state blob format is documented in `vst3::stream`.
 //!
@@ -33,6 +34,8 @@ use std::path::Path;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+#[cfg(target_os = "macos")]
+mod bundle;
 mod clap;
 pub mod host;
 pub mod host_loop;
@@ -46,8 +49,8 @@ pub use komponist_ipc::{
     GuiSize, NoteName, ParamInfo, PluginDescriptor, PluginFormat, PluginKind, RenderMode,
 };
 pub use plugin::{
-    ActivateConfig, EventOut, GuiInfo, HostedPlugin, HostedProcessor, HostingError, ProcessBlock,
-    ProcessStatus,
+    ActivateConfig, EventOut, GUI_EMBEDDING, GuiInfo, HostedPlugin, HostedProcessor, HostingError,
+    ProcessBlock, ProcessStatus,
 };
 
 /// Bridge main thread. Loads plugin `plugin_id` from `bundle` and initialises it (not activated).

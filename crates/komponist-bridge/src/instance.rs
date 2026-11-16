@@ -4,10 +4,11 @@
 //! control messages until `Shutdown` or until the app closes the socket. Everything except block
 //! processing happens on the main thread, which is also the plugin's main thread:
 //!
-//! - **Main loop:** one `poll()` ([`EventLoop`]) over the control socket, the notification eventfd
-//!   ([`BridgeNotify`]), the plugin's fds and timers. Each tick dispatches plugin fds and timers,
-//!   handles notifications, reads control messages and forwards queued log lines and parameter
-//!   values. Only this thread sends on the control channel.
+//! - **Main loop:** on Linux one `poll()` (`event_loop::EventLoop`) over the control socket, the
+//!   notification eventfd ([`BridgeNotify`]), the plugin's fds and timers; on macOS the main
+//!   thread's CFRunLoop (`cf_loop::CfEventLoop`) with all of them as common-mode sources. Each tick
+//!   dispatches plugin fds and timers, handles notifications, reads control messages and forwards
+//!   queued log lines and parameter values. Only this thread sends on the control channel.
 //! - **Watchdog:** `Ping` is answered with `Pong` from this loop, in every state, between two
 //!   plugin calls; a stalled loop shows as a missing `Pong`. A long plugin call on this thread
 //!   (`Load`, `OpenGui`) delays it too; a plugin busy in `process` (RT thread) does not.
@@ -23,18 +24,20 @@
 //!   `ParamValues` with the plugin's text, coalesced to at most one message per
 //!   [`VALUES_INTERVAL`]. GUI edits during processing travel through the shared output ring.
 //! - **Shutdown** (spike WP-15 §4): close the GUI → stop the RT thread and deactivate → destroy
-//!   and unload the plugin → exit 0.
+//!   and unload the plugin → `_exit(0)` (the caller, `crate::run`).
 
+#[cfg(target_os = "macos")]
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
-use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
-    ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode,
+    ActivateConfig, FdEvents, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode,
+    TimerId,
 };
 use komponist_ipc::control::PROTOCOL_VERSION;
 use komponist_ipc::shm::MAX_BLOCK;
@@ -42,12 +45,16 @@ use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
     LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
 };
+#[cfg(not(target_os = "macos"))]
 use rustix::event::{PollFd, PollFlags};
 
+#[cfg(target_os = "macos")]
+use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
+#[cfg(not(target_os = "macos"))]
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, LOG_PENDING};
 use crate::rt::{Fallback, RtConfig, RtThread, StartReport};
-use crate::sched;
+use crate::{exit, sched};
 
 /// Every `Log` line about the RT thread's scheduling starts with this, so the app can tell it
 /// apart from plugin output (it shows a status-bar warning when the level is `Warning`).
@@ -57,6 +64,7 @@ pub const RT_LOG_PREFIX: &str = "RT priority:";
 pub const VALUES_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Longest `poll()` when nothing is scheduled; the control socket and the eventfd wake it earlier.
+#[cfg(not(target_os = "macos"))]
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 
 /// Control messages handled per tick before plugin fds and timers get their turn again.
@@ -71,13 +79,13 @@ pub struct Options {
     pub rt_priority: i32,
 }
 
-/// Runs instance mode until shutdown; the process exit code.
-pub fn run(options: Options) -> ExitCode {
+/// Runs instance mode until shutdown; the process exit code ([`crate::exit`]).
+pub fn run(options: Options) -> u8 {
     // SAFETY: only asks the kernel whether the number is an open fd; nothing is closed or kept.
     let open = rustix::io::fcntl_getfd(unsafe { BorrowedFd::borrow_raw(options.control_fd) });
     if let Err(e) = open {
         eprintln!("komponist-bridge: control fd {}: {e}", options.control_fd);
-        return ExitCode::FAILURE;
+        return exit::FAILURE;
     }
     // SAFETY: the app made this inherited, open fd ours (`--control-fd`); nothing else in this
     // process owns it. A wrong kind of fd fails at the first send below.
@@ -92,7 +100,7 @@ pub fn run(options: Options) -> ExitCode {
     };
     if let Err(e) = channel.send(&hello) {
         eprintln!("komponist-bridge: control fd {}: {e}", options.control_fd);
-        return ExitCode::FAILURE;
+        return exit::FAILURE;
     }
     let region = match channel
         .recv_fd()
@@ -107,14 +115,14 @@ pub fn run(options: Options) -> ExitCode {
                 fatal: true,
             });
             eprintln!("komponist-bridge: shared memory: {message}");
-            return ExitCode::FAILURE;
+            return exit::FAILURE;
         }
     };
     match Bridge::new(channel, region, options.rt_priority) {
         Ok(bridge) => bridge.run(),
         Err(e) => {
             eprintln!("komponist-bridge: {e}");
-            ExitCode::FAILURE
+            exit::FAILURE
         }
     }
 }
@@ -167,8 +175,10 @@ impl Bridge {
         })
     }
 
-    /// The main loop; returns after `Shutdown` or when the app is gone.
-    fn run(mut self) -> ExitCode {
+    /// The main loop (Linux): one `poll()` per tick; returns after `Shutdown` or when the app is
+    /// gone.
+    #[cfg(not(target_os = "macos"))]
+    fn run(mut self) -> u8 {
         while !self.shutdown {
             let now = Instant::now();
             let wait = self
@@ -183,27 +193,94 @@ impl Bridge {
                 let ready = self.event_loop.poll(&mut extra, wait);
                 (extra[0].revents(), ready)
             };
-            if let Some(plugin) = self.plugin.as_mut() {
-                for (fd, events) in ready.fds {
-                    if self.event_loop.fd_registered(fd) {
-                        plugin.on_fd(fd, events);
-                    }
-                }
-                for timer in ready.timers {
-                    if self.event_loop.timer_registered(timer) {
-                        plugin.on_timer(timer);
-                    }
-                }
-            }
-            self.handle_notifications();
-            if !control.is_empty() {
-                self.read_control();
-            }
-            self.forward_logs();
-            self.send_values_if_due();
+            self.dispatch(ready.fds, ready.timers, !control.is_empty());
         }
         self.close();
-        ExitCode::SUCCESS
+        exit::SUCCESS
+    }
+
+    /// The main loop (macOS): the thread's CFRunLoop ([`EventLoop`] is `CfEventLoop`) with the
+    /// control socket and the wake fd as sources; returns after `Shutdown` or when the app is
+    /// gone.
+    ///
+    /// Every callout ends in [`Bridge::drain_ready`] unless the bridge is busy already (a plugin
+    /// call running a nested run loop); the busy dispatch then drains what queued up.
+    ///
+    /// **Seam for the plugin frame (#52):** the outer `while` is where the bridge will leave
+    /// `CFRunLoopRun` for the frame window. `OpenGui` will record a frame request and call
+    /// `event_loop.stop()`; this loop then runs `eframe::run_native` (run-and-return) right here,
+    /// outside every borrow of the bridge, and enters `event_loop.run()` again when the frame has
+    /// closed. All sources stay installed in the common modes, so control messages, plugin timers
+    /// and notifications keep being served inside eframe's event loop and during live resize;
+    /// protocol work never runs from egui's `ui()` (eframe skips it for occluded windows, spike #42
+    /// Q5).
+    #[cfg(target_os = "macos")]
+    fn run(self) -> u8 {
+        let event_loop = self.event_loop.clone();
+        let watched = event_loop
+            .watch(self.channel.as_fd(), Owner::Control)
+            .and_then(|()| event_loop.watch(self.notify.wake_fd(), Owner::Wake));
+        if let Err(e) = watched {
+            eprintln!("komponist-bridge: {e}");
+            return exit::FAILURE;
+        }
+        let bridge = Rc::new(RefCell::new(self));
+        let weak = Rc::downgrade(&bridge);
+        event_loop.set_dispatch(Some(Rc::new(move || {
+            if let Some(bridge) = weak.upgrade()
+                && let Ok(mut bridge) = bridge.try_borrow_mut()
+            {
+                bridge.drain_ready();
+            }
+        })));
+        while !bridge.borrow().shutdown {
+            event_loop.run();
+        }
+        event_loop.set_dispatch(None);
+        bridge.borrow_mut().close();
+        exit::SUCCESS
+    }
+
+    /// Dispatches everything the run loop queued until the queue stays empty, then arms the
+    /// sources again for the next round (macOS).
+    #[cfg(target_os = "macos")]
+    fn drain_ready(&mut self) {
+        loop {
+            let ready = self.event_loop.take_ready();
+            if ready.is_empty() {
+                break;
+            }
+            self.dispatch(ready.fds, ready.timers, ready.control);
+            if self.shutdown {
+                self.event_loop.stop();
+                return;
+            }
+        }
+        self.event_loop.rearm(self.values_due);
+    }
+
+    /// One tick: ready plugin fds and due timers (each only while still registered), plugin
+    /// notifications, control messages (if the socket is readable), queued log lines, and the
+    /// coalesced `ParamValues` when due.
+    fn dispatch(&mut self, fds: Vec<(RawFd, FdEvents)>, timers: Vec<TimerId>, control: bool) {
+        if let Some(plugin) = self.plugin.as_mut() {
+            for (fd, events) in fds {
+                if self.event_loop.fd_registered(fd) {
+                    plugin.on_fd(fd, events);
+                }
+            }
+            for timer in timers {
+                if self.event_loop.timer_registered(timer) {
+                    plugin.on_timer(timer);
+                }
+            }
+        }
+        self.handle_notifications();
+        if control {
+            self.read_control();
+        }
+        self.forward_logs();
+        self.send_values_if_due();
     }
 
     // --------------------------------------------------------------------------------------------

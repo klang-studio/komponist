@@ -365,6 +365,21 @@ impl Bridge {
         })
     }
 
+    /// Waits for a `ParamValues` that reports parameter `id` at `value` (within 1e-6). Unlike
+    /// [`Bridge::expect_value`] this is a sync point after a `SetParam` or `SetState`: the bridge
+    /// also reports values on its own (a state load once right away and again, up to
+    /// `VALUES_INTERVAL` later, after the plugin's own rescan), and such a report with the old
+    /// value can arrive after the `SetParam` was sent but before the bridge read it (#51).
+    pub fn expect_value_of(&mut self, id: u32, value: f64) -> String {
+        self.expect("ParamValues", |m| match m {
+            BridgeMsg::ParamValues(values) => values
+                .iter()
+                .find(|v| v.id == id && (v.value - value).abs() < 1e-6)
+                .map(|v| v.text.clone()),
+            _ => None,
+        })
+    }
+
     /// `RT priority` log lines seen so far.
     pub fn rt_logs(&self) -> Vec<(LogLevel, String)> {
         self.seen

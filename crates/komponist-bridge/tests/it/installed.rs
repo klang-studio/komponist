@@ -12,6 +12,15 @@ use std::time::Instant;
 use common::*;
 use komponist_ipc::{BlockStatus, BridgeMsg, ControlMsg, PluginKind};
 
+/// The install path on this OS: the one given for Linux, or for macOS.
+fn on_this_os(linux: &'static str, macos: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        macos
+    } else {
+        linux
+    }
+}
+
 /// Load, process with notes, state round trip into a second bridge, shutdown. `sound`: the notes
 /// must be audible (Klopfer's default kit has no samples, so it may stay silent).
 fn exercise(path: &str, plugin_id: &str, sound: bool) {
@@ -90,14 +99,24 @@ fn exercise(path: &str, plugin_id: &str, sound: bool) {
 #[test]
 #[ignore = "installed plugin; run with --ignored"]
 fn klopfer() {
-    exercise("~/.clap/Klopfer.clap", "com.klopfer.drum-sampler", false);
+    exercise(
+        on_this_os(
+            "~/.clap/Klopfer.clap",
+            "~/Library/Audio/Plug-Ins/CLAP/Klopfer.clap",
+        ),
+        "com.klopfer.drum-sampler",
+        false,
+    );
 }
 
 #[test]
 #[ignore = "installed plugin; run with --ignored"]
 fn surge_xt() {
     exercise(
-        "/usr/lib/clap/Surge XT.clap",
+        on_this_os(
+            "/usr/lib/clap/Surge XT.clap",
+            "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap",
+        ),
         "org.surge-synth-team.surge-xt",
         true,
     );
@@ -107,7 +126,10 @@ fn surge_xt() {
 #[ignore = "installed plugin; run with --ignored"]
 fn dexed() {
     exercise(
-        "/usr/lib/clap/Dexed.clap",
+        on_this_os(
+            "/usr/lib/clap/Dexed.clap",
+            "/Library/Audio/Plug-Ins/CLAP/Dexed.clap",
+        ),
         "com.digital-suburban.dexed",
         true,
     );
@@ -117,7 +139,10 @@ fn dexed() {
 #[ignore = "installed plugin; run with --ignored"]
 fn klopfer_vst3() {
     exercise(
-        "~/.vst3/Klopfer.vst3",
+        on_this_os(
+            "~/.vst3/Klopfer.vst3",
+            "~/Library/Audio/Plug-Ins/VST3/Klopfer.vst3",
+        ),
         "4B6C6F706665724472756D536D706C72",
         false,
     );
@@ -127,7 +152,10 @@ fn klopfer_vst3() {
 #[ignore = "installed plugin; run with --ignored"]
 fn surge_xt_vst3() {
     exercise(
-        "/usr/lib/vst3/Surge XT.vst3",
+        on_this_os(
+            "/usr/lib/vst3/Surge XT.vst3",
+            "/Library/Audio/Plug-Ins/VST3/Surge XT.vst3",
+        ),
         "ABCDEF019182FAEB566D624153675854",
         true,
     );
@@ -137,7 +165,10 @@ fn surge_xt_vst3() {
 #[ignore = "installed plugin; run with --ignored"]
 fn dexed_vst3() {
     exercise(
-        "/usr/lib/vst3/Dexed.vst3",
+        on_this_os(
+            "/usr/lib/vst3/Dexed.vst3",
+            "/Library/Audio/Plug-Ins/VST3/Dexed.vst3",
+        ),
         "ABCDEF019182FAEB4447534244657864",
         true,
     );
@@ -147,7 +178,10 @@ fn dexed_vst3() {
 #[ignore = "installed plugin; run with --ignored"]
 fn decent_sampler_vst3() {
     exercise(
-        "/usr/lib/vst3/DecentSampler.vst3",
+        on_this_os(
+            "/usr/lib/vst3/DecentSampler.vst3",
+            "/Library/Audio/Plug-Ins/VST3/DecentSampler.vst3",
+        ),
         "ABCDEF019182FAEB446C647944736D70",
         false,
     );
@@ -157,7 +191,10 @@ fn decent_sampler_vst3() {
 #[ignore = "installed plugin; run with --ignored"]
 fn shortcircuit_xt_vst3() {
     exercise(
-        "/usr/local/lib/vst3/Shortcircuit XT.vst3",
+        on_this_os(
+            "/usr/local/lib/vst3/Shortcircuit XT.vst3",
+            "/Library/Audio/Plug-Ins/VST3/Shortcircuit XT.vst3",
+        ),
         "7B791499693F5465B590BA9435E6D873",
         false,
     );

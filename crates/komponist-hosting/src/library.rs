@@ -70,7 +70,8 @@ impl Library {
         Ok(Library { handle })
     }
 
-    /// The raw handle (for VST3 `ModuleEntry`).
+    /// The raw handle (for VST3 `ModuleEntry` on Linux).
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn handle(&self) -> *mut c_void {
         self.handle
     }

@@ -923,7 +923,12 @@ While loading, the device reads "Lädt" and the engine passes audio through (S05
 audio) and the app spawns `current_exe()` with `--bridge` (`PluginManagerConfig::bridge_exe` +
 `bridge_args`, also used by scans). The bridge stays a process of its own per plugin instance, with
 unchanged settings (non-dumpable, RT priority, signals, exit codes); it sets its process name to
-`komponist-bridge` (`prctl(PR_SET_NAME)`, shown as `komponist-bridg` in `comm`). A small
+`komponist-bridge` (`prctl(PR_SET_NAME)`, shown as `komponist-bridg` in `comm`). On macOS (#51) it names
+its main thread instead (`pthread_setname_np`; the process keeps its executable's name) and turns core dumps
+off with `RLIMIT_CORE = 0` in place of `PR_SET_DUMPABLE`. Both modes end with `_exit` once the plugin is torn
+down, so plugin thread-local destructors and `atexit` handlers never run after the plugin is gone (Klopfer
+panics in its TLS destructors on `exit`, spike #42); `--scan` writes its JSON to a saved stdout after pointing
+fd 1 at stderr, before any plugin code runs (Dexed prints a banner). A small
 `komponist-bridge` binary remains for the bridge's own tests and tools; the app does not need it.
 
 **Shared memory per instance** (fixed size): header with futex words `request_seq` and `done_seq`,
@@ -994,8 +999,9 @@ truce-rack serve as further reference code.
   (`ProcessBlock::sidechain`) into the sidechain port or bus, each adapted to its channel count (mono
   gets `(L + R) / 2`, more channels get L, R and silence); every other input and a sidechain port in a
   block without sidechain get silence. The main output is read back as stereo.
-- **VST3** via the `vst3` crate: Linux bundle layout `X.vst3/Contents/x86_64-linux/X.so`,
-  `GetPluginFactory`, IComponent/IAudioProcessor/IEditController (+ IConnectionPoint),
+- **VST3** via the `vst3` crate: Linux bundle layout `X.vst3/Contents/x86_64-linux/X.so`, on macOS
+  `X.vst3/Contents/MacOS/<CFBundleExecutable>` with `bundleEntry(CFBundleRef)` / `bundleExit()` in place of
+  `ModuleEntry` / `ModuleExit` (#51), `GetPluginFactory`, IComponent/IAudioProcessor/IEditController (+ IConnectionPoint),
   IHostApplication, IComponentHandler (GUI edits), IParameterChanges/IEventList, IBStream (state:
   component + controller in one blob with a header), IPlugView with `kPlatformTypeX11EmbedWindowID`,
   IPlugFrame (resize), **Linux IRunLoop** (event handlers for fds and timers, in the bridge's poll
@@ -1006,7 +1012,21 @@ truce-rack serve as further reference code.
   `ModuleExit` after use, activate buses before processing (otherwise instruments stay silent; the
   sidechain bus, the first audio input bus of type `kAux`, is activated with the main buses, #6), sync
   component state into the controller, keep the library loaded until every COM object is released.
+- **macOS (#51):** CLAP `.clap` bundles are directories; clack-host loads their executable and passes
+  the bundle path to `clap_entry.init`. The GUI API there is Cocoa (CLAP `cocoa`, VST3
+  `kPlatformTypeNSView`), but `GUI_EMBEDDING` keeps `has_gui` false until the bridge owns the frame window
+  (#52).
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
+  On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): the control socket, the
+  notification wake pipe and plugin fds are libdispatch read/write sources on a private serial queue, whose
+  handlers suspend themselves and signal one version-0 `CFRunLoopSource` (+ `CFRunLoopWakeUp`); plugin
+  timers and the next deadline are `CFRunLoopTimer`s; all in the common modes, run by `CFRunLoopRun`.
+  Callouts only queue; the bridge dispatches outside every borrow, drains what queued up during a plugin's
+  nested run loop, then resumes the sources. The RT thread only writes the wake pipe (CF's signal and
+  wake-up take locks; they run on the dispatch queue). `CFFileDescriptor` was tried first and dropped: its
+  re-enabled read callback sometimes never fired, so the bridge missed `Shutdown`. The outer loop is the
+  seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native` (run-and-return) and
+  resumes the run loop when the frame closes.
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
   honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
   reading by default and handle write interest only with a rate limit (WP-26/31 decide the details).
