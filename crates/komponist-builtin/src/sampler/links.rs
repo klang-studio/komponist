@@ -479,7 +479,10 @@ mod tests {
     #[test]
     fn links_round_trip_and_keep_the_rest_of_the_state() {
         let state = br#"{"params":{"kit_tune":2}}"#;
-        let link = SampleLink::new(Path::new("/s/kick.wav"), Some(Path::new("/p")));
+        // `/p` has no drive on Windows, where `new` makes the link's path absolute (`C:\s\kick.wav`):
+        // the project folder gets the same drive, so both share a root.
+        let project = absolute(Path::new("/p"));
+        let link = SampleLink::new(Path::new("/s/kick.wav"), Some(&project));
         assert_eq!(link.rel, Path::new("../s/kick.wav"));
         assert_eq!(link.name, "kick");
         let with = write(Some(state), 2, Some(&link));
