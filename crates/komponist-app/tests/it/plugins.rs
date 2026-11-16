@@ -282,9 +282,16 @@ fn the_app_loads_scanned_plugins_plays_them_and_survives_a_crash() {
         id: crash_param,
         value: 1.0,
     }));
+    // SIGSEGV; on Windows the access violation `0xC000_0005`, which komponist-ipc reports as the
+    // signal (an NTSTATUS crash).
+    let segv = if cfg!(windows) {
+        0xC000_0005_u32 as i32
+    } else {
+        11
+    };
     let crashed = DeviceStatus::Crashed(FailReason::Exited {
         code: None,
-        signal: Some(11),
+        signal: Some(segv),
     });
     step_until(&mut app, "the crash", |app| {
         app.engine().device_status(crash) == crashed

@@ -257,3 +257,62 @@ pub fn alive(pid: u32) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
+
+/// Process ids of this process's child processes running `komponist.exe` (scans included). The
+/// test process starts `komponist.exe` for bridges only (`komponist --bridge`), and a Toolhelp
+/// snapshot has no command lines, so the image name and the parent id identify them.
+#[cfg(windows)]
+pub fn bridge_children() -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let me = std::process::id();
+    let mut pids = Vec::new();
+    // SAFETY: the snapshot handle is checked and closed; `entry` has `dwSize` set as the API
+    // requires and lives across the calls.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        assert!(snapshot != INVALID_HANDLE_VALUE, "process snapshot");
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let image = String::from_utf16_lossy(&entry.szExeFile[..len]);
+            if entry.th32ParentProcessID == me && image.eq_ignore_ascii_case("komponist.exe") {
+                pids.push(entry.th32ProcessID);
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    pids
+}
+
+/// Whether process `pid` is running (an exited process whose handle someone still holds is not).
+#[cfg(windows)]
+pub fn alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: the handle is checked, used for one query and closed.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        ok && code == STILL_ACTIVE as u32
+    }
+}
