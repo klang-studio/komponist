@@ -719,6 +719,11 @@ mod sys {
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-ipc: no shared-memory backend (shm.rs) for this OS yet (Windows: W2, CreateFileMappingW + MapViewOfFile)"
+);
+
 impl core::fmt::Debug for ShmRegion {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ShmRegion")
@@ -769,13 +774,13 @@ pub struct BlockSpec {
 }
 
 /// RT. [`BlockRequest::deadline_ticks`] for `deadline`: the absolute `mach_absolute_time` on
-/// macOS, 0 without a deadline and on other systems (no reader; saves the clock reads).
+/// macOS, 0 without a deadline and on Linux (no reader there; saves the clock reads).
 fn deadline_ticks(deadline: Option<Instant>) -> u64 {
     #[cfg(target_os = "macos")]
     {
         deadline.map_or(0, komponist_rt::mach_time::deadline)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         let _ = deadline;
         0
@@ -1430,7 +1435,7 @@ mod tests {
                 }
                 None => assert_eq!(request.deadline_ticks, 0),
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             assert_eq!(request.deadline_ticks, 0);
             server.finish(BlockResult::default());
             let mut out = [[0f32; 16]; 2];

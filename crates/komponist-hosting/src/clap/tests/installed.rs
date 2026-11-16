@@ -10,15 +10,15 @@ use super::*;
 use crate::clap::events::NO_NOTE_ID;
 
 // Install paths per OS (the user and system plugin folders).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const KLOPFER: &str = "~/.clap/Klopfer.clap";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SURGE_XT: &str = "/usr/lib/clap/Surge XT.clap";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SURGE_XT_FX: &str = "/usr/lib/clap/Surge XT Effects.clap";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const DEXED: &str = "/usr/lib/clap/Dexed.clap";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SHORTCIRCUIT_XT: &str = "/usr/local/lib/clap/Shortcircuit XT.clap";
 #[cfg(target_os = "macos")]
 pub(super) const KLOPFER: &str = "~/Library/Audio/Plug-Ins/CLAP/Klopfer.clap";

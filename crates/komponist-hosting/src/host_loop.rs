@@ -138,7 +138,7 @@ pub mod wake {
 
 /// macOS has no eventfd: a non-blocking pipe with the same semantics. A full pipe (EAGAIN on
 /// `write`) already means "readable", so a lost byte changes nothing.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub mod wake {
     use super::*;
 
@@ -189,6 +189,11 @@ pub mod wake {
         }
     }
 }
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-hosting: no wake-fd backend (host_loop.rs) for this OS yet (Windows: W5, an event object; the fd registry is not offered there)"
+);
 
 /// A [`HostNotify`] that coalesces notifications into atomic bits and wakes a [`PollLoop`] through
 /// a wake fd (an eventfd on Linux, a non-blocking pipe on macOS). RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write`.

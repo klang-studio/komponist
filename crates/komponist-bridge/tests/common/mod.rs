@@ -176,7 +176,7 @@ impl Bridge {
                 if let Some(n) = rtprio {
                     rustix::process::setrlimit(rustix::process::Resource::Rtprio, limit(n))?;
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
                 let _ = rtprio;
                 // Let the bridge end of the socket survive exec.
                 let fd = BorrowedFd::borrow_raw(raw);

@@ -625,6 +625,11 @@ mod sys {
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-ipc: no control-channel backend (control.rs) for this OS yet (Windows: W2, byte-stream pipe + DuplicateHandle)"
+);
+
 fn io_error(e: Errno) -> ChannelError {
     ChannelError::Io(e.to_string())
 }

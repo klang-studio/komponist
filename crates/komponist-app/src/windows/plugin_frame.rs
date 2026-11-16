@@ -74,9 +74,9 @@ pub mod header;
 pub mod keys;
 pub mod metrics;
 pub mod sizing;
-#[cfg(target_os = "linux")]
+#[cfg(x11_embed)]
 mod x11;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(x11_embed))]
 #[path = "plugin_frame/x11_unavailable.rs"]
 mod x11;
 
@@ -584,7 +584,7 @@ impl App {
     /// Once per root pass, after the queue was dispatched (module docs).
     pub(crate) fn update_plugin_frames(&mut self, ctx: &Context) {
         let native = !ctx.embed_viewports();
-        let remote = (native && cfg!(target_os = "macos")) || self.frames.force_bridge_frames;
+        let remote = (native && cfg!(bridge_frame)) || self.frames.force_bridge_frames;
         self.frames.bridge_frames = remote;
         if remote && native && activation::became_active(ctx) {
             self.raise_bridge_frames();

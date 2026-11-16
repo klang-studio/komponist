@@ -39,14 +39,19 @@ use crate::plugin::HostingError;
 const AUDIO_MODULE_CLASS: &str = "Audio Module Class";
 
 /// The module entry and exit symbols of this OS (see the module docs).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const ENTRY_SYMBOL: &CStr = c"ModuleEntry";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const EXIT_SYMBOL: &CStr = c"ModuleExit";
 #[cfg(target_os = "macos")]
 const ENTRY_SYMBOL: &CStr = c"bundleEntry";
 #[cfg(target_os = "macos")]
 const EXIT_SYMBOL: &CStr = c"bundleExit";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-hosting: no VST3 bundle layout or module entry (vst3/module.rs) for this OS yet (Windows: W5, X.vst3/Contents/x86_64-win + InitDll)"
+);
 
 /// The shared library of a bundle (see the module docs for the layouts). A `.vst3` that is a plain
 /// file (the pre-3.6.10 layout) is the library itself.
@@ -76,7 +81,7 @@ fn bundle_binary(bundle: &Path) -> Result<PathBuf, HostingError> {
 
 /// Linux: `Contents/<arch>-linux/X.so`, or any single `.so` in that directory when it is named
 /// differently.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn bundle_binary(bundle: &Path) -> Result<PathBuf, HostingError> {
     let dir = bundle
         .join("Contents")
@@ -126,7 +131,7 @@ impl Module {
         // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain
         // it.
         let library = unsafe { Library::open(binary) }?;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let _ = bundle;
         let mut module = Module {
             binary: binary.to_path_buf(),
@@ -154,7 +159,7 @@ impl Module {
     }
 
     /// What the entry function gets: the dlopen handle.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn entry_argument(&self) -> Result<*mut c_void, HostingError> {
         Ok(self.library.handle())
     }
@@ -341,7 +346,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn bundle_layout() {
         let dir = std::env::temp_dir().join(format!("kp-vst3-layout-{}", std::process::id()));

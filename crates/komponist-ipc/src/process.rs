@@ -260,6 +260,11 @@ mod sys {
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-ipc: no process-watcher backend (process.rs) for this OS yet (Windows: W2, process handle wait)"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

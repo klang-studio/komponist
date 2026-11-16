@@ -185,6 +185,11 @@ mod sys {
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-ipc: no cross-process wait/wake backend (signal.rs) for this OS yet (Windows: W2, auto-reset events + high-resolution timer)"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
