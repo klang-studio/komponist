@@ -22,6 +22,7 @@ use komponist_ui::{focus, fonts, icons, px};
 use super::metrics as m;
 use super::{SendInfo, Target};
 use crate::actions::{Action, EditAction};
+use crate::platform::Platform;
 use crate::views::mixer::model::base_color;
 use crate::views::{ViewCtx, elided_galley};
 
@@ -839,7 +840,9 @@ pub fn routing_chip(
     });
     if !open {
         Tip::new(t.routing_routing())
-            .detail(t.routing_popover_hint())
+            .detail(
+                Platform::current().pick(t.routing_popover_hint(), t.routing_popover_hint_mac()),
+            )
             .attach(&r);
     }
     let st = State::of(ui, &r);

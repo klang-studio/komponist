@@ -177,14 +177,14 @@ pub enum Verdict {
 pub fn decide(sym: u32, mods: Mods, typing: bool) -> Verdict {
     let ctrl_only = mods.ctrl && !mods.alt && !mods.logo;
     match sym {
-        keysym::S if ctrl_only && !mods.shift => Verdict::Take(KeyChord::ctrl(Key::S)),
+        keysym::S if ctrl_only && !mods.shift => Verdict::Take(KeyChord::command(Key::S)),
         _ if typing => Verdict::Pass,
         keysym::SPACE if mods.plain() => Verdict::Take(KeyChord::plain(Key::Space)),
         keysym::ESCAPE if mods.plain() => Verdict::Take(KeyChord::plain(Key::Escape)),
         keysym::Z if ctrl_only => Verdict::Take(if mods.shift {
-            KeyChord::ctrl_shift(Key::Z)
+            KeyChord::command_shift(Key::Z)
         } else {
-            KeyChord::ctrl(Key::Z)
+            KeyChord::command(Key::Z)
         }),
         _ => Verdict::Pass,
     }
@@ -496,13 +496,16 @@ mod tests {
         for typing in [false, true] {
             assert_eq!(
                 decide(keysym::S, CTRL, typing),
-                Take(KeyChord::ctrl(Key::S))
+                Take(KeyChord::command(Key::S))
             );
         }
-        assert_eq!(decide(keysym::Z, CTRL, false), Take(KeyChord::ctrl(Key::Z)));
+        assert_eq!(
+            decide(keysym::Z, CTRL, false),
+            Take(KeyChord::command(Key::Z))
+        );
         assert_eq!(
             decide(keysym::Z, CTRL_SHIFT, false),
-            Take(KeyChord::ctrl_shift(Key::Z))
+            Take(KeyChord::command_shift(Key::Z))
         );
         assert_eq!(decide(keysym::Z, CTRL, true), Pass);
         assert_eq!(decide(keysym::S, CTRL_SHIFT, false), Pass);

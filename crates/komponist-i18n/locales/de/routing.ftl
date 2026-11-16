@@ -111,6 +111,9 @@ routing-solo-follows-tip = Läuft mit, weil eine solo geschaltete Spur auf diese
 # Detail line of the dock chip's tooltip.
 routing-popover-hint = Strg+Klick auf den Chip: ganze Liste im Inspektor
 
+# Same on macOS: ⌘ instead of Strg.
+routing-popover-hint-mac = ⌘+Klick auf den Chip: ganze Liste im Inspektor
+
 # Inspector: nothing routes to this bus.
 routing-no-inputs = Noch nichts geroutet
 

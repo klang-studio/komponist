@@ -30,6 +30,9 @@ status-notes-selected = { $clip } · { $selected } of { $total } { $total ->
 # Middle text in the piano roll.
 status-notes-hint = Ctrl+drag a note: velocity · Alt+drag: copy
 
+# Same on macOS: ⌘ instead of Ctrl.
+status-notes-hint-mac = ⌘+drag a note: velocity · Alt+drag: copy
+
 # Left side in the step sequencer with a selected step; `$step` counts from 1.
 status-step-selected = { $clip } · Step { $step } of { $length }
 
@@ -69,6 +72,9 @@ status-clips-selected = { $count ->
 # Middle text with selected clips.
 status-clips-hint = Drag moves · Alt+drag copies · right edge trims · Ctrl+D duplicates · Del deletes
 
+# Same on macOS: ⌘ instead of Ctrl.
+status-clips-hint-mac = Drag moves · Alt+drag copies · right edge trims · ⌘D duplicates · Del deletes
+
 # Middle text with a selected track.
 status-track-hint = Double-click in the track to add a clip · R records
 
@@ -77,6 +83,9 @@ status-project-unsaved = { $name } · unsaved
 
 # Middle text of a project without tracks.
 status-empty-hint = Ctrl+T: MIDI track · Ctrl+S: save
+
+# Same on macOS: ⌘ instead of Ctrl.
+status-empty-hint-mac = ⌘T: MIDI track · ⌘S: save
 
 ## Messages (`App::set_status`).
 
