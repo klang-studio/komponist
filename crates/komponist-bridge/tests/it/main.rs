@@ -6,7 +6,9 @@ mod common;
 
 #[cfg(target_os = "macos")]
 mod frame_mac;
-#[cfg(target_os = "linux")]
+#[cfg(windows)]
+mod frame_win;
+#[cfg(x11_embed)]
 mod gui;
 mod installed;
 mod instance;

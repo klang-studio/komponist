@@ -1,0 +1,5 @@
+# LF in every checkout, also on Windows with core.autocrlf (Windows port): golden files, catalogs,
+# tokens and scripts are compared or parsed byte for byte. Git detects binaries (PNG snapshots, icons).
+* text=auto eol=lf
+# The vendored ASIO SDK stays byte-identical to upstream (CRLF; see vendor/asio-sdk/VENDORED.md).
+vendor/asio-sdk/** -text

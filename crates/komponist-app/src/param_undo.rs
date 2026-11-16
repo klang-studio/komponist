@@ -79,6 +79,10 @@ pub(crate) struct ParamUndo {
     turned: HashMap<DeviceId, (String, Instant)>,
     /// The undo step the last snapshot of a device made, and when it was last amended.
     steps: HashMap<DeviceId, (u64, Instant)>,
+    /// Bridged devices whose card gesture ended before any snapshot made its step: the step the
+    /// next snapshot makes counts as amended at this time at the earliest, so the plugin's
+    /// debounced snapshot of the same turns still joins it ([`SNAPSHOT_SLACK`]).
+    tails: HashMap<DeviceId, Instant>,
     /// Until when snapshots of a device are the echo of a state the document handed it.
     echo: HashMap<DeviceId, Instant>,
     /// Snapshots that arrived during a gesture that is not theirs, in arrival order.
@@ -99,6 +103,7 @@ impl Default for ParamUndo {
             gesture_bridged: BTreeSet::new(),
             turned: HashMap::new(),
             steps: HashMap::new(),
+            tails: HashMap::new(),
             echo: HashMap::new(),
             deferred: Vec::new(),
             awaiting: BTreeSet::new(),
@@ -150,9 +155,16 @@ impl App {
                     self.param_undo
                         .steps
                         .insert(device, (step, now + SNAPSHOT_SLACK));
+                    self.param_undo.tails.remove(&device);
                 }
+                // No snapshot came during the drag: the immediate answer will make the step, and
+                // the debounced one follows about the debounce after the last turn. Without the
+                // slack its window would start at the immediate answer and leave the debounced
+                // snapshot only the answer's own latency to arrive in (a second step on a busy
+                // machine, seen on the Windows CI runner).
                 _ => {
                     self.param_undo.steps.remove(&device);
+                    self.param_undo.tails.insert(device, now + SNAPSHOT_SLACK);
                 }
             }
         }
@@ -361,18 +373,22 @@ impl App {
             && now.duration_since(at) < self.param_undo.window
             && self.doc.amend(step, set).unwrap_or(false)
         {
-            self.param_undo.steps.insert(device, (step, now));
+            // The window runs from the later of the amendment and the slack after a gesture
+            // (`end_gesture`): the immediate answer must not cut the slack short.
+            self.param_undo.steps.insert(device, (step, at.max(now)));
             return;
         }
         let label = match self.param_undo.turned.get(&device) {
             Some((label, at)) if now.duration_since(*at) < TURN_LABEL => label.clone(),
             _ => undo_label::plugin_state(&self.device_name(device)),
         };
+        let tail = self.param_undo.tails.remove(&device);
         if self.doc.apply(label, set).is_ok()
             && !in_gesture
             && let Some(step) = self.doc.top_step()
         {
-            self.param_undo.steps.insert(device, (step, now));
+            let at = tail.map_or(now, |tail| tail.max(now));
+            self.param_undo.steps.insert(device, (step, at));
         }
     }
 

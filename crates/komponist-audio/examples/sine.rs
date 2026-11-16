@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! cargo run -p komponist-audio --example sine -- [--tone] [--seconds N]
-//!     [--host coreaudio|pipewire|jack|alsa|null] [--device NAME] [--rate HZ]
+//!     [--host coreaudio|wasapi|asio|pipewire|jack|alsa|null] [--device NAME] [--rate HZ]
 //! ```
 //!
 //! Debug builds install `assert_no_alloc`'s allocator: any allocation or free inside the audio
@@ -138,6 +138,8 @@ fn parse_args() -> Result<Args, String> {
             "--host" => {
                 args.host = match value()?.as_str() {
                     "coreaudio" => HostKind::CoreAudio,
+                    "wasapi" => HostKind::Wasapi,
+                    "asio" => HostKind::Asio,
                     "pipewire" => HostKind::PipeWire,
                     "jack" => HostKind::Jack,
                     "alsa" => HostKind::Alsa,

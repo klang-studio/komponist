@@ -251,9 +251,9 @@ fn carriers_fill_in_the_track_colour_and_modulators_in_text_2() {
         value: 1.0,
     }));
     let patch = patch_of(&app, device);
-    for op in 0..6 {
+    for (op, operator) in patch.operators.iter().enumerate().take(6) {
         assert_eq!(
-            patch.operators[op].output,
+            operator.output,
             device::is_carrier(1, op),
             "operator {}",
             op + 1

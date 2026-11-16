@@ -1,4 +1,5 @@
-//! Instance mode: `komponist-bridge --instance --control-fd N` (ARCHITECTURE §8.1–8.2).
+//! Instance mode: `komponist-bridge --instance --control-fd N` (Windows: `--instance`, the control
+//! pipe is stdin) (ARCHITECTURE §8.1–8.2).
 //!
 //! Start-up (komponist-ipc `control` docs): send `Hello`, receive the memfd and map it, then serve
 //! control messages until `Shutdown` or until the app closes the socket. Everything except block
@@ -6,7 +7,10 @@
 //!
 //! - **Main loop:** on Linux one `poll()` (`event_loop::EventLoop`) over the control socket, the
 //!   notification eventfd ([`BridgeNotify`]), the plugin's fds and timers; on macOS the main
-//!   thread's CFRunLoop (`cf_loop::CfEventLoop`) with all of them as common-mode sources. Each tick
+//!   thread's CFRunLoop (`cf_loop::CfEventLoop`) with all of them as common-mode sources; on Windows
+//!   the main thread's message pump (`win_loop::WinEventLoop`), woken by a relay thread that waits
+//!   for the control reader thread's event (`win_loop::ControlReader`), the notification event and
+//!   a high-resolution timer and posts to a window of the main thread, without plugin fds. Each tick
 //!   dispatches plugin fds and timers, handles notifications, reads control messages and forwards
 //!   queued log lines and parameter values. Only this thread sends on the control channel.
 //! - **Watchdog:** `Ping` is answered with `Pong` from this loop, in every state, between two
@@ -24,29 +28,32 @@
 //!   `ParamValues` with the plugin's text, coalesced to at most one message per
 //!   [`VALUES_INTERVAL`]. GUI edits during processing travel through the shared output ring.
 //! - **Plugin GUI:** on Linux the plugin attaches to the app's X11 child window (`OpenGui` with
-//!   `GuiTarget::X11Child`); on macOS the bridge opens a frame window of its own
-//!   (`GuiTarget::OwnFrame`, the `frame` module, #52), run from the outer loop of [`Bridge::run`].
+//!   `GuiTarget::X11Child`); on macOS (#52) and Windows (port W6) the bridge opens a
+//!   frame window of its own (`GuiTarget::OwnFrame`, the `frame` module), run from the outer loop of
+//!   [`Bridge::run`].
 //! - **Shutdown** (spike WP-15 §4): close the GUI → stop the RT thread and deactivate → destroy
 //!   and unload the plugin → `_exit(0)` (the caller, `crate::run`).
 
-#[cfg(target_os = "macos")]
+#[cfg(bridge_frame)]
 #[path = "frame/mod.rs"]
 mod frame;
 
-#[cfg(target_os = "macos")]
+#[cfg(bridge_frame)]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
+use komponist_hosting::FdEvents;
+#[cfg(x11_embed)]
 use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
-    ActivateConfig, FdEvents, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode,
-    TimerId,
+    ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode, TimerId,
 };
 use komponist_ipc::control::PROTOCOL_VERSION;
 use komponist_ipc::shm::MAX_BLOCK;
@@ -54,15 +61,17 @@ use komponist_ipc::{
     BridgeChannel, BridgeMsg, BridgeServer, BridgeState, ChannelError, ControlMsg, ErrorContext,
     GuiTarget, LoadedInfo, LogLevel, ParamValue, ShmRegion, WireEvent, WireEventKind,
 };
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use rustix::event::{PollFd, PollFlags};
 
 #[cfg(target_os = "macos")]
 use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, LOG_PENDING};
 use crate::rt::{Fallback, RtConfig, RtThread, StartReport};
+#[cfg(windows)]
+use crate::win_loop::{ControlReader, WinEventLoop as EventLoop};
 use crate::{exit, sched};
 
 /// Every `Log` line about the RT thread's scheduling starts with this, so the app can tell it
@@ -73,7 +82,8 @@ pub const RT_LOG_PREFIX: &str = "RT priority:";
 pub const VALUES_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Longest `poll()` when nothing is scheduled; the control socket and the eventfd wake it earlier.
-#[cfg(not(target_os = "macos"))]
+/// (Windows: the relay's idle wait, `win_loop`.)
+#[cfg(target_os = "linux")]
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 
 /// Control messages handled per tick before plugin fds and timers get their turn again.
@@ -82,40 +92,31 @@ const MESSAGES_PER_TICK: usize = 64;
 /// Options of instance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
-    /// Inherited fd of the bridge end of the control socket.
+    /// Inherited fd of the bridge end of the control socket (Windows: the pipe is stdin).
+    #[cfg(unix)]
     pub control_fd: RawFd,
-    /// `SCHED_FIFO` priority of the RT thread.
+    /// `SCHED_FIFO` priority of the RT thread (Linux).
     pub rt_priority: i32,
 }
 
 /// Runs instance mode until shutdown; the process exit code ([`crate::exit`]).
 pub fn run(options: Options) -> u8 {
-    // SAFETY: only asks the kernel whether the number is an open fd; nothing is closed or kept.
-    let open = rustix::io::fcntl_getfd(unsafe { BorrowedFd::borrow_raw(options.control_fd) });
-    if let Err(e) = open {
-        eprintln!("komponist-bridge: control fd {}: {e}", options.control_fd);
-        return exit::FAILURE;
-    }
-    // SAFETY: the app made this inherited, open fd ours (`--control-fd`); nothing else in this
-    // process owns it. A wrong kind of fd fails at the first send below.
-    let fd = unsafe { OwnedFd::from_raw_fd(options.control_fd) };
-    // Plugins may spawn helper processes; they must not inherit the socket, or a dead bridge would
-    // never close it for the app.
-    let _ = rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC);
-    let channel = BridgeChannel::from_fd(fd);
+    let channel = match open_channel(&options) {
+        Ok(channel) => channel,
+        Err(message) => {
+            eprintln!("komponist-bridge: {message}");
+            return exit::FAILURE;
+        }
+    };
     let hello = BridgeMsg::Hello {
         protocol: PROTOCOL_VERSION,
         pid: std::process::id(),
     };
     if let Err(e) = channel.send(&hello) {
-        eprintln!("komponist-bridge: control fd {}: {e}", options.control_fd);
+        eprintln!("komponist-bridge: control channel: {e}");
         return exit::FAILURE;
     }
-    let region = match channel
-        .recv_fd()
-        .map_err(|e| e.to_string())
-        .and_then(|fd| ShmRegion::open(fd).map_err(|e| e.to_string()))
-    {
+    let region = match receive_region(&channel) {
         Ok(region) => Arc::new(region),
         Err(message) => {
             let _ = channel.send(&BridgeMsg::Error {
@@ -136,6 +137,49 @@ pub fn run(options: Options) -> u8 {
     }
 }
 
+/// The bridge end of the control socket: the inherited fd of `--control-fd`.
+#[cfg(unix)]
+fn open_channel(options: &Options) -> Result<BridgeChannel, String> {
+    // SAFETY: only asks the kernel whether the number is an open fd; nothing is closed or kept.
+    let open = rustix::io::fcntl_getfd(unsafe { BorrowedFd::borrow_raw(options.control_fd) });
+    if let Err(e) = open {
+        return Err(format!("control fd {}: {e}", options.control_fd));
+    }
+    // SAFETY: the app made this inherited, open fd ours (`--control-fd`); nothing else in this
+    // process owns it. A wrong kind of fd fails at the first send.
+    let fd = unsafe { OwnedFd::from_raw_fd(options.control_fd) };
+    // Plugins may spawn helper processes; they must not inherit the socket, or a dead bridge would
+    // never close it for the app.
+    let _ = rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC);
+    Ok(BridgeChannel::from_fd(fd))
+}
+
+/// Windows: the bridge end of the control pipe is stdin; stdin then points at `NUL`
+/// (`crate::win_stdio`). A stdin that is no pipe is refused; one that is no overlapped pipe fails
+/// at the first send.
+#[cfg(windows)]
+fn open_channel(_options: &Options) -> Result<BridgeChannel, String> {
+    crate::win_stdio::take_control_pipe()
+        .map(BridgeChannel::from_handle)
+        .map_err(|e| format!("control pipe (stdin): {e}"))
+}
+
+/// The shared memory the app sends right after `Hello`: the memfd (Linux) or POSIX shm fd (macOS).
+#[cfg(unix)]
+fn receive_region(channel: &BridgeChannel) -> Result<ShmRegion, String> {
+    let fd = channel.recv_fd().map_err(|e| e.to_string())?;
+    ShmRegion::open(fd).map_err(|e| e.to_string())
+}
+
+/// Windows: the section and its two events, duplicated into this process by the app.
+#[cfg(windows)]
+fn receive_region(channel: &BridgeChannel) -> Result<ShmRegion, String> {
+    // SAFETY: the peer is the app that started this bridge and duplicated these handles for it
+    // (`Channel::send_region`).
+    let handles = unsafe { channel.recv_region() }.map_err(|e| e.to_string())?;
+    ShmRegion::open(handles).map_err(|e| e.to_string())
+}
+
 /// The processing state while active.
 struct Active {
     rt: RtThread,
@@ -147,8 +191,12 @@ struct Bridge {
     // Drop order: the plugin (and with it the RT thread's processor) before the loop it uses.
     active: Option<Active>,
     plugin: Option<Box<dyn HostedPlugin>>,
-    /// Shared with the frame window (macOS), which reports its keys and header clicks itself.
-    channel: Rc<BridgeChannel>,
+    /// Shared with the frame window (macOS, Windows), which reports its keys and header clicks itself, and
+    /// with the control reader thread (Windows).
+    channel: Arc<BridgeChannel>,
+    /// Windows: the thread that reads the control pipe and queues its messages.
+    #[cfg(windows)]
+    control: ControlReader,
     region: Arc<ShmRegion>,
     event_loop: Rc<EventLoop>,
     notify: Arc<BridgeNotify>,
@@ -161,8 +209,8 @@ struct Bridge {
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
     shutdown: bool,
-    /// The plugin frame window this bridge owns (macOS, #52).
-    #[cfg(target_os = "macos")]
+    /// The plugin frame window this bridge owns (macOS #52, Windows W6).
+    #[cfg(bridge_frame)]
     frame: frame::Slot,
 }
 
@@ -172,12 +220,20 @@ impl Bridge {
         region: Arc<ShmRegion>,
         rt_priority: i32,
     ) -> std::io::Result<Bridge> {
+        let channel = Arc::new(channel);
+        #[cfg(windows)]
+        let control = ControlReader::start(channel.clone())?;
         Ok(Bridge {
+            #[cfg(windows)]
+            control,
             active: None,
             plugin: None,
-            channel: Rc::new(channel),
+            channel,
             region,
+            #[cfg(unix)]
             event_loop: EventLoop::new(),
+            #[cfg(windows)]
+            event_loop: EventLoop::new()?,
             notify: Arc::new(BridgeNotify::new()?),
             rt_priority,
             rt_reported: None,
@@ -185,14 +241,14 @@ impl Bridge {
             values_due: None,
             values_sent: None,
             shutdown: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             frame: frame::Slot::default(),
         })
     }
 
     /// The main loop (Linux): one `poll()` per tick; returns after `Shutdown` or when the app is
     /// gone.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn run(mut self) -> u8 {
         while !self.shutdown {
             let now = Instant::now();
@@ -212,6 +268,92 @@ impl Bridge {
         }
         self.close();
         exit::SUCCESS
+    }
+
+    /// The main loop (Windows, ports W5 and W6): the main thread pumps window messages
+    /// (`WinEventLoop::run`), and the relay thread of `win_loop` wakes it for the control reader's
+    /// event, the notification event and the next deadline with a message to its wake window,
+    /// whose procedure calls [`Bridge::drain_ready`] (outside every borrow of the loop; a busy
+    /// bridge is retried). Returns after `Shutdown` or when the app is gone.
+    ///
+    /// **The plugin frame (W6):** as on macOS, `OpenGui` records a frame request and stops the
+    /// pump; this loop then runs `eframe::run_native` (run-and-return, `frame::run`) right here,
+    /// outside every borrow of the bridge, and pumps again when the frame has closed. eframe's
+    /// (winit's) message loop dispatches the wake messages too, so control messages, plugin timers
+    /// and notifications keep being served while the frame is open, during the user's drags and
+    /// inside a plugin's modal dialog loop; protocol work never runs from egui's `ui()`.
+    #[cfg(windows)]
+    fn run(self) -> u8 {
+        let event_loop = self.event_loop.clone();
+        // Before the first window of the process (the relay's wake window).
+        crate::win_loop::per_monitor_dpi();
+        if let Err(e) = event_loop.start_relay(&[self.control.event(), self.notify.wake_handle()]) {
+            eprintln!("komponist-bridge: wake relay: {e}");
+            return exit::FAILURE;
+        }
+        let bridge = Rc::new(RefCell::new(self));
+        let weak = Rc::downgrade(&bridge);
+        event_loop.set_dispatch(Some(Rc::new(move || {
+            let Some(bridge) = weak.upgrade() else {
+                return true;
+            };
+            let Ok(mut bridge) = bridge.try_borrow_mut() else {
+                return false;
+            };
+            bridge.drain_ready();
+            true
+        })));
+        while !bridge.borrow().shutdown {
+            let request = bridge.borrow_mut().frame.request.take();
+            match request {
+                Some(request) => frame::run(&bridge, request),
+                None => event_loop.run(),
+            }
+        }
+        event_loop.set_dispatch(None);
+        bridge.borrow_mut().close();
+        exit::SUCCESS
+    }
+
+    /// One wake of the relay (Windows): due timers, notifications, control messages, then the
+    /// next deadline for the relay.
+    #[cfg(windows)]
+    fn drain_ready(&mut self) {
+        let timers = self.event_loop.take_due();
+        // Always look at the control queue: it is cheap, and the event says no more than that.
+        self.dispatch(timers, true);
+        if self.shutdown {
+            // An open frame closes first: its event loop runs inside the outer loop.
+            frame::close(self, true);
+            self.event_loop.stop();
+        }
+        self.rearm();
+    }
+
+    /// Arms the relay for the next deadline: a plugin timer, `ParamValues`, the frame's debounced
+    /// work (Windows).
+    #[cfg(windows)]
+    fn rearm(&mut self) {
+        let due = [
+            self.event_loop.next_timer(),
+            self.values_due,
+            frame::deadline(self),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        self.event_loop.rearm(due);
+    }
+
+    /// The frame changed its debounced work (a drag, a move, a new scale): macOS lets the bridge
+    /// handle what queued and re-arm its timer ([`Bridge::drain_ready`]); Windows only re-arms the
+    /// relay (the frame calls this from eframe's `logic()`, where no control message is handled).
+    #[cfg(bridge_frame)]
+    fn reschedule(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.drain_ready();
+        #[cfg(windows)]
+        self.rearm();
     }
 
     /// The main loop (macOS): the thread's CFRunLoop ([`EventLoop`] is `CfEventLoop`) with the
@@ -287,8 +429,14 @@ impl Bridge {
     /// One tick: ready plugin fds and due timers (each only while still registered), plugin
     /// notifications, control messages (if the socket is readable), queued log lines, and the
     /// coalesced `ParamValues` when due.
-    fn dispatch(&mut self, fds: Vec<(RawFd, FdEvents)>, timers: Vec<TimerId>, control: bool) {
+    fn dispatch(
+        &mut self,
+        #[cfg(unix)] fds: Vec<(RawFd, FdEvents)>,
+        timers: Vec<TimerId>,
+        control: bool,
+    ) {
         if let Some(plugin) = self.plugin.as_mut() {
+            #[cfg(unix)]
             for (fd, events) in fds {
                 if self.event_loop.fd_registered(fd) {
                     plugin.on_fd(fd, events);
@@ -306,7 +454,7 @@ impl Bridge {
         }
         self.forward_logs();
         self.send_values_if_due();
-        #[cfg(target_os = "macos")]
+        #[cfg(bridge_frame)]
         frame::tick(self);
     }
 
@@ -473,11 +621,12 @@ impl Bridge {
         if pending & bits::GUI_RESIZE_REQUESTED != 0
             && let Some(size) = gui_size
         {
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             if frame::owns_gui(self) {
                 frame::plugin_resized(self, size);
             }
-            #[cfg(not(target_os = "macos"))]
+            // The app owns the frame (Linux).
+            #[cfg(not(bridge_frame))]
             self.send(BridgeMsg::GuiSizeRequest(size));
         }
         if pending & bits::GUI_CLOSED != 0 {
@@ -516,12 +665,19 @@ impl Bridge {
     // Control messages
     // --------------------------------------------------------------------------------------------
 
+    /// Handles up to [`MESSAGES_PER_TICK`] control messages: read from the socket (Unix), or taken
+    /// from the reader thread's queue (Windows; what is left keeps its event set, so the next
+    /// wait returns at once).
     fn read_control(&mut self) {
         for _ in 0..MESSAGES_PER_TICK {
             if self.shutdown {
                 return;
             }
-            match self.channel.try_recv() {
+            #[cfg(unix)]
+            let received = self.channel.try_recv();
+            #[cfg(windows)]
+            let received = self.control.try_next().transpose();
+            match received {
                 Ok(Some(msg)) => self.handle(msg),
                 Ok(None) => return,
                 Err(ChannelError::Codec(message)) => {
@@ -595,7 +751,7 @@ impl Bridge {
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
             ControlMsg::SetGuiSize(size) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(bridge_frame)]
                 if frame::owns_gui(self) {
                     return frame::set_body_size(self, size);
                 }
@@ -611,13 +767,13 @@ impl Bridge {
             }
             ControlMsg::CloseGui => self.close_gui(),
             // The own frame's messages; there is none on Linux.
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             ControlMsg::HeaderState { header, lang } => frame::set_header(self, header, &lang),
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             ControlMsg::ActivateFrame => frame::activate(self),
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             ControlMsg::RaiseFrame => frame::raise(self),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(bridge_frame))]
             ControlMsg::HeaderState { .. } | ControlMsg::ActivateFrame | ControlMsg::RaiseFrame => {
             }
             ControlMsg::SetRenderMode(mode) => self.set_render_mode(mode),
@@ -626,8 +782,8 @@ impl Bridge {
         }
     }
 
-    /// `OpenGui`: into the app's X11 child (Linux) or the bridge's own frame (macOS). Answer:
-    /// `GuiOpened` (for the own frame once the plugin is attached) or `Error`.
+    /// `OpenGui`: into the app's X11 child (Linux) or the bridge's own frame (macOS, Windows).
+    /// Answer: `GuiOpened` (for the own frame once the plugin is attached) or `Error`.
     fn open_gui(&mut self, target: GuiTarget) {
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::Gui, "no plugin loaded");
@@ -636,7 +792,7 @@ impl Bridge {
             return self.error(ErrorContext::Gui, "the plugin has no embeddable GUI");
         }
         match target {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(x11_embed)]
             GuiTarget::X11Child { xid, scale } => {
                 match plugin.gui_open(GuiParent::X11 { xid, scale }) {
                     Ok(info) => self.send(BridgeMsg::GuiOpened {
@@ -646,7 +802,7 @@ impl Bridge {
                     Err(e) => self.error(ErrorContext::Gui, e.to_string()),
                 }
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(bridge_frame)]
             GuiTarget::OwnFrame { header, lang, rect } => {
                 if let Err(message) = frame::request(self, header, &lang, rect) {
                     self.error(ErrorContext::Gui, message);
@@ -659,7 +815,7 @@ impl Bridge {
     /// `CloseGui`, or the plugin closed its GUI: closes it (and the own frame) and answers
     /// `GuiClosed`.
     fn close_gui(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(bridge_frame)]
         if frame::owns_gui(self) {
             return frame::close(self, false);
         }
@@ -888,7 +1044,7 @@ impl Bridge {
 
     /// Shutdown order: GUI, RT thread and deactivation, then destroy and unload.
     fn close(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(bridge_frame)]
         frame::close(self, true);
         if let Some(plugin) = self.plugin.as_mut() {
             plugin.gui_close();

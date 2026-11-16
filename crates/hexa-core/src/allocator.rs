@@ -167,9 +167,9 @@ impl Allocator {
     /// Releases all sustained voices (pedal up) and returns them as a bit mask.
     pub(crate) fn release_sustained(&mut self) -> u32 {
         let mut released = 0;
-        for v in 0..MAX_VOICES {
-            if self.sustained[v] {
-                self.sustained[v] = false;
+        for (v, sustained) in self.sustained.iter_mut().enumerate() {
+            if *sustained {
+                *sustained = false;
                 released |= 1 << v;
             }
         }

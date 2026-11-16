@@ -15,10 +15,11 @@
 //!   menu.
 //! - ↑ ↓ and the mouse wheel: one step, with Shift fine ([`step_delta`]).
 //!
-//! Dragging up increases the value. While dragging, the pointer is hidden and confined to the
-//! window ([`grab_pointer`] / [`release_pointer`]). Knobs and number fields are driven by raw
-//! mouse motion ([`pointer_delta`]), so the value keeps following when the cursor would hit the
-//! screen edge; faders follow the pointer position instead.
+//! Dragging up increases the value. While dragging, the pointer is hidden and held
+//! ([`grab_pointer`], [`grab_pointer_absolute`] for faders, [`release_pointer`]; confined to the
+//! window on Linux and macOS, locked in place on Windows). Knobs and number fields are driven by
+//! raw mouse motion ([`pointer_delta`]), so the value keeps following when the cursor would hit
+//! the screen edge; faders follow the pointer position instead.
 //!
 //! The numbers in this module are interaction rules of the design system (`ix.number`,
 //! `ix.knob`, HANDOFF §5), not visual tokens.
@@ -246,14 +247,39 @@ impl ClickAction {
     }
 }
 
-/// Hides the pointer and confines it to the window for a drag gesture. X11 cannot lock the
-/// pointer in place, so it is confined; [`pointer_delta`] keeps delivering movement at the edges.
+/// Hides the pointer and holds it for a relative drag gesture (knob, number field, graph handle),
+/// which reads [`pointer_delta`].
+///
+/// - Linux, macOS: confined to the window (X11 cannot lock the pointer in place); the raw motion
+///   keeps coming at the edges.
+/// - Windows: locked where it was pressed. winit clips a hidden, *confined* pointer to the centre
+///   of the window (so it cannot trigger the taskbar), and it stayed there after the drag; a
+///   *locked* one is clipped to its own position, so it reappears where the gesture started.
 pub fn grab_pointer(ctx: &Context) {
-    ctx.send_viewport_cmd(ViewportCommand::CursorGrab(CursorGrab::Confined));
+    let grab = if cfg!(windows) {
+        CursorGrab::Locked
+    } else {
+        CursorGrab::Confined
+    };
+    ctx.send_viewport_cmd(ViewportCommand::CursorGrab(grab));
     ctx.send_viewport_cmd(ViewportCommand::CursorVisible(false));
 }
 
-/// Undoes [`grab_pointer`].
+/// Hides the pointer for an absolute drag gesture (fader: [`AbsoluteDrag`]), which follows the
+/// pointer position, so the pointer must keep moving.
+///
+/// - Linux, macOS: as [`grab_pointer`] (confined to the window).
+/// - Windows: hidden only, not grabbed: winit would pin a hidden, grabbed pointer to the window
+///   centre (see [`grab_pointer`]). The window holds the mouse capture while the button is down,
+///   so the drag still follows the pointer outside the window.
+pub fn grab_pointer_absolute(ctx: &Context) {
+    if !cfg!(windows) {
+        ctx.send_viewport_cmd(ViewportCommand::CursorGrab(CursorGrab::Confined));
+    }
+    ctx.send_viewport_cmd(ViewportCommand::CursorVisible(false));
+}
+
+/// Undoes [`grab_pointer`] and [`grab_pointer_absolute`].
 pub fn release_pointer(ctx: &Context) {
     ctx.send_viewport_cmd(ViewportCommand::CursorGrab(CursorGrab::None));
     ctx.send_viewport_cmd(ViewportCommand::CursorVisible(true));

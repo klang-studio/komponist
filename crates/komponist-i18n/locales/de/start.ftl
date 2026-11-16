@@ -45,6 +45,9 @@ start-version = { $version } · Linux · CLAP und VST3
 # Same on macOS; the platform is part of the line.
 start-version-mac = { $version } · macOS · CLAP und VST3
 
+# Same on Windows.
+start-version-windows = { $version } · Windows · CLAP und VST3
+
 # S09 recent row: tempo and track count; `$bpm` is "124", `$tracks` a count.
 start-meta = { $bpm } BPM · { $tracks ->
         [one] 1 Spur

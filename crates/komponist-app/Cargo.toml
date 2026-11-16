@@ -46,6 +46,11 @@ hound.workspace = true
 # render (ARCHITECTURE §6.1).
 assert_no_alloc.workspace = true
 
+[features]
+# ASIO on Windows (W8): forwards to komponist-audio (needs LLVM; the ASIO SDK comes from vendor/asio-sdk,
+# ARCHITECTURE §7). Off by default; scripts/package-windows.sh turns it on.
+asio = ["komponist-audio/asio"]
+
 [dev-dependencies]
 # Snapshot and interaction tests of the shell (`tests/`).
 komponist-ui = { workspace = true, features = ["snapshot"] }
@@ -73,3 +78,29 @@ x11rb.workspace = true
 # (X-Resource).
 winit.workspace = true
 x11rb = { workspace = true, features = ["xtest", "res"] }
+
+[target.'cfg(windows)'.build-dependencies]
+# Icon, version information and manifest of komponist.exe (`build.rs`, ARCHITECTURE §8.8).
+embed-resource.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Console attach for `--help` in the windows-subsystem build (`main.rs`); known folders and drives (`dirs.rs`).
+# The frame activation with the bridges (`windows::plugin_frame::activation`, port W6): the foreground
+# hook (Accessibility), the z-order and foreground calls (WindowsAndMessaging), the bridges among
+# the processes (ToolHelp, Threading).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Child-process checks of the app tests (`tests/common`): a Toolhelp snapshot of the bridges and
+# `GetExitCodeProcess` for "is it gone".
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

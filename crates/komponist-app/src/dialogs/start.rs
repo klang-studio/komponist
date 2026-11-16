@@ -72,7 +72,7 @@ pub struct SystemRow {
 /// Everything the start screen shows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
-    /// "0.1.0 · Linux · CLAP und VST3".
+    /// "0.1.0 · Linux · CLAP und VST3" ("· macOS ·", "· Windows ·").
     pub version: String,
     /// Shortcut of "Neues Projekt" ("Strg N").
     pub new_shortcut: String,
@@ -103,12 +103,18 @@ pub enum Output {
     Settings(SettingsSection),
 }
 
-/// The version line: "0.1.0 · Linux · CLAP und VST3", "0.1.0 · macOS · CLAP und VST3" on macOS.
+/// The version line: "0.1.0 · Linux · CLAP und VST3", "0.1.0 · macOS · CLAP und VST3" on macOS,
+/// "0.1.0 · Windows · CLAP und VST3" on Windows (which shortcuts like Linux, so [`Platform`] cannot
+/// tell them apart).
 pub fn version_line(t: Lang) -> String {
-    version_line_for(t, Platform::current())
+    if cfg!(windows) {
+        t.start_version_windows(env!("CARGO_PKG_VERSION"))
+    } else {
+        version_line_for(t, Platform::current())
+    }
 }
 
-/// [`version_line`] for a given platform.
+/// [`version_line`] for a given platform (Linux or macOS).
 pub fn version_line_for(t: Lang, platform: Platform) -> String {
     let version = env!("CARGO_PKG_VERSION");
     platform.pick(t.start_version(version), t.start_version_mac(version))
@@ -757,9 +763,15 @@ mod tests {
         assert!(pc(Lang::En).ends_with(" · Linux · CLAP and VST3"));
         assert!(mac(Lang::De).ends_with(" · macOS · CLAP und VST3"));
         assert!(mac(Lang::En).ends_with(" · macOS · CLAP and VST3"));
+        #[cfg(not(windows))]
         assert_eq!(
             version_line(Lang::De),
             Platform::current().pick(pc(Lang::De), mac(Lang::De))
         );
+        #[cfg(windows)]
+        {
+            assert!(version_line(Lang::De).ends_with(" · Windows · CLAP und VST3"));
+            assert!(version_line(Lang::En).ends_with(" · Windows · CLAP and VST3"));
+        }
     }
 }

@@ -217,7 +217,11 @@ fn the_recent_list_shows_english_dates_and_a_missing_file() {
         system: Vec::new(),
         message: None,
     };
-    let platform = Platform::current().pick("Linux", "macOS");
+    let platform = if cfg!(windows) {
+        "Windows"
+    } else {
+        Platform::current().pick("Linux", "macOS")
+    };
     assert!(
         model
             .version
@@ -284,6 +288,7 @@ fn the_midi_rows_and_the_scan_summary_are_english() {
         enabled,
         connected,
         active: false,
+        busy: false,
     };
     assert_eq!(row(false, true).info(Lang::En), "off");
     assert_eq!(row(true, true).info(Lang::En), "active · channels 1–16");

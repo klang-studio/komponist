@@ -1,6 +1,8 @@
 //! Audio and MIDI I/O of komponist.
 //!
-//! cpal backends (CoreAudio on macOS; PipeWire, JACK, ALSA on Linux) and a null backend for tests and "Kein Audio-Gerät", the
+//! cpal backends (CoreAudio on macOS; WASAPI, and ASIO with the feature `asio`, on Windows; PipeWire,
+//! JACK, ALSA on Linux) and a null
+//! backend for tests and "Kein Audio-Gerät", the
 //! stream lifecycle with an engine handoff that survives a stream rebuild, midir MIDI inputs with
 //! timestamps, and CPU load and xrun statistics.
 //!
@@ -14,10 +16,14 @@
 //!   [`AudioState`], [`StreamStats`].
 //! - [`slot`]: [`EngineSlot`], the engine handoff between streams.
 //! - [`midi`]: [`MidiInputHub`], [`MidiStamped`], [`MidiPortId`].
+//! - `asio_registry` (Windows): whether an ASIO driver is registered (`HKLM\SOFTWARE\ASIO`, read-only); ASIO is
+//!   an available host only then.
 //!
 //! Threads: `AudioSystem` and `MidiInputHub` live on the UI thread; `EngineSlot::process` and
 //! `AudioProcess::process` run on the audio thread; midir callbacks on MIDI threads.
 
+#[cfg(windows)]
+mod asio_registry;
 mod backend;
 pub mod midi;
 pub mod process;

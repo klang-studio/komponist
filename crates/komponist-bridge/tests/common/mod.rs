@@ -7,8 +7,12 @@
 
 #![allow(dead_code)]
 
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::io::AsHandle;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -21,6 +25,7 @@ use komponist_ipc::{
     ControlMsg, LoadedInfo, LogLevel, PluginFormat, ProcessExit, ProcessWatcher, ShmRegion,
     WireEvent, WireEventKind, WireTransport,
 };
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 
 /// The binary under test.
@@ -75,10 +80,12 @@ pub fn fixture_in(format: &str, name: &str) -> Option<PathBuf> {
     }
 }
 
-/// An installed bundle (`~/` expanded), or `None` with a note if it is not installed.
+/// An installed bundle (`~/` expanded: `$HOME`, on Windows `%USERPROFILE%`), or `None` with a
+/// note if it is not installed.
 pub fn installed(path: &str) -> Option<PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
     let path = match path.strip_prefix("~/") {
-        Some(rest) => Path::new(&std::env::var("HOME").ok()?).join(rest),
+        Some(rest) => Path::new(&home?).join(rest),
         None => PathBuf::from(path),
     };
     if path.exists() {
@@ -151,6 +158,80 @@ pub struct SpawnOptions {
     pub rtprio_limit: Option<u64>,
 }
 
+/// Starts the bridge process with the bridge end of a fresh control channel: an inherited fd
+/// (`--control-fd`) on Unix, its stdin on Windows (the plugin manager's way, komponist-ipc
+/// `socket_pair`).
+#[cfg(unix)]
+fn spawn_process(options: &SpawnOptions) -> (AppChannel, ProcessWatcher) {
+    let (channel, bridge_fd) = socket_pair().unwrap();
+    let raw = bridge_fd.as_raw_fd();
+    let mut command = Command::new(BRIDGE);
+    command
+        .args(["--instance", "--control-fd", &raw.to_string()])
+        .args(&options.args)
+        .stdout(Stdio::null());
+    for (key, value) in &options.env {
+        command.env(key, value);
+    }
+    let rtprio = options.rtprio_limit;
+    // SAFETY: runs between fork and exec and only makes async-signal-safe syscalls.
+    unsafe {
+        command.pre_exec(move || {
+            let limit = |n| rustix::process::Rlimit {
+                current: Some(n),
+                maximum: Some(n),
+            };
+            rustix::process::setrlimit(rustix::process::Resource::Core, limit(0))?;
+            // RLIMIT_RTPRIO is Linux only; macOS has no equivalent to limit.
+            #[cfg(target_os = "linux")]
+            if let Some(n) = rtprio {
+                rustix::process::setrlimit(rustix::process::Resource::Rtprio, limit(n))?;
+            }
+            #[cfg(target_os = "macos")]
+            let _ = rtprio;
+            // Let the bridge end of the socket survive exec.
+            let fd = BorrowedFd::borrow_raw(raw);
+            rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::empty())?;
+            Ok(())
+        });
+    }
+    let child = command.spawn().expect("spawn komponist-bridge");
+    let watcher = ProcessWatcher::new(child.id()).expect("pidfd");
+    // The watcher reaps the child; our copy of the bridge end must go, or a dead bridge would
+    // never close the socket.
+    drop(child);
+    drop(bridge_fd);
+    (channel, watcher)
+}
+
+#[cfg(windows)]
+fn spawn_process(options: &SpawnOptions) -> (AppChannel, ProcessWatcher) {
+    let (channel, bridge_end) = socket_pair().unwrap();
+    let mut command = Command::new(BRIDGE);
+    command
+        .arg("--instance")
+        .args(&options.args)
+        .stdin(Stdio::from(bridge_end))
+        .stdout(Stdio::null());
+    for (key, value) in &options.env {
+        command.env(key, value);
+    }
+    // No RLIMIT_RTPRIO on Windows (MMCSS needs no privilege).
+    let _ = options.rtprio_limit;
+    let child = command.spawn().expect("spawn komponist-bridge");
+    let watcher = ProcessWatcher::new(child.id()).expect("process handle");
+    // The `Command` holds the bridge end of the pipe: it must go, or a dead bridge would never
+    // close the pipe.
+    drop(child);
+    drop(command);
+    (channel, watcher)
+}
+
+/// How a test waits for the next control message on Windows, where a pipe cannot be waited on
+/// for "readable": a short sleep between two `try_recv`s.
+#[cfg(windows)]
+const RECV_POLL: Duration = Duration::from_micros(500);
+
 /// A running bridge and the app's ends of it.
 pub struct Bridge {
     pub channel: AppChannel,
@@ -174,47 +255,10 @@ impl Bridge {
         Bridge::spawn_with(SpawnOptions::default())
     }
 
-    /// Spawns the binary and runs the start-up protocol up to the memfd: `Hello`, memfd.
+    /// Spawns the binary and runs the start-up protocol up to the shared memory: `Hello`, memfd
+    /// (Windows: the section and its events, duplicated into the bridge).
     pub fn spawn_with(options: SpawnOptions) -> Bridge {
-        let (channel, bridge_fd) = socket_pair().unwrap();
-        let raw = bridge_fd.as_raw_fd();
-        let mut command = Command::new(BRIDGE);
-        command
-            .args(["--instance", "--control-fd", &raw.to_string()])
-            .args(&options.args)
-            .stdout(Stdio::null());
-        for (key, value) in &options.env {
-            command.env(key, value);
-        }
-        let rtprio = options.rtprio_limit;
-        // SAFETY: runs between fork and exec and only makes async-signal-safe syscalls.
-        unsafe {
-            command.pre_exec(move || {
-                let limit = |n| rustix::process::Rlimit {
-                    current: Some(n),
-                    maximum: Some(n),
-                };
-                rustix::process::setrlimit(rustix::process::Resource::Core, limit(0))?;
-                // RLIMIT_RTPRIO is Linux only; macOS has no equivalent to limit.
-                #[cfg(target_os = "linux")]
-                if let Some(n) = rtprio {
-                    rustix::process::setrlimit(rustix::process::Resource::Rtprio, limit(n))?;
-                }
-                #[cfg(not(target_os = "linux"))]
-                let _ = rtprio;
-                // Let the bridge end of the socket survive exec.
-                let fd = BorrowedFd::borrow_raw(raw);
-                rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::empty())?;
-                Ok(())
-            });
-        }
-        let child = command.spawn().expect("spawn komponist-bridge");
-        let watcher = ProcessWatcher::new(child.id()).expect("pidfd");
-        // The watcher reaps the child; our copy of the bridge end must go, or a dead bridge would
-        // never close the socket.
-        drop(child);
-        drop(bridge_fd);
-
+        let (channel, watcher) = spawn_process(&options);
         match channel.recv().expect("Hello") {
             BridgeMsg::Hello { protocol, pid } => {
                 assert_eq!(protocol, PROTOCOL_VERSION);
@@ -223,7 +267,10 @@ impl Bridge {
             other => panic!("expected Hello, got {other:?}"),
         }
         let region = Arc::new(ShmRegion::create().unwrap());
+        #[cfg(unix)]
         channel.send_fd(region.fd()).unwrap();
+        #[cfg(windows)]
+        channel.send_region(&region, watcher.as_handle()).unwrap();
         Bridge {
             channel,
             watcher,
@@ -262,15 +309,21 @@ impl Bridge {
             if left.is_zero() {
                 return None;
             }
+            #[cfg(windows)]
+            std::thread::sleep(left.min(RECV_POLL));
+            #[cfg(unix)]
             let ts = Timespec {
                 tv_sec: left.as_secs() as i64,
                 tv_nsec: i64::from(left.subsec_nanos()),
             };
-            let mut fds = [PollFd::from_borrowed_fd(
-                self.channel.as_fd(),
-                PollFlags::IN,
-            )];
-            let _ = rustix::event::poll(&mut fds, Some(&ts));
+            #[cfg(unix)]
+            {
+                let mut fds = [PollFd::from_borrowed_fd(
+                    self.channel.as_fd(),
+                    PollFlags::IN,
+                )];
+                let _ = rustix::event::poll(&mut fds, Some(&ts));
+            }
         }
     }
 
@@ -476,6 +529,18 @@ impl Bridge {
         self.wait_exit()
     }
 
+    /// Closes the app's end of the control channel, as if the app died.
+    pub fn close_channel(&mut self) {
+        #[cfg(unix)]
+        rustix::net::shutdown(&self.channel, rustix::net::Shutdown::Both).unwrap();
+        // Windows: a pipe has no half-close; replacing the end drops (closes) it.
+        #[cfg(windows)]
+        drop(std::mem::replace(
+            &mut self.channel,
+            socket_pair().unwrap().0,
+        ));
+    }
+
     pub fn wait_exit(&mut self) -> ProcessExit {
         self.watcher
             .wait_exit(Some(Duration::from_secs(10)))
@@ -491,6 +556,13 @@ impl Drop for Bridge {
         let _ = self.watcher.wait_exit(Some(Duration::from_secs(5)));
     }
 }
+
+/// How a null-pointer write ends a bridge: SIGSEGV, or on Windows the access violation
+/// `0xC000_0005` (komponist-ipc reports an NTSTATUS crash as the signal).
+#[cfg(unix)]
+pub const SEGV: i32 = 11;
+#[cfg(windows)]
+pub const SEGV: i32 = 0xC000_0005_u32 as i32;
 
 /// A clean exit.
 pub const EXIT_OK: ProcessExit = ProcessExit {

@@ -101,7 +101,7 @@ fn crash_keeps_the_track_running_and_reload_restores_the_state() {
     rig.manager.set_param(DeviceId(11), crash_param, 1.0);
     let crashed = DeviceStatus::Crashed(FailReason::Exited {
         code: None,
-        signal: Some(11),
+        signal: Some(SEGV),
     });
     rig.wait_status(11, crashed.clone());
     assert!(rig.events.contains(&PluginManagerEvent::StatusChanged {
@@ -154,7 +154,7 @@ fn note_crash_in_one_track_leaves_the_other_playing() {
         20,
         DeviceStatus::Crashed(FailReason::Exited {
             code: None,
-            signal: Some(11),
+            signal: Some(SEGV),
         }),
     );
     run_until(&mut rig, "ProcessorFailed", |rig| rig.failed(20));
@@ -414,8 +414,12 @@ fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
 }
 
 /// Whether process `pid` exists (a zombie counts: it is not reaped yet). macOS has no `/proc`: `kill -0`.
+/// Windows: the process can be opened and has no exit code yet.
 fn alive(pid: u32) -> bool {
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        komponist_ipc::ProcessWatcher::new(pid)
+            .is_ok_and(|mut w| w.try_exit().is_ok_and(|exit| exit.is_none()))
+    } else if cfg!(target_os = "linux") {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     } else {
         std::process::Command::new("kill")
@@ -430,6 +434,7 @@ fn alive(pid: u32) -> bool {
 /// from outside ends a bridge and reads "Abgestürzt". SIGSEGV from `kill` does not: Rust's std
 /// handler for stack overflows sees no guard-page fault, restores the default action and returns,
 /// and as nothing faults again the bridge runs on (owner test of #52, 2026-11-16).
+#[cfg(unix)]
 #[test]
 fn a_bridge_killed_by_sigabrt_is_crashed_and_kill_sigsegv_is_survived() {
     let dir = scratch("sigabrt");
@@ -459,6 +464,80 @@ fn a_bridge_killed_by_sigabrt_is_crashed_and_kill_sigsegv_is_survived() {
     );
 }
 
+/// Windows: a bridge another process ends with an exception code (what a crash or `abort` looks
+/// like from outside) reads "Abgestürzt" with that code, and reloads.
+#[cfg(windows)]
+#[test]
+fn a_bridge_terminated_with_an_exception_code_is_crashed() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    /// `STATUS_STACK_BUFFER_OVERRUN`, the code of a fast fail (`abort` in a plugin).
+    const FAST_FAIL: u32 = 0xC000_0409;
+    let dir = scratch("terminated");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let pid = rig.manager.bridge_pid(DeviceId(10)).unwrap();
+    // SAFETY: a fresh handle with the right to terminate, closed again.
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        assert!(!process.is_null());
+        assert_ne!(TerminateProcess(process, FAST_FAIL), 0);
+        CloseHandle(process);
+    }
+    rig.wait_status(
+        10,
+        DeviceStatus::Crashed(FailReason::Exited {
+            code: None,
+            signal: Some(FAST_FAIL as i32),
+        }),
+    );
+    run_until(&mut rig, "ProcessorFailed", |rig| rig.failed(10));
+    rig.reload(10);
+    rig.wait_status(10, DeviceStatus::Ok);
+}
+
+/// Stops every thread of process `pid` (`SIGSTOP`; Windows: attaching as a debugger, which
+/// suspends the process until the debugger continues it, and this test never does).
+fn stop_process(pid: u32) {
+    #[cfg(unix)]
+    {
+        let raw = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        rustix::process::kill_process(raw, rustix::process::Signal::STOP).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            DebugActiveProcess, DebugSetProcessKillOnExit,
+        };
+        // SAFETY: plain FFI calls; the stopped bridge is killed by the watchdog.
+        unsafe {
+            assert_ne!(
+                DebugActiveProcess(pid),
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            DebugSetProcessKillOnExit(1);
+        }
+    }
+}
+
+/// Lets a process stopped by [`stop_process`] go on, so a kill can complete (Windows: a debugged
+/// process exits only once its debugger has seen the exit; nothing to do after `SIGSTOP`).
+fn release_process(pid: u32) {
+    #[cfg(unix)]
+    let _ = pid;
+    // SAFETY: detaches the debugger this thread attached in `stop_process`.
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::DebugActiveProcessStop(pid);
+    }
+}
+
 #[test]
 fn watchdog_kills_a_hanging_bridge() {
     let dir = scratch("watchdog");
@@ -479,14 +558,14 @@ fn watchdog_kills_a_hanging_bridge() {
 
     // A stalled bridge (stopped) misses its Pong: "hängt", killed, the slot fails over.
     let pid = rig.manager.bridge_pid(DeviceId(10)).unwrap();
-    let raw = rustix::process::Pid::from_raw(pid as i32).unwrap();
-    rustix::process::kill_process(raw, rustix::process::Signal::STOP).unwrap();
+    stop_process(pid);
     let t0 = Instant::now();
     rig.wait_status(10, DeviceStatus::Crashed(FailReason::Unresponsive));
     let detected = t0.elapsed();
     eprintln!("watchdog: stalled bridge detected after {detected:.1?}");
     assert!(detected < Duration::from_secs(5));
     run_until(&mut rig, "ProcessorFailed", |rig| rig.failed(10));
+    release_process(pid);
     run_until(&mut rig, "the killed bridge reaped", |_| !alive(pid));
     rig.reload(10);
     rig.wait_status(10, DeviceStatus::Ok);

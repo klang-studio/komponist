@@ -54,7 +54,8 @@ block2 = "0.6.2"
 raw-window-handle = "0.6.2"
 
 # Audio and MIDI I/O.
-cpal = { version = "0.18.2", features = ["pipewire", "jack"] }
+# Backend features are per target, in crates/komponist-audio/Cargo.toml (pipewire, jack: Linux only).
+cpal = "0.18.2"
 midir = "0.11.1"
 
 # Plugin format layer (linked only by komponist-bridge via komponist-hosting; the komponist binary
@@ -69,6 +70,13 @@ rtrb = "0.4.1"
 # komponist-app: local calendar time (`localtime_r`) for "heute 09:12", "gestern", "12. Okt.".
 libc = "0.2.191"
 rustix = { version = "1.1.6", features = ["mm", "thread", "process", "net"] }
+# Windows port: the Win32 API (shared memory, events, pipes, processes, MMCSS, LoadLibrary). MIT OR
+# Apache-2.0; already in the tree through winit, cpal and others, so the lock file gains no new crate.
+# Each crate enables only the API features it uses, under `[target.'cfg(windows)'.dependencies]`.
+windows-sys = "0.61.2"
+# komponist-app build script (Windows hosts only): compiles the icon, version info and manifest resource with the
+# MSVC rc.exe. MIT.
+embed-resource = "3.0"
 x11rb = "0.14.0"
 
 # Text catalog generator (komponist-i18n build script): Project Fluent parser, Apache-2.0 OR MIT.

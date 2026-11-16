@@ -29,7 +29,7 @@
 //!    back to realtime, the engine's events are drained (a `ProcessorFailed` from the render, or a
 //!    processor that failed to re-activate, names a device that dropped out), the dialog closes
 //!    and the status bar says „Night Drive.wav exportiert · 00:33 · 24 bit“ with „Im Ordner
-//!    zeigen“ (the folder opens with `xdg-open`, local only). The file joins Projekt › Exporte
+//!    zeigen“ (the folder opens with `xdg-open`, on Windows `explorer`, local only). The file joins Projekt › Exporte
 //!    (this session's exports of the open project).
 //!
 //! **Cancel** (Esc, "Abbrechen"): while waiting for devices the dialog closes at once; while
@@ -96,7 +96,7 @@ impl Default for Exports {
         Exports {
             run: None,
             done: Vec::new(),
-            opener: Box::new(xdg_open),
+            opener: Box::new(open_folder),
             collecting: false,
             failed: Vec::new(),
         }
@@ -122,9 +122,15 @@ impl Exports {
     }
 }
 
-/// `xdg-open <folder>`, detached; the child is reaped by a thread.
-fn xdg_open(folder: &Path) -> io::Result<()> {
-    let mut child = std::process::Command::new("xdg-open")
+/// `xdg-open <folder>` (Windows: `explorer <folder>`), detached; the child is reaped by a thread.
+/// (`explorer` reports success with exit code 1; nobody looks at the code.)
+fn open_folder(folder: &Path) -> io::Result<()> {
+    let program = if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let mut child = std::process::Command::new(program)
         .arg(folder)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -276,7 +282,7 @@ fn bar_number(tick: Tick, ticks_per_bar: i64) -> i64 {
     tick.0.div_euclid(ticks_per_bar.max(1)) + 1
 }
 
-/// "~/Musik/Exporte" for `folder` under `$HOME`.
+/// "~/Musik/Exporte" for `folder` under the home folder.
 fn folder_label(folder: &Path) -> String {
     crate::dialogs::format::tilde(folder)
 }
@@ -292,7 +298,7 @@ impl App {
         self.export.is_active()
     }
 
-    /// Replaces how "Im Ordner zeigen" opens a folder (default: `xdg-open`; tests record).
+    /// Replaces how "Im Ordner zeigen" opens a folder (default: `xdg-open`, `explorer` on Windows; tests record).
     pub fn with_folder_opener(mut self, opener: FolderOpener) -> App {
         self.export.opener = opener;
         self
@@ -331,7 +337,7 @@ impl App {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .or_else(crate::dirs::start_dir)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let mut s = self
             .settings
@@ -858,7 +864,7 @@ impl App {
                     let start = if dir.is_dir() {
                         dir
                     } else {
-                        std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+                        crate::dirs::start_dir().unwrap_or_else(crate::dirs::filesystem_root)
                     };
                     self.open_overlay(Overlay::File(FileBrowser::new(
                         self.lang,

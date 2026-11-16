@@ -1,12 +1,13 @@
 # CI: formatting, clippy, tests (incl. the test plugins and the GUI tests under Xvfb) on every push to
 # main and on every pull request, on Linux; clippy and tests (incl. the test plugins) on macOS arm64 too
-# (epic #41: macOS 14.4+, Apple Silicon only). Local equivalent: scripts/check.sh + scripts/check-gui.sh.
+# (epic #41: macOS 14.4+, Apple Silicon only) and on Windows x86_64 (port in progress, not blocking).
+# Local equivalent: scripts/check.sh + scripts/check-gui.sh.
 #
 # Snapshot tests (egui_kittest, wgpu) render with lavapipe, the software Vulkan driver of Mesa, on the runner,
 # while the committed PNGs come from the owner's GPU. Anti-aliasing can differ in single pixels, so this
 # workflow writes a kittest.toml with a tolerance (SNAPSHOT_* below) before the tests. Local runs keep kittest's strict
 # defaults. If the first CI run fails on snapshots, look at the "snapshot-diffs" artifact first. On macOS the
-# committed kittest.toml ([mac]) renders every snapshot without comparing it (Metal pixels differ).
+# committed kittest.toml ([mac], [windows]) renders every snapshot without comparing it (other pixels).
 name: CI
 
 # Documentation and README media changes need no build.
@@ -188,3 +189,72 @@ jobs:
         run: >-
           cargo test -p komponist-rt -p komponist-ipc --lib a_timed_out_wait_ends_close_to_its_deadline
           -- --nocapture
+
+  # Windows x86_64 (port in progress, branch `windows`). Formatting is checked once, on Linux. No GUI tests
+  # (scripts/check-gui.sh is Linux only). Snapshots render without a GPU (wgpu falls back to WARP on DX12) and are not
+  # compared (kittest.toml [windows]). The gate passes locally on Windows 11 (with Vulkan, scripts/check.sh); this job
+  # has not run on a GitHub runner yet.
+  windows-x86_64:
+    name: "Windows x86_64: clippy, tests"
+    runs-on: windows-2025
+    timeout-minutes: 90
+    # Not blocking while the port is new: the job has never run on a runner (WARP, shared VM timing). Remove this
+    # once the job is reliably green.
+    continue-on-error: true
+    env:
+      # The workflow-wide lavapipe setting is for Linux.
+      WGPU_BACKEND: dx12
+      # A test binary ended abnormally once without a failing test (exit code 2173): show where.
+      RUST_BACKTRACE: "1"
+    defaults:
+      run:
+        # Git Bash, for the bash scripts (the default on Windows runners is PowerShell).
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Visual Studio Build Tools (MSVC), Git Bash and rustup come with the runner image.
+      # rust-toolchain.toml: stable + rustfmt + clippy.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            test-plugins -> target
+          cache-on-failure: true
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Without the bundles the plugin tests skip silently.
+      - name: Build test plugins
+        run: scripts/build-test-plugins.sh
+
+      # --no-fail-fast as on macOS: a red run lists the failures of every test binary.
+      - name: Test
+        timeout-minutes: 45
+        run: cargo test --workspace --no-fail-fast
+
+      # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
+      # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images
+      # readme; C:\Program Files\LLVM is its default path, assumed here). Steinberg's ASIO SDK (host subset, GPLv3 option) is
+      # vendored in vendor/asio-sdk and selected by CPAL_ASIO_DIR in .cargo/config.toml: no download. No ASIO device is opened. Untested until pushed.
+      - name: Clippy and tests with ASIO
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: |
+          cargo clippy -p komponist-audio --all-targets --features asio -- -D warnings
+          cargo test -p komponist-audio --features asio
+
+      # The test scratch folders in target/tmp hold a file with a non-ASCII name (a plugins scan test), which
+      # Git for Windows' tar cannot read when rust-cache packs target/: "File removed before we read it", and the
+      # whole cache save failed, so every run built from scratch. Nothing in there is worth caching.
+      - name: Remove test scratch files
+        if: always()
+        run: rm -rf target/tmp

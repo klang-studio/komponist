@@ -43,7 +43,7 @@ fn vst3_synth_sounds_through_the_ipc_path() {
     assert_eq!(info.descriptor.id, SYNTH_VST3);
     assert_eq!(info.descriptor.kind, PluginKind::Instrument);
     // Its own GUI: X11 on Linux, Cocoa in the bridge's frame on macOS (#52).
-    assert!(info.has_gui);
+    assert_eq!(info.has_gui, komponist_bridge::GUI_EMBEDDING);
     assert_eq!(info.latency, 0);
     let names: Vec<&str> = info.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["Gain", "Decay"]);
@@ -276,7 +276,7 @@ fn vst3_crash_kills_only_its_bridge() {
         exit,
         ProcessExit {
             code: None,
-            signal: Some(11),
+            signal: Some(SEGV),
         }
     );
     assert_eq!(crash.begin(&[]), Err(BlockError::Busy));
@@ -304,7 +304,7 @@ fn vst3_crash_kills_only_its_bridge() {
         crash.block_with(&[], Duration::from_millis(50)),
         Err(BlockError::Late)
     );
-    assert_eq!(crash.wait_exit().signal, Some(11));
+    assert_eq!(crash.wait_exit().signal, Some(SEGV));
 
     synth.block(&[note_on(0, 72)]);
     assert!(synth.peak(0..BLOCK) > 0.1);

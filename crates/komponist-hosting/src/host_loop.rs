@@ -29,8 +29,17 @@
 //!   `MainThreadCallback` (calls [`HostedPlugin::on_main_thread`]) and `ParamFlushRequested` (calls
 //!   [`HostedPlugin::flush_params`] while the plugin is inactive) itself and records everything
 //!   else for the caller ([`PollLoop::take_observed`]); the bridge forwards those to the app.
+//!
+//! **Windows** (port W5): no fds. A tick is one [`wake::wait`]: `MsgWaitForMultipleObjectsEx` over
+//! the wake event ([`wake::WakeEvent`], a manual-reset event) and a high-resolution waitable timer
+//! armed for the next due timer ([`wake::DeadlineTimer`]; a millisecond timeout would be up to
+//! 15.6 ms late at the default clock resolution), and every window message of the thread is
+//! dispatched before it returns. Plugins create hidden windows, timers and COM objects on their
+//! main thread and rely on its message pump even without a visible GUI. The bridge's main loop
+//! (`komponist-bridge` `win_loop`) uses the same [`wake`] functions.
 
 use std::cell::{Cell, RefCell};
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -38,9 +47,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use komponist_ipc::{GuiSize, LogLevel, WireEvent};
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 
-use crate::host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::{HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 use crate::plugin::{HostedPlugin, HostingError};
 
 /// Default cooldown between two `WRITE` reports for the same fd (see the module docs).
@@ -138,7 +150,7 @@ pub mod wake {
 
 /// macOS has no eventfd: a non-blocking pipe with the same semantics. A full pipe (EAGAIN on
 /// `write`) already means "readable", so a lost byte changes nothing.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub mod wake {
     use super::*;
 
@@ -190,8 +202,211 @@ pub mod wake {
     }
 }
 
+/// Windows: the wake event and the main-thread wait (see the module docs).
+#[cfg(windows)]
+pub mod wake {
+    use std::io;
+    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
+    use std::time::Instant;
+
+    use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CreateEventW,
+        CreateWaitableTimerExW, INFINITE, ResetEvent, SetEvent, SetWaitableTimerEx,
+        TIMER_ALL_ACCESS,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+        PeekMessageW, QS_ALLINPUT, TranslateMessage, WM_QUIT,
+    };
+
+    /// Most handles [`wait`] takes from its caller (`MAXIMUM_WAIT_OBJECTS` is 64, one goes to
+    /// the timer, and `MsgWaitForMultipleObjectsEx` takes one less than that).
+    pub const MAX_HANDLES: usize = 62;
+
+    fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: a fresh handle that nothing else owns.
+            Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+        }
+    }
+
+    /// A manual-reset event: signalled from any thread, set until the main thread drains it (the
+    /// semantics of the eventfd on Linux).
+    #[derive(Debug)]
+    pub struct WakeEvent(OwnedHandle);
+
+    impl WakeEvent {
+        /// A new, non-signalled, non-inheritable manual-reset event.
+        pub fn new() -> io::Result<WakeEvent> {
+            // SAFETY: no security attributes, no name.
+            owned(unsafe { CreateEventW(core::ptr::null(), 1, 0, core::ptr::null()) })
+                .map(WakeEvent)
+        }
+
+        /// Signals the event. RT-safe: one `SetEvent`, which never blocks or allocates.
+        pub fn signal(&self) {
+            // SAFETY: a valid event handle with EVENT_MODIFY_STATE.
+            unsafe { SetEvent(self.0.as_raw_handle()) };
+        }
+
+        /// Resets the event (before the caller looks at what is pending).
+        pub fn drain(&self) {
+            // SAFETY: as above.
+            unsafe { ResetEvent(self.0.as_raw_handle()) };
+        }
+    }
+
+    impl AsHandle for WakeEvent {
+        fn as_handle(&self) -> BorrowedHandle<'_> {
+            self.0.as_handle()
+        }
+    }
+
+    /// A high-resolution waitable timer for the next deadline of a main loop (Windows 10 1803+). A
+    /// synchronization timer: a wait that it satisfies resets it, and so does arming it again. Any
+    /// thread may arm it and wait on it ([`AsHandle`]; the bridge's wake relay, port W6).
+    #[derive(Debug)]
+    pub struct DeadlineTimer(OwnedHandle);
+
+    impl DeadlineTimer {
+        /// A new, unarmed timer.
+        pub fn new() -> io::Result<DeadlineTimer> {
+            // SAFETY: no security attributes, no name.
+            owned(unsafe {
+                CreateWaitableTimerExW(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS,
+                )
+            })
+            .map(DeadlineTimer)
+        }
+
+        /// Arms the timer for `deadline` (at least 100 ns from now); `false` if that failed.
+        pub fn arm(&self, deadline: Instant) -> bool {
+            let after = deadline.saturating_duration_since(Instant::now());
+            let ticks = after.as_nanos().div_ceil(100).clamp(1, i64::MAX as u128) as i64;
+            // Negative: relative to now.
+            let due = -ticks;
+            // SAFETY: a valid timer handle; no completion routine, no tolerable delay.
+            unsafe {
+                SetWaitableTimerEx(
+                    self.0.as_raw_handle(),
+                    &due,
+                    0,
+                    None,
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0,
+                ) != 0
+            }
+        }
+
+        /// Disarms the timer (its signalled state stays as it is).
+        pub fn cancel(&self) {
+            // SAFETY: a valid timer handle.
+            unsafe { CancelWaitableTimer(self.0.as_raw_handle()) };
+        }
+    }
+
+    impl AsHandle for DeadlineTimer {
+        fn as_handle(&self) -> BorrowedHandle<'_> {
+            self.0.as_handle()
+        }
+    }
+
+    /// Dispatches every window message queued for the calling thread. A `WM_QUIT` a plugin posts
+    /// is dropped: the bridge decides when its main loop ends. Returns the number of messages.
+    pub fn pump_messages() -> usize {
+        let mut count = 0;
+        // SAFETY: a plain C struct for which all zeroes are valid.
+        let mut msg: MSG = unsafe { core::mem::zeroed() };
+        // SAFETY: `msg` is a valid out pointer; NULL window = every window of this thread and its
+        // thread messages.
+        while unsafe { PeekMessageW(&mut msg, core::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+            count += 1;
+            if msg.message == WM_QUIT {
+                continue;
+            }
+            // SAFETY: a message just taken from this thread's queue.
+            unsafe {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        count
+    }
+
+    /// One main-loop wait: returns when one of `handles` is signalled, `deadline` passes (`None`:
+    /// no deadline), or window messages arrive; window messages that are queued are dispatched
+    /// before it returns (also when they were queued before the call). Callers then look at what
+    /// is pending themselves (several handles may be signalled at once). Main thread only; plugin
+    /// window procedures run inside, so the caller must hold no borrow a plugin call could need.
+    ///
+    /// # Panics
+    /// With more than [`MAX_HANDLES`] handles.
+    pub fn wait(timer: &DeadlineTimer, handles: &[BorrowedHandle<'_>], deadline: Option<Instant>) {
+        assert!(handles.len() <= MAX_HANDLES, "too many handles");
+        if pump_messages() > 0 {
+            // Plugin code ran; let the caller look at its work before blocking.
+            return;
+        }
+        let mut raw: [HANDLE; MAX_HANDLES + 1] = [core::ptr::null_mut(); MAX_HANDLES + 1];
+        for (slot, handle) in raw.iter_mut().zip(handles) {
+            *slot = handle.as_raw_handle();
+        }
+        let mut count = handles.len();
+        let armed = match deadline {
+            Some(deadline) if deadline <= Instant::now() => return,
+            Some(deadline) => timer.arm(deadline),
+            None => false,
+        };
+        if armed {
+            raw[count] = timer.0.as_raw_handle();
+            count += 1;
+        }
+        // An unarmed timer for a deadline (a broken handle): a millisecond timeout instead.
+        let timeout = match deadline {
+            Some(deadline) if !armed => {
+                let ms = deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis();
+                ms.clamp(1, u128::from(INFINITE - 1)) as u32
+            }
+            _ => INFINITE,
+        };
+        // SAFETY: `count` valid handles that outlive the call.
+        let woke = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                count as u32,
+                raw.as_ptr(),
+                timeout,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if armed {
+            timer.cancel();
+        }
+        if woke == WAIT_OBJECT_0 + count as u32 {
+            pump_messages();
+        } else if woke == WAIT_FAILED {
+            // A handle that is no waitable object: do not spin.
+            std::thread::yield_now();
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+compile_error!("komponist-hosting: no wake backend (host_loop.rs) for this OS");
+
 /// A [`HostNotify`] that coalesces notifications into atomic bits and wakes a [`PollLoop`] through
-/// a wake fd (an eventfd on Linux, a non-blocking pipe on macOS). RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write`.
+/// a wake fd (an eventfd on Linux, a non-blocking pipe on macOS) or a wake event (Windows).
+/// RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write` (`SetEvent`).
 ///
 /// Coalescing: one bit per kind, the latest GUI size request, and for `ParamEdited` (VST3 only)
 /// only the latest id and value plus a counter; a bridge that forwards VST3 GUI edits needs a ring
@@ -205,15 +420,20 @@ pub struct LoopNotify {
     edited_count: AtomicU32,
     log_lines: [AtomicU32; 4],
     echo_log: bool,
-    wake: wake::WakeFd,
+    wake: Wake,
 }
 
+/// What wakes a [`PollLoop`]: a wake fd, or the wake event on Windows.
+#[cfg(unix)]
+type Wake = wake::WakeFd;
+#[cfg(windows)]
+type Wake = wake::WakeEvent;
+
 impl LoopNotify {
-    /// Creates the eventfd. `echo_log` prints plugin log lines to stderr (tests; never on the RT
-    /// thread of a real bridge).
+    /// Creates the eventfd (Windows: the wake event). `echo_log` prints plugin log lines to
+    /// stderr (tests; never on the RT thread of a real bridge).
     pub fn new(echo_log: bool) -> Result<LoopNotify, HostingError> {
-        let wake =
-            wake::WakeFd::new().map_err(|e| HostingError::HostLoop(format!("wake fd: {e}")))?;
+        let wake = Wake::new().map_err(|e| HostingError::HostLoop(format!("wake: {e}")))?;
         Ok(LoopNotify {
             pending: AtomicU32::new(0),
             gui_size: AtomicU64::new(NO_SIZE),
@@ -227,8 +447,15 @@ impl LoopNotify {
     }
 
     /// The fd that becomes readable when a notification is pending.
+    #[cfg(unix)]
     pub fn wake_fd(&self) -> BorrowedFd<'_> {
         self.wake.as_fd()
+    }
+
+    /// Windows: the event that is signalled while a notification is pending.
+    #[cfg(windows)]
+    pub fn wake_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        std::os::windows::io::AsHandle::as_handle(&self.wake)
     }
 
     /// Clears the wake fd, then takes the pending bits and the latest GUI size request. Draining
@@ -338,6 +565,7 @@ struct TimerEntry {
     next: Instant,
 }
 
+#[cfg(unix)]
 #[derive(Debug)]
 struct FdEntry {
     fd: RawFd,
@@ -352,6 +580,7 @@ struct FdEntry {
 struct LoopState {
     next_timer: u32,
     timers: Vec<TimerEntry>,
+    #[cfg(unix)]
     fds: Vec<FdEntry>,
 }
 
@@ -364,6 +593,9 @@ pub struct PollLoop {
     write_interval: Option<Duration>,
     observed: RefCell<Observed>,
     stats: Cell<LoopStats>,
+    /// Windows: the deadline of each wait.
+    #[cfg(windows)]
+    timer: wake::DeadlineTimer,
 }
 
 impl PollLoop {
@@ -383,6 +615,9 @@ impl PollLoop {
             write_interval,
             observed: RefCell::new(Observed::default()),
             stats: Cell::new(LoopStats::default()),
+            #[cfg(windows)]
+            timer: wake::DeadlineTimer::new()
+                .map_err(|e| HostingError::HostLoop(format!("timer: {e}")))?,
         }))
     }
 
@@ -406,13 +641,18 @@ impl PollLoop {
         }
     }
 
-    /// Number of registered timers and fds.
+    /// Number of registered timers and fds (always 0 fds on Windows).
     pub fn registrations(&self) -> (usize, usize) {
         let state = self.state.borrow();
-        (state.timers.len(), state.fds.len())
+        #[cfg(unix)]
+        let fds = state.fds.len();
+        #[cfg(windows)]
+        let fds = 0;
+        (state.timers.len(), fds)
     }
 
     /// The interest registered for `fd`.
+    #[cfg(unix)]
     pub fn fd_interest(&self, fd: RawFd) -> Option<FdEvents> {
         let state = self.state.borrow();
         state.fds.iter().find(|e| e.fd == fd).map(|e| e.interest)
@@ -466,6 +706,29 @@ impl PollLoop {
         let mut stats = self.stats.get();
         stats.ticks += 1;
 
+        // 1.–3. Wait, then dispatch ready fds (Unix).
+        #[cfg(unix)]
+        self.poll_fds(plugin, max_wait, &mut stats);
+        #[cfg(windows)]
+        self.wait(max_wait);
+
+        self.dispatch_timers_and_notifications(plugin, &mut stats);
+        self.stats.set(stats);
+    }
+
+    /// Windows: one [`wake::wait`] over the wake event until `max_wait` or the next due timer.
+    #[cfg(windows)]
+    fn wait(&self, max_wait: Duration) {
+        let mut deadline = Instant::now() + max_wait;
+        for timer in &self.state.borrow().timers {
+            deadline = deadline.min(timer.next);
+        }
+        wake::wait(&self.timer, &[self.notify.wake_handle()], Some(deadline));
+    }
+
+    /// One `poll()` over the wake fd and the plugin's fds, then the ready fds' callbacks.
+    #[cfg(unix)]
+    fn poll_fds(&self, plugin: &mut dyn HostedPlugin, max_wait: Duration, stats: &mut LoopStats) {
         // 1. Build the poll set and the timeout.
         let now = Instant::now();
         let mut deadline = now + max_wait;
@@ -557,7 +820,14 @@ impl PollLoop {
                 plugin.on_fd(fd, events);
             }
         }
+    }
 
+    /// Steps 4 and 5 of a tick: due timers, then pending notifications.
+    fn dispatch_timers_and_notifications(
+        &self,
+        plugin: &mut dyn HostedPlugin,
+        stats: &mut LoopStats,
+    ) {
         // 4. Due timers.
         let now = Instant::now();
         let due: Vec<TimerId> = {
@@ -604,7 +874,6 @@ impl PollLoop {
                 self.observed.borrow_mut().flushed.extend(out);
             }
         }
-        self.stats.set(stats);
     }
 }
 
@@ -632,6 +901,7 @@ impl HostLoop for PollLoop {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn register_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
         let mut state = self.state.borrow_mut();
         if fd < 0 || state.fds.iter().any(|e| e.fd == fd) {
@@ -648,6 +918,7 @@ impl HostLoop for PollLoop {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn modify_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
         let mut state = self.state.borrow_mut();
         let entry = state
@@ -660,6 +931,7 @@ impl HostLoop for PollLoop {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn unregister_fd(&self, fd: RawFd) -> Result<(), HostingError> {
         let mut state = self.state.borrow_mut();
         let before = state.fds.len();
@@ -678,14 +950,18 @@ mod tests {
     use komponist_ipc::{
         NoteName, ParamInfo, PluginDescriptor, PluginFormat, PluginKind, RenderMode,
     };
+    #[cfg(unix)]
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
+    #[cfg(unix)]
     use std::os::unix::net::UnixStream;
 
     /// What the fake plugin was called with.
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
         Timer(TimerId),
+        #[cfg(unix)]
         Fd(RawFd, FdEvents),
         MainThread,
         Flush,
@@ -796,6 +1072,7 @@ mod tests {
         fn on_timer(&mut self, timer: TimerId) {
             self.record(Call::Timer(timer));
         }
+        #[cfg(unix)]
         fn on_fd(&mut self, fd: RawFd, events: FdEvents) {
             self.record(Call::Fd(fd, events));
         }
@@ -839,6 +1116,7 @@ mod tests {
         assert_eq!(lp.registrations(), (0, 0));
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_readiness_is_dispatched() {
         let lp = PollLoop::new(false).unwrap();
@@ -862,6 +1140,7 @@ mod tests {
     }
 
     /// Spike WP-15 §1.7: an always-writable fd with WRITE interest must not make the loop spin.
+    #[cfg(unix)]
     #[test]
     fn write_interest_is_rate_limited() {
         let lp = PollLoop::new(false).unwrap();
@@ -899,6 +1178,7 @@ mod tests {
         assert!(plugin.calls.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_closed_fd_is_reported_once_and_parked() {
         let lp = PollLoop::new(false).unwrap();
@@ -987,5 +1267,57 @@ mod tests {
             })
         );
         assert_eq!(notify.take(), (0, None));
+    }
+
+    /// Windows: a window message posted to the loop's thread wakes the wait and is dispatched
+    /// before the tick returns; a `WM_QUIT` is dropped.
+    #[cfg(windows)]
+    #[test]
+    fn window_messages_wake_the_loop_and_are_pumped() {
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP, WM_QUIT};
+
+        let lp = PollLoop::new(false).unwrap();
+        let mut plugin = FakePlugin::new();
+        // PeekMessage gives the thread its message queue, so another thread can post to it.
+        wake::pump_messages();
+        let thread = unsafe { GetCurrentThreadId() };
+        let poster = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            assert_ne!(unsafe { PostThreadMessageW(thread, WM_APP, 0, 0) }, 0);
+        });
+        let start = Instant::now();
+        lp.run_once(&mut plugin, Duration::from_secs(5));
+        poster.join().unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        // Already dispatched by the tick.
+        assert_eq!(wake::pump_messages(), 0);
+        assert_ne!(unsafe { PostThreadMessageW(thread, WM_QUIT, 0, 0) }, 0);
+        assert_eq!(wake::pump_messages(), 1);
+        // A queued message ends a wait at once.
+        assert_ne!(unsafe { PostThreadMessageW(thread, WM_APP, 0, 0) }, 0);
+        let start = Instant::now();
+        lp.run_once(&mut plugin, Duration::from_secs(5));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Windows: the high-resolution timer keeps a 2 ms deadline within a few ms (a millisecond
+    /// timeout would end on the 15.6 ms clock tick).
+    #[cfg(windows)]
+    #[test]
+    fn short_waits_end_near_their_deadline() {
+        let lp = PollLoop::new(false).unwrap();
+        let mut plugin = FakePlugin::new();
+        let mut worst = Duration::ZERO;
+        for _ in 0..20 {
+            let start = Instant::now();
+            lp.run_once(&mut plugin, Duration::from_millis(2));
+            worst = worst.max(start.elapsed());
+        }
+        assert!(worst < Duration::from_millis(12), "worst {worst:?}");
     }
 }

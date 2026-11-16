@@ -9,6 +9,17 @@
 //!   fd refers to it). Its size can be set once only (a second `ftruncate` fails), which gives the
 //!   guarantee the seals give on Linux. The mapping is prefaulted by `mlock` (or by touching every
 //!   page if locking is refused). `fstat` reports the size rounded up to the 16 KiB page.
+//! - Windows: a pagefile-backed section (`CreateFileMappingW` on `INVALID_HANDLE_VALUE`, no name,
+//!   not inheritable) of exactly `SHM_SIZE` bytes; a section's size can never change, so no seal is
+//!   needed. Mapped with `MapViewOfFile`, prefaulted by `VirtualLock` (best effort: the default
+//!   minimum working set lets a process lock about one region) or else by touching every page.
+//!   The bridge maps the whole section and checks its size with `VirtualQuery`. Handles cannot
+//!   travel in-band, so the region also owns the two wake events of the handshake ([`signal`],
+//!   "Windows"): the app duplicates the section and both events into the bridge
+//!   (`Channel::send_region`), the bridge opens them as `ShmHandles`. Each region also has a
+//!   deadline timer per waiting role, created in each process. In the handshake below, "futex-wake"
+//!   is `SetEvent` there and "futex-wait" the event wait with its timer (the app's wait spins
+//!   briefly and ends at its deadline within µs; the bridge's does neither).
 //!
 //! Layout ([`ShmLayout`], `#[repr(C)]`, all offsets fixed): header with the futex words, the
 //! per-block request and result, an input event ring (app → bridge), an output event ring
@@ -35,11 +46,16 @@
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(unix)]
 use rustix::fs::fstat;
+#[cfg(unix)]
 use rustix::mm::{MapFlags, ProtFlags, mlock, mmap, munmap};
 
 use crate::ring::ShmRing;
@@ -420,10 +436,40 @@ impl core::fmt::Display for ShmError {
 
 impl std::error::Error for ShmError {}
 
+#[cfg(unix)]
 impl From<rustix::io::Errno> for ShmError {
     fn from(e: rustix::io::Errno) -> ShmError {
         ShmError::Io(e.to_string())
     }
+}
+
+#[cfg(windows)]
+impl From<std::io::Error> for ShmError {
+    fn from(e: std::io::Error) -> ShmError {
+        ShmError::Io(e.to_string())
+    }
+}
+
+/// One of the two handshake words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Word {
+    /// `request_seq`: written by the app, awaited by the bridge.
+    Request,
+    /// `done_seq`: written by the bridge, awaited by the app.
+    Done,
+}
+
+/// Windows: the handles the bridge needs to open a region, received from the app
+/// (`Channel::recv_region`; the app sends them with `Channel::send_region`).
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct ShmHandles {
+    /// The pagefile-backed section.
+    pub mapping: OwnedHandle,
+    /// The wake event of `request_seq`.
+    pub request: OwnedHandle,
+    /// The wake event of `done_seq`.
+    pub done: OwnedHandle,
 }
 
 /// Role bits in [`ShmRegion::roles`]: each RT role may exist once per region.
@@ -433,7 +479,11 @@ const ROLE_MONITOR: u8 = 4;
 
 /// One mapped shared-memory file holding a [`ShmLayout`]. Unmapped on drop (the fd closes with it).
 pub struct ShmRegion {
+    #[cfg(unix)]
     fd: OwnedFd,
+    /// The section, the wake events and this process' deadline timers.
+    #[cfg(windows)]
+    os: sys::Objects,
     ptr: NonNull<ShmLayout>,
     /// `ROLE_*` bits of the live role objects in this process; keeps the unsafe single-producer /
     /// single-consumer contracts of the rings out of reach of safe code.
@@ -451,18 +501,12 @@ unsafe impl Sync for ShmRegion {}
 impl ShmRegion {
     /// App side, non-RT. Creates the shared-memory file (module docs), sizes it to [`SHM_SIZE`]
     /// for good, maps it and writes the header constants.
+    #[cfg(unix)]
     pub fn create() -> Result<ShmRegion, ShmError> {
         let fd = sys::create(SHM_SIZE)?;
         let ptr = map(&fd)?;
-        // SAFETY: fresh, zero-filled mapping of `SHM_SIZE` bytes that nobody else sees yet; the
-        // constants are written through raw pointers before any reference to the layout exists.
-        unsafe {
-            let header = &raw mut (*ptr.as_ptr()).header;
-            (&raw mut (*header).magic).write(SHM_MAGIC);
-            (&raw mut (*header).version).write(SHM_VERSION);
-            (&raw mut (*header).size).write(SHM_SIZE as u32);
-            (&raw mut (*header).max_block).write(MAX_BLOCK as u32);
-        }
+        // SAFETY: fresh, zero-filled mapping of `SHM_SIZE` bytes that nobody else sees yet.
+        unsafe { write_header(ptr) };
         Ok(ShmRegion {
             fd,
             ptr,
@@ -470,8 +514,62 @@ impl ShmRegion {
         })
     }
 
+    /// App side, non-RT. Creates the section of [`SHM_SIZE`] bytes and the two wake events
+    /// (module docs), maps the section and writes the header constants.
+    #[cfg(windows)]
+    pub fn create() -> Result<ShmRegion, ShmError> {
+        let os = sys::Objects::new(
+            sys::create(SHM_SIZE)?,
+            signal::WakeEvent::new()?,
+            signal::WakeEvent::new()?,
+        )?;
+        let ptr = sys::map(&os.mapping)?.0;
+        // SAFETY: fresh, zero-filled mapping of `SHM_SIZE` bytes that nobody else sees yet.
+        unsafe { write_header(ptr) };
+        sys::prefault(ptr);
+        Ok(ShmRegion {
+            os,
+            ptr,
+            roles: AtomicU8::new(0),
+        })
+    }
+
+    /// Bridge side, non-RT. Maps the section received from the app with its wake events and
+    /// validates magic, version, size and `max_block`.
+    #[cfg(windows)]
+    pub fn open(handles: ShmHandles) -> Result<ShmRegion, ShmError> {
+        let os = sys::Objects::new(
+            handles.mapping,
+            signal::WakeEvent::from_handle(handles.request),
+            signal::WakeEvent::from_handle(handles.done),
+        )?;
+        // The whole section, whatever its size: `MapViewOfFile` refuses what is not a section.
+        let (ptr, size) = sys::map(&os.mapping)?;
+        // From here on `Drop` unmaps the view whatever the checks find.
+        let region = ShmRegion {
+            os,
+            ptr,
+            roles: AtomicU8::new(0),
+        };
+        // SAFETY: the view is at least one page long, so the four header words are inside it.
+        // Volatile: the other process may write the mapping (not these words, by protocol).
+        let word = |i: usize| unsafe { ptr.as_ptr().cast::<u32>().add(i).read_volatile() };
+        if word(0) != SHM_MAGIC {
+            return Err(ShmError::BadMagic);
+        }
+        if word(1) != SHM_VERSION {
+            return Err(ShmError::VersionMismatch { found: word(1) });
+        }
+        if word(2) as usize != SHM_SIZE || word(3) as usize != MAX_BLOCK || size != SHM_SIZE {
+            return Err(ShmError::LayoutMismatch);
+        }
+        sys::prefault(ptr);
+        Ok(region)
+    }
+
     /// Bridge side, non-RT. Maps a shared-memory file received from the app and validates magic,
     /// version, size and `max_block`.
+    #[cfg(unix)]
     pub fn open(fd: OwnedFd) -> Result<ShmRegion, ShmError> {
         // Validate before mapping: the four header words, then the file size through `fstat` (a
         // smaller file would turn accesses past its end into SIGBUS).
@@ -501,8 +599,61 @@ impl ShmRegion {
     }
 
     /// The shared-memory file, to pass to the bridge.
+    #[cfg(unix)]
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
+    }
+
+    /// Windows: the handles to pass to the bridge, in the order of [`ShmHandles`]: section,
+    /// request event, done event (`Channel::send_region` sends them).
+    #[cfg(windows)]
+    pub fn handles(&self) -> [BorrowedHandle<'_>; 3] {
+        [
+            self.os.mapping.as_handle(),
+            self.os.request.as_handle(),
+            self.os.done.as_handle(),
+        ]
+    }
+
+    /// The handshake word `word`.
+    fn word(&self, word: Word) -> &AtomicU32 {
+        let header = &self.layout().header;
+        match word {
+            Word::Request => &header.request_seq,
+            Word::Done => &header.done_seq,
+        }
+    }
+
+    /// RT: wakes the waiter of `word` (in the other process). Store the word first (release).
+    fn wake(&self, word: Word) {
+        #[cfg(unix)]
+        signal::wake(self.word(word));
+        #[cfg(windows)]
+        self.os.event(word).wake();
+    }
+
+    /// RT: waits while `word == current`, until `deadline` (`None` = none). The app waits for
+    /// `Done`, the bridge for `Request`; on Windows each with its own timer and mode.
+    fn wait_while(&self, word: Word, current: u32, deadline: Option<Instant>) -> WaitOutcome {
+        #[cfg(unix)]
+        {
+            signal::wait_while(self.word(word), current, deadline)
+        }
+        #[cfg(windows)]
+        {
+            let (timer, mode) = match word {
+                Word::Done => (&self.os.client_timer, signal::Mode::Exact),
+                Word::Request => (&self.os.server_timer, signal::Mode::Relaxed),
+            };
+            signal::wait_while_event(
+                self.word(word),
+                current,
+                deadline,
+                self.os.event(word),
+                timer,
+                mode,
+            )
+        }
     }
 
     /// The mapped layout.
@@ -556,14 +707,38 @@ impl Drop for ShmRegion {
     fn drop(&mut self) {
         // SAFETY: `ptr` is the start of our own `SHM_SIZE` mapping; no reference into it outlives
         // `self` (role objects hold an `Arc<ShmRegion>`).
+        #[cfg(unix)]
         unsafe {
             let _ = munmap(self.ptr.as_ptr().cast(), SHM_SIZE);
         }
+        // SAFETY: as above (Windows: the view of the whole section).
+        #[cfg(windows)]
+        unsafe {
+            sys::unmap(self.ptr);
+        }
+    }
+}
+
+/// Writes the header constants into a fresh mapping.
+///
+/// # Safety
+///
+/// `ptr` is a new mapping of at least `SHM_SIZE` bytes that nobody else sees yet; the constants
+/// are written through raw pointers before any reference to the layout exists.
+unsafe fn write_header(ptr: NonNull<ShmLayout>) {
+    // SAFETY: per the caller.
+    unsafe {
+        let header = &raw mut (*ptr.as_ptr()).header;
+        (&raw mut (*header).magic).write(SHM_MAGIC);
+        (&raw mut (*header).version).write(SHM_VERSION);
+        (&raw mut (*header).size).write(SHM_SIZE as u32);
+        (&raw mut (*header).max_block).write(MAX_BLOCK as u32);
     }
 }
 
 /// Maps `SHM_SIZE` bytes of `fd` shared, prefaulted and (best effort) locked, so the RT paths
 /// never take a page fault.
+#[cfg(unix)]
 fn map(fd: &OwnedFd) -> Result<NonNull<ShmLayout>, ShmError> {
     // SAFETY: a new mapping at an address the kernel picks; nothing aliases it yet. The caller
     // made sure the file is at least `SHM_SIZE` bytes long.
@@ -719,12 +894,159 @@ mod sys {
     }
 }
 
+#[cfg(windows)]
+mod sys {
+    use core::ffi::c_void;
+    use core::ptr::NonNull;
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Memory::{
+        CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_BASIC_INFORMATION,
+        MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READWRITE, UnmapViewOfFile, VirtualLock,
+        VirtualQuery,
+    };
+
+    use super::{SHM_SIZE, ShmError, ShmLayout, Word};
+    use crate::signal::{DeadlineTimer, WakeEvent};
+
+    /// The kernel objects of one region in this process.
+    #[derive(Debug)]
+    pub(super) struct Objects {
+        /// The section.
+        pub(super) mapping: OwnedHandle,
+        /// Wakes the bridge (`request_seq`).
+        pub(super) request: WakeEvent,
+        /// Wakes the app (`done_seq`).
+        pub(super) done: WakeEvent,
+        /// The `BridgeClient`'s deadline timer (it waits for `done_seq`).
+        pub(super) client_timer: DeadlineTimer,
+        /// The `BridgeServer`'s deadline timer (it waits for `request_seq`).
+        pub(super) server_timer: DeadlineTimer,
+    }
+
+    impl Objects {
+        /// The shared objects plus this process' two timers.
+        pub(super) fn new(
+            mapping: OwnedHandle,
+            request: WakeEvent,
+            done: WakeEvent,
+        ) -> Result<Objects, ShmError> {
+            Ok(Objects {
+                mapping,
+                request,
+                done,
+                client_timer: DeadlineTimer::new()?,
+                server_timer: DeadlineTimer::new()?,
+            })
+        }
+
+        /// The wake event of `word`.
+        pub(super) fn event(&self, word: Word) -> &WakeEvent {
+            match word {
+                Word::Request => &self.request,
+                Word::Done => &self.done,
+            }
+        }
+    }
+
+    /// A pagefile-backed, unnamed, non-inheritable section of exactly `size` bytes.
+    pub(super) fn create(size: usize) -> Result<OwnedHandle, ShmError> {
+        let size = size as u64;
+        // SAFETY: no file (the pagefile backs it), no security attributes, no name.
+        let handle = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                core::ptr::null(),
+                PAGE_READWRITE,
+                (size >> 32) as u32,
+                size as u32,
+                core::ptr::null(),
+            )
+        };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error().into());
+        }
+        // SAFETY: a fresh handle that nothing else owns.
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    /// Maps the whole section read-write; the view and its size in bytes (whole pages). Fails for
+    /// a handle that is not a section.
+    pub(super) fn map(mapping: &OwnedHandle) -> Result<(NonNull<ShmLayout>, usize), ShmError> {
+        // SAFETY: a new view at an address the kernel picks; nothing aliases it yet.
+        let view = unsafe {
+            MapViewOfFile(
+                mapping.as_raw_handle(),
+                FILE_MAP_READ | FILE_MAP_WRITE,
+                0,
+                0,
+                0,
+            )
+        };
+        let Some(ptr) = NonNull::new(view.Value.cast::<ShmLayout>()) else {
+            return Err(io::Error::last_os_error().into());
+        };
+        // SAFETY: a plain C struct for which all zeroes are valid.
+        let mut info: MEMORY_BASIC_INFORMATION = unsafe { core::mem::zeroed() };
+        // SAFETY: queries our own view into a properly sized buffer.
+        let written = unsafe {
+            VirtualQuery(
+                view.Value,
+                &mut info,
+                core::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        if written == 0 {
+            let error = io::Error::last_os_error();
+            // SAFETY: our own view, unused so far.
+            unsafe { unmap(ptr) };
+            return Err(error.into());
+        }
+        Ok((ptr, info.RegionSize))
+    }
+
+    /// Locks the view's `SHM_SIZE` bytes into memory (which faults them in), or, if the working
+    /// set quota refuses it, faults every page in by reading one byte of it, so the RT paths
+    /// start without page faults. Unlocked pages may still be trimmed under memory pressure.
+    pub(super) fn prefault(ptr: NonNull<ShmLayout>) {
+        let base = ptr.as_ptr().cast::<c_void>();
+        // SAFETY: our own view of at least `SHM_SIZE` bytes; locking changes no contents.
+        if unsafe { VirtualLock(base, SHM_SIZE) } != 0 {
+            return;
+        }
+        for offset in (0..SHM_SIZE).step_by(4096) {
+            // SAFETY: inside our own view of at least `SHM_SIZE` bytes.
+            unsafe { core::ptr::read_volatile(ptr.as_ptr().cast::<u8>().add(offset)) };
+        }
+    }
+
+    /// Unmaps a view from [`map`] (which also ends a `VirtualLock`).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is a live view from [`map`] that nothing refers to any more.
+    pub(super) unsafe fn unmap(ptr: NonNull<ShmLayout>) {
+        let view = MEMORY_MAPPED_VIEW_ADDRESS {
+            Value: ptr.as_ptr().cast(),
+        };
+        // SAFETY: per the caller.
+        unsafe { UnmapViewOfFile(view) };
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+compile_error!("komponist-ipc: no shared-memory backend (shm.rs) for this OS");
+
 impl core::fmt::Debug for ShmRegion {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ShmRegion")
-            .field("fd", &self.fd)
-            .field("ptr", &self.ptr)
-            .finish()
+        let mut s = f.debug_struct("ShmRegion");
+        #[cfg(unix)]
+        s.field("fd", &self.fd);
+        #[cfg(windows)]
+        s.field("os", &self.os);
+        s.field("ptr", &self.ptr).finish()
     }
 }
 
@@ -769,13 +1091,13 @@ pub struct BlockSpec {
 }
 
 /// RT. [`BlockRequest::deadline_ticks`] for `deadline`: the absolute `mach_absolute_time` on
-/// macOS, 0 without a deadline and on other systems (no reader; saves the clock reads).
+/// macOS, 0 without a deadline and on Linux and Windows (no reader there; saves the clock reads).
 fn deadline_ticks(deadline: Option<Instant>) -> u64 {
     #[cfg(target_os = "macos")]
     {
         deadline.map_or(0, komponist_rt::mach_time::deadline)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "linux", windows))]
     {
         let _ = deadline;
         0
@@ -891,7 +1213,7 @@ impl BridgeClient {
         // `request_seq`, which is published below with release ordering.
         unsafe { header.request.get().write(request) };
         header.request_seq.store(seq, Ordering::Release);
-        signal::wake(&header.request_seq);
+        self.region.wake(Word::Request);
         self.seq = seq;
         self.frames = spec.frames;
         Ok(seq)
@@ -927,7 +1249,7 @@ impl BridgeClient {
             if done == seq {
                 break;
             }
-            if signal::wait_while(&header.done_seq, done, Some(deadline)) == WaitOutcome::TimedOut {
+            if self.region.wait_while(Word::Done, done, Some(deadline)) == WaitOutcome::TimedOut {
                 return Err(BlockError::Late);
             }
         }
@@ -1020,7 +1342,7 @@ impl BridgeServer {
                     ..request
                 });
             }
-            if signal::wait_while(&header.request_seq, seq, deadline) == WaitOutcome::TimedOut {
+            if self.region.wait_while(Word::Request, seq, deadline) == WaitOutcome::TimedOut {
                 return None;
             }
         }
@@ -1115,7 +1437,7 @@ impl BridgeServer {
             });
         }
         header.done_seq.store(self.seq, Ordering::Release);
-        signal::wake(&header.done_seq);
+        self.region.wake(Word::Done);
         self.busy = false;
     }
 
@@ -1200,8 +1522,47 @@ mod tests {
     use assert_no_alloc::assert_no_alloc;
     use std::time::Duration;
 
+    #[cfg(unix)]
     fn dup(region: &ShmRegion) -> OwnedFd {
         region.fd().try_clone_to_owned().unwrap()
+    }
+
+    /// Windows: copies of the region's handles, as the bridge receives them.
+    #[cfg(windows)]
+    fn dup(region: &ShmRegion) -> ShmHandles {
+        let [mapping, request, done] = region.handles().map(|h| h.try_clone_to_owned().unwrap());
+        ShmHandles {
+            mapping,
+            request,
+            done,
+        }
+    }
+
+    /// Windows: a section of `len` bytes whose first words are `words`, with two fresh events.
+    #[cfg(windows)]
+    fn raw_section(len: usize, words: &[u32]) -> ShmHandles {
+        let mapping = sys::create(len).unwrap();
+        let (ptr, size) = sys::map(&mapping).unwrap();
+        assert!(size >= words.len() * 4);
+        // SAFETY: our own fresh view, long enough (checked above), unmapped right after.
+        unsafe {
+            let base = ptr.as_ptr().cast::<u32>();
+            for (i, word) in words.iter().enumerate() {
+                base.add(i).write(*word);
+            }
+            sys::unmap(ptr);
+        }
+        let event = || {
+            signal::WakeEvent::new()
+                .unwrap()
+                .as_handle()
+                .try_clone_to_owned()
+        };
+        ShmHandles {
+            mapping,
+            request: event().unwrap(),
+            done: event().unwrap(),
+        }
     }
 
     /// A memfd of `len` bytes whose first words are `words`.
@@ -1256,14 +1617,26 @@ mod tests {
         other.set_bridge_state(BridgeState::Active);
         assert_eq!(region.latency(), 64);
         assert_eq!(region.bridge_state(), BridgeState::Active);
+        #[cfg(unix)]
         assert!(sys::size_matches(
             fstat(region.fd()).unwrap().st_size,
             SHM_SIZE
         ));
+        #[cfg(windows)]
+        assert_eq!(
+            sys::map(&region.os.mapping).map(|(p, size)| {
+                // SAFETY: the view just mapped, not used.
+                unsafe { sys::unmap(p) };
+                size
+            }),
+            Ok(SHM_SIZE)
+        );
     }
 
-    /// Sealed on Linux, set once for good on macOS: neither side can change the size.
+    /// Sealed on Linux, set once for good on macOS: neither side can change the size. (A Windows
+    /// section has no way to change its size at all.)
     #[test]
+    #[cfg(unix)]
     fn the_size_cannot_change() {
         use rustix::fs::ftruncate;
         let region = ShmRegion::create().unwrap();
@@ -1284,13 +1657,59 @@ mod tests {
         a.set_latency(1);
         b.set_latency(2);
         assert_eq!((a.latency(), b.latency()), (1, 2));
+        #[cfg(unix)]
         for region in [&a, &b] {
             let flags = rustix::io::fcntl_getfd(region.fd()).unwrap();
             assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
         }
+        // Windows: no handle of a region is inheritable (a spawned child gets none of them).
+        #[cfg(windows)]
+        for handle in a.handles().into_iter().chain(b.handles()) {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+            let mut flags = 0;
+            // SAFETY: a valid handle and an out pointer.
+            assert_ne!(
+                unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) },
+                0
+            );
+            assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+        }
     }
 
     #[test]
+    #[cfg(windows)]
+    fn open_validates_the_section() {
+        let (s, m) = (SHM_SIZE as u32, MAX_BLOCK as u32);
+        let open = |len, words: &[u32]| ShmRegion::open(raw_section(len, words)).map(|_| ());
+        assert_eq!(open(SHM_SIZE, &[]), Err(ShmError::BadMagic));
+        assert_eq!(
+            open(SHM_SIZE, &[SHM_MAGIC, 7, s, m]),
+            Err(ShmError::VersionMismatch { found: 7 })
+        );
+        for words in [
+            [SHM_MAGIC, SHM_VERSION, s + 4096, m],
+            [SHM_MAGIC, SHM_VERSION, s, 512],
+        ] {
+            assert_eq!(open(SHM_SIZE, &words), Err(ShmError::LayoutMismatch));
+        }
+        // Right header, section too small or too large.
+        let words = [SHM_MAGIC, SHM_VERSION, s, m];
+        assert_eq!(open(4096, &words), Err(ShmError::LayoutMismatch));
+        assert_eq!(open(SHM_SIZE + 4096, &words), Err(ShmError::LayoutMismatch));
+        assert_eq!(open(SHM_SIZE, &words), Ok(()));
+        // Not a section at all (an event).
+        let mut handles = raw_section(SHM_SIZE, &words);
+        handles.mapping = signal::WakeEvent::new()
+            .unwrap()
+            .as_handle()
+            .try_clone_to_owned()
+            .unwrap();
+        assert!(matches!(ShmRegion::open(handles), Err(ShmError::Io(_))));
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn open_validates_the_header() {
         let size = SHM_SIZE as u64;
         let (s, m) = (SHM_SIZE as u32, MAX_BLOCK as u32);
@@ -1430,7 +1849,7 @@ mod tests {
                 }
                 None => assert_eq!(request.deadline_ticks, 0),
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(target_os = "linux", windows))]
             assert_eq!(request.deadline_ticks, 0);
             server.finish(BlockResult::default());
             let mut out = [[0f32; 16]; 2];

@@ -11,9 +11,20 @@
 //! some are killed on purpose).
 //! RT priority is not required; for numbers at SCHED_FIFO run the ignored `latency_report` under
 //! `chrt -f 80` (the bridge child inherits the policy).
+//!
+//! Windows: the child is spawned (no fork) with the bridge end of the control pipe as its stdin,
+//! the app sends the region's section and wake events with `send_region` (duplicated into the
+//! child through the watcher's process handle), and the child turns off the Windows Error
+//! Reporting dialog (`SetErrorMode`) before it may crash. This is the handle-passing and
+//! cross-process wait/wake test on Windows; the RT path runs inside `assert_no_alloc` on both
+//! sides as on Unix.
 
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::io::AsHandle;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,8 +44,14 @@ use komponist_ipc::{
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-/// Set in the child: the number of the inherited control socket fd.
+/// Set in the child: the number of the inherited control socket fd (Windows: `stdin`).
 const BRIDGE_ENV: &str = "KOMPONIST_IPC_TEST_BRIDGE";
+
+/// The exit of a bridge that aborts: SIGABRT on Unix, the fast-fail NTSTATUS on Windows.
+#[cfg(unix)]
+const ABORTED: i32 = 6;
+#[cfg(windows)]
+const ABORTED: i32 = 0xC000_0409_u32 as i32;
 
 /// Input-event parameter ids the test bridge treats as commands.
 const SLEEP_MS: u32 = 0xFFFF_0001;
@@ -49,6 +66,28 @@ const LATENCY: u32 = 64;
 
 /// Entry point of the child process; does nothing in a normal test run.
 #[test]
+#[cfg(windows)]
+fn child_bridge_entry() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+    };
+    if std::env::var(BRIDGE_ENV).is_err() {
+        return;
+    }
+    // A crashing bridge must exit, not wait behind an error-reporting dialog (this process only).
+    // SAFETY: plain FFI call.
+    unsafe { SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX) };
+    // The parent gave us the bridge end of the pipe as stdin.
+    let pipe = std::io::stdin()
+        .as_handle()
+        .try_clone_to_owned()
+        .expect("stdin handle");
+    bridge_main(BridgeChannel::from_handle(pipe));
+    std::process::exit(0);
+}
+
+#[test]
+#[cfg(unix)]
 fn child_bridge_entry() {
     let Ok(fd) = std::env::var(BRIDGE_ENV) else {
         return;
@@ -75,10 +114,17 @@ fn bridge_main(channel: BridgeChannel) {
     if channel.send(&hello).is_err() {
         return;
     }
-    let Ok(fd) = channel.recv_fd() else {
+    #[cfg(unix)]
+    let Ok(handles) = channel.recv_fd() else {
         return;
     };
-    let region = Arc::new(ShmRegion::open(fd).expect("open shared memory"));
+    // SAFETY: the peer is the test process that spawned us, which duplicated the handles into
+    // this process for these messages.
+    #[cfg(windows)]
+    let Ok(handles) = (unsafe { channel.recv_region() }) else {
+        return;
+    };
+    let region = Arc::new(ShmRegion::open(handles).expect("open shared memory"));
     let stop = Arc::new(AtomicBool::new(false));
     let mut rt = None;
     // Control loop on the main thread; `Closed` (the app died) ends it like `Shutdown`.
@@ -173,10 +219,8 @@ struct TestBridge {
 }
 
 impl TestBridge {
-    /// Spawns the child and runs the start-up protocol: `Hello`, memfd, `Activate`.
-    fn start() -> TestBridge {
-        let (channel, bridge_fd) = socket_pair().unwrap();
-        let raw = bridge_fd.as_raw_fd();
+    /// The child bridge, running `child_bridge_entry`, with its end of the control socket.
+    fn command() -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
@@ -185,8 +229,17 @@ impl TestBridge {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env(BRIDGE_ENV, raw.to_string())
             .stdout(Stdio::null());
+        command
+    }
+
+    /// Spawns the child bridge and watches it (Unix: inherits the socket fd).
+    #[cfg(unix)]
+    fn spawn() -> (AppChannel, ProcessWatcher) {
+        let (channel, bridge_fd) = socket_pair().unwrap();
+        let raw = bridge_fd.as_raw_fd();
+        let mut command = Self::command();
+        command.env(BRIDGE_ENV, raw.to_string());
         // SAFETY: runs between fork and exec and only makes two async-signal-safe syscalls.
         unsafe {
             command.pre_exec(move || {
@@ -208,6 +261,30 @@ impl TestBridge {
         // never close the socket.
         drop(child);
         drop(bridge_fd);
+        (channel, watcher)
+    }
+
+    /// Spawns the child bridge and watches it (Windows: the pipe end is its stdin).
+    #[cfg(windows)]
+    fn spawn() -> (AppChannel, ProcessWatcher) {
+        let (channel, bridge_end) = socket_pair().unwrap();
+        let mut command = Self::command();
+        command
+            .env(BRIDGE_ENV, "stdin")
+            .stdin(Stdio::from(bridge_end));
+        let child = command.spawn().expect("spawn the bridge child");
+        // While `child` holds its handle, the pid cannot be reused.
+        let watcher = ProcessWatcher::new(child.id()).expect("process handle");
+        drop(child);
+        // The command owns our copy of the bridge end: it must go, or a dead bridge would never
+        // close the pipe.
+        drop(command);
+        (channel, watcher)
+    }
+
+    /// Spawns the child and runs the start-up protocol: `Hello`, memfd, `Activate`.
+    fn start() -> TestBridge {
+        let (channel, watcher) = Self::spawn();
 
         match channel.recv().expect("Hello") {
             BridgeMsg::Hello { protocol, pid } => {
@@ -217,7 +294,10 @@ impl TestBridge {
             other => panic!("expected Hello, got {other:?}"),
         }
         let region = Arc::new(ShmRegion::create().unwrap());
+        #[cfg(unix)]
         channel.send_fd(region.fd()).unwrap();
+        #[cfg(windows)]
+        channel.send_region(&region, watcher.as_handle()).unwrap();
         channel
             .send(&ControlMsg::Activate {
                 sample_rate: 48_000.0,
@@ -539,9 +619,15 @@ fn killed_bridge_is_detected_by_the_pidfd_within_10ms() {
     }
     assert_eq!(bridge.watcher.try_exit().unwrap(), None);
 
-    let pid = rustix::process::Pid::from_raw(bridge.watcher.pid() as i32).unwrap();
     let t0 = Instant::now();
-    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+    #[cfg(unix)]
+    {
+        let pid = rustix::process::Pid::from_raw(bridge.watcher.pid() as i32).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+    }
+    // Windows: TerminateProcess through the watcher (reported as signal 9).
+    #[cfg(windows)]
+    bridge.watcher.kill().unwrap();
     let exit = bridge
         .watcher
         .wait_exit(Some(Duration::from_secs(1)))
@@ -611,7 +697,7 @@ fn bridge_crashing_mid_block_is_late_and_detected() {
         exit,
         Some(ProcessExit {
             code: None,
-            signal: Some(6),
+            signal: Some(ABORTED),
         })
     );
     eprintln!("pidfd: abort() in the bridge detected {detected:.1?} after the request");

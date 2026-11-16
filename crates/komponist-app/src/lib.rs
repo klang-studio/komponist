@@ -26,7 +26,7 @@
 //! - [`step_rows`]: which rows a new step clip gets per instrument and how rows are labelled
 //!   (sampler pads "P1…", note names elsewhere; WP-54, WP-87).
 //! - [`settings`]: the settings file, `~/.config/komponist/settings.json`
-//!   (macOS: `~/Library/Application Support/komponist/settings.json`).
+//!   (macOS: `~/Library/Application Support/komponist/settings.json`, Windows: `%APPDATA%\komponist\settings.json`).
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 //! - [`windows`]: windows besides the main one; [`windows::plugin_frame`], the S05 plugin frame
 //!   around a plugin's own GUI (WP-50).
@@ -48,6 +48,7 @@ pub mod actions;
 pub mod app;
 pub mod device_host;
 pub mod dialogs;
+pub mod dirs;
 pub mod engine_sync;
 pub mod export;
 pub mod gain_trace;

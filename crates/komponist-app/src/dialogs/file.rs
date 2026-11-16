@@ -154,10 +154,13 @@ impl FileBrowser {
         self.location = super::format::tilde(&self.dir);
     }
 
-    /// "‹": the parent folder.
+    /// "‹": the parent folder. On Windows the parent of a drive root is the list of drives (an
+    /// empty `dir`); there is nothing above that, and `/` has no parent elsewhere.
     pub fn parent(&mut self) {
         if let Some(parent) = self.dir.parent().map(Path::to_path_buf) {
             self.go(parent);
+        } else if !self.dir.as_os_str().is_empty() && !crate::dirs::roots().is_empty() {
+            self.go(PathBuf::new());
         }
     }
 
@@ -217,11 +220,12 @@ impl FileBrowser {
                     .and_then(|i| self.entries.get(i))
                     .filter(|e| e.is_dir)
                     .map_or_else(|| self.dir.clone(), |e| e.path.clone());
-                Some(Output::Chosen(chosen))
+                // The list of drives (Windows) is no folder.
+                (!chosen.as_os_str().is_empty()).then_some(Output::Chosen(chosen))
             }
             Purpose::Save => {
                 let name = self.name.trim();
-                if name.is_empty() {
+                if name.is_empty() || self.dir.as_os_str().is_empty() {
                     return None;
                 }
                 let path = with_extension(&self.dir.join(name));
@@ -272,25 +276,41 @@ pub fn is_sample_file(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
 }
 
-/// `~` and `~/…` with the home folder.
+/// `~` and `~/…` with the home folder (on Windows `~\…` too).
 fn expand_tilde(text: &str) -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    expand_tilde_in(text, crate::dirs::home_dir())
+}
+
+/// [`expand_tilde`] for a given home folder.
+fn expand_tilde_in(text: &str, home: Option<PathBuf>) -> PathBuf {
+    let is_separator = |c: char| c == '/' || (cfg!(windows) && c == std::path::MAIN_SEPARATOR);
     match (text.strip_prefix('~'), home) {
-        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
-            home.join(rest.trim_start_matches('/'))
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with(is_separator) => {
+            home.join(rest.trim_start_matches(is_separator))
         }
         _ => PathBuf::from(text),
     }
 }
 
 /// The rows of folder `dir` for `purpose`: folders, then project files (not when choosing a
-/// folder), each sorted by name without case; hidden entries are left out.
+/// folder), each sorted by name without case; hidden entries are left out. An empty `dir` lists
+/// the drives (Windows; [`crate::dirs::roots`]).
 pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
+    if dir.as_os_str().is_empty() {
+        return Ok(crate::dirs::roots()
+            .into_iter()
+            .map(|path| Entry {
+                name: path.display().to_string(),
+                path,
+                is_dir: true,
+            })
+            .collect());
+    }
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        if name.starts_with('.') || is_hidden(&entry) {
             continue;
         }
         let path = entry.path();
@@ -310,6 +330,24 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
     files.sort_by_key(key);
     dirs.extend(files);
     Ok(dirs)
+}
+
+/// Whether Windows marks the entry hidden (`$RECYCLE.BIN`, `AppData`); never on other systems,
+/// where a leading dot does it.
+fn is_hidden(entry: &std::fs::DirEntry) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        entry
+            .metadata()
+            .is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = entry;
+        false
+    }
 }
 
 /// Draws the browser; returns what the user did in this frame.
@@ -595,6 +633,56 @@ mod tests {
         );
         assert_eq!(names(Purpose::Folder), ["A-ordner", "b-ordner"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_tilde_stands_for_the_home_folder() {
+        let home = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\kim"
+        } else {
+            "/home/kim"
+        });
+        assert_eq!(expand_tilde_in("~", Some(home.clone())), home);
+        assert_eq!(
+            expand_tilde_in("~/Musik", Some(home.clone())),
+            home.join("Musik")
+        );
+        // `~kim` is no home shorthand; without a home folder nothing expands.
+        assert_eq!(
+            expand_tilde_in("~kim", Some(home.clone())),
+            PathBuf::from("~kim")
+        );
+        assert_eq!(expand_tilde_in("~/Musik", None), PathBuf::from("~/Musik"));
+    }
+
+    /// Windows: `~\Musik` works too, and above a drive root the browser lists the drives.
+    #[cfg(windows)]
+    #[test]
+    fn windows_has_backslashes_and_drives() {
+        let home = Some(PathBuf::from(r"C:\Users\kim"));
+        assert_eq!(
+            expand_tilde_in(r"~\Musik", home),
+            PathBuf::from(r"C:\Users\kim\Musik")
+        );
+        let drives = crate::dirs::roots();
+        assert!(!drives.is_empty());
+        let root = drives[0].clone();
+        let mut b = FileBrowser::new(Lang::De, Purpose::Folder, root.clone(), String::new());
+        assert_eq!(b.dir, root);
+        // "‹" at a drive root: the list of drives; there is nothing above that.
+        b.parent();
+        assert!(b.dir.as_os_str().is_empty());
+        assert_eq!(b.entries.len(), drives.len());
+        assert!(b.entries.iter().all(|e| e.is_dir));
+        b.parent();
+        assert!(b.dir.as_os_str().is_empty());
+        // The list of drives is no folder to choose; a drive is.
+        assert_eq!(b.confirm(), None);
+        b.select(0);
+        assert_eq!(b.confirm(), Some(Output::Chosen(drives[0].clone())));
+        // Opening a drive shows its folders.
+        assert_eq!(b.activate(0), None);
+        assert_eq!(b.dir, drives[0]);
     }
 
     #[test]

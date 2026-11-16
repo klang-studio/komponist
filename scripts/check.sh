@@ -8,6 +8,12 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source scripts/build-lock.sh
 
+# Windows (Git Bash): wgpu's DX12 backend crashed parallel kittest tests with STATUS_ACCESS_VIOLATION on
+# the first Windows gate (2026-11-16); Vulkan and GL pass. A WGPU_BACKEND set by the caller wins.
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}" ;;
+esac
+
 lowprio cargo fmt --all --check
 lowprio cargo clippy --workspace --all-targets -- -D warnings
 lowprio cargo test --workspace --no-run

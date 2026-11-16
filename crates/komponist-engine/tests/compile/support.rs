@@ -346,6 +346,8 @@ pub fn check_golden(name: &str, actual: &str) {
             path.display()
         )
     });
+    // A Windows checkout with `core.autocrlf` has CRLF line ends in the golden file.
+    let expected = expected.replace("\r\n", "\n");
     if expected == actual {
         return;
     }

@@ -20,7 +20,7 @@ use komponist_app::project_io::{self, RecentList};
 use komponist_app::settings::{Language, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartView};
 use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
-use komponist_audio::{DeviceId as AudioDeviceId, HostKind, StreamConfig};
+use komponist_audio::{DeviceId as AudioDeviceId, DeviceInfo, HostKind, StreamConfig};
 use komponist_engine::Processor;
 use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
@@ -1279,6 +1279,7 @@ fn s07_model_in(lang: Lang) -> settings::Model {
         device,
         rates: vec![44_100, 48_000, 96_000],
         no_device: Some("no audio device".into()),
+        buffer: settings::BufferLimit::Free,
         latency: match lang {
             Lang::De => "5.3 ms Latenz",
             Lang::En => "5.3 ms latency",
@@ -1292,6 +1293,7 @@ fn s07_model_in(lang: Lang) -> settings::Model {
                 enabled: true,
                 connected: true,
                 active: true,
+                busy: false,
             },
             settings::MidiRow {
                 name: "Midi Through Port-0".into(),
@@ -1299,6 +1301,7 @@ fn s07_model_in(lang: Lang) -> settings::Model {
                 enabled: false,
                 connected: true,
                 active: false,
+                busy: false,
             },
         ]),
         dirs: vec![
@@ -1401,6 +1404,183 @@ fn snapshot_of_s07_in_english() {
         .rect();
     h.mask(cpu.expand(2.0));
     h.snapshot("dialogs-s07-en-1x");
+}
+
+/// S07 with WASAPI selected (Windows): the buffer size is the device period, so its segments are
+/// disabled and a hint names the real size; a MIDI input another program holds says so instead of
+/// "active". The devices are fake (rule 14). No reference snapshot: this is rendered, not compared;
+/// set `KOMPONIST_RENDER_DIR` to also write the PNGs (`s07-wasapi-de.png`, `s07-wasapi-en.png`).
+#[test]
+fn s07_with_wasapi_shows_the_fixed_buffer_and_a_busy_midi_input() {
+    for lang in [Lang::De, Lang::En] {
+        let config = StreamConfig {
+            host: HostKind::Wasapi,
+            device: None,
+            device_id: None,
+            sample_rate: 48_000,
+            buffer_frames: 256,
+        };
+        let (devices, device) = settings::device_entries(lang, HostKind::Wasapi, &[], &config);
+        let mut model = s07_model_in(lang);
+        model.hosts = vec![HostKind::Wasapi, HostKind::Null];
+        model.config = config;
+        model.devices = devices;
+        model.device = device;
+        model.rates = vec![44_100, 48_000, 96_000];
+        model.no_device = None;
+        model.buffer = settings::BufferLimit::Fixed(480);
+        model.latency = match lang {
+            Lang::De => "10.0 ms Latenz",
+            Lang::En => "10.0 ms latency",
+        }
+        .into();
+        if let Some(rows) = model.midi.as_mut() {
+            rows[0].busy = true;
+            rows[0].active = false;
+        }
+        let hint = match lang {
+            Lang::De => "Der Treiber gibt 480 Samples vor.",
+            Lang::En => "The driver sets 480 samples.",
+        };
+        let busy = match lang {
+            Lang::De => "belegt · ein anderes Programm nutzt den Eingang",
+            Lang::En => "in use · another program holds the input",
+        };
+        assert_eq!(model.midi.as_ref().unwrap()[0].info(lang), busy);
+        let app = App::headless(demo_project()).with_lang(lang);
+        let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(vec2(W, H))
+            .build_ui_state(
+                move |ui, app: &mut App| {
+                    app.show(ui);
+                    let _ = settings::show(ui.ctx(), &model, None);
+                },
+                app,
+            );
+        h.run_steps(4);
+        // The hint is a label of the page; the segments are disabled, none is selected.
+        h.get_by_label_contains(hint);
+        h.get_by_label_contains(busy);
+        if let Some(dir) = std::env::var_os("KOMPONIST_RENDER_DIR") {
+            let img = h.render().expect("render");
+            let name = format!(
+                "s07-wasapi-{}.png",
+                if lang == Lang::De { "de" } else { "en" }
+            );
+            img.save(std::path::Path::new(&dir).join(name)).unwrap();
+        }
+    }
+}
+
+/// S07 with ASIO listed (Windows build with the feature `asio`): the "ASIO Compatible" logo sits
+/// in the driver row with an accessible name; without ASIO in the build, it is not drawn at all
+/// (Linux, macOS, Windows without the feature). Fake devices (rule 14), nothing is opened. Set
+/// `KOMPONIST_RENDER_DIR` to also write the PNGs (`s07-asio-de.png`, `s07-asio-en.png`).
+#[test]
+fn s07_shows_the_asio_logo_where_asio_is_offered() {
+    for lang in [Lang::De, Lang::En] {
+        let config = StreamConfig {
+            host: HostKind::Asio,
+            device: Some("ASIO4ALL v2".into()),
+            device_id: None,
+            sample_rate: 48_000,
+            buffer_frames: 256,
+        };
+        let (devices, device) = settings::device_entries(lang, HostKind::Asio, &[], &config);
+        let mut model = s07_model_in(lang);
+        model.hosts = vec![HostKind::Wasapi, HostKind::Asio, HostKind::Null];
+        model.config = config;
+        model.devices = devices;
+        model.device = device;
+        model.rates = vec![44_100, 48_000, 96_000];
+        model.no_device = None;
+        model.buffer = settings::BufferLimit::Range(64, 2048);
+        let name = match lang {
+            Lang::De => de::SETTINGS_ASIO_LOGO,
+            Lang::En => en::SETTINGS_ASIO_LOGO,
+        };
+        let app = App::headless(demo_project()).with_lang(lang);
+        let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(vec2(W, H))
+            .build_ui_state(
+                move |ui, app: &mut App| {
+                    app.show(ui);
+                    let _ = settings::show(ui.ctx(), &model, None);
+                },
+                app,
+            );
+        h.run_steps(4);
+        let logo = h.query_by_label(name);
+        assert_eq!(
+            logo.is_some(),
+            HostKind::Asio.is_supported_here(),
+            "logo only where the ASIO segment is shown"
+        );
+        if let Some(logo) = logo {
+            assert_eq!(logo.accesskit_node().role(), Role::Image);
+        }
+        if let Some(dir) = std::env::var_os("KOMPONIST_RENDER_DIR") {
+            let img = h.render().expect("render");
+            let tag = if lang == Lang::De { "de" } else { "en" };
+            img.save(std::path::Path::new(&dir).join(format!("s07-asio-{tag}.png")))
+                .unwrap();
+        }
+    }
+}
+#[test]
+fn buffer_limits_follow_the_driver() {
+    let device = |host, range| DeviceInfo {
+        host,
+        id: Some(AudioDeviceId("d".into())),
+        name: "Out".into(),
+        is_default: true,
+        channels: 2,
+        sample_rates: vec![48_000],
+        buffer_range: range,
+    };
+    let config = StreamConfig::default();
+    let entry = |h, r| {
+        let devices = vec![device(h, r)];
+        let (entries, i) = settings::device_entries(Lang::En, h, &devices, &config);
+        (devices, entries[i].clone())
+    };
+    // WASAPI: the device period, or the one the stream reports.
+    let (d, e) = entry(HostKind::Wasapi, Some((480, 480)));
+    assert_eq!(
+        settings::buffer_limit(HostKind::Wasapi, &d, &e, None),
+        settings::BufferLimit::Fixed(480)
+    );
+    let running = StreamConfig {
+        host: HostKind::Wasapi,
+        buffer_frames: 528,
+        ..StreamConfig::default()
+    };
+    assert_eq!(
+        settings::buffer_limit(HostKind::Wasapi, &d, &e, Some(&running)),
+        settings::BufferLimit::Fixed(528)
+    );
+    let (d, e) = entry(HostKind::Wasapi, None);
+    assert_eq!(
+        settings::buffer_limit(HostKind::Wasapi, &d, &e, None),
+        settings::BufferLimit::Free
+    );
+    // ASIO: the driver's range; one size when min == max.
+    let (d, e) = entry(HostKind::Asio, Some((64, 2048)));
+    assert_eq!(
+        settings::buffer_limit(HostKind::Asio, &d, &e, None),
+        settings::BufferLimit::Range(64, 2048)
+    );
+    let (d, e) = entry(HostKind::Asio, Some((480, 480)));
+    assert_eq!(
+        settings::buffer_limit(HostKind::Asio, &d, &e, None),
+        settings::BufferLimit::Fixed(480)
+    );
+    // The other drivers are not limited by the dialog.
+    let (d, e) = entry(HostKind::Jack, Some((256, 256)));
+    assert_eq!(
+        settings::buffer_limit(HostKind::Jack, &d, &e, None),
+        settings::BufferLimit::Free
+    );
 }
 
 /// S07 scrolled to "Appearance": the language row (#5), German and English.

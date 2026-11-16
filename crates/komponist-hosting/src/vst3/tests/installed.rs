@@ -10,17 +10,17 @@ use komponist_ipc::{ParamInfo, PluginKind, WireEvent, WireEventKind};
 use super::*;
 
 // Install paths per OS (the user and system plugin folders).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const KLOPFER: &str = "~/.vst3/Klopfer.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SURGE_XT: &str = "/usr/lib/vst3/Surge XT.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SURGE_XT_FX: &str = "/usr/lib/vst3/Surge XT Effects.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const DEXED: &str = "/usr/lib/vst3/Dexed.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const DECENT_SAMPLER: &str = "/usr/lib/vst3/DecentSampler.vst3";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(super) const SHORTCIRCUIT_XT: &str = "/usr/local/lib/vst3/Shortcircuit XT.vst3";
 #[cfg(target_os = "macos")]
 pub(super) const KLOPFER: &str = "~/Library/Audio/Plug-Ins/VST3/Klopfer.vst3";
@@ -34,6 +34,20 @@ pub(super) const DEXED: &str = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3";
 pub(super) const DECENT_SAMPLER: &str = "/Library/Audio/Plug-Ins/VST3/DecentSampler.vst3";
 #[cfg(target_os = "macos")]
 pub(super) const SHORTCIRCUIT_XT: &str = "/Library/Audio/Plug-Ins/VST3/Shortcircuit XT.vst3";
+#[cfg(windows)]
+pub(super) const KLOPFER: &str = "~/AppData/Local/Programs/Common/VST3/Klopfer.vst3";
+#[cfg(windows)]
+pub(super) const SURGE_XT: &str =
+    "C:/Program Files/Common Files/VST3/Surge Synth Team/Surge XT.vst3";
+#[cfg(windows)]
+pub(super) const SURGE_XT_FX: &str =
+    "C:/Program Files/Common Files/VST3/Surge Synth Team/Surge XT Effects.vst3";
+#[cfg(windows)]
+pub(super) const DEXED: &str = "C:/Program Files/Common Files/VST3/Dexed.vst3";
+#[cfg(windows)]
+pub(super) const DECENT_SAMPLER: &str = "C:/Program Files/Common Files/VST3/DecentSampler.vst3";
+#[cfg(windows)]
+pub(super) const SHORTCIRCUIT_XT: &str = "C:/Program Files/Common Files/VST3/Shortcircuit XT.vst3";
 
 /// What a plugin should do in [`exercise`].
 struct Expect {

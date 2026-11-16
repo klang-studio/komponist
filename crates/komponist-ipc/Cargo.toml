@@ -7,10 +7,12 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+
+[target.'cfg(unix)'.dependencies]
 # Workspace features (mm, thread, process, net) plus: fs (memfd, seals, fstat), event (poll on
 # pidfds, kqueue on macOS), time (CLOCK_MONOTONIC for absolute futex deadlines).
 rustix = { workspace = true, features = ["fs", "event", "time"] }
-postcard = { workspace = true, features = ["use-std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # POSIX shared memory (`shm_open`) in place of memfd; the page size for its rounded size.
@@ -20,5 +22,24 @@ rustix = { workspace = true, features = ["shm", "param"] }
 # time-constraint policy in a test.
 komponist-rt.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Foundation (handles, DuplicateHandle, errors), Security (the SECURITY_ATTRIBUTES parameter of
+# the create calls), Threading (events, high-resolution waitable timers, WaitOnAddress, process
+# handles), Memory (CreateFileMappingW, MapViewOfFile, VirtualLock), Pipes + Storage_FileSystem +
+# System_IO (the overlapped duplex named pipe of the control channel).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
 [dev-dependencies]
 assert_no_alloc.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# Test children that crash on purpose turn off the Windows Error Reporting dialog (SetErrorMode).
+windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug"] }

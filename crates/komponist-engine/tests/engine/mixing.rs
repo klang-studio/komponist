@@ -68,8 +68,8 @@ fn solo_mute_matrix() {
                     });
                 }
             } else {
-                for i in 0..3 {
-                    let t = Arc::make_mut(&mut p.tracks[i]);
+                for (i, track) in p.tracks.iter_mut().enumerate().take(3) {
+                    let t = Arc::make_mut(track);
                     t.mute = mute(i);
                     t.solo = solo(i);
                 }

@@ -37,6 +37,62 @@ file to force a full rescan; remove the folders to reset komponist.
 icon, hardened-runtime signature; ad-hoc unless `KOMPONIST_SIGN_IDENTITY` is set, see the header of the script).
 `ARCHITECTURE.md` §8.7 describes the bundle.
 
+## Windows
+
+The Windows 11 (x86_64) port is in progress; the first release zip follows once the app builds there. Every
+[release](https://github.com/klang-studio/komponist/releases) then has `komponist-<tag>-windows-x86_64.zip` and its
+`.sha256`.
+
+1. Download the zip. Check it in PowerShell: `Get-FileHash komponist-<tag>-windows-x86_64.zip -Algorithm SHA256` must
+   print the hash in the `.sha256` file.
+2. Unzip it anywhere (right-click → Extract All). komponist is one `komponist.exe`; there is nothing to install.
+3. First start: **the zip is not signed with a code signing certificate (Authenticode)**, so SmartScreen shows
+   "Windows protected your PC". Click **More info**, then **Run anyway**. Alternatively, before unzipping: right-click the zip →
+   Properties → tick **Unblock**. You do this once per downloaded version. A signed build will make it unnecessary.
+4. Audio goes through WASAPI (shared mode, the default) or, if your audio interface has an ASIO driver, through ASIO
+   (Settings → Treiber → ASIO; the segment is enabled only when at least one ASIO driver is registered on the
+   machine). With ASIO the buffer size you choose is the one that runs, within the driver's range (the other
+   sizes are greyed out). WASAPI runs at the one size of the device's period: the buffer segments are greyed out
+   and a note names the size.
+   Changing the sample rate changes it for the whole driver, also for other programs that use the interface; close
+   them first, as most ASIO drivers serve one program at a time. komponist loads each installed ASIO driver briefly
+   to list the devices. ASIO is a registered trademark of Steinberg Media Technologies GmbH.
+
+**Projects:** a double-click on a `.komponist` file does not open komponist yet; the file association (and a Start menu
+entry) come with a later installer. Open a project from inside komponist, or pass it on the command line:
+`komponist.exe "C:\path\to\project.komponist"`.
+
+**MIDI inputs:** Windows lets one program at a time open a MIDI input. If another program (a DAW, a MIDI monitor)
+holds it, Settings → MIDI inputs shows "belegt" ("in use") for it; close the other program and switch the input off
+and on again.
+
+**Plugins:** CLAP plugins are searched in `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP` and
+`%CLAP_PATH%` (separated by `;`); VST3 plugins in `%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3`.
+More folders can be added in the settings. A plugin's own window (S05 "Öffnen") is a window of its plugin process
+with komponist's header on top, so it is a window of its own in the taskbar and in Alt-Tab; the "Fenster" (Window)
+submenu of the "⋯" menu lists every open plugin window.
+
+**Where komponist keeps its files:** settings and recent projects in `%APPDATA%\komponist\` (`settings.json`,
+`recent.json`). Remove the folder to reset komponist.
+
+**Command line:** `komponist.exe` is a windows-subsystem program (no console window). Started from a terminal it
+attaches to that console for `--help` and error messages; the terminal does not wait for it, so the output can appear
+after the next prompt. Piping it (`komponist.exe --help | more`) makes the shell wait.
+
+**Building the zip yourself:** `scripts/package-windows.sh` (Git Bash) builds `komponist.exe` and writes
+`dist/komponist-<version>-windows-x86_64.zip` with its `.sha256`; signing is optional, see the header of the script.
+`ARCHITECTURE.md` §8.8 describes the package. The script builds with ASIO and stops with an error when LLVM's
+`libclang.dll` is missing (`--no-asio` builds without ASIO).
+
+**Windows, building from source:** MSVC (Visual Studio Build Tools) and Rust. ASIO is optional: a plain
+`cargo build` has WASAPI only and needs no extra tools. For ASIO build with `--features asio` (on `komponist-app`; it
+forwards to `komponist-audio`). That needs [LLVM](https://releases.llvm.org) for `libclang.dll` (bindgen): set
+`LIBCLANG_PATH` to its `bin` folder if it is not `C:\Program Files\LLVM\bin`. Nothing is downloaded: the host part of
+Steinberg's ASIO SDK 2.3.4 is vendored in `vendor/asio-sdk/` and `.cargo/config.toml` points `CPAL_ASIO_DIR` at it. Steinberg
+licenses the SDK under its own licence or under GPLv3 (`LICENSE.txt` there); komponist uses the GPLv3 option, which
+allows the redistribution. Left out are the driver side, the PDFs and three old Microsoft files without a licence grant
+(`vendor/asio-sdk/VENDORED.md`, `ARCHITECTURE.md` §7). The sources are not part of the release zip.
+
 ## Build from source
 
 You need a Rust toolchain (`rust-toolchain.toml` pins the version) and the usual system libraries for egui/wgpu and

@@ -126,11 +126,24 @@ impl RunOptions {
     /// The eframe options: wgpu renderer, X11 forced on Linux (also under XWayland), the viewport
     /// from these settings.
     pub fn native_options(&self) -> eframe::NativeOptions {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut inner_size = self.inner_size;
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut position: Option<egui::Pos2> = None;
+        #[cfg(windows)]
+        if let Some(work) = windows_work_area() {
+            let (size, pos) = fit_to_work_area(inner_size, work);
+            inner_size = size;
+            position = Some(pos);
+        }
         let mut viewport = egui::ViewportBuilder::default()
             .with_title(self.title.clone())
             .with_app_id(self.app_id.clone())
             .with_icon(app_icon())
-            .with_inner_size(self.inner_size);
+            .with_inner_size(inner_size);
+        if let Some(pos) = position {
+            viewport = viewport.with_position(pos);
+        }
         if let Some(min) = self.min_inner_size {
             viewport = viewport.with_min_inner_size(min);
         }
@@ -155,6 +168,50 @@ impl RunOptions {
             ..Default::default()
         }
     }
+}
+
+/// Room the window's frame takes around its inner size, in points: the Windows 11 title bar is
+/// 31 px high at 100 % and the frame about 1 px a side; rounded up with the drop shadow, so the
+/// whole window stays inside the work area.
+const WINDOW_CHROME: egui::Vec2 = egui::vec2(16.0, 40.0);
+
+/// The first window on Windows: `requested` (inner size, points) shrunk so the window with its
+/// frame fits `work` (the monitor's work area in points, i.e. without the taskbar), and the outer
+/// position that centres it there. Linux and macOS place and size windows themselves.
+pub fn fit_to_work_area(requested: egui::Vec2, work: egui::Rect) -> (egui::Vec2, egui::Pos2) {
+    let room = (work.size() - WINDOW_CHROME).max(egui::Vec2::ZERO);
+    let size = requested.min(room);
+    let outer = size + WINDOW_CHROME;
+    let pos = work.min + (work.size() - outer) * 0.5;
+    (size, pos)
+}
+
+/// The primary monitor's work area in points: `SPI_GETWORKAREA` (pixels, minus the taskbar)
+/// divided by the system DPI scale. `None` if Windows reports nothing usable.
+#[cfg(windows)]
+fn windows_work_area() -> Option<egui::Rect> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETWORKAREA, SystemParametersInfoW};
+
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: `r` is a RECT as `SPI_GETWORKAREA` requires, and lives for the call.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, (&raw mut r).cast(), 0) };
+    // SAFETY: no arguments, no preconditions.
+    let dpi = unsafe { GetDpiForSystem() };
+    if ok == 0 || r.right <= r.left || r.bottom <= r.top || dpi == 0 {
+        return None;
+    }
+    let scale = dpi as f32 / 96.0;
+    Some(egui::Rect::from_min_max(
+        egui::pos2(r.left as f32 / scale, r.top as f32 / scale),
+        egui::pos2(r.right as f32 / scale, r.bottom as f32 / scale),
+    ))
 }
 
 /// Runs an eframe app with the komponist setup: [`RunOptions::native_options`], then
@@ -199,6 +256,30 @@ mod tests {
         );
         assert_eq!(o.viewport.title.as_deref(), Some("komponist · Test"));
         assert_eq!(o.viewport.app_id.as_deref(), Some("komponist-test"));
+    }
+
+    #[test]
+    fn the_first_window_fits_the_work_area() {
+        let work = |w, h| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h));
+        // 1920×1040 work area (1080 minus the taskbar): the 1920×1080 request shrinks, and the
+        // window with its frame lies inside.
+        let (size, pos) = fit_to_work_area(egui::vec2(1920.0, 1080.0), work(1920.0, 1040.0));
+        assert_eq!(size, egui::vec2(1920.0 - 16.0, 1040.0 - 40.0));
+        assert_eq!(pos, egui::pos2(0.0, 0.0));
+        // A small screen at 150 % (1280×680 points): shrunk on both axes.
+        let (size, _) = fit_to_work_area(egui::vec2(1920.0, 1080.0), work(1280.0, 680.0));
+        assert_eq!(size, egui::vec2(1264.0, 640.0));
+        // A large screen keeps the size and centres the window; the work area's origin counts.
+        let big = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(3000.0, 1600.0));
+        let (size, pos) = fit_to_work_area(egui::vec2(1920.0, 1080.0), big);
+        assert_eq!(size, egui::vec2(1920.0, 1080.0));
+        assert_eq!(
+            pos,
+            egui::pos2((3000.0 - 1936.0) / 2.0, 40.0 + (1600.0 - 1120.0) / 2.0)
+        );
+        // Degenerate work area: no negative size.
+        let (size, _) = fit_to_work_area(egui::vec2(1920.0, 1080.0), work(10.0, 10.0));
+        assert_eq!(size, egui::Vec2::ZERO);
     }
 
     #[test]

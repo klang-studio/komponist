@@ -1,10 +1,17 @@
-//! MIDI inputs through midir (ALSA sequencer, JACK where enabled; CoreMIDI on macOS) with per-device enable, activity
-//! flags and timestamps (ARCHITECTURE §7, S07 "MIDI-Eingänge").
+//! MIDI inputs through midir (ALSA sequencer, JACK where enabled; CoreMIDI on macOS; WinMM on
+//! Windows) with per-device enable, activity flags and timestamps (ARCHITECTURE §7, S07 "MIDI-Eingänge").
 //!
 //! midir callbacks run on their own threads. They stamp each message with `Instant::now()` and push
 //! it into a lock-free queue that the audio callback drains through [`MidiReceiver`] (via
 //! [`crate::MidiIn`]). Only channel messages (note on/off, CC, pitch bend, aftertouch, program
 //! change) are forwarded; SysEx and system real-time messages are dropped.
+//!
+//! **Windows (WinMM):** midir has no virtual ports there and a WinMM input device is exclusive per
+//! process: while another program (a DAW, a MIDI monitor) holds it, [`MidiInputHub::refresh`] and
+//! [`MidiInputHub::set_enabled`] report a [`MidiError::Backend`], and the port stays listed as
+//! present. Port names are the device names WinMM reports (it cuts them at 31 characters; the hub
+//! appends " (2)" to a repeated name). Tests therefore cannot create ports; they feed the input
+//! path through `MidiInputHub::inject_for_test` or [`TestMidiSource`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -187,9 +194,12 @@ pub(crate) fn channel_message(bytes: &[u8]) -> Option<[u8; 3]> {
 /// and re-plugging; midir tells re-plugged ports apart by that unique id. Two identical devices
 /// get a " (2)" suffix from the hub.
 ///
+/// Windows: WinMM reports the device name (`MIDIINCAPS::szPname`, e.g. `"Arturia KeyStep 37"`). It
+/// carries no address, so it is used as is (trimmed).
+///
 /// Elsewhere (ALSA): see [`alsa_port_name`].
 fn port_name(raw: &str) -> String {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", windows)) {
         raw.trim().to_owned()
     } else {
         alsa_port_name(raw)
@@ -224,7 +234,8 @@ fn alsa_port_name(raw: &str) -> String {
 /// Whether a newly seen port starts disabled: the system-wide virtual MIDI ports, which would
 /// otherwise feed komponist with whatever other programs send. "Midi Through" (ALSA) everywhere,
 /// the IAC Driver buses (CoreMIDI display name "IAC Driver Bus 1", midir exposes no driver
-/// property) only on macOS (`mac`).
+/// property) only on macOS (`mac`). Windows has no system-wide virtual ports: virtual cables there
+/// (loopMIDI and the like) are drivers the user installed on purpose.
 fn starts_disabled(name: &str, mac: bool) -> bool {
     name.starts_with("Midi Through") || (mac && name.starts_with("IAC"))
 }
@@ -241,6 +252,31 @@ struct PortFlags {
     activity: AtomicBool,
 }
 
+/// What a port's midir callback does with a message, on the MIDI thread: forwards a channel
+/// message into the queue, sets the activity flag and wakes the UI.
+struct PortSink {
+    id: MidiPortId,
+    flags: Arc<PortFlags>,
+    sender: MidiSender,
+    waker: Arc<OnceLock<Waker>>,
+}
+
+impl PortSink {
+    fn deliver(&self, bytes: &[u8]) {
+        if !self.flags.enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(data) = channel_message(bytes) {
+            self.flags.activity.store(true, Ordering::Relaxed);
+            // A full queue means the audio callback is not draining it; drop the message.
+            let _ = self.sender.push(self.id, data);
+            if let Some(wake) = self.waker.get() {
+                wake();
+            }
+        }
+    }
+}
+
 /// A port seen by the hub.
 struct PortEntry {
     info: MidiPortInfo,
@@ -248,6 +284,8 @@ struct PortEntry {
     port: Option<MidiInputPort>,
     /// The open connection while enabled and present.
     connection: Option<MidiInputConnection<()>>,
+    /// The last attempt to open the port failed (on Windows: another program holds it).
+    busy: bool,
     flags: Arc<PortFlags>,
 }
 
@@ -378,6 +416,7 @@ impl MidiInputHub {
                         },
                         port: None,
                         connection: None,
+                        busy: false,
                         flags: Arc::new(PortFlags::default()),
                     });
                     self.ports.len() - 1
@@ -404,6 +443,13 @@ impl MidiInputHub {
     /// All ports seen since the hub was created, in enumeration order.
     pub fn ports(&self) -> Vec<MidiPortInfo> {
         self.ports.iter().map(|e| e.info.clone()).collect()
+    }
+
+    /// Whether the port named `name` is enabled and present but could not be opened. On Windows
+    /// this is a WinMM input another program holds (exclusive per process): the port stays listed
+    /// and a later [`MidiInputHub::refresh`] or [`MidiInputHub::set_enabled`] tries again.
+    pub fn port_busy(&self, name: &str) -> bool {
+        self.entry(name).is_some_and(|e| e.busy)
     }
 
     /// The id of the port named `name`, if seen.
@@ -443,6 +489,42 @@ impl MidiInputHub {
             .is_some_and(|e| e.flags.activity.swap(false, Ordering::Relaxed))
     }
 
+    /// Tests: lists a port named `name` as present and enabled without a backend port behind it
+    /// (WinMM has no virtual ports to create) and returns its id.
+    #[cfg(test)]
+    fn add_port_for_test(&mut self, name: &str) -> MidiPortId {
+        let id = MidiPortId(self.ports.len() as u16);
+        let flags = Arc::new(PortFlags::default());
+        flags.enabled.store(true, Ordering::Relaxed);
+        self.ports.push(PortEntry {
+            info: MidiPortInfo {
+                id,
+                name: name.to_owned(),
+                enabled: true,
+                connected: true,
+            },
+            port: None,
+            connection: None,
+            busy: false,
+            flags,
+        });
+        id
+    }
+
+    /// Tests: what the midir callback of port `id` does with `bytes`: the input path without a
+    /// backend port (enabled check, channel filter, activity flag, queue, waker).
+    #[cfg(test)]
+    fn inject_for_test(&self, id: MidiPortId, bytes: &[u8]) {
+        let entry = self.ports.iter().find(|e| e.info.id == id).unwrap();
+        PortSink {
+            id,
+            flags: Arc::clone(&entry.flags),
+            sender: self.sender.clone(),
+            waker: Arc::clone(&self.waker),
+        }
+        .deliver(bytes);
+    }
+
     fn entry(&self, name: &str) -> Option<&PortEntry> {
         self.ports.iter().find(|e| e.info.name == name)
     }
@@ -454,35 +536,28 @@ impl MidiInputHub {
             return Ok(());
         };
         if !entry.info.enabled || entry.connection.is_some() {
+            entry.busy = false;
             return Ok(());
         }
         // midir's `connect` consumes its client, so every connection gets its own.
         let input = open_client()?;
-        let sender = self.sender.clone();
-        let flags = Arc::clone(&entry.flags);
-        let waker = Arc::clone(&self.waker);
-        let id = entry.info.id;
-        flags.enabled.store(true, Ordering::Relaxed);
-        let callback = move |_stamp: u64, bytes: &[u8], _: &mut ()| {
-            if !flags.enabled.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Some(data) = channel_message(bytes) {
-                flags.activity.store(true, Ordering::Relaxed);
-                // A full queue means the audio callback is not draining it; drop the message.
-                let _ = sender.push(id, data);
-                if let Some(wake) = waker.get() {
-                    wake();
-                }
-            }
+        let sink = PortSink {
+            id: entry.info.id,
+            flags: Arc::clone(&entry.flags),
+            sender: self.sender.clone(),
+            waker: Arc::clone(&self.waker),
         };
+        sink.flags.enabled.store(true, Ordering::Relaxed);
+        let callback = move |_stamp: u64, bytes: &[u8], _: &mut ()| sink.deliver(bytes);
         match input.connect(port, "komponist-in", callback, ()) {
             Ok(connection) => {
                 entry.connection = Some(connection);
+                entry.busy = false;
                 Ok(())
             }
             Err(e) => {
                 entry.flags.enabled.store(false, Ordering::Relaxed);
+                entry.busy = true;
                 Err(MidiError::Backend(format!("{}: {e}", entry.info.name)))
             }
         }
@@ -499,6 +574,7 @@ fn open_client() -> Result<MidiInput, MidiError> {
 /// Stops forwarding from `entry` and closes its connection (joins the midir thread).
 fn close(entry: &mut PortEntry) {
     entry.flags.enabled.store(false, Ordering::Relaxed);
+    entry.busy = false;
     if let Some(connection) = entry.connection.take() {
         connection.close();
     }
@@ -509,7 +585,10 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    // midir has virtual ports on unix only (ALSA, CoreMIDI), not on WinMM.
+    #[cfg(unix)]
     use midir::MidiOutput;
+    #[cfg(unix)]
     use midir::os::unix::VirtualOutput;
 
     #[test]
@@ -580,9 +659,49 @@ mod tests {
             assert_eq!(port_name("IAC Driver Bus 1"), "IAC Driver Bus 1");
             assert_eq!(port_name("Synth 14:0"), "Synth 14:0");
             assert_eq!(port_name(" Arturia KeyStep 37 "), "Arturia KeyStep 37");
+        } else if cfg!(windows) {
+            // WinMM names carry no address; they pass through trimmed.
+            assert_eq!(port_name("Arturia KeyStep 37"), "Arturia KeyStep 37");
+            assert_eq!(port_name(" Synth 14:0 "), "Synth 14:0");
         } else {
             assert_eq!(port_name("Synth:Synth 1 14:0"), "Synth 1");
         }
+    }
+
+    /// The hub's input path without a backend port (the only way on Windows, where midir has no
+    /// virtual ports and a real device must never be opened by a test): channel messages reach the
+    /// queue and set the activity flag, SysEx and a disabled port do not.
+    #[test]
+    fn hub_input_path_without_a_backend_port() {
+        let Ok((mut hub, mut receiver)) = MidiInputHub::new() else {
+            eprintln!("MIDI backend unavailable: skipped");
+            return;
+        };
+        // No `refresh`: the machine's real ports are neither listed nor opened.
+        let id = hub.add_port_for_test("Test Keyboard");
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woken);
+        hub.set_waker(move || flag.store(true, Ordering::SeqCst));
+        assert_eq!(hub.port_id("Test Keyboard"), Some(id));
+        assert!(!hub.take_activity(id));
+
+        hub.inject_for_test(id, &[0xF0, 0x7D, 0x01, 0xF7]);
+        hub.inject_for_test(id, &[0xF8]);
+        assert!(!hub.take_activity(id), "SysEx and clock are dropped");
+        assert!(!woken.load(Ordering::SeqCst));
+
+        hub.inject_for_test(id, &[0x90, 60, 100]);
+        let event = receiver.pop_before(Instant::now()).expect("note on queued");
+        assert_eq!((event.port, event.data), (id, [0x90, 60, 100]));
+        assert!(hub.take_activity(id));
+        assert!(!hub.take_activity(id), "reset by the read");
+        assert!(woken.load(Ordering::SeqCst));
+
+        hub.set_enabled("Test Keyboard", false).unwrap();
+        hub.inject_for_test(id, &[0x90, 61, 100]);
+        assert!(receiver.pop_before(Instant::now()).is_none());
+        assert!(!hub.take_activity(id));
+        assert_eq!(hub.ports().len(), 1);
     }
 
     #[test]
@@ -603,7 +722,8 @@ mod tests {
         assert!(receiver.pop_before(now).is_none());
     }
 
-    /// Waits up to 2 s for the next event in `receiver`.
+    /// Waits up to 2 s for the next event in `receiver` (the virtual-port test).
+    #[cfg(unix)]
     fn next_event(receiver: &mut MidiReceiver) -> Option<MidiStamped> {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
@@ -615,6 +735,7 @@ mod tests {
         None
     }
 
+    #[cfg(unix)]
     fn virtual_output(name: &str) -> midir::MidiOutputConnection {
         MidiOutput::new("komponist-test")
             .unwrap()
@@ -624,7 +745,9 @@ mod tests {
 
     /// End to end through the platform's MIDI backend (ALSA sequencer, CoreMIDI) with a midir
     /// virtual port. Skipped where there is no backend. On macOS the virtual source
-    /// "komponist-test probe-<pid>" is visible system-wide while the test runs.
+    /// "komponist-test probe-<pid>" is visible system-wide while the test runs. Not on Windows:
+    /// WinMM has no virtual ports (`hub_input_path_without_a_backend_port` covers the path there).
+    #[cfg(unix)]
     #[test]
     fn virtual_port_round_trip() {
         let Ok((mut hub, mut receiver)) = MidiInputHub::new() else {

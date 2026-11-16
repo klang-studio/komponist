@@ -299,6 +299,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "asio-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "477f1cf5b65679fc2e5422af426f87becba79d1cfa2cd77eff3433e36c8021b9"
+dependencies = [
+ "bindgen",
+ "cc",
+ "num-derive",
+ "num-traits",
+ "walkdir",
+]
+
+[[package]]
 name = "assert_no_alloc"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -530,6 +543,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -1031,6 +1046,7 @@ checksum = "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1"
 dependencies = [
  "alsa",
  "alsa-sys",
+ "asio-sys",
  "audio_thread_priority",
  "block2 0.6.2",
  "coreaudio-rs",
@@ -1429,6 +1445,20 @@ checksum = "e73ce90f54750be8672c02be0743fe47530e6f251e066f0ee2869b59eb297af5"
 dependencies = [
  "bytemuck",
  "serde",
+]
+
+[[package]]
+name = "embed-resource"
+version = "3.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6168487b5e7eb2673e6efe1200b1848016e436a6ca0b8031bf04bd9d493a249f"
+dependencies = [
+ "cc",
+ "memchr",
+ "rustc_version",
+ "toml",
+ "vswhom",
+ "winreg",
 ]
 
 [[package]]
@@ -2449,6 +2479,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "embed-resource",
  "hound",
  "klang-dsp",
  "komponist-audio",
@@ -2470,6 +2501,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "windows-sys 0.61.2",
  "winit",
  "x11rb 0.14.0",
 ]
@@ -2486,6 +2518,7 @@ dependencies = [
  "rtrb",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2510,6 +2543,7 @@ dependencies = [
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
+ "windows-sys 0.61.2",
  "winit",
  "x11rb 0.14.0",
 ]
@@ -2542,6 +2576,7 @@ dependencies = [
  "komponist-rt",
  "rtrb",
  "rustix 1.1.6",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2557,6 +2592,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde_json",
  "vst3",
+ "windows-sys 0.61.2",
  "x11rb 0.14.0",
 ]
 
@@ -2576,6 +2612,7 @@ dependencies = [
  "postcard",
  "rustix 1.1.6",
  "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2602,6 +2639,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
  "x11rb 0.14.0",
 ]
 
@@ -2611,6 +2649,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2637,6 +2676,7 @@ dependencies = [
  "komponist-model",
  "komponist-tokens",
  "komponist-ui",
+ "windows-sys 0.61.2",
  "winit",
 ]
 
@@ -3839,6 +3879,16 @@ name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "primal-check"
@@ -5082,6 +5132,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "vswhom"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be979b7f07507105799e854203b470ff7c78a1639e330a58f183b5fea574608b"
+dependencies = [
+ "libc",
+ "vswhom-sys",
+]
+
+[[package]]
+name = "vswhom-sys"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5881,6 +5951,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

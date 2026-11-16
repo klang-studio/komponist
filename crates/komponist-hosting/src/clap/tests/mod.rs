@@ -15,7 +15,7 @@
 //!   ```
 
 mod fixtures;
-#[cfg(target_os = "linux")]
+#[cfg(x11_embed)]
 pub(crate) mod gui;
 mod installed;
 
@@ -57,10 +57,13 @@ pub(super) fn fixture(name: &str) -> Option<PathBuf> {
     }
 }
 
-/// An installed bundle (`~/` expanded), or `None` (with a note) if it is not installed.
+/// An installed bundle (`~/` expanded: `$HOME`, on Windows `%USERPROFILE%`), or `None` (with a
+/// note) if it is not installed.
 pub(crate) fn installed(path: &str) -> Option<PathBuf> {
+    let home =
+        || std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
     let path = match path.strip_prefix("~/") {
-        Some(rest) => Path::new(&std::env::var("HOME").ok()?).join(rest),
+        Some(rest) => home()?.join(rest),
         None => PathBuf::from(path),
     };
     if path.exists() {
@@ -85,7 +88,7 @@ pub(super) fn load(bundle: &Path, plugin_id: &str) -> Rig {
 }
 
 /// Loads the first plugin of a bundle.
-#[cfg(target_os = "linux")]
+#[cfg(x11_embed)]
 pub(super) fn load_first(bundle: &Path) -> Rig {
     let descriptors = crate::scan(bundle).unwrap();
     let first = descriptors.first().expect("no plugin in the bundle");

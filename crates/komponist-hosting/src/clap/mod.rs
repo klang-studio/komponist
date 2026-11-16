@@ -2,9 +2,12 @@
 //! whose `activate` returns a [`processor::ClapProcessor`] ([`crate::HostedProcessor`]).
 //!
 //! Host extensions offered (see [`host`]): log, thread-check, gui, timer-support,
-//! posix-fd-support, params, latency, state, audio-ports, note-ports, note-name. Plugin extensions
-//! used: audio-ports, note-ports, params, state, latency, gui (x11, embedded), timer-support,
-//! posix-fd-support, render, note-name.
+//! posix-fd-support (Linux and macOS), params, latency, state, audio-ports, note-ports, note-name.
+//! Plugin extensions used: audio-ports, note-ports, params, state, latency, gui (x11, cocoa or
+//! win32, embedded), timer-support, posix-fd-support (Linux and macOS), render, note-name.
+//!
+//! Windows (port W5): a `.clap` is a single DLL, loaded by clack-host and pinned by
+//! `crate::library`.
 //!
 //! Threading follows the contract: the thread that calls [`load`] is the plugin's main thread
 //! (CLAP thread-check reports it as such), processor methods mark their thread as the audio thread
@@ -19,6 +22,7 @@ pub(crate) mod tests;
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::Path;
 
@@ -30,6 +34,7 @@ use clack_extensions::latency::PluginLatency;
 use clack_extensions::note_name::{NoteNameBuffer, PluginNoteName};
 use clack_extensions::note_ports::PluginNotePorts;
 use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
+#[cfg(unix)]
 use clack_extensions::posix_fd::PluginPosixFd;
 use clack_extensions::render::{PluginRender, RenderMode as ClapRenderMode};
 use clack_extensions::state::PluginState;
@@ -46,7 +51,9 @@ use komponist_ipc::{
 use self::events::{InputEventList, WireSink};
 use self::host::{KpHost, MainThreadHost, SharedHost};
 use self::processor::{ClapProcessor, NoteTarget, PortLayout};
-use crate::host::{FdEvents, HostContext, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::{HostContext, TimerId};
 use crate::plugin::{
     ActivateConfig, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor, HostingError,
 };
@@ -56,7 +63,7 @@ const HOST_VENDOR: &str = "klang-studio";
 
 /// The embedded GUI API of this OS: X11 (Linux) or Cocoa (macOS, #52; no `set_scale` there, JUCE
 /// plugins then double their size in points, spike #42 Q1).
-#[cfg(not(target_os = "macos"))]
+#[cfg(x11_embed)]
 const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
     api_type: GuiApiType::X11,
     is_floating: false,
@@ -67,10 +74,28 @@ const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
     is_floating: false,
 };
 
+/// Windows: `win32`, embedded into an `HWND` of the bridge's frame (W6), with `set_scale`.
+#[cfg(windows)]
+const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
+    api_type: GuiApiType::WIN32,
+    is_floating: false,
+};
+
+#[cfg(not(any(x11_embed, target_os = "macos", windows)))]
+compile_error!("komponist-hosting: no embedded CLAP GUI API (clap/mod.rs) for this OS");
+
 /// Loads a bundle's entry (dlopen + `clap_entry.init`). clack caches entries per library, so
 /// loading the same bundle twice in one process shares one initialised entry. The library stays
 /// mapped after its last entry is gone (see `crate::library`).
+///
+/// Windows: clack-host loads with a plain `LoadLibraryExW(path, NULL, 0)`, which would look for the
+/// plugin's dependencies next to the executable and on `PATH` rather than next to the plugin. So
+/// the DLL is loaded with `crate::library`'s policy first (and pinned); clack's load then only
+/// finds it loaded.
 fn load_entry(bundle: &Path) -> Result<PluginEntry, HostingError> {
+    // SAFETY: as below.
+    #[cfg(windows)]
+    let _policy_load = unsafe { crate::library::Library::open(bundle) }?;
     // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain it.
     let entry = unsafe { PluginEntry::load(bundle) }
         .map_err(|e| HostingError::Load(format!("{}: {e}", bundle.display())))?;
@@ -80,7 +105,7 @@ fn load_entry(bundle: &Path) -> Result<PluginEntry, HostingError> {
     Ok(entry)
 }
 
-/// The library clack-host loaded for `bundle`: the bundle itself on Linux (a `.clap` is the
+/// The library clack-host loaded for `bundle`: the bundle itself on Linux and Windows (a `.clap` is the
 /// shared library), the executable inside a `.clap` bundle directory on macOS (clack passes the
 /// bundle's path to `clap_entry.init`).
 fn binary_path(bundle: &Path) -> std::borrow::Cow<'_, Path> {
@@ -151,6 +176,7 @@ struct Extensions {
     latency: Option<PluginLatency>,
     gui: Option<PluginGui>,
     timer: Option<PluginTimer>,
+    #[cfg(unix)]
     posix_fd: Option<PluginPosixFd>,
     render: Option<PluginRender>,
     note_name: Option<PluginNoteName>,
@@ -166,6 +192,7 @@ impl Extensions {
             latency: handle.get_extension(),
             gui: handle.get_extension(),
             timer: handle.get_extension(),
+            #[cfg(unix)]
             posix_fd: handle.get_extension(),
             render: handle.get_extension(),
             note_name: handle.get_extension(),
@@ -273,6 +300,7 @@ impl ClapPlugin {
             .access_handler(|mt| mt.owns_timer(timer))
     }
 
+    #[cfg(unix)]
     fn owns_fd(&self, fd: RawFd) -> bool {
         self.instance.borrow().access_handler(|mt| mt.owns_fd(fd))
     }
@@ -556,7 +584,7 @@ impl HostedPlugin for ClapPlugin {
             .map_err(|e| HostingError::Gui(format!("create: {e}")))?;
         let opened = (|| {
             let window = match parent {
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(x11_embed)]
                 GuiParent::X11 { xid, scale } => {
                     // Allowed to fail on X11 (Shortcircuit XT picks its own scale).
                     if gui.set_scale(&handle, scale).is_err() {
@@ -569,6 +597,17 @@ impl HostedPlugin for ClapPlugin {
                 #[cfg(target_os = "macos")]
                 // SAFETY: see `set_parent` below; the view outlives the GUI.
                 GuiParent::Cocoa(view) => unsafe { Window::from_cocoa_nsview(view) },
+                #[cfg(windows)]
+                GuiParent::Win32 { hwnd, scale } => {
+                    // Allowed to fail: a plugin may follow the window's DPI itself.
+                    if gui.set_scale(&handle, scale).is_err() {
+                        self.context
+                            .notify
+                            .log(LogLevel::Debug, &format!("gui.set_scale({scale}) declined"));
+                    }
+                    // SAFETY: see `set_parent` below; the window outlives the GUI.
+                    unsafe { Window::from_win32_hwnd(hwnd) }
+                }
                 _ => {
                     return Err(HostingError::Gui(
                         "the parent window is of another platform".into(),
@@ -579,8 +618,9 @@ impl HostedPlugin for ClapPlugin {
                 .get_size(&handle)
                 .ok_or_else(|| HostingError::Gui("get_size failed".into()))?;
             let resizable = gui.can_resize(&handle);
-            // SAFETY: the parent is a live X11 window of the app's frame, or an `NSView` of the
-            // bridge's frame; either is kept until after `gui_close` (or the bridge's death).
+            // SAFETY: the parent is a live X11 window of the app's frame, or an `NSView` / `HWND`
+            // of the bridge's frame; either is kept until after `gui_close` (or the bridge's
+            // death).
             unsafe { gui.set_parent(&handle, window) }
                 .map_err(|e| HostingError::Gui(format!("set_parent: {e}")))?;
             gui.show(&handle)
@@ -637,6 +677,14 @@ impl HostedPlugin for ClapPlugin {
         }))
     }
 
+    fn gui_set_scale(&mut self, scale: f64) -> bool {
+        let Ok((gui, _)) = self.require_gui() else {
+            return false;
+        };
+        let mut instance = self.instance.borrow_mut();
+        gui.set_scale(&instance.plugin_handle(), scale).is_ok()
+    }
+
     fn gui_close(&mut self) {
         let Some(gui) = self.ext.gui else {
             return;
@@ -665,6 +713,7 @@ impl HostedPlugin for ClapPlugin {
         ext.on_timer(&instance.plugin_handle(), ClapTimerId(timer.0));
     }
 
+    #[cfg(unix)]
     fn on_fd(&mut self, fd: RawFd, events: FdEvents) {
         let Some(ext) = self.ext.posix_fd else {
             return;

@@ -26,12 +26,23 @@ const DETACH_POLL: Duration = Duration::from_micros(500);
 /// How often [`AudioSystem::poll`] looks for a missing device while the state is `NoDevice`.
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
+/// The same for an ASIO device: every probe loads every installed ASIO driver, which is slow and can
+/// disturb an interface another program is using, so it runs less often.
+const ASIO_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Audio driver ("Treiber" in S07).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostKind {
     /// CoreAudio, the only device host on macOS.
     CoreAudio,
+    /// WASAPI in shared mode, the default on Windows. Always unavailable off Windows.
+    Wasapi,
+    /// ASIO (cpal feature `asio`): Windows builds made with the crate feature `asio` only,
+    /// unavailable everywhere else. One driver at a time per process; a sample rate change applies
+    /// to the whole driver (ARCHITECTURE §7). Listed by [`AudioSystem::available_hosts`] only while at
+    /// least one ASIO driver is registered.
+    Asio,
     /// PipeWire (cpal feature `pipewire`), the default on current Linux desktops. Always
     /// unavailable off Linux.
     PipeWire,
@@ -46,21 +57,26 @@ pub enum HostKind {
 
 impl HostKind {
     /// Whether this driver exists on the operating system the crate was built for: CoreAudio on
-    /// macOS; PipeWire, JACK and ALSA on Linux; `Null` everywhere. The variants of the other
-    /// systems stay in the enum so that a settings file written on Linux still loads on macOS
-    /// (see [`StreamConfig`]); they are never available there.
+    /// macOS; WASAPI, and ASIO in builds with the feature `asio`, on Windows; PipeWire, JACK and
+    /// ALSA on Linux; `Null` everywhere. The variants of the other systems stay in the enum so that a
+    /// settings file written on one system still loads on the others (see [`StreamConfig`]); they are never available there.
     pub const fn is_supported_here(self) -> bool {
         match self {
             HostKind::Null => true,
             HostKind::CoreAudio => cfg!(target_os = "macos"),
+            HostKind::Wasapi => cfg!(windows),
+            HostKind::Asio => cfg!(all(windows, feature = "asio")),
             HostKind::PipeWire | HostKind::Jack | HostKind::Alsa => cfg!(target_os = "linux"),
         }
     }
 
-    /// The driver a fresh configuration starts with: CoreAudio on macOS, PipeWire elsewhere.
+    /// The driver a fresh configuration starts with: CoreAudio on macOS, WASAPI on Windows,
+    /// PipeWire elsewhere.
     pub const fn platform_default() -> HostKind {
         if cfg!(target_os = "macos") {
             HostKind::CoreAudio
+        } else if cfg!(windows) {
+            HostKind::Wasapi
         } else {
             HostKind::PipeWire
         }
@@ -72,7 +88,8 @@ impl HostKind {
 /// cpal's `DeviceId` in its string form `"<host>:<id>"`: the PipeWire node name
 /// (`"pipewire:alsa_output.usb-Focusrite_Scarlett_2i2-00.analog-stereo"`), the ALSA PCM name
 /// (`"alsa:hw:CARD=USB,DEV=0"`), `"jack:output"`, the CoreAudio device UID
-/// (`"coreaudio:BuiltInSpeakerDevice"`). Unlike [`DeviceInfo::name`] it is unique and
+/// (`"coreaudio:BuiltInSpeakerDevice"`), the WASAPI endpoint id
+/// (`"wasapi:{0.0.0.00000000}.{guid}"`). Unlike [`DeviceInfo::name`] it is unique and
 /// does not depend on enumeration order. Serialised as a plain string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -111,8 +128,8 @@ pub struct DeviceInfo {
 #[serde(from = "StoredStreamConfig")]
 pub struct StreamConfig {
     /// Driver. A saved configuration that names a driver this system does not have (PipeWire,
-    /// JACK or ALSA on macOS, CoreAudio on Linux) loads as the default configuration of this
-    /// system: [`HostKind::platform_default`] with the default device (`device` and `device_id`
+    /// JACK or ALSA on macOS and Windows, CoreAudio on Linux and Windows, WASAPI on Linux and
+    /// macOS) loads as the default configuration of this system: [`HostKind::platform_default`] with the default device (`device` and `device_id`
     /// dropped, they belong to the other system), rate and buffer size kept.
     pub host: HostKind,
     /// Output device name (display, and fallback for the lookup); `None` together with
@@ -159,7 +176,7 @@ impl From<StoredStreamConfig> for StreamConfig {
 }
 
 impl Default for StreamConfig {
-    /// [`HostKind::platform_default`] (CoreAudio on macOS, PipeWire elsewhere), default device,
+    /// [`HostKind::platform_default`] (CoreAudio on macOS, WASAPI on Windows, PipeWire on Linux), default device,
     /// 48000 Hz, 256 frames.
     fn default() -> StreamConfig {
         StreamConfig {
@@ -359,6 +376,8 @@ pub struct AudioSystem<P: AudioProcess> {
 struct Retry {
     /// The configuration to start once the device is back.
     config: StreamConfig,
+    /// Time between two probes.
+    interval: Duration,
     /// When the next probe starts.
     next: Instant,
     /// A probe running on its own thread: is the device present?
@@ -378,8 +397,15 @@ struct Current<P: AudioProcess> {
 
 /// Held for its `Drop`, which stops the stream.
 enum Backend {
-    Device { _stream: cpal::Stream },
-    Null { _stream: NullStream },
+    /// `_open` is declared after the stream: the count of open ASIO streams drops once the stream is
+    /// gone.
+    Device {
+        _stream: cpal::Stream,
+        _open: Option<backend::AsioOpen>,
+    },
+    Null {
+        _stream: NullStream,
+    },
 }
 
 impl<P: AudioProcess> AudioSystem<P> {
@@ -398,8 +424,12 @@ impl<P: AudioProcess> AudioSystem<P> {
         }
     }
 
-    /// Hosts available on this machine, in preference order (CoreAudio on macOS; PipeWire, JACK,
-    /// ALSA on Linux; `Null` always last).
+    /// Hosts available on this machine, in preference order (CoreAudio on macOS; WASAPI, ASIO on
+    /// Windows; PipeWire, JACK, ALSA on Linux; `Null` always last).
+    ///
+    /// ASIO counts as available when at least one driver is registered (`HKLM\SOFTWARE\ASIO`; the check reads
+    /// the registry and loads no driver). Without one it is missing from the list, which S07 shows as a
+    /// disabled segment.
     ///
     /// JACK counts as available when a JACK server (or PipeWire's JACK emulation) answers; the
     /// check opens a short-lived JACK client.
@@ -594,11 +624,16 @@ impl<P: AudioProcess> AudioSystem<P> {
             ..params.clone()
         };
         let callback = StreamCallback::new(slot, callback_params, Arc::clone(&shared));
+        // Before the stream exists, so no enumeration sees an ASIO driver that is loading.
+        let open = (config.host == HostKind::Asio).then(|| backend::AsioOpen::new(&device));
         let stream =
             backend::build_stream(&device, &negotiated, callback, Arc::clone(&self.stats))?;
         stream.play().map_err(backend::map_err)?;
         self.install(Current {
-            backend: Backend::Device { _stream: stream },
+            backend: Backend::Device {
+                _stream: stream,
+                _open: open,
+            },
             handle,
             params,
             shared,
@@ -709,19 +744,25 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Looks for `config`'s device from the next `poll` on.
     fn arm_retry(&mut self, config: StreamConfig) {
+        let interval = if config.host == HostKind::Asio {
+            self.retry_interval.max(ASIO_RETRY_INTERVAL)
+        } else {
+            self.retry_interval
+        };
         self.retry = Some(Retry {
             config,
-            next: Instant::now() + self.retry_interval,
+            interval,
+            next: Instant::now() + interval,
             probe: None,
         });
     }
 
     /// Starts a probe when one is due and restarts the stream once a probe found the device.
     fn poll_retry(&mut self) {
-        let interval = self.retry_interval;
         let Some(retry) = self.retry.as_mut() else {
             return;
         };
+        let interval = retry.interval;
         match retry.probe.take() {
             Some(probe) if probe.is_finished() => {
                 if probe.join().unwrap_or(false) {
@@ -959,7 +1000,9 @@ mod tests {
         assert!(runs(&probe, 3));
     }
 
-    /// A host of this system whose device lookup only enumerates (nothing is opened).
+    /// A host whose device lookup only enumerates (nothing is opened). Windows has none: the
+    /// tests never enumerate the machine's WASAPI endpoints (rule 14), so they use ALSA, which is
+    /// unavailable there and fails with `HostUnavailable`.
     fn test_host() -> HostKind {
         if cfg!(target_os = "macos") {
             HostKind::CoreAudio
@@ -1106,6 +1149,23 @@ mod tests {
     }
 
     #[test]
+    fn an_asio_device_is_looked_for_less_often() {
+        let (mut system, _probe, _sender) = system(0.0);
+        system.set_retry_interval(Duration::from_millis(10));
+        system.arm_retry(null(64));
+        assert_eq!(
+            system.retry.as_ref().unwrap().interval,
+            Duration::from_millis(10)
+        );
+        let asio = StreamConfig {
+            host: HostKind::Asio,
+            ..null(64)
+        };
+        system.arm_retry(asio);
+        assert_eq!(system.retry.as_ref().unwrap().interval, ASIO_RETRY_INTERVAL);
+    }
+
+    #[test]
     fn a_missing_device_keeps_being_looked_for() {
         let (mut system, probe, _sender) = system(0.0);
         system.set_retry_interval(Duration::from_millis(5));
@@ -1142,6 +1202,7 @@ mod tests {
 
     /// How long S07's enumeration takes on this machine (WP-52 note, WP-61): `available_hosts`
     /// (the JACK probe opens a client) and `devices` per host. Opens no stream, plays nothing.
+    /// On Windows with the feature `asio`, `devices(Asio)` loads every installed ASIO driver in turn.
     ///
     /// ```text
     /// cargo test --release -p komponist-audio device_enumeration_time -- --ignored --nocapture
@@ -1179,9 +1240,11 @@ mod tests {
 
     #[test]
     fn stream_configs_without_device_id_still_load() {
-        // A driver of this system (PipeWire or CoreAudio): other systems' drivers migrate.
+        // A driver of this system (PipeWire, CoreAudio or WASAPI): other systems' drivers migrate.
         let host = if cfg!(target_os = "macos") {
             "coreaudio"
+        } else if cfg!(windows) {
+            "wasapi"
         } else {
             "pipewire"
         };
@@ -1210,6 +1273,15 @@ mod tests {
     fn hosts_and_devices() {
         let hosts = AudioSystem::<TestEngine>::available_hosts();
         assert_eq!(hosts.last(), Some(&HostKind::Null));
+        // ASIO is listed in builds with the feature when a driver is registered (listing creates
+        // cpal's host and reads the registry; it loads no driver: W8b), after WASAPI so the
+        // platform default stays first. CI runners have no ASIO driver.
+        let asio = cfg!(all(windows, feature = "asio")) && crate::backend::asio_driver_registered();
+        assert_eq!(hosts.contains(&HostKind::Asio), asio);
+        if asio {
+            let position = |kind| hosts.iter().position(|&h| h == kind);
+            assert!(position(HostKind::Wasapi) < position(HostKind::Asio));
+        }
         let null = AudioSystem::<TestEngine>::devices(HostKind::Null).unwrap();
         assert_eq!(null.len(), 1);
         assert!(null[0].is_default);
@@ -1217,8 +1289,9 @@ mod tests {
             null[0].sample_rates,
             [44_100, 48_000, 88_200, 96_000, 192_000]
         );
-        // Real devices depend on the machine: reported, not asserted.
-        for &host in &hosts {
+        // Real devices depend on the machine: reported, not asserted. Not on Windows: WASAPI
+        // enumeration would touch the machine's endpoints (rule 14).
+        for &host in hosts.iter().filter(|_| !cfg!(windows)) {
             match AudioSystem::<TestEngine>::devices(host) {
                 Ok(devices) => {
                     for d in devices {
@@ -1259,6 +1332,8 @@ mod tests {
         };
         for kind in [
             HostKind::CoreAudio,
+            HostKind::Wasapi,
+            HostKind::Asio,
             HostKind::PipeWire,
             HostKind::Jack,
             HostKind::Alsa,
@@ -1282,7 +1357,7 @@ mod tests {
                 assert_eq!((config.device, config.device_id), (None, None));
             }
         }
-        assert!(serde_json::from_str::<StreamConfig>(&json("wasapi")).is_err());
+        assert!(serde_json::from_str::<StreamConfig>(&json("oss")).is_err());
     }
 
     #[test]
@@ -1291,5 +1366,10 @@ mod tests {
             serde_json::to_string(&HostKind::CoreAudio).unwrap(),
             r#""coreaudio""#
         );
+        assert_eq!(
+            serde_json::to_string(&HostKind::Wasapi).unwrap(),
+            r#""wasapi""#
+        );
+        assert_eq!(serde_json::to_string(&HostKind::Asio).unwrap(), r#""asio""#);
     }
 }

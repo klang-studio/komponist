@@ -7,9 +7,7 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
-# `realtime-dbus`: cpal promotes its PipeWire and ALSA audio threads to real-time priority through
-# RTKit (audio_thread_priority); plain `realtime` is a no-op on Linux in audio_thread_priority 0.35.
-cpal = { workspace = true, features = ["realtime-dbus"] }
+cpal.workspace = true
 midir.workspace = true
 rtrb.workspace = true
 # The device's audio workgroup handed to the engine's workers (macOS, #45).
@@ -18,6 +16,27 @@ komponist-rt.workspace = true
 # reports when the binary installs `assert_no_alloc::AllocDisabler` as its allocator.
 assert_no_alloc.workspace = true
 
+[features]
+# ASIO on Windows (W8). Off by default: the build needs LLVM's libclang (bindgen in `asio-sys`);
+# the SDK is vendored in vendor/asio-sdk (ARCHITECTURE §7). The feature does nothing off Windows: cpal's
+# `asio-sys` dependency is a Windows-only one.
+asio = ["cpal/asio"]
+
 [dev-dependencies]
 klang-dsp.workspace = true
 serde_json.workspace = true
+
+# cpal's backend features are per target, so Windows and macOS builds pull none of the Linux ones.
+# Cargo unions the features of a dependency declared in several tables for each target that
+# matches them: a Linux build has the plain `cpal` plus the features of the first table.
+[target.'cfg(target_os = "linux")'.dependencies]
+# `realtime-dbus`: cpal promotes its PipeWire and ALSA audio threads to real-time priority through
+# RTKit (audio_thread_priority); plain `realtime` is a no-op on Linux in audio_thread_priority 0.35.
+cpal = { workspace = true, features = ["realtime-dbus", "pipewire", "jack"] }
+
+[target.'cfg(windows)'.dependencies]
+# `realtime`: cpal's WASAPI thread registers with MMCSS ("Audio") when the stream starts, with
+# THREAD_PRIORITY_TIME_CRITICAL as the fallback (ARCHITECTURE §7).
+cpal = { workspace = true, features = ["realtime"] }
+# `RegOpenKeyExW`/`RegEnumKeyExW`: read-only check for registered ASIO drivers (`asio_registry`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Registry"] }

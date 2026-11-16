@@ -22,9 +22,12 @@
 
 use komponist_ipc::{GuiSize, NoteName, ParamInfo, PluginDescriptor, RenderMode};
 use komponist_ipc::{WireEvent, WireTransport};
+#[cfg(unix)]
 use std::os::fd::RawFd;
 
-use crate::host::{FdEvents, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::TimerId;
 
 /// Why a hosting operation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,9 +86,10 @@ pub struct GuiInfo {
 
 /// Whether this build embeds plugin GUIs: on Linux into an X11 child of the app's frame window
 /// (WP-50), on macOS into an `NSView` of the bridge's own frame window (#52; CLAP `cocoa`, VST3
-/// `kPlatformTypeNSView`). Where it is false, no plugin reports a GUI, whatever it offers, and
-/// `gui_open` fails.
-pub const GUI_EMBEDDING: bool = true;
+/// `kPlatformTypeNSView`), on Windows into a child `HWND` of the bridge's own frame window (port
+/// W6; [`GuiParent::Win32`], CLAP `win32`, VST3 `kPlatformTypeHWND`). Where it is false, no plugin
+/// reports a GUI, whatever it offers, and `gui_open` fails.
+pub const GUI_EMBEDDING: bool = cfg!(any(target_os = "linux", target_os = "macos", windows));
 
 /// Where [`HostedPlugin::gui_open`] attaches the plugin's GUI.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -102,6 +106,15 @@ pub enum GuiParent {
     /// scale follows the screen, so no scale is passed: CLAP `set_scale` would make JUCE plugins
     /// double their size in points, and VST3 `setContentScaleFactor` is refused (spike #42 Q1).
     Cocoa(*mut std::ffi::c_void),
+    /// Windows: an `HWND` of the bridge's frame window (W6), at UI `scale` (the window's DPI scale;
+    /// CLAP `set_scale`, VST3 `setContentScaleFactor`). Win32 sizes are physical pixels, and plugins
+    /// there expect the host to pass the scale (unlike Cocoa).
+    Win32 {
+        /// The parent `HWND`.
+        hwnd: *mut std::ffi::c_void,
+        /// UI scale factor.
+        scale: f64,
+    },
 }
 
 /// Main-thread half of one loaded plugin instance. Lives on the bridge's main thread from
@@ -175,9 +188,18 @@ pub trait HostedPlugin {
     /// with `HostingError::Gui`.
     fn gui_open(&mut self, parent: GuiParent) -> Result<GuiInfo, HostingError>;
 
-    /// Asks the GUI to take `size` (physical pixels on X11, points on Cocoa); returns the size it
+    /// Asks the GUI to take `size` (physical pixels on X11 and Win32, points on Cocoa); returns the size it
     /// adopted (it may round to its constraints).
     fn gui_set_size(&mut self, size: GuiSize) -> Result<GuiSize, HostingError>;
+
+    /// The open GUI's scale changed (Win32: the frame moved to a monitor with another DPI, port
+    /// W6): CLAP `set_scale`, VST3 `setContentScaleFactor`. Returns whether the plugin took it (a
+    /// plugin may follow the window's DPI itself). Not for Cocoa, whose GUIs take no scale. The
+    /// default does nothing.
+    fn gui_set_scale(&mut self, scale: f64) -> bool {
+        let _ = scale;
+        false
+    }
 
     /// Hides and destroys the GUI. No-op if closed.
     fn gui_close(&mut self);
@@ -190,7 +212,8 @@ pub trait HostedPlugin {
     fn on_timer(&mut self, timer: TimerId);
 
     /// A file descriptor registered through [`crate::HostLoop`] is ready (CLAP posix-fd-support,
-    /// VST3 `IEventHandler`).
+    /// VST3 `IEventHandler`). Unix only.
+    #[cfg(unix)]
     fn on_fd(&mut self, fd: RawFd, events: FdEvents);
 }
 

@@ -1,6 +1,6 @@
-//! The X11 side of the plugin frames where there is no X11 (macOS): [`X11::connect`] always
-//! fails. On macOS native frames never ask for it: the bridge owns the plugin's frame window
-//! (#52, `plugin_frame` module docs); the X11 path only has to compile.
+//! The X11 side of the plugin frames where there is no X11 (macOS, Windows): [`X11::connect`]
+//! always fails. There native frames never ask for it: the bridge owns the plugin's frame window
+//! (#52, port W6, `plugin_frame` module docs); the X11 path only has to compile.
 
 use komponist_model::DeviceId;
 use komponist_tokens::Srgba;

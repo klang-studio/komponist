@@ -63,7 +63,15 @@ pub fn run(bundle: &Path) -> u8 {
     }
 }
 
+/// A duplicate of stdout for the JSON; fd 1 itself then points at stderr (Windows: both standard
+/// outputs, the process's and the C runtime's, `crate::win_stdio`).
+#[cfg(windows)]
+fn json_output() -> std::io::Result<File> {
+    crate::win_stdio::move_stdout_to_stderr()
+}
+
 /// A duplicate of stdout for the JSON; fd 1 itself then points at stderr.
+#[cfg(unix)]
 fn json_output() -> std::io::Result<File> {
     let out = rustix::io::dup(rustix::stdio::stdout())?;
     rustix::stdio::dup2_stdout(rustix::stdio::stderr())?;

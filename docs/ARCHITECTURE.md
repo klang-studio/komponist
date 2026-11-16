@@ -197,6 +197,37 @@ Rules: `komponist-model` has no dependency on any other studio crate (it writes 
 no IPC and no plugin format. Only `komponist-bridge` links plugin formats. Only `komponist-app` knows egui
 *and* the engine.
 
+### 4.1 Platform cfgs
+
+komponist runs on Linux and macOS (a Windows port is planned, see the work packages W1–W9 in the internal notes).
+A `cfg` says what the code is about, never "everything but the other OS": a negative OS condition
+(`not(target_os = …)`) is only used for a fallback that is meaningful on every other OS (for example "no audio
+workgroup", `komponist-rt`, `komponist-audio`). Two semantic cfgs, set by a small `build.rs` in each crate that needs
+them (`komponist-app`, `komponist-bridge`, `komponist-hosting`; `cargo::rustc-check-cfg` declares both, so
+`unexpected_cfgs` stays clean on every target):
+
+| cfg | Set on | Meaning |
+|---|---|---|
+| `x11_embed` | Linux | The app owns the plugin frame window and the plugin attaches to an X11 child of it (`GuiTarget::X11Child`, `GuiParent::X11`, CLAP `x11`, VST3 `kPlatformTypeX11EmbedWindowID`); X11 key grabs (WP-50). |
+| `bridge_frame` | macOS, Windows | The bridge owns the plugin frame window (`GuiTarget::OwnFrame`, `komponist-bridge/src/frame`; #52, port W6): header model and actions, `RaiseFrame`, activation hand-over. |
+
+Plain `target_os = "linux"` / `"macos"` stays where the code is about one OS's API: futex, memfd, pidfd, eventfd,
+`prctl`, `SCHED_FIFO`, `/proc` (Linux); AppKit, CoreFoundation, mach, kqueue, `os_sync`, `shm_open` (macOS). The
+frame code of the bridge and the activation hand-over of the app are `bridge_frame` code with the OS calls in one
+module per OS: `frame/mod.rs` and `frame/keys.rs` are the shared frame logic, `frame/appkit.rs` (macOS) and
+`frame/win32.rs` (Windows, W6) the OS halves; in the app `activation.rs` has a `macos` and a `win32` module.
+
+Every per-OS backend module (`komponist-ipc` `shm`, `signal`, `control`, `process`; `komponist-engine` `sys`;
+`komponist-hosting` `library`, `host_loop::wake`, `vst3::module`, the GUI platform types; `komponist-bridge`'s main
+loop and process hardening; the app's activation) ends with a `compile_error!` for any other OS that names the missing
+backend and the work package that adds it. `komponist-rt` and `komponist-audio` keep their fallbacks and compile on
+every OS. Since W5 the hosting, bridge and plugin-manager modules have their Windows backends; there the
+`compile_error!` only names an OS none of the three supports.
+
+Unix-only items are `cfg(unix)` where they are about fds: `HostLoop::register_fd` / `modify_fd` / `unregister_fd`,
+`HostedPlugin::on_fd`, CLAP posix-fd-support and VST3 `IRunLoop` (Windows plugins drive their own work through window
+messages and `SetTimer`, so there is no fd registry to offer).
+
 ---
 
 ## 5. Data model (`komponist-model`)
@@ -324,7 +355,8 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 - Migrations: `version` → `migrate_vN_to_vN+1` functions, with a test per version. Version 2 (WP-101) adds the
   routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master.
 - Settings: `~/.config/komponist/settings.json` (driver, device, rate, buffer, MIDI inputs, plugin
-  folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`.
+  folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`. (macOS:
+  `~/Library/Application Support/komponist/`; Windows: `%APPDATA%\komponist\`, see §9.3.)
   Plugin scan cache: `~/.cache/komponist/plugins.json`.
   On macOS the settings and recent list live in `~/Library/Application Support/komponist/` and the
   scan cache in `~/Library/Caches/komponist/plugins.json` (`XDG_*_HOME` is not honoured there).
@@ -473,6 +505,14 @@ decaying maximum in an atomic, at most 2 ms). The last stretch (50 µs plus that
 `mach_wait_until` slices of at most 25 µs, which the kernel does not delay on a time-constraint
 thread, with a look at the word between them; a wake-up there is seen up to one slice later
 (`komponist_rt::os_sync`).
+
+On Windows (W3; spike windows-wake S1, internal notes) workers register with MMCSS (`AvSetMmThreadCharacteristicsW("Pro Audio")`,
+`AVRT_PRIORITY_CRITICAL`, once per thread; `THREAD_PRIORITY_TIME_CRITICAL` if MMCSS refuses; a refusal of both is reported
+like a refused `SCHED_FIFO`). Waits and wakes use `WaitOnAddress` / `WakeByAddressSingle|All` on the same process-private
+words (round trip p50 0.5 µs). Their timeout is in whole milliseconds on the coarse system clock (a 1 ms timeout takes a
+median 12 ms at the default timer resolution), so each wait uses `ceil(remaining ms)` and re-checks word and clock. That is
+enough because a missed deadline only counts `WorkerStats::late` and the dispatcher waits again; the audio deadline itself
+is the device's. The pool therefore does not need `timeBeginPeriod`; `late` may be counted up to one timer tick late.
 
 - **Dispatch, per segment:** the audio thread writes a batch descriptor, publishes it with one
   release store of a claim word (`epoch << 32 | count << 16 | next`) and wakes as many workers as
@@ -901,13 +941,109 @@ must not output back into that bus).
 
 ## 7. Audio and MIDI I/O (`komponist-audio`)
 
-- `AudioSystem::hosts()` → PipeWire, JACK, ALSA (cpal features `pipewire`, `jack`), devices, rates,
-  buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
+- `AudioSystem::available_hosts()` → the drivers of this OS (see below), devices, rates, buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
   over a channel. The new stream takes it over. A buffer change is "short dropout, engine untouched"
   (S07).
+- **Drivers per OS** (`HostKind`): CoreAudio on macOS, WASAPI (shared mode) on Windows, PipeWire / JACK / ALSA on
+  Linux; `Null` everywhere. The variants of the other systems stay in the enum so a settings file written on one
+  system loads on the others (it migrates to the platform default, see `StreamConfig`). cpal's backend features
+  are per target in `komponist-audio/Cargo.toml` (`pipewire`, `jack`, `realtime-dbus` Linux only; `realtime` on
+  Windows). ASIO (`HostKind::Asio`, serde `"asio"`) is behind the cargo feature `asio` of `komponist-audio`
+  (forwarded by `komponist-app`'s `asio`); see "ASIO" below. Without the feature the variant exists but is never
+  available, so a settings file with `"asio"` loads as WASAPI there.
+- **ASIO (W8; the code is checked on Windows, but no ASIO driver was ever opened: manual test pending).**
+  - *Build:* cpal's `asio` feature pulls `asio-sys`, whose build script compiles the SDK's host sources with `cc`
+    and runs bindgen over its headers (needs LLVM's `libclang.dll`: `LIBCLANG_PATH`). It reads the SDK from
+    `CPAL_ASIO_DIR` (else it would use or download `%TEMP%\asio_sdk`). The host subset of SDK 2.3.4 is **vendored** in
+    `vendor/asio-sdk/` (layout as upstream; `VENDORED.md` there lists what was taken and left out), and
+    `.cargo/config.toml` `[env]` sets `CPAL_ASIO_DIR` to it (`relative = true`), so nothing is downloaded and CI and
+    the release job need LLVM only. Other targets never build `asio-sys`'s C++, so the variable is inert there. The
+    feature stays off by default (LLVM); `scripts/package-windows.sh`, the release job and one CI step turn it on.
+    `.gitattributes` keeps `vendor/asio-sdk/**` byte-identical to upstream (`-text`, CRLF).
+  - *Licence (SDK 2.3.4, Oct 2025, read from its `LICENSE.txt`):* "This Software Development Kit is licensed under
+    the terms of the Steinberg ASIO License, or alternatively under the terms of the General Public License (GPL)
+    Version 3. You may use the Software Development Kit according to either of these licenses as it is most
+    appropriate for your project on a case-by-case basis (commercial or not)." The clause "The Software Development
+    Kit may not be distributed in parts or its entirety without prior written agreement by Steinberg" is part of
+    option a), the proprietary licence. Option b) is plain GPLv3. The SDK's `README.md` confirms: "Both options grant
+    access to the same SDK", the GPL option is for "full open-source integration", and trademark rules apply under
+    both. komponist (GPL-3.0-or-later) takes option b) (owner's decision, W8b), which allows redistribution: the repository
+    holds the host subset of the SDK sources and the release zip a binary with the compiled host code, both under
+    GPLv3. `asio-sys` and cpal are Apache-2.0 (GPLv3 compatible). The `LICENSE.txt` says files with their own
+    embedded licence text follow that text; the vendored `common/*` files reference the Steinberg licence, the
+    `host/*` files carry Steinberg's BSD-style text. `common/combase.cpp`, `combase.h`, `dllentry.cpp` and `wxdebug.h`
+    carry an old Microsoft "AS IS" header without a licence grant and are **not vendored** (driver-side COM
+    helpers; the build works without them, which proves a host does not need them), nor are the driver sample, the
+    PDFs and the sample converter. Open point: (1) legal review remains the owner's. (2) Steinberg's *ASIO Usage Guidelines* apply to the word
+    "ASIO" and the logo under GPLv3 too: if ASIO is only activated manually, the ASIO Compatible Logo must appear "in
+    every dialog that enables/configures ASIO" (Settings, S07), and "ASIO is a registered trademark of Steinberg
+    Media Technologies GmbH." must appear in the credits and documentation (the zip's `README.txt` and INSTALL.md
+    carry it; the app has no credits screen on Windows, only the native macOS About panel, so there is no place
+    for it in the app). **The logo is in S07 (W8c):** the vendored white-on-transparent SVG, embedded with
+    `include_bytes!` in `dialogs/settings.rs`, right-aligned in the "Treiber" row whenever the ASIO segment is shown
+    (also disabled without a registered driver); accessible name `settings-asio-logo`. The app has only the dark
+    theme, so one variant is enough. The owner still has to decide on legal review.
+  - *Devices:* ASIO has no default device (cpal takes the first driver) and loads **one driver at a time per
+    process**. cpal lists the devices by loading each registered driver in turn, which is slow and can disturb an
+    interface another program holds. Consequences handled in `backend.rs`: `available_hosts` lists ASIO only when
+    at least one driver is registered, read from the registry (`asio_registry.rs`: `RegOpenKeyExW` with `KEY_READ`
+    and `RegEnumKeyExW` on `HKLM\SOFTWARE\ASIO`, one subkey per driver; read-only, nothing is loaded, nothing is
+    written). The process's default registry view is read, as the SDK's `asiolist.cpp` does: a 64-bit komponist sees
+    the 64-bit view, which is where the 64-bit drivers it can load register (32-bit drivers sit under `WOW6432Node`
+    and are invisible to it). `HostKind::Asio.is_supported_here()` stays the compile-time answer (S07's
+    `drivers_here` keeps the segment), so with no driver S07 shows ASIO **disabled**, as it does for any supported
+    host that is not in `available_hosts` (JACK without a server); while an ASIO stream runs, cpal's
+    enumeration stops at the first driver that is not the running one, so `devices(Asio)` returns the cache of the last
+    enumeration (plus the running device) while an `AsioOpen` guard lives; the reconnect probe of a missing ASIO
+    device runs every 10 s instead of 2 s. `start` still lists all drivers on the UI thread (as for the other hosts),
+    which can take a moment.
+  - *Buffers:* the driver's `min`/`max` (`ASIOGetBufferSize`) arrive as `SupportedBufferSize::Range` and
+    `DeviceInfo::buffer_range`. Unlike WASAPI, `pick_buffer` honours the request (`BufferSize::Fixed`) and rejects
+    sizes outside the range with the range in the message. The driver's granularity is not exposed by cpal: stepped
+    sizes are checked by cpal, power-of-two drivers (granularity −1) are not, so a size that is not a power of two can
+    be rejected only by the driver when the buffers are created (the S07 choices are powers of two). The size can
+    change while running (`kAsioBufferSizeChange`): cpal resizes its buffer, and `StreamCallback` already cuts a
+    longer callback into prepared pieces; a driver reset request arrives as `StreamInvalidated` and is handled
+    like a lost device.
+  - *Rates:* cpal lists the common rates the driver accepts (`ASIOCanSampleRate`), one range per rate. Building a
+    stream calls `ASIOSetSampleRate` when the rate differs, and that applies to the **whole driver**, hence to every
+    program using the interface; a rate the driver does not accept is an error (no silent resampling).
+  - *Formats:* ASIO drivers deliver their native format; komponist accepts `f32`, `i32`, packed `i24` (only on ASIO;
+    `ASIOSTInt24LSB` is common) and `i16`. 64-bit float and DSD are not offered.
+  - *Threads:* the callback runs on the driver's own thread. cpal's ASIO host makes no priority call (its
+    `realtime` handling is WASAPI's): the ASIO SDK says the driver puts its threads into MMCSS "Pro Audio" at CRITICAL
+    priority and "an ASIO host shall by no means alter these priorities", so komponist does the same as cpal and
+    leaves them alone (`RealtimeDenied` never occurs). Findings in cpal 0.18.2 / asio-sys 0.4.0: the user callback
+    runs inside asio-sys's `BUFFER_CALLBACK` mutex and takes cpal's uncontended `asio_streams` mutex, then converts
+    from an interleaved scratch buffer allocated when the stream is built (the only allocation in the callback path is
+    that buffer growing after a `kAsioBufferSizeChange`, in cpal's code outside our `assert_no_alloc` scope), so `assert_no_alloc`
+    around `StreamCallback::run` and the `EngineSlot` handoff work unchanged. `Stream::drop` calls
+    `remove_callback`, which takes the same mutex (so it waits for a running callback) and drops the closure, hence
+    the slot hands the engine back synchronously as with the other backends; `ASIOStop`/`ASIOExit` follow when the last
+    driver handle goes, on the thread that drops the stream. Overloads are reported as `Xrun`. cpal also starts a
+    small `cpal-asio-event-timer` thread per stream for debounced error delivery.
+  - *Not tested with hardware:* opening a stream, stream restarts at other buffer sizes and rates, reset requests,
+    unplugging, drivers that report rate 0 or fire the callback twice per buffer (cpal guards the latter), ASIO4ALL.
+    The unit tests never load a driver (rule 14).
+- **Windows audio thread:** cpal's WASAPI thread registers itself with MMCSS (task "Audio", via
+  `audio_thread_priority`, fallback `THREAD_PRIORITY_TIME_CRITICAL`) when the stream starts, before the first
+  callback and outside `assert_no_alloc`, if cpal's `realtime` feature is on. When both MMCSS and the fallback
+  fail, cpal reports an error that is not `ErrorKind::RealtimeDenied` (it wraps the Win32 error), so
+  `StreamStats::realtime_denied` stays false on Windows and the stream runs at normal priority. The callback
+  itself makes no priority call: the thread is registered already, and a second MMCSS registration on it fails. (The engine's workers use "Pro Audio" through `komponist_rt`, §6.4.1.)
+- **WASAPI buffer sizes:** in shared mode the audio engine calls back once per device period (typically
+  10 ms: 480 frames at 48 kHz), whatever size is requested; cpal reports that period as the only supported
+  buffer size (`DeviceInfo::buffer_range` is `(period, period)`). `negotiate` therefore ignores the requested size,
+  runs on the default buffer and returns the period as `effective.buffer_frames`, so the S07 latency
+  (`buffer / rate` plus the reported latency) shows what really runs and the engine is prepared for it. Rates
+  are resampled by the Windows mixer (cpal's `AUTOCONVERTPCM`); the S07 rate list is cpal's.
+- **Windows MIDI:** midir uses WinMM: no virtual ports, and an input device is exclusive per process (opening one
+  another program holds fails with `MidiError::Backend`; the port stays listed). Port names are the names WinMM
+  reports. Tests feed the input path without a port (`TestMidiSource`, hub-internal injection) and never open a
+  real device.
 - No device / device lost → state `NoDevice`. The UI disables play and record and shows the red notice
   in the transport bar, the status bar and S07.
 - MIDI: midir inputs per device, switchable in S07, activity flag per device. Events carry
@@ -987,6 +1123,52 @@ Bridge → app: `Loaded{info, params, latency}`
 (macOS) `HeaderAction`, `Shortcut{chord}`, `HeaderKey`, `FrameMoved(rect)`, `CloseRequested`,
 `FrameWindow(number)` (§8.4).
 
+**Windows (`komponist-ipc`, port W2):** the same layout, handshake and framing on other primitives.
+The shared memory is a pagefile-backed section of exactly `SHM_SIZE` (`CreateFileMappingW`; its size
+cannot change, so nothing needs sealing), prefaulted with `VirtualLock` or by touching the pages.
+There is no cross-process address wait (`WaitOnAddress` is per process), so each region also owns two
+auto-reset events, one per handshake word; the words stay the truth and are re-read after every wake.
+Deadlines use one high-resolution waitable timer per waiting role, armed before each wait and waited
+on together with the event (`WaitForMultipleObjects`); a millisecond timeout would be 12 ms late at
+the default clock resolution, and `timeBeginPeriod` is never called. Spike S1 (internal notes) measured
+an event round trip of p50 4–8 µs, p99 6–13 µs under MMCSS, a timer that fires p50 +13–20 µs late
+but 1–2 % of the time a whole 0.5 ms quantum late, and a rare 0.3–0.4 ms stall about once per 10 000
+round trips. So the app's `wait_done` spins 20 µs on `done_seq` before it blocks, arms its timer
+600 µs before the deadline and spins the rest (a timed-out block ends within µs of its deadline, and
+spins only when the bridge is that late), while the bridge's `wait_request` neither spins nor
+corrects the timer (its deadline only polls for shutdown). The control channel is a duplex
+byte-mode named pipe with a random name and one instance, both ends opened at once and overlapped
+(a blocked `recv` does not hold up a `send` on another thread). Handles cannot travel in-band: the
+app duplicates the section and both events into the bridge through the bridge's process handle
+(`Channel::send_region(region, watcher)`) and sends their values in `TAG_FD` frames with an 8-byte
+payload; the bridge opens them with `recv_region` and `ShmRegion::open`. The bridge's end of the pipe
+is its stdin, so no handle value goes on the command line and std's spawn lock keeps it from leaking
+into other children. The process watcher holds a process handle (`WaitForSingleObject`,
+`GetExitCodeProcess`, `TerminateProcess`); an NTSTATUS error code (`0xC000_0005` access violation,
+`0xC000_0409` fast fail from `abort`, …) is reported as a crash in `ProcessExit::signal`, and a
+process the watcher killed as signal 9, as on Unix. Both ends of a channel run on the same OS, so
+`PROTOCOL_VERSION` does not change for the Windows framing.
+
+**Windows bridge process (port W5):** `komponist --bridge --instance [--rt-priority N]`, without
+`--control-fd`: the plugin manager passes the bridge end of the control pipe as the child's stdin
+(`Stdio::from(handle)`), watches the child through a `ProcessWatcher`, drops the `Child` and the
+`Command` (a kept `Command` would hold the pipe open after the bridge died) and sends the shared memory
+with `send_region` through the watcher's process handle. The bridge keeps a non-inheritable duplicate of
+stdin (refused unless it is a pipe), then points both stdins, the process's (`SetStdHandle`) and the C
+runtime's descriptor 0 (`_dup2` of a `NUL` descriptor), at `NUL` and closes the original handle, so no
+plugin can read the control pipe and no helper process a plugin starts can keep it open. Process set-up:
+`SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` and `WerSetFlags(WER_FAULT_REPORTING_NO_UI)`
+in place of non-dumpable (a crashing plugin must never leave the bridge alive behind a Windows Error
+Reporting dialog; `KOMPONIST_BRIDGE_COREDUMP=1` keeps the report), the main thread named
+`komponist-bridge` (`SetThreadDescription`), and `TerminateProcess(GetCurrentProcess(), code)` as
+`_exit`: the CRT's `_exit` ends in `ExitProcess`, which still runs every DLL's `DLL_PROCESS_DETACH` and
+the TLS callbacks (Rust's thread-local destructors), i.e. plugin code after the plugin is gone. The RT
+thread registers with MMCSS ("Pro Audio", `komponist-rt`; `--rt-priority` does not apply, the report
+reads "MMCSS (Pro Audio)"). `--scan` saves a duplicate of stdout for the JSON and points both stdouts
+(`SetStdHandle`, CRT descriptor 1) at stderr before any plugin code runs; a plugin with a static CRT
+initialises its own descriptors from the process's handles when its DLL loads, so it prints to stderr
+too. Crash detection measured with `kp-test-crash`: 3 ms from the request to the reported exit.
+
 **Parallelism:** bridges are separate processes, so each plugin runs on its own core. Since WP-65 an
 instrument bridge at the head of a chain is started before the engine runs any chain
 (`Processor::begin`: build the wire events, `begin_block`, wake) and collected by whichever thread
@@ -1028,6 +1210,21 @@ truce-rack serve as further reference code.
   `kPlatformTypeNSView`): `gui_open(GuiParent::Cocoa(nsview))` attaches into the bridge's own frame
   (#52), without CLAP `set_scale` (JUCE plugins would double their size in points) and without VST3
   `setContentScaleFactor` (refused); sizes are points.
+- **Windows (port W5):** plugin DLLs are loaded with `LoadLibraryExW(path, NULL,
+  LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` (dependencies from the plugin's own
+  folder and the system folders, never the working directory or `PATH`) and pinned with
+  `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN)`, the `RTLD_NODELETE` of Windows. A CLAP `.clap` is
+  one DLL; clack-host loads it with plain flags, so the hosting layer loads it with the policy first.
+  VST3: `X.vst3/Contents/x86_64-win/X.vst3` (a DLL in a bundle folder) or a legacy single-file `X.vst3`,
+  `InitDll()` / `ExitDll()` (both optional) in place of `ModuleEntry` / `ModuleExit`. The SDK lays a
+  `TUID` out as a COM `GUID` there (`COM_COMPATIBLE`), so plugin ids and the class id in the state blob
+  are written in the canonical byte order (`module::cid_hex`): a project and its VST3 states move between
+  operating systems. The bindings' enums are signed on Windows (`c_int`, MSVC) and unsigned elsewhere;
+  `vst3::enum_u32` / `enum_i32` convert. GUI API: CLAP `win32`, VST3 `kPlatformTypeHWND`
+  (`GuiParent::Win32 { hwnd, scale }`), with the scale passed (CLAP `set_scale`, VST3
+  `setContentScaleFactor`, again through `gui_set_scale` when the frame changes monitors); sizes are physical
+  pixels. `GUI_EMBEDDING` is true since W6 (the bridge-owned frame, §8.4). No CLAP posix-fd-support and no VST3 `IRunLoop`
+  (see §4.1).
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
   On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): the control socket, the
   notification wake pipe and plugin fds are libdispatch read/write sources on a private serial queue, whose
@@ -1040,6 +1237,27 @@ truce-rack serve as further reference code.
   seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native` (run-and-return) and
   resumes the run loop when the frame closes.
   The frame is the seam's user (#52, §8.4).
+  On Windows (W5, W6, `win_loop`) the main thread must pump Win32 messages even without a visible GUI
+  (plugins create hidden windows, `SetTimer` timers and COM objects on it), and it does nothing else: it
+  waits in `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)` and dispatches what comes (a
+  plugin's `WM_QUIT` is dropped). A **relay thread** waits for the control reader's event, the
+  notification event (a manual-reset event the RT and plugin threads set with one `SetEvent`) and a
+  high-resolution waitable timer armed for the next host timer, `ParamValues` or frame deadline (a
+  millisecond timeout would be up to 15.6 ms late), posts one `WM_APP` message to a message-only window
+  of the main thread, and waits until the main thread hands back. The window's procedure runs the
+  bridge's tick outside every borrow (at most `MESSAGES_PER_TICK` control messages), re-arms the timer and
+  hands back; a tick that finds the bridge busy is retried with a 5 ms `SetTimer`. Because it is a window
+  message, every loop that pumps the thread serves the bridge: eframe's while the plugin frame is open, the
+  window manager's move and size loop during a drag, and a plugin's modal dialog loop opened from its GUI.
+  Only a modal loop inside a plugin call the bridge itself made (`Load`, `gui_open`, a state call) holds
+  control messages and timers back until it returns, as a long plugin call does on Linux. The bridge makes
+  itself per-monitor-v2 DPI aware before that window exists (as the manifest of `komponist.exe` does). A pipe cannot be waited on for "readable", so a reader
+  thread blocks in `Channel::recv` and queues whole messages (at most 256, then the app's writer waits),
+  setting the event while the queue is not empty; the main thread sends on the same overlapped pipe.
+  The frame (W6, §8.4) uses the outer loop of `Bridge::run` as on macOS: `OpenGui` stops the pump, the
+  bridge runs `eframe::run_native` (run-and-return) and pumps again when the frame closes.
+  `komponist_hosting::host_loop::wake` holds the wait, the event and the timer, shared with
+  the reference `PollLoop` of the hosting tests.
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
   honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
   reading by default and handle write interest only with a rate limit (WP-26/31 decide the details).
@@ -1061,6 +1279,12 @@ On macOS: CLAP `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP`, 
 `~/Library/Audio/Plug-Ins/VST3`, `/Library/Audio/Plug-Ins/VST3`. A macOS `.clap` / `.vst3` is a bundle
 directory (`Contents/MacOS/<name>`, `Contents/Info.plist`); the scan never descends into it, and its cache
 mtime is the newest of the bundle's files.
+On Windows (W5): CLAP `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP`, `%CLAP_PATH%`
+(`;`-separated); VST3 `%COMMONPROGRAMFILES%\VST3`, `%LOCALAPPDATA%\Programs\Common\VST3`; the cache in
+`%LOCALAPPDATA%\komponist\`. A Windows `.vst3` is a bundle folder (`Contents/x86_64-win/X.vst3`) or a
+single DLL. Canonical bundle paths drop the verbatim prefix `fs::canonicalize` adds (`\\?\C:\…`). A scan
+waits on its process handle and reads its output pipes with `PeekNamedPipe` every 5 ms (pipes cannot be
+waited on); a crash reads "crashed (exception 0xC0000005)" in the report.
 Browser categories ("EQ und Filter", "Dynamik", "Hall und Delay", "Modulation") come from a mapping
 table of CLAP features / VST3 subcategories.
 
@@ -1130,6 +1354,44 @@ table of CLAP features / VST3 subcategories.
   the bridge frame's position. Costs (spike #42): +40–60 MiB per visible frame (egui draws the
   whole window). `KOMPONIST_FRAME_OFFSCREEN=1` opens frames at −20000 and blocks every activation
   (tests). The bridge clears its task-level crash exception ports at start.
+
+- **Windows (port W6): the bridge owns the frame window, as on macOS.** The app could create the frame and let
+  the plugin attach a child window across processes (the Linux model), but a cross-process parent/child pair
+  attaches the input queues of both threads, so a hung plugin would freeze the app (Windows port evaluation
+  §3.6, internal notes). The frame logic is shared with macOS (`komponist-bridge/src/frame/mod.rs`, `keys.rs`);
+  `frame/win32.rs` is the OS half. The body is a container child window of winit's window (`WS_CLIPCHILDREN`,
+  background `surface.0`) the plugin attaches to (CLAP `win32`, VST3 `kPlatformTypeHWND`). Sizes are physical
+  pixels at the window's DPI scale (`GetDpiForWindow / 96`), passed to the plugin (CLAP `set_scale`, VST3
+  `setContentScaleFactor`); the header is 28 × scale pixels; the protocol (`GuiOpened`, `SetGuiSize`, `FrameRect`)
+  stays in points. The window's size is set with `SetWindowPos` for the outer rect `AdjustWindowRectExForDpi`
+  gives, then the container; a user drag of a resizable plugin asks it 100 ms after the drag rests; fixed-size
+  plugins get a frame without resize border or maximize button. When the frame moves to a monitor with another
+  DPI (winit keeps its size in points), `logic()` sees the new scale and the bridge passes it to the plugin
+  (`HostedPlugin::gui_set_scale`) and asks for its size at that scale. The bridge process is per-monitor-v2 DPI
+  aware (the manifest; the bridge sets it before its first window too). The event loop: §8.1, the wake relay
+  posts to a window of the main thread, which winit's loop dispatches. Keys: a `WH_GETMESSAGE` hook on the main
+  thread, installed after the plugin's GUI opened (plugins hook the thread too: baseview, under the egui GUIs
+  of the test plugins, handles key messages for its windows in its own `WH_GETMESSAGE` hook, so winit's message
+  hook never sees them; hooks run newest first), applies the WP-50 policy while the focus is in the container
+  (Strg = Ctrl as on Linux, the Windows key is "other", AltGr is Ctrl + Alt and never a shortcut; Space, Esc,
+  Return, Tab, Backspace, Delete by virtual-key code, letters by the layout's character) and turns a taken key into
+  `WM_NULL` and a `Shortcut`; while another visible top-level window of the bridge lies above the frame (tooltips:
+  `WS_EX_TRANSPARENT`, `tooltips_class32` do not count) every key passes.  Activation (the foreground lock): the
+  app calls `AllowSetForegroundWindow(bridge pid)` before `ActivateFrame`, the bridge calls `SetForegroundWindow`;
+  on close the bridge allows the app, and the app brings its front window forward if the bridge still had the
+  foreground. `RaiseFrame` is `SetWindowPos(HWND_TOP, SWP_NOACTIVATE)`; the app sends it when one of its windows
+  comes to the foreground from a process that is not komponist (a foreground `SetWinEventHook`; switching from a
+  frame to the main window raises nothing, so the clicked window stays in front), back to front by the `HWND`s
+  the bridges report in `FrameWindow`. "Oben halten" is `HWND_TOPMOST` while komponist (the app or one of its
+  bridges) is the foreground process (a foreground hook in the bridge); when another application comes to the
+  front the frame leaves the topmost band and goes right below its window. The frames run from `komponist.exe
+  --bridge`, the app's own executable, which is what the taskbar groups by when no `AppUserModelID` is set;
+  none is set. Costs, measured with the debug build (wgpu on DX12): a bridge without a frame has a 34 MiB
+  working set, with the kp-test-synth frame open about 200 MiB (private bytes about 400 MiB), mostly the GPU
+  device and swapchain of eframe; release builds were not measured. `KOMPONIST_FRAME_OFFSCREEN=1` opens frames
+  at −20000 points without a taskbar button and skips every activation (tests). Tests: `komponist-bridge`
+  `tests/it/frame_win` (the test synth as CLAP and VST3, close and reopen at the rect, shutdown, a dying bridge,
+  the key hook; Surge XT and Dexed `#[ignore]`d).
 
 ### 8.5 Built-in instruments
 
@@ -1210,6 +1472,54 @@ waits for an Apple Developer account. Plugins that compile code at run time (JIT
 signature and the entitlements and to run `--help` of the app and of the bridge mode, and attaches the zip and its
 `.sha256` to the release. It does not start the GUI (no display session).
 
+### 8.8 Windows package and release (W9a)
+
+`scripts/package-windows.sh` (Git Bash on Windows) builds `komponist` (release) and assembles
+`dist/komponist-<version>-windows-x86_64/`, which it zips with bsdtar (`System32\tar.exe -a`, Git Bash's GNU tar cannot write
+zip) into `komponist-<version>-windows-x86_64.zip` plus a `.sha256`:
+
+```text
+komponist-<version>-windows-x86_64/
+  komponist.exe     the one executable; the plugin bridge is `komponist.exe --bridge` (§8.1)
+  LICENSE
+  README.txt        start, the SmartScreen note, settings and plugin folders (English)
+```
+
+As on macOS, fonts, texts and the window icon are compiled in, so nothing else ships. **Resources of the executable**
+come from `crates/komponist-app/build.rs`, which on Windows hosts fills the placeholders of `assets/windows/komponist.rc.in`
+(workspace version for `FILEVERSION` / `ProductVersion`, absolute paths of the icon and the manifest) and compiles it with the
+MSVC `rc.exe` through the `embed-resource` crate; the resource is linked into `komponist` only, not into `komponist-play`.
+It contains:
+
+- `assets/windows/komponist.ico`: 16, 24, 32, 48, 64, 128 and 256 px, the PNGs of `assets/icons/hicolor` verbatim (PNG-in-ICO).
+  `assets/windows/make-ico.sh` regenerates it.
+- Version information: product name komponist, file description "komponist - MIDI DAW", licence GPL-3.0-or-later.
+- `assets/windows/komponist.manifest`: per-monitor v2 DPI awareness (the egui window and the bridge-owned plugin frames,
+  §8.4, scale per monitor), `longPathAware`, Windows 10 and 11 as supported OS, `asInvoker` (no elevation), and deliberately
+  no UTF-8 active code page: the bridge is the same executable, so it has the same manifest, and plugins expect the
+  system's ANSI code page as in every other host.
+
+**Subsystem and console:** release builds use `#![windows_subsystem = "windows"]` (`main.rs`; debug builds keep the console),
+so Explorer starts no console window. That leaves the process without stdout and stderr when a terminal starts it, which would
+silence `--help`; `attach_parent_console` therefore attaches to the parent's console (`AttachConsole(ATTACH_PARENT_PROCESS)`)
+and points the missing standard handles at `CONOUT$`, but only when a handle is missing. Handles the parent passes (the
+pipes of the app's bridge processes, a redirect in a script) are never replaced, so `--bridge` keeps its pipes. The shell does
+not wait for a windows-subsystem program: console output may appear after the next prompt.
+
+**Signing:** the first Windows release is unsigned. SmartScreen warns on the first start of a downloaded, unsigned executable ("More info" →
+"Run anyway", `docs/INSTALL.md`); only a trusted certificate (or reputation built up over many downloads) removes the
+warning. With `KOMPONIST_SIGN_CERT` (+ `KOMPONIST_SIGN_PASSWORD`) or `KOMPONIST_SIGN_THUMBPRINT` the script signs a copy of
+the executable with `signtool` (SHA-256, RFC 3161 timestamp from `KOMPONIST_SIGN_TIMESTAMP_URL`, default DigiCert) and
+verifies it before zipping; that path has not been run (no certificate yet).
+
+**Release:** the `windows-x86_64` job of `.github/workflows/release.yml` runs the script on a `windows-2025` runner, checks
+the hash, unpacks the zip, runs `--help` of the app and of the bridge mode (piped, so the shell waits for the
+windows-subsystem process) and attaches the zip and its `.sha256` to the release. It does not start the GUI (no desktop
+session). It has not run yet: it waits for the workspace to build on Windows.
+
+**Not part of this package:** an installer (Start menu entry, the `.komponist` file association, uninstall) and signing
+certificates; the app takes one project path per start (`komponist.exe "%1"`), so the association needs no further app change.
+
 ---
 
 ## 9. User interface
@@ -1276,6 +1586,23 @@ with `Painter`:
   it with `egui_kittest`.
 - **EngineSync:** after each document change: `compile::build` → `SetProgram`. Fader, pan, mute and
   solo use the fast-path commands during a gesture.
+- **Per-user folders (`dirs.rs`, W4b):** the settings folder (`settings::config_dir`: `$XDG_CONFIG_HOME` or
+  `~/.config` on Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows, always `…/komponist`;
+  `recent.json` beside `settings.json`), the home folder shown as `~` (`$HOME`; Windows: the profile folder),
+  where the export dialog starts without a project folder (the home folder; Windows: the Music folder), and the
+  drive roots of the file browser. On Windows they come from the shell's known folders
+  (`SHGetKnownFolderPath`: Profile, Music, RoamingAppData; `GetLogicalDrives`), so redirected folders work; the
+  environment variables `USERPROFILE` and `APPDATA` are only the fallback. The in-app file browser shows `~\Music`
+  with the platform's separator; above a drive root it lists the drives (an empty path), and it hides entries
+  with the hidden attribute besides dot-files. "Im Ordner zeigen" runs `explorer` there, `xdg-open` elsewhere.
+- **Platform for shortcuts:** `komponist_ui::Platform` is `Pc` (Strg/Ctrl, written-out labels) on Linux and
+  Windows and `Mac` on macOS. The few texts that name the OS (the start screen's version line) pick Windows
+  explicitly (`dialogs::start::version_line`).
+- **S07 on Windows (W4b):** WASAPI shared mode calls back once per device period, so the buffer segments are
+  disabled and a hint names the real size (`settings::buffer_limit`, `BufferLimit::Fixed`; the running
+  stream's size wins over the device's reported period). ASIO enables the sizes inside the driver's range
+  (`Range`, or `Fixed` for one size). A WinMM MIDI input another program holds stays listed and reads "belegt"
+  / "in use" (`MidiInputHub::port_busy`), not as an error.
 
 ---
 

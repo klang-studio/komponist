@@ -296,9 +296,9 @@ fn carriers_follow_the_algorithm() {
     for number in 1..=32 {
         let mut patch = default_patch();
         Macro::Algorithm.set(&mut patch, f64::from(number));
-        for op in 0..6 {
+        for (op, operator) in patch.operators.iter().enumerate().take(6) {
             assert_eq!(
-                patch.operators[op].output,
+                operator.output,
                 device::is_carrier(number as usize, op),
                 "algorithm {number}, operator {}",
                 op + 1

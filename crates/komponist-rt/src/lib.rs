@@ -3,7 +3,7 @@
 //!
 //! Module map:
 //! - [`policy`]: [`set_current_thread_realtime`]: `SCHED_FIFO` on Linux, the Mach time-constraint
-//!   policy on macOS.
+//!   policy on macOS, MMCSS ("Pro Audio") with a `TIME_CRITICAL` fallback on Windows.
 //! - [`workgroup`]: [`Workgroup`] (a device's audio workgroup, joined by threads that work to its
 //!   deadline) and [`WorkInterval`] (a workgroup a thread creates and drives itself), with the
 //!   [`JoinToken`] of a join. They exist on every OS so callers need no `cfg`, but only macOS can

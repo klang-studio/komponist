@@ -5,12 +5,15 @@
 //!   no X11 connection of its own. CLAP timer-support / posix-fd-support and the VST3 Linux
 //!   `IRunLoop` are all implemented on top of it by the format layers, which map their handler
 //!   objects to [`TimerId`]s and fds and dispatch [`crate::HostedPlugin::on_timer`] /
-//!   [`crate::HostedPlugin::on_fd`].
+//!   `HostedPlugin::on_fd`. On Windows (port W5) only timers: plugins there drive their own work
+//!   with window messages and `SetTimer`, so neither CLAP posix-fd-support nor VST3 `IRunLoop` is
+//!   offered and the fd methods do not exist; the bridge's main thread pumps Win32 messages.
 //! - [`HostNotify`] (any thread, RT-safe): requests and notifications from the plugin to the host.
 //!
 //! Both are handed to [`crate::load`] in a [`HostContext`] and kept by the format layer for the
 //! lifetime of the instance.
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -60,13 +63,17 @@ pub trait HostLoop {
     /// Stops a timer.
     fn unregister_timer(&self, timer: TimerId) -> Result<(), HostingError>;
 
-    /// Watches `fd` for `events`; calls `HostedPlugin::on_fd(fd, ready)` when ready.
+    /// Watches `fd` for `events`; calls `HostedPlugin::on_fd(fd, ready)` when ready (Unix only,
+    /// see the module docs).
+    #[cfg(unix)]
     fn register_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError>;
 
     /// Changes the interest of a watched fd.
+    #[cfg(unix)]
     fn modify_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError>;
 
     /// Stops watching `fd`.
+    #[cfg(unix)]
     fn unregister_fd(&self, fd: RawFd) -> Result<(), HostingError>;
 }
 

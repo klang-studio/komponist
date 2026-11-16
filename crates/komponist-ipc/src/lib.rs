@@ -1,7 +1,8 @@
 //! The link between komponist and its plugin bridge processes.
 //!
 //! Shared memory, cross-process wait/wake with deadlines, SPSC event rings in shared memory and
-//! the control protocol over a Unix socket. Both sides use this crate: the app's
+//! the control protocol over a Unix socket (Windows: a named pipe). Both sides use this crate: the
+//! app's
 //! `ExternalProcessor` and plugin manager (`komponist-plugins`) and `komponist-bridge`.
 //!
 //! Module map (ARCHITECTURE §8.1):
@@ -19,6 +20,16 @@
 //! `process` and the socket set-up in `control` each have a private `sys` module per OS (Linux:
 //! memfd, futex, pidfd; macOS: POSIX shm, `os_sync_wait_on_address`, kqueue). The control framing
 //! is one code path on both.
+//!
+//! Windows (port W2): the same modules with a `sys` module each (pagefile-backed section, auto-reset
+//! events with a high-resolution timer, overlapped duplex named pipe, process handle). Where a
+//! handle replaces an fd, the API differs in kind, not in shape: [`ShmRegion::open`] takes
+//! `ShmHandles` instead of an `OwnedFd`, `ShmRegion::handles` replaces `fd()`,
+//! `Channel::send_region` / `Channel::recv_region` (and `send_handle` / `recv_handle`) replace
+//! `send_fd` / `recv_fd`, [`control::socket_pair`] returns the bridge's end as an `OwnedHandle`,
+//! `Channel::from_handle` replaces `from_fd`, and `AsHandle` replaces `AsFd` on [`Channel`] and
+//! [`ProcessWatcher`]. [`signal::wait_while`] and [`signal::wake`] work only within one process
+//! there; the block handshake does not use them.
 //!
 //! This crate links no plugin format and no audio backend.
 
@@ -42,6 +53,8 @@ pub use control::{
 };
 pub use process::{ProcessExit, ProcessWatcher};
 pub use ring::ShmRing;
+#[cfg(windows)]
+pub use shm::ShmHandles;
 pub use shm::{
     BlockError, BlockRequest, BlockResult, BlockSpec, BlockStatus, BridgeClient, BridgeMonitor,
     BridgeServer, BridgeState, ShmError, ShmLayout, ShmRegion, WireEvent, WireEventKind,

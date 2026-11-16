@@ -36,6 +36,9 @@ settings-keyboard = Tastatur
 # S07 row label and name of the driver control.
 settings-driver = Treiber
 
+# S07 accessible name of the "ASIO Compatible" logo next to the driver segments (Windows builds with ASIO).
+settings-asio-logo = ASIO-kompatibel
+
 # S07 row label and name of the output device dropdown.
 settings-device = Ausgabegerät
 
@@ -44,6 +47,9 @@ settings-rate = Abtastrate
 
 # S07 row label and name of the buffer size control.
 settings-buffer = Puffergröße
+
+# S07 hint under the buffer size segments when the driver fixes the size (WASAPI shared mode: the device period); `$frames` is the real size, e.g. "480".
+settings-buffer-fixed = Der Treiber gibt { $frames } Samples vor.
 
 # S07 first entry of the output device dropdown: the driver's default.
 settings-default-device = Standardgerät
@@ -77,6 +83,9 @@ settings-midi-active = aktiv · Kanal 1–16
 
 # S07 MIDI row, input on but not present.
 settings-midi-disconnected = nicht verbunden
+
+# S07 MIDI row, input on and present but another program holds it (Windows: a MIDI input is exclusive).
+settings-midi-busy = belegt · ein anderes Programm nutzt den Eingang
 
 # S07 row label and name of the UI scale control.
 settings-scale = UI-Skalierung

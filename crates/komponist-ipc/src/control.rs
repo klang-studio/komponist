@@ -5,7 +5,7 @@
 //! The app keeps one end and passes the other to the bridge as an inherited fd (`--instance
 //! --control-fd N`). Messages larger than [`MAX_FRAME`] (big plugin states) are split into frames
 //! and reassembled by [`Channel`]; callers always see whole messages. The shared-memory fd travels
-//! over the same socket as SCM_RIGHTS ancillary data ([`Channel::send_fd`]).
+//! over the same socket as SCM_RIGHTS ancillary data (`Channel::send_fd`).
 //!
 //! Every frame header carries the frame's own payload length, and the receiver reads each frame
 //! exactly (header, then payload), never past its end. So frame boundaries hold on a byte stream,
@@ -15,6 +15,17 @@
 //! through `MSG_NOSIGNAL` (Linux) or `SO_NOSIGPIPE` (macOS); received fds close-on-exec through
 //! `MSG_CMSG_CLOEXEC` (Linux) or `fcntl` right after `recvmsg` (macOS); macOS also raises the
 //! socket buffers from their 8 KiB default.
+//!
+//! Windows: the transport is a duplex byte-mode named pipe (one instance, a fresh random name
+//! under `\\.\pipe\`, remote clients rejected, both ends opened right away by [`socket_pair`], so
+//! nobody else can connect), both ends overlapped, so one thread may block in `recv` while
+//! another sends (synchronous handles would serialise the two). Neither end is inheritable; the
+//! bridge's end reaches the child as its stdin (see "Command line"). The framing is the same, with
+//! one difference: handles cannot travel in-band, so a `TAG_FD` frame carries an 8-byte payload,
+//! the handle's value **in the receiving process**: the sender duplicates the handle into the
+//! peer first (`DuplicateHandle`, through the peer's process handle, which only the app has), see
+//! `Channel::send_handle` / `Channel::send_region`. Only the bridge receives handles. Both ends
+//! of a channel always run on the same OS, so [`PROTOCOL_VERSION`] stays the same.
 //!
 //! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `SetState`
 //! if it has a state, then `Activate` (so the plugin starts processing with its state); the bridge
@@ -33,20 +44,31 @@
 //! - `komponist-bridge --instance --control-fd <fd> [--rt-priority <1..=99>]`: one plugin instance
 //!   on the inherited control socket `fd`. `--rt-priority` sets the `SCHED_FIFO` priority of the
 //!   RT thread (default 80, below PipeWire's data loops at 83/88).
+//! - Windows: the bridge's end of the pipe is the child's stdin (`Stdio::from(OwnedHandle)`: std
+//!   makes only that copy inheritable, under its spawn lock), so no handle value goes on the
+//!   command line; the flag that replaces `--control-fd` is W5's to choose.
 //! - `komponist-bridge --scan <bundle>`: prints a JSON array of [`PluginDescriptor`] (serde_json,
 //!   same field names) and a newline to stdout; plugin output during the scan goes to stderr.
 //!   Exit codes: 0 success (the array may be empty), 1 the bundle could not be scanned (reason on
 //!   stderr), 2 bad command line, 3 the format has no hosting (unused since CLAP and VST3 are both hosted). A crashing
 //!   bundle kills the scan process with its signal.
 
+#[cfg(unix)]
 use std::io::{IoSlice, IoSliceMut};
 use std::marker::PhantomData;
+#[cfg(unix)]
 use std::mem::MaybeUninit;
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, poll};
+#[cfg(unix)]
 use rustix::io::Errno;
+#[cfg(unix)]
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
     SendAncillaryMessage, recvmsg, sendmsg,
@@ -71,7 +93,7 @@ pub const MAX_FRAME: usize = 64 * 1024;
 // little-endian), the length of the whole encoded message (u32, little-endian, the same in every
 // fragment) — then up to `MAX_FRAME - FRAME_HEADER` payload bytes. A message is the payloads of
 // its `TAG_MORE` frames followed by one `TAG_LAST` frame; a `TAG_FD` frame carries one fd and no
-// payload.
+// payload (Windows: no fd, but the 8-byte little-endian handle value as payload and total).
 
 /// Bytes in front of every frame.
 const FRAME_HEADER: usize = 8;
@@ -81,8 +103,11 @@ const MAX_PAYLOAD: usize = MAX_FRAME - FRAME_HEADER;
 const TAG_LAST: u8 = 0;
 /// A fragment; more follow.
 const TAG_MORE: u8 = 1;
-/// A file descriptor as SCM_RIGHTS, no payload.
+/// A file descriptor as SCM_RIGHTS, no payload (Windows: a handle value as payload).
 const TAG_FD: u8 = 2;
+/// Windows: payload bytes of a `TAG_FD` frame (the handle value as `u64`, little-endian).
+#[cfg(windows)]
+const HANDLE_PAYLOAD: usize = 8;
 /// Largest encoded message either side accepts (a sanity limit against a corrupt peer; plugin
 /// states of sample-based instruments reach tens of MiB).
 const MAX_MESSAGE: usize = 1 << 30;
@@ -533,7 +558,11 @@ impl std::error::Error for ChannelError {}
 /// One end of a control socket that sends `Tx` and receives `Rx`. Non-RT (main threads).
 #[derive(Debug)]
 pub struct Channel<Tx, Rx> {
+    #[cfg(unix)]
     fd: OwnedFd,
+    /// Windows: an overlapped end of the duplex named pipe.
+    #[cfg(windows)]
+    pipe: OwnedHandle,
     _msgs: PhantomData<fn(Tx) -> Rx>,
 }
 
@@ -545,9 +574,20 @@ pub type BridgeChannel = Channel<BridgeMsg, ControlMsg>;
 
 /// Creates a connected socket pair (`SOCK_STREAM`, close-on-exec): the app's end and the fd for
 /// the bridge (to be inherited by the child; the spawner clears `CLOEXEC` on it).
+#[cfg(unix)]
 pub fn socket_pair() -> Result<(AppChannel, OwnedFd), ChannelError> {
     let (app, bridge) = sys::stream_pair().map_err(io_error)?;
     Ok((Channel::from_fd(app), bridge))
+}
+
+/// Windows: creates a connected duplex pipe (module docs): the app's end and the bridge's end,
+/// neither inheritable. Give the bridge's end to the child as its stdin
+/// (`Command::stdin(Stdio::from(handle))`) and drop the `Command` after spawning, or a dead
+/// bridge would never close the pipe.
+#[cfg(windows)]
+pub fn socket_pair() -> Result<(AppChannel, OwnedHandle), ChannelError> {
+    let (app, bridge) = sys::stream_pair().map_err(io_error)?;
+    Ok((Channel::from_handle(app), bridge))
 }
 
 #[cfg(target_os = "linux")]
@@ -625,7 +665,269 @@ mod sys {
     }
 }
 
+#[cfg(windows)]
+mod sys {
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use windows_sys::Win32::Foundation::{
+        DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED,
+        ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+        ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+        PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
+    };
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
+    };
+    use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess};
+
+    use super::{ChannelError, MAX_FRAME};
+
+    /// Pipe buffer quota per direction: four full frames, as on macOS.
+    const BUFFER: u32 = 4 * MAX_FRAME as u32;
+
+    /// `handle` from a create call that reports failure as `INVALID_HANDLE_VALUE`.
+    fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: a fresh handle that nothing else owns.
+            Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+        }
+    }
+
+    /// The two ends of a fresh duplex byte pipe, both overlapped and not inheritable.
+    pub(super) fn stream_pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let pid = std::process::id();
+        let mut error = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        for _ in 0..16 {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let clock = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as u64);
+            let name: Vec<u16> = format!(r"\\.\pipe\komponist-{pid:x}-{n:x}-{clock:x}")
+                .encode_utf16()
+                .chain([0])
+                .collect();
+            // SAFETY: a NUL-terminated name; default security (no attributes: not inheritable).
+            // One instance only, and FIRST_PIPE_INSTANCE fails if the name exists already.
+            let server = owned(unsafe {
+                CreateNamedPipeW(
+                    name.as_ptr(),
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                    1,
+                    BUFFER,
+                    BUFFER,
+                    0,
+                    core::ptr::null(),
+                )
+            });
+            let server = match server {
+                Ok(server) => server,
+                Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                    error = e;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            // SAFETY: as above; the client end may not impersonate beyond identification.
+            let client = owned(unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    core::ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                    core::ptr::null_mut(),
+                )
+            });
+            let client = match client {
+                Ok(client) => client,
+                // Someone else took the only instance first: never use that pipe.
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                    error = e;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            // The client is connected already; this only confirms it (ERROR_PIPE_CONNECTED).
+            overlapped(&server, |ov| {
+                // SAFETY: a valid server end and an OVERLAPPED that outlives the operation.
+                unsafe { ConnectNamedPipe(server.as_raw_handle(), ov) }
+            })
+            .or_else(|e| match e.raw_os_error() {
+                Some(code) if code == ERROR_PIPE_CONNECTED as i32 => Ok(0),
+                _ => Err(e),
+            })?;
+            return Ok((server, client));
+        }
+        Err(error)
+    }
+
+    /// Runs one overlapped operation on `pipe` to completion and returns its byte count. `start`
+    /// issues it with the given `OVERLAPPED` (which stays valid and pinned until it completes,
+    /// also on error: the wait below never returns before).
+    fn overlapped(
+        pipe: &OwnedHandle,
+        start: impl FnOnce(*mut OVERLAPPED) -> windows_sys::core::BOOL,
+    ) -> io::Result<u32> {
+        // One manual-reset event per operation: a sender and a receiver on two threads must not
+        // share one, and this is not an RT path.
+        // SAFETY: no attributes, no name.
+        let event = owned(unsafe { CreateEventW(core::ptr::null(), 1, 0, core::ptr::null()) })?;
+        // SAFETY: a plain C struct for which all zeroes are valid.
+        let mut ov: OVERLAPPED = unsafe { core::mem::zeroed() };
+        ov.hEvent = event.as_raw_handle();
+        if start(&mut ov) == 0 {
+            // SAFETY: plain FFI call.
+            let error = unsafe { GetLastError() };
+            if error != ERROR_IO_PENDING {
+                return Err(io::Error::from_raw_os_error(error as i32));
+            }
+        }
+        let mut bytes = 0u32;
+        // SAFETY: the operation started on `pipe` with `ov`; waits for its completion.
+        if unsafe { GetOverlappedResult(pipe.as_raw_handle(), &ov, &mut bytes, 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(bytes)
+    }
+
+    /// `Closed` for the errors of a pipe whose other end is gone.
+    fn pipe_error(e: io::Error) -> ChannelError {
+        match e.raw_os_error().map(|c| c as u32) {
+            Some(ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED) => {
+                ChannelError::Closed
+            }
+            _ => super::io_error(e),
+        }
+    }
+
+    /// Writes all of `bytes`.
+    pub(super) fn write_all(pipe: &OwnedHandle, mut bytes: &[u8]) -> Result<(), ChannelError> {
+        while !bytes.is_empty() {
+            let len = bytes.len().min(u32::MAX as usize) as u32;
+            let written = overlapped(pipe, |ov| {
+                // SAFETY: `bytes` outlives the operation (`overlapped` waits for it).
+                unsafe {
+                    WriteFile(
+                        pipe.as_raw_handle(),
+                        bytes.as_ptr(),
+                        len,
+                        core::ptr::null_mut(),
+                        ov,
+                    )
+                }
+            })
+            .map_err(pipe_error)?;
+            bytes = &bytes[written as usize..];
+        }
+        Ok(())
+    }
+
+    /// Reads at least one byte into `buf` (blocking); 0 only for an empty write of the peer.
+    pub(super) fn read(pipe: &OwnedHandle, buf: &mut [u8]) -> Result<usize, ChannelError> {
+        let len = buf.len().min(u32::MAX as usize) as u32;
+        let read = overlapped(pipe, |ov| {
+            // SAFETY: `buf` outlives the operation (`overlapped` waits for it).
+            unsafe {
+                ReadFile(
+                    pipe.as_raw_handle(),
+                    buf.as_mut_ptr(),
+                    len,
+                    core::ptr::null_mut(),
+                    ov,
+                )
+            }
+        })
+        .map_err(pipe_error)?;
+        Ok(read as usize)
+    }
+
+    /// Bytes queued for reading, without blocking. `Closed` once the other end is gone and
+    /// nothing is left.
+    pub(super) fn available(pipe: &OwnedHandle) -> Result<u32, ChannelError> {
+        let mut available = 0u32;
+        // SAFETY: a valid pipe handle; only the count is asked for.
+        let ok = unsafe {
+            PeekNamedPipe(
+                pipe.as_raw_handle(),
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                &mut available,
+                core::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(pipe_error(io::Error::last_os_error()));
+        }
+        Ok(available)
+    }
+
+    /// Duplicates `handle` into `process` (same access, not inheritable); its value there.
+    pub(super) fn duplicate_into(
+        handle: BorrowedHandle<'_>,
+        process: BorrowedHandle<'_>,
+    ) -> io::Result<HANDLE> {
+        let mut target: HANDLE = core::ptr::null_mut();
+        // SAFETY: valid handles; `target` receives a handle value of the other process.
+        let ok = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle.as_raw_handle(),
+                process.as_raw_handle(),
+                &mut target,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(target)
+    }
+
+    /// Closes `value`, a handle that [`duplicate_into`] put into `process` (when its message could
+    /// not be sent).
+    pub(super) fn close_in(process: BorrowedHandle<'_>, value: HANDLE) {
+        // SAFETY: closes the source handle in `process`; no target, nothing is duplicated.
+        unsafe {
+            DuplicateHandle(
+                process.as_raw_handle(),
+                value,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                DUPLICATE_CLOSE_SOURCE,
+            );
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+compile_error!("komponist-ipc: no control-channel backend (control.rs) for this OS");
+
+#[cfg(unix)]
 fn io_error(e: Errno) -> ChannelError {
+    ChannelError::Io(e.to_string())
+}
+
+#[cfg(windows)]
+fn io_error(e: std::io::Error) -> ChannelError {
     ChannelError::Io(e.to_string())
 }
 
@@ -634,6 +936,7 @@ fn codec_error(message: impl Into<String>) -> ChannelError {
 }
 
 /// The fds that arrived with the bytes of one frame.
+#[cfg(unix)]
 #[derive(Default)]
 struct Incoming {
     /// The first fd (more are closed).
@@ -641,6 +944,11 @@ struct Incoming {
     /// The kernel dropped fds for lack of control space (more than one fd in a frame).
     truncated: bool,
 }
+
+/// Windows: nothing arrives besides the bytes.
+#[cfg(windows)]
+#[derive(Default)]
+struct Incoming {}
 
 /// One received frame (payload in the caller's buffer after the header).
 struct Frame {
@@ -650,10 +958,12 @@ struct Frame {
     /// Payload bytes in this frame.
     len: usize,
     /// The first fd that came with the frame (more are closed).
+    #[cfg(unix)]
     fd: Option<OwnedFd>,
 }
 
 /// Blocks until `fd` is ready for `flags` (used when someone made the socket non-blocking).
+#[cfg(unix)]
 fn wait_ready(fd: BorrowedFd<'_>, flags: PollFlags) -> Result<(), ChannelError> {
     let mut fds = [PollFd::from_borrowed_fd(fd, flags)];
     match poll(&mut fds, None) {
@@ -676,9 +986,20 @@ fn decode<Rx: DeserializeOwned>(bytes: &[u8]) -> Result<Rx, ChannelError> {
 
 impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// Wraps a connected stream socket (one end of [`socket_pair`]).
+    #[cfg(unix)]
     pub fn from_fd(fd: OwnedFd) -> Channel<Tx, Rx> {
         Channel {
             fd,
+            _msgs: PhantomData,
+        }
+    }
+
+    /// Windows: wraps one end of the pipe from [`socket_pair`] (in the bridge: its stdin handle,
+    /// `std::io::stdin().as_handle().try_clone_to_owned()`). It must be an overlapped pipe handle.
+    #[cfg(windows)]
+    pub fn from_handle(pipe: OwnedHandle) -> Channel<Tx, Rx> {
+        Channel {
+            pipe,
             _msgs: PhantomData,
         }
     }
@@ -704,7 +1025,10 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             } else {
                 TAG_MORE
             };
+            #[cfg(unix)]
             self.send_frame(tag, total, &bytes[sent..sent + len], None)?;
+            #[cfg(windows)]
+            self.send_frame(tag, total, &bytes[sent..sent + len])?;
             sent += len;
             if tag == TAG_LAST {
                 return Ok(());
@@ -727,7 +1051,125 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         self.recv_message(true)
     }
 
+    /// Windows: duplicates `handle` into `peer` (the bridge's process handle, e.g. its
+    /// `ProcessWatcher`, which has `PROCESS_DUP_HANDLE`) and sends the new value as its own frame.
+    /// If the frame cannot be sent, the duplicate in `peer` is closed again.
+    #[cfg(windows)]
+    pub fn send_handle(
+        &self,
+        handle: BorrowedHandle<'_>,
+        peer: BorrowedHandle<'_>,
+    ) -> Result<(), ChannelError> {
+        let value = sys::duplicate_into(handle, peer).map_err(io_error)?;
+        let payload = (value as usize as u64).to_le_bytes();
+        let sent = self.send_frame(TAG_FD, HANDLE_PAYLOAD, &payload);
+        if sent.is_err() {
+            sys::close_in(peer, value);
+        }
+        sent
+    }
+
+    /// Windows: receives a handle sent with [`Channel::send_handle`], blocking.
+    ///
+    /// A message frame in its place is consumed and reported as `Codec`.
+    ///
+    /// # Safety
+    ///
+    /// The peer is trusted: the value it sends must be a handle it duplicated into this process
+    /// for this message ([`Channel::send_handle`]) and that nothing else here owns; a lying peer
+    /// would make the returned `OwnedHandle` close a handle that belongs to someone else. Only the
+    /// bridge receives handles, from the app that started it.
+    #[cfg(windows)]
+    pub unsafe fn recv_handle(&self) -> Result<OwnedHandle, ChannelError> {
+        let mut buf = vec![0u8; MAX_FRAME];
+        let frame = loop {
+            if let Some(frame) = self.recv_frame(&mut buf, false)? {
+                break frame;
+            }
+        };
+        match (frame.tag, frame.len) {
+            (TAG_FD, HANDLE_PAYLOAD) => {
+                let payload = &buf[FRAME_HEADER..FRAME_HEADER + HANDLE_PAYLOAD];
+                let value = u64::from_le_bytes(payload.try_into().unwrap()) as usize as RawHandle;
+                if value.is_null() || value as isize == -1 {
+                    return Err(codec_error("handle frame without a valid handle"));
+                }
+                // SAFETY: per the caller, a handle the peer put into this process for us.
+                Ok(unsafe { OwnedHandle::from_raw_handle(value) })
+            }
+            (TAG_FD, _) => Err(codec_error("handle frame without a handle")),
+            _ => Err(codec_error("expected a handle, got a message frame")),
+        }
+    }
+
+    /// Windows: sends the handles of `region` (section, request event, done event) to the bridge
+    /// `peer`, as three handle frames (see [`Channel::send_handle`]). The counterpart of
+    /// `send_fd(region.fd())` on Unix.
+    #[cfg(windows)]
+    pub fn send_region(
+        &self,
+        region: &crate::shm::ShmRegion,
+        peer: BorrowedHandle<'_>,
+    ) -> Result<(), ChannelError> {
+        for handle in region.handles() {
+            self.send_handle(handle, peer)?;
+        }
+        Ok(())
+    }
+
+    /// Windows: receives the handles sent with [`Channel::send_region`], for
+    /// [`ShmRegion::open`](crate::shm::ShmRegion::open).
+    ///
+    /// # Safety
+    ///
+    /// As for [`Channel::recv_handle`].
+    #[cfg(windows)]
+    pub unsafe fn recv_region(&self) -> Result<crate::shm::ShmHandles, ChannelError> {
+        // SAFETY: per the caller.
+        unsafe {
+            Ok(crate::shm::ShmHandles {
+                mapping: self.recv_handle()?,
+                request: self.recv_handle()?,
+                done: self.recv_handle()?,
+            })
+        }
+    }
+
+    /// Windows: writes one frame, header then payload (one sender at a time, so the two writes
+    /// stay together on the stream).
+    #[cfg(windows)]
+    fn send_frame(&self, tag: u8, total: usize, payload: &[u8]) -> Result<(), ChannelError> {
+        debug_assert!(payload.len() <= MAX_PAYLOAD);
+        let mut header = [0u8; FRAME_HEADER];
+        header[0] = tag;
+        header[1..4].copy_from_slice(&(payload.len() as u32).to_le_bytes()[..3]);
+        header[4..].copy_from_slice(&(total as u32).to_le_bytes());
+        sys::write_all(&self.pipe, &header)?;
+        sys::write_all(&self.pipe, payload)
+    }
+
+    /// Windows: fills `buf` exactly from the pipe. `Ok(false)` only with `dont_wait` when not a
+    /// single byte is queued; once a byte has arrived, the rest is awaited blockingly. A pipe
+    /// whose other end is gone is `Closed` (after what it still holds was read).
+    #[cfg(windows)]
+    fn recv_exact(
+        &self,
+        buf: &mut [u8],
+        dont_wait: bool,
+        _incoming: &mut Incoming,
+    ) -> Result<bool, ChannelError> {
+        if dont_wait && !buf.is_empty() && sys::available(&self.pipe)? == 0 {
+            return Ok(false);
+        }
+        let mut got = 0;
+        while got < buf.len() {
+            got += sys::read(&self.pipe, &mut buf[got..])?;
+        }
+        Ok(true)
+    }
+
     /// Sends a file descriptor (SCM_RIGHTS) as its own frame.
+    #[cfg(unix)]
     pub fn send_fd(&self, fd: BorrowedFd<'_>) -> Result<(), ChannelError> {
         self.send_frame(TAG_FD, 0, &[], Some(fd))
     }
@@ -735,6 +1177,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// Receives a file descriptor sent with [`Channel::send_fd`], blocking.
     ///
     /// A message frame in its place is consumed and reported as `Codec`.
+    #[cfg(unix)]
     pub fn recv_fd(&self) -> Result<OwnedFd, ChannelError> {
         let mut buf = vec![0u8; MAX_FRAME];
         let frame = loop {
@@ -753,6 +1196,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
 
     /// Writes one frame: header, `payload` and optionally `fd` as SCM_RIGHTS (with the first
     /// byte). A stream socket may take the frame in several writes; the rest follows at once.
+    #[cfg(unix)]
     fn send_frame(
         &self,
         tag: u8,
@@ -812,6 +1256,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     /// Fills `buf` exactly from the stream, collecting the fds that come with the bytes.
     /// `Ok(false)` only with `dont_wait` when not a single byte is queued; once a byte has
     /// arrived, the rest is awaited blockingly. End of stream is `Closed`.
+    #[cfg(unix)]
     fn recv_exact(
         &self,
         buf: &mut [u8],
@@ -892,6 +1337,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             false,
             &mut incoming,
         )?;
+        #[cfg(unix)]
         if incoming.truncated {
             return Err(codec_error("too many file descriptors in one frame"));
         }
@@ -899,6 +1345,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             tag: header[0],
             total,
             len,
+            #[cfg(unix)]
             fd: incoming.fd,
         }))
     }
@@ -955,10 +1402,20 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
     }
 }
 
+#[cfg(unix)]
 impl<Tx, Rx> AsFd for Channel<Tx, Rx> {
     /// The socket, for `poll()`.
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
+    }
+}
+
+#[cfg(windows)]
+impl<Tx, Rx> AsHandle for Channel<Tx, Rx> {
+    /// The pipe end (overlapped). A pipe handle is not a waitable "readable" object: a bridge
+    /// main loop that waits for messages needs its own overlapped read or a reader thread.
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.pipe.as_handle()
     }
 }
 
@@ -968,17 +1425,54 @@ mod tests {
     use crate::frame::{KeyMods, Mark, PluginView};
     use crate::shm::ShmRegion;
 
+    #[cfg(unix)]
     fn pair() -> (AppChannel, BridgeChannel) {
         let (app, fd) = socket_pair().unwrap();
         (app, BridgeChannel::from_fd(fd))
     }
 
+    #[cfg(windows)]
+    fn pair() -> (AppChannel, BridgeChannel) {
+        let (app, handle) = socket_pair().unwrap();
+        (app, BridgeChannel::from_handle(handle))
+    }
+
     /// Writes raw bytes (bypassing the encoder), all of them.
-    fn raw_send(fd: BorrowedFd<'_>, bytes: &[u8]) {
+    #[cfg(unix)]
+    fn raw_send(channel: &AppChannel, bytes: &[u8]) {
         let mut sent = 0;
         while sent < bytes.len() {
-            sent += rustix::net::send(fd, &bytes[sent..], sys::SEND_FLAGS).unwrap();
+            sent += rustix::net::send(channel.as_fd(), &bytes[sent..], sys::SEND_FLAGS).unwrap();
         }
+    }
+
+    /// Writes raw bytes (bypassing the encoder), all of them.
+    #[cfg(windows)]
+    fn raw_send(channel: &AppChannel, bytes: &[u8]) {
+        sys::write_all(&channel.pipe, bytes).unwrap();
+    }
+
+    /// Windows: this process, as the "peer" of handles sent within one test process.
+    #[cfg(windows)]
+    fn this_process() -> BorrowedHandle<'static> {
+        // SAFETY: the pseudo handle of the current process (-1) is valid for the whole run.
+        unsafe {
+            BorrowedHandle::borrow_raw(windows_sys::Win32::System::Threading::GetCurrentProcess())
+        }
+    }
+
+    /// Windows: whether `handle` is inheritable.
+    #[cfg(windows)]
+    fn inheritable(handle: BorrowedHandle<'_>) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+        let mut flags = 0;
+        // SAFETY: a valid handle and an out pointer.
+        assert_ne!(
+            unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) },
+            0
+        );
+        flags & HANDLE_FLAG_INHERIT != 0
     }
 
     /// A frame whose header announces `payload.len()` bytes.
@@ -1266,7 +1760,86 @@ mod tests {
         });
     }
 
+    /// Windows: the region's three handles arrive as new handles of the receiving process (here
+    /// the same one), not inheritable, and map the same memory.
     #[test]
+    #[cfg(windows)]
+    fn a_region_travels_over_the_pipe() {
+        let (app, bridge) = pair();
+        let region = ShmRegion::create().unwrap();
+        app.send_region(&region, this_process()).unwrap();
+        app.send(&ControlMsg::ListParams).unwrap();
+        // SAFETY: the peer is `app` above, which duplicated the handles into this process.
+        let handles = unsafe { bridge.recv_region() }.unwrap();
+        assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
+        for handle in [&handles.mapping, &handles.request, &handles.done] {
+            assert!(!inheritable(handle.as_handle()));
+        }
+        let mapped = ShmRegion::open(handles).unwrap();
+        mapped.set_latency(321);
+        assert_eq!(region.latency(), 321);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn handles_stay_with_their_frames_between_messages() {
+        let (app, bridge) = pair();
+        let a = ShmRegion::create().unwrap();
+        let b = ShmRegion::create().unwrap();
+        a.set_latency(1);
+        b.set_latency(2);
+        let big = ControlMsg::SetState {
+            state: (0..3 * MAX_FRAME).map(|i| i as u8).collect(),
+        };
+        // Queued back to back before anything is read.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                app.send(&ControlMsg::ListParams).unwrap();
+                app.send_region(&a, this_process()).unwrap();
+                app.send(&big).unwrap();
+                app.send_region(&b, this_process()).unwrap();
+                app.send(&ControlMsg::Deactivate).unwrap();
+            });
+            // SAFETY (both): the peer is `app` above.
+            let open = || ShmRegion::open(unsafe { bridge.recv_region() }.unwrap()).unwrap();
+            assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
+            assert_eq!(open().latency(), 1);
+            assert_eq!(bridge.recv().unwrap(), big);
+            assert_eq!(open().latency(), 2);
+            assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
+        });
+    }
+
+    /// Windows: a message sent right before the peer closes is still received; then `Closed`.
+    #[test]
+    #[cfg(windows)]
+    fn messages_before_close_are_received() {
+        let (app, bridge) = pair();
+        bridge.send(&BridgeMsg::StateDirty).unwrap();
+        bridge.send(&BridgeMsg::Pong { seq: 3 }).unwrap();
+        drop(bridge);
+        assert_eq!(app.try_recv().unwrap(), Some(BridgeMsg::StateDirty));
+        assert_eq!(app.recv().unwrap(), BridgeMsg::Pong { seq: 3 });
+        assert_eq!(app.try_recv().unwrap_err(), ChannelError::Closed);
+    }
+
+    /// Windows: one thread blocked in `recv` does not hold up a `send` on the same end.
+    #[test]
+    #[cfg(windows)]
+    fn send_while_another_thread_receives() {
+        let (app, bridge) = pair();
+        std::thread::scope(|scope| {
+            let receiver = scope.spawn(|| app.recv().unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            app.send(&ControlMsg::Ping { seq: 1 }).unwrap();
+            assert_eq!(bridge.recv().unwrap(), ControlMsg::Ping { seq: 1 });
+            bridge.send(&BridgeMsg::Pong { seq: 1 }).unwrap();
+            assert_eq!(receiver.join().unwrap(), BridgeMsg::Pong { seq: 1 });
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn a_memfd_travels_over_the_socket() {
         let (app, bridge) = pair();
         let region = ShmRegion::create().unwrap();
@@ -1282,6 +1855,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn fds_stay_with_their_frames_between_messages() {
         let (app, bridge) = pair();
         let a = ShmRegion::create().unwrap();
@@ -1319,12 +1893,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn sockets_are_close_on_exec() {
         let (app, bridge) = socket_pair().unwrap();
         for fd in [app.as_fd(), bridge.as_fd()] {
             let flags = rustix::io::fcntl_getfd(fd).unwrap();
             assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pipe_ends_are_not_inheritable() {
+        let (app, bridge) = socket_pair().unwrap();
+        assert!(!inheritable(app.as_handle()));
+        assert!(!inheritable(bridge.as_handle()));
     }
 
     #[test]
@@ -1339,44 +1922,68 @@ mod tests {
         );
         let (app, bridge) = pair();
         drop(app);
+        #[cfg(unix)]
         assert_eq!(bridge.recv_fd().unwrap_err(), ChannelError::Closed);
+        // SAFETY: nothing arrives (the peer is gone).
+        #[cfg(windows)]
+        assert_eq!(
+            unsafe { bridge.recv_handle() }.unwrap_err(),
+            ChannelError::Closed
+        );
     }
 
     #[test]
     fn malformed_frames_are_codec_errors() {
         let (app, bridge) = pair();
-        let fd = app.as_fd();
         let is_codec =
             |r: Result<ControlMsg, ChannelError>| matches!(r, Err(ChannelError::Codec(_)));
 
         // Garbage payload, trailing bytes, wrong length, unknown tag, short frame.
-        raw_send(fd, &frame(TAG_LAST, 3, &[0xff, 0xff, 0xff]));
+        raw_send(&app, &frame(TAG_LAST, 3, &[0xff, 0xff, 0xff]));
         assert!(is_codec(bridge.recv()));
         let mut ok = postcard::to_stdvec(&ControlMsg::ListParams).unwrap();
         ok.push(0);
-        raw_send(fd, &frame(TAG_LAST, ok.len() as u32, &ok));
+        raw_send(&app, &frame(TAG_LAST, ok.len() as u32, &ok));
         assert!(is_codec(bridge.recv()));
-        raw_send(fd, &frame(TAG_LAST, 99, &ok[..1]));
+        raw_send(&app, &frame(TAG_LAST, 99, &ok[..1]));
         assert!(is_codec(bridge.recv()));
-        raw_send(fd, &frame(9, 0, &[]));
+        raw_send(&app, &frame(9, 0, &[]));
         assert!(is_codec(bridge.recv()));
         // A frame beyond MAX_FRAME is read past and refused.
-        raw_send(fd, &frame(TAG_LAST, 0, &vec![0; MAX_FRAME]));
+        raw_send(&app, &frame(TAG_LAST, 0, &vec![0; MAX_FRAME]));
         assert!(is_codec(bridge.recv()));
         let lie = frame_announcing(TAG_LAST, MAX_PAYLOAD as u32 + 1, 3, &[0; MAX_PAYLOAD + 1]);
-        raw_send(fd, &lie);
+        raw_send(&app, &lie);
         assert!(is_codec(bridge.recv()));
         // Fragments whose lengths do not add up, and a fragment announcing too much.
-        raw_send(fd, &frame(TAG_MORE, 10, &[0; 4]));
-        raw_send(fd, &frame(TAG_LAST, 11, &[0; 6]));
+        raw_send(&app, &frame(TAG_MORE, 10, &[0; 4]));
+        raw_send(&app, &frame(TAG_LAST, 11, &[0; 6]));
         assert!(is_codec(bridge.recv()));
-        raw_send(fd, &frame(TAG_MORE, u32::MAX, &[0; 4]));
+        raw_send(&app, &frame(TAG_MORE, u32::MAX, &[0; 4]));
         assert!(is_codec(bridge.recv()));
         // An fd where a message is expected, and a message where an fd is expected.
-        app.send_fd(fd).unwrap();
-        assert!(is_codec(bridge.recv()));
-        app.send(&ControlMsg::Shutdown).unwrap();
-        assert!(matches!(bridge.recv_fd(), Err(ChannelError::Codec(_))));
+        #[cfg(unix)]
+        {
+            app.send_fd(app.as_fd()).unwrap();
+            assert!(is_codec(bridge.recv()));
+            app.send(&ControlMsg::Shutdown).unwrap();
+            assert!(matches!(bridge.recv_fd(), Err(ChannelError::Codec(_))));
+        }
+        #[cfg(windows)]
+        {
+            // The duplicate stays open in this process: nobody takes it from a wrong frame.
+            app.send_handle(app.as_handle(), this_process()).unwrap();
+            assert!(is_codec(bridge.recv()));
+            app.send(&ControlMsg::Shutdown).unwrap();
+            // SAFETY: a message arrives, no handle is taken.
+            let wrong = unsafe { bridge.recv_handle() };
+            assert!(matches!(wrong, Err(ChannelError::Codec(_))));
+            // A handle frame with the wrong payload length.
+            raw_send(&app, &frame(TAG_FD, 4, &[1, 0, 0, 0]));
+            // SAFETY: as above.
+            let short = unsafe { bridge.recv_handle() };
+            assert!(matches!(short, Err(ChannelError::Codec(_))));
+        }
         // The channel is still in sync afterwards.
         app.send(&ControlMsg::Deactivate).unwrap();
         assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
@@ -1390,11 +1997,11 @@ mod tests {
         // Cut inside the header, then inside the payload; the rest arrives a little later.
         for cut in [3, FRAME_HEADER + 1] {
             assert_eq!(bridge.try_recv().unwrap(), None);
-            raw_send(app.as_fd(), &whole[..cut]);
+            raw_send(&app, &whole[..cut]);
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     std::thread::sleep(std::time::Duration::from_millis(20));
-                    raw_send(app.as_fd(), &whole[cut..]);
+                    raw_send(&app, &whole[cut..]);
                 });
                 // A started frame is completed blockingly, also by `try_recv`.
                 assert_eq!(

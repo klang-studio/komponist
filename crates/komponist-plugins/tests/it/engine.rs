@@ -66,7 +66,8 @@ fn synth_and_effect_sound_through_the_engine() {
         .map(|p| p.name.as_str())
         .collect();
     assert_eq!(params, ["Gain", "Decay"]);
-    // The synth has its own GUI on both platforms (X11; Cocoa in the bridge's frame, #52).
+    // The synth has its own GUI everywhere (X11 on Linux; Cocoa or Win32 in the bridge's frame on
+    // macOS and Windows, #52 and port W6).
     assert!(rig.manager.has_gui(DeviceId(10)));
     assert!(!rig.manager.has_gui(DeviceId(11)));
     rig.recompile();

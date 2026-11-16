@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds the test plugins in test-plugins/ (a Cargo workspace of its own, PLAN WP-27) in release
 # mode and copies their bundles to target/test-plugins/<os>/clap/ and target/test-plugins/<os>/vst3/,
-# <os> being `linux` or `macos` (what Rust's std::env::consts::OS says, which the test helpers use). A bundle
-# is a file on Linux and a directory on macOS, and one worktree may be built on both (macOS natively, Linux
-# in the Docker gate), so each OS gets its own build folder and its own output folder.
+# <os> being `linux`, `macos` or `windows` (what Rust's std::env::consts::OS says, which the test helpers use). A bundle
+# is a file on Linux, a directory on macOS; on Windows CLAP is a file and VST3 a directory. One worktree may be built on
+# several OSes (macOS or Windows natively, Linux in the Docker gate), so each OS gets its own build folder and its own
+# output folder. On Windows run it in Git Bash.
 # Prints the path of every copied bundle.
 set -euo pipefail
 
@@ -12,6 +13,7 @@ plugins="$root/test-plugins"
 case "$(uname -s)" in
 Darwin) os=macos ;;
 Linux) os=linux ;;
+MINGW* | MSYS* | CYGWIN*) os=windows ;;
 *)
     echo "error: unsupported OS $(uname -s)" >&2
     exit 1
