@@ -2586,6 +2586,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-rt"
+version = "0.2.0"
+dependencies = [
+ "assert_no_alloc",
+ "libc",
+]
+
+[[package]]
 name = "komponist-tokens"
 version = "0.2.0"
 dependencies = [

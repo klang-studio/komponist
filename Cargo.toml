@@ -18,6 +18,7 @@ komponist-engine = { path = "crates/komponist-engine" }
 komponist-audio = { path = "crates/komponist-audio" }
 komponist-builtin = { path = "crates/komponist-builtin" }
 komponist-ipc = { path = "crates/komponist-ipc" }
+komponist-rt = { path = "crates/komponist-rt" }
 komponist-hosting = { path = "crates/komponist-hosting" }
 komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-bridge = { path = "crates/komponist-bridge" }
