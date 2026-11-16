@@ -83,6 +83,9 @@ status-empty-hint = Strg T: MIDI-Spur · Strg S: speichern
 # The engine's worker threads run without real-time priority.
 status-workers-no-realtime = Audio-Threads laufen ohne Echtzeit-Priorität
 
+# The engine's worker threads could not join the audio device's workgroup (macOS).
+status-workers-no-workgroup = Audio-Threads konnten der Audio-Workgroup nicht beitreten
+
 # A MIDI input appeared; `$name` as S07 shows it.
 status-midi-connected = { $name } verbunden
 

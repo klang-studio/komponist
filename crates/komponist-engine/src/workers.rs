@@ -92,12 +92,20 @@ impl WorkerRt {
 /// it at once).
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 
-/// Workers for this machine: one per physical core (assuming two hardware threads per core),
-/// minus two for the audio callback and the rest of the system (UI, bridges, audio server), at
-/// most 8 and none below four hardware threads. 12 hardware threads (6 cores) give 4.
+/// Workers for this machine. Elsewhere: one per physical core (assuming two hardware threads per
+/// core), minus two for the audio callback and the rest of the system (UI, bridges, audio
+/// server), at most 8 and none below four hardware threads; 12 hardware threads (6 cores) give 4.
+/// On Apple silicon (no SMT, so that rule gives a 10-core M1 Pro only 3): one per performance
+/// core minus the audio IO thread, at most 8 (7 on an M1 Pro, 3 on an M1); the efficiency cores are left to
+/// the system. A stream's workgroup may cap this further ([`cap_to_workgroup`]).
 pub fn auto_workers() -> usize {
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    auto_workers_for(threads)
+    match komponist_rt::topology::performance_cores() {
+        Some(performance) => auto_workers_for_performance_cores(performance),
+        None => {
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+            auto_workers_for(threads)
+        }
+    }
 }
 
 fn auto_workers_for(threads: usize) -> usize {
@@ -105,6 +113,24 @@ fn auto_workers_for(threads: usize) -> usize {
         0
     } else {
         (threads / 2).saturating_sub(2).clamp(1, 8)
+    }
+}
+
+fn auto_workers_for_performance_cores(performance: usize) -> usize {
+    if performance < 3 {
+        0
+    } else {
+        (performance - 1).min(8)
+    }
+}
+
+/// Keeps the audio IO thread plus `workers` within the workgroup's `max_parallel_threads` (8 on an
+/// M1 Pro): more threads than that would share cores with each other and with the IO thread.
+/// Without a workgroup, or when it reports nothing, `workers` stays.
+pub fn cap_to_workgroup(workers: usize, workgroup: Option<&komponist_rt::Workgroup>) -> usize {
+    match workgroup.and_then(komponist_rt::Workgroup::max_parallel_threads) {
+        Some(parallel) => workers.min(parallel.saturating_sub(1)),
+        None => workers,
     }
 }
 
@@ -729,6 +755,12 @@ mod tests {
         assert_eq!(auto_workers_for(8), 2);
         assert_eq!(auto_workers_for(12), 4);
         assert_eq!(auto_workers_for(64), 8);
+        // Apple silicon: performance cores minus the IO thread.
+        assert_eq!(auto_workers_for_performance_cores(2), 0);
+        assert_eq!(auto_workers_for_performance_cores(4), 3);
+        assert_eq!(auto_workers_for_performance_cores(8), 7);
+        assert_eq!(auto_workers_for_performance_cores(16), 8);
+        assert_eq!(cap_to_workgroup(7, None), 7);
         assert!(auto_workers() <= 8);
     }
 

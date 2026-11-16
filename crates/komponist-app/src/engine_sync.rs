@@ -39,7 +39,9 @@ use komponist_audio::{
     StreamStats,
 };
 use komponist_engine::compile::{self, CompileEnv};
-use komponist_engine::workers::{WorkerRt, WorkerStats, WorkerStatus, auto_workers};
+use komponist_engine::workers::{
+    WorkerRt, WorkerStats, WorkerStatus, auto_workers, cap_to_workgroup,
+};
 use komponist_engine::{
     Command, Engine, EngineConfig, EngineEvent, EngineHandle, LiveInput, MAX_BLOCK,
     MAX_EVENTS_PER_BLOCK, MidiInEvent, MidiPort, Program, SlotId, Telemetry, TrackMeter,
@@ -74,6 +76,8 @@ pub struct EngineProcess {
     rate: Arc<AtomicU32>,
     /// Worker threads the engine should run (WP-65), started in `prepare`.
     workers: usize,
+    /// `workers` is [`auto_workers`] (not the user's setting): a stream's workgroup may cap it.
+    workers_auto: bool,
     /// How they run in realtime: the period and the audio workgroup of the latest stream (#45).
     rt: WorkerRt,
     /// Outcome of the last worker start, for the UI thread (only touched outside the callback).
@@ -81,12 +85,23 @@ pub struct EngineProcess {
     /// Set by a worker start that ran without realtime priority; the app takes it once
     /// ([`EngineSync::take_worker_notice`]).
     worker_notice: Arc<AtomicBool>,
+    /// Likewise for workers that could not join the audio workgroup
+    /// ([`EngineSync::take_workgroup_notice`]).
+    workgroup_notice: Arc<AtomicBool>,
 }
 
 /// Whether a worker start deserves a status bar notice: workers run, but without the realtime
 /// priority that was asked for. Workers off or none started: nothing to say (single-threaded).
 pub fn lacks_realtime(status: &WorkerStatus) -> bool {
     status.threads > 0 && status.realtime_error.is_some()
+}
+
+/// Whether a worker start deserves a status bar notice because workers could not join the audio
+/// device's workgroup (macOS; without it the realtime policy alone gives dropouts at 64-128
+/// frames, real-IO measurement #79). Only a workgroup that was given and refused counts: streams
+/// without one (null backend, Linux) have `workgroup_error == None`.
+pub fn lacks_workgroup(status: &WorkerStatus) -> bool {
+    status.threads > 0 && status.workgroup_error.is_some()
 }
 
 impl EngineProcess {
@@ -100,10 +115,12 @@ impl EngineProcess {
             midi: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             rate,
             workers: auto_workers(),
+            workers_auto: true,
             // Replaced by the stream's in `prepare`.
             rt: WorkerRt::new(Duration::from_secs_f64(HELD_BLOCK as f64 / 48_000.0)),
             worker_status: Arc::default(),
             worker_notice: Arc::default(),
+            workgroup_notice: Arc::default(),
         }
     }
 
@@ -111,14 +128,43 @@ impl EngineProcess {
     /// `prepare` on (0: single-threaded).
     pub fn set_workers(&mut self, threads: usize) {
         self.workers = threads;
+        self.workers_auto = false;
+    }
+
+    /// Like [`EngineProcess::set_workers`] with [`auto_workers`], which the stream's workgroup
+    /// may cap (the IO thread plus the workers stay within its `max_parallel_threads`).
+    pub fn set_auto_workers(&mut self) {
+        self.workers = auto_workers();
+        self.workers_auto = true;
+    }
+
+    /// The settings file's `worker_threads`: `None` is automatic, `Some(n)` is exactly `n`.
+    fn apply_worker_setting(&mut self, setting: Option<u32>) {
+        match setting {
+            Some(n) => self.set_workers(n as usize),
+            None => self.set_auto_workers(),
+        }
+    }
+
+    /// The worker count to start: the setting, or for the automatic one capped by the workgroup.
+    fn effective_workers(&self) -> usize {
+        if self.workers_auto {
+            cap_to_workgroup(self.workers, self.rt.workgroup.as_ref())
+        } else {
+            self.workers
+        }
     }
 
     /// Starts or replaces the engine's worker pool if the count or the realtime set-up changed
     /// (non-RT).
     fn apply_workers(&mut self) {
-        let status = self.engine.set_workers(self.workers, Some(self.rt.clone()));
+        let status = self
+            .engine
+            .set_workers(self.effective_workers(), Some(self.rt.clone()));
         self.worker_notice
             .store(lacks_realtime(&status), Ordering::Relaxed);
+        self.workgroup_notice
+            .store(lacks_workgroup(&status), Ordering::Relaxed);
         *self.worker_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
     }
 }
@@ -262,11 +308,13 @@ pub struct EngineSync {
     /// The playhead when an export took the engine ([`EngineSync::detach`]): shown meanwhile.
     frozen: Option<Tick>,
     /// Worker threads asked for while an export had the engine (applied at [`EngineSync::attach`]).
-    workers_after_export: Option<usize>,
+    workers_after_export: Option<Option<u32>>,
     /// Outcome of the engine's last worker start ([`EngineProcess`] writes it in `prepare`).
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
     /// See [`EngineProcess`]'s `worker_notice`.
     worker_notice: Arc<AtomicBool>,
+    /// See [`EngineProcess`]'s `workgroup_notice`.
+    workgroup_notice: Arc<AtomicBool>,
     worker_stats: Arc<WorkerStats>,
 }
 
@@ -318,6 +366,7 @@ impl EngineSync {
         let process = EngineProcess::new(engine, Arc::clone(&rate));
         let worker_status = Arc::clone(&process.worker_status);
         let worker_notice = Arc::clone(&process.worker_notice);
+        let workgroup_notice = Arc::clone(&process.workgroup_notice);
         let telemetry = Arc::clone(handle.telemetry());
         let mut sync = EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
@@ -340,6 +389,7 @@ impl EngineSync {
             workers_after_export: None,
             worker_status,
             worker_notice,
+            workgroup_notice,
             worker_stats,
         };
         let started = sync.audio.start(config);
@@ -671,19 +721,18 @@ impl EngineSync {
         &mut self,
         setting: Option<u32>,
     ) -> Result<Option<WorkerStatus>, AudioError> {
-        let threads = setting.map_or_else(auto_workers, |n| n as usize);
         if self.handle.is_none() {
-            self.workers_after_export = Some(threads);
+            self.workers_after_export = Some(setting);
             return Ok(None);
         }
         match self.held.as_mut() {
             Some(process) => {
-                process.set_workers(threads);
+                process.apply_worker_setting(setting);
                 process.apply_workers();
             }
             None => {
                 let mut process = self.audio.detach(HOLD_TIMEOUT)?;
-                process.set_workers(threads);
+                process.apply_worker_setting(setting);
                 // `attach` prepares the engine for the stream, which starts the workers.
                 self.audio.attach(process);
             }
@@ -703,6 +752,12 @@ impl EngineSync {
     /// says so; [`lacks_realtime`]).
     pub fn take_worker_notice(&self) -> bool {
         self.worker_notice.swap(false, Ordering::Relaxed)
+    }
+
+    /// True once per stream start whose workers could not join the audio workgroup (the status
+    /// bar says so; [`lacks_workgroup`]).
+    pub fn take_workgroup_notice(&self) -> bool {
+        self.workgroup_notice.swap(false, Ordering::Relaxed)
     }
 
     /// The engine's worker pool counters (batches, jobs on workers, late waits).
@@ -951,8 +1006,8 @@ impl EngineSync {
         } = engine;
         self.handle = Some(handle);
         self.frozen = None;
-        if let Some(threads) = self.workers_after_export.take() {
-            process.set_workers(threads);
+        if let Some(setting) = self.workers_after_export.take() {
+            process.apply_worker_setting(setting);
             if held {
                 process.apply_workers();
             }
@@ -1142,6 +1197,27 @@ mod tests {
         assert!(!lacks_realtime(&status(3, None)));
         assert!(!lacks_realtime(&status(0, Some("Operation not permitted"))));
         assert!(!lacks_realtime(&WorkerStatus::default()));
+    }
+
+    #[test]
+    fn workgroup_notice_only_for_running_workers_that_could_not_join() {
+        let status = |threads, workgroup_error: Option<&str>| WorkerStatus {
+            threads,
+            joined_workgroup: workgroup_error.is_none(),
+            workgroup_error: workgroup_error.map(str::to_owned),
+            ..WorkerStatus::default()
+        };
+        assert!(lacks_workgroup(&status(3, Some("Invalid argument"))));
+        assert!(!lacks_workgroup(&status(3, None)));
+        assert!(!lacks_workgroup(&status(0, Some("Invalid argument"))));
+        // No workgroup given (null backend, Linux): nothing to say.
+        assert!(!lacks_workgroup(&WorkerStatus::default()));
+        // A refused priority alone is the other notice's business.
+        assert!(!lacks_workgroup(&WorkerStatus {
+            threads: 3,
+            realtime_error: Some("Operation not permitted".into()),
+            ..WorkerStatus::default()
+        }));
     }
 
     /// Mute and solo on the fast path carry the gate table of the routing graph: soloing a group

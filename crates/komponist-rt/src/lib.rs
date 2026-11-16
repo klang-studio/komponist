@@ -8,6 +8,7 @@
 //!   deadline) and [`WorkInterval`] (a workgroup a thread creates and drives itself), with the
 //!   [`JoinToken`] of a join. They exist on every OS so callers need no `cfg`, but only macOS can
 //!   create them; elsewhere `Option<Workgroup>` is always `None`.
+//! - [`topology`]: [`topology::performance_cores`] for the worker count on Apple silicon.
 //! - macOS only: [`mach_time`] (the clock behind `Instant` in Mach ticks) and [`os_sync`] (wait and
 //!   wake on an address with a deadline, compensating the kernel's timer leeway).
 //!
@@ -20,6 +21,7 @@
 //! "non-RT" ones run before or after a realtime loop.
 
 pub mod policy;
+pub mod topology;
 pub mod workgroup;
 
 #[cfg(target_os = "macos")]

@@ -598,3 +598,22 @@ fn workers_without_realtime_priority_reach_the_status_bar() {
     app.step();
     assert_eq!(status_text(&app), None);
 }
+
+/// #79: workers that could not join the audio workgroup (macOS) say so in the status bar, once.
+#[test]
+fn workers_without_workgroup_reach_the_status_bar() {
+    let (mut app, _script) = app();
+    app.ui_mut().status = None;
+    app.engine().take_workgroup_notice();
+    app.report_workers_without_workgroup();
+    assert_eq!(
+        status_text(&app),
+        Some((
+            "Audio-Threads konnten der Audio-Workgroup nicht beitreten".to_owned(),
+            StatusKind::Info
+        ))
+    );
+    app.ui_mut().status = None;
+    app.step();
+    assert_eq!(status_text(&app), None);
+}
