@@ -62,3 +62,13 @@ EOF
 ```
 
 (`nix shell nixpkgs#python3Packages.fonttools --command python3 …` if fontTools is missing.)
+
+## Keyboard symbols (`KomponistKeys.ttf`, macOS shortcut labels)
+
+IBM Plex has no ⌘ (U+2318), ⇧ (U+21E7), ⌥ (U+2325) or ⌃ (U+2303), and egui panics on a glyph no font
+has. The macOS shortcut labels (`⌘S`, `⇧⌘Z`, issue #47) need them, so a four-glyph subset of
+DejaVu Sans 2.37 (`DejaVuSans.ttf` of the nixpkgs `dejavu_fonts` 2.37 package) is bundled as a
+fallback after Plex (`komponist_ui::fonts::definitions`). Made with fontTools 4.63 (`fontTools.subset`,
+no layout features, no hinting, name table reduced), family renamed to "Komponist Keys" because the
+Bitstream Vera licence forbids a modified version under the original names. Licence: Bitstream Vera
+Fonts Copyright plus public-domain DejaVu changes, `LICENSE-DejaVu.txt`, GPL-compatible.

@@ -10,6 +10,7 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::{EditAction, ProjectAction};
 use komponist_app::panels::statusbar;
+use komponist_app::platform::Platform;
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::undo_label;
 use komponist_app::{Action, App, UiAction};
@@ -140,7 +141,11 @@ fn the_status_bar_follows_the_language() {
     let s = status(&h);
     assert!(s.left.starts_with("Lead A · 0 of "), "{}", s.left);
     assert!(s.left.ends_with(" notes selected"), "{}", s.left);
-    assert_eq!(s.mid, "Ctrl+drag a note: velocity · Alt+drag: copy");
+    let hint = Platform::current().pick(
+        "Ctrl+drag a note: velocity · Alt+drag: copy",
+        "⌘+drag a note: velocity · Alt+drag: copy",
+    );
+    assert_eq!(s.mid, hint);
     // The null backend of the headless app: the output line says "samples" and the chip text.
     assert_eq!(s.right, "No audio device · 48 kHz · 256 samples · 5.3 ms");
     assert_eq!(en::STATUS_AUDIO_STOPPED, "Audio stopped");
@@ -155,7 +160,11 @@ fn status_messages_are_english() {
     let mut app = App::headless(demo_project()).with_lang(Lang::En);
     app.dispatch(Action::Project(ProjectAction::New));
     let text = app.ui().status.as_ref().unwrap().text.clone();
-    assert_eq!(text, "New project created · Ctrl+T adds a MIDI track");
+    let created = Platform::current().pick(
+        "New project created · Ctrl+T adds a MIDI track",
+        "New project created · ⌘T adds a MIDI track",
+    );
+    assert_eq!(text, created);
     // R without an armed or selected track.
     let mut app = App::headless(demo_project()).with_lang(Lang::En);
     app.set_status(Lang::En.record_no_track(), StatusKind::Error);
@@ -215,4 +224,35 @@ fn undo_labels_follow_the_language() {
         undo_label::text(Lang::En, &undo_label::param("Cutoff")),
         "Change Cutoff"
     );
+}
+
+#[test]
+fn the_macos_hints_name_command_and_the_linux_hints_name_ctrl() {
+    for t in Lang::ALL {
+        let mac = [
+            t.project_new_created_mac(),
+            t.status_notes_hint_mac(),
+            t.status_clips_hint_mac(),
+            t.status_empty_hint_mac(),
+            t.routing_popover_hint_mac(),
+        ];
+        let pc = [
+            t.project_new_created(),
+            t.status_notes_hint(),
+            t.status_clips_hint(),
+            t.status_empty_hint(),
+            t.routing_popover_hint(),
+        ];
+        for (mac, pc) in mac.into_iter().zip(pc) {
+            assert!(mac.contains('⌘'), "{t:?}: {mac}");
+            assert!(
+                !mac.contains("Ctrl") && !mac.contains("Strg"),
+                "{t:?}: {mac}"
+            );
+            assert!(
+                !pc.contains('⌘') && (pc.contains("Ctrl") || pc.contains("Strg")),
+                "{t:?}: {pc}"
+            );
+        }
+    }
 }

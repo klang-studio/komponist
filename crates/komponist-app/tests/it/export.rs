@@ -899,13 +899,8 @@ fn the_last_settings_are_saved_and_the_dialog_opens_with_them() {
 // The dialog through kittest
 // ------------------------------------------------------------------------------------------------
 
-const CTRL_SHIFT: Modifiers = Modifiers {
-    alt: false,
-    ctrl: true,
-    shift: true,
-    mac_cmd: false,
-    command: true,
-};
+/// The shortcut modifier (Ctrl on Linux, ⌘ on macOS) and Shift.
+const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 
 #[test]
 fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
@@ -918,7 +913,7 @@ fn the_dialog_exports_and_the_status_bar_link_opens_the_folder() {
     let mut h = harness(app);
 
     // Strg Shift E: S08 with the defaults.
-    h.key_press_modifiers(CTRL_SHIFT, Key::E);
+    h.key_press_modifiers(COMMAND_SHIFT, Key::E);
     h.run_steps(3);
     h.get_by_label(de::EXPORT_TITLE);
     h.get_by_role_and_label(Role::RadioButton, de::EXPORT_SONG);
