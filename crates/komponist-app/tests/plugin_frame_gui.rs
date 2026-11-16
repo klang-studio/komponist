@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Plugin frames as real X11 windows with the WP-27 test plugins (WP-50): kp-test-synth as CLAP
 //! (open, fixed size, Space from the focused plugin, close, reopen) and as VST3 (bridge killed →
 //! "Abgestürzt" without the child → "Neu laden"), kp-test-crash in the parameter view crashing

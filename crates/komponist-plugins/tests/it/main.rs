@@ -10,6 +10,7 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 mod common;
 
 mod engine;
+#[cfg(target_os = "linux")]
 mod gui;
 mod installed;
 mod lifecycle;

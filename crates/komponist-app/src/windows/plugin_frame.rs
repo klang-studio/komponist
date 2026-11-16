@@ -52,6 +52,10 @@ pub mod header;
 pub mod keys;
 pub mod metrics;
 pub mod sizing;
+#[cfg(target_os = "linux")]
+mod x11;
+#[cfg(not(target_os = "linux"))]
+#[path = "plugin_frame/x11_unavailable.rs"]
 mod x11;
 
 use std::sync::{Arc, Mutex, MutexGuard};

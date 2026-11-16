@@ -9,6 +9,7 @@
 
 use crate::common;
 
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, Instant};
 
@@ -780,6 +781,8 @@ fn bridge_exits_when_the_app_goes_away() {
     );
 }
 
+// Reads /proc and relies on `PR_SET_DUMPABLE`, so Linux only.
+#[cfg(target_os = "linux")]
 #[test]
 fn bridges_are_not_dumpable_unless_asked() {
     let uid = rustix::process::getuid().as_raw();

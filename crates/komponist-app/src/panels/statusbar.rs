@@ -317,7 +317,11 @@ mod tests {
 
     #[test]
     fn output_text_matches_s01() {
-        let config = StreamConfig::default();
+        // The default host depends on the platform; S01 shows PipeWire.
+        let config = StreamConfig {
+            host: HostKind::PipeWire,
+            ..StreamConfig::default()
+        };
         assert_eq!(
             fmt_output(&config, Lang::De),
             "PipeWire · 48 kHz · 256 Samples · 5.3 ms"

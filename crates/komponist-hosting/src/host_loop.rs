@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use komponist_ipc::{GuiSize, LogLevel, WireEvent};
-use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec};
+use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::host::{FdEvents, HostContext, HostLoop, HostNotification, HostNotify, TimerId};
 use crate::plugin::{HostedPlugin, HostingError};
@@ -104,8 +104,94 @@ fn unpack_size(raw: u64) -> Option<GuiSize> {
     })
 }
 
+/// A wake fd (also used by the bridge's `BridgeNotify`): readable while a notification is pending. `signal` may be
+/// called from any thread and does one non-blocking `write` (no allocation, no lock).
+#[cfg(target_os = "linux")]
+pub mod wake {
+    use super::*;
+    use rustix::event::EventfdFlags;
+
+    #[derive(Debug)]
+    pub struct WakeFd(OwnedFd);
+
+    impl WakeFd {
+        pub fn new() -> std::io::Result<WakeFd> {
+            let fd = rustix::event::eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
+            Ok(WakeFd(fd))
+        }
+
+        pub fn as_fd(&self) -> BorrowedFd<'_> {
+            self.0.as_fd()
+        }
+
+        /// Non-blocking eventfd: one read resets the counter; EAGAIN means nothing was pending.
+        pub fn drain(&self) {
+            let mut buf = [0u8; 8];
+            let _ = rustix::io::read(&self.0, &mut buf);
+        }
+
+        pub fn signal(&self) {
+            let _ = rustix::io::write(&self.0, &1u64.to_ne_bytes());
+        }
+    }
+}
+
+/// macOS has no eventfd: a non-blocking pipe with the same semantics. A full pipe (EAGAIN on
+/// `write`) already means "readable", so a lost byte changes nothing.
+#[cfg(not(target_os = "linux"))]
+pub mod wake {
+    use super::*;
+
+    #[derive(Debug)]
+    pub struct WakeFd {
+        read: OwnedFd,
+        write: OwnedFd,
+    }
+
+    fn prepare(fd: &OwnedFd) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let raw = fd.as_raw_fd();
+        // SAFETY: `raw` is a valid fd owned by `fd`; fcntl with these flags has no other effect.
+        unsafe {
+            let fd_flags = libc::fcntl(raw, libc::F_GETFD);
+            let fl_flags = libc::fcntl(raw, libc::F_GETFL);
+            if fd_flags < 0
+                || fl_flags < 0
+                || libc::fcntl(raw, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) < 0
+                || libc::fcntl(raw, libc::F_SETFL, fl_flags | libc::O_NONBLOCK) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    impl WakeFd {
+        pub fn new() -> std::io::Result<WakeFd> {
+            let (read, write) = rustix::pipe::pipe()?;
+            prepare(&read)?;
+            prepare(&write)?;
+            Ok(WakeFd { read, write })
+        }
+
+        pub fn as_fd(&self) -> BorrowedFd<'_> {
+            self.read.as_fd()
+        }
+
+        /// Reads until the pipe is empty (EAGAIN).
+        pub fn drain(&self) {
+            let mut buf = [0u8; 64];
+            while matches!(rustix::io::read(&self.read, &mut buf), Ok(n) if n == buf.len()) {}
+        }
+
+        pub fn signal(&self) {
+            let _ = rustix::io::write(&self.write, &[1u8]);
+        }
+    }
+}
+
 /// A [`HostNotify`] that coalesces notifications into atomic bits and wakes a [`PollLoop`] through
-/// an eventfd. RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write`.
+/// a wake fd (an eventfd on Linux, a non-blocking pipe on macOS). RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write`.
 ///
 /// Coalescing: one bit per kind, the latest GUI size request, and for `ParamEdited` (VST3 only)
 /// only the latest id and value plus a counter; a bridge that forwards VST3 GUI edits needs a ring
@@ -119,15 +205,15 @@ pub struct LoopNotify {
     edited_count: AtomicU32,
     log_lines: [AtomicU32; 4],
     echo_log: bool,
-    wake: OwnedFd,
+    wake: wake::WakeFd,
 }
 
 impl LoopNotify {
     /// Creates the eventfd. `echo_log` prints plugin log lines to stderr (tests; never on the RT
     /// thread of a real bridge).
     pub fn new(echo_log: bool) -> Result<LoopNotify, HostingError> {
-        let wake = rustix::event::eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)
-            .map_err(|e| HostingError::HostLoop(format!("eventfd: {e}")))?;
+        let wake =
+            wake::WakeFd::new().map_err(|e| HostingError::HostLoop(format!("wake fd: {e}")))?;
         Ok(LoopNotify {
             pending: AtomicU32::new(0),
             gui_size: AtomicU64::new(NO_SIZE),
@@ -148,9 +234,7 @@ impl LoopNotify {
     /// Clears the wake fd, then takes the pending bits and the latest GUI size request. Draining
     /// first means a notification that races with this call wakes the next `poll()`.
     pub fn take(&self) -> (u32, Option<GuiSize>) {
-        let mut buf = [0u8; 8];
-        // Non-blocking eventfd: one read resets the counter; EAGAIN means nothing was pending.
-        let _ = rustix::io::read(&self.wake, &mut buf);
+        self.wake.drain();
         let pending = self.pending.swap(0, Ordering::AcqRel);
         let size = if pending & bits::GUI_RESIZE_REQUESTED != 0 {
             unpack_size(self.gui_size.load(Ordering::Acquire))
@@ -194,7 +278,7 @@ impl HostNotify for LoopNotify {
         let bit = notification_bit(&notification);
         // Only the first notification since the last `take` needs to wake the loop.
         if self.pending.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
-            let _ = rustix::io::write(&self.wake, &1u64.to_ne_bytes());
+            self.wake.signal();
         }
     }
 

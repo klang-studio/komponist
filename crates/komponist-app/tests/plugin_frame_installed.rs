@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Plugin frames as real X11 windows with the plugins installed on this machine (WP-50):
 //! Klopfer (fixed size, Space from the focused plugin, bridge killed → "Neu laden", close and
 //! reopen), Surge XT as CLAP and VST3 (resizable: user resizes the frame, the plugin adjusts, the

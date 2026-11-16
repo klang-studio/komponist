@@ -54,6 +54,7 @@ pub mod exit {
 }
 
 /// Set to `1` to keep core dumps (the bridge is non-dumpable otherwise).
+#[cfg(target_os = "linux")]
 const COREDUMP_ENV: &str = "KOMPONIST_BRIDGE_COREDUMP";
 
 const USAGE: &str = "usage: komponist-bridge --instance --control-fd <fd> [--rt-priority <1..=99>]
@@ -62,6 +63,7 @@ const USAGE: &str = "usage: komponist-bridge --instance --control-fd <fd> [--rt-
 
 /// The process name in bridge mode (`comm`, at most 15 bytes): tools and tests find the bridges of
 /// an app by it, whichever executable they were started from.
+#[cfg(target_os = "linux")]
 const PROCESS_NAME: &std::ffi::CStr = c"komponist-bridge";
 
 /// What the command line asks for.
@@ -123,10 +125,16 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
 /// `--bridge` of `komponist`). Returns the exit code of the process.
 pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     // `komponist --bridge` shows up as `komponist` otherwise.
-    let _ = rustix::thread::set_name(PROCESS_NAME);
-    if std::env::var_os(COREDUMP_ENV).is_none_or(|v| v != "1") {
-        let _ =
-            rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable);
+    // Linux only; macOS names the process by its executable and gets its core-dump policy with
+    // the bridge main loop (#51).
+    #[cfg(target_os = "linux")]
+    {
+        let _ = rustix::thread::set_name(PROCESS_NAME);
+        if std::env::var_os(COREDUMP_ENV).is_none_or(|v| v != "1") {
+            let _ = rustix::process::set_dumpable_behavior(
+                rustix::process::DumpableBehavior::NotDumpable,
+            );
+        }
     }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

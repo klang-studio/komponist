@@ -259,17 +259,22 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
         .collect();
     assert_eq!(cached, ["Crash.clap", "Empty.clap", "Fail.clap"]);
 
-    // A restarted scan and a dropped manager kill their scan processes.
-    manager.start_scan(&dirs);
-    wait_until(|| !children_named("sleep").is_empty());
-    manager.start_scan(&dirs);
-    wait_until(|| children_named("sleep").len() == 1);
-    let t0 = Instant::now();
-    drop(manager);
-    assert!(t0.elapsed() < Duration::from_secs(2));
-    assert!(children_named("sleep").is_empty());
+    // A restarted scan and a dropped manager kill their scan processes. Finding the children
+    // reads /proc, so this part runs on Linux only.
+    #[cfg(target_os = "linux")]
+    {
+        manager.start_scan(&dirs);
+        wait_until(|| !children_named("sleep").is_empty());
+        manager.start_scan(&dirs);
+        wait_until(|| children_named("sleep").len() == 1);
+        let t0 = Instant::now();
+        drop(manager);
+        assert!(t0.elapsed() < Duration::from_secs(2));
+        assert!(children_named("sleep").is_empty());
+    }
 }
 
+#[cfg(target_os = "linux")]
 fn wait_until(mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + PATIENCE;
     while !condition() {

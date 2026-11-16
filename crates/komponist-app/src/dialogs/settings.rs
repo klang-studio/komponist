@@ -1305,6 +1305,7 @@ mod tests {
     fn the_stored_device_is_found_by_id_then_name_or_shown_missing() {
         let starship = "pipewire:alsa_output.pci-0000_09_00.4.analog-stereo";
         let config = StreamConfig {
+            host: HostKind::PipeWire,
             device: Some("Alter Name".into()),
             device_id: Some(DeviceId(starship.into())),
             ..StreamConfig::default()
@@ -1313,6 +1314,7 @@ mod tests {
         assert_eq!(entries[i].id.as_ref().unwrap().0, starship);
         // Unplugged: shown under its stored name, selected, with its id kept.
         let config = StreamConfig {
+            host: HostKind::PipeWire,
             device: Some("Focusrite Scarlett 2i2".into()),
             device_id: Some(DeviceId("pipewire:alsa_output.usb-Focusrite".into())),
             ..StreamConfig::default()
