@@ -867,15 +867,13 @@ impl App {
             }
             PluginManagerEvent::GuiClosed { device, rect } => {
                 if let Some(rect) = rect {
+                    // The bridge's frame closed (×, Esc, "Parameter", the plugin itself): it
+                    // yielded back, so the app takes the focus if the bridge had it.
+                    activation::take_back(self.engine.host().bridge_pid(device));
                     self.remember_frame(device, |m| m.pos = Some(rect_pos(rect)));
-                    match self.frames.frame_mut(device) {
-                        Some(f) => {
-                            f.remote_rect = Some(rect);
-                            f.pos = Some(rect_pos(rect));
-                        }
-                        // Closed by the user: the bridge yielded back, the app takes the focus
-                        // if the bridge had it.
-                        None => activation::take_back(self.engine.host().bridge_pid(device)),
+                    if let Some(f) = self.frames.frame_mut(device) {
+                        f.remote_rect = Some(rect);
+                        f.pos = Some(rect_pos(rect));
                     }
                 }
                 if let Some(at) = self
