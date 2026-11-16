@@ -24,7 +24,7 @@
 | `common/asio.cpp`, `common/asio.h`, `common/asiosys.h`, `common/iasiodrv.h` | the host-side API (compiled / bindgen input) |
 | `host/asiodrivers.cpp`, `host/asiodrivers.h`, `host/ginclude.h` | driver loading (`AsioDrivers`) |
 | `host/pc/asiolist.cpp`, `host/pc/asiolist.h` | driver registry list (Windows) |
-| `Steinberg ASIO Logo Artwork/*.svg`, `*.png` | for the "ASIO compatible" logo in S07 later. Use is governed by Steinberg's ASIO usage guidelines (PDF, not vendored). |
+| `Steinberg ASIO Logo Artwork/*.svg`, `*.png` | the "ASIO compatible" logo in S07: the app embeds `ASIO-compatible-logo-Steinberg-®-white-transparent-RGB.svg` (`include_bytes!`, `dialogs/settings.rs`); the other three files are unused. Use is governed by Steinberg's ASIO usage guidelines (PDF, not vendored). |
 
 ## Left out
 

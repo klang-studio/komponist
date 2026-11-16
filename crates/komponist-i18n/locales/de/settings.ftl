@@ -36,6 +36,9 @@ settings-keyboard = Tastatur
 # S07 row label and name of the driver control.
 settings-driver = Treiber
 
+# S07 accessible name of the "ASIO Compatible" logo next to the driver segments (Windows builds with ASIO).
+settings-asio-logo = ASIO-kompatibel
+
 # S07 row label and name of the output device dropdown.
 settings-device = Ausgabegerät
 

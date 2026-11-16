@@ -876,6 +876,25 @@ fn grid_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     r
 }
 
+/// The "ASIO Compatible" logo (white on transparent: the app has only the dark theme), as
+/// Steinberg's ASIO usage guidelines require in every dialog that enables or configures ASIO.
+/// The vendored SVG itself, untouched (`vendor/asio-sdk/VENDORED.md`).
+const ASIO_LOGO_SVG: &[u8] = include_bytes!(
+    "../../../../vendor/asio-sdk/Steinberg ASIO Logo Artwork/ASIO-compatible-logo-Steinberg-®-white-transparent-RGB.svg"
+);
+
+/// Draws the ASIO logo at the right edge of the rest of the driver row.
+fn asio_logo(ui: &mut Ui, t: Lang) {
+    let height = m::ASIO_LOGO_HEIGHT;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add(
+            egui::Image::from_bytes("bytes://asio-compatible-logo.svg", ASIO_LOGO_SVG)
+                .fit_to_exact_size(vec2(height * m::ASIO_LOGO_ASPECT, height))
+                .alt_text(t.settings_asio_logo()),
+        );
+    });
+}
+
 fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
     section_label(ui, t.settings_audio());
     ui.add_space(m::SECTION_INNER_GAP);
@@ -910,6 +929,9 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
                 device_id: None,
                 ..config.clone()
             }));
+        }
+        if here.iter().any(|(h, _)| *h == HostKind::Asio) {
+            asio_logo(ui, t);
         }
     });
 
