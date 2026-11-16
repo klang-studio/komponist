@@ -1,8 +1,8 @@
 # Release: runs when a GitHub release is published (the release, tag and notes are written by hand on GitHub).
 # Pre-releases (v0.2.0-rc.1, v0.2-beta1 ...) trigger it too, deliberately and unfiltered: publish a pre-release
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
-# komponist-<tag>-linux-x86_64.tar.gz and komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53)
-# with their .sha256 files to that same release.
+# komponist-<tag>-linux-x86_64.tar.gz, komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53) and
+# komponist-<tag>-windows-x86_64.zip (unsigned, untested) with their .sha256 files to that same release.
 name: Release
 
 on:
@@ -149,6 +149,71 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 14.4
           "$app/Contents/MacOS/komponist" --help
           "$app/Contents/MacOS/komponist" --bridge --help
+
+      - name: Upload to the release
+        run: gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --repo "$GITHUB_REPOSITORY"
+
+  # Windows 11 x86_64 (MSVC). UNTESTED until the workspace builds on Windows (Windows port, W4b/W5): this job has
+  # never run. The zip is unsigned (SmartScreen note in docs/INSTALL.md); once a code signing certificate exists,
+  # scripts/package-windows.sh signs with Authenticode when KOMPONIST_SIGN_CERT (+ KOMPONIST_SIGN_PASSWORD) or
+  # KOMPONIST_SIGN_THUMBPRINT is set (as secrets passed to the "Package" step).
+  windows-x86_64:
+    name: Windows x86_64 zip (untested)
+    runs-on: windows-2025
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check the tag name
+        run: |
+          # The tag ends up in file names: letters, digits, dot, underscore, dash only.
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Unsupported tag name: $TAG"
+            exit 1
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      # Visual Studio Build Tools (MSVC, rc.exe) and rustup come with the runner image; no system packages needed.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # Builds komponist (release), assembles dist/<name>/ (komponist.exe, LICENSE, README.txt) and zips it with bsdtar.
+      - name: Package
+        run: |
+          name="komponist-${TAG}-windows-x86_64"
+          scripts/package-windows.sh --name "$name"
+          mv "dist/$name.zip" "dist/$name.zip.sha256" .
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      # Unpack the archive as a user would and check what is in it. No window: a GUI start needs a desktop
+      # session, so this runs the command line paths (`--help` of the app and of the bridge mode, which the app
+      # starts for every plugin). The release binary uses the windows subsystem; with stdout piped (`| cat`) the
+      # output reaches the step and `cat` keeps the shell waiting until the process has ended.
+      - name: Check the unpacked zip
+        run: |
+          sha256sum -c "$NAME.zip.sha256"
+          mkdir unpacked
+          /c/Windows/System32/tar.exe -xf "$NAME.zip" -C unpacked
+          exe="unpacked/$NAME/komponist.exe"
+          test -f "$exe"
+          test -f "unpacked/$NAME/LICENSE"
+          test -f "unpacked/$NAME/README.txt"
+          help="$("$exe" --help | cat)"
+          echo "$help"
+          case "$help" in *"usage: komponist"*) ;; *) echo "::error::komponist.exe --help printed no usage"; exit 1 ;; esac
+          bridge_help="$("$exe" --bridge --help | cat)"
+          echo "$bridge_help"
+          test -n "$bridge_help"
 
       - name: Upload to the release
         run: gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --repo "$GITHUB_REPOSITORY"

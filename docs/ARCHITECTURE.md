@@ -1279,6 +1279,54 @@ waits for an Apple Developer account. Plugins that compile code at run time (JIT
 signature and the entitlements and to run `--help` of the app and of the bridge mode, and attaches the zip and its
 `.sha256` to the release. It does not start the GUI (no display session).
 
+### 8.8 Windows package and release (W9a)
+
+`scripts/package-windows.sh` (Git Bash on Windows) builds `komponist` (release) and assembles
+`dist/komponist-<version>-windows-x86_64/`, which it zips with bsdtar (`System32\tar.exe -a`, Git Bash's GNU tar cannot write
+zip) into `komponist-<version>-windows-x86_64.zip` plus a `.sha256`:
+
+```text
+komponist-<version>-windows-x86_64/
+  komponist.exe     the one executable; the plugin bridge is `komponist.exe --bridge` (§8.1)
+  LICENSE
+  README.txt        start, the SmartScreen note, settings and plugin folders (English)
+```
+
+As on macOS, fonts, texts and the window icon are compiled in, so nothing else ships. **Resources of the executable**
+come from `crates/komponist-app/build.rs`, which on Windows hosts fills the placeholders of `assets/windows/komponist.rc.in`
+(workspace version for `FILEVERSION` / `ProductVersion`, absolute paths of the icon and the manifest) and compiles it with the
+MSVC `rc.exe` through the `embed-resource` crate; the resource is linked into `komponist` only, not into `komponist-play`.
+It contains:
+
+- `assets/windows/komponist.ico`: 16, 24, 32, 48, 64, 128 and 256 px, the PNGs of `assets/icons/hicolor` verbatim (PNG-in-ICO).
+  `assets/windows/make-ico.sh` regenerates it.
+- Version information: product name komponist, file description "komponist - MIDI DAW", licence GPL-3.0-or-later.
+- `assets/windows/komponist.manifest`: per-monitor v2 DPI awareness (the egui window and the bridge-owned plugin frames,
+  §8.4, scale per monitor), `longPathAware`, Windows 10 and 11 as supported OS, `asInvoker` (no elevation), and deliberately
+  no UTF-8 active code page: the bridge is the same executable, so it has the same manifest, and plugins expect the
+  system's ANSI code page as in every other host.
+
+**Subsystem and console:** release builds use `#![windows_subsystem = "windows"]` (`main.rs`; debug builds keep the console),
+so Explorer starts no console window. That leaves the process without stdout and stderr when a terminal starts it, which would
+silence `--help`; `attach_parent_console` therefore attaches to the parent's console (`AttachConsole(ATTACH_PARENT_PROCESS)`)
+and points the missing standard handles at `CONOUT$`, but only when a handle is missing. Handles the parent passes (the
+pipes of the app's bridge processes, a redirect in a script) are never replaced, so `--bridge` keeps its pipes. The shell does
+not wait for a windows-subsystem program: console output may appear after the next prompt.
+
+**Signing:** the first Windows release is unsigned. SmartScreen warns on the first start of a downloaded, unsigned executable ("More info" →
+"Run anyway", `docs/INSTALL.md`); only a trusted certificate (or reputation built up over many downloads) removes the
+warning. With `KOMPONIST_SIGN_CERT` (+ `KOMPONIST_SIGN_PASSWORD`) or `KOMPONIST_SIGN_THUMBPRINT` the script signs a copy of
+the executable with `signtool` (SHA-256, RFC 3161 timestamp from `KOMPONIST_SIGN_TIMESTAMP_URL`, default DigiCert) and
+verifies it before zipping; that path has not been run (no certificate yet).
+
+**Release:** the `windows-x86_64` job of `.github/workflows/release.yml` runs the script on a `windows-2025` runner, checks
+the hash, unpacks the zip, runs `--help` of the app and of the bridge mode (piped, so the shell waits for the
+windows-subsystem process) and attaches the zip and its `.sha256` to the release. It does not start the GUI (no desktop
+session). It has not run yet: it waits for the workspace to build on Windows.
+
+**Not part of this package:** an installer (Start menu entry, the `.komponist` file association, uninstall) and signing
+certificates; the app takes one project path per start (`komponist.exe "%1"`), so the association needs no further app change.
+
 ---
 
 ## 9. User interface
