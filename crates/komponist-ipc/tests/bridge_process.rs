@@ -58,6 +58,7 @@ fn child_bridge_entry() {
     // systemd-coredump pipe helper for a crashing process, which delays its exit by tens of
     // milliseconds and pings crash reporters. Not dumpable skips the core dump path entirely
     // (exec resets this flag, so it is set here and not in `pre_exec`).
+    #[cfg(target_os = "linux")]
     rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
         .expect("PR_SET_DUMPABLE");
     // SAFETY: the parent made this inherited fd ours (CLOEXEC cleared) and nothing else owns it.
