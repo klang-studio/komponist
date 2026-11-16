@@ -20,5 +20,7 @@ rustix = { workspace = true, features = ["event"] }
 [dev-dependencies]
 # Integration tests run `Engine::process` and `ExternalProcessor::process` inside `assert_no_alloc`.
 assert_no_alloc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows and fake pointer input for the GUI routing tests (run under Xvfb only).
 x11rb = { workspace = true, features = ["xtest"] }

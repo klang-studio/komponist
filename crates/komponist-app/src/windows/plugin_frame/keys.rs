@@ -33,18 +33,26 @@
 //! `KOMPONIST_LOG_KEYS=1` logs every key event of the main window and the frames, the grab
 //! decisions and X focus changes to stderr.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::sync::mpsc::{Receiver, Sender, channel};
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 use komponist_i18n::Lang;
 use komponist_model::DeviceId;
+#[cfg(target_os = "linux")]
 use x11rb::connection::Connection;
+#[cfg(target_os = "linux")]
 use x11rb::protocol::Event;
+#[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::{
     Allow, ConnectionExt as _, GrabMode, KeyPressEvent, Keycode, Keysym, ModMask, Window,
 };
+#[cfg(target_os = "linux")]
 use x11rb::rust_connection::RustConnection;
 
 use crate::keymap::{Key, KeyChord};
@@ -109,6 +117,7 @@ pub struct Mods {
 
 impl Mods {
     /// From the X `state` field; Caps Lock, Num Lock and AltGr (Mod5) do not count.
+    #[cfg(any(target_os = "linux", test))]
     pub fn from_state(state: u16) -> Mods {
         Mods {
             shift: state & 0x0001 != 0,
@@ -218,18 +227,21 @@ pub struct Grabbed {
 }
 
 /// Grabs the keys of the frame windows and runs the policy on its own thread (module docs).
+#[cfg(target_os = "linux")]
 pub struct KeyGrabber {
     conn: Arc<RustConnection>,
     frames: Arc<Mutex<HashMap<Window, DeviceId>>>,
     rx: Receiver<Grabbed>,
 }
 
+#[cfg(target_os = "linux")]
 impl std::fmt::Debug for KeyGrabber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyGrabber").finish_non_exhaustive()
     }
 }
 
+#[cfg(target_os = "linux")]
 impl KeyGrabber {
     /// Starts the thread on `conn`; it wakes the root viewport of `ctx` for every taken key.
     /// The thread reads all events of `conn` (it is the only reader) and ends with the
@@ -289,12 +301,14 @@ impl KeyGrabber {
 }
 
 /// Keycode → keysym (level 0) of the current keyboard mapping.
+#[cfg(target_os = "linux")]
 struct KeyMapping {
     min: u8,
     per: usize,
     syms: Vec<Keysym>,
 }
 
+#[cfg(target_os = "linux")]
 impl KeyMapping {
     fn load(conn: &RustConnection) -> Option<KeyMapping> {
         let setup = conn.setup();
@@ -324,6 +338,7 @@ impl KeyMapping {
 
 /// Per-thread state.
 #[derive(Default)]
+#[cfg(target_os = "linux")]
 struct Session {
     typing: HashMap<Window, Typing>,
     /// Last release of a taken key (keycode, server time): an auto-repeat press has the same
@@ -332,6 +347,7 @@ struct Session {
     focus: Option<Window>,
 }
 
+#[cfg(target_os = "linux")]
 fn run(
     conn: &RustConnection,
     frames: &Mutex<HashMap<Window, DeviceId>>,
@@ -378,11 +394,13 @@ fn run(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn is_repeat(session: &Session, e: &KeyPressEvent) -> bool {
     session.released == Some((e.detail, e.time))
 }
 
 /// Decides a grabbed press; `Some` = komponist takes it.
+#[cfg(target_os = "linux")]
 fn press(
     conn: &RustConnection,
     e: &KeyPressEvent,

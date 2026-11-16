@@ -19,5 +19,7 @@ rtrb.workspace = true
 assert_no_alloc.workspace = true
 
 [dev-dependencies]
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows and fake pointer input for the GUI tests (run under Xvfb only).
 x11rb = { workspace = true, features = ["xtest"] }
