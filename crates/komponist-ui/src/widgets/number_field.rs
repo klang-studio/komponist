@@ -592,8 +592,9 @@ pub(crate) fn drag_gesture(response: &Response, start: impl FnOnce() -> ValueDra
 
 /// The absolute drag gesture of a fader behind `response` ([`drag::AbsoluteDrag`]): the thumb
 /// (fraction 0 bottom … 1 top, `fraction` = where it is now, `top`/`len` = its reference y at the
-/// top and its travel) sticks to the pointer. Grabs and hides the pointer like [`drag_gesture`].
-/// Returns the new fraction while dragging.
+/// top and its travel) sticks to the pointer. Hides the pointer for the gesture
+/// ([`drag::grab_pointer_absolute`]: unlike [`drag_gesture`] it must keep moving). Returns the
+/// new fraction while dragging.
 pub(crate) fn absolute_drag_gesture(
     response: &Response,
     top: f32,
@@ -610,7 +611,7 @@ pub(crate) fn absolute_drag_gesture(
         )
     });
     if response.drag_started() {
-        drag::grab_pointer(ctx);
+        drag::grab_pointer_absolute(ctx);
         let press_y = press.or(latest)?.y;
         let mut d = drag::AbsoluteDrag::start(top, len, fraction, press_y);
         let f = d.update(latest.map_or(press_y, |p| p.y), shift);
