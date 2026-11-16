@@ -1,5 +1,38 @@
 # Installing komponist
 
+## macOS
+
+Every [release](https://github.com/klang-studio/komponist/releases) has `komponist-<tag>-macos-arm64.zip` (macOS 14.4
+or newer, Apple Silicon only) and its `.sha256`.
+
+1. Download and unzip it (Safari unzips automatically). Check the download with `shasum -a 256 -c komponist-<tag>-macos-arm64.zip.sha256`
+   in the folder that holds both files.
+2. Move `komponist.app` to `/Applications`.
+3. First start: **v0.3 is signed ad-hoc, not with an Apple Developer ID**, so macOS refuses to open it ("komponist
+   cannot be opened" / "Apple could not verify ..."). Allow it once:
+   - macOS 15 and newer: try to open the app, then System Settings → Privacy & Security → scroll to the message
+     about komponist → **Open Anyway**, and confirm. (Control-click → Open no longer works since macOS 15.)
+   - On any version, in Terminal: `xattr -dr com.apple.quarantine /Applications/komponist.app`
+     (the app starts normally afterwards).
+   You do this once per downloaded version. A Developer ID signature with notarization will make it unnecessary;
+   it follows once an Apple Developer account exists.
+4. The first recording asks for microphone access (System Settings → Privacy & Security → Microphone).
+
+**Plugins** downloaded in a browser carry the same quarantine flag and may be refused or silently skipped. If a
+downloaded CLAP or VST3 plugin does not show up or does not load, remove the flag from the bundle, e.g.
+`xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/CLAP/Name.clap"`, then rescan. komponist itself is signed with
+`com.apple.security.cs.disable-library-validation`, so plugins signed by other teams (or ad-hoc) can load into it.
+Plugin folders: `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP` and `$CLAP_PATH`;
+`~/Library/Audio/Plug-Ins/VST3` and `/Library/Audio/Plug-Ins/VST3`.
+
+**Where komponist keeps its files:** settings and recent projects in `~/Library/Application Support/komponist/`
+(`settings.json`, `recent.json`), the plugin scan cache in `~/Library/Caches/komponist/plugins.json`. Delete the cache
+file to force a full rescan; remove the folders to reset komponist.
+
+**Building the app bundle yourself:** `scripts/bundle-macos.sh` builds `dist/komponist.app` (executable, `Info.plist`,
+icon, hardened-runtime signature; ad-hoc unless `KOMPONIST_SIGN_IDENTITY` is set, see the header of the script).
+`ARCHITECTURE.md` §8.7 describes the bundle.
+
 ## Build from source
 
 You need a Rust toolchain (`rust-toolchain.toml` pins the version) and the usual system libraries for egui/wgpu and

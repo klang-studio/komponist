@@ -1153,6 +1153,38 @@ kept, S06 dialog on open), plus `Bypassed`. Held by `komponist-plugins::PluginMa
 switch around an export) and a warm-up of `komponist_plugins::WARM_UP` (250 ms) after every
 activation, so `Ok` means "renders real audio now"; the export waits for it (WP-61).
 
+### 8.7 macOS app bundle, signing and release (#53)
+
+`scripts/bundle-macos.sh` builds `komponist` (release) and assembles `dist/komponist.app`:
+
+```text
+komponist.app/Contents/
+  Info.plist                      from assets/macos/Info.plist.in (version = [workspace.package] version)
+  PkgInfo
+  MacOS/komponist                 the one executable; the plugin bridge is `komponist --bridge` (§8.1)
+  Resources/komponist.icns        iconutil, from assets/icons/hicolor (16 … 512 px; no 1024 px render exists)
+  Resources/{de,en}.lproj/InfoPlist.strings   the microphone text in both UI languages
+```
+
+Fonts, the window icon and all texts are compiled in, so nothing else goes into the bundle. The bundle id is
+`studio.klang.komponist`; `LSMinimumSystemVersion` is 14.4 (Apple Silicon only), the category is music, and the plist
+exports the type `studio.klang.komponist.project` for `*.komponist`. Opening a project by double-click (Apple Event
+`odoc`) is not handled yet, so the plist declares the type but no `CFBundleDocumentTypes`.
+
+**Signing:** hardened runtime (`codesign --options runtime`) with `assets/macos/komponist.entitlements`:
+`com.apple.security.cs.disable-library-validation` (CLAP and VST3 plugins are signed by other teams or not at all and are
+loaded into the app and its bridge processes) and `com.apple.security.device.audio-input` (recording). The bridge is
+the same signed executable, so it carries the same entitlements. v0.3 is signed ad-hoc (`-s -`): Gatekeeper refuses the
+downloaded app until the user allows it once (`docs/INSTALL.md`). With `KOMPONIST_SIGN_IDENTITY` (a Developer ID
+Application certificate) the script signs for distribution with a secure timestamp, and with notarytool credentials
+(`KOMPONIST_NOTARY_PROFILE`, or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`) it notarizes and staples; that path
+waits for an Apple Developer account.
+
+**Release:** the `macos-arm64` job of `.github/workflows/release.yml` runs the script on a macOS arm64 runner, packs
+`komponist-<tag>-macos-arm64.zip` with `ditto -c -k --keepParent` (keeps the signature), unpacks it again to verify the
+signature and the entitlements and to run `--help` of the app and of the bridge mode, and attaches the zip and its
+`.sha256` to the release. It does not start the GUI (no display session).
+
 ---
 
 ## 9. User interface
