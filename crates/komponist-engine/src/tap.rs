@@ -250,10 +250,14 @@ mod tests {
         assert_eq!(out, [0.5, 0.5, 0.5]);
     }
 
-    /// A producer writes a ramp of ever-growing integers in blocks of varying size through a
-    /// small ring while the reader fetches windows: every accepted window must be consecutive.
+    /// A producer writes a ramp of integers in blocks of varying size through a small ring while
+    /// the reader fetches windows: every accepted window must be consecutive. The ramp wraps at
+    /// [`RAMP`], far below 2^24, so every value is exact in `f32` however fast the producer runs
+    /// (#55: a fast machine passed 2^24 within the test's 400 ms).
     #[test]
     fn concurrent_reads_are_never_torn() {
+        const RAMP: u32 = 1 << 20;
+        let ramp = |n: u64| (n % u64::from(RAMP)) as f32;
         let tap = Arc::new(SampleTap::new(256));
         let stop = Arc::new(AtomicBool::new(false));
         let producer = {
@@ -265,7 +269,7 @@ mod tests {
                 while !stop.load(Ordering::Relaxed) {
                     size = size % 97 + 1;
                     block.clear();
-                    block.extend((0..size).map(|i| (next + i) as f32));
+                    block.extend((0..size).map(|i| ramp(u64::from(next + i))));
                     next += size;
                     tap.push(&block);
                 }
@@ -283,9 +287,13 @@ mod tests {
                     assert!(end >= last_end);
                     last_end = end;
                     for (i, pair) in window.windows(2).enumerate() {
-                        assert_eq!(pair[1], pair[0] + 1.0, "torn window at {i}: {window:?}");
+                        assert_eq!(
+                            pair[1],
+                            ramp(pair[0] as u64 + 1),
+                            "torn window at {i}: {window:?}"
+                        );
                     }
-                    assert_eq!(window[99], (end - 1) as f32);
+                    assert_eq!(window[99], ramp(end - 1));
                 }
                 None => rejected += 1,
             }
