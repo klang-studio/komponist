@@ -15,9 +15,10 @@ postcard = { workspace = true, features = ["use-std"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 # POSIX shared memory (`shm_open`) in place of memfd; the page size for its rounded size.
 rustix = { workspace = true, features = ["shm", "param"] }
-# `os_sync_wait_on_address` / `os_sync_wake_by_address_all` and `mach_absolute_time`, which
-# rustix does not wrap.
-libc.workspace = true
+# `os_sync_wait_on_address` / `os_sync_wake_by_address_all` (which rustix does not wrap) and the
+# Mach clock, with the wait's timer-leeway compensation (#45); shared with the engine. The
+# time-constraint policy in a test.
+komponist-rt.workspace = true
 
 [dev-dependencies]
 assert_no_alloc.workspace = true
