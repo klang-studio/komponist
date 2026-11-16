@@ -65,7 +65,7 @@ fn surge_header() -> HeaderModel {
 
 fn hexa_header() -> HeaderModel {
     HeaderModel {
-        name: "hexa".into(),
+        name: "Hexa".into(),
         sub: "Lead · INTERN".into(),
         presets: komponist_builtin::presets()
             .map(|p| p.name.to_owned())
@@ -85,7 +85,7 @@ fn macro_grid() -> ParamGrid {
         .tracks
         .iter()
         .flat_map(|t| t.channel.devices.iter())
-        .find(|d| d.plugin.name == "hexa")
+        .find(|d| d.plugin.name == "Hexa")
         .unwrap();
     ParamGrid {
         params: hexa_macro_params(Lang::De, hexa),
@@ -671,7 +671,7 @@ fn oben_halten_and_the_position_are_remembered_per_plugin() {
     assert!(w.keep_on_top);
     assert_eq!(w.pos, Some((120, 80)));
     // Another plugin has no memory.
-    let other = device_named(h.state(), "hexa");
+    let other = device_named(h.state(), "Hexa");
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(other)));
     h.run_steps(3);
@@ -723,7 +723,7 @@ fn the_frame_shows_loading_crashed_and_reloads() {
 fn hexa_opens_its_parameters_and_steps_through_its_presets() {
     let (app, _script, _) = app();
     let mut h = harness(app);
-    let lead = device_named(h.state(), "hexa");
+    let lead = device_named(h.state(), "Hexa");
     h.state_mut()
         .dispatch(Action::Plugin(PluginAction::OpenWindow(lead)));
     h.run_steps(3);
@@ -818,7 +818,7 @@ fn a_missing_plugin_says_so_and_esc_in_the_main_window_leaves_the_frame_open() {
 fn another_project_closes_every_plugin_frame() {
     let (app, script, surge) = app();
     let mut h = harness(app);
-    let hexa = device_named(h.state(), "hexa");
+    let hexa = device_named(h.state(), "Hexa");
     for device in [surge, hexa] {
         h.state_mut()
             .dispatch(Action::Plugin(PluginAction::OpenWindow(device)));

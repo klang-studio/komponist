@@ -36,7 +36,7 @@ fn names(manager: &PluginManager) -> Vec<String> {
         .catalog()
         .entries()
         .iter()
-        .filter(|e| !e.is_builtin() || e.plugin.name == "hexa")
+        .filter(|e| !e.is_builtin() || e.plugin.name == "Hexa")
         .map(|e| e.plugin.name.clone())
         .collect()
 }
@@ -87,7 +87,7 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     let mut manager = PluginManager::new(config(&dir));
     // The built-in entries (hexa and the internal devices of WP-85) come before any scan.
     let builtins = names(&manager);
-    assert_eq!(builtins[0], "hexa");
+    assert_eq!(builtins[0], "Hexa");
     assert!(!manager.is_scanning());
     let t0 = Instant::now();
     manager.start_scan(&dirs);

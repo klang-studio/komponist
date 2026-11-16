@@ -383,9 +383,9 @@ mod tests {
     #[test]
     fn access_names() {
         let p = TrackPalette::new(150);
-        let m = HeaderModel::new("Lead", "hexa", &p);
+        let m = HeaderModel::new("Lead", "Hexa", &p);
         let a = header_access(Lang::De, &m, State::SELECTED);
-        assert_eq!(a.name, "Spur Lead, hexa");
+        assert_eq!(a.name, "Spur Lead, Hexa");
         assert_eq!(a.role, Role::Row);
         assert_eq!(a.selected, Some(true));
         let m = HeaderModel::new("MIDI 3", "", &p);

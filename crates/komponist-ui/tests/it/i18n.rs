@@ -99,10 +99,10 @@ fn timeline_names_in_english() {
     assert_eq!(a.name, "Clip Beat A, bars 1\u{2013}4, muted");
     let a = note_access(Lang::En, 60, Tick(8 * 3840), m, NoteState::REST);
     assert_eq!(a.name, "Note C4, 9.1.000");
-    let head = HeaderModel::new("Lead", "hexa", &p);
+    let head = HeaderModel::new("Lead", "Hexa", &p);
     assert_eq!(
         header_access(Lang::En, &head, State::REST).name,
-        "Track Lead, hexa"
+        "Track Lead, Hexa"
     );
     let ruler = RulerModel {
         axis: TimeAxis::per_bar(0.0, 72.0, m),

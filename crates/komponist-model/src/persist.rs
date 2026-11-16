@@ -19,7 +19,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::project::{BUILTIN_HEXA, BUILTIN_VOLT, ClipContent, HEXA_NAME, Project, VOLT_NAME};
+use crate::project::{
+    BUILTIN_HEXA, BUILTIN_VOLT, ClipContent, HEXA_NAME, PRESSE_NAME, Project, VOLT_NAME,
+};
 use crate::routing;
 
 /// Value of the `format` field.
@@ -141,10 +143,14 @@ struct FileOut<'a> {
 /// Built-in devices whose display name changed: `(stored id, old name, new name)`. The stored id stays (so
 /// every existing project loads); the stored display name of such a plugin reference is replaced on load,
 /// without a format version bump, so every view shows the new name and a later save writes it.
-/// "pisynth" became hexa, "knurr" became volt.
-const RENAMED_BUILTINS: [(&str, &str, &str); 2] = [
+/// "pisynth" became hexa, "knurr" became volt; since 2026-11-16 the names of Hexa, Volt and Presse start with
+/// a capital (the lowercase names of earlier files are replaced).
+const RENAMED_BUILTINS: [(&str, &str, &str); 5] = [
     (BUILTIN_HEXA, "pisynth", HEXA_NAME),
     (BUILTIN_VOLT, "knurr", VOLT_NAME),
+    (BUILTIN_HEXA, "hexa", HEXA_NAME),
+    (BUILTIN_VOLT, "volt", VOLT_NAME),
+    ("presse", "presse", PRESSE_NAME),
 ];
 
 fn rename_builtins(value: &mut Value) {
@@ -621,7 +627,7 @@ mod tests {
         let mut v =
             serde_json::json!({"a": [file("pisynth", "pisynth"), file("pisynth", "sampler")]});
         rename_builtins(&mut v);
-        assert_eq!(v["a"][0]["plugin"]["name"], "hexa");
+        assert_eq!(v["a"][0]["plugin"]["name"], "Hexa");
         assert_eq!(v["a"][0]["plugin"]["id"], "pisynth");
         // Only the built-in hexa is renamed; anything else keeps what it stored.
         assert_eq!(v["a"][1]["plugin"]["name"], "pisynth");
@@ -630,12 +636,33 @@ mod tests {
     #[test]
     fn a_stored_knurr_name_loads_as_volt_with_the_same_id() {
         let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
-        let mut v = serde_json::json!({"a": [file("knurr", "knurr"), file("knurr", "sampler"), file("volt", "knurr")]});
+        let mut v = serde_json::json!({"a": [file("knurr", "knurr"), file("knurr", "sampler"), file("Volt", "knurr")]});
         rename_builtins(&mut v);
-        assert_eq!(v["a"][0]["plugin"]["name"], "volt");
+        assert_eq!(v["a"][0]["plugin"]["name"], "Volt");
         assert_eq!(v["a"][0]["plugin"]["id"], "knurr");
         assert_eq!(v["a"][1]["plugin"]["name"], "knurr");
-        assert_eq!(v["a"][2]["plugin"]["name"], "volt");
+        assert_eq!(v["a"][2]["plugin"]["name"], "Volt");
+    }
+
+    #[test]
+    fn lowercase_device_names_of_earlier_files_load_capitalised_with_the_same_ids() {
+        let file = |name: &str, id: &str| serde_json::json!({"plugin": {"format": "builtin", "id": id, "name": name}});
+        let mut v = serde_json::json!({"a": [
+            file("hexa", "pisynth"), file("volt", "knurr"), file("presse", "presse"),
+            file("presse", "sampler"), file("Hexa", "pisynth")]});
+        rename_builtins(&mut v);
+        let shown = |i: usize| {
+            (
+                v["a"][i]["plugin"]["id"].clone(),
+                v["a"][i]["plugin"]["name"].clone(),
+            )
+        };
+        assert_eq!(shown(0), ("pisynth".into(), "Hexa".into()));
+        assert_eq!(shown(1), ("knurr".into(), "Volt".into()));
+        assert_eq!(shown(2), ("presse".into(), "Presse".into()));
+        // Only the built-ins are renamed; a name that is already right stays.
+        assert_eq!(shown(3), ("sampler".into(), "presse".into()));
+        assert_eq!(shown(4), ("pisynth".into(), "Hexa".into()));
     }
 
     #[test]

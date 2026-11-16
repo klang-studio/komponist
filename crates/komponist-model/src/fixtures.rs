@@ -412,7 +412,7 @@ impl DemoPlugin {
 const HEXA: DemoPlugin = DemoPlugin {
     format: PluginFormat::Builtin,
     id: BUILTIN_HEXA,
-    name: "hexa",
+    name: "Hexa",
     vendor: "klang-studio",
     version: "0.1.0",
 };
@@ -557,11 +557,11 @@ mod tests {
                 .collect()
         };
         assert_eq!(chain(0), [("Sampler", false), ("LSP Compressor", false)]);
-        assert_eq!(chain(1), [("hexa", false), ("LSP Para EQ x8", false)]);
+        assert_eq!(chain(1), [("Hexa", false), ("LSP Para EQ x8", false)]);
         assert_eq!(
             chain(2),
             [
-                ("hexa", false),
+                ("Hexa", false),
                 ("LSP Para EQ x8", false),
                 ("TAL-Chorus-LX", true),
                 ("Dragonfly Hall Reverb", false),

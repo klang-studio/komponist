@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(device_name(Lang::De, &hall), Some("Hall"));
         let mut hexa = Internal::Sampler.plugin_ref();
         hexa.id = BUILTIN_HEXA.into();
-        assert_eq!(device_name(Lang::En, &hexa), Some("hexa"));
+        assert_eq!(device_name(Lang::En, &hexa), Some("Hexa"));
         let mut clap = hall;
         clap.format = PluginFormat::Clap;
         assert_eq!(device_name(Lang::En, &clap), None);
