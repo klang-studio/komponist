@@ -17,8 +17,8 @@ komponist-rt.workspace = true
 assert_no_alloc.workspace = true
 
 [features]
-# ASIO on Windows (W8). Off by default: the build needs LLVM's libclang (bindgen in `asio-sys`) and
-# downloads Steinberg's ASIO SDK (ARCHITECTURE §7). The feature does nothing off Windows: cpal's
+# ASIO on Windows (W8). Off by default: the build needs LLVM's libclang (bindgen in `asio-sys`);
+# the SDK is vendored in vendor/asio-sdk (ARCHITECTURE §7). The feature does nothing off Windows: cpal's
 # `asio-sys` dependency is a Windows-only one.
 asio = ["cpal/asio"]
 
@@ -38,3 +38,5 @@ cpal = { workspace = true, features = ["realtime-dbus", "pipewire", "jack"] }
 # `realtime`: cpal's WASAPI thread registers with MMCSS ("Audio") when the stream starts, with
 # THREAD_PRIORITY_TIME_CRITICAL as the fallback (ARCHITECTURE §7).
 cpal = { workspace = true, features = ["realtime"] }
+# `RegOpenKeyExW`/`RegEnumKeyExW`: read-only check for registered ASIO drivers (`asio_registry`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Registry"] }

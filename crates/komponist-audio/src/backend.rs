@@ -288,13 +288,23 @@ pub(crate) fn host(kind: HostKind) -> Result<cpal::Host, AudioError> {
     cpal::host_from_id(id).map_err(|_| AudioError::HostUnavailable(kind))
 }
 
+/// Whether an ASIO driver is registered (Windows registry, read-only, nothing loaded). Never true off
+/// Windows, where `host(HostKind::Asio)` fails first anyway.
+#[cfg(windows)]
+use crate::asio_registry::any_driver_registered as asio_driver_registered;
+#[cfg(not(windows))]
+fn asio_driver_registered() -> bool {
+    false
+}
+
 /// Hosts available on this machine, in preference order, `Null` last.
+/// ASIO is listed only with a registered driver, so S07 shows it disabled otherwise.
 pub(crate) fn available_hosts() -> Vec<HostKind> {
     let mut hosts: Vec<HostKind> = [
         HostKind::CoreAudio,
         HostKind::Wasapi,
-        // Listed whenever the build has it: `host` only creates cpal's wrapper, it loads no driver
-        // (the devices are found by loading each driver, which `available_hosts` must not do).
+        // Listed when the build has it and at least one driver is registered (checked below, in the
+        // registry: no driver is loaded, which would be slow and disturb the interface).
         HostKind::Asio,
         HostKind::PipeWire,
         HostKind::Jack,
@@ -304,6 +314,7 @@ pub(crate) fn available_hosts() -> Vec<HostKind> {
     .filter(|&kind| match host(kind) {
         // cpal always lists JACK; it is usable only when a server answers.
         Ok(host) if kind == HostKind::Jack => host.default_output_device().is_some(),
+        Ok(_) if kind == HostKind::Asio => asio_driver_registered(),
         Ok(_) => true,
         Err(_) => false,
     })
@@ -1018,6 +1029,14 @@ mod lookup_tests {
             assert!(!available_hosts().contains(&kind));
         }
         assert_eq!(available_hosts().last(), Some(&HostKind::Null));
+    }
+
+    /// ASIO is a host only when the build has it and a driver is registered (the registry is read, no
+    /// driver is loaded).
+    #[test]
+    fn asio_is_listed_only_with_a_registered_driver() {
+        let expected = HostKind::Asio.is_supported_here() && asio_driver_registered();
+        assert_eq!(available_hosts().contains(&HostKind::Asio), expected);
     }
 
     #[test]
