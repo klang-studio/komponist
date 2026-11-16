@@ -111,6 +111,9 @@ routing-solo-follows-tip = Follows solo because a soloed track feeds this bus.
 # Detail line of the dock chip's tooltip.
 routing-popover-hint = Ctrl+click the chip: full list in the inspector
 
+# Same on macOS: ⌘ instead of Ctrl.
+routing-popover-hint-mac = ⌘+click the chip: full list in the inspector
+
 # Inspector: nothing routes to this bus.
 routing-no-inputs = Nothing routed yet
 

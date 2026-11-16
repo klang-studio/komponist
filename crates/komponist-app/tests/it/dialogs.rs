@@ -76,19 +76,11 @@ fn press(h: &mut Harness<'_, App>, mods: Modifiers, key: Key) {
     h.run_steps(2);
 }
 
-const CTRL: Modifiers = Modifiers {
-    alt: false,
-    ctrl: true,
-    shift: false,
-    mac_cmd: false,
-    command: true,
-};
-
 /// Replaces the text of the focused text field with `text` and presses Enter.
 fn type_into(h: &mut Harness<'_, App>, label: &str, text: &str) {
     h.get_by_label(label).focus();
     h.run_steps(1);
-    press(h, CTRL, Key::A);
+    press(h, Modifiers::COMMAND, Key::A);
     h.get_by_label(label).type_text(text);
     h.run_steps(1);
 }
@@ -106,14 +98,14 @@ fn new_save_open_round_trip_through_the_file_browser() {
     let dir = scratch("round-trip");
     let mut h = harness(app_in(&dir, demo_project()));
     // Ctrl N: S10, empty and clean.
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     assert_eq!(h.state().project().name, "Unbenannt");
     assert!(h.state().project().tracks.is_empty());
     assert!(!h.state().doc().is_dirty());
     // Ctrl T, then Ctrl S: no file yet, so the save dialog asks for one.
-    press(&mut h, CTRL, Key::T);
+    press(&mut h, Modifiers::COMMAND, Key::T);
     assert_eq!(h.state().project().tracks.len(), 1);
-    press(&mut h, CTRL, Key::S);
+    press(&mut h, Modifiers::COMMAND, Key::S);
     h.get_by_value("Projekt speichern");
     assert_eq!(h.state().ui().focus, FocusArea::Dialog);
     let file = dir.join("Lieder/Hafenlicht");
@@ -131,8 +123,8 @@ fn new_save_open_round_trip_through_the_file_browser() {
     assert_eq!(on_disk.projects, std::slice::from_ref(&saved));
 
     // Ctrl N again, then Ctrl O: the browser opens in the last project's folder.
-    press(&mut h, CTRL, Key::N);
-    press(&mut h, CTRL, Key::O);
+    press(&mut h, Modifiers::COMMAND, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::O);
     h.get_by_value("Projekt öffnen");
     h.get_by_label("Hafenlicht.komponist").click();
     h.run_steps(2);
@@ -189,7 +181,7 @@ fn undo_back_to_the_saved_state_is_clean_again() {
     // Save: one edit, then Ctrl S into a new file.
     action(&mut h, EditAction::NewMidiTrack);
     assert!(h.state().doc().is_dirty() && unsaved(&h));
-    press(&mut h, CTRL, Key::S);
+    press(&mut h, Modifiers::COMMAND, Key::S);
     std::fs::create_dir_all(&dir).unwrap();
     type_into(&mut h, "Dateiname", dir.join("Clean").to_str().unwrap());
     press(&mut h, Modifiers::NONE, Key::Enter);
@@ -205,7 +197,7 @@ fn undo_back_to_the_saved_state_is_clean_again() {
     action(&mut h, EditAction::Undo);
 
     // Clean: Ctrl N does not ask.
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     assert!(h.query_by_value("Änderungen speichern?").is_none());
     assert_eq!(h.state().project().name, "Unbenannt");
 
@@ -213,7 +205,7 @@ fn undo_back_to_the_saved_state_is_clean_again() {
     let mut app = app_in(&dir, demo_project());
     app.dispatch(Action::Edit(EditAction::NewMidiTrack));
     let mut h = harness(app);
-    press(&mut h, CTRL, Key::S);
+    press(&mut h, Modifiers::COMMAND, Key::S);
     type_into(&mut h, "Dateiname", dir.join("Clean2").to_str().unwrap());
     press(&mut h, Modifiers::NONE, Key::Enter);
     assert!(!h.state().doc().is_dirty());
@@ -222,7 +214,7 @@ fn undo_back_to_the_saved_state_is_clean_again() {
     action(&mut h, EditAction::Undo);
     action(&mut h, EditAction::Redo);
     assert!(h.state().doc().is_dirty());
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     h.get_by_value("Änderungen speichern?");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -235,21 +227,21 @@ fn unsaved_changes_ask_before_a_new_project() {
     assert!(app.doc().is_dirty());
     let mut h = harness(app);
     let tracks = h.state().project().tracks.len();
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     h.get_by_value("Änderungen speichern?");
     // Esc keeps the project.
     press(&mut h, Modifiers::NONE, Key::Escape);
     assert_eq!(h.state().project().tracks.len(), tracks);
     assert!(h.query_by_value("Änderungen speichern?").is_none());
     // "Nicht speichern" discards it.
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     h.get_by_label("Nicht speichern").click();
     h.run_steps(2);
     assert_eq!(h.state().project().name, "Unbenannt");
     // "Speichern" without a file asks for one and then continues: Ctrl N on a dirty S10 project.
     h.state_mut()
         .dispatch(Action::Edit(EditAction::NewMidiTrack));
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     h.get_by_label("Speichern").click();
     h.run_steps(2);
     // The file browser opens in the frame after the click and shows one frame later.
@@ -286,6 +278,29 @@ fn closing_the_window_asks_for_unsaved_changes() {
     assert!(!h.state_mut().close_requested());
     h.run_steps(2);
     // "Nicht speichern": the window may close.
+    h.get_by_label("Nicht speichern").click();
+    h.run_steps(2);
+    assert!(h.state_mut().close_requested());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_quit_action_asks_for_unsaved_changes_like_the_close_button() {
+    let dir = scratch("quit-action");
+    let mut app = app_in(&dir, demo_project());
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    app.dispatch(Action::Project(ProjectAction::Quit));
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.get_by_value("Änderungen speichern?");
+    // Cancel keeps the app running: the window may not close.
+    h.get_by_label("Abbrechen").click();
+    h.run_steps(2);
+    assert!(h.query_by_value("Änderungen speichern?").is_none());
+    assert!(!h.state_mut().close_requested());
+    // Asked again and answered "Nicht speichern": the quit goes through.
+    h.state_mut().dispatch(Action::Project(ProjectAction::Quit));
+    h.run_steps(2);
     h.get_by_label("Nicht speichern").click();
     h.run_steps(2);
     assert!(h.state_mut().close_requested());
@@ -737,7 +752,7 @@ fn the_start_screen_creates_projects_and_opens_the_settings() {
     // Back on the start screen, Ctrl N: S10.
     h.state_mut().show_start_screen();
     h.run_steps(2);
-    press(&mut h, CTRL, Key::N);
+    press(&mut h, Modifiers::COMMAND, Key::N);
     assert_eq!(h.state().ui().screen, Screen::Project);
     assert_eq!(h.state().project().name, "Unbenannt");
     let _ = std::fs::remove_dir_all(&dir);

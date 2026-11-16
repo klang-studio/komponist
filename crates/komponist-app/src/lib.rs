@@ -53,11 +53,14 @@ pub mod export;
 pub mod gain_trace;
 pub mod keymap;
 pub mod layout;
+#[cfg(target_os = "macos")]
+pub mod macos_menu;
 pub mod master_scope;
 pub mod meters;
 pub mod metrics;
 pub mod panels;
 pub mod param_undo;
+pub mod platform;
 pub mod project_io;
 pub mod record;
 pub mod samples;

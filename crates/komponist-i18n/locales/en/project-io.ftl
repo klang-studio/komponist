@@ -3,6 +3,9 @@
 # New project created (S10).
 project-new-created = New project created · Ctrl+T adds a MIDI track
 
+# Same on macOS: ⌘ instead of Ctrl.
+project-new-created-mac = New project created · ⌘T adds a MIDI track
+
 # A project file could not be opened; `$file` is the file name, `$reason` one of the `project-reason-*` texts.
 project-open-failed = “{ $file }” could not be opened: { $reason }
 

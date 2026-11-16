@@ -30,6 +30,9 @@ status-notes-selected = { $clip } · { $selected } von { $total } { $total ->
 # Middle text in the piano roll.
 status-notes-hint = Strg-Ziehen auf Note: Velocity · Alt-Ziehen: Kopie
 
+# Same on macOS: ⌘ instead of Strg.
+status-notes-hint-mac = ⌘-Ziehen auf Note: Velocity · Alt-Ziehen: Kopie
+
 # Left side in the step sequencer with a selected step; `$step` counts from 1.
 status-step-selected = { $clip } · Step { $step } von { $length }
 
@@ -69,6 +72,9 @@ status-clips-selected = { $count ->
 # Middle text with selected clips.
 status-clips-hint = Ziehen verschiebt · Alt-Ziehen kopiert · rechte Kante kürzt · Strg D dupliziert · Entf löscht
 
+# Same on macOS: ⌘ instead of Strg.
+status-clips-hint-mac = Ziehen verschiebt · Alt-Ziehen kopiert · rechte Kante kürzt · ⌘D dupliziert · Entf löscht
+
 # Middle text with a selected track.
 status-track-hint = Doppelklick in die Spur legt einen Clip an · R nimmt auf
 
@@ -77,6 +83,9 @@ status-project-unsaved = { $name } · nicht gespeichert
 
 # Middle text of a project without tracks.
 status-empty-hint = Strg T: MIDI-Spur · Strg S: speichern
+
+# Same on macOS: ⌘ instead of Strg.
+status-empty-hint-mac = ⌘T: MIDI-Spur · ⌘S: speichern
 
 ## Messages (`App::set_status`).
 

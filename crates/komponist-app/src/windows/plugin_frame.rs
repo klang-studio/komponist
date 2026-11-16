@@ -674,7 +674,7 @@ impl App {
         let chord = KeyChord {
             key: k,
             mods: keymap::Modifiers {
-                ctrl,
+                command: ctrl,
                 shift,
                 alt: modifiers.alt,
             },

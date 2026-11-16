@@ -3,6 +3,9 @@
 # New project created (S10).
 project-new-created = Neues Projekt angelegt · Strg T legt eine MIDI-Spur an
 
+# Same on macOS: ⌘ instead of Strg.
+project-new-created-mac = Neues Projekt angelegt · ⌘T legt eine MIDI-Spur an
+
 # A project file could not be opened; `$file` is the file name, `$reason` one of the `project-reason-*` texts.
 project-open-failed = „{ $file }“ lässt sich nicht öffnen: { $reason }
 

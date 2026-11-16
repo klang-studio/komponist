@@ -7,8 +7,8 @@
 //! ([`text_format`], [`rich_text`], [`layout_job`]).
 //!
 //! `FontFamily::Proportional` is Plex Sans 400 and `FontFamily::Monospace` Plex Mono 400, so plain
-//! egui text uses the design fonts too. egui's default fonts stay in the list as fallbacks for the
-//! few symbols Plex does not have, so no glyph is drawn as tofu.
+//! egui text uses the design fonts too. The four-glyph `KomponistKeys` (⌘ ⇧ ⌥ ⌃) and egui's default fonts stay in the list as
+//! fallbacks for the few symbols Plex does not have, so no glyph is drawn as tofu.
 
 use std::sync::Arc;
 
@@ -127,6 +127,11 @@ pub fn definitions() -> FontDefinitions {
             Arc::new(FontData::from_static(face.bytes)),
         );
     }
+    // The ⌘ ⇧ ⌥ ⌃ of the macOS shortcut labels: after Plex, before egui's fonts.
+    defs.font_data.insert(
+        font::KEYS_NAME.to_owned(),
+        Arc::new(FontData::from_static(font::KEYS_BYTES)),
+    );
     for face in &font::FACES {
         let mut list = vec![face.name.to_owned()];
         if face.family == Family::Mono {
@@ -136,6 +141,7 @@ pub fn definitions() -> FontDefinitions {
                 .expect("Plex Sans 400 is bundled");
             list.push(sans.name.to_owned());
         }
+        list.push(font::KEYS_NAME.to_owned());
         list.extend(fallback_sans.iter().cloned());
         defs.families.insert(face_family(face), list);
     }
@@ -146,9 +152,13 @@ pub fn definitions() -> FontDefinitions {
             .name
             .to_owned()
     };
-    let mut proportional = vec![regular(Family::Sans)];
+    let mut proportional = vec![regular(Family::Sans), font::KEYS_NAME.to_owned()];
     proportional.extend(fallback_sans);
-    let mut monospace = vec![regular(Family::Mono), regular(Family::Sans)];
+    let mut monospace = vec![
+        regular(Family::Mono),
+        regular(Family::Sans),
+        font::KEYS_NAME.to_owned(),
+    ];
     monospace.extend(fallback_mono);
     defs.families.insert(FontFamily::Proportional, proportional);
     defs.families.insert(FontFamily::Monospace, monospace);
@@ -181,6 +191,27 @@ mod tests {
             defs.families[&FontFamily::Monospace][0],
             "IBMPlexMono-Regular"
         );
+    }
+
+    #[test]
+    fn the_mac_key_glyphs_have_a_font_in_every_family() {
+        // egui panics on a glyph no font has: lay out ⌘ ⇧ ⌥ ⌃ in every face and in the defaults.
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let mut families: Vec<FontFamily> = font::FACES.iter().map(face_family).collect();
+        families.extend([FontFamily::Proportional, FontFamily::Monospace]);
+        // The new fonts apply from the second pass on.
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
+        ctx.run_ui(Default::default(), |ui| {
+            for family in &families {
+                let text = RichText::new("⌥⇧⌘⌃ ⇧⌘Z").font(FontId::new(12.0, family.clone()));
+                ui.label(text);
+            }
+        })
+        .textures_delta
+        .clear();
     }
 
     #[test]

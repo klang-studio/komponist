@@ -60,12 +60,15 @@ fn step_until(h: &mut Harness<'_, App>, mut done: impl FnMut(&App) -> bool) -> b
 }
 
 fn egui_mods(m: komponist_app::Modifiers) -> Modifiers {
+    // `COMMAND` is Ctrl on Linux and ⌘ on macOS, as in the real input.
+    let mut mods = Modifiers::NONE;
+    if m.command {
+        mods |= Modifiers::COMMAND;
+    }
     Modifiers {
         alt: m.alt,
-        ctrl: m.ctrl,
         shift: m.shift,
-        mac_cmd: false,
-        command: m.ctrl,
+        ..mods
     }
 }
 

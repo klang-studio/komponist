@@ -68,6 +68,17 @@ pub const FACES: [Face; 6] = [
     face!(Mono, 600, "IBMPlexMono-SemiBold"),
 ];
 
+/// Name of [`KEYS_BYTES`] in egui's `FontDefinitions::font_data`.
+pub const KEYS_NAME: &str = "KomponistKeys";
+
+/// The keyboard glyphs Plex lacks and macOS shortcut labels need (⌘ U+2318, ⇧ U+21E7, ⌥ U+2325,
+/// ⌃ U+2303): a four-glyph subset of DejaVu Sans 2.37, renamed "Komponist Keys" as its licence
+/// asks (`assets/fonts/README.md`, `LICENSE-DejaVu.txt`). A fallback only: no text style uses it.
+pub const KEYS_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/KomponistKeys.ttf"
+));
+
 /// The face of `family` with exactly `weight`, if bundled.
 pub fn face(family: Family, weight: u16) -> Option<&'static Face> {
     FACES

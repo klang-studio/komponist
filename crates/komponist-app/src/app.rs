@@ -899,7 +899,9 @@ impl App {
             plugin_frame::keys::log(format!(
                 "main: {key:?} pressed={pressed} repeat={repeat} {modifiers:?}"
             ));
-            let ctrl = modifiers.ctrl || modifiers.command;
+            // `command` is Ctrl on Linux and ⌘ on macOS: the shortcut modifier (a macOS Ctrl is
+            // not a shortcut).
+            let ctrl = modifiers.command;
             let physical = key_from_egui(physical_key.unwrap_or(key));
             // A held note ends on release even if the layer turned off meanwhile.
             let held = physical.is_some_and(|k| self.shell.held_notes.iter().any(|(h, _)| *h == k));
@@ -926,7 +928,7 @@ impl App {
             let chord = KeyChord {
                 key: k,
                 mods: keymap::Modifiers {
-                    ctrl,
+                    command: ctrl,
                     shift,
                     alt: modifiers.alt,
                 },
@@ -2526,6 +2528,7 @@ impl App {
             | ProjectAction::SaveAs
             | ProjectAction::CollectAndSave
             | ProjectAction::ShowStartScreen
+            | ProjectAction::Quit
             | ProjectAction::ContinueWithMissing
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
             // The export (WP-53b): `crate::export`.
@@ -2660,7 +2663,7 @@ fn on_start_screen(action: &Action) -> bool {
     closes_dialog(action)
         || matches!(
             action,
-            Action::Project(ProjectAction::New | ProjectAction::Open)
+            Action::Project(ProjectAction::New | ProjectAction::Open | ProjectAction::Quit)
                 | Action::Ui(UiAction::OpenSettings(_))
         )
 }

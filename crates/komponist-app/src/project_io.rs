@@ -32,6 +32,7 @@ use crate::app::App;
 use crate::dialogs::file::{FileBrowser, Purpose};
 use crate::dialogs::new_project::{self, Answer};
 use crate::dialogs::{Overlay, Pending};
+use crate::platform::Platform;
 use crate::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StatusKind};
 
 /// File name of the recent list inside the config directory.
@@ -247,6 +248,7 @@ impl App {
         match action {
             ProjectAction::New => self.guard(Pending::New),
             ProjectAction::Open => self.guard(Pending::Open),
+            ProjectAction::Quit => self.guard(Pending::Quit),
             ProjectAction::OpenPath(path) => self.guard(Pending::OpenPath(path)),
             ProjectAction::Save => match self.project_path.clone() {
                 Some(path) => {
@@ -288,7 +290,11 @@ impl App {
         match next {
             Pending::New => {
                 self.open_document(Document::new(new_project::empty_project(self.lang)), None);
-                self.set_status(self.lang.project_new_created(), StatusKind::Info);
+                let created = Platform::current().pick(
+                    self.lang.project_new_created(),
+                    self.lang.project_new_created_mac(),
+                );
+                self.set_status(created, StatusKind::Info);
             }
             Pending::Template => {
                 let project = new_project::template(self.lang, crate::app::hexa_ref());

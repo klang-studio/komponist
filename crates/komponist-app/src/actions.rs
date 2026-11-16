@@ -517,6 +517,9 @@ pub enum ProjectAction {
     CollectAndSave,
     /// "⋯" › "Zum Startbildschirm": back to S09, asking to save a dirty project first.
     ShowStartScreen,
+    /// ⌘Q (macOS) and the app menu's Quit: quit the app, asking to save a dirty project first
+    /// (the same path as the window's close button).
+    Quit,
     /// Ctrl Shift E or "⋯": open the export dialog with the last settings.
     OpenExportDialog,
     /// The status bar's "Im Ordner zeigen": opens this folder in the file manager.

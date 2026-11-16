@@ -24,6 +24,7 @@ use komponist_ui::{px, widgets as w};
 
 use crate::app::{App, STATUS_DURATION};
 use crate::metrics::transport::ERROR_DOT;
+use crate::platform::Platform;
 use crate::ui_state::{FocusArea, StatusKind};
 
 /// The three texts of the status bar and their colours.
@@ -121,6 +122,7 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
 /// Left and middle text from the transport, focus and selection.
 fn context(app: &App, s: &mut StatusModel) {
     let t = app.lang();
+    let platform = Platform::current();
     let p = app.project();
     let ui = app.ui();
     let sel = &ui.selection;
@@ -173,7 +175,9 @@ fn context(app: &App, s: &mut StatusModel) {
             if let ClipContent::Midi(midi) = &clip.content {
                 let total = midi.active().notes.len();
                 s.left = t.status_notes_selected(&clip.name, sel.notes.len(), total);
-                s.mid = t.status_notes_hint().to_owned();
+                s.mid = platform
+                    .pick(t.status_notes_hint(), t.status_notes_hint_mac())
+                    .to_owned();
                 return;
             }
         }
@@ -216,7 +220,9 @@ fn context(app: &App, s: &mut StatusModel) {
     }
     if !sel.clips.is_empty() {
         s.left = t.status_clips_selected(sel.clips.len());
-        s.mid = t.status_clips_hint().to_owned();
+        s.mid = platform
+            .pick(t.status_clips_hint(), t.status_clips_hint_mac())
+            .to_owned();
     } else if let Some(tr) = track {
         s.left = t.status_track_selected(&tr.name);
         s.mid = t.status_track_hint().to_owned();
@@ -227,7 +233,9 @@ fn context(app: &App, s: &mut StatusModel) {
             p.name.clone()
         };
         if p.tracks.is_empty() {
-            s.mid = t.status_empty_hint().to_owned();
+            s.mid = platform
+                .pick(t.status_empty_hint(), t.status_empty_hint_mac())
+                .to_owned();
         }
     }
 }

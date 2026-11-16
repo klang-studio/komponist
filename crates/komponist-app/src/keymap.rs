@@ -24,6 +24,7 @@
 //! | Strg [ / Strg ] | canvases | `Ui(GridFiner / GridCoarser)` |
 //! | F2 | global | `Ui(RenameSelection)` (the selected clip, else the first selected track: name field) |
 //! | Strg Z / Strg Shift Z | global | `Edit(Undo / Redo)` |
+//! | ⌘Q (macOS only) | global | `Project(Quit)` |
 //! | Strg , | global | `Ui(OpenSettings(Audio))` |
 //! | Esc | global | `Ui(ClearSelection)` (recording: `Transport(DiscardTake)`) |
 //! | Strg D / Strg E / 0 | arrangement | `Edit(DuplicateSelection / SplitAtPlayhead / ToggleMuteSelection)` |
@@ -41,6 +42,9 @@
 //! | ← → | device chain | `Ui(SelectAdjacentDevice(∓1))` |
 //! | Esc | dialog | `Ui(CloseDialog)` |
 //!
+//! On macOS "Strg" is ⌘ (the `command` modifier, [`Modifiers::command`]) and the labels are glyphs
+//! ("⇧⌘Z", [`KeyChord::label_on`]).
+//!
 //! Computer keyboard MIDI is a separate layer ([`NOTE_KEYS`], [`note_for`]) checked before the
 //! table while it is active (a track is armed, or [`crate::ui_state::UiState::keyboard_midi`]
 //! is on; ARCHITECTURE §13.2), by physical key position; text fields get keys before both. The
@@ -48,6 +52,8 @@
 //! recording, and a widget reached with Tab keeps Space, Enter, arrows and Tab.
 
 use komponist_i18n::Lang;
+
+use crate::platform::Platform;
 
 use crate::actions::{Action, EditAction, ProjectAction, TransportAction, UiAction};
 use crate::ui_state::{FocusArea, Panel, SettingsSection, Tool};
@@ -117,14 +123,15 @@ pub enum Key {
     F2,
 }
 
-/// Modifier state of a chord. Ctrl means Ctrl (Linux); there is no Cmd mapping in v0.1.
+/// Modifier state of a chord. `command` is the platform's shortcut modifier: Ctrl on Linux, ⌘ on
+/// macOS (egui's `Modifiers::command`); the other Ctrl gestures (Ctrl-drag) are not chords.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Modifiers {
-    /// Ctrl ("Strg").
-    pub ctrl: bool,
+    /// The shortcut modifier: Ctrl ("Strg") on Linux, ⌘ on macOS.
+    pub command: bool,
     /// Shift.
     pub shift: bool,
-    /// Alt.
+    /// Alt (⌥ on macOS).
     pub alt: bool,
 }
 
@@ -138,22 +145,46 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
-    /// The label shown in tooltips and context menus, in `t`: German "Strg Shift E", "Leertaste",
-    /// "Pos1", "Entf", "Strg ↑" (as written in `HANDOFF.md` §7), English "Ctrl+Shift+E", "Space",
-    /// "Home", "Del", "Ctrl+↑". The `key-*` messages hold the names and the separator.
+    /// The label shown in tooltips and context menus on this platform ([`Platform::current`]), in
+    /// `t`: see [`KeyChord::label_on`].
     pub fn label(&self, t: Lang) -> String {
+        self.label_on(t, Platform::current())
+    }
+
+    /// The label for `platform`, in `t`. Linux: German "Strg Shift E", "Leertaste", "Pos1", "Entf",
+    /// "Strg ↑" (as written in `HANDOFF.md` §7), English "Ctrl+Shift+E", "Space", "Home", "Del",
+    /// "Ctrl+↑". macOS: glyphs in Apple's order, without a separator, in both languages: "⇧⌘E",
+    /// "⌘↑", "⌥+" (Apple HIG). The `key-*` messages hold the names, the glyphs and the separators.
+    pub fn label_on(&self, t: Lang, platform: Platform) -> String {
         let mut parts: Vec<&str> = Vec::with_capacity(4);
-        if self.mods.ctrl {
-            parts.push(t.key_ctrl());
+        match platform {
+            Platform::Pc => {
+                if self.mods.command {
+                    parts.push(t.key_ctrl());
+                }
+                if self.mods.shift {
+                    parts.push(t.key_shift());
+                }
+                if self.mods.alt {
+                    parts.push(t.key_alt());
+                }
+                parts.push(self.key.label(t));
+                parts.join(t.key_separator())
+            }
+            Platform::Mac => {
+                if self.mods.alt {
+                    parts.push(t.key_alt_mac());
+                }
+                if self.mods.shift {
+                    parts.push(t.key_shift_mac());
+                }
+                if self.mods.command {
+                    parts.push(t.key_command_mac());
+                }
+                parts.push(self.key.label(t));
+                parts.join(t.key_separator_mac())
+            }
         }
-        if self.mods.shift {
-            parts.push(t.key_shift());
-        }
-        if self.mods.alt {
-            parts.push(t.key_alt());
-        }
-        parts.push(self.key.label(t));
-        parts.join(t.key_separator())
     }
 
     /// `key` without modifiers.
@@ -164,20 +195,20 @@ impl KeyChord {
         }
     }
 
-    /// Ctrl + `key`.
-    pub const fn ctrl(key: Key) -> KeyChord {
+    /// The primary modifier + `key`.
+    pub const fn command(key: Key) -> KeyChord {
         KeyChord {
             key,
-            mods: Modifiers::CTRL,
+            mods: Modifiers::COMMAND,
         }
     }
 
-    /// Ctrl + Shift + `key`.
-    pub const fn ctrl_shift(key: Key) -> KeyChord {
+    /// The primary modifier + Shift + `key`.
+    pub const fn command_shift(key: Key) -> KeyChord {
         KeyChord {
             key,
             mods: Modifiers {
-                ctrl: true,
+                command: true,
                 shift: true,
                 alt: false,
             },
@@ -189,7 +220,7 @@ impl KeyChord {
         KeyChord {
             key,
             mods: Modifiers {
-                ctrl: false,
+                command: false,
                 shift: true,
                 alt: false,
             },
@@ -201,7 +232,7 @@ impl KeyChord {
         KeyChord {
             key,
             mods: Modifiers {
-                ctrl: false,
+                command: false,
                 shift: false,
                 alt: true,
             },
@@ -212,14 +243,14 @@ impl KeyChord {
 impl Modifiers {
     /// No modifier.
     pub const NONE: Modifiers = Modifiers {
-        ctrl: false,
+        command: false,
         shift: false,
         alt: false,
     };
 
-    /// Ctrl only.
-    pub const CTRL: Modifiers = Modifiers {
-        ctrl: true,
+    /// The primary modifier only.
+    pub const COMMAND: Modifiers = Modifiers {
+        command: true,
         shift: false,
         alt: false,
     };
@@ -322,8 +353,14 @@ impl Keymap {
         Keymap::default()
     }
 
-    /// The default table (see the module docs).
+    /// The default table (see the module docs) for the platform this build runs on.
     pub fn default_bindings() -> Keymap {
+        Keymap::default_bindings_for(Platform::current())
+    }
+
+    /// The default table for `platform`: the same on every platform, plus ⌘Q (quit) on macOS,
+    /// where every app has it; on Linux Ctrl+Q stays unbound.
+    pub fn default_bindings_for(platform: Platform) -> Keymap {
         use KeyScope::{Area, Canvases, Global};
         let arrangement = Area(FocusArea::Arrangement);
         let piano_roll = Area(FocusArea::PianoRoll);
@@ -366,33 +403,33 @@ impl Keymap {
                 u(UiAction::ToggleMixer),
             ),
             (
-                KeyChord::ctrl(Key::Num1),
+                KeyChord::command(Key::Num1),
                 Global,
                 u(UiAction::TogglePanel(Panel::Browser)),
             ),
             (
-                KeyChord::ctrl(Key::Num2),
+                KeyChord::command(Key::Num2),
                 Global,
                 u(UiAction::TogglePanel(Panel::Inspector)),
             ),
             (
-                KeyChord::ctrl(Key::Num3),
+                KeyChord::command(Key::Num3),
                 Global,
                 u(UiAction::TogglePanel(Panel::Dock)),
             ),
             (
-                KeyChord::ctrl(Key::ArrowUp),
+                KeyChord::command(Key::ArrowUp),
                 Global,
                 u(UiAction::ToggleDockMaximized),
             ),
-            (KeyChord::ctrl(Key::Tab), Global, u(UiAction::NextTab)),
+            (KeyChord::command(Key::Tab), Global, u(UiAction::NextTab)),
             (
-                KeyChord::ctrl(Key::F),
+                KeyChord::command(Key::F),
                 Global,
                 u(UiAction::FocusBrowserSearch),
             ),
             (
-                KeyChord::ctrl(Key::Comma),
+                KeyChord::command(Key::Comma),
                 Global,
                 u(UiAction::OpenSettings(SettingsSection::Audio)),
             ),
@@ -407,22 +444,26 @@ impl Keymap {
                 u(UiAction::CloseDialog),
             ),
             // Project.
-            (KeyChord::ctrl(Key::T), Global, e(EditAction::NewMidiTrack)),
             (
-                KeyChord::ctrl(Key::G),
+                KeyChord::command(Key::T),
+                Global,
+                e(EditAction::NewMidiTrack),
+            ),
+            (
+                KeyChord::command(Key::G),
                 Global,
                 e(EditAction::GroupSelection),
             ),
-            (KeyChord::ctrl(Key::N), Global, p(ProjectAction::New)),
-            (KeyChord::ctrl(Key::O), Global, p(ProjectAction::Open)),
-            (KeyChord::ctrl(Key::S), Global, p(ProjectAction::Save)),
+            (KeyChord::command(Key::N), Global, p(ProjectAction::New)),
+            (KeyChord::command(Key::O), Global, p(ProjectAction::Open)),
+            (KeyChord::command(Key::S), Global, p(ProjectAction::Save)),
             (
-                KeyChord::ctrl_shift(Key::S),
+                KeyChord::command_shift(Key::S),
                 Global,
                 p(ProjectAction::SaveAs),
             ),
             (
-                KeyChord::ctrl_shift(Key::E),
+                KeyChord::command_shift(Key::E),
                 Global,
                 p(ProjectAction::OpenExportDialog),
             ),
@@ -433,8 +474,8 @@ impl Keymap {
                 u(UiAction::RenameSelection),
             ),
             // History.
-            (KeyChord::ctrl(Key::Z), Global, e(EditAction::Undo)),
-            (KeyChord::ctrl_shift(Key::Z), Global, e(EditAction::Redo)),
+            (KeyChord::command(Key::Z), Global, e(EditAction::Undo)),
+            (KeyChord::command_shift(Key::Z), Global, e(EditAction::Redo)),
             // Canvases: zoom, fit, grid.
             (KeyChord::plain(Key::Plus), Canvases, u(zoom(false, 1))),
             (KeyChord::plain(Key::Minus), Canvases, u(zoom(false, -1))),
@@ -442,23 +483,23 @@ impl Keymap {
             (KeyChord::alt(Key::Minus), Canvases, u(zoom(true, -1))),
             (KeyChord::plain(Key::Z), Canvases, u(UiAction::ZoomToFit)),
             (
-                KeyChord::ctrl(Key::OpenBracket),
+                KeyChord::command(Key::OpenBracket),
                 Canvases,
                 u(UiAction::GridFiner),
             ),
             (
-                KeyChord::ctrl(Key::CloseBracket),
+                KeyChord::command(Key::CloseBracket),
                 Canvases,
                 u(UiAction::GridCoarser),
             ),
             // Arrangement: clips and tracks.
             (
-                KeyChord::ctrl(Key::D),
+                KeyChord::command(Key::D),
                 arrangement,
                 e(EditAction::DuplicateSelection),
             ),
             (
-                KeyChord::ctrl(Key::E),
+                KeyChord::command(Key::E),
                 arrangement,
                 e(EditAction::SplitAtPlayhead),
             ),
@@ -482,12 +523,20 @@ impl Keymap {
                 arrangement,
                 e(EditAction::DeleteSelection),
             ),
-            (KeyChord::ctrl(Key::A), arrangement, u(UiAction::SelectAll)),
-            // Device chain: the selected devices.
-            (KeyChord::ctrl(Key::C), devices, u(UiAction::CopyDevices)),
-            (KeyChord::ctrl(Key::V), devices, e(EditAction::PasteDevices)),
             (
-                KeyChord::ctrl(Key::D),
+                KeyChord::command(Key::A),
+                arrangement,
+                u(UiAction::SelectAll),
+            ),
+            // Device chain: the selected devices.
+            (KeyChord::command(Key::C), devices, u(UiAction::CopyDevices)),
+            (
+                KeyChord::command(Key::V),
+                devices,
+                e(EditAction::PasteDevices),
+            ),
+            (
+                KeyChord::command(Key::D),
                 devices,
                 e(EditAction::DuplicateDevices),
             ),
@@ -522,7 +571,11 @@ impl Keymap {
                 piano_roll,
                 e(EditAction::DeleteSelection),
             ),
-            (KeyChord::ctrl(Key::A), piano_roll, u(UiAction::SelectAll)),
+            (
+                KeyChord::command(Key::A),
+                piano_roll,
+                u(UiAction::SelectAll),
+            ),
             (
                 KeyChord::plain(Key::ArrowUp),
                 piano_roll,
@@ -574,6 +627,10 @@ impl Keymap {
                 u(UiAction::SetTool(Tool::Eraser)),
             ),
         ];
+        let mut table = table;
+        if platform.is_mac() {
+            table.push((KeyChord::command(Key::Q), Global, p(ProjectAction::Quit)));
+        }
         let mut keymap = Keymap::new();
         for (chord, scope, action) in table {
             keymap.bind(Binding {
@@ -630,7 +687,12 @@ impl Keymap {
 
     /// The label of [`Keymap::chord_for`] in `t` ("Strg 3"), for tooltips and menus.
     pub fn label_for(&self, action: &Action, t: Lang) -> Option<String> {
-        self.chord_for(action).map(|c| c.label(t))
+        self.label_for_on(action, t, Platform::current())
+    }
+
+    /// [`Keymap::label_for`] for `platform`.
+    pub fn label_for_on(&self, action: &Action, t: Lang, platform: Platform) -> Option<String> {
+        self.chord_for(action).map(|c| c.label_on(t, platform))
     }
 }
 
@@ -713,36 +775,78 @@ mod tests {
 
     #[test]
     fn labels_follow_the_handoff() {
-        let label = |c: KeyChord| c.label(Lang::De);
+        let label = |c: KeyChord| c.label_on(Lang::De, Platform::Pc);
         assert_eq!(label(KeyChord::plain(Key::Space)), "Leertaste");
-        assert_eq!(label(KeyChord::ctrl_shift(Key::E)), "Strg Shift E");
+        assert_eq!(label(KeyChord::command_shift(Key::E)), "Strg Shift E");
         assert_eq!(label(KeyChord::plain(Key::Home)), "Pos1");
         assert_eq!(label(KeyChord::plain(Key::Delete)), "Entf");
-        assert_eq!(label(KeyChord::ctrl(Key::ArrowUp)), "Strg ↑");
+        assert_eq!(label(KeyChord::command(Key::ArrowUp)), "Strg ↑");
         assert_eq!(label(KeyChord::alt(Key::Minus)), "Alt \u{2212}");
-        assert_eq!(label(KeyChord::ctrl(Key::Comma)), "Strg ,");
-        assert_eq!(label(KeyChord::ctrl(Key::Num3)), "Strg 3");
+        assert_eq!(label(KeyChord::command(Key::Comma)), "Strg ,");
+        assert_eq!(label(KeyChord::command(Key::Num3)), "Strg 3");
         assert_eq!(label(KeyChord::plain(Key::F2)), "F2");
         assert_eq!(label(KeyChord::shift(Key::ArrowDown)), "Shift ↓");
     }
 
     #[test]
     fn english_labels_use_plus_and_english_key_names() {
-        let label = |c: KeyChord| c.label(Lang::En);
-        assert_eq!(label(KeyChord::ctrl_shift(Key::E)), "Ctrl+Shift+E");
+        let label = |c: KeyChord| c.label_on(Lang::En, Platform::Pc);
+        assert_eq!(label(KeyChord::command_shift(Key::E)), "Ctrl+Shift+E");
         assert_eq!(label(KeyChord::plain(Key::Space)), "Space");
         assert_eq!(label(KeyChord::plain(Key::Delete)), "Del");
         assert_eq!(label(KeyChord::plain(Key::Backspace)), "Backspace");
         assert_eq!(label(KeyChord::plain(Key::Home)), "Home");
         assert_eq!(label(KeyChord::plain(Key::End)), "End");
-        assert_eq!(label(KeyChord::ctrl(Key::ArrowUp)), "Ctrl+↑");
+        assert_eq!(label(KeyChord::command(Key::ArrowUp)), "Ctrl+↑");
         assert_eq!(label(KeyChord::alt(Key::Minus)), "Alt+\u{2212}");
-        let k = Keymap::default_bindings();
+        let k = Keymap::default_bindings_for(Platform::Pc);
         let export = Action::Project(ProjectAction::OpenExportDialog);
         assert_eq!(
-            k.label_for(&export, Lang::En).as_deref(),
+            k.label_for_on(&export, Lang::En, Platform::Pc).as_deref(),
             Some("Ctrl+Shift+E")
         );
+    }
+
+    #[test]
+    fn mac_labels_are_glyphs_in_apple_order_in_both_languages() {
+        for t in Lang::ALL {
+            let label = |c: KeyChord| c.label_on(t, Platform::Mac);
+            assert_eq!(label(KeyChord::command(Key::S)), "⌘S", "{t:?}");
+            assert_eq!(label(KeyChord::command_shift(Key::Z)), "⇧⌘Z", "{t:?}");
+            assert_eq!(label(KeyChord::command(Key::ArrowUp)), "⌘↑", "{t:?}");
+            assert_eq!(label(KeyChord::command(Key::Comma)), "⌘,", "{t:?}");
+            assert_eq!(label(KeyChord::alt(Key::Plus)), "⌥+", "{t:?}");
+            let all = KeyChord {
+                key: Key::A,
+                mods: Modifiers {
+                    command: true,
+                    shift: true,
+                    alt: true,
+                },
+            };
+            assert_eq!(label(all), "⌥⇧⌘A", "{t:?}");
+            assert_eq!(label(KeyChord::plain(Key::F2)), "F2", "{t:?}");
+        }
+        // Keys without a modifier keep their names.
+        let space = KeyChord::plain(Key::Space);
+        assert_eq!(space.label_on(Lang::De, Platform::Mac), "Leertaste");
+        assert_eq!(space.label_on(Lang::En, Platform::Mac), "Space");
+    }
+
+    #[test]
+    fn quit_is_bound_on_macos_only() {
+        let quit = Action::Project(ProjectAction::Quit);
+        let key = KeyChord::command(Key::Q);
+        let mac = Keymap::default_bindings_for(Platform::Mac);
+        assert_eq!(mac.lookup(key, FocusArea::Arrangement), Some(&quit));
+        assert_eq!(
+            mac.label_for_on(&quit, Lang::De, Platform::Mac).as_deref(),
+            Some("⌘Q")
+        );
+        let pc = Keymap::default_bindings_for(Platform::Pc);
+        assert_eq!(pc.lookup(key, FocusArea::Arrangement), None);
+        // Everything else is the same table.
+        assert_eq!(mac.bindings().len(), pc.bindings().len() + 1);
     }
 
     #[test]
@@ -790,13 +894,16 @@ mod tests {
 
     #[test]
     fn later_bindings_win_and_chords_are_found_by_action() {
-        let mut k = Keymap::default_bindings();
+        let mut k = Keymap::default_bindings_for(Platform::Pc);
         let play = Action::Transport(TransportAction::TogglePlay);
         assert_eq!(k.chord_for(&play), Some(KeyChord::plain(Key::Space)));
-        assert_eq!(k.label_for(&play, Lang::De).as_deref(), Some("Leertaste"));
+        assert_eq!(
+            k.label_for_on(&play, Lang::De, Platform::Pc).as_deref(),
+            Some("Leertaste")
+        );
         let export = Action::Project(ProjectAction::OpenExportDialog);
         assert_eq!(
-            k.label_for(&export, Lang::De).as_deref(),
+            k.label_for_on(&export, Lang::De, Platform::Pc).as_deref(),
             Some("Strg Shift E")
         );
         k.bind(Binding {
@@ -822,29 +929,29 @@ mod tests {
             (KeyChord::plain(Key::C), FocusArea::Arrangement),
             (KeyChord::plain(Key::Home), FocusArea::Arrangement),
             (KeyChord::plain(Key::Tab), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::T), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::N), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::O), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::S), FocusArea::Arrangement),
-            (KeyChord::ctrl_shift(Key::E), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::Num1), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::Num2), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::Num3), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::F), FocusArea::Arrangement),
+            (KeyChord::command(Key::T), FocusArea::Arrangement),
+            (KeyChord::command(Key::N), FocusArea::Arrangement),
+            (KeyChord::command(Key::O), FocusArea::Arrangement),
+            (KeyChord::command(Key::S), FocusArea::Arrangement),
+            (KeyChord::command_shift(Key::E), FocusArea::Arrangement),
+            (KeyChord::command(Key::Num1), FocusArea::Arrangement),
+            (KeyChord::command(Key::Num2), FocusArea::Arrangement),
+            (KeyChord::command(Key::Num3), FocusArea::Arrangement),
+            (KeyChord::command(Key::F), FocusArea::Arrangement),
             (KeyChord::plain(Key::Plus), FocusArea::Arrangement),
             (KeyChord::plain(Key::Minus), FocusArea::Arrangement),
             (KeyChord::alt(Key::Plus), FocusArea::Arrangement),
             (KeyChord::alt(Key::Minus), FocusArea::Arrangement),
             (KeyChord::plain(Key::Z), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::OpenBracket), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::CloseBracket), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::Z), FocusArea::Arrangement),
-            (KeyChord::ctrl_shift(Key::Z), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::Comma), FocusArea::Arrangement),
+            (KeyChord::command(Key::OpenBracket), FocusArea::Arrangement),
+            (KeyChord::command(Key::CloseBracket), FocusArea::Arrangement),
+            (KeyChord::command(Key::Z), FocusArea::Arrangement),
+            (KeyChord::command_shift(Key::Z), FocusArea::Arrangement),
+            (KeyChord::command(Key::Comma), FocusArea::Arrangement),
             (KeyChord::plain(Key::F2), FocusArea::Arrangement),
             (KeyChord::plain(Key::Escape), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::D), FocusArea::Arrangement),
-            (KeyChord::ctrl(Key::E), FocusArea::Arrangement),
+            (KeyChord::command(Key::D), FocusArea::Arrangement),
+            (KeyChord::command(Key::E), FocusArea::Arrangement),
             (KeyChord::plain(Key::Num0), FocusArea::Arrangement),
             (KeyChord::plain(Key::ArrowUp), FocusArea::PianoRoll),
             (KeyChord::plain(Key::ArrowDown), FocusArea::PianoRoll),

@@ -230,18 +230,41 @@ fn run_app() -> eframe::Result {
     {
         eprintln!("komponist: --open-plugin: no device with plugin \"{name}\"");
     }
-    komponist_ui::run(options, move |_cc| Shell(app))
+    komponist_ui::run(options, move |cc| {
+        // After winit's own default menu exists: this replaces it.
+        #[cfg(target_os = "macos")]
+        let menu = komponist_app::macos_menu::MacMenu::install(&cc.egui_ctx, app.lang());
+        #[cfg(not(target_os = "macos"))]
+        let _ = cc;
+        Shell {
+            app,
+            #[cfg(target_os = "macos")]
+            menu,
+        }
+    })
 }
 
 /// The eframe side of the app.
-struct Shell(App);
+struct Shell {
+    app: App,
+    /// The native app menu (macOS): its commands are dispatched at the start of a frame.
+    #[cfg(target_os = "macos")]
+    menu: Option<komponist_app::macos_menu::MacMenu>,
+}
 
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.0.show(ui);
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.menu {
+            menu.set_lang(self.app.lang());
+            for command in menu.drain() {
+                self.app.dispatch(command.action());
+            }
+        }
+        self.app.show(ui);
     }
 
     fn on_exit(&mut self) {
-        self.0.shutdown();
+        self.app.shutdown();
     }
 }
