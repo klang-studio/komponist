@@ -62,6 +62,7 @@ pub fn fmt_output(config: &StreamConfig, t: Lang) -> String {
     let host = match config.host {
         HostKind::CoreAudio => "CoreAudio",
         HostKind::Wasapi => "WASAPI",
+        HostKind::Asio => "ASIO",
         HostKind::PipeWire => "PipeWire",
         HostKind::Jack => "JACK",
         HostKind::Alsa => "ALSA",

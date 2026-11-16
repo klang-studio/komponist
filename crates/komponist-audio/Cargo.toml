@@ -16,6 +16,12 @@ komponist-rt.workspace = true
 # reports when the binary installs `assert_no_alloc::AllocDisabler` as its allocator.
 assert_no_alloc.workspace = true
 
+[features]
+# ASIO on Windows (W8). Off by default: the build needs LLVM's libclang (bindgen in `asio-sys`) and
+# downloads Steinberg's ASIO SDK (ARCHITECTURE §7). The feature does nothing off Windows: cpal's
+# `asio-sys` dependency is a Windows-only one.
+asio = ["cpal/asio"]
+
 [dev-dependencies]
 klang-dsp.workspace = true
 serde_json.workspace = true

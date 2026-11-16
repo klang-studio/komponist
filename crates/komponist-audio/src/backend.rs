@@ -1,7 +1,7 @@
 //! Stream backends: cpal device streams, the null backend (a timer thread), and the callback both
 //! drive.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -18,6 +18,24 @@ const STANDARD_RATES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 
 /// Device sample formats the callback converts to, in order of preference.
 const FORMATS: [SampleFormat; 3] = [SampleFormat::F32, SampleFormat::I32, SampleFormat::I16];
+
+/// [`FORMATS`] for ASIO, which also hands out packed 24-bit integers (`ASIOSTInt24LSB`, a native
+/// format of many interfaces). Elsewhere a 24-bit configuration is left to the 32-bit one.
+const ASIO_FORMATS: [SampleFormat; 4] = [
+    SampleFormat::F32,
+    SampleFormat::I32,
+    SampleFormat::I24,
+    SampleFormat::I16,
+];
+
+/// The sample formats the callback converts to on `kind`, in order of preference.
+fn formats(kind: HostKind) -> &'static [SampleFormat] {
+    if kind == HostKind::Asio {
+        &ASIO_FORMATS
+    } else {
+        &FORMATS
+    }
+}
 
 /// Largest accepted buffer size in frames.
 const MAX_BUFFER_FRAMES: u32 = 16_384;
@@ -241,13 +259,16 @@ impl Drop for NullStream {
 }
 
 /// cpal's id of a host; `None` for the null host and for hosts this system does not have (cpal
-/// only has the PipeWire, JACK and ALSA ids on Linux, CoreAudio on macOS and WASAPI on Windows).
+/// only has the PipeWire, JACK and ALSA ids on Linux, CoreAudio on macOS, WASAPI on Windows and ASIO
+/// there with its feature).
 fn host_id(kind: HostKind) -> Option<cpal::HostId> {
     match kind {
         #[cfg(target_os = "macos")]
         HostKind::CoreAudio => Some(cpal::HostId::CoreAudio),
         #[cfg(windows)]
         HostKind::Wasapi => Some(cpal::HostId::Wasapi),
+        #[cfg(all(windows, feature = "asio"))]
+        HostKind::Asio => Some(cpal::HostId::Asio),
         #[cfg(target_os = "linux")]
         HostKind::PipeWire => Some(cpal::HostId::PipeWire),
         #[cfg(target_os = "linux")]
@@ -272,6 +293,9 @@ pub(crate) fn available_hosts() -> Vec<HostKind> {
     let mut hosts: Vec<HostKind> = [
         HostKind::CoreAudio,
         HostKind::Wasapi,
+        // Listed whenever the build has it: `host` only creates cpal's wrapper, it loads no driver
+        // (the devices are found by loading each driver, which `available_hosts` must not do).
+        HostKind::Asio,
         HostKind::PipeWire,
         HostKind::Jack,
         HostKind::Alsa,
@@ -362,7 +386,15 @@ pub(crate) fn device_present(config: &StreamConfig) -> bool {
 }
 
 /// Output devices of `kind`.
+///
+/// ASIO loads one driver at a time per process, and cpal finds its devices by loading each driver in
+/// turn. While an ASIO stream runs, that enumeration stops at the first driver that is not the
+/// running one, so the list would be empty. Then (and only then) the list comes from the cache
+/// ([`asio_cache`]).
 pub(crate) fn devices(kind: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
+    if kind == HostKind::Asio && asio_open() {
+        return Ok(asio_cache());
+    }
     if kind == HostKind::Null {
         return Ok(vec![DeviceInfo {
             host: HostKind::Null,
@@ -375,39 +407,108 @@ pub(crate) fn devices(kind: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
         }]);
     }
     let host = host(kind)?;
-    let default = host.default_output_device();
+    // ASIO has no default device (cpal takes the first driver, and loading one more driver for it is
+    // avoided): the first listed one stands in.
+    let default = if kind == HostKind::Asio {
+        None
+    } else {
+        host.default_output_device()
+    };
     let mut list = Vec::new();
     for (name, device) in output_devices(&host)? {
-        let Ok(config) = device.default_output_config() else {
-            continue;
-        };
-        let ranges: Vec<SupportedStreamConfigRange> = device
-            .supported_output_configs()
-            .map(Iterator::collect)
-            .unwrap_or_default();
-        let sample_rates = STANDARD_RATES
-            .into_iter()
-            .filter(|&rate| {
-                ranges
-                    .iter()
-                    .any(|r| FORMATS.contains(&r.sample_format()) && supports_rate(r, rate))
-            })
-            .collect();
-        let buffer_range = match *config.buffer_size() {
-            SupportedBufferSize::Range { min, max } => Some((min, max)),
-            SupportedBufferSize::Unknown => None,
-        };
-        list.push(DeviceInfo {
-            host: kind,
-            id: device.id().ok().map(|id| DeviceId(id.to_string())),
-            name,
-            is_default: default.as_ref() == Some(&device),
-            channels: config.channels(),
-            sample_rates,
-            buffer_range,
-        });
+        let is_default =
+            default.as_ref() == Some(&device) || (kind == HostKind::Asio && list.is_empty());
+        if let Some(info) = device_info(kind, name, &device, is_default) {
+            list.push(info);
+        }
+    }
+    if kind == HostKind::Asio {
+        *asio_cache_lock() = list.clone();
     }
     Ok(list)
+}
+
+/// The S07 entry for `device`, `None` if it has no usable output configuration.
+fn device_info(
+    kind: HostKind,
+    name: String,
+    device: &cpal::Device,
+    is_default: bool,
+) -> Option<DeviceInfo> {
+    let config = device.default_output_config().ok()?;
+    let ranges: Vec<SupportedStreamConfigRange> = device
+        .supported_output_configs()
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    let formats = formats(kind);
+    let sample_rates = STANDARD_RATES
+        .into_iter()
+        .filter(|&rate| {
+            ranges
+                .iter()
+                .any(|r| formats.contains(&r.sample_format()) && supports_rate(r, rate))
+        })
+        .collect();
+    let buffer_range = match *config.buffer_size() {
+        SupportedBufferSize::Range { min, max } => Some((min, max)),
+        SupportedBufferSize::Unknown => None,
+    };
+    Some(DeviceInfo {
+        host: kind,
+        id: device.id().ok().map(|id| DeviceId(id.to_string())),
+        name,
+        is_default,
+        channels: config.channels(),
+        sample_rates,
+        buffer_range,
+    })
+}
+
+/// The device list of the last ASIO enumeration, plus the device a stream opened on.
+static ASIO_DEVICES: Mutex<Vec<DeviceInfo>> = Mutex::new(Vec::new());
+
+/// The number of ASIO streams that exist (0 or 1 in practice: the process loads one driver).
+static ASIO_STREAMS: AtomicUsize = AtomicUsize::new(0);
+
+fn asio_cache_lock() -> std::sync::MutexGuard<'static, Vec<DeviceInfo>> {
+    ASIO_DEVICES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn asio_cache() -> Vec<DeviceInfo> {
+    asio_cache_lock().clone()
+}
+
+fn asio_open() -> bool {
+    ASIO_STREAMS.load(Ordering::Acquire) > 0
+}
+
+/// Marks an ASIO stream as existing for as long as it lives (see [`devices`]). Declare it after the
+/// stream so the stream is gone when the count drops.
+pub(crate) struct AsioOpen(());
+
+impl AsioOpen {
+    /// For a stream just opened on `device`: counts it and makes sure the cache lists the device,
+    /// even when no enumeration ran before.
+    pub(crate) fn new(device: &cpal::Device) -> AsioOpen {
+        let name = device
+            .description()
+            .map(|d| d.name().to_owned())
+            .unwrap_or_default();
+        let mut cache = asio_cache_lock();
+        if !cache.iter().any(|d| d.name == name)
+            && let Some(info) = device_info(HostKind::Asio, name, device, false)
+        {
+            cache.push(info);
+        }
+        ASIO_STREAMS.fetch_add(1, Ordering::AcqRel);
+        AsioOpen(())
+    }
+}
+
+impl Drop for AsioOpen {
+    fn drop(&mut self) {
+        ASIO_STREAMS.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn supports_rate(range: &SupportedStreamConfigRange, rate: u32) -> bool {
@@ -465,6 +566,12 @@ fn pick_buffer(
 /// checks the buffer against the device's range). WASAPI (shared mode) takes the rates cpal lists
 /// for the device (the mixer resamples) and calls back once per device period whatever buffer
 /// size was requested: [`Negotiated::effective`] carries that period.
+///
+/// ASIO honours the request within the driver's range (`min..=max` from `ASIOGetBufferSize`) and
+/// accepts the rates the driver says it can (`ASIOCanSampleRate`; cpal sets the driver's rate when
+/// the stream is built, which changes it for every program using the driver). It also takes packed
+/// 24-bit integers, after `i32`. The driver's granularity is not visible here: cpal checks stepped
+/// sizes and the driver rejects the rest when the buffers are created.
 pub(crate) fn negotiate(
     kind: HostKind,
     device: &cpal::Device,
@@ -475,12 +582,13 @@ pub(crate) fn negotiate(
         .supported_output_configs()
         .map_err(map_err)?
         .collect();
+    let formats = formats(kind);
     let best = |rate: Option<u32>| {
         ranges
             .iter()
             .filter(|r| rate.is_none_or(|rate| supports_rate(r, rate)))
             .filter_map(|r| {
-                let format = FORMATS.iter().position(|&f| f == r.sample_format())?;
+                let format = formats.iter().position(|&f| f == r.sample_format())?;
                 let channels = match r.channels() {
                     c if c == default.channels() => 0,
                     2 => 1,
@@ -538,6 +646,8 @@ pub(crate) fn build_stream<P: AudioProcess>(
         SampleFormat::F32 => build_typed::<f32, P>(device, config, callback, stats),
         SampleFormat::I32 => build_typed::<i32, P>(device, config, callback, stats),
         SampleFormat::I16 => build_typed::<i16, P>(device, config, callback, stats),
+        // ASIO only (see `ASIO_FORMATS`).
+        SampleFormat::I24 => build_typed::<cpal::I24, P>(device, config, callback, stats),
         other => Err(AudioError::UnsupportedConfig(format!(
             "sample format {other}"
         ))),
@@ -788,6 +898,74 @@ mod lookup_tests {
         ));
         assert!(device_present(&config(None, Some(id))));
         assert!(!device_present(&config(None, Some(missing))));
+    }
+
+    #[test]
+    fn asio_honours_the_request_within_the_drivers_range() {
+        let range = SupportedBufferSize::Range { min: 64, max: 2048 };
+        for requested in [64, 256, 1024, 2048] {
+            assert_eq!(
+                pick_buffer(HostKind::Asio, range, requested).unwrap(),
+                (BufferSize::Fixed(requested), requested)
+            );
+        }
+        for requested in [32, 4096] {
+            assert!(matches!(
+                pick_buffer(HostKind::Asio, range, requested),
+                Err(AudioError::UnsupportedConfig(_))
+            ));
+        }
+        // A driver with one fixed size (min == max) runs on it or is rejected, unlike WASAPI.
+        let fixed = SupportedBufferSize::Range { min: 480, max: 480 };
+        assert_eq!(
+            pick_buffer(HostKind::Asio, fixed, 480).unwrap(),
+            (BufferSize::Fixed(480), 480)
+        );
+        assert!(pick_buffer(HostKind::Asio, fixed, 256).is_err());
+    }
+
+    #[test]
+    fn asio_takes_24_bit_integers_the_other_hosts_do_not() {
+        assert!(formats(HostKind::Asio).contains(&SampleFormat::I24));
+        for kind in [HostKind::Wasapi, HostKind::CoreAudio, HostKind::Alsa] {
+            assert!(!formats(kind).contains(&SampleFormat::I24));
+        }
+        // Preference: float, then the wider integers.
+        assert_eq!(formats(HostKind::Asio)[0], SampleFormat::F32);
+        let i24 = formats(HostKind::Asio)
+            .iter()
+            .position(|&f| f == SampleFormat::I24);
+        let i32_ = formats(HostKind::Asio)
+            .iter()
+            .position(|&f| f == SampleFormat::I32);
+        let i16_ = formats(HostKind::Asio)
+            .iter()
+            .position(|&f| f == SampleFormat::I16);
+        assert!(i32_ < i24 && i24 < i16_);
+    }
+
+    /// While an ASIO stream exists, enumeration would load drivers one by one and stop at the
+    /// first one that is not the running one; the list then comes from the cache and no driver is
+    /// touched (rule 14: no ASIO driver is loaded here, the cache is filled by hand).
+    #[test]
+    fn asio_devices_come_from_the_cache_while_a_stream_exists() {
+        let info = DeviceInfo {
+            host: HostKind::Asio,
+            id: None,
+            name: "Test ASIO".to_owned(),
+            is_default: true,
+            channels: 2,
+            sample_rates: vec![48_000],
+            buffer_range: Some((64, 2048)),
+        };
+        *asio_cache_lock() = vec![info.clone()];
+        assert!(!asio_open());
+        ASIO_STREAMS.fetch_add(1, Ordering::AcqRel);
+        assert!(asio_open());
+        assert_eq!(devices(HostKind::Asio).unwrap(), [info]);
+        drop(AsioOpen(()));
+        assert!(!asio_open());
+        asio_cache_lock().clear();
     }
 
     #[test]
