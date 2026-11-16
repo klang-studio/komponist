@@ -84,7 +84,9 @@ use crate::sequencer::{Captured, EventList, LiveMsg, NoteIds, TrackSeq, Window, 
 use crate::slots::{Bufs, ChainHook, SharedSlots, Slot, chains_exclusive, run_chain};
 use crate::stage::{self, StageLists, StageSig, StageState};
 use crate::transport::{Song, Transport};
-use crate::workers::{MAX_WORKERS, Pool, Publisher, WorkerStats, WorkerStatus, run_serial};
+use crate::workers::{
+    MAX_WORKERS, Pool, Publisher, WorkerRt, WorkerStats, WorkerStatus, run_serial,
+};
 use crate::{
     COMMAND_CAPACITY, EVENT_CAPACITY, MAX_BLOCK, MAX_COMMANDS_PER_BLOCK, MAX_EVENTS_PER_BLOCK,
     MAX_SLOTS, MAX_TRACKS,
@@ -269,18 +271,20 @@ impl Engine {
 
     /// Non-RT (engine out of the audio callback). Processes tracks in parallel from now on: starts
     /// `threads` worker threads (at most [`MAX_WORKERS`]; 0 = none, every track on the calling
-    /// thread) at `SCHED_FIFO` `priority` (`None`: normal scheduling), replacing the running pool
-    /// (whose threads are joined). Keeps the pool if it already has that many threads and that
-    /// priority. If no thread can start, the engine stays single-threaded; the status says so.
+    /// thread) in realtime per `rt` (`None`: normal scheduling; see [`WorkerRt`]: `SCHED_FIFO` on
+    /// Linux, the time-constraint policy and the device workgroup on macOS), replacing the running
+    /// pool (whose threads leave the workgroup and are joined). Keeps the pool if it already has
+    /// that many threads and runs as `rt` asks. If no thread can start, the engine stays
+    /// single-threaded; the status says so.
     ///
     /// The output does not change: it is bit-exact with the single-threaded engine (see
     /// [`crate::workers`]). The app starts the pool when a stream starts; export uses it too.
-    pub fn set_workers(&mut self, threads: usize, priority: Option<i32>) -> WorkerStatus {
+    pub fn set_workers(&mut self, threads: usize, rt: Option<WorkerRt>) -> WorkerStatus {
         let core = &mut self.core;
         let threads = threads.min(MAX_WORKERS);
         if let Some(pool) = &core.pool
             && pool.threads() == threads
-            && pool.status().priority == priority
+            && pool.runs_as(rt.as_ref())
         {
             return pool.status().clone();
         }
@@ -289,7 +293,7 @@ impl Engine {
             core.lanes = vec![Lane::new()].into_boxed_slice();
             return WorkerStatus::default();
         }
-        let (pool, status) = Pool::start(threads, priority, Arc::clone(&core.stats));
+        let (pool, status) = Pool::start(threads, rt, Arc::clone(&core.stats));
         let lanes = pool.as_ref().map_or(0, Pool::threads) + 1;
         core.lanes = (0..lanes).map(|_| Lane::new()).collect();
         core.pool = pool;

@@ -1021,10 +1021,12 @@ fn bench_run(song: &Song, workers: usize) -> (std::time::Duration, std::time::Du
     let mut rig = Rig::new(RATE, BLOCK);
     let status = rig.engine.set_workers(
         workers,
-        Some(komponist_engine::workers::DEFAULT_WORKER_PRIORITY),
+        Some(komponist_engine::workers::WorkerRt::new(
+            std::time::Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE)),
+        )),
     );
     if let Some(e) = status.realtime_error {
-        eprintln!("workers without SCHED_FIFO: {e}");
+        eprintln!("workers without realtime scheduling: {e}");
     }
     song.load(&mut rig, None);
     rig.process(96_000, BLOCK);

@@ -2521,6 +2521,7 @@ dependencies = [
  "klang-dsp",
  "komponist-builtin",
  "komponist-model",
+ "komponist-rt",
  "rtrb",
  "rustix 1.1.6",
 ]
