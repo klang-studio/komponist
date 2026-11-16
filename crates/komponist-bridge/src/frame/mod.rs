@@ -185,29 +185,6 @@ impl Frame {
         (self.body.0.max(self.header_width), self.body.1 + HEADER)
     }
 
-    /// Window first, then the container (module docs, "Sizes").
-    fn fit(&mut self) {
-        let Some(window) = self.window.clone() else {
-            return;
-        };
-        let (w, h) = self.wanted_content();
-        if (w - self.content.0).abs() > 0.5 || (h - self.content.1).abs() > 0.5 {
-            self.content = (w, h);
-            window.setContentSize(NSSize::new(w, h));
-        }
-        if self.resizable {
-            window.setContentMinSize(NSSize::new(
-                self.header_width.max(1.0),
-                HEADER + f64::from(metrics::MIN_BODY_HEIGHT),
-            ));
-        }
-        self.layout();
-        log(format!(
-            "fit: content {w}×{h} pt, plugin {}×{} pt",
-            self.body.0, self.body.1
-        ));
-    }
-
     /// Places the container below the header, centred when the window is wider than the plugin.
     fn layout(&self) {
         let (Some(window), Some(container)) = (&self.window, &self.container) else {
@@ -247,6 +224,41 @@ impl Frame {
             );
         }
     }
+}
+
+/// Window first, then the container (module docs, "Sizes"). No borrow of `frame` is held while
+/// AppKit resizes the window: winit may hand the resize to eframe at once, whose `logic()`
+/// borrows the frame.
+fn fit(frame: &RefCell<Frame>) {
+    let (window, content, min) = {
+        let mut f = frame.borrow_mut();
+        let Some(window) = f.window.clone() else {
+            return;
+        };
+        let (w, h) = f.wanted_content();
+        let changed = (w - f.content.0).abs() > 0.5 || (h - f.content.1).abs() > 0.5;
+        if changed {
+            f.content = (w, h);
+        }
+        let min = f.resizable.then(|| {
+            NSSize::new(
+                f.header_width.max(1.0),
+                HEADER + f64::from(metrics::MIN_BODY_HEIGHT),
+            )
+        });
+        log(format!(
+            "fit: content {w}×{h} pt, plugin {}×{} pt",
+            f.body.0, f.body.1
+        ));
+        (window, changed.then(|| NSSize::new(w, h)), min)
+    };
+    if let Some(size) = content {
+        window.setContentSize(size);
+    }
+    if let Some(min) = min {
+        window.setContentMinSize(min);
+    }
+    frame.borrow().layout();
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -302,7 +314,8 @@ pub(super) fn activate(bridge: &mut Bridge) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
     };
-    if let Some(window) = frame.borrow().window.clone() {
+    let window = frame.borrow().window.clone();
+    if let Some(window) = window {
         appkit::activate(&window);
     }
 }
@@ -320,11 +333,8 @@ pub(super) fn set_body_size(bridge: &mut Bridge, size: GuiSize) {
         }));
         return;
     }
-    {
-        let mut f = frame.borrow_mut();
-        f.body = (f64::from(size.width), f64::from(size.height));
-        f.fit();
-    }
+    frame.borrow_mut().body = (f64::from(size.width), f64::from(size.height));
+    fit(&frame);
     ask_plugin(bridge, &frame);
 }
 
@@ -333,11 +343,13 @@ pub(super) fn plugin_resized(bridge: &mut Bridge, size: GuiSize) {
     let Some(frame) = bridge.frame.open.clone() else {
         return;
     };
-    let mut f = frame.borrow_mut();
-    f.body = (f64::from(size.width), f64::from(size.height));
-    f.resize_due = None;
-    f.fit();
-    f.moved_due = Some(Instant::now() + MOVE_SETTLE);
+    {
+        let mut f = frame.borrow_mut();
+        f.body = (f64::from(size.width), f64::from(size.height));
+        f.resize_due = None;
+        f.moved_due = Some(Instant::now() + MOVE_SETTLE);
+    }
+    fit(&frame);
 }
 
 /// Whether the plugin's GUI lives in the bridge's own frame.
@@ -374,7 +386,8 @@ pub(super) fn close(bridge: &mut Bridge, quiet: bool) {
     if was_open && let Some(plugin) = bridge.plugin.as_mut() {
         plugin.gui_close();
     }
-    if let Some(container) = frame.borrow_mut().container.take() {
+    let container = frame.borrow_mut().container.take();
+    if let Some(container) = container {
         container.removeFromSuperview();
     }
     if !quiet {
@@ -436,12 +449,14 @@ fn ask_plugin(bridge: &mut Bridge, frame: &Rc<RefCell<Frame>>) {
     };
     let taken = plugin.gui_set_size(wanted);
     log(format!("user size {wanted:?} -> plugin {taken:?}"));
-    let mut f = frame.borrow_mut();
-    if let Ok(taken) = taken {
-        f.body = (f64::from(taken.width), f64::from(taken.height));
+    {
+        let mut f = frame.borrow_mut();
+        if let Ok(taken) = taken {
+            f.body = (f64::from(taken.width), f64::from(taken.height));
+        }
+        f.moved_due = Some(Instant::now() + MOVE_SETTLE);
     }
-    f.fit();
-    f.moved_due = Some(Instant::now() + MOVE_SETTLE);
+    fit(frame);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -616,11 +631,14 @@ fn create(
     };
     match opened {
         Ok(info) => {
-            let mut f = frame.borrow_mut();
-            f.gui_open = true;
-            f.body = (f64::from(info.size.width), f64::from(info.size.height));
-            f.resizable = info.resizable;
-            f.fit();
+            {
+                let mut f = frame.borrow_mut();
+                f.gui_open = true;
+                f.body = (f64::from(info.size.width), f64::from(info.size.height));
+                f.resizable = info.resizable;
+            }
+            fit(frame);
+            let f = frame.borrow();
             f.apply_level();
             f.send(&BridgeMsg::GuiOpened {
                 size: info.size,
@@ -755,13 +773,18 @@ impl eframe::App for FrameApp {
             .rect_filled(body_rect, 0.0, color32(color::SURFACE_0));
         let out = header::show(ui, header_rect, &model);
         let keys = header_keys(&ctx);
-        let mut f = self.frame.borrow_mut();
-        if (f64::from(out.natural_width) - f.header_width).abs() > 0.5 {
-            f.header_width = f64::from(out.natural_width);
-            if !f.closing {
-                f.fit();
+        let refit = {
+            let mut f = self.frame.borrow_mut();
+            let wider = (f64::from(out.natural_width) - f.header_width).abs() > 0.5;
+            if wider {
+                f.header_width = f64::from(out.natural_width);
             }
+            wider && !f.closing
+        };
+        if refit {
+            fit(&self.frame);
         }
+        let f = self.frame.borrow();
         for event in out.events {
             log(format!("header: {event:?}"));
             f.send(&BridgeMsg::HeaderAction(event));
