@@ -1303,8 +1303,11 @@ pub fn set_device_bypass(project: &Project, device: DeviceId, bypass: bool) -> E
 }
 
 /// Stores a device state: a parameter value, a preset, a sample link, a plugin's own snapshot.
-/// A tracked edit (one undo step per gesture); [`crate::Document::apply_untracked`] only for the
-/// states that must not enter the history (sample paths rewritten on save, the echo of an undo).
+/// A tracked edit (one undo step per gesture). States that must not enter the history go through
+/// [`crate::Document::rewrite_untracked`] (sample paths rewritten on save, per step) or
+/// [`crate::Document::apply_untracked_to_root`] (the echo of an undo, a baseline taken for the
+/// file), never through [`crate::Document::apply_untracked`], which would give every step the
+/// same state.
 pub fn set_device_state(
     project: &Project,
     device: DeviceId,
