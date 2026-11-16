@@ -45,6 +45,9 @@ settings-rate = Sample rate
 # S07 row label and name of the buffer size control.
 settings-buffer = Buffer size
 
+# S07 hint under the buffer size segments when the driver fixes the size (WASAPI shared mode: the device period); `$frames` is the real size, e.g. "480".
+settings-buffer-fixed = The driver sets { $frames } samples.
+
 # S07 first entry of the output device dropdown: the driver's default.
 settings-default-device = Default Device
 
@@ -77,6 +80,9 @@ settings-midi-active = active · channels 1–16
 
 # S07 MIDI row, input on but not present.
 settings-midi-disconnected = not connected
+
+# S07 MIDI row, input on and present but another program holds it (Windows: a MIDI input is exclusive).
+settings-midi-busy = in use · another program holds the input
 
 # S07 row label and name of the UI scale control.
 settings-scale = UI scale
