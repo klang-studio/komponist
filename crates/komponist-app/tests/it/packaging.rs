@@ -99,6 +99,8 @@ fn the_macos_bundle_opens_project_files() {
     ] {
         assert!(types.contains(entry), "{entry} in {types}");
     }
+    // #100: the plugin bridges (this executable) are UI elements, never a second Dock icon.
+    assert!(plist.contains("<key>LSUIElement</key><true/>"));
     // The type's name in both languages.
     for (lang, name) in [("de", "komponist-Projekt"), ("en", "komponist project")] {
         let strings = read(&format!("assets/macos/{lang}.lproj/InfoPlist.strings"));

@@ -1187,7 +1187,11 @@ MIME type (`assets/komponist-mime.xml`) and starts `komponist %f`, one file per 
 **Signing:** hardened runtime (`codesign --options runtime`) with `assets/macos/komponist.entitlements`:
 `com.apple.security.cs.disable-library-validation` (CLAP and VST3 plugins are signed by other teams or not at all and are
 loaded into the app and its bridge processes) and `com.apple.security.device.audio-input` (recording). The bridge is
-the same signed executable, so it carries the same entitlements. v0.3 is signed ad-hoc (`-s -`): Gatekeeper refuses the
+the same signed executable, so it carries the same entitlements. Being the bundle's executable, a bridge would be
+checked in by LaunchServices as a second regular komponist (a bouncing Dock icon while a frame opened, #100). The
+plist therefore declares `LSUIElement`: bridges are UI elements from their first AppKit call on, and the app makes
+itself regular (Dock icon, menu bar) when it has finished launching (`RunOptions::native_options`). An instance bridge
+holds an `NSProcessInfo` activity against App Nap (`komponist_bridge::macos_app`). v0.3 is signed ad-hoc (`-s -`): Gatekeeper refuses the
 downloaded app until the user allows it once (`docs/INSTALL.md`). With `KOMPONIST_SIGN_IDENTITY` (a Developer ID
 Application certificate) the script signs for distribution with a secure timestamp, and with notarytool credentials
 (`KOMPONIST_NOTARY_PROFILE`, or `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`) it notarizes and staples; that path
