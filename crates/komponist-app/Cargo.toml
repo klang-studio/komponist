@@ -84,5 +84,10 @@ x11rb = { workspace = true, features = ["xtest", "res"] }
 embed-resource.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# Console attach for `--help` in the windows-subsystem build (`main.rs`).
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
+# Console attach for `--help` in the windows-subsystem build (`main.rs`); known folders and drives (`dirs.rs`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Child-process checks of the app tests (`tests/common`): a Toolhelp snapshot of the bridges and
+# `GetExitCodeProcess` for "is it gone".
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

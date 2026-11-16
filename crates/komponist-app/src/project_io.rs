@@ -5,7 +5,7 @@
 //!   through a temporary file next to the target and a rename, so a crash never leaves half a
 //!   project.
 //! - The recent list lives in `recent.json` next to the settings file
-//!   (`~/.config/komponist/recent.json`, on macOS in `~/Library/Application Support/komponist/`), newest first, at most [`RECENT_LIMIT`] entries.
+//!   (`~/.config/komponist/recent.json`, on macOS in `~/Library/Application Support/komponist/`, on Windows in `%APPDATA%\komponist\`), newest first, at most [`RECENT_LIMIT`] entries.
 //! - Opening or creating a project resets the engine ([`crate::engine_sync::EngineSync::reset`]).
 //!   A project whose plugins are not in the catalog opens the S06 dialog; while a plugin scan
 //!   runs, the check waits for its end, so plugins the scan is about to find are not reported.
@@ -531,8 +531,8 @@ impl App {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .or_else(|| self.dialogs.last_dir.clone())
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("/"));
+            .or_else(crate::dirs::home_dir)
+            .unwrap_or_else(crate::dirs::filesystem_root);
         let name = match purpose {
             Purpose::Save => format!("{}.{FILE_EXTENSION}", self.project().name),
             _ => String::new(),

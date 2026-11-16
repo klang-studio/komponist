@@ -35,7 +35,7 @@ pub(super) fn take_back(bridge: Option<u32>) {
     if let Some(pid) = bridge {
         macos::activate_if_front(pid);
     }
-    #[cfg(x11_embed)]
+    #[cfg(not(target_os = "macos"))]
     let _ = bridge;
 }
 
@@ -47,7 +47,7 @@ pub(super) fn became_active(ctx: &egui::Context) -> bool {
         macos::watch(ctx);
         macos::BECAME_ACTIVE.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
-    #[cfg(x11_embed)]
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = ctx;
         false
@@ -58,7 +58,7 @@ pub(super) fn became_active(ctx: &egui::Context) -> bool {
 pub(super) fn front_to_back() -> Vec<i64> {
     #[cfg(target_os = "macos")]
     return macos::front_to_back();
-    #[cfg(x11_embed)]
+    #[cfg(not(target_os = "macos"))]
     Vec::new()
 }
 
@@ -66,7 +66,7 @@ pub(super) fn front_to_back() -> Vec<i64> {
 pub(super) fn is_active() -> bool {
     #[cfg(target_os = "macos")]
     return macos::is_active();
-    #[cfg(x11_embed)]
+    #[cfg(not(target_os = "macos"))]
     true
 }
 
@@ -80,7 +80,7 @@ pub(super) fn activate() {
 fn yield_to(pid: u32) {
     #[cfg(target_os = "macos")]
     macos::yield_to(pid);
-    #[cfg(x11_embed)]
+    #[cfg(not(target_os = "macos"))]
     let _ = pid;
 }
 
@@ -179,7 +179,8 @@ mod macos {
     }
 }
 
-#[cfg(not(any(target_os = "macos", x11_embed)))]
-compile_error!(
-    "komponist-app: no activation hand-over for bridge-owned frames on this OS yet (Windows: W6, AllowSetForegroundWindow + SetForegroundWindow)"
-);
+// Windows (W4b): everything above is a no-op there, because frames never open while
+// `komponist_bridge::GUI_EMBEDDING` is false. This is W6's seam: `yield_to` gets
+// `AllowSetForegroundWindow(pid)` and `bring_to_front` a `SetForegroundWindow` on the frame;
+// `take_back`, `became_active`, `front_to_back` and `is_active` keep their defaults unless W6
+// needs them. Linux and Windows share the `not(macos)` arms (Linux: `x11_embed`).

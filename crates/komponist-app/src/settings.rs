@@ -1,5 +1,5 @@
 //! App settings (`~/.config/komponist/settings.json`, on macOS
-//! `~/Library/Application Support/komponist/settings.json`): audio stream, MIDI inputs, plugin folders,
+//! `~/Library/Application Support/komponist/settings.json`, on Windows `%APPDATA%\komponist\settings.json`): audio stream, MIDI inputs, plugin folders,
 //! UI scale, panel layout, the last export settings and the browser's favourites. The recent
 //! projects have their own file next to it (`recent.json`, [`crate::project_io::RecentList`]).
 //!
@@ -332,14 +332,24 @@ impl std::error::Error for SettingsError {}
 
 /// The settings folder. Linux: `$XDG_CONFIG_HOME/komponist`, else `$HOME/.config/komponist`.
 /// macOS: `$HOME/Library/Application Support/komponist` (the XDG variables are not honoured there).
+/// Windows: `<roaming application data>\komponist`, i.e. `%APPDATA%\komponist` (the shell's known
+/// folder, the variable only as a fallback; [`crate::dirs`]).
 /// `None` without a usable `$HOME` (on Linux, without `$XDG_CONFIG_HOME` either).
 pub fn config_dir() -> Option<PathBuf> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    config_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+    #[cfg(windows)]
+    {
+        crate::dirs::roaming_app_data().map(|d| d.join("komponist"))
+    }
+    #[cfg(not(windows))]
+    {
+        let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        config_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+    }
 }
 
-/// [`config_dir`] for given inputs; `macos` picks the platform's convention.
+/// [`config_dir`] for given inputs (Linux and macOS); `macos` picks the platform's convention.
+#[cfg(not(windows))]
 fn config_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
     let base = if macos {
         home?.join("Library/Application Support")
@@ -415,6 +425,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
     fn config_dir_follows_the_platform() {
         let home = Path::new("/Users/u");
         let xdg = Path::new("/x/cfg");
