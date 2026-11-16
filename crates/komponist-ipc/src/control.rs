@@ -1,11 +1,20 @@
 //! The control protocol between the app and a bridge (ARCHITECTURE §8.1), plus the plugin
 //! vocabulary both sides share (descriptors, parameters, note names).
 //!
-//! Transport: a Unix `SOCK_SEQPACKET` socket pair, one per bridge, messages encoded with postcard.
+//! Transport: a Unix `SOCK_STREAM` socket pair, one per bridge, messages encoded with postcard.
 //! The app keeps one end and passes the other to the bridge as an inherited fd (`--instance
 //! --control-fd N`). Messages larger than [`MAX_FRAME`] (big plugin states) are split into frames
 //! and reassembled by [`Channel`]; callers always see whole messages. The shared-memory fd travels
 //! over the same socket as SCM_RIGHTS ancillary data ([`Channel::send_fd`]).
+//!
+//! Every frame header carries the frame's own payload length, and the receiver reads each frame
+//! exactly (header, then payload), never past its end. So frame boundaries hold on a byte stream,
+//! and an fd, which the kernel attaches to the first byte of its frame, always arrives with that
+//! frame. The same transport runs on Linux and macOS (#44; macOS has no `SOCK_SEQPACKET` on
+//! `AF_UNIX`). OS details: close-on-exec at creation (Linux) or by `fcntl` (macOS); no SIGPIPE
+//! through `MSG_NOSIGNAL` (Linux) or `SO_NOSIGPIPE` (macOS); received fds close-on-exec through
+//! `MSG_CMSG_CLOEXEC` (Linux) or `fcntl` right after `recvmsg` (macOS); macOS also raises the
+//! socket buffers from their 8 KiB default.
 //!
 //! Order on a new bridge: bridge sends `Hello`; app sends the memfd, then `Load`, then `SetState`
 //! if it has a state, then `Activate` (so the plugin starts processing with its state); the bridge
@@ -39,9 +48,8 @@ use std::path::PathBuf;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::io::Errno;
 use rustix::net::{
-    AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags,
-    SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketFlags, SocketType, recvmsg,
-    sendmsg, socketpair,
+    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
+    SendAncillaryMessage, recvmsg, sendmsg,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -54,10 +62,11 @@ pub const PROTOCOL_VERSION: u32 = 3;
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
 
-// Frame format: an 8-byte header — tag (1 byte), 3 reserved bytes (0), the length of the whole
-// encoded message (u32, little-endian, the same in every fragment) — then up to
-// `MAX_FRAME - FRAME_HEADER` payload bytes. A message is the payloads of its `TAG_MORE` frames
-// followed by one `TAG_LAST` frame; a `TAG_FD` frame carries one fd and no payload.
+// Frame format: an 8-byte header — tag (1 byte), the payload length of this frame (u24,
+// little-endian), the length of the whole encoded message (u32, little-endian, the same in every
+// fragment) — then up to `MAX_FRAME - FRAME_HEADER` payload bytes. A message is the payloads of
+// its `TAG_MORE` frames followed by one `TAG_LAST` frame; a `TAG_FD` frame carries one fd and no
+// payload.
 
 /// Bytes in front of every frame.
 const FRAME_HEADER: usize = 8;
@@ -459,17 +468,86 @@ pub type AppChannel = Channel<ControlMsg, BridgeMsg>;
 /// The bridge's end.
 pub type BridgeChannel = Channel<BridgeMsg, ControlMsg>;
 
-/// Creates a connected socket pair (`SOCK_SEQPACKET | SOCK_CLOEXEC`): the app's end and the fd for
+/// Creates a connected socket pair (`SOCK_STREAM`, close-on-exec): the app's end and the fd for
 /// the bridge (to be inherited by the child; the spawner clears `CLOEXEC` on it).
 pub fn socket_pair() -> Result<(AppChannel, OwnedFd), ChannelError> {
-    let (app, bridge) = socketpair(
-        AddressFamily::UNIX,
-        SocketType::SEQPACKET,
-        SocketFlags::CLOEXEC,
-        None,
-    )
-    .map_err(io_error)?;
+    let (app, bridge) = sys::stream_pair().map_err(io_error)?;
     Ok((Channel::from_fd(app), bridge))
+}
+
+#[cfg(target_os = "linux")]
+mod sys {
+    use std::os::fd::OwnedFd;
+
+    use rustix::io::Errno;
+    use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType, socketpair};
+
+    /// A dead peer must give EPIPE, not kill us with SIGPIPE.
+    pub(super) const SEND_FLAGS: SendFlags = SendFlags::NOSIGNAL;
+    /// Received fds are close-on-exec atomically.
+    pub(super) const RECV_FLAGS: RecvFlags = RecvFlags::CMSG_CLOEXEC;
+
+    pub(super) fn stream_pair() -> Result<(OwnedFd, OwnedFd), Errno> {
+        socketpair(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+    }
+
+    /// Already close-on-exec (`MSG_CMSG_CLOEXEC`).
+    pub(super) fn received_fd(fd: OwnedFd) -> OwnedFd {
+        fd
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod sys {
+    use std::os::fd::OwnedFd;
+
+    use rustix::io::{Errno, FdFlags, fcntl_setfd};
+    use rustix::net::sockopt::{
+        set_socket_nosigpipe, set_socket_recv_buffer_size, set_socket_send_buffer_size,
+    };
+    use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType, socketpair};
+
+    use super::MAX_FRAME;
+
+    /// No `MSG_NOSIGNAL` in rustix on macOS: both sockets have `SO_NOSIGPIPE` instead.
+    pub(super) const SEND_FLAGS: SendFlags = SendFlags::empty();
+    /// No `MSG_CMSG_CLOEXEC` on macOS: see [`received_fd`].
+    pub(super) const RECV_FLAGS: RecvFlags = RecvFlags::empty();
+    /// Socket buffer size per direction: four full frames (the default for Unix stream sockets is
+    /// 8 KiB, which would split every large frame into many context switches).
+    const BUFFER: usize = 4 * MAX_FRAME;
+
+    pub(super) fn stream_pair() -> Result<(OwnedFd, OwnedFd), Errno> {
+        // No SOCK_CLOEXEC on macOS. The window until `fcntl` is short; bridges are spawned from
+        // the thread that creates their socket pair.
+        let (a, b) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::empty(),
+            None,
+        )?;
+        for fd in [&a, &b] {
+            fcntl_setfd(fd, FdFlags::CLOEXEC)?;
+            set_socket_nosigpipe(fd, true)?;
+            set_socket_send_buffer_size(fd, BUFFER)?;
+            set_socket_recv_buffer_size(fd, BUFFER)?;
+        }
+        Ok((a, b))
+    }
+
+    /// Marks a received fd close-on-exec. Between `recvmsg` and this `fcntl` a fork + exec in
+    /// another thread of the receiver could inherit the fd: accepted, since the bridge (the side
+    /// that receives the shared memory) spawns no children itself; only a plugin that forks in
+    /// that moment could (owner, #44). A failure leaves the fd usable, so it is ignored.
+    pub(super) fn received_fd(fd: OwnedFd) -> OwnedFd {
+        let _ = fcntl_setfd(&fd, FdFlags::CLOEXEC);
+        fd
+    }
 }
 
 fn io_error(e: Errno) -> ChannelError {
@@ -478,6 +556,15 @@ fn io_error(e: Errno) -> ChannelError {
 
 fn codec_error(message: impl Into<String>) -> ChannelError {
     ChannelError::Codec(message.into())
+}
+
+/// The fds that arrived with the bytes of one frame.
+#[derive(Default)]
+struct Incoming {
+    /// The first fd (more are closed).
+    fd: Option<OwnedFd>,
+    /// The kernel dropped fds for lack of control space (more than one fd in a frame).
+    truncated: bool,
 }
 
 /// One received frame (payload in the caller's buffer after the header).
@@ -513,7 +600,7 @@ fn decode<Rx: DeserializeOwned>(bytes: &[u8]) -> Result<Rx, ChannelError> {
 }
 
 impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
-    /// Wraps a connected seqpacket socket.
+    /// Wraps a connected stream socket (one end of [`socket_pair`]).
     pub fn from_fd(fd: OwnedFd) -> Channel<Tx, Rx> {
         Channel {
             fd,
@@ -589,7 +676,8 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         }
     }
 
-    /// Writes one frame: header, `payload` and optionally `fd` as SCM_RIGHTS.
+    /// Writes one frame: header, `payload` and optionally `fd` as SCM_RIGHTS (with the first
+    /// byte). A stream socket may take the frame in several writes; the rest follows at once.
     fn send_frame(
         &self,
         tag: u8,
@@ -597,50 +685,78 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
         payload: &[u8],
         fd: Option<BorrowedFd<'_>>,
     ) -> Result<(), ChannelError> {
+        debug_assert!(payload.len() <= MAX_PAYLOAD);
         let mut header = [0u8; FRAME_HEADER];
         header[0] = tag;
+        header[1..4].copy_from_slice(&(payload.len() as u32).to_le_bytes()[..3]);
         header[4..].copy_from_slice(&(total as u32).to_le_bytes());
-        let iov = [IoSlice::new(&header), IoSlice::new(payload)];
         let fds = fd.map(|fd| [fd]);
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
         let mut control = SendAncillaryBuffer::new(&mut space);
         if let Some(fds) = &fds {
             control.push(SendAncillaryMessage::ScmRights(fds));
         }
-        loop {
-            // NOSIGNAL: a dead peer must give EPIPE, not kill us with SIGPIPE.
-            match sendmsg(&self.fd, &iov, &mut control, SendFlags::NOSIGNAL) {
-                Ok(n) if n == FRAME_HEADER + payload.len() => return Ok(()),
-                Ok(n) => {
+        let len = FRAME_HEADER + payload.len();
+        let mut sent = 0;
+        while sent < len {
+            let iov = if sent < FRAME_HEADER {
+                [IoSlice::new(&header[sent..]), IoSlice::new(payload)]
+            } else {
+                [
+                    IoSlice::new(&payload[sent - FRAME_HEADER..]),
+                    IoSlice::new(&[]),
+                ]
+            };
+            // The fd goes with the first write only.
+            let result = if sent == 0 {
+                sendmsg(&self.fd, &iov, &mut control, sys::SEND_FLAGS)
+            } else {
+                sendmsg(
+                    &self.fd,
+                    &iov,
+                    &mut SendAncillaryBuffer::default(),
+                    sys::SEND_FLAGS,
+                )
+            };
+            match result {
+                Ok(0) => {
                     return Err(ChannelError::Io(format!(
-                        "short send: {n} of {} bytes",
-                        FRAME_HEADER + payload.len()
+                        "short send: {sent} of {len} bytes"
                     )));
                 }
+                Ok(n) => sent += n,
                 Err(Errno::INTR) => {}
                 Err(Errno::AGAIN) => wait_ready(self.fd.as_fd(), PollFlags::OUT)?,
                 Err(Errno::PIPE | Errno::CONNRESET) => return Err(ChannelError::Closed),
                 Err(e) => return Err(io_error(e)),
             }
         }
+        Ok(())
     }
 
-    /// Reads one frame into `buf` (at least `MAX_FRAME` bytes). `None` only with `dont_wait` when
-    /// nothing is queued.
-    fn recv_frame(&self, buf: &mut [u8], dont_wait: bool) -> Result<Option<Frame>, ChannelError> {
-        let flags = if dont_wait {
-            RecvFlags::CMSG_CLOEXEC | RecvFlags::DONTWAIT
-        } else {
-            RecvFlags::CMSG_CLOEXEC
-        };
+    /// Fills `buf` exactly from the stream, collecting the fds that come with the bytes.
+    /// `Ok(false)` only with `dont_wait` when not a single byte is queued; once a byte has
+    /// arrived, the rest is awaited blockingly. End of stream is `Closed`.
+    fn recv_exact(
+        &self,
+        buf: &mut [u8],
+        mut dont_wait: bool,
+        incoming: &mut Incoming,
+    ) -> Result<bool, ChannelError> {
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-        loop {
+        let mut got = 0;
+        while got < buf.len() {
+            let flags = if dont_wait {
+                sys::RECV_FLAGS | RecvFlags::DONTWAIT
+            } else {
+                sys::RECV_FLAGS
+            };
             let mut control = RecvAncillaryBuffer::new(&mut space);
-            let mut iov = [IoSliceMut::new(buf)];
+            let mut iov = [IoSliceMut::new(&mut buf[got..])];
             let msg = match recvmsg(&self.fd, &mut iov, &mut control, flags) {
                 Ok(msg) => msg,
                 Err(Errno::INTR) => continue,
-                Err(Errno::AGAIN) if dont_wait => return Ok(None),
+                Err(Errno::AGAIN) if dont_wait => return Ok(false),
                 Err(Errno::AGAIN) => {
                     wait_ready(self.fd.as_fd(), PollFlags::IN)?;
                     continue;
@@ -649,35 +765,67 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
                 Err(e) => return Err(io_error(e)),
             };
             // Take ownership of every received fd first, so none leaks whatever happens next.
-            let mut fd = None;
             for message in control.drain() {
                 if let RecvAncillaryMessage::ScmRights(fds) = message {
                     for received in fds {
-                        fd.get_or_insert(received);
+                        if incoming.fd.is_none() {
+                            incoming.fd = Some(sys::received_fd(received));
+                        }
                     }
                 }
             }
-            // Every frame has a header, so an empty read is the end of the stream.
+            if msg.flags.contains(ReturnFlags::CTRUNC) {
+                incoming.truncated = true;
+            }
+            // Every frame has a header, so an empty read is the end of the stream (also in the
+            // middle of a frame: the peer died while writing it).
             if msg.bytes == 0 {
                 return Err(ChannelError::Closed);
             }
-            if msg.flags.contains(ReturnFlags::TRUNC) {
-                return Err(codec_error(format!("frame larger than {MAX_FRAME} bytes")));
-            }
-            if msg.flags.contains(ReturnFlags::CTRUNC) {
-                return Err(codec_error("too many file descriptors in one frame"));
-            }
-            if msg.bytes < FRAME_HEADER {
-                return Err(codec_error(format!("short frame of {} bytes", msg.bytes)));
-            }
-            let total = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
-            return Ok(Some(Frame {
-                tag: buf[0],
-                total,
-                len: msg.bytes - FRAME_HEADER,
-                fd,
-            }));
+            got += msg.bytes;
+            dont_wait = false;
         }
+        Ok(true)
+    }
+
+    /// Reads one frame into `buf` (at least `MAX_FRAME` bytes; the payload lands after
+    /// `FRAME_HEADER`). `None` only with `dont_wait` when nothing is queued.
+    fn recv_frame(&self, buf: &mut [u8], dont_wait: bool) -> Result<Option<Frame>, ChannelError> {
+        let mut header = [0u8; FRAME_HEADER];
+        let mut incoming = Incoming::default();
+        if !self.recv_exact(&mut header, dont_wait, &mut incoming)? {
+            return Ok(None);
+        }
+        let len = u32::from_le_bytes([header[1], header[2], header[3], 0]) as usize;
+        let total = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        if len > MAX_PAYLOAD {
+            // Read past the oversized payload, so the stream stays in step, then refuse it.
+            let mut left = len;
+            while left > 0 {
+                let n = left.min(MAX_PAYLOAD);
+                self.recv_exact(
+                    &mut buf[FRAME_HEADER..FRAME_HEADER + n],
+                    false,
+                    &mut incoming,
+                )?;
+                left -= n;
+            }
+            return Err(codec_error(format!("frame larger than {MAX_FRAME} bytes")));
+        }
+        self.recv_exact(
+            &mut buf[FRAME_HEADER..FRAME_HEADER + len],
+            false,
+            &mut incoming,
+        )?;
+        if incoming.truncated {
+            return Err(codec_error("too many file descriptors in one frame"));
+        }
+        Ok(Some(Frame {
+            tag: header[0],
+            total,
+            len,
+            fd: incoming.fd,
+        }))
     }
 
     /// Receives one message; the first frame without blocking if `dont_wait`.
@@ -749,13 +897,23 @@ mod tests {
         (app, BridgeChannel::from_fd(fd))
     }
 
-    /// Writes one raw frame (bypassing the encoder).
+    /// Writes raw bytes (bypassing the encoder), all of them.
     fn raw_send(fd: BorrowedFd<'_>, bytes: &[u8]) {
-        rustix::net::send(fd, bytes, SendFlags::NOSIGNAL).unwrap();
+        let mut sent = 0;
+        while sent < bytes.len() {
+            sent += rustix::net::send(fd, &bytes[sent..], sys::SEND_FLAGS).unwrap();
+        }
     }
 
+    /// A frame whose header announces `payload.len()` bytes.
     fn frame(tag: u8, total: u32, payload: &[u8]) -> Vec<u8> {
-        let mut f = vec![tag, 0, 0, 0];
+        frame_announcing(tag, payload.len() as u32, total, payload)
+    }
+
+    /// A frame whose header announces `len` payload bytes, whatever follows.
+    fn frame_announcing(tag: u8, len: u32, total: u32, payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![tag];
+        f.extend_from_slice(&len.to_le_bytes()[..3]);
         f.extend_from_slice(&total.to_le_bytes());
         f.extend_from_slice(payload);
         f
@@ -968,9 +1126,57 @@ mod tests {
         app.send(&ControlMsg::ListParams).unwrap();
         let fd = bridge.recv_fd().unwrap();
         assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
+        let flags = rustix::io::fcntl_getfd(&fd).unwrap();
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
         let mapped = ShmRegion::open(fd).unwrap();
         mapped.set_latency(321);
         assert_eq!(region.latency(), 321);
+    }
+
+    #[test]
+    fn fds_stay_with_their_frames_between_messages() {
+        let (app, bridge) = pair();
+        let a = ShmRegion::create().unwrap();
+        let b = ShmRegion::create().unwrap();
+        a.set_latency(1);
+        b.set_latency(2);
+        let big = ControlMsg::SetState {
+            state: (0..3 * MAX_FRAME).map(|i| i as u8).collect(),
+        };
+        // Queued back to back before anything is read: the stream holds them in one piece.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                app.send(&ControlMsg::ListParams).unwrap();
+                app.send_fd(a.fd()).unwrap();
+                app.send(&big).unwrap();
+                app.send_fd(b.fd()).unwrap();
+                app.send(&ControlMsg::Deactivate).unwrap();
+            });
+            assert_eq!(bridge.recv().unwrap(), ControlMsg::ListParams);
+            assert_eq!(
+                ShmRegion::open(bridge.recv_fd().unwrap())
+                    .unwrap()
+                    .latency(),
+                1
+            );
+            assert_eq!(bridge.recv().unwrap(), big);
+            assert_eq!(
+                ShmRegion::open(bridge.recv_fd().unwrap())
+                    .unwrap()
+                    .latency(),
+                2
+            );
+            assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
+        });
+    }
+
+    #[test]
+    fn sockets_are_close_on_exec() {
+        let (app, bridge) = socket_pair().unwrap();
+        for fd in [app.as_fd(), bridge.as_fd()] {
+            let flags = rustix::io::fcntl_getfd(fd).unwrap();
+            assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+        }
     }
 
     #[test]
@@ -1006,10 +1212,11 @@ mod tests {
         assert!(is_codec(bridge.recv()));
         raw_send(fd, &frame(9, 0, &[]));
         assert!(is_codec(bridge.recv()));
-        raw_send(fd, &[TAG_LAST, 0, 0]);
-        assert!(is_codec(bridge.recv()));
-        // A frame beyond MAX_FRAME is truncated by the kernel and refused.
+        // A frame beyond MAX_FRAME is read past and refused.
         raw_send(fd, &frame(TAG_LAST, 0, &vec![0; MAX_FRAME]));
+        assert!(is_codec(bridge.recv()));
+        let lie = frame_announcing(TAG_LAST, MAX_PAYLOAD as u32 + 1, 3, &[0; MAX_PAYLOAD + 1]);
+        raw_send(fd, &lie);
         assert!(is_codec(bridge.recv()));
         // Fragments whose lengths do not add up, and a fragment announcing too much.
         raw_send(fd, &frame(TAG_MORE, 10, &[0; 4]));
@@ -1025,5 +1232,28 @@ mod tests {
         // The channel is still in sync afterwards.
         app.send(&ControlMsg::Deactivate).unwrap();
         assert_eq!(bridge.recv().unwrap(), ControlMsg::Deactivate);
+    }
+
+    #[test]
+    fn a_frame_split_across_writes_is_reassembled() {
+        let (app, bridge) = pair();
+        let bytes = postcard::to_stdvec(&ControlMsg::SetParam { id: 9, value: 0.25 }).unwrap();
+        let whole = frame(TAG_LAST, bytes.len() as u32, &bytes);
+        // Cut inside the header, then inside the payload; the rest arrives a little later.
+        for cut in [3, FRAME_HEADER + 1] {
+            assert_eq!(bridge.try_recv().unwrap(), None);
+            raw_send(app.as_fd(), &whole[..cut]);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    raw_send(app.as_fd(), &whole[cut..]);
+                });
+                // A started frame is completed blockingly, also by `try_recv`.
+                assert_eq!(
+                    bridge.try_recv().unwrap(),
+                    Some(ControlMsg::SetParam { id: 9, value: 0.25 })
+                );
+            });
+        }
     }
 }

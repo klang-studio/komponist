@@ -1,8 +1,14 @@
 //! Shared memory between the app and one bridge process (ARCHITECTURE §8.1).
 //!
-//! One memfd per plugin instance, fixed size [`SHM_SIZE`], mapped `MAP_SHARED` by both processes.
-//! The app creates it ([`ShmRegion::create`]) and passes the fd to the bridge over the control
-//! socket (SCM_RIGHTS); the bridge maps it with [`ShmRegion::open`].
+//! One shared-memory file per plugin instance, fixed size [`SHM_SIZE`], mapped `MAP_SHARED` by both
+//! processes. The app creates it ([`ShmRegion::create`]) and passes the fd to the bridge over the
+//! control socket (SCM_RIGHTS); the bridge maps it with [`ShmRegion::open`]. Per OS:
+//!
+//! - Linux: a memfd, its size sealed (`F_SEAL_SHRINK | F_SEAL_GROW`), mapped with `MAP_POPULATE`.
+//! - macOS: a POSIX shm object (`shm_open` with a fresh random name, unlinked at once, so only the
+//!   fd refers to it). Its size can be set once only (a second `ftruncate` fails), which gives the
+//!   guarantee the seals give on Linux. The mapping is prefaulted by `mlock` (or by touching every
+//!   page if locking is refused). `fstat` reports the size rounded up to the 16 KiB page.
 //!
 //! Layout ([`ShmLayout`], `#[repr(C)]`, all offsets fixed): header with the futex words, the
 //! per-block request and result, an input event ring (app → bridge), an output event ring
@@ -33,7 +39,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Instant;
 
-use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fstat, ftruncate, memfd_create};
+use rustix::fs::fstat;
 use rustix::mm::{MapFlags, ProtFlags, mlock, mmap, munmap};
 
 use crate::ring::ShmRing;
@@ -381,7 +387,7 @@ impl WireEvent {
 /// Why a mapping could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShmError {
-    /// A syscall failed (memfd, ftruncate, mmap); the OS error text.
+    /// A syscall failed (memfd / shm_open, ftruncate, mmap); the OS error text.
     Io(String),
     /// The header does not start with [`SHM_MAGIC`].
     BadMagic,
@@ -420,7 +426,7 @@ const ROLE_CLIENT: u8 = 1;
 const ROLE_SERVER: u8 = 2;
 const ROLE_MONITOR: u8 = 4;
 
-/// One mapped memfd holding a [`ShmLayout`]. Unmapped on drop (the fd closes with it).
+/// One mapped shared-memory file holding a [`ShmLayout`]. Unmapped on drop (the fd closes with it).
 pub struct ShmRegion {
     fd: OwnedFd,
     ptr: NonNull<ShmLayout>,
@@ -438,17 +444,10 @@ unsafe impl Send for ShmRegion {}
 unsafe impl Sync for ShmRegion {}
 
 impl ShmRegion {
-    /// App side, non-RT. Creates a memfd named `komponist-bridge`, sizes it to [`SHM_SIZE`], maps
-    /// it and writes the header constants.
+    /// App side, non-RT. Creates the shared-memory file (module docs), sizes it to [`SHM_SIZE`]
+    /// for good, maps it and writes the header constants.
     pub fn create() -> Result<ShmRegion, ShmError> {
-        let fd = memfd_create(
-            "komponist-bridge",
-            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
-        )?;
-        ftruncate(&fd, SHM_SIZE as u64)?;
-        // Fix the size for good: a bridge that shrank the file would make the app's next access
-        // to the missing pages fault with SIGBUS.
-        fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL)?;
+        let fd = sys::create(SHM_SIZE)?;
         let ptr = map(&fd)?;
         // SAFETY: fresh, zero-filled mapping of `SHM_SIZE` bytes that nobody else sees yet; the
         // constants are written through raw pointers before any reference to the layout exists.
@@ -466,15 +465,16 @@ impl ShmRegion {
         })
     }
 
-    /// Bridge side, non-RT. Maps a memfd received from the app and validates magic, version, size
-    /// and `max_block`.
+    /// Bridge side, non-RT. Maps a shared-memory file received from the app and validates magic,
+    /// version, size and `max_block`.
     pub fn open(fd: OwnedFd) -> Result<ShmRegion, ShmError> {
-        // Validate before mapping: the four header words through `pread`, the file size through
-        // `fstat` (a smaller file would turn accesses past its end into SIGBUS).
-        let mut words = [0u8; 16];
-        let read = rustix::io::pread(&fd, &mut words, 0)?;
+        // Validate before mapping: the four header words, then the file size through `fstat` (a
+        // smaller file would turn accesses past its end into SIGBUS).
+        let Some(words) = sys::read_header(&fd)? else {
+            return Err(ShmError::BadMagic);
+        };
         let word = |i: usize| u32::from_ne_bytes(words[i * 4..i * 4 + 4].try_into().unwrap());
-        if read < words.len() || word(0) != SHM_MAGIC {
+        if word(0) != SHM_MAGIC {
             return Err(ShmError::BadMagic);
         }
         if word(1) != SHM_VERSION {
@@ -483,7 +483,7 @@ impl ShmRegion {
         let file_size = fstat(&fd)?.st_size;
         if word(2) as usize != SHM_SIZE
             || word(3) as usize != MAX_BLOCK
-            || file_size != SHM_SIZE as i64
+            || !sys::size_matches(file_size, SHM_SIZE)
         {
             return Err(ShmError::LayoutMismatch);
         }
@@ -495,7 +495,7 @@ impl ShmRegion {
         })
     }
 
-    /// The memfd, to pass to the bridge.
+    /// The shared-memory file, to pass to the bridge.
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
     }
@@ -567,17 +567,151 @@ fn map(fd: &OwnedFd) -> Result<NonNull<ShmLayout>, ShmError> {
             core::ptr::null_mut(),
             SHM_SIZE,
             ProtFlags::READ | ProtFlags::WRITE,
-            MapFlags::SHARED | MapFlags::POPULATE,
+            MapFlags::SHARED | sys::PREFAULT,
             fd,
             0,
         )?
     };
-    // SAFETY: locks our own fresh mapping. Failure (RLIMIT_MEMLOCK) only means the pages may be
-    // swapped out under memory pressure; MAP_POPULATE already prefaulted them.
-    unsafe {
-        let _ = mlock(ptr, SHM_SIZE);
+    // SAFETY: locks our own fresh mapping (which also faults its pages in). Failure
+    // (RLIMIT_MEMLOCK) only means the pages may be swapped out under memory pressure.
+    let locked = unsafe { mlock(ptr, SHM_SIZE) }.is_ok();
+    if !locked && sys::PREFAULT.is_empty() {
+        // No MAP_POPULATE on this OS: fault every page in by reading one byte of it.
+        for offset in (0..SHM_SIZE).step_by(4096) {
+            // SAFETY: inside our own mapping of `SHM_SIZE` bytes, which the file covers.
+            unsafe { core::ptr::read_volatile(ptr.cast::<u8>().add(offset)) };
+        }
     }
     NonNull::new(ptr.cast()).ok_or_else(|| ShmError::Io("mmap returned null".into()))
+}
+
+#[cfg(target_os = "linux")]
+mod sys {
+    use std::os::fd::OwnedFd;
+
+    use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, ftruncate, memfd_create};
+    use rustix::mm::MapFlags;
+
+    use super::ShmError;
+
+    /// The mapping is prefaulted by the kernel.
+    pub(super) const PREFAULT: MapFlags = MapFlags::POPULATE;
+
+    /// A memfd named `komponist-bridge` of `size` bytes, its size sealed.
+    pub(super) fn create(size: usize) -> Result<OwnedFd, ShmError> {
+        let fd = memfd_create(
+            "komponist-bridge",
+            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+        )?;
+        ftruncate(&fd, size as u64)?;
+        // Fix the size for good: a bridge that shrank the file would make the app's next access
+        // to the missing pages fault with SIGBUS.
+        fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL)?;
+        Ok(fd)
+    }
+
+    /// The first 16 bytes through `pread`; `None` if the file is shorter.
+    pub(super) fn read_header(fd: &OwnedFd) -> Result<Option<[u8; 16]>, ShmError> {
+        let mut words = [0u8; 16];
+        let read = rustix::io::pread(fd, &mut words, 0)?;
+        Ok((read == words.len()).then_some(words))
+    }
+
+    /// The sealed memfd has exactly the size `create` gave it.
+    pub(super) fn size_matches(file_size: i64, size: usize) -> bool {
+        file_size == size as i64
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod sys {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::os::fd::OwnedFd;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rustix::fs::{FileType, Mode, fstat, ftruncate};
+    use rustix::io::Errno;
+    use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
+    use rustix::shm;
+
+    use super::ShmError;
+
+    /// No `MAP_POPULATE`: `map` prefaults with `mlock` or by touching the pages.
+    pub(super) const PREFAULT: MapFlags = MapFlags::empty();
+
+    /// Longest shm name including the leading slash (`PSHMNAMLEN`).
+    const NAME_MAX: usize = 31;
+
+    /// A fresh, unlinked POSIX shm object of `size` bytes (rounded up to the page by the kernel).
+    ///
+    /// The name is never seen by anybody: `/kp.<pid>.<counter>.<clock>` in hex (at most 27 chars),
+    /// created with `O_EXCL` and mode 0600 and unlinked right away, so only the fd refers to the
+    /// object. A name taken by someone else (`EEXIST`) just moves on to the next one.
+    pub(super) fn create(size: usize) -> Result<OwnedFd, ShmError> {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let pid = std::process::id();
+        for _ in 0..64 {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let clock = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let name = format!("/kp.{pid:x}.{n:x}.{clock:x}");
+            debug_assert!(name.len() <= NAME_MAX, "{name}");
+            let flags = shm::OFlags::CREATE | shm::OFlags::EXCL | shm::OFlags::RDWR;
+            let fd = match shm::open(name.as_str(), flags, Mode::RUSR | Mode::WUSR) {
+                Ok(fd) => fd,
+                Err(Errno::EXIST | Errno::INTR) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            shm::unlink(name.as_str())?;
+            // The only size this object will ever have: a second `ftruncate` fails with EINVAL.
+            ftruncate(&fd, size as u64)?;
+            return Ok(fd);
+        }
+        Err(Errno::EXIST.into())
+    }
+
+    /// The first 16 bytes through a short read-only mapping (POSIX shm objects support neither
+    /// `read` nor `pread`); `None` if the object is shorter. Sockets, pipes and devices are refused
+    /// as `Io` (a shm object's `st_mode` carries no file type at all).
+    pub(super) fn read_header(fd: &OwnedFd) -> Result<Option<[u8; 16]>, ShmError> {
+        let mut words = [0u8; 16];
+        let st = fstat(fd)?;
+        match FileType::from_raw_mode(st.st_mode) {
+            FileType::Socket
+            | FileType::Fifo
+            | FileType::Directory
+            | FileType::CharacterDevice
+            | FileType::BlockDevice
+            | FileType::Symlink => return Err(ShmError::Io("not a shared-memory file".into())),
+            FileType::RegularFile | FileType::Unknown => {}
+        }
+        if st.st_size < words.len() as i64 {
+            return Ok(None);
+        }
+        // SAFETY: a new view at an address the kernel picks, read only within the object's size
+        // (checked above; the size of a shm object cannot change) and unmapped right away.
+        unsafe {
+            let ptr = mmap(
+                core::ptr::null_mut(),
+                words.len(),
+                ProtFlags::READ,
+                MapFlags::SHARED,
+                fd,
+                0,
+            )?;
+            core::ptr::copy_nonoverlapping(ptr.cast::<u8>(), words.as_mut_ptr(), words.len());
+            let _ = munmap(ptr, words.len());
+        }
+        Ok(Some(words))
+    }
+
+    /// The kernel rounds the object's size up to the page (16 KiB on Apple Silicon); larger than
+    /// `size` is fine, since the size can never change again.
+    pub(super) fn size_matches(file_size: i64, size: usize) -> bool {
+        let page = rustix::param::page_size() as i64;
+        file_size >= size as i64 && file_size < size as i64 + page
+    }
 }
 
 impl core::fmt::Debug for ShmRegion {
@@ -1048,11 +1182,40 @@ mod tests {
     }
 
     /// A memfd of `len` bytes whose first words are `words`.
+    #[cfg(target_os = "linux")]
     fn raw_memfd(len: u64, words: &[u32]) -> OwnedFd {
+        use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
         let fd = memfd_create("komponist-test", MemfdFlags::CLOEXEC).unwrap();
         ftruncate(&fd, len).unwrap();
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
         rustix::io::pwrite(&fd, &bytes, 0).unwrap();
+        fd
+    }
+
+    /// A POSIX shm object of `len` bytes whose first words are `words` (written through a
+    /// mapping: shm objects support no `pwrite`).
+    #[cfg(target_os = "macos")]
+    fn raw_memfd(len: u64, words: &[u32]) -> OwnedFd {
+        use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
+        let fd = sys::create(len as usize).unwrap();
+        if !words.is_empty() {
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+            // SAFETY: a fresh mapping of the first bytes of the object, which is at least that
+            // long; unmapped right after the copy.
+            unsafe {
+                let ptr = mmap(
+                    core::ptr::null_mut(),
+                    bytes.len(),
+                    ProtFlags::READ | ProtFlags::WRITE,
+                    MapFlags::SHARED,
+                    &fd,
+                    0,
+                )
+                .unwrap();
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast::<u8>(), bytes.len());
+                munmap(ptr, bytes.len()).unwrap();
+            }
+        }
         fd
     }
 
@@ -1070,14 +1233,38 @@ mod tests {
         other.set_bridge_state(BridgeState::Active);
         assert_eq!(region.latency(), 64);
         assert_eq!(region.bridge_state(), BridgeState::Active);
-        assert_eq!(fstat(region.fd()).unwrap().st_size, SHM_SIZE as i64);
+        assert!(sys::size_matches(
+            fstat(region.fd()).unwrap().st_size,
+            SHM_SIZE
+        ));
+    }
+
+    /// Sealed on Linux, set once for good on macOS: neither side can change the size.
+    #[test]
+    fn the_size_cannot_change() {
+        use rustix::fs::ftruncate;
+        let region = ShmRegion::create().unwrap();
+        let size = fstat(region.fd()).unwrap().st_size;
+        assert!(ftruncate(region.fd(), 4096).is_err());
+        assert!(ftruncate(region.fd(), 2 * SHM_SIZE as u64).is_err());
+        assert!(ftruncate(region.fd(), 0).is_err());
+        assert_eq!(fstat(region.fd()).unwrap().st_size, size);
+        // The mapping is intact.
+        region.set_latency(7);
+        assert_eq!(ShmRegion::open(dup(&region)).unwrap().latency(), 7);
     }
 
     #[test]
-    fn the_size_is_sealed() {
-        let region = ShmRegion::create().unwrap();
-        assert!(ftruncate(region.fd(), 4096).is_err());
-        assert!(ftruncate(region.fd(), 2 * SHM_SIZE as u64).is_err());
+    fn regions_are_distinct_and_close_on_exec() {
+        let a = ShmRegion::create().unwrap();
+        let b = ShmRegion::create().unwrap();
+        a.set_latency(1);
+        b.set_latency(2);
+        assert_eq!((a.latency(), b.latency()), (1, 2));
+        for region in [&a, &b] {
+            let flags = rustix::io::fcntl_getfd(region.fd()).unwrap();
+            assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+        }
     }
 
     #[test]
@@ -1115,8 +1302,8 @@ mod tests {
         // Not a file at all.
         let (a, _b) = rustix::net::socketpair(
             rustix::net::AddressFamily::UNIX,
-            rustix::net::SocketType::SEQPACKET,
-            rustix::net::SocketFlags::CLOEXEC,
+            rustix::net::SocketType::STREAM,
+            rustix::net::SocketFlags::empty(),
             None,
         )
         .unwrap();

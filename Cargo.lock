@@ -2533,6 +2533,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "komponist-ipc",
+ "libc",
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
@@ -2552,6 +2553,7 @@ name = "komponist-ipc"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
+ "libc",
  "postcard",
  "rustix 1.1.6",
  "serde",

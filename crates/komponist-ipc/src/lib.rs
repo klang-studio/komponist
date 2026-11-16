@@ -1,6 +1,6 @@
 //! The link between komponist and its plugin bridge processes.
 //!
-//! Shared memory (memfd), futex signalling with deadlines, SPSC event rings in shared memory and
+//! Shared memory, cross-process wait/wake with deadlines, SPSC event rings in shared memory and
 //! the control protocol over a Unix socket. Both sides use this crate: the app's
 //! `ExternalProcessor` and plugin manager (`komponist-plugins`) and `komponist-bridge`.
 //!
@@ -8,10 +8,15 @@
 //! - [`shm`]: the `#[repr(C)]` shared layout, [`ShmRegion`], the RT roles [`BridgeClient`] (app)
 //!   and [`BridgeServer`] (bridge), and [`BridgeMonitor`] (app UI thread).
 //! - [`ring`]: [`ShmRing`], the SPSC ring inside the mapping.
-//! - [`signal`]: futex wait with deadline and wake.
-//! - [`control`]: [`ControlMsg`] / [`BridgeMsg`] over a seqpacket [`Channel`], and the shared
+//! - [`signal`]: wait with deadline and wake on shared words.
+//! - [`control`]: [`ControlMsg`] / [`BridgeMsg`] over a stream-socket [`Channel`], and the shared
 //!   plugin vocabulary ([`PluginDescriptor`], [`ParamInfo`], [`NoteName`], …).
-//! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process through its pidfd.
+//! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process.
+//!
+//! Platform layer (#44): the public API is the same on Linux and macOS; `shm`, `signal`,
+//! `process` and the socket set-up in `control` each have a private `sys` module per OS (Linux:
+//! memfd, futex, pidfd; macOS: POSIX shm, `os_sync_wait_on_address`, kqueue). The control framing
+//! is one code path on both.
 //!
 //! This crate links no plugin format and no audio backend.
 

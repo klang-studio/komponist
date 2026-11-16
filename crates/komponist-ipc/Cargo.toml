@@ -8,9 +8,16 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 # Workspace features (mm, thread, process, net) plus: fs (memfd, seals, fstat), event (poll on
-# pidfds), time (CLOCK_MONOTONIC for absolute futex deadlines).
+# pidfds, kqueue on macOS), time (CLOCK_MONOTONIC for absolute futex deadlines).
 rustix = { workspace = true, features = ["fs", "event", "time"] }
 postcard = { workspace = true, features = ["use-std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# POSIX shared memory (`shm_open`) in place of memfd; the page size for its rounded size.
+rustix = { workspace = true, features = ["shm", "param"] }
+# `os_sync_wait_on_address` / `os_sync_wake_by_address_all` and `mach_absolute_time`, which
+# rustix does not wrap.
+libc.workspace = true
 
 [dev-dependencies]
 assert_no_alloc.workspace = true

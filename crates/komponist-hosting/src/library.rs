@@ -8,26 +8,18 @@
 //! `dlclose` (and VST3 `ModuleExit`) as usual; the code just stays mapped, and loading the library
 //! again finds it in place.
 //!
-//! The functions come straight from the C library (glibc ≥ 2.34 has `dlopen` in `libc.so.6`), which
-//! keeps the crate free of a loader dependency.
+//! The functions come straight from the C library (glibc ≥ 2.34 has `dlopen` in `libc.so.6`, macOS
+//! in `libSystem`) through the `libc` bindings, which keeps the crate free of a loader dependency.
+//! The `RTLD_*` flags differ per OS (e.g. `RTLD_NODELETE` is `0x1000` on Linux and `0x80` on
+//! macOS, `RTLD_LOCAL` is `0` and `0x4`), so they come from `libc` too, never as literals.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use libc::{RTLD_LOCAL, RTLD_NODELETE, RTLD_NOLOAD, RTLD_NOW, dlclose, dlerror, dlopen, dlsym};
+
 use crate::plugin::HostingError;
-
-unsafe extern "C" {
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    fn dlclose(handle: *mut c_void) -> c_int;
-    fn dlerror() -> *mut c_char;
-}
-
-const RTLD_NOW: c_int = 2;
-const RTLD_LOCAL: c_int = 0;
-const RTLD_NOLOAD: c_int = 4;
-const RTLD_NODELETE: c_int = 0x1000;
 
 /// The last `dlerror()` message.
 fn last_error() -> String {
@@ -131,8 +123,51 @@ mod tests {
         ));
         // Not loaded: nothing happens.
         keep_mapped(missing);
-        // This test executable is no loadable library.
-        let exe = std::env::current_exe().unwrap();
-        assert!(unsafe { Library::open(&exe) }.is_err());
+        // A file that is no library at all.
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/library.rs");
+        assert!(unsafe { Library::open(&source) }.is_err());
+        // This test executable is no loadable library for glibc (dyld on macOS hands out a handle
+        // to the running main executable instead).
+        #[cfg(target_os = "linux")]
+        {
+            let exe = std::env::current_exe().unwrap();
+            assert!(unsafe { Library::open(&exe) }.is_err());
+        }
+    }
+
+    /// The flags are the platform's own values (#44: the Linux literals were wrong on macOS).
+    #[test]
+    fn dlopen_flags_are_the_platform_values() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            (RTLD_NOW, RTLD_LOCAL, RTLD_NOLOAD, RTLD_NODELETE),
+            (0x2, 0x0, 0x4, 0x1000)
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            (RTLD_NOW, RTLD_LOCAL, RTLD_NOLOAD, RTLD_NODELETE),
+            (0x2, 0x4, 0x10, 0x80)
+        );
+    }
+
+    /// A loaded system library opens with the policy flags, symbols resolve, and `keep_mapped`
+    /// on it (`RTLD_NOLOAD | RTLD_NODELETE`) is accepted.
+    #[test]
+    fn a_system_library_opens_with_the_policy_flags() {
+        #[cfg(target_os = "linux")]
+        let path = Path::new("libc.so.6");
+        #[cfg(target_os = "macos")]
+        let path = Path::new("/usr/lib/libSystem.B.dylib");
+        let lib = unsafe { Library::open(path) }.unwrap();
+        type Getpid = unsafe extern "C" fn() -> i32;
+        let getpid = unsafe { lib.symbol::<Getpid>(c"getpid") }.unwrap();
+        assert_eq!(unsafe { getpid() } as u32, std::process::id());
+        assert!(unsafe { lib.symbol::<Getpid>(c"no_such_symbol_here") }.is_none());
+        keep_mapped(path);
+        // RTLD_NOLOAD finds it loaded (on macOS a wrong flag value would load or fail instead).
+        let c = c_path(path).unwrap();
+        let handle = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_NOLOAD) };
+        assert!(!handle.is_null(), "{}", last_error());
+        unsafe { dlclose(handle) };
     }
 }

@@ -930,12 +930,12 @@ If RT priority cannot be obtained, the bridge logs it and the UI shows a warning
 **Watchdog:** the bridge main loop must answer a heartbeat on the control socket; a stalled main
 loop (seen once with DecentSampler in the spike) is reported as "hängt" and can be restarted like a crash.
 
-**Crash:** the plugin manager watches each bridge's `pidfd`. Death → state "abgestürzt": red edge,
+**Crash:** the plugin manager watches each bridge's `pidfd` (a kqueue `EVFILT_PROC` on macOS). Death → state "abgestürzt": red edge,
 the track keeps running (passthrough or silence), "Neu laden" starts a new bridge with the last known
 state. State snapshots are taken on save, on GUI close, and debounced on "state dirty" (CLAP
 `state.mark_dirty`, VST3 `restartComponent` / edits).
 
-**Control protocol** (postcard over a Unix seqpacket socket), app → bridge:
+**Control protocol** (postcard over a Unix stream socket, length-prefixed frames; #44), app → bridge:
 `Load`, `Activate`, `Deactivate`, `GetState`, `SetState`, `ListParams`, `SetParam`, `OpenGui{parent_xid, scale}`,
 `SetGuiSize`, `CloseGui`, `SetRenderMode`, `Shutdown`. Bridge → app: `Loaded{info, params, latency}`
 (the info's descriptor says whether the plugin has a sidechain port, `PluginDescriptor::sidechain`, #6),

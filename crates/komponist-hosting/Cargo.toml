@@ -29,6 +29,8 @@ clack-extensions = { workspace = true, features = [
 vst3.workspace = true
 # Parameter changes between the VST3 controller (main thread) and processor (RT thread).
 rtrb.workspace = true
+# dlopen and its per-OS RTLD_* flags (`library.rs`).
+libc.workspace = true
 # poll() and eventfd for the reference `PollLoop`.
 rustix = { workspace = true, features = ["event"] }
 
