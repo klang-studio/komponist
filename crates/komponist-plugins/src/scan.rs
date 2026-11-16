@@ -16,6 +16,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdout, Command, Stdio};
@@ -25,6 +26,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use komponist_ipc::{PluginDescriptor, PluginFormat, PluginKind, ProcessExit, ProcessWatcher};
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::catalog::{CachedBundle, DirCount, PluginDirs, ScanCache, ScanReport, SkippedBundle};
@@ -34,6 +36,10 @@ const MAX_DEPTH: usize = 8;
 
 /// How often a waiting scan looks at the cancel flag.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+/// Windows: how often a waiting scan reads its output pipes (they cannot be waited on).
+#[cfg(windows)]
+const PIPE_POLL: Duration = Duration::from_millis(5);
 
 /// Most bytes of scan output kept (a JSON array of descriptors is a few KiB).
 const MAX_STDOUT: usize = 16 << 20;
@@ -341,6 +347,8 @@ pub(crate) fn bundle_key(path: &Path) -> Result<PathBuf, String> {
         return Err("path is not valid UTF-8".into());
     }
     let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let canonical = without_verbatim(canonical);
     if canonical.to_str().is_none() {
         return Err(format!(
             "path {} is not valid UTF-8",
@@ -348,6 +356,23 @@ pub(crate) fn bundle_key(path: &Path) -> Result<PathBuf, String> {
         ));
     }
     Ok(canonical)
+}
+
+/// Windows: `fs::canonicalize` gives verbatim paths (`\\?\C:\…`, `\\?\UNC\server\share\…`). The
+/// cache key, the catalog and project files keep the usual form, which every later use (the scan,
+/// the bridge's `LoadLibraryExW`) takes as well.
+#[cfg(windows)]
+pub(crate) fn without_verbatim(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
 }
 
 /// Modification time of a bundle in seconds. A plain file (a Linux `.clap`) has its own; for a
@@ -488,9 +513,19 @@ pub(crate) fn interpret(exit: ProcessExit, stdout: &[u8], stderr: &[u8], bundle:
             };
             Scanned::failed(message, code == EXIT_FAILURE)
         }
-        (None, Some(signal)) => Scanned::failed(format!("crashed (signal {signal})"), true),
+        (None, Some(signal)) => Scanned::failed(crash_reason(signal), true),
         (None, None) => Scanned::failed("scan ended without a status", false),
     }
+}
+
+/// How a crash reads in the report: the signal, or on Windows the exception (an NTSTATUS error
+/// code, which `komponist-ipc` reports in place of the signal).
+fn crash_reason(signal: i32) -> String {
+    #[cfg(windows)]
+    if signal as u32 & 0xC000_0000 == 0xC000_0000 {
+        return format!("crashed (exception 0x{:08X})", signal as u32);
+    }
+    format!("crashed (signal {signal})")
 }
 
 /// The bridge's own reason from stderr: the last line it printed, else the last non-empty line;
@@ -523,6 +558,7 @@ struct Pipes {
 
 impl Pipes {
     /// Waits up to `timeout` until a pipe has data or the process exited.
+    #[cfg(unix)]
     fn wait(&self, watcher: &ProcessWatcher, timeout: Duration) {
         let mut fds = Vec::with_capacity(3);
         fds.push(PollFd::from_borrowed_fd(watcher.as_fd(), PollFlags::IN));
@@ -539,6 +575,22 @@ impl Pipes {
         let _ = poll(&mut fds, Some(&ts));
     }
 
+    /// Windows: waits up to `timeout` (at most [`PIPE_POLL`]) until the process exited. A pipe
+    /// cannot be waited on for "readable", so the caller reads what arrived after every wait; a
+    /// scan prints a few KiB, and a full pipe only holds the plugin up until the next look.
+    #[cfg(windows)]
+    fn wait(&self, watcher: &ProcessWatcher, timeout: Duration) {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        let wait = timeout.min(PIPE_POLL).as_millis().max(1) as u32;
+        // SAFETY: the watcher's live process handle; a plain timed wait.
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(
+                watcher.as_handle().as_raw_handle(),
+                wait,
+            )
+        };
+    }
+
     /// Reads whatever the pipes hold now, without blocking.
     fn read_ready(&mut self) {
         read_pipe(&mut self.stdout, &mut self.out, MAX_STDOUT, false);
@@ -546,21 +598,78 @@ impl Pipes {
     }
 }
 
+/// How many bytes `reader` can give without blocking: `None` at EOF (or on an error).
+#[cfg(unix)]
+fn ready_bytes<R: AsFd>(reader: &R) -> Option<usize> {
+    let mut fds = [PollFd::from_borrowed_fd(reader.as_fd(), PollFlags::IN)];
+    let zero = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    match poll(&mut fds, Some(&zero)) {
+        // Readable: data, or EOF (which the read then reports as 0).
+        Ok(n) if n > 0 => Some(usize::MAX),
+        _ => Some(0),
+    }
+}
+
+/// Windows: the bytes queued in the pipe (`PeekNamedPipe`); `None` once the writer is gone and
+/// nothing is left.
+#[cfg(windows)]
+fn ready_bytes<R: std::os::windows::io::AsHandle>(reader: &R) -> Option<usize> {
+    use std::os::windows::io::AsRawHandle;
+    let mut available = 0u32;
+    // SAFETY: a valid pipe handle; only the count is asked for.
+    let ok = unsafe {
+        windows_sys::Win32::System::Pipes::PeekNamedPipe(
+            reader.as_handle().as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(available as usize)
+}
+
 /// Reads from `pipe` while it has data; closes it at EOF. Keeps at most `max` bytes (the tail if
 /// `tail`, else the head).
+#[cfg(unix)]
 fn read_pipe<R: Read + AsFd>(pipe: &mut Option<R>, buf: &mut Vec<u8>, max: usize, tail: bool) {
+    read_pipe_with(pipe, buf, max, tail, ready_bytes);
+}
+
+/// Reads from `pipe` while it has data; closes it at EOF. Keeps at most `max` bytes (the tail if
+/// `tail`, else the head).
+#[cfg(windows)]
+fn read_pipe<R: Read + std::os::windows::io::AsHandle>(
+    pipe: &mut Option<R>,
+    buf: &mut Vec<u8>,
+    max: usize,
+    tail: bool,
+) {
+    read_pipe_with(pipe, buf, max, tail, ready_bytes);
+}
+
+fn read_pipe_with<R: Read>(
+    pipe: &mut Option<R>,
+    buf: &mut Vec<u8>,
+    max: usize,
+    tail: bool,
+    ready: fn(&R) -> Option<usize>,
+) {
     let mut chunk = [0u8; 8192];
     while let Some(reader) = pipe.as_mut() {
-        let mut fds = [PollFd::from_borrowed_fd(reader.as_fd(), PollFlags::IN)];
-        let zero = Timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
+        let len = match ready(reader) {
+            None => {
+                *pipe = None;
+                return;
+            }
+            Some(0) => return,
+            Some(n) => n.min(chunk.len()),
         };
-        match poll(&mut fds, Some(&zero)) {
-            Ok(n) if n > 0 => {}
-            _ => return,
-        }
-        match reader.read(&mut chunk) {
+        match reader.read(&mut chunk[..len]) {
             Ok(0) | Err(_) => *pipe = None,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
@@ -627,6 +736,16 @@ mod tests {
         let crashed = interpret(exit(None, Some(11)), b"", b"", Path::new(BUNDLE));
         assert_eq!(crashed.error.as_deref(), Some("crashed (signal 11)"));
         assert!(crashed.cacheable);
+        // Windows: an NTSTATUS crash code reads as the exception.
+        #[cfg(windows)]
+        {
+            let violation = 0xC000_0005_u32 as i32;
+            let crashed = interpret(exit(None, Some(violation)), b"", b"", Path::new(BUNDLE));
+            assert_eq!(
+                crashed.error.as_deref(),
+                Some("crashed (exception 0xC0000005)")
+            );
+        }
 
         let usage = interpret(exit(Some(2), None), b"", b"", Path::new(BUNDLE));
         assert_eq!(usage.error.as_deref(), Some("scan failed (exit code 2)"));
@@ -650,29 +769,75 @@ mod tests {
         ] {
             std::fs::write(root.join(file), b"x").unwrap();
         }
-        // A symlink loop must not hang the walk.
+        // A symlink loop must not hang the walk (Windows: creating symlinks needs a privilege).
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&root, root.join("vendor/loop")).unwrap();
 
         let clap = find_bundles(&root, PluginFormat::Clap);
-        let names: Vec<_> = clap
-            .iter()
-            .map(|p| p.strip_prefix(&root).unwrap().to_str().unwrap().to_owned())
-            .collect();
+        let names: Vec<_> = clap.iter().map(|p| relative(&root, p)).collect();
         assert_eq!(names, ["Z.clap", "a.CLAP", "vendor/sub/Deep.clap"]);
         let vst3 = find_bundles(&root, PluginFormat::Vst3);
         assert_eq!(vst3, [root.join("B.vst3")]);
         assert!(bundle_mtime(&vst3[0]) > 0);
         assert!(find_bundles(&root.join("missing"), PluginFormat::Clap).is_empty());
 
+        #[cfg(unix)]
         assert_eq!(
             bundle_key(&root.join("vendor/loop/Z.clap")),
-            Ok(std::fs::canonicalize(root.join("Z.clap")).unwrap())
+            Ok(canonical(&root.join("Z.clap")))
+        );
+        assert_eq!(
+            bundle_key(&root.join("Z.clap")),
+            Ok(canonical(&root.join("Z.clap")))
         );
         assert!(bundle_key(&root.join("missing.clap")).is_err());
-        use std::os::unix::ffi::OsStrExt;
-        let bad = root.join(std::ffi::OsStr::from_bytes(b"\xff.clap"));
+        #[cfg(unix)]
+        let bad =
+            root.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"\xff.clap"));
+        // Windows: an unpaired surrogate.
+        #[cfg(windows)]
+        let bad = root.join(
+            <std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(&[
+                0xD800,
+                u16::from(b'.'),
+                u16::from(b'c'),
+            ]),
+        );
         assert_eq!(bundle_key(&bad), Err("path is not valid UTF-8".into()));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `path` below `root`, with `/` between its components on every OS.
+    fn relative(root: &Path, path: &Path) -> String {
+        let parts: Vec<&str> = path
+            .strip_prefix(root)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_str().unwrap())
+            .collect();
+        parts.join("/")
+    }
+
+    /// The canonical path as `bundle_key` gives it (Windows: without the verbatim prefix).
+    fn canonical(path: &Path) -> PathBuf {
+        let path = std::fs::canonicalize(path).unwrap();
+        #[cfg(windows)]
+        let path = without_verbatim(path);
+        path
+    }
+
+    /// Windows: verbatim paths lose their prefix; others stay as they are.
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_prefixes_are_dropped() {
+        for (from, to) in [
+            (r"\\?\C:\Program Files\x.clap", r"C:\Program Files\x.clap"),
+            (r"\\?\UNC\server\share\x.clap", r"\\server\share\x.clap"),
+            (r"C:\x.clap", r"C:\x.clap"),
+            (r"\\?\GLOBALROOT\Device\x", r"\\?\GLOBALROOT\Device\x"),
+        ] {
+            assert_eq!(without_verbatim(from.into()), PathBuf::from(to));
+        }
     }
 
     /// A bundle folder shaped like the ones macOS plugins ship as (`Contents/MacOS/<name>`,
@@ -706,7 +871,7 @@ mod tests {
         assert_eq!(found, [clap.clone(), nested]);
         assert_eq!(find_bundles(&root, PluginFormat::Vst3), [vst3]);
         // The cache key is the canonical path of the bundle folder.
-        assert_eq!(bundle_key(&clap), Ok(std::fs::canonicalize(&clap).unwrap()));
+        assert_eq!(bundle_key(&clap), Ok(canonical(&clap)));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

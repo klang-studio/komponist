@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,11 +37,13 @@ use komponist_ipc::{
     ControlMsg, GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, RenderMode,
 };
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId};
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 
 use crate::bridge::{Bridge, Collected, SpawnSetup, StatePurpose, Timing};
 use crate::catalog::{
-    Catalog, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache, ScanReport,
+    Catalog, Platform, PluginDirs, PluginLocation, SCAN_CACHE_FILE, SCAN_TIMEOUT, ScanCache,
+    ScanReport, env_path,
 };
 use crate::scan::{ScanJob, ScanSetup};
 
@@ -273,15 +275,13 @@ pub struct PluginManagerConfig {
 impl PluginManagerConfig {
     /// The default setup of the app: the bridge is the running executable itself with `--bridge`
     /// (WP-94: nothing next to it can be missing or stale), the cache in
-    /// `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`; on macOS `~/Library/Caches/komponist/`,
-    /// where the XDG variable is not honoured), and half the CPU cores (1 ..= 8)
-    /// for scans. When the running executable cannot be determined, `bridge_exe` is empty and
+    /// `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`; on macOS
+    /// `~/Library/Caches/komponist/`, where the XDG variable is not honoured; on Windows
+    /// `%LOCALAPPDATA%\komponist\`), and half the CPU cores (1 ..= 8) for scans. When the running executable cannot be determined, `bridge_exe` is empty and
     /// every start of a bridge fails with a clear [`PluginError::Spawn`].
     pub fn defaults() -> PluginManagerConfig {
         let exe = std::env::current_exe().unwrap_or_default();
-        let xdg = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let cache_dir = cache_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+        let cache_dir = cache_dir_from(Platform::CURRENT, &|name: &str| env_path(name))
             .unwrap_or_else(|| std::env::temp_dir().join("komponist"));
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         PluginManagerConfig {
@@ -293,15 +293,16 @@ impl PluginManagerConfig {
     }
 }
 
-/// The cache folder for given inputs; `macos` picks the platform's convention. `None` without a
-/// usable home folder (Linux: without `$XDG_CACHE_HOME` too).
-fn cache_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
-    let base = if macos {
-        home?.join("Library/Caches")
-    } else {
-        xdg.filter(|d| d.is_absolute())
-            .map(Path::to_path_buf)
-            .or_else(|| home.map(|h| h.join(".cache")))?
+/// The cache folder for a platform's convention and the environment `var` (a variable by name).
+/// `None` without a usable home folder (Linux: without `$XDG_CACHE_HOME` too; Windows: without
+/// an absolute `%LOCALAPPDATA%`).
+fn cache_dir_from(platform: Platform, var: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    let base = match platform {
+        Platform::Macos => var("HOME")?.join("Library/Caches"),
+        Platform::Linux => var("XDG_CACHE_HOME")
+            .filter(|d| d.is_absolute())
+            .or_else(|| var("HOME").map(|h| h.join(".cache")))?,
+        Platform::Windows => var("LOCALAPPDATA").filter(|d| d.is_absolute())?,
     };
     Some(base.join("komponist"))
 }
@@ -664,17 +665,23 @@ impl PluginManager {
             if waiting.is_empty() || now >= deadline {
                 break;
             }
-            let mut fds: Vec<PollFd<'_>> = waiting
-                .keys()
-                .filter_map(|d| self.bridges.get(d))
-                .map(|b| PollFd::from_borrowed_fd(b.socket(), PollFlags::IN))
-                .collect();
-            let wait = (deadline - now).min(Duration::from_millis(50));
-            let ts = Timespec {
-                tv_sec: wait.as_secs() as i64,
-                tv_nsec: i64::from(wait.subsec_nanos()),
-            };
-            let _ = rustix::event::poll(&mut fds, Some(&ts));
+            #[cfg(unix)]
+            {
+                let mut fds: Vec<PollFd<'_>> = waiting
+                    .keys()
+                    .filter_map(|d| self.bridges.get(d))
+                    .map(|b| PollFd::from_borrowed_fd(b.socket(), PollFlags::IN))
+                    .collect();
+                let wait = (deadline - now).min(Duration::from_millis(50));
+                let ts = Timespec {
+                    tv_sec: wait.as_secs() as i64,
+                    tv_nsec: i64::from(wait.subsec_nanos()),
+                };
+                let _ = rustix::event::poll(&mut fds, Some(&ts));
+            }
+            // Windows: a pipe cannot be waited on for "readable"; look again shortly.
+            #[cfg(windows)]
+            std::thread::sleep((deadline - now).min(Duration::from_millis(1)));
         }
         states.sort_by_key(|(device, _)| *device);
         states
@@ -828,25 +835,50 @@ impl PluginManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn cache_dir_follows_the_platform() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| PathBuf::from(v))
+            }
+        };
         let home = Path::new("/Users/u");
-        let xdg = Path::new("/x/cache");
+        // An absolute path on the OS that runs the test (`is_absolute` follows the host).
+        const XDG: &str = if cfg!(windows) {
+            "C:/x/cache"
+        } else {
+            "/x/cache"
+        };
+        let all = env(&[("HOME", "/Users/u"), ("XDG_CACHE_HOME", XDG)]);
         assert_eq!(
-            cache_dir_from(true, Some(xdg), Some(home)),
-            Some("/Users/u/Library/Caches/komponist".into())
+            cache_dir_from(Platform::Macos, &all),
+            Some(home.join("Library/Caches").join("komponist"))
         );
-        assert_eq!(cache_dir_from(true, None, None), None);
+        assert_eq!(cache_dir_from(Platform::Macos, &env(&[])), None);
         assert_eq!(
-            cache_dir_from(false, Some(xdg), Some(home)),
-            Some("/x/cache/komponist".into())
+            cache_dir_from(Platform::Linux, &all),
+            Some(Path::new(XDG).join("komponist"))
         );
+        let relative = env(&[("HOME", "/Users/u"), ("XDG_CACHE_HOME", "rel")]);
         assert_eq!(
-            cache_dir_from(false, Some(Path::new("rel")), Some(home)),
-            Some("/Users/u/.cache/komponist".into())
+            cache_dir_from(Platform::Linux, &relative),
+            Some(home.join(".cache").join("komponist"))
         );
-        assert_eq!(cache_dir_from(false, None, None), None);
+        assert_eq!(cache_dir_from(Platform::Linux, &env(&[])), None);
+        // Windows: %LOCALAPPDATA%, never $HOME (an absolute path only where Windows paths are).
+        assert_eq!(cache_dir_from(Platform::Windows, &all), None);
+        #[cfg(windows)]
+        assert_eq!(
+            cache_dir_from(
+                Platform::Windows,
+                &env(&[("LOCALAPPDATA", r"C:\Users\u\AppData\Local")])
+            ),
+            Some(r"C:\Users\u\AppData\Local\komponist".into())
+        );
     }
 
     #[test]

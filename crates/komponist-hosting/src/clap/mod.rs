@@ -87,7 +87,15 @@ compile_error!("komponist-hosting: no embedded CLAP GUI API (clap/mod.rs) for th
 /// Loads a bundle's entry (dlopen + `clap_entry.init`). clack caches entries per library, so
 /// loading the same bundle twice in one process shares one initialised entry. The library stays
 /// mapped after its last entry is gone (see `crate::library`).
+///
+/// Windows: clack-host loads with a plain `LoadLibraryExW(path, NULL, 0)`, which would look for the
+/// plugin's dependencies next to the executable and on `PATH` rather than next to the plugin. So
+/// the DLL is loaded with `crate::library`'s policy first (and pinned); clack's load then only
+/// finds it loaded.
 fn load_entry(bundle: &Path) -> Result<PluginEntry, HostingError> {
+    // SAFETY: as below.
+    #[cfg(windows)]
+    let _policy_load = unsafe { crate::library::Library::open(bundle) }?;
     // SAFETY: loading a plugin library runs foreign code; the bridge process exists to contain it.
     let entry = unsafe { PluginEntry::load(bundle) }
         .map_err(|e| HostingError::Load(format!("{}: {e}", bundle.display())))?;

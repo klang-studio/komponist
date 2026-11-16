@@ -13,13 +13,33 @@ komponist-ipc.workspace = true
 serde.workspace = true
 # The scan cache file and the JSON output of `komponist-bridge --scan`.
 serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 # Workspace features (mm, thread, process, net) plus: event (poll on control sockets, scan pipes
 # and pidfds).
 rustix = { workspace = true, features = ["event"] }
 
+[target.'cfg(windows)'.dependencies]
+# Foundation (handles, errors), Pipes (PeekNamedPipe on a scan's output pipes), Threading
+# (waiting on a scan's process handle).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Integration tests run `Engine::process` and `ExternalProcessor::process` inside `assert_no_alloc`.
 assert_no_alloc.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# Ending and stopping bridges from outside in the lifecycle tests (TerminateProcess,
+# DebugActiveProcess).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows and fake pointer input for the GUI routing tests (run under Xvfb only).
