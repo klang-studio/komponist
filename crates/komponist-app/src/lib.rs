@@ -25,7 +25,8 @@
 //! - [`record`]: [`record::Recording`], the take that grows while recording (WP-51).
 //! - [`step_rows`]: which rows a new step clip gets per instrument and how rows are labelled
 //!   (sampler pads "P1…", note names elsewhere; WP-54, WP-87).
-//! - [`settings`]: the settings file, `~/.config/komponist/settings.json`.
+//! - [`settings`]: the settings file, `~/.config/komponist/settings.json`
+//!   (macOS: `~/Library/Application Support/komponist/settings.json`).
 //! - [`metrics`]: shell sizes the handoff gives only in the screen data.
 //! - [`windows`]: windows besides the main one; [`windows::plugin_frame`], the S05 plugin frame
 //!   around a plugin's own GUI (WP-50).

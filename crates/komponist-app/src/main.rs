@@ -7,7 +7,8 @@
 //!
 //! Opens `PROJECT`, or shows the start screen (S09) with the recent projects
 //! (`recent.json` next to the settings file). `--demo` opens the demo project "Night Drive". The
-//! audio output comes from the settings (`~/.config/komponist/settings.json`);
+//! audio output comes from the settings (`~/.config/komponist/settings.json`, on macOS
+//! `~/Library/Application Support/komponist/settings.json`);
 //! `--null-audio` (or `KOMPONIST_NULL_AUDIO=1`) runs the engine on the null backend without any
 //! audio or MIDI device, for checks under Xvfb. `--scale` overrides the UI scale. `--lang` overrides
 //! the UI language of the settings (`language`: `system`, `de`, `en`; `system` is German on a
@@ -51,7 +52,8 @@ usage: komponist [PROJECT.komponist] [options]
   --demo           open the demo project Night Drive instead of the start screen
   --null-audio     no audio or MIDI device: the engine runs on a timer (also KOMPONIST_NULL_AUDIO=1)
   --scale N        UI scale (pixels per point), e.g. 1 or 2
-  --settings PATH  settings file (default ~/.config/komponist/settings.json)
+  --settings PATH  settings file (default ~/.config/komponist/settings.json,
+                   macOS: ~/Library/Application Support/komponist/settings.json)
   --open-plugin NAME  open the plugin window of the first device whose plugin is NAME
   --lang de|en     UI language (default: the setting; \"system\" is German on a German desktop, else English)
   --no-plugin-scan  skip the plugin scan: only the built-in devices (also KOMPONIST_NO_PLUGIN_SCAN=1)";
