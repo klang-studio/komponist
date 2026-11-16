@@ -1116,7 +1116,7 @@ fn close_tooltip(side: komponist_ui::tooltip::HoverSide) -> (Rect, Option<Rect>)
 #[test]
 fn header_tooltips_stay_in_the_header_where_a_native_view_lies_below() {
     use komponist_ui::tooltip::HoverSide;
-    let (close, below) = close_tooltip(HoverSide::Below);
+    let (_, below) = close_tooltip(HoverSide::Below);
     let below = below.expect("the tooltip of × shows");
     assert!(
         below.top() >= metrics::HEADER,
