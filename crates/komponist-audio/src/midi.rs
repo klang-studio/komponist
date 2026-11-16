@@ -567,7 +567,10 @@ mod tests {
         }
         assert!(starts_disabled("IAC Driver Bus 1", true));
         assert!(starts_disabled("IAC-Treiber Bus 2", true));
-        assert!(!starts_disabled("IAC Driver Bus 1", false), "Linux unchanged");
+        assert!(
+            !starts_disabled("IAC Driver Bus 1", false),
+            "Linux unchanged"
+        );
     }
 
     #[test]
