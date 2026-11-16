@@ -219,3 +219,14 @@ jobs:
       - name: Test
         timeout-minutes: 45
         run: cargo test --workspace
+
+      # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
+      # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images
+      # readme; C:\Program Files\LLVM is its default path, assumed here). asio-sys downloads Steinberg's ASIO SDK from
+      # https://www.steinberg.net/asiosdk into %TEMP% during the build. No ASIO device is opened. Untested until pushed.
+      - name: Clippy and tests with ASIO
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: |
+          cargo clippy -p komponist-audio --all-targets --features asio -- -D warnings
+          cargo test -p komponist-audio --features asio

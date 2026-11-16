@@ -2,8 +2,14 @@
 # Builds komponist (release) and packs the Windows zip: dist/komponist-<version>-windows-x86_64.zip with its .sha256.
 # Windows only, run from Git Bash (MSVC toolchain, bsdtar from Windows 10+). Used by the release job and by hand.
 #
-#   scripts/package-windows.sh [--skip-build] [--out DIR] [--name NAME]
+#   scripts/package-windows.sh [--skip-build] [--no-asio] [--out DIR] [--name NAME]
 #
+# The build has ASIO (cargo feature `asio`, W8) unless --no-asio is given. ASIO needs LLVM's libclang for bindgen
+# (LIBCLANG_PATH, or "C:\Program Files\LLVM\bin", where the LLVM installer and the windows-2025 runner put it) and
+# downloads Steinberg's ASIO SDK at build time (https://www.steinberg.net/asiosdk; docs/ARCHITECTURE.md §7). Without
+# libclang the script stops with an error instead of shipping a build without ASIO silently. The ASIO SDK is
+#
+# not part of the zip. With --skip-build nothing is built or checked here.
 # NAME is the base name of the folder inside the zip and of the zip itself; default komponist-<version>-windows-x86_64
 # (the release job passes komponist-<tag>-windows-x86_64). The zip holds komponist.exe (the plugin bridge is
 # `komponist.exe --bridge`, nothing else to ship; fonts, texts and the window icon are compiled in, the file icon
@@ -22,14 +28,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 skip_build=0
+asio=1
 out=dist
 name=
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build) skip_build=1 ;;
+        --no-asio) asio=0 ;;
         --out) shift; out="${1:?--out needs a folder}" ;;
         --name) shift; name="${1:?--name needs a name}" ;;
-        -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "package-windows.sh: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -48,16 +56,32 @@ if [ -z "$version" ]; then
 fi
 [ -n "$name" ] || name="komponist-$version-windows-x86_64"
 
+features=()
+if [ "$skip_build" = 0 ] && [ "$asio" = 1 ]; then
+    if [ -z "${LIBCLANG_PATH:-}" ] && [ -f "/c/Program Files/LLVM/bin/libclang.dll" ]; then
+        export LIBCLANG_PATH="C:\Program Files\LLVM\bin"
+    fi
+    if [ -z "${LIBCLANG_PATH:-}" ] || [ ! -f "$(cygpath -u "$LIBCLANG_PATH")/libclang.dll" ]; then
+        echo "package-windows.sh: ASIO needs LLVM's libclang.dll: install LLVM (https://releases.llvm.org) or set LIBCLANG_PATH to its bin folder;" >&2
+        echo "  or build without ASIO with --no-asio" >&2
+        exit 1
+    fi
+    features=(--features asio)
+fi
+
 if [ "$skip_build" = 0 ]; then
     # One heavy build at a time across worktrees, at low priority (CLAUDE.md, "Build load").
     (
         source scripts/build-lock.sh
-        lowprio cargo build --release -p komponist-app --bin komponist
+        lowprio cargo build --release -p komponist-app --bin komponist ${features[@]+"${features[@]}"}
     )
 fi
 exe=target/release/komponist.exe
 [ -f "$exe" ] || { echo "package-windows.sh: $exe is missing (build it first)" >&2; exit 1; }
 
+audio="Audio goes through WASAPI or an ASIO driver (Settings, Treiber). ASIO is a registered trademark of
+Steinberg Media Technologies GmbH."
+[ "$asio" = 1 ] || audio="This build has no ASIO; audio goes through WASAPI."
 signed="unsigned"
 if [ -n "${KOMPONIST_SIGN_CERT:-}" ] || [ -n "${KOMPONIST_SIGN_THUMBPRINT:-}" ]; then
     signtool="$(command -v signtool.exe || true)"
@@ -101,7 +125,7 @@ This build is $signed. Windows SmartScreen may show "Windows protected your PC" 
 
 Settings and the recent projects live in %APPDATA%\komponist.
 Plugins (CLAP, VST3) are found in %COMMONPROGRAMFILES%\CLAP and \VST3, %LOCALAPPDATA%\Programs\Common\CLAP
-and \VST3, and in %CLAP_PATH%. ASIO is not supported yet; audio goes through WASAPI.
+and \VST3, and in %CLAP_PATH%. $audio
 
 Double-clicking a .komponist file does not open komponist yet (the file association comes with a later installer);
 open it from inside komponist or drop it on komponist.exe.

@@ -2,7 +2,7 @@
 # Pre-releases (v0.2.0-rc.1, v0.2-beta1 ...) trigger it too, deliberately and unfiltered: publish a pre-release
 # to try this workflow. It builds komponist, checks that it starts headless and attaches
 # komponist-<tag>-linux-x86_64.tar.gz, komponist-<tag>-macos-arm64.zip (ad-hoc signed app bundle, #53) and
-# komponist-<tag>-windows-x86_64.zip (unsigned, untested) with their .sha256 files to that same release.
+# komponist-<tag>-windows-x86_64.zip (unsigned, untested, with ASIO) with their .sha256 files to that same release.
 name: Release
 
 on:
@@ -188,7 +188,13 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # Builds komponist (release), assembles dist/<name>/ (komponist.exe, LICENSE, README.txt) and zips it with bsdtar.
+      # ASIO is part of the release build (cargo feature `asio`, set by the script): bindgen needs libclang, which
+      # the windows-2025 image has with LLVM 20 (runner-images readme; C:\Program Files\LLVM is its default path,
+      # assumed here; if it is missing, add a step with `choco install llvm`). Steinberg's ASIO SDK is downloaded
+      # during the build from https://www.steinberg.net/asiosdk and is not part of the zip. Untested until pushed.
       - name: Package
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: |
           name="komponist-${TAG}-windows-x86_64"
           scripts/package-windows.sh --name "$name"
