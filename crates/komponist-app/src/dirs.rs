@@ -20,7 +20,8 @@ pub fn home_dir() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        from_env("HOME")
+        // As it always was: whatever `$HOME` says.
+        std::env::var_os("HOME").map(PathBuf::from)
     }
 }
 
@@ -66,6 +67,7 @@ fn drives_from_mask(mask: u32) -> Vec<PathBuf> {
 }
 
 /// An absolute path from the environment variable `name` (empty or relative values do not count).
+#[cfg(windows)]
 fn from_env(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
