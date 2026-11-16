@@ -197,6 +197,31 @@ Rules: `komponist-model` has no dependency on any other studio crate (it writes 
 no IPC and no plugin format. Only `komponist-bridge` links plugin formats. Only `komponist-app` knows egui
 *and* the engine.
 
+### 4.1 Platform cfgs
+
+komponist runs on Linux and macOS (a Windows port is planned, see the work packages W1–W9 in the internal notes).
+A `cfg` says what the code is about, never "everything but the other OS": a negative OS condition
+(`not(target_os = …)`) is only used for a fallback that is meaningful on every other OS (for example "no audio
+workgroup", `komponist-rt`, `komponist-audio`). Two semantic cfgs, set by a small `build.rs` in each crate that needs
+them (`komponist-app`, `komponist-bridge`, `komponist-hosting`; `cargo::rustc-check-cfg` declares both, so
+`unexpected_cfgs` stays clean on every target):
+
+| cfg | Set on | Meaning |
+|---|---|---|
+| `x11_embed` | Linux | The app owns the plugin frame window and the plugin attaches to an X11 child of it (`GuiTarget::X11Child`, `GuiParent::X11`, CLAP `x11`, VST3 `kPlatformTypeX11EmbedWindowID`); X11 key grabs (WP-50). |
+| `bridge_frame` | macOS (Windows joins in W6) | The bridge owns the plugin frame window (`GuiTarget::OwnFrame`, `komponist-bridge/src/frame`, #52): header model and actions, `RaiseFrame`, activation hand-over. |
+
+Plain `target_os = "linux"` / `"macos"` stays where the code is about one OS's API: futex, memfd, pidfd, eventfd,
+`prctl`, `SCHED_FIFO`, `/proc` (Linux); AppKit, CoreFoundation, mach, kqueue, `os_sync`, `shm_open` (macOS). The
+frame code of the bridge and the activation hand-over of the app are `bridge_frame` code with AppKit calls inside:
+AppKit parts (`frame/appkit.rs`, `activation.rs::macos`) are the seam where a Windows backend plugs in.
+
+Every per-OS backend module (`komponist-ipc` `shm`, `signal`, `control`, `process`; `komponist-engine` `sys`;
+`komponist-hosting` `library`, `host_loop::wake`, `vst3::module`, the GUI platform types; `komponist-bridge`'s main
+loop and process hardening; the app's activation) ends with a `compile_error!` for any other OS that names the missing
+backend and the work package that adds it. `komponist-rt` and `komponist-audio` keep their fallbacks and compile on
+every OS.
+
 ---
 
 ## 5. Data model (`komponist-model`)
