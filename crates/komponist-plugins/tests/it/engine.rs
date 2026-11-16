@@ -406,6 +406,14 @@ fn bridges_in_series_share_the_callback_deadline() {
         midi: &[],
         output_latency: 0,
     };
+    // The callback runs on a realtime thread, as the device's audio thread does. A timeshare
+    // thread's deadline wait gets the process's timer leeway, which on a QoS-clamped process (the
+    // GitHub macOS runner) is tens of milliseconds: the callback took 40 ms there (#94).
+    #[cfg(target_os = "macos")]
+    komponist_rt::policy::set_current_thread_time_constraint(Duration::from_secs_f64(
+        frames as f64 / f64::from(RATE),
+    ))
+    .expect("time-constraint policy");
     let engine = &mut rig.engine;
     let before = Instant::now();
     assert_no_alloc(|| engine.process(&mut l, &mut r, &input));
