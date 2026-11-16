@@ -4,7 +4,7 @@
 //!
 //! The bridge: the `komponist` binary of this package run as `komponist --bridge` (cargo builds it
 //! for the integration tests), exactly how the app starts its bridges (WP-94). The test plugins come from
-//! `scripts/build-test-plugins.sh` (`target/test-plugins/clap/`); without them the tests skip with
+//! `scripts/build-test-plugins.sh` (`target/test-plugins/<os>/clap/`); without them the tests skip with
 //! a note.
 
 #![allow(dead_code)]
@@ -43,7 +43,10 @@ pub fn target_dir() -> PathBuf {
 /// The folder of the WP-27 CLAP fixtures as scan folders, or `None` with a note if they are not
 /// built.
 pub fn fixture_dirs() -> Option<PluginDirs> {
-    let dir = target_dir().join("test-plugins/clap");
+    let dir = target_dir()
+        .join("test-plugins")
+        .join(std::env::consts::OS)
+        .join("clap");
     if dir.join("kp-test-synth.clap").exists() {
         Some(PluginDirs {
             clap: vec![std::fs::canonicalize(dir).unwrap()],
@@ -191,6 +194,7 @@ pub fn all_ok(app: &App) -> bool {
 }
 
 /// Process ids of this process's child processes running `komponist-bridge` (scans included).
+#[cfg(target_os = "linux")]
 pub fn bridge_children() -> Vec<u32> {
     let me = std::process::id();
     let mut pids = Vec::new();
@@ -221,7 +225,35 @@ pub fn bridge_children() -> Vec<u32> {
     pids
 }
 
+/// Process ids of this process's child processes running `komponist --bridge` (scans included). macOS has
+/// no `/proc` and the bridge keeps its name there, so this asks `ps` for the arguments.
+#[cfg(target_os = "macos")]
+pub fn bridge_children() -> Vec<u32> {
+    let me = std::process::id();
+    let out = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+        .expect("run ps");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let ppid = fields.next()?.parse::<u32>().ok()?;
+            (ppid == me && fields.any(|arg| arg == "--bridge")).then_some(pid)
+        })
+        .collect()
+}
+
 /// Whether process `pid` exists (a zombie counts: it is not reaped yet).
+#[cfg(target_os = "linux")]
 pub fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Whether process `pid` exists (a zombie counts: it is not reaped yet).
+#[cfg(target_os = "macos")]
+pub fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }

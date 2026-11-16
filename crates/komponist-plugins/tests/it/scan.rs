@@ -195,7 +195,28 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     assert!(!names(&manager).contains(&"Cached FX".to_owned()));
 }
 
+/// Child processes of this test process with command name `comm` (macOS has no `/proc`: asks `ps`).
+#[cfg(target_os = "macos")]
+fn children_named(comm: &str) -> Vec<u32> {
+    let me = std::process::id();
+    let out = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,comm="])
+        .output()
+        .expect("run ps");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let ppid = fields.next()?.parse::<u32>().ok()?;
+            let name = fields.next()?.rsplit('/').next()?;
+            (ppid == me && name == comm).then_some(pid)
+        })
+        .collect()
+}
+
 /// Child processes of this test process with command name `comm`.
+#[cfg(target_os = "linux")]
 fn children_named(comm: &str) -> Vec<u32> {
     let mut found = Vec::new();
     let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
@@ -274,9 +295,7 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
         .collect();
     assert_eq!(cached, ["Crash.clap", "Empty.clap", "Fail.clap"]);
 
-    // A restarted scan and a dropped manager kill their scan processes. Finding the children
-    // reads /proc, so this part runs on Linux only.
-    #[cfg(target_os = "linux")]
+    // A restarted scan and a dropped manager kill their scan processes.
     {
         manager.start_scan(&dirs);
         wait_until(|| !children_named("sleep").is_empty());
@@ -289,7 +308,6 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn wait_until(mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + PATIENCE;
     while !condition() {
