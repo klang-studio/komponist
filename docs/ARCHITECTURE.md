@@ -464,9 +464,15 @@ reported like a refused `SCHED_FIFO`), joins the workgroup and leaves it before 
 every stream brings a new workgroup reference, the pool is rebuilt per stream. The callback
 thread itself does not join: it is the HAL's IO thread, a member already. Waits and wakes use
 `os_sync_wait_on_address` / `os_sync_wake_by_address_*` on process-private words. The kernel ends
-timed waits 12.5–25 % of the wait late (timer leeway; 25 % while nobody uses the desktop), so each
-kernel wait is armed at 3/4 of the remaining time and repeated for the rest, the last one (under
-50 µs) at the deadline (`komponist_rt::os_sync`).
+timed waits late by a timer leeway that is kernel policy: 12.5 % of the wait up to 1 ms on macOS 27,
+25 % while nobody uses the desktop, about 0.7 ms for any wait on the idle macOS 15 CI runner (#101).
+So each kernel wait is armed a quarter of the remaining time before the deadline (enough for a
+leeway up to a third of the wait) or, if longer, the leeway learned so far plus a quarter; a
+timed-out kernel wait more than a third of its length late teaches that leeway (per scope, a
+decaying maximum in an atomic, at most 2 ms). The last stretch (50 µs plus that margin) is slept in
+`mach_wait_until` slices of at most 25 µs, which the kernel does not delay on a time-constraint
+thread, with a look at the word between them; a wake-up there is seen up to one slice later
+(`komponist_rt::os_sync`).
 
 - **Dispatch, per segment:** the audio thread writes a batch descriptor, publishes it with one
   release store of a claim word (`epoch << 32 | count << 16 | next`) and wakes as many workers as

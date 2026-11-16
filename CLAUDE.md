@@ -127,8 +127,9 @@ The `egui` MCP server (`egui-mcp` from `egui_mcp` 0.3.0, matching egui 0.37) is 
    widgets). The design handoff is historical (see Design references); where it disagrees with the app, the app wins.
    New screens or larger changes start with an approved proposal (mockups in the internal notes).
 4. **Realtime:** inside `Engine::process`, `Processor::process` and the bridge RT loop: no allocation
-   or freeing, no locks, no logging, no IO, no blocking syscalls except the specified futex wait
-   with a deadline. Tests wrap `process` in `assert_no_alloc`.
+   or freeing, no locks, no logging, no IO, no blocking syscalls except the specified wait with a deadline
+   (`komponist_rt::os_sync` / the futex on Linux; on macOS including its short `mach_wait_until` slices of at most
+   25 µs before the deadline, #101). Tests wrap `process` in `assert_no_alloc`.
 5. **Scope:** change only the paths your WP owns. Never touch the sibling projects (`../pisynth`,
    `../klopfer`, `../klang-dsp`) unless your WP says so.
 6. **Tests first-class:** every WP ships tests. Before reporting, `scripts/check.sh` must pass

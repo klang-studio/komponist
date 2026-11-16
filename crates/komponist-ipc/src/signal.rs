@@ -11,12 +11,16 @@
 //!   the `SHARED` flags and an absolute `OS_CLOCK_MACH_ABSOLUTE_TIME` deadline, through
 //!   `komponist_rt::os_sync` (#45). `Instant` reads `CLOCK_UPTIME_RAW`, which is
 //!   `mach_absolute_time` in nanoseconds, so the deadline is the current `mach_absolute_time` plus
-//!   the remaining time in mach ticks (rounded up). The kernel ends timed waits 12.5–25 % of the
-//!   wait late (timer leeway, spike #43), so each kernel wait is armed at 3/4 of the remaining
-//!   time and repeated for the rest, the last one (under 50 µs) at the deadline.
+//!   the remaining time in mach ticks (rounded up). The kernel ends timed waits late by a timer
+//!   leeway that depends on the OS version and on how idle the machine is (12.5 % of the wait on
+//!   macOS 27, about 0.7 ms for any wait on the macOS 15 CI runner, #101), so each kernel wait is armed short
+//!   of the deadline by 1/4 of the remaining time or by the leeway `komponist_rt::os_sync` has
+//!   learned, and the last stretch is slept in short `mach_wait_until` slices with a look at the
+//!   word between them.
 //!
 //! RT use: [`wait_while`] is the only blocking call the engine's audio thread may make, always
-//! with a deadline; [`wake`] never blocks. Neither allocates or takes a lock.
+//! with a deadline (on macOS its last stretch sleeps in `mach_wait_until` slices of at most
+//! 25 µs); [`wake`] never blocks. Neither allocates or takes a lock.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
@@ -171,7 +175,7 @@ mod sys {
 
     /// One `os_sync_wait_on_address[_with_deadline]` with the `SHARED` flag (the word may sit in
     /// shared memory and be woken from another process), armed short of the deadline to make up
-    /// for the kernel's timer leeway ([`os_sync`]).
+    /// for the kernel's timer leeway, or near the deadline one poll slice ([`os_sync`]).
     pub(super) fn wait(word: &AtomicU32, current: u32, deadline: Option<Deadline>) -> Wait {
         match os_sync::wait(word, current, deadline, Scope::Shared) {
             os_sync::Wait::Retry => Wait::Retry,
@@ -275,15 +279,18 @@ mod tests {
         assert!((1.499..1.6).contains(&diff), "{diff}");
     }
 
-    /// The kernel's timer leeway is compensated (spike #43, Q4): on a time-constraint thread a
-    /// 1 ms wait that times out ends at most 50 µs later than the machine's plainest timed wait
-    /// (`mach_wait_until`: a few µs on Apple silicon; uncompensated: 125–260 µs more). Medians of
-    /// 40 waits; skipped if the kernel refuses the policy or the machine's timers are too coarse
-    /// for the check (the GitHub macOS runner's VM: 192 µs, #94).
+    /// The kernel's timer leeway is compensated (spike #43, Q4; #101): on a time-constraint thread
+    /// a 1 ms wait that times out ends at most 50 µs later than the machine's plainest timed wait
+    /// (`mach_wait_until`: a few µs on Apple silicon; a bare shared-scope kernel wait: 125–260 µs
+    /// more on macOS 27, 425 µs more on the macOS 15 CI runner). Medians of 40 waits; prints the
+    /// numbers for the CI log (`--nocapture`); skipped if the kernel refuses the policy or the
+    /// machine's timers are too coarse for the check (the GitHub macOS runner's VM once: 192 µs,
+    /// #94).
     #[test]
     #[cfg(target_os = "macos")]
     fn a_timed_out_wait_ends_close_to_its_deadline() {
         use komponist_rt::mach_time;
+        use komponist_rt::os_sync::{self, Scope};
         let overshoot = std::thread::spawn(|| {
             let period = Duration::from_millis(2);
             if let Err(e) = komponist_rt::set_current_thread_realtime(period, 80) {
@@ -292,9 +299,16 @@ mod tests {
             }
             let word = AtomicU32::new(0);
             mach_time::against_baseline(|| {
-                mach_time::median_overshoot(|deadline| {
+                let bare = os_sync::kernel_overshoot(Scope::Shared);
+                let compensated = mach_time::median_overshoot(|deadline| {
                     assert_eq!(wait_while(&word, 0, Some(deadline)), WaitOutcome::TimedOut);
-                })
+                });
+                eprintln!(
+                    "wait_while: bare kernel wait {bare:?}, compensated {compensated:?}, learned \
+                     leeway {:?}",
+                    os_sync::learned_leeway(Scope::Shared)
+                );
+                compensated
             })
         })
         .join()
