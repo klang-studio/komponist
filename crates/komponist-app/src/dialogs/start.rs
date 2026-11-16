@@ -751,7 +751,15 @@ mod tests {
         assert_eq!(r.name, "Alt");
         assert_eq!(r.meta, komponist_i18n::de::START_FILE_MISSING);
         assert!(r.missing);
-        assert!(version_line(Lang::De).ends_with(" · Linux · CLAP und VST3"));
-        assert!(version_line(Lang::En).ends_with(" · Linux · CLAP and VST3"));
+        let pc = |t| version_line_for(t, Platform::Pc);
+        let mac = |t| version_line_for(t, Platform::Mac);
+        assert!(pc(Lang::De).ends_with(" · Linux · CLAP und VST3"));
+        assert!(pc(Lang::En).ends_with(" · Linux · CLAP and VST3"));
+        assert!(mac(Lang::De).ends_with(" · macOS · CLAP und VST3"));
+        assert!(mac(Lang::En).ends_with(" · macOS · CLAP and VST3"));
+        assert_eq!(
+            version_line(Lang::De),
+            Platform::current().pick(pc(Lang::De), mac(Lang::De))
+        );
     }
 }
