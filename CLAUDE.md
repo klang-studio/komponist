@@ -83,6 +83,24 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
   are gated with a reason.
 - CI has a macOS arm64 job (clippy, tests, test plugins; no GUI tests, no format check).
 
+## Windows (port in progress)
+
+komponist is being ported to Windows 11 x86_64 (MSVC; integration branch `windows`; no GitHub issues yet). The workspace does not
+build there yet; this is what is true now:
+
+- **Shell:** the scripts are bash: run them in Git Bash (`scripts/check.sh`, `scripts/build-test-plugins.sh`). The gate is
+  the same as on Linux: `scripts/check.sh`. `scripts/check-gui.sh` is Linux only.
+- **Cross clippy from Windows** (Linux and macOS code stays green while the port lands):
+  `cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings` and
+  `cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu --exclude komponist-audio --exclude komponist-app -- -D warnings`.
+- **Test plugins:** `scripts/build-test-plugins.sh` builds them into `test-plugins/target/windows` and copies them to
+  `target/test-plugins/windows/{clap,vst3}`: CLAP is a single `<name>.clap` DLL, VST3 a bundle
+  `<name>.vst3/Contents/x86_64-win/<name>.vst3`.
+- **Snapshots:** Linux (lavapipe) is the reference. On Windows `kittest.toml` `[windows]` renders every snapshot without
+  comparing; **never run `UPDATE_SNAPSHOTS` on Windows**, it would overwrite the reference PNGs with the GPU's pixels.
+- CI has a `windows` job (clippy, test plugins, tests; no GUI tests, no format check), not blocking while the port is in
+  progress.
+
 ## Commands
 
 | Command | What it does |
