@@ -844,16 +844,18 @@ mod tests {
     fn default_folders_on_windows() {
         let common = r"C:\Program Files\Common Files";
         let local = r"C:\Users\x\AppData\Local";
+        // The default folder repeated in CLAP_PATH, joined as the code joins it: with `\` on a
+        // Windows host, with `/` where the test runs on Linux or macOS (CI), so the duplicate is
+        // dropped on every host.
+        let repeated = Path::new(common).join("CLAP");
+        let clap_path = format!(r"D:\clap;;{};E:\more", repeated.display());
         let dirs = PluginDirs::defaults_from(
             Platform::Windows,
             &env(&[
                 ("COMMONPROGRAMFILES", common),
                 ("LOCALAPPDATA", local),
                 ("HOME", "/home/ignored"),
-                (
-                    "CLAP_PATH",
-                    r"D:\clap;;C:\Program Files\Common Files\CLAP;E:\more",
-                ),
+                ("CLAP_PATH", &clap_path),
             ]),
         );
         let local_common = Path::new(local).join("Programs").join("Common");
