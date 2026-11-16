@@ -213,7 +213,7 @@ fn run_app() -> eframe::Result {
     }
     for name in app.settings().midi_disabled.clone() {
         if let Some(hub) = app.engine_mut().midi_mut() {
-            let _ = hub.set_enabled(&name, false);
+            hub.remember_disabled(&name);
         }
     }
     if !args.demo {
