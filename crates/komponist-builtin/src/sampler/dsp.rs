@@ -252,6 +252,10 @@ impl Dsp for SamplerDsp {
         let Some(pad) = pad_of_note(key) else {
             return;
         };
+        // A note comes before the render of its piece of the block: a sample the loader handed
+        // over since the last call must be in before the voice starts, or the first hit after a
+        // load (an export's first beat) is silent (#94).
+        self.take_loaded();
         self.meters.hit(pad);
         self.engine.note_on(
             pad,
