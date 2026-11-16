@@ -58,7 +58,7 @@ use super::{Dsp, INITIAL_RATE, Preset, Spec, knob, knob_large, param, toggle};
 /// The device. The name is the working name of the proposal; this is the one place it is written.
 pub(super) static SPEC: Spec = Spec {
     id: "presse",
-    name: "presse",
+    name: "Presse",
     features: &["audio-effect", "compressor", "dynamics"],
     params,
     layout,

@@ -411,7 +411,7 @@ pub struct ScanReport {
 mod tests {
     /// `hexa`, then the internal devices, by name.
     fn builtin_names() -> Vec<&'static str> {
-        let mut names = vec!["hexa"];
+        let mut names = vec!["Hexa"];
         names.extend(komponist_builtin::Internal::ALL.iter().map(|k| k.name()));
         names
     }
@@ -479,7 +479,7 @@ mod tests {
         let hexa = &catalog.entries()[0];
         assert!(hexa.is_builtin());
         assert_eq!(hexa.plugin.id, BUILTIN_HEXA);
-        assert_eq!(hexa.plugin.name, "hexa");
+        assert_eq!(hexa.plugin.name, "Hexa");
         assert_eq!(hexa.kind, PluginKind::Instrument);
         assert_eq!(hexa.location, PluginLocation::InProcess(BuiltinKind::Hexa));
 
@@ -532,7 +532,7 @@ mod tests {
         };
         assert_eq!(module("Surge XT").as_deref(), Some("Surge XT.clap"));
         assert_eq!(module("Vital").as_deref(), Some("Vital.vst3"));
-        assert_eq!(module("hexa").as_deref(), Some(""));
+        assert_eq!(module("Hexa").as_deref(), Some(""));
     }
 
     #[test]
@@ -689,8 +689,8 @@ mod tests {
         assert_eq!(names("HALL"), ["Hall", "Big Hall"]);
         assert_eq!(names("vendor"), ["Big Hall", "Squash"]);
         // The built-in compressor matches by its feature (WP-93).
-        assert_eq!(names("compress"), ["presse", "Squash"]);
-        assert_eq!(names("synth"), ["hexa", "volt"]);
+        assert_eq!(names("compress"), ["Presse", "Squash"]);
+        assert_eq!(names("synth"), ["Hexa", "Volt"]);
         assert!(names("nothing like this").is_empty());
     }
 

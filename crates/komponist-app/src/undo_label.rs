@@ -85,8 +85,8 @@ mod tests {
             "Surge XT: Zustand ändern"
         );
         assert_eq!(
-            text(Lang::En, &device_param("hexa")),
-            "hexa: Change Parameter"
+            text(Lang::En, &device_param("Hexa")),
+            "Hexa: Change Parameter"
         );
     }
 

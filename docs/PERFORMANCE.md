@@ -23,15 +23,15 @@ upper bounds. Re-run on an idle machine before reading the tails as properties o
 | Area | Target | Measured | Verdict |
 |---|---|---|---|
 | UI frame, 16 tracks / 200 clips / 10 000 notes, arrangement only | ≤ 8 ms (ARCHITECTURE §9.2) | median 1.3 ms (1×) / 1.3 ms (2×), worst 2.0 / 1.7 ms; all selected: median 1.8 / 1.9 ms, worst 2.5 / 2.5 ms | met |
-| UI frame, same project **playing** (16 hexa tracks on the audio thread), dock open with the piano roll | ≤ 8 ms | median 1.3 / 1.3 ms, worst 1.5 / 1.4 ms | met |
+| UI frame, same project **playing** (16 Hexa tracks on the audio thread), dock open with the piano roll | ≤ 8 ms | median 1.3 / 1.3 ms, worst 1.5 / 1.4 ms | met |
 | First frame after load (clip previews built) | — | 10–17 ms | one-off, acceptable |
 | Piano roll, one clip with 10 000 notes, whole app | ≤ 8 ms | median 2.5 ms | met |
 | Timeline paint, 10 000 notes (WP-22 bench) | < 4 ms | piano roll 3.4 ms (1×) / 4.0 ms (2×, median 3.97); arrangement 0.6 ms | met, **2× at the limit** |
 | Engine's own cost, 16 tracks (sequencer, chains, mixer, meters, PDC) | — | 8 µs mean per 256 frames (0.15 %) | negligible |
-| Engine + 16 hexa tracks, stress material, one thread | no overrun | mean 3.3 ms = 62 % of the period, worst 6–11 ms | **missed under load** (hexa DSP, see §4.1) |
+| Engine + 16 Hexa tracks, stress material, one thread | no overrun | mean 3.3 ms = 62 % of the period, worst 6–11 ms | **missed under load** (Hexa DSP, see §4.1) |
 | Same in the real callback path (app, null backend) | no overrun | mean 67–69 %, peak 110–120 %, overruns 49–63 of 1 880 callbacks (2.6–3.4 %), xruns 0 | **missed under load** |
 | + 8 kp-test-fx bridges (one per track on 8 tracks) | no late block | mean +2 points (70.7 %), late blocks 12 (SCHED_FIFO) / 95 (SCHED_OTHER) of 15 000 | **missed under load** (follows from the above) |
-| **WP-65:** 16 hexa, callback path, 4 worker threads (§6) | < 50 % of the period, no overrun in 5 min | mean 17.5–17.7 %, peak 28.5 %, 0 overruns in 56 265 callbacks; + 8 bridges 21.1 %, 0 late blocks | **met** |
+| **WP-65:** 16 Hexa, callback path, 4 worker threads (§6) | < 50 % of the period, no overrun in 5 min | mean 17.5–17.7 %, peak 28.5 %, 0 overruns in 56 265 callbacks; + 8 bridges 21.1 %, 0 late blocks | **met** |
 | IPC round trip, back to back, SCHED_FIFO 80 | p99 ≤ 7.6 µs (WP-15 spike) | p50 5.6 µs, **p99 7.0 µs**, max 23 µs | met |
 | IPC round trip, back to back, SCHED_OTHER | — | p50 7.6 µs, p99 10.9 µs, max 1.5 ms | as the spike |
 | IPC round trip, paced like a 256-frame callback, SCHED_FIFO 80 | p99 ≤ 26 µs (spike, idle machine) | p50 13 µs, p99 202 µs, max 448 µs (load average 51) | tail missed under load, see §4.4 |
@@ -53,7 +53,7 @@ are checked:
 |---|---|
 | `Engine::process` / `render`: commands, transport, count-in, loop wrap, sequencer, **note chasing**, probability, live MIDI, `LiveNote`, recording capture, fast paths, program swap, processor insert/remove (garbage), panic, PDC, mixer, meters, metronome | `komponist-engine` `tests/engine` (every call via `Rig`), incl. 1 000 random command sequences (`random.rs`) and `chase.rs` (10 000-note scan) |
 | Held MIDI-input keys (telemetry) | `live.rs` `held_input_keys_…` |
-| hexa `PisynthProcessor::process` / `reset` / parameter events | `komponist-builtin` `tests/hexa` |
+| Hexa `PisynthProcessor::process` / `reset` / parameter events | `komponist-builtin` `tests/hexa` |
 | `ExternalProcessor::process` (bridge client: wire events, stash, futex wait, fallbacks) | `komponist-plugins` `tests/it/engine.rs` (`call` and `Rig`) |
 | `ExternalProcessor::process_sidechain` (#6: the sidechain through the shared memory) | `komponist-plugins` `tests/it/sidechain.rs` (direct calls and `Rig`) |
 | IPC `begin_block` / `wait_done` / output events | `komponist-ipc` `tests/bridge_process.rs` (10 000 checked blocks), sidechain blocks in `shm.rs` unit tests |
@@ -82,8 +82,8 @@ callback), `MidiSender` (MIDI threads only; the audio side pops an rtrb queue).
 random generator, every 16.7 ms UI frame (the whole UI drawn and tessellated), does 0–2 of: locate,
 loop on/off and range, metronome, record / punch-out / discard take, play/stop, MIDI input notes
 (through `TestMidiSource`, the real input path), live notes, add/remove/move/resize notes,
-add/remove/move/copy/loop clips, fader/pan/mute/solo, tempo, new hexa track, remove track,
-hexa preset, bypass, undo, redo, open clip, mixer, and at least one WAV export of the loop
+add/remove/move/copy/loop clips, fader/pan/mute/solo, tempo, new Hexa track, remove track,
+Hexa preset, bypass, undo, redo, open clip, mixer, and at least one WAV export of the loop
 (detach, offline render, re-attach). Checks: no allocation in the callback (debug), the audio thread
 kept running (≥ 90 % of the expected callbacks), no command left in the queue, no overrun (release).
 
@@ -92,9 +92,9 @@ priority like a PipeWire callback):
 
 | Run | Callbacks | Mean / peak load | Overruns | xruns | UI frame worst | Exports |
 |---|---|---|---|---|---|---|
-| 6 s, `cargo test` (debug) | 1 100 of ~1 128 | — / 260 % | 118 (unoptimised hexa; not asserted) | 6 | 156 ms | 1 |
+| 6 s, `cargo test` (debug) | 1 100 of ~1 128 | — / 260 % | 118 (unoptimised Hexa; not asserted) | 6 | 156 ms | 1 |
 | 6 s, release, SCHED_OTHER | 1 127 | — / 35 % | 0 | 0 | 6.9 ms | 2 |
-| 5 min, debug (SCHED_OTHER) | 52 527 of ~56 253 | — / 443 % | 9 907 (unoptimised hexa; not asserted) | 478 | 137 ms | 38 |
+| 5 min, debug (SCHED_OTHER) | 52 527 of ~56 253 | — / 443 % | 9 907 (unoptimised Hexa; not asserted) | 478 | 137 ms | 38 |
 | 4 min, release | 45 000 | 3–5 % / 96 % | 1 (at 30.7 s) | 0 | 249 ms | 32 |
 | 5 min, release | 56 252 | 2–12 % / 65 % | 0 | 0 | 8.7 ms | 43 |
 | 30 min, release | 337 532 of ~337 521 | 3–9 % / 430 % | 10 (at 110, 371, 371, 443, 1336, 1508, 1509, 1647, 1684, 1754 s) | 1 | **2.0 s** | 207 |
@@ -107,7 +107,7 @@ edits, transport moves and a live note, no export) and not reproducible with the
 2 s) and the I/O pressure stall (`/proc/pressure/io`, avg300) was 3.3 %. The same
 run once saw a 249 ms UI frame. A page fault of the audio thread into a page the kernel reclaimed
 (code or data) blocks on I/O for milliseconds, which fits both. The first calls of a freshly
-created hexa are not slower than later ones (`first_calls_of_a_new_processor`, ±10 µs), so new
+created Hexa are not slower than later ones (`first_calls_of_a_new_processor`, ±10 µs), so new
 processors after undo/redo are not the cause.
 
 Recommendation (owner decision, not done in WP-61): lock the app's memory at start
@@ -118,14 +118,14 @@ resident size first.
 
 ## 4. Decisions
 
-### 4.1 Engine CPU: hexa dominates
+### 4.1 Engine CPU: Hexa dominates
 
-The engine's own work for 16 tracks is 8 µs per 256-frame block (0.15 %); hexa's DSP is the
+The engine's own work for 16 tracks is 8 µs per 256-frame block (0.15 %); Hexa's DSP is the
 rest. The stress material (per track a four-note chord per half bar, held, plus a 1/16 line, with
 the presets E-Piano, Strings, Supersaw and Init; 8 or more voices per track, release tails
 overlapping) costs 62 % of one core at 48 kHz in a single thread, matching the per-voice numbers of
 the WP-25 bench (8 voices: Init 1.0 %, E-Piano 2.6 %, Strings 5.6 %, Supersaw 5.0 %). The demo
-(gate G3, 10 hexa instances) used 11–12 %.
+(gate G3, 10 Hexa instances) used 11–12 %.
 
 At that load the single audio thread has no headroom on a busy machine: 2.6–3.4 % of the callbacks
 overran, and bridges placed after many tracks miss their 60 % deadline (they fall back to
@@ -134,7 +134,7 @@ passthrough, as designed). Not fixed in WP-61, because both remedies are bigger 
 - **Parallel track processing** (ARCHITECTURE §8.1 "later optimisation"): tracks are independent
   until the master bus; a worker pool (or bridge fan-out) would spread 16 tracks over the cores.
   Recommended as a work package after v0.1.
-- **hexa DSP cost** (`crates/hexa-core`, WP-34's klang-dsp migration is the place).
+- **Hexa DSP cost** (`crates/hexa-core`, WP-34's klang-dsp migration is the place).
 - Meanwhile a 512-frame buffer halves the per-callback scheduling risk.
 
 ### 4.2 Note chasing: yes, like Ableton
@@ -222,7 +222,7 @@ cargo test --release -p komponist-app --test arrangement_perf -- --ignored --noc
 cargo test --release -p komponist-app --test it piano_roll::ten_thousand -- --nocapture
 cargo bench -p komponist-ui --bench timeline
 
-# Engine CPU: engine alone and + 16 hexa, and the real callback path (+ 8 bridges; needs
+# Engine CPU: engine alone and + 16 Hexa, and the real callback path (+ 8 bridges; needs
 # scripts/build-test-plugins.sh), each with 0 and 4 worker threads (WP-65; KOMPONIST_BENCH_WORKERS /
 # KOMPONIST_PERF_WORKERS take another list, KOMPONIST_PERF_SECS another length). For RT priority
 # run the test binary under chrt -f 70.
@@ -265,14 +265,14 @@ ARCHITECTURE §6.4.1.
 | Run | Before (main, single-threaded) | After, 0 workers | After, 4 workers |
 |---|---|---|---|
 | Engine alone, 16 idle instruments, one thread (`bench`) | 8.4 µs (0.16 %), worst 143 µs | 8.8 µs (0.16 %), worst 142 µs | 10.8 µs (0.20 %), worst 214 µs |
-| Engine + 16 hexa, stress material, one thread (`bench`) | 3.1 ms (58.6 %), worst 5.1 ms (96 %) | 3.1 ms (58.7 %), worst 5.2 ms (98 %) | **0.89 ms (16.7 %), worst 2.2 ms (42 %)** |
-| 16 hexa, real callback path, 10 s (`engine_perf`) | mean 63.5 %, peak 94.6 %, 0 overruns | mean 63.4 %, peak 79.7 %, 0 overruns | **mean 17.5 %, peak 27.7 %, 0 overruns** |
-| + 8 kp-test-fx bridges (after hexa on 8 tracks), 10 s | — | mean 65.0 %, peak 88.6 %, 0 late blocks | **mean 21.1 %, peak 27.9 %, 0 late blocks** |
-| 16 hexa, callback path, **5 minutes** | — | — | **mean 17.7 %, peak 28.5 %, 0 overruns, 0 xruns in 56 265 callbacks**, 0 late waits |
+| Engine + 16 Hexa, stress material, one thread (`bench`) | 3.1 ms (58.6 %), worst 5.1 ms (96 %) | 3.1 ms (58.7 %), worst 5.2 ms (98 %) | **0.89 ms (16.7 %), worst 2.2 ms (42 %)** |
+| 16 Hexa, real callback path, 10 s (`engine_perf`) | mean 63.5 %, peak 94.6 %, 0 overruns | mean 63.4 %, peak 79.7 %, 0 overruns | **mean 17.5 %, peak 27.7 %, 0 overruns** |
+| + 8 kp-test-fx bridges (after Hexa on 8 tracks), 10 s | — | mean 65.0 %, peak 88.6 %, 0 late blocks | **mean 21.1 %, peak 27.9 %, 0 late blocks** |
+| 16 Hexa, callback path, **5 minutes** | — | — | **mean 17.7 %, peak 28.5 %, 0 overruns, 0 xruns in 56 265 callbacks**, 0 late waits |
 | Soak, release, **5 minutes** (demo, random edits, 42 exports) | — | — | **0 overruns, 0 xruns in 56 250 callbacks**, peak 63 %, worst UI frame 7.3 ms; 59 635 batches, 390 397 jobs on workers, 0 late waits |
 | Soak, release, 30 minutes | — | — | **open** (see below); stopped after 6 of 30 minutes by owner decision with 0 overruns, 0 xruns in 67 503 callbacks so far |
 
-**Done-when met:** 16 hexa stress tracks at 17.5–17.7 % of the period (target < 50 %) with 4
+**Done-when met:** 16 Hexa stress tracks at 17.5–17.7 % of the period (target < 50 %) with 4
 workers, no overrun in the 5-minute stress run and the 5-minute soak. The 3.5× speed-up on 5
 threads (callback + 4 workers) is close to the ideal for 16 jobs of uneven cost; the remaining time
 is the longest job chain on one thread plus the wake-ups (~10–30 µs per batch). The dispatch costs
@@ -282,7 +282,7 @@ WP-61 baseline (95–98 %) shrinks to 28 % with workers: one slow track no longe
 Notes:
 - "Before" and "after, 0 workers" agree, so the three-phase segment (events, jobs, ordered sum)
   costs nothing single-threaded. The bit-exact tests prove they compute the same output.
-- The bridge case puts the kp-test-fx *after* hexa, so those bridges cannot start early; their
+- The bridge case puts the kp-test-fx *after* Hexa, so those bridges cannot start early; their
   waits now overlap on the workers. Instrument bridges at the head of a chain start before any
   chain runs (`Processor::begin`), checked by `komponist-plugins`
   `bridged_instruments_with_workers_match_single_threaded` (bit-exact offline, all realtime blocks
@@ -321,12 +321,12 @@ data-dependently); every effect runs inside `assert_no_alloc` in the unit tests,
 `internal_effects_are_bit_exact_with_workers` (8 tracks × 4 effects, 0/2/4 workers, realtime and
 offline) is bit-exact.
 
-**presse, the compressor (WP-93)**, measured 2026-11-15 on `wp/WP-93` the same way (release, 48 kHz,
+**Presse, the compressor (WP-93)**, measured 2026-11-15 on `wp/WP-93` the same way (release, 48 kHz,
 256 frames, white noise, threshold −30 dB so it compresses all the time). The proposal estimated
 14 µs (0.26 %); it costs less because the level conversion uses a 4-term series for `log2` and a
 5-term polynomial for `exp2` instead of `ln` and `powf` per sample.
 
-| presse (settings) | 1 instance, mean | worst | 16 instances, mean | worst |
+| Presse (settings) | 1 instance, mean | worst | 16 instances, mean | worst |
 |---|---|---|---|---|
 | RMS, link 100 % (one gain computer), no lookahead, auto-release | 9.9 µs (0.19 %) | 19 µs | 155 µs (2.9 %) | 203 µs |
 | Peak, link 0 % (two gain computers), lookahead, SC-HP 120 Hz, auto-release | 11.5 µs (0.22 %) | 521 µs (noise) | 176 µs (3.3 %) | 462 µs |
@@ -335,13 +335,13 @@ offline) is bit-exact.
 The tap that feeds the level point and the reduction history copies one pair of floats per 32 frames,
 and only while the card is on screen; it is not in these numbers (a few atomic stores per block). The
 engine test `internal_effects_are_bit_exact_with_workers` now runs 8 tracks × 5 effects with a
-lookahead `presse` on every track.
+lookahead `Presse` on every track.
 
 ```bash
 cargo test --release -p komponist-builtin --lib cpu_ -- --ignored --nocapture
 ```
 
-## 8. volt (WP-95)
+## 8. Volt (WP-95)
 
 Measured 2026-11-15 on `wp/WP-95` (load average 6–11 on 12 threads, other agents building), release
 profile, 48 kHz, calls of 256 frames (5.33 ms period), keys held (envelopes in sustain), one thread.
@@ -389,7 +389,7 @@ master. **Routed**: two groups of six tracks inside a third group (nested), two 
 with 64 frames latency) fed by a post send from all 16 tracks and a pre send from every other track (24 sends), and
 a sidechain from track 1 into an effect on track 13 (delayed to that device): 20 jobs, 4 of them joins, every
 path delay-compensated. "Constant" instruments write a constant (the engine's own cost); "busy" ones cost about
-120 µs per block each (a synth-like load, comparable to hexa's 190 µs in §6).
+120 µs per block each (a synth-like load, comparable to Hexa's 190 µs in §6).
 
 | Run | Flat, 0 workers | Routed, 0 workers | Flat, 4 workers | Routed, 4 workers |
 |---|---|---|---|---|

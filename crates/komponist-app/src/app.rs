@@ -2724,7 +2724,7 @@ pub fn hexa_ref() -> PluginRef {
     PluginRef {
         format: PluginFormat::Builtin,
         id: BUILTIN_HEXA.to_owned(),
-        name: "hexa".to_owned(),
+        name: "Hexa".to_owned(),
         vendor: "klang-studio".to_owned(),
         module: Box::default(),
         version: env!("CARGO_PKG_VERSION").to_owned(),

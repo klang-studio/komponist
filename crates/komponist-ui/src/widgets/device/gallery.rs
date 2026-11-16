@@ -102,7 +102,7 @@ pub fn section() -> Section {
                 ])
                 .content(pad_card),
             Card::new("FM-Algorithmus")
-                .spec("Sonderanzeige · hexa")
+                .spec("Sonderanzeige · Hexa")
                 .ix(&[
                     ("Anzeige", "Operatoren als Knoten, Modulation als Linien, Träger in Spurfarbe."),
                     ("Klick", "Wählt den Operator."),

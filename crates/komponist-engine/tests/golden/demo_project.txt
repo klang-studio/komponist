@@ -302,7 +302,7 @@ track 1 "Drums": gain 0.5012, pan +0.00, mute off, solo off, arm off, monitor of
 track 8 "Bass": gain 0.6310, pan +0.00, mute off, solo off, arm off, monitor off
   input: all ports, omni; pdc delay 0
   chain:
-    [0] dev 9 "hexa" instrument -> slot 2
+    [0] dev 9 "Hexa" instrument -> slot 2
     [1] dev 10 "LSP Para EQ x8" effect -> slot 3
   notes: 80
     pos         tick length      key  vel   prob  ch
@@ -390,7 +390,7 @@ track 8 "Bass": gain 0.6310, pan +0.00, mute off, solo off, arm off, monitor off
 track 93 "Lead": gain 0.7079, pan +0.00, mute off, solo off, arm off, monitor off
   input: all ports, omni; pdc delay 0
   chain:
-    [0] dev 94 "hexa" instrument -> slot 4
+    [0] dev 94 "Hexa" instrument -> slot 4
     [1] dev 95 "LSP Para EQ x8" effect -> slot 5
     [2] dev 96 "TAL-Chorus-LX" effect, bypass -> slot 6
     [3] dev 97 "Dragonfly Hall Reverb" effect -> slot 7

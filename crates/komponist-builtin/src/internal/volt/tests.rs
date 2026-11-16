@@ -332,7 +332,7 @@ fn the_layout_validates_for_every_envelope_and_lfo_and_shows_every_parameter() {
 fn volt_is_an_instrument_in_the_catalog() {
     let kind = Internal::Volt;
     assert_eq!(kind.name(), NAME);
-    assert_eq!(kind.name(), "volt");
+    assert_eq!(kind.name(), "Volt");
     assert!(kind.is_instrument());
     assert_eq!(kind.role(), komponist_model::DeviceRole::Instrument);
     assert!(!kind.is_midi_effect());

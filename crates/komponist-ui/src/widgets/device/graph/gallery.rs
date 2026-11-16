@@ -559,7 +559,7 @@ pub fn cards() -> Vec<Card> {
                 ("Griffe", "Knie: Threshold ↔, Ratio ↕"),
             ])
             .content(transfer_card),
-        Card::new("Kompressor (presse)")
+        Card::new("Kompressor (Presse)")
             .spec("graph::compressor")
             .ix(&[
                 ("X", "dB, −60 bis 0 (Eingang), Beschriftung −48, −24, 0"),
@@ -569,7 +569,7 @@ pub fn cards() -> Vec<Card> {
                 ("Griffe", "Knie: Threshold ↔, Ratio ↕"),
             ])
             .content(compressor_card),
-        Card::new("Reduktionsverlauf (presse)")
+        Card::new("Reduktionsverlauf (Presse)")
             .spec("graph::gr_history")
             .ix(&[
                 ("X", "Zeit, 4 s, jetzt rechts"),
