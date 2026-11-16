@@ -349,11 +349,14 @@ impl Pool {
             let spawned = std::thread::Builder::new()
                 .name(format!("komponist-worker-{lane}"))
                 .spawn(move || {
-                    let realtime = rt.as_ref().map(sys::set_current_thread_realtime);
-                    let joined = rt.as_ref().and_then(sys::join_workgroup);
+                    // `rt` ends with this block; the join keeps its own workgroup reference.
+                    let (realtime, joined) = {
+                        let rt = rt;
+                        let realtime = rt.as_ref().map(sys::set_current_thread_realtime);
+                        (realtime, rt.as_ref().and_then(sys::join_workgroup))
+                    };
                     let refused = joined.as_ref().and_then(|j| j.as_ref().err().copied());
                     let _ = ready.send((realtime, refused));
-                    drop(rt);
                     work(&shared, lane, seen);
                     // Leave before the thread ends (the pool is replaced or dropped, e.g. when
                     // the stream stops); the last reference to the workgroup goes here too.
@@ -633,9 +636,11 @@ mod tests {
         let (pool, status) = Pool::start(2, Some(rt.clone()), Arc::default());
         let pool = pool.unwrap();
         assert_eq!(status.priority, Some(DEFAULT_WORKER_PRIORITY));
-        if let Some(e) = &status.realtime_error {
+        if let Some(e) = &status.realtime_error
+            && cfg!(target_os = "macos")
+        {
             // Linux machines without an RT rlimit refuse SCHED_FIFO; macOS needs no privilege.
-            assert!(cfg!(target_os = "linux"), "{e}");
+            panic!("time-constraint policy refused: {e}");
         }
         assert!(!status.joined_workgroup);
         assert_eq!(status.workgroup_error, None);
