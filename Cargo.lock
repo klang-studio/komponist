@@ -2577,6 +2577,7 @@ dependencies = [
  "postcard",
  "rustix 1.1.6",
  "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
