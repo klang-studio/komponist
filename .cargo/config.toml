@@ -2,3 +2,9 @@
 # more jobs mean more parallel links (egui/wgpu) and swapping. Override with CARGO_BUILD_JOBS.
 [build]
 jobs = 6
+
+[env]
+# Steinberg's ASIO SDK (host subset, GPLv3 option) is vendored: `asio-sys` (cpal feature `asio`,
+# Windows only) reads this instead of downloading the SDK. Relative to the folder that holds
+# `.cargo/`. Other targets do not build `asio-sys`'s C++ and ignore it. See vendor/asio-sdk/VENDORED.md.
+CPAL_ASIO_DIR = { value = "vendor/asio-sdk", relative = true }

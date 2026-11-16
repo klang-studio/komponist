@@ -942,11 +942,14 @@ must not output back into that bus).
   (forwarded by `komponist-app`'s `asio`); see "ASIO" below. Without the feature the variant exists but is never
   available, so a settings file with `"asio"` loads as WASAPI there.
 - **ASIO (W8; the code is checked on Windows, but no ASIO driver was ever opened: manual test pending).**
-  - *Build:* cpal's `asio` feature pulls `asio-sys`, whose build script finds Steinberg's ASIO SDK in
-    `CPAL_ASIO_DIR`, else in `%TEMP%\asio_sdk`, else downloads <https://www.steinberg.net/asiosdk> there
-    (PowerShell `Invoke-WebRequest`, then `Expand-Archive`), compiles the SDK's host sources with `cc` and runs
-    bindgen over its headers (needs LLVM's `libclang.dll`: `LIBCLANG_PATH`). Hence the feature is off by default, and
-    `scripts/package-windows.sh`, the release job and one CI step turn it on. The SDK never enters the repository.
+  - *Build:* cpal's `asio` feature pulls `asio-sys`, whose build script compiles the SDK's host sources with `cc`
+    and runs bindgen over its headers (needs LLVM's `libclang.dll`: `LIBCLANG_PATH`). It reads the SDK from
+    `CPAL_ASIO_DIR` (else it would use or download `%TEMP%\asio_sdk`). The host subset of SDK 2.3.4 is **vendored** in
+    `vendor/asio-sdk/` (layout as upstream; `VENDORED.md` there lists what was taken and left out), and
+    `.cargo/config.toml` `[env]` sets `CPAL_ASIO_DIR` to it (`relative = true`), so nothing is downloaded and CI and
+    the release job need LLVM only. Other targets never build `asio-sys`'s C++, so the variable is inert there. The
+    feature stays off by default (LLVM); `scripts/package-windows.sh`, the release job and one CI step turn it on.
+    `.gitattributes` keeps `vendor/asio-sdk/**` byte-identical to upstream (`-text`, CRLF).
   - *Licence (SDK 2.3.4, Oct 2025, read from its `LICENSE.txt`):* "This Software Development Kit is licensed under
     the terms of the Steinberg ASIO License, or alternatively under the terms of the General Public License (GPL)
     Version 3. You may use the Software Development Kit according to either of these licenses as it is most
@@ -954,21 +957,28 @@ must not output back into that bus).
     Kit may not be distributed in parts or its entirety without prior written agreement by Steinberg" is part of
     option a), the proprietary licence. Option b) is plain GPLv3. The SDK's `README.md` confirms: "Both options grant
     access to the same SDK", the GPL option is for "full open-source integration", and trademark rules apply under
-    both. komponist (GPL-3.0-or-later) takes option b): the release zip holds a binary with the compiled SDK host
-    code under GPLv3, the SDK sources are not redistributed by us (the builder downloads them from Steinberg), so
-    the "do not distribute" clause is not touched either way. `asio-sys` and cpal are Apache-2.0 (GPLv3 compatible).
-    Open points: (1) `common/combase.cpp`, `dllentry.cpp` and `wxdebug.h` carry an old Microsoft "AS IS" header
-    without a licence grant, and the LICENSE says other files follow "the respective embedded license text"; `cc`
-    compiles them into `libasio.a`, but nothing of the host path references them, so the linker should leave them
-    out (not verified by inspecting the final binary). (2) Steinberg's *ASIO Usage Guidelines* apply to the word
+    both. komponist (GPL-3.0-or-later) takes option b) (owner's decision, W8b), which allows redistribution: the repository
+    holds the host subset of the SDK sources and the release zip a binary with the compiled host code, both under
+    GPLv3. `asio-sys` and cpal are Apache-2.0 (GPLv3 compatible). The `LICENSE.txt` says files with their own
+    embedded licence text follow that text; the vendored `common/*` files reference the Steinberg licence, the
+    `host/*` files carry Steinberg's BSD-style text. `common/combase.cpp`, `combase.h`, `dllentry.cpp` and `wxdebug.h`
+    carry an old Microsoft "AS IS" header without a licence grant and are **not vendored** (driver-side COM
+    helpers; the build works without them, which proves a host does not need them), nor are the driver sample, the
+    PDFs and the sample converter. Open point: (1) legal review remains the owner's. (2) Steinberg's *ASIO Usage Guidelines* apply to the word
     "ASIO" and the logo under GPLv3 too: if ASIO is only activated manually, the ASIO Compatible Logo must appear "in
     every dialog that enables/configures ASIO" (Settings, S07), and "ASIO is a registered trademark of Steinberg
     Media Technologies GmbH." must appear in the credits and documentation (the zip's `README.txt` and INSTALL.md
     carry it; the logo is not in the app yet). The owner has to decide on the logo and on legal review.
   - *Devices:* ASIO has no default device (cpal takes the first driver) and loads **one driver at a time per
     process**. cpal lists the devices by loading each registered driver in turn, which is slow and can disturb an
-    interface another program holds. Consequences handled in `backend.rs`: `available_hosts` lists ASIO without
-    loading anything (even with no driver installed, then the device list is empty); while an ASIO stream runs, cpal's
+    interface another program holds. Consequences handled in `backend.rs`: `available_hosts` lists ASIO only when
+    at least one driver is registered, read from the registry (`asio_registry.rs`: `RegOpenKeyExW` with `KEY_READ`
+    and `RegEnumKeyExW` on `HKLM\SOFTWARE\ASIO`, one subkey per driver; read-only, nothing is loaded, nothing is
+    written). The process's default registry view is read, as the SDK's `asiolist.cpp` does: a 64-bit komponist sees
+    the 64-bit view, which is where the 64-bit drivers it can load register (32-bit drivers sit under `WOW6432Node`
+    and are invisible to it). `HostKind::Asio.is_supported_here()` stays the compile-time answer (S07's
+    `drivers_here` keeps the segment), so with no driver S07 shows ASIO **disabled**, as it does for any supported
+    host that is not in `available_hosts` (JACK without a server); while an ASIO stream runs, cpal's
     enumeration stops at the first driver that is not the running one, so `devices(Asio)` returns the cache of the last
     enumeration (plus the running device) while an `AsioOpen` guard lives; the reconnect probe of a missing ASIO
     device runs every 10 s instead of 2 s. `start` still lists all drivers on the UI thread (as for the other hosts),

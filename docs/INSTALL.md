@@ -50,7 +50,8 @@ The Windows 11 (x86_64) port is in progress; the first release zip follows once 
    "Windows protected your PC". Click **More info**, then **Run anyway**. Alternatively, before unzipping: right-click the zip →
    Properties → tick **Unblock**. You do this once per downloaded version. A signed build will make it unnecessary.
 4. Audio goes through WASAPI (shared mode, the default) or, if your audio interface has an ASIO driver, through ASIO
-   (Settings → Treiber → ASIO). With ASIO the buffer size you choose is the one that runs, within the driver's range.
+   (Settings → Treiber → ASIO; the segment is enabled only when at least one ASIO driver is registered on the
+   machine). With ASIO the buffer size you choose is the one that runs, within the driver's range.
    Changing the sample rate changes it for the whole driver, also for other programs that use the interface; close
    them first, as most ASIO drivers serve one program at a time. komponist loads each installed ASIO driver briefly
    to list the devices. ASIO is a registered trademark of Steinberg Media Technologies GmbH.
@@ -78,10 +79,11 @@ after the next prompt. Piping it (`komponist.exe --help | more`) makes the shell
 **Windows, building from source:** MSVC (Visual Studio Build Tools) and Rust. ASIO is optional: a plain
 `cargo build` has WASAPI only and needs no extra tools. For ASIO build with `--features asio` (on `komponist-app`; it
 forwards to `komponist-audio`). That needs [LLVM](https://releases.llvm.org) for `libclang.dll` (bindgen): set
-`LIBCLANG_PATH` to its `bin` folder if it is not `C:\Program Files\LLVM\bin`. The build downloads Steinberg's ASIO SDK
-from <https://www.steinberg.net/asiosdk> into `%TEMP%\asio_sdk` (once); to use an unpacked copy instead set
-`CPAL_ASIO_DIR` to its folder. The SDK is not part of this repository or of the zip. Steinberg licenses it under its
-own licence or under GPLv3 (`LICENSE.txt` in the SDK); komponist uses the GPLv3 option (`ARCHITECTURE.md` §7).
+`LIBCLANG_PATH` to its `bin` folder if it is not `C:\Program Files\LLVM\bin`. Nothing is downloaded: the host part of
+Steinberg's ASIO SDK 2.3.4 is vendored in `vendor/asio-sdk/` and `.cargo/config.toml` points `CPAL_ASIO_DIR` at it. Steinberg
+licenses the SDK under its own licence or under GPLv3 (`LICENSE.txt` there); komponist uses the GPLv3 option, which
+allows the redistribution. Left out are the driver side, the PDFs and three old Microsoft files without a licence grant
+(`vendor/asio-sdk/VENDORED.md`, `ARCHITECTURE.md` §7). The sources are not part of the release zip.
 
 ## Build from source
 

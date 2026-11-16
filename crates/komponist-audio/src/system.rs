@@ -40,7 +40,8 @@ pub enum HostKind {
     Wasapi,
     /// ASIO (cpal feature `asio`): Windows builds made with the crate feature `asio` only,
     /// unavailable everywhere else. One driver at a time per process; a sample rate change applies
-    /// to the whole driver (ARCHITECTURE §7).
+    /// to the whole driver (ARCHITECTURE §7). Listed by [`AudioSystem::available_hosts`] only while at
+    /// least one ASIO driver is registered.
     Asio,
     /// PipeWire (cpal feature `pipewire`), the default on current Linux desktops. Always
     /// unavailable off Linux.
@@ -425,6 +426,10 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Hosts available on this machine, in preference order (CoreAudio on macOS; WASAPI, ASIO on
     /// Windows; PipeWire, JACK, ALSA on Linux; `Null` always last).
+    ///
+    /// ASIO counts as available when at least one driver is registered (`HKLM\SOFTWARE\ASIO`; the check reads
+    /// the registry and loads no driver). Without one it is missing from the list, which S07 shows as a
+    /// disabled segment.
     ///
     /// JACK counts as available when a JACK server (or PipeWire's JACK emulation) answers; the
     /// check opens a short-lived JACK client.

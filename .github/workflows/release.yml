@@ -190,8 +190,8 @@ jobs:
       # Builds komponist (release), assembles dist/<name>/ (komponist.exe, LICENSE, README.txt) and zips it with bsdtar.
       # ASIO is part of the release build (cargo feature `asio`, set by the script): bindgen needs libclang, which
       # the windows-2025 image has with LLVM 20 (runner-images readme; C:\Program Files\LLVM is its default path,
-      # assumed here; if it is missing, add a step with `choco install llvm`). Steinberg's ASIO SDK is downloaded
-      # during the build from https://www.steinberg.net/asiosdk and is not part of the zip. Untested until pushed.
+      # assumed here; if it is missing, add a step with `choco install llvm`). Steinberg's ASIO SDK (host subset) is vendored in
+      # vendor/asio-sdk (CPAL_ASIO_DIR in .cargo/config.toml): nothing is downloaded, the sources are not part of the zip. Untested until pushed.
       - name: Package
         env:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin

@@ -16,10 +16,14 @@
 //!   [`AudioState`], [`StreamStats`].
 //! - [`slot`]: [`EngineSlot`], the engine handoff between streams.
 //! - [`midi`]: [`MidiInputHub`], [`MidiStamped`], [`MidiPortId`].
+//! - `asio_registry` (Windows): whether an ASIO driver is registered (`HKLM\SOFTWARE\ASIO`, read-only); ASIO is
+//!   an available host only then.
 //!
 //! Threads: `AudioSystem` and `MidiInputHub` live on the UI thread; `EngineSlot::process` and
 //! `AudioProcess::process` run on the audio thread; midir callbacks on MIDI threads.
 
+#[cfg(windows)]
+mod asio_registry;
 mod backend;
 pub mod midi;
 pub mod process;

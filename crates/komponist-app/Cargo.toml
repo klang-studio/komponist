@@ -47,7 +47,7 @@ hound.workspace = true
 assert_no_alloc.workspace = true
 
 [features]
-# ASIO on Windows (W8): forwards to komponist-audio (needs LLVM and downloads the ASIO SDK at build time,
+# ASIO on Windows (W8): forwards to komponist-audio (needs LLVM; the ASIO SDK comes from vendor/asio-sdk,
 # ARCHITECTURE §7). Off by default; not yet built on Windows with the app.
 asio = ["komponist-audio/asio"]
 
