@@ -70,8 +70,7 @@ fn a_plugin_loads_by_double_click_and_by_drag_and_offers_its_gui() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
-    // "Öffnen" on the synth's card asks for its window. Not on macOS yet: no plugin GUIs there
-    // until the bridge owns the frame window (#52).
+    // "Öffnen" on the synth's card asks for its window (on macOS the bridge owns it, #52).
     assert_eq!(
         h.state().engine().host().has_gui(synth.id),
         komponist_bridge::GUI_EMBEDDING

@@ -2413,6 +2413,8 @@ impl App {
                     self.ui
                         .plugin_windows
                         .push(PluginWindow::new(device, view, memory.as_ref()));
+                } else {
+                    self.raise_plugin_window(device);
                 }
             }
             // Closes the plugin's GUI if it is open; a state snapshot follows (`StateSnapshot`).

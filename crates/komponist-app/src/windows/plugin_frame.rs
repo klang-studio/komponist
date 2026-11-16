@@ -28,6 +28,27 @@
 //!    under it. Esc in the main window leaves the frames open. Opening another project closes
 //!    every frame before `EngineSync::reset` releases the bridges.
 //!
+//! # macOS: the bridge owns the frame (#52)
+//!
+//! An app cannot embed another process's `NSView`, so on macOS the plugin view of a frame is a
+//! window of the bridge: `DeviceHost::open_gui` with `GuiTarget::OwnFrame` (the header model, the
+//! language, where the frame was). The bridge draws the same header (`komponist_ui::plugin_frame`)
+//! and reports what happens in it; the app keeps every decision, as on Linux:
+//!
+//! - `FrameHeaderAction` → the header's events (bypass, presets, view, "Oben halten", ×);
+//!   `HeaderState` carries the new header back whenever the model changes.
+//! - `FrameShortcut` (a key the bridge took from the focused plugin) and `FrameKey` (keys while
+//!   its header has the focus) → the same chords as the X11 grab and the frame's egui keys.
+//! - `FrameMoved`, `GuiClosed{rect}` → the position the frame reopens at (remembered per plugin).
+//! - `FrameCloseRequested` (the window's close button) → `CloseWindow`.
+//!
+//! While the bridge shows the frame the app shows no viewport for it. The parameter view and the
+//! device states (loading, crashed, missing) are the app's own viewport as on Linux, at the
+//! bridge frame's last position; switching "Ansicht" swaps the windows. Activation follows
+//! macOS's cooperative rules (spike #42 Q3): the app yields to the bridge's pid and sends
+//! `ActivateFrame` when the frame opens or is opened again; when the bridge closes a frame it
+//! yields back, and the app activates itself if the bridge was the active app.
+//!
 //! Without native viewports (`egui_kittest`, `Context::embed_viewports`) frames run without X11 and
 //! are not drawn, so other views' snapshots stay as they are; frame tests turn on
 //! [`App::show_embedded_plugin_frames`] to get them as embedded egui windows, where the plugin view
@@ -47,6 +68,7 @@
 //! `KOMPONIST_LOG_KEYS=1` logs key events of the main window and the frames, the grab decisions
 //! and X focus changes to stderr.
 
+mod activation;
 pub mod body;
 pub mod header;
 pub mod keys;
@@ -66,6 +88,8 @@ use egui::{
     WindowLevel, vec2,
 };
 use komponist_i18n::Lang;
+use komponist_ipc::GuiTarget;
+use komponist_ipc::frame::{FrameKeyEvent, FrameRect};
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{ChannelRef, Device, DeviceId, PluginFormat};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
@@ -121,6 +145,10 @@ pub struct PluginFrames {
     counter: u64,
     /// Draw frames as embedded egui windows where there are no native viewports (frame tests).
     embedded: bool,
+    /// Tests: the bridge owns the plugin frames (as on macOS) also without native viewports.
+    force_bridge_frames: bool,
+    /// This pass: the bridge owns the plugin frames (macOS with native viewports, or forced).
+    bridge_frames: bool,
     /// Last X focus logged (`KOMPONIST_LOG_KEYS`).
     logged_focus: Option<u32>,
 }
@@ -175,6 +203,8 @@ struct Frame {
     keep_on_top: bool,
     /// Where the frame opens (outer position, points), if remembered.
     pos: Option<(i32, i32)>,
+    /// Where the bridge's own frame was last (macOS).
+    remote_rect: Option<FrameRect>,
     /// The view the window was last sized for.
     sized_for: Option<PluginView>,
     /// The user picked the view (the frame no longer switches it to "Plugin" by itself).
@@ -253,6 +283,31 @@ impl App {
     /// main window (off by default, so other views' snapshots do not show them).
     pub fn show_embedded_plugin_frames(&mut self, on: bool) {
         self.frames.embedded = on;
+    }
+
+    /// Tests: the bridge owns the plugin view of a frame (`GuiTarget::OwnFrame`, as on macOS)
+    /// also without native viewports and on Linux.
+    pub fn use_bridge_frames(&mut self, on: bool) {
+        self.frames.force_bridge_frames = on;
+    }
+
+    /// Whether the bridge shows `device`'s frame right now (its `OpenGui{OwnFrame}` is out or
+    /// answered), so the app shows no viewport for it.
+    pub fn plugin_frame_in_bridge(&self, device: DeviceId) -> bool {
+        self.frames.bridge_frames
+            && self
+                .frames
+                .frames
+                .iter()
+                .any(|f| f.device == device && f.gui != Gui::Idle)
+    }
+
+    /// `OpenWindow` for a window that is open already: a frame the bridge shows comes to the
+    /// front (macOS).
+    pub(crate) fn raise_plugin_window(&mut self, device: DeviceId) {
+        if self.plugin_frame_in_bridge(device) {
+            activation::bring_to_front(self.engine.host_mut(), device);
+        }
     }
 
     /// The frame of `device`'s plugin window, if one is open.
@@ -360,7 +415,13 @@ impl App {
     /// Closes the GUI of a frame that goes away and parks or destroys its child.
     fn retire_frame(&mut self, frame: Frame) {
         let device = frame.device;
-        if let Some(pos) = lock(&frame.shared).seen.outer {
+        let remote = self.frames.bridge_frames && frame.gui != Gui::Idle;
+        let pos = if remote {
+            frame.remote_rect.map(rect_pos)
+        } else {
+            lock(&frame.shared).seen.outer
+        };
+        if let Some(pos) = pos {
             self.remember_frame(device, |m| m.pos = Some(pos));
         }
         let open = matches!(frame.gui, Gui::Opening | Gui::Open);
@@ -419,6 +480,8 @@ impl App {
     /// Once per root pass, after the queue was dispatched (module docs).
     pub(crate) fn update_plugin_frames(&mut self, ctx: &Context) {
         let native = !ctx.embed_viewports();
+        let remote = (native && cfg!(target_os = "macos")) || self.frames.force_bridge_frames;
+        self.frames.bridge_frames = remote;
         self.log_focus();
         // Keys the key thread took back from plugins.
         let grabbed = self
@@ -454,7 +517,11 @@ impl App {
             self.close_plugin_window(device);
         }
         self.sync_frames(native);
-        if native && !self.frames.is_empty() && matches!(self.frames.x11, X11State::Untried) {
+        if native
+            && !remote
+            && !self.frames.is_empty()
+            && matches!(self.frames.x11, X11State::Untried)
+        {
             self.frames.x11 = match X11::connect(ctx) {
                 Ok(x) => X11State::Ready(x),
                 Err(e) => {
@@ -470,7 +537,9 @@ impl App {
         let now = Instant::now();
         let mut busy = false;
         for i in 0..self.frames.frames.len() {
-            if native {
+            if remote {
+                busy |= self.step_remote(i);
+            } else if native {
                 busy |= self.step_native(i, ctx, now);
             }
             self.update_models(i, ctx, native);
@@ -478,6 +547,10 @@ impl App {
         self.expire_parked(now);
         if native || self.frames.embedded {
             for frame in &self.frames.frames {
+                // The bridge shows this one (macOS).
+                if remote && frame.gui != Gui::Idle {
+                    continue;
+                }
                 show_viewport(ctx, frame, native);
             }
         }
@@ -529,6 +602,7 @@ impl App {
                 min_width: 0,
                 keep_on_top: window.keep_on_top,
                 pos: window.pos,
+                remote_rect: None,
                 sized_for: if native { None } else { Some(window.view) },
                 user_view: false,
                 had_gui: false,
@@ -637,6 +711,41 @@ impl App {
         self.frame_chord(device, chord, false);
     }
 
+    /// A key the bridge's own frame took from its plugin (macOS, the X11 grab's counterpart).
+    fn frame_shortcut(&mut self, device: DeviceId, chord: &komponist_ipc::frame::FrameChord) {
+        let Some(chord) = keys::chord_from_frame(chord) else {
+            return;
+        };
+        keys::log(format!(
+            "frame {} (bridge): {}",
+            device.0,
+            chord.label(Lang::En)
+        ));
+        self.frame_chord(device, chord, false);
+    }
+
+    /// A key event of the bridge's own frame while its header has the focus (macOS): applied as a
+    /// key of the frame's own window.
+    fn frame_bridge_key(&mut self, device: DeviceId, key: &FrameKeyEvent) {
+        let Some(logical) = egui::Key::from_name(&key.key) else {
+            return;
+        };
+        let event = Event::Key {
+            key: logical,
+            physical_key: key.physical_key.as_deref().and_then(egui::Key::from_name),
+            pressed: key.pressed,
+            repeat: key.repeat,
+            modifiers: egui::Modifiers {
+                alt: key.mods.alt,
+                ctrl: key.mods.ctrl,
+                shift: key.mods.shift,
+                mac_cmd: key.mods.mac_cmd,
+                command: key.mods.command,
+            },
+        };
+        self.frame_key(device, &event);
+    }
+
     /// A key event of frame `device`'s own window (the frame, not the plugin, has the focus).
     fn frame_key(&mut self, device: DeviceId, event: &Event) {
         let Event::Key {
@@ -714,6 +823,7 @@ impl App {
                 size,
                 resizable,
             } => {
+                let remote = self.frames.bridge_frames;
                 let Some(f) = self.frames.frame_mut(device) else {
                     return;
                 };
@@ -722,6 +832,11 @@ impl App {
                 }
                 f.gui = Gui::Open;
                 f.had_gui = true;
+                if remote {
+                    // The bridge's frame is up: to the front (macOS cooperative activation).
+                    activation::bring_to_front(self.engine.host_mut(), device);
+                    return;
+                }
                 let chrome = chrome(f);
                 let effects = f.sizing.opened(size, resizable, chrome, now);
                 if f.sized_for == Some(PluginView::Gui) {
@@ -729,6 +844,10 @@ impl App {
                 }
             }
             PluginManagerEvent::GuiSizeRequest { device, size } => {
+                if self.frames.bridge_frames {
+                    // The bridge's frame follows its plugin itself.
+                    return;
+                }
                 let Some(f) = self.frames.frame_mut(device) else {
                     return;
                 };
@@ -741,7 +860,19 @@ impl App {
                     self.apply_effects(device, &effects, ctx);
                 }
             }
-            PluginManagerEvent::GuiClosed { device } => {
+            PluginManagerEvent::GuiClosed { device, rect } => {
+                if let Some(rect) = rect {
+                    self.remember_frame(device, |m| m.pos = Some(rect_pos(rect)));
+                    match self.frames.frame_mut(device) {
+                        Some(f) => {
+                            f.remote_rect = Some(rect);
+                            f.pos = Some(rect_pos(rect));
+                        }
+                        // Closed by the user: the bridge yielded back, the app takes the focus
+                        // if the bridge had it.
+                        None => activation::take_back(self.engine.host().bridge_pid(device)),
+                    }
+                }
                 if let Some(at) = self
                     .frames
                     .parked
@@ -805,8 +936,127 @@ impl App {
                     f.params_dirty = true;
                 }
             }
+            PluginManagerEvent::FrameHeaderAction { device, event } => {
+                if self.frames.frame_mut(device).is_some() {
+                    self.frame_output(device, Output::Header(event));
+                }
+            }
+            PluginManagerEvent::FrameShortcut { device, ref chord } => {
+                if self.frames.frame_mut(device).is_some() {
+                    self.frame_shortcut(device, chord);
+                }
+            }
+            PluginManagerEvent::FrameKey { device, ref key } => {
+                if self.frames.frame_mut(device).is_some() {
+                    self.frame_bridge_key(device, key);
+                }
+            }
+            PluginManagerEvent::FrameMoved { device, rect } => {
+                if let Some(f) = self.frames.frame_mut(device) {
+                    f.remote_rect = Some(rect);
+                    f.pos = Some(rect_pos(rect));
+                }
+            }
+            PluginManagerEvent::FrameCloseRequested { device } => {
+                if self.frames.frame_mut(device).is_some() {
+                    self.queue
+                        .push(Action::Plugin(PluginAction::CloseWindow(device)));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Frame `i` where the bridge owns the plugin view (macOS, module docs): opens and closes the
+    /// bridge's frame with the view and the device's state; `true` while it waits for the bridge.
+    fn step_remote(&mut self, i: usize) -> bool {
+        let device = self.frames.frames[i].device;
+        let Some(window) = self
+            .ui
+            .plugin_windows
+            .iter()
+            .find(|w| w.device == device)
+            .copied()
+        else {
+            return false;
+        };
+        let host = self.engine.host();
+        let running = host.status(device) == DeviceStatus::Ok;
+        let has_gui = host.has_gui(device);
+        let frame = &mut self.frames.frames[i];
+        frame.had_gui |= has_gui;
+        if !running && frame.gui != Gui::Idle {
+            // A crash or reload took the bridge's window with it: the app's frame shows the state.
+            frame.gui = Gui::Idle;
+        }
+        let mut view = window.view;
+        if running
+            && !frame.user_view
+            && has_gui
+            && view == PluginView::Params
+            && frame.gui == Gui::Idle
+        {
+            view = PluginView::Gui;
+        }
+        if running && view == PluginView::Gui && !has_gui {
+            view = PluginView::Params;
+        }
+        if view != PluginView::Gui && frame.gui != Gui::Idle {
+            // "Parameter": the app's frame takes over at the bridge frame's place.
+            frame.gui = Gui::Idle;
+            self.engine.host_mut().close_gui(device);
+        }
+        let frame = &self.frames.frames[i];
+        if running && view == PluginView::Gui && frame.gui == Gui::Idle {
+            let rect = frame.remote_rect.or_else(|| {
+                frame.pos.map(|(x, y)| {
+                    let [w, h] = metrics::GUI_AREA;
+                    FrameRect {
+                        x: x as f32,
+                        y: y as f32,
+                        width: w,
+                        height: h + metrics::HEADER,
+                    }
+                })
+            });
+            let header = self.header_model(
+                device,
+                PluginView::Gui,
+                window.keep_on_top,
+                frame.had_gui || has_gui,
+                frame.preset,
+                frame.preset_changed,
+            );
+            let target = GuiTarget::OwnFrame {
+                header: header.clone(),
+                lang: self.lang.code().to_owned(),
+                rect,
+            };
+            match self.engine.host_mut().open_gui(device, target) {
+                Ok(()) => {
+                    let frame = &mut self.frames.frames[i];
+                    frame.gui = Gui::Opening;
+                    // What the bridge shows now; `update_models` sends changes from here.
+                    lock(&frame.shared).header = header;
+                }
+                Err(e) => {
+                    eprintln!("komponist: device {}: plugin GUI not opened: {e}", device.0);
+                    self.frames.frames[i].user_view = true;
+                    view = PluginView::Params;
+                }
+            }
+        }
+        if view != window.view
+            && let Some(w) = self
+                .ui
+                .plugin_windows
+                .iter_mut()
+                .find(|w| w.device == device)
+        {
+            w.view = view;
+        }
+        self.frames.frames[i].sized_for = Some(view);
+        self.frames.frames[i].gui == Gui::Opening
     }
 
     /// X11 work of frame `i`; `true` while it waits for something (the root keeps polling).
@@ -890,7 +1140,13 @@ impl App {
                     let scale = f64::from(seen.ppp);
                     self.engine
                         .host_mut()
-                        .open_gui(device, u64::from(child), scale)
+                        .open_gui(
+                            device,
+                            GuiTarget::X11Child {
+                                xid: u64::from(child),
+                                scale,
+                            },
+                        )
                         .map_err(|e| e.to_string())
                 });
             if let Err(e) = opened {
@@ -1068,11 +1324,16 @@ impl App {
                 }
             },
         };
+        let remote = self.frames.bridge_frames;
         let f = &mut self.frames.frames[i];
         f.params_dirty = false;
         let mut s = lock(&f.shared);
         let mut changed = false;
+        let mut to_bridge = None;
         if s.header != header {
+            if remote && f.gui != Gui::Idle {
+                to_bridge = Some(header.clone());
+            }
             s.header = header;
             changed = true;
         }
@@ -1085,6 +1346,12 @@ impl App {
         drop(s);
         if changed {
             ctx.request_repaint_of(f.viewport);
+        }
+        if let Some(header) = to_bridge {
+            let lang = self.lang.code();
+            self.engine
+                .host_mut()
+                .set_frame_header(device, header, lang);
         }
     }
 
@@ -1257,6 +1524,11 @@ fn is_hexa(device: &Device) -> bool {
     device.plugin.format == PluginFormat::Builtin && device.plugin.id == BUILTIN_HEXA
 }
 
+/// The outer position of `rect`, as the settings remember it.
+fn rect_pos(rect: FrameRect) -> (i32, i32) {
+    (rect.x.round() as i32, rect.y.round() as i32)
+}
+
 /// The frame's measures from what its callback saw.
 fn chrome(f: &Frame) -> Chrome {
     let seen = lock(&f.shared).seen;
@@ -1325,17 +1597,7 @@ fn show_viewport(ctx: &Context, frame: &Frame, native: bool) {
         if native && frame.xid.is_none() {
             frame.token.clone()
         } else {
-            // "Surge XT · Pad · komponist": the header's sub line is "track · format".
-            let track = s
-                .header
-                .sub
-                .rsplit_once(" · ")
-                .map_or(s.header.sub.as_str(), |(track, _)| track);
-            format!(
-                "{} · {track} · {}",
-                s.header.name,
-                crate::panels::transport::WORDMARK
-            )
+            komponist_ui::plugin_frame::window_title(&s.header)
         }
     };
     let level = if frame.keep_on_top {
