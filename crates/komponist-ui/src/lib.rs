@@ -116,8 +116,8 @@ impl RunOptions {
         }
     }
 
-    /// The eframe options: wgpu renderer, X11 forced (also under XWayland), the viewport from
-    /// these settings.
+    /// The eframe options: wgpu renderer, X11 forced on Linux (also under XWayland), the viewport
+    /// from these settings.
     pub fn native_options(&self) -> eframe::NativeOptions {
         let mut viewport = egui::ViewportBuilder::default()
             .with_title(self.title.clone())
@@ -130,6 +130,8 @@ impl RunOptions {
         eframe::NativeOptions {
             viewport,
             renderer: eframe::Renderer::Wgpu,
+            // X11 only exists on Linux; macOS uses winit's default (Cocoa) event loop.
+            #[cfg(target_os = "linux")]
             event_loop_builder: Some(Box::new(|builder| {
                 use winit::platform::x11::EventLoopBuilderExtX11 as _;
                 builder.with_x11();
@@ -174,7 +176,8 @@ mod tests {
     fn native_options_force_wgpu_and_x11() {
         let o = RunOptions::new("komponist-test", "komponist · Test").native_options();
         assert_eq!(o.renderer, eframe::Renderer::Wgpu);
-        assert!(o.event_loop_builder.is_some());
+        // X11 is forced on Linux only.
+        assert_eq!(o.event_loop_builder.is_some(), cfg!(target_os = "linux"));
         assert_eq!(o.viewport.title.as_deref(), Some("komponist · Test"));
         assert_eq!(o.viewport.app_id.as_deref(), Some("komponist-test"));
     }
