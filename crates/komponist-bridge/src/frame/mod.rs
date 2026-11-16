@@ -133,7 +133,7 @@ pub(super) struct Frame {
     lang: Lang,
     /// Where the app wants it to open.
     initial: Option<FrameRect>,
-    channel: Rc<BridgeChannel>,
+    channel: std::sync::Arc<BridgeChannel>,
     /// The app (the bridge's parent), to yield the activation back to.
     app_pid: i32,
     ctx: Option<egui::Context>,

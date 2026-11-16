@@ -10,11 +10,15 @@
 //!   the latest one, so edits of different parameters are not merged.
 
 use std::cell::Cell;
+#[cfg(unix)]
 use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use komponist_hosting::host_loop::wake::WakeFd;
+#[cfg(windows)]
+use komponist_hosting::host_loop::wake::WakeEvent as Wake;
+#[cfg(unix)]
+use komponist_hosting::host_loop::wake::WakeFd as Wake;
 use komponist_hosting::host_loop::{notification_bit, notification_bits};
 use komponist_hosting::{GuiSize, HostNotification, HostNotify};
 use komponist_ipc::LogLevel;
@@ -72,13 +76,13 @@ pub struct BridgeNotify {
     logs: Mutex<LogQueue>,
     dropped_rt_logs: AtomicU32,
     edits: Mutex<Vec<(u32, f64)>>,
-    wake: WakeFd,
+    wake: Wake,
 }
 
 impl BridgeNotify {
-    /// Creates the wake fd (eventfd on Linux, pipe on macOS).
+    /// Creates the wake fd (eventfd on Linux, pipe on macOS; Windows: a manual-reset event).
     pub fn new() -> std::io::Result<BridgeNotify> {
-        let wake = WakeFd::new()?;
+        let wake = Wake::new()?;
         let edits = Mutex::new(Vec::with_capacity(MAX_EDITS));
         // On macOS `std`'s mutex boxes its pthread mutex on first use: lock it once here, so that
         // `notify` (`ParamEdited`) never allocates.
@@ -94,8 +98,15 @@ impl BridgeNotify {
     }
 
     /// Readable while something is pending.
+    #[cfg(unix)]
     pub fn wake_fd(&self) -> BorrowedFd<'_> {
         self.wake.as_fd()
+    }
+
+    /// Windows: signalled while something is pending.
+    #[cfg(windows)]
+    pub fn wake_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        std::os::windows::io::AsHandle::as_handle(&self.wake)
     }
 
     /// Sets `bit` and wakes the main loop if it was not set yet. RT-safe.
@@ -196,6 +207,19 @@ mod tests {
     use super::*;
     use notification_bits as bits;
 
+    #[cfg(windows)]
+    fn readable(notify: &BridgeNotify) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        // SAFETY: a valid event handle; a zero timeout only tests its state.
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(
+                notify.wake_handle().as_raw_handle(),
+                0,
+            ) == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+        }
+    }
+
+    #[cfg(unix)]
     fn readable(notify: &BridgeNotify) -> bool {
         let mut fds = [rustix::event::PollFd::from_borrowed_fd(
             notify.wake_fd(),

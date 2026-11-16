@@ -6,7 +6,7 @@
 //! `IEditController`, `IConnectionPoint`, `IMidiMapping`, `IUnitInfo`, `IPlugView`,
 //! `IPlugViewContentScaleSupport`. Host interfaces offered (see [`host`]): `IHostApplication`,
 //! `IPlugInterfaceSupport`, `IMessage` / `IAttributeList`, `IComponentHandler` (2),
-//! `IPlugFrame` + `Linux::IRunLoop`, `IBStream` (+ `ISizeableStream`), `IParameterChanges` /
+//! `IPlugFrame` + `Linux::IRunLoop` (Linux and macOS), `IBStream` (+ `ISizeableStream`), `IParameterChanges` /
 //! `IParamValueQueue`, `IEventList`.
 //!
 //! # Host duties (spike WP-15 §2 and §4: what truce-rack got wrong)
@@ -64,6 +64,7 @@ mod tests;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::Path;
 use std::rc::Rc;
@@ -106,10 +107,30 @@ const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 #[cfg(target_os = "macos")]
 const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeNSView;
 
-#[cfg(not(any(x11_embed, target_os = "macos")))]
-compile_error!(
-    "komponist-hosting: no VST3 IPlugView platform type (vst3/mod.rs) for this OS yet (Windows: W6, kPlatformTypeHWND)"
-);
+/// Windows: an `HWND` of the bridge's frame (W6), with `setContentScaleFactor`.
+#[cfg(windows)]
+const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeHWND;
+
+#[cfg(not(any(x11_embed, target_os = "macos", windows)))]
+compile_error!("komponist-hosting: no VST3 IPlugView platform type (vst3/mod.rs) for this OS");
+
+/// The integer type of the VST3 enums (`MediaTypes`, `BusDirections`, `EventTypes`, flag sets, …): the
+/// bindings make it `c_uint` on Linux and macOS and `c_int` on Windows (MSVC enums are signed).
+/// Constants keep their bit patterns either way; [`enum_u32`] and [`enum_i32`] convert for the
+/// `uint32` and `int32` fields and arguments they go into.
+pub(crate) type VstEnum = vst3::Steinberg::Vst::MediaTypes;
+
+/// A VST3 enum value (or flag set) as `uint32` (see [`VstEnum`]).
+#[allow(clippy::unnecessary_cast)] // a no-op outside Windows
+pub(crate) const fn enum_u32(value: VstEnum) -> u32 {
+    value as u32
+}
+
+/// A VST3 enum value as `int32` (see [`VstEnum`]).
+#[allow(clippy::unnecessary_cast)] // a no-op on Windows
+pub(crate) const fn enum_i32(value: VstEnum) -> i32 {
+    value as i32
+}
 
 use self::events::MidiMap;
 use self::host::{
@@ -118,7 +139,9 @@ use self::host::{
 use self::module::{Module, audio_classes, load_module, parse_cid};
 use self::processor::{BusLayout, ProcessorSetup, TO_CONTROLLER_RING, Vst3Processor};
 use self::strings::utf16;
-use crate::host::{FdEvents, HostContext, TimerId};
+#[cfg(unix)]
+use crate::host::FdEvents;
+use crate::host::{HostContext, TimerId};
 use crate::plugin::{
     ActivateConfig, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor, HostingError,
 };
@@ -174,14 +197,15 @@ fn probe_sidechain(
 
 /// The buses of `media` in direction `dir` (main thread, inactive); a bus whose info the plugin
 /// refuses reads as 0 channels.
-fn bus_infos(component: &ComPtr<IComponent>, media: u32, dir: u32) -> Vec<BusInfo> {
+fn bus_infos(component: &ComPtr<IComponent>, media: VstEnum, dir: VstEnum) -> Vec<BusInfo> {
     // SAFETY: main thread, inactive; plain out-structs.
-    let count = unsafe { component.getBusCount(media as i32, dir as i32) };
+    let count = unsafe { component.getBusCount(enum_i32(media), enum_i32(dir)) };
     (0..count.max(0))
         .map(|index| {
             let mut info: BusInfo = unsafe { std::mem::zeroed() };
-            let ok = unsafe { component.getBusInfo(media as i32, dir as i32, index, &mut info) }
-                == kResultOk;
+            let ok =
+                unsafe { component.getBusInfo(enum_i32(media), enum_i32(dir), index, &mut info) }
+                    == kResultOk;
             if !ok {
                 info.channelCount = 0;
             }
@@ -194,7 +218,7 @@ fn bus_infos(component: &ComPtr<IComponent>, media: u32, dir: u32) -> Vec<BusInf
 fn main_bus(infos: &[BusInfo]) -> Option<usize> {
     infos
         .iter()
-        .position(|b| b.busType == kMain as i32)
+        .position(|b| b.busType == enum_i32(kMain))
         .or((!infos.is_empty()).then_some(0))
 }
 
@@ -203,7 +227,9 @@ fn main_bus(infos: &[BusInfo]) -> Option<usize> {
 fn sidechain_bus(infos: &[BusInfo]) -> Option<usize> {
     let main = main_bus(infos);
     (0..infos.len()).find(|&index| {
-        Some(index) != main && infos[index].busType == kAux as i32 && infos[index].channelCount > 0
+        Some(index) != main
+            && infos[index].busType == enum_i32(kAux)
+            && infos[index].channelCount > 0
     })
 }
 
@@ -442,7 +468,10 @@ impl Vst3Plugin {
             self.unit_info = controller.cast::<IUnitInfo>();
         }
         // SAFETY: plain getter on the main thread.
-        self.event_inputs = unsafe { self.component.getBusCount(kEvent as i32, kInput as i32) };
+        self.event_inputs = unsafe {
+            self.component
+                .getBusCount(enum_i32(kEvent), enum_i32(kInput))
+        };
         self.descriptor.sidechain = sidechain_bus(&self.bus_infos(kAudio, kInput)).is_some();
         // Not even probed where no GUI is embedded: JUCE builds its whole editor in `createView`.
         self.has_gui = GUI_EMBEDDING && self.probe_gui();
@@ -566,21 +595,21 @@ impl Vst3Plugin {
         }
     }
 
-    fn bus_infos(&self, media: u32, dir: u32) -> Vec<BusInfo> {
+    fn bus_infos(&self, media: VstEnum, dir: VstEnum) -> Vec<BusInfo> {
         bus_infos(&self.component, media, dir)
     }
 
     /// Asks for stereo main buses (keeping the other buses' arrangements) and returns the audio
     /// layouts the plugin settled on.
     fn arrange_buses(&self) -> (BusLayout, BusLayout) {
-        let arrangements = |dir: u32, count: usize, main: Option<usize>| {
+        let arrangements = |dir: VstEnum, count: usize, main: Option<usize>| {
             (0..count)
                 .map(|index| {
                     let mut arr: SpeakerArrangement = 0;
                     // SAFETY: main thread, inactive.
                     unsafe {
                         self.audio
-                            .getBusArrangement(dir as i32, index as i32, &mut arr)
+                            .getBusArrangement(enum_i32(dir), index as i32, &mut arr)
                     };
                     if Some(index) == main { kStereo } else { arr }
                 })
@@ -632,12 +661,12 @@ impl Vst3Plugin {
             for (index, info) in self.bus_infos(media, dir).iter().enumerate() {
                 if Some(index) == main
                     || Some(index) == sidechain
-                    || info.flags & kDefaultActive != 0
+                    || info.flags & enum_u32(kDefaultActive) != 0
                 {
                     // SAFETY: main thread, inactive.
                     unsafe {
                         self.component
-                            .activateBus(media as i32, dir as i32, index as i32, 1)
+                            .activateBus(enum_i32(media), enum_i32(dir), index as i32, 1)
                     };
                 }
             }
@@ -658,20 +687,20 @@ impl Vst3Plugin {
                 "invalid configuration {config:?}"
             )));
         }
-        let process_mode = match self.render_mode {
+        let process_mode = enum_i32(match self.render_mode {
             RenderMode::Realtime => kRealtime,
             RenderMode::Offline => kOffline,
-        } as i32;
+        });
         let (inputs, outputs) = self.arrange_buses();
         // SAFETY: main thread, inactive.
-        if unsafe { self.audio.canProcessSampleSize(kSample32 as i32) } != kResultOk {
+        if unsafe { self.audio.canProcessSampleSize(enum_i32(kSample32)) } != kResultOk {
             return Err(HostingError::Activate(
                 "the plugin cannot process 32-bit samples".into(),
             ));
         }
         let mut setup = ProcessSetup {
             processMode: process_mode,
-            symbolicSampleSize: kSample32 as i32,
+            symbolicSampleSize: enum_i32(kSample32),
             maxSamplesPerBlock: config.max_frames as i32,
             sampleRate: config.sample_rate,
         };
@@ -998,6 +1027,8 @@ impl HostedPlugin for Vst3Plugin {
             GuiParent::X11 { xid, scale } => (xid as *mut c_void, Some(scale)),
             #[cfg(target_os = "macos")]
             GuiParent::Cocoa(view) => (view, None),
+            #[cfg(windows)]
+            GuiParent::Win32 { hwnd, scale } => (hwnd, Some(scale)),
             _ => {
                 return Err(HostingError::Gui(
                     "the parent window is of another platform".into(),
@@ -1028,8 +1059,8 @@ impl HostedPlugin for Vst3Plugin {
                     );
                 }
             }
-            // The parent is a live X11 window of the app's frame, or an `NSView` of the bridge's
-            // frame; either is kept until after `gui_close` (or the bridge's death).
+            // The parent is a live X11 window of the app's frame, or an `NSView` / `HWND` of the
+            // bridge's frame; either is kept until after `gui_close` (or the bridge's death).
             let result = view.attached(window, PLATFORM_TYPE);
             if result != kResultOk {
                 view.setFrame(std::ptr::null_mut());
@@ -1100,6 +1131,7 @@ impl HostedPlugin for Vst3Plugin {
         }
     }
 
+    #[cfg(unix)]
     fn on_fd(&mut self, fd: RawFd, events: FdEvents) {
         if self.run_loop.owns_fd(fd) {
             self.run_loop.dispatch_fd(fd, events);

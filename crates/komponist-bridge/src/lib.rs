@@ -1,7 +1,8 @@
 //! The plugin bridge: one process per hosted plugin instance (ARCHITECTURE §8.1–8.3).
 //!
 //! ```text
-//! komponist --bridge --instance --control-fd <fd> [--rt-priority <1..=99>]
+//! komponist --bridge --instance --control-fd <fd> [--rt-priority <1..=99>]   (Linux, macOS)
+//! komponist --bridge --instance [--rt-priority <1..=99>]                     (Windows)
 //! komponist --bridge --scan <bundle>
 //! komponist-bridge --instance …   (the same, as a binary of its own)
 //! ```
@@ -14,13 +15,22 @@
 //!
 //! - **Instance mode** ([`instance`]): talks to the app over the inherited control socket, hosts
 //!   one plugin on its main thread and processes blocks on an RT thread ([`rt`]) through the
-//!   shared memory. A crashing plugin takes only this process down.
+//!   shared memory. A crashing plugin takes only this process down. On Windows (port W5) the
+//!   control channel is the bridge's stdin (a named pipe the app passes as the child's stdin, so
+//!   no handle value goes on the command line): there is no `--control-fd`, and the bridge points
+//!   stdin at `NUL` once it holds the pipe (`win_stdio`). `--rt-priority` is accepted and ignored
+//!   there (MMCSS has no priority number).
 //! - **Scan mode** ([`scan`]): prints the bundle's plugins as JSON and exits.
 //!
 //! Both modes first turn core dumps off (`PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` on
 //! macOS, where the bridge also clears its task-level crash exception ports): plugins crash on purpose in tests and by accident in practice, and systemd-coredump
 //! would delay the crash detection to about 55 ms and pop up a crash reporter (PLAN WP-31).
-//! `KOMPONIST_BRIDGE_COREDUMP=1` keeps core dumps for debugging a plugin crash. Any panic in the
+//! On Windows the same goes for Windows Error Reporting: `SetErrorMode(SEM_FAILCRITICALERRORS |
+//! SEM_NOGPFAULTERRORBOX)` and `WerSetFlags(WER_FAULT_REPORTING_NO_UI)`, so a crashing plugin never
+//! leaves the bridge alive behind a dialog (both: the error mode covers unhandled exceptions, the
+//! WER flag the paths that report without it, such as fast-fail from a plugin's `abort`).
+//! `KOMPONIST_BRIDGE_COREDUMP=1` keeps core dumps (Windows: the WER report) for debugging a plugin
+//! crash. Any panic in the
 //! bridge aborts it, so a failing bridge always looks like a crash to the app and never leaves a
 //! half-torn-down plugin running. Both modes end with `_exit` after the plugin is torn down
 //! ([`exit_now`]).
@@ -34,13 +44,18 @@ mod notify;
 mod rt;
 mod scan;
 mod sched;
+#[cfg(windows)]
+mod win_loop;
+#[cfg(windows)]
+mod win_stdio;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!(
-    "komponist-bridge: no main loop (event_loop.rs / cf_loop.rs) for this OS yet (Windows: W5, a Win32 message pump)"
+    "komponist-bridge: no main loop (event_loop.rs / cf_loop.rs / win_loop.rs) for this OS"
 );
 
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -53,8 +68,8 @@ use std::process::ExitCode;
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 /// Whether bridges embed plugin GUIs on this OS (Linux: into the app's frame, macOS: into the
-/// bridge's own frame window, #52). For the app and its tests, which do not link the hosting crate
-/// directly.
+/// bridge's own frame window, #52; Windows: not before W6). For the app and its tests, which do not
+/// link the hosting crate directly.
 pub use komponist_hosting::GUI_EMBEDDING;
 
 /// Process exit codes.
@@ -73,14 +88,20 @@ pub mod exit {
 /// Set to `1` to keep core dumps (the bridge is non-dumpable otherwise).
 const COREDUMP_ENV: &str = "KOMPONIST_BRIDGE_COREDUMP";
 
+#[cfg(unix)]
 const USAGE: &str = "usage: komponist-bridge --instance --control-fd <fd> [--rt-priority <1..=99>]
+       komponist-bridge --scan <bundle>
+       komponist --bridge <the same arguments>";
+#[cfg(windows)]
+const USAGE: &str =
+    "usage: komponist-bridge --instance [--rt-priority <1..=99>]  (control pipe on stdin)
        komponist-bridge --scan <bundle>
        komponist --bridge <the same arguments>";
 
 /// The main thread's name in bridge mode. On Linux it is the process name (`comm`, at most 15
 /// bytes), by which tools and tests find the bridges of an app, whichever executable they were
 /// started from. macOS names processes by their executable; there it names the main thread
-/// (debuggers, `spindump`, crash reports).
+/// (debuggers, `spindump`, crash reports), as on Windows (`SetThreadDescription`).
 const PROCESS_NAME: &std::ffi::CStr = c"komponist-bridge";
 
 /// What the command line asks for.
@@ -94,6 +115,7 @@ enum Mode {
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> {
     let mut args = args.into_iter();
     let mut instance = false;
+    #[cfg(unix)]
     let mut control_fd: Option<RawFd> = None;
     let mut rt_priority = sched::DEFAULT_PRIORITY;
     let mut scan: Option<PathBuf> = None;
@@ -101,6 +123,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.to_str() {
             Some("--instance") => instance = true,
+            #[cfg(unix)]
             Some("--control-fd") => {
                 let v = value("--control-fd")?;
                 let fd = v
@@ -125,7 +148,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
             _ => return Err(format!("unknown argument {}", arg.to_string_lossy())),
         }
     }
-    match (instance, control_fd, scan) {
+    #[cfg(unix)]
+    return match (instance, control_fd, scan) {
         (true, Some(control_fd), None) => Ok(Mode::Instance(instance::Options {
             control_fd,
             rt_priority,
@@ -135,7 +159,14 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Mode, String> 
         (false, Some(_), _) => Err("--control-fd needs --instance".into()),
         (false, None, Some(bundle)) => Ok(Mode::Scan(bundle)),
         (false, None, None) => Err("nothing to do".into()),
-    }
+    };
+    #[cfg(windows)]
+    return match (instance, scan) {
+        (true, None) => Ok(Mode::Instance(instance::Options { rt_priority })),
+        (true, Some(_)) => Err("--instance and --scan exclude each other".into()),
+        (false, Some(bundle)) => Ok(Mode::Scan(bundle)),
+        (false, None) => Err("nothing to do".into()),
+    };
 }
 
 /// The bridge process: `args` are the command line without the program name (and without the
@@ -163,7 +194,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 }
 
 /// Names the process (or main thread) and keeps core dumps off, unless [`COREDUMP_ENV`] is `1`:
-/// `PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` (the soft limit) on macOS.
+/// `PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` (the soft limit) on macOS, no Windows Error
+/// Reporting UI on Windows.
 fn harden_process() {
     let keep_cores = std::env::var_os(COREDUMP_ENV).is_some_and(|v| v == "1");
     #[cfg(target_os = "linux")]
@@ -193,10 +225,42 @@ fn harden_process() {
             );
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    compile_error!(
-        "komponist-bridge: no process hardening (harden_process) for this OS yet (Windows: W5, SetErrorMode + WerSetFlags)"
-    );
+    #[cfg(windows)]
+    {
+        name_current_thread(PROCESS_NAME);
+        if !keep_cores {
+            disable_error_reporting();
+        }
+    }
+}
+
+/// Windows: names the calling thread (`SetThreadDescription`; debuggers, crash dumps, Process
+/// Explorer). A failure only leaves it unnamed.
+#[cfg(windows)]
+fn name_current_thread(name: &std::ffi::CStr) {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadDescription};
+    let wide: Vec<u16> = name
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: the pseudo handle of this thread and a NUL-terminated string.
+    unsafe { SetThreadDescription(GetCurrentThread(), wide.as_ptr()) };
+}
+
+/// Windows: no crash dialog, no Windows Error Reporting UI (module docs). The error mode is
+/// inherited by processes the plugin starts.
+#[cfg(windows)]
+fn disable_error_reporting() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+    };
+    use windows_sys::Win32::System::ErrorReporting::{WER_FAULT_REPORTING_NO_UI, WerSetFlags};
+    // SAFETY: plain process-wide settings.
+    unsafe {
+        SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+        WerSetFlags(WER_FAULT_REPORTING_NO_UI);
+    }
 }
 
 /// Detaches the bridge from ReportCrash as far as a task can (#52): clears the task-level crash
@@ -241,12 +305,28 @@ fn detach_from_crash_reporter() {
 /// some fail when they run after the plugin is gone (Klopfer panics in its TLS destructors on
 /// `process::exit`, spike #42); the bridge has nothing left to clean up by then. Rust's buffered
 /// stdout is flushed first (the scan writes its JSON unbuffered anyway).
+///
+/// Windows: `TerminateProcess(GetCurrentProcess(), code)`. The CRT's `_exit` skips `atexit`
+/// handlers but ends in `ExitProcess`, which still sends `DLL_PROCESS_DETACH` to every DLL and runs
+/// the TLS callbacks (where Rust's thread-local destructors live), i.e. plugin code after the
+/// plugin is gone; `TerminateProcess` runs none of it.
 fn exit_now(code: u8) -> ! {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
+    #[cfg(unix)]
     // SAFETY: ends the process without running exit handlers; nothing in it is half-done.
-    unsafe { libc::_exit(i32::from(code)) }
+    unsafe {
+        libc::_exit(i32::from(code))
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: ends this process with `code`; nothing in it is half-done.
+        unsafe { TerminateProcess(GetCurrentProcess(), u32::from(code)) };
+        // TerminateProcess on the own process does not return; should it ever, fail hard.
+        std::process::abort()
+    }
 }
 
 #[cfg(test)]
@@ -257,6 +337,7 @@ mod tests {
         parse_args(args.iter().map(OsString::from))
     }
 
+    #[cfg(unix)]
     #[test]
     fn instance_and_scan_arguments() {
         assert_eq!(
@@ -278,6 +359,39 @@ mod tests {
             Ok(Mode::Scan("/usr/lib/clap/Dexed.clap".into()))
         );
         assert_eq!(parse(&["--help"]), Ok(Mode::Help));
+    }
+
+    /// Windows: the control pipe is stdin, so instance mode takes no fd argument.
+    #[cfg(windows)]
+    #[test]
+    fn instance_and_scan_arguments() {
+        assert_eq!(
+            parse(&["--instance"]),
+            Ok(Mode::Instance(instance::Options {
+                rt_priority: sched::DEFAULT_PRIORITY,
+            }))
+        );
+        assert_eq!(
+            parse(&["--rt-priority", "70", "--instance"]),
+            Ok(Mode::Instance(instance::Options { rt_priority: 70 }))
+        );
+        assert_eq!(
+            parse(&["--scan", r"C:\Program Files\Common Files\CLAP\Dexed.clap"]),
+            Ok(Mode::Scan(
+                r"C:\Program Files\Common Files\CLAP\Dexed.clap".into()
+            ))
+        );
+        assert_eq!(parse(&["--help"]), Ok(Mode::Help));
+        for args in [
+            &[][..],
+            &["--instance", "--control-fd", "3"],
+            &["--instance", "--rt-priority", "0"],
+            &["--instance", "--scan", r"C:\x.clap"],
+            &["--scan"],
+            &["--bogus"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
+        }
     }
 
     /// macOS: the main thread is named and core dumps are off (the soft limit only).
@@ -308,6 +422,38 @@ mod tests {
         .unwrap();
     }
 
+    /// Windows: the thread is named and the crash dialogs are off. (Process-wide error mode: it
+    /// only suppresses dialogs, which no test wants anyway.)
+    #[cfg(windows)]
+    #[test]
+    fn hardening_names_the_thread_and_turns_crash_dialogs_off() {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadDescription};
+        if std::env::var_os(COREDUMP_ENV).is_some() {
+            return;
+        }
+        std::thread::spawn(|| {
+            harden_process();
+            let mode = unsafe { GetErrorMode() };
+            assert_eq!(
+                mode & (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX),
+                SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX
+            );
+            let mut name: *mut u16 = std::ptr::null_mut();
+            // SAFETY: the pseudo handle of this thread; the string is freed with LocalFree.
+            assert!(unsafe { GetThreadDescription(GetCurrentThread(), &mut name) } >= 0);
+            let len = (0..).take_while(|&i| unsafe { *name.add(i) } != 0).count();
+            let text = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name, len) });
+            unsafe { windows_sys::Win32::Foundation::LocalFree(name.cast()) };
+            assert_eq!(text, "komponist-bridge");
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(unix)]
     #[test]
     fn bad_arguments_are_refused() {
         for args in [

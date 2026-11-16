@@ -4,7 +4,6 @@
 
 use crate::common;
 
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -107,7 +106,8 @@ fn scan_prints_vst3_descriptors_as_json() {
 #[test]
 fn scan_failures_have_exit_codes() {
     // Missing bundle, and a file that is no bundle: 1 with the reason on stderr, nothing on stdout.
-    for bundle in ["/nonexistent/X.clap", "/etc/hostname"] {
+    let not_a_bundle = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    for bundle in ["/nonexistent/X.clap", not_a_bundle] {
         let output = scan(Path::new(bundle));
         assert_eq!(output.status.code(), Some(1), "{bundle}");
         assert!(output.stdout.is_empty());
@@ -119,15 +119,39 @@ fn scan_failures_have_exit_codes() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     // A path the JSON cannot carry.
-    let invalid = std::ffi::OsStr::from_bytes(b"/tmp/\xff.clap");
+    #[cfg(unix)]
+    let invalid: std::ffi::OsString = std::ffi::OsString::from_vec(b"/tmp/\xff.clap".to_vec());
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+    // Windows: an unpaired surrogate in "X?.clap".
+    #[cfg(windows)]
+    let invalid: std::ffi::OsString = std::os::windows::ffi::OsStringExt::from_wide(&[
+        u16::from(b'X'),
+        0xD800,
+        u16::from(b'.'),
+        u16::from(b'c'),
+        u16::from(b'l'),
+        u16::from(b'a'),
+        u16::from(b'p'),
+    ]);
     let output = Command::new(BRIDGE)
         .arg("--scan")
         .arg(invalid)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    // Usage errors: 2.
-    for args in [&[][..], &["--scan"], &["--bogus"], &["--instance"]] {
+    // Usage errors: 2. (`--instance` alone is complete on Windows: the control pipe is stdin.)
+    let usage: &[&[&str]] = if cfg!(windows) {
+        &[
+            &[],
+            &["--scan"],
+            &["--bogus"],
+            &["--instance", "--control-fd", "3"],
+        ]
+    } else {
+        &[&[], &["--scan"], &["--bogus"], &["--instance"]]
+    };
+    for args in usage {
         let output = bridge(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));

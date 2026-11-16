@@ -19,7 +19,6 @@ clack-extensions = { workspace = true, features = [
     "note-name",
     "note-ports",
     "params",
-    "posix-fd",
     "render",
     "state",
     "thread-check",
@@ -29,10 +28,26 @@ clack-extensions = { workspace = true, features = [
 vst3.workspace = true
 # Parameter changes between the VST3 controller (main thread) and processor (RT thread).
 rtrb.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# CLAP posix-fd-support: Linux and macOS only (the extension is built on `std::os::unix`, and
+# Windows plugins use their own window messages and timers instead).
+clack-extensions = { workspace = true, features = ["posix-fd"] }
 # dlopen and its per-OS RTLD_* flags (`library.rs`).
 libc.workspace = true
 # poll() and eventfd for the reference `PollLoop`.
 rustix = { workspace = true, features = ["event", "pipe"] }
+
+[target.'cfg(windows)'.dependencies]
+# Foundation (handles, errors), LibraryLoader (LoadLibraryExW, GetProcAddress and the pin of
+# GetModuleHandleExW, `library.rs`), Threading (the wake event and the high-resolution waitable
+# timer of `host_loop::wake`), WindowsAndMessaging (its message pump).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 # RT checks around `HostedProcessor::process`.

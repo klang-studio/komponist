@@ -240,53 +240,110 @@ pub struct PluginDirs {
     pub vst3: Vec<PathBuf>,
 }
 
+/// The OS whose conventions the default folders follow (plugin folders, the scan cache).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Platform {
+    /// Linux, and the fallback for any other Unix.
+    Linux,
+    Macos,
+    Windows,
+}
+
+impl Platform {
+    /// The OS this build runs on.
+    pub(crate) const CURRENT: Platform = if cfg!(windows) {
+        Platform::Windows
+    } else if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else {
+        Platform::Linux
+    };
+}
+
+/// An environment variable as a path, if set and not empty.
+pub(crate) fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
 impl PluginDirs {
     /// The default folders (ARCHITECTURE §8.3). Linux: CLAP `~/.clap`, `/usr/lib/clap`,
     /// `/usr/local/lib/clap` and the entries of `$CLAP_PATH`; VST3 `~/.vst3`, `/usr/lib/vst3`,
     /// `/usr/local/lib/vst3`. macOS: CLAP `~/Library/Audio/Plug-Ins/CLAP`,
     /// `/Library/Audio/Plug-Ins/CLAP` and `$CLAP_PATH`; VST3 `~/Library/Audio/Plug-Ins/VST3`,
-    /// `/Library/Audio/Plug-Ins/VST3`.
+    /// `/Library/Audio/Plug-Ins/VST3`. Windows: CLAP `%COMMONPROGRAMFILES%\CLAP`,
+    /// `%LOCALAPPDATA%\Programs\Common\CLAP` and the entries of `%CLAP_PATH%` (`;`-separated);
+    /// VST3 `%COMMONPROGRAMFILES%\VST3`, `%LOCALAPPDATA%\Programs\Common\VST3`.
     pub fn defaults() -> PluginDirs {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let clap_path = std::env::var_os("CLAP_PATH");
-        PluginDirs::defaults_from(
-            cfg!(target_os = "macos"),
-            home.as_deref(),
-            clap_path.as_deref(),
-        )
+        PluginDirs::defaults_from(Platform::CURRENT, &|name: &str| env_path(name))
     }
 
-    /// [`PluginDirs::defaults`] for a platform (`macos`), a home folder and a `$CLAP_PATH` value.
-    /// Empty entries of `$CLAP_PATH` and folders listed twice are left out.
-    fn defaults_from(
-        macos: bool,
-        home: Option<&Path>,
-        clap_path: Option<&std::ffi::OsStr>,
+    /// [`PluginDirs::defaults`] for a platform and the environment `var` (a variable by name).
+    /// Empty entries of `CLAP_PATH` and folders listed twice are left out.
+    pub(crate) fn defaults_from(
+        platform: Platform,
+        var: &dyn Fn(&str) -> Option<PathBuf>,
     ) -> PluginDirs {
-        let (user_clap, user_vst3, system_clap, system_vst3): (_, _, &[&str], &[&str]) = if macos {
-            (
-                "Library/Audio/Plug-Ins/CLAP",
-                "Library/Audio/Plug-Ins/VST3",
-                &["/Library/Audio/Plug-Ins/CLAP"],
-                &["/Library/Audio/Plug-Ins/VST3"],
-            )
-        } else {
-            (
-                ".clap",
-                ".vst3",
-                &["/usr/lib/clap", "/usr/local/lib/clap"],
-                &["/usr/lib/vst3", "/usr/local/lib/vst3"],
-            )
+        let home = var("HOME");
+        let under = |base: Option<PathBuf>, rel: &str| base.map(|b| b.join(rel));
+        let (mut clap, vst3): (Vec<Option<PathBuf>>, Vec<Option<PathBuf>>) = match platform {
+            Platform::Linux => (
+                vec![
+                    under(home.clone(), ".clap"),
+                    Some("/usr/lib/clap".into()),
+                    Some("/usr/local/lib/clap".into()),
+                ],
+                vec![
+                    under(home, ".vst3"),
+                    Some("/usr/lib/vst3".into()),
+                    Some("/usr/local/lib/vst3".into()),
+                ],
+            ),
+            Platform::Macos => (
+                vec![
+                    under(home.clone(), "Library/Audio/Plug-Ins/CLAP"),
+                    Some("/Library/Audio/Plug-Ins/CLAP".into()),
+                ],
+                vec![
+                    under(home, "Library/Audio/Plug-Ins/VST3"),
+                    Some("/Library/Audio/Plug-Ins/VST3".into()),
+                ],
+            ),
+            Platform::Windows => {
+                let common = var("COMMONPROGRAMFILES");
+                let local = var("LOCALAPPDATA").map(|l| l.join("Programs").join("Common"));
+                (
+                    vec![under(common.clone(), "CLAP"), under(local.clone(), "CLAP")],
+                    vec![under(common, "VST3"), under(local, "VST3")],
+                )
+            }
         };
-        let mut clap: Vec<PathBuf> = home.map(|h| h.join(user_clap)).into_iter().collect();
-        clap.extend(system_clap.iter().map(PathBuf::from));
-        if let Some(paths) = clap_path {
-            clap.extend(std::env::split_paths(paths).filter(|p| !p.as_os_str().is_empty()));
+        if let Some(paths) = var("CLAP_PATH") {
+            let separator = if platform == Platform::Windows {
+                ';'
+            } else {
+                ':'
+            };
+            let entries: Vec<PathBuf> = match paths.to_str() {
+                Some(text) => text.split(separator).map(PathBuf::from).collect(),
+                // Not UTF-8: only the running OS can split it.
+                None => std::env::split_paths(paths.as_os_str()).collect(),
+            };
+            clap.extend(
+                entries
+                    .into_iter()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(Some),
+            );
         }
         let mut seen = HashSet::new();
-        clap.retain(|p| seen.insert(p.clone()));
-        let mut vst3: Vec<PathBuf> = home.map(|h| h.join(user_vst3)).into_iter().collect();
-        vst3.extend(system_vst3.iter().map(PathBuf::from));
+        let clap: Vec<PathBuf> = clap
+            .into_iter()
+            .flatten()
+            .filter(|p| seen.insert(p.clone()))
+            .collect();
+        let vst3 = vst3.into_iter().flatten().collect();
         PluginDirs { clap, vst3 }
     }
 }
@@ -694,77 +751,129 @@ mod tests {
         assert!(names("nothing like this").is_empty());
     }
 
+    /// An environment of `(name, value)` pairs for `defaults_from`.
+    fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<PathBuf> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| PathBuf::from(v))
+        }
+    }
+
+    fn strings(paths: &[PathBuf]) -> Vec<&str> {
+        paths.iter().map(|p| p.to_str().unwrap()).collect()
+    }
+
     #[test]
     fn default_folders() {
         let dirs = PluginDirs::defaults_from(
-            false,
-            Some(Path::new("/home/x")),
-            Some(std::ffi::OsStr::new(
-                "/opt/clap::/usr/lib/clap:/home/x/more",
-            )),
+            Platform::Linux,
+            &env(&[
+                ("HOME", "/home/x"),
+                ("CLAP_PATH", "/opt/clap::/usr/lib/clap:/home/x/more"),
+            ]),
         );
-        let clap: Vec<&str> = dirs.clap.iter().map(|p| p.to_str().unwrap()).collect();
+        let home = Path::new("/home/x");
         assert_eq!(
-            clap,
+            dirs.clap,
             [
-                "/home/x/.clap",
-                "/usr/lib/clap",
-                "/usr/local/lib/clap",
-                "/opt/clap",
-                "/home/x/more"
+                home.join(".clap"),
+                "/usr/lib/clap".into(),
+                "/usr/local/lib/clap".into(),
+                "/opt/clap".into(),
+                "/home/x/more".into()
             ]
         );
-        let vst3: Vec<&str> = dirs.vst3.iter().map(|p| p.to_str().unwrap()).collect();
         assert_eq!(
-            vst3,
-            ["/home/x/.vst3", "/usr/lib/vst3", "/usr/local/lib/vst3"]
+            dirs.vst3,
+            [
+                home.join(".vst3"),
+                "/usr/lib/vst3".into(),
+                "/usr/local/lib/vst3".into()
+            ]
         );
-        let bare = PluginDirs::defaults_from(false, None, None);
+        let bare = PluginDirs::defaults_from(Platform::Linux, &env(&[]));
         assert_eq!(bare.clap.len(), 2);
         assert_eq!(bare.vst3.len(), 2);
         // The real environment gives at least the system folders.
-        let system_clap = if cfg!(target_os = "macos") {
-            "/Library/Audio/Plug-Ins/CLAP"
-        } else {
-            "/usr/lib/clap"
+        let system_clap = match Platform::CURRENT {
+            Platform::Macos => PathBuf::from("/Library/Audio/Plug-Ins/CLAP"),
+            Platform::Linux => PathBuf::from("/usr/lib/clap"),
+            Platform::Windows => env_path("COMMONPROGRAMFILES").unwrap().join("CLAP"),
         };
-        assert!(
-            PluginDirs::defaults()
-                .clap
-                .contains(&PathBuf::from(system_clap))
-        );
+        assert!(PluginDirs::defaults().clap.contains(&system_clap));
     }
 
     #[test]
     fn default_folders_on_macos() {
         let dirs = PluginDirs::defaults_from(
-            true,
-            Some(Path::new("/Users/x")),
-            Some(std::ffi::OsStr::new(
-                "/opt/clap::/Library/Audio/Plug-Ins/CLAP:/Users/x/more",
-            )),
+            Platform::Macos,
+            &env(&[
+                ("HOME", "/Users/x"),
+                (
+                    "CLAP_PATH",
+                    "/opt/clap::/Library/Audio/Plug-Ins/CLAP:/Users/x/more",
+                ),
+            ]),
         );
-        let clap: Vec<&str> = dirs.clap.iter().map(|p| p.to_str().unwrap()).collect();
+        let home = Path::new("/Users/x");
         assert_eq!(
-            clap,
+            dirs.clap,
             [
-                "/Users/x/Library/Audio/Plug-Ins/CLAP",
-                "/Library/Audio/Plug-Ins/CLAP",
-                "/opt/clap",
-                "/Users/x/more"
+                home.join("Library/Audio/Plug-Ins/CLAP"),
+                "/Library/Audio/Plug-Ins/CLAP".into(),
+                "/opt/clap".into(),
+                "/Users/x/more".into()
             ]
         );
-        let vst3: Vec<&str> = dirs.vst3.iter().map(|p| p.to_str().unwrap()).collect();
         assert_eq!(
-            vst3,
+            dirs.vst3,
             [
-                "/Users/x/Library/Audio/Plug-Ins/VST3",
-                "/Library/Audio/Plug-Ins/VST3"
+                home.join("Library/Audio/Plug-Ins/VST3"),
+                "/Library/Audio/Plug-Ins/VST3".into()
             ]
         );
-        let bare = PluginDirs::defaults_from(true, None, None);
+        let bare = PluginDirs::defaults_from(Platform::Macos, &env(&[]));
         assert_eq!(bare.clap, [PathBuf::from("/Library/Audio/Plug-Ins/CLAP")]);
         assert_eq!(bare.vst3, [PathBuf::from("/Library/Audio/Plug-Ins/VST3")]);
+    }
+
+    /// Windows: the folders of the CLAP and VST3 specs, `CLAP_PATH` split at `;` (whatever OS
+    /// runs the test), no home-relative folders.
+    #[test]
+    fn default_folders_on_windows() {
+        let common = r"C:\Program Files\Common Files";
+        let local = r"C:\Users\x\AppData\Local";
+        let dirs = PluginDirs::defaults_from(
+            Platform::Windows,
+            &env(&[
+                ("COMMONPROGRAMFILES", common),
+                ("LOCALAPPDATA", local),
+                ("HOME", "/home/ignored"),
+                (
+                    "CLAP_PATH",
+                    r"D:\clap;;C:\Program Files\Common Files\CLAP;E:\more",
+                ),
+            ]),
+        );
+        let local_common = Path::new(local).join("Programs").join("Common");
+        assert_eq!(
+            dirs.clap,
+            [
+                Path::new(common).join("CLAP"),
+                local_common.join("CLAP"),
+                r"D:\clap".into(),
+                r"E:\more".into()
+            ],
+            "{:?}",
+            strings(&dirs.clap)
+        );
+        assert_eq!(
+            dirs.vst3,
+            [Path::new(common).join("VST3"), local_common.join("VST3")]
+        );
+        let bare = PluginDirs::defaults_from(Platform::Windows, &env(&[]));
+        assert!(bare.clap.is_empty() && bare.vst3.is_empty());
     }
 
     #[test]

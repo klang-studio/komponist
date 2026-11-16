@@ -11,7 +11,7 @@
 //! | 0 | 4 | magic `KPV3` |
 //! | 4 | 2 | format version, `1` |
 //! | 6 | 2 | flags, `0` (reserved) |
-//! | 8 | 16 | class id (`TUID` bytes) of the plugin that saved it |
+//! | 8 | 16 | class id of the plugin that saved it, in the canonical byte order (`module::cid_hex`; a Windows `TUID` is byte-swapped, so a state moves between OSes) |
 //! | 24 | 8 | component state length `C` |
 //! | 32 | 8 | controller state length `K` |
 //! | 40 | `C` | component state |
@@ -20,7 +20,7 @@
 //! The blob is exactly `40 + C + K` bytes. Loading checks magic, version, lengths and class id.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 
 use vst3::Steinberg::IBStream_::IStreamSeekMode_::{kIBSeekCur, kIBSeekEnd, kIBSeekSet};
 use vst3::Steinberg::{
@@ -123,10 +123,11 @@ impl IBStreamTrait for MemoryStream {
 
     unsafe fn seek(&self, pos: int64, mode: int32, result: *mut int64) -> tresult {
         let len = self.data.borrow().len() as i64;
-        let base = match mode as u32 {
-            m if m == kIBSeekSet => 0,
-            m if m == kIBSeekCur => self.pos.get() as i64,
-            m if m == kIBSeekEnd => len,
+        // The seek modes are `c_uint` constants outside Windows: compare as i64.
+        let base = match i64::from(mode) {
+            m if m == kIBSeekSet as i64 => 0,
+            m if m == kIBSeekCur as i64 => self.pos.get() as i64,
+            m if m == kIBSeekEnd as i64 => len,
             _ => return kInvalidArgument,
         };
         let new = base.saturating_add(pos).max(0);
@@ -181,7 +182,7 @@ pub(crate) fn encode_state(cid: &TUID, component: &[u8], controller: &[u8]) -> V
     blob.extend_from_slice(&STATE_MAGIC);
     blob.extend_from_slice(&STATE_VERSION.to_le_bytes());
     blob.extend_from_slice(&0u16.to_le_bytes());
-    blob.extend(cid.iter().map(|&b| b as u8));
+    blob.extend_from_slice(&super::module::cid_to_canonical(cid));
     blob.extend_from_slice(&(component.len() as u64).to_le_bytes());
     blob.extend_from_slice(&(controller.len() as u64).to_le_bytes());
     blob.extend_from_slice(component);
@@ -201,10 +202,7 @@ pub(crate) fn decode_state(blob: &[u8]) -> Result<StateParts<'_>, String> {
     if version != STATE_VERSION {
         return Err(format!("unsupported VST3 state version {version}"));
     }
-    let mut cid: TUID = [0; 16];
-    for (dst, &src) in cid.iter_mut().zip(&header[8..24]) {
-        *dst = src as c_char;
-    }
+    let cid = super::module::cid_from_canonical(header[8..24].try_into().unwrap());
     let len = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
     let (component_len, controller_len) = (len(24), len(32));
     let total = (STATE_HEADER as u64)
@@ -227,6 +225,7 @@ pub(crate) fn decode_state(blob: &[u8]) -> Result<StateParts<'_>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_char;
     use vst3::ComPtr;
 
     #[test]
@@ -239,7 +238,10 @@ mod tests {
             assert_eq!(s.write(bytes.as_mut_ptr().cast(), 5, &mut n), kResultOk);
             assert_eq!(n, 5);
             let mut pos = 0;
-            assert_eq!(s.seek(1, kIBSeekSet as i32, &mut pos), kResultOk);
+            assert_eq!(
+                s.seek(1, crate::vst3::enum_i32(kIBSeekSet), &mut pos),
+                kResultOk
+            );
             assert_eq!(pos, 1);
             let mut out = [0u8; 8];
             assert_eq!(s.read(out.as_mut_ptr().cast(), 8, &mut n), kResultOk);
@@ -248,12 +250,15 @@ mod tests {
             assert_eq!(s.read(out.as_mut_ptr().cast(), 8, &mut n), kResultOk);
             assert_eq!(n, 0);
             // Seek past the end, write: the gap is zero-filled.
-            s.seek(2, kIBSeekEnd as i32, std::ptr::null_mut());
+            s.seek(2, crate::vst3::enum_i32(kIBSeekEnd), std::ptr::null_mut());
             let mut x = *b"x";
             s.write(x.as_mut_ptr().cast(), 1, std::ptr::null_mut());
             s.tell(&mut pos);
             assert_eq!(pos, 8);
-            assert_eq!(s.seek(-3, kIBSeekCur as i32, &mut pos), kResultOk);
+            assert_eq!(
+                s.seek(-3, crate::vst3::enum_i32(kIBSeekCur), &mut pos),
+                kResultOk
+            );
             assert_eq!(pos, 5);
             assert_eq!(s.seek(0, 7, &mut pos), kInvalidArgument);
             let sized: ComPtr<ISizeableStream> = s.cast().unwrap();

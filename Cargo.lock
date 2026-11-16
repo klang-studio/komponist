@@ -2543,6 +2543,7 @@ dependencies = [
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
+ "windows-sys 0.61.2",
  "winit",
  "x11rb 0.14.0",
 ]
@@ -2591,6 +2592,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde_json",
  "vst3",
+ "windows-sys 0.61.2",
  "x11rb 0.14.0",
 ]
 
@@ -2636,6 +2638,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
  "x11rb 0.14.0",
 ]
 

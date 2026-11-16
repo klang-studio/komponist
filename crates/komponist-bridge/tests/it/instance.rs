@@ -146,8 +146,9 @@ fn synth_sounds_through_the_ipc_path() {
     let info = bridge.load(&bundle, SYNTH);
     assert_eq!(info.descriptor.id, SYNTH);
     assert_eq!(info.descriptor.kind, PluginKind::Instrument);
-    // Its own GUI: X11 on Linux, Cocoa in the bridge's frame on macOS (#52).
-    assert!(info.has_gui);
+    // Its own GUI: X11 on Linux, Cocoa in the bridge's frame on macOS (#52); none before W6 on
+    // Windows.
+    assert_eq!(info.has_gui, komponist_bridge::GUI_EMBEDDING);
     assert_eq!(info.latency, 0);
     let names: Vec<&str> = info.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["Gain", "Decay"]);
@@ -483,7 +484,7 @@ fn crash_kills_only_its_bridge() {
         exit,
         ProcessExit {
             code: None,
-            signal: Some(11),
+            signal: Some(SEGV),
         }
     );
     assert_eq!(
@@ -516,7 +517,7 @@ fn crash_kills_only_its_bridge() {
         crash.block_with(&[], Duration::from_millis(50)),
         Err(BlockError::Late)
     );
-    assert_eq!(crash.wait_exit().signal, Some(11));
+    assert_eq!(crash.wait_exit().signal, Some(SEGV));
 
     synth.block(&[note_on(0, 72)]);
     assert!(synth.peak(0..BLOCK) > 0.1);
@@ -811,7 +812,7 @@ fn bridge_exits_when_the_app_goes_away() {
     bridge.activate();
     bridge.block(&[note_on(0, 60)]);
     // As if the app died: its end of the socket closes.
-    rustix::net::shutdown(&bridge.channel, rustix::net::Shutdown::Both).unwrap();
+    bridge.close_channel();
     let t0 = Instant::now();
     assert_eq!(bridge.wait_exit(), EXIT_OK);
     eprintln!(
@@ -847,6 +848,7 @@ fn bridges_are_not_dumpable_unless_asked() {
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 
+#[cfg(unix)]
 #[test]
 fn instance_mode_needs_an_open_control_fd() {
     let output = std::process::Command::new(BRIDGE)
@@ -856,4 +858,53 @@ fn instance_mode_needs_an_open_control_fd() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("control fd 999"), "{stderr}");
+}
+
+/// Windows: the control pipe is stdin; a stdin that is no pipe ends instance mode at once.
+#[cfg(windows)]
+#[test]
+fn instance_mode_needs_the_control_pipe_on_stdin() {
+    let output = std::process::Command::new(BRIDGE)
+        .arg("--instance")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("control pipe (stdin)"), "{stderr}");
+}
+
+/// Windows: the RT thread registers with MMCSS ("Pro Audio"), which needs no privilege; it is
+/// reported as granted and blocks run. `--rt-priority` is accepted and does not change that.
+#[cfg(windows)]
+#[test]
+fn rt_thread_runs_with_mmcss() {
+    let Some(bundle) = fixture("kp-test-fx") else {
+        return;
+    };
+    for args in [vec![], vec!["--rt-priority".to_owned(), "70".to_owned()]] {
+        let mut bridge = Bridge::spawn_with(SpawnOptions {
+            args,
+            ..SpawnOptions::default()
+        });
+        bridge.load(&bundle, FX);
+        bridge.activate();
+        let logs = bridge.rt_logs();
+        assert_eq!(
+            logs,
+            [(
+                LogLevel::Info,
+                "RT priority: the audio thread runs at MMCSS (Pro Audio)".to_owned()
+            )],
+            "{:?}",
+            bridge.seen
+        );
+        let status = bridge.rt_status();
+        assert_eq!(status.len(), 1);
+        assert!(status[0].0 && status[0].2.is_empty(), "{status:?}");
+        bridge.input[0][0] = 1.0;
+        bridge.block(&[]);
+        assert_eq!(bridge.output[0][64], 1.0);
+        assert_eq!(bridge.shutdown(), EXIT_OK);
+    }
 }

@@ -260,7 +260,7 @@ pub(crate) fn process_context(t: &WireTransport, sample_rate: f64, steady: u64) 
             state |= kCycleActive;
         }
     }
-    ctx.state = state;
+    ctx.state = super::enum_u32(state);
     ctx
 }
 
@@ -517,7 +517,7 @@ impl Vst3Processor {
         self.apply_main_thread_edits(None);
         let mut data = ProcessData {
             processMode: self.process_mode,
-            symbolicSampleSize: kSample32 as i32,
+            symbolicSampleSize: super::enum_i32(kSample32),
             numSamples: 0,
             numInputs: 0,
             numOutputs: 0,
@@ -578,7 +578,7 @@ impl HostedProcessor for Vst3Processor {
 
         let mut data = ProcessData {
             processMode: self.process_mode,
-            symbolicSampleSize: kSample32 as i32,
+            symbolicSampleSize: super::enum_i32(kSample32),
             numSamples: frames as i32,
             numInputs: self.inputs.buses.len() as i32,
             numOutputs: self.outputs.buses.len() as i32,
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn transport_maps_to_the_process_context() {
         let ctx = process_context(&WireTransport::default(), 48_000.0, 512);
-        assert_eq!(ctx.state, kContTimeValid);
+        assert_eq!(ctx.state, super::super::enum_u32(kContTimeValid));
         assert_eq!(ctx.continousTimeSamples, 512);
         let t = WireTransport {
             flags: TRANSPORT_PLAYING | TRANSPORT_LOOPING,
@@ -747,9 +747,9 @@ mod tests {
         };
         let ctx = process_context(&t, 48_000.0, 0);
         for flag in [kPlaying, kCycleActive, kTempoValid, kProjectTimeMusicValid] {
-            assert!(ctx.state & flag != 0, "{flag:#x}");
+            assert!(ctx.state & super::super::enum_u32(flag) != 0, "{flag:#x}");
         }
-        assert_eq!(ctx.state & kRecording, 0);
+        assert_eq!(ctx.state & super::super::enum_u32(kRecording), 0);
         assert_eq!(ctx.projectTimeSamples, 156_000);
         assert_eq!((ctx.timeSigNumerator, ctx.timeSigDenominator), (3, 4));
         assert_eq!((ctx.cycleStartMusic, ctx.cycleEndMusic), (4.0, 8.0));

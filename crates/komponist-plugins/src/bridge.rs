@@ -1,7 +1,9 @@
 //! One bridge process as the plugin manager sees it (ARCHITECTURE §8.1).
 //!
 //! [`Bridge::spawn`] starts `komponist-bridge --instance --control-fd N` with the bridge end of a
-//! fresh control socket, watches it through a pidfd, sends the memfd and queues the start-up
+//! fresh control socket, watches it through a pidfd, sends the memfd (Windows: `--instance` with the
+//! control pipe as the child's stdin, a process handle, the section and its events duplicated into
+//! the bridge) and queues the start-up
 //! messages: `Load`, `SetState` (if there is a state), `Activate`. The state goes in before the
 //! activation, so the plugin starts processing with it (the bridge's own tests use this order too).
 //!
@@ -26,8 +28,12 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::io::AsHandle;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -104,6 +110,68 @@ pub(crate) enum StatePurpose {
 
 /// A state blob that arrived for a `Collect` request.
 pub(crate) type Collected = (u32, Arc<[u8]>);
+
+/// Starts `exe args… --instance` with the bridge end of a fresh control channel and watches it:
+/// on Unix the end is an inherited fd named by `--control-fd`; on Windows it is the child's stdin
+/// (komponist-ipc `socket_pair`), so no handle goes on the command line and std's spawn lock keeps
+/// it out of every other child.
+fn spawn_process(
+    exe: &Path,
+    args: &[OsString],
+) -> Result<(AppChannel, ProcessWatcher), PluginError> {
+    #[cfg(unix)]
+    let (channel, bridge_end) = socket_pair().map_err(|e| PluginError::Ipc(e.to_string()))?;
+    #[cfg(unix)]
+    let mut command = {
+        let raw = bridge_end.as_raw_fd();
+        let mut command = Command::new(exe);
+        command
+            .args(args)
+            .arg("--instance")
+            .arg("--control-fd")
+            .arg(raw.to_string())
+            .stdin(Stdio::null());
+        // SAFETY: runs between fork and exec and makes one async-signal-safe syscall on an fd
+        // that stays open in the parent until `spawn` returned.
+        unsafe {
+            command.pre_exec(move || {
+                // Let the bridge end of the socket survive exec.
+                let fd = BorrowedFd::borrow_raw(raw);
+                rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::empty())?;
+                Ok(())
+            });
+        }
+        command
+    };
+    #[cfg(windows)]
+    let (channel, mut command) = {
+        let (channel, bridge_end) = socket_pair().map_err(|e| PluginError::Ipc(e.to_string()))?;
+        let mut command = Command::new(exe);
+        command
+            .args(args)
+            .arg("--instance")
+            .stdin(Stdio::from(bridge_end));
+        (channel, command)
+    };
+    let mut child = command
+        .spawn()
+        .map_err(|e| PluginError::Spawn(format!("{}: {e}", exe.display())))?;
+    let watcher = match ProcessWatcher::new(child.id()) {
+        Ok(watcher) => watcher,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(PluginError::Spawn(format!("process watcher: {e}")));
+        }
+    };
+    // The watcher reaps the child. Our copy of the bridge end must go (on Windows the `Command`
+    // holds it), or a dead bridge would never close the channel.
+    drop(child);
+    drop(command);
+    #[cfg(unix)]
+    drop(bridge_end);
+    Ok((channel, watcher))
+}
 
 /// One bridge process and everything the manager knows about its plugin.
 #[derive(Debug)]
@@ -184,40 +252,7 @@ impl Bridge {
                 s.bundle.to_string_lossy()
             )));
         }
-        let (channel, bridge_fd) = socket_pair().map_err(|e| PluginError::Ipc(e.to_string()))?;
-        let raw = bridge_fd.as_raw_fd();
-        let mut command = Command::new(s.exe);
-        command
-            .args(s.args)
-            .arg("--instance")
-            .arg("--control-fd")
-            .arg(raw.to_string())
-            .stdin(Stdio::null());
-        // SAFETY: runs between fork and exec and makes one async-signal-safe syscall on an fd
-        // that stays open in the parent until `spawn` returned.
-        unsafe {
-            command.pre_exec(move || {
-                // Let the bridge end of the socket survive exec.
-                let fd = BorrowedFd::borrow_raw(raw);
-                rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::empty())?;
-                Ok(())
-            });
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|e| PluginError::Spawn(format!("{}: {e}", s.exe.display())))?;
-        let watcher = match ProcessWatcher::new(child.id()) {
-            Ok(watcher) => watcher,
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(PluginError::Spawn(format!("pidfd: {e}")));
-            }
-        };
-        // The watcher reaps the child. Our copy of the bridge end must go, or a dead bridge would
-        // never close the socket.
-        drop(child);
-        drop(bridge_fd);
+        let (channel, watcher) = spawn_process(s.exe, s.args)?;
 
         let kill = |watcher: &ProcessWatcher| {
             let _ = watcher.kill();
@@ -230,7 +265,13 @@ impl Bridge {
             }
         };
         // The socket is empty, so this frame never blocks; the bridge takes it after `Hello`.
-        if let Err(e) = channel.send_fd(region.fd()) {
+        #[cfg(unix)]
+        let sent = channel.send_fd(region.fd());
+        // Windows: the section and its events, duplicated into the bridge through its process
+        // handle (the watcher's).
+        #[cfg(windows)]
+        let sent = channel.send_region(&region, watcher.as_handle());
+        if let Err(e) = sent {
             kill(&watcher);
             return Err(PluginError::Ipc(e.to_string()));
         }
@@ -323,6 +364,7 @@ impl Bridge {
     }
 
     /// The control socket, for `poll()`.
+    #[cfg(unix)]
     pub(crate) fn socket(&self) -> BorrowedFd<'_> {
         self.channel.as_fd()
     }

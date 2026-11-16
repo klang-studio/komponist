@@ -48,6 +48,13 @@ pub const SETUP: ProcessorSetup = ProcessorSetup {
     max_block: komponist_engine::MAX_BLOCK,
 };
 
+/// How a null-pointer write in a plugin ends its bridge: SIGSEGV, or on Windows the access
+/// violation `0xC000_0005` (komponist-ipc reports an NTSTATUS crash as the signal).
+#[cfg(unix)]
+pub const SEGV: i32 = 11;
+#[cfg(windows)]
+pub const SEGV: i32 = 0xC000_0005_u32 as i32;
+
 /// The workspace's `target/` directory.
 fn target_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
@@ -60,10 +67,20 @@ pub fn bridge_exe() -> PathBuf {
         if let Some(exe) = std::env::var_os("KOMPONIST_BRIDGE_EXE") {
             return PathBuf::from(exe);
         }
-        // target/<profile>/deps/<test> → target/<profile>/komponist-bridge
+        // target/<profile>/deps/<test> → target/<profile>/komponist-bridge; Cargo's newer layout
+        // puts tests deeper (target/<profile>/build/<package>/<hash>/<test>), so the profile
+        // folder is the nearest `debug` or `release` above the test.
         let test = std::env::current_exe().expect("test executable");
-        let profile_dir = test.parent().and_then(Path::parent).expect("profile dir");
-        let exe = profile_dir.join("komponist-bridge");
+        let profile_dir = test
+            .ancestors()
+            .skip(1)
+            .find(|dir| {
+                dir.file_name()
+                    .is_some_and(|n| n == "debug" || n == "release")
+            })
+            .or_else(|| test.parent().and_then(Path::parent))
+            .expect("profile dir");
+        let exe = profile_dir.join(format!("komponist-bridge{}", std::env::consts::EXE_SUFFIX));
         if !is_fresh(&exe) {
             let mut cargo = Command::new(env!("CARGO"));
             cargo.args(["build", "-p", "komponist-bridge"]);
@@ -113,6 +130,16 @@ fn newest(dir: &Path) -> SystemTime {
     latest
 }
 
+/// The canonical form of `path` as the scan keys bundles by it: on Windows without the verbatim
+/// prefix (`\\?\C:\…`) that `fs::canonicalize` adds.
+pub fn canonical(path: &Path) -> PathBuf {
+    let path = std::fs::canonicalize(path).unwrap();
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(rest) if cfg!(windows) && rest.as_bytes().get(1) == Some(&b':') => rest.into(),
+        _ => path,
+    }
+}
+
 /// The folder of the WP-27 CLAP fixtures, or `None` with a note if they are not built.
 pub fn fixture_dir() -> Option<PathBuf> {
     let dir = target_dir()
@@ -120,7 +147,7 @@ pub fn fixture_dir() -> Option<PathBuf> {
         .join(std::env::consts::OS)
         .join("clap");
     if dir.join("kp-test-synth.clap").exists() {
-        Some(std::fs::canonicalize(dir).unwrap())
+        Some(canonical(&dir))
     } else {
         eprintln!(
             "skipped: {} is missing; run scripts/build-test-plugins.sh",

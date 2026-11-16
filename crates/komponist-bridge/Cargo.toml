@@ -9,12 +9,11 @@ publish.workspace = true
 komponist-ipc.workspace = true
 komponist-hosting.workspace = true
 # Realtime set-up of the RT thread: SCHED_FIFO (Linux), time-constraint policy and an own audio
-# work interval (macOS, #45).
+# work interval (macOS, #45), MMCSS (Windows).
 komponist-rt.workspace = true
-# Workspace features (mm, thread, process, net) plus: event (poll, eventfd), stdio (scan mode keeps
-# plugin output off the JSON on stdout).
-rustix = { workspace = true, features = ["event", "stdio"] }
-# `_exit` after the plugin is torn down; the main thread's name on macOS (`pthread_setname_np`).
+# `_exit` after the plugin is torn down; the main thread's name on macOS (`pthread_setname_np`);
+# Windows: the C runtime's descriptors 0–2 (`_dup2`, `_open_osfhandle`), which plugins print
+# through.
 libc.workspace = true
 # Scan mode: descriptors as JSON on stdout.
 serde_json.workspace = true
@@ -22,6 +21,24 @@ serde_json.workspace = true
 rtrb.workspace = true
 # Debug builds: the RT loop runs inside `assert_no_alloc` (no-op in release builds).
 assert_no_alloc.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Workspace features (mm, thread, process, net) plus: event (poll, eventfd), stdio (scan mode keeps
+# plugin output off the JSON on stdout).
+rustix = { workspace = true, features = ["event", "stdio"] }
+
+[target.'cfg(windows)'.dependencies]
+# Foundation (handles), Console (the standard handles), Storage_FileSystem (GetFileType),
+# Diagnostics_Debug (SetErrorMode), ErrorReporting (WerSetFlags: no crash dialog), Threading
+# (thread names, TerminateProcess).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_ErrorReporting",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The plugin frame window the bridge owns on macOS (#52): eframe (wgpu) for the window and the

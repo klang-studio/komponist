@@ -220,7 +220,12 @@ Every per-OS backend module (`komponist-ipc` `shm`, `signal`, `control`, `proces
 `komponist-hosting` `library`, `host_loop::wake`, `vst3::module`, the GUI platform types; `komponist-bridge`'s main
 loop and process hardening; the app's activation) ends with a `compile_error!` for any other OS that names the missing
 backend and the work package that adds it. `komponist-rt` and `komponist-audio` keep their fallbacks and compile on
-every OS.
+every OS. Since W5 the hosting, bridge and plugin-manager modules have their Windows backends; there the
+`compile_error!` only names an OS none of the three supports.
+
+Unix-only items are `cfg(unix)` where they are about fds: `HostLoop::register_fd` / `modify_fd` / `unregister_fd`,
+`HostedPlugin::on_fd`, CLAP posix-fd-support and VST3 `IRunLoop` (Windows plugins drive their own work through window
+messages and `SetTimer`, so there is no fd registry to offer).
 
 ---
 
@@ -1132,6 +1137,26 @@ into other children. The process watcher holds a process handle (`WaitForSingleO
 process the watcher killed as signal 9, as on Unix. Both ends of a channel run on the same OS, so
 `PROTOCOL_VERSION` does not change for the Windows framing.
 
+**Windows bridge process (port W5):** `komponist --bridge --instance [--rt-priority N]`, without
+`--control-fd`: the plugin manager passes the bridge end of the control pipe as the child's stdin
+(`Stdio::from(handle)`), watches the child through a `ProcessWatcher`, drops the `Child` and the
+`Command` (a kept `Command` would hold the pipe open after the bridge died) and sends the shared memory
+with `send_region` through the watcher's process handle. The bridge keeps a non-inheritable duplicate of
+stdin (refused unless it is a pipe), then points both stdins, the process's (`SetStdHandle`) and the C
+runtime's descriptor 0 (`_dup2` of a `NUL` descriptor), at `NUL` and closes the original handle, so no
+plugin can read the control pipe and no helper process a plugin starts can keep it open. Process set-up:
+`SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` and `WerSetFlags(WER_FAULT_REPORTING_NO_UI)`
+in place of non-dumpable (a crashing plugin must never leave the bridge alive behind a Windows Error
+Reporting dialog; `KOMPONIST_BRIDGE_COREDUMP=1` keeps the report), the main thread named
+`komponist-bridge` (`SetThreadDescription`), and `TerminateProcess(GetCurrentProcess(), code)` as
+`_exit`: the CRT's `_exit` ends in `ExitProcess`, which still runs every DLL's `DLL_PROCESS_DETACH` and
+the TLS callbacks (Rust's thread-local destructors), i.e. plugin code after the plugin is gone. The RT
+thread registers with MMCSS ("Pro Audio", `komponist-rt`; `--rt-priority` does not apply, the report
+reads "MMCSS (Pro Audio)"). `--scan` saves a duplicate of stdout for the JSON and points both stdouts
+(`SetStdHandle`, CRT descriptor 1) at stderr before any plugin code runs; a plugin with a static CRT
+initialises its own descriptors from the process's handles when its DLL loads, so it prints to stderr
+too. Crash detection measured with `kp-test-crash`: 3 ms from the request to the reported exit.
+
 **Parallelism:** bridges are separate processes, so each plugin runs on its own core. Since WP-65 an
 instrument bridge at the head of a chain is started before the engine runs any chain
 (`Processor::begin`: build the wire events, `begin_block`, wake) and collected by whichever thread
@@ -1173,6 +1198,21 @@ truce-rack serve as further reference code.
   `kPlatformTypeNSView`): `gui_open(GuiParent::Cocoa(nsview))` attaches into the bridge's own frame
   (#52), without CLAP `set_scale` (JUCE plugins would double their size in points) and without VST3
   `setContentScaleFactor` (refused); sizes are points.
+- **Windows (port W5):** plugin DLLs are loaded with `LoadLibraryExW(path, NULL,
+  LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` (dependencies from the plugin's own
+  folder and the system folders, never the working directory or `PATH`) and pinned with
+  `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN)`, the `RTLD_NODELETE` of Windows. A CLAP `.clap` is
+  one DLL; clack-host loads it with plain flags, so the hosting layer loads it with the policy first.
+  VST3: `X.vst3/Contents/x86_64-win/X.vst3` (a DLL in a bundle folder) or a legacy single-file `X.vst3`,
+  `InitDll()` / `ExitDll()` (both optional) in place of `ModuleEntry` / `ModuleExit`. The SDK lays a
+  `TUID` out as a COM `GUID` there (`COM_COMPATIBLE`), so plugin ids and the class id in the state blob
+  are written in the canonical byte order (`module::cid_hex`): a project and its VST3 states move between
+  operating systems. The bindings' enums are signed on Windows (`c_int`, MSVC) and unsigned elsewhere;
+  `vst3::enum_u32` / `enum_i32` convert. GUI API: CLAP `win32`, VST3 `kPlatformTypeHWND`
+  (`GuiParent::Win32 { hwnd, scale }`), with the scale passed (CLAP `set_scale`, VST3
+  `setContentScaleFactor`); sizes are physical pixels. `GUI_EMBEDDING` stays false until the bridge has
+  its frame window (W6), so no plugin reports a GUI yet. No CLAP posix-fd-support and no VST3 `IRunLoop`
+  (see §4.1).
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
   On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): the control socket, the
   notification wake pipe and plugin fds are libdispatch read/write sources on a private serial queue, whose
@@ -1185,6 +1225,20 @@ truce-rack serve as further reference code.
   seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native` (run-and-return) and
   resumes the run loop when the frame closes.
   The frame is the seam's user (#52, §8.4).
+  On Windows (W5, `win_loop`) the main thread must pump Win32 messages even without a visible GUI
+  (plugins create hidden windows, `SetTimer` timers and COM objects on it). Each tick is one
+  `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)` over the control reader's event, the
+  notification event (a manual-reset event the RT and plugin threads set with one `SetEvent`) and a
+  high-resolution waitable timer armed for the next host timer or `ParamValues` deadline (a millisecond
+  timeout would be up to 15.6 ms late); every queued window message is dispatched inside the wait (a
+  plugin's `WM_QUIT` is dropped), everything else after it, outside every borrow, at most
+  `MESSAGES_PER_TICK` control messages per tick. A pipe cannot be waited on for "readable", so a reader
+  thread blocks in `Channel::recv` and queues whole messages (at most 256, then the app's writer waits),
+  setting the event while the queue is not empty; the main thread sends on the same overlapped pipe.
+  The seam for W6 is the outer loop of `Bridge::run`, as on macOS; while eframe's (winit's) message loop
+  or a plugin's modal loop runs, this wait does not, so W6 has to wake that loop for the same events and
+  deadline. `komponist_hosting::host_loop::wake` holds the wait, the event and the timer, shared with
+  the reference `PollLoop` of the hosting tests.
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
   honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
   reading by default and handle write interest only with a rate limit (WP-26/31 decide the details).
@@ -1206,6 +1260,12 @@ On macOS: CLAP `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP`, 
 `~/Library/Audio/Plug-Ins/VST3`, `/Library/Audio/Plug-Ins/VST3`. A macOS `.clap` / `.vst3` is a bundle
 directory (`Contents/MacOS/<name>`, `Contents/Info.plist`); the scan never descends into it, and its cache
 mtime is the newest of the bundle's files.
+On Windows (W5): CLAP `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP`, `%CLAP_PATH%`
+(`;`-separated); VST3 `%COMMONPROGRAMFILES%\VST3`, `%LOCALAPPDATA%\Programs\Common\VST3`; the cache in
+`%LOCALAPPDATA%\komponist\`. A Windows `.vst3` is a bundle folder (`Contents/x86_64-win/X.vst3`) or a
+single DLL. Canonical bundle paths drop the verbatim prefix `fs::canonicalize` adds (`\\?\C:\…`). A scan
+waits on its process handle and reads its output pipes with `PeekNamedPipe` every 5 ms (pipes cannot be
+waited on); a crash reads "crashed (exception 0xC0000005)" in the report.
 Browser categories ("EQ und Filter", "Dynamik", "Hall und Delay", "Modulation") come from a mapping
 table of CLAP features / VST3 subcategories.
 

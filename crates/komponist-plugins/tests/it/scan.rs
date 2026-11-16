@@ -3,7 +3,6 @@
 
 use crate::common;
 
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -11,14 +10,25 @@ use common::*;
 use komponist_ipc::PluginKind;
 use komponist_plugins::{PluginDirs, PluginManager, PluginManagerEvent, ScanCache, ScanReport};
 
+/// Copies the file or folder `from` into the folder `to` (`cp -R`, without a `cp` on Windows).
 fn copy(from: &Path, to: &Path) {
-    let status = std::process::Command::new("cp")
-        .arg("-R")
-        .arg(from)
-        .arg(to)
-        .status()
-        .unwrap();
-    assert!(status.success());
+    let target = to.join(from.file_name().unwrap());
+    if from.is_dir() {
+        std::fs::create_dir_all(&target).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            copy(&entry.unwrap().path(), &target);
+        }
+    } else {
+        std::fs::copy(from, &target).unwrap();
+    }
+}
+
+/// A file name that is not valid UTF-8: a byte 0xFF on Unix, an unpaired surrogate on Windows.
+fn bad_file_name() -> std::ffi::OsString {
+    #[cfg(unix)]
+    return std::os::unix::ffi::OsStringExt::from_vec(b"\xff.clap".to_vec());
+    #[cfg(windows)]
+    return std::os::windows::ffi::OsStringExt::from_wide(&[0xD800, 0x2E, 0x63, 0x6C, 0x61, 0x70]);
 }
 
 fn finish_scan(manager: &mut PluginManager) -> ScanReport {
@@ -41,12 +51,12 @@ fn names(manager: &PluginManager) -> Vec<String> {
         .collect()
 }
 
-fn reason(report: &ScanReport, file: impl AsRef<[u8]>) -> &str {
+fn reason(report: &ScanReport, file: impl AsRef<std::ffi::OsStr>) -> &str {
     let file = file.as_ref();
     report
         .skipped
         .iter()
-        .find(|s| s.path.file_name().map(|n| n.as_bytes()) == Some(file))
+        .find(|s| s.path.file_name() == Some(file))
         .map(|s| s.reason.as_str())
         .unwrap_or_else(|| panic!("{file:?} not skipped: {:?}", report.skipped))
 }
@@ -69,11 +79,7 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     // sequence"), so on macOS the case cannot occur on disk and the test leaves it out.
     let bad_name = !cfg!(target_os = "macos");
     if bad_name {
-        std::fs::write(
-            clap.join(std::ffi::OsStr::from_bytes(b"\xff.clap")),
-            b"bad name",
-        )
-        .unwrap();
+        std::fs::write(clap.join(bad_file_name()), b"bad name").unwrap();
     }
     // An empty VST3 folder: VST3 scanning itself is covered by the hosting and bridge tests (WP-32).
     // Putting the VST3 fixture here made the counts depend on whether its bundle was built.
@@ -113,7 +119,7 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     );
     assert!(!reason(&report, "Broken.clap").is_empty());
     if bad_name {
-        assert_eq!(reason(&report, b"\xff.clap"), "path is not valid UTF-8");
+        assert_eq!(reason(&report, bad_file_name()), "path is not valid UTF-8");
     }
     assert_eq!(
         report.skipped.len(),
@@ -147,13 +153,12 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     let cache_file = dir.join("cache/plugins.json");
     let mut cache = ScanCache::load(&cache_file);
     assert_eq!(cache.bundles.len(), 5, "{cache:?}");
-    assert!(cache.bundles.iter().any(|b| {
-        b.path
-            == clap
-                .join("vendor/kp-test-slow.clap")
-                .canonicalize()
-                .unwrap()
-    }));
+    assert!(
+        cache
+            .bundles
+            .iter()
+            .any(|b| b.path == canonical(&clap.join("vendor/kp-test-slow.clap")))
+    );
     assert!(cache.bundles.iter().all(|b| b.path.is_absolute()));
     let broken = cache
         .bundles
@@ -189,6 +194,8 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     let file = std::fs::File::options().write(true).open(changed).unwrap();
     file.set_modified(SystemTime::now() + Duration::from_secs(10))
         .unwrap();
+    // Closed before the scan: Windows maps no DLL that is open for writing.
+    drop(file);
     manager.start_scan(&dirs);
     finish_scan(&mut manager);
     assert!(names(&manager).contains(&"kp-test-fx".to_owned()));
@@ -237,10 +244,10 @@ fn children_named(comm: &str) -> Vec<u32> {
     found
 }
 
-#[test]
-fn crashing_hanging_and_empty_bundles_are_skipped() {
-    let dir = scratch("fake-scan");
-    // A stand-in for the bridge's scan mode (SIGTERM as the crash: no core dump).
+/// A stand-in for the bridge's scan mode in `dir` (SIGTERM as the crash: no core dump): the
+/// launcher and its leading arguments.
+#[cfg(unix)]
+fn fake_bridge(dir: &Path) -> (PathBuf, Vec<std::ffi::OsString>) {
     let fake = dir.join("fake-bridge");
     std::fs::write(
         &fake,
@@ -254,6 +261,81 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
     )
     .unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    (fake, Vec::new())
+}
+
+/// Windows: the stand-in is a PowerShell script (the crash: the exit code of an access
+/// violation). A hanging scan leaves `hang-<pid>.pid` in `dir`, for [`hanging_scans`].
+#[cfg(windows)]
+fn fake_bridge(dir: &Path) -> (PathBuf, Vec<std::ffi::OsString>) {
+    let script = dir.join("fake-bridge.ps1");
+    std::fs::write(
+        &script,
+        "$bundle = $args[$args.Count - 1]\r\n\
+         if ($bundle -like '*Crash*') { exit -1073741819 }\r\n\
+         if ($bundle -like '*Hang*') {\r\n\
+         \x20 Set-Content -Path (Join-Path $PSScriptRoot \"hang-$PID.pid\") -Value $PID\r\n\
+         \x20 Start-Sleep -Seconds 60\r\n\
+         \x20 exit 0\r\n\
+         }\r\n\
+         if ($bundle -like '*Fail*') {\r\n\
+         \x20 [Console]::Error.WriteLine('komponist-bridge: no clap_entry')\r\n\
+         \x20 exit 1\r\n\
+         }\r\n\
+         [Console]::Out.WriteLine('[]')\r\n\
+         exit 0\r\n",
+    )
+    .unwrap();
+    let args = [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .chain([script.into_os_string()])
+    .collect();
+    (PathBuf::from("powershell.exe"), args)
+}
+
+/// Hanging scan processes still alive.
+#[cfg(unix)]
+fn hanging_scans(_dir: &Path) -> usize {
+    children_named("sleep").len()
+}
+
+/// Windows: the hanging scans whose process is still alive (by their pid files).
+#[cfg(windows)]
+fn hanging_scans(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_prefix("hang-")?
+                .strip_suffix(".pid")?
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|&pid| {
+            komponist_ipc::ProcessWatcher::new(pid)
+                .is_ok_and(|mut w| w.try_exit().is_ok_and(|exit| exit.is_none()))
+        })
+        .count()
+}
+
+/// What a crashing scan reads in the report: the signal, on Windows the exception code.
+#[cfg(unix)]
+const CRASHED: &str = "crashed (signal 15)";
+#[cfg(windows)]
+const CRASHED: &str = "crashed (exception 0xC0000005)";
+
+#[test]
+fn crashing_hanging_and_empty_bundles_are_skipped() {
+    let dir = scratch("fake-scan");
+    let (fake, fake_args) = fake_bridge(&dir);
     let plugins = dir.join("clap");
     std::fs::create_dir_all(&plugins).unwrap();
     for name in ["Crash", "Hang", "Fail", "Empty"] {
@@ -264,7 +346,8 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
         vst3: Vec::new(),
     };
     let mut config = config(&dir);
-    config.bridge_exe = fake.clone();
+    config.bridge_exe = fake;
+    config.bridge_args = fake_args;
 
     let mut manager = PluginManager::new(config.clone());
     let t0 = Instant::now();
@@ -278,14 +361,11 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
     );
     assert!(took < Duration::from_secs(25));
     assert_eq!(report.found, 0);
-    assert_eq!(reason(&report, "Crash.clap"), "crashed (signal 15)");
+    assert_eq!(reason(&report, "Crash.clap"), CRASHED);
     assert_eq!(reason(&report, "Hang.clap"), "timed out after 10 s");
     assert_eq!(reason(&report, "Fail.clap"), "no clap_entry");
     assert_eq!(reason(&report, "Empty.clap"), "no plugins in the bundle");
-    assert!(
-        children_named("sleep").is_empty(),
-        "the hanging scan was killed"
-    );
+    assert_eq!(hanging_scans(&dir), 0, "the hanging scan was killed");
     // Timeouts are not cached; the others are.
     let cache = ScanCache::load(&config.cache_file);
     let cached: Vec<String> = cache
@@ -298,13 +378,13 @@ fn crashing_hanging_and_empty_bundles_are_skipped() {
     // A restarted scan and a dropped manager kill their scan processes.
     {
         manager.start_scan(&dirs);
-        wait_until(|| !children_named("sleep").is_empty());
+        wait_until(|| hanging_scans(&dir) > 0);
         manager.start_scan(&dirs);
-        wait_until(|| children_named("sleep").len() == 1);
+        wait_until(|| hanging_scans(&dir) == 1);
         let t0 = Instant::now();
         drop(manager);
         assert!(t0.elapsed() < Duration::from_secs(2));
-        assert!(children_named("sleep").is_empty());
+        assert_eq!(hanging_scans(&dir), 0);
     }
 }
 
