@@ -1,7 +1,7 @@
 //! In-process tests of the CLAP layer.
 //!
 //! - [`fixtures`]: the WP-27 test plugins (`scripts/build-test-plugins.sh` builds them into
-//!   `target/test-plugins/clap/`). Run by default; each test is skipped with a message when its
+//!   `target/test-plugins/<os>/clap/`). Run by default; each test is skipped with a message when its
 //!   bundle is missing.
 //! - [`installed`]: plugins installed on this machine (Klopfer, Surge XT, Dexed, Shortcircuit XT).
 //!   Klopfer runs by default when installed; the third-party plugins are `#[ignore]` (large, slow
@@ -42,7 +42,9 @@ pub(crate) const CONFIG: ActivateConfig = ActivateConfig {
 /// A fixture bundle, or `None` (with a note on stderr) if it has not been built.
 pub(super) fn fixture(name: &str) -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/test-plugins/clap")
+        .join("../../target/test-plugins")
+        .join(std::env::consts::OS)
+        .join("clap")
         .join(format!("{name}.clap"));
     if path.exists() {
         Some(path)

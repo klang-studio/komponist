@@ -3,16 +3,21 @@
 # acceptance flow 4's GUI step). Runs them under a private Xvfb, never on the desktop, with the
 # WP-27 test plugins (built here). HOME and the XDG folders are scratch folders under target/tmp,
 # so nothing reaches the real home or ~/.config.
+#
+# Linux only (Xvfb, xdotool): on macOS it says so and exits with 0. The plugin frame tests there are covered
+# by hand, see the macOS section of CLAUDE.md.
 set -euo pipefail
+
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "check-gui.sh runs on Linux only (it needs Xvfb); skipping on $(uname -s)." >&2
+    exit 0
+fi
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # Before XDG_RUNTIME_DIR is redirected below, so the lock file is the shared one.
 source scripts/build-lock.sh
 
-(
-    low_priority
-    scripts/build-test-plugins.sh >/dev/null
-)
+lowprio scripts/build-test-plugins.sh >/dev/null
 
 # The toolchain lives in the real home; keep it reachable.
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"

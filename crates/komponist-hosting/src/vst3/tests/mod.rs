@@ -2,7 +2,7 @@
 //! block helpers they share).
 //!
 //! - [`fixtures`]: the WP-27 test plugins as VST3 (`scripts/build-test-plugins.sh` builds them into
-//!   `target/test-plugins/vst3/`). Run by default; each test is skipped with a message when its
+//!   `target/test-plugins/<os>/vst3/`). Run by default; each test is skipped with a message when its
 //!   bundle is missing.
 //! - [`installed`]: VST3 plugins installed on this machine. Klopfer runs by default when installed;
 //!   the third-party plugins (Surge XT, Surge XT Effects, Dexed, DecentSampler, Shortcircuit XT)
@@ -34,7 +34,9 @@ pub(super) use crate::clap::tests::{BLOCK, Blocks, CONFIG, SAMPLE_RATE, installe
 /// A VST3 fixture bundle, or `None` (with a note on stderr) if it has not been built.
 pub(super) fn fixture(name: &str) -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/test-plugins/vst3")
+        .join("../../target/test-plugins")
+        .join(std::env::consts::OS)
+        .join("vst3")
         .join(format!("{name}.vst3"));
     if path.exists() {
         Some(path)
