@@ -2590,7 +2590,10 @@ impl App {
                     let _ = hub.set_enabled(&name, enabled);
                 }
                 self.settings.midi_disabled.retain(|n| *n != name);
-                if !enabled {
+                self.settings.midi_enabled.retain(|n| *n != name);
+                if enabled {
+                    self.settings.midi_enabled.push(name);
+                } else {
                     self.settings.midi_disabled.push(name);
                 }
                 self.save_settings();
