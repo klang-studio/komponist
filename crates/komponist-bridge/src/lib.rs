@@ -18,7 +18,7 @@
 //! - **Scan mode** ([`scan`]): prints the bundle's plugins as JSON and exits.
 //!
 //! Both modes first turn core dumps off (`PR_SET_DUMPABLE = 0` on Linux, `RLIMIT_CORE = 0` on
-//! macOS, where the bridge also drops its crash exception ports, so ReportCrash shows no dialog): plugins crash on purpose in tests and by accident in practice, and systemd-coredump
+//! macOS, where the bridge also clears its task-level crash exception ports): plugins crash on purpose in tests and by accident in practice, and systemd-coredump
 //! would delay the crash detection to about 55 ms and pop up a crash reporter (PLAN WP-31).
 //! `KOMPONIST_BRIDGE_COREDUMP=1` keeps core dumps for debugging a plugin crash. Any panic in the
 //! bridge aborts it, so a failing bridge always looks like a crash to the app and never leaves a
@@ -190,42 +190,36 @@ fn harden_process() {
     }
 }
 
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn task_set_exception_ports(
-        task: libc::mach_port_t,
-        exception_mask: u32,
-        new_port: libc::mach_port_t,
-        behavior: i32,
-        new_flavor: i32,
-    ) -> i32;
-    /// The task's own port (what `mach_task_self()` returns).
-    static mach_task_self_: libc::mach_port_t;
-}
-
-#[cfg(target_os = "macos")]
-/// `EXC_MASK_CRASH`.
-const EXC_MASK_CRASH: u32 = 1 << 10;
-#[cfg(target_os = "macos")]
-/// `EXC_MASK_CORPSE_NOTIFY`.
-const EXC_MASK_CORPSE_NOTIFY: u32 = 1 << 13;
-#[cfg(target_os = "macos")]
-/// `EXCEPTION_DEFAULT`.
-const EXCEPTION_DEFAULT: i32 = 1;
-#[cfg(target_os = "macos")]
-/// `THREAD_STATE_NONE` on arm64.
-const THREAD_STATE_NONE: i32 = 5;
-
-/// Detaches the bridge from ReportCrash: a crashing plugin shows komponist's own crash state, not
-/// the macOS "quit unexpectedly" dialog (the app reports bridge crashes itself). The task's crash
-/// exception ports, inherited from launchd, are cleared.
+/// Detaches the bridge from ReportCrash as far as a task can (#52): clears the task-level crash
+/// exception ports a launcher may have handed down, so a crash is not delivered to a reporter
+/// through them; the app reports bridge crashes itself ("Abgestürzt"). A handler registered at
+/// host level (how ReportCrash gets crashes of processes started from a terminal: their task ports
+/// are already empty, measured 2026-11-16) is out of a task's reach; whether the macOS dialog
+/// still appears for a crashing bridge with a frame window is checked on screen.
 #[cfg(target_os = "macos")]
 fn detach_from_crash_reporter() {
+    unsafe extern "C" {
+        fn task_set_exception_ports(
+            task: libc::mach_port_t,
+            exception_mask: u32,
+            new_port: libc::mach_port_t,
+            behavior: i32,
+            new_flavor: i32,
+        ) -> i32;
+        /// The task's own port (what `mach_task_self()` returns).
+        static mach_task_self_: libc::mach_port_t;
+    }
+    /// `EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY`.
+    const CRASH_MASKS: u32 = (1 << 10) | (1 << 13);
+    /// `EXCEPTION_DEFAULT`.
+    const EXCEPTION_DEFAULT: i32 = 1;
+    /// `THREAD_STATE_NONE` on arm64.
+    const THREAD_STATE_NONE: i32 = 5;
     // SAFETY: changes only this task's exception ports; a null port removes the handler.
     unsafe {
         task_set_exception_ports(
             mach_task_self_,
-            EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY,
+            CRASH_MASKS,
             0,
             EXCEPTION_DEFAULT,
             THREAD_STATE_NONE,

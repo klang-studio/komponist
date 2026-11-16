@@ -66,11 +66,8 @@ fn synth_and_effect_sound_through_the_engine() {
         .map(|p| p.name.as_str())
         .collect();
     assert_eq!(params, ["Gain", "Decay"]);
-    // No plugin GUIs on macOS until #52 (`komponist_hosting::GUI_EMBEDDING`).
-    assert_eq!(
-        rig.manager.has_gui(DeviceId(10)),
-        cfg!(not(target_os = "macos"))
-    );
+    // The synth has its own GUI on both platforms (X11; Cocoa in the bridge's frame, #52).
+    assert!(rig.manager.has_gui(DeviceId(10)));
     assert!(!rig.manager.has_gui(DeviceId(11)));
     rig.recompile();
 

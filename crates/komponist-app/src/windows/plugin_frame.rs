@@ -1055,8 +1055,11 @@ impl App {
         {
             w.view = view;
         }
-        self.frames.frames[i].sized_for = Some(view);
-        self.frames.frames[i].gui == Gui::Opening
+        let frame = &mut self.frames.frames[i];
+        frame.sized_for = Some(view);
+        // The app's viewport opens anew whenever the bridge's frame goes: at the view's size.
+        frame.initial = initial_size(&PluginWindow { view, ..window });
+        frame.gui == Gui::Opening
     }
 
     /// X11 work of frame `i`; `true` while it waits for something (the root keeps polling).

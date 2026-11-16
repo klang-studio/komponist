@@ -941,7 +941,7 @@ events (param changes from the plugin); audio in and out `[2][MAX_BLOCK]`, and s
 sends none, and the bridge then hands the plugin's sidechain port silence, never the previous block's
 data. The sidechain arrives already aligned by the engine (§6.8.5); the bridge adds no latency, so PDC
 counts only what the plugin reports. Both sides check the layout version (`SHM_VERSION`) when the bridge
-maps the memfd, and the control protocol version (`PROTOCOL_VERSION` 3) in `Hello`.
+maps the memfd, and the control protocol version (`PROTOCOL_VERSION` 4) in `Hello`.
 
 **RT handshake per block:** the engine writes input and events → `request_seq += 1` → futex wake →
 futex wait on `done_seq` with a deadline (about 60 % of the block period minus elapsed time).
@@ -971,11 +971,14 @@ state. State snapshots are taken on save, on GUI close, and debounced on "state 
 `state.mark_dirty`, VST3 `restartComponent` / edits).
 
 **Control protocol** (postcard over a Unix stream socket, length-prefixed frames; #44), app → bridge:
-`Load`, `Activate`, `Deactivate`, `GetState`, `SetState`, `ListParams`, `SetParam`, `OpenGui{parent_xid, scale}`,
-`SetGuiSize`, `CloseGui`, `SetRenderMode`, `Shutdown`. Bridge → app: `Loaded{info, params, latency}`
+`Load`, `Activate`, `Deactivate`, `GetState`, `SetState`, `ListParams`, `SetParam`,
+`OpenGui(GuiTarget)` (`X11Child{xid, scale}` on Linux, `OwnFrame{header, lang, rect}` on macOS, #52),
+`SetGuiSize`, `CloseGui`, `HeaderState{header, lang}`, `ActivateFrame`, `SetRenderMode`, `Shutdown`.
+Bridge → app: `Loaded{info, params, latency}`
 (the info's descriptor says whether the plugin has a sidechain port, `PluginDescriptor::sidechain`, #6),
-`State(bytes)`, `ParamValues(batch, ~30 Hz)`, `GuiSizeRequest`, `LatencyChanged`, `RestartRequested`,
-`StateDirty`, `Log`, `Error`.
+`State(bytes)`, `ParamValues(batch, ~30 Hz)`, `GuiOpened`, `GuiSizeRequest`, `GuiClosed{rect}`,
+`LatencyChanged`, `RestartRequested`, `StateDirty`, `Log`, `Error`, and from a bridge-owned frame
+(macOS) `HeaderAction`, `Shortcut{chord}`, `HeaderKey`, `FrameMoved(rect)`, `CloseRequested` (§8.4).
 
 **Parallelism:** bridges are separate processes, so each plugin runs on its own core. Since WP-65 an
 instrument bridge at the head of a chain is started before the engine runs any chain
@@ -1015,8 +1018,9 @@ truce-rack serve as further reference code.
   component state into the controller, keep the library loaded until every COM object is released.
 - **macOS (#51):** CLAP `.clap` bundles are directories; clack-host loads their executable and passes
   the bundle path to `clap_entry.init`. The GUI API there is Cocoa (CLAP `cocoa`, VST3
-  `kPlatformTypeNSView`), but `GUI_EMBEDDING` keeps `has_gui` false until the bridge owns the frame window
-  (#52).
+  `kPlatformTypeNSView`): `gui_open(GuiParent::Cocoa(nsview))` attaches into the bridge's own frame
+  (#52), without CLAP `set_scale` (JUCE plugins would double their size in points) and without VST3
+  `setContentScaleFactor` (refused); sizes are points.
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
   On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): the control socket, the
   notification wake pipe and plugin fds are libdispatch read/write sources on a private serial queue, whose
@@ -1028,6 +1032,7 @@ truce-rack serve as further reference code.
   re-enabled read callback sometimes never fired, so the bridge missed `Shutdown`. The outer loop is the
   seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native` (run-and-return) and
   resumes the run loop when the frame closes.
+  The frame is the seam's user (#52, §8.4).
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
   honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
   reading by default and handle write interest only with a rate limit (WP-26/31 decide the details).
@@ -1080,6 +1085,30 @@ table of CLAP features / VST3 subcategories.
   everything else goes to the plugin. `KOMPONIST_LOG_KEYS=1` logs keys, grab decisions and focus changes.
   `komponist --open-plugin NAME` opens a frame directly (for checks). Presets work for hexa only until a
   CLAP/VST3 preset API exists (post v0.1).
+
+- **macOS (#52): the bridge owns the frame window.** An app cannot embed another process's `NSView`,
+  so `OpenGui{OwnFrame}` makes the bridge open the frame: an eframe window (run-and-return at the
+  #51 seam; accessory policy, no menu, no self-activation) whose header is drawn with the same code
+  (`komponist_ui::plugin_frame`, model and events in `komponist_ipc::frame`) and whose body is a
+  container `NSView`, a subview of winit's view, that the plugin attaches to. The app keeps the
+  frame model and every decision: header clicks come as `HeaderAction`, the app answers with
+  `HeaderState`; `FrameMoved` / `GuiClosed{rect}` give the position it reopens at; the close
+  button sends `CloseRequested`. Sizes are points and follow the plugin: a plugin's request sets the
+  window first, then the container; a user drag of a resizable plugin asks it 100 ms after the drag
+  rests and snaps to what it took; fixed-size plugins get a non-resizable frame. Close: the bridge
+  yields its activation back to the app, closes the plugin's GUI (`gui_close`), removes the
+  container, answers `GuiClosed{rect}` and only then closes the window. Keys: an `NSEvent` local
+  monitor applies the WP-50 policy (Strg → ⌘) while the plugin's view has the focus and sends taken
+  keys as `Shortcut`; while another window of the bridge is above the frame (a JUCE popup menu, a
+  dialog; tooltips do not count) every key passes, so Esc closes Surge's menu, not the frame;
+  keys of the focused header go to egui and to the app as `HeaderKey`. Activation (cooperative,
+  macOS 14+): the app yields to the bridge's pid, then `ActivateFrame` (`activate` +
+  `makeKeyAndOrderFront`); the app activates itself again after `GuiClosed` if the bridge was
+  frontmost. "Oben halten" floats the frame only while komponist (the app or one of its bridges) is
+  the active application. The parameter view and the device states stay the app's own viewport at
+  the bridge frame's position. Costs (spike #42): +40–60 MiB per visible frame (egui draws the
+  whole window). `KOMPONIST_FRAME_OFFSCREEN=1` opens frames at −20000 and blocks every activation
+  (tests). The bridge clears its task-level crash exception ports at start.
 
 ### 8.5 Built-in instruments
 
