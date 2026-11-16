@@ -5,7 +5,7 @@
 //!   through a temporary file next to the target and a rename, so a crash never leaves half a
 //!   project.
 //! - The recent list lives in `recent.json` next to the settings file
-//!   (`~/.config/komponist/recent.json`), newest first, at most [`RECENT_LIMIT`] entries.
+//!   (`~/.config/komponist/recent.json`, on macOS in `~/Library/Application Support/komponist/`), newest first, at most [`RECENT_LIMIT`] entries.
 //! - Opening or creating a project resets the engine ([`crate::engine_sync::EngineSync::reset`]).
 //!   A project whose plugins are not in the catalog opens the S06 dialog; while a plugin scan
 //!   runs, the check waits for its end, so plugins the scan is about to find are not reported.

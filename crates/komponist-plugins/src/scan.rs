@@ -1,7 +1,8 @@
 //! Background plugin scans (ARCHITECTURE §8.3).
 //!
 //! [`ScanJob::start`] runs on its own thread: it walks the plugin folders for bundles (recursively,
-//! as the CLAP spec asks for Linux), canonicalizes their paths (the cache key), takes unchanged
+//! as the CLAP spec asks for Linux; a bundle is never entered, on macOS `.clap` and `.vst3` are
+//! directories with `Contents/MacOS/<name>` and `Contents/Info.plist`), canonicalizes their paths (the cache key), takes unchanged
 //! bundles from the [`ScanCache`] and scans the rest with `<launcher> --scan <bundle>` (`komponist --bridge`),
 //! [`PluginManagerConfig::parallel_scans`](crate::PluginManagerConfig) processes at a time, each
 //! killed after [`SCAN_TIMEOUT`](crate::catalog::SCAN_TIMEOUT). The finished job writes the new cache file and hands a
@@ -349,8 +350,12 @@ pub(crate) fn bundle_key(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-/// Modification time of a bundle in seconds; for a bundle directory (VST3) the newest of the
-/// directory and the files of its `Contents/x86_64-linux/`. 0 if unknown.
+/// Modification time of a bundle in seconds. A plain file (a Linux `.clap`) has its own; for a
+/// bundle directory (macOS `.clap` / `.vst3`, Linux `.vst3`) it is the newest of the bundle
+/// folder, `Contents/`, and the entries of `Contents/` and of the folders in it
+/// (`Contents/MacOS/<name>`, `Contents/x86_64-linux/<name>.so`, `Contents/Info.plist`,
+/// `Contents/_CodeSignature/CodeResources`). Replacing the binary or the plist therefore
+/// triggers a rescan; a directory's own mtime alone would not change. 0 if unknown.
 pub(crate) fn bundle_mtime(path: &Path) -> u64 {
     let secs = |p: &Path| {
         std::fs::metadata(p)
@@ -360,11 +365,23 @@ pub(crate) fn bundle_mtime(path: &Path) -> u64 {
             .map_or(0, |d| d.as_secs())
     };
     let mut newest = secs(path);
-    if path.is_dir()
-        && let Ok(entries) = std::fs::read_dir(path.join("Contents/x86_64-linux"))
-    {
-        for entry in entries.flatten() {
-            newest = newest.max(secs(&entry.path()));
+    if !path.is_dir() {
+        return newest;
+    }
+    let contents = path.join("Contents");
+    newest = newest.max(secs(&contents));
+    let Ok(entries) = std::fs::read_dir(&contents) else {
+        return newest;
+    };
+    for entry in entries.flatten() {
+        let entry = entry.path();
+        newest = newest.max(secs(&entry));
+        if entry.is_dir()
+            && let Ok(files) = std::fs::read_dir(&entry)
+        {
+            for file in files.flatten() {
+                newest = newest.max(secs(&file.path()));
+            }
         }
     }
     newest
@@ -655,6 +672,75 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let bad = root.join(std::ffi::OsStr::from_bytes(b"\xff.clap"));
         assert_eq!(bundle_key(&bad), Err("path is not valid UTF-8".into()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A bundle folder shaped like the ones macOS plugins ship as (`Contents/MacOS/<name>`,
+    /// `Contents/Info.plist`).
+    fn macos_bundle(root: &Path, name: &str) -> PathBuf {
+        let bundle = root.join(name);
+        let stem = name.rsplit_once('.').unwrap().0;
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::write(
+            bundle.join("Contents/MacOS").join(stem),
+            b"\xcf\xfa\xed\xfe",
+        )
+        .unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"<plist/>").unwrap();
+        bundle
+    }
+
+    #[test]
+    fn macos_bundle_directories_are_found_whole_and_not_entered() {
+        let root = std::env::temp_dir().join(format!("kp-scan-macos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Vendor")).unwrap();
+        let clap = macos_bundle(&root, "Surge XT.clap");
+        let nested = macos_bundle(&root.join("Vendor"), "Deep.clap");
+        let vst3 = macos_bundle(&root, "Vital.vst3");
+        // A bundle inside a bundle (a helper app, a nested plugin) is not a plugin of its own.
+        macos_bundle(&clap.join("Contents/Resources"), "Inner.clap");
+        std::fs::write(root.join(".DS_Store"), b"x").unwrap();
+
+        let found = find_bundles(&root, PluginFormat::Clap);
+        assert_eq!(found, [clap.clone(), nested]);
+        assert_eq!(find_bundles(&root, PluginFormat::Vst3), [vst3]);
+        // The cache key is the canonical path of the bundle folder.
+        assert_eq!(bundle_key(&clap), Ok(std::fs::canonicalize(&clap).unwrap()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_bundle_directory_changes_when_its_binary_or_plist_does() {
+        let root = std::env::temp_dir().join(format!("kp-scan-mtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bundle = macos_bundle(&root, "Fx.clap");
+        let set = |file: &Path, secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        };
+        // Everything old, then touch one file at a time.
+        let binary = bundle.join("Contents/MacOS/Fx");
+        let plist = bundle.join("Contents/Info.plist");
+        set(&binary, 1_000);
+        set(&plist, 1_000);
+        let before = bundle_mtime(&bundle);
+        assert!(before > 0);
+        set(&binary, 4_000_000_000);
+        assert_eq!(bundle_mtime(&bundle), 4_000_000_000);
+        set(&binary, 1_000);
+        set(&plist, 4_100_000_000);
+        assert_eq!(bundle_mtime(&bundle), 4_100_000_000);
+        // A plain file (a Linux `.clap`) has its own mtime.
+        let file = root.join("Plain.clap");
+        std::fs::write(&file, b"x").unwrap();
+        set(&file, 4_200_000_000);
+        assert_eq!(bundle_mtime(&file), 4_200_000_000);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

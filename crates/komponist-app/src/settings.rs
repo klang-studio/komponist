@@ -1,4 +1,5 @@
-//! App settings (`~/.config/komponist/settings.json`): audio stream, MIDI inputs, plugin folders,
+//! App settings (`~/.config/komponist/settings.json`, on macOS
+//! `~/Library/Application Support/komponist/settings.json`): audio stream, MIDI inputs, plugin folders,
 //! UI scale, panel layout, the last export settings and the browser's favourites. The recent
 //! projects have their own file next to it (`recent.json`, [`crate::project_io::RecentList`]).
 //!
@@ -326,16 +327,24 @@ impl core::fmt::Display for SettingsError {
 
 impl std::error::Error for SettingsError {}
 
-/// `$XDG_CONFIG_HOME/komponist`, else `$HOME/.config/komponist`; `None` without either.
+/// The settings folder. Linux: `$XDG_CONFIG_HOME/komponist`, else `$HOME/.config/komponist`.
+/// macOS: `$HOME/Library/Application Support/komponist` (the XDG variables are not honoured there).
+/// `None` without a usable `$HOME` (on Linux, without `$XDG_CONFIG_HOME` either).
 pub fn config_dir() -> Option<PathBuf> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute());
-    let base = xdg.or_else(|| {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|h| h.join(".config"))
-    })?;
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    config_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+}
+
+/// [`config_dir`] for given inputs; `macos` picks the platform's convention.
+fn config_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let base = if macos {
+        home?.join("Library/Application Support")
+    } else {
+        xdg.filter(|p| p.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|h| h.join(".config")))?
+    };
     Some(base.join("komponist"))
 }
 
@@ -401,6 +410,31 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_dir_follows_the_platform() {
+        let home = Path::new("/Users/u");
+        let xdg = Path::new("/x/cfg");
+        assert_eq!(
+            config_dir_from(true, Some(xdg), Some(home)),
+            Some("/Users/u/Library/Application Support/komponist".into())
+        );
+        assert_eq!(config_dir_from(true, None, None), None);
+        assert_eq!(
+            config_dir_from(false, Some(xdg), Some(home)),
+            Some("/x/cfg/komponist".into())
+        );
+        assert_eq!(
+            config_dir_from(false, Some(Path::new("rel")), Some(home)),
+            Some("/Users/u/.config/komponist".into())
+        );
+        assert_eq!(
+            config_dir_from(false, None, Some(home)),
+            Some("/Users/u/.config/komponist".into())
+        );
+        assert_eq!(config_dir_from(false, None, None), None);
+    }
+
     use komponist_audio::HostKind;
 
     fn temp_dir(name: &str) -> PathBuf {

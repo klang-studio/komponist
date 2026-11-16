@@ -65,11 +65,16 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     // One level down, as vendors install them.
     copy(&fixtures.join("kp-test-slow.clap"), &clap.join("vendor"));
     std::fs::write(clap.join("Broken.clap"), b"not a shared object").unwrap();
-    std::fs::write(
-        clap.join(std::ffi::OsStr::from_bytes(b"\xff.clap")),
-        b"bad name",
-    )
-    .unwrap();
+    // A name that is not valid UTF-8. APFS (and HFS+) refuse to create one (EILSEQ, "Illegal byte
+    // sequence"), so on macOS the case cannot occur on disk and the test leaves it out.
+    let bad_name = !cfg!(target_os = "macos");
+    if bad_name {
+        std::fs::write(
+            clap.join(std::ffi::OsStr::from_bytes(b"\xff.clap")),
+            b"bad name",
+        )
+        .unwrap();
+    }
     // An empty VST3 folder: VST3 scanning itself is covered by the hosting and bridge tests (WP-32).
     // Putting the VST3 fixture here made the counts depend on whether its bundle was built.
     let vst3 = dir.join("vst3");
@@ -107,8 +112,14 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
         ]
     );
     assert!(!reason(&report, "Broken.clap").is_empty());
-    assert_eq!(reason(&report, b"\xff.clap"), "path is not valid UTF-8");
-    assert_eq!(report.skipped.len(), 2, "{report:?}");
+    if bad_name {
+        assert_eq!(reason(&report, b"\xff.clap"), "path is not valid UTF-8");
+    }
+    assert_eq!(
+        report.skipped.len(),
+        1 + usize::from(bad_name),
+        "{report:?}"
+    );
     assert!(report.finished <= SystemTime::now());
 
     let mut expected = builtins.clone();
@@ -168,10 +179,14 @@ fn scan_finds_the_fixtures_and_reuses_the_cache() {
     assert_eq!(again.found, 4);
     assert!(names(&manager).contains(&"Cached FX".to_owned()));
     // A changed bundle is scanned again.
-    let file = std::fs::File::options()
-        .write(true)
-        .open(clap.join("kp-test-fx.clap"))
-        .unwrap();
+    // (A macOS bundle is a folder: its binary changes, as when the plugin is updated.)
+    let changed = clap.join("kp-test-fx.clap");
+    let changed = if changed.is_dir() {
+        changed.join("Contents/MacOS/kp-test-fx")
+    } else {
+        changed
+    };
+    let file = std::fs::File::options().write(true).open(changed).unwrap();
     file.set_modified(SystemTime::now() + Duration::from_secs(10))
         .unwrap();
     manager.start_scan(&dirs);

@@ -326,6 +326,8 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 - Settings: `~/.config/komponist/settings.json` (driver, device, rate, buffer, MIDI inputs, plugin
   folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`.
   Plugin scan cache: `~/.cache/komponist/plugins.json`.
+  On macOS the settings and recent list live in `~/Library/Application Support/komponist/` and the
+  scan cache in `~/Library/Caches/komponist/plugins.json` (`XDG_*_HOME` is not honoured there).
 
 ---
 
@@ -1022,6 +1024,10 @@ from the catalog until the bridge loaded the plugin, then from the plugin itself
 version (`SCAN_CACHE_VERSION`, 1 since #6); a file of another version, or one from before #6 without it,
 is dropped, so the next scan scans every bundle again. Default folders: CLAP `~/.clap`, `/usr/lib/clap`,
 `/usr/local/lib/clap`, `$CLAP_PATH`; VST3 `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3`.
+On macOS: CLAP `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP`, `$CLAP_PATH`; VST3
+`~/Library/Audio/Plug-Ins/VST3`, `/Library/Audio/Plug-Ins/VST3`. A macOS `.clap` / `.vst3` is a bundle
+directory (`Contents/MacOS/<name>`, `Contents/Info.plist`); the scan never descends into it, and its cache
+mtime is the newest of the bundle's files.
 Browser categories ("EQ und Filter", "Dynamik", "Hall und Delay", "Modulation") come from a mapping
 table of CLAP features / VST3 subcategories.
 

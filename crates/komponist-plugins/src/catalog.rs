@@ -3,7 +3,7 @@
 //!
 //! Scanning runs `komponist-bridge --scan <bundle>` per bundle as separate processes, in parallel,
 //! with [`SCAN_TIMEOUT`] each, and caches results by path and modification time in
-//! `~/.cache/komponist/plugins.json` ([`ScanCache`]). A bundle that crashes or times out is listed
+//! `~/.cache/komponist/plugins.json` (macOS `~/Library/Caches/komponist/`; [`ScanCache`]). A bundle that crashes or times out is listed
 //! as skipped ("1 Plugin übersprungen", S07).
 
 use std::collections::HashSet;
@@ -241,29 +241,52 @@ pub struct PluginDirs {
 }
 
 impl PluginDirs {
-    /// The default folders (ARCHITECTURE §8.3): CLAP `~/.clap`, `/usr/lib/clap`,
+    /// The default folders (ARCHITECTURE §8.3). Linux: CLAP `~/.clap`, `/usr/lib/clap`,
     /// `/usr/local/lib/clap` and the entries of `$CLAP_PATH`; VST3 `~/.vst3`, `/usr/lib/vst3`,
-    /// `/usr/local/lib/vst3`.
+    /// `/usr/local/lib/vst3`. macOS: CLAP `~/Library/Audio/Plug-Ins/CLAP`,
+    /// `/Library/Audio/Plug-Ins/CLAP` and `$CLAP_PATH`; VST3 `~/Library/Audio/Plug-Ins/VST3`,
+    /// `/Library/Audio/Plug-Ins/VST3`.
     pub fn defaults() -> PluginDirs {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let clap_path = std::env::var_os("CLAP_PATH");
-        PluginDirs::defaults_from(home.as_deref(), clap_path.as_deref())
+        PluginDirs::defaults_from(
+            cfg!(target_os = "macos"),
+            home.as_deref(),
+            clap_path.as_deref(),
+        )
     }
 
-    /// [`PluginDirs::defaults`] for a given home folder and `$CLAP_PATH` value. Empty entries of
-    /// `$CLAP_PATH` and folders listed twice are left out.
-    fn defaults_from(home: Option<&Path>, clap_path: Option<&std::ffi::OsStr>) -> PluginDirs {
-        let mut clap: Vec<PathBuf> = home.map(|h| h.join(".clap")).into_iter().collect();
-        clap.push("/usr/lib/clap".into());
-        clap.push("/usr/local/lib/clap".into());
+    /// [`PluginDirs::defaults`] for a platform (`macos`), a home folder and a `$CLAP_PATH` value.
+    /// Empty entries of `$CLAP_PATH` and folders listed twice are left out.
+    fn defaults_from(
+        macos: bool,
+        home: Option<&Path>,
+        clap_path: Option<&std::ffi::OsStr>,
+    ) -> PluginDirs {
+        let (user_clap, user_vst3, system_clap, system_vst3): (_, _, &[&str], &[&str]) = if macos {
+            (
+                "Library/Audio/Plug-Ins/CLAP",
+                "Library/Audio/Plug-Ins/VST3",
+                &["/Library/Audio/Plug-Ins/CLAP"],
+                &["/Library/Audio/Plug-Ins/VST3"],
+            )
+        } else {
+            (
+                ".clap",
+                ".vst3",
+                &["/usr/lib/clap", "/usr/local/lib/clap"],
+                &["/usr/lib/vst3", "/usr/local/lib/vst3"],
+            )
+        };
+        let mut clap: Vec<PathBuf> = home.map(|h| h.join(user_clap)).into_iter().collect();
+        clap.extend(system_clap.iter().map(PathBuf::from));
         if let Some(paths) = clap_path {
             clap.extend(std::env::split_paths(paths).filter(|p| !p.as_os_str().is_empty()));
         }
         let mut seen = HashSet::new();
         clap.retain(|p| seen.insert(p.clone()));
-        let mut vst3: Vec<PathBuf> = home.map(|h| h.join(".vst3")).into_iter().collect();
-        vst3.push("/usr/lib/vst3".into());
-        vst3.push("/usr/local/lib/vst3".into());
+        let mut vst3: Vec<PathBuf> = home.map(|h| h.join(user_vst3)).into_iter().collect();
+        vst3.extend(system_vst3.iter().map(PathBuf::from));
         PluginDirs { clap, vst3 }
     }
 }
@@ -513,6 +536,25 @@ mod tests {
     }
 
     #[test]
+    fn macos_bundles_are_named_by_their_bundle_folder() {
+        // The module is the bundle folder (`.clap` / `.vst3`), not the binary in `Contents/MacOS`.
+        let mut catalog = Catalog::builtin();
+        let mut clap = descriptor("org.surge", "Surge XT", PluginKind::Instrument, &[]);
+        clap.bundle = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap".into();
+        let mut vst3 = descriptor("0123ABCD", "Vital", PluginKind::Instrument, &[]);
+        vst3.format = BundleFormat::Vst3;
+        vst3.bundle = "/Users/u/Library/Audio/Plug-Ins/VST3/Vital.vst3".into();
+        catalog.set_scanned(&[clap, vst3]);
+        let modules: Vec<&str> = catalog
+            .entries()
+            .iter()
+            .filter(|e| !e.is_builtin())
+            .map(|e| &*e.plugin.module)
+            .collect();
+        assert_eq!(modules, ["Surge XT.clap", "Vital.vst3"]);
+    }
+
+    #[test]
     fn scanned_entries_are_sorted_filtered_and_resolved() {
         let mut catalog = Catalog::builtin();
         let mut vst3 = descriptor("0123ABCD", "dexed", PluginKind::Instrument, &["instrument"]);
@@ -655,6 +697,7 @@ mod tests {
     #[test]
     fn default_folders() {
         let dirs = PluginDirs::defaults_from(
+            false,
             Some(Path::new("/home/x")),
             Some(std::ffi::OsStr::new(
                 "/opt/clap::/usr/lib/clap:/home/x/more",
@@ -676,15 +719,52 @@ mod tests {
             vst3,
             ["/home/x/.vst3", "/usr/lib/vst3", "/usr/local/lib/vst3"]
         );
-        let bare = PluginDirs::defaults_from(None, None);
+        let bare = PluginDirs::defaults_from(false, None, None);
         assert_eq!(bare.clap.len(), 2);
         assert_eq!(bare.vst3.len(), 2);
         // The real environment gives at least the system folders.
+        let system_clap = if cfg!(target_os = "macos") {
+            "/Library/Audio/Plug-Ins/CLAP"
+        } else {
+            "/usr/lib/clap"
+        };
         assert!(
             PluginDirs::defaults()
                 .clap
-                .contains(&PathBuf::from("/usr/lib/clap"))
+                .contains(&PathBuf::from(system_clap))
         );
+    }
+
+    #[test]
+    fn default_folders_on_macos() {
+        let dirs = PluginDirs::defaults_from(
+            true,
+            Some(Path::new("/Users/x")),
+            Some(std::ffi::OsStr::new(
+                "/opt/clap::/Library/Audio/Plug-Ins/CLAP:/Users/x/more",
+            )),
+        );
+        let clap: Vec<&str> = dirs.clap.iter().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(
+            clap,
+            [
+                "/Users/x/Library/Audio/Plug-Ins/CLAP",
+                "/Library/Audio/Plug-Ins/CLAP",
+                "/opt/clap",
+                "/Users/x/more"
+            ]
+        );
+        let vst3: Vec<&str> = dirs.vst3.iter().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(
+            vst3,
+            [
+                "/Users/x/Library/Audio/Plug-Ins/VST3",
+                "/Library/Audio/Plug-Ins/VST3"
+            ]
+        );
+        let bare = PluginDirs::defaults_from(true, None, None);
+        assert_eq!(bare.clap, [PathBuf::from("/Library/Audio/Plug-Ins/CLAP")]);
+        assert_eq!(bare.vst3, [PathBuf::from("/Library/Audio/Plug-Ins/VST3")]);
     }
 
     #[test]
