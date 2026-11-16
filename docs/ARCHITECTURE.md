@@ -976,7 +976,11 @@ must not output back into that bus).
     "ASIO" and the logo under GPLv3 too: if ASIO is only activated manually, the ASIO Compatible Logo must appear "in
     every dialog that enables/configures ASIO" (Settings, S07), and "ASIO is a registered trademark of Steinberg
     Media Technologies GmbH." must appear in the credits and documentation (the zip's `README.txt` and INSTALL.md
-    carry it; the logo is not in the app yet). The owner has to decide on the logo and on legal review.
+    carry it; the app has no credits screen on Windows, only the native macOS About panel, so there is no place
+    for it in the app). **The logo is in S07 (W8c):** the vendored white-on-transparent SVG, embedded with
+    `include_bytes!` in `dialogs/settings.rs`, right-aligned in the "Treiber" row whenever the ASIO segment is shown
+    (also disabled without a registered driver); accessible name `settings-asio-logo`. The app has only the dark
+    theme, so one variant is enough. The owner still has to decide on legal review.
   - *Devices:* ASIO has no default device (cpal takes the first driver) and loads **one driver at a time per
     process**. cpal lists the devices by loading each registered driver in turn, which is slow and can disturb an
     interface another program holds. Consequences handled in `backend.rs`: `available_hosts` lists ASIO only when
