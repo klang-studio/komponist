@@ -81,6 +81,9 @@ devices-to-default-shortcut = Double-click
 # Its shortcut column for the controls where only the Alt-click resets (number fields, choices).
 devices-to-default-alt-shortcut = Alt+click
 
+# Same on macOS: ⌥ instead of Alt.
+devices-to-default-alt-shortcut-mac = ⌥+click
+
 # Context menu of a parameter: open the text entry.
 devices-enter-value = Enter Value
 

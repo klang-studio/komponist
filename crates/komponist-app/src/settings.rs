@@ -41,6 +41,9 @@ pub struct Settings {
     pub audio: StreamConfig,
     /// MIDI inputs switched off in S07, by port name (new ports start enabled).
     pub midi_disabled: Vec<String>,
+    /// MIDI inputs the user switched on in S07, by port name. Matters for ports that start
+    /// disabled ("Midi Through", the IAC Driver buses): the stored choice wins at the next start.
+    pub midi_enabled: Vec<String>,
     /// CLAP plugin folders added in S07 ("Plugin-Ordner"), scanned after the default folders
     /// ([`Settings::plugin_dirs`]).
     pub clap_dirs: Vec<PathBuf>,
@@ -533,6 +536,7 @@ mod tests {
         s.audio.host = HostKind::Null;
         s.audio.buffer_frames = 512;
         s.midi_disabled.push("Midi Through Port-0".into());
+        s.midi_enabled.push("IAC Driver Bus 1".into());
         s.ui_scale = Some(2.0);
         s.panels.browser_open = false;
         s.panels.dock_height = 400.0;

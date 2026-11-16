@@ -14,6 +14,7 @@ use komponist_app::actions::{Action, ProjectAction, UiAction};
 use komponist_app::dialogs::file::{FileBrowser, Purpose};
 use komponist_app::dialogs::format::{self, LocalTime};
 use komponist_app::dialogs::{export, missing_plugins, new_project, settings, start};
+use komponist_app::platform::Platform;
 use komponist_app::project_io::ProjectSummary;
 use komponist_app::ui_state::{SettingsSection, StartView};
 use komponist_app::windows::plugin_frame::header::{self, HeaderModel, Mark};
@@ -216,7 +217,24 @@ fn the_recent_list_shows_english_dates_and_a_missing_file() {
         system: Vec::new(),
         message: None,
     };
-    assert!(model.version.ends_with("Linux · CLAP and VST3"));
+    let platform = Platform::current().pick("Linux", "macOS");
+    assert!(
+        model
+            .version
+            .ends_with(&format!("{platform} · CLAP and VST3"))
+    );
+    // Each platform names itself, in both languages.
+    for (lang, formats) in [(Lang::De, "CLAP und VST3"), (Lang::En, "CLAP and VST3")] {
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            start::version_line_for(lang, Platform::Pc),
+            format!("{v} · Linux · {formats}")
+        );
+        assert_eq!(
+            start::version_line_for(lang, Platform::Mac),
+            format!("{v} · macOS · {formats}")
+        );
+    }
     assert_eq!(model.recent[0].meta, "File missing");
     let h = view_harness(Lang::En, StartView::default(), move |ui, view| {
         let rect = ui.ctx().content_rect();

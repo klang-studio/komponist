@@ -21,6 +21,9 @@ status-count-in = Count-in…
 # Middle text while a device parameter is dragged.
 status-param-hint = Alt+click: default · Right-click: enter value
 
+# Same on macOS: ⌥ instead of Alt.
+status-param-hint-mac = ⌥+click: default · Right-click: enter value
+
 # Left side in the piano roll; German keeps "Noten" for one note (verbatim S01).
 status-notes-selected = { $clip } · { $selected } of { $total } { $total ->
         [one] note
@@ -31,13 +34,16 @@ status-notes-selected = { $clip } · { $selected } of { $total } { $total ->
 status-notes-hint = Ctrl+drag a note: velocity · Alt+drag: copy
 
 # Same on macOS: ⌘ instead of Ctrl.
-status-notes-hint-mac = ⌘+drag a note: velocity · Alt+drag: copy
+status-notes-hint-mac = ⌘+drag a note: velocity · ⌥+drag: copy
 
 # Left side in the step sequencer with a selected step; `$step` counts from 1.
 status-step-selected = { $clip } · Step { $step } of { $length }
 
 # Middle text in the step sequencer with a selected step.
 status-step-hint = Click sets a step · Drag ↕ on a step: velocity · Alt+click: probability
+
+# Same on macOS: ⌥ instead of Alt.
+status-step-hint-mac = Click sets a step · Drag ↕ on a step: velocity · ⌥+click: probability
 
 # Left side in the step sequencer without a selected step; German keeps "Steps" for one step.
 status-steps-set = { $clip } · { $count ->
@@ -63,6 +69,9 @@ status-devices = { $name } · { $count ->
 # Middle text in the device chain.
 status-devices-hint = Drag a device: reorder · Alt+click a switch: bypass
 
+# Same on macOS: ⌥ instead of Alt.
+status-devices-hint-mac = Drag a device: reorder · ⌥+click a switch: bypass
+
 # Left side with selected clips.
 status-clips-selected = { $count ->
         [one] 1 clip
@@ -73,7 +82,7 @@ status-clips-selected = { $count ->
 status-clips-hint = Drag moves · Alt+drag copies · right edge trims · Ctrl+D duplicates · Del deletes
 
 # Same on macOS: ⌘ instead of Ctrl.
-status-clips-hint-mac = Drag moves · Alt+drag copies · right edge trims · ⌘D duplicates · Del deletes
+status-clips-hint-mac = Drag moves · ⌥+drag copies · right edge trims · ⌘D duplicates · Del deletes
 
 # Middle text with a selected track.
 status-track-hint = Double-click in the track to add a clip · R records

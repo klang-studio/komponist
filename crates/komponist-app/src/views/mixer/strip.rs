@@ -30,6 +30,7 @@ use crate::actions::{
     Action, DropTarget, EditAction, PluginAction, SelectMode, SelectionChange, UiAction,
 };
 use crate::meters::Meters;
+use crate::platform::Platform;
 use crate::views::devices::add_menu;
 use crate::views::devices::model::{Placement, place_plugin};
 use crate::views::late;
@@ -1145,7 +1146,10 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
         info
     });
     Tip::new(ctx.lang.mixer_peak_tip())
-        .detail(ctx.lang.mixer_peak_detail())
+        .detail(Platform::current().pick(
+            ctx.lang.mixer_peak_detail(),
+            ctx.lang.mixer_peak_detail_mac(),
+        ))
         .attach(&response);
     if response.clicked() {
         ctx.send(Action::Ui(UiAction::ResetMeters {
