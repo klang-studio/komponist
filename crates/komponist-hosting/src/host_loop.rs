@@ -783,7 +783,7 @@ mod tests {
         fn note_names(&self) -> Vec<NoteName> {
             Vec::new()
         }
-        fn gui_open(&mut self, _: u64, _: f64) -> Result<GuiInfo, HostingError> {
+        fn gui_open(&mut self, _: crate::GuiParent) -> Result<GuiInfo, HostingError> {
             Err(HostingError::Unsupported("fake"))
         }
         fn gui_set_size(&mut self, _: GuiSize) -> Result<GuiSize, HostingError> {

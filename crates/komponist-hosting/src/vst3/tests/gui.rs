@@ -67,11 +67,19 @@ fn exercise_gui(bundle: &Path, name: &str, expect: Expect) {
     assert!(plugin.has_gui());
 
     let opened = Instant::now();
-    let info = plugin.gui_open(u64::from(parent.window), 1.0).unwrap();
+    let info = plugin
+        .gui_open(crate::GuiParent::X11 {
+            xid: u64::from(parent.window),
+            scale: 1.0,
+        })
+        .unwrap();
     let open_time = opened.elapsed();
     assert!(info.size.width > 0 && info.size.height > 0, "{info:?}");
     assert!(matches!(
-        plugin.gui_open(u64::from(parent.window), 1.0),
+        plugin.gui_open(crate::GuiParent::X11 {
+            xid: u64::from(parent.window),
+            scale: 1.0
+        }),
         Err(crate::HostingError::WrongState(_))
     ));
 
@@ -141,7 +149,12 @@ fn exercise_gui(bundle: &Path, name: &str, expect: Expect) {
     let after_close = host_loop.registrations();
 
     // A second open after a close works too.
-    let again = plugin.gui_open(u64::from(parent.window), 1.0).unwrap();
+    let again = plugin
+        .gui_open(crate::GuiParent::X11 {
+            xid: u64::from(parent.window),
+            scale: 1.0,
+        })
+        .unwrap();
     host_loop.run_for(plugin, Duration::from_millis(300));
     plugin.gui_close();
     assert_eq!(again.size.width > 0, info.size.width > 0);
@@ -363,7 +376,12 @@ fn gui_dexed_edit_while_processing() {
         }
     });
 
-    plugin.gui_open(u64::from(parent.window), 1.0).unwrap();
+    plugin
+        .gui_open(crate::GuiParent::X11 {
+            xid: u64::from(parent.window),
+            scale: 1.0,
+        })
+        .unwrap();
     host_loop.run_for(plugin, Duration::from_millis(1000));
     // The Cutoff knob again, dragged down.
     let (before, after, last) = drag(&parent, &host_loop, plugin, ((250, 463), (250, 523)));

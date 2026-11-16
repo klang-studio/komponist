@@ -48,14 +48,14 @@ use self::host::{KpHost, MainThreadHost, SharedHost};
 use self::processor::{ClapProcessor, NoteTarget, PortLayout};
 use crate::host::{FdEvents, HostContext, TimerId};
 use crate::plugin::{
-    ActivateConfig, GUI_EMBEDDING, GuiInfo, HostedPlugin, HostedProcessor, HostingError,
+    ActivateConfig, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor, HostingError,
 };
 
 /// Vendor reported to plugins in `clap_host.vendor`.
 const HOST_VENDOR: &str = "klang-studio";
 
-/// The embedded GUI API of this OS: X11 (Linux) or Cocoa (macOS, for #52; note for it: do not
-/// call `set_scale` on Cocoa, JUCE plugins then double their size in points, spike #42 Q1).
+/// The embedded GUI API of this OS: X11 (Linux) or Cocoa (macOS, #52; no `set_scale` there, JUCE
+/// plugins then double their size in points, spike #42 Q1).
 #[cfg(not(target_os = "macos"))]
 const EMBEDDED: GuiConfiguration<'static> = GuiConfiguration {
     api_type: GuiApiType::X11,
@@ -541,7 +541,7 @@ impl HostedPlugin for ClapPlugin {
             .collect()
     }
 
-    fn gui_open(&mut self, parent_xid: u64, scale: f64) -> Result<GuiInfo, HostingError> {
+    fn gui_open(&mut self, parent: GuiParent) -> Result<GuiInfo, HostingError> {
         if self.gui.is_some() {
             return Err(HostingError::WrongState("the GUI is already open"));
         }
@@ -555,19 +555,33 @@ impl HostedPlugin for ClapPlugin {
         gui.create(&handle, EMBEDDED)
             .map_err(|e| HostingError::Gui(format!("create: {e}")))?;
         let opened = (|| {
-            // Allowed to fail on X11 (Shortcircuit XT picks its own scale).
-            if gui.set_scale(&handle, scale).is_err() {
-                self.context
-                    .notify
-                    .log(LogLevel::Debug, &format!("gui.set_scale({scale}) declined"));
-            }
+            let window = match parent {
+                #[cfg(not(target_os = "macos"))]
+                GuiParent::X11 { xid, scale } => {
+                    // Allowed to fail on X11 (Shortcircuit XT picks its own scale).
+                    if gui.set_scale(&handle, scale).is_err() {
+                        self.context
+                            .notify
+                            .log(LogLevel::Debug, &format!("gui.set_scale({scale}) declined"));
+                    }
+                    Window::from_x11_handle(xid as _)
+                }
+                #[cfg(target_os = "macos")]
+                // SAFETY: see `set_parent` below; the view outlives the GUI.
+                GuiParent::Cocoa(view) => unsafe { Window::from_cocoa_nsview(view) },
+                _ => {
+                    return Err(HostingError::Gui(
+                        "the parent window is of another platform".into(),
+                    ));
+                }
+            };
             let size = gui
                 .get_size(&handle)
                 .ok_or_else(|| HostingError::Gui("get_size failed".into()))?;
             let resizable = gui.can_resize(&handle);
-            // SAFETY: the parent is a live X11 window of the app's frame; the app keeps it until
-            // after `gui_close` (or the bridge's death).
-            unsafe { gui.set_parent(&handle, Window::from_x11_handle(parent_xid as _)) }
+            // SAFETY: the parent is a live X11 window of the app's frame, or an `NSView` of the
+            // bridge's frame; either is kept until after `gui_close` (or the bridge's death).
+            unsafe { gui.set_parent(&handle, window) }
                 .map_err(|e| HostingError::Gui(format!("set_parent: {e}")))?;
             gui.show(&handle)
                 .map_err(|e| HostingError::Gui(format!("show: {e}")))?;

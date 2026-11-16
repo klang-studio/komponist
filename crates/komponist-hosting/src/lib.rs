@@ -19,10 +19,10 @@
 //!   are normalized (`0..=1`); its state blob format is documented in `vst3::stream`.
 //!
 //! Format checklist for either implementation (ARCHITECTURE §8.2): CLAP audio-ports, note-ports,
-//! params, state, latency, gui (x11, embedded), timer-support, posix-fd-support, thread-check, log,
+//! params, state, latency, gui (x11 or cocoa, embedded), timer-support, posix-fd-support, thread-check, log,
 //! render, note-name; VST3 IComponent / IAudioProcessor / IEditController (+ IConnectionPoint),
 //! IHostApplication, IComponentHandler, IParameterChanges / IEventList, IBStream, IPlugView (X11
-//! embed), IPlugFrame, Linux IRunLoop, IPlugViewContentScaleSupport.
+//! or NSView embed), IPlugFrame, Linux IRunLoop, IPlugViewContentScaleSupport.
 //!
 //! Shared vocabulary comes from `komponist-ipc` and is re-exported here: [`PluginDescriptor`],
 //! [`ParamInfo`], [`NoteName`], [`RenderMode`], [`GuiSize`].
@@ -49,8 +49,8 @@ pub use komponist_ipc::{
     GuiSize, NoteName, ParamInfo, PluginDescriptor, PluginFormat, PluginKind, RenderMode,
 };
 pub use plugin::{
-    ActivateConfig, EventOut, GUI_EMBEDDING, GuiInfo, HostedPlugin, HostedProcessor, HostingError,
-    ProcessBlock, ProcessStatus,
+    ActivateConfig, EventOut, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor,
+    HostingError, ProcessBlock, ProcessStatus,
 };
 
 /// Bridge main thread. Loads plugin `plugin_id` from `bundle` and initialises it (not activated).

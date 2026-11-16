@@ -388,7 +388,10 @@ fn fx_reports_and_applies_latency() {
     let plugin = rig.plugin.as_mut();
     assert_eq!(plugin.descriptor().kind, PluginKind::Effect);
     assert!(!plugin.has_gui());
-    assert!(matches!(plugin.gui_open(1, 1.0), Err(HostingError::Gui(_))));
+    assert!(matches!(
+        plugin.gui_open(crate::GuiParent::X11 { xid: 1, scale: 1.0 }),
+        Err(HostingError::Gui(_))
+    ));
     assert_eq!(plugin.latency(), 0, "inactive");
 
     let mut processor = plugin.activate(CONFIG).unwrap();
