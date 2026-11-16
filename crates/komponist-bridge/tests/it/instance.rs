@@ -146,8 +146,8 @@ fn synth_sounds_through_the_ipc_path() {
     let info = bridge.load(&bundle, SYNTH);
     assert_eq!(info.descriptor.id, SYNTH);
     assert_eq!(info.descriptor.kind, PluginKind::Instrument);
-    // Its own GUI: X11 on Linux, Cocoa in the bridge's frame on macOS (#52); none before W6 on
-    // Windows.
+    // Its own GUI: X11 on Linux, Cocoa or Win32 in the bridge's frame on macOS and Windows (#52,
+    // port W6).
     assert_eq!(info.has_gui, komponist_bridge::GUI_EMBEDDING);
     assert_eq!(info.latency, 0);
     let names: Vec<&str> = info.params.iter().map(|p| p.name.as_str()).collect();

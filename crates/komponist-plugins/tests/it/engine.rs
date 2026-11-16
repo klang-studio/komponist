@@ -66,9 +66,9 @@ fn synth_and_effect_sound_through_the_engine() {
         .map(|p| p.name.as_str())
         .collect();
     assert_eq!(params, ["Gain", "Decay"]);
-    // The synth has its own GUI on Linux and macOS (X11; Cocoa in the bridge's frame, #52); on
-    // Windows bridges embed no GUI before W6 (`komponist_bridge::GUI_EMBEDDING`).
-    assert_eq!(rig.manager.has_gui(DeviceId(10)), !cfg!(windows));
+    // The synth has its own GUI everywhere (X11 on Linux; Cocoa or Win32 in the bridge's frame on
+    // macOS and Windows, #52 and port W6).
+    assert!(rig.manager.has_gui(DeviceId(10)));
     assert!(!rig.manager.has_gui(DeviceId(11)));
     rig.recompile();
 
