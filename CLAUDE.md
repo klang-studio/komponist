@@ -85,11 +85,14 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
 
 ## Windows (port in progress)
 
-komponist is being ported to Windows 11 x86_64 (MSVC; integration branch `windows`; no GitHub issues yet). The workspace does not
-build there yet; this is what is true now:
+komponist is being ported to Windows 11 x86_64 (MSVC; integration branch `windows`; no GitHub issues yet). The workspace
+builds and its gate passes there; plugin GUI frames are not done yet (W6). What is true now:
 
 - **Shell:** the scripts are bash: run them in Git Bash (`scripts/check.sh`, `scripts/build-test-plugins.sh`). The gate is
-  the same as on Linux: `scripts/check.sh`. `scripts/check-gui.sh` is Linux only.
+  the same as on Linux: `scripts/check.sh`, which sets `WGPU_BACKEND=vulkan` on Windows (DX12 crashed parallel kittest
+  tests). `scripts/check-gui.sh` is Linux only.
+- **Audio and MIDI:** always `--null-audio` for live runs (rule 14). WASAPI is the default host; ASIO needs the cargo
+  feature `asio` and LLVM (`LIBCLANG_PATH`), the SDK comes from `vendor/asio-sdk/`.
 - **Cross clippy from Windows** (Linux and macOS code stays green while the port lands):
   `cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings` and
   `cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu --exclude komponist-audio --exclude komponist-app -- -D warnings`.
