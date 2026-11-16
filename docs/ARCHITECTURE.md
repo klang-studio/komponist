@@ -938,7 +938,69 @@ must not output back into that bus).
   Linux; `Null` everywhere. The variants of the other systems stay in the enum so a settings file written on one
   system loads on the others (it migrates to the platform default, see `StreamConfig`). cpal's backend features
   are per target in `komponist-audio/Cargo.toml` (`pipewire`, `jack`, `realtime-dbus` Linux only; `realtime` on
-  Windows). ASIO joins in W8.
+  Windows). ASIO (`HostKind::Asio`, serde `"asio"`) is behind the cargo feature `asio` of `komponist-audio`
+  (forwarded by `komponist-app`'s `asio`); see "ASIO" below. Without the feature the variant exists but is never
+  available, so a settings file with `"asio"` loads as WASAPI there.
+- **ASIO (W8; the code is checked on Windows, but no ASIO driver was ever opened: manual test pending).**
+  - *Build:* cpal's `asio` feature pulls `asio-sys`, whose build script finds Steinberg's ASIO SDK in
+    `CPAL_ASIO_DIR`, else in `%TEMP%\asio_sdk`, else downloads <https://www.steinberg.net/asiosdk> there
+    (PowerShell `Invoke-WebRequest`, then `Expand-Archive`), compiles the SDK's host sources with `cc` and runs
+    bindgen over its headers (needs LLVM's `libclang.dll`: `LIBCLANG_PATH`). Hence the feature is off by default, and
+    `scripts/package-windows.sh`, the release job and one CI step turn it on. The SDK never enters the repository.
+  - *Licence (SDK 2.3.4, Oct 2025, read from its `LICENSE.txt`):* "This Software Development Kit is licensed under
+    the terms of the Steinberg ASIO License, or alternatively under the terms of the General Public License (GPL)
+    Version 3. You may use the Software Development Kit according to either of these licenses as it is most
+    appropriate for your project on a case-by-case basis (commercial or not)." The clause "The Software Development
+    Kit may not be distributed in parts or its entirety without prior written agreement by Steinberg" is part of
+    option a), the proprietary licence. Option b) is plain GPLv3. The SDK's `README.md` confirms: "Both options grant
+    access to the same SDK", the GPL option is for "full open-source integration", and trademark rules apply under
+    both. komponist (GPL-3.0-or-later) takes option b): the release zip holds a binary with the compiled SDK host
+    code under GPLv3, the SDK sources are not redistributed by us (the builder downloads them from Steinberg), so
+    the "do not distribute" clause is not touched either way. `asio-sys` and cpal are Apache-2.0 (GPLv3 compatible).
+    Open points: (1) `common/combase.cpp`, `dllentry.cpp` and `wxdebug.h` carry an old Microsoft "AS IS" header
+    without a licence grant, and the LICENSE says other files follow "the respective embedded license text"; `cc`
+    compiles them into `libasio.a`, but nothing of the host path references them, so the linker should leave them
+    out (not verified by inspecting the final binary). (2) Steinberg's *ASIO Usage Guidelines* apply to the word
+    "ASIO" and the logo under GPLv3 too: if ASIO is only activated manually, the ASIO Compatible Logo must appear "in
+    every dialog that enables/configures ASIO" (Settings, S07), and "ASIO is a registered trademark of Steinberg
+    Media Technologies GmbH." must appear in the credits and documentation (the zip's `README.txt` and INSTALL.md
+    carry it; the logo is not in the app yet). The owner has to decide on the logo and on legal review.
+  - *Devices:* ASIO has no default device (cpal takes the first driver) and loads **one driver at a time per
+    process**. cpal lists the devices by loading each registered driver in turn, which is slow and can disturb an
+    interface another program holds. Consequences handled in `backend.rs`: `available_hosts` lists ASIO without
+    loading anything (even with no driver installed, then the device list is empty); while an ASIO stream runs, cpal's
+    enumeration stops at the first driver that is not the running one, so `devices(Asio)` returns the cache of the last
+    enumeration (plus the running device) while an `AsioOpen` guard lives; the reconnect probe of a missing ASIO
+    device runs every 10 s instead of 2 s. `start` still lists all drivers on the UI thread (as for the other hosts),
+    which can take a moment.
+  - *Buffers:* the driver's `min`/`max` (`ASIOGetBufferSize`) arrive as `SupportedBufferSize::Range` and
+    `DeviceInfo::buffer_range`. Unlike WASAPI, `pick_buffer` honours the request (`BufferSize::Fixed`) and rejects
+    sizes outside the range with the range in the message. The driver's granularity is not exposed by cpal: stepped
+    sizes are checked by cpal, power-of-two drivers (granularity −1) are not, so a size that is not a power of two can
+    be rejected only by the driver when the buffers are created (the S07 choices are powers of two). The size can
+    change while running (`kAsioBufferSizeChange`): cpal resizes its buffer, and `StreamCallback` already cuts a
+    longer callback into prepared pieces; a driver reset request arrives as `StreamInvalidated` and is handled
+    like a lost device.
+  - *Rates:* cpal lists the common rates the driver accepts (`ASIOCanSampleRate`), one range per rate. Building a
+    stream calls `ASIOSetSampleRate` when the rate differs, and that applies to the **whole driver**, hence to every
+    program using the interface; a rate the driver does not accept is an error (no silent resampling).
+  - *Formats:* ASIO drivers deliver their native format; komponist accepts `f32`, `i32`, packed `i24` (only on ASIO;
+    `ASIOSTInt24LSB` is common) and `i16`. 64-bit float and DSD are not offered.
+  - *Threads:* the callback runs on the driver's own thread. cpal's ASIO host makes no priority call (its
+    `realtime` handling is WASAPI's): the ASIO SDK says the driver puts its threads into MMCSS "Pro Audio" at CRITICAL
+    priority and "an ASIO host shall by no means alter these priorities", so komponist does the same as cpal and
+    leaves them alone (`RealtimeDenied` never occurs). Findings in cpal 0.18.2 / asio-sys 0.4.0: the user callback
+    runs inside asio-sys's `BUFFER_CALLBACK` mutex and takes cpal's uncontended `asio_streams` mutex, then converts
+    from an interleaved scratch buffer allocated when the stream is built (the only allocation in the callback path is
+    that buffer growing after a `kAsioBufferSizeChange`, in cpal's code outside our `assert_no_alloc` scope), so `assert_no_alloc`
+    around `StreamCallback::run` and the `EngineSlot` handoff work unchanged. `Stream::drop` calls
+    `remove_callback`, which takes the same mutex (so it waits for a running callback) and drops the closure, hence
+    the slot hands the engine back synchronously as with the other backends; `ASIOStop`/`ASIOExit` follow when the last
+    driver handle goes, on the thread that drops the stream. Overloads are reported as `Xrun`. cpal also starts a
+    small `cpal-asio-event-timer` thread per stream for debounced error delivery.
+  - *Not tested with hardware:* opening a stream, stream restarts at other buffer sizes and rates, reset requests,
+    unplugging, drivers that report rate 0 or fire the callback twice per buffer (cpal guards the latter), ASIO4ALL.
+    The unit tests never load a driver (rule 14).
 - **Windows audio thread:** cpal's WASAPI thread registers itself with MMCSS (task "Audio", via
   `audio_thread_priority`, fallback `THREAD_PRIORITY_TIME_CRITICAL`) when the stream starts, before the first
   callback and outside `assert_no_alloc`, if cpal's `realtime` feature is on. When both MMCSS and the fallback
