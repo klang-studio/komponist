@@ -54,10 +54,15 @@ use rustix::net::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
+
 /// Protocol version; `Hello` carries it and the app refuses other versions. 2: `Ping`/`Pong`,
 /// `RtPriority`. 3 (#6): [`PluginDescriptor::sidechain`] (shared memory version 2 carries the
-/// sidechain audio).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// sidechain audio). 4 (#52): `OpenGui` takes a [`GuiTarget`] (an X11 child on Linux, the
+/// bridge's own frame window on macOS) and the frame messages (`HeaderState`, `ActivateFrame`,
+/// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
+/// frame's last rect).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -214,13 +219,41 @@ pub enum RenderMode {
     Offline,
 }
 
-/// Size of a plugin GUI in physical pixels (X11 is not DPI-aware; scale is passed separately).
+/// Size of a plugin GUI: physical pixels on Linux (X11 is not DPI-aware; scale is passed
+/// separately), points on macOS (CLAP `cocoa` and VST3 `NSView` size in points).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct GuiSize {
-    /// Width in physical pixels.
+    /// Width in physical pixels (Linux) or points (macOS).
     pub width: u32,
-    /// Height in physical pixels.
+    /// Height in physical pixels (Linux) or points (macOS).
     pub height: u32,
+}
+
+/// Where a plugin GUI opens (`ControlMsg::OpenGui`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GuiTarget {
+    /// Linux (WP-50): embedded as a child of the X11 window `xid` (the app's frame draws the
+    /// header), at UI `scale` (egui `pixels_per_point`).
+    X11Child {
+        /// X11 window id of the frame's child window.
+        xid: u64,
+        /// UI scale factor.
+        scale: f64,
+    },
+    /// macOS (#52): the bridge opens a frame window of its own, draws the header from `header` in
+    /// the language `lang` (a `Lang` code, "de" or "en") and attaches the plugin's `NSView` below
+    /// it. `rect` is where the frame was last (its position is reused; `None`: the system
+    /// places it). "Oben halten" is `header.keep_on_top`. The bridge answers `GuiOpened` (size in
+    /// points) and from then on reports the frame: `HeaderAction`, `Shortcut`, `HeaderKey`,
+    /// `FrameMoved`, `CloseRequested`, and `GuiClosed` with the last rect.
+    OwnFrame {
+        /// What the header shows.
+        header: HeaderModel,
+        /// UI language code.
+        lang: String,
+        /// Where the frame opens.
+        rect: Option<FrameRect>,
+    },
 }
 
 /// Severity of a log line from a bridge or plugin.
@@ -284,18 +317,27 @@ pub enum ControlMsg {
         /// Plain value.
         value: f64,
     },
-    /// Open the plugin GUI as a child of the X11 window `parent_xid`, at `scale` (egui
-    /// `pixels_per_point`). Answer: `GuiOpened` or `Error`.
-    OpenGui {
-        /// X11 window id of the frame's child window.
-        parent_xid: u64,
-        /// UI scale factor.
-        scale: f64,
-    },
-    /// The frame window resized the GUI area (answer to `GuiSizeRequest`, or user resize).
+    /// Open the plugin GUI in `GuiTarget`. Answer: `GuiOpened` or `Error`.
+    OpenGui(GuiTarget),
+    /// The frame window resized the GUI area (answer to `GuiSizeRequest`, or user resize). For a
+    /// bridge-owned frame (macOS): resize the body to this size in points as a user resize would
+    /// (the plugin may adjust it; the frame follows and reports `FrameMoved`).
     SetGuiSize(GuiSize),
-    /// Close the plugin GUI.
+    /// Close the plugin GUI. A bridge-owned frame closes with it, after the bridge yielded the
+    /// activation back to the app.
     CloseGui,
+    /// What the header of the bridge-owned frame shows, in language `lang` (sent when it changes;
+    /// macOS).
+    HeaderState {
+        /// The header.
+        header: HeaderModel,
+        /// UI language code.
+        lang: String,
+    },
+    /// Bring the bridge-owned frame to the front and make it key (macOS). The app yields its
+    /// activation to the bridge's pid right before (`NSApplication::yieldActivationToApplication`),
+    /// so the bridge's `activate` succeeds under cooperative activation (spike #42 Q3).
+    ActivateFrame,
     /// Switch realtime / offline (export); the bridge deactivates and re-activates if needed.
     SetRenderMode(RenderMode),
     /// Deactivate, unload and exit.
@@ -346,10 +388,34 @@ pub enum BridgeMsg {
         /// Whether the user may resize it.
         resizable: bool,
     },
-    /// The plugin wants a different GUI size; the app resizes the frame and answers `SetGuiSize`.
+    /// The plugin wants a different GUI size; the app resizes the frame and answers `SetGuiSize`
+    /// (Linux; a bridge-owned frame follows its plugin itself).
     GuiSizeRequest(GuiSize),
-    /// The GUI was closed (by the plugin, or as the answer to `CloseGui`).
-    GuiClosed,
+    /// The GUI was closed (by the plugin, or as the answer to `CloseGui`). `rect`: where a
+    /// bridge-owned frame was when it closed (`None` on Linux).
+    GuiClosed {
+        /// The frame's last rect.
+        rect: Option<FrameRect>,
+    },
+    /// The user clicked in the header of the bridge-owned frame; the app decides (it owns the
+    /// state and answers with `HeaderState`).
+    HeaderAction(HeaderEvent),
+    /// The frame took a key from the focused plugin for komponist (`frame::keys` policy):
+    /// `from_plugin` is always `true` for now (keys of the header come as `HeaderKey`).
+    Shortcut {
+        /// The chord the app applies as on Linux (Esc closes the frame, the rest are global
+        /// shortcuts).
+        chord: FrameChord,
+        /// Taken from the plugin's view (not the header).
+        from_plugin: bool,
+    },
+    /// A key event while the header of the bridge-owned frame has the keyboard focus: the app
+    /// applies it as a key of a frame window (global shortcuts, computer-keyboard MIDI, Esc).
+    HeaderKey(FrameKeyEvent),
+    /// The bridge-owned frame moved or changed its size (debounced).
+    FrameMoved(FrameRect),
+    /// The window's close button of the bridge-owned frame: the app closes it like × (`CloseGui`).
+    CloseRequested,
     /// The plugin's latency changed (frames).
     LatencyChanged(u32),
     /// The plugin asked for a restart; the bridge handles it and reports `Activated`.
@@ -406,7 +472,7 @@ pub struct LoadedInfo {
     pub latency: u32,
     /// Note names (empty if the plugin has none).
     pub note_names: Vec<NoteName>,
-    /// Whether the plugin has its own GUI for X11.
+    /// Whether the plugin has its own GUI this build embeds (X11 on Linux, Cocoa on macOS).
     pub has_gui: bool,
 }
 
@@ -890,6 +956,7 @@ impl<Tx, Rx> AsFd for Channel<Tx, Rx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::{KeyMods, Mark, PluginView};
     use crate::shm::ShmRegion;
 
     fn pair() -> (AppChannel, BridgeChannel) {
@@ -917,6 +984,23 @@ mod tests {
         f.extend_from_slice(&total.to_le_bytes());
         f.extend_from_slice(payload);
         f
+    }
+
+    fn header() -> HeaderModel {
+        HeaderModel {
+            name: "Surge XT".into(),
+            sub: "Pad · CLAP".into(),
+            mark: Mark::Bypassed,
+            bypassed: true,
+            presets: vec!["Init".into()],
+            preset: Some(0),
+            preset_changed: true,
+            can_save: false,
+            view: PluginView::Gui,
+            has_gui: true,
+            keep_on_top: true,
+            close_shortcut: "Esc".into(),
+        }
     }
 
     fn descriptor() -> PluginDescriptor {
@@ -953,10 +1037,30 @@ mod tests {
             },
             ControlMsg::ListParams,
             ControlMsg::SetParam { id: 3, value: -0.5 },
-            ControlMsg::OpenGui {
-                parent_xid: 0x0400_0007,
+            ControlMsg::OpenGui(GuiTarget::X11Child {
+                xid: 0x0400_0007,
                 scale: 1.5,
+            }),
+            ControlMsg::OpenGui(GuiTarget::OwnFrame {
+                header: header(),
+                lang: "de".into(),
+                rect: Some(FrameRect {
+                    x: -1200.0,
+                    y: 40.5,
+                    width: 1141.0,
+                    height: 739.0,
+                }),
+            }),
+            ControlMsg::OpenGui(GuiTarget::OwnFrame {
+                header: header(),
+                lang: "en".into(),
+                rect: None,
+            }),
+            ControlMsg::HeaderState {
+                header: header(),
+                lang: "en".into(),
             },
+            ControlMsg::ActivateFrame,
             ControlMsg::SetGuiSize(GuiSize {
                 width: 800,
                 height: 600,
@@ -1026,7 +1130,40 @@ mod tests {
                 width: 1,
                 height: 2,
             }),
-            BridgeMsg::GuiClosed,
+            BridgeMsg::GuiClosed { rect: None },
+            BridgeMsg::GuiClosed {
+                rect: Some(FrameRect {
+                    x: 20.0,
+                    y: 60.0,
+                    width: 866.0,
+                    height: 702.0,
+                }),
+            },
+            BridgeMsg::HeaderAction(HeaderEvent::ToggleBypass),
+            BridgeMsg::HeaderAction(HeaderEvent::Preset(3)),
+            BridgeMsg::HeaderAction(HeaderEvent::View(PluginView::Params)),
+            BridgeMsg::HeaderAction(HeaderEvent::KeepOnTop(true)),
+            BridgeMsg::Shortcut {
+                chord: FrameChord::command_shift("Z"),
+                from_plugin: true,
+            },
+            BridgeMsg::HeaderKey(FrameKeyEvent {
+                key: "A".into(),
+                physical_key: Some("Q".into()),
+                pressed: true,
+                repeat: false,
+                mods: KeyMods {
+                    shift: true,
+                    ..KeyMods::default()
+                },
+            }),
+            BridgeMsg::FrameMoved(FrameRect {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            }),
+            BridgeMsg::CloseRequested,
             BridgeMsg::LatencyChanged(128),
             BridgeMsg::RestartRequested,
             BridgeMsg::StateDirty,
