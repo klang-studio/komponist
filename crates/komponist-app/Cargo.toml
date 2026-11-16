@@ -53,6 +53,13 @@ egui_kittest.workspace = true
 # Virtual MIDI output port for the hardware-input test (`tests/it/hardware_midi.rs`).
 midir.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The native app menu (About, Settings, Quit; `macos_menu`, issue #47). Already in the tree through
+# eframe/winit; licences MIT and Zlib OR Apache-2.0 OR MIT.
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Plugin frames (WP-50): the X11 child window a plugin GUI attaches to, the frame's window lookup by
 # title, the key grabs (ARCHITECTURE §8.4). macOS frames come with #52.
