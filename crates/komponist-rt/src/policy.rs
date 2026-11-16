@@ -52,11 +52,19 @@ pub fn set_current_thread_fifo(priority: i32) -> io::Result<()> {
     }
 }
 
-/// Non-RT. Sets the time-constraint policy for work every `period` on the calling thread:
-/// computation 50 % of `period`, constraint = `period`, preemptible. An error carries the kernel's
-/// `kern_return_t` (4 = `KERN_INVALID_ARGUMENT`: a period the kernel does not accept).
+/// Shortest period [`set_current_thread_time_constraint`] sets: the kernel refuses computations
+/// below 50 µs (measured on macOS 27, M1 Pro: 41.5 µs refused, 50 µs accepted). Shorter callback
+/// periods (16 frames at 192 kHz: 83 µs) get this one.
+#[cfg(target_os = "macos")]
+pub const MIN_TIME_CONSTRAINT_PERIOD: Duration = Duration::from_micros(100);
+
+/// Non-RT. Sets the time-constraint policy for work every `period` (at least
+/// [`MIN_TIME_CONSTRAINT_PERIOD`]) on the calling thread: computation 50 % of the period,
+/// constraint = the period, preemptible. An error carries the kernel's `kern_return_t`
+/// (4 = `KERN_INVALID_ARGUMENT`: a period the kernel does not accept).
 #[cfg(target_os = "macos")]
 pub fn set_current_thread_time_constraint(period: Duration) -> io::Result<()> {
+    let period = period.max(MIN_TIME_CONSTRAINT_PERIOD);
     let period = u32::try_from(crate::mach_time::ticks(period)).unwrap_or(u32::MAX);
     let mut policy = libc::thread_time_constraint_policy {
         period,
@@ -170,6 +178,19 @@ mod tests {
         result.expect("the time-constraint policy needs no privilege");
         let ticks = crate::mach_time::ticks(period) as u32;
         assert_eq!(after, Some((ticks, ticks / 2, ticks)));
+    }
+
+    /// The longest period komponist asks for: a whole 2048-frame block at 44.1 kHz (the bridge's
+    /// activated maximum, 46 ms), and the shortest: 16 frames at 192 kHz (raised to the minimum).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_periods_komponist_uses_are_accepted() {
+        for period in [Duration::from_micros(46_440), Duration::from_micros(83)] {
+            std::thread::spawn(move || set_current_thread_time_constraint(period))
+                .join()
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{period:?}: {e}"));
+        }
     }
 
     #[cfg(target_os = "macos")]
