@@ -311,6 +311,14 @@ impl Document {
         self.untracked_dirty = false;
     }
 
+    /// Forgets the saved root: the file was written with more than any root of the history holds
+    /// (a running take, which is not part of the document until it ends), so the document is
+    /// dirty until the next [`Document::mark_saved`].
+    pub fn forget_saved(&mut self) {
+        self.saved = None;
+        self.untracked_dirty = false;
+    }
+
     /// Pushes a new undo step: clears the redo stack and drops the oldest step beyond
     /// [`UNDO_LIMIT`].
     fn push_undo(&mut self, label: String, project: Arc<Project>) {
@@ -742,6 +750,18 @@ mod tests {
         assert!(!doc.is_dirty());
         // An untracked edit that changes nothing does not dirty the document.
         doc.apply_untracked(|p| Ok(p.clone())).unwrap();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn a_forgotten_saved_state_stays_dirty_until_the_next_save() {
+        let mut doc = Document::new(Project::new("A"));
+        doc.forget_saved();
+        assert!(doc.is_dirty());
+        doc.apply("1", rename("B")).unwrap();
+        doc.undo();
+        assert!(doc.is_dirty(), "no root of the history is the saved one");
+        doc.mark_saved();
         assert!(!doc.is_dirty());
     }
 
