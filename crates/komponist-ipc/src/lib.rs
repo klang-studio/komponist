@@ -11,6 +11,8 @@
 //! - [`signal`]: wait with deadline and wake on shared words.
 //! - [`control`]: [`ControlMsg`] / [`BridgeMsg`] over a stream-socket [`Channel`], and the shared
 //!   plugin vocabulary ([`PluginDescriptor`], [`ParamInfo`], [`NoteName`], …).
+//! - [`frame`]: the plugin frame window's vocabulary (header model and events, frame rect, keys
+//!   and the key policy), shared by the app and the bridge that owns the frame on macOS (#52).
 //! - [`process`]: [`ProcessWatcher`], crash detection of a bridge process.
 //!
 //! Platform layer (#44): the public API is the same on Linux and macOS; `shm`, `signal`,
@@ -21,6 +23,7 @@
 //! This crate links no plugin format and no audio backend.
 
 pub mod control;
+pub mod frame;
 pub mod process;
 pub mod ring;
 pub mod shm;
@@ -34,8 +37,8 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 pub use control::{
     AppChannel, BridgeChannel, BridgeMsg, Channel, ChannelError, ControlMsg, ErrorContext, GuiSize,
-    LoadedInfo, LogLevel, NoteName, ParamInfo, ParamValue, PluginDescriptor, PluginFormat,
-    PluginKind, RenderMode,
+    GuiTarget, LoadedInfo, LogLevel, NoteName, ParamInfo, ParamValue, PluginDescriptor,
+    PluginFormat, PluginKind, RenderMode,
 };
 pub use process::{ProcessExit, ProcessWatcher};
 pub use ring::ShmRing;

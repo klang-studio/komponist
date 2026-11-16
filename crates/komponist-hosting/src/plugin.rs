@@ -35,7 +35,7 @@ pub enum HostingError {
     Activate(String),
     /// State save or load failed.
     State(String),
-    /// GUI creation, attach or resize failed, or the plugin has no X11 GUI.
+    /// GUI creation, attach or resize failed, or the plugin has no embeddable GUI.
     Gui(String),
     /// The call needs an active (or an inactive) plugin.
     WrongState(&'static str),
@@ -75,17 +75,34 @@ pub struct ActivateConfig {
 /// What [`HostedPlugin::gui_open`] reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GuiInfo {
-    /// Initial size in physical pixels.
+    /// Initial size: physical pixels (X11) or points (Cocoa).
     pub size: GuiSize,
     /// Whether the GUI accepts host resizes.
     pub resizable: bool,
 }
 
-/// Whether this build embeds plugin GUIs. On Linux the app's frame window gives the plugin an X11
-/// parent (WP-50). On macOS the bridge will own the frame window and attach the plugin's `NSView`
-/// itself (#52; CLAP `cocoa`, VST3 `kPlatformTypeNSView`); until then no plugin reports a GUI
-/// there, whatever it offers, and `gui_open` fails.
-pub const GUI_EMBEDDING: bool = cfg!(not(target_os = "macos"));
+/// Whether this build embeds plugin GUIs: on Linux into an X11 child of the app's frame window
+/// (WP-50), on macOS into an `NSView` of the bridge's own frame window (#52; CLAP `cocoa`, VST3
+/// `kPlatformTypeNSView`). Where it is false, no plugin reports a GUI, whatever it offers, and
+/// `gui_open` fails.
+pub const GUI_EMBEDDING: bool = true;
+
+/// Where [`HostedPlugin::gui_open`] attaches the plugin's GUI.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuiParent {
+    /// Linux: the X11 window `xid` (the app frame's child window), at UI `scale` (egui
+    /// `pixels_per_point`; CLAP `set_scale`, VST3 `setContentScaleFactor`).
+    X11 {
+        /// X11 window id.
+        xid: u64,
+        /// UI scale factor.
+        scale: f64,
+    },
+    /// macOS: an `NSView*` of the bridge's frame window. Cocoa sizes in points and the backing
+    /// scale follows the screen, so no scale is passed: CLAP `set_scale` would make JUCE plugins
+    /// double their size in points, and VST3 `setContentScaleFactor` is refused (spike #42 Q1).
+    Cocoa(*mut std::ffi::c_void),
+}
 
 /// Main-thread half of one loaded plugin instance. Lives on the bridge's main thread from
 /// [`crate::load`] until drop (drop = deactivate if needed, destroy, unload).
@@ -97,8 +114,9 @@ pub trait HostedPlugin {
     fn descriptor(&self) -> &PluginDescriptor;
 
     /// Whether the plugin offers a GUI this build embeds: on Linux one that embeds into X11 (CLAP
-    /// `gui` with `x11` embedded, VST3 `IPlugView` with `kPlatformTypeX11EmbedWindowID`). Always
-    /// false where [`GUI_EMBEDDING`] is (macOS until #52).
+    /// `gui` with `x11` embedded, VST3 `IPlugView` with `kPlatformTypeX11EmbedWindowID`), on macOS
+    /// into Cocoa (CLAP `cocoa` embedded, VST3 `kPlatformTypeNSView`). Always false where
+    /// [`GUI_EMBEDDING`] is.
     fn has_gui(&self) -> bool;
 
     /// Activates for `config` and returns the audio-thread half, not yet processing. Fails if
@@ -153,11 +171,12 @@ pub trait HostedPlugin {
     /// Note names (CLAP note-name; empty if unsupported).
     fn note_names(&self) -> Vec<NoteName>;
 
-    /// Creates the GUI embedded into the X11 window `parent_xid` at UI `scale` and shows it.
-    fn gui_open(&mut self, parent_xid: u64, scale: f64) -> Result<GuiInfo, HostingError>;
+    /// Creates the GUI embedded into `parent` and shows it. A [`GuiParent`] of the other OS fails
+    /// with `HostingError::Gui`.
+    fn gui_open(&mut self, parent: GuiParent) -> Result<GuiInfo, HostingError>;
 
-    /// Asks the GUI to take `size` (physical pixels); returns the size it adopted (it may round to
-    /// its constraints).
+    /// Asks the GUI to take `size` (physical pixels on X11, points on Cocoa); returns the size it
+    /// adopted (it may round to its constraints).
     fn gui_set_size(&mut self, size: GuiSize) -> Result<GuiSize, HostingError>;
 
     /// Hides and destroys the GUI. No-op if closed.

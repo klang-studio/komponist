@@ -99,8 +99,8 @@ use vst3::Steinberg::{
 use vst3::Steinberg::{kResultOk, kResultTrue};
 use vst3::{ComPtr, ComWrapper, Interface};
 
-/// The `IPlugView` platform type of this OS: an X11 window id (Linux) or an `NSView` (macOS, for
-/// #52; note for it: `setContentScaleFactor` is refused on macOS, skip it, spike #42 Q1).
+/// The `IPlugView` platform type of this OS: an X11 window id (Linux) or an `NSView` (macOS, #52;
+/// no `setContentScaleFactor` there, plugins refuse it, spike #42 Q1).
 #[cfg(not(target_os = "macos"))]
 const PLATFORM_TYPE: FIDString = vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 #[cfg(target_os = "macos")]
@@ -115,7 +115,7 @@ use self::processor::{BusLayout, ProcessorSetup, TO_CONTROLLER_RING, Vst3Process
 use self::strings::utf16;
 use crate::host::{FdEvents, HostContext, TimerId};
 use crate::plugin::{
-    ActivateConfig, GUI_EMBEDDING, GuiInfo, HostedPlugin, HostedProcessor, HostingError,
+    ActivateConfig, GUI_EMBEDDING, GuiInfo, GuiParent, HostedPlugin, HostedProcessor, HostingError,
 };
 
 /// The configuration of a parameter flush on a plugin that was never activated.
@@ -981,13 +981,24 @@ impl HostedPlugin for Vst3Plugin {
         Vec::new()
     }
 
-    fn gui_open(&mut self, parent_xid: u64, scale: f64) -> Result<GuiInfo, HostingError> {
+    fn gui_open(&mut self, parent: GuiParent) -> Result<GuiInfo, HostingError> {
         if self.view.is_some() {
             return Err(HostingError::WrongState("the GUI is already open"));
         }
         if !self.has_gui {
             return Err(HostingError::Gui("the plugin has no embeddable GUI".into()));
         }
+        let (window, scale): (*mut c_void, Option<f64>) = match parent {
+            #[cfg(not(target_os = "macos"))]
+            GuiParent::X11 { xid, scale } => (xid as *mut c_void, Some(scale)),
+            #[cfg(target_os = "macos")]
+            GuiParent::Cocoa(view) => (view, None),
+            _ => {
+                return Err(HostingError::Gui(
+                    "the parent window is of another platform".into(),
+                ));
+            }
+        };
         let view = self
             .create_view()
             .ok_or_else(|| HostingError::Gui("createView returned no view".into()))?;
@@ -1001,7 +1012,9 @@ impl HostedPlugin for Vst3Plugin {
                 .as_com_ref::<IPlugFrame>()
                 .map_or(std::ptr::null_mut(), |f| f.as_ptr());
             view.setFrame(frame);
-            if let Some(scaling) = view.cast::<IPlugViewContentScaleSupport>() {
+            if let Some(scale) = scale
+                && let Some(scaling) = view.cast::<IPlugViewContentScaleSupport>()
+            {
                 let result = scaling.setContentScaleFactor(scale as f32);
                 if result != kResultOk {
                     self.log(
@@ -1010,9 +1023,9 @@ impl HostedPlugin for Vst3Plugin {
                     );
                 }
             }
-            // The parent is a live X11 window of the app's frame; the app keeps it until after
-            // `gui_close` (or the bridge's death).
-            let result = view.attached(parent_xid as *mut c_void, PLATFORM_TYPE);
+            // The parent is a live X11 window of the app's frame, or an `NSView` of the bridge's
+            // frame; either is kept until after `gui_close` (or the bridge's death).
+            let result = view.attached(window, PLATFORM_TYPE);
             if result != kResultOk {
                 view.setFrame(std::ptr::null_mut());
                 return Err(HostingError::Gui(format!("attached returned {result}")));

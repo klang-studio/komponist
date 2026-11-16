@@ -26,8 +26,10 @@ use komponist_app::windows::plugin_frame::metrics;
 use komponist_app::{Action, App};
 use komponist_engine::Processor;
 use komponist_i18n::{Lang, de};
+use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, KeyMods};
 use komponist_ipc::{
-    GuiSize, ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat, PluginKind,
+    GuiSize, GuiTarget, ParamInfo, ParamValue, PluginDescriptor, PluginFormat as BundleFormat,
+    PluginKind,
 };
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef};
@@ -405,6 +407,10 @@ struct Script {
     opened: Vec<DeviceId>,
     closed: Vec<DeviceId>,
     sizes: Vec<(DeviceId, GuiSize)>,
+    targets: Vec<GuiTarget>,
+    headers: Vec<(DeviceId, HeaderModel, String)>,
+    activated: Vec<DeviceId>,
+    raised: Vec<DeviceId>,
 }
 
 /// Devices whose plugin the catalog knows run and have a GUI; the rest are missing.
@@ -480,9 +486,23 @@ impl DeviceHost for FakeHost {
     fn has_gui(&self, device: DeviceId) -> bool {
         self.status(device) == DeviceStatus::Ok && self.known(device)
     }
-    fn open_gui(&mut self, device: DeviceId, _: u64, _: f64) -> Result<(), PluginError> {
-        self.script.borrow_mut().opened.push(device);
+    fn open_gui(&mut self, device: DeviceId, target: GuiTarget) -> Result<(), PluginError> {
+        let mut s = self.script.borrow_mut();
+        s.opened.push(device);
+        s.targets.push(target);
         Ok(())
+    }
+    fn set_frame_header(&mut self, device: DeviceId, header: HeaderModel, lang: &str) {
+        self.script
+            .borrow_mut()
+            .headers
+            .push((device, header, lang.to_owned()));
+    }
+    fn activate_frame(&mut self, device: DeviceId) {
+        self.script.borrow_mut().activated.push(device);
+    }
+    fn raise_frame(&mut self, device: DeviceId) {
+        self.script.borrow_mut().raised.push(device);
     }
     fn set_gui_size(&mut self, device: DeviceId, size: GuiSize) {
         self.script.borrow_mut().sizes.push((device, size));
@@ -833,4 +853,312 @@ fn another_project_closes_every_plugin_frame() {
     assert!(h.query_by_label(de::DIALOG_CLOSE).is_none());
     // No GUI was open (no X11 here), so none had to close.
     assert!(script.borrow().closed.is_empty());
+}
+
+// ------------------------------------------------------------------------------------------------
+// The bridge's own frame (macOS, #52), forced on here
+// ------------------------------------------------------------------------------------------------
+
+fn bridge_frame_harness() -> (Harness<'static, App>, Rc<RefCell<Script>>, DeviceId) {
+    let (mut app, script, surge) = app();
+    app.use_bridge_frames(true);
+    let mut h = harness(app);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(3);
+    (h, script, surge)
+}
+
+fn push(script: &Rc<RefCell<Script>>, event: PluginManagerEvent) {
+    script.borrow_mut().events.push(event);
+}
+
+#[test]
+fn the_bridge_opens_its_own_frame_and_the_app_shows_none() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    let target = script.borrow().targets.last().cloned();
+    let Some(GuiTarget::OwnFrame { header, lang, rect }) = target else {
+        panic!("expected OpenGui with OwnFrame, got {target:?}");
+    };
+    assert_eq!(header.name, "Surge XT");
+    assert_eq!(header.view, PluginView::Gui);
+    assert!(header.has_gui);
+    assert_eq!(lang, "de");
+    assert_eq!(rect, None, "no remembered position");
+    assert!(h.state().plugin_frame_in_bridge(surge));
+    // No app viewport: neither the header nor the placeholder is drawn by the app.
+    assert!(h.query_by_label(de::PLUGIN_FRAME_BYPASS).is_none());
+    // Opened: the frame comes to the front.
+    push(
+        &script,
+        PluginManagerEvent::GuiOpened {
+            device: surge,
+            size: GuiSize {
+                width: 1141,
+                height: 711,
+            },
+            resizable: true,
+        },
+    );
+    h.run_steps(2);
+    assert_eq!(script.borrow().activated, vec![surge]);
+    assert!(h.state().plugin_frame(surge).unwrap().gui_open);
+    // Opening it again only brings it forward.
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(2);
+    assert_eq!(script.borrow().activated, vec![surge, surge]);
+    assert_eq!(script.borrow().targets.len(), 1);
+}
+
+#[test]
+fn header_clicks_in_the_bridge_frame_are_decided_by_the_app() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    push(
+        &script,
+        PluginManagerEvent::GuiOpened {
+            device: surge,
+            size: GuiSize::default(),
+            resizable: false,
+        },
+    );
+    h.run_steps(2);
+    let headers_before = script.borrow().headers.len();
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device: surge,
+            event: HeaderEvent::ToggleBypass,
+        },
+    );
+    h.run_steps(3);
+    assert!(h.state().project().find_device(surge).unwrap().2.bypass);
+    // The new header goes back to the bridge.
+    let sent = script.borrow().headers[headers_before..].to_vec();
+    let (device, header, lang) = sent.last().cloned().expect("HeaderState after bypass");
+    assert_eq!(device, surge);
+    assert!(header.bypassed && header.mark == Mark::Bypassed);
+    assert_eq!(lang, "de");
+    // "Oben halten" is the app's state too.
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device: surge,
+            event: HeaderEvent::KeepOnTop(true),
+        },
+    );
+    h.run_steps(3);
+    assert!(h.state().ui().plugin_windows[0].keep_on_top);
+    assert!(script.borrow().headers.last().unwrap().1.keep_on_top);
+    // "Parameter": the bridge closes its frame, the app shows the parameters.
+    push(
+        &script,
+        PluginManagerEvent::FrameHeaderAction {
+            device: surge,
+            event: HeaderEvent::View(PluginView::Params),
+        },
+    );
+    h.run_steps(3);
+    assert_eq!(script.borrow().closed, vec![surge]);
+    assert!(!h.state().plugin_frame_in_bridge(surge));
+    assert!(h.query_by_role_and_label(Role::Slider, "Cutoff").is_some());
+    // And back: the bridge opens it again.
+    h.get_by_role_and_label(Role::RadioButton, de::PLUGIN_FRAME_VIEW_PLUGIN)
+        .click();
+    h.run_steps(3);
+    assert_eq!(script.borrow().targets.len(), 2);
+    assert!(h.state().plugin_frame_in_bridge(surge));
+}
+
+#[test]
+fn keys_of_the_bridge_frame_act_as_in_the_app() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    // ⌘S taken from the plugin saves; Esc taken from the plugin closes the frame.
+    push(
+        &script,
+        PluginManagerEvent::FrameShortcut {
+            device: surge,
+            chord: FrameChord::plain("Escape"),
+        },
+    );
+    h.run_steps(3);
+    assert!(
+        h.state()
+            .dispatched()
+            .any(|a| *a == Action::Plugin(PluginAction::CloseWindow(surge)))
+    );
+    assert!(h.state().ui().plugin_windows.is_empty());
+    assert_eq!(script.borrow().closed, vec![surge]);
+
+    // Space in the focused header is the global Play.
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(3);
+    for pressed in [true, false] {
+        push(
+            &script,
+            PluginManagerEvent::FrameKey {
+                device: surge,
+                key: FrameKeyEvent {
+                    key: "Space".into(),
+                    physical_key: Some("Space".into()),
+                    pressed,
+                    repeat: false,
+                    mods: KeyMods::default(),
+                },
+            },
+        );
+    }
+    h.run_steps(3);
+    let plays = h
+        .state()
+        .dispatched()
+        .filter(|a| **a == Action::Transport(komponist_app::actions::TransportAction::TogglePlay))
+        .count();
+    assert_eq!(plays, 1, "Leertaste in the header is Play, once");
+    // The window's close button closes it like ×.
+    push(
+        &script,
+        PluginManagerEvent::FrameCloseRequested { device: surge },
+    );
+    h.run_steps(3);
+    assert!(h.state().ui().plugin_windows.is_empty());
+}
+
+#[test]
+fn the_bridge_frame_reopens_where_it_was() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    let rect = FrameRect {
+        x: 300.0,
+        y: 120.0,
+        width: 1141.0,
+        height: 739.0,
+    };
+    push(
+        &script,
+        PluginManagerEvent::FrameMoved {
+            device: surge,
+            rect,
+        },
+    );
+    h.run_steps(2);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::CloseWindow(surge)));
+    h.run_steps(2);
+    // The bridge's answer carries where it really was last.
+    let last = FrameRect { x: 310.0, ..rect };
+    push(
+        &script,
+        PluginManagerEvent::GuiClosed {
+            device: surge,
+            rect: Some(last),
+        },
+    );
+    h.run_steps(2);
+    h.state_mut()
+        .dispatch(Action::Plugin(PluginAction::OpenWindow(surge)));
+    h.run_steps(3);
+    let target = script.borrow().targets.last().cloned();
+    let Some(GuiTarget::OwnFrame { rect: Some(at), .. }) = target else {
+        panic!("expected a position, got {target:?}");
+    };
+    assert_eq!((at.x, at.y), (310.0, 120.0));
+}
+
+#[test]
+fn a_crash_takes_the_bridge_frame_and_the_app_shows_the_state() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    assert!(h.state().plugin_frame_in_bridge(surge));
+    script.borrow_mut().statuses.insert(
+        surge,
+        DeviceStatus::Crashed(FailReason::Exited {
+            code: None,
+            signal: Some(11),
+        }),
+    );
+    h.run_steps(3);
+    assert!(!h.state().plugin_frame_in_bridge(surge));
+    assert!(h.query_by_label(CRASHED_TITLE).is_some());
+    // Running again: the bridge opens its frame again.
+    script.borrow_mut().statuses.insert(surge, DeviceStatus::Ok);
+    h.run_steps(3);
+    assert_eq!(script.borrow().targets.len(), 2);
+}
+
+/// The tooltip of the header's × after the hover delay: its rect, or `None` if it did not show.
+fn close_tooltip(side: komponist_ui::tooltip::HoverSide) -> (Rect, Option<Rect>) {
+    let mut h = frame_harness(
+        frame(
+            surge_header(),
+            BodyModel::Gui {
+                native: true,
+                name: String::new(),
+            },
+        ),
+        [900.0, 200.0],
+        1.0,
+    );
+    komponist_ui::tooltip::set_hover_side(&h.ctx, side);
+    h.run();
+    let close = h.get_by_label(de::DIALOG_CLOSE).rect();
+    h.hover_at(close.center());
+    for _ in 0..240 {
+        h.step();
+        if let Some(tip) = h.query_by_label_contains("Esc") {
+            return (close, Some(tip.rect()));
+        }
+    }
+    (close, None)
+}
+
+/// The bridge's frame on macOS (#52): the plugin's `NSView` covers everything below the header,
+/// so header tooltips go beside their element, inside the header strip.
+#[test]
+fn header_tooltips_stay_in_the_header_where_a_native_view_lies_below() {
+    use komponist_ui::tooltip::HoverSide;
+    let (_, below) = close_tooltip(HoverSide::Below);
+    let below = below.expect("the tooltip of × shows");
+    assert!(
+        below.top() >= metrics::HEADER,
+        "below the header: {below:?}"
+    );
+    let (close, beside) = close_tooltip(HoverSide::Beside);
+    let beside = beside.expect("the tooltip of × shows beside it");
+    assert!(
+        beside.top() >= 0.0 && beside.bottom() <= metrics::HEADER,
+        "inside the header strip: {beside:?}"
+    );
+    assert!(
+        beside.right() <= close.left(),
+        "left of ×: {beside:?} {close:?}"
+    );
+}
+
+/// The app became active (Dock icon, ⌘-Tab): the frames the bridges show come forward, not the
+/// ones still opening, and nothing takes the activation from the app.
+#[test]
+fn becoming_active_raises_the_open_bridge_frames() {
+    let (mut h, script, surge) = bridge_frame_harness();
+    h.state_mut().raise_bridge_frames();
+    assert!(script.borrow().raised.is_empty(), "still opening");
+    push(
+        &script,
+        PluginManagerEvent::GuiOpened {
+            device: surge,
+            size: GuiSize::default(),
+            resizable: false,
+        },
+    );
+    push(
+        &script,
+        PluginManagerEvent::FrameWindow {
+            device: surge,
+            number: 4711,
+        },
+    );
+    h.run_steps(2);
+    let activated = script.borrow().activated.len();
+    h.state_mut().raise_bridge_frames();
+    assert_eq!(script.borrow().raised, vec![surge]);
+    assert_eq!(script.borrow().activated.len(), activated);
 }

@@ -42,8 +42,8 @@ fn vst3_synth_sounds_through_the_ipc_path() {
     assert_eq!(info.descriptor.format, PluginFormat::Vst3);
     assert_eq!(info.descriptor.id, SYNTH_VST3);
     assert_eq!(info.descriptor.kind, PluginKind::Instrument);
-    // No plugin GUIs on macOS until #52.
-    assert_eq!(info.has_gui, komponist_hosting::GUI_EMBEDDING);
+    // Its own GUI: X11 on Linux, Cocoa in the bridge's frame on macOS (#52).
+    assert!(info.has_gui);
     assert_eq!(info.latency, 0);
     let names: Vec<&str> = info.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["Gain", "Decay"]);

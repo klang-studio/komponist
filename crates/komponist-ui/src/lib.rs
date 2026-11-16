@@ -16,6 +16,8 @@
 //! - [`gallery_shell`]: the gallery frame and its sections, filled by WP-20/21/22.
 //! - [`widgets`]: the components; value controls and meters (WP-21): [`widgets::number_field`],
 //!   [`widgets::knob`], [`widgets::fader`], [`widgets::meter`].
+//! - [`plugin_frame`]: the plugin frame's header and its measures, drawn by the app (Linux) and
+//!   by the bridge's own frame window (macOS).
 //! - [`timeline`]: paint functions of the timeline elements (track header, clip, note, ruler,
 //!   grid) with their accessibility names, for the canvases of wave 4.
 //! - `snapshot` (feature `snapshot`): the `egui_kittest` harness for snapshot tests at 1× and 2×.
@@ -26,6 +28,7 @@ pub mod fonts;
 pub mod gallery_shell;
 pub mod icons;
 pub mod platform;
+pub mod plugin_frame;
 pub mod px;
 pub mod state;
 pub mod theme;
@@ -38,6 +41,9 @@ pub mod snapshot;
 
 pub use komponist_i18n::Lang;
 pub use state::State;
+
+/// The DAW's name in the wordmark and window titles (ARCHITECTURE §13.6).
+pub const WORDMARK: &str = "komponist";
 
 /// Where the UI language lives in an egui [`Context`](egui::Context).
 const LANG_ID: &str = "komponist_lang";

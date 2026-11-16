@@ -46,7 +46,8 @@ use std::time::Duration;
 use komponist_builtin::sampler::{self, SamplerHandle};
 use komponist_builtin::{HexaProcessor, Internal};
 use komponist_engine::{DeviceMeter, Processor};
-use komponist_ipc::{GuiSize, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
+use komponist_ipc::frame::HeaderModel;
+use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginKind, RenderMode};
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::{
@@ -202,16 +203,34 @@ pub trait DeviceHost {
         false
     }
 
-    /// Opens the plugin GUI inside X11 window `parent_xid` at UI `scale`; answered by
-    /// [`PluginManagerEvent::GuiOpened`].
-    fn open_gui(
-        &mut self,
-        device: DeviceId,
-        parent_xid: u64,
-        scale: f64,
-    ) -> Result<(), PluginError> {
-        let _ = (parent_xid, scale);
+    /// Opens the plugin GUI in `target` (the frame's X11 child on Linux, the bridge's own frame
+    /// window on macOS); answered by [`PluginManagerEvent::GuiOpened`].
+    fn open_gui(&mut self, device: DeviceId, target: GuiTarget) -> Result<(), PluginError> {
+        let _ = target;
         Err(PluginError::UnknownDevice(device))
+    }
+
+    /// What the header of the bridge's own frame shows, in language `lang` (macOS).
+    fn set_frame_header(&mut self, device: DeviceId, header: HeaderModel, lang: &str) {
+        let _ = (device, header, lang);
+    }
+
+    /// Brings the bridge's own frame to the front (macOS; the app yielded its activation to
+    /// [`DeviceHost::bridge_pid`] first).
+    fn activate_frame(&mut self, device: DeviceId) {
+        let _ = device;
+    }
+
+    /// Orders the bridge's own frame to the front without activating it (macOS; the app became
+    /// active).
+    fn raise_frame(&mut self, device: DeviceId) {
+        let _ = device;
+    }
+
+    /// The process id of the device's bridge, if it has one.
+    fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
+        let _ = device;
+        None
     }
 
     /// Tells the plugin GUI its new size (after the frame window resized).
@@ -696,13 +715,24 @@ impl DeviceHost for PluginHost {
         self.is_external(device) && self.manager.has_sidechain(device)
     }
 
-    fn open_gui(
-        &mut self,
-        device: DeviceId,
-        parent_xid: u64,
-        scale: f64,
-    ) -> Result<(), PluginError> {
-        self.manager.open_gui(device, parent_xid, scale)
+    fn open_gui(&mut self, device: DeviceId, target: GuiTarget) -> Result<(), PluginError> {
+        self.manager.open_gui(device, target)
+    }
+
+    fn set_frame_header(&mut self, device: DeviceId, header: HeaderModel, lang: &str) {
+        self.manager.set_frame_header(device, header, lang);
+    }
+
+    fn activate_frame(&mut self, device: DeviceId) {
+        self.manager.activate_frame(device);
+    }
+
+    fn raise_frame(&mut self, device: DeviceId) {
+        self.manager.raise_frame(device);
+    }
+
+    fn bridge_pid(&self, device: DeviceId) -> Option<u32> {
+        self.manager.bridge_pid(device)
     }
 
     fn set_gui_size(&mut self, device: DeviceId, size: GuiSize) {
@@ -823,7 +853,10 @@ mod tests {
         assert!(host.params(device).is_none());
         assert!(!host.set_param(device, 0, 0.5));
         assert!(!host.has_gui(device));
-        assert!(host.open_gui(device, 1, 1.0).is_err());
+        assert!(
+            host.open_gui(device, GuiTarget::X11Child { xid: 1, scale: 1.0 })
+                .is_err()
+        );
         host.start_scan(&PluginDirs::defaults());
         assert!(!host.is_scanning() && !host.needs_polling());
         assert!(host.snapshot_states(Duration::ZERO).is_empty());

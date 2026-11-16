@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
+use komponist_ipc::GuiTarget;
 use komponist_ipc::LogLevel;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, TrackId};
 use komponist_plugins::manager::STATE_LOG_PREFIX;
@@ -425,6 +426,39 @@ fn alive(pid: u32) -> bool {
     }
 }
 
+/// What the owner's crash check sends (`tests/macos-frames-crash.sh`, internal notes): SIGABRT
+/// from outside ends a bridge and reads "Abgestürzt". SIGSEGV from `kill` does not: Rust's std
+/// handler for stack overflows sees no guard-page fault, restores the default action and returns,
+/// and as nothing faults again the bridge runs on (owner test of #52, 2026-11-16).
+#[test]
+fn a_bridge_killed_by_sigabrt_is_crashed_and_kill_sigsegv_is_survived() {
+    let dir = scratch("sigabrt");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let pid = rig.manager.bridge_pid(DeviceId(10)).unwrap();
+    let raw = rustix::process::Pid::from_raw(pid as i32).unwrap();
+    rustix::process::kill_process(raw, rustix::process::Signal::SEGV).unwrap();
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(500) {
+        rig.process(BLOCK);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(rig.manager.status(DeviceId(10)), DeviceStatus::Ok);
+    assert!(alive(pid), "kill -SEGV left the bridge running");
+    rustix::process::kill_process(raw, rustix::process::Signal::ABORT).unwrap();
+    rig.wait_status(
+        10,
+        DeviceStatus::Crashed(FailReason::Exited {
+            code: None,
+            signal: Some(6),
+        }),
+    );
+}
+
 #[test]
 fn watchdog_kills_a_hanging_bridge() {
     let dir = scratch("watchdog");
@@ -489,7 +523,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
     assert_eq!(manager.status(DeviceId(9)), DeviceStatus::Ok);
     assert_eq!(manager.status(DeviceId(99)), DeviceStatus::Ok);
     assert_eq!(
-        manager.open_gui(DeviceId(99), 1, 1.0),
+        manager.open_gui(DeviceId(99), GuiTarget::X11Child { xid: 1, scale: 1.0 }),
         Err(PluginError::UnknownDevice(DeviceId(99)))
     );
     let pids: Vec<u32> = (1..=3)
@@ -502,7 +536,7 @@ fn release_shutdown_and_drop_end_the_bridges() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(
-        manager.open_gui(DeviceId(1), 1, 1.0),
+        manager.open_gui(DeviceId(1), GuiTarget::X11Child { xid: 1, scale: 1.0 }),
         Err(PluginError::NoGui)
     );
 

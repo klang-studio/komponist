@@ -901,7 +901,7 @@ pub fn closed(name: &str) -> Vec<Step> {
                 let child_gone = f.child.is_none_or(|c| !w.x.exists(c));
                 let device = w.device(&n);
                 let gui_closed = w.events.iter().any(
-                    |e| matches!(e, PluginManagerEvent::GuiClosed { device: d } if *d == device),
+                    |e| matches!(e, PluginManagerEvent::GuiClosed { device: d, .. } if *d == device),
                 );
                 if !(window_gone && child_gone && gui_closed) {
                     return Ok(Poll::Pending);

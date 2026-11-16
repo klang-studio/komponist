@@ -38,7 +38,7 @@ use crate::meters::Meters;
 use crate::metrics::transport as m;
 
 /// The DAW's name in the wordmark and window title (ARCHITECTURE §13.6).
-pub const WORDMARK: &str = "komponist";
+pub const WORDMARK: &str = komponist_ui::WORDMARK;
 
 /// What the transport bar shows.
 pub struct TransportModel<'a> {

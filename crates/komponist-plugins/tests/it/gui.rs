@@ -197,7 +197,13 @@ fn route(rig: &mut Rig, parent: &Parent) -> (GuiSize, bool) {
     let from = rig.events.len();
     let t0 = Instant::now();
     rig.manager
-        .open_gui(device, u64::from(parent.window), 1.0)
+        .open_gui(
+            device,
+            komponist_ipc::GuiTarget::X11Child {
+                xid: u64::from(parent.window),
+                scale: 1.0,
+            },
+        )
         .unwrap();
     let (size, resizable) = expect(rig, from, "GuiOpened", |e| match e {
         PluginManagerEvent::GuiOpened {
@@ -232,7 +238,7 @@ fn route(rig: &mut Rig, parent: &Parent) -> (GuiSize, bool) {
     let from = rig.events.len();
     rig.manager.close_gui(device);
     expect(rig, from, "GuiClosed", |e| {
-        matches!(e, PluginManagerEvent::GuiClosed { device: d } if *d == device).then_some(())
+        matches!(e, PluginManagerEvent::GuiClosed { device: d, .. } if *d == device).then_some(())
     });
     expect(rig, from, "StateSnapshot after closing", |e| {
         matches!(e, PluginManagerEvent::StateSnapshot { device: d, .. } if *d == device)
@@ -293,7 +299,13 @@ fn gui_edits_of_dexed_reach_the_manager() {
     // Open again and drag the Cutoff knob while processing (WP-26/31 coordinates).
     let from = rig.events.len();
     rig.manager
-        .open_gui(DeviceId(10), u64::from(parent.window), 1.0)
+        .open_gui(
+            DeviceId(10),
+            komponist_ipc::GuiTarget::X11Child {
+                xid: u64::from(parent.window),
+                scale: 1.0,
+            },
+        )
         .unwrap();
     expect(&mut rig, from, "GuiOpened", |e| {
         matches!(e, PluginManagerEvent::GuiOpened { .. }).then_some(())

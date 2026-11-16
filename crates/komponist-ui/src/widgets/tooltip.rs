@@ -138,7 +138,8 @@ impl<'a> Tip<'a> {
     }
 
     /// Shows this tooltip while `response` is hovered (after [`crate::tooltip::DELAY`],
-    /// [`crate::tooltip::GAP`] below it) and makes it the element's AccessKit description.
+    /// [`crate::tooltip::GAP`] below it, or beside it where [`crate::tooltip::hover_side`] says
+    /// so) and makes it the element's AccessKit description.
     pub fn attach(&self, response: &Response) {
         let description = self.description();
         super::accesskit(response, |node| node.set_description(description));
@@ -148,6 +149,12 @@ impl<'a> Tip<'a> {
             .frame(self.frame())
             .gap(timing::GAP)
             .width(size::MENU_WIDTH);
+        if timing::hover_side(&response.ctx) == timing::HoverSide::Beside {
+            tooltip.popup = tooltip
+                .popup
+                .align(egui::RectAlign::LEFT)
+                .align_alternatives(&[egui::RectAlign::RIGHT]);
+        }
         tooltip.show(|ui| self.content(ui));
     }
 }

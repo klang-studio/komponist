@@ -37,6 +37,33 @@ pub const TEXT: TypeStyle = typography::SMALL;
 /// Text style of the value tooltip.
 pub const VALUE_TEXT: TypeStyle = typography::VALUE_M;
 
+/// Where hover tooltips ([`crate::widgets::tooltip::Tip::attach`]) go in a context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HoverSide {
+    /// Below the element, as the design system says (the default).
+    #[default]
+    Below,
+    /// Beside the element (left of it, or right where there is no room), vertically centred on
+    /// it: for a window whose area below a strip of controls belongs to a native view that egui
+    /// cannot draw over, such as the bridge's plugin frame on macOS (#52), where the plugin's
+    /// `NSView` covers everything below the header.
+    Beside,
+}
+
+/// Where the hover side of a context lives in its memory.
+const HOVER_SIDE_ID: &str = "komponist_tooltip_hover_side";
+
+/// Sets where hover tooltips go in `ctx`.
+pub fn set_hover_side(ctx: &Context, side: HoverSide) {
+    ctx.data_mut(|d| d.insert_temp(Id::unique(HOVER_SIDE_ID), side));
+}
+
+/// Where hover tooltips go in `ctx` ([`HoverSide::Below`] unless [`set_hover_side`] said else).
+pub fn hover_side(ctx: &Context) -> HoverSide {
+    ctx.data(|d| d.get_temp(Id::unique(HOVER_SIDE_ID)))
+        .unwrap_or_default()
+}
+
 /// Where a tooltip sits relative to its element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {

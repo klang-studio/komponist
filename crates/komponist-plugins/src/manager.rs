@@ -31,8 +31,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_engine::Processor;
+use komponist_ipc::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderModel};
 use komponist_ipc::shm::MAX_BLOCK;
-use komponist_ipc::{ControlMsg, GuiSize, LogLevel, NoteName, ParamInfo, ParamValue, RenderMode};
+use komponist_ipc::{
+    ControlMsg, GuiSize, GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, RenderMode,
+};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginRef, Project, TrackId};
 use rustix::event::{PollFd, PollFlags, Timespec};
 
@@ -144,6 +147,48 @@ pub enum PluginManagerEvent {
     GuiClosed {
         /// The device.
         device: DeviceId,
+        /// Where the bridge's own frame was (macOS); `None` on Linux.
+        rect: Option<FrameRect>,
+    },
+    /// The user clicked in the header of the bridge's own frame (macOS, #52).
+    FrameHeaderAction {
+        /// The device.
+        device: DeviceId,
+        /// What the user did.
+        event: HeaderEvent,
+    },
+    /// The bridge's own frame took a key from the focused plugin for komponist (macOS).
+    FrameShortcut {
+        /// The device.
+        device: DeviceId,
+        /// The chord.
+        chord: FrameChord,
+    },
+    /// A key event while the header of the bridge's own frame has the focus (macOS).
+    FrameKey {
+        /// The device.
+        device: DeviceId,
+        /// The key event.
+        key: FrameKeyEvent,
+    },
+    /// The bridge's own frame moved or changed its size (macOS).
+    FrameMoved {
+        /// The device.
+        device: DeviceId,
+        /// Where it is now.
+        rect: FrameRect,
+    },
+    /// The close button of the bridge's own frame (macOS): close it like ×.
+    FrameCloseRequested {
+        /// The device.
+        device: DeviceId,
+    },
+    /// The window number of the bridge's own frame (macOS), for ordering frames.
+    FrameWindow {
+        /// The device.
+        device: DeviceId,
+        /// Window server id.
+        number: i64,
     },
     /// A background scan finished; the catalog is updated.
     ScanFinished(ScanReport),
@@ -682,18 +727,39 @@ impl PluginManager {
         self.bridges.get(&device).is_some_and(|b| b.sidechain)
     }
 
-    /// Opens the plugin GUI inside the X11 window `parent_xid` (the frame's child window) at UI
-    /// `scale`; answered by [`PluginManagerEvent::GuiOpened`].
-    pub fn open_gui(
-        &mut self,
-        device: DeviceId,
-        parent_xid: u64,
-        scale: f64,
-    ) -> Result<(), PluginError> {
+    /// Opens the plugin GUI in `target`: the frame's X11 child window (Linux) or the bridge's own
+    /// frame window (macOS); answered by [`PluginManagerEvent::GuiOpened`].
+    pub fn open_gui(&mut self, device: DeviceId, target: GuiTarget) -> Result<(), PluginError> {
         self.bridges
             .get_mut(&device)
             .ok_or(PluginError::UnknownDevice(device))?
-            .open_gui(parent_xid, scale)
+            .open_gui(target)
+    }
+
+    /// What the header of the bridge's own frame shows, in language `lang` (macOS).
+    pub fn set_frame_header(&mut self, device: DeviceId, header: HeaderModel, lang: &str) {
+        if let Some(bridge) = self.bridges.get(&device) {
+            bridge.send(ControlMsg::HeaderState {
+                header,
+                lang: lang.to_owned(),
+            });
+        }
+    }
+
+    /// Orders the bridge's own frame to the front without activating it (macOS; the app became
+    /// active).
+    pub fn raise_frame(&mut self, device: DeviceId) {
+        if let Some(bridge) = self.bridges.get(&device) {
+            bridge.send(ControlMsg::RaiseFrame);
+        }
+    }
+
+    /// Brings the bridge's own frame to the front (macOS; the caller yielded its activation to
+    /// [`PluginManager::bridge_pid`] first).
+    pub fn activate_frame(&mut self, device: DeviceId) {
+        if let Some(bridge) = self.bridges.get(&device) {
+            bridge.send(ControlMsg::ActivateFrame);
+        }
     }
 
     /// Tells the plugin GUI its new size (after the frame resized).

@@ -133,7 +133,11 @@ impl DeviceHost for FakeHost {
         !self.is_builtin(device) && self.status(device) == DeviceStatus::Ok
     }
 
-    fn open_gui(&mut self, device: DeviceId, _xid: u64, _scale: f64) -> Result<(), PluginError> {
+    fn open_gui(
+        &mut self,
+        device: DeviceId,
+        _target: komponist_ipc::GuiTarget,
+    ) -> Result<(), PluginError> {
         Err(PluginError::UnknownDevice(device))
     }
 

@@ -4,6 +4,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+#[cfg(target_os = "macos")]
+mod frame_mac;
 #[cfg(target_os = "linux")]
 mod gui;
 mod installed;

@@ -1,6 +1,6 @@
 //! The X11 side of the plugin frames where there is no X11 (macOS): [`X11::connect`] always
-//! fails, so the frames take the existing "no connection" path and show the plugin's GUI as
-//! failed. The macOS frame window is owned by the bridge (#52); this stub goes away with it.
+//! fails. On macOS native frames never ask for it: the bridge owns the plugin's frame window
+//! (#52, `plugin_frame` module docs); the X11 path only has to compile.
 
 use komponist_model::DeviceId;
 use komponist_tokens::Srgba;

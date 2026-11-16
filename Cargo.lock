@@ -2445,6 +2445,7 @@ name = "komponist-app"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
+ "block2 0.6.2",
  "eframe",
  "egui",
  "egui_kittest",
@@ -2492,13 +2493,24 @@ name = "komponist-bridge"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
+ "block2 0.6.2",
+ "eframe",
+ "egui",
  "komponist-hosting",
+ "komponist-i18n",
  "komponist-ipc",
  "komponist-rt",
+ "komponist-tokens",
+ "komponist-ui",
  "libc",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
+ "winit",
  "x11rb 0.14.0",
 ]
 
@@ -2620,6 +2632,7 @@ dependencies = [
  "egui_kittest",
  "klang-dsp",
  "komponist-i18n",
+ "komponist-ipc",
  "komponist-model",
  "komponist-tokens",
  "komponist-ui",
@@ -3097,6 +3110,7 @@ checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
