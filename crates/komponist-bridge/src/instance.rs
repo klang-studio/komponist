@@ -12,9 +12,11 @@
 //!   plugin calls; a stalled loop shows as a missing `Pong`. A long plugin call on this thread
 //!   (`Load`, `OpenGui`) delays it too; a plugin busy in `process` (RT thread) does not.
 //! - **RT thread:** started by `Activate` ([`RtThread`]), stopped by `Deactivate`, restarts, render
-//!   mode changes and shutdown. Its `SCHED_FIFO` outcome goes to the app as `RtPriority` right
-//!   before every `Activated`, and as a `Log` line starting with [`RT_LOG_PREFIX`] when it is new
-//!   or changed (`Info` on success, `Warning` on failure; processing goes on either way).
+//!   mode changes and shutdown. Its realtime outcome (`SCHED_FIFO` on Linux, the time-constraint
+//!   policy on macOS) goes to the app as `RtPriority` right before every `Activated`, and as a
+//!   `Log` line starting with [`RT_LOG_PREFIX`] when it is new or changed (`Info` on success,
+//!   `Warning` on failure; processing goes on either way). On macOS a work interval the thread
+//!   could not join is a `Warning` line too.
 //! - **Parameters:** `SetParam` reaches the plugin as an event at offset 0 of the next block while
 //!   active, through `flush_params` while inactive. Values the app set, values the plugin changed
 //!   outside processing (flush output, VST3 edits) and all values after a state load go back as
@@ -44,7 +46,8 @@ use rustix::event::{PollFd, PollFlags};
 
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, LOG_PENDING};
-use crate::rt::{Fallback, RtConfig, RtThread};
+use crate::rt::{Fallback, RtConfig, RtThread, StartReport};
+use crate::sched;
 
 /// Every `Log` line about the RT thread's scheduling starts with this, so the app can tell it
 /// apart from plugin output (it shows a status-bar warning when the level is `Warning`).
@@ -132,8 +135,9 @@ struct Bridge {
     event_loop: Rc<EventLoop>,
     notify: Arc<BridgeNotify>,
     rt_priority: i32,
-    /// Outcome of the last `SCHED_FIFO` attempt that was reported (reported again on change).
-    rt_reported: Option<bool>,
+    /// Outcome of the last realtime set-up that was reported (scheduling, work interval; reported
+    /// again on change).
+    rt_reported: Option<(bool, bool)>,
     /// Values for the next `ParamValues`, by id (latest wins).
     pending_values: BTreeMap<u32, f64>,
     values_due: Option<Instant>,
@@ -644,6 +648,9 @@ impl Bridge {
         };
         let rt_config = RtConfig {
             priority: self.rt_priority,
+            // A rate of 0 never activates; a zero period then gets the policy's minimum.
+            period: Duration::try_from_secs_f64(f64::from(config.max_frames) / config.sample_rate)
+                .unwrap_or_default(),
             max_frames: config.max_frames,
             fallback,
         };
@@ -652,7 +659,7 @@ impl Bridge {
             Ok(started) => started,
             Err(failure) => {
                 plugin.deactivate(failure.processor);
-                self.report_rt_priority(&failure.report.priority);
+                self.report_rt_priority(&failure.report);
                 return Err(failure.error);
             }
         };
@@ -660,7 +667,7 @@ impl Bridge {
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);
         self.active = Some(Active { rt, config });
-        self.report_rt_priority(&report.priority);
+        self.report_rt_priority(&report);
         // Right before `Activated` (sent by the caller), on every activation.
         let rt_status = BridgeMsg::RtPriority {
             granted: report.priority.is_ok(),
@@ -675,25 +682,36 @@ impl Bridge {
         Ok(latency)
     }
 
-    /// Logs the `SCHED_FIFO` outcome when it is new or changed.
-    fn report_rt_priority(&mut self, outcome: &std::io::Result<()>) {
-        if self.rt_reported == Some(outcome.is_ok()) {
+    /// Logs the realtime outcome when it is new or changed.
+    fn report_rt_priority(&mut self, report: &StartReport) {
+        let interval_ok = report.work_interval.is_none_or(|joined| joined.is_ok());
+        let outcome = (report.priority.is_ok(), interval_ok);
+        if self.rt_reported == Some(outcome) {
             return;
         }
-        self.rt_reported = Some(outcome.is_ok());
-        let priority = self.rt_priority;
-        match outcome {
+        self.rt_reported = Some(outcome);
+        let policy = sched::policy_name(self.rt_priority);
+        match &report.priority {
             Ok(()) => self.log(
                 LogLevel::Info,
-                format!("{RT_LOG_PREFIX} the audio thread runs at SCHED_FIFO {priority}"),
+                format!("{RT_LOG_PREFIX} the audio thread runs at {policy}"),
             ),
             Err(e) => self.log(
                 LogLevel::Warning,
                 format!(
-                    "{RT_LOG_PREFIX} SCHED_FIFO {priority} refused ({e}); the audio thread runs \
+                    "{RT_LOG_PREFIX} {policy} refused ({e}); the audio thread runs \
                      without realtime priority and may miss deadlines under load"
                 ),
             ),
+        }
+        if let Some(Err(errno)) = report.work_interval {
+            self.log(
+                LogLevel::Warning,
+                format!(
+                    "{RT_LOG_PREFIX} no audio work interval (errno {errno}); the audio thread \
+                     may run on slow cores and miss deadlines at light load"
+                ),
+            );
         }
     }
 

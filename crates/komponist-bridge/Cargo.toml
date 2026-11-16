@@ -8,6 +8,9 @@ publish.workspace = true
 [dependencies]
 komponist-ipc.workspace = true
 komponist-hosting.workspace = true
+# Realtime set-up of the RT thread: SCHED_FIFO (Linux), time-constraint policy and an own audio
+# work interval (macOS, #45).
+komponist-rt.workspace = true
 # Workspace features (mm, thread, process, net) plus: event (poll, eventfd), stdio (scan mode keeps
 # plugin output off the JSON on stdout).
 rustix = { workspace = true, features = ["event", "stdio"] }
