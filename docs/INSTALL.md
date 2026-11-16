@@ -7,6 +7,10 @@ ALSA/PipeWire/JACK. Everything else is fetched by cargo: komponist depends on th
 [klang-dsp](https://github.com/klang-studio/klang-dsp) as a git dependency pinned to one commit (`Cargo.toml`,
 `[workspace.dependencies]`), so a plain clone builds without any sibling checkout.
 
+**macOS** (14.4 or newer, Apple Silicon only): install the Xcode command line tools (`xcode-select --install`) and
+Rust through [rustup](https://rustup.rs); no further system libraries are needed. The scripts in `scripts/` run with
+the stock `/bin/bash` 3.2; `scripts/check-gui.sh` is Linux only.
+
 Working on komponist and klang-dsp together: check out klang-dsp next to komponist and patch the git dependency to
 the local path. Do **not** edit the tracked `Cargo.toml` or `.cargo/config.toml` for this. Pick one:
 

@@ -115,7 +115,10 @@ fn newest(dir: &Path) -> SystemTime {
 
 /// The folder of the WP-27 CLAP fixtures, or `None` with a note if they are not built.
 pub fn fixture_dir() -> Option<PathBuf> {
-    let dir = target_dir().join("test-plugins/clap");
+    let dir = target_dir()
+        .join("test-plugins")
+        .join(std::env::consts::OS)
+        .join("clap");
     if dir.join("kp-test-synth.clap").exists() {
         Some(std::fs::canonicalize(dir).unwrap())
     } else {

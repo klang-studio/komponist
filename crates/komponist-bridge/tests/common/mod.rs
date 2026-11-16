@@ -61,6 +61,7 @@ pub fn fixture(name: &str) -> Option<PathBuf> {
 pub fn fixture_in(format: &str, name: &str) -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/test-plugins")
+        .join(std::env::consts::OS)
         .join(format)
         .join(format!("{name}.{format}"));
     if path.exists() {

@@ -11,7 +11,10 @@ const KOMPONIST: &str = env!("CARGO_BIN_EXE_komponist");
 
 #[test]
 fn scan_mode_prints_the_descriptors_of_a_bundle() {
-    let bundle = target_dir().join("test-plugins/clap/kp-test-synth.clap");
+    let bundle = target_dir()
+        .join("test-plugins")
+        .join(std::env::consts::OS)
+        .join("clap/kp-test-synth.clap");
     if !bundle.exists() {
         eprintln!(
             "skipped: {} is missing; run scripts/build-test-plugins.sh",

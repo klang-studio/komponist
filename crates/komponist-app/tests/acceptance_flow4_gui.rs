@@ -26,7 +26,9 @@ fn flow_4_the_plugin_gui_opens_in_a_real_frame() {
     if !gui_allowed() {
         return;
     }
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-plugins");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/test-plugins")
+        .join(std::env::consts::OS);
     if !root.join("clap/kp-test-synth.clap").exists() {
         eprintln!("skipped: run scripts/build-test-plugins.sh");
         return;

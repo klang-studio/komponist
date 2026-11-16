@@ -9,7 +9,9 @@
 # environment or in the untracked scripts/local.env. Unset or missing: the worktree keeps a normal target/.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-[ -f scripts/local.env ] && source scripts/local.env
+if [ -f scripts/local.env ]; then
+    source scripts/local.env
+fi
 
 trees="$(cd .. && pwd)/.claude/worktrees"
 root="${KOMPONIST_TARGET_ROOT:-}"
@@ -31,9 +33,13 @@ add)
 remove)
     # Stop a rust-analyzer or cargo check still running in that worktree, then remove it.
     pids=$(pgrep -f "[m]anifest-path $dir/" || true)
-    [ -n "$pids" ] && kill -TERM $pids || true
+    if [ -n "$pids" ]; then
+        kill -TERM $pids || true
+    fi
     git worktree remove --force "$dir" 2>/dev/null || { rm -rf "$dir"; git worktree prune; }
-    [ -n "$root" ] && rm -rf "${root:?}/$name"
+    if [ -n "$root" ]; then
+        rm -rf "${root:?}/$name"
+    fi
     ;;
 *)
     echo "usage: $0 add <name> <branch> | remove <name>" >&2
