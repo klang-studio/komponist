@@ -8,6 +8,12 @@
 //!   thread silently stays timeshare, so the result must be checked and reported. On Apple silicon
 //!   the policy alone is not enough: the thread must also be in an audio workgroup
 //!   ([`crate::workgroup`]).
+//! - Windows: MMCSS ("Pro Audio" task, `AVRT_PRIORITY_CRITICAL`; windows-wake spike S1, internal
+//!   notes: the registration keeps wake-ups at a few µs under load), with
+//!   `THREAD_PRIORITY_TIME_CRITICAL` as the fallback when MMCSS refuses (service stopped, policy).
+//!   MMCSS needs no privilege. A second `AvSetMmThreadCharacteristicsW` on a registered thread
+//!   fails although the thread stays registered, so each thread registers once
+//!   ([`set_current_thread_mmcss`] remembers it in a thread-local).
 
 use std::io;
 use std::time::Duration;
@@ -27,11 +33,76 @@ pub fn set_current_thread_realtime(period: Duration, fifo_priority: i32) -> io::
         let _ = fifo_priority;
         set_current_thread_time_constraint(period)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let _ = (period, fifo_priority);
+        set_current_thread_mmcss()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (period, fifo_priority);
         Err(io::ErrorKind::Unsupported.into())
     }
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// Whether this thread is registered with MMCSS already (see [`set_current_thread_mmcss`]).
+    /// A `const` initialiser of a type without destructor: no allocation.
+    static MMCSS_REGISTERED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Non-RT. Registers the calling thread with MMCSS as "Pro Audio" at `AVRT_PRIORITY_CRITICAL`; if
+/// MMCSS refuses, raises it to `THREAD_PRIORITY_TIME_CRITICAL` instead (reported as success: the
+/// thread has the highest priority of the normal class). Called again on a registered thread it
+/// returns `Ok` without a second registration (which Windows would refuse). An error carries the
+/// MMCSS `GetLastError` code when both ways fail, or says that the MMCSS priority was refused
+/// (the thread is registered then, at normal MMCSS priority).
+#[cfg(windows)]
+pub fn set_current_thread_mmcss() -> io::Result<()> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::Threading::{
+        AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority,
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    };
+
+    if MMCSS_REGISTERED.get() {
+        return Ok(());
+    }
+    // "Pro Audio" as a NUL-terminated UTF-16 string.
+    const TASK: [u16; 10] = {
+        let ascii = *b"Pro Audio\0";
+        let mut wide = [0u16; 10];
+        let mut i = 0;
+        while i < wide.len() {
+            wide[i] = ascii[i] as u16;
+            i += 1;
+        }
+        wide
+    };
+    // The task index must be 0 for a new task.
+    let mut task_index = 0u32;
+    // SAFETY: `TASK` is NUL-terminated and `task_index` a valid `u32`, both alive for the call.
+    let task = unsafe { AvSetMmThreadCharacteristicsW(TASK.as_ptr(), &mut task_index) };
+    if !task.is_null() {
+        MMCSS_REGISTERED.set(true);
+        // SAFETY: `task` is the handle the call above returned.
+        if unsafe { AvSetMmThreadPriority(task, AVRT_PRIORITY_CRITICAL) } != 0 {
+            return Ok(());
+        }
+        // SAFETY: no preconditions.
+        let code = unsafe { GetLastError() };
+        return Err(io::Error::other(format!(
+            "MMCSS priority refused (error {code})"
+        )));
+    }
+    // SAFETY: no preconditions.
+    let mmcss_code = unsafe { GetLastError() };
+    // SAFETY: `GetCurrentThread` returns a pseudo handle that needs no closing.
+    if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) } != 0 {
+        return Ok(());
+    }
+    Err(io::Error::from_raw_os_error(mmcss_code as i32))
 }
 
 /// Non-RT. Switches the calling thread to `SCHED_FIFO` at `priority` (1 ..= 99). Fails with
@@ -125,6 +196,41 @@ pub(crate) fn current_time_constraint() -> Option<(u32, u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MMCSS (or the fallback priority) is applied, or both are refused with an error; asking
+    /// twice on one thread is fine.
+    #[cfg(windows)]
+    #[test]
+    fn mmcss_is_obtained_or_refused_cleanly_and_twice_is_fine() {
+        let (first, second, registered) = std::thread::spawn(|| {
+            let first = set_current_thread_realtime(Duration::from_millis(5), 80);
+            let second = set_current_thread_realtime(Duration::from_millis(5), 80);
+            (first, second, MMCSS_REGISTERED.get())
+        })
+        .join()
+        .unwrap();
+        match (first, second) {
+            (Ok(()), Ok(())) => {}
+            // MMCSS registered but refused the priority, or neither way worked: the retry
+            // succeeds (registered) or fails again; it never panics or hangs.
+            (Err(first), second) => {
+                eprintln!("RT priority not fully obtained here: {first}");
+                assert!(registered || second.is_err(), "{second:?}");
+            }
+            (Ok(()), Err(e)) => panic!("the second call must not fail: {e}"),
+        }
+    }
+
+    /// The registration is per thread: a new thread registers on its own.
+    #[cfg(windows)]
+    #[test]
+    fn mmcss_registration_is_per_thread() {
+        let run = || std::thread::spawn(|| (set_current_thread_mmcss(), MMCSS_REGISTERED.get()));
+        let first = run().join().unwrap();
+        let second = run().join().unwrap();
+        assert_eq!(first.0.is_ok(), second.0.is_ok());
+        assert_eq!(first.1, second.1);
+    }
 
     /// (policy, rt_priority) of the calling thread from `/proc/thread-self/stat`.
     #[cfg(target_os = "linux")]
