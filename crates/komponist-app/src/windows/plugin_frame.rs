@@ -660,7 +660,7 @@ impl App {
                 if remote && frame.gui != Gui::Idle {
                     continue;
                 }
-                show_viewport(ctx, frame, native);
+                show_viewport(ctx, frame, native, remote);
             }
         }
         if busy {
@@ -1703,11 +1703,14 @@ fn resize_viewport(
     ));
 }
 
-/// Registers frame `frame`'s viewport for this pass.
-fn show_viewport(ctx: &Context, frame: &Frame, native: bool) {
+/// Registers frame `frame`'s viewport for this pass. Its title is the token until X11 found the
+/// window (Linux); where the bridges own the plugin frames (macOS) there is no lookup, and the
+/// app's own frame (parameter view, device states) carries its real title from the start, as the
+/// Window and Dock menus expect (#95).
+fn show_viewport(ctx: &Context, frame: &Frame, native: bool, remote: bool) {
     let title = {
         let s = lock(&frame.shared);
-        if native && frame.xid.is_none() {
+        if native && !remote && frame.xid.is_none() {
             frame.token.clone()
         } else {
             komponist_ui::plugin_frame::window_title(&s.header)
