@@ -1,0 +1,2 @@
+/* Texts of komponist.app/Contents/Info.plist, English. */
+"NSMicrophoneUsageDescription" = "komponist needs microphone access to record audio tracks.";
