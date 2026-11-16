@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -218,7 +218,8 @@ pub struct PluginManagerConfig {
     /// … with these leading arguments (`--bridge` for the app's executable). The bridge's own
     /// arguments (`--instance …`, `--scan <bundle>`) follow.
     pub bridge_args: Vec<OsString>,
-    /// Path of the scan cache (`~/.cache/komponist/plugins.json`).
+    /// Path of the scan cache (`~/.cache/komponist/plugins.json`, on macOS
+    /// `~/Library/Caches/komponist/plugins.json`).
     pub cache_file: PathBuf,
     /// Scan processes running at once.
     pub parallel_scans: usize,
@@ -227,25 +228,37 @@ pub struct PluginManagerConfig {
 impl PluginManagerConfig {
     /// The default setup of the app: the bridge is the running executable itself with `--bridge`
     /// (WP-94: nothing next to it can be missing or stale), the cache in
-    /// `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`), and half the CPU cores (1 ..= 8)
+    /// `$XDG_CACHE_HOME/komponist/` (else `~/.cache/komponist/`; on macOS `~/Library/Caches/komponist/`,
+    /// where the XDG variable is not honoured), and half the CPU cores (1 ..= 8)
     /// for scans. When the running executable cannot be determined, `bridge_exe` is empty and
     /// every start of a bridge fails with a clear [`PluginError::Spawn`].
     pub fn defaults() -> PluginManagerConfig {
         let exe = std::env::current_exe().unwrap_or_default();
+        let xdg = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let cache_dir = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .filter(|d| d.is_absolute())
-            .or_else(|| home.as_ref().map(|h| h.join(".cache")))
-            .unwrap_or_else(std::env::temp_dir);
+        let cache_dir = cache_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+            .unwrap_or_else(|| std::env::temp_dir().join("komponist"));
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
         PluginManagerConfig {
             bridge_exe: exe,
             bridge_args: vec![OsString::from(BRIDGE_FLAG)],
-            cache_file: cache_dir.join("komponist").join(SCAN_CACHE_FILE),
+            cache_file: cache_dir.join(SCAN_CACHE_FILE),
             parallel_scans: (cores / 2).clamp(1, 8),
         }
     }
+}
+
+/// The cache folder for given inputs; `macos` picks the platform's convention. `None` without a
+/// usable home folder (Linux: without `$XDG_CACHE_HOME` too).
+fn cache_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let base = if macos {
+        home?.join("Library/Caches")
+    } else {
+        xdg.filter(|d| d.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|h| h.join(".cache")))?
+    };
+    Some(base.join("komponist"))
 }
 
 /// How a processor is prepared.
@@ -749,6 +762,26 @@ impl PluginManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_dir_follows_the_platform() {
+        let home = Path::new("/Users/u");
+        let xdg = Path::new("/x/cache");
+        assert_eq!(
+            cache_dir_from(true, Some(xdg), Some(home)),
+            Some("/Users/u/Library/Caches/komponist".into())
+        );
+        assert_eq!(cache_dir_from(true, None, None), None);
+        assert_eq!(
+            cache_dir_from(false, Some(xdg), Some(home)),
+            Some("/x/cache/komponist".into())
+        );
+        assert_eq!(
+            cache_dir_from(false, Some(Path::new("rel")), Some(home)),
+            Some("/Users/u/.cache/komponist".into())
+        );
+        assert_eq!(cache_dir_from(false, None, None), None);
+    }
 
     #[test]
     fn default_config_runs_the_executable_itself_as_the_bridge() {
