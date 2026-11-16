@@ -97,6 +97,11 @@ pub(crate) fn wake(word: &AtomicU32, count: usize) {
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "komponist-engine: no worker wait/wake backend (sys.rs) for this OS yet (Windows: W3, WaitOnAddress / WakeByAddress*)"
+);
+
 /// RT. The calling thread's floating-point control state (MXCSR on x86_64, FPCR on aarch64, 0
 /// elsewhere): rounding mode, flush-to-zero, denormals-are-zero. Workers copy the dispatching
 /// thread's state, so a track computes the same bits on every thread.
