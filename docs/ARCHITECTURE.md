@@ -214,7 +214,9 @@ them (`komponist-app`, `komponist-bridge`, `komponist-hosting`; `cargo::rustc-ch
 Plain `target_os = "linux"` / `"macos"` stays where the code is about one OS's API: futex, memfd, pidfd, eventfd,
 `prctl`, `SCHED_FIFO`, `/proc` (Linux); AppKit, CoreFoundation, mach, kqueue, `os_sync`, `shm_open` (macOS). The
 frame code of the bridge and the activation hand-over of the app are `bridge_frame` code with AppKit calls inside:
-AppKit parts (`frame/appkit.rs`, `activation.rs::macos`) are the seam where a Windows backend plugs in.
+AppKit parts (`frame/appkit.rs`, `activation.rs::macos`) are the seam where a Windows backend plugs in. On
+Windows the app's `activation.rs` is a no-op for now (frames never open while `GUI_EMBEDDING` is false); W6
+adds `AllowSetForegroundWindow` and `SetForegroundWindow` there.
 
 Every per-OS backend module (`komponist-ipc` `shm`, `signal`, `control`, `process`; `komponist-engine` `sys`;
 `komponist-hosting` `library`, `host_loop::wake`, `vst3::module`, the GUI platform types; `komponist-bridge`'s main
@@ -354,7 +356,8 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 - Migrations: `version` → `migrate_vN_to_vN+1` functions, with a test per version. Version 2 (WP-101) adds the
   routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master.
 - Settings: `~/.config/komponist/settings.json` (driver, device, rate, buffer, MIDI inputs, plugin
-  folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`.
+  folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`. (macOS:
+  `~/Library/Application Support/komponist/`; Windows: `%APPDATA%\komponist\`, see §9.3.)
   Plugin scan cache: `~/.cache/komponist/plugins.json`.
   On macOS the settings and recent list live in `~/Library/Application Support/komponist/` and the
   scan cache in `~/Library/Caches/komponist/plugins.json` (`XDG_*_HOME` is not honoured there).
@@ -1525,6 +1528,23 @@ with `Painter`:
   it with `egui_kittest`.
 - **EngineSync:** after each document change: `compile::build` → `SetProgram`. Fader, pan, mute and
   solo use the fast-path commands during a gesture.
+- **Per-user folders (`dirs.rs`, W4b):** the settings folder (`settings::config_dir`: `$XDG_CONFIG_HOME` or
+  `~/.config` on Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows, always `…/komponist`;
+  `recent.json` beside `settings.json`), the home folder shown as `~` (`$HOME`; Windows: the profile folder),
+  where the export dialog starts without a project folder (the home folder; Windows: the Music folder), and the
+  drive roots of the file browser. On Windows they come from the shell's known folders
+  (`SHGetKnownFolderPath`: Profile, Music, RoamingAppData; `GetLogicalDrives`), so redirected folders work; the
+  environment variables `USERPROFILE` and `APPDATA` are only the fallback. The in-app file browser shows `~\Music`
+  with the platform's separator; above a drive root it lists the drives (an empty path), and it hides entries
+  with the hidden attribute besides dot-files. "Im Ordner zeigen" runs `explorer` there, `xdg-open` elsewhere.
+- **Platform for shortcuts:** `komponist_ui::Platform` is `Pc` (Strg/Ctrl, written-out labels) on Linux and
+  Windows and `Mac` on macOS. The few texts that name the OS (the start screen's version line) pick Windows
+  explicitly (`dialogs::start::version_line`).
+- **S07 on Windows (W4b):** WASAPI shared mode calls back once per device period, so the buffer segments are
+  disabled and a hint names the real size (`settings::buffer_limit`, `BufferLimit::Fixed`; the running
+  stream's size wins over the device's reported period). ASIO enables the sizes inside the driver's range
+  (`Range`, or `Fixed` for one size). A WinMM MIDI input another program holds stays listed and reads "belegt"
+  / "in use" (`MidiInputHub::port_busy`), not as an error.
 
 ---
 

@@ -51,7 +51,9 @@ The Windows 11 (x86_64) port is in progress; the first release zip follows once 
    Properties → tick **Unblock**. You do this once per downloaded version. A signed build will make it unnecessary.
 4. Audio goes through WASAPI (shared mode, the default) or, if your audio interface has an ASIO driver, through ASIO
    (Settings → Treiber → ASIO; the segment is enabled only when at least one ASIO driver is registered on the
-   machine). With ASIO the buffer size you choose is the one that runs, within the driver's range.
+   machine). With ASIO the buffer size you choose is the one that runs, within the driver's range (the other
+   sizes are greyed out). WASAPI runs at the one size of the device's period: the buffer segments are greyed out
+   and a note names the size.
    Changing the sample rate changes it for the whole driver, also for other programs that use the interface; close
    them first, as most ASIO drivers serve one program at a time. komponist loads each installed ASIO driver briefly
    to list the devices. ASIO is a registered trademark of Steinberg Media Technologies GmbH.
@@ -59,6 +61,10 @@ The Windows 11 (x86_64) port is in progress; the first release zip follows once 
 **Projects:** a double-click on a `.komponist` file does not open komponist yet; the file association (and a Start menu
 entry) come with a later installer. Open a project from inside komponist, or pass it on the command line:
 `komponist.exe "C:\path\to\project.komponist"`.
+
+**MIDI inputs:** Windows lets one program at a time open a MIDI input. If another program (a DAW, a MIDI monitor)
+holds it, Settings → MIDI inputs shows "belegt" ("in use") for it; close the other program and switch the input off
+and on again.
 
 **Plugins:** CLAP plugins are searched in `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP` and
 `%CLAP_PATH%` (separated by `;`); VST3 plugins in `%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3`.
