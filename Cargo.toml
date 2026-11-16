@@ -42,13 +42,14 @@ egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
 # feature does nothing on macOS).
 winit = { version = "0.30.13", default-features = false, features = ["x11"] }
 
-# macOS app menu (komponist-app `macos_menu`) and the plugin frame windows of the bridge (#52): the
+# macOS app menu (komponist-app `macos_menu`, `macos_delegate`: Dock menu, documents from Finder) and the
+# plugin frame windows of the bridge (#52): the
 # Objective-C bindings eframe/winit already link (objc2 0.6 family); only the AppKit classes these
 # need, so Cargo.lock gets no new crate. block2: the key monitor's and notification observers'
 # blocks; raw-window-handle: the frame window's `NSView` from eframe (both already in the tree).
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphics", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSValue"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSURL", "NSValue"] }
 block2 = "0.6.2"
 raw-window-handle = "0.6.2"
 
