@@ -46,14 +46,14 @@ fn an_old_file_that_calls_the_synth_pisynth_shows_it_as_hexa() {
         .find(|d| komponist_app::device_host::is_hexa(d))
         .expect("a hexa device");
     assert_eq!(device.plugin.id, "pisynth");
-    assert_eq!(device.plugin.name, "hexa");
+    assert_eq!(device.plugin.name, "Hexa");
     // Saving writes the new name and keeps the id, so older files and new files load alike.
     let saved = persist::to_json(&project).expect("saves");
     let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
     let plugin = &v["project"]["tracks"][0]["channel"]["devices"][0]["plugin"];
     assert_eq!(
         (plugin["id"].as_str(), plugin["name"].as_str()),
-        (Some("pisynth"), Some("hexa"))
+        (Some("pisynth"), Some("Hexa"))
     );
 }
 
@@ -105,4 +105,60 @@ fn saving_an_old_file_keeps_every_device_state_byte() {
     assert!(states(&project).iter().any(Option::is_some));
     // No parameter id leaks into the file: the schema is the one the old file has.
     assert!(!saved.contains("\"p1\""));
+}
+
+/// Lowercases the stored name of every built-in device, as files saved before 2026-11-16 have it.
+fn lowercase_builtin_names(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("format").and_then(|f| f.as_str()) == Some("builtin") {
+                if let Some(name) = map.get("name").and_then(|n| n.as_str()) {
+                    let lower = name.to_lowercase();
+                    map.insert("name".into(), lower.into());
+                }
+            }
+            map.values_mut().for_each(lowercase_builtin_names);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(lowercase_builtin_names),
+        _ => {}
+    }
+}
+
+#[test]
+fn a_file_with_lowercase_device_names_shows_hexa_volt_and_presse() {
+    use komponist_i18n::Lang;
+    let saved = persist::to_json(&komponist_app::showcase::showcase_project()).expect("saves");
+    let mut v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    lowercase_builtin_names(&mut v["project"]);
+    let old = serde_json::to_string(&v).unwrap();
+    assert!(old.contains("\"name\":\"hexa\"") && old.contains("\"name\":\"volt\""));
+    assert!(old.contains("\"name\":\"presse\""));
+
+    let project = persist::from_json(&old).expect("the old file loads");
+    let mut shown = std::collections::BTreeSet::new();
+    for device in project
+        .tracks
+        .iter()
+        .flat_map(|t| &t.channel.devices)
+        .chain(&project.master.devices)
+    {
+        for lang in [Lang::De, Lang::En] {
+            shown.insert((
+                device.plugin.id.clone(),
+                komponist_app::views::plugin_name(lang, &device.plugin),
+            ));
+        }
+    }
+    for (id, name) in [("pisynth", "Hexa"), ("knurr", "Volt"), ("presse", "Presse")] {
+        assert!(
+            shown.contains(&(id.to_owned(), name.to_owned())),
+            "{id} is shown as {name}: {shown:?}"
+        );
+    }
+    // The ids and the shown names never go through the lowercase spelling.
+    assert!(
+        !shown
+            .iter()
+            .any(|(_, n)| ["hexa", "volt", "presse"].contains(&n.as_str()))
+    );
 }
