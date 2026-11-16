@@ -133,6 +133,13 @@ impl Recording {
         self.laps.len()
     }
 
+    /// Whether any note was captured: a take with notes is unsaved material (#85).
+    pub fn has_notes(&self) -> bool {
+        self.lanes
+            .iter()
+            .any(|l| l.laps.iter().any(|lap| !lap.is_empty()))
+    }
+
     /// The clip being recorded on `track` as the views draw it: named "● Aufnahme · Take n", from
     /// the start to the head (and to the loop end once the loop wrapped), with the notes of the
     /// running lap; held notes reach the head. Its id is not in the document.
@@ -546,7 +553,9 @@ mod tests {
     fn stop_writes_one_take_with_whole_bars() {
         let (p, a, _) = project();
         let mut r = Recording::new(&p, Tick(BAR), Lang::De);
+        assert!(!r.has_notes());
         r.handle(&on(a, BAR + 100, 60), Tick(BAR + 100), &p);
+        assert!(r.has_notes(), "a held note is material too");
         r.handle(&off(a, BAR + 580, 60), Tick(BAR + 580), &p);
         r.handle(&on(a, BAR + 960, 64), Tick(BAR + 960), &p);
         // Stopped 1.04 bars in: still one bar; the held note ends at the head.

@@ -605,6 +605,38 @@ impl App {
         }
     }
 
+    /// Punch-out: commits the running take ([`App::commit_take`]) and stops capturing; playback
+    /// goes on. Nothing happens without a take.
+    pub(crate) fn stop_take(&mut self) {
+        if self.recording.is_some() {
+            self.commit_take();
+            self.engine.send(Command::StopRecording);
+        }
+    }
+
+    /// Whether a running take holds captured notes: material that is not in the document yet, so
+    /// leaving the project asks first (#85).
+    pub(crate) fn has_unsaved_take(&self) -> bool {
+        self.recording.as_ref().is_some_and(Recording::has_notes)
+    }
+
+    /// The project as a save writes it while capturing (#85): the document with the running take
+    /// as Stop would commit it now; `None` without a take with notes. Events in flight are
+    /// drained first. Capture goes on.
+    pub(crate) fn project_with_take(&mut self) -> Option<Project> {
+        self.recording.as_ref()?;
+        self.drain_events();
+        let rec = self.recording.as_ref().filter(|r| r.has_notes())?;
+        let commit = rec.commit(self.doc.project(), self.engine.playhead())?;
+        match commit.apply(self.doc.project()) {
+            Ok((project, _)) => Some(project),
+            Err(e) => {
+                self.shell.last_error = Some(e);
+                None
+            }
+        }
+    }
+
     /// Stop: writes the running take as one undo step "Take n", selects its clip and opens it in
     /// the editor (prototype `finishRec`). Events still in flight are drained first.
     fn commit_take(&mut self) {
@@ -636,8 +668,9 @@ impl App {
         }
     }
 
-    /// Esc while recording: the running take is gone, playback goes on.
-    fn discard_take(&mut self) {
+    /// Esc while recording (or "Nicht speichern" before leaving the project): the running take is
+    /// gone, playback goes on.
+    pub(crate) fn discard_take(&mut self) {
         // A count-in that just ended still starts its take; it goes too.
         self.drain_events();
         self.recording = None;
@@ -1141,10 +1174,7 @@ impl App {
     fn toggle_record(&mut self) {
         match self.transport() {
             TransportState::CountIn => self.cancel_count_in(),
-            TransportState::Recording => {
-                self.commit_take();
-                self.engine.send(Command::StopRecording);
-            }
+            TransportState::Recording => self.stop_take(),
             _ if !self.audio_ok() => {}
             state => {
                 if !self.project().tracks.iter().any(|t| t.arm) {
