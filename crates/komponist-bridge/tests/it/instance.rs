@@ -431,11 +431,11 @@ fn state_round_trips_between_bridges() {
         id: gain,
         value: 1.0,
     });
-    second.expect_value(gain);
+    second.expect_value_of(gain, 1.0);
     let loud = play(&mut second, 70);
     assert!(loud > 0.5, "0 dB expected, level {loud}");
     second.send(ControlMsg::SetState { state });
-    second.expect_value(gain);
+    second.expect_value_of(gain, 0.5);
     let level = play(&mut second, 71);
     assert!(
         (0.025..0.04).contains(&level),
