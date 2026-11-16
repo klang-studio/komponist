@@ -1017,13 +1017,16 @@ truce-rack serve as further reference code.
   `kPlatformTypeNSView`), but `GUI_EMBEDDING` keeps `has_gui` false until the bridge owns the frame window
   (#52).
 - Bridge main loop = `poll()` over the control socket, the fds the plugin registered, and a timerfd.
-  On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): `CFFileDescriptor` sources for
-  the control socket, the notification wake pipe and plugin fds, `CFRunLoopTimer`s for plugin timers and
-  the next deadline, all in the common modes, run by `CFRunLoopRun`. Callouts only queue; the bridge
-  dispatches outside every borrow and drains what queued up during a plugin's nested run loop. The wake
-  pipe stays (not a `CFRunLoopSource` v0 + `CFRunLoopWakeUp`, which take CF locks on the RT thread). The
-  outer loop is the seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native`
-  (run-and-return) and resumes the run loop when the frame closes.
+  On macOS (#51) it is the main thread's CFRunLoop (`cf_loop::CfEventLoop`): the control socket, the
+  notification wake pipe and plugin fds are libdispatch read/write sources on a private serial queue, whose
+  handlers suspend themselves and signal one version-0 `CFRunLoopSource` (+ `CFRunLoopWakeUp`); plugin
+  timers and the next deadline are `CFRunLoopTimer`s; all in the common modes, run by `CFRunLoopRun`.
+  Callouts only queue; the bridge dispatches outside every borrow, drains what queued up during a plugin's
+  nested run loop, then resumes the sources. The RT thread only writes the wake pipe (CF's signal and
+  wake-up take locks; they run on the dispatch queue). `CFFileDescriptor` was tried first and dropped: its
+  re-enabled read callback sometimes never fired, so the bridge missed `Shutdown`. The outer loop is the
+  seam for #52: `OpenGui` stops `CFRunLoopRun`, the bridge runs `eframe::run_native` (run-and-return) and
+  resumes the run loop when the frame closes.
   The bridge needs no X11 connection of its own. JUCE plugins register their X11 fd for writing too;
   honouring write readiness blindly makes the loop spin at 100 % CPU (Dexed in the spike). Poll for
   reading by default and handle write interest only with a rate limit (WP-26/31 decide the details).

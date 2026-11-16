@@ -3,25 +3,28 @@
 //!
 //! On macOS the bridge's main thread is the Cocoa main thread. JUCE's message queue and timers are
 //! CFRunLoop sources, and the plugin frame of #52 will run eframe (`[NSApp run]`) on it, so the
-//! loop cannot be a `poll()` of its own. Everything the bridge waits for is a CFRunLoop source in
-//! the **common modes**, so it keeps firing inside `CFRunLoopRun`, inside eframe's event loop, and
-//! in `NSEventTrackingRunLoopMode` (live resize, menus):
+//! loop cannot be a `poll()` of its own. Everything the bridge waits for reaches the run loop
+//! through sources in the **common modes**, so it keeps being served inside `CFRunLoopRun`, inside
+//! eframe's event loop, and in `NSEventTrackingRunLoopMode` (live resize, menus):
 //!
 //! - **fds** (the control socket, the notification wake pipe, every fd the plugin registers): a
-//!   `CFFileDescriptor` source each. Its callbacks are one-shot: the callout only records the
-//!   readiness (a zero-timeout `poll()` of that fd gives the same `READ` / `WRITE` / `ERROR` bits
-//!   as the Linux loop) and the fd is armed again only after the bridge handled it ([`rearm`]), so
-//!   a readiness that waits for a busy bridge does not spin.
+//!   libdispatch read source (and a write source for `WRITE` interest) each, on a private serial
+//!   queue. Its handler suspends the source, records the fd and signals one version-0
+//!   `CFRunLoopSource` with `CFRunLoopWakeUp`; the source's perform on the main thread turns the
+//!   records into [`Ready`] (a zero-timeout `poll()` of a plugin fd gives the same `READ` / `WRITE`
+//!   / `ERROR` bits as the Linux loop). A source is resumed only after the bridge handled its fd
+//!   ([`CfEventLoop::rearm`]), so a readiness that waits for a busy bridge does not spin.
+//!   The first version used `CFFileDescriptor`; after some dispatches (a `Deactivate` and an
+//!   `Activate` in one) its re-enabled read callback never fired again, and the bridge missed
+//!   `Shutdown` in about one of three runs of the bridge tests (#51).
 //! - **timers** of the plugin: a repeating `CFRunLoopTimer` each (CF skips missed periods itself).
 //! - **one internal timer** for the next deadline: the bridge's next `ParamValues` and the end of a
 //!   write cooldown.
-//! - **Cross-thread notifications** stay the non-blocking wake pipe of `BridgeNotify` (watched as
-//!   above). Spike #42 proposed a `CFRunLoopSource` v0 signalled with `CFRunLoopWakeUp`; those take
-//!   CF's internal locks (`CFRunLoopWakeUp` holds the run loop's lock around its `mach_msg`), and
-//!   `notify` runs on the RT thread too (CLAP `request_callback`, `request_restart`,
-//!   `request_flush`), where rule 4 allows no lock. A pipe `write` takes none in user space, and
-//!   the pipe's source is a common-mode CF source like the others, not a block on the (serial)
-//!   main dispatch queue, which is what the spike warned against.
+//! - **Cross-thread notifications** stay the non-blocking wake pipe of `BridgeNotify`, watched like
+//!   the other fds. `notify` runs on the RT thread too (CLAP `request_callback`, `request_restart`,
+//!   `request_flush`), where rule 4 allows no lock, and `CFRunLoopSourceSignal` /
+//!   `CFRunLoopWakeUp` take CF's internal locks; they run on the dispatch queue's thread instead.
+//!   Nothing goes through the (serial) main dispatch queue, which spike #42 warned against.
 //!
 //! **Dispatch** follows the rules of the Linux loop (`event_loop`): callouts only queue what is
 //! ready ([`CfEventLoop::take_ready`]) and call the dispatcher the bridge installed
@@ -31,22 +34,24 @@
 //! finds it borrowed and leaves its event queued; the busy dispatch drains the queue before it
 //! returns.
 //!
-//! **Write interest** keeps the Linux policy: after a `WRITE` report the fd gets no write callback
-//! for `DEFAULT_WRITE_INTERVAL`. **Differences** from `poll()`: `ERROR` is seen only together with
-//! a read callback (so only with `READ` interest), and an fd closed without unregistering is never
-//! reported (kqueue drops it) instead of being reported once and parked.
+//! **Write interest** keeps the Linux policy: after a `WRITE` report the fd's write source stays
+//! suspended for `DEFAULT_WRITE_INTERVAL`. **Differences** from `poll()`: `ERROR` is seen only
+//! together with a read report (so only with `READ` interest), and an fd closed without
+//! unregistering is never reported (kqueue drops it) instead of being reported once and parked.
 //!
 //! **Outer loop** ([`CfEventLoop::run`], [`CfEventLoop::stop`]): `CFRunLoopRun` until the bridge
 //! stops it. All sources stay installed when it returns, so the bridge can run something else that
 //! spins the same run loop (#52: `eframe::run_native` with run-and-return for a plugin frame) and
 //! enter `run` again afterwards.
 //!
-//! Raw CoreFoundation FFI, as in `komponist_hosting`'s bundle module; no extra crate.
+//! Raw CoreFoundation and libdispatch FFI (both part of the system), no extra crate.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::os::fd::{BorrowedFd, RawFd};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use komponist_hosting::host_loop::DEFAULT_WRITE_INTERVAL;
@@ -54,23 +59,19 @@ use komponist_hosting::{FdEvents, HostLoop, HostingError, TimerId};
 use rustix::event::{PollFd, PollFlags, Timespec};
 
 mod ffi {
-    use std::ffi::c_void;
+    use std::ffi::{c_char, c_void};
 
     pub type CFTypeRef = *const c_void;
     pub type CFRunLoopRef = *mut c_void;
     pub type CFRunLoopSourceRef = *mut c_void;
     pub type CFRunLoopTimerRef = *mut c_void;
-    pub type CFFileDescriptorRef = *mut c_void;
     pub type CFStringRef = *const c_void;
     pub type CFOptionFlags = usize;
     pub type CFAbsoluteTime = f64;
 
-    pub const READ_CALLBACK: CFOptionFlags = 1 << 0;
-    pub const WRITE_CALLBACK: CFOptionFlags = 1 << 1;
-
-    /// `CFFileDescriptorContext` and `CFRunLoopTimerContext` (the same layout).
+    /// `CFRunLoopTimerContext`.
     #[repr(C)]
-    pub struct Context {
+    pub struct TimerContext {
         pub version: isize,
         pub info: *mut c_void,
         pub retain: *const c_void,
@@ -78,7 +79,21 @@ mod ffi {
         pub copy_description: *const c_void,
     }
 
-    pub type FdCallout = extern "C" fn(CFFileDescriptorRef, CFOptionFlags, *mut c_void);
+    /// `CFRunLoopSourceContext` (version 0).
+    #[repr(C)]
+    pub struct SourceContext {
+        pub version: isize,
+        pub info: *mut c_void,
+        pub retain: *const c_void,
+        pub release: *const c_void,
+        pub copy_description: *const c_void,
+        pub equal: *const c_void,
+        pub hash: *const c_void,
+        pub schedule: *const c_void,
+        pub cancel: *const c_void,
+        pub perform: extern "C" fn(*mut c_void),
+    }
+
     pub type TimerCallout = extern "C" fn(CFRunLoopTimerRef, *mut c_void);
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -90,25 +105,16 @@ mod ffi {
         pub fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         pub fn CFRunLoopRun();
         pub fn CFRunLoopStop(rl: CFRunLoopRef);
+        pub fn CFRunLoopWakeUp(rl: CFRunLoopRef);
         pub fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
         pub fn CFRunLoopAddTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef);
-        pub fn CFRunLoopSourceInvalidate(source: CFRunLoopSourceRef);
-        pub fn CFFileDescriptorCreate(
+        pub fn CFRunLoopSourceCreate(
             allocator: CFTypeRef,
-            fd: i32,
-            close_on_invalidate: u8,
-            callout: FdCallout,
-            context: *const Context,
-        ) -> CFFileDescriptorRef;
-        pub fn CFFileDescriptorGetNativeDescriptor(f: CFFileDescriptorRef) -> i32;
-        pub fn CFFileDescriptorEnableCallBacks(f: CFFileDescriptorRef, types: CFOptionFlags);
-        pub fn CFFileDescriptorDisableCallBacks(f: CFFileDescriptorRef, types: CFOptionFlags);
-        pub fn CFFileDescriptorCreateRunLoopSource(
-            allocator: CFTypeRef,
-            f: CFFileDescriptorRef,
             order: isize,
+            context: *mut SourceContext,
         ) -> CFRunLoopSourceRef;
-        pub fn CFFileDescriptorInvalidate(f: CFFileDescriptorRef);
+        pub fn CFRunLoopSourceSignal(source: CFRunLoopSourceRef);
+        pub fn CFRunLoopSourceInvalidate(source: CFRunLoopSourceRef);
         pub fn CFRunLoopTimerCreate(
             allocator: CFTypeRef,
             fire_date: CFAbsoluteTime,
@@ -116,7 +122,7 @@ mod ffi {
             flags: CFOptionFlags,
             order: isize,
             callout: TimerCallout,
-            context: *mut Context,
+            context: *mut TimerContext,
         ) -> CFRunLoopTimerRef;
         pub fn CFRunLoopTimerSetNextFireDate(timer: CFRunLoopTimerRef, date: CFAbsoluteTime);
         pub fn CFRunLoopTimerInvalidate(timer: CFRunLoopTimerRef);
@@ -130,9 +136,47 @@ mod ffi {
         pub fn CFRunLoopAddCommonMode(rl: CFRunLoopRef, mode: CFStringRef);
         pub fn CFStringCreateWithCString(
             allocator: CFTypeRef,
-            text: *const std::ffi::c_char,
+            text: *const c_char,
             encoding: u32,
         ) -> CFStringRef;
+    }
+
+    /// Any libdispatch object (`dispatch_queue_t`, `dispatch_source_t`).
+    pub type DispatchObject = *mut c_void;
+
+    /// `struct dispatch_source_type_s` (opaque).
+    #[repr(C)]
+    pub struct DispatchSourceType {
+        _private: [u8; 0],
+    }
+
+    pub type DispatchFunction = extern "C" fn(*mut c_void);
+
+    // libdispatch is part of libSystem.
+    unsafe extern "C" {
+        pub static _dispatch_source_type_read: DispatchSourceType;
+        pub static _dispatch_source_type_write: DispatchSourceType;
+        pub fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> DispatchObject;
+        pub fn dispatch_source_create(
+            kind: *const DispatchSourceType,
+            handle: usize,
+            mask: usize,
+            queue: DispatchObject,
+        ) -> DispatchObject;
+        pub fn dispatch_set_context(object: DispatchObject, context: *mut c_void);
+        pub fn dispatch_source_set_event_handler_f(
+            source: DispatchObject,
+            handler: DispatchFunction,
+        );
+        pub fn dispatch_source_set_cancel_handler_f(
+            source: DispatchObject,
+            handler: DispatchFunction,
+        );
+        pub fn dispatch_source_cancel(source: DispatchObject);
+        pub fn dispatch_resume(object: DispatchObject);
+        pub fn dispatch_suspend(object: DispatchObject);
+        pub fn dispatch_release(object: DispatchObject);
+        pub fn dispatch_sync_f(queue: DispatchObject, context: *mut c_void, work: DispatchFunction);
     }
 }
 
@@ -174,42 +218,169 @@ impl Ready {
     }
 }
 
-/// A `CFFileDescriptor` with its run-loop source.
-#[derive(Debug)]
-struct FdSource {
-    descriptor: CFFileDescriptorRef,
+// ------------------------------------------------------------------------------------------------
+// fds: dispatch sources that signal the run loop
+// ------------------------------------------------------------------------------------------------
+
+/// What the dispatch queue and the main thread share: the fds whose sources fired, and the run
+/// loop source that tells the main thread.
+struct Signal {
+    /// `(fd, write)` of every source that fired since the main thread last looked.
+    fired: Mutex<Vec<(RawFd, bool)>>,
+    /// The version-0 source (retained).
     source: CFRunLoopSourceRef,
+    /// The run loop to wake (retained).
+    run_loop: CFRunLoopRef,
 }
 
-impl FdSource {
-    fn invalidate(self) {
-        // SAFETY: both were created by `watch` and are invalidated and released once.
+// SAFETY: the CF objects are only retained, released, signalled and woken, which CF allows from
+// any thread; `fired` is behind a mutex.
+unsafe impl Send for Signal {}
+// SAFETY: as above.
+unsafe impl Sync for Signal {}
+
+impl Drop for Signal {
+    fn drop(&mut self) {
+        // SAFETY: retained in `CfEventLoop::with_write_interval`, released once.
         unsafe {
-            CFRunLoopSourceInvalidate(self.source);
-            CFFileDescriptorInvalidate(self.descriptor);
             CFRelease(self.source);
-            CFRelease(self.descriptor);
+            CFRelease(self.run_loop);
         }
     }
 }
 
-#[derive(Debug)]
+/// The context of one dispatch source: freed by its cancel handler.
+struct WatchContext {
+    signal: Arc<Signal>,
+    fd: RawFd,
+    write: bool,
+    /// The dispatch source (set before it is first resumed).
+    source: Cell<DispatchObject>,
+    /// The handler suspended the source; the main thread resumes it ([`Watch::resume`]).
+    suspended: AtomicBool,
+}
+
+/// One dispatch source watching an fd for reading or writing.
+struct Watch {
+    source: DispatchObject,
+    queue: DispatchObject,
+    context: *const WatchContext,
+}
+
+/// Runs on the dispatch queue when the fd is ready: one report per resume.
+extern "C" fn watch_fired(context: *mut c_void) {
+    // SAFETY: the source's context lives until its cancel handler, which runs after every event
+    // handler (both on the same serial queue).
+    let context = unsafe { &*context.cast::<WatchContext>() };
+    // SAFETY: the live source this handler belongs to.
+    unsafe { dispatch_suspend(context.source.get()) };
+    context.suspended.store(true, Ordering::Release);
+    let signal = &context.signal;
+    signal
+        .fired
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((context.fd, context.write));
+    // SAFETY: retained by `signal`; both calls are allowed from any thread.
+    unsafe {
+        CFRunLoopSourceSignal(signal.source);
+        CFRunLoopWakeUp(signal.run_loop);
+    }
+}
+
+/// Runs on the dispatch queue after the source was cancelled: frees its context.
+extern "C" fn watch_cancelled(context: *mut c_void) {
+    // SAFETY: created by `Box::into_raw` in `Watch::new`, freed only here.
+    drop(unsafe { Box::from_raw(context.cast::<WatchContext>()) });
+}
+
+/// Cancels a watch on its queue, where no event handler runs at the same time (`dispatch_sync_f`).
+extern "C" fn cancel_on_queue(context: *mut c_void) {
+    // SAFETY: `Watch::drop` passes its source and context and waits for this function.
+    let (source, context) = unsafe { *context.cast::<(DispatchObject, *const WatchContext)>() };
+    // SAFETY: the live source; a suspended one must be resumed so that it can be cancelled and
+    // released.
+    unsafe {
+        dispatch_source_cancel(source);
+        if (*context).suspended.swap(false, Ordering::AcqRel) {
+            dispatch_resume(source);
+        }
+        dispatch_release(source);
+    }
+}
+
+impl Watch {
+    /// A running source for `fd` (reading, or writing if `write`).
+    fn new(queue: DispatchObject, signal: &Arc<Signal>, fd: RawFd, write: bool) -> Option<Watch> {
+        let context = Box::into_raw(Box::new(WatchContext {
+            signal: signal.clone(),
+            fd,
+            write,
+            source: Cell::new(std::ptr::null_mut()),
+            suspended: AtomicBool::new(false),
+        }));
+        // SAFETY: the static source types of libdispatch; the fd stays open while it is watched
+        // (the caller's contract). A new source is suspended until the `dispatch_resume` below,
+        // so the context is complete before any handler runs.
+        unsafe {
+            let kind = if write {
+                &_dispatch_source_type_write
+            } else {
+                &_dispatch_source_type_read
+            };
+            let source = dispatch_source_create(kind, fd as usize, 0, queue);
+            if source.is_null() {
+                drop(Box::from_raw(context));
+                return None;
+            }
+            (*context).source.set(source);
+            dispatch_set_context(source, context.cast());
+            dispatch_source_set_event_handler_f(source, watch_fired);
+            dispatch_source_set_cancel_handler_f(source, watch_cancelled);
+            dispatch_resume(source);
+            Some(Watch {
+                source,
+                queue,
+                context,
+            })
+        }
+    }
+
+    /// Resumes the source if its handler suspended it.
+    fn resume(&self) {
+        // SAFETY: the context lives as long as the watch (freed only after `cancel_on_queue`).
+        let context = unsafe { &*self.context };
+        if context.suspended.swap(false, Ordering::AcqRel) {
+            // SAFETY: suspended exactly once by the handler, resumed once here.
+            unsafe { dispatch_resume(self.source) };
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let mut pair = (self.source, self.context);
+        // SAFETY: waits until `cancel_on_queue` ran on the source's queue.
+        unsafe { dispatch_sync_f(self.queue, (&raw mut pair).cast(), cancel_on_queue) };
+    }
+}
+
 struct FdEntry {
     fd: RawFd,
     owner: Owner,
     interest: FdEvents,
-    /// No write callback before this instant (write cooldown).
+    /// No write report before this instant (write cooldown).
     write_after: Instant,
-    source: FdSource,
+    read: Option<Watch>,
+    write: Option<Watch>,
 }
 
-#[derive(Debug)]
 struct TimerEntry {
     id: TimerId,
     timer: CFRunLoopTimerRef,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct State {
     next_timer: u32,
     timers: Vec<TimerEntry>,
@@ -229,12 +400,15 @@ pub struct CfEventLoop {
     write_interval: Duration,
     /// The internal deadline timer (null until [`CfEventLoop::new`] created it).
     deadline_timer: Cell<CFRunLoopTimerRef>,
+    /// The serial queue of the fd sources.
+    queue: DispatchObject,
+    /// The fd sources' way to the main thread (null source until [`CfEventLoop::new`]).
+    signal: RefCell<Option<Arc<Signal>>>,
 }
 
 impl std::fmt::Debug for CfEventLoop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CfEventLoop")
-            .field("state", &self.state)
             .field("write_interval", &self.write_interval)
             .finish_non_exhaustive()
     }
@@ -248,11 +422,15 @@ impl CfEventLoop {
 
     /// A loop with an explicit write cooldown.
     pub fn with_write_interval(write_interval: Duration) -> Rc<CfEventLoop> {
-        // SAFETY: the current thread's run loop, retained for the loop's lifetime.
-        let run_loop = unsafe {
+        // SAFETY: the current thread's run loop, retained for the loop's lifetime; a serial queue
+        // (NULL attributes), released in `drop`.
+        let (run_loop, queue) = unsafe {
             let rl = CFRunLoopGetCurrent();
             CFRetain(rl);
-            rl
+            (
+                rl,
+                dispatch_queue_create(c"komponist-bridge.fds".as_ptr(), std::ptr::null()),
+            )
         };
         let lp = Rc::new(CfEventLoop {
             run_loop,
@@ -260,9 +438,36 @@ impl CfEventLoop {
             dispatch: RefCell::new(None),
             write_interval,
             deadline_timer: Cell::new(std::ptr::null_mut()),
+            queue,
+            signal: RefCell::new(None),
         });
         let timer = lp.add_timer(FAR_FUTURE, FAR_FUTURE);
         lp.deadline_timer.set(timer);
+        let mut context = SourceContext {
+            version: 0,
+            info: Rc::as_ptr(&lp).cast_mut().cast(),
+            retain: std::ptr::null(),
+            release: std::ptr::null(),
+            copy_description: std::ptr::null(),
+            equal: std::ptr::null(),
+            hash: std::ptr::null(),
+            schedule: std::ptr::null(),
+            cancel: std::ptr::null(),
+            perform: signal_performed,
+        };
+        // SAFETY: CF copies the context; `info` points to the loop, and the source is invalidated
+        // in `drop` before the loop goes away. The source and run loop are retained for `Signal`.
+        let source = unsafe {
+            let source = CFRunLoopSourceCreate(std::ptr::null(), 0, &mut context);
+            CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
+            CFRetain(run_loop);
+            source
+        };
+        *lp.signal.borrow_mut() = Some(Arc::new(Signal {
+            fired: Mutex::new(Vec::new()),
+            source,
+            run_loop,
+        }));
         lp
     }
 
@@ -304,15 +509,22 @@ impl CfEventLoop {
         (state.timers.len(), fds.count())
     }
 
-    /// After the bridge handled everything [`CfEventLoop::take_ready`] returned: arms every fd
-    /// again (the callouts disarm theirs; `WRITE` only after its cooldown) and sets the deadline
-    /// timer to `deadline` or the end of the next write cooldown, whichever is earlier.
+    /// After the bridge handled everything [`CfEventLoop::take_ready`] returned: resumes every fd
+    /// source its handler suspended (a write source only after its cooldown) and sets the
+    /// deadline timer to `deadline` or the end of the next write cooldown, whichever is earlier.
     pub fn rearm(&self, deadline: Option<Instant>) {
         let now = Instant::now();
         let mut next = deadline;
         for entry in &self.state.borrow().fds {
-            if let Some(cooldown_end) = self.arm(entry, now) {
-                next = Some(next.map_or(cooldown_end, |n| n.min(cooldown_end)));
+            if let Some(read) = &entry.read {
+                read.resume();
+            }
+            if let Some(write) = &entry.write {
+                if now >= entry.write_after {
+                    write.resume();
+                } else {
+                    next = Some(next.map_or(entry.write_after, |n| n.min(entry.write_after)));
+                }
             }
         }
         let date = next.map_or(FAR_FUTURE, |at| {
@@ -354,19 +566,15 @@ impl CfEventLoop {
     // Sources
     // --------------------------------------------------------------------------------------------
 
-    fn context(&self) -> Context {
-        Context {
+    /// A repeating timer in the common modes, first firing `first` seconds from now.
+    fn add_timer(&self, first: f64, interval: f64) -> CFRunLoopTimerRef {
+        let mut context = TimerContext {
             version: 0,
             info: (self as *const CfEventLoop).cast_mut().cast(),
             retain: std::ptr::null(),
             release: std::ptr::null(),
             copy_description: std::ptr::null(),
-        }
-    }
-
-    /// A repeating timer in the common modes, first firing `first` seconds from now.
-    fn add_timer(&self, first: f64, interval: f64) -> CFRunLoopTimerRef {
-        let mut context = self.context();
+        };
         // SAFETY: the context is copied by CF; `info` points to `self`, which outlives the timer
         // (invalidated in `drop` or `unregister_timer`).
         unsafe {
@@ -384,95 +592,90 @@ impl CfEventLoop {
         }
     }
 
+    /// The dispatch sources `interest` needs.
+    fn watches(
+        &self,
+        fd: RawFd,
+        interest: FdEvents,
+    ) -> Result<(Option<Watch>, Option<Watch>), HostingError> {
+        let signal = self.signal.borrow().clone().expect("created in `new`");
+        let make = |write| {
+            Watch::new(self.queue, &signal, fd, write)
+                .ok_or_else(|| HostingError::HostLoop(format!("no dispatch source for fd {fd}")))
+        };
+        let read = interest
+            .contains(FdEvents::READ)
+            .then(|| make(false))
+            .transpose()?;
+        let write = interest
+            .contains(FdEvents::WRITE)
+            .then(|| make(true))
+            .transpose()?;
+        Ok((read, write))
+    }
+
     fn add_fd(&self, fd: RawFd, owner: Owner, interest: FdEvents) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        if fd < 0 || state.fds.iter().any(|e| e.fd == fd) {
+        if fd < 0 || self.state.borrow().fds.iter().any(|e| e.fd == fd) {
             return Err(HostingError::HostLoop(format!(
                 "fd {fd} is invalid or already registered"
             )));
         }
-        let context = self.context();
-        // SAFETY: as in `add_timer`; the fd stays open while it is registered (the caller's
-        // contract), and CF does not close it (`close_on_invalidate` false).
-        let source = unsafe {
-            let descriptor = CFFileDescriptorCreate(std::ptr::null(), fd, 0, fd_callout, &context);
-            if descriptor.is_null() {
-                return Err(HostingError::HostLoop(format!(
-                    "CFFileDescriptorCreate({fd}) failed"
-                )));
-            }
-            let source = CFFileDescriptorCreateRunLoopSource(std::ptr::null(), descriptor, 0);
-            CFRunLoopAddSource(self.run_loop, source, kCFRunLoopCommonModes);
-            FdSource { descriptor, source }
-        };
-        let entry = FdEntry {
+        let (read, write) = self.watches(fd, interest)?;
+        self.state.borrow_mut().fds.push(FdEntry {
             fd,
             owner,
             interest,
             write_after: Instant::now(),
-            source,
-        };
-        self.arm(&entry, Instant::now());
-        state.fds.push(entry);
+            read,
+            write,
+        });
         Ok(())
-    }
-
-    /// Enables the callbacks `entry` wants now; returns the end of a write cooldown that keeps
-    /// its write callback off.
-    fn arm(&self, entry: &FdEntry, now: Instant) -> Option<Instant> {
-        let mut types = 0;
-        let mut cooldown_end = None;
-        if entry.interest.contains(FdEvents::READ) {
-            types |= READ_CALLBACK;
-        }
-        if entry.interest.contains(FdEvents::WRITE) {
-            if now >= entry.write_after {
-                types |= WRITE_CALLBACK;
-            } else {
-                cooldown_end = Some(entry.write_after);
-            }
-        }
-        // SAFETY: a live descriptor of this loop. Enabling an enabled callback changes nothing.
-        unsafe {
-            CFFileDescriptorDisableCallBacks(
-                entry.source.descriptor,
-                (READ_CALLBACK | WRITE_CALLBACK) & !types,
-            );
-            if types != 0 {
-                CFFileDescriptorEnableCallBacks(entry.source.descriptor, types);
-            }
-        }
-        cooldown_end
     }
 
     // --------------------------------------------------------------------------------------------
     // Callouts
     // --------------------------------------------------------------------------------------------
 
-    fn fd_fired(&self, descriptor: CFFileDescriptorRef) {
-        // SAFETY: CF hands the descriptor that fired; it is live during its callout.
-        let fd = unsafe { CFFileDescriptorGetNativeDescriptor(descriptor) };
-        // Disarmed until the bridge handled it (`rearm`).
-        // SAFETY: as above.
-        unsafe { CFFileDescriptorDisableCallBacks(descriptor, READ_CALLBACK | WRITE_CALLBACK) };
+    /// The fd sources' run loop source: moves what fired into the ready queue.
+    fn fds_fired(&self) {
+        let fired = {
+            let signal = self.signal.borrow();
+            let Some(signal) = signal.as_ref() else {
+                return;
+            };
+            std::mem::take(&mut *signal.fired.lock().unwrap_or_else(PoisonError::into_inner))
+        };
+        if fired.is_empty() {
+            return;
+        }
         {
             let mut state = self.state.borrow_mut();
             let State { fds, ready, .. } = &mut *state;
-            let Some(entry) = fds.iter_mut().find(|e| e.fd == fd) else {
-                return;
-            };
-            match entry.owner {
-                Owner::Control => ready.control = true,
-                Owner::Wake => ready.wake = true,
-                Owner::Plugin => {
-                    let events = readiness(fd, entry.interest);
-                    if events.contains(FdEvents::WRITE) {
-                        entry.write_after = Instant::now() + self.write_interval;
-                    }
-                    if events != FdEvents::NONE {
-                        match ready.fds.iter_mut().find(|(f, _)| *f == fd) {
-                            Some((_, queued)) => *queued = queued.union(events),
-                            None => ready.fds.push((fd, events)),
+            for (fd, write) in fired {
+                let Some(entry) = fds.iter_mut().find(|e| e.fd == fd) else {
+                    continue;
+                };
+                match entry.owner {
+                    Owner::Control => ready.control = true,
+                    Owner::Wake => ready.wake = true,
+                    Owner::Plugin => {
+                        let wanted = if write {
+                            FdEvents::WRITE
+                        } else {
+                            FdEvents::READ
+                        };
+                        if !entry.interest.contains(wanted) {
+                            continue;
+                        }
+                        let events = readiness(fd, wanted);
+                        if events.contains(FdEvents::WRITE) {
+                            entry.write_after = Instant::now() + self.write_interval;
+                        }
+                        if events != FdEvents::NONE {
+                            match ready.fds.iter_mut().find(|(f, _)| *f == fd) {
+                                Some((_, queued)) => *queued = queued.union(events),
+                                None => ready.fds.push((fd, events)),
+                            }
                         }
                     }
                 }
@@ -537,19 +740,15 @@ fn readiness(fd: RawFd, interest: FdEvents) -> FdEvents {
     events
 }
 
-extern "C" fn fd_callout(
-    descriptor: CFFileDescriptorRef,
-    _types: CFOptionFlags,
-    info: *mut c_void,
-) {
-    // SAFETY: `info` is the loop that created this source; sources are invalidated before the
-    // loop is dropped, so it is alive during every callout.
+extern "C" fn signal_performed(info: *mut c_void) {
+    // SAFETY: `info` is the loop that created this source; it is invalidated before the loop is
+    // dropped, so the loop is alive during every perform.
     let lp = unsafe { &*info.cast::<CfEventLoop>() };
-    lp.fd_fired(descriptor);
+    lp.fds_fired();
 }
 
 extern "C" fn timer_callout(timer: CFRunLoopTimerRef, info: *mut c_void) {
-    // SAFETY: as in `fd_callout`.
+    // SAFETY: as in `signal_performed`.
     let lp = unsafe { &*info.cast::<CfEventLoop>() };
     lp.timer_fired(timer);
 }
@@ -586,25 +785,39 @@ impl HostLoop for CfEventLoop {
     }
 
     fn modify_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        let entry = state
-            .fds
-            .iter_mut()
-            .find(|e| e.fd == fd && e.owner == Owner::Plugin)
-            .ok_or_else(|| HostingError::HostLoop(format!("unknown fd {fd}")))?;
-        entry.interest = events;
-        self.arm(entry, Instant::now());
+        if !self.fd_registered(fd) {
+            return Err(HostingError::HostLoop(format!("unknown fd {fd}")));
+        }
+        let (read, write) = self.watches(fd, events)?;
+        let old = {
+            let mut state = self.state.borrow_mut();
+            let entry = state
+                .fds
+                .iter_mut()
+                .find(|e| e.fd == fd && e.owner == Owner::Plugin)
+                .expect("checked above");
+            entry.interest = events;
+            (
+                std::mem::replace(&mut entry.read, read),
+                std::mem::replace(&mut entry.write, write),
+            )
+        };
+        // The old sources are cancelled outside the borrow (`dispatch_sync_f`).
+        drop(old);
         Ok(())
     }
 
     fn unregister_fd(&self, fd: RawFd) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        let index = state
-            .fds
-            .iter()
-            .position(|e| e.fd == fd && e.owner == Owner::Plugin)
-            .ok_or_else(|| HostingError::HostLoop(format!("unknown fd {fd}")))?;
-        state.fds.swap_remove(index).source.invalidate();
+        let entry = {
+            let mut state = self.state.borrow_mut();
+            let index = state
+                .fds
+                .iter()
+                .position(|e| e.fd == fd && e.owner == Owner::Plugin)
+                .ok_or_else(|| HostingError::HostLoop(format!("unknown fd {fd}")))?;
+            state.fds.swap_remove(index)
+        };
+        drop(entry);
         Ok(())
     }
 }
@@ -612,11 +825,12 @@ impl HostLoop for CfEventLoop {
 impl Drop for CfEventLoop {
     fn drop(&mut self) {
         let state = std::mem::take(self.state.get_mut());
-        for entry in state.fds {
-            entry.source.invalidate();
-        }
+        // Cancels every fd source (each waits for its queue).
+        drop(state.fds);
+        let signal = self.signal.get_mut().take();
         // SAFETY: every timer was created by `add_timer` and is released once; the run loop was
-        // retained in `with_write_interval`.
+        // retained in `with_write_interval`; the run loop source stays allocated while `Signal`
+        // (shared with cancel handlers still queued) retains it, but performs no more.
         unsafe {
             for entry in state.timers {
                 CFRunLoopTimerInvalidate(entry.timer);
@@ -624,6 +838,10 @@ impl Drop for CfEventLoop {
             }
             CFRunLoopTimerInvalidate(self.deadline_timer.get());
             CFRelease(self.deadline_timer.get());
+            if let Some(signal) = &signal {
+                CFRunLoopSourceInvalidate(signal.source);
+            }
+            dispatch_release(self.queue);
             CFRelease(self.run_loop);
         }
     }
@@ -737,6 +955,50 @@ mod tests {
         lp.unregister_fd(hup.as_raw_fd()).unwrap();
     }
 
+    /// The case that lost `Shutdown` with `CFFileDescriptor` (#51): data that arrives while the
+    /// dispatcher is still busy with the previous message, and data that arrives long after the
+    /// rearm, are both reported, many times over.
+    #[test]
+    fn every_message_is_reported() {
+        let lp = CfEventLoop::new();
+        let (control, mut app) = UnixStream::pair().unwrap();
+        control.set_nonblocking(true).unwrap();
+        lp.watch(control.as_fd(), Owner::Control).unwrap();
+        let received = Rc::new(Cell::new(0u32));
+        let weak = Rc::downgrade(&lp);
+        let r = received.clone();
+        let reader = control.try_clone().unwrap();
+        lp.set_dispatch(Some(Rc::new(move || {
+            let lp = weak.upgrade().unwrap();
+            while lp.take_ready().control {
+                let mut buf = [0u8; 64];
+                while let Ok(n) = std::io::Read::read(&mut &reader, &mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    r.set(r.get() + n as u32);
+                }
+                // A slow handler: the next byte arrives before the rearm.
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            lp.rearm(None);
+        })));
+        let writer = std::thread::spawn(move || {
+            for i in 0..200u32 {
+                app.write_all(b"m").unwrap();
+                std::thread::sleep(Duration::from_micros(if i % 2 == 0 { 300 } else { 3000 }));
+            }
+            app
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while received.get() < 200 && Instant::now() < deadline {
+            lp.run_for(None, Duration::from_millis(10));
+        }
+        let _app = writer.join().unwrap();
+        assert_eq!(received.get(), 200);
+        lp.set_dispatch(None);
+    }
+
     /// Spike WP-15 §1.7: an always-writable fd with WRITE interest must not make the loop spin.
     #[test]
     fn write_interest_is_rate_limited() {
@@ -767,8 +1029,8 @@ mod tests {
         lp.unregister_fd(fd).unwrap();
     }
 
-    /// Events of a callout that fires while the dispatcher is busy (a plugin running a nested run
-    /// loop) stay queued, and the fd is not armed again until the busy dispatch rearms.
+    /// Events that arrive while the dispatcher is busy (a plugin running a nested run loop) stay
+    /// queued, and the fd is not reported again until the busy dispatch rearms.
     #[test]
     fn a_busy_dispatcher_keeps_events_queued() {
         let lp = CfEventLoop::new();
@@ -800,7 +1062,7 @@ mod tests {
         })));
         other.write_all(b"x").unwrap();
         lp.run_for(None, Duration::from_millis(5));
-        // One callout entered the dispatcher; the fd stayed disarmed inside the nested loop.
+        // One callout entered the dispatcher; the fd stayed suspended inside the nested loop.
         assert_eq!(calls.get(), 1);
         let handled = handled.borrow();
         assert_eq!(handled.len(), 1);
