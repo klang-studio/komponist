@@ -85,7 +85,7 @@ komponist runs on macOS 14.4+ (Apple Silicon only) as well as on Linux. Agents o
 
 ## Windows (port in progress)
 
-komponist is being ported to Windows 11 x86_64 (MSVC; branch `windows`, epic in the issues). The workspace does not
+komponist is being ported to Windows 11 x86_64 (MSVC; integration branch `windows`; no GitHub issues yet). The workspace does not
 build there yet; this is what is true now:
 
 - **Shell:** the scripts are bash: run them in Git Bash (`scripts/check.sh`, `scripts/build-test-plugins.sh`). The gate is
