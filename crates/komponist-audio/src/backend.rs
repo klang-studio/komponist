@@ -241,11 +241,13 @@ impl Drop for NullStream {
 }
 
 /// cpal's id of a host; `None` for the null host and for hosts this system does not have (cpal
-/// only has the PipeWire, JACK and ALSA ids on Linux, and CoreAudio on macOS).
+/// only has the PipeWire, JACK and ALSA ids on Linux, CoreAudio on macOS and WASAPI on Windows).
 fn host_id(kind: HostKind) -> Option<cpal::HostId> {
     match kind {
         #[cfg(target_os = "macos")]
         HostKind::CoreAudio => Some(cpal::HostId::CoreAudio),
+        #[cfg(windows)]
+        HostKind::Wasapi => Some(cpal::HostId::Wasapi),
         #[cfg(target_os = "linux")]
         HostKind::PipeWire => Some(cpal::HostId::PipeWire),
         #[cfg(target_os = "linux")]
@@ -269,6 +271,7 @@ pub(crate) fn host(kind: HostKind) -> Result<cpal::Host, AudioError> {
 pub(crate) fn available_hosts() -> Vec<HostKind> {
     let mut hosts: Vec<HostKind> = [
         HostKind::CoreAudio,
+        HostKind::Wasapi,
         HostKind::PipeWire,
         HostKind::Jack,
         HostKind::Alsa,
@@ -415,8 +418,42 @@ fn supports_rate(range: &SupportedStreamConfigRange, rate: u32) -> bool {
 pub(crate) struct Negotiated {
     pub(crate) config: cpal::StreamConfig,
     pub(crate) format: SampleFormat,
-    /// What actually runs: JACK imposes the server's rate and buffer size.
+    /// What actually runs: JACK imposes the server's rate and buffer size, WASAPI the buffer size.
     pub(crate) effective: StreamConfig,
+}
+
+/// The cpal buffer size and the frames per buffer the stream will really use, for `requested`
+/// frames on a device whose range is `supported`.
+fn pick_buffer(
+    kind: HostKind,
+    supported: SupportedBufferSize,
+    requested: u32,
+) -> Result<(BufferSize, u32), AudioError> {
+    Ok(match supported {
+        // JACK's buffer is the server's (min == max); it may change while the stream runs, so let
+        // cpal follow it instead of pinning it.
+        SupportedBufferSize::Range { min, .. } if kind == HostKind::Jack => {
+            (BufferSize::Default, min)
+        }
+        // WASAPI shared mode: the audio engine calls back once per device period (typically
+        // 10 ms) whatever buffer size is requested; the request would only change the depth of a
+        // ring buffer in front of it. cpal reports the period as the range (min == max), so run
+        // on the default buffer and report the period as the size the stream uses: S07 shows the
+        // real figure and the engine is prepared for it.
+        SupportedBufferSize::Range { min, .. } if kind == HostKind::Wasapi => {
+            (BufferSize::Default, min)
+        }
+        SupportedBufferSize::Range { min, max } if !(min..=max).contains(&requested) => {
+            return Err(AudioError::UnsupportedConfig(format!(
+                "buffer size {requested} not in {min}..={max}"
+            )));
+        }
+        // No period reported: still no request to the mixer, and the requested size stands.
+        SupportedBufferSize::Unknown if kind == HostKind::Wasapi => {
+            (BufferSize::Default, requested)
+        }
+        _ => (BufferSize::Fixed(requested), requested),
+    })
 }
 
 /// Picks format, channels, rate and buffer size for `requested` on `device`.
@@ -425,7 +462,9 @@ pub(crate) struct Negotiated {
 /// runs at the server's rate and buffer size whatever was requested. PipeWire accepts rates
 /// outside its allowed list (it converts). ALSA and CoreAudio must support the rate and buffer
 /// size (CoreAudio then sets the device's nominal rate and its IO buffer frame size; cpal
-/// checks the buffer against the device's range).
+/// checks the buffer against the device's range). WASAPI (shared mode) takes the rates cpal lists
+/// for the device (the mixer resamples) and calls back once per device period whatever buffer
+/// size was requested: [`Negotiated::effective`] carries that period.
 pub(crate) fn negotiate(
     kind: HostKind,
     device: &cpal::Device,
@@ -468,25 +507,8 @@ pub(crate) fn negotiate(
             _ => return Err(unsupported_rate()),
         },
     };
-    let (buffer_size, buffer_frames) = match *range.buffer_size() {
-        // JACK's buffer is the server's (min == max); it may change while the stream runs, so let
-        // cpal follow it instead of pinning it.
-        SupportedBufferSize::Range { min, .. } if kind == HostKind::Jack => {
-            (BufferSize::Default, min)
-        }
-        SupportedBufferSize::Range { min, max }
-            if !(min..=max).contains(&requested.buffer_frames) =>
-        {
-            return Err(AudioError::UnsupportedConfig(format!(
-                "buffer size {} not in {min}..={max}",
-                requested.buffer_frames
-            )));
-        }
-        _ => (
-            BufferSize::Fixed(requested.buffer_frames),
-            requested.buffer_frames,
-        ),
-    };
+    let (buffer_size, buffer_frames) =
+        pick_buffer(kind, *range.buffer_size(), requested.buffer_frames)?;
     Ok(Negotiated {
         config: cpal::StreamConfig {
             channels: range.channels(),
@@ -709,7 +731,9 @@ mod tests {
 mod lookup_tests {
     use super::*;
 
-    /// The device host of this system; the lookup tests only enumerate its devices.
+    /// The device host of this system; the lookup tests only enumerate its devices. Windows has
+    /// none here: ALSA is unavailable there, so the tests skip instead of enumerating WASAPI
+    /// endpoints (rule 14).
     const HOST: HostKind = if cfg!(target_os = "macos") {
         HostKind::CoreAudio
     } else {
@@ -767,9 +791,43 @@ mod lookup_tests {
     }
 
     #[test]
+    fn wasapi_runs_at_its_device_period_whatever_was_requested() {
+        let period = SupportedBufferSize::Range { min: 480, max: 480 };
+        for requested in [64, 256, 480, 1024] {
+            assert_eq!(
+                pick_buffer(HostKind::Wasapi, period, requested).unwrap(),
+                (BufferSize::Default, 480)
+            );
+        }
+        assert_eq!(
+            pick_buffer(HostKind::Wasapi, SupportedBufferSize::Unknown, 256).unwrap(),
+            (BufferSize::Default, 256)
+        );
+        // JACK does the same with the server's size; the other hosts honour or reject.
+        assert_eq!(
+            pick_buffer(HostKind::Jack, period, 64).unwrap(),
+            (BufferSize::Default, 480)
+        );
+        assert_eq!(
+            pick_buffer(
+                HostKind::Alsa,
+                SupportedBufferSize::Range { min: 32, max: 4096 },
+                256
+            )
+            .unwrap(),
+            (BufferSize::Fixed(256), 256)
+        );
+        assert!(matches!(
+            pick_buffer(HostKind::CoreAudio, period, 256),
+            Err(AudioError::UnsupportedConfig(_))
+        ));
+    }
+
+    #[test]
     fn hosts_of_other_systems_are_unavailable() {
         for kind in [
             HostKind::CoreAudio,
+            HostKind::Wasapi,
             HostKind::PipeWire,
             HostKind::Jack,
             HostKind::Alsa,

@@ -83,14 +83,16 @@ pub fn section_name(t: Lang, section: SettingsSection) -> &'static str {
 
 /// The drivers of the "Treiber" segments (all systems; the dialog lists those of this system, see
 /// [`drivers_here`]).
-pub const DRIVERS: [(HostKind, &str); 4] = [
+pub const DRIVERS: [(HostKind, &str); 5] = [
     (HostKind::CoreAudio, "CoreAudio"),
+    (HostKind::Wasapi, "WASAPI"),
     (HostKind::PipeWire, "PipeWire"),
     (HostKind::Jack, "JACK"),
     (HostKind::Alsa, "ALSA"),
 ];
 
-/// The drivers this system has (CoreAudio on macOS; PipeWire, JACK, ALSA on Linux), in segment
+/// The drivers this system has (CoreAudio on macOS; WASAPI on Windows; PipeWire, JACK, ALSA on
+/// Linux), in segment
 /// order. Those not currently available are shown disabled.
 pub fn drivers_here() -> Vec<(HostKind, &'static str)> {
     DRIVERS
@@ -1391,6 +1393,8 @@ mod tests {
             HostKind::platform_default(),
             if cfg!(target_os = "macos") {
                 "CoreAudio"
+            } else if cfg!(windows) {
+                "WASAPI"
             } else {
                 "PipeWire"
             }
