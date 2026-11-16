@@ -37,6 +37,39 @@ file to force a full rescan; remove the folders to reset komponist.
 icon, hardened-runtime signature; ad-hoc unless `KOMPONIST_SIGN_IDENTITY` is set, see the header of the script).
 `ARCHITECTURE.md` §8.7 describes the bundle.
 
+## Windows
+
+The Windows 11 (x86_64) port is in progress; the first release zip follows once the app builds there. Every
+[release](https://github.com/klang-studio/komponist/releases) then has `komponist-<tag>-windows-x86_64.zip` and its
+`.sha256`.
+
+1. Download the zip. Check it in PowerShell: `Get-FileHash komponist-<tag>-windows-x86_64.zip -Algorithm SHA256` must
+   print the hash in the `.sha256` file.
+2. Unzip it anywhere (right-click → Extract All). komponist is one `komponist.exe`; there is nothing to install.
+3. First start: **the zip is not signed with a code signing certificate (Authenticode)**, so SmartScreen shows
+   "Windows protected your PC". Click **More info**, then **Run anyway**. Alternatively, before unzipping: right-click the zip →
+   Properties → tick **Unblock**. You do this once per downloaded version. A signed build will make it unnecessary.
+4. Audio goes through WASAPI. ASIO is not supported yet.
+
+**Projects:** a double-click on a `.komponist` file does not open komponist yet; the file association (and a Start menu
+entry) come with a later installer. Open a project from inside komponist, or pass it on the command line:
+`komponist.exe "C:\path\to\project.komponist"`.
+
+**Plugins:** CLAP plugins are searched in `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP` and
+`%CLAP_PATH%` (separated by `;`); VST3 plugins in `%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3`.
+More folders can be added in the settings.
+
+**Where komponist keeps its files:** settings and recent projects in `%APPDATA%\komponist\` (`settings.json`,
+`recent.json`). Remove the folder to reset komponist.
+
+**Command line:** `komponist.exe` is a windows-subsystem program (no console window). Started from a terminal it
+attaches to that console for `--help` and error messages; the terminal does not wait for it, so the output can appear
+after the next prompt. Piping it (`komponist.exe --help | more`) makes the shell wait.
+
+**Building the zip yourself:** `scripts/package-windows.sh` (Git Bash) builds `komponist.exe` and writes
+`dist/komponist-<version>-windows-x86_64.zip` with its `.sha256`; signing is optional, see the header of the script.
+`ARCHITECTURE.md` §8.8 describes the package.
+
 ## Build from source
 
 You need a Rust toolchain (`rust-toolchain.toml` pins the version) and the usual system libraries for egui/wgpu and
