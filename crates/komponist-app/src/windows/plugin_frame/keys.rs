@@ -39,7 +39,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 #[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(any(target_os = "linux", test))]
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 use komponist_i18n::Lang;
@@ -55,10 +56,12 @@ use x11rb::protocol::xproto::{
 #[cfg(target_os = "linux")]
 use x11rb::rust_connection::RustConnection;
 
-use crate::keymap::{Key, KeyChord};
+pub use komponist_ipc::frame::keys::{KeyKind, PolicyKey, PolicyMods, TYPING_GRACE, Typing};
+use komponist_ipc::frame::{FrameChord, keys as policy};
 
-/// How long a typing session lasts after the last text key.
-pub const TYPING_GRACE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+use crate::keymap::Key;
+use crate::keymap::KeyChord;
 
 /// Whether `KOMPONIST_LOG_KEYS=1` is set.
 pub fn log_enabled() -> bool {
@@ -126,42 +129,47 @@ impl Mods {
             logo: state & 0x0040 != 0,
         }
     }
-
-    fn plain(self) -> bool {
-        !self.shift && !self.ctrl && !self.alt && !self.logo
-    }
 }
 
-/// What a key is, for the typing heuristic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyKind {
-    /// Prints a character or edits text (Backspace, Delete).
-    Text,
-    /// Ends a text entry (Enter, Tab, Esc).
-    Confirm,
-    /// Anything else (arrows, function keys, modifiers).
-    Other,
-}
-
-/// Classifies `sym` with `mods`.
-pub fn kind(sym: u32, mods: Mods) -> KeyKind {
-    if mods.ctrl || mods.alt || mods.logo {
-        return KeyKind::Other;
-    }
-    match sym {
-        keysym::RETURN | keysym::KP_ENTER | keysym::TAB | keysym::ISO_LEFT_TAB | keysym::ESCAPE => {
-            KeyKind::Confirm
+impl From<Mods> for PolicyMods {
+    fn from(m: Mods) -> PolicyMods {
+        PolicyMods {
+            shift: m.shift,
+            command: m.ctrl,
+            alt: m.alt,
+            other: m.logo,
         }
-        keysym::BACKSPACE | keysym::DELETE => KeyKind::Text,
-        // Latin-1, legacy character sets, dead keys, keypad characters, Unicode keysyms.
-        0x0020..=0x007e
-        | 0x00a0..=0x13ff
-        | 0x20a0..=0x20ac
-        | 0xfe50..=0xfe8f
-        | 0xff80..=0xffb9
-        | 0x0100_0100..=0x0110_ffff => KeyKind::Text,
-        _ => KeyKind::Other,
     }
+}
+
+/// The policy's view of keysym `sym`: the keys it knows by name, a character for text keysyms
+/// (Latin-1, legacy character sets, dead keys, keypad characters, Unicode keysyms; the letter as
+/// the keysym says, so only `s` and `z` match the policy's shortcuts), [`PolicyKey::Other`] for
+/// the rest.
+pub fn policy_key(sym: u32) -> PolicyKey {
+    match sym {
+        keysym::SPACE => PolicyKey::Space,
+        keysym::ESCAPE => PolicyKey::Escape,
+        keysym::RETURN | keysym::KP_ENTER => PolicyKey::Return,
+        keysym::TAB | keysym::ISO_LEFT_TAB => PolicyKey::Tab,
+        keysym::BACKSPACE => PolicyKey::Backspace,
+        keysym::DELETE => PolicyKey::Delete,
+        0x0021..=0x007e | 0x00a0..=0x00ff => {
+            char::from_u32(sym).map_or(PolicyKey::Other, PolicyKey::Char)
+        }
+        0x0100_0100..=0x0110_ffff => {
+            char::from_u32(sym - 0x0100_0000).map_or(PolicyKey::Other, PolicyKey::Char)
+        }
+        0x0100..=0x13ff | 0x20a0..=0x20ac | 0xfe50..=0xfe8f | 0xff80..=0xffb9 => {
+            PolicyKey::Char(char::REPLACEMENT_CHARACTER)
+        }
+        _ => PolicyKey::Other,
+    }
+}
+
+/// Classifies `sym` with `mods` (`komponist_ipc::frame::keys::kind`).
+pub fn kind(sym: u32, mods: Mods) -> KeyKind {
+    policy::kind(policy_key(sym), mods.into())
 }
 
 /// What happens to a key press inside a frame.
@@ -173,44 +181,27 @@ pub enum Verdict {
     Pass,
 }
 
-/// The policy (module docs) for a key `sym` with `mods` while the plugin has the focus.
+/// The policy (module docs, `komponist_ipc::frame::keys::decide`) for a key `sym` with `mods`
+/// while the plugin has the focus.
 pub fn decide(sym: u32, mods: Mods, typing: bool) -> Verdict {
-    let ctrl_only = mods.ctrl && !mods.alt && !mods.logo;
-    match sym {
-        keysym::S if ctrl_only && !mods.shift => Verdict::Take(KeyChord::command(Key::S)),
-        _ if typing => Verdict::Pass,
-        keysym::SPACE if mods.plain() => Verdict::Take(KeyChord::plain(Key::Space)),
-        keysym::ESCAPE if mods.plain() => Verdict::Take(KeyChord::plain(Key::Escape)),
-        keysym::Z if ctrl_only => Verdict::Take(if mods.shift {
-            KeyChord::command_shift(Key::Z)
-        } else {
-            KeyChord::command(Key::Z)
-        }),
-        _ => Verdict::Pass,
+    match policy::decide(policy_key(sym), mods.into(), typing).and_then(|c| chord_from_frame(&c)) {
+        Some(chord) => Verdict::Take(chord),
+        None => Verdict::Pass,
     }
 }
 
-/// The typing heuristic of one frame (module docs).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Typing {
-    last_text: Option<Instant>,
-}
-
-impl Typing {
-    /// Whether the user is typing in the plugin at `now`.
-    pub fn active(&self, now: Instant) -> bool {
-        self.last_text
-            .is_some_and(|t| now.duration_since(t) < TYPING_GRACE)
-    }
-
-    /// A key of `kind` went to the plugin at `now`.
-    pub fn passed(&mut self, kind: KeyKind, now: Instant) {
-        match kind {
-            KeyKind::Text => self.last_text = Some(now),
-            KeyKind::Confirm => self.last_text = None,
-            KeyKind::Other => {}
-        }
-    }
+/// komponist's chord for a chord a frame took (`FrameChord` names keys as egui does); `None` for
+/// a key komponist has no binding key for.
+pub fn chord_from_frame(chord: &FrameChord) -> Option<KeyChord> {
+    let key = crate::app::key_from_egui(egui::Key::from_name(&chord.key)?)?;
+    Some(KeyChord {
+        key,
+        mods: crate::keymap::Modifiers {
+            command: chord.command,
+            shift: chord.shift,
+            alt: chord.alt,
+        },
+    })
 }
 
 // ------------------------------------------------------------------------------------------------
