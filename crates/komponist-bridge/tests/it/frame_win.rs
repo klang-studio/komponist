@@ -8,6 +8,13 @@
 //! a taskbar button and the bridge never activates, so nothing shows on the desktop or takes the
 //! focus. The installed-plugin tests are `#[ignore]` (large third-party plugins):
 //! `cargo test -p komponist-bridge --test it frame_win:: -- --ignored --test-threads=1`.
+//!
+//! kp-test-synth draws with OpenGL (nice-plug-egui on baseview), which creates a 3.2 core context
+//! through `wglCreateContextAttribsARB`. A machine with only Windows' software renderer ("GDI
+//! Generic", OpenGL 1.1: the GitHub Windows runner, no GPU) does not offer it, so the plugin
+//! cannot open its GUI ("set_parent: Failed to set plugin window parent"); there the tests check
+//! that the bridge reports the failed GUI without harm instead ([`gui_without_opengl`]), as
+//! `frame_mac` does on the macOS runner (#94).
 
 use crate::common;
 
@@ -189,7 +196,99 @@ fn settled_synth(window: HWND) {
     }
 }
 
+/// Whether this machine's OpenGL driver can make the context kp-test-synth's GUI asks for: a
+/// throw-away context on a hidden window must offer `wglCreateContextAttribsARB`, which baseview
+/// uses for its 3.2 core context. Windows' software renderer (GDI Generic, OpenGL 1.1) does not.
+fn opengl_available() -> bool {
+    use windows_sys::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+    use windows_sys::Win32::Graphics::OpenGL::{
+        ChoosePixelFormat, GL_RENDERER, PFD_DOUBLEBUFFER, PFD_DRAW_TO_WINDOW, PFD_MAIN_PLANE,
+        PFD_SUPPORT_OPENGL, PFD_TYPE_RGBA, PIXELFORMATDESCRIPTOR, SetPixelFormat, glGetString,
+        wglCreateContext, wglDeleteContext, wglGetProcAddress, wglMakeCurrent,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
+
+    let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+    // SAFETY: a hidden window of a system class, its DC and a legacy context, each released or
+    // destroyed before returning; the pixel format descriptor and the name are live for the calls.
+    unsafe {
+        let window = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            1,
+            1,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        if window.is_null() {
+            eprintln!("no window for the OpenGL probe");
+            return false;
+        }
+        let dc = GetDC(window);
+        let pfd = PIXELFORMATDESCRIPTOR {
+            nSize: size_of::<PIXELFORMATDESCRIPTOR>() as u16,
+            nVersion: 1,
+            dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
+            iPixelType: PFD_TYPE_RGBA,
+            cColorBits: 32,
+            cAlphaBits: 8,
+            cDepthBits: 24,
+            cStencilBits: 8,
+            iLayerType: PFD_MAIN_PLANE as u8,
+            ..std::mem::zeroed()
+        };
+        let mut modern = false;
+        let format = ChoosePixelFormat(dc, &pfd);
+        if format != 0 && SetPixelFormat(dc, format, &pfd) != 0 {
+            let context = wglCreateContext(dc);
+            if !context.is_null() {
+                if wglMakeCurrent(dc, context) != 0 {
+                    modern =
+                        wglGetProcAddress(c"wglCreateContextAttribsARB".as_ptr().cast()).is_some();
+                    let renderer = glGetString(GL_RENDERER);
+                    if !renderer.is_null() {
+                        let name = std::ffi::CStr::from_ptr(renderer.cast());
+                        eprintln!("OpenGL renderer: {}", name.to_string_lossy());
+                    }
+                    wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut());
+                }
+                wglDeleteContext(context);
+            }
+        }
+        ReleaseDC(window, dc);
+        DestroyWindow(window);
+        if !modern {
+            eprintln!("no OpenGL driver with wglCreateContextAttribsARB");
+        }
+        modern
+    }
+}
+
+/// Without a modern OpenGL driver: opening the frame is refused with a GUI error (not fatal), and
+/// the bridge keeps processing and shuts down cleanly. What a user on such a machine sees for an
+/// OpenGL plugin.
+fn gui_without_opengl(bundle: &Path, id: &str) {
+    eprintln!("skipping the frame checks: kp-test-synth's GUI needs OpenGL 3.2 (module docs)");
+    let mut bridge = offscreen_bridge();
+    bridge.load(bundle, id);
+    bridge.activate();
+    bridge.send(own_frame("kp-test-synth", None));
+    let error = bridge.expect_error(ErrorContext::Gui);
+    assert!(error.contains("GUI failed"), "{error}");
+    process(&mut bridge);
+    assert_eq!(bridge.shutdown(), EXIT_OK);
+}
+
 fn synth_frame(bundle: &Path, id: &str) {
+    if !opengl_available() {
+        return gui_without_opengl(bundle, id);
+    }
     let mut bridge = offscreen_bridge();
     let info = bridge.load(bundle, id);
     assert!(info.has_gui, "kp-test-synth has a Win32 GUI");
@@ -292,6 +391,9 @@ fn shutdown_closes_an_open_frame() {
     let Some(bundle) = fixture("kp-test-synth") else {
         return;
     };
+    if !opengl_available() {
+        return gui_without_opengl(&bundle, SYNTH);
+    }
     let mut bridge = offscreen_bridge();
     bridge.load(&bundle, SYNTH);
     bridge.activate();
@@ -307,6 +409,9 @@ fn a_dying_bridge_takes_its_frame_with_it() {
     let Some(bundle) = fixture("kp-test-synth") else {
         return;
     };
+    if !opengl_available() {
+        return gui_without_opengl(&bundle, SYNTH);
+    }
     let mut bridge = offscreen_bridge();
     bridge.load(&bundle, SYNTH);
     bridge.activate();
@@ -326,6 +431,9 @@ fn the_key_hook_takes_shortcuts_from_the_focused_plugin() {
     let Some(bundle) = fixture("kp-test-synth") else {
         return;
     };
+    if !opengl_available() {
+        return gui_without_opengl(&bundle, SYNTH);
+    }
     let mut bridge = offscreen_bridge();
     bridge.load(&bundle, SYNTH);
     let (_, _, window) = open(&mut bridge, "kp-test-synth");

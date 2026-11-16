@@ -74,9 +74,12 @@ block2.workspace = true
 [dev-dependencies]
 
 [target.'cfg(windows)'.dev-dependencies]
-# The frame tests look at the bridge's frame window (port W6).
+# The frame tests look at the bridge's frame window (port W6), and ask WGL whether kp-test-synth's
+# OpenGL GUI can open on this machine (not on a GitHub runner without GPU).
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
