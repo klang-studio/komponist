@@ -1,6 +1,6 @@
 # Vendored: Steinberg ASIO SDK (host subset)
 
-- **Source:** https://www.steinberg.net/asiosdk (the "ASIO SDK 2.3.4" zip, `asiosdk_2.3.4_2025-10-14`;
+- **Source:** https://www.steinberg.net/asiosdk (ASIO SDK 2.3.4: `changes.txt` starts with "Changes in ASIO 2.3.4";
   file dates 2025-09-05 … 2025-10-13). Taken on 2026-11-16 (W8b).
 - **Used by:** `asio-sys` 0.4 (cpal feature `asio`, Windows builds with the crate feature
   `komponist-audio/asio`). `.cargo/config.toml` sets `CPAL_ASIO_DIR` to this folder, so the build

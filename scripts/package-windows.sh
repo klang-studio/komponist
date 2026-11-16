@@ -5,11 +5,11 @@
 #   scripts/package-windows.sh [--skip-build] [--no-asio] [--out DIR] [--name NAME]
 #
 # The build has ASIO (cargo feature `asio`, W8) unless --no-asio is given. ASIO needs LLVM's libclang for bindgen
-# (LIBCLANG_PATH, or "C:\Program Files\LLVM\bin", where the LLVM installer and the windows-2025 runner put it) and
-# downloads Steinberg's ASIO SDK at build time (https://www.steinberg.net/asiosdk; docs/ARCHITECTURE.md §7). Without
-# libclang the script stops with an error instead of shipping a build without ASIO silently. The ASIO SDK is
-#
-# not part of the zip. With --skip-build nothing is built or checked here.
+# (LIBCLANG_PATH, or "C:\Program Files\LLVM\bin", where the LLVM installer and the windows-2025 runner put it). The
+# ASIO SDK (host subset) is vendored in vendor/asio-sdk and found through CPAL_ASIO_DIR in .cargo/config.toml: nothing is
+# downloaded (docs/ARCHITECTURE.md §7). Without libclang the script stops with an error instead of shipping a build
+# without ASIO silently. The SDK sources are not part of the zip.
+# With --skip-build nothing is built or checked here.
 # NAME is the base name of the folder inside the zip and of the zip itself; default komponist-<version>-windows-x86_64
 # (the release job passes komponist-<tag>-windows-x86_64). The zip holds komponist.exe (the plugin bridge is
 # `komponist.exe --bridge`, nothing else to ship; fonts, texts and the window icon are compiled in, the file icon
