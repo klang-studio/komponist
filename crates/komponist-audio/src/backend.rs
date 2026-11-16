@@ -291,9 +291,9 @@ pub(crate) fn host(kind: HostKind) -> Result<cpal::Host, AudioError> {
 /// Whether an ASIO driver is registered (Windows registry, read-only, nothing loaded). Never true off
 /// Windows, where `host(HostKind::Asio)` fails first anyway.
 #[cfg(windows)]
-use crate::asio_registry::any_driver_registered as asio_driver_registered;
+pub(crate) use crate::asio_registry::any_driver_registered as asio_driver_registered;
 #[cfg(not(windows))]
-fn asio_driver_registered() -> bool {
+pub(crate) fn asio_driver_registered() -> bool {
     false
 }
 

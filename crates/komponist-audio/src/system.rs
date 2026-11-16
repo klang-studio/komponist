@@ -1273,13 +1273,12 @@ mod tests {
     fn hosts_and_devices() {
         let hosts = AudioSystem::<TestEngine>::available_hosts();
         assert_eq!(hosts.last(), Some(&HostKind::Null));
-        // ASIO is listed in builds with the feature (listing creates cpal's host; it loads no
-        // driver), after WASAPI so the platform default stays first.
-        assert_eq!(
-            hosts.contains(&HostKind::Asio),
-            cfg!(all(windows, feature = "asio"))
-        );
-        if cfg!(all(windows, feature = "asio")) {
+        // ASIO is listed in builds with the feature when a driver is registered (listing creates
+        // cpal's host and reads the registry; it loads no driver: W8b), after WASAPI so the
+        // platform default stays first. CI runners have no ASIO driver.
+        let asio = cfg!(all(windows, feature = "asio")) && crate::backend::asio_driver_registered();
+        assert_eq!(hosts.contains(&HostKind::Asio), asio);
+        if asio {
             let position = |kind| hosts.iter().position(|&h| h == kind);
             assert!(position(HostKind::Wasapi) < position(HostKind::Asio));
         }
