@@ -1351,8 +1351,8 @@ table of CLAP features / VST3 subcategories.
 
 - **Windows (port W6): the bridge owns the frame window, as on macOS.** The app could create the frame and let the
   plugin attach a child window across processes (the Linux model), but a cross-process parent/child pair attaches
-  the input queues of both threads, so a hung plugin would freeze the app (Windows port evaluation §3.6, internal notes). The frame logic is
-  shared with macOS (`komponist-bridge/src/frame/mod.rs`, `keys.rs`); `frame/win32.rs` is the OS half. The body is a
+  the input queues of both threads, so a hung plugin would freeze the app (Windows port evaluation §3.6, internal
+  notes). The frame logic is shared with macOS (`komponist-bridge/src/frame/mod.rs`, `keys.rs`); `frame/win32.rs` is the OS half. The body is a
   container child window of winit's window (`WS_CLIPCHILDREN`, background `surface.0`) the plugin attaches to (CLAP
   `win32`, VST3 `kPlatformTypeHWND`). Sizes are physical pixels at the window's DPI scale (`GetDpiForWindow / 96`),
   passed to the plugin (CLAP `set_scale`, VST3 `setContentScaleFactor`); the header is 28 × scale pixels; the
