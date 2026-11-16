@@ -83,6 +83,9 @@ status-empty-hint = Ctrl+T: MIDI track · Ctrl+S: save
 # The engine's worker threads run without real-time priority.
 status-workers-no-realtime = Audio threads run without real-time priority
 
+# The engine's worker threads could not join the audio device's workgroup (macOS).
+status-workers-no-workgroup = Audio threads could not join the audio workgroup
+
 # A MIDI input appeared; `$name` as S07 shows it.
 status-midi-connected = { $name } connected
 

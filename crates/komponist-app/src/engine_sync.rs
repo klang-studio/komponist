@@ -81,12 +81,23 @@ pub struct EngineProcess {
     /// Set by a worker start that ran without realtime priority; the app takes it once
     /// ([`EngineSync::take_worker_notice`]).
     worker_notice: Arc<AtomicBool>,
+    /// Likewise for workers that could not join the audio workgroup
+    /// ([`EngineSync::take_workgroup_notice`]).
+    workgroup_notice: Arc<AtomicBool>,
 }
 
 /// Whether a worker start deserves a status bar notice: workers run, but without the realtime
 /// priority that was asked for. Workers off or none started: nothing to say (single-threaded).
 pub fn lacks_realtime(status: &WorkerStatus) -> bool {
     status.threads > 0 && status.realtime_error.is_some()
+}
+
+/// Whether a worker start deserves a status bar notice because workers could not join the audio
+/// device's workgroup (macOS; without it the realtime policy alone gives dropouts at 64-128
+/// frames, real-IO measurement #79). Only a workgroup that was given and refused counts: streams
+/// without one (null backend, Linux) have `workgroup_error == None`.
+pub fn lacks_workgroup(status: &WorkerStatus) -> bool {
+    status.threads > 0 && status.workgroup_error.is_some()
 }
 
 impl EngineProcess {
@@ -104,6 +115,7 @@ impl EngineProcess {
             rt: WorkerRt::new(Duration::from_secs_f64(HELD_BLOCK as f64 / 48_000.0)),
             worker_status: Arc::default(),
             worker_notice: Arc::default(),
+            workgroup_notice: Arc::default(),
         }
     }
 
@@ -119,6 +131,8 @@ impl EngineProcess {
         let status = self.engine.set_workers(self.workers, Some(self.rt.clone()));
         self.worker_notice
             .store(lacks_realtime(&status), Ordering::Relaxed);
+        self.workgroup_notice
+            .store(lacks_workgroup(&status), Ordering::Relaxed);
         *self.worker_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
     }
 }
@@ -267,6 +281,8 @@ pub struct EngineSync {
     worker_status: Arc<Mutex<Option<WorkerStatus>>>,
     /// See [`EngineProcess`]'s `worker_notice`.
     worker_notice: Arc<AtomicBool>,
+    /// See [`EngineProcess`]'s `workgroup_notice`.
+    workgroup_notice: Arc<AtomicBool>,
     worker_stats: Arc<WorkerStats>,
 }
 
@@ -318,6 +334,7 @@ impl EngineSync {
         let process = EngineProcess::new(engine, Arc::clone(&rate));
         let worker_status = Arc::clone(&process.worker_status);
         let worker_notice = Arc::clone(&process.worker_notice);
+        let workgroup_notice = Arc::clone(&process.workgroup_notice);
         let telemetry = Arc::clone(handle.telemetry());
         let mut sync = EngineSync {
             audio: AudioSystem::new(Box::new(process), receiver),
@@ -340,6 +357,7 @@ impl EngineSync {
             workers_after_export: None,
             worker_status,
             worker_notice,
+            workgroup_notice,
             worker_stats,
         };
         let started = sync.audio.start(config);
@@ -703,6 +721,12 @@ impl EngineSync {
     /// says so; [`lacks_realtime`]).
     pub fn take_worker_notice(&self) -> bool {
         self.worker_notice.swap(false, Ordering::Relaxed)
+    }
+
+    /// True once per stream start whose workers could not join the audio workgroup (the status
+    /// bar says so; [`lacks_workgroup`]).
+    pub fn take_workgroup_notice(&self) -> bool {
+        self.workgroup_notice.swap(false, Ordering::Relaxed)
     }
 
     /// The engine's worker pool counters (batches, jobs on workers, late waits).
@@ -1142,6 +1166,27 @@ mod tests {
         assert!(!lacks_realtime(&status(3, None)));
         assert!(!lacks_realtime(&status(0, Some("Operation not permitted"))));
         assert!(!lacks_realtime(&WorkerStatus::default()));
+    }
+
+    #[test]
+    fn workgroup_notice_only_for_running_workers_that_could_not_join() {
+        let status = |threads, workgroup_error: Option<&str>| WorkerStatus {
+            threads,
+            joined_workgroup: workgroup_error.is_none(),
+            workgroup_error: workgroup_error.map(str::to_owned),
+            ..WorkerStatus::default()
+        };
+        assert!(lacks_workgroup(&status(3, Some("Invalid argument"))));
+        assert!(!lacks_workgroup(&status(3, None)));
+        assert!(!lacks_workgroup(&status(0, Some("Invalid argument"))));
+        // No workgroup given (null backend, Linux): nothing to say.
+        assert!(!lacks_workgroup(&WorkerStatus::default()));
+        // A refused priority alone is the other notice's business.
+        assert!(!lacks_workgroup(&WorkerStatus {
+            threads: 3,
+            realtime_error: Some("Operation not permitted".into()),
+            ..WorkerStatus::default()
+        }));
     }
 
     /// Mute and solo on the fast path carry the gate table of the routing graph: soloing a group

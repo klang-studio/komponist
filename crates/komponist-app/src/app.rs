@@ -384,6 +384,12 @@ impl App {
         self.set_status(self.lang.status_workers_no_realtime(), StatusKind::Info);
     }
 
+    /// Tells in the status bar that the engine's worker threads could not join the audio
+    /// workgroup (macOS). Once per stream start.
+    pub fn report_workers_without_workgroup(&mut self) {
+        self.set_status(self.lang.status_workers_no_workgroup(), StatusKind::Info);
+    }
+
     /// Tells in the status bar which MIDI inputs appeared or vanished in the last scans
     /// (`EngineSync::take_midi_changes`), by the name S07 shows. Several changes make one
     /// message, joined by " · ".
@@ -534,8 +540,13 @@ impl App {
             self.engine.audio_state(),
             AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
         );
-        if self.engine.take_worker_notice() && device_stream {
+        let no_realtime = self.engine.take_worker_notice();
+        let no_workgroup = self.engine.take_workgroup_notice();
+        // One message per frame; a missing priority is the worse one and wins.
+        if device_stream && no_realtime {
             self.report_workers_without_realtime();
+        } else if device_stream && no_workgroup {
+            self.report_workers_without_workgroup();
         }
         self.report_midi_changes();
         // Read after the drain: at least as new as every event drained (`record` docs).
