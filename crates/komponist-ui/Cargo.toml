@@ -32,6 +32,10 @@ egui_extras.workspace = true
 winit.workspace = true
 egui_kittest = { workspace = true, optional = true }
 
+# The primary monitor's work area and the system DPI for the first window's size (`windows_work_area`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 komponist-ui = { path = ".", features = ["snapshot"] }
 
