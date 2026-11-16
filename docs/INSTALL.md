@@ -39,9 +39,8 @@ icon, hardened-runtime signature; ad-hoc unless `KOMPONIST_SIGN_IDENTITY` is set
 
 ## Windows
 
-The Windows 11 (x86_64) port is in progress; the first release zip follows once the app builds there. Every
-[release](https://github.com/klang-studio/komponist/releases) then has `komponist-<tag>-windows-x86_64.zip` and its
-`.sha256`.
+komponist runs on Windows 11 (x86_64). Every [release](https://github.com/klang-studio/komponist/releases) since
+v0.3.0-alpha2 has `komponist-<tag>-windows-x86_64.zip` and its `.sha256`.
 
 1. Download the zip. Check it in PowerShell: `Get-FileHash komponist-<tag>-windows-x86_64.zip -Algorithm SHA256` must
    print the hash in the `.sha256` file.
