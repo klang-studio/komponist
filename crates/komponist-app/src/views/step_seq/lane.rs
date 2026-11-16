@@ -109,8 +109,7 @@ pub fn show(
 
     let selected = open.selected_step(row);
     let tab = lane_label(ctx.lang, lane);
-    for i in 0..open.steps() {
-        let step = &model.steps[i];
+    for (i, step) in model.steps.iter().enumerate().take(open.steps()) {
         let x = cols.x(i);
         let painter = ui.painter();
         px::fill(

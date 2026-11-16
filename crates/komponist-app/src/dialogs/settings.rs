@@ -92,8 +92,7 @@ pub const DRIVERS: [(HostKind, &str); 5] = [
 ];
 
 /// The drivers this system has (CoreAudio on macOS; WASAPI on Windows; PipeWire, JACK, ALSA on
-/// Linux), in segment
-/// order. Those not currently available are shown disabled.
+/// Linux), in segment order. Those not currently available are shown disabled.
 pub fn drivers_here() -> Vec<(HostKind, &'static str)> {
     DRIVERS
         .into_iter()
