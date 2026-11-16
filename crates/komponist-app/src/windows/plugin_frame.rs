@@ -814,6 +814,11 @@ impl App {
         self.queue.push(action);
     }
 
+    /// Whether `device` has a frame.
+    fn has_frame(&self, device: DeviceId) -> bool {
+        self.frames.frames.iter().any(|f| f.device == device)
+    }
+
     /// The parts of a device host event that concern the frames.
     fn frame_event(&mut self, event: &PluginManagerEvent, ctx: &Context) {
         let now = Instant::now();
@@ -936,20 +941,14 @@ impl App {
                     f.params_dirty = true;
                 }
             }
-            PluginManagerEvent::FrameHeaderAction { device, event } => {
-                if self.frames.frame_mut(device).is_some() {
-                    self.frame_output(device, Output::Header(event));
-                }
+            PluginManagerEvent::FrameHeaderAction { device, event } if self.has_frame(device) => {
+                self.frame_output(device, Output::Header(event));
             }
-            PluginManagerEvent::FrameShortcut { device, ref chord } => {
-                if self.frames.frame_mut(device).is_some() {
-                    self.frame_shortcut(device, chord);
-                }
+            PluginManagerEvent::FrameShortcut { device, ref chord } if self.has_frame(device) => {
+                self.frame_shortcut(device, chord);
             }
-            PluginManagerEvent::FrameKey { device, ref key } => {
-                if self.frames.frame_mut(device).is_some() {
-                    self.frame_bridge_key(device, key);
-                }
+            PluginManagerEvent::FrameKey { device, ref key } if self.has_frame(device) => {
+                self.frame_bridge_key(device, key);
             }
             PluginManagerEvent::FrameMoved { device, rect } => {
                 if let Some(f) = self.frames.frame_mut(device) {
@@ -957,11 +956,9 @@ impl App {
                     f.pos = Some(rect_pos(rect));
                 }
             }
-            PluginManagerEvent::FrameCloseRequested { device } => {
-                if self.frames.frame_mut(device).is_some() {
-                    self.queue
-                        .push(Action::Plugin(PluginAction::CloseWindow(device)));
-                }
+            PluginManagerEvent::FrameCloseRequested { device } if self.has_frame(device) => {
+                self.queue
+                    .push(Action::Plugin(PluginAction::CloseWindow(device)));
             }
             _ => {}
         }
