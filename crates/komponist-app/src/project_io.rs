@@ -10,7 +10,12 @@
 //!   A project whose plugins are not in the catalog opens the S06 dialog; while a plugin scan
 //!   runs, the check waits for its end, so plugins the scan is about to find are not reported.
 //! - A dirty project asks first (`dialogs::new_project`): save, discard or cancel; so does
-//!   closing the window ([`App::close_requested`]).
+//!   closing the window ([`App::close_requested`]). A running take with notes counts as unsaved
+//!   even in a clean project (#85): "Speichern" ends it as Stop would and saves it, "Nicht
+//!   speichern" throws it away, "Abbrechen" keeps recording. A failed save goes no further.
+//! - Saving while recording writes the document plus the take as Stop would commit it at that
+//!   moment, and capture goes on into the same take. No root of the undo history equals that
+//!   file, so the project stays unsaved until it is saved again after Stop.
 //! - Saving under a new path renames the project after the file ("Unbenannt" saved as
 //!   `Hafenlicht.komponist` becomes "Hafenlicht"), outside the undo history.
 //!
@@ -275,9 +280,14 @@ impl App {
         }
     }
 
+    /// Whether leaving the project loses something: unsaved changes or a running take with notes.
+    fn has_unsaved(&self) -> bool {
+        self.doc.is_dirty() || self.has_unsaved_take()
+    }
+
     /// `next` replaces the open project: asks first if it has unsaved changes.
     fn guard(&mut self, next: Pending) {
-        if self.ui.screen == Screen::Project && self.doc.is_dirty() {
+        if self.ui.screen == Screen::Project && self.has_unsaved() {
             self.dialogs.pending = Some(next);
             self.open_overlay(Overlay::Unsaved);
         } else {
@@ -312,11 +322,10 @@ impl App {
     }
 
     /// The window is asked to close (its close button, Alt F4): `true` if it may close now. A
-    /// project with unsaved changes asks first (save, discard, cancel); after "Speichern" or "Nicht
-    /// speichern" the window closes by itself.
+    /// project with unsaved changes or a running take asks first (save, discard, cancel); after
+    /// "Speichern" or "Nicht speichern" the window closes by itself.
     pub fn close_requested(&mut self) -> bool {
-        if self.dialogs.quit_confirmed || self.ui.screen != Screen::Project || !self.doc.is_dirty()
-        {
+        if self.dialogs.quit_confirmed || self.ui.screen != Screen::Project || !self.has_unsaved() {
             return true;
         }
         if !matches!(self.dialogs.overlay, Some(Overlay::Unsaved)) {
@@ -388,10 +397,12 @@ impl App {
     }
 
     /// Saves the project to `path` (`.komponist` added): takes the bridged plugins' states first,
-    /// renames the project after a new file, remembers the file. `false` if writing failed (the
-    /// status bar says why).
+    /// renames the project after a new file, remembers the file. A running take goes into the
+    /// file without ending (module docs). `false` if writing failed (the status bar says why).
     pub(crate) fn save_to(&mut self, path: &Path) -> bool {
         let path = with_extension(path);
+        // The take so far, with the notes still in flight (#85).
+        let with_take = self.project_with_take();
         // The bridged plugins' current states go into the file (blocking, bounded).
         for (device, state) in self
             .engine
@@ -406,20 +417,32 @@ impl App {
         let rename = name_from_path(&path).filter(|name| {
             self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
         });
-        let written = match &rename {
-            Some(name) => {
+        let take_saved = with_take.is_some();
+        let written = match (with_take, &rename) {
+            (Some(mut project), rename) => {
+                if let Some(name) = rename {
+                    project.name = name.clone();
+                }
+                save_project(&path, &project)
+            }
+            (None, Some(name)) => {
                 let mut renamed = Project::clone(self.project());
                 renamed.name = name.clone();
                 save_project(&path, &renamed)
             }
-            None => save_project(&path, self.project()),
+            (None, None) => save_project(&path, self.project()),
         };
         match written {
             Ok(()) => {
                 if let Some(name) = rename {
                     self.untracked(ProjectProp::Name(name));
                 }
-                self.doc.mark_saved();
+                if take_saved {
+                    // The file holds the take, the document does not yet.
+                    self.doc.forget_saved();
+                } else {
+                    self.doc.mark_saved();
+                }
                 self.project_path = Some(path.clone());
                 let dir = self.project_dir();
                 self.engine.host_mut().set_project_dir(dir);
@@ -518,19 +541,30 @@ impl App {
             return;
         };
         match answer {
+            // A running take records on.
             Answer::Cancel => {}
-            Answer::Discard => self.proceed(next),
-            Answer::Save => match self.project_path.clone() {
-                Some(path) => {
-                    if self.save_to(&path) {
-                        self.proceed(next);
+            Answer::Discard => {
+                if self.recording.is_some() {
+                    self.discard_take();
+                }
+                self.proceed(next);
+            }
+            // A running take ends as Stop would and is saved with the project; if the save fails,
+            // the take stays in the document and the project stays open.
+            Answer::Save => {
+                self.stop_take();
+                match self.project_path.clone() {
+                    Some(path) => {
+                        if self.save_to(&path) {
+                            self.proceed(next);
+                        }
+                    }
+                    None => {
+                        self.open_file_browser(Purpose::Save);
+                        self.dialogs.pending = Some(next);
                     }
                 }
-                None => {
-                    self.open_file_browser(Purpose::Save);
-                    self.dialogs.pending = Some(next);
-                }
-            },
+            }
         }
     }
 
