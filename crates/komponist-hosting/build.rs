@@ -1,4 +1,4 @@
-//! Platform cfgs of this crate (ARCHITECTURE §8.4, "Platform cfgs"), set from the target OS:
+//! Platform cfgs of this crate (ARCHITECTURE §4.1, "Platform cfgs"), set from the target OS:
 //!
 //! - `x11_embed` (Linux): plugin GUIs are embedded as X11 children of a window the app owns
 //!   (`GuiParent::X11`, CLAP `x11`, VST3 `kPlatformTypeX11EmbedWindowID`).

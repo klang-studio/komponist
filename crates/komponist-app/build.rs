@@ -1,4 +1,4 @@
-//! Platform cfgs of this crate (ARCHITECTURE §8.4, "Platform cfgs"), set from the target OS:
+//! Platform cfgs of this crate (ARCHITECTURE §4.1, "Platform cfgs"), set from the target OS:
 //!
 //! - `bridge_frame` (macOS): the plugin bridge owns the plugin's frame window (`GuiTarget::OwnFrame`,
 //!   #52); the app only sends the header model and handles the actions it gets back. The Windows
