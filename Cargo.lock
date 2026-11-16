@@ -2491,6 +2491,7 @@ dependencies = [
  "assert_no_alloc",
  "komponist-hosting",
  "komponist-ipc",
+ "komponist-rt",
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
