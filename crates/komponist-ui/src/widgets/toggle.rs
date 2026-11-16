@@ -38,6 +38,7 @@ use komponist_tokens::{Srgba, color, radius, size, space};
 use super::metrics;
 use super::tooltip::Tip;
 use crate::Lang;
+use crate::platform::Platform;
 use crate::state::{self, State};
 use crate::{focus, px};
 
@@ -117,12 +118,12 @@ impl ToggleKind {
                 .shortcut("M")
                 .detail(t.ui_toggle_mute_implied()),
             Self::Mute => Tip::new(name).shortcut("M"),
-            Self::Solo => Tip::new(name)
-                .shortcut("S")
-                .detail(t.ui_toggle_solo_detail()),
-            Self::Arm => Tip::new(name)
-                .shortcut("R")
-                .detail(t.ui_toggle_arm_detail()),
+            Self::Solo => Tip::new(name).shortcut("S").detail(
+                Platform::current().pick(t.ui_toggle_solo_detail(), t.ui_toggle_solo_detail_mac()),
+            ),
+            Self::Arm => Tip::new(name).shortcut("R").detail(
+                Platform::current().pick(t.ui_toggle_arm_detail(), t.ui_toggle_arm_detail_mac()),
+            ),
             Self::Monitor if implied => Tip::new(name).detail(t.ui_toggle_monitor_implied()),
             Self::Monitor => Tip::new(name),
         }

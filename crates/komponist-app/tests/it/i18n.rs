@@ -143,7 +143,7 @@ fn the_status_bar_follows_the_language() {
     assert!(s.left.ends_with(" notes selected"), "{}", s.left);
     let hint = Platform::current().pick(
         "Ctrl+drag a note: velocity · Alt+drag: copy",
-        "⌘+drag a note: velocity · Alt+drag: copy",
+        "⌘+drag a note: velocity · ⌥+drag: copy",
     );
     assert_eq!(s.mid, hint);
     // The null backend of the headless app: the output line says "samples" and the chip text.
@@ -227,8 +227,9 @@ fn undo_labels_follow_the_language() {
 }
 
 #[test]
-fn the_macos_hints_name_command_and_the_linux_hints_name_ctrl() {
+fn the_macos_hints_name_command_and_option_and_the_linux_hints_name_ctrl_and_alt() {
     for t in Lang::ALL {
+        // Hints with the shortcut modifier: ⌘ on macOS, Ctrl / Strg elsewhere.
         let mac = [
             t.project_new_created_mac(),
             t.status_notes_hint_mac(),
@@ -253,6 +254,32 @@ fn the_macos_hints_name_command_and_the_linux_hints_name_ctrl() {
                 !pc.contains('⌘') && (pc.contains("Ctrl") || pc.contains("Strg")),
                 "{t:?}: {pc}"
             );
+        }
+    }
+}
+
+/// Every prose hint that names the Option key writes ⌥ on macOS and Alt elsewhere (#81).
+#[test]
+fn the_macos_hints_write_the_option_key_as_a_glyph() {
+    for t in Lang::ALL {
+        let pairs = [
+            (t.status_param_hint(), t.status_param_hint_mac()),
+            (t.status_notes_hint(), t.status_notes_hint_mac()),
+            (t.status_step_hint(), t.status_step_hint_mac()),
+            (t.status_devices_hint(), t.status_devices_hint_mac()),
+            (t.status_clips_hint(), t.status_clips_hint_mac()),
+            (t.mixer_slot_detail(), t.mixer_slot_detail_mac()),
+            (t.mixer_peak_detail(), t.mixer_peak_detail_mac()),
+            (t.ui_toggle_solo_detail(), t.ui_toggle_solo_detail_mac()),
+            (t.ui_toggle_arm_detail(), t.ui_toggle_arm_detail_mac()),
+            (
+                t.devices_to_default_alt_shortcut(),
+                t.devices_to_default_alt_shortcut_mac(),
+            ),
+        ];
+        for (pc, mac) in pairs {
+            assert!(mac.contains('⌥') && !mac.contains("Alt"), "{t:?}: {mac}");
+            assert!(pc.contains("Alt") && !pc.contains('⌥'), "{t:?}: {pc}");
         }
     }
 }

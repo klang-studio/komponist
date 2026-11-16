@@ -18,8 +18,14 @@ ui-toggle-mute-implied = stumm durch Solo
 # Second tooltip line of S.
 ui-toggle-solo-detail = Alt-Klick: nur diese Spur solo
 
+# Same on macOS: ⌥ instead of Alt.
+ui-toggle-solo-detail-mac = ⌥-Klick: nur diese Spur solo
+
 # Second tooltip line of R.
 ui-toggle-arm-detail = Alt-Klick exklusiv
+
+# Same on macOS: ⌥ instead of Alt.
+ui-toggle-arm-detail-mac = ⌥-Klick exklusiv
 
 # Second tooltip line of I while the armed track monitors.
 ui-toggle-monitor-implied = durch Record-Arm

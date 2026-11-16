@@ -21,6 +21,9 @@ status-count-in = Vorzähler …
 # Middle text while a device parameter is dragged.
 status-param-hint = Alt-Klick: Standard · Rechtsklick: Wert eingeben
 
+# Same on macOS: ⌥ instead of Alt.
+status-param-hint-mac = ⌥-Klick: Standard · Rechtsklick: Wert eingeben
+
 # Left side in the piano roll; German keeps "Noten" for one note (verbatim S01).
 status-notes-selected = { $clip } · { $selected } von { $total } { $total ->
         [one] Noten
@@ -30,14 +33,17 @@ status-notes-selected = { $clip } · { $selected } von { $total } { $total ->
 # Middle text in the piano roll.
 status-notes-hint = Strg-Ziehen auf Note: Velocity · Alt-Ziehen: Kopie
 
-# Same on macOS: ⌘ instead of Strg.
-status-notes-hint-mac = ⌘-Ziehen auf Note: Velocity · Alt-Ziehen: Kopie
+# Same on macOS: ⌘ instead of Strg, ⌥ instead of Alt.
+status-notes-hint-mac = ⌘-Ziehen auf Note: Velocity · ⌥-Ziehen: Kopie
 
 # Left side in the step sequencer with a selected step; `$step` counts from 1.
 status-step-selected = { $clip } · Step { $step } von { $length }
 
 # Middle text in the step sequencer with a selected step.
 status-step-hint = Klick setzt Step · Ziehen ↕ auf Step: Velocity · Alt-Klick: Wahrscheinlichkeit
+
+# Same on macOS: ⌥ instead of Alt.
+status-step-hint-mac = Klick setzt Step · Ziehen ↕ auf Step: Velocity · ⌥-Klick: Wahrscheinlichkeit
 
 # Left side in the step sequencer without a selected step; German keeps "Steps" for one step.
 status-steps-set = { $clip } · { $count } { $count ->
@@ -63,6 +69,9 @@ status-devices = { $name } · { $count ->
 # Middle text in the device chain.
 status-devices-hint = Gerät ziehen: umsortieren · Alt-Klick auf Schalter: Bypass
 
+# Same on macOS: ⌥ instead of Alt.
+status-devices-hint-mac = Gerät ziehen: umsortieren · ⌥-Klick auf Schalter: Bypass
+
 # Left side with selected clips.
 status-clips-selected = { $count ->
         [one] 1 Clip
@@ -72,8 +81,8 @@ status-clips-selected = { $count ->
 # Middle text with selected clips.
 status-clips-hint = Ziehen verschiebt · Alt-Ziehen kopiert · rechte Kante kürzt · Strg D dupliziert · Entf löscht
 
-# Same on macOS: ⌘ instead of Strg.
-status-clips-hint-mac = Ziehen verschiebt · Alt-Ziehen kopiert · rechte Kante kürzt · ⌘D dupliziert · Entf löscht
+# Same on macOS: ⌘ instead of Strg, ⌥ instead of Alt.
+status-clips-hint-mac = Ziehen verschiebt · ⌥-Ziehen kopiert · rechte Kante kürzt · ⌘D dupliziert · Entf löscht
 
 # Middle text with a selected track.
 status-track-hint = Doppelklick in die Spur legt einen Clip an · R nimmt auf
@@ -84,7 +93,7 @@ status-project-unsaved = { $name } · nicht gespeichert
 # Middle text of a project without tracks.
 status-empty-hint = Strg T: MIDI-Spur · Strg S: speichern
 
-# Same on macOS: ⌘ instead of Strg.
+# Same on macOS: ⌘ instead of Strg, ⌥ instead of Alt.
 status-empty-hint-mac = ⌘T: MIDI-Spur · ⌘S: speichern
 
 ## Messages (`App::set_status`).
