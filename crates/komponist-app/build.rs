@@ -1,8 +1,8 @@
 //! Platform cfgs of this crate (ARCHITECTURE §4.1, "Platform cfgs"), set from the target OS:
 //!
-//! - `bridge_frame` (macOS): the plugin bridge owns the plugin's frame window (`GuiTarget::OwnFrame`,
-//!   #52); the app only sends the header model and handles the actions it gets back. The Windows
-//!   port joins here in W6.
+//! - `bridge_frame` (macOS, Windows): the plugin bridge owns the plugin's frame window
+//!   (`GuiTarget::OwnFrame`; #52 on macOS, port W6 on Windows); the app only sends the header model
+//!   and handles the actions it gets back.
 //! - `x11_embed` (Linux): the app owns the frame window and the plugin attaches to an X11 child of
 //!   it (`GuiTarget::X11Child`, WP-50), including the key grabs.
 //!
@@ -21,7 +21,10 @@ fn main() {
     {
         "linux" => println!("cargo::rustc-cfg=x11_embed"),
         "macos" => println!("cargo::rustc-cfg=bridge_frame"),
-        "windows" => windows_resources(),
+        "windows" => {
+            println!("cargo::rustc-cfg=bridge_frame");
+            windows_resources();
+        }
         _ => {}
     }
 }
