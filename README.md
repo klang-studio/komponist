@@ -44,23 +44,23 @@ The step sequencer is made for drums and Sampler kits. Toggle steps while the pa
 
 No plugins needed to make a sound.
 
-**hexa** is a six-operator FM synth with envelopes, LFOs and a large preset library. Here with an EQ and a Delay behind
+**Hexa** is a six-operator FM synth with envelopes, LFOs and a large preset library. Here with an EQ and a Delay behind
 it:
 
-![hexa (FM synth) with an EQ and a Delay behind it](docs/media/device-hexa.png)
+![Hexa (FM synth) with an EQ and a Delay behind it](docs/media/device-hexa.png)
 
-**volt** is a subtractive synth with two oscillators, a filter and a sub oscillator. Here on the bass, with an EQ and a presse keyed by the drums:
+**Volt** is a subtractive synth with two oscillators, a filter and a sub oscillator. Here on the bass, with an EQ and a Presse keyed by the drums:
 
-![volt, a subtractive synth, with an EQ and presse](docs/media/device-volt.png)
+![Volt, a subtractive synth, with an EQ and Presse](docs/media/device-volt.png)
 
 The **Sampler** is a pad sampler with layers, envelopes, filters and slicing. The demo kit is synthesized, so it needs
-no sample files. Next to it, the presse compressor:
+no sample files. Next to it, the Presse compressor:
 
-![Sampler with its pads, and the presse compressor](docs/media/device-sampler-presse.png)
+![Sampler with its pads, and the Presse compressor](docs/media/device-sampler-presse.png)
 
 ### Built-in effects
 
-**EQ**, **Delay**, **Reverb**, **presse** (compressor with sidechain) and **Limiter**, plus the MIDI effects
+**EQ**, **Delay**, **Reverb**, **Presse** (compressor with sidechain) and **Limiter**, plus the MIDI effects
 **Arpeggiator** and **Scale**. The EQ shows the live spectrum of the signal it processes:
 
 ![The EQ's spectrum moving while the lead plays](docs/media/eq-spectrum.gif)
@@ -71,10 +71,10 @@ Add a device from the search menu in the dock, or drag it from the browser onto 
 
 ### Sidechains
 
-Key presse from another track's signal: choose the source in the **SC** chip of the device. Here, presse on the bass is
+Key Presse from another track's signal: choose the source in the **SC** chip of the device. Here, Presse on the bass is
 keyed by the drums:
 
-![presse on the bass, keyed by the drums: the gain reduction pumps with the kick](docs/media/sidechain.gif)
+![Presse on the bass, keyed by the drums: the gain reduction pumps with the kick](docs/media/sidechain.gif)
 
 ### CLAP and VST3 plugins
 
@@ -84,7 +84,7 @@ does not take your project down with it. Plugin windows open as native X11 windo
 ### Mixer, routing, recording
 
 - Record MIDI from any connected MIDI input (or the computer keyboard) into a take.
-- Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain presse, or a CLAP or
+- Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain Presse, or a CLAP or
   VST3 plugin with a sidechain input, from any track or bus.
 - Every edit is undoable, including parameter changes.
 - The transport bar shows the master output as an oscilloscope or a spectrum; a click switches between them.
@@ -98,7 +98,7 @@ The mixer shows every track with its inserts, sends, pan, mute/solo, faders and 
 komponist is **early software (v0.2)**. The MIDI workflow works end to end: arrange, edit, play, record, mix, save,
 export. Expect rough edges and file-format changes.
 
-What works: MIDI and step clips, piano roll, step sequencer, hexa / volt / Sampler, the built-in effects, sidechains
+What works: MIDI and step clips, piano roll, step sequencer, Hexa / Volt / Sampler, the built-in effects, sidechains
 (also into CLAP and VST3 plugins with a sidechain input), CLAP and VST3 hosting, mixer with groups, buses and sends, recording, undo and redo, project files, export.
 
 What is coming: **audio tracks**, automation.
@@ -156,7 +156,7 @@ A Rust workspace: model and undo, a realtime engine, built-in devices, plugin ho
 komponist is licensed under the **GNU General Public License, version 3 or (at your option) any later version**, see
 [LICENSE](LICENSE).
 
-- `crates/hexa-core` (hexa's FM engine) is a copy of the `hexa-core` crate of pisynth, and `crates/sampler-core`
+- `crates/hexa-core` (Hexa's FM engine) is a copy of the `hexa-core` crate of pisynth, and `crates/sampler-core`
   (the Sampler engine) is a copy of the `dsp` crate of klopfer. Both authors license the copies under
   GPL-3.0-or-later; the crates' READMEs record the provenance. The projects continue separately.
 - The DSP library [klang-dsp](https://github.com/klang-studio/klang-dsp) is a git dependency.
