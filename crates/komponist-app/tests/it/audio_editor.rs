@@ -391,19 +391,14 @@ fn audio_editor_snapshots() {
                     .get_by_role_and_label(Role::Status, lang.transport_cpu())
                     .rect();
                 h.mask(cpu.expand(2.0));
-                let waveform_name = lang.audio_waveform_title("Verse");
-                let waveform_x = h
-                    .get_by_role_and_label(Role::Group, &waveform_name)
-                    .rect()
-                    .x_range();
                 let resolved = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
                 let path_label = resolved.display().to_string();
                 let mut masks: Vec<_> = h
-                    .get_all_by_role_and_label(Role::Label, &path_label)
-                    .map(|n| egui::Rect::from_x_y_ranges(waveform_x, n.rect().y_range()))
+                    .query_all_by_role_and_label(Role::Label, &path_label)
+                    .map(|n| n.rect())
                     .collect();
                 masks.extend(
-                    h.get_all_by_role_and_label(Role::Label, lang.audio_file_path())
+                    h.query_all_by_role_and_label(Role::Label, lang.audio_file_path())
                         .map(|n| n.rect()),
                 );
                 for rect in masks {
