@@ -99,6 +99,8 @@ pub fn add_audio_track_in(
 /// A property of an audio clip (inspector, clip handles).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AudioClipProp {
+    /// Start frame of the active source window; keeps the timeline start and shortens at file end.
+    SourceOffset(u64),
     /// Clip gain in dB, clamped to `CLIP_GAIN_DB_MIN ..= CLIP_GAIN_DB_MAX`; NaN is `Invalid`.
     GainDb(f32),
     /// Fade-in length in ticks, clamped to `0 ..= length − fade_out`.
@@ -120,6 +122,9 @@ pub fn set_audio_clip_prop(project: &Project, clip: ClipId, prop: AudioClipProp)
         let length = c.length;
         let a = audio_mut(c)?;
         match prop {
+            AudioClipProp::SourceOffset(offset) => {
+                a.offset = offset.min(a.file.frames.saturating_sub(1))
+            }
             AudioClipProp::GainDb(db) => {
                 if db.is_nan() {
                     return Err(EditError::Invalid("gain is not a number"));
@@ -138,7 +143,9 @@ pub fn set_audio_clip_prop(project: &Project, clip: ClipId, prop: AudioClipProp)
         }
         if matches!(
             prop,
-            AudioClipProp::TimeMode(_) | AudioClipProp::OriginalTempo(_)
+            AudioClipProp::TimeMode(_)
+                | AudioClipProp::OriginalTempo(_)
+                | AudioClipProp::SourceOffset(_)
         ) {
             let max = a.max_length(tempo).max(MIN_LENGTH);
             let new_length = length.min(max);

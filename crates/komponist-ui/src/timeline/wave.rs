@@ -77,6 +77,15 @@ impl WaveMesh {
 
     /// The waveform of `peaks` for `spec`.
     pub fn from_peaks(peaks: &PeakData, spec: &WaveSpec) -> Self {
+        Self::from_channels(peaks,spec,0..peaks.channels().min(2))
+    }
+
+    /// One source channel, used by the stereo waveform editor.
+    pub fn from_channel(peaks:&PeakData,spec:&WaveSpec,channel:usize)->Self {
+        Self::from_channels(peaks,spec,channel..channel.saturating_add(1).min(peaks.channels()))
+    }
+
+    fn from_channels(peaks:&PeakData,spec:&WaveSpec,channels:std::ops::Range<usize>)->Self {
         let mut mesh = Self::flat(spec.width, spec.px_per_tick, spec.body_height);
         let columns = (mesh.width.max(0) as usize).min(MAX_COLUMNS);
         if columns == 0 || spec.frames == 0 {
@@ -86,7 +95,7 @@ impl WaveMesh {
         let end = spec.offset.saturating_add(spec.frames);
         let mut peak = vec![(0.0f32, 0.0f32); columns];
         let mut rms = vec![0.0f32; columns];
-        for channel in 0..peaks.channels().min(2) {
+        for channel in channels {
             let q = peaks.query(channel, spec.offset, end, columns);
             for (slot, value) in rms
                 .iter_mut()
@@ -175,6 +184,13 @@ impl WaveMesh {
     /// Whether column `i` passes 0 dBFS, for tests.
     pub fn is_over(&self, i: usize) -> bool {
         self.cols.get(i).is_some_and(|c| c.over)
+    }
+
+    /// Paints a cached waveform in a source-editor lane, clipped to the viewport.
+    pub fn paint(&self,painter:&egui::Painter,body:Rect,peak:Color32,core:Color32,over:Color32) {
+        let mut q=Quads::new(painter.pixels_per_point());
+        self.paint_into(&mut q,body,painter.clip_rect().x_range(),peak,core,over);
+        q.paint(painter);
     }
 
     /// Adds the waveform into `q`, centred in `body` and cut to `body` and `visible` (screen x).

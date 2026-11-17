@@ -267,6 +267,10 @@ impl App {
                 None => self.open_file_browser(Purpose::Save),
             },
             ProjectAction::SaveAs => self.open_file_browser(Purpose::Save),
+            ProjectAction::ReplaceAudio(clip) => {
+                self.open_file_browser(Purpose::ReplaceAudio(clip))
+            }
+            ProjectAction::ReplaceAudioPath { clip, path } => self.replace_audio_path(clip, path),
             ProjectAction::CollectAndSave => self.collect_and_save(),
             ProjectAction::ShowStartScreen => self.guard(Pending::StartScreen),
             ProjectAction::ContinueWithMissing => {
@@ -622,6 +626,7 @@ impl App {
                 }
             }
             Purpose::Sample => self.sample_chosen(path),
+            Purpose::ReplaceAudio(clip) => self.replace_audio_path(clip, path),
             Purpose::ExportFolder => self.export_folder_chosen(path),
             Purpose::Folder => {
                 let (clap, vst3) = crate::dialogs::settings::folder_formats(&path);
@@ -644,6 +649,60 @@ fn file_name(path: &Path) -> String {
         || path.display().to_string(),
         |f| f.to_string_lossy().into_owned(),
     )
+}
+
+impl App {
+    /// Relink without copying a file. Failed decoding or a source offset beyond its end keeps
+    /// both the document and undo history untouched.
+    pub(crate) fn replace_audio_path(&mut self, clip: komponist_model::ClipId, path: PathBuf) {
+        let Some((_, before)) = self.project().find_clip(clip) else {
+            return;
+        };
+        let komponist_model::ClipContent::Audio(a) = &before.content else {
+            return;
+        };
+        let old_length = before.length;
+        let name = before.name.clone();
+        let offset = a.offset;
+        let Ok(source) = komponist_audiofile::FilePool::global().open(&path) else {
+            self.set_status(
+                self.lang
+                    .audio_file_replace_failed(self.lang.audio_file_no_audio()),
+                StatusKind::Error,
+            );
+            return;
+        };
+        let info = source.info();
+        if offset >= info.frames {
+            self.set_status(
+                self.lang
+                    .audio_file_replace_failed(self.lang.audio_file_too_short()),
+                StatusKind::Error,
+            );
+            return;
+        }
+        let file = komponist_model::AudioFile::new(
+            &path,
+            self.project_dir().as_deref(),
+            info.frames,
+            info.sample_rate,
+            info.channels as u16,
+        );
+        self.dispatch(Action::Edit(crate::EditAction::SetAudioClipFile {
+            clip,
+            file,
+        }));
+        if self
+            .project()
+            .find_clip(clip)
+            .is_some_and(|(_, c)| c.length < old_length)
+        {
+            self.set_status(
+                self.lang.audio_file_replace_shortened(name),
+                StatusKind::Info,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

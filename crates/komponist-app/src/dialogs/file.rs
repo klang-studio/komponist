@@ -40,6 +40,8 @@ pub enum Purpose {
     ExportFolder,
     /// Choose a sample (WAV) for a sampler pad: "Sample laden …", and "Suchen …" for a missing one.
     Sample,
+    /// Relink one audio clip using a supported source file.
+    ReplaceAudio(komponist_model::ClipId),
 }
 
 impl Purpose {
@@ -123,6 +125,7 @@ impl FileBrowser {
             Purpose::Folder => t.file_folder_title(),
             Purpose::ExportFolder => t.export_folder_title(),
             Purpose::Sample => t.file_sample_title(),
+            Purpose::ReplaceAudio(_) => t.audio_file_replace(),
         }
     }
 
@@ -133,7 +136,7 @@ impl FileBrowser {
             Purpose::Save if self.replace.is_some() => t.file_replace(),
             Purpose::Save => t.file_save(),
             Purpose::Folder | Purpose::ExportFolder => t.file_choose_folder(),
-            Purpose::Sample => t.file_load(),
+            Purpose::Sample | Purpose::ReplaceAudio(_) => t.file_load(),
         }
     }
 
@@ -198,7 +201,9 @@ impl FileBrowser {
             return None;
         }
         match self.purpose {
-            Purpose::Open | Purpose::Sample => Some(Output::Chosen(entry.path)),
+            Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_) => {
+                Some(Output::Chosen(entry.path))
+            }
             Purpose::Save => {
                 self.name = entry.name;
                 self.confirm()
@@ -210,7 +215,7 @@ impl FileBrowser {
     /// The primary button (or Enter without a highlighted row).
     pub fn confirm(&mut self) -> Option<Output> {
         match self.purpose {
-            Purpose::Open | Purpose::Sample => {
+            Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_) => {
                 let i = self.selected?;
                 self.activate(i)
             }
@@ -261,7 +266,11 @@ impl FileBrowser {
         if path.is_dir() {
             self.go(path);
             None
-        } else if matches!(self.purpose, Purpose::Open | Purpose::Sample) && path.is_file() {
+        } else if matches!(
+            self.purpose,
+            Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_)
+        ) && path.is_file()
+        {
             Some(Output::Chosen(path))
         } else {
             self.message = Some(self.lang.file_no_such_path(path.display()));
@@ -320,6 +329,7 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
             dirs.push(Entry { name, path, is_dir });
         } else if match purpose {
             Purpose::Sample => is_sample_file(&path),
+            Purpose::ReplaceAudio(_) => is_audio_file(&path),
             _ => !purpose.is_folder() && is_project_file(&path),
         } {
             files.push(Entry { name, path, is_dir });
@@ -499,6 +509,7 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                         let text = match b.purpose {
                             Purpose::Folder | Purpose::ExportFolder => t.file_no_folders(),
                             Purpose::Sample => t.file_no_samples(),
+                            Purpose::ReplaceAudio(_) => t.audio_file_no_audio(),
                             _ => t.file_no_projects(),
                         };
                         let g = styled(ui, text, &typography::SMALL, color32(color::TEXT_3), None);
@@ -592,6 +603,15 @@ fn name_row(ui: &mut Ui, t: Lang, b: &mut FileBrowser) -> bool {
         r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
     })
     .inner
+}
+
+/// Source formats supported by the audio-file decoder.
+pub fn is_audio_file(path: &Path) -> bool {
+    path.extension().is_some_and(|e| {
+        ["wav", "flac", "ogg", "mp3"]
+            .iter()
+            .any(|ext| e.eq_ignore_ascii_case(ext))
+    })
 }
 
 #[cfg(test)]
