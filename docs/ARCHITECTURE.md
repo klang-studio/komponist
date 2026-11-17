@@ -1137,10 +1137,13 @@ silence to their common loop window, including first/last partial passes. A grow
 `window_frames`, so the app can preserve that window before final padding.
 
 `RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
-buckets per track. The worker compacts pairs by summing sample energy/counts; UI polling clones only summaries.
+buckets per track, both combined and separately for each native channel. Buckets carry exact sample counts;
+per-channel counts equal source frames, including a final partial bucket. The worker compacts pairs by summing
+sample energy/counts; UI polling clones only summaries. Progress locks always follow waveform → path order.
 `poll` returns finalized files after queues drain. `checkpoint` flushes and returns saveable prefixes (2 s timeout);
-`relocate` closes handles, transactionally renames on one filesystem and reopens append. Failed moves roll back
-and retain the old paths; cross-device moves are explicit errors for the app to copy after stop. Relocation waits
+`relocate` closes handles, stages exclusive hard links on one filesystem and reopens every append handle before
+publishing paths and unlinking originals. Failed moves remove only their own links and retain the old paths;
+cross-device moves are explicit errors for the app to copy after stop. Relocation waits
 for its transaction result so a delayed completion cannot silently invalidate links. Cancellation removes live
 session files; a saved checkpoint must therefore reference independent preserved assets.
 
@@ -1149,6 +1152,7 @@ fail explicitly, retaining partial files for recovery. `AbortAudioRecording` han
 silently joining different devices. Synthetic-input tests cover monitoring, mono/stereo PCM24/Float32, count-in,
 latency and stop tails, cycle padding, parallel bus taps/PDC, live checkpoints, relocation and cancellation;
 every tested engine callback runs under `assert_no_alloc`.
+
 #### 6.9.5 Linked import and file browsing (#12)
 
 `komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
@@ -1161,6 +1165,26 @@ The browser Files tab enumerates directories and reads audio headers on a worker
 and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
 a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
 files through the localized status bar while preserving their links.
+
+#### 6.9.6 App recording lifecycle and live views (#13)
+
+`audio_record::State` owns the non-RT session until its latency tail and file worker finish. A live
+`AudioRecording` is an overlay, not a document edit. Arrangement and audio editor render measured bounded summaries
+without opening the unfinished WAV. The selected armed track chooses the MIDI or audio live editor, including
+count-in before audio frames exist. The input meter is drained once per UI frame and shared by header, mixer and
+inspector. Input/device changes are refused during capture; monitoring remains switchable.
+
+Stop/punch-out freezes the MIDI overlay and waits for audio finalization. Both become one document transaction
+and undo step; cycle laps become takes of the same audio clip. Undo retains files for redo. Export and project
+save-and-leave wait for a stopped session before taking their project/program snapshot; a timeout keeps the project
+open. Capture failures preserve partial files and any MIDI notes already recorded.
+
+A save during capture flushes a checkpoint and copies its exact frame prefix into an independent valid WAV,
+padding a partial loop window if necessary. Esc deletes only worker-owned live files, so the saved project remains
+playable. Unsaved projects use a unique directory under the user's Music folder and show a persistent provisional
+recordings chip. First save moves live files transactionally on the same filesystem, or copies closed files later
+when a live move is unsupported. Migration rewrites all undo/redo states. Originals survive until the project
+file itself has been written successfully; failed migrations retain their provisional registry for retry.
 
 ### 6.10 Audio files (`komponist-audiofile`)
 
