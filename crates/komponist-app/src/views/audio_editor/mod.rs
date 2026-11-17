@@ -464,23 +464,17 @@ impl AudioEditor {
         if !ui.rect_contains_pointer(canvas) {
             return;
         }
-        let (delta, ctrl, pointer) = ui.input(|i| {
-            (
-                i.smooth_scroll_delta,
-                i.modifiers.command || i.modifiers.ctrl,
-                i.pointer.hover_pos(),
-            )
-        });
-        if delta == egui::Vec2::ZERO {
+        let (delta, zoom, pointer) =
+            ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
+        if delta == egui::Vec2::ZERO && zoom == 1.0 {
             return;
         }
         let view = &mut ctx.ui.waveform;
-        if ctrl {
+        if zoom != 1.0 {
             let x = pointer.map_or(canvas.center().x, |p| p.x) - canvas.left();
             let old = view.px_per_bar / project.meter.ticks_per_bar() as f32;
             let anchor = view.scroll_tick + f64::from(x / old);
-            view.px_per_bar = (view.px_per_bar * m::ZOOM_STEP.powf(delta.y / space::SPACE_4))
-                .clamp(m::PPB_MIN, m::PPB_MAX);
+            view.px_per_bar = (view.px_per_bar * zoom).clamp(m::PPB_MIN, m::PPB_MAX);
             let next = view.px_per_bar / project.meter.ticks_per_bar() as f32;
             view.scroll_tick = (anchor - f64::from(x / next)).max(0.0);
         } else {

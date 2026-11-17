@@ -168,6 +168,88 @@ fn audio_opens_waveform_and_localized_controls_in_both_languages() {
         assert_eq!(data(&h, id).file.channels, 2);
     }
 }
+
+fn wheel(h: &mut Harness<'_, App>, pointer: Pos2, delta: f32, modifiers: Modifiers) {
+    h.hover_at(pointer);
+    h.step();
+    h.event_modifiers(
+        Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, delta),
+            modifiers,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        },
+        modifiers,
+    );
+    h.run_steps(20);
+}
+
+#[test]
+fn ctrl_wheel_zooms_horizontally_around_the_pointer_without_editing_the_clip() {
+    use komponist_app::views::audio_editor::metrics;
+
+    let dir = crate::common::scratch("audio-editor-wheel-zoom");
+    let path = dir.join("verse.wav");
+    wav(&path, 384000, 2);
+    for lang in [Lang::De, Lang::En] {
+        let (mut app, id) = app(&path, 2, lang);
+        app.ui_mut().waveform.px_per_bar = 880.0;
+        let mut h = harness(app);
+        h.state_mut().ui_mut().waveform.scroll_tick = 2000.0;
+        h.run_steps(2);
+        let editor = h
+            .get_by_role_and_label(Role::Group, &lang.audio_waveform_title("Verse"))
+            .rect();
+        let left = editor.left() + metrics::GUTTER;
+        let pointer = Pos2::new(left + (editor.right() - left) * 0.35, editor.center().y);
+        let source_at_pointer = |h: &Harness<'_, App>| {
+            let view = &h.state().ui().waveform;
+            view.scroll_tick + f64::from((pointer.x - left) / view.px_per_bar) * BAR as f64
+        };
+        let anchor = source_at_pointer(&h);
+        let original = data(&h, id);
+        let before = h.state().ui().waveform.px_per_bar;
+        let arrangement = h.state().ui().arrangement.px_per_bar;
+        wheel(&mut h, pointer, 60.0, Modifiers::CTRL);
+        let zoomed = h.state().ui().waveform.px_per_bar;
+        assert!(zoomed > before, "Ctrl+wheel must zoom in");
+        assert!((source_at_pointer(&h) - anchor).abs() < 1.0);
+        wheel(&mut h, pointer, -60.0, Modifiers::CTRL);
+        assert!(h.state().ui().waveform.px_per_bar < zoomed);
+        assert!((source_at_pointer(&h) - anchor).abs() < 1.0);
+        assert_eq!(h.state().ui().arrangement.px_per_bar, arrangement);
+        assert_eq!(data(&h, id), original);
+        assert!(!h.state().doc().is_dirty());
+    }
+}
+
+#[test]
+fn waveform_wheel_preserves_plain_scrolling_and_clamps_zoom() {
+    use komponist_app::views::audio_editor::metrics;
+
+    let dir = crate::common::scratch("audio-editor-wheel-bounds");
+    let path = dir.join("verse.wav");
+    wav(&path, 384000, 1);
+    let (mut app, _) = app(&path, 1, Lang::De);
+    app.ui_mut().waveform.px_per_bar = metrics::PPB_MAX;
+    let mut h = harness(app);
+    let pointer = h
+        .get_by_role_and_label(Role::Group, &Lang::De.audio_waveform_title("Verse"))
+        .rect()
+        .center();
+    wheel(&mut h, pointer, -60.0, Modifiers::NONE);
+    assert!(h.state().ui().waveform.scroll_tick > 0.0);
+    assert_eq!(h.state().ui().waveform.px_per_bar, metrics::PPB_MAX);
+    wheel(&mut h, pointer, 120.0, Modifiers::CTRL);
+    assert_eq!(h.state().ui().waveform.px_per_bar, metrics::PPB_MAX);
+    h.state_mut().ui_mut().waveform.px_per_bar = metrics::PPB_MIN;
+    h.run_steps(2);
+    wheel(&mut h, pointer, -120.0, Modifiers::CTRL);
+    assert_eq!(h.state().ui().waveform.px_per_bar, metrics::PPB_MIN);
+    assert_eq!(h.state().ui().waveform.scroll_tick, 0.0);
+}
+
 #[test]
 fn toolbar_gain_source_start_repitch_tempo_and_bars_edit_the_document() {
     let dir = crate::common::scratch("audio-editor-fields");
