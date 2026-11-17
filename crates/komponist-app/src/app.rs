@@ -1239,6 +1239,9 @@ impl App {
                 } else {
                     Tick(at)
                 };
+                // Timing/input edits dispatched in this frame must precede Record too,
+                // even when the track was already armed (not only automatic arming).
+                self.engine.sync(&self.doc);
                 if !self.prepare_audio_take(from) {
                     return;
                 }

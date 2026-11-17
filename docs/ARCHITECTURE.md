@@ -1104,24 +1104,12 @@ Built in `komponist-engine`, module `audio` (a plan per track, the ring, the str
 - **Input and monitoring (#13).** The source stage of an audio track is `Voice::render` into the chain's input buffer
   (marked `#13` in `TrackJobs::run`): `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from
   the bus's post-fader line (like a send tap, §6.8.2), mixed in when monitoring (`Off` never, `On` always, `Auto` while
-  armed and not playing back) before the chain; the recorder (#13) taps the input in the engine, not the voice.
+  armed, including ordinary playback) before the chain; the recorder (#13) taps the input in the engine, not the voice.
   Not built by #11.
 - **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
   conversion and the fades are the streamer's.
 
-#### 6.9.4 Linked import and file browsing (#12)
-
-`komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
-undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
-creates an audio track at the pointer; several files create separate tracks at tick zero. An existing audio track
-receives files in sequence. The arrangement grid is applied only while snapping is enabled; MIDI and bus lanes
-refuse audio drops. Ctrl I captures the selected audio track and playhead before opening a multi-select file dialog.
-
-The browser Files tab enumerates directories and reads audio headers on a worker, with duration/channel metadata
-and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
-a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
-files through the localized status bar while preserving their links.
-#### 6.9.5 Live audio inputs and bounded recording (#13)
+#### 6.9.4 Live audio inputs and bounded recording (#13)
 
 `Engine::process_with_audio` adds a borrowed interleaved `AudioInputBuffer` to the existing MIDI callback
 contract; `process` and offline renders use an empty audio input. `EngineProcess::process_input` bridges the
@@ -1161,6 +1149,18 @@ fail explicitly, retaining partial files for recovery. `AbortAudioRecording` han
 silently joining different devices. Synthetic-input tests cover monitoring, mono/stereo PCM24/Float32, count-in,
 latency and stop tails, cycle padding, parallel bus taps/PDC, live checkpoints, relocation and cancellation;
 every tested engine callback runs under `assert_no_alloc`.
+#### 6.9.5 Linked import and file browsing (#12)
+
+`komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
+undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
+creates an audio track at the pointer; several files create separate tracks at tick zero. An existing audio track
+receives files in sequence. The arrangement grid is applied only while snapping is enabled; MIDI and bus lanes
+refuse audio drops. Ctrl I captures the selected audio track and playhead before opening a multi-select file dialog.
+
+The browser Files tab enumerates directories and reads audio headers on a worker, with duration/channel metadata
+and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
+a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
+files through the localized status bar while preserving their links.
 
 ### 6.10 Audio files (`komponist-audiofile`)
 

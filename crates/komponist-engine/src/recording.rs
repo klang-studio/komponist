@@ -117,6 +117,10 @@ pub struct RecordingPeak {
     pub max: f32,
     /// Measured RMS (all source channels).
     pub rms: f32,
+    /// Number of measured source samples, including a partial bucket. For a combined
+    /// envelope divide by the progress channel count to obtain frame duration; for a
+    /// native channel envelope this count already equals frame duration.
+    pub samples: u64,
 }
 /// Current pass telemetry. UI polling may allocate; the audio thread never does.
 #[derive(Debug, Clone)]
@@ -137,6 +141,9 @@ pub struct RecordingProgress {
     pub peak: f32,
     /// At most 4096 energy-weighted buckets covering the current take.
     pub waveform: Vec<RecordingPeak>,
+    /// One measured envelope per native channel (mono or left/right), each bounded to
+    /// 4096 buckets. Here each bucket's `samples` is its duration in frames.
+    pub channel_waveforms: Vec<Vec<RecordingPeak>>,
 }
 #[derive(Clone, Copy)]
 struct Chunk {
@@ -190,6 +197,7 @@ impl Bucket {
             min: self.min,
             max: self.max,
             rms: (self.energy / self.count.max(1) as f64).sqrt() as f32,
+            samples: self.count,
         }
     }
 }
@@ -240,6 +248,26 @@ impl Wave {
             .collect()
     }
 }
+// Worker-only builders share the same frame boundaries and compaction schedule. The
+// combined envelope retains all-channel energy; each native channel retains its own energy.
+struct LiveWave {
+    combined: Wave,
+    channels: Vec<Wave>,
+}
+impl LiveWave {
+    fn new(channels: u16) -> Self {
+        Self {
+            combined: Wave::new(),
+            channels: (0..channels).map(|_| Wave::new()).collect(),
+        }
+    }
+    fn push(&mut self, frame: &[f32]) {
+        self.combined.push(frame);
+        for (channel, &sample) in self.channels.iter_mut().zip(frame) {
+            channel.push(&[sample]);
+        }
+    }
+}
 struct Progress {
     track: TrackId,
     path: Mutex<PathBuf>,
@@ -248,7 +276,7 @@ struct Progress {
     frames: AtomicU64,
     lap: AtomicU32,
     peak: AtomicU32,
-    wave: Mutex<Wave>,
+    wave: Mutex<LiveWave>,
 }
 impl Progress {
     fn snapshot(&self) -> RecordingProgress {
@@ -264,7 +292,8 @@ impl Progress {
             frames: self.frames.load(Ordering::Acquire),
             lap: self.lap.load(Ordering::Acquire),
             peak: f32::from_bits(self.peak.swap(0, Ordering::Relaxed)),
-            waveform: wave.snapshot(),
+            waveform: wave.combined.snapshot(),
+            channel_waveforms: wave.channels.iter().map(Wave::snapshot).collect(),
         }
     }
 }
@@ -813,7 +842,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             frames: AtomicU64::new(0),
             lap: AtomicU32::new(0),
             peak: AtomicU32::new(0),
-            wave: Mutex::new(Wave::new()),
+            wave: Mutex::new(LiveWave::new(spec.channels)),
         }));
     }
     let shared = Arc::new(Shared {
@@ -948,7 +977,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                         if p.lap.load(Ordering::Relaxed) != chunk.lap
                             || p.frames.load(Ordering::Relaxed) == 0
                         {
-                            *wave = Wave::new();
+                            *wave = LiveWave::new(p.channels);
                             let prefix = output.frames.saturating_sub(chunk.frames as u64);
                             for _ in 0..prefix {
                                 wave.push(&[0.0; 2][..channels]);
@@ -1095,7 +1124,7 @@ mod tests {
             frames: AtomicU64::new(1),
             lap: AtomicU32::new(0),
             peak: AtomicU32::new(0),
-            wave: Mutex::new(Wave::new()),
+            wave: Mutex::new(LiveWave::new(1)),
         });
         // Holding path forces the reader to stop between its two acquisitions. Observing
         // wave locked proves the lock order without relying on thread scheduling or sleeps.
@@ -1126,7 +1155,7 @@ mod tests {
         let publishing = std::thread::spawn(move || {
             for lap in 1..1000_u32 {
                 let mut wave = publisher.wave.lock().unwrap();
-                *wave = Wave::new();
+                *wave = LiveWave::new(1);
                 wave.push(&[lap as f32]);
                 *publisher.path.lock().unwrap() = PathBuf::from(format!("{lap}.wav"));
                 publisher.start.store(i64::from(lap), Ordering::Release);
@@ -1152,6 +1181,8 @@ mod tests {
                 assert_eq!(snapshot.frames, u64::from(snapshot.lap) + 1);
                 if snapshot.lap > 0 {
                     assert_eq!(snapshot.waveform[0].max, snapshot.lap as f32);
+                    assert_eq!(snapshot.channel_waveforms.len(), 1);
+                    assert_eq!(snapshot.channel_waveforms[0][0].max, snapshot.lap as f32);
                 }
             }
             sent.send(()).unwrap();
@@ -1178,6 +1209,53 @@ mod tests {
         );
         let count: u64 = wave.buckets.iter().map(|b| b.count).sum::<u64>() + wave.current.count;
         assert_eq!(count, frames as u64 * 2);
+        assert_eq!(
+            summary.iter().map(|peak| peak.samples).sum::<u64>() / 2,
+            frames as u64
+        );
+        assert_eq!(summary.last().unwrap().samples, wave.current.count);
+        assert!(wave.filled > 0 && wave.filled < wave.stride);
+    }
+    #[test]
+    fn native_channel_waveforms_preserve_asymmetry_and_partial_compacted_durations() {
+        let mut wave = LiveWave::new(2);
+        let frames = WAVE_BUCKETS as u64 * BASE_WAVE_FRAMES * 3 + 17;
+        for _ in 0..frames {
+            wave.push(&[0.25, 0.75]);
+        }
+        assert!(wave.combined.stride > BASE_WAVE_FRAMES);
+        for (channel, expected) in wave.channels.iter().zip([0.25, 0.75]) {
+            let summary = channel.snapshot();
+            assert!(summary.len() <= WAVE_BUCKETS);
+            assert_eq!(summary.iter().map(|peak| peak.samples).sum::<u64>(), frames);
+            assert!(summary.iter().all(|peak| {
+                peak.min == expected && peak.max == expected && (peak.rms - expected).abs() < 1e-6
+            }));
+            assert_eq!(summary.last().unwrap().samples, channel.filled);
+            assert!(channel.filled > 0 && channel.filled < channel.stride);
+        }
+        let combined = wave.combined.snapshot();
+        assert_eq!(
+            combined.iter().map(|peak| peak.samples).sum::<u64>(),
+            frames * 2
+        );
+        let rms = ((0.25_f32.powi(2) + 0.75_f32.powi(2)) / 2.0).sqrt();
+        assert!(combined.iter().all(|peak| (peak.rms - rms).abs() < 1e-6));
+        assert_eq!(wave.channels[0].snapshot().len(), combined.len());
+        assert_eq!(wave.channels[1].snapshot().len(), combined.len());
+    }
+    #[test]
+    fn live_bucket_sample_counts_preserve_a_short_partial_mono_window() {
+        let mut wave = Wave::new();
+        let frames = BASE_WAVE_FRAMES + 17;
+        for _ in 0..frames {
+            wave.push(&[0.25]);
+        }
+        let summary = wave.snapshot();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].samples, BASE_WAVE_FRAMES);
+        assert_eq!(summary[1].samples, 17);
+        assert_eq!(summary.iter().map(|peak| peak.samples).sum::<u64>(), frames);
     }
     #[test]
     fn a_full_capture_queue_fails_explicitly_without_allocating_or_freeing() {

@@ -80,6 +80,7 @@ pub(crate) struct State {
     pending_midi: Option<record::Commit>,
     pending_removals: BTreeSet<PathBuf>,
     save_target: Option<PathBuf>,
+    save_notice: Option<String>,
 }
 
 impl State {
@@ -122,6 +123,7 @@ impl State {
         self.provisional.clear();
         self.pending_removals.clear();
         self.save_target = None;
+        self.save_notice = None;
     }
     pub(crate) fn cancel(&mut self) {
         if let Some(capture) = self.capture.take() {
@@ -358,6 +360,7 @@ impl App {
                             for take in &mut result.takes {
                                 if let Some(path) = mapping.get(&take.path) {
                                     self.audio_recording.provisional.remove(&take.path);
+                                    self.audio_recording.provisional.insert(path.clone());
                                     take.path = path.clone();
                                 }
                             }
@@ -518,6 +521,20 @@ impl App {
     /// Called only after the new project file is written. Older on-disk checkpoints remain
     /// playable until then; undo/redo paths have already been rewritten to the copies.
     pub(crate) fn recordings_saved(&mut self) {
+        if let Some(directory) = self.project_dir() {
+            let target = directory.join("Takes");
+            self.audio_recording
+                .provisional
+                .retain(|path| !path.starts_with(&target));
+            if let Some(capture) = &mut self.audio_recording.capture
+                && capture.directory.starts_with(&target)
+            {
+                capture.provisional = false;
+            }
+        }
+        if let Some(notice) = self.audio_recording.save_notice.take() {
+            self.set_status(notice, StatusKind::Error);
+        }
         let paths = std::mem::take(&mut self.audio_recording.pending_removals);
         for path in paths {
             if let Err(error) = std::fs::remove_file(&path)
@@ -550,7 +567,14 @@ impl App {
 
     /// Moves open WAVs only through their writer; on a cross-device/other failed move they
     /// remain usable and provisional. Closed takes use conservative copies with undo rewrites.
+    fn recording_move_notice(&mut self, error: impl std::fmt::Display) {
+        let notice = self.lang.audio_record_move_failed(error);
+        self.audio_recording.save_notice = Some(notice.clone());
+        self.set_status(notice, StatusKind::Error);
+    }
+
     pub(crate) fn migrate_recordings_for_save(&mut self, project_file: &Path) {
+        self.audio_recording.save_notice = None;
         self.audio_recording.save_target = project_file
             .parent()
             .map(|directory| directory.join("Takes"));
@@ -583,22 +607,18 @@ impl App {
                                     {
                                         mapping.insert(old.path.clone(), new.path.clone());
                                         self.audio_recording.provisional.remove(&old.path);
+                                        self.audio_recording.provisional.insert(new.path.clone());
                                     }
                                 }
+                                active.extend(after.iter().map(|take| take.path.clone()));
                                 capture.directory = target.clone();
-                                capture.provisional = false;
                                 self.rewrite_recording_paths(&mapping);
                             }
-                            Err(error) => self.set_status(
-                                self.lang.audio_record_move_failed(error),
-                                StatusKind::Error,
-                            ),
+                            Err(error) => self.recording_move_notice(error),
                         }
                     }
                 }
-                Err(error) => {
-                    self.set_status(self.lang.audio_record_failed(error), StatusKind::Error)
-                }
+                Err(error) => self.recording_move_notice(error),
             }
         }
         let paths: Vec<_> = self
@@ -614,13 +634,12 @@ impl App {
                     .pending_removals
                     .extend(mapping.keys().cloned());
                 self.rewrite_recording_paths(&mapping);
-                for source in mapping.keys() {
+                for (source, destination) in &mapping {
                     self.audio_recording.provisional.remove(source);
+                    self.audio_recording.provisional.insert(destination.clone());
                 }
             }
-            Err(error) => {
-                self.set_status(self.lang.audio_record_move_failed(error), StatusKind::Error)
-            }
+            Err(error) => self.recording_move_notice(error),
         }
     }
 }
@@ -869,6 +888,60 @@ mod tests {
         drop(app);
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn failed_move_keeps_originals_provisional_and_reports_the_reason_after_saving() {
+        let (mut app, track, root) = rig();
+        begin(&mut app, track);
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let original = match &app.project().track(track).unwrap().clips[0].content {
+            ClipContent::Audio(audio) => audio.file.abs.clone(),
+            _ => unreachable!(),
+        };
+        std::fs::write(root.join("Takes"), b"not a directory").unwrap();
+        assert!(app.save_to(&root.join("Song.komponist")));
+        assert!(original.is_file());
+        assert!(app.provisional_recordings_folder().is_some());
+        assert_eq!(app.ui.status.as_ref().unwrap().kind, StatusKind::Error);
+        std::fs::remove_file(root.join("Takes")).unwrap();
+        assert!(app.save_to(&root.join("Song.komponist")));
+        assert!(!original.is_file());
+        assert!(app.provisional_recordings_folder().is_none());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn failed_project_write_keeps_originals_and_retry_to_another_folder_updates_links() {
+        let (mut app, track, root) = rig();
+        begin(&mut app, track);
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let original = match &app.project().track(track).unwrap().clips[0].content {
+            ClipContent::Audio(audio) => audio.file.abs.clone(),
+            _ => unreachable!(),
+        };
+        let blocked = root.join("blocked.komponist");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(!app.save_to(&blocked));
+        assert!(original.is_file());
+        assert!(app.provisional_recordings_folder().is_some());
+        let retry = root.join("Retry");
+        std::fs::create_dir(&retry).unwrap();
+        assert!(app.save_to(&retry.join("Song.komponist")));
+        let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
+        else {
+            unreachable!();
+        };
+        assert!(audio.file.abs.starts_with(retry.join("Takes")));
+        assert!(audio.file.abs.is_file());
+        assert!(!original.is_file());
+        assert!(app.provisional_recordings_folder().is_none());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn add_midi(app: &mut App) -> TrackId {
         let midi = app
             .doc
