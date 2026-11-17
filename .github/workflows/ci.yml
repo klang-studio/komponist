@@ -238,10 +238,16 @@ jobs:
       - name: Build test plugins
         run: scripts/build-test-plugins.sh
 
-      # --no-fail-fast as on macOS: a red run lists the failures of every test binary.
+      # DX12/WARP intermittently terminates concurrent kittest renderings (exit 2173, no Rust
+      # panic). Serialize only the UI suite and leave its output visible if the driver exits.
+      # Run both suites even if one fails, and propagate either failure to the step.
       - name: Test
         timeout-minutes: 45
-        run: cargo test --workspace --no-fail-fast
+        run: |
+          test_status=0
+          cargo test --workspace --exclude komponist-ui --no-fail-fast || test_status=$?
+          cargo test -p komponist-ui --no-fail-fast -- --test-threads=1 --nocapture || test_status=$?
+          exit "$test_status"
 
       # ASIO (W8, cargo feature `asio`): off in the steps above, so the plain build needs no LLVM. These two build
       # komponist-audio with it. bindgen needs libclang: the windows-2025 image has LLVM 20 (per the runner-images
