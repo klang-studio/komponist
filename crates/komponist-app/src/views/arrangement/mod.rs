@@ -285,7 +285,16 @@ impl View for Arrangement {
                 .id_salt("komponist_arrangement_tracks"),
         );
         tracks.set_clip_rect(g.tracks.intersect(ui.clip_rect()));
-        self.lanes(&mut tracks, ctx, &project, &g);
+        // Timeline objects can extend left of tick zero while horizontally scrolled. Clip
+        // their paint and hit area to the lanes themselves, not the combined header/track
+        // region: indented group headers deliberately leave their ancestor bracket gutter open.
+        let mut lanes = tracks.new_child(
+            UiBuilder::new()
+                .max_rect(g.lanes())
+                .id_salt("komponist_arrangement_lane_canvas"),
+        );
+        lanes.set_clip_rect(g.lanes().intersect(tracks.clip_rect()));
+        self.lanes(&mut lanes, ctx, &project, &g);
         self.headers(&mut tracks, ctx, &project, &g);
         self.new_track_area(&mut tracks, ctx, &g);
         self.overlays(&mut tracks, ctx, &project, &g);
