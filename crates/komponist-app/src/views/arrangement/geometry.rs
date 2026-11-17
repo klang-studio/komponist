@@ -137,6 +137,14 @@ impl Row {
 pub enum Zone {
     /// Body and head: select, move, open.
     Body,
+    /// Audio source start edge.
+    Start,
+    /// Audio fade-in grip.
+    FadeIn,
+    /// Audio fade-out grip.
+    FadeOut,
+    /// Audio gain line or grip.
+    Gain,
     /// Right end: drag the length (`ix.clip` "Kante ziehen").
     End,
     /// Top right corner of the head: drag loop repetitions (`ix.clip` "Ecke oben rechts").
@@ -167,6 +175,31 @@ pub fn zone(rect: Rect, pos: Pos2) -> Zone {
     if pos.x >= rect.right() - loop_w && pos.y < rect.top() + size::CLIP_HEADER {
         Zone::Loop
     } else if pos.x >= rect.right() - edge_w {
+        Zone::End
+    } else {
+        Zone::Body
+    }
+}
+
+/// Audio hit priorities match the visible controls: gain grip, fades, gain line, edges, body.
+pub fn audio_zone(rect: Rect, pos: Pos2, a: &komponist_model::AudioClip, ppt: f32) -> Zone {
+    let p = komponist_ui::timeline::audio_parts(
+        rect,
+        a.fade_in.0 as f32 * ppt,
+        a.fade_out.0 as f32 * ppt,
+        a.gain_db,
+    );
+    if p.gain.contains(pos) {
+        Zone::Gain
+    } else if p.fade_in.contains(pos) {
+        Zone::FadeIn
+    } else if p.fade_out.contains(pos) {
+        Zone::FadeOut
+    } else if p.gain_band.contains(pos) && p.body.contains(pos) {
+        Zone::Gain
+    } else if pos.x <= rect.left() + metrics::CLIP_EDGE_GRAB.min(rect.width() / 3.0) {
+        Zone::Start
+    } else if pos.x >= rect.right() - metrics::CLIP_EDGE_GRAB.min(rect.width() / 3.0) {
         Zone::End
     } else {
         Zone::Body
@@ -420,7 +453,11 @@ impl Geometry {
                 row,
                 clip: c.id,
                 rect,
-                zone: zone(rect, pos),
+                zone: if let komponist_model::ClipContent::Audio(a) = &c.content {
+                    audio_zone(rect, pos, a, self.axis.px_per_tick)
+                } else {
+                    zone(rect, pos)
+                },
             })
         })
     }

@@ -1721,6 +1721,17 @@ with `Painter`:
   selected/toggled state). They make the canvases queryable for kittest and the egui MCP server and
   usable with screen readers. Only visible objects, so the cost follows the screen, not the project.
 
+Audio arrangement clips use `timeline::{AudioLook, WaveMesh, WaveSpec, audio_parts}`. The app's
+`arrangement::AudioCache` keeps file handles per linked file and project directory, rechecks file identity
+once a second, requests peak data once with a repaint callback, and caches meshes per clip `Arc`, full
+source window (including tempo), zoom, height and peak-data identity. Ready peaks replace pending flat
+meshes automatically; missing links retain editable model metadata and are checked again. The two waveform
+tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting. Painting is
+clipped to the visible range. `audio_parts` shares control geometry with hit testing; visible gain/fade/trim
+controls have localized slider nodes. Audio moves and trims always use the selected grid; fades and gain
+use unsnapped pointer deltas. Move/copy and both trim gestures apply to the gesture-start document so a
+previewed overlap cut is restored when the pointer returns or enters a refused destination.
+
 ### 9.3 App structure (`komponist-app`)
 
 - `App { doc: Document, ui: UiState, engine: EngineHandle, plugins: PluginManager, windows, settings }`.

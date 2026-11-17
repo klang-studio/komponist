@@ -62,9 +62,10 @@ pub const CLIP_BADGE_PAD_X: f32 = 4.0;
 /// Waveform: the envelope never reaches the body's top and bottom by this much (the 1 px ring and
 /// 1 px air), so a full-scale waveform stays inside the clip.
 pub const WAVE_PAD: f32 = 2.0;
-/// Waveform: share of the peak envelope the RMS core shows (the peak pyramid stores no RMS, so the
-/// core is a fixed fraction of the local peak; see the report of #12 a/b).
-pub const WAVE_CORE_SHARE: f32 = 0.55;
+/// Gain drag sensitivity with Shift held, matching the fine adjustment of other controls.
+pub const GAIN_FINE_FACTOR: f32 = 0.1;
+/// Overload tips on waveform peaks (audio proposal mockup 02).
+pub const WAVE_OVER_TIP: f32 = 2.0;
 /// Missing-file hatching and the missing-file text: stripe width and gap in px (`canvas.hatch`
 /// in `SPEC.md` §10: 2 px on, 5 px off, 135°).
 pub const HATCH_ON: f32 = 2.0;
@@ -72,8 +73,6 @@ pub const HATCH_ON: f32 = 2.0;
 pub const HATCH_OFF: f32 = 5.0;
 /// The accent shading over the part of a clip an overlap cuts (`SPEC.md` §3.3: 14 %).
 pub const CUT_SHADE_ALPHA: f32 = 0.14;
-/// The warning mark in front of „Datei fehlt“ in a clip: triangle width (drawn with shapes).
-pub const MISSING_MARK: f32 = 9.0;
 
 /// Clip preview: height of a note mark (`marks`: `height:2`).
 pub const PREVIEW_NOTE_HEIGHT: f32 = 2.0;

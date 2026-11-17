@@ -191,6 +191,20 @@ pub enum EditAction {
         /// New length.
         length: Tick,
     },
+    /// Trim the source start of an audio clip.
+    TrimAudioClipStart {
+        /// Clip to trim.
+        clip: ClipId,
+        /// New timeline start.
+        start: Tick,
+    },
+    /// Set an audio clip parameter.
+    SetAudioClipProp {
+        /// Clip to edit.
+        clip: ClipId,
+        /// New property value.
+        prop: komponist_model::edits::AudioClipProp,
+    },
     /// `edits::set_clip_loop` (corner drag, inspector).
     SetClipLoop {
         /// The clip.

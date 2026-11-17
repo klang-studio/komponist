@@ -275,6 +275,15 @@ mod tests {
     }
 
     #[test]
+    fn waveform_tones_use_the_approved_note_velocities() {
+        for hue in HUES {
+            let p = TrackPalette::new(hue.degrees);
+            assert_eq!(p.wave_peak, p.note(50));
+            assert_eq!(p.wave_rms, p.note(105));
+        }
+    }
+
+    #[test]
     fn note_lightness_grows_with_velocity() {
         let p = TrackPalette::new(150);
         let luma = |c: Srgba| u32::from(c[0]) * 2 + u32::from(c[1]) * 7 + u32::from(c[2]);

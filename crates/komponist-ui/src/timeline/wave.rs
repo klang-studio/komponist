@@ -8,8 +8,7 @@
 //! gain and the fades are applied in the mesh, so the waveform shows them at once and parts above
 //! 0 dBFS get a `meter.clip` tip.
 //!
-//! The peak pyramid stores minimum and maximum only, so the core is a fixed share of the local
-//! peak envelope ([`metrics::WAVE_CORE_SHARE`]), not a measured RMS.
+//! The inner envelope uses the measured RMS energy from the peak pyramid.
 
 use egui::{Color32, Rangef, Rect, pos2};
 use komponist_audiofile::PeakData;
@@ -81,10 +80,19 @@ impl WaveMesh {
         if columns == 0 || spec.frames == 0 {
             return mesh;
         }
-        let end = spec.offset + spec.frames;
+        let frames =
+            (spec.frames as f64 * columns as f64 / f64::from(spec.width.max(1.0))).ceil() as u64;
+        let end = spec.offset.saturating_add(frames);
         let mut peak = vec![(0.0f32, 0.0f32); columns];
+        let mut rms = vec![0.0f32; columns];
         for channel in 0..peaks.channels().min(2) {
             let q = peaks.query(channel, spec.offset, end, columns);
+            for (slot, value) in rms
+                .iter_mut()
+                .zip(peaks.query_rms(channel, spec.offset, end, columns).columns)
+            {
+                *slot = slot.max(value);
+            }
             for (slot, p) in peak.iter_mut().zip(&q.columns) {
                 slot.0 = slot.0.min(p.min);
                 slot.1 = slot.1.max(p.max);
@@ -109,8 +117,8 @@ impl WaveMesh {
                 Col {
                     up: scale(up.min(1.0)),
                     down: scale(down.min(1.0)),
-                    core_up: scale(up.min(1.0) * metrics::WAVE_CORE_SHARE),
-                    core_down: scale(down.min(1.0) * metrics::WAVE_CORE_SHARE),
+                    core_up: scale((rms[i] * k).min(up).min(1.0)),
+                    core_down: scale((rms[i] * k).min(down).min(1.0)),
                     over: up > 1.0 || down > 1.0,
                 }
             })
@@ -133,8 +141,8 @@ impl WaveMesh {
                 let sum: i32 = (a..=b).map(|j| i32::from(f(&src[j]))).sum();
                 (sum / (b - a + 1) as i32) as i16
             };
-            self.cols[i].core_up = avg(|c| c.core_up);
-            self.cols[i].core_down = avg(|c| c.core_down);
+            self.cols[i].core_up = avg(|c| c.core_up).min(self.cols[i].up);
+            self.cols[i].core_down = avg(|c| c.core_down).min(self.cols[i].down);
         }
     }
 
@@ -200,7 +208,7 @@ impl WaveMesh {
             }
             let x0 = (bx0 + i as f32).max(lo);
             let x1 = (bx0 + j as f32).min(hi);
-            let (up, down) = (f32::from(c.up), f32::from(c.down.max(1 - c.up.min(1))));
+            let (up, down) = (f32::from(c.up), f32::from(c.down));
             let col = |q: &mut Quads, u: f32, d: f32, color: Color32| {
                 q.quad(
                     Rect::from_min_max(pos2(x0, mid - u), pos2(x1, mid + d.max(1.0 - u.min(1.0)))),
@@ -212,7 +220,7 @@ impl WaveMesh {
                 col(q, f32::from(c.core_up), f32::from(c.core_down), core);
             }
             if c.over {
-                let tip = 2.0;
+                let tip = metrics::WAVE_OVER_TIP;
                 q.quad(
                     Rect::from_min_max(pos2(x0, mid - up), pos2(x1, mid - (up - tip).max(0.0))),
                     over,
@@ -317,6 +325,29 @@ mod tests {
     }
 
     #[test]
+    fn capped_mesh_keeps_source_scale_and_rms_never_exceeds_local_peak() {
+        let mut samples = vec![0.0; 131072];
+        samples[100000] = 1.0;
+        let p = PeakData::from_planar(48000, &[samples]);
+        let m = WaveMesh::from_peaks(&p, &spec(65536.0, 131072));
+        assert_eq!(m.len(), MAX_COLUMNS);
+        assert!(
+            m.cols.iter().all(|c| c.up == 0 && c.down == 0),
+            "late impulse must not be compressed into the capped first half"
+        );
+        let p = PeakData::from_planar(
+            48000,
+            &[vec![1.0; 1000].into_iter().chain(vec![0.0; 1000]).collect()],
+        );
+        let m = WaveMesh::from_peaks(&p, &spec(40.0, 2000));
+        assert!(
+            m.cols
+                .iter()
+                .all(|c| c.core_up <= c.up && c.core_down <= c.down)
+        );
+    }
+
+    #[test]
     fn equal_columns_merge_when_painting() {
         let p = peaks(96_000, 0.5);
         let m = WaveMesh::from_peaks(&p, &spec(72.0, 96_000));
@@ -330,6 +361,10 @@ mod tests {
             Color32::GRAY,
             Color32::RED,
         );
-        assert!(q.mesh.indices.len() <= 6 * 3, "{} indices", q.mesh.indices.len());
+        assert!(
+            q.mesh.indices.len() <= 6 * 3,
+            "{} indices",
+            q.mesh.indices.len()
+        );
     }
 }
