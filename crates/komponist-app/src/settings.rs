@@ -361,6 +361,38 @@ fn config_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Opti
     Some(base.join("komponist"))
 }
 
+/// The audio cache folder (created lazily by the file pool). Linux follows
+/// `$XDG_CACHE_HOME`, macOS uses `~/Library/Caches`, Windows `%LOCALAPPDATA%`.
+/// No directory is created by this function or by headless app construction.
+pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join("komponist"))
+    }
+    #[cfg(not(windows))]
+    {
+        let xdg = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
+        let home = crate::dirs::home_dir();
+        cache_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+    }
+}
+
+#[cfg(not(windows))]
+fn cache_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home.filter(|p| p.is_absolute());
+    let base = if macos {
+        home?.join("Library/Caches")
+    } else {
+        xdg.filter(|p| p.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|h| h.join(".cache")))?
+    };
+    Some(base.join("komponist"))
+}
+
 /// The default settings file, `<config_dir>/settings.json`.
 pub fn default_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join(FILE_NAME))
@@ -423,6 +455,31 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(windows))]
+    fn cache_dir_follows_the_platform() {
+        let home = Path::new("/users/test");
+        let xdg = Path::new("/cache");
+        assert_eq!(
+            cache_dir_from(true, Some(xdg), Some(home)),
+            Some(home.join("Library/Caches/komponist"))
+        );
+        assert_eq!(
+            cache_dir_from(false, Some(xdg), Some(home)),
+            Some(xdg.join("komponist"))
+        );
+        assert_eq!(
+            cache_dir_from(false, Some(Path::new("relative")), Some(home)),
+            Some(home.join(".cache/komponist"))
+        );
+        assert_eq!(cache_dir_from(false, None, None), None);
+        assert_eq!(cache_dir_from(true, Some(xdg), None), None);
+        assert_eq!(
+            cache_dir_from(false, None, Some(Path::new("relative"))),
+            None
+        );
+    }
 
     #[test]
     #[cfg(not(windows))]

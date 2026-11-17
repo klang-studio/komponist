@@ -51,6 +51,8 @@ use crate::ui_state::UiState;
 pub struct ViewCtx<'a> {
     /// The project (read-only; changes go through [`Action::Edit`]).
     pub project: &'a Arc<Project>,
+    /// Base folder for the project's linked audio files (absent for an unsaved project).
+    pub project_dir: Option<&'a std::path::Path>,
     /// The view state; a view may change its own scroll and zoom fields directly.
     pub ui: &'a mut UiState,
     /// Engine telemetry (playhead, transport state), device status, track meters.
@@ -101,6 +103,7 @@ impl<'a> ViewCtx<'a> {
     ) -> ViewCtx<'a> {
         ViewCtx {
             project,
+            project_dir: None,
             ui,
             engine,
             meters,

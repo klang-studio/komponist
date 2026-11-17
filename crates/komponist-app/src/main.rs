@@ -148,6 +148,8 @@ fn run_app() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    komponist_audiofile::FilePool::global()
+        .set_cache_dir(settings::cache_dir().map(|dir| dir.join("peaks")));
     // An unreadable settings file is reported and left alone: this session runs on the
     // defaults and does not overwrite it.
     let path = args.settings.clone().or_else(settings::default_path);

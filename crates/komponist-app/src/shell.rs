@@ -132,6 +132,7 @@ impl App {
         f: impl FnOnce(&mut crate::views::Views, &mut ViewCtx<'_>) -> R,
     ) -> R {
         let focused = self.ui.focus == area;
+        let project_dir = self.project_dir();
         let mut ctx = ViewCtx::new(
             self.doc.project(),
             &mut self.ui,
@@ -140,6 +141,7 @@ impl App {
             &self.keymap,
             &mut self.queue,
         );
+        ctx.project_dir = project_dir.as_deref();
         ctx.focused = focused;
         ctx.lang = self.lang;
         ctx.requests = self.shell.requests;

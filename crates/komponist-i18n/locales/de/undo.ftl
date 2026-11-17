@@ -186,3 +186,7 @@ undo-param-unnamed = { $plugin }: Parameter ändern
 
 # A state the plugin reports on its own (its GUI).
 undo-plugin-state = { $plugin }: Zustand ändern
+
+# Audio clip envelope gestures.
+undo-clip-gain = Clip-Gain ändern
+undo-clip-fade = Fade ändern
