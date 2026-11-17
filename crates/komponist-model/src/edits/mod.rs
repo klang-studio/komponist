@@ -42,7 +42,7 @@ pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
 pub use audio::{
     AudioClipProp, NewAudioTrack, add_audio_take, add_audio_track, add_audio_track_in,
     remove_audio_take, rename_audio_take, rewrite_audio_files, select_audio_take,
-    set_audio_clip_file, set_audio_clip_prop, trim_audio_clip_start,
+    set_audio_clip_file, set_audio_clip_prop, set_audio_clip_warp, trim_audio_clip_start,
 };
 
 pub use routes::{
@@ -56,6 +56,8 @@ mod audio_tests;
 mod routing_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod warp_tests;
 
 // ------------------------------------------------------------------------------------------------
 // Errors
@@ -132,6 +134,12 @@ impl fmt::Display for EditError {
 }
 
 impl std::error::Error for EditError {}
+
+impl From<crate::WarpError> for EditError {
+    fn from(error: crate::WarpError) -> Self {
+        Self::Invalid(error.message())
+    }
+}
 
 /// Result of an edit that returns only the new root.
 pub type EditResult = Result<Project, EditError>;
@@ -1857,7 +1865,7 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Cli
             let ClipContent::Audio(left_audio) = &mut left.content else {
                 unreachable!("left and right are copies of one clip");
             };
-            right_audio.shift_sources(at, project.tempo);
+            right_audio.shift_sources(at, project.tempo)?;
             right_audio.fade_in = Tick::ZERO;
             left_audio.fade_out = Tick::ZERO;
             left_audio.clamp(left.length);

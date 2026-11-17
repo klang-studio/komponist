@@ -6,6 +6,7 @@
 //!
 //! Module map (ARCHITECTURE §5):
 //! - [`audio`]: audio files, audio clips, audio track input and monitoring (epic #8).
+//! - [`warp`]: optional affine Warp state and exact native frame/tick mapping (#14).
 //! - [`paths`]: lexical path helpers for file links.
 //! - [`ids`]: stable ids from one per-project counter.
 //! - [`time`]: [`Tick`], [`Tempo`], [`Meter`], [`TickRange`], [`TempoMap`], grids.
@@ -34,6 +35,7 @@ pub mod persist;
 pub mod project;
 pub mod routing;
 pub mod time;
+pub mod warp;
 
 #[cfg(test)]
 mod proptests;
@@ -54,3 +56,4 @@ pub use time::{
     Bbt, DISPLAY_TICKS_PER_BEAT, Grid, Meter, PPQ, StepResolution, TICKS_PER_STEP, Tempo, TempoMap,
     Tick, TickRange,
 };
+pub use warp::{AudioWarp, MAX_WARP_TICK, WarpError, WarpMap};

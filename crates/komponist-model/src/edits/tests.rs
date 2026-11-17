@@ -112,6 +112,7 @@ pub(crate) fn check_invariants(p: &Project) {
                     assert_eq!(clip.loop_length, None, "audio clips never loop");
                     assert!(a.offset < a.file.frames);
                     assert!(clip.length <= a.max_length(p.tempo).max(MIN_LENGTH));
+                    a.validate_warp(clip.length).expect("valid warp span");
                     assert!(a.fade_in >= Tick::ZERO && a.fade_out >= Tick::ZERO);
                     assert!(a.fade_in + a.fade_out <= clip.length);
                 }

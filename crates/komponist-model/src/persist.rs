@@ -295,6 +295,11 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
                     if !(crate::Tempo::MIN_BPM..=crate::Tempo::MAX_BPM).contains(&bpm) {
                         return Err(format!("clip {}: original tempo out of range", clip.id.0));
                     }
+                    if a.warp_enabled() && clip.length <= Tick::ZERO {
+                        return Err(format!("clip {}: empty audio warp span", clip.id.0));
+                    }
+                    a.validate_warp(clip.length)
+                        .map_err(|e| format!("clip {}: {e}", clip.id.0))?;
                     // Repair what a hand edit can break: a window longer than the file, fades
                     // longer than the clip, a gain out of range.
                     let length = clip.length.min(a.max_length(tempo).max(Tick(1)));
