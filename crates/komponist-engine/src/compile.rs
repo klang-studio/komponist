@@ -23,6 +23,12 @@
 //!   ratchets expanded into evenly spaced hits (later hits at 75 % velocity,
 //!   [`crate::program::PROBABILITY_FOLLOW`]); probability kept per note; muted rows and, with any
 //!   row soloed, non-soloed rows skipped.
+//! - Audio tracks (#11, ARCHITECTURE §6.9.3): an [`AudioPlan`](crate::audio::AudioPlan) per track from the unmuted
+//!   audio clips, the tempo map, [`CompileEnv::sample_rate`] and [`CompileEnv::project_dir`]; the files are shared
+//!   through the previous program, nothing is opened (no IO here).
+//! - Audio tracks (#11, ARCHITECTURE §6.9.3): an [`AudioPlan`](crate::audio::AudioPlan) per track from the unmuted
+//!   audio clips, the tempo map, [`CompileEnv::sample_rate`] and [`CompileEnv::project_dir`]; the files are shared
+//!   through the previous program, nothing is opened (no IO here).
 //! - Devices → [`ChainSlot`](crate::program::ChainSlot)s with stable slots; volume dB → linear
 //!   gain; MIDI input names → [`MidiPort`]s; chain latencies → `pdc_delay`.
 //! - Routing (WP-102, ARCHITECTURE §6.8.4–6.8.6): outputs to buses, sends and sidechains →

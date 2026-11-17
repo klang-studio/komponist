@@ -788,3 +788,99 @@ fn a_recompile_keeps_the_plan_while_the_clips_and_the_tempo_stay() {
     assert!(std::sync::Arc::ptr_eq(&a.sources()[0], &c.sources()[0]));
     assert_eq!(c.segments().len(), 2);
 }
+
+// ------------------------------------------------------------------------------------------------
+// Performance
+// ------------------------------------------------------------------------------------------------
+
+/// `tracks` audio tracks, each with one clip of 8 s from one of four 20 s stereo files (two at 48
+/// kHz, two at 44.1 kHz, so half of the voices convert), looped over bars 1–4 (8 s): the audio
+/// thread's cost per 256-frame block and the read-ahead thread's load, paced like a device.
+/// `KOMPONIST_BENCH_AUDIO_TRACKS` sets the track counts (default `16,64`).
+///
+/// ```text
+/// cargo test --release -p komponist-engine --test engine audio::bench -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "timing: run in release with --ignored --nocapture"]
+fn bench_audio_streams() {
+    const BLOCK: usize = 256;
+    const SECONDS: usize = 20;
+    let period = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
+    let counts: Vec<usize> = std::env::var("KOMPONIST_BENCH_AUDIO_TRACKS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|w| w.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![16, 64]);
+    for tracks in counts {
+        let mut s = Studio::new("bench");
+        let files: Vec<AudioFile> = (0..4)
+            .map(|k| {
+                let rate = if k % 2 == 0 { 48_000 } else { 44_100 };
+                s.wav(
+                    &format!("f{k}.wav"),
+                    rate,
+                    2,
+                    rate as usize * 20,
+                    move |i, c| noise(i + k * 101, c) * 0.1,
+                )
+            })
+            .collect();
+        for k in 0..tracks {
+            let track = s.track();
+            s.clip(
+                track,
+                &files[k % 4],
+                0,
+                8 * 2 * BEAT,
+                (k as u64 * 997) % 5000,
+            );
+        }
+        s.project.loop_on = true;
+        s.project.loop_range = TickRange::new(Tick(0), Tick(8 * 2 * BEAT));
+        let program = s.program();
+        let mut rig = Rig::new(RATE, BLOCK);
+        rig.set_program(&program);
+        wait_primed(&mut rig, &program);
+        rig.send(Command::Play);
+        let stats = rig.engine.stream_stats();
+        let telemetry = rig.handle.telemetry().clone();
+        let (frames0, busy0) = (stats.frames(), stats.busy());
+        let blocks = SECONDS * 48_000 / BLOCK;
+        rig.l.reserve(blocks * BLOCK + 4096);
+        rig.r.reserve(blocks * BLOCK + 4096);
+        let (mut total, mut worst) = (Duration::ZERO, Duration::ZERO);
+        let (mut late, mut worst_at) = (0, 0);
+        let began = Instant::now();
+        for b in 0..blocks {
+            let due = began + period * b as u32;
+            let t0 = Instant::now();
+            rig.process_with(BLOCK, &[], 0);
+            let t = t0.elapsed();
+            total += t;
+            late += usize::from(t > period);
+            if t > worst {
+                (worst, worst_at) = (t, b);
+            }
+            if let Some(wait) = due
+                .checked_add(period)
+                .and_then(|d| d.checked_duration_since(Instant::now()))
+            {
+                std::thread::sleep(wait);
+            }
+        }
+        let wall = began.elapsed();
+        let busy = stats.busy() - busy0;
+        let frames = stats.frames() - frames0;
+        let mean = total / blocks as u32;
+        eprintln!(
+            "{tracks} streamed stereo clips (half converted from 44.1 kHz): audio thread mean {mean:.1?} ({:.2} %), worst {worst:.1?} ({:.1} %, block {worst_at}) per {BLOCK} frames, {late} of {blocks} blocks longer than the period; \
+             read-ahead thread busy {:.1} % of {:.1?}, {:.0} frames/s per voice (realtime 48000); underruns {}",
+            mean.as_secs_f64() / period.as_secs_f64() * 100.0,
+            worst.as_secs_f64() / period.as_secs_f64() * 100.0,
+            busy.as_secs_f64() / wall.as_secs_f64() * 100.0,
+            wall,
+            frames as f64 / tracks as f64 / wall.as_secs_f64(),
+            telemetry.audio_underruns(),
+        );
+    }
+}

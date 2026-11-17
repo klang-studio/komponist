@@ -37,6 +37,7 @@ use komponist_model::{
 };
 
 pub use ring::{RING_FRAMES, Ring};
+pub use streamer::StreamStats;
 
 /// Length in milliseconds of the head every segment keeps in memory: what plays right after a
 /// locate or a jump while the streamer refills the ring.

@@ -7,7 +7,7 @@
 //! loop, and an offline render (export, tests) calls it itself before every block
 //! ([`StreamShared::ensure`]), so that its result does not depend on thread timing.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -58,6 +58,8 @@ struct StreamVoice {
     /// Frames since the stream last jumped from the loop end to the loop start.
     since_wrap: Option<u32>,
     renderer: SegmentRenderer,
+    /// Frames written so far (all epochs).
+    produced: u64,
 }
 
 struct HeadJob {
@@ -65,8 +67,28 @@ struct HeadJob {
     done: Vec<[Box<[f32]>; 2]>,
 }
 
+/// How much the read-ahead thread works (diagnostics, the perf suite).
+#[derive(Debug, Default)]
+pub struct StreamStats {
+    busy_ns: AtomicU64,
+    frames: AtomicU64,
+}
+
+impl StreamStats {
+    /// Time the thread spent rendering (passes that did something), in total.
+    pub fn busy(&self) -> Duration {
+        Duration::from_nanos(self.busy_ns.load(Ordering::Relaxed))
+    }
+
+    /// Frames written into rings by the thread (silence included).
+    pub fn frames(&self) -> u64 {
+        self.frames.load(Ordering::Relaxed)
+    }
+}
+
 /// The streamer's state. See the module docs.
 pub(crate) struct Streamer {
+    stats: Arc<StreamStats>,
     rx: rtrb::Consumer<Msg>,
     voices: Vec<StreamVoice>,
     head_queue: Vec<Arc<AudioPlan>>,
@@ -75,8 +97,9 @@ pub(crate) struct Streamer {
 }
 
 impl Streamer {
-    pub(crate) fn new(rx: rtrb::Consumer<Msg>) -> Streamer {
+    pub(crate) fn new(rx: rtrb::Consumer<Msg>, stats: Arc<StreamStats>) -> Streamer {
         Streamer {
+            stats,
             rx,
             voices: Vec::new(),
             head_queue: Vec::new(),
@@ -119,6 +142,7 @@ impl Streamer {
                     lp,
                     since_wrap: None,
                     renderer: SegmentRenderer::new(),
+                    produced: 0,
                 }),
             }
         }
@@ -131,8 +155,12 @@ impl Streamer {
         let mut progress = self.drain();
         for v in &mut self.voices {
             for _ in 0..PASS_CHUNKS {
+                let before = v.produced;
                 if v.produce(&mut self.buf) {
                     progress = true;
+                    self.stats
+                        .frames
+                        .fetch_add(v.produced - before, Ordering::Relaxed);
                 } else {
                     break;
                 }
@@ -235,6 +263,7 @@ impl StreamVoice {
         }
         self.wrap_fades(l, r);
         plan.ring.push(self.epoch, l, r);
+        self.produced += n as u64;
         let before = self.cursor;
         self.cursor = advance(before, k, self.lp);
         let wrapped = matches!(self.lp, Some((_, end)) if before < end && before + k == end);
@@ -272,6 +301,7 @@ impl StreamVoice {
 
 /// The streamer and its thread, shared by the engine (offline servicing) and the thread.
 pub(crate) struct StreamShared {
+    pub(crate) stats: Arc<StreamStats>,
     core: Mutex<Streamer>,
     stop: AtomicBool,
     /// The thread does no work while set (a slow disk, in tests); an offline render is not held.
@@ -282,8 +312,10 @@ impl StreamShared {
     /// The shared state and the queue's producer for the audio thread.
     pub(crate) fn new() -> (Arc<StreamShared>, rtrb::Producer<Msg>) {
         let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let stats = Arc::new(StreamStats::default());
         let shared = Arc::new(StreamShared {
-            core: Mutex::new(Streamer::new(rx)),
+            stats: Arc::clone(&stats),
+            core: Mutex::new(Streamer::new(rx, stats)),
             stop: AtomicBool::new(false),
             stalled: AtomicBool::new(false),
         });
@@ -315,6 +347,7 @@ impl StreamShared {
                 std::thread::sleep(IDLE);
                 continue;
             }
+            let began = std::time::Instant::now();
             let progress = {
                 let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
                 // A decoder that panics must not take the thread's voices down in a loop: the
@@ -327,7 +360,10 @@ impl StreamShared {
                         false
                     })
             };
-            if !progress {
+            if progress {
+                let spent = began.elapsed().as_nanos() as u64;
+                self.stats.busy_ns.fetch_add(spent, Ordering::Relaxed);
+            } else {
                 std::thread::sleep(IDLE);
             }
         }

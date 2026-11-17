@@ -61,6 +61,10 @@
 //!   recording. Captured keys
 //!   still down get their `RecordedNoteOff` at the playhead on `Stop`, `StopRecording` and
 //!   `Locate`, and at the loop end when the loop wraps (each lap is a take of its own).
+//! - Audio tracks (#11, ARCHITECTURE §6.9.3): the track's source node is its clips' stream, read from a
+//!   ring that the read-ahead thread fills (see the `audio` module); a jump of the playhead asks for a new
+//!   epoch, the segment heads cover the gap, a late stream is silence and an underrun count. An offline render
+//!   runs the read-ahead's work itself before each block.
 //! - Instruments get note, MIDI, parameter and `AllNotesOff` events; effects get their parameters
 //!   and `AllNotesOff`. On a track with MIDI effects the instrument gets what the stage chain makes
 //!   of the track's events, with note ids and note-offs guaranteed by the stage's guard
@@ -372,6 +376,12 @@ impl Engine {
     /// offline renders are not affected. For tests and diagnostics.
     pub fn stall_streaming(&self, stalled: bool) {
         self.core.stream.stall(stalled);
+    }
+
+    /// How much the read-ahead thread of the audio clips works (shared; for diagnostics and the
+    /// perf suite).
+    pub fn stream_stats(&self) -> Arc<crate::audio::StreamStats> {
+        Arc::clone(&self.core.stream.stats)
     }
 
     /// The worker pool's counters (shared; they survive [`Engine::set_workers`]).
