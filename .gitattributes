@@ -3,3 +3,6 @@
 * text=auto eol=lf
 # The vendored ASIO SDK stays byte-identical to upstream (CRLF; see vendor/asio-sdk/VENDORED.md).
 vendor/asio-sdk/** -text
+
+# Byte-identical upstream DSP sources, including their original whitespace.
+vendor/signalsmith-stretch/** -text -whitespace
