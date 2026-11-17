@@ -36,6 +36,12 @@ pub struct AudioRecording {
 }
 
 impl AudioRecording {
+    /// Deterministic view-only fixture; it cannot start capture or own recording files.
+    #[cfg(test)]
+    pub(crate) fn preview(start: Tick, head: Tick, progress: Vec<RecordingProgress>, clips: Vec<(TrackId, Arc<Clip>)>) -> Self {
+        Self { start, head, progress, clips }
+    }
+
     /// Current drawn clip on one track (not yet in the document).
     pub fn clip(&self, track: TrackId) -> Option<&Arc<Clip>> {
         self.clips
@@ -824,6 +830,20 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn opening_export_waits_for_the_stopped_take_before_computing_its_song_range() {
+        let (mut app, audio, root) = rig();
+        begin(&mut app, audio);
+        app.dispatch(Action::Transport(TransportAction::Stop));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        // The engine has ended capture, but the UI has not polled its final writer result yet.
+        app.open_export_dialog();
+        assert!(!app.audio_recording.is_active());
+        assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
+        assert!(matches!(app.ui.dialog, Some(crate::ui_state::Dialog::Export(_))));
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn save_during_capture_has_independent_assets_that_survive_esc() {
         let (mut app, track, root) = rig();
         begin(&mut app, track);
@@ -985,6 +1005,26 @@ mod tests {
             app.audio_recording()
                 .is_some_and(|view| view.progress.iter().any(|progress| progress.frames > 0))
         });
+    }
+    #[test]
+    fn mixed_audio_and_midi_stop_as_one_undo_step() {
+        let (mut app, audio, root) = rig();
+        let midi = add_midi(&mut app);
+        begin_mixed(&mut app);
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        assert!(app.recording.is_none());
+        assert_eq!(app.project().track(midi).unwrap().clips.len(), 1);
+        assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert!(app.project().track(midi).unwrap().clips.is_empty());
+        assert!(app.project().track(audio).unwrap().clips.is_empty());
+        app.dispatch(Action::Edit(EditAction::Redo));
+        assert_eq!(app.project().track(midi).unwrap().clips.len(), 1);
+        assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn audio_failure_freezes_and_preserves_the_active_midi_overlay_once() {

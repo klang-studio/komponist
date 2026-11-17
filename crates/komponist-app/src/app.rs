@@ -616,7 +616,7 @@ impl App {
         self.recording = midi.first().is_some().then_some(midi);
         self.set_dock_tab(DockTab::Editor);
         if self.ui.dialog.is_none() {
-            self.ui.focus = FocusArea::PianoRoll;
+            self.ui.focus = self.live_editor_area().unwrap_or(FocusArea::PianoRoll);
         }
     }
 
@@ -2328,11 +2328,12 @@ impl App {
         }
     }
 
-    /// The focus area of the dock's active tab: the piano roll while it shows the take being
-    /// recorded, else [`UiState::dock_area`].
+    /// The focus area of the dock's active tab, including the selected live MIDI or audio take.
     pub(crate) fn dock_area(&self) -> FocusArea {
-        if self.recording.is_some() && self.ui.layout.dock_tab == DockTab::Editor {
-            FocusArea::PianoRoll
+        if self.ui.layout.dock_tab == DockTab::Editor
+            && let Some(area) = self.live_editor_area()
+        {
+            area
         } else {
             self.ui.dock_area(self.doc.project())
         }
