@@ -429,7 +429,9 @@ fn audio_track_dialog_and_file_browser_render_in_both_languages() {
         // The dimmed inspector still paints the scratch filename behind the modal. Its
         // process-specific directory is not part of the missing-files UI contract.
         let source_path = h
-            .get_by_role_and_label(Role::Label, lang.audio_file_path())
+            .get_all_by_role(Role::Label)
+            .find(|node| node.accesskit_node().label().as_deref() == Some(lang.audio_file_path()))
+            .expect("inspector source path remains exposed behind the modal")
             .rect();
         h.mask(source_path);
         mask_cpu(&mut h, lang);
