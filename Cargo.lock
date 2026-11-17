@@ -2614,6 +2614,7 @@ dependencies = [
  "assert_no_alloc",
  "hound",
  "klang-dsp",
+ "komponist-audiofile",
  "komponist-builtin",
  "komponist-model",
  "komponist-rt",

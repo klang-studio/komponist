@@ -243,6 +243,45 @@ fn status(app: &App) -> (String, StatusKind) {
 // ------------------------------------------------------------------------------------------------
 
 #[test]
+fn missing_audio_aborts_export_with_a_localized_status_and_restores_the_engine() {
+    for lang in [Lang::De, Lang::En] {
+        let dir = scratch(&format!("missing-audio-{lang:?}"));
+        let path = dir.join("missing.wav");
+        let (project, track) =
+            edits::add_audio_track(&Project::new("Audio"), edits::NewAudioTrack::default())
+                .unwrap();
+        let (project, _) = edits::add_clip(
+            &project,
+            track,
+            edits::NewClip {
+                start: Tick::ZERO,
+                length: Tick(BAR),
+                name: "Missing".into(),
+                content: edits::NewClipContent::Audio {
+                    file: komponist_model::AudioFile::new(&path, None, 96_000, 48_000, 2),
+                    offset: 0,
+                },
+            },
+        )
+        .unwrap();
+        let (app, _) = app_in(&dir, project);
+        let mut app = app.with_lang(lang);
+        app.step();
+        export(&mut app, export_settings(&dir, ExportRange::Song));
+        assert_eq!(
+            status(&app),
+            (lang.export_missing_audio(path.display()), StatusKind::Error)
+        );
+        assert!(app.exported().is_empty());
+        assert!(!dir.join("out/Night Drive.wav").exists());
+        app.dispatch(Action::Transport(TransportAction::TogglePlay));
+        step_until(&mut app, "playback after failed export", |app| {
+            app.engine().playhead() > Tick::ZERO
+        });
+    }
+}
+
+#[test]
 fn the_song_exports_as_range_plus_tail_normalised_to_minus_one_dbfs() {
     let dir = scratch("song");
     let (mut app, opened) = app_in(&dir, one_bar_song());

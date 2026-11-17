@@ -723,6 +723,10 @@ impl App {
             Err(ExportError::Cancelled) => {
                 self.set_status(self.lang.export_cancelled(), StatusKind::Info)
             }
+            Err(ExportError::MissingAudio(path)) => self.set_status(
+                self.lang.export_missing_audio(path.display()),
+                StatusKind::Error,
+            ),
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }
     }

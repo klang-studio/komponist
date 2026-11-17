@@ -441,7 +441,7 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
 - **Telemetry** (atomics, read every UI frame): playhead tick, play/record state, CPU load (callback
   time / buffer period, smoothed), xrun count, per-track `TrackMeter` (`Arc` shared with the program:
   peak L/R since the last read, as `AtomicU32` f32 bits, taken with `swap(0)`), master meter,
-  MIDI activity per input, keys held on the MIDI inputs (`Telemetry::held_input_keys`, a 128-bit
+  audio clip streaming (`audio_underruns`, `audio_pending`, §6.9.3), MIDI activity per input, keys held on the MIDI inputs (`Telemetry::held_input_keys`, a 128-bit
   map in two atomics; the piano roll's keyboard lights them, WP-61), and the master tap (`Telemetry::master_tap`, #34:
   a `SampleTap` of the master output's mono sum at the master meter's point, written only while the transport bar's
   scope renews its lease and never in an offline render). Ballistics (peak hold 1.5 s, 20 dB/s, clip latch) run in the UI with
@@ -642,6 +642,8 @@ special case.
   engine's processors (`komponist_engine::export::recompile`, after `Engine::settle` applied the queued commands, e.g. a
   lookahead switched a moment before), so the program's delay compensation and `Routing::latency()` are in export-rate
   frames (see 6.8.10 item 8). The stream gets the program the app compiled back afterwards.
+- Audio clips render through the same streamer, which the render thread runs itself (§6.9.3 "Offline"); the export is
+  refused with the missing file named when a clip in its range has none.
 - Dither and PCM quantisation stay in `komponist-engine::export` (only one user, see §10).
 
 ### 6.8 Routing: buses, sends, sidechains (wave 9)
@@ -1022,28 +1024,77 @@ plays and the engine needs no z-order. Dragging the clip away does not restore t
 the clip below can be dragged back out, because the pieces keep their window into the file.
 `EDGE_FADE_MS` (3 ms) is applied by the playback at every edge a cut or a clip border creates; it is not stored.
 
-#### 6.9.3 Engine design (implemented by #11 and #12; #9 only keeps the engine compiling)
+#### 6.9.3 Engine: playback and disk streaming (#11)
+
+Built in `komponist-engine`, module `audio` (a plan per track, the ring, the streamer, the voice).
 
 - **Compile.** An audio track compiles as a source node: no sequencer notes, no instrument, an effect chain
-  (`ChainKind::Master`), output, sends, sidechain taps, PDC and gates as any track. #9 makes it silent
-  (`ClipContent::Audio` yields no notes); the input edge only orders the graph (`topo_order`).
-- **Clip table.** The program gets, per audio track, a flat sorted table of non-overlapping segments built from the
-  clips (`start` and `end` in frames of the engine rate via the tempo map, `offset`, speed `source rate / engine rate ×
-  AudioClip::speed`, gain, fades in frames, the file's pool id). Because clips never overlap, the audio thread
-  needs no mixing of clips and no priority. `Arc::ptr_eq` per clip drives the incremental recompile (§6.3); a tempo
-  change recompiles the segment boundaries.
-- **Streaming.** Files are decoded and converted to the engine rate on a worker (#10, file pool with a peak cache) into
-  planar `f32` buffers owned by the pool; the audio thread only reads them (no allocation, no locks, no IO: rule 4). A
-  clip whose file is not ready or missing plays silence and reports its state to the UI. Long files stream from a
-  ring buffer filled ahead of the playhead by the same worker; seeking and loop jumps refill it before the segment
-  starts (`lookahead` like the MIDI scheduler). Re-Pitch and Fixed differ only in the read speed per segment.
-- **Edges.** At segment starts and ends the playback applies `EDGE_FADE_MS` linear fades on top of the clip's own
-  `fade_in` / `fade_out` and gain; no crossfade in v1.
-- **Input and monitoring.** `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from the bus's
-  post-fader line (like a send tap, §6.8.2), into the track's chain when monitoring (`Off` never, `On` always, `Auto`
-  while armed and not playing back) and into the recorder (#13) when armed and recording.
-- **Export.** The offline render uses the same clip table (§6.7); files that are not ready are waited for or the
-  export is refused with the file named (#11).
+  (`ChainKind::Master`), output, sends, sidechain taps, PDC and gates as any track (the head delay of §6.8.5 applies
+  to its effects like to a MIDI track's). `TrackProgram::audio` is an `AudioPlan`, built by `compile::build` from the
+  unmuted audio clips, the tempo map, the engine rate (`CompileEnv::sample_rate`, default 48 kHz; a plan of another
+  rate than the engine plays silence until the program is compiled again) and the project folder
+  (`CompileEnv::project_dir`, for the relative links). The compile does no IO.
+- **Segments.** The plan holds a sorted table of non-overlapping `Segment`s in **song frames of the engine rate**
+  (`tick_to_sample` of the clip's start and end), each with the file frame at its start converted to the engine rate
+  and rounded (`x0`, from `AudioClip::offset`), the speed (1 for Fixed, `AudioClip::speed` = project / original tempo
+  for Re-Pitch), the clip gain, the clip's fades in frames, and flags for the two edge fades. Clips never overlap in
+  the model, so the audio thread needs no mixing of clips and no priority; a hand-made overlap is resolved at compile
+  time (the later clip wins). `Arc::ptr_eq` per clip, the rate, the tempo map and the folder decide whether a
+  recompile keeps the plan (its ring, heads and open files): a fader move does, an edit or a tempo change does not.
+- **Edges.** `EDGE_FADE_MS` (3 ms) is a linear fade at the start and the end of every segment, on top of the clip's
+  own fades and gain, **except** between two segments that are one continuous stretch of the same file (same file,
+  speed and gain, no clip fade at the cut, the second starting where the first stops, within a frame): a split clip
+  plays through its cut. Fade-in frame `j` has gain `j / length` (0 at the first frame), fade-out frame `j` has
+  `(len − 1 − j) / length` (0 at the last frame).
+- **The stream.** The source of a segment is the file **resampled to the engine rate** (`komponist_audiofile`'s
+  `StreamResampler`; none if the rates are equal, then it is a bit-exact copy), an infinite signal with zeros outside
+  the file. `SourceReader` produces it from any frame: it seeks a pre-roll before the target, aligned to
+  `rate_in / gcd(rate_in, rate_out)` file frames so the converter's phase is right, and decodes forward, so a seek
+  and a continuous play give the same frames. A Re-Pitch segment reads that stream at `speed` frames per output frame
+  with a four-point cubic interpolation (the pitch follows, there is no anti-alias filter for speeds above 1).
+- **The streamer** (`komponist-stream`, one thread per engine) renders every audio track's output (stream, gain,
+  fades, edge fades) **in playback order** into that track's **ring**: lock-free single-producer single-consumer,
+  planar `f32` in atomics (no `unsafe`), 32 768 frames (0.68 s at 48 kHz). The audio thread talks to it through one
+  SPSC queue of `Start { plan, epoch, position, loop }` messages and sends one only when the playhead jumps; the
+  streamer never waits for the audio thread, which never blocks (no `unpark`: the thread polls every 2 ms when idle).
+  Ring positions count frames per **epoch**; both indices carry the epoch, so a word of an older epoch is never
+  mistaken for the current one.
+- **The voice** (audio thread, in the track state) compares the playhead with where the stream goes on: after `n`
+  frames from `p` the stream continues at `p + n`, or at the loop start when the segment ended at the loop end (the
+  transport splits segments exactly there; the streamer follows the same rule, so **loop wraps are predicted** and
+  seamless). If the plan, the position or the loop is not the one of the epoch, the voice starts a new epoch (a locate
+  while playing, a program that changed the track, a changed loop, a start from another position). **Stopped** voices
+  do that too, so the ring is filled for the playhead and **starting is immediate**.
+- **Heads.** For every segment the streamer keeps its first `HEAD_MS` (100 ms) rendered in memory (built in the
+  background after a plan first plays, `AudioPlan::heads_ready`). Until the new epoch's frames arrive, the voice plays
+  from the head of the segment it is in; a position that is not in a head (a locate into the middle of a clip) plays
+  silence until the streamer has caught up, a few milliseconds. Frames inside a segment that neither the ring nor a
+  head could deliver are an **underrun**: silence, one count per block in `Telemetry::audio_underruns`, never a wait.
+  `Telemetry::audio_pending` counts the audio tracks whose ring has not reached the playhead yet.
+- **De-click.** A stop or a locate while playing copies the next 3 ms of the old position, faded out, into a tail that
+  plays out over the next blocks; a start or a jump fades in over 3 ms unless it lands on a segment start (which has its
+  edge fade). A loop wrap has its fades in the stream: the last 3 ms before the loop end and the first 3 ms after the
+  loop start. A hard cut (second Stop) ends tails at once.
+- **Files.** `ClipSource` is one file for all clips that link it (keyed by link and folder), opened by the streamer
+  through the pool (`FilePool::global`; the `Arc<PoolFile>` lives as long as a program plays a clip of it), looked for
+  again at most every 500 ms while missing. `ClipSource::status()` (`Pending`, `Ready`, `Missing`, `Unreadable`) and
+  `Program::clip_source` / `Program::audio_sources` are what the UI shows. A missing file plays silence.
+- **Offline.** An offline render (`Engine::render`, the export) has no deadline: before every block the render thread
+  runs the streamer's own work for the voice (`StreamShared::ensure`, behind the streamer's mutex, with
+  `permit_alloc` around the IO), so the stream is exactly what the thread would have written and the result does not
+  depend on thread timing. Offline renders start without the 3 ms fade-in of a jump (a file has no speakers to click),
+  so they differ from a realtime run only in the first 3 ms after a start in the middle of a clip. The export checks
+  that every file in its range is there (`ExportError::MissingAudio`) and cuts audio at the end of its range like it
+  cuts notes (a plan of its own with its own ring, `AudioPlan::cut_at`).
+- **One engine per plan.** A plan's ring belongs to the engine that plays its program; two engines must not play
+  programs that share a plan (tests compile one program per engine).
+- **Input and monitoring (#13).** The source stage of an audio track is `Voice::render` into the chain's input buffer
+  (marked `#13` in `TrackJobs::run`): `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from
+  the bus's post-fader line (like a send tap, §6.8.2), mixed in when monitoring (`Off` never, `On` always, `Auto` while
+  armed and not playing back) before the chain; the recorder (#13) taps the input in the engine, not the voice.
+  Not built by #11.
+- **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
+  conversion and the fades are the streamer's.
 
 ### 6.10 Audio files (`komponist-audiofile`)
 

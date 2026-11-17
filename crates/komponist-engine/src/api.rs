@@ -294,6 +294,12 @@ pub struct Telemetry {
     pub(crate) dropped_events: AtomicU32,
     /// Keys held on the MIDI inputs: bits 0–63 and 64–127 of [`Telemetry::held_input_keys`].
     pub(crate) held_input: [AtomicU64; 2],
+    /// Blocks in which an audio track missed frames of a clip it should have played (the
+    /// read-ahead was late or the file is slow: silence played instead; ARCHITECTURE §6.9.3).
+    pub(crate) audio_underruns: AtomicU32,
+    /// Audio tracks whose read-ahead has not caught up with the playhead yet (a locate or a
+    /// program change just asked for it), as of the last block.
+    pub(crate) audio_pending: AtomicU32,
 }
 
 impl Telemetry {
@@ -306,7 +312,21 @@ impl Telemetry {
             master_tap: Arc::new(SampleTap::new(crate::tap::DEFAULT_CAPACITY)),
             dropped_events: AtomicU32::new(0),
             held_input: [AtomicU64::new(0), AtomicU64::new(0)],
+            audio_underruns: AtomicU32::new(0),
+            audio_pending: AtomicU32::new(0),
         }
+    }
+
+    /// Total number of blocks since the engine started in which an audio track played silence
+    /// where a clip should have sounded because the streaming was late (never a block).
+    pub fn audio_underruns(&self) -> u32 {
+        self.audio_underruns.load(Ordering::Relaxed)
+    }
+
+    /// How many audio tracks are not ready at the playhead yet: their read-ahead is filling after
+    /// a locate or a change. The UI can show "loading" while it is above 0 and the transport runs.
+    pub fn audio_pending(&self) -> u32 {
+        self.audio_pending.load(Ordering::Relaxed)
     }
 
     /// MIDI keys held on the live MIDI inputs right now (bit `k` = key `k`), all ports and

@@ -43,7 +43,8 @@ use crate::step_rows;
 use crate::ui_state::{StatusKind, StepCursor};
 
 /// The demo project with the synthesized test kit on the pads of every sampler (`--demo`): the
-/// kit's files are written into `dir` (created), the pads link them. The demo is a throwaway, so
+/// kit's files and showcase audio clips are synthesized into `dir` (created), the pads and clips
+/// link them. The demo is a throwaway, so
 /// `dir` is the system's temporary folder in the app.
 pub fn demo_with_kit(
     mut project: komponist_model::Project,
@@ -67,6 +68,7 @@ pub fn demo_with_kit(
             }
         }
     }
+    crate::showcase::audio::write_files(&mut project, dir)?;
     Ok(project)
 }
 
