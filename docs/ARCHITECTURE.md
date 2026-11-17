@@ -1067,13 +1067,16 @@ and worker threads and hand finished `Arc`s over.
   `StreamResampler` converts chunk by chunk for the read-ahead thread (`push`, `finish`, `reset` after a seek).
   The Sampler converts nothing (its voices interpolate at playback); audio clips are converted to the engine rate off
   the audio thread.
-- **Peaks (`PeakData`).** Multi-resolution min/max per channel: level 0 has one bucket per 128 source frames, every
-  further level merges 4 buckets, up to one bucket (≈ 4.5 MB for 10 minutes of 48 kHz stereo). `query(channel, start,
+- **Peaks (`PeakData`).** Multi-resolution min/max and measured RMS per channel: level 0 has one bucket per 128 source frames, every
+  further level merges 4 buckets, up to one bucket (≈ 9.6 MB for 10 minutes of 48 kHz stereo). `query(channel, start,
   end, columns)` (or `query_secs`) returns the min/max of `columns` equal slices of a frame range from the coarsest
   level whose buckets are at most a quarter column wide, so a redraw costs the view's width, not the file's length.
   `frames_per_bucket` in the answer tells the arrangement when to switch to raw samples. Frames are source frames
   (`sample_rate()` converts from ticks via seconds). `PeakBuilder` builds from chunks; `PeakData::from_file` streams a
-  decode without holding the file in memory.
+  decode without holding the file in memory. `query_rms(channel, start, end, columns)` returns RMS amplitudes at the
+  same resolution: each bucket stores the sum of squared samples in `f64`, higher levels sum energies, and the
+  query weights the final partial bucket by its actual frame count. Unaligned columns include whole intersecting
+  buckets, as min/max queries do. Cache version `KPK2` stores energy beside min/max; older caches are regenerated.
 - **File pool (`FilePool`, `PoolFile`).** One entry per file, keyed by `FileId` (canonical path, size, mtime), so
   symlinks and spellings of a path are one entry and a changed file is a new one. The pool holds entries weakly:
   the refcount is the `Arc<PoolFile>` the users hold, and an entry and its memory go with the last user. Per entry,

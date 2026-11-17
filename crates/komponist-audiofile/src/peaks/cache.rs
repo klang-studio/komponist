@@ -6,16 +6,16 @@
 //! that changed under the same name never reads stale peaks, and a damaged or foreign file
 //! reads as a miss. All of it is best effort: every error is a miss on read and ignored on write.
 //!
-//! Layout (little-endian): `"KPK1"`, sample rate `u32`, frames `u64`, file size `u64`, mtime
+//! Layout (little-endian): `"KPK2"`, sample rate `u32`, frames `u64`, file size `u64`, mtime
 //! nanoseconds `u64`, channels `u32`, level count `u32`, then per level the block size `u64`,
-//! the bucket count `u64`, and `channels × buckets` min/max `f32` pairs.
+//! the bucket count `u64`, and `channels × buckets` min/max `f32` pairs and sum-of-squares `f64` values.
 
 use std::path::{Path, PathBuf};
 
 use super::{Level, Peak, PeakData};
 use crate::FileId;
 
-const MAGIC: &[u8; 4] = b"KPK1";
+const MAGIC: &[u8; 4] = b"KPK2";
 const HEADER: usize = 4 + 4 + 8 + 8 + 8 + 4 + 4;
 
 /// The cache file of `id` inside `dir`.
@@ -36,10 +36,11 @@ pub fn to_bytes(data: &PeakData, id: &FileId) -> Vec<u8> {
     for level in &data.levels {
         out.extend_from_slice(&level.block.to_le_bytes());
         out.extend_from_slice(&(level.data[0].len() as u64).to_le_bytes());
-        for channel in &level.data {
-            for p in channel {
+        for (channel, energy) in level.data.iter().zip(&level.energy) {
+            for (p, energy) in channel.iter().zip(energy) {
                 out.extend_from_slice(&p.min.to_le_bytes());
                 out.extend_from_slice(&p.max.to_le_bytes());
+                out.extend_from_slice(&energy.to_le_bytes());
             }
         }
     }
@@ -74,21 +75,35 @@ pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
             return None;
         }
         // The remaining bytes must hold the buckets: no huge allocation from a corrupt count.
-        if buckets.checked_mul(channels)?.checked_mul(8)? > r.0.len() {
+        if buckets.checked_mul(channels)?.checked_mul(16)? > r.0.len() {
             return None;
         }
         let mut data = Vec::with_capacity(channels);
+        let mut energy = Vec::with_capacity(channels);
         for _ in 0..channels {
             let mut c = Vec::with_capacity(buckets);
-            for _ in 0..buckets {
+            let mut e = Vec::with_capacity(buckets);
+            for bucket in 0..buckets {
                 c.push(Peak {
                     min: r.f32()?,
                     max: r.f32()?,
                 });
+                let value = r.f64()?;
+                let count = frames.saturating_sub(bucket as u64 * block).min(block);
+                let limit = f64::from(f32::MAX).powi(2) * count as f64;
+                if !value.is_finite() || value < 0.0 || value > limit {
+                    return None;
+                }
+                e.push(value);
             }
             data.push(c);
+            energy.push(e);
         }
-        levels.push(Level { block, data });
+        levels.push(Level {
+            block,
+            data,
+            energy,
+        });
     }
     r.0.is_empty().then_some(PeakData {
         sample_rate,
@@ -127,6 +142,9 @@ impl<'a> Reader<'a> {
     }
     fn u64(&mut self) -> Option<u64> {
         Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn f64(&mut self) -> Option<f64> {
+        Some(f64::from_le_bytes(self.take(8)?.try_into().ok()?))
     }
     fn f32(&mut self) -> Option<f32> {
         Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))

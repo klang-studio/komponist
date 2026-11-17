@@ -286,3 +286,119 @@ fn the_cache_folder_is_created_and_files_are_named_by_identity() {
         16 + ".kpeaks".len()
     );
 }
+
+fn assert_rms_close(actual: f32, expected: f64) {
+    assert!(
+        (f64::from(actual) - expected).abs() < 1e-6,
+        "RMS {actual}, expected {expected}"
+    );
+}
+
+#[test]
+fn rms_distinguishes_an_impulse_from_a_constant_with_the_same_peak() {
+    let constant = PeakData::from_planar(48000, &[vec![1.0; 128]]);
+    let mut impulse = vec![0.0; 128];
+    impulse[0] = 1.0;
+    let impulse = PeakData::from_planar(48000, &[impulse]);
+    assert_eq!(constant.query(0, 0, 128, 1).columns[0].max, 1.0);
+    assert_eq!(impulse.query(0, 0, 128, 1).columns[0].max, 1.0);
+    assert_rms_close(constant.query_rms(0, 0, 128, 1).columns[0], 1.0);
+    assert_rms_close(
+        impulse.query_rms(0, 0, 128, 1).columns[0],
+        (1.0f64 / 128.0).sqrt(),
+    );
+}
+
+#[test]
+fn rms_weights_partial_buckets_by_their_actual_sample_count() {
+    // One full silent bucket and one sample at 1. An average of bucket RMS would be wrong.
+    let mut samples = vec![0.0; 128];
+    samples.push(1.0);
+    let p = PeakData::from_planar(48000, &[samples]);
+    assert_rms_close(
+        p.query_rms(0, 0, 129, 1).columns[0],
+        (1.0f64 / 129.0).sqrt(),
+    );
+    assert_rms_close(p.query_rms(0, 128, 129, 1).columns[0], 1.0);
+    // Select a higher pyramid level containing the same partial final bucket.
+    let q = p.query_rms(0, 0, 4096, 1);
+    assert_eq!(q.frames_per_bucket, 512);
+    assert_rms_close(q.columns[0], (1.0f64 / 129.0).sqrt());
+}
+
+#[test]
+fn rms_queries_match_measured_energy_at_every_pyramid_resolution() {
+    let samples = noise(200_003, 91);
+    let p = PeakData::from_planar(44100, std::slice::from_ref(&samples));
+    for (block, columns) in [
+        (128usize, 100usize),
+        (512, 100),
+        (2048, 50),
+        (8192, 20),
+        (32768, 5),
+    ] {
+        let q = p.query_rms(0, 0, (block * columns) as u64, columns);
+        assert_eq!(
+            q.frames_per_bucket,
+            p.query(0, 0, (block * columns) as u64, columns)
+                .frames_per_bucket
+        );
+        for (c, &rms) in q.columns.iter().enumerate() {
+            let part = &samples[c * block..(c + 1) * block];
+            let energy: f64 = part.iter().map(|&x| f64::from(x).powi(2)).sum();
+            assert_rms_close(rms, (energy / part.len() as f64).sqrt());
+        }
+    }
+    // A whole-file query also includes the final partial bucket with its true weight.
+    let q = p.query_rms(0, 0, samples.len() as u64, 1);
+    let energy: f64 = samples.iter().map(|&x| f64::from(x).powi(2)).sum();
+    assert_rms_close(q.columns[0], (energy / samples.len() as f64).sqrt());
+}
+
+#[test]
+fn rms_channels_empty_ranges_and_outside_file_match_peak_queries() {
+    let p = PeakData::from_planar(48000, &[vec![0.25; 256], vec![-0.75; 256]]);
+    assert_eq!(p.query_rms(0, 0, 256, 2).columns, [0.25, 0.25]);
+    assert_eq!(p.query_rms(1, 0, 256, 2).columns, [0.75, 0.75]);
+    assert_eq!(p.query_rms(0, 128, 384, 2).columns, [0.25, 0.0]);
+    assert_eq!(p.query_rms(2, 0, 256, 2).columns, [0.0, 0.0]);
+    assert!(p.query_rms(0, 10, 10, 2).columns.is_empty());
+    assert!(p.query_rms(0, 0, 256, 0).columns.is_empty());
+    assert_eq!(
+        PeakData::from_planar(48000, &[Vec::new()])
+            .query_rms(0, 0, 1, 2)
+            .columns,
+        [0.0, 0.0]
+    );
+    // Large public query ranges must not overflow while multiplying by the column number.
+    assert_eq!(
+        p.query_rms(0, u64::MAX - 100, u64::MAX, 4).columns,
+        [0.0; 4]
+    );
+    assert_eq!(
+        p.query(0, u64::MAX - 100, u64::MAX, 4).columns,
+        [Peak::SILENT; 4]
+    );
+}
+
+#[test]
+fn old_peak_caches_and_invalid_rms_energy_are_misses() {
+    let p = PeakData::from_planar(48000, &[vec![0.5; 128]]);
+    let bytes = cache::to_bytes(&p, &id(11, 22));
+    assert_eq!(&bytes[..4], b"KPK2");
+    let mut old = bytes.clone();
+    old[..4].copy_from_slice(b"KPK1");
+    assert_eq!(cache::from_bytes(&old, &id(11, 22)), None);
+    for invalid in [
+        -1.0f64,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+    ] {
+        let mut corrupt = bytes.clone();
+        // 40-byte header + 16-byte level header + min/max pair.
+        corrupt[64..72].copy_from_slice(&invalid.to_le_bytes());
+        assert_eq!(cache::from_bytes(&corrupt, &id(11, 22)), None);
+    }
+}
