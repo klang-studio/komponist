@@ -257,10 +257,11 @@ pub struct Project {
 }
 pub struct Track {
     pub id: TrackId, pub name: String, pub hue: Hue,       // Hue = one of the 14 token hues
-    pub kind: TrackKind,                                   // Midi | Bus (wave 9); Audio in wave 10
+    pub kind: TrackKind,                                   // Midi | Bus (wave 9) | Audio (wave 10, §6.9)
     pub channel: Channel,                                  // volume_db, pan (-1..1), mute, solo, devices
     pub arm: bool, pub monitor: bool,                      // R, I
     pub input: MidiInputSel, pub midi_channel: MidiChannelSel, // "Alle MIDI-Eingänge", "Omni"
+    pub audio: AudioIo,                                    // audio input + monitoring, audio tracks only (§6.9)
     pub height: u16,                                       // 32..=160, part of the project
     pub clips: Vec<Arc<Clip>>,                             // empty on a bus
     pub output: TrackOutput,                               // Master | Bus(id)       (routing, §6.8)
@@ -281,7 +282,7 @@ pub struct Clip {
     pub start: Tick, pub length: Tick,                     // on the timeline
     pub loop_length: Option<Tick>,                         // "loopen": repetitions of the content
     pub mute: bool,
-    pub content: ClipContent,                              // Midi(MidiClip) | Step(StepClip)
+    pub content: ClipContent,                              // Midi(MidiClip) | Step(StepClip) | Audio(AudioClip) (§6.9)
 }
 pub struct MidiClip { pub takes: Vec<Take>, pub active_take: usize }  // loop recording → takes
 pub struct Take { pub name: String, pub notes: Arc<Vec<Note>> }       // sorted by start
@@ -350,10 +351,11 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 
 ### 5.5 Persistence (D7)
 
-- `*.komponist`: JSON `{ "format": "komponist", "version": 2, "project": … }`. Plugin states are base64.
+- `*.komponist`: JSON `{ "format": "komponist", "version": 3, "project": … }`. Plugin states are base64.
   A missing plugin keeps its state unchanged (S06).
 - Migrations: `version` → `migrate_vN_to_vN+1` functions, with a test per version. Version 2 (WP-101) adds the
-  routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master.
+  routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master. Version 3 (#9, wave 10) adds audio tracks and clips (§6.9); it is
+  all optional data, so `migrate_v2_to_v3` changes nothing, and the bump only keeps older builds from opening it.
 - Settings: `~/.config/komponist/settings.json` (driver, device, rate, buffer, MIDI inputs, plugin
   folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`. (macOS:
   `~/Library/Application Support/komponist/`; Windows: `%APPDATA%\komponist\`, see §9.3.)
@@ -653,17 +655,18 @@ colours from the palette (14 A). Model code: `komponist_model::routing` (pure qu
 
 #### 6.8.1 The graph, track kinds and the UI
 
-One graph for everything. **Nodes:** every track (`TrackKind::Midi`, `TrackKind::Bus`, later `Audio`) and the
+One graph for everything. **Nodes:** every track (`TrackKind::Midi`, `TrackKind::Bus`, `TrackKind::Audio`) and the
 master. **Edges:**
 
 | Edge | From → to | Model | Carries |
 |---|---|---|---|
 | Output | track or bus → master or bus | `Track::output: TrackOutput` (`Master` \| `Bus(TrackId)`) | the node's signal after fader, pan and mute |
 | Send | MIDI track → bus | `Track::sends: Vec<TrackSend>` (`id: SendId`, `target`, `level_db`, `tap: Pre \| Post`, `enabled`) | a copy at the tap, scaled by the send level |
+| Input | bus → audio track (§6.9) | `Track::audio.input: AudioInput::Bus(TrackId)` | what leaves the bus (behind its fader, pan, mute), recorded and monitored by the audio track; nothing into the mix |
 | Sidechain | track or bus → the node holding the device | `Device::sidechain: Option<Sidechain>` (`source: TrackId`, `tap`) | the source's signal at the tap into the device's sidechain input; nothing into the mix |
 
 ```rust
-pub enum TrackKind { #[default] Midi, Bus }            // Audio reserved for wave 10 (WP-111)
+pub enum TrackKind { #[default] Midi, Bus, Audio }     // Audio: wave 10, §6.9
 pub struct Track { /* … as in 5.2 … */
     pub output: TrackOutput,                            // required from file version 2
     pub sends: Vec<TrackSend>,                          // empty on buses (11 A)
@@ -741,6 +744,9 @@ Invariants (`routing::check`, asserted after every edit in the property tests):
 3. Output and send targets are buses; a track sends at most once to a bus; buses have no sends (edits, 11 A).
 4. Groups: `folder` only on buses, `folded` only on groups, members directly behind their group (6.8.1).
 5. A bus holds no clips, no instrument, no MIDI effects, is not armed and not monitoring.
+6. A track holds only content its kind takes (`RoutingIssue::KindContent`): an audio track audio clips and audio
+   effects, a MIDI track MIDI and step clips; `Track::audio` is non-default only on audio tracks; an audio track's
+   input bus exists, is a bus and closes no cycle (§6.9).
 
 **Queries for the UI** (grey out what would close a cycle, WP-100 §7): `routing::output_targets(track)` (master
 first, then every bus that is not upstream of the track), `send_targets(track)` (the same buses minus those it
@@ -910,11 +916,13 @@ Per-bus stems later are one more output: copy a node's post buffer into a second
 
 #### 6.8.9 Audio tracks (wave 10)
 
-An audio track (`TrackKind::Audio`, WP-111) is one more source node: clip playback (and live input) replaces
+An audio track (`TrackKind::Audio`, §6.9) is one more source node: clip playback (and live input) replaces
 sequencer and instrument at the head of the chain; output, sends, sidechain taps, groups, mute, solo and PDC are
 the same, so nothing in this section changes. „Bus aufnehmen“ (16 A) creates an audio track whose **input** is a
-bus: that adds an input edge bus → audio track, which counts for the cycle check like a sidechain (the audio track
-must not output back into that bus).
+bus: that adds an input edge bus → audio track (`routing::EdgeKind::Input`), which counts for the cycle check like a
+sidechain (the audio track must not output back into that bus or into anything that feeds it; `output_targets` and
+`routing::input_sources` grey those out). It is a tap, not a gate: mute and solo do not close it
+(`routing::gates` ignores it), the bus is just processed before the track (`topo_order`).
 
 #### 6.8.10 Open questions
 
@@ -936,6 +944,105 @@ must not output back into that bus).
    routing latency and the delay compensation are in frames of the export rate and agree with the skipped latency.
    The same step fixed a race at the same rate: a latency published after the app's last compile (a lookahead switched
    right before the export) made the skip and the compensation disagree.
+
+### 6.9 Audio tracks and audio clips (wave 10, epic #8)
+
+Model and file format: #9 (this section). Decoding, resampling, peaks and the file pool: #10. Playback and streaming:
+#11. Arrangement, waveform and inspector: #12. Recording: #13. Warp, if it comes: #14. Owner decisions on the epic
+(2026-11-17): separate track kinds (no hybrid tracks); clip positions follow the bar grid and the content stays fixed
+(optional per clip „Re-Pitch“); files are linked like the Sampler's and „Sammeln und speichern“ copies them; a moved clip
+cuts the one below it (3 ms edge fades, no crossfade in v1); no audio files on MIDI tracks; no Reverse in v1; monitoring
+of a new audio track is off.
+
+#### 6.9.1 Data model
+
+```rust
+pub enum TrackKind { Midi, Bus, Audio }
+pub struct AudioIo { pub input: AudioInput, pub monitor: MonitorMode }   // Track::audio, default = {None, Off}
+pub enum AudioInput { None, Hardware(HardwareInput), Bus(TrackId) }       // Bus: input edge, §6.8.9
+pub struct HardwareInput { pub first: u16, pub stereo: bool }             // channel `first` (and `first + 1`), from 0
+pub enum MonitorMode { Off, Auto, On }                                    // Auto: armed and not playing back
+
+pub enum ClipContent { Midi(MidiClip), Step(StepClip), Audio(AudioClip) } // ClipKind::{Midi, Step, Audio}
+pub struct AudioClip {
+    pub file: AudioFile,            // the link, plus what the file is
+    pub offset: u64,                // start of the window in the file, frames of the file's own rate
+    pub gain_db: f32,               // -70 (silence) ..= +24
+    pub fade_in: Tick, pub fade_out: Tick,   // timeline ticks, fade_in + fade_out <= Clip::length
+    pub time_mode: ClipTimeMode,    // Fixed (default) | RePitch; an enum so warp (#14) is a new variant
+    pub original_tempo: Tempo,      // project tempo at creation, set by hand; used by RePitch
+}
+pub struct AudioFile { pub abs: PathBuf, pub rel: PathBuf /* empty before the project has a file */,
+                       pub frames: u64, pub sample_rate: u32, pub channels: u16 }
+```
+
+`Clip` is unchanged around it: `start` and `length` are timeline ticks (the bar grid), `mute` works, `loop_length` is
+always `None`, `transpose` and `velocity_pct` are 0. The **window** is `offset` frames into the file for `length`
+ticks. How many frames that is depends on the mode, `AudioClip::source_frames(ticks, project_tempo)`:
+
+- **Fixed:** the content plays at its own speed, one tick lasts what the project tempo says. A tempo change keeps the
+  clip's duration in **seconds**: `set_project_prop(Tempo)` scales the length and fades of every Fixed clip (the start
+  stays on the grid), then `normalize_overlaps` cuts what the longer clips now run into (the clip that starts later
+  wins).
+- **RePitch:** one tick plays what it lasts at `original_tempo`, so the clip keeps its length in ticks and plays at
+  `project / original` speed (`AudioClip::speed`), pitch following.
+- The clip never reaches past the file: `AudioClip::max_length(project_tempo)` is what is left behind `offset`; adding,
+  stretching, switching the mode and changing the original tempo clamp to it. `frames`, `sample_rate` and `channels` are
+  those of the file when it was linked, so this works with the file missing and the UI can draw an extent for it.
+
+**Files.** `AudioFile` is the Sampler's link (§8.5, `sampler::links`): the file is found through `rel` against the
+folder of the project file first, then through `abs` (`AudioFile::resolve`). Saving rebases resolving links to the new
+file (`AudioFile::rebased`); a link that does not resolve stays. „Sammeln und speichern“ copies the files of audio clips
+into `<project name> Samples/` with the **same collector** as the Sampler's samples (identical content is copied once;
+`Collector::collect_file`), and `edits::rewrite_audio_files` points the clips (and every undo step, per step) at the
+copies. A recording of a project without a file lives in the user's recordings folder (its `abs`, empty `rel`); the app
+knows that folder and moves such files into the project's samples folder on the first save (#13): no extra state in
+the model. The path helpers moved to `komponist_model::paths` for this.
+
+**Kinds are enforced** by the edits (`EditError::ClipNotAllowed { track, clip }`) and by `routing::check` /
+loading: audio clips only on audio tracks (add, move and copy refuse the target), MIDI and step clips only on MIDI
+tracks, an audio track takes audio effects only (`insert_device`, `replace_instrument`). `Track::audio` is read on audio
+tracks only; MIDI props (`Input`, `MidiChannel`, `Monitor`) are ignored on them, `AudioInput` and `MonitorMode` are
+`Invalid` elsewhere. Arming an audio track does not touch `Track::monitor`; monitoring is `AudioIo::monitor`.
+
+#### 6.9.2 Edits, the overlap-cut rule, undo
+
+All edits are pure functions as in §5.3, one undo step each. Added: `add_audio_track(_in)` (`NewAudioTrack`, default
+name „Audio“, `DefaultNames::audio`), `NewClipContent::Audio { file, offset }` for `add_clip`, `set_audio_clip_prop`
+(`AudioClipProp::{GainDb, FadeIn, FadeOut, TimeMode, OriginalTempo}`), `set_audio_clip_file` (relink),
+`trim_audio_clip_start` (left edge: the window follows the edge), `TrackProp::{AudioInput, MonitorMode}`.
+`split_clips` advances the right part's offset; `set_clip_length` clamps to the file.
+
+**Audio clips on one track never overlap.** Whatever puts a clip on a track (add, move, Alt-drag copy, Ctrl D, stretch,
+left trim, `ClipProp::Start`) cuts the clips below it in the same step: a covered clip is removed, a clip hit on one
+side is shortened (a cut start advances its `offset`), a clip with the new one in the middle becomes two (the left part
+keeps the id, the right part gets a new one). A cut edge loses its fade. The model therefore always says exactly what
+plays and the engine needs no z-order. Dragging the clip away does not restore the hidden part (undo does); the edge of
+the clip below can be dragged back out, because the pieces keep their window into the file.
+`EDGE_FADE_MS` (3 ms) is applied by the playback at every edge a cut or a clip border creates; it is not stored.
+
+#### 6.9.3 Engine design (implemented by #11 and #12; #9 only keeps the engine compiling)
+
+- **Compile.** An audio track compiles as a source node: no sequencer notes, no instrument, an effect chain
+  (`ChainKind::Master`), output, sends, sidechain taps, PDC and gates as any track. #9 makes it silent
+  (`ClipContent::Audio` yields no notes); the input edge only orders the graph (`topo_order`).
+- **Clip table.** The program gets, per audio track, a flat sorted table of non-overlapping segments built from the
+  clips (`start` and `end` in frames of the engine rate via the tempo map, `offset`, speed `source rate / engine rate ×
+  AudioClip::speed`, gain, fades in frames, the file's pool id). Because clips never overlap, the audio thread
+  needs no mixing of clips and no priority. `Arc::ptr_eq` per clip drives the incremental recompile (§6.3); a tempo
+  change recompiles the segment boundaries.
+- **Streaming.** Files are decoded and converted to the engine rate on a worker (#10, file pool with a peak cache) into
+  planar `f32` buffers owned by the pool; the audio thread only reads them (no allocation, no locks, no IO: rule 4). A
+  clip whose file is not ready or missing plays silence and reports its state to the UI. Long files stream from a
+  ring buffer filled ahead of the playhead by the same worker; seeking and loop jumps refill it before the segment
+  starts (`lookahead` like the MIDI scheduler). Re-Pitch and Fixed differ only in the read speed per segment.
+- **Edges.** At segment starts and ends the playback applies `EDGE_FADE_MS` linear fades on top of the clip's own
+  `fade_in` / `fade_out` and gain; no crossfade in v1.
+- **Input and monitoring.** `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from the bus's
+  post-fader line (like a send tap, §6.8.2), into the track's chain when monitoring (`Off` never, `On` always, `Auto`
+  while armed and not playing back) and into the recorder (#13) when armed and recording.
+- **Export.** The offline render uses the same clip table (§6.7); files that are not ready are waited for or the
+  export is refused with the file named (#11).
 
 ---
 
