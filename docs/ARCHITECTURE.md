@@ -1158,6 +1158,18 @@ and worker threads and hand finished `Arc`s over.
 ## 7. Audio and MIDI I/O (`komponist-audio`)
 
 - `AudioSystem::available_hosts()` → the drivers of this OS (see below), devices, rates, buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
+- **Audio capture (#13):** input devices are enumerated separately (`AudioSystem::input_devices`).
+  Capture is off until `set_input(Some(InputConfig))`; an absent setting never opens a microphone.
+  `AudioProcess::process_input` receives a borrowed interleaved `InputBuffer` at the output rate;
+  its default implementation preserves output-only processors. A bounded SPSC bridge carries
+  timestamped frames from the input callback to the output callback. Linear rate conversion and
+  a queue-depth clock follower (at most ±0.2%) align separate device clocks; a short priming lead
+  avoids recurring startup underruns. `InputBuffer::latency` includes capture and queue delay.
+  Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
+  instead of joining samples across a gap. Callback buffers and queue storage are preallocated.
+  ASIO capture uses the output's driver and caches input metadata during normal enumeration;
+  it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
+  inject synthetic capture into the same bridge/null backend without opening hardware.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
