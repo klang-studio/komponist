@@ -283,26 +283,103 @@ mod tests {
         }
     }
 
-    /// A wake ends a long wait at once: far below the deadline (and below a timer tick).
+    /// Records the waiter's resume time, excluding thread teardown and the caller's join latency.
+    #[cfg(windows)]
+    fn wake_round_trip(
+        wait: fn(&AtomicU32, u32, Instant) -> bool,
+        signal: fn(&AtomicU32),
+    ) -> Duration {
+        let word = Arc::new(AtomicU32::new(0));
+        let other = Arc::clone(&word);
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            assert!(wait(&other, 0, Instant::now() + Duration::from_secs(10)));
+            assert_eq!(other.load(Ordering::Acquire), 1);
+            Instant::now()
+        });
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Let the waiter reach the kernel; identical for the wrapper and native reference.
+        std::thread::sleep(Duration::from_millis(1));
+        let sent = Instant::now();
+        word.store(1, Ordering::Release);
+        signal(&word);
+        let latency = waiter
+            .join()
+            .unwrap()
+            .checked_duration_since(sent)
+            .expect("wait returned before the word changed");
+        assert!(
+            latency < Duration::from_secs(1),
+            "wake did not interrupt the long wait: {latency:?}"
+        );
+        latency
+    }
+
+    /// Independent Win32 reference, without the engine wrapper, on the same loaded machine.
+    #[cfg(windows)]
+    fn native_wait_on_address(word: &AtomicU32, current: u32, deadline: Instant) -> bool {
+        use windows_sys::Win32::System::Threading::WaitOnAddress;
+
+        while word.load(Ordering::Acquire) == current {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let millis = remaining
+                .as_nanos()
+                .div_ceil(1_000_000)
+                .min(u128::from(u32::MAX - 1)) as u32;
+            // SAFETY: valid, aligned word and comparison value for the duration of the wait.
+            unsafe {
+                WaitOnAddress(
+                    word.as_ptr().cast(),
+                    (&raw const current).cast(),
+                    size_of::<u32>(),
+                    millis,
+                );
+            }
+        }
+        true
+    }
+
+    #[cfg(windows)]
+    fn native_wake_by_address(word: &AtomicU32) {
+        use windows_sys::Win32::System::Threading::WakeByAddressSingle;
+
+        // SAFETY: the word is valid and aligned for the whole call.
+        unsafe { WakeByAddressSingle(word.as_ptr().cast()) };
+    }
+
+    /// Every wake interrupts the pending wait. Compare median latency with the native primitive
+    /// in interleaved rounds: a shared VM can delay either thread by a scheduler quantum. The
+    /// wrapper's 1 ms overhead budget still catches a coarse-timer poll (about 15.6 ms) without
+    /// treating thread teardown or runner scheduling as engine latency.
     #[cfg(windows)]
     #[test]
     fn wake_round_trip_is_fast() {
-        let word = Arc::new(AtomicU32::new(0));
-        let other = Arc::clone(&word);
-        let waiter = std::thread::spawn(move || {
-            let t0 = Instant::now();
-            assert!(wait_while(&other, 0, t0 + Duration::from_secs(10)));
-            t0.elapsed()
-        });
-        std::thread::sleep(Duration::from_millis(30));
-        let t0 = Instant::now();
-        word.store(1, Ordering::Release);
-        wake(&word, 1);
-        waiter.join().unwrap();
+        let mut wrapper = Vec::new();
+        let mut native = Vec::new();
+        for round in 0..31 {
+            for reference in [round % 2 == 0, round % 2 != 0] {
+                if reference {
+                    native.push(wake_round_trip(
+                        native_wait_on_address,
+                        native_wake_by_address,
+                    ));
+                } else {
+                    wrapper.push(wake_round_trip(wait_while, |word| wake(word, 1)));
+                }
+            }
+        }
+        wrapper.sort_unstable();
+        native.sort_unstable();
+        let wrapper_median = wrapper[wrapper.len() / 2];
+        let native_median = native[native.len() / 2];
+        eprintln!("wake round trip: wrapper {wrapper_median:?}, native {native_median:?}");
         assert!(
-            t0.elapsed() < Duration::from_millis(10),
-            "{:?}",
-            t0.elapsed()
+            wrapper_median <= native_median + Duration::from_millis(1),
+            "wrapper {wrapper_median:?}, native {native_median:?}"
         );
     }
 
