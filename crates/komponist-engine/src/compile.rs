@@ -100,8 +100,10 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
     let track_chains: Vec<Vec<&Device>> = tracks
         .iter()
         .map(|t| {
-            // A bus runs audio effects only (it never holds an instrument or MIDI effects).
-            let kind = if t.is_bus() {
+            // A bus runs audio effects only (it never holds an instrument or MIDI effects), and so
+            // does an audio track. #11: an audio track is a source node without sequencer and
+            // instrument for now, so it is silent until clip playback exists.
+            let kind = if t.is_bus() || t.is_audio() {
                 ChainKind::Master
             } else {
                 ChainKind::Track
@@ -411,6 +413,8 @@ fn compile_notes(clips: &[Arc<Clip>]) -> Arc<[SeqNote]> {
         match &clip.content {
             ClipContent::Midi(midi) => midi_notes(clip, midi, &mut notes),
             ClipContent::Step(steps) => step_notes(clip, steps, &mut notes),
+            // Audio clips make no notes; their playback is #11.
+            ClipContent::Audio(_) => {}
         }
     }
     notes.sort_by_key(|n| (n.start, n.key));

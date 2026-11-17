@@ -21,8 +21,10 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
+use komponist_model::paths::normalize;
+pub use komponist_model::paths::{absolute, relative};
 use serde_json::{Map, Value};
 
 use super::PADS;
@@ -309,6 +311,24 @@ impl Collector {
         (relinked != links).then(|| write_all(state, &relinked))
     }
 
+    /// Collects one file (resolved already) into the samples folder, like [`Collector::collect`]
+    /// does for the links of a state: copied unless it lies in the folder or an identical copy does.
+    /// Returns where it is now. Audio clips use it (#9).
+    pub fn collect_file(&mut self, file: &Path) -> io::Result<PathBuf> {
+        self.place(file)
+    }
+
+    /// Where `file` went in this run ([`Collector::collect_file`], [`Collector::collect`]); `None`
+    /// if it was not collected. Does not copy.
+    pub fn placed(&self, file: &Path) -> Option<PathBuf> {
+        self.done.get(&normalize(file)).cloned()
+    }
+
+    /// The folder of the project file the collector works for.
+    pub fn project_dir(&self) -> &Path {
+        &self.project_dir
+    }
+
     /// The path `file` has in the samples folder after collecting (copied if needed).
     fn place(&mut self, file: &Path) -> io::Result<PathBuf> {
         let file = normalize(file);
@@ -402,53 +422,6 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
     Ok(std::fs::read(a)? == std::fs::read(b)?)
 }
 
-/// `path` as an absolute path (against the current folder), without touching the file system.
-pub fn absolute(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        normalize(path)
-    } else {
-        std::env::current_dir()
-            .map(|d| normalize(&d.join(path)))
-            .unwrap_or_else(|_| path.to_path_buf())
-    }
-}
-
-/// `path` without `.` and resolvable `..` parts (lexically).
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// `path` relative to the folder `base` (both absolute): `Kit/kick.wav`, `../Samples/kick.wav`.
-pub fn relative(path: &Path, base: &Path) -> PathBuf {
-    let path = normalize(path);
-    let base = normalize(base);
-    let (p, b): (Vec<_>, Vec<_>) = (path.components().collect(), base.components().collect());
-    let common = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    if common == 0 {
-        return path;
-    }
-    let mut out = PathBuf::new();
-    for _ in common..b.len() {
-        out.push("..");
-    }
-    for c in &p[common..] {
-        out.push(c.as_os_str());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,14 +439,6 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
         path
-    }
-
-    #[test]
-    fn relative_paths_climb_and_descend() {
-        let r = |p: &str, b: &str| relative(Path::new(p), Path::new(b));
-        assert_eq!(r("/a/b/k.wav", "/a/b"), Path::new("k.wav"));
-        assert_eq!(r("/a/b/S/k.wav", "/a/b"), Path::new("S/k.wav"));
-        assert_eq!(r("/a/x/k.wav", "/a/b/c"), Path::new("../../x/k.wav"));
     }
 
     #[test]

@@ -66,6 +66,12 @@ pub(crate) fn check_invariants(p: &Project) {
             t.clips.is_sorted_by_key(|c| (c.start, c.id)),
             "clips sorted"
         );
+        if t.is_audio() {
+            assert!(
+                t.clips.windows(2).all(|w| w[0].end() <= w[1].start),
+                "audio clips never overlap"
+            );
+        }
         for clip in &t.clips {
             id(clip.id.0);
             assert!(clip.start >= Tick::ZERO && clip.length >= MIN_LENGTH);
@@ -102,7 +108,15 @@ pub(crate) fn check_invariants(p: &Project) {
                         }
                     }
                 }
+                ClipContent::Audio(a) => {
+                    assert_eq!(clip.loop_length, None, "audio clips never loop");
+                    assert!(a.offset < a.file.frames);
+                    assert!(clip.length <= a.max_length(p.tempo).max(MIN_LENGTH));
+                    assert!(a.fade_in >= Tick::ZERO && a.fade_out >= Tick::ZERO);
+                    assert!(a.fade_in + a.fade_out <= clip.length);
+                }
             }
+            assert!(clip.kind().fits(t.kind), "clip kind fits the track kind");
         }
     }
 }
@@ -250,7 +264,7 @@ fn track_of(p: &Project, id: ClipId) -> TrackId {
 fn take_notes(p: &Project, id: ClipId) -> &[Note] {
     match &clip(p, id).content {
         ClipContent::Midi(m) => &m.active().notes,
-        ClipContent::Step(_) => panic!("not a MIDI clip"),
+        ClipContent::Step(_) | ClipContent::Audio(_) => panic!("not a MIDI clip"),
     }
 }
 
@@ -276,7 +290,7 @@ fn note(p: &Project, clip: ClipId, id: NoteId) -> Note {
 fn pattern(p: &Project, id: ClipId) -> &StepClip {
     match &clip(p, id).content {
         ClipContent::Step(s) => s,
-        ClipContent::Midi(_) => panic!("not a step clip"),
+        ClipContent::Midi(_) | ClipContent::Audio(_) => panic!("not a step clip"),
     }
 }
 
@@ -527,6 +541,7 @@ const EN: DefaultNames = DefaultNames {
     drums: "Drums",
     bus: "Bus",
     group: "Group",
+    audio: "Audio",
 };
 
 #[test]

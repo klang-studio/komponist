@@ -90,7 +90,7 @@ fn notes_of(app: &App, clip: ClipId) -> Vec<Note> {
     let (_, c) = app.project().find_clip(clip).unwrap();
     match &c.content {
         ClipContent::Midi(m) => m.active().notes.to_vec(),
-        ClipContent::Step(_) => unreachable!(),
+        ClipContent::Step(_) | ClipContent::Audio(_) => unreachable!(),
     }
 }
 

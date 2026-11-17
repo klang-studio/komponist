@@ -1,6 +1,6 @@
 //! Project files `*.komponist` (ARCHITECTURE §5.5, decision D7).
 //!
-//! One JSON file: `{ "format": "komponist", "version": 2, "project": { … } }`. Plugin states are
+//! One JSON file: `{ "format": "komponist", "version": 3, "project": { … } }`. Plugin states are
 //! base64 strings. A missing plugin keeps its state byte-identical through load and save (S06).
 //! Older versions are upgraded on load by a chain of `migrate_vN_to_vN+1` functions on the JSON
 //! value, one per version step, each with its own test.
@@ -10,6 +10,10 @@
 //! - 2 (WP-101, wave 9): routing. Every track has an `output` (`"master"` or `{"bus": id}`);
 //!   optional `sends`, `folder`, `folded` on tracks and `sidechain` on devices; track kind `"bus"`.
 //!   `migrate_v1_to_v2` gives every track `"output": "master"`.
+//! - 3 (#9, wave 10): audio tracks. Track kind `"audio"`, optional `audio` (input and monitoring)
+//!   on tracks, clip content `{"kind": "audio", …}` ([`crate::AudioClip`]). Everything is new
+//!   optional data, so `migrate_v2_to_v3` changes nothing; the bump keeps builds from before audio
+//!   from opening a project that may hold audio clips as if it were complete.
 //!
 //! Thread: any non-RT thread (loading and saving run on workers).
 
@@ -23,12 +27,13 @@ use crate::project::{
     BUILTIN_HEXA, BUILTIN_VOLT, ClipContent, HEXA_NAME, PRESSE_NAME, Project, VOLT_NAME,
 };
 use crate::routing;
+use crate::time::Tick;
 
 /// Value of the `format` field.
 pub const FORMAT_TAG: &str = "komponist";
 
 /// Version written by this build; files with a higher version are rejected.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// File name extension, without the dot.
 pub const FILE_EXTENSION: &str = "komponist";
@@ -178,7 +183,8 @@ fn rename_builtins(value: &mut Value) {
 type MigrationStep = fn(Value) -> Result<Value, String>;
 
 /// All migration steps, oldest first.
-const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] = [migrate_v1_to_v2];
+const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] =
+    [migrate_v1_to_v2, migrate_v2_to_v3];
 
 /// Version 1 → 2 (wave 9, routing): every track outputs to the master. Sends, groups and
 /// sidechains are optional fields and absent in version 1, which means none. A malformed track
@@ -197,6 +203,12 @@ fn migrate_v1_to_v2(mut project: Value) -> Result<Value, String> {
     Ok(project)
 }
 
+/// Version 2 → 3 (wave 10, audio tracks): nothing to rewrite. Audio tracks, their `audio` settings
+/// and audio clips are optional additions, absent in version 2, which means none.
+fn migrate_v2_to_v3(project: Value) -> Result<Value, String> {
+    Ok(project)
+}
+
 /// After loading: rejects what the program cannot work with (meter, tempo, takes, pattern
 /// lengths, a routing cycle, a bus with clips or an instrument) and repairs what is cheap to
 /// repair (`next_id` below an existing id, unsorted clips and notes, routing references to
@@ -211,6 +223,7 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
     if !(crate::Tempo::MIN_BPM..=crate::Tempo::MAX_BPM).contains(&bpm) {
         return Err(format!("tempo {bpm} out of range"));
     }
+    let tempo = project.tempo;
     let mut max_id = project
         .master
         .devices
@@ -219,6 +232,12 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
         .max()
         .unwrap_or(0);
     for track in &mut project.tracks {
+        if !track.is_audio() && (!track.audio.is_default()) {
+            Arc::make_mut(track).audio = crate::AudioIo::default();
+        }
+        if track.is_audio() && track.monitor {
+            Arc::make_mut(track).monitor = false;
+        }
         let mut ids = vec![track.id.0];
         ids.extend(track.channel.devices.iter().map(|d| d.id.0));
         ids.extend(track.sends.iter().map(|s| s.id.0));
@@ -257,13 +276,54 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
                         return Err(format!("clip {}: pattern length out of range", clip.id.0));
                     }
                 }
+                ClipContent::Audio(a) => {
+                    let file = &a.file;
+                    if file.frames == 0 || file.sample_rate == 0 || file.channels == 0 {
+                        return Err(format!("clip {}: audio file without frames", clip.id.0));
+                    }
+                    if a.offset >= file.frames {
+                        return Err(format!("clip {}: offset behind the file's end", clip.id.0));
+                    }
+                    let bpm = a.original_tempo.bpm;
+                    if !(crate::Tempo::MIN_BPM..=crate::Tempo::MAX_BPM).contains(&bpm) {
+                        return Err(format!("clip {}: original tempo out of range", clip.id.0));
+                    }
+                    // Repair what a hand edit can break: a window longer than the file, fades
+                    // longer than the clip, a gain out of range.
+                    let length = clip.length.min(a.max_length(tempo).max(Tick(1)));
+                    let mut fixed = a.clone();
+                    fixed.clamp(length);
+                    if length != clip.length || fixed != *a {
+                        let clip = Arc::make_mut(&mut Arc::make_mut(track).clips[index]);
+                        clip.length = length;
+                        clip.content = ClipContent::Audio(fixed);
+                    }
+                }
             }
         }
         max_id = ids.into_iter().fold(max_id, u64::max);
     }
     project.next_id = project.next_id.max(max_id + 1);
     repair_routing(project);
+    repair_audio_inputs(project);
+    crate::edits::normalize_audio_overlaps(project);
     routing::check(project).map_err(|issue| issue.to_string())
+}
+
+/// Clears the input bus of an audio track that names a missing track, the track itself or a track
+/// that is not a bus. A cycle through an input stays for [`routing::check`] to reject.
+fn repair_audio_inputs(project: &mut Project) {
+    let buses: std::collections::HashSet<_> = project
+        .tracks
+        .iter()
+        .filter(|t| t.is_bus())
+        .map(|t| t.id)
+        .collect();
+    for track in &mut project.tracks {
+        if track.input_bus().is_some_and(|b| !buses.contains(&b)) {
+            Arc::make_mut(track).audio.input = crate::AudioInput::None;
+        }
+    }
 }
 
 /// Drops routing references that cannot work: outputs and sends that name a missing track, the
@@ -404,7 +464,7 @@ mod tests {
         let text = to_json(&demo_project()).unwrap();
         assert!(
             text.starts_with(
-                "{\n  \"format\": \"komponist\",\n  \"version\": 2,\n  \"project\": {"
+                "{\n  \"format\": \"komponist\",\n  \"version\": 3,\n  \"project\": {"
             )
         );
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -579,8 +639,8 @@ mod tests {
             );
         }
         assert_eq!(
-            from_json(r#"{"format": "komponist", "version": 3, "project": {}}"#),
-            Err(PersistError::TooNew { found: 3 })
+            from_json(r#"{"format": "komponist", "version": 4, "project": {}}"#),
+            Err(PersistError::TooNew { found: 4 })
         );
         assert!(matches!(
             from_json(r#"{"format": "komponist", "version": 0, "project": {}}"#),
@@ -914,8 +974,163 @@ mod tests {
     #[test]
     fn errors_display() {
         assert_eq!(
-            PersistError::TooNew { found: 3 }.to_string(),
-            "project file version 3 is newer than 2"
+            PersistError::TooNew { found: 4 }.to_string(),
+            "project file version 4 is newer than 3"
         );
+    }
+
+    // --- Version 3: audio tracks and clips (#9) -----------------------------------------------
+
+    use crate::audio::{AudioFile, AudioInput, ClipTimeMode, HardwareInput, MonitorMode};
+    use crate::edits::{
+        AudioClipProp, NewAudioTrack, TrackProp, add_audio_track, add_bus, set_audio_clip_prop,
+        set_track_prop,
+    };
+
+    fn audio_file() -> AudioFile {
+        AudioFile {
+            abs: "/t/take 1.wav".into(),
+            rel: "Unbenannt Samples/take 1.wav".into(),
+            frames: 480_000,
+            sample_rate: 48_000,
+            channels: 2,
+        }
+    }
+
+    /// An audio track with a clip (gain, fades, Re-Pitch), a second one that records a bus, and
+    /// a bus.
+    fn audio_project() -> Project {
+        let p = Project::new("Audio");
+        let (p, bus) = add_bus(&p, crate::edits::NewBus::default()).unwrap();
+        let (p, a) = add_audio_track(&p, NewAudioTrack::default()).unwrap();
+        let (p, b) = add_audio_track(&p, NewAudioTrack::default()).unwrap();
+        let (p, clip) = edits::add_clip(
+            &p,
+            a,
+            NewClip {
+                start: crate::Tick(3840),
+                length: crate::Tick(7680),
+                name: "take 1".into(),
+                content: NewClipContent::Audio {
+                    file: audio_file(),
+                    offset: 48_000,
+                },
+            },
+        )
+        .unwrap();
+        let p = set_audio_clip_prop(&p, clip, AudioClipProp::GainDb(-3.5)).unwrap();
+        let p = set_audio_clip_prop(&p, clip, AudioClipProp::FadeIn(crate::Tick(120))).unwrap();
+        let p =
+            set_audio_clip_prop(&p, clip, AudioClipProp::TimeMode(ClipTimeMode::RePitch)).unwrap();
+        let hw = AudioInput::Hardware(HardwareInput {
+            first: 0,
+            stereo: true,
+        });
+        let p = set_track_prop(&p, &[a], TrackProp::AudioInput(hw)).unwrap();
+        let p = set_track_prop(&p, &[a], TrackProp::MonitorMode(MonitorMode::Auto)).unwrap();
+        set_track_prop(&p, &[b], TrackProp::AudioInput(AudioInput::Bus(bus))).unwrap()
+    }
+
+    #[test]
+    fn audio_projects_round_trip() {
+        let p = audio_project();
+        let text = to_json(&p).unwrap();
+        assert!(text.contains("\"version\": 3"));
+        assert!(text.contains("\"kind\": \"audio\""));
+        assert!(text.contains("\"time_mode\": \"repitch\""));
+        assert_eq!(from_json(&text).unwrap(), p);
+        // The default audio settings and an empty relative path are not written.
+        let plain = to_json(&demo_project()).unwrap();
+        assert!(!plain.contains("\"audio\""));
+        let mut q = p.clone();
+        for t in &mut q.tracks {
+            Arc::make_mut(t).audio = crate::AudioIo::default();
+        }
+        assert!(!to_json(&q).unwrap().contains("\"input\": \"none\""));
+    }
+
+    #[test]
+    fn a_version_2_file_loads_as_it_is_and_migration_changes_nothing() {
+        let v = demo_value();
+        assert_eq!(migrate_v2_to_v3(v.clone()).unwrap(), v);
+        let v2 = serde_json::json!({ "format": "komponist", "version": 2, "project": v });
+        let loaded = from_json(&v2.to_string()).unwrap();
+        assert_eq!(loaded, demo_project());
+        assert!(loaded.tracks.iter().all(|t| !t.is_audio()));
+        // Saving writes version 3.
+        assert!(to_json(&loaded).unwrap().contains("\"version\": 3"));
+        // Audio clip fields that are missing read as the defaults (Fixed, 0 dB, no fades).
+        let mut av = serde_json::to_value(audio_project()).unwrap();
+        let clip = &mut av["tracks"][1]["clips"][0]["content"];
+        for k in ["gain_db", "fade_in", "fade_out", "time_mode"] {
+            clip.as_object_mut().unwrap().remove(k);
+        }
+        let p: Project = serde_json::from_value(av).unwrap();
+        let ClipContent::Audio(a) = &p.tracks[1].clips[0].content else {
+            panic!("audio clip");
+        };
+        assert_eq!(
+            (a.gain_db, a.fade_in, a.fade_out, a.time_mode),
+            (0.0, crate::Tick(0), crate::Tick(0), ClipTimeMode::Fixed)
+        );
+    }
+
+    #[test]
+    fn loading_repairs_audio_files_that_break_and_rejects_what_cannot_work() {
+        let value = |p: &Project| serde_json::to_value(p).unwrap();
+        let load = |v: serde_json::Value| {
+            from_json(&format!(
+                r#"{{"format":"komponist","version":3,"project":{v}}}"#
+            ))
+        };
+        // Clip 1 is track 1's clip.
+        let mut v = value(&audio_project());
+        v["tracks"][1]["clips"][0]["length"] = 99_999_999.into();
+        v["tracks"][1]["clips"][0]["content"]["fade_out"] = 99_999_999.into();
+        v["tracks"][1]["clips"][0]["content"]["gain_db"] = 500.into();
+        let p = load(v).unwrap();
+        let clip = &p.tracks[1].clips[0];
+        let ClipContent::Audio(a) = &clip.content else {
+            panic!("audio clip");
+        };
+        // RePitch at 120 bpm original: 9 s left behind the offset = 17 280 ticks.
+        assert_eq!(clip.length, crate::Tick(17_280));
+        assert_eq!(a.gain_db, crate::CLIP_GAIN_DB_MAX);
+        assert!(a.fade_in + a.fade_out <= clip.length);
+        // An offset behind the end, a file without frames: malformed.
+        let mut v = value(&audio_project());
+        v["tracks"][1]["clips"][0]["content"]["offset"] = 480_000.into();
+        assert!(matches!(load(v), Err(PersistError::Malformed(_))));
+        let mut v = value(&audio_project());
+        v["tracks"][1]["clips"][0]["content"]["file"]["frames"] = 0.into();
+        assert!(matches!(load(v), Err(PersistError::Malformed(_))));
+        // An audio clip on a MIDI track is rejected.
+        let mut v = value(&audio_project());
+        v["tracks"][1]["kind"] = "midi".into();
+        assert!(matches!(load(v), Err(PersistError::Malformed(_))));
+        // Audio settings on a bus are cleared; an input that is not a bus is cleared.
+        let mut v = value(&audio_project());
+        v["tracks"][0]["audio"] = serde_json::json!({ "monitor": "on" });
+        let own = v["tracks"][2]["id"].clone();
+        v["tracks"][2]["audio"] = serde_json::json!({ "input": { "bus": own } });
+        let p = load(v).unwrap();
+        assert!(p.tracks[0].audio.is_default());
+        assert_eq!(p.tracks[2].audio.input, AudioInput::None);
+        // An input cycle is rejected: the track records a bus it outputs into.
+        let mut v = value(&audio_project());
+        let bus = v["tracks"][0]["id"].clone();
+        v["tracks"][2]["output"] = serde_json::json!({ "bus": bus });
+        assert!(matches!(load(v), Err(PersistError::Malformed(_))));
+        // Overlapping audio clips are cut on load: the later one wins.
+        let mut v = value(&audio_project());
+        let mut second = v["tracks"][1]["clips"][0].clone();
+        second["id"] = 9000.into();
+        second["start"] = 5760.into();
+        v["tracks"][1]["clips"].as_array_mut().unwrap().push(second);
+        v["next_id"] = 9001.into();
+        let p = load(v).unwrap();
+        let clips = &p.tracks[1].clips;
+        assert_eq!(clips.len(), 2);
+        assert!(clips[0].end() <= clips[1].start);
     }
 }

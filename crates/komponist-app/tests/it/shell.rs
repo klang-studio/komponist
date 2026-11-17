@@ -292,7 +292,9 @@ fn clicks_focus_areas_and_the_status_bar_follows() {
     assert_eq!(h.state().ui().focus, FocusArea::PianoRoll);
     let notes = match &lead.clips[0].content {
         komponist_model::ClipContent::Midi(m) => m.active().notes.len(),
-        komponist_model::ClipContent::Step(_) => unreachable!(),
+        komponist_model::ClipContent::Step(_) | komponist_model::ClipContent::Audio(_) => {
+            unreachable!()
+        }
     };
     h.get_by_role_and_label(
         Role::Label,

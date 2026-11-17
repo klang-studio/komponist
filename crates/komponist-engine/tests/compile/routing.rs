@@ -195,3 +195,44 @@ fn a_broken_graph_compiles_flat() {
     let program = compile::build(&project(vec![a, b]), None, &NoEnv);
     assert!(program.routing.is_flat());
 }
+
+/// Audio tracks (#9) compile as silent source nodes: no notes, no instrument, an effect chain that
+/// stays, an input edge from a bus that orders the bus before the track. Playback is #11.
+#[test]
+fn audio_tracks_compile_as_silent_source_nodes() {
+    use komponist_model::{AudioClip, AudioFile, AudioInput, ClipContent, Tempo};
+    let file = AudioFile {
+        abs: "/t/loop.wav".into(),
+        rel: Default::default(),
+        frames: 96_000,
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let content = ClipContent::Audio(AudioClip::new(file, 0, Tempo::DEFAULT));
+    let mut a = track(1, "Audio", vec![clip(10, 0, 3840, content)]);
+    a.kind = TrackKind::Audio;
+    a.channel.devices = vec![
+        // An instrument cannot be on an audio track; a damaged project's one is dropped.
+        device(101, DeviceRole::Instrument, "I"),
+        device(102, DeviceRole::Effect, "E"),
+    ];
+    a.audio.input = AudioInput::Bus(TrackId(2));
+    let b = bus(2, "Bus");
+    // The bus is below the audio track in display order but must run first.
+    let p = project(vec![a, b]);
+    let program = compile::build(&p, None, &NoEnv);
+    assert_eq!(program.tracks.len(), 2);
+    assert!(program.tracks[0].notes.is_empty());
+    assert_eq!(
+        program.tracks[0].chain.len(),
+        1,
+        "the effect stays, the instrument goes"
+    );
+    let order = komponist_model::routing::topo_order(&p).unwrap();
+    let at = |id: u64| {
+        order
+            .iter()
+            .position(|n| *n == komponist_model::ChannelRef::Track(TrackId(id)))
+    };
+    assert!(at(2) < at(1));
+}

@@ -178,6 +178,8 @@ impl PreviewMesh {
         match &clip.content {
             ClipContent::Midi(m) => Self::midi(&m.active().notes, spec),
             ClipContent::Step(s) => Self::steps(s, spec),
+            // #12: the waveform; until then an audio clip shows its body only.
+            ClipContent::Audio(_) => Self::empty(&spec),
         }
     }
 

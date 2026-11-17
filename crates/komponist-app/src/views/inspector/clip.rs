@@ -43,6 +43,8 @@ pub(super) fn section(
     let kind = match clip.content {
         ClipContent::Midi(_) => t.inspector_clip_midi(),
         ClipContent::Step(_) => t.inspector_clip_step(),
+        // #12: the audio clip inspector.
+        ClipContent::Audio(_) => "",
     };
     let chip = crate::views::mixer::model::base_color(track.hue.0);
     frame(
@@ -67,6 +69,7 @@ pub(super) fn section(
             match &clip.content {
                 ClipContent::Midi(_) => midi_fields(ui, ctx, project, col, clip),
                 ClipContent::Step(step) => step_fields(ui, ctx, project, col, clip, step),
+                ClipContent::Audio(_) => {} // #12
             }
             takes(ui, ctx, col, clip);
         },
@@ -396,7 +399,7 @@ pub(super) fn recording_section(
     let name = rec.take_name(track).unwrap_or_else(|| clip.name.clone());
     let notes = match &clip.content {
         ClipContent::Midi(m) => m.active().notes.len(),
-        ClipContent::Step(_) => 0,
+        ClipContent::Step(_) | ClipContent::Audio(_) => 0,
     };
     let meter = project.meter;
     let (start, length) = (clip.start, clip.length);
