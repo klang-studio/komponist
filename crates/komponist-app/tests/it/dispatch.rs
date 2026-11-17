@@ -414,3 +414,23 @@ fn a_view_can_post_a_status_message() {
         ("Ratchet ×3", StatusKind::Info)
     );
 }
+
+#[test]
+fn exhausted_object_ids_report_a_localized_error_without_changing_the_document() {
+    for lang in [komponist_i18n::Lang::De, komponist_i18n::Lang::En] {
+        let mut project = komponist_model::Project::new("Exhausted");
+        project.next_id = u64::MAX;
+        let mut app = App::headless(project).with_lang(lang);
+        let before = app.project().clone();
+        app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+        assert_eq!(
+            app.last_error(),
+            Some(&komponist_model::edits::EditError::IdsExhausted)
+        );
+        assert!(std::sync::Arc::ptr_eq(&before, app.project()));
+        assert_eq!(
+            app.ui().status.as_ref().unwrap().text,
+            lang.status_id_space_exhausted()
+        );
+    }
+}

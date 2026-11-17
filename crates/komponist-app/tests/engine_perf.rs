@@ -127,7 +127,7 @@ fn project(bridges: bool) -> Project {
         p = next;
         let state: Arc<[u8]> = encode_state(&preset_patch(preset).unwrap()).into();
         let fx = (bridges && i < BRIDGES).then(|| Device {
-            id: DeviceId(p.alloc_id()),
+            id: DeviceId(p.alloc_id().expect("fixture identifiers")),
             role: DeviceRole::Effect,
             plugin: clap_plugin(FX),
             bypass: false,

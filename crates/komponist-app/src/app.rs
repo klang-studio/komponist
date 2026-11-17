@@ -631,7 +631,7 @@ impl App {
         match commit.apply(self.doc.project()) {
             Ok((project, _)) => Some(project),
             Err(e) => {
-                self.shell.last_error = Some(e);
+                self.record_edit_error(e);
                 None
             }
         }
@@ -1224,8 +1224,15 @@ impl App {
             .doc
             .apply_untracked(|p| edits::set_project_prop(p, prop.clone()))
         {
-            self.shell.last_error = Some(e);
+            self.record_edit_error(e);
         }
+    }
+
+    fn record_edit_error(&mut self, error: EditError) {
+        if error == EditError::IdsExhausted {
+            self.set_status(self.lang.status_id_space_exhausted(), StatusKind::Error);
+        }
+        self.shell.last_error = Some(error);
     }
 
     /// Applies `edit` as an undo step `label` (or inside the open gesture); records a failure.
@@ -1237,7 +1244,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.shell.last_error = Some(e);
+                self.record_edit_error(e);
                 false
             }
         }
@@ -1256,7 +1263,7 @@ impl App {
                 Some(v)
             }
             Err(e) => {
-                self.shell.last_error = Some(e);
+                self.record_edit_error(e);
                 None
             }
         }
@@ -1281,7 +1288,7 @@ impl App {
                 Some(v)
             }
             Err(e) => {
-                self.shell.last_error = Some(e);
+                self.record_edit_error(e);
                 None
             }
         }

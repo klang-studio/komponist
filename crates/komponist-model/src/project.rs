@@ -123,10 +123,15 @@ impl Project {
     }
 
     /// Takes the next id from [`Project::next_id`]. Edits use it for every new object.
-    pub fn alloc_id(&mut self) -> u64 {
+    /// Exhaustion leaves the counter unchanged; `u64::MAX` is reserved as an invalid next id.
+    pub fn alloc_id(&mut self) -> Result<u64, crate::edits::EditError> {
         let id = self.next_id;
-        self.next_id += 1;
-        id
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .filter(|&next| next < u64::MAX)
+            .ok_or(crate::edits::EditError::IdsExhausted)?;
+        Ok(id)
     }
 
     /// The track with `id`.

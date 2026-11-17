@@ -154,3 +154,6 @@ status-collected = Collected and saved · { $count ->
 
 # Collecting the samples failed; `$reason` is the system's text.
 status-collect-failed = Collecting failed: { $reason }
+
+# Editing cannot create an object once the project ID counter is exhausted.
+status-id-space-exhausted = No unused object IDs remain in this project.

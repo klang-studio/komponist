@@ -261,7 +261,13 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
         }
         max_id = ids.into_iter().fold(max_id, u64::max);
     }
-    project.next_id = project.next_id.max(max_id + 1);
+    let next = max_id
+        .checked_add(1)
+        .ok_or("project object identifiers exhausted")?;
+    project.next_id = project.next_id.max(next);
+    if project.next_id == u64::MAX {
+        return Err("project object identifiers exhausted".to_owned());
+    }
     repair_routing(project);
     routing::check(project).map_err(|issue| issue.to_string())
 }
@@ -606,6 +612,47 @@ mod tests {
                 "{pointer}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_exhausted_identifiers_without_panicking() {
+        for pointer in [
+            "/next_id",
+            "/tracks/0/id",
+            "/tracks/0/channel/devices/0/id",
+            "/tracks/0/clips/0/id",
+            "/tracks/1/clips/0/content/takes/0/notes/0/id",
+        ] {
+            let mut value = demo_value();
+            *value.pointer_mut(pointer).expect("fixture field") = u64::MAX.into();
+            assert!(
+                matches!(from_json(&file(value)), Err(PersistError::Malformed(message))
+                if message.contains("identifiers exhausted")),
+                "{pointer}"
+            );
+        }
+        let mut project = routed_project();
+        let track = project
+            .tracks
+            .iter_mut()
+            .find(|t| !t.sends.is_empty())
+            .unwrap();
+        Arc::make_mut(track).sends[0].id = crate::SendId(u64::MAX);
+        assert!(from_json(&to_json(&project).unwrap()).is_err());
+        let mut project = routed_project();
+        Arc::make_mut(&mut Arc::make_mut(&mut project.master).devices[0]).id =
+            crate::DeviceId(u64::MAX);
+        assert!(from_json(&to_json(&project).unwrap()).is_err());
+    }
+
+    #[test]
+    fn large_valid_identifiers_repair_and_round_trip() {
+        let mut value = demo_value();
+        value["tracks"][0]["id"] = (u64::MAX - 2).into();
+        value["next_id"] = 1.into();
+        let project = from_json(&file(value)).unwrap();
+        assert_eq!(project.next_id, u64::MAX - 1);
+        assert_eq!(from_json(&to_json(&project).unwrap()).unwrap(), project);
     }
 
     #[test]

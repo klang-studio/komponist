@@ -180,7 +180,7 @@ pub fn add_bus_in(
         })
         .collect();
     let mut p = project.clone();
-    let id = TrackId(p.alloc_id());
+    let id = TrackId(p.alloc_id()?);
     let len = p.tracks.len();
     let (index, output) = match roots.first() {
         Some(first) => {
@@ -231,7 +231,7 @@ pub fn add_bus_in(
             track_mut(&mut p, i).output = TrackOutput::Bus(id);
         }
         if senders.contains(&track) && p.tracks[i].send_to(id).is_none() {
-            let send = SendId(p.alloc_id());
+            let send = SendId(p.alloc_id()?);
             track_mut(&mut p, i).sends.push(new_send(send, id));
         }
     }
@@ -277,7 +277,7 @@ pub fn add_send(
         return Err(EditError::Invalid("the track already sends to this bus"));
     }
     let mut p = project.clone();
-    let id = SendId(p.alloc_id());
+    let id = SendId(p.alloc_id()?);
     track_mut(&mut p, index).sends.push(new_send(id, target));
     Ok((finish(p)?, id))
 }
@@ -364,7 +364,7 @@ pub fn duplicate_tracks(
         let index = locate_track(&p, id)?;
         let original = Arc::clone(&p.tracks[index]);
         let mut copy = Track::clone(&original);
-        copy.id = TrackId(p.alloc_id());
+        copy.id = TrackId(p.alloc_id()?);
         copy.name = super::unique_track_name(&p, &original.name);
         copy.arm = false;
         copy.channel.devices = original
@@ -373,23 +373,25 @@ pub fn duplicate_tracks(
             .iter()
             .map(|d| {
                 let mut d = Device::clone(d);
-                d.id = DeviceId(p.alloc_id());
-                Arc::new(d)
+                d.id = DeviceId(p.alloc_id()?);
+                Ok(Arc::new(d))
             })
-            .collect();
+            .collect::<Result<_, EditError>>()?;
         copy.clips = original
             .clips
             .iter()
-            .map(|c| Arc::new(copy_clip(&mut p, c)))
-            .collect();
+            .map(|c| copy_clip(&mut p, c).map(Arc::new))
+            .collect::<Result<_, EditError>>()?;
         copy.sends = original
             .sends
             .iter()
-            .map(|s| TrackSend {
-                id: SendId(p.alloc_id()),
-                ..s.clone()
+            .map(|s| {
+                Ok(TrackSend {
+                    id: SendId(p.alloc_id()?),
+                    ..s.clone()
+                })
             })
-            .collect();
+            .collect::<Result<_, EditError>>()?;
         let mut end = index + 1;
         while end < p.tracks.len() && routing::group_ancestors(&p, p.tracks[end].id).contains(&id) {
             end += 1;
