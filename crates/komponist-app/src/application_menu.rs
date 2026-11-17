@@ -140,11 +140,13 @@ impl Snapshot {
         .into_iter()
         .map(|(command, title)| item(command, title))
         .collect();
-        let mut application = vec![item(Command::About, lang.app_menu_about())];
-        if backend == Backend::AppKit {
-            application.push(Item::separator());
-        }
-        application.push(item(Command::Settings, lang.app_menu_settings()));
+        let about = item(Command::About, lang.app_menu_about());
+        let settings = item(Command::Settings, lang.app_menu_settings());
+        let mut application = match backend {
+            Backend::Egui => vec![settings, about],
+            Backend::AppKit => vec![about, Item::separator(), settings],
+            Backend::Win32 => vec![about, settings],
+        };
         let native = |command, title: &str, chord| Item {
             command: Some(Command::Native(command)),
             label: title.to_owned(),

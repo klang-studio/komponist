@@ -229,6 +229,7 @@ fn about_and_settings_restore_focus_and_about_exposes_localized_metadata() {
         assert!(app.dispatch_menu(Command::About));
         let mut h = harness(app, 1.0);
         h.get_by_role_and_label(Role::Dialog, lang.app_menu_about());
+        h.get_by_role_and_label(Role::Image, komponist_ui::WORDMARK);
         h.get_by_label(&lang.about_version(env!("CARGO_PKG_VERSION")));
         h.get_by_label(&lang.about_license(env!("CARGO_PKG_LICENSE")));
         h.get_by_role_and_label(Role::Button, lang.dialog_close())
@@ -314,7 +315,9 @@ fn about_and_fallback_menu_snapshots_in_both_languages() {
         h.get_by_role_and_label(Role::Button, lang.transport_menu())
             .click();
         h.run_steps(4);
-        h.get_by_role_and_label(Role::MenuItem, lang.app_menu_about());
+        let settings = h.get_by_role_and_label(Role::MenuItem, lang.app_menu_settings());
+        let about = h.get_by_role_and_label(Role::MenuItem, lang.app_menu_about());
+        assert!(settings.rect().bottom() <= about.rect().top());
         if let Some(cpu) = h.query_by_role_and_label(Role::Status, lang.transport_cpu()) {
             h.mask(cpu.rect().expand(2.0));
         }
@@ -381,12 +384,10 @@ fn fallback_menu_takes_keyboard_commands_and_returns_focus_to_its_button() {
         // About entry without toggling playback or re-opening the menu.
         h.key_press(Key::Space);
         h.run_steps(3);
-        h.key_press(Key::ArrowUp);
-        h.run_steps(2);
-        h.key_press(Key::ArrowUp);
-        h.run_steps(2);
-        h.key_press(Key::ArrowUp);
-        h.run_steps(2);
+        for _ in 0..2 {
+            h.key_press(Key::ArrowUp);
+            h.run_steps(2);
+        }
         h.key_press(Key::Space);
         h.run_steps(3);
         h.get_by_role_and_label(Role::Dialog, lang.app_menu_about());
