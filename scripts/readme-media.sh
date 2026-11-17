@@ -23,8 +23,7 @@ done
 if [ -z "${SKIP_BUILD:-}" ]; then
     (
         source scripts/build-lock.sh
-        low_priority
-        cargo build --release -p komponist-app --bin komponist
+        lowprio cargo build --release -p komponist-app --bin komponist
     )
 fi
 bin="$PWD/target/release/komponist"
