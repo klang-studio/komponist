@@ -55,6 +55,8 @@ pub struct ViewCtx<'a> {
     pub project: &'a Arc<Project>,
     /// Base folder for the project's linked audio files (absent for an unsaved project).
     pub project_dir: Option<&'a std::path::Path>,
+    /// Shared, injectable device inventory provider. Input choosers enumerate on a worker.
+    pub audio_devices: Option<Arc<dyn crate::dialogs::settings::AudioDevices>>,
     /// The view state; a view may change its own scroll and zoom fields directly.
     pub ui: &'a mut UiState,
     /// Engine telemetry (playhead, transport state), device status, track meters.
@@ -69,6 +71,10 @@ pub struct ViewCtx<'a> {
     pub requests: Requests,
     /// The take being recorded (WP-51): the arrangement and the piano roll draw it.
     pub recording: Option<&'a Recording>,
+    /// Live audio capture overlay, separate from the MIDI recording overlay.
+    pub audio_recording: Option<&'a crate::audio_record::AudioRecording>,
+    /// Folder behind the provisional-recordings notice, if any.
+    pub provisional_recordings: Option<&'a std::path::Path>,
     /// This session's WAV exports of the project, oldest first (WP-53b): the browser lists them
     /// under Projekt › Exporte.
     pub exports: &'a [std::path::PathBuf],
@@ -106,6 +112,7 @@ impl<'a> ViewCtx<'a> {
         ViewCtx {
             project,
             project_dir: None,
+            audio_devices: None,
             ui,
             engine,
             meters,
@@ -113,6 +120,8 @@ impl<'a> ViewCtx<'a> {
             focused: false,
             requests: Requests::default(),
             recording: None,
+            audio_recording: None,
+            provisional_recordings: None,
             exports: &[],
             held_notes: Vec::new(),
             lang: Lang::default(),

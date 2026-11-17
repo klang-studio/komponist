@@ -40,6 +40,7 @@ mod metronome;
 mod mixer;
 pub mod processor;
 pub mod program;
+pub mod recording;
 pub mod route;
 mod sequencer;
 mod slots;
@@ -60,7 +61,7 @@ pub use api::{
     Command, DeviceMeter, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState,
 };
 pub use audio::{AudioPlan, ClipSource, Segment, SourceStatus};
-pub use engine::{Engine, EngineConfig, LiveInput, MidiInEvent};
+pub use engine::{AudioInputBuffer, Engine, EngineConfig, LiveInput, MidiInEvent};
 pub use processor::{
     Event, EventBuffer, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,
     ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,

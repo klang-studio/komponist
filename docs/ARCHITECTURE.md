@@ -1121,6 +1121,46 @@ The browser Files tab enumerates directories and reads audio headers on a worker
 and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
 a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
 files through the localized status bar while preserving their links.
+#### 6.9.5 Live audio inputs and bounded recording (#13)
+
+`Engine::process_with_audio` adds a borrowed interleaved `AudioInputBuffer` to the existing MIDI callback
+contract; `process` and offline renders use an empty audio input. `EngineProcess::process_input` bridges the
+backend's captured samples, input latency and discontinuity flag without allocation. Hardware channel selection
+is per audio track. Its input meter (`TrackMeter::take_input`) is independent of the output meter. Monitoring
+mixes the input before effects: Off never monitors, Auto monitors while armed (including ordinary playback),
+On always monitors. Capturing taps the input regardless of monitor, track mute or fader. MIDI capture does not
+run on audio tracks.
+
+A bus input is its post-fader/pan/mute tap. The compiler includes bus-input dependencies in the worker graph,
+marks the tap live and allocates a separate delay line. Playback clips are aligned before the already-delayed
+bus input is mixed, so the input is not delayed twice. Bus recording corrects only its graph latency; hardware
+recording corrects input plus output latency, frozen at the session start to avoid timestamp jitter changing
+sample alignment. STOP/punch-out continues capture through a virtual cursor for each source's remaining latency
+before marking the session ended. A source contributes only its own delayed tail, even in mixed bus/hardware
+sessions. Count-in samples and corrected pre-roll before the recording start are excluded.
+
+`recording::prepare(RecordingConfig)` runs non-RT, creates exclusive unique WAV paths, preallocates per-track
+SPSC queues (32 chunks of at most 2048 stereo frames, about 0.5 MB per prepared track) and starts the file worker.
+Install the returned `Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through
+`Garbage::Recorder`. Track jobs enqueue fixed-size chunks without allocation, locks, logging or IO. The worker
+writes either signed PCM24 (default) or Float32 WAVs, flushes valid headers before progress publication, and
+finalizes old laps as soon as their input is complete, bounding open file handles. Cycle passes are padded with
+silence to their common loop window, including first/last partial passes. A growing checkpoint also reports
+`window_frames`, so the app can preserve that window before final padding.
+
+`RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
+buckets per track. The worker compacts pairs by summing sample energy/counts; UI polling clones only summaries.
+`poll` returns finalized files after queues drain. `checkpoint` flushes and returns saveable prefixes (2 s timeout);
+`relocate` closes handles, transactionally renames on one filesystem and reopens append. Failed moves roll back
+and retain the old paths; cross-device moves are explicit errors for the app to copy after stop. Relocation waits
+for its transaction result so a delayed completion cannot silently invalidate links. Cancellation removes live
+session files; a saved checkpoint must therefore reference independent preserved assets.
+
+Queue overflow, discontinuous/unavailable input, sample-rate/source/tempo/loop changes and write/finalize errors
+fail explicitly, retaining partial files for recovery. `AbortAudioRecording` handles stream rebuilds without
+silently joining different devices. Synthetic-input tests cover monitoring, mono/stereo PCM24/Float32, count-in,
+latency and stop tails, cycle padding, parallel bus taps/PDC, live checkpoints, relocation and cancellation;
+every tested engine callback runs under `assert_no_alloc`.
 
 ### 6.10 Audio files (`komponist-audiofile`)
 

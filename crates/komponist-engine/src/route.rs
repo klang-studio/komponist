@@ -71,6 +71,8 @@ pub enum LineKey {
     Sidechain(DeviceId),
     /// The input delay of a MIDI track whose sidechain arrives late (§6.8.5).
     Head(TrackId),
+    /// Post-fader bus input of an audio track.
+    AudioInput(TrackId),
 }
 
 /// A delay with its own state in the engine's edge table.
@@ -113,6 +115,8 @@ pub struct NodeRoute {
     /// A bus: the job sums [`NodeRoute::inputs`] before its chain (MIDI tracks start from their
     /// instrument).
     pub bus: bool,
+    /// Live post-fader bus input; not an output/send sum.
+    pub audio_input: Option<AudioInputRoute>,
     /// Where the main output goes: `None` = the master, `Some(i)` = the bus at track index `i`.
     pub output: Option<u16>,
     /// The inputs of a bus in [`Routing::inputs`], in summing order.
@@ -134,6 +138,15 @@ pub struct NodeRoute {
     pub latency_in: u32,
     /// `out(v)`: `latency_in` plus the latency of the node's chain.
     pub latency_out: u32,
+}
+
+/// A bus input read after its source job has completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioInputRoute {
+    /// Source program track index.
+    pub from: u16,
+    /// Align the bus tap with other inputs before the audio track's effects.
+    pub delay: Delay,
 }
 
 /// A send into a bus.

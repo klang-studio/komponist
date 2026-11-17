@@ -121,3 +121,11 @@ audio-clip-context-menu = Audio-Clip
 audio-clip-context-mute = Stumm
 audio-clip-context-duplicate = Duplizieren
 audio-clip-context-split = Teilen
+# Audio recording lifecycle and file failures.
+audio-record-input-unavailable = Kein verfügbarer Audio-Eingang für „{ $track }“ · Eingang wählen
+audio-record-finalizing = Aufnahme wird abgeschlossen …
+audio-record-folder-unavailable = Kein Ordner für Aufnahmen verfügbar
+audio-record-failed = Aufnahme fehlgeschlagen: { $reason }
+audio-record-move-failed = Aufnahme bleibt vorläufig gespeichert: { $reason }
+audio-record-complete = Aufnahme abgeschlossen · { $count } Takes
+audio-record-apply-failed = Aufnahme konnte nicht ins Projekt übernommen werden · Dateien bleiben erhalten

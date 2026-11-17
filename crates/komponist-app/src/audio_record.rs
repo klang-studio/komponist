@@ -1,0 +1,982 @@
+//! Audio recording lifecycle on the UI thread. The engine owns bounded capture queues, the
+//! session owns file IO; growing clips are overlays until finalized takes form one undo step.
+
+mod files;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use komponist_engine::Command;
+use komponist_engine::recording::{
+    self, RecordedTake, RecordingConfig, RecordingFormat, RecordingProgress, RecordingSession,
+    RecordingTrack,
+};
+use komponist_model::edits::{self, EditError, NewClip, NewClipContent};
+use komponist_model::{
+    AudioClip, AudioFile, AudioInput, AudioTake, Clip, ClipContent, ClipId, Project, Tick, TrackId,
+    TrackKind,
+};
+
+use crate::actions::{Action, UiAction};
+use crate::app::App;
+use crate::record;
+use crate::settings::CaptureFormat;
+use crate::ui_state::StatusKind;
+
+/// The live view of an audio session, read by the arrangement, dock and inspector.
+#[derive(Default)]
+pub struct AudioRecording {
+    /// Song position where this recording started (before any loop wrap).
+    pub start: Tick,
+    /// Current transport head.
+    pub head: Tick,
+    progress: Vec<RecordingProgress>,
+    clips: Vec<(TrackId, Arc<Clip>)>,
+}
+
+impl AudioRecording {
+    /// Current drawn clip on one track (not yet in the document).
+    pub fn clip(&self, track: TrackId) -> Option<&Arc<Clip>> {
+        self.clips
+            .iter()
+            .find(|(id, _)| *id == track)
+            .map(|(_, clip)| clip)
+    }
+    /// First live audio track/clip, for the editor.
+    pub fn first(&self) -> Option<(TrackId, &Arc<Clip>)> {
+        self.clips.first().map(|(track, clip)| (*track, clip))
+    }
+    /// Bounded, measured waveform/peak and file telemetry for a live track.
+    pub fn progress(&self, track: TrackId) -> Option<&RecordingProgress> {
+        self.progress
+            .iter()
+            .find(|progress| progress.track == track)
+    }
+    /// Tracks represented in the live view.
+    pub fn tracks(&self) -> impl Iterator<Item = TrackId> + '_ {
+        self.progress.iter().map(|progress| progress.track)
+    }
+}
+
+struct Capture {
+    session: RecordingSession,
+    view: AudioRecording,
+    directory: PathBuf,
+    provisional: bool,
+    stopping: bool,
+    base: u32,
+    rate: u32,
+    owned: BTreeSet<PathBuf>,
+    material: bool,
+}
+
+/// Session-owned files survive undo. Only an explicit discard deletes an active session.
+#[derive(Default)]
+pub(crate) struct State {
+    capture: Option<Capture>,
+    provisional: BTreeSet<PathBuf>,
+    root_override: Option<PathBuf>,
+    pending_midi: Option<record::Commit>,
+    pending_removals: BTreeSet<PathBuf>,
+    save_target: Option<PathBuf>,
+}
+
+impl State {
+    pub(crate) fn running(&self) -> Option<&AudioRecording> {
+        self.capture.as_ref().map(|capture| &capture.view)
+    }
+    pub(crate) fn is_active(&self) -> bool {
+        self.capture.is_some()
+    }
+    pub(crate) fn has_material(&self) -> bool {
+        self.capture
+            .as_ref()
+            .is_some_and(|capture| capture.material || capture.stopping)
+            || self.pending_midi.is_some()
+    }
+    pub(crate) fn defer_midi(&mut self, commit: Option<record::Commit>) {
+        if commit.is_some() {
+            self.pending_midi = commit;
+        }
+    }
+    pub(crate) fn folder(&self) -> Option<&Path> {
+        self.capture
+            .as_ref()
+            .filter(|capture| capture.provisional)
+            .map(|capture| capture.directory.as_path())
+            .or_else(|| {
+                self.provisional
+                    .iter()
+                    .next()
+                    .and_then(|path| path.parent())
+            })
+    }
+    pub(crate) fn stop(&mut self) {
+        if let Some(capture) = &mut self.capture {
+            capture.stopping = true;
+        }
+    }
+    pub(crate) fn reset(&mut self) {
+        self.cancel();
+        self.provisional.clear();
+        self.pending_removals.clear();
+        self.save_target = None;
+    }
+    pub(crate) fn cancel(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            capture.session.cancel();
+            for path in &capture.owned {
+                self.provisional.remove(path);
+            }
+        }
+        self.pending_midi = None;
+    }
+}
+
+impl App {
+    /// Overrides the provisional recording root for embedding/tests. No directory is created
+    /// until recording starts. Headless construction always uses scratch space.
+    pub fn with_recording_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.audio_recording.root_override = Some(directory.into());
+        self
+    }
+    /// Folder shown by the persistent provisional-recordings chip, while any owned file still
+    /// lives outside the saved project's Takes folder.
+    /// Current audio capture, including a count-in or a draining stop tail.
+    pub fn audio_recording(&self) -> Option<&AudioRecording> {
+        self.audio_recording.running()
+    }
+
+    pub fn provisional_recordings_folder(&self) -> Option<&Path> {
+        self.audio_recording.folder()
+    }
+
+    /// Validates capture sources before either automatic arm or a recording attempt.
+    pub(crate) fn audio_record_track_available(&mut self, id: TrackId) -> bool {
+        let Some(track) = self.project().track(id) else {
+            return false;
+        };
+        if track.kind != TrackKind::Audio {
+            return true;
+        }
+        let available = match track.audio.input {
+            AudioInput::None => false,
+            AudioInput::Hardware(input) => input
+                .first
+                .checked_add(input.channel_count())
+                .is_some_and(|end| end <= self.engine.audio_input_channels()),
+            AudioInput::Bus(bus) => self
+                .project()
+                .track(bus)
+                .is_some_and(|track| track.is_bus()),
+        };
+        if !available {
+            self.set_status(
+                self.lang.audio_record_input_unavailable(&track.name),
+                StatusKind::Error,
+            );
+        }
+        available
+    }
+
+    pub(crate) fn prepare_audio_take(&mut self, from: Tick) -> bool {
+        if self.audio_recording.capture.is_some() {
+            self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
+            return false;
+        }
+        let armed: Vec<_> = self
+            .project()
+            .tracks
+            .iter()
+            .filter(|track| track.arm && track.kind == TrackKind::Audio)
+            .map(|track| track.id)
+            .collect();
+        if armed.is_empty() {
+            return true;
+        }
+        if armed
+            .iter()
+            .any(|id| !self.audio_record_track_available(*id))
+        {
+            return false;
+        }
+        let provisional = self.project_path.is_none();
+        let directory = if let Some(directory) = self.project_dir() {
+            directory.join("Takes")
+        } else {
+            let root = self
+                .audio_recording
+                .root_override
+                .clone()
+                .or_else(files::provisional_root);
+            let Some(root) = root else {
+                self.set_status(
+                    self.lang.audio_record_folder_unavailable(),
+                    StatusKind::Error,
+                );
+                return false;
+            };
+            match files::directory(&root, &self.project().name) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+                    return false;
+                }
+            }
+        };
+        let tracks = armed
+            .into_iter()
+            .filter_map(|id| self.project().track(id))
+            .map(|track| RecordingTrack {
+                track: track.id,
+                name: track.name.clone(),
+                input: track.audio.input,
+                channels: match track.audio.input {
+                    AudioInput::Hardware(input) => input.channel_count(),
+                    _ => 2,
+                },
+            })
+            .collect();
+        let rate = self.engine.sample_rate();
+        let format = match self.settings.capture_format {
+            CaptureFormat::Pcm24 => RecordingFormat::Pcm24,
+            CaptureFormat::Float32 => RecordingFormat::Float32,
+        };
+        match recording::prepare(RecordingConfig {
+            directory: directory.clone(),
+            sample_rate: rate,
+            format,
+            tracks,
+        }) {
+            Ok((recorder, session)) => {
+                self.audio_recording.capture = Some(Capture {
+                    session,
+                    directory,
+                    provisional,
+                    view: AudioRecording {
+                        start: from,
+                        head: from,
+                        ..Default::default()
+                    },
+                    stopping: false,
+                    base: edits::next_take_number(self.project()),
+                    rate,
+                    owned: BTreeSet::new(),
+                    material: false,
+                });
+                self.engine.send(Command::SetRecorder(recorder));
+                true
+            }
+            Err(error) => {
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+                false
+            }
+        }
+    }
+
+    pub(crate) fn update_audio_take(&mut self) {
+        let project = self.project().clone();
+        let head = self.engine.playhead();
+        let Some(capture) = &mut self.audio_recording.capture else {
+            return;
+        };
+        capture.view.head = head;
+        capture.view.progress = capture.session.progress();
+        let track_count = capture.view.progress.len().max(1) as u32;
+        capture.view.clips.clear();
+        for (index, progress) in capture.view.progress.iter().enumerate() {
+            if progress.path.as_os_str().is_empty() {
+                continue;
+            }
+            capture.owned.insert(progress.path.clone());
+            if progress.frames == 0 {
+                continue;
+            }
+            capture.material = true;
+            if capture.provisional {
+                self.audio_recording
+                    .provisional
+                    .insert(progress.path.clone());
+            }
+            let file = AudioFile::new(
+                &progress.path,
+                None,
+                progress.frames.max(1),
+                capture.rate,
+                progress.channels,
+            );
+            let source = AudioClip::new(file, 0, project.tempo);
+            let length = source
+                .frames_to_ticks(progress.frames, project.tempo)
+                .max(Tick(1));
+            let take = self.lang.record_take(
+                capture
+                    .base
+                    .saturating_add(index as u32)
+                    .saturating_add(progress.lap.saturating_mul(track_count)),
+            );
+            capture.view.clips.push((
+                progress.track,
+                Arc::new(Clip {
+                    id: ClipId(u64::MAX - 1024 - index as u64),
+                    name: self.lang.record_clip(take),
+                    start: progress.start,
+                    length,
+                    loop_length: None,
+                    mute: false,
+                    transpose: 0,
+                    velocity_pct: 0,
+                    content: ClipContent::Audio(source),
+                }),
+            ));
+        }
+        let Some(result) = capture.session.poll() else {
+            return;
+        };
+        let capture = self
+            .audio_recording
+            .capture
+            .take()
+            .expect("polled capture exists");
+        match result {
+            Ok(mut result) => {
+                if capture.provisional {
+                    self.audio_recording
+                        .provisional
+                        .extend(result.takes.iter().map(|take| take.path.clone()));
+                }
+                if let Some(directory) = self.project_dir() {
+                    let paths: Vec<_> = result
+                        .takes
+                        .iter()
+                        .filter(|take| self.audio_recording.provisional.contains(&take.path))
+                        .map(|take| take.path.clone())
+                        .collect();
+                    match files::stage(&paths, &directory.join("Takes")) {
+                        Ok(mapping) => {
+                            for take in &mut result.takes {
+                                if let Some(path) = mapping.get(&take.path) {
+                                    self.audio_recording.provisional.remove(&take.path);
+                                    take.path = path.clone();
+                                }
+                            }
+                            // Keep source files until the result is in the document; old project
+                            // checkpoints and undo states may still link to those files.
+                            self.audio_recording
+                                .pending_removals
+                                .extend(mapping.keys().cloned());
+                            self.rewrite_recording_paths(&mapping);
+                        }
+                        Err(error) => self.set_status(
+                            self.lang.audio_record_move_failed(error),
+                            StatusKind::Error,
+                        ),
+                    }
+                }
+                let midi = self.audio_recording.pending_midi.take();
+                let label = midi
+                    .as_ref()
+                    .map(|commit| commit.label().to_owned())
+                    .unwrap_or_else(|| {
+                        self.lang
+                            .record_take(edits::next_take_number(self.project()))
+                    });
+                let lang = self.lang;
+                let directory = self.project_dir();
+                self.doc.end_gesture();
+                let clips = self.apply_with(&label, |project| {
+                    let (project, mut clips) = match &midi {
+                        Some(commit) => commit.apply(project)?,
+                        None => (project.clone(), Vec::new()),
+                    };
+                    let (project, audio) =
+                        apply_takes(&project, &result.takes, lang, directory.as_deref())?;
+                    clips.extend(audio);
+                    Ok((project, clips))
+                });
+                let applied = clips.as_ref().is_some_and(|clips| !clips.is_empty());
+                if clips.is_none() {
+                    self.set_status(self.lang.audio_record_apply_failed(), StatusKind::Error);
+                }
+                if let Some(first) = clips.and_then(|clips| clips.first().copied()) {
+                    self.dispatch(Action::Ui(UiAction::OpenClip(first)));
+                }
+                if applied && !result.takes.is_empty() {
+                    self.set_status(
+                        self.lang.audio_record_complete(result.takes.len()),
+                        StatusKind::Success,
+                    );
+                }
+            }
+            Err(recording::RecordingError::Cancelled) => {
+                self.audio_recording.pending_midi = None;
+            }
+            Err(error) => {
+                // Freeze an in-progress MIDI overlay too: writer failure can happen before
+                // Stop has created pending_midi. Both paths preserve captured notes once.
+                if capture.provisional {
+                    self.audio_recording
+                        .provisional
+                        .extend(capture.owned.iter().filter(|path| path.is_file()).cloned());
+                }
+                let mut commits = Vec::new();
+                if let Some(midi) = self.audio_recording.pending_midi.take() {
+                    commits.push(midi);
+                }
+                if let Some(midi) = self.recording.take().and_then(|recording| {
+                    recording.commit(self.doc.project(), self.engine.playhead())
+                }) {
+                    commits.push(midi);
+                }
+                if let Some(first) = commits.first() {
+                    let label = first.label().to_owned();
+                    self.apply_with(&label, |project| {
+                        let mut project = project.clone();
+                        let mut clips = Vec::new();
+                        for commit in &commits {
+                            let (next, added) = commit.apply(&project)?;
+                            project = next;
+                            clips.extend(added);
+                        }
+                        Ok((project, clips))
+                    });
+                }
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+                self.engine.send(Command::StopRecording);
+            }
+        }
+        drop(capture); // joins/IO only on this non-RT thread
+    }
+
+    /// A stopped capture drains its latency tail before a Save-and-leave action can leave the
+    /// project. The audio thread keeps running; a timeout leaves the project and files open.
+    pub(crate) fn await_audio_take(&mut self) -> bool {
+        if !self
+            .audio_recording
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.stopping)
+        {
+            return true;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while self.audio_recording.capture.is_some() && std::time::Instant::now() < deadline {
+            self.update_audio_take();
+            if self.audio_recording.capture.is_some() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        if self.audio_recording.capture.is_some() {
+            self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// A flushed snapshot for saving while capture continues; does not create an undo step.
+    pub(crate) fn project_with_audio_take(
+        &mut self,
+        project: &Project,
+    ) -> Result<Option<Project>, ()> {
+        let Some(capture) = self.audio_recording.capture.as_ref() else {
+            return Ok(None);
+        };
+        let target = self
+            .audio_recording
+            .save_target
+            .clone()
+            .or_else(|| self.project_dir().map(|directory| directory.join("Takes")))
+            .unwrap_or_else(|| capture.directory.clone());
+        let takes = match capture.session.checkpoint() {
+            Ok(takes) => takes,
+            Err(error) => {
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+                return Err(());
+            }
+        };
+        if takes.iter().all(|take| take.frames == 0) {
+            return Ok(None);
+        }
+        let snapshots = match files::checkpoint(&takes, &target) {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+                return Err(());
+            }
+        };
+        match apply_takes(project, &snapshots, self.lang, target.parent()) {
+            Ok((project, _)) => Ok(Some(project)),
+            Err(error) => {
+                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+                Err(())
+            }
+        }
+    }
+
+    /// Called only after the new project file is written. Older on-disk checkpoints remain
+    /// playable until then; undo/redo paths have already been rewritten to the copies.
+    pub(crate) fn recordings_saved(&mut self) {
+        let paths = std::mem::take(&mut self.audio_recording.pending_removals);
+        for path in paths {
+            if let Err(error) = std::fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                self.audio_recording.pending_removals.insert(path);
+                self.set_status(self.lang.audio_record_move_failed(error), StatusKind::Error);
+            }
+        }
+    }
+
+    pub(crate) fn rewrite_recording_paths(&mut self, mapping: &BTreeMap<PathBuf, PathBuf>) {
+        if mapping.is_empty() {
+            return;
+        }
+        let directory = self.project_dir();
+        self.doc.rewrite_untracked(|project| {
+            edits::rewrite_audio_files(project, |file| {
+                let destination = mapping.get(&file.abs)?;
+                Some(AudioFile::new(
+                    destination,
+                    directory.as_deref(),
+                    file.frames,
+                    file.sample_rate,
+                    file.channels,
+                ))
+            })
+        });
+    }
+
+    /// Moves open WAVs only through their writer; on a cross-device/other failed move they
+    /// remain usable and provisional. Closed takes use conservative copies with undo rewrites.
+    pub(crate) fn migrate_recordings_for_save(&mut self, project_file: &Path) {
+        self.audio_recording.save_target = project_file
+            .parent()
+            .map(|directory| directory.join("Takes"));
+        if self.audio_recording.provisional.is_empty()
+            && !self
+                .audio_recording
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.provisional)
+        {
+            return;
+        }
+        let Some(directory) = project_file.parent() else {
+            return;
+        };
+        let target = directory.join("Takes");
+        let mut active = BTreeSet::new();
+        if let Some(capture) = &mut self.audio_recording.capture {
+            match capture.session.checkpoint() {
+                Ok(before) => {
+                    active.extend(before.iter().map(|take| take.path.clone()));
+                    if capture.provisional {
+                        match capture.session.relocate(&target) {
+                            Ok(after) => {
+                                let mut mapping = BTreeMap::new();
+                                for old in &before {
+                                    if let Some(new) = after
+                                        .iter()
+                                        .find(|new| new.track == old.track && new.lap == old.lap)
+                                    {
+                                        mapping.insert(old.path.clone(), new.path.clone());
+                                        self.audio_recording.provisional.remove(&old.path);
+                                    }
+                                }
+                                capture.directory = target.clone();
+                                capture.provisional = false;
+                                self.rewrite_recording_paths(&mapping);
+                            }
+                            Err(error) => self.set_status(
+                                self.lang.audio_record_move_failed(error),
+                                StatusKind::Error,
+                            ),
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.set_status(self.lang.audio_record_failed(error), StatusKind::Error)
+                }
+            }
+        }
+        let paths: Vec<_> = self
+            .audio_recording
+            .provisional
+            .iter()
+            .filter(|path| !active.contains(*path))
+            .cloned()
+            .collect();
+        match files::stage(&paths, &target) {
+            Ok(mapping) => {
+                self.audio_recording
+                    .pending_removals
+                    .extend(mapping.keys().cloned());
+                self.rewrite_recording_paths(&mapping);
+                for source in mapping.keys() {
+                    self.audio_recording.provisional.remove(source);
+                }
+            }
+            Err(error) => {
+                self.set_status(self.lang.audio_record_move_failed(error), StatusKind::Error)
+            }
+        }
+    }
+}
+
+fn apply_takes(
+    project: &Project,
+    takes: &[RecordedTake],
+    lang: komponist_i18n::Lang,
+    directory: Option<&Path>,
+) -> Result<(Project, Vec<ClipId>), EditError> {
+    let mut grouped = BTreeMap::<TrackId, Vec<&RecordedTake>>::new();
+    for take in takes.iter().filter(|take| take.frames > 0) {
+        grouped.entry(take.track).or_default().push(take);
+    }
+    let mut project = project.clone();
+    let mut clips = Vec::new();
+    for (track, mut takes) in grouped {
+        if project
+            .track(track)
+            .is_none_or(|track| track.kind != TrackKind::Audio)
+        {
+            continue;
+        }
+        takes.sort_by_key(|take| take.lap);
+        let first = takes[0];
+        let source = |take: &RecordedTake| {
+            AudioFile::new(
+                &take.path,
+                directory,
+                take.window_frames.unwrap_or(take.frames),
+                take.sample_rate,
+                take.channels,
+            )
+        };
+        let audio = AudioClip::new(source(first), 0, project.tempo);
+        let length = audio.max_length(project.tempo).max(Tick(1));
+        let name = lang.record_take(edits::next_take_number(&project));
+        let (next, id) = edits::add_clip(
+            &project,
+            track,
+            NewClip {
+                start: first.start,
+                length,
+                name: name.clone(),
+                content: NewClipContent::Audio {
+                    file: source(first),
+                    offset: 0,
+                },
+            },
+        )?;
+        project = next;
+        let track_index = project
+            .tracks
+            .iter()
+            .position(|candidate| candidate.id == track)
+            .expect("new clip track");
+        let clip_index = project.tracks[track_index]
+            .clips
+            .iter()
+            .position(|clip| clip.id == id)
+            .expect("new clip");
+        if let ClipContent::Audio(audio) = &mut Arc::make_mut(
+            &mut Arc::make_mut(&mut project.tracks[track_index]).clips[clip_index],
+        )
+        .content
+        {
+            audio.takes[0].name = name;
+        }
+        for take in takes.into_iter().skip(1) {
+            let name = lang.record_take(edits::next_take_number(&project));
+            project = edits::add_audio_take(
+                &project,
+                id,
+                AudioTake {
+                    name: name.clone(),
+                    file: source(take),
+                    offset: 0,
+                },
+            )?
+            .0;
+            project = edits::set_clip_prop(&project, id, edits::ClipProp::Name(name))?;
+        }
+        clips.push(id);
+    }
+    Ok((project, clips))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::{EditAction, TransportAction};
+    use std::time::{Duration, Instant};
+
+    fn rig() -> (App, TrackId, PathBuf) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "komponist-audio-lifecycle-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project = Project::new("Captured audio");
+        project.count_in_bars = 0;
+        project.loop_on = false;
+        let (project, bus) = edits::add_bus(&project, edits::NewBus::default()).unwrap();
+        let (mut project, track) = edits::add_audio_track(
+            &project,
+            edits::NewAudioTrack {
+                input: AudioInput::Bus(bus),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        Arc::make_mut(
+            project
+                .tracks
+                .iter_mut()
+                .find(|candidate| candidate.id == track)
+                .unwrap(),
+        )
+        .arm = true;
+        let mut app = App::headless(project).with_recording_directory(root.join("Provisional"));
+        app.engine_mut().hold_engine().unwrap();
+        app.step();
+        (app, track, root)
+    }
+    fn wait(app: &mut App, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            app.step();
+            if done(app) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "audio lifecycle did not advance; status={:?}",
+                app.ui.status
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    fn begin(app: &mut App, track: TrackId) {
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(1024, &[], 0));
+        wait(app, |app| {
+            app.audio_recording()
+                .and_then(|view| view.progress(track))
+                .is_some_and(|progress| progress.frames > 0)
+        });
+    }
+    #[test]
+    fn stopped_audio_is_one_undo_step_and_undo_keeps_its_file_for_redo() {
+        let (mut app, track, root) = rig();
+        begin(&mut app, track);
+        assert!(
+            app.recording.is_none(),
+            "audio must not create a MIDI overlay"
+        );
+        assert!(app.provisional_recordings_folder().is_some());
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let clip = app.project().track(track).unwrap().clips[0].clone();
+        let ClipContent::Audio(audio) = &clip.content else {
+            panic!("audio clip");
+        };
+        let path = audio.file.abs.clone();
+        assert!(path.is_file());
+        assert_eq!(
+            hound::WavReader::open(&path)
+                .unwrap()
+                .spec()
+                .bits_per_sample,
+            24
+        );
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+        assert!(path.is_file());
+        app.dispatch(Action::Edit(EditAction::Redo));
+        assert_eq!(app.project().track(track).unwrap().clips[0], clip);
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn save_during_capture_has_independent_assets_that_survive_esc() {
+        let (mut app, track, root) = rig();
+        begin(&mut app, track);
+        let project_file = root.join("Song.komponist");
+        assert!(app.save_to(&project_file));
+        let saved = crate::project_io::load_project(&project_file).unwrap();
+        let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
+            panic!("saved audio");
+        };
+        let snapshot = audio.file.abs.clone();
+        let live = app
+            .audio_recording
+            .capture
+            .as_ref()
+            .unwrap()
+            .session
+            .progress()[0]
+            .path
+            .clone();
+        assert_ne!(snapshot, live);
+        assert!(snapshot.starts_with(root.join("Takes")));
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        app.step();
+        assert!(
+            snapshot.is_file(),
+            "Esc must preserve saved checkpoint audio"
+        );
+        assert!(
+            !live.is_file(),
+            "only the discarded worker's own live file is deleted"
+        );
+        assert!(app.provisional_recordings_folder().is_none());
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+        assert!(hound::WavReader::open(snapshot).unwrap().duration() > 0);
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn first_save_migrates_every_undo_state_and_keeps_redo_playable() {
+        let (mut app, track, root) = rig();
+        begin(&mut app, track);
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let original = match &app.project().track(track).unwrap().clips[0].content {
+            ClipContent::Audio(audio) => audio.file.abs.clone(),
+            _ => unreachable!(),
+        };
+        let project_file = root.join("Song.komponist");
+        assert!(app.save_to(&project_file));
+        assert!(app.provisional_recordings_folder().is_none());
+        assert!(!original.is_file());
+        app.dispatch(Action::Edit(EditAction::Undo));
+        app.dispatch(Action::Edit(EditAction::Redo));
+        let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
+        else {
+            unreachable!();
+        };
+        assert!(audio.file.abs.starts_with(root.join("Takes")));
+        assert!(audio.file.abs.is_file());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    fn add_midi(app: &mut App) -> TrackId {
+        let midi = app
+            .doc
+            .apply_with("Add MIDI", |project| {
+                edits::add_track(
+                    project,
+                    edits::NewTrack {
+                        name: Some("MIDI input".into()),
+                        hue: None,
+                        instrument: None,
+                        index: None,
+                        arm_exclusive: false,
+                    },
+                )
+            })
+            .unwrap();
+        app.doc
+            .apply("Arm MIDI", |project| {
+                edits::set_track_prop(project, &[midi], edits::TrackProp::Arm(true))
+            })
+            .unwrap();
+        app.step();
+        midi
+    }
+    fn begin_mixed(app: &mut App) {
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        let notes = [
+            komponist_engine::MidiInEvent {
+                frame: 0,
+                port: komponist_engine::MidiPort(1),
+                data: [0x90, 60, 100],
+            },
+            komponist_engine::MidiInEvent {
+                frame: 512,
+                port: komponist_engine::MidiPort(1),
+                data: [0x80, 60, 0],
+            },
+        ];
+        assert!(app.engine_mut().run_held(1024, &notes, 0));
+        wait(app, |app| {
+            app.audio_recording()
+                .is_some_and(|view| view.progress.iter().any(|progress| progress.frames > 0))
+        });
+    }
+    #[test]
+    fn audio_failure_freezes_and_preserves_the_active_midi_overlay_once() {
+        let (mut app, audio, root) = rig();
+        let midi = add_midi(&mut app);
+        begin_mixed(&mut app);
+        app.engine_mut().send(Command::AbortAudioRecording);
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        assert!(app.recording.is_none());
+        assert_eq!(app.project().track(midi).unwrap().clips.len(), 1);
+        assert!(app.project().track(audio).unwrap().clips.is_empty());
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert!(app.project().track(midi).unwrap().clips.is_empty());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn deleting_a_midi_track_during_audio_finalization_does_not_drop_audio() {
+        let (mut app, audio, root) = rig();
+        let midi = add_midi(&mut app);
+        begin_mixed(&mut app);
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        app.doc
+            .apply("Remove MIDI", |project| {
+                edits::remove_tracks(project, &[midi])
+            })
+            .unwrap();
+        app.step();
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        assert!(app.project().track(midi).is_none());
+        assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
+        app.dispatch(Action::Edit(EditAction::Undo));
+        assert!(app.project().track(midi).is_none());
+        assert!(app.project().track(audio).unwrap().clips.is_empty());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn save_during_count_in_does_not_leave_a_stale_provisional_path() {
+        let (mut app, audio, root) = rig();
+        app.dispatch(Action::Transport(TransportAction::ToggleCountIn));
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        app.step();
+        assert_eq!(app.transport(), komponist_engine::TransportState::CountIn);
+        assert!(app.audio_recording().unwrap().clip(audio).is_none());
+        assert!(app.save_to(&root.join("Count-in.komponist")));
+        assert!(app.provisional_recordings_folder().is_none());
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        app.step();
+        assert!(app.provisional_recordings_folder().is_none());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unsaved_guard_sees_recording_before_the_ui_has_consumed_worker_progress() {
+        let (mut app, _, root) = rig();
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(1024, &[], 0));
+        assert!(app.has_unsaved_take());
+        app.dispatch(Action::Transport(TransportAction::DiscardTake));
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

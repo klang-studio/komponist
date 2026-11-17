@@ -189,6 +189,16 @@ impl AudioProcess for EngineProcess {
     }
 
     fn process(&mut self, out: &mut OutputBuffer<'_>, info: &CallbackInfo, midi: &mut MidiIn<'_>) {
+        self.process_input(out, info, midi, &komponist_audio::InputBuffer::empty());
+    }
+
+    fn process_input(
+        &mut self,
+        out: &mut OutputBuffer<'_>,
+        info: &CallbackInfo,
+        midi: &mut MidiIn<'_>,
+        audio: &komponist_audio::InputBuffer<'_>,
+    ) {
         komponist_audio::enable_flush_to_zero();
         self.midi.clear();
         while let Some(m) = midi.pop() {
@@ -207,7 +217,17 @@ impl AudioProcess for EngineProcess {
             output_latency: latency as u32,
         };
         let (left, right) = (&mut self.left[..frames], &mut self.right[..frames]);
-        self.engine.process(left, right, &input);
+        self.engine.process_with_audio(
+            left,
+            right,
+            &input,
+            &komponist_engine::AudioInputBuffer {
+                data: audio.data(),
+                channels: audio.channels(),
+                latency: (audio.latency().as_secs_f64() * f64::from(info.sample_rate)) as u32,
+                discontinuous: audio.discontinuous(),
+            },
+        );
         out.write_stereo(left, right);
     }
 }
@@ -722,6 +742,15 @@ impl EngineSync {
     /// Rebuilds the stream for `config` (S07: driver, device, rate, buffer). The engine survives;
     /// a new rate re-activates the processors.
     pub fn set_audio(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
+        let changed = match self.audio.state() {
+            AudioState::Running { config: old, .. } | AudioState::NoDevice { config: old, .. } => {
+                old != config
+            }
+            AudioState::Stopped => false,
+        };
+        if changed {
+            self.send(Command::AbortAudioRecording);
+        }
         let before = self.sample_rate();
         let started = self.audio.start(config);
         if self.sample_rate() != before {
@@ -730,6 +759,43 @@ impl EngineSync {
             self.fast = None;
         }
         started
+    }
+
+    /// Explicitly configures capture; absent by default so old projects never open inputs.
+    pub fn set_audio_input(
+        &mut self,
+        config: Option<komponist_audio::InputConfig>,
+    ) -> Result<(), AudioError> {
+        if self.audio.input() != config.as_ref() {
+            self.send(Command::AbortAudioRecording);
+        }
+        self.audio.set_input(config)
+    }
+    /// Synthetic capture on the null backend, without enumerating or opening hardware.
+    pub fn set_test_audio_input(
+        &mut self,
+        channels: u16,
+        rate: u32,
+    ) -> Result<komponist_audio::TestAudioSource, AudioError> {
+        self.send(Command::AbortAudioRecording);
+        self.audio.set_test_input(channels, rate)
+    }
+
+    /// Current capture configuration, independent of per-track channel selection.
+    pub fn audio_input_config(&self) -> Option<&komponist_audio::InputConfig> {
+        self.audio.input()
+    }
+    /// Input channels currently available from the configured device.
+    pub fn audio_input_channels(&self) -> u16 {
+        self.audio.input_channels()
+    }
+    /// Metadata-only input enumeration for the active host (no stream is opened).
+    pub fn audio_input_devices(&self) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
+        let host = match self.audio.state() {
+            AudioState::Running { config, .. } | AudioState::NoDevice { config, .. } => config.host,
+            AudioState::Stopped => HostKind::Null,
+        };
+        AudioSystem::<EngineProcess>::input_devices(host)
     }
 
     /// Parallel track processing (WP-65, settings file `worker_threads`): `None` = automatic

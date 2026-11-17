@@ -449,6 +449,10 @@ impl App {
     /// file without ending (module docs). `false` if writing failed (the status bar says why).
     pub(crate) fn save_to(&mut self, path: &Path) -> bool {
         let path = with_extension(path);
+        if !self.await_audio_take() {
+            return false;
+        }
+        self.migrate_recordings_for_save(&path);
         // The bridged plugins' current states go into the file (blocking, bounded).
         for (device, state) in self
             .engine
@@ -460,7 +464,10 @@ impl App {
         // The sample links get the paths for this file's folder.
         self.rebase_samples(&path);
         // A running take so far, with the notes still in flight, on top of all that (#85).
-        let with_take = self.project_with_take();
+        let with_take = match self.project_with_take() {
+            Ok(project) => project,
+            Err(()) => return false,
+        };
         // A new file renames the project after it; the rename happens only if writing works.
         let rename = name_from_path(&path).filter(|name| {
             self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
@@ -500,6 +507,7 @@ impl App {
                     StatusKind::Success,
                 );
                 self.remember(path);
+                self.recordings_saved();
                 true
             }
             Err(e) => {
@@ -592,7 +600,7 @@ impl App {
             // A running take records on.
             Answer::Cancel => {}
             Answer::Discard => {
-                if self.recording.is_some() {
+                if self.recording.is_some() || self.audio_recording.is_active() {
                     self.discard_take();
                 }
                 self.proceed(next);

@@ -134,6 +134,9 @@ impl App {
     ) -> R {
         let focused = self.ui.focus == area;
         let project_dir = self.project_dir();
+        let provisional_recordings = self
+            .provisional_recordings_folder()
+            .map(std::path::Path::to_path_buf);
         let mut ctx = ViewCtx::new(
             self.doc.project(),
             &mut self.ui,
@@ -143,10 +146,13 @@ impl App {
             &mut self.queue,
         );
         ctx.project_dir = project_dir.as_deref();
+        ctx.audio_devices = Some(std::sync::Arc::clone(&self.audio_devices));
         ctx.focused = focused;
         ctx.lang = self.lang;
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
+        ctx.audio_recording = self.audio_recording.running();
+        ctx.provisional_recordings = provisional_recordings.as_deref();
         ctx.exports = &self.export.done;
         let midi = self.engine.telemetry().held_input_keys();
         ctx.held_notes = self
