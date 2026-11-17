@@ -119,6 +119,10 @@ pub trait AudioDevices: Send + Sync {
     fn hosts(&self) -> Vec<HostKind>;
     /// Output devices of `host`; empty if it cannot be enumerated.
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo>;
+    /// Capture devices; providers used by headless tests expose none unless explicitly set.
+    fn input_devices(&self, _host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
+        Vec::new()
+    }
     /// Whether enumeration may take long enough to stall a frame, so the dialog runs it on a
     /// worker thread and shows the previous list meanwhile (WP-61 measured 7–10 ms for the
     /// drivers, whose JACK probe opens a client, and 170–200 ms for ALSA's devices).
@@ -138,6 +142,10 @@ impl AudioDevices for SystemDevices {
 
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo> {
         AudioSystem::<EngineProcess>::devices(host).unwrap_or_default()
+    }
+
+    fn input_devices(&self, host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
+        AudioSystem::<EngineProcess>::input_devices(host).unwrap_or_default()
     }
 
     fn is_slow(&self) -> bool {
@@ -201,6 +209,60 @@ pub struct DeviceEntry {
     pub name: Option<String>,
     /// `StreamConfig::device_id` when chosen.
     pub id: Option<komponist_audio::DeviceId>,
+}
+
+/// One capture-device choice; None explicitly keeps recording input disabled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputEntry {
+    pub label: String,
+    pub config: Option<komponist_audio::InputConfig>,
+}
+
+pub fn input_entries(
+    t: Lang,
+    devices: &[komponist_audio::InputDeviceInfo],
+    configured: Option<&komponist_audio::InputConfig>,
+) -> (Vec<InputEntry>, usize) {
+    let mut entries = vec![
+        InputEntry {
+            label: t.audio_input_none().to_owned(),
+            config: None,
+        },
+        InputEntry {
+            label: t.settings_default_device().to_owned(),
+            config: Some(komponist_audio::InputConfig::default()),
+        },
+    ];
+    entries.extend(devices.iter().map(|device| InputEntry {
+        label: device.name.clone(),
+        config: Some(komponist_audio::InputConfig {
+            device: Some(device.name.clone()),
+            device_id: device.id.clone(),
+        }),
+    }));
+    let selected = entries
+        .iter()
+        .position(|entry| {
+            entry.config.as_ref() == configured
+                || configured.is_some_and(|config| {
+                    config.device_id.as_ref().is_some_and(|id| {
+                        entry.config.as_ref().and_then(|c| c.device_id.as_ref()) == Some(id)
+                    })
+                })
+        })
+        .unwrap_or_else(|| {
+            let label = t.audio_input_unavailable(
+                configured
+                    .and_then(|c| c.device.as_deref())
+                    .unwrap_or(t.settings_default_device()),
+            );
+            entries.push(InputEntry {
+                label,
+                config: configured.cloned(),
+            });
+            entries.len() - 1
+        });
+    (entries, selected)
 }
 
 /// Pseudo devices that stand for the default device (WP-13 notes: PipeWire lists
@@ -410,6 +472,12 @@ pub struct Model {
     pub hosts: Vec<HostKind>,
     /// The configured stream (settings).
     pub config: StreamConfig,
+    /// Explicit capture-device choices (off, default, then named devices).
+    pub input_devices: Vec<InputEntry>,
+    /// Configured capture choice.
+    pub input_device: usize,
+    /// WAV encoding for future recordings.
+    pub capture_format: crate::settings::CaptureFormat,
     /// Device dropdown entries ([`device_entries`]).
     pub devices: Vec<DeviceEntry>,
     /// The configured device's entry.
@@ -535,6 +603,9 @@ pub(crate) struct Cache {
     pending_hosts: Option<Receiver<Vec<HostKind>>>,
     /// A device enumeration running on a worker thread, and its driver.
     pending_devices: Option<(HostKind, Receiver<Vec<DeviceInfo>>)>,
+    pending_inputs: Option<(HostKind, Receiver<Vec<komponist_audio::InputDeviceInfo>>)>,
+    input_host: Option<HostKind>,
+    inputs: Vec<komponist_audio::InputDeviceInfo>,
     /// When each MIDI port (by name) last had activity.
     pub(crate) lit: HashMap<String, Instant>,
     /// Scroll the page to this section in the next frame.
@@ -544,11 +615,24 @@ pub(crate) struct Cache {
 impl Cache {
     /// Whether an enumeration is still running (the dialog repaints until it arrives).
     pub(crate) fn enumerating(&self) -> bool {
-        self.pending_hosts.is_some() || self.pending_devices.is_some()
+        self.pending_hosts.is_some()
+            || self.pending_devices.is_some()
+            || self.pending_inputs.is_some()
     }
 
     /// Takes finished enumerations.
     fn collect(&mut self) {
+        if let Some((host, rx)) = &self.pending_inputs {
+            match rx.try_recv() {
+                Ok(inputs) => {
+                    self.inputs = inputs;
+                    self.input_host = Some(*host);
+                    self.pending_inputs = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.pending_inputs = None,
+            }
+        }
         if let Some(rx) = &self.pending_hosts {
             match rx.try_recv() {
                 Ok(hosts) => {
@@ -595,6 +679,7 @@ impl crate::App {
             self.dialogs.settings.pending_hosts =
                 Some(enumerate(&self.audio_devices, |d| d.hosts()));
             self.dialogs.settings.devices_host = None;
+            self.dialogs.settings.input_host = None;
             self.dialogs.settings.scroll_to.get_or_insert(section);
             self.engine.scan_midi();
         }
@@ -605,6 +690,17 @@ impl crate::App {
             let host = config.host;
             let rx = enumerate(&self.audio_devices, move |d| d.devices(host));
             cache.pending_devices = Some((host, rx));
+        }
+        if cache.input_host != Some(config.host)
+            && cache.pending_inputs.as_ref().map(|(host, _)| *host) != Some(config.host)
+        {
+            let host = config.host;
+            cache.pending_inputs = Some((
+                host,
+                enumerate(&self.audio_devices, move |provider| {
+                    provider.input_devices(host)
+                }),
+            ));
         }
         cache.collect();
         let t = self.lang;
@@ -654,7 +750,12 @@ impl crate::App {
                 .collect()
         });
         let host = self.engine.host();
+        let (input_devices, input_device) =
+            input_entries(t, &cache.inputs, self.settings.audio_input.as_ref());
         Model {
+            input_devices,
+            input_device,
+            capture_format: self.settings.capture_format,
             section,
             hosts: cache.hosts.clone(),
             config: config.clone(),
@@ -895,6 +996,49 @@ fn asio_logo(ui: &mut Ui, t: Lang) {
     });
 }
 
+fn capture_fields(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+    let mut selected = model.input_device;
+    let items: Vec<_> = model
+        .input_devices
+        .iter()
+        .map(|entry| Item::new(&entry.label))
+        .collect();
+    grid_row(ui, t.settings_input_device(), |ui| {
+        if ui
+            .add(Dropdown::new(t.settings_input_device(), &mut selected, &items).width(width))
+            .changed()
+        {
+            out.push(Output::Act(Action::Settings(
+                SettingsAction::SetAudioInput(model.input_devices[selected].config.clone()),
+            )));
+        }
+    });
+    grid_row(ui, t.settings_capture_format(), |ui| {
+        let items = [
+            komponist_ui::widgets::tabs::Item::new(t.settings_capture_pcm24()),
+            komponist_ui::widgets::tabs::Item::new(t.settings_capture_float32()),
+        ];
+        let mut selected =
+            usize::from(model.capture_format == crate::settings::CaptureFormat::Float32);
+        if ui
+            .add(Segmented::new(
+                t.settings_capture_format(),
+                &mut selected,
+                &items,
+            ))
+            .changed()
+        {
+            out.push(Output::Act(Action::Settings(
+                SettingsAction::SetCaptureFormat(if selected == 0 {
+                    crate::settings::CaptureFormat::Pcm24
+                } else {
+                    crate::settings::CaptureFormat::Float32
+                }),
+            )));
+        }
+    });
+}
+
 fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
     section_label(ui, t.settings_audio());
     ui.add_space(m::SECTION_INNER_GAP);
@@ -956,6 +1100,7 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
     if model.no_device.is_some() {
         grid_row(ui, "", |ui| notice(ui, t, field_width, out));
     }
+    capture_fields(ui, t, model, field_width, out);
 
     let labels: Vec<String> = model.rates.iter().map(|r| format!("{r} Hz")).collect();
     let rate_items: Vec<Item<'_>> = labels.iter().map(|l| Item::new(l)).collect();

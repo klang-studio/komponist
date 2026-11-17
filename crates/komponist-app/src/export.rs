@@ -364,7 +364,9 @@ impl App {
             self.set_status(self.lang.export_empty(), StatusKind::Error);
             return;
         }
-        self.stop_for_export();
+        if !self.stop_for_export() {
+            return;
+        }
         let settings = self.export_dialog_settings();
         self.open_dialog(Dialog::Export(ExportDialog {
             settings,
@@ -374,10 +376,11 @@ impl App {
     }
 
     /// The transport stops during an export (ARCHITECTURE §6.7); a take is committed first.
-    fn stop_for_export(&mut self) {
+    fn stop_for_export(&mut self) -> bool {
         if self.transport() != TransportState::Stopped {
             self.dispatch(Action::Transport(crate::actions::TransportAction::Stop));
         }
+        self.await_audio_take()
     }
 
     /// "Exportieren": see the module docs (steps 1 and 2).
@@ -387,7 +390,9 @@ impl App {
         }
         self.settings.export = Some(settings.clone());
         self.save_settings();
-        self.stop_for_export();
+        if !self.stop_for_export() {
+            return;
+        }
         // The program must be the document's for the song end and the render.
         self.engine.sync(&self.doc);
         let Some(file) = view::file_name(&settings.file_name) else {

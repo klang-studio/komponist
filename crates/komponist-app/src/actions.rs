@@ -129,6 +129,18 @@ pub enum EditAction {
     NewMidiTrack,
     /// Ctrl Shift T: open the new-track dialog with Audio selected.
     NewAudioTrack,
+    /// Create an armed audio track recording this bus, outside its group.
+    RecordBus(TrackId),
+    /// Choose an audio take.
+    SelectAudioTake { clip: ClipId, take: usize },
+    /// Rename an audio take.
+    RenameAudioTake {
+        clip: ClipId,
+        take: usize,
+        name: String,
+    },
+    /// Remove an audio take, keeping at least one.
+    RemoveAudioTake { clip: ClipId, take: usize },
 
     /// `edits::set_project_prop`.
     SetProjectProp(ProjectProp),
@@ -585,6 +597,16 @@ pub enum ProjectAction {
 pub enum SettingsAction {
     /// Driver, device, rate or buffer changed: rebuild the stream (engine untouched).
     SetAudio(StreamConfig),
+    /// Explicit capture device selection; None disables capture.
+    SetAudioInput(Option<komponist_audio::InputConfig>),
+    /// Open a capture device, then assign its channels only if opening succeeded.
+    ChooseTrackAudioInput {
+        track: TrackId,
+        input: komponist_model::AudioInput,
+        device: komponist_audio::InputConfig,
+    },
+    /// Encoding of newly recorded WAV files.
+    SetCaptureFormat(crate::settings::CaptureFormat),
     /// "Erneut suchen" after the device was lost.
     RetryAudio,
     /// MIDI input switch.

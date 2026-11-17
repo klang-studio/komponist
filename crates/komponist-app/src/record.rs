@@ -111,7 +111,11 @@ impl Recording {
             head: at,
             lang,
         };
-        for track in project.tracks.iter().filter(|t| t.arm) {
+        for track in project
+            .tracks
+            .iter()
+            .filter(|t| t.arm && t.kind == komponist_model::TrackKind::Midi)
+        {
             rec.lane_mut(track.id);
         }
         rec.update(at);
@@ -391,6 +395,11 @@ impl Commit {
         let mut p = project.clone();
         let mut ids = Vec::with_capacity(self.clips.len());
         for clip in &self.clips {
+            if p.track(clip.track)
+                .is_none_or(|track| track.kind != komponist_model::TrackKind::Midi)
+            {
+                continue;
+            }
             let Some((last, _)) = clip.takes.last() else {
                 continue;
             };

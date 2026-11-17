@@ -129,6 +129,10 @@ pub enum Command {
     },
     /// Panic: note-off for every sounding note and `AllNotesOff` to every processor.
     AllNotesOff,
+    /// Install a prepared bounded recording session. The previous endpoint is retired to UI.
+    SetRecorder(Box<crate::recording::Recorder>),
+    /// A capture/output stream is being rebuilt; fail an active audio take explicitly.
+    AbortAudioRecording,
 }
 
 impl fmt::Debug for Command {
@@ -192,6 +196,8 @@ impl fmt::Debug for Command {
                 .field("velocity", velocity)
                 .finish(),
             Command::AllNotesOff => f.write_str("AllNotesOff"),
+            Command::SetRecorder(_) => f.write_str("SetRecorder(..)"),
+            Command::AbortAudioRecording => f.write_str("AbortAudioRecording"),
         }
     }
 }
@@ -249,6 +255,8 @@ pub enum EngineEvent {
 pub enum Garbage {
     /// A replaced program.
     Program(Box<Program>),
+    /// A stopped or replaced audio recording endpoint.
+    Recorder(Box<crate::recording::Recorder>),
     /// A removed or replaced processor, with the slot it left.
     Processor(SlotId, Box<dyn Processor>),
 }
@@ -257,6 +265,7 @@ impl fmt::Debug for Garbage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Garbage::Program(_) => f.write_str("Program(..)"),
+            Garbage::Recorder(_) => f.write_str("Recorder(..)"),
             Garbage::Processor(slot, _) => f.debug_tuple("Processor").field(slot).finish(),
         }
     }
@@ -386,6 +395,8 @@ impl Default for Telemetry {
 pub struct TrackMeter {
     peak_l: AtomicU32,
     peak_r: AtomicU32,
+    input_l: AtomicU32,
+    input_r: AtomicU32,
 }
 
 impl TrackMeter {
@@ -394,6 +405,8 @@ impl TrackMeter {
         TrackMeter {
             peak_l: AtomicU32::new(0),
             peak_r: AtomicU32::new(0),
+            input_l: AtomicU32::new(0),
+            input_r: AtomicU32::new(0),
         }
     }
 
@@ -402,6 +415,19 @@ impl TrackMeter {
     pub fn record(&self, l: f32, r: f32) {
         self.peak_l.fetch_max(l.to_bits(), Ordering::Relaxed);
         self.peak_r.fetch_max(r.to_bits(), Ordering::Relaxed);
+    }
+
+    /// RT. Input peaks before monitoring, effects and the track fader.
+    pub fn record_input(&self, l: f32, r: f32) {
+        self.input_l.fetch_max(l.to_bits(), Ordering::Relaxed);
+        self.input_r.fetch_max(r.to_bits(), Ordering::Relaxed);
+    }
+    /// UI. Input peaks since the last call, resetting only the input meter.
+    pub fn take_input(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.input_l.swap(0, Ordering::Relaxed)),
+            f32::from_bits(self.input_r.swap(0, Ordering::Relaxed)),
+        )
     }
 
     /// UI. Returns the peaks since the last call and resets them to 0.

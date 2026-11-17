@@ -1,5 +1,6 @@
 //! Full-source waveform dock with per-channel envelopes, editable clip window and file recovery.
 pub mod fields;
+pub mod live;
 pub mod metrics;
 pub mod source;
 pub mod toolbar;
@@ -69,6 +70,12 @@ pub struct AudioEditor {
 }
 impl View for AudioEditor {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
+        if ctx.audio_recording.is_some() && self.gesture.take().is_some() {
+            ctx.send(Action::Edit(EditAction::CancelGesture));
+        }
+        if self.live(ui, ctx) {
+            return;
+        }
         let project = Arc::clone(ctx.project);
         let Some((track, clip)) = ctx.ui.editor.clip.and_then(|id| project.find_clip(id)) else {
             return;

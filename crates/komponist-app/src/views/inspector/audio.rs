@@ -85,8 +85,13 @@ pub(super) fn file_section(
     };
     source.refresh(a, ctx, ui.ctx());
     let path = source.path(a);
+    let provisional = ctx
+        .provisional_recordings
+        .filter(|dir| path.starts_with(dir));
     let state = if source.file.is_none() {
         ctx.lang.audio_clip_missing_short()
+    } else if provisional.is_some() {
+        ctx.lang.audio_file_provisional()
     } else if ctx.project_dir.is_some_and(|dir| path.starts_with(dir)) {
         ctx.lang.audio_file_in_project()
     } else {
@@ -130,7 +135,16 @@ pub(super) fn file_section(
                 info.current_text_value = Some(text.clone());
                 info
             });
-            response.on_hover_text(&text);
+            komponist_ui::widgets::accesskit(&response, |node| node.set_label(name));
+            if let Some(folder) = provisional {
+                response.on_hover_text(format!(
+                    "{}\n{}",
+                    text,
+                    ctx.lang.audio_file_provisional_note(folder.display())
+                ));
+            } else {
+                response.on_hover_text(&text);
+            }
             let r = col.take(typography::SMALL.line_height * 2.0);
             label(
                 ui,

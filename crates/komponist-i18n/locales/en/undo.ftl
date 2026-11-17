@@ -200,3 +200,9 @@ undo-clip-replace-file = Replace File
 # Linked audio import and browsing (epic #8).
 undo-import-audio = Import Audio
 undo-add-audio-track = Add Audio Track
+undo-audio-input = Change Input
+undo-audio-monitor = Change Monitoring
+undo-record-bus = Record Bus
+undo-select-audio-take = Choose Take
+undo-rename-audio-take = Rename Take
+undo-remove-audio-take = Remove Take

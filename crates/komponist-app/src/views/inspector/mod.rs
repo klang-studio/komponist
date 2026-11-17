@@ -19,6 +19,8 @@
 //! the channel fader or pan knob: they take the wheel, owner decision 2026-11-15).
 
 mod audio;
+mod audio_recording;
+mod audio_takes;
 mod channel;
 mod clip;
 pub mod metrics;
@@ -75,6 +77,7 @@ pub struct Inspector {
     rename: Option<Rename>,
     /// Per device: the late-block count last seen and when it last grew (egui time).
     late: LateTracker,
+    audio_takes: audio_takes::State,
     audio_source: crate::views::audio_editor::source::Source,
 }
 
@@ -89,10 +92,11 @@ impl View for Inspector {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         let project = Arc::clone(ctx.project);
         let body = ui.max_rect();
-        let recording: Vec<komponist_model::TrackId> = ctx
+        let mut recording: Vec<komponist_model::TrackId> = ctx
             .recording
             .map(|r| r.tracks().collect())
             .unwrap_or_default();
+        recording.extend(ctx.audio_recording.into_iter().flat_map(|r| r.tracks()));
         let sections = Sections::of(
             &project,
             &ctx.ui.selection.tracks,
@@ -142,7 +146,11 @@ impl View for Inspector {
                 audio::file_section(ui, ctx, &project, x, &mut y, id, &mut self.audio_source);
             }
             Some(ClipSection::Recording(track)) => {
-                clip::recording_section(ui, ctx, &project, x, &mut y, track);
+                if project.track(track).is_some_and(|track| track.is_audio()) {
+                    audio_recording::show(ui, ctx, &project, x, &mut y, track);
+                } else {
+                    clip::recording_section(ui, ctx, &project, x, &mut y, track);
+                }
             }
             None => {}
         }

@@ -28,7 +28,7 @@ use komponist_ui::{focus, px};
 use crate::actions::{Action, UiAction};
 use crate::keymap::Keymap;
 use crate::metrics::dock as m;
-use crate::ui_state::{DockTab, Panel, UiState};
+use crate::ui_state::{DockTab, FocusArea, Panel, UiState};
 
 /// Title, secondary text and colour mark of the editor tab.
 pub fn editor_tab(
@@ -58,7 +58,7 @@ pub fn tab_strip(
     rect: Rect,
     project: &Project,
     state: &UiState,
-    recording: bool,
+    recording: Option<FocusArea>,
     keymap: &Keymap,
     t: Lang,
     actions: &mut Vec<Action>,
@@ -71,10 +71,14 @@ pub fn tab_strip(
             .layout(Layout::left_to_right(Align::Center)),
     );
     row.spacing_mut().item_spacing.x = 0.0;
-    let (title, kind, mark) = if recording {
+    let (title, kind, mark) = if let Some(area) = recording {
         (
-            t.dock_recording().to_owned(),
-            t.dock_recording_kind(),
+            t.dock_recording().trim_start_matches("● ").to_owned(),
+            if area == FocusArea::Waveform {
+                t.audio_live_waveform()
+            } else {
+                t.dock_recording_kind()
+            },
             Some(color32(color::STATE_RECORD)),
         )
     } else {

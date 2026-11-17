@@ -31,7 +31,7 @@ pub mod audio_clip;
 pub mod clip;
 mod wave;
 pub use audio_clip::{AudioFileState, AudioLook, AudioParts, audio_parts, gain_from_y, gain_y};
-pub use wave::{WaveMesh, WaveSpec};
+pub use wave::{WaveMesh, WaveSpec, WaveSummary};
 pub mod gallery;
 pub mod grid;
 mod mesh;

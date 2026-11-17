@@ -663,6 +663,7 @@ impl Arrangement {
                         return None;
                     };
                     Some(AudioLook {
+                        takes: (a.takes.len() > 1).then_some((a.active_take + 1, a.takes.len())),
                         file,
                         wave,
                         repitch: (a.time_mode == komponist_model::ClipTimeMode::RePitch)
@@ -785,6 +786,70 @@ impl Arrangement {
                         );
                     }
                 }
+            }
+            // Audio capture is drawn directly from bounded writer telemetry. Never request
+            // peaks from an unfinished WAV; the current lap may contain only a partial bucket.
+            if let Some(recording) = ctx.audio_recording
+                && let Some(rec) = recording.clip(track.id)
+                && let Some(progress) = recording.progress(track.id)
+                && rec.end() >= t0
+                && rec.start <= t1
+            {
+                let rect = g.clip_rect(i, rec);
+                let data = crate::views::audio_editor::live::summaries(
+                    &progress.waveform,
+                    progress.channels,
+                );
+                let wave = komponist_ui::timeline::WaveMesh::from_summaries(
+                    &data,
+                    &komponist_ui::timeline::WaveSpec {
+                        width: (rect.width()
+                            - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_X)
+                            .max(0.0),
+                        px_per_tick: ppt,
+                        body_height: body_height(rect.height()),
+                        offset: 0,
+                        frames: progress.frames,
+                        gain: 1.0,
+                        fade_in: 0.0,
+                        fade_out: 0.0,
+                    },
+                );
+                let audio = AudioLook {
+                    file: AudioFileState::Ready,
+                    wave: &wave,
+                    takes: None,
+                    repitch: None,
+                    repitch_label: "",
+                    message: "",
+                    gain_db: 0.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                };
+                let model = ClipModel {
+                    name: rec.name.trim_start_matches("● "),
+                    palette,
+                    muted: false,
+                    recording: true,
+                    loop_mark: false,
+                    audio: Some(&audio),
+                    preview: None,
+                };
+                paint_clip(painter, rect, &model, ClipState::REST);
+                let access = clip_access(
+                    ctx.lang,
+                    &model,
+                    rec.start,
+                    rec.end(),
+                    project.meter,
+                    ClipState::REST,
+                );
+                let node = ui.interact(
+                    rect.intersect(lanes),
+                    Id::unique(("arrangement-audio-recording", track.id.0)),
+                    Sense::hover(),
+                );
+                register(&node, &access);
             }
             // The take being recorded on this track (S02): red head, growing with the playhead.
             if let Some(rec) = ctx.recording.and_then(|r| r.clip(track.id))

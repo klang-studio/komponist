@@ -41,6 +41,20 @@ pub struct WaveSpec {
     pub fade_out: f32,
 }
 
+/// A measured, consecutive source-frame interval supplied by a live recorder.
+/// RMS is measured energy; `frames` preserves partial and compacted bucket durations.
+#[derive(Clone, Copy, Debug)]
+pub struct WaveSummary {
+    /// Lowest measured sample.
+    pub min: f32,
+    /// Highest measured sample.
+    pub max: f32,
+    /// Measured root mean square.
+    pub rms: f32,
+    /// Number of source frames represented by this interval.
+    pub frames: u64,
+}
+
 /// One envelope sample: fractional-point peak/RMS extents above and below the centre line.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Col {
@@ -138,6 +152,70 @@ impl WaveMesh {
                 }
             })
             .collect();
+        mesh
+    }
+
+    /// Builds a live envelope without opening the unfinished recording file. Intervals keep
+    /// their real frame positions; uncovered source windows remain silent. RMS is weighted by
+    /// overlap duration when summaries are compacted or straddle a display column.
+    pub fn from_summaries(summaries: &[WaveSummary], spec: &WaveSpec) -> Self {
+        let mut mesh = Self::flat(spec.width, spec.px_per_tick, spec.body_height);
+        let columns = ((mesh.width.max(0) as f32 * metrics::WAVE_SAMPLES_PER_POINT).ceil()
+            as usize)
+            .min(MAX_COLUMNS);
+        if columns == 0 || spec.frames == 0 {
+            return mesh;
+        }
+        mesh.column_width = mesh.width as f32 / columns as f32;
+        let half = ((spec.body_height - 2.0 * metrics::WAVE_PAD) / 2.0).max(0.0);
+        let mut first = 0;
+        let mut first_frame = 0u64;
+        for i in 0..columns {
+            let start = spec.offset as f64 + spec.frames as f64 * i as f64 / columns as f64;
+            let end = spec.offset as f64 + spec.frames as f64 * (i + 1) as f64 / columns as f64;
+            while first < summaries.len()
+                && first_frame.saturating_add(summaries[first].frames) as f64 <= start
+            {
+                first_frame = first_frame.saturating_add(summaries[first].frames);
+                first += 1;
+            }
+            let (mut lo, mut hi, mut energy) = (0.0f32, 0.0f32, 0.0f64);
+            let mut frame = first_frame;
+            for bucket in &summaries[first..] {
+                if frame as f64 >= end {
+                    break;
+                }
+                let next = frame.saturating_add(bucket.frames);
+                let overlap = (end.min(next as f64) - start.max(frame as f64)).max(0.0);
+                if overlap > 0.0 {
+                    lo = lo.min(bucket.min);
+                    hi = hi.max(bucket.max);
+                    energy += f64::from(bucket.rms).powi(2) * overlap;
+                }
+                frame = next;
+            }
+            let x = (i as f32 + 0.5) * mesh.column_width;
+            let fade_in = if spec.fade_in > 0.0 {
+                (x / spec.fade_in).min(1.0)
+            } else {
+                1.0
+            };
+            let fade_out = if spec.fade_out > 0.0 {
+                ((spec.width - x) / spec.fade_out).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let gain = spec.gain * fade_in * fade_out;
+            let (up, down) = (hi.max(0.0) * gain, (-lo).max(0.0) * gain);
+            let rms = (energy / (end - start)).sqrt() as f32 * gain;
+            mesh.cols.push(Col {
+                up: up.min(1.0) * half,
+                down: down.min(1.0) * half,
+                core_up: rms.min(up).min(1.0) * half,
+                core_down: rms.min(down).min(1.0) * half,
+                over: up > 1.0 || down > 1.0,
+            });
+        }
         mesh
     }
 
@@ -377,6 +455,62 @@ mod tests {
             fade_in: 0.0,
             fade_out: 0.0,
         }
+    }
+
+    #[test]
+    fn live_summaries_preserve_partial_bucket_frame_positions_and_silent_tail() {
+        let data = [
+            WaveSummary {
+                min: -0.25,
+                max: 0.25,
+                rms: 0.125,
+                frames: 80,
+            },
+            WaveSummary {
+                min: -1.0,
+                max: 1.0,
+                rms: 0.5,
+                frames: 20,
+            },
+        ];
+        let mesh = WaveMesh::from_summaries(&data, &spec(100.0, 200));
+        assert_eq!(mesh.cols[70].up, 4.0);
+        assert_eq!(
+            mesh.cols[90].up, 16.0,
+            "partial final bucket belongs at frame 80, not halfway"
+        );
+        assert_eq!(
+            mesh.cols[120],
+            Col::default(),
+            "unwritten loop suffix stays silent"
+        );
+        let mut window = spec(10.0, 20);
+        window.offset = 80;
+        let mesh = WaveMesh::from_summaries(&data, &window);
+        assert!(mesh.cols.iter().all(|c| c.up == 16.0 && c.core_up == 8.0));
+    }
+
+    #[test]
+    fn live_rms_uses_duration_weighted_measured_energy() {
+        let data = [
+            WaveSummary {
+                min: -1.0,
+                max: 1.0,
+                rms: 1.0,
+                frames: 1,
+            },
+            WaveSummary {
+                min: -1.0,
+                max: 1.0,
+                rms: 0.0,
+                frames: 3,
+            },
+        ];
+        // Each of two display columns spans a complete four-frame pair.
+        let data: Vec<_> = data.into_iter().cycle().take(4).collect();
+        let mesh = WaveMesh::from_summaries(&data, &spec(1.0, 8));
+        assert_eq!(mesh.cols[0].core_up, 8.0, "sqrt(1 / 4) times 16 points");
+        assert_eq!(mesh.cols[1].core_up, 8.0);
     }
 
     #[test]

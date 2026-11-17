@@ -1104,12 +1104,56 @@ Built in `komponist-engine`, module `audio` (a plan per track, the ring, the str
 - **Input and monitoring (#13).** The source stage of an audio track is `Voice::render` into the chain's input buffer
   (marked `#13` in `TrackJobs::run`): `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from
   the bus's post-fader line (like a send tap, §6.8.2), mixed in when monitoring (`Off` never, `On` always, `Auto` while
-  armed and not playing back) before the chain; the recorder (#13) taps the input in the engine, not the voice.
+  armed, including ordinary playback) before the chain; the recorder (#13) taps the input in the engine, not the voice.
   Not built by #11.
 - **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
   conversion and the fades are the streamer's.
 
-#### 6.9.4 Linked import and file browsing (#12)
+#### 6.9.4 Live audio inputs and bounded recording (#13)
+
+`Engine::process_with_audio` adds a borrowed interleaved `AudioInputBuffer` to the existing MIDI callback
+contract; `process` and offline renders use an empty audio input. `EngineProcess::process_input` bridges the
+backend's captured samples, input latency and discontinuity flag without allocation. Hardware channel selection
+is per audio track. Its input meter (`TrackMeter::take_input`) is independent of the output meter. Monitoring
+mixes the input before effects: Off never monitors, Auto monitors while armed (including ordinary playback),
+On always monitors. Capturing taps the input regardless of monitor, track mute or fader. MIDI capture does not
+run on audio tracks.
+
+A bus input is its post-fader/pan/mute tap. The compiler includes bus-input dependencies in the worker graph,
+marks the tap live and allocates a separate delay line. Playback clips are aligned before the already-delayed
+bus input is mixed, so the input is not delayed twice. Bus recording corrects only its graph latency; hardware
+recording corrects input plus output latency, frozen at the session start to avoid timestamp jitter changing
+sample alignment. STOP/punch-out continues capture through a virtual cursor for each source's remaining latency
+before marking the session ended. A source contributes only its own delayed tail, even in mixed bus/hardware
+sessions. Count-in samples and corrected pre-roll before the recording start are excluded.
+
+`recording::prepare(RecordingConfig)` runs non-RT, creates exclusive unique WAV paths, preallocates per-track
+SPSC queues (32 chunks of at most 2048 stereo frames, about 0.5 MB per prepared track) and starts the file worker.
+Install the returned `Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through
+`Garbage::Recorder`. Track jobs enqueue fixed-size chunks without allocation, locks, logging or IO. The worker
+writes either signed PCM24 (default) or Float32 WAVs, flushes valid headers before progress publication, and
+finalizes old laps as soon as their input is complete, bounding open file handles. Cycle passes are padded with
+silence to their common loop window, including first/last partial passes. A growing checkpoint also reports
+`window_frames`, so the app can preserve that window before final padding.
+
+`RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
+buckets per track, both combined and separately for each native channel. Buckets carry exact sample counts;
+per-channel counts equal source frames, including a final partial bucket. The worker compacts pairs by summing
+sample energy/counts; UI polling clones only summaries. Progress locks always follow waveform → path order.
+`poll` returns finalized files after queues drain. `checkpoint` flushes and returns saveable prefixes (2 s timeout);
+`relocate` closes handles, stages exclusive hard links on one filesystem and reopens every append handle before
+publishing paths and unlinking originals. Failed moves remove only their own links and retain the old paths;
+cross-device moves are explicit errors for the app to copy after stop. Relocation waits
+for its transaction result so a delayed completion cannot silently invalidate links. Cancellation removes live
+session files; a saved checkpoint must therefore reference independent preserved assets.
+
+Queue overflow, discontinuous/unavailable input, sample-rate/source/tempo/loop changes and write/finalize errors
+fail explicitly, retaining partial files for recovery. `AbortAudioRecording` handles stream rebuilds without
+silently joining different devices. Synthetic-input tests cover monitoring, mono/stereo PCM24/Float32, count-in,
+latency and stop tails, cycle padding, parallel bus taps/PDC, live checkpoints, relocation and cancellation;
+every tested engine callback runs under `assert_no_alloc`.
+
+#### 6.9.5 Linked import and file browsing (#12)
 
 `komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
 undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
@@ -1121,6 +1165,26 @@ The browser Files tab enumerates directories and reads audio headers on a worker
 and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
 a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
 files through the localized status bar while preserving their links.
+
+#### 6.9.6 App recording lifecycle and live views (#13)
+
+`audio_record::State` owns the non-RT session until its latency tail and file worker finish. A live
+`AudioRecording` is an overlay, not a document edit. Arrangement and audio editor render measured bounded summaries
+without opening the unfinished WAV. The selected armed track chooses the MIDI or audio live editor, including
+count-in before audio frames exist. The input meter is drained once per UI frame and shared by header, mixer and
+inspector. Input/device changes are refused during capture; monitoring remains switchable.
+
+Stop/punch-out freezes the MIDI overlay and waits for audio finalization. Both become one document transaction
+and undo step; cycle laps become takes of the same audio clip. Undo retains files for redo. Export and project
+save-and-leave wait for a stopped session before taking their project/program snapshot; a timeout keeps the project
+open. Capture failures preserve partial files and any MIDI notes already recorded.
+
+A save during capture flushes a checkpoint and copies its exact frame prefix into an independent valid WAV,
+padding a partial loop window if necessary. Esc deletes only worker-owned live files, so the saved project remains
+playable. Unsaved projects use a unique directory under the user's Music folder and show a persistent provisional
+recordings chip. First save moves live files transactionally on the same filesystem, or copies closed files later
+when a live move is unsupported. Migration rewrites all undo/redo states. Originals survive until the project
+file itself has been written successfully; failed migrations retain their provisional registry for retry.
 
 ### 6.10 Audio files (`komponist-audiofile`)
 
