@@ -115,7 +115,7 @@ impl Arrangement {
         let t = g.tick_at(pos.x);
         if pressed && response.is_pointer_button_down_on() || pressed && response.clicked() {
             if pos.y < half {
-                self.drag = Some(Drag::Playhead);
+                self.drag = Some(Drag::Playhead { last: None });
             } else {
                 let bar_ticks = meter.ticks_per_bar();
                 let bar = Tick((t.max(0.0) as i64).div_euclid(bar_ticks) * bar_ticks);
@@ -123,9 +123,13 @@ impl Arrangement {
             }
         }
         match &mut self.drag {
-            Some(Drag::Playhead) => {
+            Some(Drag::Playhead { last }) => {
                 let at = playhead_at(t, meter.ticks_per_beat(), shift);
-                ctx.send(Action::Transport(TransportAction::Locate(at)));
+                // Seeking every frame would keep restarting playback while the pointer is held.
+                if *last != Some(at) {
+                    *last = Some(at);
+                    ctx.send(Action::Transport(TransportAction::Locate(at)));
+                }
                 if !down {
                     self.drag = None;
                 }
@@ -156,6 +160,65 @@ mod tests {
         assert_eq!(playhead_at(1500.0, 960, false), Tick(1920));
         assert_eq!(playhead_at(1500.4, 960, true), Tick(1500));
         assert_eq!(playhead_at(-50.0, 960, false), Tick(0));
+    }
+
+    #[test]
+    fn playhead_drag_seeks_once_per_target_tick() {
+        use egui::{Event, Modifiers, PointerButton, RawInput, Rect, pos2, vec2};
+        use std::sync::Arc;
+
+        let mut app = crate::App::headless(Project::new("Ruler"));
+        let mut arrangement = Arrangement::new();
+        let project = Arc::clone(app.project());
+        let context = egui::Context::default();
+        komponist_ui::install(&context);
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 500.0));
+        let geometry = Geometry::new(screen, &project, &app.ui.arrangement);
+        let beat = project.meter.ticks_per_beat();
+        let position = |tick| pos2(geometry.axis.x(tick), geometry.ruler.top() + 4.0);
+        let from = position(Tick(4 * beat));
+        let to = position(Tick(5 * beat));
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let locate = |tick| Action::Transport(TransportAction::Locate(tick));
+        let mut frame = |events| {
+            let mut actions = Vec::new();
+            let mut output = context.run_ui(
+                RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let mut ctx = ViewCtx::new(
+                        &project,
+                        &mut app.ui,
+                        &app.engine,
+                        &mut app.meters,
+                        &app.keymap,
+                        &mut actions,
+                    );
+                    arrangement.ruler(ui, &mut ctx, &project, &geometry);
+                },
+            );
+            output.textures_delta.clear();
+            actions
+        };
+
+        assert!(frame(vec![Event::PointerMoved(from)]).is_empty());
+        assert_eq!(frame(vec![button(from, true)]), [locate(Tick(4 * beat))]);
+        assert!(frame(vec![]).is_empty(), "holding must not seek again");
+        assert!(frame(vec![Event::PointerMoved(from + vec2(2.0, 0.0))]).is_empty());
+        assert_eq!(
+            frame(vec![Event::PointerMoved(to)]),
+            [locate(Tick(5 * beat))]
+        );
+        assert!(frame(vec![button(to, false)]).is_empty());
+        assert_eq!(frame(vec![button(to, true)]), [locate(Tick(5 * beat))]);
     }
 
     #[test]
