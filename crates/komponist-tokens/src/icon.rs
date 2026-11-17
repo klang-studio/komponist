@@ -144,7 +144,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 29);
+        assert_eq!(Icon::ALL.len(), 30);
     }
 
     #[test]
@@ -163,8 +163,9 @@ mod tests {
     fn icons_are_prepared() {
         for &icon in Icon::ALL {
             let svg = text(icon);
+            let licence=if icon==Icon::AudioWaveform {"@license komponist-original"} else {"@license lucide-static"};
             assert!(
-                svg.contains("@license lucide-static"),
+                svg.contains(licence),
                 "{icon:?} lost its licence header"
             );
             assert!(
