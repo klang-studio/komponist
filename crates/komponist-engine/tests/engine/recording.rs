@@ -455,3 +455,89 @@ fn bus_latency_is_compensated_once_and_its_delayed_tail_is_drained() {
     assert_eq!(samples[2], 0.001);
     assert_eq!(samples[samples.len() - 2], 0.255);
 }
+
+#[test]
+fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
+    use komponist_engine::compile::CompileEnv;
+    use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
+    use std::sync::Arc;
+    struct Env;
+    impl CompileEnv for Env {
+        fn midi_port(&self, _: &str) -> Option<komponist_engine::MidiPort> {
+            None
+        }
+        fn device_latency(&self, _: DeviceId) -> u32 {
+            400
+        }
+    }
+    let (mut p, source) = project(MonitorMode::On, true);
+    let device = DeviceId(p.alloc_id());
+    Arc::make_mut(p.tracks.iter_mut().find(|t| t.id == source).unwrap())
+        .channel
+        .devices
+        .push(Arc::new(Device {
+            id: device,
+            role: DeviceRole::Effect,
+            plugin: PluginRef {
+                format: PluginFormat::Builtin,
+                id: "test".into(),
+                name: "Delay400".into(),
+                vendor: String::new(),
+                version: String::new(),
+                module: "".into(),
+            },
+            bypass: false,
+            state: None,
+            sidechain: None,
+        }));
+    let (p, bus) = edits::add_bus(&p, NewBus::group(vec![source])).unwrap();
+    let (p, record) = edits::add_audio_track(
+        &p,
+        NewAudioTrack {
+            input: AudioInput::Bus(bus),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let p = edits::set_track_prop(&p, &[record], TrackProp::Arm(true)).unwrap();
+    let program = compile::build(&p, None, &Env);
+    let (rec, mut session, _) = prepare(&p, &[source, record], RecordingFormat::Float32);
+    let mut rig = Rig::new(RATE, 256);
+    rig.send(Command::InsertProcessor {
+        slot: program.slots.slot(device).unwrap(),
+        processor: Box::new(komponist_engine::testing::TestGain::with_latency(1.0, 400)),
+    });
+    rig.set_program(&program);
+    rig.send(Command::SetRecorder(rec));
+    rig.send(Command::Record { from: Tick::ZERO });
+    let input = |from: usize, n: usize| {
+        (from..from + n)
+            .flat_map(|i| [i as f32 / 2048.0; 2])
+            .collect::<Vec<_>>()
+    };
+    feed(&mut rig, &input(0, 512), 256, 256, false);
+    rig.send(Command::Stop);
+    feed(&mut rig, &input(512, 100), 256, 256, false);
+    rig.send(Command::Stop);
+    rig.send(Command::Locate(Tick::ZERO));
+    // The speaker fade finishes before either pending capture tail. Resetting effects now
+    // would erase the final 44 frames still waiting in the bus's 400-frame processor delay.
+    feed(&mut rig, &input(612, 256), 256, 256, false);
+    feed(&mut rig, &input(868, 256), 256, 256, false);
+    let result = finished(&mut session).unwrap();
+    assert_eq!(result.takes.len(), 2);
+    for take in &result.takes {
+        assert_eq!((take.start, take.frames), (Tick::ZERO, 512));
+        let samples = hound::WavReader::open(&take.path)
+            .unwrap()
+            .samples::<f32>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        let expected = if take.track == source {
+            1023.0 / 2048.0
+        } else {
+            511.0 / 2048.0
+        };
+        assert_eq!(samples[samples.len() - 1], expected);
+    }
+}

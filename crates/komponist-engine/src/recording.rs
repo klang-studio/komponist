@@ -302,7 +302,7 @@ impl RecordingSession {
         rx.recv_timeout(Duration::from_secs(2))
             .map_err(|_| RecordingError::Io("recording checkpoint timed out".into()))?
     }
-    /// Non-RT. Closes file handles, transactionally renames on the same filesystem, and reopens
+    /// Non-RT. Closes file handles, transactionally stages hard links on the same filesystem, and reopens
     /// append. A failed move restores old paths and capture continues; cross-device moves are an
     /// explicit error and can be copied after stopping. No files are silently overwritten.
     pub fn relocate(&self, directory: &std::path::Path) -> Checkpoint {
@@ -626,74 +626,121 @@ fn relocate_outputs(
     all: &mut [BTreeMap<u32, Output>],
     directory: &std::path::Path,
 ) -> Result<(), RecordingError> {
+    relocate_outputs_with(all, directory, |path| hound::WavWriter::append(path))
+}
+
+// Staging hard links instead of replacing names keeps originals intact until all destination
+// writers are open. Creating a link is atomic and never overwrites a concurrent destination.
+// The injected opener exercises late failures without filesystem permissions or system changes.
+fn relocate_outputs_with(
+    all: &mut [BTreeMap<u32, Output>],
+    directory: &std::path::Path,
+    mut open: impl FnMut(&std::path::Path) -> Result<Writer, hound::Error>,
+) -> Result<(), RecordingError> {
     flush_all(all)?;
     std::fs::create_dir_all(directory).map_err(|e| RecordingError::Io(e.to_string()))?;
-    let mut paths = Vec::new();
-    for output in all.iter_mut().flat_map(|p| p.values_mut()) {
-        let to = directory.join(
-            output
+    let mut outputs: Vec<_> = all.iter_mut().flat_map(|p| p.values_mut()).collect();
+    let paths: Vec<_> = outputs
+        .iter()
+        .map(|output| {
+            let name = output
                 .path
                 .file_name()
-                .ok_or_else(|| RecordingError::Io("recording path has no name".into()))?,
-        );
-        if to == output.path {
-            continue;
-        }
-        if to.exists() {
-            return Err(RecordingError::Io(format!(
-                "{} already exists",
-                to.display()
-            )));
-        }
-        paths.push((output.path.clone(), to));
-    }
-    if paths.is_empty() {
+                .ok_or_else(|| RecordingError::Io("recording path has no name".into()))?;
+            Ok((output.path.clone(), directory.join(name)))
+        })
+        .collect::<Result<_, RecordingError>>()?;
+    if paths.iter().all(|(from, to)| from == to) {
         return Ok(());
     }
     let mut failure = None;
-    for output in all.iter_mut().flat_map(|p| p.values_mut()) {
+    for output in &mut outputs {
         if let Some(writer) = output.writer.take()
             && let Err(e) = writer.finalize()
         {
             failure = Some(e.to_string());
         }
     }
-    let mut moved = 0;
+    let mut linked = Vec::new();
     if failure.is_none() {
         for (from, to) in &paths {
-            match std::fs::rename(from, to) {
-                Ok(()) => moved += 1,
+            if from == to {
+                continue;
+            }
+            match std::fs::hard_link(from, to) {
+                Ok(()) => linked.push((from.clone(), to.clone())),
                 Err(e) => {
-                    failure = Some(e.to_string());
+                    failure = Some(format!("stage {}: {e}", to.display()));
                     break;
                 }
             }
         }
     }
-    if failure.is_some() {
-        for (from, to) in paths[..moved].iter().rev() {
-            if let Err(e) = std::fs::rename(to, from) {
-                failure = Some(format!("rollback {}: {e}", from.display()));
+    let mut reopened = Vec::with_capacity(outputs.len());
+    if failure.is_none() {
+        for (output, (_, to)) in outputs.iter().zip(&paths) {
+            if output.closed {
+                reopened.push(None);
+                continue;
+            }
+            match open(to) {
+                Ok(writer) => reopened.push(Some(writer)),
+                Err(e) => {
+                    failure = Some(format!("reopen {}: {e}", to.display()));
+                    break;
+                }
             }
         }
     }
-    let success = failure.is_none();
-    for output in all.iter_mut().flat_map(|p| p.values_mut()) {
-        if success && let Some((_, to)) = paths.iter().find(|(from, _)| from == &output.path) {
-            output.path = to.clone();
-        }
-        if output.closed {
-            continue;
-        }
-        match hound::WavWriter::append(&output.path) {
-            Ok(writer) => output.writer = Some(writer),
-            Err(e) => failure = Some(format!("reopen {}: {e}", output.path.display())),
+    // Commit the name change only after every new append handle exists. If unlinking an old
+    // name fails, restore previously removed names while both paths still share the same data.
+    let mut removed = Vec::new();
+    if failure.is_none() {
+        for (from, to) in &linked {
+            match std::fs::remove_file(from) {
+                Ok(()) => removed.push((from, to)),
+                Err(e) => {
+                    failure = Some(format!("remove {}: {e}", from.display()));
+                    break;
+                }
+            }
         }
     }
-    match failure {
-        Some(e) => Err(RecordingError::Io(e)),
-        None => Ok(()),
+    if let Some(mut error) = failure {
+        for writer in reopened.into_iter().flatten() {
+            let _ = writer.finalize();
+        }
+        for (from, to) in removed {
+            if let Err(e) = std::fs::hard_link(to, from) {
+                error = format!("restore {} from {}: {e}", from.display(), to.display());
+            }
+        }
+        for (from, to) in &linked {
+            if from.exists() {
+                let _ = std::fs::remove_file(to);
+            }
+            // If even restoring the original name failed, keep the surviving destination;
+            // fail explicitly rather than unlinking the final copy of captured material.
+            else if let Some(output) = outputs.iter_mut().find(|o| o.path == *from) {
+                output.path = to.clone();
+            }
+        }
+        for output in &mut outputs {
+            if output.closed {
+                continue;
+            }
+            match open(&output.path) {
+                Ok(writer) => output.writer = Some(writer),
+                Err(e) => error = format!("restore append {}: {e}", output.path.display()),
+            }
+        }
+        return Err(RecordingError::Io(error));
     }
+    for ((output, (_, to)), writer) in outputs.into_iter().zip(paths).zip(reopened) {
+        output.path = to;
+        output.writer = writer;
+    }
+    Ok(())
 }
 
 /// Preallocates bounded queues and opens the initial WAVs before starting the writer thread.
@@ -1091,5 +1138,78 @@ mod tests {
         assert_eq!(shared.failure.load(Ordering::Acquire), 1);
         assert!(shared.ended.load(Ordering::Acquire));
         drop(rx);
+    }
+
+    #[test]
+    fn a_late_destination_append_failure_restores_original_paths_and_all_writers() {
+        let root = std::env::temp_dir().join(format!(
+            "komponist-reopen-{}-{}",
+            std::process::id(),
+            SESSION.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = RecordingConfig {
+            directory: root.clone(),
+            sample_rate: 48000,
+            format: RecordingFormat::Float32,
+            tracks: Vec::new(),
+        };
+        let paths = [root.join("first.wav"), root.join("second.wav")];
+        let mut all: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let mut output = create(path.clone(), &config, 1).unwrap();
+                output
+                    .writer
+                    .as_mut()
+                    .unwrap()
+                    .write_sample(0.25_f32)
+                    .unwrap();
+                output.frames = 1;
+                output.next = 1;
+                BTreeMap::from([(0, output)])
+            })
+            .collect();
+        let target = root.join("Takes");
+        let mut attempts = 0;
+        let result = relocate_outputs_with(&mut all, &target, |path| {
+            if path.parent() == Some(target.as_path()) {
+                attempts += 1;
+                if attempts == 2 {
+                    return Err(hound::Error::IoError(io::Error::other(
+                        "injected append failure",
+                    )));
+                }
+            }
+            hound::WavWriter::append(path)
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts, 2);
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+        for (pass, original) in all.iter_mut().zip(&paths) {
+            let output = pass.get_mut(&0).unwrap();
+            assert_eq!(&output.path, original);
+            assert!(original.is_file());
+            output
+                .writer
+                .as_mut()
+                .unwrap()
+                .write_sample(0.5_f32)
+                .unwrap();
+            output.frames += 1;
+            output.next += 1;
+            close_output(output, RecordingFormat::Float32).unwrap();
+            let samples = hound::WavReader::open(original)
+                .unwrap()
+                .samples::<f32>()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                samples,
+                [0.25, 0.5],
+                "capture continues through the restored writer"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

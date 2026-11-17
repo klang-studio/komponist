@@ -1282,6 +1282,9 @@ impl Core {
     fn drain_commands(&mut self) {
         for _ in 0..MAX_COMMANDS_PER_BLOCK {
             match self.commands.peek() {
+                // A restart after the speaker hard-cut must chase notes after the deferred
+                // processor reset, not before it. Preserve queue order until capture drains.
+                Ok(Command::Play) if self.capture_tail.is_some() && self.cut.is_some() => break,
                 Ok(next) if retires(next) && !self.outbox.can_retire() => break,
                 Ok(_) => {}
                 Err(_) => break,
@@ -1374,7 +1377,8 @@ impl Core {
                 }
             }
             Command::Locate(tick) => {
-                if let Some(rec) = &self.recorder
+                if self.capture_tail.is_none()
+                    && let Some(rec) = &self.recorder
                     && rec.start.is_some()
                     && rec.active()
                 {
@@ -1582,6 +1586,11 @@ impl Core {
     /// RT. Ends a running hard cut at once: resets every processor and gives the output its full
     /// level back (the processors are silent after the reset). No-op without a cut.
     fn finish_cut(&mut self) {
+        // A hard cut may silence speakers while corrected capture still needs delayed bus
+        // samples. Keep processing those delays until the independent capture cursor drains.
+        if self.capture_tail.is_some() {
+            return;
+        }
         if self.cut.take().is_some() {
             self.silence(true);
         }
