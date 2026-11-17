@@ -1,4 +1,4 @@
-# komponist – Performance and RT safety (WP-61, WP-65, WP-102)
+# komponist – Performance and RT safety (WP-61, WP-65, WP-102, #11)
 
 Measured 2026-11-14 on the branch `wp/WP-61`; parallel track processing on `wp/WP-65`
 ([§6](#6-parallel-track-processing-wp-65)). Every number below comes from a test or bench in the
@@ -60,6 +60,7 @@ are checked:
 | CLAP / VST3 `process` with a sidechain port | `komponist-hosting` fixture tests (`Blocks::run`, `sidechain_reaches_the_port`) |
 | Bridge RT loop | `komponist-bridge` `rt.rs` runs its loop inside `assert_no_alloc` in debug builds |
 | Audio callback: backend → `EngineSlot` (attach/detach mailbox) → `EngineProcess` (MIDI → frames) → engine | `komponist-audio` `StreamCallback::run` wraps every callback; every app test on the null backend runs it (acceptance flows, soak) |
+| Audio clips: `Voice::prepare` / `render` (ring read, heads, de-click, tails, epoch starts), compile of plans, program swaps with audio tracks, loop wraps, locates, stops | `komponist-engine` `tests/engine/audio.rs` (every call via `Rig`; `playing_clips_never_allocate_on_the_audio_thread`), the streamer thread is outside the rule and allocates freely |
 | **Export render** | new: `komponist_engine::export` wraps every `Engine::render` call (WP-61); checked by the engine export tests, `export_bridges`, `klopfer`, acceptance flow 5 and the soak |
 
 Findings: no allocation, free or lock was found on these paths. The only RT-path change was the
@@ -227,6 +228,8 @@ cargo bench -p komponist-ui --bench timeline
 # KOMPONIST_PERF_WORKERS take another list, KOMPONIST_PERF_SECS another length). For RT priority
 # run the test binary under chrt -f 70.
 cargo test --release -p komponist-engine --test engine bench -- --ignored --nocapture
+# Audio clips (#11): N streamed stereo clips, audio thread and read-ahead thread (KOMPONIST_BENCH_AUDIO_TRACKS=16,64)
+cargo test --release -p komponist-engine --test engine audio::bench -- --ignored --nocapture
 # Routing (WP-102): 16 tracks flat vs. + 4 buses, sends and a sidechain, 0 and 4 workers
 cargo test --release -p komponist-engine --test engine routing::bench -- --ignored --nocapture
 cargo test --release -p komponist-app --test engine_perf -- --ignored --nocapture --test-threads 1
@@ -414,3 +417,34 @@ path delay-compensated. "Constant" instruments write a constant (the engine's ow
   inside it, and program swaps with buses, sends and sidechains (also with changed latencies and routing) allocate
   nothing on the audio thread; a recompiled program is bit-identical to not swapping (delay lines and send gains are
   kept by edge).
+
+## 10. Audio clips and disk streaming (#11)
+
+Measured 2026-11-17 on `wp/11-audio-playback`, **Apple M1 Pro** (10 cores, 16 GiB, macOS 27.2, rustc 1.99.0, release),
+not the machine of §1: the test engine has no realtime scheduling (no workgroup, normal priority), so single blocks
+that a busy desktop delays say nothing about the callback path; the **mean** and the **read-ahead load** are the
+figures. `audio::bench_audio_streams` plays N audio tracks, each with one 8 s clip from one of four 20 s stereo files
+(two at 48 kHz, two at 44.1 kHz: half of the voices convert to the engine rate), looped over those 8 s so the stream
+wraps every 8 s, in blocks of 256 frames paced like a device (5.33 ms) for 20 s. Files come from the OS page cache
+(they were just written); a cold disk is the streamer's problem, which the ring (0.68 s) and the heads absorb, see
+the stall tests.
+
+| Streamed stereo clips | Audio thread, mean per 256 frames | Worst block | Blocks longer than the period | Read-ahead thread busy | Underruns |
+|---|---|---|---|---|---|
+| 16 | 65–75 µs (1.2–1.4 %) | 5.6–16.7 ms (scheduler, not at a loop wrap) | 1 of 3 750 | 8.3–9.0 % of one core | 0 |
+| 64 | 165–174 µs (3.1–3.3 %) | 7.6–17.5 ms (scheduler) | 5 of 3 750 | 24–27 % of one core | 0 |
+
+- **The audio thread's share is the ring copy:** about 4 µs per track and block (two planar atomics reads per frame
+  and the fader), 0.08 % of the period per track including the engine's own overhead; a loop wrap costs nothing there
+  (the streamer predicts it) and the long blocks fall at varying block numbers from run to run (two runs of the 64-track case: 96 and
+  other blocks), which points at the scheduler, not at a pattern in the engine.
+- **The read-ahead thread** decodes, converts (FFT resampler for the 44.1 kHz half), applies the fades and writes:
+  ≈ 0.4–0.6 % of a core per voice at 48 kHz stereo, and it kept up in real time (≈ 48 000 frames per second per voice
+  written, 0 underruns in both runs). It runs at normal priority and polls every 2 ms; if it had to wait for a slow
+  disk, the ring covers 0.68 s, and `audio_underruns` counts the blocks where it did not.
+- **Seeks:** a locate or a loop change makes the streamer seek and, for converted files, decode an 8192-frame pre-roll
+  before the target; the first chunk of a new epoch arrives within a few milliseconds (2 ms poll plus the chunk).
+  Heads (100 ms of every segment) cover jumps to segment starts in that time; the head memory is
+  `100 ms × 8 bytes × rate` ≈ 38 KB per clip at 48 kHz (1 000 clips: 38 MB), built in the background.
+- RT: no allocation or free on the audio thread with audio clips playing, looping, locating, stopping and swapping
+  programs (`playing_clips_never_allocate_on_the_audio_thread`, debug, odd block sizes).
