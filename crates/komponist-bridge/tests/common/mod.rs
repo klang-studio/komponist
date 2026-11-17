@@ -7,11 +7,11 @@
 
 #![allow(dead_code)]
 
-#[cfg(unix)]
 #[allow(dead_code)]
 #[path = "../../../../scripts/test-fixtures.rs"]
 mod test_fixtures;
 
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
