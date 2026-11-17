@@ -13,3 +13,12 @@ audio-clip-start = Clip start
 audio-clip-end = Clip end
 a11y-audio-missing-suffix = , file missing
 a11y-audio-repitch-suffix = , Re-Pitch { $tempo } BPM
+
+# Audio recording lifecycle and file failures.
+audio-record-input-unavailable = No audio input available for “{ $track }” · choose an input
+audio-record-finalizing = Finalizing recording…
+audio-record-folder-unavailable = No recording folder available
+audio-record-failed = Recording failed: { $reason }
+audio-record-move-failed = Recording remains provisional: { $reason }
+audio-record-complete = Recording finished · { $count } takes
+audio-record-apply-failed = Could not add recording to the project · files are preserved

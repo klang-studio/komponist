@@ -126,6 +126,7 @@ pub struct App {
     pub(crate) audio_devices: Arc<dyn AudioDevices>,
     /// The take being recorded (`record`), from the end of the count-in to Stop or Esc.
     pub(crate) recording: Option<Recording>,
+    pub(crate) audio_recording: crate::audio_record::State,
     /// The plugin frame windows (WP-50).
     pub(crate) frames: PluginFrames,
     /// The WAV export in progress and this session's exports (WP-53b, [`crate::export`]).
@@ -219,6 +220,7 @@ impl App {
             recent_path,
             audio_devices: Arc::new(SystemDevices),
             recording: None,
+            audio_recording: Default::default(),
             frames: PluginFrames::default(),
             export: Default::default(),
             lang: Lang::default(),
@@ -250,6 +252,13 @@ impl App {
         let mut settings = Settings::default();
         settings.audio.host = komponist_audio::HostKind::Null;
         let mut app = App::new(Document::new(project), engine, settings, None);
+        static NEXT_RECORDING_ROOT: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        app = app.with_recording_directory(std::env::temp_dir().join(format!(
+            "komponist-headless-recordings-{}-{}",
+            std::process::id(),
+            NEXT_RECORDING_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )));
         app.audio_devices = Arc::new(FixedDevices {
             hosts: vec![komponist_audio::HostKind::Null],
             devices: Vec::new(),
@@ -567,6 +576,7 @@ impl App {
         if let Some(rec) = &mut self.recording {
             rec.update(playhead);
         }
+        self.update_audio_take();
         if recompile {
             // Delay compensation follows the new latencies; the slots stay as they are.
             self.engine.send_project(self.doc.project());
@@ -597,8 +607,11 @@ impl App {
     /// `startRec`).
     fn begin_take(&mut self, at: Tick) {
         // A take still open belongs to an earlier capture; it is kept.
-        self.finish_take();
-        self.recording = Some(Recording::new(self.doc.project(), at, self.lang));
+        if self.recording.is_some() {
+            self.finish_take();
+        }
+        let midi = Recording::new(self.doc.project(), at, self.lang);
+        self.recording = midi.first().is_some().then_some(midi);
         self.set_dock_tab(DockTab::Editor);
         if self.ui.dialog.is_none() {
             self.ui.focus = FocusArea::PianoRoll;
@@ -608,7 +621,7 @@ impl App {
     /// Punch-out: commits the running take ([`App::commit_take`]) and stops capturing; playback
     /// goes on. Nothing happens without a take.
     pub(crate) fn stop_take(&mut self) {
-        if self.recording.is_some() {
+        if self.recording.is_some() || self.audio_recording.is_active() {
             self.commit_take();
             self.engine.send(Command::StopRecording);
         }
@@ -618,29 +631,45 @@ impl App {
     /// leaving the project asks first (#85).
     pub(crate) fn has_unsaved_take(&self) -> bool {
         self.recording.as_ref().is_some_and(Recording::has_notes)
+            || self.audio_recording.has_material()
+            || (self.audio_recording.is_active() && self.transport() == TransportState::Recording)
     }
 
     /// The project as a save writes it while capturing (#85): the document with the running take
     /// as Stop would commit it now; `None` without a take with notes. Events in flight are
     /// drained first. Capture goes on.
-    pub(crate) fn project_with_take(&mut self) -> Option<Project> {
-        self.recording.as_ref()?;
+    pub(crate) fn project_with_take(&mut self) -> Result<Option<Project>, ()> {
         self.drain_events();
-        let rec = self.recording.as_ref().filter(|r| r.has_notes())?;
-        let commit = rec.commit(self.doc.project(), self.engine.playhead())?;
-        match commit.apply(self.doc.project()) {
-            Ok((project, _)) => Some(project),
-            Err(e) => {
-                self.shell.last_error = Some(e);
-                None
+        let mut project = Project::clone(self.project());
+        let mut changed = false;
+        if let Some(rec) = self
+            .recording
+            .as_ref()
+            .filter(|recording| recording.has_notes())
+            && let Some(commit) = rec.commit(&project, self.engine.playhead())
+        {
+            match commit.apply(&project) {
+                Ok((next, _)) => {
+                    project = next;
+                    changed = true;
+                }
+                Err(error) => {
+                    self.shell.last_error = Some(error);
+                    return Err(());
+                }
             }
         }
+        if let Some(next) = self.project_with_audio_take(&project)? {
+            project = next;
+            changed = true;
+        }
+        Ok(changed.then_some(project))
     }
 
     /// Stop: writes the running take as one undo step "Take n", selects its clip and opens it in
     /// the editor (prototype `finishRec`). Events still in flight are drained first.
     fn commit_take(&mut self) {
-        if self.recording.is_some() {
+        if self.recording.is_some() || self.audio_recording.is_active() {
             self.drain_events();
             self.finish_take();
         }
@@ -648,10 +677,16 @@ impl App {
 
     /// [`App::commit_take`] without draining (inside a drain).
     fn finish_take(&mut self) {
-        let Some(rec) = self.recording.take() else {
+        let commit = self
+            .recording
+            .take()
+            .and_then(|recording| recording.commit(self.doc.project(), self.engine.playhead()));
+        if self.audio_recording.is_active() {
+            self.audio_recording.defer_midi(commit);
+            self.audio_recording.stop();
             return;
-        };
-        let Some(commit) = rec.commit(self.doc.project(), self.engine.playhead()) else {
+        }
+        let Some(commit) = commit else {
             return;
         };
         // The take is an undo step of its own, also in the middle of a drag.
@@ -674,6 +709,7 @@ impl App {
         // A count-in that just ended still starts its take; it goes too.
         self.drain_events();
         self.recording = None;
+        self.audio_recording.cancel();
         self.shell.take_expected = false;
         self.engine.send(Command::StopRecording);
     }
@@ -1013,6 +1049,7 @@ impl App {
             }
             Action::Ui(UiAction::ClearSelection)
                 if self.recording.is_some()
+                    || self.audio_recording.is_active()
                     || matches!(
                         self.transport(),
                         TransportState::Recording | TransportState::CountIn
@@ -1182,6 +1219,9 @@ impl App {
                         self.set_status(self.lang.record_no_track(), StatusKind::Error);
                         return;
                     };
+                    if !self.audio_record_track_available(track) {
+                        return;
+                    }
                     // Arming switches monitoring on (S02 "I").
                     self.apply("undo-arm-track", |p| {
                         edits::set_exclusive(p, track, edits::ExclusiveFlag::Arm)
@@ -1197,6 +1237,9 @@ impl App {
                 } else {
                     Tick(at)
                 };
+                if !self.prepare_audio_take(from) {
+                    return;
+                }
                 self.shell.record_from = Some(from);
                 self.shell.take_expected = true;
                 self.engine.send(Command::Record { from });
@@ -1211,6 +1254,7 @@ impl App {
         // A count-in that just ended may have started its take; it goes.
         self.drain_events();
         self.recording = None;
+        self.audio_recording.cancel();
         self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         if let Some(from) = self.shell.record_from {
@@ -1244,7 +1288,7 @@ impl App {
     }
 
     /// Like [`App::apply`] for edits returning a value.
-    fn apply_with<T>(
+    pub(crate) fn apply_with<T>(
         &mut self,
         label: &str,
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
@@ -1290,7 +1334,7 @@ impl App {
     /// The clip open in the editor and whether it is a MIDI clip; `None` while recording (the
     /// editor shows the take being recorded, not the open clip).
     fn open_clip_notes(&self) -> Option<(komponist_model::ClipId, bool)> {
-        if self.recording.is_some() {
+        if self.recording.is_some() || self.audio_recording.is_active() {
             return None;
         }
         let id = self.ui.editor.clip?;
@@ -2599,6 +2643,7 @@ impl App {
         // A take of the old project does not go into the new one, nor does a count-in that ends
         // while the project opens.
         self.recording = None;
+        self.audio_recording.reset();
         self.shell.take_expected = false;
         self.engine.send(Command::Stop);
         self.engine.send(Command::Locate(Tick::ZERO));
