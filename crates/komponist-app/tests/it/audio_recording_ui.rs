@@ -630,7 +630,12 @@ fn live_audio_inspector_and_input_status_render_in_both_languages() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             app.step();
-            if app.audio_recording().and_then(|r| r.clip(track)).is_some() {
+            if app.audio_recording().is_some_and(|recording| {
+                recording.clip(track).is_some()
+                    && recording
+                        .progress(track)
+                        .is_some_and(|progress| progress.frames == 4_800)
+            }) {
                 break;
             }
             assert!(
@@ -667,6 +672,27 @@ fn live_audio_inspector_and_input_status_render_in_both_languages() {
             .unwrap()
             .rect();
         h.mask(path);
+        // A generated filename contains the session timestamp. Keep the surrounding live toolbar
+        // visible while masking its filename through the right edge, independent of name width.
+        let filename = h
+            .state()
+            .audio_recording()
+            .unwrap()
+            .progress(track)
+            .unwrap()
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let name_rect = h.get_by_role_and_label(Role::Label, &filename).rect();
+        let waveform = h
+            .get_by_role_and_label(Role::Group, lang.audio_live_waveform())
+            .rect();
+        h.mask(egui::Rect::from_x_y_ranges(
+            name_rect.left()..=waveform.right(),
+            name_rect.y_range(),
+        ));
         snapshot(&mut h, &mut results, lang, "live-inspector");
         h.state_mut().dispatch(Action::Transport(
             komponist_app::actions::TransportAction::DiscardTake,
