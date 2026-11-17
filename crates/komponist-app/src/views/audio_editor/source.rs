@@ -67,11 +67,11 @@ impl Source {
         };
         let duration =
             komponist_model::format::fmt_time(a.file.frames as f64 / f64::from(a.file.sample_rate));
-        let mut meta = t.audio_file_metadata(rate, channels, duration);
-        if let Some(bits) = self.bits {
-            meta.push_str(" · ");
-            meta.push_str(&t.audio_file_bit_depth(bits));
-        }
-        meta
+        let details = if let Some(bits) = self.bits {
+            format!("{} · {duration}", t.audio_file_bit_depth(bits))
+        } else {
+            duration
+        };
+        t.audio_file_metadata(rate, channels, details)
     }
 }

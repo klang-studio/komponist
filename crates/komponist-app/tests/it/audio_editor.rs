@@ -292,6 +292,52 @@ fn missing_source_disables_toolbar_and_offers_localized_replacement() {
     }
 }
 #[test]
+fn arrangement_audio_context_menu_opens_file_replacement() {
+    let dir = crate::common::scratch("audio-editor-context-menu");
+    let path = dir.join("verse.wav");
+    wav(&path, 384000, 1);
+    let (app, id) = app(&path, 1, Lang::De);
+    let mut h = harness(app);
+    let (_, clip) = h.state().project().find_clip(id).unwrap();
+    let span = komponist_ui::timeline::bar_span(
+        Lang::De,
+        clip.start,
+        clip.end(),
+        h.state().project().meter,
+    );
+    let name = Lang::De.a11y_clip(&clip.name, span);
+    let at = h
+        .get_by_role_and_label(Role::GridCell, &name)
+        .rect()
+        .center();
+    h.hover_at(at);
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::MenuItem, Lang::De.audio_file_replace())
+        .click();
+    h.run_steps(5);
+    assert!(
+        h.state()
+            .dispatched()
+            .any(|a| matches!(a, Action::Project(ProjectAction::ReplaceAudio(_)))),
+        "menu dispatch log: {:?}",
+        h.state().dispatched().collect::<Vec<_>>()
+    );
+    assert!(
+        h.query_by_role_and_label(Role::Dialog, Lang::De.audio_file_replace())
+            .is_some()
+    );
+}
+
+#[test]
 fn audio_editor_snapshots() {
     let dir = crate::common::scratch("audio-editor-shots");
     let mut results = SnapshotResults::new();
@@ -338,6 +384,30 @@ fn audio_editor_snapshots() {
                         .unwrap()
                         .save(std::env::temp_dir().join(format!("komponist-{name}.png")))
                         .unwrap();
+                }
+                // CPU telemetry and resolved scratch paths vary by run; retain their layout
+                // while masking data-dependent pixels with fixed-width rectangles.
+                let cpu = h
+                    .get_by_role_and_label(Role::Status, lang.transport_cpu())
+                    .rect();
+                h.mask(cpu.expand(2.0));
+                let waveform_name = lang.audio_waveform_title("Verse");
+                let waveform_x = h
+                    .get_by_role_and_label(Role::Group, &waveform_name)
+                    .rect()
+                    .x_range();
+                let resolved = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let path_label = resolved.display().to_string();
+                let mut masks: Vec<_> = h
+                    .get_all_by_role_and_label(Role::Label, &path_label)
+                    .map(|n| egui::Rect::from_x_y_ranges(waveform_x, n.rect().y_range()))
+                    .collect();
+                masks.extend(
+                    h.get_all_by_role_and_label(Role::Label, lang.audio_file_path())
+                        .map(|n| n.rect()),
+                );
+                for rect in masks {
+                    h.mask(rect);
                 }
                 h.snapshot(name);
                 results.extend_harness(&mut h);

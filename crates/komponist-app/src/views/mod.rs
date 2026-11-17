@@ -281,7 +281,7 @@ pub struct Views {
     /// Dock editor tab, MIDI clips (WP-41).
     pub piano_roll: Box<dyn View>,
     /// Dock editor for an audio clip.
-    pub waveform:Box<dyn View>,
+    pub waveform: Box<dyn View>,
     /// Dock editor tab, step clips (WP-42).
     pub step_seq: Box<dyn View>,
     /// Dock mixer tab (WP-43).
@@ -300,7 +300,7 @@ impl Views {
         Views {
             arrangement: Box::new(arrangement::Arrangement::new()),
             piano_roll: Box::new(piano_roll::PianoRoll::new()),
-            waveform:Box::new(audio_editor::AudioEditor::default()),
+            waveform: Box::new(audio_editor::AudioEditor::default()),
             step_seq: Box::new(step_seq::StepSequencer::new()),
             mixer: Box::new(mixer::Mixer::new()),
             inspector: Box::new(inspector::Inspector::new()),

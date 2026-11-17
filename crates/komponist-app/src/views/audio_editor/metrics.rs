@@ -17,7 +17,7 @@ pub const FADE_W: f32 = 120.0;
 /// Source-start field includes the millisecond time display.
 pub const SOURCE_W: f32 = 168.0;
 /// Original BPM field plus its label.
-pub const TEMPO_W: f32 = 160.0;
+pub const TEMPO_W: f32 = 176.0;
 /// Bar-count conversion field.
 pub const BARS_W: f32 = 120.0;
 /// Minimum file-chip width before showing its compact filename variant.
@@ -32,3 +32,9 @@ pub const BANNER_PAD: f32 = space::SPACE_4;
 pub const BANNER_GAP: f32 = space::SPACE_2;
 /// Wheel zoom step, matching piano-roll zoom behavior.
 pub const ZOOM_STEP: f32 = 1.25;
+/// Centered missing-source recovery block, following mockup05.
+pub const BANNER_CONTENT_W: f32 = 640.0;
+/// Explicit recovery-button widths leave space for both catalog languages.
+pub const BANNER_REPLACE_W: f32 = 160.0;
+/// Copy-path recovery action width.
+pub const BANNER_COPY_W: f32 = 128.0;

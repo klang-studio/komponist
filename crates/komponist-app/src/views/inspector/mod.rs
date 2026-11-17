@@ -75,7 +75,7 @@ pub struct Inspector {
     rename: Option<Rename>,
     /// Per device: the late-block count last seen and when it last grew (egui time).
     late: LateTracker,
-    audio_source:crate::views::audio_editor::source::Source,
+    audio_source: crate::views::audio_editor::source::Source,
 }
 
 impl Inspector {
@@ -139,8 +139,8 @@ impl View for Inspector {
         match sections.clip {
             Some(ClipSection::Clip(id)) => {
                 clip::section(self, ui, ctx, &project, x, &mut y, id);
-                audio::file_section(ui,ctx,&project,x,&mut y,id,&mut self.audio_source);
-            },
+                audio::file_section(ui, ctx, &project, x, &mut y, id, &mut self.audio_source);
+            }
             Some(ClipSection::Recording(track)) => {
                 clip::recording_section(ui, ctx, &project, x, &mut y, track);
             }

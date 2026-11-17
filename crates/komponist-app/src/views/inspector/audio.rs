@@ -101,15 +101,35 @@ pub(super) fn file_section(
         |ui, col| {
             let r = col.take(typography::MONO_XS.line_height * 2.0);
             let text = path.display().to_string();
-            let response = ui.put(
-                r,
-                egui::Label::new(
-                    egui::RichText::new(&text)
-                        .font(komponist_ui::fonts::font_id(&typography::MONO_XS))
-                        .color(komponist_tokens::egui_support::color32(color::TEXT_3)),
-                )
-                .wrap(),
+            let ink = komponist_tokens::egui_support::color32(color::TEXT_3);
+            let mut job = egui::text::LayoutJob::single_section(
+                text.clone(),
+                egui::text::TextFormat {
+                    font_id: komponist_ui::fonts::font_id(&typography::MONO_XS),
+                    line_height: Some(typography::MONO_XS.line_height),
+                    color: ink,
+                    ..Default::default()
+                },
             );
+            job.wrap = egui::text::TextWrapping {
+                max_width: r.width(),
+                max_rows: 2,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+            let galley = ui.painter().layout_job(job);
+            ui.painter().galley(r.min, galley, ink);
+            let response = ui.interact(
+                r,
+                ui.scope_id().with("audio-file-path"),
+                egui::Sense::hover(),
+            );
+            let name = ctx.lang.audio_file_path();
+            response.widget_info(|| {
+                let mut info = egui::WidgetInfo::labeled(egui::Role::Label, true, name);
+                info.current_text_value = Some(text.clone());
+                info
+            });
             response.on_hover_text(&text);
             let r = col.take(typography::SMALL.line_height * 2.0);
             label(

@@ -59,13 +59,13 @@ pub fn file_actions(
 /// Missing-source recovery actions remain available when value fields are disabled.
 pub fn recovery(ui: &mut Ui, ctx: &mut ViewCtx<'_>, clip: &Clip, a: &AudioClip, source: &Source) {
     if ui
-        .add(Button::primary(ctx.lang.audio_file_replace()))
+        .add(Button::primary(ctx.lang.audio_file_replace()).width(m::BANNER_REPLACE_W))
         .clicked()
     {
         ctx.send(Action::Project(ProjectAction::ReplaceAudio(clip.id)));
     }
     if ui
-        .add(Button::new(ctx.lang.audio_file_copy_path()))
+        .add(Button::new(ctx.lang.audio_file_copy_path()).width(m::BANNER_COPY_W))
         .clicked()
     {
         ui.ctx().copy_text(source.path(a).display().to_string());
@@ -129,6 +129,10 @@ pub fn show(
     row.set_clip_rect(values.intersect(ui.clip_rect()));
     crate::views::group_bounds(&row, values);
     egui::ScrollArea::horizontal()
+        .scroll_source(egui::scroll_area::ScrollSource {
+            mouse_wheel: !komponist_ui::widgets::number_field::wheel_over_control(ui.ctx()),
+            ..Default::default()
+        })
         .id_salt("audio-toolbar-scroll")
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .max_height(size::PANEL_HEADER)

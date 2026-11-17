@@ -113,7 +113,7 @@ pub fn number(
         .default_value(default)
         .unit(unit)
         .width(width);
-    if key {
+    if key && field != Field::Bars {
         widget = widget.key(name);
     }
     widget = match field {
@@ -126,7 +126,20 @@ pub fn number(
         Field::SourceStart => widget
             .format(komponist_model::format::fmt_time)
             .parse(parse_time),
-        Field::Tempo | Field::Bars => widget.decimals(2),
+        Field::Tempo => widget.decimals(2),
+        Field::Bars => {
+            let lang = ctx.lang;
+            widget
+                .format(move |v| lang.audio_clip_bars(format!("{v:.2}")))
+                .parse(|text| {
+                    let text = text
+                        .trim()
+                        .trim_start_matches('=')
+                        .trim()
+                        .trim_end_matches(|c: char| c.is_alphabetic() || c.is_whitespace());
+                    komponist_ui::widgets::number_field::parse_number(text, "")
+                })
+        }
         _ => widget.decimals(0),
     };
     let r = ui.add_enabled(

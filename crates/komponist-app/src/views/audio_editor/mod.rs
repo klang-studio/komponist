@@ -121,20 +121,17 @@ impl View for AudioEditor {
         let source_start = a.frames_to_ticks(a.offset, project.tempo);
         let source_end = source_start + clip.length;
         let palette = TrackPalette::new(track.hue.0);
-        paint_ruler(
-            ui.painter(),
-            ruler,
-            &RulerModel {
-                axis,
-                meter: project.meter,
-                kind: RulerKind::Editor {
-                    clip: TickRange::new(source_start, source_end),
-                    clip_color: color32(palette.base),
-                },
-                playhead: None,
-                recording: false,
+        let ruler_model = RulerModel {
+            axis,
+            meter: project.meter,
+            kind: RulerKind::Editor {
+                clip: TickRange::new(source_start, source_end),
+                clip_color: color32(palette.base),
             },
-        );
+            playhead: None,
+            recording: false,
+        };
+        paint_ruler(ui.painter(), ruler, &ruler_model);
         let channels = usize::from(a.file.channels.min(2));
         let lane_h = canvas.height() / channels as f32;
         let lanes: Vec<Rect> = (0..channels)
@@ -153,7 +150,7 @@ impl View for AudioEditor {
                 .accessibility_role(Role::Group)
                 .accessibility_label(&name),
         );
-        crate::views::group_bounds(&canvas_ui, canvas);
+        crate::views::group_bounds(&canvas_ui, rest);
         let ui = &mut canvas_ui;
         let response = ui.interact(
             canvas,
@@ -328,6 +325,8 @@ impl View for AudioEditor {
             Id::unique(("audio-editor-ruler", clip.id.0)),
             Sense::click_and_drag(),
         );
+        let ruler_access = komponist_ui::timeline::ruler_access(ctx.lang, &ruler_model);
+        ruler_response.widget_info(|| ruler_access.widget_info());
         if (ruler_response.clicked() || ruler_response.dragged())
             && let Some(pos) = ruler_response.interact_pointer_pos()
         {
@@ -356,37 +355,97 @@ impl AudioEditor {
             );
             x += step;
         }
+        let inner = Rect::from_center_size(
+            rect.center(),
+            vec2(
+                (rect.width() - 2.0 * m::BANNER_PAD).clamp(0.0, m::BANNER_CONTENT_W),
+                typography::UI.line_height
+                    + typography::MONO_XS.line_height
+                    + size::CONTROL
+                    + 3.0 * m::BANNER_GAP,
+            ),
+        );
         let mut content = ui.new_child(
             UiBuilder::new()
-                .max_rect(rect.shrink(m::BANNER_PAD))
+                .max_rect(inner)
                 .id_salt("audio-missing-banner")
                 .accessibility_role(Role::Group)
                 .accessibility_label(ctx.lang.audio_waveform_title(&clip.name)),
         );
+        crate::views::group_bounds(&content, rect);
         let message = ctx
             .lang
             .audio_clip_missing(a.file.abs.file_name().unwrap_or_default().to_string_lossy());
-        // The warning glyph is supplied by the existing icon set, not by a fallback font.
-        content.horizontal(|ui| {
-            ui.add(komponist_ui::icons::image(
-                komponist_tokens::Icon::TriangleExclamationPoint,
-                color32(color::STATE_ERROR),
-            ));
-            ui.label(
-                egui::RichText::new(message.trim_start_matches('⚠').trim())
-                    .color(color32(color::STATE_ERROR)),
-            );
-        });
-        content.label(
-            egui::RichText::new(self.source.path(a).display().to_string())
-                .font(fonts::font_id(&typography::MONO_XS))
-                .color(color32(color::TEXT_3)),
+        let message = message.trim_start_matches('⚠').trim();
+        let galley = painter.layout_no_wrap(
+            message.to_owned(),
+            fonts::font_id(&typography::UI),
+            color32(color::STATE_ERROR),
         );
-        content.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = m::BANNER_GAP;
-            toolbar::recovery(ui, ctx, clip, a, &self.source);
-        });
+        let icon_w = komponist_tokens::size::ICON;
+        let title_w = galley.size().x + icon_w + space::SPACE_1;
+        let x = inner.center().x - title_w / 2.0;
+        let title = Rect::from_min_size(
+            pos2(x, inner.top()),
+            vec2(title_w, typography::UI.line_height),
+        );
+        komponist_ui::icons::paint_in(
+            &content,
+            Rect::from_min_size(title.min, vec2(icon_w, icon_w)),
+            komponist_tokens::Icon::TriangleExclamationPoint,
+            color32(color::STATE_ERROR),
+        );
+        painter.galley(
+            title.min + vec2(icon_w + space::SPACE_1, 0.0),
+            galley,
+            color32(color::STATE_ERROR),
+        );
+        content
+            .interact(
+                title,
+                Id::unique(("audio-missing-message", clip.id.0)),
+                Sense::hover(),
+            )
+            .widget_info(|| WidgetInfo::labeled(Role::Label, true, message));
+        let path = self.source.path(a).display().to_string();
+        let path_rect = Rect::from_min_size(
+            pos2(inner.left(), title.bottom() + m::BANNER_GAP),
+            vec2(inner.width(), typography::MONO_XS.line_height),
+        );
+        let mut path_ui = content.new_child(
+            UiBuilder::new()
+                .max_rect(path_rect)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+        );
+        path_ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(&path)
+                        .font(fonts::font_id(&typography::MONO_XS))
+                        .color(color32(color::TEXT_3)),
+                )
+                .truncate(),
+            )
+            .on_hover_text(&path);
+        let actions = Rect::from_center_size(
+            pos2(
+                inner.center().x,
+                path_rect.bottom() + m::BANNER_GAP + size::CONTROL / 2.0,
+            ),
+            vec2(
+                m::BANNER_REPLACE_W + m::BANNER_COPY_W + m::BANNER_GAP,
+                size::CONTROL,
+            ),
+        );
+        let mut row = content.new_child(
+            UiBuilder::new()
+                .max_rect(actions)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row.spacing_mut().item_spacing.x = m::BANNER_GAP;
+        toolbar::recovery(&mut row, ctx, clip, a, &self.source);
     }
+
     fn wheel(
         &self,
         ui: &mut Ui,

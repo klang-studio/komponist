@@ -69,3 +69,7 @@ missing-continue-files = Fortfahren
 missing-audio-open-clip = Clip öffnen
 missing-audio-chip = AUDIO
 missing-audio-place = Spur { $track } · Clip { $clip }
+audio-clip-context-menu = Audio-Clip
+audio-clip-context-mute = Stumm
+audio-clip-context-duplicate = Duplizieren
+audio-clip-context-split = Teilen
