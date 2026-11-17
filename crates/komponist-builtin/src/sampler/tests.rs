@@ -383,6 +383,47 @@ fn the_loader_hands_samples_over_and_takes_the_old_ones_back() {
     assert_eq!(sounding(&render(&mut p, &[on(0, 0, 127)], 500)), 0);
 }
 
+#[test]
+fn failed_replacements_clear_the_audio_slot_and_old_results_cannot_return() {
+    let dir = scratch("failed-replacement");
+    let path = dc_wav(&dir, "valid.wav", 4096, 0.5, RATE as u32);
+    let junk = dir.join("invalid.wav");
+    std::fs::write(&junk, b"not a WAV").unwrap();
+    let mut p = sampler();
+    let handle = p.sampler().unwrap();
+    for (failed, missing) in [(dir.join("missing.wav"), true), (junk, false)] {
+        load(&mut p, 0, &path);
+        assert!(sounding(&render(&mut p, &[on(0, 0, 127)], 256)) > 0);
+        handle.load_link(0, SampleLink::new(&failed, None), None);
+        assert!(handle.wait_idle(WAIT));
+        if missing {
+            assert_eq!(handle.view(0).status, PadStatus::Missing);
+        } else {
+            assert!(matches!(handle.view(0).status, PadStatus::Failed(_)));
+        }
+        // Also kills voices using the previous sample. render checks assert_no_alloc.
+        assert_eq!(sounding(&render(&mut p, &[on(0, 0, 127)], 256)), 0);
+    }
+    // Several completed results may already be queued when a new request supersedes them.
+    handle.load_link(0, SampleLink::new(&path, None), None);
+    assert!(handle.wait_idle(WAIT));
+    handle.load_link(
+        0,
+        SampleLink::new(&dir.join("missing-again.wav"), None),
+        None,
+    );
+    assert!(handle.wait_idle(WAIT));
+    handle.clear(0);
+    assert!(handle.wait_idle(WAIT));
+    assert_eq!(handle.view(0).status, PadStatus::Empty);
+    assert_eq!(sounding(&render(&mut p, &[on(0, 0, 127)], 256)), 0);
+    // An undo-like replacement after a clear is the newest request and must remain audible.
+    handle.load_link(0, SampleLink::new(&path, None), None);
+    assert!(handle.wait_idle(WAIT));
+    assert_eq!(handle.view(0).status, PadStatus::Ready);
+    assert!(sounding(&render(&mut p, &[on(0, 0, 127)], 256)) > 0);
+}
+
 /// A note at the start of the first call after the loader handed the sample over plays it: the
 /// processor takes loaded samples before the note, not only when it renders (#94: the first hit
 /// after a load, or an export's first beat, was silent when no call ran in between; slow CI

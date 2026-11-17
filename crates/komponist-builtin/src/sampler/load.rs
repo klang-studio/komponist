@@ -20,7 +20,7 @@
 //! interpolates), nothing is converted here.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -85,6 +85,7 @@ impl PadView {
 /// A sample for the audio thread (`None`: the pad is empty now).
 pub(super) struct Loaded {
     pub pad: usize,
+    pub generation: u64,
     pub sample: Option<Arc<Sample>>,
 }
 
@@ -97,6 +98,7 @@ pub(super) struct AudioSide {
 /// State shared by the handle, the loader and the audio thread.
 struct Shared {
     views: Mutex<Vec<PadView>>,
+    generations: [AtomicU64; PADS],
     /// Playhead of each pad as `f32` bits: a fraction of the sample, negative while silent.
     playheads: [AtomicU32; PADS],
     /// `counter << 4 | pad` of the last note that hit a pad; the counter starts at 1.
@@ -106,9 +108,9 @@ struct Shared {
 }
 
 impl Shared {
-    fn update(&self, pad: usize, f: impl FnOnce(&mut PadView)) {
+    fn update<R>(&self, pad: usize, f: impl FnOnce(&mut PadView) -> R) -> R {
         let mut views = self.views.lock().unwrap_or_else(|e| e.into_inner());
-        f(&mut views[pad]);
+        f(&mut views[pad])
     }
 }
 
@@ -117,6 +119,10 @@ impl Shared {
 pub(super) struct Meters(Arc<Shared>);
 
 impl Meters {
+    pub(super) fn is_current(&self, pad: usize, generation: u64) -> bool {
+        self.0.generations[pad].load(Ordering::Acquire) == generation
+    }
+
     pub(super) fn playhead(&self, pad: usize, fraction: f32) {
         self.0.playheads[pad].store(fraction.to_bits(), Ordering::Relaxed);
     }
@@ -132,11 +138,13 @@ impl Meters {
 enum Request {
     Load {
         pad: usize,
+        generation: u64,
         link: SampleLink,
         project_dir: Option<PathBuf>,
     },
     Clear {
         pad: usize,
+        generation: u64,
     },
 }
 
@@ -158,6 +166,7 @@ impl std::fmt::Debug for SamplerHandle {
 pub(super) fn channel() -> (SamplerHandle, AudioSide, Meters) {
     let shared = Arc::new(Shared {
         views: Mutex::new(vec![PadView::empty(); PADS]),
+        generations: std::array::from_fn(|_| AtomicU64::new(0)),
         playheads: std::array::from_fn(|_| AtomicU32::new((-1.0f32).to_bits())),
         hit: AtomicU32::new(0),
         pending: AtomicUsize::new(0),
@@ -187,7 +196,10 @@ impl SamplerHandle {
         if pad >= PADS {
             return;
         }
-        self.shared.update(pad, |v| {
+        let generation = self.shared.update(pad, |v| {
+            let generation = self.shared.generations[pad]
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
             *v = PadView {
                 status: PadStatus::Loading,
                 name: link.name.clone(),
@@ -195,10 +207,12 @@ impl SamplerHandle {
                 length_s: 0.0,
                 peaks: Arc::from([]),
             };
+            generation
         });
         self.shared.pending.fetch_add(1, Ordering::SeqCst);
         let _ = self.requests.send(Request::Load {
             pad,
+            generation,
             link,
             project_dir,
         });
@@ -209,9 +223,14 @@ impl SamplerHandle {
         if pad >= PADS {
             return;
         }
-        self.shared.update(pad, |v| *v = PadView::empty());
+        let generation = self.shared.update(pad, |v| {
+            *v = PadView::empty();
+            self.shared.generations[pad]
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1)
+        });
         self.shared.pending.fetch_add(1, Ordering::SeqCst);
-        let _ = self.requests.send(Request::Clear { pad });
+        let _ = self.requests.send(Request::Clear { pad, generation });
     }
 
     /// What `pad` shows.
@@ -277,45 +296,50 @@ fn run_loader(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        match request {
-            Request::Clear { pad } => {
-                send(&mut to_audio, &mut from_audio, Loaded { pad, sample: None });
-            }
+        let (pad, generation, load) = match request {
+            Request::Clear { pad, generation } => (pad, generation, None),
             Request::Load {
                 pad,
+                generation,
                 link,
                 project_dir,
-            } => match link.resolve(project_dir.as_deref()) {
-                None => shared.update(pad, |v| v.status = PadStatus::Missing),
-                Some(path) => match decode(&path) {
-                    Ok(sample) => {
-                        let (length_s, peaks) = (sample.duration_secs() as f64, peaks_of(&sample));
-                        send(
-                            &mut to_audio,
-                            &mut from_audio,
-                            Loaded {
-                                pad,
-                                sample: Some(Arc::new(sample)),
-                            },
-                        );
-                        shared.update(pad, |v| {
-                            // A newer request for the pad may have replaced the view meanwhile.
-                            if v.link.as_ref() == Some(&link) {
-                                v.status = PadStatus::Ready;
-                                v.length_s = length_s;
-                                v.peaks = peaks;
-                            }
-                        });
+            } => (pad, generation, Some((link, project_dir))),
+        };
+        if shared.generations[pad].load(Ordering::Acquire) == generation {
+            let mut sample = None;
+            if let Some((link, project_dir)) = load {
+                let (status, length_s, peaks) = match link.resolve(project_dir.as_deref()) {
+                    None => (PadStatus::Missing, 0.0, Arc::from([])),
+                    Some(path) => match decode(&path) {
+                        Ok(decoded) => {
+                            let length = decoded.duration_secs() as f64;
+                            let peaks = peaks_of(&decoded);
+                            sample = Some(Arc::new(decoded));
+                            (PadStatus::Ready, length, peaks)
+                        }
+                        Err(reason) => (PadStatus::Failed(reason), 0.0, Arc::from([])),
+                    },
+                };
+                shared.update(pad, |view| {
+                    // Check under the same lock used to publish a new request's view.
+                    if shared.generations[pad].load(Ordering::Acquire) == generation {
+                        view.status = status;
+                        view.length_s = length_s;
+                        view.peaks = peaks;
                     }
-                    Err(reason) => {
-                        shared.update(pad, |v| {
-                            if v.link.as_ref() == Some(&link) {
-                                v.status = PadStatus::Failed(reason);
-                            }
-                        });
-                    }
+                });
+            }
+            // Failures clear the audio slot too. The audio side rejects results superseded
+            // while decoding or while waiting for space in this queue.
+            send(
+                &mut to_audio,
+                &mut from_audio,
+                Loaded {
+                    pad,
+                    generation,
+                    sample,
                 },
-            },
+            );
         }
         shared.pending.fetch_sub(1, Ordering::SeqCst);
     }

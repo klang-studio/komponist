@@ -122,7 +122,12 @@ impl SamplerDsp {
             let Ok(loaded) = self.audio.incoming.pop() else {
                 break;
             };
-            self.set_sample(loaded.pad, loaded.sample);
+            if self.meters.is_current(loaded.pad, loaded.generation) {
+                self.set_sample(loaded.pad, loaded.sample);
+            } else {
+                // Retire stale results on the loader, never free their Arc on the audio thread.
+                let _ = self.audio.garbage.push(loaded.sample);
+            }
         }
     }
 
@@ -278,5 +283,38 @@ impl Dsp for SamplerDsp {
 
     fn sampler(&self) -> Option<SamplerHandle> {
         Some(self.handle())
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+    use crate::sampler::load::Loaded;
+    use rtrb::RingBuffer;
+
+    #[test]
+    fn a_decoded_sample_superseded_by_clear_is_retired_without_becoming_playable() {
+        let mut dsp = SamplerDsp::new();
+        // Hold a decoded result in transit while a newer UI clear is published. The private
+        // queue models a decoder completing after clear without depending on thread timing.
+        let (mut decoder, incoming) = RingBuffer::new(4);
+        dsp.audio.incoming = incoming;
+        let sample = Arc::new(Sample::mono(48_000.0, vec![0.5; 128]));
+        decoder
+            .push(Loaded {
+                pad: 0,
+                generation: 0,
+                sample: Some(sample.clone()),
+            })
+            .unwrap_or_else(|_| panic!("queue room"));
+        dsp.handle.clear(0);
+        assert_no_alloc::assert_no_alloc(|| dsp.take_loaded());
+        assert!(dsp.samples[slot_index(0, 0)].is_none());
+        assert_eq!(
+            dsp.handle.view(0).status,
+            crate::sampler::load::PadStatus::Empty
+        );
+        // The final strong reference may only be released outside the audio callback.
+        drop(sample);
     }
 }
