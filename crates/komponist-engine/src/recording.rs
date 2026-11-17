@@ -340,6 +340,7 @@ enum Control {
 }
 impl RecordingSession {
     /// Non-RT. Flushes all WAV headers and returns a consistent, saveable prefix of each take.
+    /// Includes all samples queued before the request.
     /// Capture continues into bounded queues while the worker handles this request.
     pub fn checkpoint(&self) -> Checkpoint {
         let (tx, rx) = mpsc::sync_channel(1);
@@ -865,6 +866,9 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 .collect();
             let mut failure = None;
             loop {
+                // Collect requests before draining: a checkpoint must include samples queued
+                // before the request, even if they arrived just after the previous drain.
+                let controls: Vec<_> = control_rx.try_iter().collect();
                 let ended = shared.ended.load(Ordering::Acquire);
                 let mut worked = false;
                 for (i, reader) in readers.iter_mut().enumerate() {
@@ -997,7 +1001,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                         p.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
                     }
                 }
-                while let Ok(control) = control_rx.try_recv() {
+                for control in controls {
                     match control {
                         Control::Checkpoint(reply) => {
                             let result =

@@ -218,6 +218,28 @@ fn count_in_is_not_recorded_and_pcm24_headers_are_finalized() {
     assert!(wav.samples::<i32>().all(|s| s.unwrap() == 4194304));
 }
 #[test]
+fn checkpoints_include_all_samples_submitted_before_the_request() {
+    let (p, track) = project(MonitorMode::Off, true);
+    let (rec, mut session, _) = prepare(&p, &[track], RecordingFormat::Float32);
+    let mut rig = Rig::new(RATE, 256);
+    rig.set_program(&compile::build(&p, None, &NoEnv));
+    rig.send(Command::SetRecorder(rec));
+    rig.send(Command::Record { from: Tick::ZERO });
+    for block in 1..=64 {
+        feed(&mut rig, &[0.25; 128], 0, 0, false);
+        let checkpoint = session.checkpoint().unwrap();
+        let frames = block * 64;
+        assert_eq!(checkpoint[0].frames, frames);
+        let reader = hound::WavReader::open(&checkpoint[0].path).unwrap();
+        assert_eq!(u64::from(reader.duration()), frames);
+        assert!(reader.into_samples::<f32>().all(|s| s.unwrap() == 0.25));
+    }
+    rig.send(Command::Stop);
+    feed(&mut rig, &[0.0; 2], 0, 0, false);
+    assert_eq!(finished(&mut session).unwrap().takes[0].frames, 64 * 64);
+}
+
+#[test]
 fn checkpoint_and_relocation_keep_capture_running_and_a_failed_move_keeps_old_paths() {
     let (p, track) = project(MonitorMode::Off, true);
     let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
