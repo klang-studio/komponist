@@ -1777,7 +1777,9 @@ Audio arrangement clips use `timeline::{AudioLook, WaveMesh, WaveSpec, audio_par
 once a second, requests peak data once with a repaint callback, and caches meshes per clip `Arc`, full
 source window (including tempo), zoom, height and peak-data identity. Ready peaks replace pending flat
 meshes automatically; missing links retain editable model metadata and are checked again. The two waveform
-tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting. Painting is
+tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting.
+Waveform meshes keep at most 32,768 columns; wider clips use proportionally wider columns over the full
+source window, preserving temporal coverage, fade positions and visible-range culling. Painting is
 clipped to the visible range. `audio_parts` shares control geometry with hit testing; visible gain/fade/trim
 controls have localized slider nodes. Audio moves and trims always use the selected grid; fades and gain
 use unsnapped pointer deltas. Move/copy and both trim gestures apply to the gesture-start document so a

@@ -16,8 +16,8 @@ use komponist_audiofile::PeakData;
 use super::mesh::Quads;
 use crate::widgets::metrics::timeline as metrics;
 
-/// Most columns one mesh holds (a clip wider than this many points shows its first part
-/// correctly scaled and cuts the rest; 32 768 points are 450 bars at the default zoom).
+/// Most columns one mesh holds. Wider clips cover their full source window with coarser
+/// columns, keeping memory bounded without hiding the end of a long recording.
 pub const MAX_COLUMNS: usize = 32_768;
 
 /// What a [`WaveMesh`] is built for.
@@ -57,6 +57,7 @@ struct Col {
 pub struct WaveMesh {
     cols: Vec<Col>,
     width: i32,
+    column_width: f32,
     px_per_tick: f32,
     body_height: f32,
 }
@@ -68,6 +69,7 @@ impl WaveMesh {
         Self {
             cols: Vec::new(),
             width: width.round().max(0.0) as i32,
+            column_width: 1.0,
             px_per_tick,
             body_height,
         }
@@ -80,9 +82,8 @@ impl WaveMesh {
         if columns == 0 || spec.frames == 0 {
             return mesh;
         }
-        let frames =
-            (spec.frames as f64 * columns as f64 / f64::from(spec.width.max(1.0))).ceil() as u64;
-        let end = spec.offset.saturating_add(frames);
+        mesh.column_width = mesh.width as f32 / columns as f32;
+        let end = spec.offset.saturating_add(spec.frames);
         let mut peak = vec![(0.0f32, 0.0f32); columns];
         let mut rms = vec![0.0f32; columns];
         for channel in 0..peaks.channels().min(2) {
@@ -104,7 +105,7 @@ impl WaveMesh {
             .iter()
             .enumerate()
             .map(|(i, &(lo, hi))| {
-                let x = i as f32 + 0.5;
+                let x = (i as f32 + 0.5) * mesh.column_width;
                 let mut f = 1.0;
                 if spec.fade_in > 0.0 {
                     f *= (x / spec.fade_in).min(1.0);
@@ -197,8 +198,8 @@ impl WaveMesh {
             q.quad(Rect::from_min_max(pos2(lo, mid), pos2(hi, mid + 1.0)), peak);
             return;
         }
-        let first = ((lo - bx0).floor().max(0.0)) as usize;
-        let last = (((hi - bx0).ceil()) as usize).min(self.cols.len());
+        let first = (((lo - bx0) / self.column_width).floor().max(0.0)) as usize;
+        let last = ((((hi - bx0) / self.column_width).ceil()) as usize).min(self.cols.len());
         let mut i = first;
         while i < last {
             let c = self.cols[i];
@@ -206,8 +207,8 @@ impl WaveMesh {
             while j < last && self.cols[j] == c {
                 j += 1;
             }
-            let x0 = (bx0 + i as f32).max(lo);
-            let x1 = (bx0 + j as f32).min(hi);
+            let x0 = (bx0 + i as f32 * self.column_width).max(lo);
+            let x1 = (bx0 + j as f32 * self.column_width).min(hi);
             let (up, down) = (f32::from(c.up), f32::from(c.down));
             let col = |q: &mut Quads, u: f32, d: f32, color: Color32| {
                 q.quad(
@@ -325,16 +326,81 @@ mod tests {
     }
 
     #[test]
-    fn capped_mesh_keeps_source_scale_and_rms_never_exceeds_local_peak() {
+    fn capped_mesh_covers_the_whole_source_at_its_timeline_position() {
         let mut samples = vec![0.0; 131072];
         samples[100000] = 1.0;
         let p = PeakData::from_planar(48000, &[samples]);
         let m = WaveMesh::from_peaks(&p, &spec(65536.0, 131072));
         assert_eq!(m.len(), MAX_COLUMNS);
+        assert_eq!(m.column_width, 2.0);
         assert!(
-            m.cols.iter().all(|c| c.up == 0 && c.down == 0),
-            "late impulse must not be compressed into the capped first half"
+            m.cols[..MAX_COLUMNS / 2].iter().all(|c| c.up == 0),
+            "late transient must not move into the first half"
         );
+        let body = Rect::from_min_max(pos2(0.0, 0.0), pos2(65536.0, 36.0));
+        let visible = Rangef::new(49980.0, 50080.0);
+        let mut q = Quads::new(1.0);
+        m.paint_into(
+            &mut q,
+            body,
+            visible,
+            Color32::WHITE,
+            Color32::GRAY,
+            Color32::RED,
+        );
+        assert!(
+            q.mesh
+                .vertices
+                .iter()
+                .any(|v| v.pos.y < 18.0 && (v.pos.x - 50000.0).abs() < 80.0),
+            "second-half transient must be painted at its full-clip location"
+        );
+        assert!(
+            q.mesh.vertices.iter().all(|v| visible.contains(v.pos.x)),
+            "coarse columns remain clipped to the viewport"
+        );
+        let mut tail = Quads::new(1.0);
+        m.paint_into(
+            &mut tail,
+            body,
+            Rangef::new(60000.0, 60010.0),
+            Color32::WHITE,
+            Color32::GRAY,
+            Color32::RED,
+        );
+        assert!(
+            !tail.mesh.vertices.is_empty(),
+            "even the silent tail must retain its center line"
+        );
+        assert_eq!(
+            tail.mesh
+                .vertices
+                .iter()
+                .map(|v| v.pos.x)
+                .fold(f32::NEG_INFINITY, f32::max),
+            60010.0
+        );
+    }
+
+    #[test]
+    fn coarse_columns_apply_fades_across_the_entire_clip() {
+        let p = peaks(131072, 1.0);
+        let mut s = spec(65536.0, 131072);
+        s.fade_in = s.width;
+        let m = WaveMesh::from_peaks(&p, &s);
+        assert_eq!(m.cols[MAX_COLUMNS / 4].up, 4);
+        assert_eq!(m.cols[3 * MAX_COLUMNS / 4].up, 12);
+        assert_eq!(m.cols[MAX_COLUMNS - 1].up, 16);
+        s.fade_in = 0.0;
+        s.fade_out = s.width;
+        let m = WaveMesh::from_peaks(&p, &s);
+        assert_eq!(m.cols[MAX_COLUMNS / 4].up, 12);
+        assert_eq!(m.cols[3 * MAX_COLUMNS / 4].up, 4);
+        assert_eq!(m.cols[MAX_COLUMNS - 1].up, 0);
+    }
+
+    #[test]
+    fn rms_smoothing_never_exceeds_the_local_peak() {
         let p = PeakData::from_planar(
             48000,
             &[vec![1.0; 1000].into_iter().chain(vec![0.0; 1000]).collect()],
