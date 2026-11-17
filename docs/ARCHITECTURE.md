@@ -1754,6 +1754,13 @@ another device. The mapping is revalidated at activation and again at dispatch. 
 teardown stay on the owner thread; none touches the realtime callback. Linux-specific desktop accessibility
 acceptance is tracked in #109, Windows native attachment in #110; this foundation adds neither GTK nor DBus.
 
+On Linux (X11/XWayland), `⋯` is the application menu (#109). Tab reaches its button; Enter or Space
+opens it, arrows move between entries, and Escape returns focus to the button. About, Settings and Quit
+are grouped below the project and optional Window commands. If the visible commands change while the
+menu is open, it closes so a highlighted row cannot silently acquire a different command. Long plugin
+labels keep their full accessible name even when the visible row elides them. The menu uses the existing
+egui widgets and works without a desktop global-menu service.
+
 ### 8.7 macOS app bundle, signing and release (#53)
 
 `scripts/bundle-macos.sh` builds `komponist` (release) and assembles `dist/komponist.app`:

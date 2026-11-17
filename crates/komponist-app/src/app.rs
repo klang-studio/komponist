@@ -1018,7 +1018,9 @@ impl App {
                     | Key::ArrowLeft
                     | Key::ArrowRight
             );
-            if widget_keys && navigation && !ctrl && !tab_only {
+            if (widget_keys && navigation && !ctrl && !tab_only)
+                || (floating && navigation && k != Key::Tab && !modifiers.any())
+            {
                 continue;
             }
             let Some(action) = self.keymap.lookup(chord, self.ui.focus).cloned() else {

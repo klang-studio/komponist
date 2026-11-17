@@ -347,6 +347,96 @@ fn installed_native_navigation_is_absent_from_the_actual_local_menu() {
     );
     h.state_mut().set_menu_backend(Backend::Egui);
     h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, Lang::En.transport_menu())
+        .click();
+    h.run_steps(3);
     h.get_by_role_and_label(Role::MenuItem, Lang::En.app_menu_window());
     h.get_by_role_and_label(Role::MenuItem, Lang::En.app_menu_about());
+}
+
+#[test]
+fn fallback_menu_takes_keyboard_commands_and_returns_focus_to_its_button() {
+    use egui::Key;
+
+    for lang in [Lang::De, Lang::En] {
+        let mut h = harness(App::headless(Project::new("Menu")).with_lang(lang), 1.0);
+        let button = h.get_by_role_and_label(Role::Button, lang.transport_menu());
+        button.focus();
+        h.run_steps(2);
+        h.key_press(Key::Enter);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Menu, lang.transport_menu());
+        h.key_press(Key::Escape);
+        h.run_steps(3);
+        assert!(
+            h.query_by_role_and_label(Role::Menu, lang.transport_menu())
+                .is_none()
+        );
+        assert!(
+            h.get_by_role_and_label(Role::Button, lang.transport_menu())
+                .is_focused()
+        );
+
+        // Space opens the focused button. It then activates the highlighted
+        // About entry without toggling playback or re-opening the menu.
+        h.key_press(Key::Space);
+        h.run_steps(3);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        h.key_press(Key::Space);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Dialog, lang.app_menu_about());
+        assert_eq!(
+            h.state().transport(),
+            komponist_engine::TransportState::Stopped
+        );
+        h.key_press(Key::Escape);
+        h.run_steps(3);
+        assert_eq!(h.state().ui().dialog, None);
+        assert!(
+            h.get_by_role_and_label(Role::Button, lang.transport_menu())
+                .is_focused()
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Menu, lang.transport_menu())
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn removing_an_open_plugin_cancels_the_stale_window_menu() {
+    let mut app = App::headless(demo_project()).with_lang(Lang::En);
+    let device = app.project().tracks[1].channel.devices[0].id;
+    app.dispatch(Action::Plugin(komponist_app::PluginAction::OpenWindow(
+        device,
+    )));
+    let lang = Lang::En;
+    let mut h = harness(app, 1.0);
+    h.get_by_role_and_label(Role::Button, lang.transport_menu())
+        .click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::MenuItem, lang.app_menu_window())
+        .click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Menu, lang.app_menu_window());
+    h.state_mut()
+        .dispatch(Action::Plugin(komponist_app::PluginAction::CloseWindow(
+            device,
+        )));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, lang.app_menu_window())
+            .is_none()
+    );
+    assert!(
+        h.query_by_role_and_label(Role::Menu, lang.transport_menu())
+            .is_none()
+    );
+    assert!(h.state().plugin_window_entries().is_empty());
 }
