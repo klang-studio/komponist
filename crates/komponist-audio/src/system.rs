@@ -400,16 +400,16 @@ struct Current<P: AudioProcess> {
 
 /// Held for its `Drop`, which stops the stream.
 enum Backend {
-    /// `_open` is declared after the stream: the count of open ASIO streams drops once the stream is
-    /// gone.
-    Device {
-        _stream: cpal::Stream,
-        capture: Option<crate::input::CaptureStream>,
-        _open: Option<backend::AsioOpen>,
-    },
-    Null {
-        _stream: NullStream,
-    },
+    // CPAL streams are large on Windows; allocate their storage only when starting a device.
+    Device(Box<DeviceStreams>),
+    Null { _stream: NullStream },
+}
+
+struct DeviceStreams {
+    _stream: cpal::Stream,
+    capture: Option<crate::input::CaptureStream>,
+    /// Declared after the streams: the open ASIO count drops only once they are gone.
+    _open: Option<backend::AsioOpen>,
 }
 
 impl<P: AudioProcess> AudioSystem<P> {
@@ -600,10 +600,14 @@ impl<P: AudioProcess> AudioSystem<P> {
                 .shared
                 .lost()
                 .or_else(|| match &current.backend {
-                    Backend::Device {
-                        capture: Some(capture),
-                        ..
-                    } if capture.lost() => Some("audio capture device lost".to_owned()),
+                    Backend::Device(streams)
+                        if streams
+                            .capture
+                            .as_ref()
+                            .is_some_and(|capture| capture.lost()) =>
+                    {
+                        Some("audio capture device lost".to_owned())
+                    }
                     _ => None,
                 })
                 .or_else(|| {
@@ -728,11 +732,11 @@ impl<P: AudioProcess> AudioSystem<P> {
             backend::build_stream(&device, &negotiated, callback, Arc::clone(&self.stats))?;
         stream.play().map_err(backend::map_err)?;
         self.install(Current {
-            backend: Backend::Device {
+            backend: Backend::Device(Box::new(DeviceStreams {
                 _stream: stream,
                 capture,
                 _open: open,
-            },
+            })),
             handle,
             params,
             shared,
