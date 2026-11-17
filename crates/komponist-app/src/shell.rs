@@ -50,8 +50,12 @@ impl App {
         let l = layout::compute(screen, &self.ui.layout);
         self.focus_on_press(ui, &l);
 
+        let provisional_recordings = self
+            .provisional_recordings_folder()
+            .map(std::path::Path::to_path_buf);
         let plugin_windows = self.plugin_window_entries();
         let model = transport::TransportModel {
+            provisional_recordings: provisional_recordings.as_deref(),
             project: self.doc.project(),
             dirty: self.doc.is_dirty(),
             state: self.engine.transport(),

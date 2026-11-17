@@ -24,6 +24,7 @@ const WAVE_HEIGHT: f32 = 18.0;
 #[derive(Debug, Default)]
 pub(super) struct State {
     files: HashMap<AudioFile, Arc<PoolFile>>,
+    clip: Option<ClipId>,
     rename: Option<(ClipId, usize, RenameState)>,
     palettes: HashMap<u16, komponist_tokens::TrackPalette>,
 }
@@ -39,6 +40,14 @@ pub(super) fn show(
     if audio.takes.len() < 2 {
         return;
     }
+    if state.clip != Some(clip.id) {
+        state.files.clear();
+        state.rename = None;
+        state.clip = Some(clip.id);
+    }
+    state
+        .files
+        .retain(|file, _| audio.takes.iter().any(|take| &take.file == file));
     let t = ctx.lang;
     let key = col.take(typography::SMALL.line_height);
     super::field_key(ui, key, t.inspector_clip_takes());
@@ -66,6 +75,24 @@ pub(super) fn show(
                 color::SURFACE_2
             }),
         );
+        if response.clicked() {
+            response.request_focus();
+        }
+        if response.has_focus()
+            && state.rename.is_none()
+            && ui.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                    || input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+            })
+        {
+            ctx.send(Action::Edit(EditAction::RemoveAudioTake {
+                clip: clip.id,
+                take: i,
+            }));
+        }
+        if response.has_focus() {
+            komponist_ui::focus::paint_ring(ui.painter(), rect, radius::S);
+        }
         if response.double_clicked() {
             state.rename = Some((clip.id, i, RenameState::new(&name)));
         } else if response.clicked() && !active {

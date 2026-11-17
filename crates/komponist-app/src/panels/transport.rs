@@ -222,15 +222,16 @@ fn wordmark(ui: &mut Ui, model: &TransportModel<'_>) {
             );
             let painted = Rect::from_min_size(at, g.size());
             ui.painter().galley(at, g, color32(color::TEXT_2));
+            let project_name = if model.dirty && i == 1 {
+                model.lang.transport_project_unsaved(text)
+            } else {
+                text.to_owned()
+            };
             text_node(
                 ui,
                 painted,
                 if i == 0 { "wordmark" } else { "project" },
-                if model.dirty && i == 1 {
-                    &model.lang.transport_project_unsaved(text)
-                } else {
-                    text
-                },
+                &project_name,
             );
             if model.dirty && i == 1 {
                 ui.painter().circle_filled(

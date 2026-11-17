@@ -1510,7 +1510,7 @@ impl App {
             }
             EditAction::SetTrackProp { tracks, prop } => self.set_track_prop(tracks, prop),
             EditAction::SetExclusive { track, flag } => {
-                if flag == ExclusiveFlag::Arm && !self.audio_arm_allowed(track) {
+                if flag == edits::ExclusiveFlag::Arm && !self.audio_arm_allowed(track) {
                     return;
                 }
                 self.apply("undo-exclusive", |p| edits::set_exclusive(p, track, flag));
@@ -1740,6 +1740,10 @@ impl App {
     }
 
     fn set_track_prop(&mut self, tracks: Vec<TrackId>, prop: TrackProp) {
+        if matches!(&prop, TrackProp::AudioInput(_)) && self.audio_recording().is_some() {
+            self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
+            return;
+        }
         if prop == TrackProp::Arm(true)
             && tracks.iter().any(|&track| !self.audio_arm_allowed(track))
         {

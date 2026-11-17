@@ -136,7 +136,17 @@ fn context(app: &App, s: &mut StatusModel) {
                 .filter(|t| t.arm)
                 .map(|t| t.name.as_str())
                 .collect();
-            s.left = t.status_recording(armed.join(", "));
+            s.left = if let Some(recording) = app.audio_recording() {
+                let inputs = recording
+                    .tracks()
+                    .filter_map(|id| p.track(id))
+                    .map(|track| crate::views::audio_inputs::input_label(t, p, track.audio.input))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                t.status_recording_input(armed.join(", "), inputs)
+            } else {
+                t.status_recording(armed.join(", "))
+            };
             // "· Take 1": the take the editor shows (S02).
             if let Some(take) = app
                 .recording()

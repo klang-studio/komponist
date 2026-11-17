@@ -106,7 +106,13 @@ fn bus_record_creates_an_armed_track_outside_the_group_with_one_undo() {
 #[test]
 fn take_actions_preserve_shared_properties_and_are_undoable() {
     let (p, track) = audio(AudioInput::None);
-    let file = AudioFile::new("/missing/recording.wav", None, 48_000, 96_000, 1);
+    let file = AudioFile::new(
+        std::path::Path::new("/missing/recording.wav"),
+        None,
+        48_000,
+        96_000,
+        1,
+    );
     let (p, clip) = edits::add_clip(
         &p,
         track,
@@ -163,7 +169,9 @@ fn take_actions_preserve_shared_properties_and_are_undoable() {
 #[test]
 fn input_meter_is_drained_once_and_shared_by_all_views() {
     let (p, track) = audio(AudioInput::None);
-    let app = App::headless(p);
+    let mut app = App::headless(p);
+    app.engine_mut().hold_engine().unwrap();
+    app.step();
     let meter = app.engine().track_meter(track).unwrap();
     meter.record_input(0.5, 0.25);
     let mut meters = Meters::new();
@@ -213,6 +221,22 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 fn snapshot(h: &mut Harness<'_, App>, results: &mut SnapshotResults, lang: Lang, name: &str) {
+    let paths: Vec<_> = h
+        .query_all_by_role(Role::Label)
+        .filter(|node| {
+            let access = node.accesskit_node();
+            access
+                .value()
+                .is_some_and(|value| value.starts_with('/') || value.contains(":\\"))
+                || access
+                    .label()
+                    .is_some_and(|label| label.starts_with('/') || label.contains(":\\"))
+        })
+        .map(|node| node.rect())
+        .collect();
+    for rect in paths {
+        h.mask(rect);
+    }
     if let Some(cpu) = h.query_by_role_and_label(Role::Status, lang.transport_cpu()) {
         h.mask(cpu.rect().expand(2.0));
     }
@@ -269,6 +293,7 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
             h.run_steps(1);
         }
         h.get_by_role_and_label(Role::MenuItem, "Test Capture");
+        h.run_steps(4);
         snapshot(&mut h, &mut results, lang, "input-channels");
         h.get_by_role_and_label(Role::MenuItem, lang.audio_input_section_bus())
             .click();
@@ -283,12 +308,15 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
         h.key_press(egui::Key::Escape);
         h.run_steps(2);
         let monitor = h
-            .get_all_by_role(Role::CheckBox)
-            .find(|node| node.accesskit_node().value() == Some(lang.ui_monitor_auto()))
+            .get_all_by_role(Role::Button)
+            .find(|node| node.accesskit_node().value().as_deref() == Some(lang.ui_monitor_auto()))
             .expect("Auto monitoring control");
-        assert_eq!(
-            monitor.accesskit_node().description(),
-            Some(lang.audio_monitor_auto_armed())
+        assert!(
+            monitor
+                .accesskit_node()
+                .description()
+                .unwrap()
+                .contains(lang.audio_monitor_auto_armed())
         );
         monitor.click();
         h.run_steps(2);
@@ -297,8 +325,8 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
             MonitorMode::Off
         );
         let control = h
-            .get_all_by_role(Role::CheckBox)
-            .find(|node| node.accesskit_node().value() == Some(lang.ui_monitor_off()))
+            .get_all_by_role(Role::Button)
+            .find(|node| node.accesskit_node().value().as_deref() == Some(lang.ui_monitor_off()))
             .unwrap();
         control.click();
         h.run_steps(2);
@@ -306,8 +334,8 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
             h.state().project().track(track).unwrap().audio.monitor,
             MonitorMode::On
         );
-        h.get_all_by_role(Role::CheckBox)
-            .find(|node| node.accesskit_node().value() == Some(lang.ui_monitor_on()))
+        h.get_all_by_role(Role::Button)
+            .find(|node| node.accesskit_node().value().as_deref() == Some(lang.ui_monitor_on()))
             .unwrap()
             .click_secondary();
         h.run_steps(2);
@@ -321,9 +349,14 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
         snapshot(&mut h, &mut results, lang, "header");
         h.state_mut().dispatch(Action::Ui(UiAction::ToggleMixer));
         h.run_steps(3);
-        let record_name = lang.routing_record_bus_name("Loop Bus");
-        h.get_by_role_and_label(Role::Button, &record_name);
+        h.get_by_role_and_label(Role::Group, &lang.routing_bus_strip("Loop Bus"))
+            .get_by_role_and_label(Role::Button, "Loop Bus")
+            .click_secondary();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::MenuItem, lang.routing_record_bus());
         snapshot(&mut h, &mut results, lang, "mixer");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
         h.state_mut().dispatch(Action::Ui(UiAction::OpenSettings(
             komponist_app::ui_state::SettingsSection::Audio,
         )));
@@ -371,7 +404,7 @@ fn take_rows_expose_selection_duration_and_delete_in_both_languages() {
             .unwrap();
     }
     writer.finalize().unwrap();
-    let file = AudioFile::new(&path, None, 48_000, 96_000, 1);
+    let file = AudioFile::new(&path, None, 96_000, 48_000, 1);
     let (p, track) = audio(AudioInput::None);
     let (p, clip) = edits::add_clip(
         &p,
@@ -407,12 +440,15 @@ fn take_rows_expose_selection_duration_and_delete_in_both_languages() {
         let mut h = harness(app);
         let first = lang.inspector_take(1);
         let first_node = h.get_by_role_and_label(Role::RadioButton, &first);
-        assert_eq!(first_node.accesskit_node().description(), Some("00:02"));
+        assert_eq!(
+            first_node.accesskit_node().description().as_deref(),
+            Some("00:02")
+        );
         assert_eq!(
             h.get_by_role_and_label(Role::RadioButton, "Second pass")
                 .accesskit_node()
-                .is_selected(),
-            Some(true)
+                .toggled(),
+            Some(egui::accesskit::Toggled::True)
         );
         first_node.click();
         h.run_steps(3);
@@ -429,6 +465,20 @@ fn take_rows_expose_selection_duration_and_delete_in_both_languages() {
             h.mask(path.rect());
         }
         snapshot(&mut h, &mut results, lang, "takes");
+        h.key_press(egui::Key::Delete);
+        h.run_steps(3);
+        assert_eq!(
+            h.state().project().tracks[0].clips.len(),
+            1,
+            "Delete on a take must retain the clip"
+        );
+        let ClipContent::Audio(a) = &h.state().project().tracks[0].clips[0].content else {
+            panic!("audio")
+        };
+        assert_eq!(a.takes.len(), 1);
+        assert_eq!(a.takes[0].name, "Second pass");
+        h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+        h.run_steps(3);
         h.get_by_role_and_label(Role::Button, &lang.audio_take_remove("Second pass"))
             .click();
         h.run_steps(3);
@@ -488,11 +538,17 @@ fn provisional_recordings_chip_is_persistent_and_fits_the_transport_in_both_lang
         let chip = h
             .get_by_role_and_label(Role::Label, lang.audio_recordings_provisional())
             .rect();
+        let mark = h
+            .get_by_role_and_label(Role::Label, transport::WORDMARK)
+            .rect();
+        assert!(
+            chip.right() <= mark.left() + komponist_app::metrics::transport::WORDMARK_WIDTH + 1.0
+        );
         assert!(
             chip.right()
-                < komponist_app::metrics::transport::WORDMARK_WIDTH
-                    + komponist_tokens::space::SPACE_3
-                    + 1.0
+                < h.get_by_role_and_label(Role::Button, lang.transport_play())
+                    .rect()
+                    .left()
         );
         h.run_steps(3);
         h.get_by_role_and_label(Role::Label, lang.audio_recordings_provisional());
@@ -501,6 +557,120 @@ fn provisional_recordings_chip_is_persistent_and_fits_the_transport_in_both_lang
             if lang == Lang::En { "-en" } else { "" }
         ));
         results.extend_harness(&mut h);
+    }
+    results.unwrap();
+}
+
+#[test]
+fn capture_device_changes_are_refused_while_recording() {
+    let (mut p, track) = audio(AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    }));
+    p.count_in_bars = 0;
+    let p = edits::set_track_prop(&p, &[track], TrackProp::Arm(true)).unwrap();
+    let mut app = App::headless(p)
+        .with_recording_directory(crate::export::scratch("recording-ui-device-guard"));
+    let _source = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
+    app.step();
+    app.dispatch(Action::Transport(
+        komponist_app::actions::TransportAction::ToggleRecord,
+    ));
+    assert!(app.audio_recording().is_some());
+    app.dispatch(Action::Settings(
+        komponist_app::actions::SettingsAction::SetAudioInput(None),
+    ));
+    assert!(app.audio_recording().is_some());
+    assert_eq!(app.engine().audio_input_channels(), 2);
+    assert_eq!(
+        app.ui().status.as_ref().unwrap().text,
+        Lang::De.audio_input_change_recording()
+    );
+    app.dispatch(Action::Transport(
+        komponist_app::actions::TransportAction::DiscardTake,
+    ));
+}
+
+#[test]
+fn live_audio_inspector_and_input_status_render_in_both_languages() {
+    let mut results = SnapshotResults::new();
+    for lang in [Lang::De, Lang::En] {
+        let (p, bus) = edits::add_bus(
+            &Project::new("Live Audio"),
+            NewBus {
+                name: Some("Source Bus".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (mut p, track) = edits::add_audio_track(
+            &p,
+            NewAudioTrack {
+                name: Some("Voice".into()),
+                input: AudioInput::Bus(bus),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        p.count_in_bars = 0;
+        let p = edits::set_track_prop(&p, &[track], TrackProp::Arm(true)).unwrap();
+        let mut app = App::headless(p)
+            .with_lang(lang)
+            .with_recording_directory(crate::export::scratch("recording-ui-live"));
+        app.engine_mut().hold_engine().unwrap();
+        app.step();
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        app.dispatch(Action::Transport(
+            komponist_app::actions::TransportAction::ToggleRecord,
+        ));
+        assert!(app.engine_mut().run_held(4_800, &[], 0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.step();
+            if app.audio_recording().and_then(|r| r.clip(track)).is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "live capture did not publish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let expected = lang.status_recording_input("Voice", lang.audio_input_bus("Source Bus"));
+        assert_eq!(
+            komponist_app::panels::statusbar::model(&app, std::time::Instant::now()).left,
+            expected
+        );
+        let mut h = harness(app);
+        h.get_by_role_and_label(
+            Role::Label,
+            &format!(
+                "{} {}",
+                lang.new_track_input(),
+                lang.audio_input_bus("Source Bus")
+            ),
+        );
+        h.get_by_role_and_label(Role::Label, &format!("{} 1", lang.inspector_clip_takes()));
+        assert!(
+            h.get_all_by_role(Role::Label).any(
+                |node| node.accesskit_node().label().as_deref() == Some(lang.audio_file_path())
+            )
+        );
+        h.get_by_role_and_label(Role::Label, lang.audio_recordings_provisional());
+        let path = h
+            .get_all_by_role(Role::Label)
+            .find(|node| node.accesskit_node().label().as_deref() == Some(lang.audio_file_path()))
+            .unwrap()
+            .rect();
+        h.mask(path);
+        snapshot(&mut h, &mut results, lang, "live-inspector");
+        h.state_mut().dispatch(Action::Transport(
+            komponist_app::actions::TransportAction::DiscardTake,
+        ));
+        h.run_steps(2);
     }
     results.unwrap();
 }

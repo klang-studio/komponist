@@ -29,6 +29,8 @@ pub const HEADER_INPUT_WIDTH: f32 = 94.0;
 pub const AUTO_MARK: f32 = 8.0;
 /// Header input line disappears below this row height (audio proposal §5).
 pub const INPUT_LINE_MIN: f32 = 44.0;
+/// Keep D9 within the viewport while allowing longer channel/device inventories to scroll.
+const MAX_ROWS: usize = 10;
 
 pub fn input_label(t: Lang, project: &Project, input: AudioInput) -> String {
     match input {
@@ -96,23 +98,24 @@ fn inventory(ui: &Ui, ctx: &ViewCtx<'_>) -> Vec<InputDeviceInfo> {
     let mut cache = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if cache.host != Some(host) && !cache.pending {
-        if let Some(provider) = ctx.audio_devices.as_ref() {
-            cache.pending = true;
-            let provider = Arc::clone(provider);
-            let state = Arc::clone(&state);
-            let repaint = ui.ctx().clone();
-            std::thread::spawn(move || {
-                let devices = provider.input_devices(host);
-                let mut cache = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                cache.devices = devices;
-                cache.host = Some(host);
-                cache.pending = false;
-                repaint.request_repaint();
-            });
-        }
+    if cache.host != Some(host)
+        && !cache.pending
+        && let Some(provider) = ctx.audio_devices.as_ref()
+    {
+        cache.pending = true;
+        let provider = Arc::clone(provider);
+        let state = Arc::clone(&state);
+        let repaint = ui.ctx().clone();
+        std::thread::spawn(move || {
+            let devices = provider.input_devices(host);
+            let mut cache = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.devices = devices;
+            cache.host = Some(host);
+            cache.pending = false;
+            repaint.request_repaint();
+        });
     }
     cache.devices.clone()
 }
@@ -306,6 +309,15 @@ fn chooser(
         .unwrap_or(initial)
         .min(devices.len());
     let mut source_changed = false;
+    let rows = if source == devices.len() {
+        project.tracks.iter().filter(|track| track.is_bus()).count()
+    } else {
+        devices.get(source).map_or(0, |device| {
+            usize::from(device.channels) + usize::from(device.channels / 2)
+        })
+    };
+    let height = (rows.max(devices.len() + 2).min(MAX_ROWS) as f32)
+        * (size::MENU_ROW + ui.spacing().item_spacing.y);
     let title = t.audio_input_title(&track.name);
     let shown = Area::new(id)
         .order(Order::Foreground)
@@ -333,7 +345,8 @@ fn chooser(
                         floating::close(ui.ctx(), id);
                     }
                     egui::ScrollArea::vertical()
-                        .max_height(size::MENU_ROW * 10.0)
+                        .max_height(height)
+                        .min_scrolled_height(height)
                         .show(ui, |ui| {
                             ui.columns(2, |columns| {
                                 let left = &mut columns[0];
@@ -528,9 +541,13 @@ pub fn monitor_button(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: R
     if let Some(mode) = ContextMenu::new(t.audio_monitoring(), &items).show_on(&response.response) {
         ctx.send(send(mode));
     }
-    Tip::new(value)
-        .detail(t.ui_monitor_tip2())
-        .attach(&response.response);
+    let detail = if mode == MonitorMode::Auto && track.arm {
+        format!("{} · {}", t.audio_monitor_auto_armed(), t.ui_monitor_tip2())
+    } else {
+        t.ui_monitor_tip2().to_owned()
+    };
+    let tip = t.audio_monitor_tip(value);
+    Tip::new(&tip).detail(&detail).attach(&response.response);
 }
 
 pub fn input_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, track: &Track, rect: Rect) {
