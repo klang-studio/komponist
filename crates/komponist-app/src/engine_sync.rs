@@ -234,6 +234,8 @@ pub enum SyncEvent {
 struct Env<'a> {
     midi: Option<&'a MidiInputHub>,
     host: &'a dyn DeviceHost,
+    /// The stream's sample rate: audio clips are compiled to frames of it.
+    rate: f64,
 }
 
 impl CompileEnv for Env<'_> {
@@ -243,6 +245,14 @@ impl CompileEnv for Env<'_> {
 
     fn device_latency(&self, device: komponist_model::DeviceId) -> u32 {
         self.host.latency(device)
+    }
+
+    fn sample_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn project_dir(&self) -> Option<std::path::PathBuf> {
+        self.host.project_dir()
     }
 }
 
@@ -439,6 +449,7 @@ impl EngineSync {
             let env = Env {
                 midi: self.midi.as_ref(),
                 host: &*self.host,
+                rate: f64::from(self.sample_rate()),
             };
             compile::build(project, self.previous.as_ref(), &env)
         };
@@ -460,6 +471,7 @@ impl EngineSync {
             let env = Env {
                 midi: self.midi.as_ref(),
                 host: &*self.host,
+                rate: f64::from(self.sample_rate()),
             };
             next = compile::build(project, Some(&next), &env);
         }
@@ -710,7 +722,14 @@ impl EngineSync {
     /// Rebuilds the stream for `config` (S07: driver, device, rate, buffer). The engine survives;
     /// a new rate re-activates the processors.
     pub fn set_audio(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
-        self.audio.start(config)
+        let before = self.sample_rate();
+        let started = self.audio.start(config);
+        if self.sample_rate() != before {
+            // Audio clips are compiled to frames of the rate: the program is compiled again.
+            self.synced = None;
+            self.fast = None;
+        }
+        started
     }
 
     /// Parallel track processing (WP-65, settings file `worker_threads`): `None` = automatic

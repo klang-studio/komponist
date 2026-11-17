@@ -78,6 +78,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         },
         pdc_delay: 0,
         meter: Arc::new(TrackMeter::new()),
+        audio: None,
     };
     Program {
         tempo_map: TempoMap::constant(Tempo::new(bpm), Meter::FOUR_FOUR),

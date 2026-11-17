@@ -73,6 +73,8 @@ use klang_dsp::buffer::{add, peak};
 use komponist_model::{Tap, Tick, TrackId};
 
 use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TransportState};
+use crate::audio::streamer::{Msg, StreamShared};
+use crate::audio::voice::{Prepare, Voice};
 use crate::garbage::Outbox;
 use crate::graph::EdgeState;
 use crate::metronome::Metronome;
@@ -150,6 +152,8 @@ pub struct LiveInput<'a> {
 /// The engine. Lives in a `Box` owned by the audio callback (or a render worker).
 pub struct Engine {
     core: Core,
+    /// The read-ahead thread of the audio clips (ARCHITECTURE §6.9.3); ended and joined on drop.
+    streamer: Option<std::thread::JoinHandle<()>>,
     render_l: Box<[f32]>,
     render_r: Box<[f32]>,
     render_out: Box<[f32]>,
@@ -171,7 +175,11 @@ impl Engine {
         let (event_tx, event_rx) = rtrb::RingBuffer::new(EVENT_CAPACITY);
         let telemetry = Arc::new(Telemetry::new());
         telemetry.master_tap.set_rate(config.sample_rate);
+        let (stream, stream_tx) = StreamShared::new();
+        let streamer = stream.spawn();
         let core = Core {
+            stream,
+            stream_tx,
             sample_rate: config.sample_rate,
             max_block: config.max_block.clamp(1, MAX_BLOCK),
             seed: config.seed,
@@ -212,6 +220,7 @@ impl Engine {
         };
         let engine = Box::new(Engine {
             core,
+            streamer,
             render_l: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_r: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_out: vec![0.0; 2 * MAX_BLOCK].into_boxed_slice(),
@@ -357,6 +366,14 @@ impl Engine {
         tracks + chain(&program.master.chain)
     }
 
+    /// Holds the read-ahead of the audio clips (`true`) or lets it go on (`false`): what a disk
+    /// that cannot keep up looks like. Realtime playback then runs on the heads and the ring's
+    /// content and plays silence, counted in [`Telemetry::audio_underruns`], where they run out;
+    /// offline renders are not affected. For tests and diagnostics.
+    pub fn stall_streaming(&self, stalled: bool) {
+        self.core.stream.stall(stalled);
+    }
+
     /// The worker pool's counters (shared; they survive [`Engine::set_workers`]).
     pub fn worker_stats(&self) -> Arc<WorkerStats> {
         Arc::clone(&self.core.stats)
@@ -388,6 +405,15 @@ impl Engine {
             frame[1] = *r;
         }
         out
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.core.stream.stop();
+        if let Some(thread) = self.streamer.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -437,6 +463,8 @@ struct TrackState {
     stage: StageState,
     /// Events the stage dropped in the current segment (counted in the sum phase).
     stage_dropped: u32,
+    /// Audio clip playback of an audio track (ARCHITECTURE §6.9.3).
+    voice: Voice,
 }
 
 impl TrackState {
@@ -459,6 +487,7 @@ impl TrackState {
             failed: false,
             stage: StageState::new(),
             stage_dropped: 0,
+            voice: Voice::new(),
         }
     }
 
@@ -482,6 +511,9 @@ struct Cut {
 }
 
 struct Core {
+    /// The read-ahead of the audio clips and the queue the audio thread asks it through.
+    stream: Arc<StreamShared>,
+    stream_tx: rtrb::Producer<Msg>,
     sample_rate: f32,
     max_block: usize,
     seed: u32,
@@ -589,6 +621,11 @@ struct TrackJobs<'a> {
     ctx: &'a ProcessContext,
     any_solo: bool,
     n: usize,
+    /// Song frame of the segment's first frame, whether the transport runs, and the engine rate:
+    /// what audio tracks read their clips with.
+    at_frame: i64,
+    playing: bool,
+    rate: u32,
 }
 
 // SAFETY: the raw pointers are only dereferenced in `TrackJobs::run`, whose contract keeps the
@@ -724,6 +761,19 @@ impl TrackJobs<'_> {
         bufs.a[1][..n].fill(0.0);
         if route.bus {
             self.sum_inputs(route, bufs);
+        }
+        if let Some(plan) = &track.audio {
+            // The source node of an audio track: its clips, in place of an instrument. (#13: live
+            // input and monitoring mix in here, before the chain.)
+            let [al, ar] = &mut bufs.a;
+            let silent = plan.rate() != self.rate;
+            state.voice.render(
+                plan,
+                self.at_frame,
+                self.playing,
+                silent,
+                [&mut al[..n], &mut ar[..n]],
+            );
         }
         let mut slots = self.slots;
         // The MIDI effect stage rewrites the track's events for the instrument (a track without
@@ -1265,7 +1315,12 @@ impl Core {
     fn silence(&mut self, reset: bool) {
         let count = self.track_count();
         for &index in &self.map[..count] {
-            self.tracks[usize::from(index)].seq.flush(true);
+            let state = &mut self.tracks[usize::from(index)];
+            state.seq.flush(true);
+            if reset {
+                // A hard cut also ends the fade-out tails of audio tracks.
+                state.voice.clear_tail();
+            }
         }
         let Some(program) = self.program.as_deref() else {
             return;
@@ -1337,6 +1392,7 @@ impl Core {
             let state = &mut self.tracks[free];
             state.id = Some(track.id);
             state.seq.clear();
+            state.voice.clear();
             state.stage.clear();
             state.stage.sig = StageSig::of(&track.chain);
             state.seq.reseed(track_seed(self.seed, track.id));
@@ -1479,6 +1535,8 @@ impl Core {
         };
 
         let Core {
+            stream,
+            stream_tx,
             program,
             tracks,
             map,
@@ -1533,6 +1591,24 @@ impl Core {
                 let tracks_and_states = program.tracks[..count].iter().zip(&map[..count]);
                 for (index, (track, &state)) in tracks_and_states.enumerate() {
                     let state = &mut tracks[usize::from(state)];
+                    if let Some(plan) = &track.audio {
+                        // Audio clips: does the playhead continue the stream, or does it jump?
+                        if plan.rate() == sample_rate.round() as u32 {
+                            state.voice.prepare(
+                                plan,
+                                Prepare {
+                                    pos: transport.pos,
+                                    n,
+                                    playing: transport.playing(),
+                                    lp: loop_samples,
+                                    tx: stream_tx,
+                                    offline: deadline.is_none().then_some(&**stream),
+                                },
+                            );
+                        } else {
+                            state.voice.clear();
+                        }
+                    }
                     // Live input of this track.
                     live.clear();
                     let capture = track.arm && recording;
@@ -1696,6 +1772,9 @@ impl Core {
                     ctx: &ctx,
                     any_solo,
                     n,
+                    at_frame: transport.pos,
+                    playing: transport.playing(),
+                    rate: sample_rate.round() as u32,
                 };
                 // SAFETY: `Pool::run_graph` gives every thread its own lane (0 here, 1 ..= threads
                 // for the workers, all < `lanes.len()`) and claims every job once, when it was
@@ -1719,11 +1798,22 @@ impl Core {
                 }
                 // 3. The master bus: what outputs to it, summed in a fixed order (track order
                 // without routing), whichever thread ran the jobs.
-                for &state in &map[..count] {
+                let (mut underruns, mut pending) = (0u32, 0u32);
+                for (track, &state) in program.tracks[..count].iter().zip(&map[..count]) {
                     let state = &tracks[usize::from(state)];
                     *unreported |= state.failed;
                     *dropped += state.stage_dropped;
+                    if track.audio.is_some() {
+                        underruns += u32::from(state.voice.underrun);
+                        pending += u32::from(!state.voice.primed);
+                    }
                 }
+                if underruns > 0 {
+                    telemetry
+                        .audio_underruns
+                        .fetch_add(underruns, Ordering::Relaxed);
+                }
+                telemetry.audio_pending.store(pending, Ordering::Relaxed);
                 let [bus_l, bus_r] = &mut bufs.bus;
                 let mut sum = |from: usize| {
                     let state = &tracks[usize::from(map[from])];

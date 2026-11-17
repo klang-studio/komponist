@@ -104,6 +104,7 @@ pub fn track(id: u64, slot: u32, notes: Vec<SeqNote>) -> TrackProgram {
         },
         pdc_delay: 0,
         meter: Arc::new(TrackMeter::new()),
+        audio: None,
     }
 }
 

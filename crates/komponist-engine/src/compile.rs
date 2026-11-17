@@ -34,6 +34,7 @@
 //!   sidechains compiles to the flat routing, exactly as before wave 9.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
@@ -43,6 +44,7 @@ use komponist_model::{
 };
 
 use crate::api::TrackMeter;
+use crate::audio::{PlanEnv, SourceCache, build_plan, plan_matches};
 use crate::program::{
     ChainSlot, InputFilter, MasterProgram, MidiPort, PROBABILITY_FOLLOW, Program, SeqNote, SlotId,
     SlotMap, TrackProgram,
@@ -61,6 +63,18 @@ pub trait CompileEnv {
     /// Latency of `device`'s processor in frames at the engine's sample rate (0 if unknown or
     /// builtin without latency).
     fn device_latency(&self, device: DeviceId) -> u32;
+
+    /// The engine's sample rate in Hz: audio clips are compiled to frames of it (a program whose
+    /// audio plan has another rate than the engine plays silence). Default 48 kHz.
+    fn sample_rate(&self) -> f64 {
+        48_000.0
+    }
+
+    /// The folder of the project file, against which the relative links of audio clips resolve
+    /// (`None` before the project has a file).
+    fn project_dir(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// An environment without MIDI devices and with zero latencies.
@@ -101,8 +115,7 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         .iter()
         .map(|t| {
             // A bus runs audio effects only (it never holds an instrument or MIDI effects), and so
-            // does an audio track. #11: an audio track is a source node without sequencer and
-            // instrument for now, so it is silent until clip playback exists.
+            // does an audio track: its source node is the clip playback (`AudioPlan`).
             let kind = if t.is_bus() || t.is_audio() {
                 ChainKind::Master
             } else {
@@ -127,6 +140,19 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         env,
         previous.map(|p| &*p.routing),
     );
+    let dir = env.project_dir();
+    let plan_env = PlanEnv {
+        rate: env.sample_rate().round().max(1.0) as u32,
+        tempo: project.tempo_map(),
+        dir: dir.as_deref(),
+    };
+    let mut cache = SourceCache::new(
+        previous
+            .into_iter()
+            .flat_map(|p| p.tracks.iter())
+            .filter_map(|t| t.audio.as_ref())
+            .flat_map(|plan| plan.sources().iter().cloned()),
+    );
     let tracks = tracks
         .into_iter()
         .zip(chains)
@@ -137,7 +163,8 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
                 input: input_filter(track, env),
                 pdc_delay,
             };
-            track_program(track, routing, previous.and_then(|p| p.track(track.id)))
+            let previous = previous.and_then(|p| p.track(track.id));
+            track_program(track, routing, previous, &plan_env, &mut cache)
         })
         .collect();
 
@@ -322,15 +349,32 @@ fn track_program(
     track: &Arc<Track>,
     routing: TrackEnv,
     previous: Option<&Arc<TrackProgram>>,
+    plan_env: &PlanEnv<'_>,
+    cache: &mut SourceCache,
 ) -> Arc<TrackProgram> {
+    // An audio track keeps its plan (its ring, its heads, its open files) while its clips, the
+    // rate, the tempo map and the project folder are the same.
+    let kept_plan = previous
+        .and_then(|p| p.audio.as_ref())
+        .filter(|plan| plan_matches(plan, &track.clips, plan_env));
     if let Some(prev) = previous
         && Arc::ptr_eq(&prev.source, track)
         && prev.chain == routing.chain
         && prev.input == routing.input
         && prev.pdc_delay == routing.pdc_delay
+        && prev.audio.is_some() == (track.is_audio() && kept_plan.is_some())
     {
         return Arc::clone(prev);
     }
+    let audio = track.is_audio().then(|| match kept_plan {
+        Some(plan) => Arc::clone(plan),
+        None => Arc::new(build_plan(
+            track,
+            plan_env,
+            cache,
+            previous.and_then(|p| p.audio.as_deref()),
+        )),
+    });
     let notes = match previous {
         Some(prev) if same_clips(&prev.source.clips, &track.clips) => Arc::clone(&prev.notes),
         _ => compile_notes(&track.clips),
@@ -350,6 +394,7 @@ fn track_program(
         input: routing.input,
         pdc_delay: routing.pdc_delay,
         meter: previous.map_or_else(|| Arc::new(TrackMeter::new()), |p| Arc::clone(&p.meter)),
+        audio,
     })
 }
 
@@ -413,7 +458,7 @@ fn compile_notes(clips: &[Arc<Clip>]) -> Arc<[SeqNote]> {
         match &clip.content {
             ClipContent::Midi(midi) => midi_notes(clip, midi, &mut notes),
             ClipContent::Step(steps) => step_notes(clip, steps, &mut notes),
-            // Audio clips make no notes; their playback is #11.
+            // Audio clips make no notes; the track's `AudioPlan` plays them.
             ClipContent::Audio(_) => {}
         }
     }

@@ -190,6 +190,12 @@ pub trait DeviceHost {
         let _ = dir;
     }
 
+    /// The folder last given to [`DeviceHost::set_project_dir`]: audio clips resolve their relative
+    /// links against it (#11).
+    fn project_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// The UI side of a sampler device (loading samples, what the pads show); `None` for every
     /// other device.
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
@@ -457,6 +463,10 @@ impl DeviceHost for BuiltinHost {
         self.project_dir = dir;
     }
 
+    fn project_dir(&self) -> Option<PathBuf> {
+        self.project_dir.clone()
+    }
+
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
         self.samplers.get(&device)
     }
@@ -699,6 +709,10 @@ impl DeviceHost for PluginHost {
 
     fn set_project_dir(&mut self, dir: Option<PathBuf>) {
         self.builtin.set_project_dir(dir);
+    }
+
+    fn project_dir(&self) -> Option<PathBuf> {
+        self.builtin.project_dir()
     }
 
     fn sampler(&self, device: DeviceId) -> Option<&SamplerHandle> {
