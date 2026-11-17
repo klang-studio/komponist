@@ -1794,7 +1794,7 @@ fn audio_mixed_selection_stays_on_grid_and_wrong_track_refuses() {
     )
     .unwrap();
     let mut app = App::headless(p);
-    app.ui_mut().arrangement.snap = false;
+    app.ui_mut().arrangement.snap = true;
     app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
         clips: vec![audio, midi],
         mode: SelectMode::Replace,
@@ -1825,4 +1825,70 @@ fn audio_mixed_selection_stays_on_grid_and_wrong_track_refuses() {
     let (track, c) = h.state().project().find_clip(audio).unwrap();
     assert_ne!(track.id, midi_track);
     assert_eq!(c.start, Tick(BAR));
+}
+
+#[test]
+fn audio_move_and_both_trim_edges_honor_disabled_grid_snapping() {
+    let (p, id) = audio_project();
+    let mut app = App::headless(p);
+    app.ui_mut().arrangement.snap = false;
+    let mut h = harness(app);
+    let grid = h
+        .state()
+        .ui()
+        .arrangement
+        .grid
+        .ticks(h.state().project().meter)
+        .0;
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.center().x, r.bottom() - 4.0),
+        pos2(r.center().x + 19.0, r.bottom() - 4.0),
+        &mut h,
+    );
+    let start = h.state().project().find_clip(id).unwrap().1.start.0;
+    assert!(start > BAR && start < 2 * BAR);
+    assert_ne!(
+        start.rem_euclid(grid),
+        0,
+        "disabled snap must keep the free move"
+    );
+    undo(&mut h);
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.left() + 2.0, r.bottom() - 4.0),
+        pos2(r.left() + 21.0, r.bottom() - 4.0),
+        &mut h,
+    );
+    let start = h.state().project().find_clip(id).unwrap().1.start.0;
+    assert!(start > BAR && start < 2 * BAR);
+    assert_ne!(
+        start.rem_euclid(grid),
+        0,
+        "source start follows the free pointer"
+    );
+    assert!(audio_data(&h, id).offset > 0);
+    undo(&mut h);
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.right() - 2.0, r.top() + 3.0),
+        pos2(r.right() - 21.0, r.top() + 3.0),
+        &mut h,
+    );
+    let length = h.state().project().find_clip(id).unwrap().1.length.0;
+    assert!(length < 2 * BAR && length > BAR);
+    assert_ne!(
+        length.rem_euclid(grid),
+        0,
+        "end trim follows the free pointer"
+    );
+    undo(&mut h);
+    assert_eq!(
+        h.state().project().find_clip(id).unwrap().1.start,
+        Tick(BAR)
+    );
+    assert_eq!(
+        h.state().project().find_clip(id).unwrap().1.length,
+        Tick(2 * BAR)
+    );
 }

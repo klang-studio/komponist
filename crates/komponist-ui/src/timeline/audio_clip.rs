@@ -187,7 +187,7 @@ pub(super) fn paint_controls(
     let parts = audio_parts(rect, audio.fade_in, audio.fade_out, audio.gain_db);
     let painter = painter.with_clip_rect(parts.body.intersect(painter.clip_rect()));
     let ink = color32(color::TEXT_1);
-    let controls = state.selected || state.hovered;
+    let controls = state.selected;
     let b = parts.body;
     if audio.file == AudioFileState::Missing {
         let visible = b.intersect(painter.clip_rect());
@@ -260,13 +260,15 @@ pub(super) fn paint_controls(
                 color32(color::CANVAS_BOX_SELECT),
                 Stroke::NONE,
             ));
-            painter.line_segment([start, end], Stroke::new(m::GAIN_LINE_WIDTH, ink));
+            if controls {
+                painter.line_segment([start, end], Stroke::new(m::GAIN_LINE_WIDTH, ink));
+            }
         }
         if controls {
             px::fill(&painter, handle, 0.0, ink);
         }
     }
-    if controls || audio.gain_db != 0.0 {
+    if controls {
         px::hline(&painter, b.x_range(), gain_y(b, audio.gain_db), ink);
         if controls {
             painter.circle_filled(parts.gain.center(), m::GAIN_GRIP / 2.0, ink);
@@ -287,6 +289,56 @@ mod tests {
             assert_eq!(gain_from_y(body, body.bottom() + 100.0), -24.0);
         }
     }
+    #[test]
+    fn gain_and_fade_lines_are_hidden_until_selected_even_when_hovered() {
+        let wave = WaveMesh::flat(200.0, 0.02, 36.0);
+        let audio = AudioLook {
+            file: AudioFileState::Ready,
+            wave: &wave,
+            repitch: None,
+            repitch_label: "RP",
+            message: "",
+            gain_db: -6.0,
+            fade_in: 30.0,
+            fade_out: 40.0,
+        };
+        for (selected, hovered) in [(false, false), (false, true), (true, false)] {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let painter = ui.ctx().layer_painter(egui::LayerId::background());
+                paint_controls(
+                    &painter,
+                    Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 50.0)),
+                    &audio,
+                    ClipState {
+                        selected,
+                        hovered,
+                        ..ClipState::REST
+                    },
+                    color32(color::SURFACE_1),
+                );
+            });
+            let ink = color32(color::TEXT_1);
+            output.textures_delta.clear();
+            let lines = output
+                .shapes
+                .iter()
+                .filter(|shape| match &shape.shape {
+                    Shape::LineSegment { stroke, .. } => stroke.color == ink,
+                    Shape::Rect(rect) => {
+                        rect.fill == ink && rect.rect.width() > 150.0 && rect.rect.height() < 2.0
+                    }
+                    _ => false,
+                })
+                .count();
+            assert_eq!(
+                lines,
+                if selected { 3 } else { 0 },
+                "selected={selected}, hovered={hovered}"
+            );
+        }
+    }
+
     #[test]
     fn fade_handles_stay_inside_narrow_clips() {
         let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 50.0));
