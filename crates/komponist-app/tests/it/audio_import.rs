@@ -426,6 +426,12 @@ fn audio_track_dialog_and_file_browser_render_in_both_languages() {
         app.ui_mut().dialog = Some(komponist_app::ui_state::Dialog::MissingPlugins(Vec::new()));
         let mut h = harness(app);
         h.get_by_role_and_label(Role::Button, lang.missing_audio_open_clip());
+        // The dimmed inspector still paints the scratch filename behind the modal. Its
+        // process-specific directory is not part of the missing-files UI contract.
+        let source_path = h
+            .get_by_role_and_label(Role::Label, lang.audio_file_path())
+            .rect();
+        h.mask(source_path);
         mask_cpu(&mut h, lang);
         h.snapshot(if lang == Lang::De {
             "audio-missing-files-1x"
