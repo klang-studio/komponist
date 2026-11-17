@@ -7,6 +7,7 @@
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod audio;
 mod bench;
 mod chase;
 #[allow(dead_code)]
@@ -18,6 +19,7 @@ mod midi_fx;
 mod mixing;
 mod parallel;
 mod random;
+mod recording;
 mod routing;
 mod swap;
 mod tails;

@@ -136,7 +136,17 @@ fn context(app: &App, s: &mut StatusModel) {
                 .filter(|t| t.arm)
                 .map(|t| t.name.as_str())
                 .collect();
-            s.left = t.status_recording(armed.join(", "));
+            s.left = if let Some(recording) = app.audio_recording() {
+                let inputs = recording
+                    .tracks()
+                    .filter_map(|id| p.track(id))
+                    .map(|track| crate::views::audio_inputs::input_label(t, p, track.audio.input))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                t.status_recording_input(armed.join(", "), inputs)
+            } else {
+                t.status_recording(armed.join(", "))
+            };
             // "· Take 1": the take the editor shows (S02).
             if let Some(take) = app
                 .recording()
@@ -228,9 +238,16 @@ fn context(app: &App, s: &mut StatusModel) {
     }
     if !sel.clips.is_empty() {
         s.left = t.status_clips_selected(sel.clips.len());
-        s.mid = platform
-            .pick(t.status_clips_hint(), t.status_clips_hint_mac())
-            .to_owned();
+        let audio = sel.clips.iter().any(|id| {
+            p.find_clip(*id)
+                .is_some_and(|(_, c)| matches!(c.content, komponist_model::ClipContent::Audio(_)))
+        });
+        s.mid = if audio {
+            platform.pick(t.status_audio_clips_hint(), t.status_audio_clips_hint_mac())
+        } else {
+            platform.pick(t.status_clips_hint(), t.status_clips_hint_mac())
+        }
+        .to_owned();
     } else if let Some(tr) = track {
         s.left = t.status_track_selected(&tr.name);
         s.mid = t.status_track_hint().to_owned();

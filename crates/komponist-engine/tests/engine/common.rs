@@ -74,6 +74,7 @@ fn model_track(id: u64) -> Arc<Track> {
         monitor: false,
         input: MidiInputSel::All,
         midi_channel: MidiChannelSel::Omni,
+        audio: komponist_model::AudioIo::default(),
         height: 56,
         clips: Vec::new(),
         output: komponist_model::TrackOutput::Master,
@@ -103,6 +104,7 @@ pub fn track(id: u64, slot: u32, notes: Vec<SeqNote>) -> TrackProgram {
         },
         pdc_delay: 0,
         meter: Arc::new(TrackMeter::new()),
+        audio: None,
     }
 }
 

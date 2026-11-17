@@ -28,7 +28,10 @@ pub const NEW_TRACK_BOX_INSET: f32 = space::SPACE_1;
 pub const NEW_TRACK_DASH: [f32; 2] = [3.0, 3.0];
 /// Room kept below the last track so "Neue Spur" stays reachable when the tracks fill the view
 /// (the screens show it in the free space below the tracks; not a design value).
-pub const NEW_TRACK_MIN_HEIGHT: f32 = size::track::DEFAULT;
+// Audio proposal §6 adds a wrapped file-drop hint beside both creation shortcuts.
+pub const NEW_TRACK_MIN_HEIGHT: f32 = size::track::DEFAULT + space::SPACE_6;
+/// One-pixel refusal hatch stroke (audio proposal mockup 08).
+pub const AUDIO_DROP_HATCH_WIDTH: f32 = 1.0;
 
 /// S10 empty project hint: width of the text block (`width:420px`).
 pub const EMPTY_HINT_WIDTH: f32 = 420.0;

@@ -164,6 +164,7 @@ fn bar(mode: MasterDisplay, ppp: f32) -> Harness<'static, Bar> {
         .build_ui_state(
             |ui, bar: &mut Bar| {
                 let model = TransportModel {
+                    provisional_recordings: None,
                     project: &bar.project,
                     dirty: false,
                     state: TransportState::Playing,

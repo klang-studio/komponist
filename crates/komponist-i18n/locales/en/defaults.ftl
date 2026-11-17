@@ -12,6 +12,9 @@ default-name-bus = Bus
 # Base of a new group: „Gruppe 1“, „Gruppe 2“, …
 default-name-group = Group
 
+# Base of a new audio track: „Audio“, „Audio 2“, …
+default-name-audio = Audio
+
 # Step row and pad of a new drum clip: the closed hi-hat (S03).
 default-name-hat-closed = Closed Hat
 

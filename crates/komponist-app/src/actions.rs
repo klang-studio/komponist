@@ -127,6 +127,20 @@ pub enum EditAction {
     NudgeSelection(i32),
     /// Ctrl T: new MIDI track with hexa, armed exclusively.
     NewMidiTrack,
+    /// Ctrl Shift T: open the new-track dialog with Audio selected.
+    NewAudioTrack,
+    /// Create an armed audio track recording this bus, outside its group.
+    RecordBus(TrackId),
+    /// Choose an audio take.
+    SelectAudioTake { clip: ClipId, take: usize },
+    /// Rename an audio take.
+    RenameAudioTake {
+        clip: ClipId,
+        take: usize,
+        name: String,
+    },
+    /// Remove an audio take, keeping at least one.
+    RemoveAudioTake { clip: ClipId, take: usize },
 
     /// `edits::set_project_prop`.
     SetProjectProp(ProjectProp),
@@ -190,6 +204,27 @@ pub enum EditAction {
         clip: ClipId,
         /// New length.
         length: Tick,
+    },
+    /// Trim the source start of an audio clip.
+    TrimAudioClipStart {
+        /// Clip to trim.
+        clip: ClipId,
+        /// New timeline start.
+        start: Tick,
+    },
+    /// Replace the linked file while preserving the audio clip settings.
+    SetAudioClipFile {
+        /// Clip to relink.
+        clip: ClipId,
+        /// Decoded file metadata and link.
+        file: komponist_model::AudioFile,
+    },
+    /// Set an audio clip parameter.
+    SetAudioClipProp {
+        /// Clip to edit.
+        clip: ClipId,
+        /// New property value.
+        prop: komponist_model::edits::AudioClipProp,
     },
     /// `edits::set_clip_loop` (corner drag, inspector).
     SetClipLoop {
@@ -509,6 +544,26 @@ pub enum ProjectAction {
     Open,
     /// Open this file (recent list, start screen Enter).
     OpenPath(PathBuf),
+    /// Open the audio file replacement browser.
+    ReplaceAudio(ClipId),
+    /// Replace with a chosen, decoded file.
+    ReplaceAudioPath {
+        /// Clip to relink.
+        clip: ClipId,
+        /// Source file to link.
+        path: PathBuf,
+    },
+    /// Ctrl I: choose linked audio files to import.
+    ImportAudio,
+    /// Link files on an audio track, or create one track per file when target is absent.
+    ImportAudioPaths {
+        /// Files in import order.
+        paths: Vec<PathBuf>,
+        /// Existing audio track, or new tracks.
+        target: Option<TrackId>,
+        /// Grid position, in ticks.
+        at: Tick,
+    },
     /// Ctrl S: save (file dialog the first time).
     Save,
     /// Ctrl Shift S or "⋯": save under a new path (file dialog).
@@ -542,6 +597,16 @@ pub enum ProjectAction {
 pub enum SettingsAction {
     /// Driver, device, rate or buffer changed: rebuild the stream (engine untouched).
     SetAudio(StreamConfig),
+    /// Explicit capture device selection; None disables capture.
+    SetAudioInput(Option<komponist_audio::InputConfig>),
+    /// Open a capture device, then assign its channels only if opening succeeded.
+    ChooseTrackAudioInput {
+        track: TrackId,
+        input: komponist_model::AudioInput,
+        device: komponist_audio::InputConfig,
+    },
+    /// Encoding of newly recorded WAV files.
+    SetCaptureFormat(crate::settings::CaptureFormat),
     /// "Erneut suchen" after the device was lost.
     RetryAudio,
     /// MIDI input switch.

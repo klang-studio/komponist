@@ -29,6 +29,7 @@ use crate::views::{View, ViewCtx, centered_text};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DockBody {
     PianoRoll,
+    Waveform,
     StepSeq,
     NoClip,
     Devices,
@@ -49,8 +50,12 @@ impl App {
         let l = layout::compute(screen, &self.ui.layout);
         self.focus_on_press(ui, &l);
 
+        let provisional_recordings = self
+            .provisional_recordings_folder()
+            .map(std::path::Path::to_path_buf);
         let plugin_windows = self.plugin_window_entries();
         let model = transport::TransportModel {
+            provisional_recordings: provisional_recordings.as_deref(),
             project: self.doc.project(),
             dirty: self.doc.is_dirty(),
             state: self.engine.transport(),
@@ -132,6 +137,10 @@ impl App {
         f: impl FnOnce(&mut crate::views::Views, &mut ViewCtx<'_>) -> R,
     ) -> R {
         let focused = self.ui.focus == area;
+        let project_dir = self.project_dir();
+        let provisional_recordings = self
+            .provisional_recordings_folder()
+            .map(std::path::Path::to_path_buf);
         let mut ctx = ViewCtx::new(
             self.doc.project(),
             &mut self.ui,
@@ -140,10 +149,14 @@ impl App {
             &self.keymap,
             &mut self.queue,
         );
+        ctx.project_dir = project_dir.as_deref();
+        ctx.audio_devices = Some(std::sync::Arc::clone(&self.audio_devices));
         ctx.focused = focused;
         ctx.lang = self.lang;
         ctx.requests = self.shell.requests;
         ctx.recording = self.recording.as_ref();
+        ctx.audio_recording = self.audio_recording.running();
+        ctx.provisional_recordings = provisional_recordings.as_deref();
         ctx.exports = &self.export.done;
         let midi = self.engine.telemetry().held_input_keys();
         ctx.held_notes = self
@@ -310,14 +323,30 @@ impl App {
         });
     }
 
+    pub(crate) fn live_editor_area(&self) -> Option<FocusArea> {
+        crate::views::audio_editor::live::recording_area(
+            self.doc.project(),
+            &self.ui,
+            self.recording.as_ref(),
+            self.audio_recording.running(),
+        )
+    }
+
     fn dock_body(&self) -> DockBody {
         let p = self.doc.project();
         match self.ui.layout.dock_tab {
             // While recording, the editor shows the take (S02 "Piano Roll · live").
-            DockTab::Editor if self.recording.is_some() => DockBody::PianoRoll,
+            DockTab::Editor if self.live_editor_area().is_some() => {
+                if self.live_editor_area() == Some(FocusArea::Waveform) {
+                    DockBody::Waveform
+                } else {
+                    DockBody::PianoRoll
+                }
+            }
             DockTab::Editor => match self.ui.editor_area(p) {
                 _ if self.ui.editor.clip.and_then(|c| p.find_clip(c)).is_none() => DockBody::NoClip,
                 FocusArea::StepSequencer => DockBody::StepSeq,
+                FocusArea::Waveform => DockBody::Waveform,
                 _ => DockBody::PianoRoll,
             },
             DockTab::Devices => {
@@ -349,7 +378,7 @@ impl App {
             strip,
             self.doc.project(),
             &self.ui,
-            self.recording.is_some(),
+            self.live_editor_area(),
             &self.keymap,
             self.lang,
             &mut self.queue,
@@ -383,6 +412,7 @@ impl App {
             kind => self.with_view(area, |views, ctx| {
                 let view: &mut dyn View = match kind {
                     DockBody::StepSeq => &mut *views.step_seq,
+                    DockBody::Waveform => &mut *views.waveform,
                     DockBody::Devices => &mut *views.devices,
                     DockBody::Mixer => &mut *views.mixer,
                     _ => &mut *views.piano_roll,

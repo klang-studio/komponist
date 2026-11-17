@@ -14,8 +14,8 @@ use super::{CompileEnv, chain_latency, fader_gain};
 use crate::MAX_PDC_FRAMES;
 use crate::program::ChainSlot;
 use crate::route::{
-    Delay, GateTable, LineId, LineKey, LineMap, MAX_LINES, MAX_SENDS, MasterRoute, NodeRoute,
-    RouteInput, Routing, SendRoute, SidechainRoute, Span,
+    AudioInputRoute, Delay, GateTable, LineId, LineKey, LineMap, MAX_LINES, MAX_SENDS, MasterRoute,
+    NodeRoute, RouteInput, Routing, SendRoute, SidechainRoute, Span,
 };
 
 /// The routing of a program and the delay of every track's main output (`pdc_delay`).
@@ -144,6 +144,11 @@ pub(super) fn compile(
             TrackOutput::Master => None,
         })
         .collect();
+    let audio_inputs: Vec<Option<usize>> = tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| t.input_bus().and_then(|id| bus(id, i)))
+        .collect();
     let mut wanted_sends = Vec::new();
     for (i, track) in tracks.iter().enumerate() {
         let mut targets = HashSet::new();
@@ -179,7 +184,11 @@ pub(super) fn compile(
             }
         }
     }
-    if outputs.iter().all(Option::is_none) && wanted_sends.is_empty() && wanted_sides.is_empty() {
+    if outputs.iter().all(Option::is_none)
+        && audio_inputs.iter().all(Option::is_none)
+        && wanted_sends.is_empty()
+        && wanted_sides.is_empty()
+    {
         return flat();
     }
 
@@ -204,6 +213,10 @@ pub(super) fn compile(
             .iter()
             .enumerate()
             .all(|(i, o)| o.is_none_or(|b| forward(i, b)))
+        && audio_inputs
+            .iter()
+            .enumerate()
+            .all(|(to, from)| from.is_none_or(|from| forward(from, to)))
         && wanted_sends.iter().all(|&(f, t, _)| forward(f, t))
         && wanted_sides
             .iter()
@@ -220,7 +233,14 @@ pub(super) fn compile(
         .filter(|t| !t.is_bus())
         .map(|t| LineKey::Head(t.id))
         .chain(wanted_sends.iter().map(|(_, _, s)| LineKey::Send(s.id)))
-        .chain(wanted_sides.iter().map(|s| LineKey::Sidechain(s.4)));
+        .chain(wanted_sides.iter().map(|s| LineKey::Sidechain(s.4)))
+        .chain(
+            tracks
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| audio_inputs[*i].is_some())
+                .map(|(_, t)| LineKey::AudioInput(t.id)),
+        );
     for key in keys {
         lines.reserve(key);
     }
@@ -266,7 +286,7 @@ pub(super) fn compile(
         lat_out[side.from].saturating_sub(prefix_latency(chain_of(side.holder), side.device, env))
     };
     for &v in &order {
-        let mut l = 0;
+        let mut l = audio_inputs[v].map_or(0, |from| lat_out[from]);
         for (u, o) in outputs.iter().enumerate() {
             if *o == Some(v) {
                 l = l.max(lat_out[u]);
@@ -301,9 +321,10 @@ pub(super) fn compile(
         .map(|v| {
             // Every MIDI track whose effects take a sidechain has a head line, also while its
             // delay is 0, so the line forgets its audio when the delay drops to 0.
-            let sidechained = sides
-                .iter()
-                .any(|s| s.holder == Some(v) && alignable(s.holder, s.device));
+            let sidechained = audio_inputs[v].is_some()
+                || sides
+                    .iter()
+                    .any(|s| s.holder == Some(v) && alignable(s.holder, s.device));
             if tracks[v].is_bus() || !sidechained {
                 return None;
             }
@@ -398,6 +419,20 @@ pub(super) fn compile(
         }
     }
 
+    for (to, from) in audio_inputs.iter().enumerate() {
+        if let Some(from) = *from
+            && let Some(line) = lines.assign(LineKey::AudioInput(tracks[to].id))
+        {
+            nodes[to].audio_input = Some(AudioInputRoute {
+                from: from as u16,
+                delay: Delay {
+                    line,
+                    frames: delay_frames(lat_in[to].saturating_sub(lat_out[from])),
+                },
+            });
+        }
+    }
+
     // Dependencies between jobs (the master is not a job): each source once per target.
     let mut edges: Vec<(usize, usize)> = Vec::new();
     edges.extend(
@@ -405,6 +440,12 @@ pub(super) fn compile(
             .iter()
             .enumerate()
             .filter_map(|(u, o)| o.map(|v| (u, v))),
+    );
+    edges.extend(
+        audio_inputs
+            .iter()
+            .enumerate()
+            .filter_map(|(to, from)| from.map(|from| (from, to))),
     );
     edges.extend(sends.iter().map(|s| (s.from, s.to)));
     edges.extend(sides.iter().filter_map(|s| s.holder.map(|h| (s.from, h))));
@@ -436,7 +477,8 @@ pub(super) fn compile(
     let taps = sends
         .iter()
         .map(|s| (s.from, s.tap))
-        .chain(sides.iter().map(|s| (s.from, s.tap)));
+        .chain(sides.iter().map(|s| (s.from, s.tap)))
+        .chain(audio_inputs.iter().flatten().map(|&from| (from, Tap::Post)));
     for (from, tap) in taps {
         match tap {
             Tap::Pre => nodes[from].pre = true,

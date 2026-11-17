@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::audio::{AudioClip, AudioInput, AudioIo};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::time::{Meter, StepResolution, Tempo, TempoMap, Tick, TickRange};
 
@@ -211,25 +212,34 @@ pub struct Track {
     pub name: String,
     /// Track colour, one of the 14 token hues ([`Hue::ALL`]).
     pub hue: Hue,
-    /// What the track carries: MIDI (clips, instrument) or a bus (sums its inputs, effects only).
+    /// What the track carries: MIDI (clips, instrument), audio (audio clips, effects only) or a bus
+    /// (sums its inputs, effects only).
     pub kind: TrackKind,
     /// Mixer channel: volume, pan, mute, solo, devices. A MIDI track's chain is
     /// `[MIDI effects…] → instrument → [audio effects…]` ([`Channel::midi_effect_count`],
-    /// [`Channel::instrument`]); a track may have no instrument (silent).
+    /// [`Channel::instrument`]); a track may have no instrument (silent). An audio track's chain
+    /// holds audio effects only.
     pub channel: Channel,
     /// Record arm ("R"). Arming also switches [`Track::monitor`] on (S02), and an armed track
-    /// monitors live input even with I off (auto-monitoring, owner decision 2026-11-15).
+    /// monitors live input even with I off (auto-monitoring, owner decision 2026-11-15). On an
+    /// audio track arming does not touch [`Track::monitor`]: [`AudioIo::monitor`] decides.
     pub arm: bool,
-    /// Input monitoring ("I"): live MIDI input reaches the instrument.
+    /// Input monitoring ("I"): live MIDI input reaches the instrument. Always `false` on audio
+    /// tracks ([`AudioIo::monitor`] replaces it).
     pub monitor: bool,
     /// Which MIDI input feeds the track ("Eingang").
     pub input: MidiInputSel,
     /// Which MIDI channel of that input feeds the track ("Kanal").
     pub midi_channel: MidiChannelSel,
+    /// Audio input and monitoring of an audio track (epic #8); the default on every other kind,
+    /// and then not written to the file.
+    #[serde(default, skip_serializing_if = "AudioIo::is_default")]
+    pub audio: AudioIo,
     /// Header height in design px, [`TRACK_HEIGHT_MIN`] ..= [`TRACK_HEIGHT_MAX`]. Part of the project.
     pub height: u16,
-    /// Clips sorted by `start`, then by id. Clips may overlap; overlapping clips all play. Always
-    /// empty on a bus.
+    /// Clips sorted by `start`, then by id. MIDI clips may overlap; overlapping clips all play.
+    /// Audio clips never overlap (edits cut what lies below, [`AudioClip`]). Always empty on a bus;
+    /// MIDI and step clips only on a MIDI track, audio clips only on an audio track.
     pub clips: Vec<Arc<Clip>>,
     /// Where the main output goes (after fader and pan): the master or a bus (wave 9, ARCHITECTURE
     /// §6.8). Never the track itself; the routing graph stays acyclic ([`crate::routing`]). A track
@@ -260,6 +270,19 @@ impl Track {
     /// Whether this track is a group: a bus shown as a folder of its members.
     pub fn is_group(&self) -> bool {
         self.is_bus() && self.folder
+    }
+
+    /// Whether this track is an audio track ([`TrackKind::Audio`]).
+    pub fn is_audio(&self) -> bool {
+        self.kind == TrackKind::Audio
+    }
+
+    /// The bus an audio track records ([`AudioInput::Bus`]), if it does.
+    pub fn input_bus(&self) -> Option<TrackId> {
+        match self.audio.input {
+            AudioInput::Bus(bus) if self.is_audio() => Some(bus),
+            _ => None,
+        }
     }
 
     /// The send to `target`, if there is one.
@@ -335,9 +358,6 @@ impl Sidechain {
 }
 
 /// Kind of a track. Kinds are separate, there are no hybrid tracks (owner, 2026-11-15).
-///
-/// Reserved: `Audio` (wave 10, WP-111) will be the next variant: audio clips instead of MIDI
-/// clips, effects only, one more source node in the same routing graph (ARCHITECTURE §6.8.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackKind {
@@ -349,6 +369,10 @@ pub enum TrackKind {
     /// never armed. Groups and effect buses are both buses ([`Track::folder`], ARCHITECTURE
     /// §6.8.1).
     Bus,
+    /// An audio track (wave 10, epic #8): audio clips instead of MIDI clips, audio effects only, one
+    /// more source node in the same routing graph (ARCHITECTURE §6.8.9, §6.9). Holds no MIDI or
+    /// step clips, no instrument and no MIDI effects; records from [`Track::audio`]'s input.
+    Audio,
 }
 
 /// A track colour: one of the 14 hues of the design tokens (`track.colors.*.hue`), in degrees of
@@ -605,14 +629,16 @@ pub struct Clip {
     /// Muted clips stay visible (dim colours) but do not play (key `0`).
     pub mute: bool,
     /// Non-destructive transposition in semitones, `-48 ..= 48` ("Transponieren" in the inspector).
-    /// Notes shifted outside `0 ..= 127` are dropped at compile time.
+    /// Notes shifted outside `0 ..= 127` are dropped at compile time. MIDI and step clips only; 0 on
+    /// audio clips.
     #[serde(default)]
     pub transpose: i8,
     /// Non-destructive velocity change in percent, `-100 ..= 100` ("Velocity +0 %"): every velocity
-    /// is scaled by `1 + v / 100` and clamped to `1 ..= 127` at compile time.
+    /// is scaled by `1 + v / 100` and clamped to `1 ..= 127` at compile time. MIDI and step clips
+    /// only; 0 on audio clips.
     #[serde(default)]
     pub velocity_pct: i8,
-    /// MIDI notes or a step pattern.
+    /// MIDI notes, a step pattern or an audio window.
     pub content: ClipContent,
 }
 
@@ -622,11 +648,12 @@ impl Clip {
         self.start + self.length
     }
 
-    /// Whether this is a MIDI or a step clip.
+    /// Whether this is a MIDI, a step or an audio clip.
     pub fn kind(&self) -> ClipKind {
         match self.content {
             ClipContent::Midi(_) => ClipKind::Midi,
             ClipContent::Step(_) => ClipKind::Step,
+            ClipContent::Audio(_) => ClipKind::Audio,
         }
     }
 }
@@ -639,6 +666,8 @@ pub enum ClipContent {
     Midi(MidiClip),
     /// A step pattern, edited in the step sequencer.
     Step(StepClip),
+    /// A window into a linked audio file (audio tracks only).
+    Audio(AudioClip),
 }
 
 /// Kind of a clip's content, without the data.
@@ -648,6 +677,20 @@ pub enum ClipKind {
     Midi,
     /// [`ClipContent::Step`].
     Step,
+    /// [`ClipContent::Audio`].
+    Audio,
+}
+
+impl ClipKind {
+    /// Whether a track of `kind` can hold a clip of this kind: MIDI and step clips on MIDI tracks,
+    /// audio clips on audio tracks, nothing on a bus.
+    pub fn fits(self, kind: TrackKind) -> bool {
+        match kind {
+            TrackKind::Midi => matches!(self, ClipKind::Midi | ClipKind::Step),
+            TrackKind::Audio => self == ClipKind::Audio,
+            TrackKind::Bus => false,
+        }
+    }
 }
 
 /// MIDI content: one or more takes, one of them active.

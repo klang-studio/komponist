@@ -1,10 +1,14 @@
 //! The routing graph (wave 9, ARCHITECTURE §6.8).
 //!
-//! Nodes are the tracks (MIDI tracks and buses, later audio tracks) and the master, addressed by
+//! Nodes are the tracks (MIDI tracks, audio tracks and buses) and the master, addressed by
 //! [`ChannelRef`]. Edges:
 //!
 //! - **Output**: every track's [`Track::output`] → the master or a bus.
 //! - **Send**: every [`TrackSend`](crate::TrackSend) → its target bus.
+//! - **Input**: the bus an audio track records ([`crate::AudioInput::Bus`], „Bus aufnehmen“) → the
+//!   audio track. Like a sidechain it is a tap, not a path into the mix, but it orders the graph:
+//!   the bus must be done before the track runs, so the track cannot output into that bus or into
+//!   anything that feeds it.
 //! - **Sidechain**: a device's [`Sidechain`](crate::Sidechain) source → the track (or master) that
 //!   holds the device. It carries no audio into the mix, but its source must be processed first,
 //!   so it orders the graph like any other edge.
@@ -20,6 +24,9 @@
 //!   routing: there is no separate folder tree.
 //! - A bus holds no clips, no instrument, no MIDI effects, and is never armed or monitoring. Only
 //!   a group can be folded.
+//! - A track holds only content its kind takes: an audio track audio clips and audio effects, a MIDI
+//!   track MIDI and step clips; the audio input settings are used by audio tracks only, and an
+//!   audio track's input bus exists and is not the track itself.
 //! - Edits give buses no sends (owner decision 11 A); the graph would allow them.
 //!
 //! Everything here is pure: the UI greys out targets with [`output_targets`], [`send_targets`] and
@@ -32,7 +39,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::ids::{DeviceId, SendId, TrackId};
-use crate::project::{ChannelRef, DeviceRole, Project, Track, TrackOutput};
+use crate::project::{ChannelRef, DeviceRole, Project, Track, TrackKind, TrackOutput};
 
 // ------------------------------------------------------------------------------------------------
 // Edges
@@ -47,6 +54,8 @@ pub enum EdgeKind {
     Send(SendId),
     /// The sidechain input of this device (held by the edge's `to` node).
     Sidechain(DeviceId),
+    /// The input of an audio track that records a bus (`from` is the bus, `to` the track).
+    Input,
 }
 
 /// One edge of the routing graph: `from` must be processed before `to`.
@@ -56,12 +65,13 @@ pub struct Edge {
     pub from: ChannelRef,
     /// Target node.
     pub to: ChannelRef,
-    /// Output, send or sidechain.
+    /// Output, send, sidechain or input.
     pub kind: EdgeKind,
 }
 
 /// All edges of `project` as stored, in display order of their source (outputs, then sends, then
-/// the sidechains of the track's devices), the master's sidechains last. References to tracks that
+/// the sidechains of the track's devices), the master's sidechains last, the inputs of audio tracks
+/// after everything else. References to tracks that
 /// do not exist are included; [`check`] reports them.
 pub fn edges(project: &Project) -> Vec<Edge> {
     let mut edges = Vec::new();
@@ -95,6 +105,13 @@ pub fn edges(project: &Project) -> Vec<Edge> {
             })
         }));
     }
+    edges.extend(project.tracks.iter().filter_map(|t| {
+        t.input_bus().map(|bus| Edge {
+            from: ChannelRef::Track(bus),
+            to: ChannelRef::Track(t.id),
+            kind: EdgeKind::Input,
+        })
+    }));
     edges
 }
 
@@ -254,6 +271,27 @@ pub fn sidechain_sources(project: &Project, device: DeviceId) -> Vec<TrackId> {
         .enumerate()
         .filter(|&(i, _)| !downstream[i])
         .map(|(_, id)| *id)
+        .collect()
+}
+
+/// Every bus that can feed the input of the audio track `track` without a cycle, in display order
+/// (`AudioInput::Bus`): not a bus the track feeds through any path. Empty when the track does not
+/// exist or is not an audio track.
+pub fn input_sources(project: &Project, track: TrackId) -> Vec<TrackId> {
+    if !project.track(track).is_some_and(|t| t.is_audio()) {
+        return Vec::new();
+    }
+    let graph = Graph::all(project);
+    let Some(node) = graph.node(ChannelRef::Track(track)) else {
+        return Vec::new();
+    };
+    let downstream = graph.reach([node], false);
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|&(i, t)| t.is_bus() && !downstream[i] && graph.index.get(&t.id) == Some(&i))
+        .map(|(_, t)| t.id)
         .collect()
 }
 
@@ -423,6 +461,17 @@ pub enum RoutingIssue {
     GroupOrder,
     /// A bus holds clips, an instrument or a MIDI effect, or is armed or monitoring.
     BusContent(TrackId),
+    /// A track holds content its kind does not take (audio clips on a MIDI track, MIDI or step
+    /// clips, an instrument or a MIDI effect on an audio track), or has audio input settings
+    /// without being an audio track.
+    KindContent(TrackId),
+    /// The input bus of an audio track is not a bus (the issue's `track` is the audio track).
+    InputNotABus {
+        /// The audio track.
+        track: TrackId,
+        /// The referenced track.
+        target: TrackId,
+    },
     /// A track that is not a bus is a folder, or one that is not a group is folded.
     NotAGroup(TrackId),
 }
@@ -449,6 +498,12 @@ impl fmt::Display for RoutingIssue {
             RoutingIssue::GroupOrder => write!(f, "group members do not follow their group"),
             RoutingIssue::BusContent(t) => {
                 write!(f, "bus {} holds clips, an instrument or a MIDI effect", t.0)
+            }
+            RoutingIssue::KindContent(t) => {
+                write!(f, "track {} holds content its kind does not take", t.0)
+            }
+            RoutingIssue::InputNotABus { track, target } => {
+                write!(f, "track {} records track {}, not a bus", track.0, target.0)
             }
             RoutingIssue::NotAGroup(t) => write!(f, "track {} is folded but not a group", t.0),
         }
@@ -499,6 +554,43 @@ pub fn check(project: &Project) -> Result<(), RoutingIssue> {
                     .any(|d| d.role != DeviceRole::Effect))
         {
             return Err(RoutingIssue::BusContent(track.id));
+        }
+        let kind_ok = match track.kind {
+            TrackKind::Midi => {
+                track.audio.is_default()
+                    && track.clips.iter().all(|c| c.kind().fits(TrackKind::Midi))
+            }
+            TrackKind::Audio => {
+                !track.monitor
+                    && track.clips.iter().all(|c| c.kind().fits(TrackKind::Audio))
+                    && track
+                        .channel
+                        .devices
+                        .iter()
+                        .all(|d| d.role == DeviceRole::Effect)
+            }
+            TrackKind::Bus => track.audio.is_default(),
+        };
+        if !kind_ok {
+            return Err(RoutingIssue::KindContent(track.id));
+        }
+        if let Some(bus) = track.input_bus() {
+            match kinds.get(&bus) {
+                None => {
+                    return Err(RoutingIssue::MissingTrack {
+                        track: Some(track.id),
+                        missing: bus,
+                    });
+                }
+                Some(_) if bus == track.id => return Err(RoutingIssue::SelfReference(track.id)),
+                Some(false) => {
+                    return Err(RoutingIssue::InputNotABus {
+                        track: track.id,
+                        target: bus,
+                    });
+                }
+                Some(true) => {}
+            }
         }
         for device in &track.channel.devices {
             if let Some(sc) = device.sidechain {
@@ -556,7 +648,7 @@ impl Gate {
 }
 
 /// Which outputs and sends carry signal under the current mute and solo states (ARCHITECTURE
-/// §6.8.6). Sidechain taps are not gates: a pre tap ignores the source's fader, mute and solo, a
+/// §6.8.6). Sidechain taps and the inputs of audio tracks are not gates: a pre tap ignores the source's fader, mute and solo, a
 /// post tap follows its fader and mute (the engine's fader stage) but never solo (§6.8.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Gates {
@@ -599,7 +691,9 @@ impl Gates {
 ///   leads into `S*` (sends into a soloed return keep feeding it). Everything else is
 ///   solo-muted. Without buses this is the old rule `!mute && (!any_solo || solo)`.
 pub fn gates(project: &Project) -> Gates {
-    let graph = Graph::new(project, |k| !matches!(k, EdgeKind::Sidechain(_)));
+    let graph = Graph::new(project, |k| {
+        !matches!(k, EdgeKind::Sidechain(_) | EdgeKind::Input)
+    });
     let soloed: Vec<usize> = project
         .tracks
         .iter()

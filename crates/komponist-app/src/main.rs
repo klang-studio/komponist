@@ -148,6 +148,8 @@ fn run_app() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    komponist_audiofile::FilePool::global()
+        .set_cache_dir(settings::cache_dir().map(|dir| dir.join("peaks")));
     // An unreadable settings file is reported and left alone: this session runs on the
     // defaults and does not overwrite it.
     let path = args.settings.clone().or_else(settings::default_path);
@@ -215,6 +217,14 @@ fn run_app() -> eframe::Result {
     options.app_id = APP_ID.to_owned();
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
+    if let Some(input) = app.settings().audio_input.clone()
+        && let Err(error) = app.engine_mut().set_audio_input(Some(input))
+    {
+        app.set_status(
+            lang.audio_record_failed(error),
+            komponist_app::ui_state::StatusKind::Error,
+        );
+    }
     if !args.no_plugin_scan {
         app.scan_plugins();
     }

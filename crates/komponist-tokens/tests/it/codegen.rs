@@ -143,7 +143,14 @@ fn komponist_additions_generate() {
 
 #[test]
 fn komponist_formulas_are_required() {
-    for key in ["key-playing", "note-muted", "clip-handle"] {
+    for key in [
+        "key-playing",
+        "note-muted",
+        "clip-handle",
+        "wave-peak",
+        "wave-rms",
+        "wave-dim",
+    ] {
         let e = error_after(|t| {
             t["track"]["$formula"].as_object_mut().unwrap().remove(key);
         });

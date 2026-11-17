@@ -91,10 +91,10 @@ status-track-hint = Double-click in the track to add a clip · R records
 status-project-unsaved = { $name } · unsaved
 
 # Middle text of a project without tracks.
-status-empty-hint = Ctrl+T: MIDI track · Ctrl+S: save
+status-empty-hint = Ctrl+T: MIDI track · Ctrl+Shift+T: Audio track · Ctrl+S: save
 
 # Same on macOS: ⌘ instead of Ctrl.
-status-empty-hint-mac = ⌘T: MIDI track · ⌘S: save
+status-empty-hint-mac = ⌘T: MIDI track · ⌘⇧T: Audio track · ⌘S: save
 
 ## Messages (`App::set_status`).
 
@@ -157,3 +157,11 @@ status-collect-failed = Collecting failed: { $reason }
 
 # Editing cannot create an object once the project ID counter is exhausted.
 status-id-space-exhausted = No unused object IDs remain in this project.
+# Audio clip editing and refused drops.
+status-audio-clips-hint = Drag moves · Alt+drag copies · Edges trim · Corners: fades · Line: gain · Ctrl+E splits · Ctrl+D duplicates · Del deletes
+status-audio-clips-hint-mac = Drag moves · ⌥+drag copies · Edges trim · Corners: fades · Line: gain · ⌘ E splits · ⌘ D duplicates · Del deletes
+status-drop-refused-midi = MIDI tracks don’t take audio files.
+status-drop-refused-audio = Audio tracks don’t take MIDI clips.
+
+# Linked audio import and browsing (epic #8).
+status-collect-skipped = { $count } files were not collected: unsupported audio files · { $files }

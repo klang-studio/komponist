@@ -147,5 +147,8 @@ export-dropped-many = { $names } sind ausgefallen
 # Status: the export failed; `$why` is the cause.
 export-failed = Export fehlgeschlagen · { $why }
 
+# Status: an audio clip's linked file could not be opened; `$file` is its path.
+export-missing-audio = Export fehlgeschlagen · Audiodatei fehlt oder lässt sich nicht öffnen: { $file }
+
 # Status: "Im Ordner zeigen" failed; `$why` is the cause.
 export-open-failed = Ordner lässt sich nicht öffnen · { $why }

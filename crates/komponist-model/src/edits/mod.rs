@@ -23,6 +23,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use crate::audio::{AudioInput, MonitorMode};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::project::{
     BUILTIN_KLOPFER, BUILTIN_SAMPLER, Channel, ChannelRef, Clip, ClipContent, ClipKind,
@@ -33,13 +34,24 @@ use crate::project::{
 };
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
+mod audio;
 mod routes;
+
+pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
+
+pub use audio::{
+    AudioClipProp, NewAudioTrack, add_audio_take, add_audio_track, add_audio_track_in,
+    remove_audio_take, rename_audio_take, rewrite_audio_files, select_audio_take,
+    set_audio_clip_file, set_audio_clip_prop, trim_audio_clip_start,
+};
 
 pub use routes::{
     DEFAULT_BUS_NAME, DEFAULT_GROUP_NAME, NewBus, SendProp, add_bus, add_bus_in, add_send,
     duplicate_tracks, numbered_track_name, remove_send, set_output, set_send, set_sidechain,
 };
 
+#[cfg(test)]
+mod audio_tests;
 #[cfg(test)]
 mod routing_tests;
 #[cfg(test)]
@@ -69,6 +81,14 @@ pub enum EditError {
     /// The edit would close a cycle in the routing graph (outputs, sends, sidechains), including
     /// a track routing or tapping into itself.
     RoutingCycle,
+    /// The track does not take clips of this kind (audio clips on a MIDI track, MIDI or step clips
+    /// on an audio track).
+    ClipNotAllowed {
+        /// The track that refuses.
+        track: TrackId,
+        /// The kind of the refused clip.
+        clip: ClipKind,
+    },
     /// The clip has the other content kind (note edit on a step clip, step edit on a MIDI clip).
     WrongClipKind {
         /// The clip.
@@ -99,6 +119,9 @@ impl fmt::Display for EditError {
             EditError::SendNotFound(id) => write!(f, "send {} not found", id.0),
             EditError::NotABus(id) => write!(f, "track {} is not a bus", id.0),
             EditError::RoutingCycle => write!(f, "the routing would have a cycle"),
+            EditError::ClipNotAllowed { track, clip } => {
+                write!(f, "track {} takes no {clip:?} clips", track.0)
+            }
             EditError::WrongClipKind { clip, expected } => {
                 write!(f, "clip {} is not a {expected:?} clip", clip.0)
             }
@@ -177,16 +200,22 @@ pub enum TrackProp {
     Hue(Hue),
     /// A mixer value of the track's channel.
     Channel(ChannelProp),
-    /// Record arm. `Arm(true)` also switches monitoring on (S02). Ignored on buses.
+    /// Record arm. `Arm(true)` also switches monitoring on (S02), except on audio tracks. Ignored
+    /// on buses.
     Arm(bool),
-    /// Input monitoring. Ignored on buses.
+    /// Input monitoring. Ignored on buses and audio tracks (use [`TrackProp::MonitorMode`]).
     Monitor(bool),
-    /// MIDI input.
+    /// MIDI input. Ignored on audio tracks.
     Input(MidiInputSel),
-    /// MIDI channel; `Channel(c)` with `c > 15` is `Invalid`.
+    /// MIDI channel; `Channel(c)` with `c > 15` is `Invalid`. Ignored on audio tracks.
     MidiChannel(MidiChannelSel),
     /// Header height, clamped to `TRACK_HEIGHT_MIN ..= TRACK_HEIGHT_MAX`.
     Height(u16),
+    /// Audio input of an audio track (`Invalid` on other kinds; a bus must exist and must not close
+    /// a routing cycle, `EditError::RoutingCycle` / `NotABus`).
+    AudioInput(AudioInput),
+    /// Monitoring mode of an audio track (`Invalid` on other kinds).
+    MonitorMode(MonitorMode),
     /// Fold or unfold a group in the arrangement; ignored on other tracks and on effect buses.
     Folded(bool),
 }
@@ -238,6 +267,15 @@ pub enum NewClipContent {
     Step {
         /// Row names and notes, top to bottom.
         rows: Vec<StepRowSpec>,
+    },
+    /// An audio clip: a window into a linked file, on an audio track. Gain 0 dB, no fades, Fixed
+    /// time mode, original tempo = the project tempo. The length is clamped to what the file has
+    /// behind `offset`.
+    Audio {
+        /// The linked file.
+        file: crate::audio::AudioFile,
+        /// Start of the window in the file, in frames of the file's rate (`< file.frames`).
+        offset: u64,
     },
 }
 
@@ -368,20 +406,24 @@ pub fn next_take_number(project: &Project) -> u32 {
         }
         digits.parse().ok()
     }
-    project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .flat_map(|c| {
-            let takes = match &c.content {
-                ClipContent::Midi(m) => m.takes.as_slice(),
-                ClipContent::Step(_) => &[],
-            };
-            std::iter::once(c.name.as_str()).chain(takes.iter().map(|t| t.name.as_str()))
-        })
-        .filter_map(number)
-        .max()
-        .map_or(1, |n| n.saturating_add(1))
+    let mut highest = 0;
+    for c in project.tracks.iter().flat_map(|t| &t.clips) {
+        highest = highest.max(number(&c.name).unwrap_or(0));
+        match &c.content {
+            ClipContent::Midi(m) => {
+                for t in &m.takes {
+                    highest = highest.max(number(&t.name).unwrap_or(0));
+                }
+            }
+            ClipContent::Audio(a) => {
+                for t in &a.takes {
+                    highest = highest.max(number(&t.name).unwrap_or(0));
+                }
+            }
+            ClipContent::Step(_) => {}
+        }
+    }
+    highest.saturating_add(1)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -397,7 +439,9 @@ pub fn set_project_prop(project: &Project, prop: ProjectProp) -> EditResult {
             if !(Tempo::MIN_BPM..=Tempo::MAX_BPM).contains(&tempo.bpm) {
                 return Err(EditError::Invalid("tempo out of range"));
             }
+            let old = p.tempo;
             p.tempo = tempo;
+            audio::retime(&mut p, old, tempo)?;
         }
         ProjectProp::Meter(meter) => {
             if !valid_meter(meter) {
@@ -453,6 +497,8 @@ pub struct DefaultNames {
     pub bus: &'static str,
     /// Base of a group: „Gruppe 1“, …
     pub group: &'static str,
+    /// Base of an audio track: „Audio“, „Audio 2“, …
+    pub audio: &'static str,
 }
 
 impl DefaultNames {
@@ -462,6 +508,7 @@ impl DefaultNames {
         drums: DRUMS_TRACK_NAME,
         bus: DEFAULT_BUS_NAME,
         group: DEFAULT_GROUP_NAME,
+        audio: DEFAULT_AUDIO_NAME,
     };
 }
 
@@ -528,6 +575,7 @@ pub fn add_track_in(
         monitor: spec.arm_exclusive,
         input: MidiInputSel::All,
         midi_channel: MidiChannelSel::Omni,
+        audio: crate::audio::AudioIo::default(),
         height: TRACK_HEIGHT_DEFAULT,
         clips: Vec::new(),
         output: group.map_or(TrackOutput::Master, TrackOutput::Bus),
@@ -596,6 +644,9 @@ pub fn set_track_prop(project: &Project, tracks: &[TrackId], prop: TrackProp) ->
     for index in indices {
         update_track(&mut p, index, |t| apply_track_prop(t, &prop))?;
     }
+    if matches!(prop, TrackProp::AudioInput(_)) {
+        routes::check_routing(&p)?;
+    }
     Ok(p)
 }
 
@@ -611,7 +662,7 @@ pub fn set_exclusive(project: &Project, track: TrackId, flag: ExclusiveFlag) -> 
                 ExclusiveFlag::Arm => {
                     let this = this && !t.is_bus();
                     t.arm = this;
-                    t.monitor |= this;
+                    t.monitor |= this && !t.is_audio();
                 }
             }
             Ok(())
@@ -631,11 +682,24 @@ pub fn add_clip(
     spec: NewClip,
 ) -> Result<(Project, ClipId), EditError> {
     let track_index = locate_track(project, track)?;
-    if project.tracks[track_index].is_bus() {
+    let kind = project.tracks[track_index].kind;
+    if kind == TrackKind::Bus {
         return Err(EditError::Invalid("a bus holds no clips"));
+    }
+    let wanted = match &spec.content {
+        NewClipContent::Midi { .. } => ClipKind::Midi,
+        NewClipContent::Step { .. } => ClipKind::Step,
+        NewClipContent::Audio { .. } => ClipKind::Audio,
+    };
+    if !wanted.fits(kind) {
+        return Err(EditError::ClipNotAllowed {
+            track,
+            clip: wanted,
+        });
     }
     let mut p = project.clone();
     let id = ClipId(p.alloc_id()?);
+    let mut length = spec.length.max(MIN_LENGTH);
     let content = match spec.content {
         NewClipContent::Midi { notes, take_name } => {
             let mut notes: Vec<Note> = notes
@@ -652,12 +716,17 @@ pub fn add_clip(
             })
         }
         NewClipContent::Step { rows } => ClipContent::Step(new_step_clip(&rows)),
+        NewClipContent::Audio { file, offset } => {
+            let (audio, fitted) = audio::new_audio(file, offset, p.tempo, length)?;
+            length = fitted;
+            ClipContent::Audio(audio)
+        }
     };
     let clip = Clip {
         id,
         name: spec.name,
         start: spec.start.max(Tick::ZERO),
-        length: spec.length.max(MIN_LENGTH),
+        length,
         loop_length: None,
         mute: false,
         transpose: 0,
@@ -665,6 +734,7 @@ pub fn add_clip(
         content,
     };
     insert_clip(track_mut(&mut p, track_index), Arc::new(clip));
+    audio::cut_below(&mut p, &[id])?;
     Ok((p, id))
 }
 
@@ -717,6 +787,8 @@ pub fn move_clips(
             Arc::new(clip),
         );
     }
+    let moved: Vec<ClipId> = group.clips.iter().map(|(_, c)| c.id).collect();
+    audio::cut_below(&mut p, &moved)?;
     Ok(p)
 }
 
@@ -740,6 +812,7 @@ pub fn copy_clips(
             Arc::new(copy),
         );
     }
+    audio::cut_below(&mut p, &copies)?;
     Ok((p, copies))
 }
 
@@ -767,16 +840,20 @@ pub fn duplicate_clips(
         copies.push(copy.id);
         insert_clip(track_mut(&mut p, track_index), Arc::new(copy));
     }
+    audio::cut_below(&mut p, &copies)?;
     Ok((p, copies))
 }
 
 /// Sets the timeline length (right edge drag), clamped to ≥ 1 tick. The start never moves; content
 /// beyond the new end is kept but not played.
+///
+/// An audio clip is clamped to what its file has behind the window and cuts the clips below it
+/// ([`audio`]).
 pub fn set_clip_length(project: &Project, clip: ClipId, length: Tick) -> EditResult {
-    edit_clip(project, clip, |c| {
-        c.length = length.max(MIN_LENGTH);
-        Ok(())
-    })
+    let tempo = project.tempo;
+    let mut p = edit_clip(project, clip, |c| audio::fit_length(c, length, tempo))?;
+    audio::cut_below(&mut p, &[clip])?;
+    Ok(p)
 }
 
 /// Sets the clip loop (top-right corner drag, inspector "Loop" / "Loop-Länge"): `loop_length`
@@ -788,17 +865,19 @@ pub fn set_clip_loop(
     loop_length: Option<Tick>,
     length: Tick,
 ) -> EditResult {
-    edit_clip(project, clip, |c| {
-        if loop_length.is_some() && c.kind() == ClipKind::Step {
+    let tempo = project.tempo;
+    let mut p = edit_clip(project, clip, |c| {
+        if loop_length.is_some() && c.kind() != ClipKind::Midi {
             return Err(EditError::WrongClipKind {
                 clip: c.id,
                 expected: ClipKind::Midi,
             });
         }
         c.loop_length = loop_length.map(|l| l.max(MIN_LENGTH));
-        c.length = length.max(MIN_LENGTH);
-        Ok(())
-    })
+        audio::fit_length(c, length, tempo)
+    })?;
+    audio::cut_below(&mut p, &[clip])?;
+    Ok(p)
 }
 
 /// Ctrl E: splits every listed clip that strictly contains `at` (timeline tick) into a left part
@@ -856,15 +935,24 @@ pub fn set_clip_prop(project: &Project, clip: ClipId, prop: ClipProp) -> EditRes
         ClipProp::Name(name) => ClipProp::Name(valid_name(&name)?),
         prop => prop,
     };
-    edit_clip(project, clip, |c| {
+    let mut p = edit_clip(project, clip, |c| {
+        let audio = c.kind() == ClipKind::Audio;
         match prop {
             ClipProp::Name(name) => c.name = name,
             ClipProp::Start(start) => c.start = start.max(Tick::ZERO),
+            ClipProp::Transpose(_) | ClipProp::VelocityPct(_) if audio => {
+                return Err(EditError::WrongClipKind {
+                    clip: c.id,
+                    expected: ClipKind::Midi,
+                });
+            }
             ClipProp::Transpose(semitones) => c.transpose = semitones.clamp(-48, 48),
             ClipProp::VelocityPct(percent) => c.velocity_pct = percent.clamp(-100, 100),
         }
         Ok(())
-    })
+    })?;
+    audio::cut_below(&mut p, &[clip])?;
+    Ok(p)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1187,6 +1275,11 @@ pub fn insert_device(
             if track.is_bus() && spec.role != DeviceRole::Effect {
                 return Err(EditError::Invalid("a bus takes audio effects only"));
             }
+            if track.is_audio() && spec.role != DeviceRole::Effect {
+                return Err(EditError::Invalid(
+                    "an audio track takes audio effects only",
+                ));
+            }
             &track.channel
         }
         ChannelRef::Master => {
@@ -1244,6 +1337,11 @@ pub fn replace_instrument(
     let track_index = locate_track(project, track)?;
     if project.tracks[track_index].is_bus() {
         return Err(EditError::Invalid("a bus takes audio effects only"));
+    }
+    if project.tracks[track_index].is_audio() {
+        return Err(EditError::Invalid(
+            "an audio track takes audio effects only",
+        ));
     }
     let mut p = project.clone();
     let id = DeviceId(p.alloc_id()?);
@@ -1375,6 +1473,8 @@ const MIN_LENGTH: Tick = Tick(1);
 pub const MAX_COUNT_IN_BARS: u8 = 4;
 /// Default name of a track with the drum sampler (prototype `addTrack`).
 const DRUMS_TRACK_NAME: &str = "Drums";
+/// Default name of an audio track.
+const DEFAULT_AUDIO_NAME: &str = "Audio";
 /// Default name of a track without instrument.
 const DEFAULT_TRACK_NAME: &str = "MIDI";
 
@@ -1444,6 +1544,9 @@ fn apply_track_prop(track: &mut Track, prop: &TrackProp) -> Result<(), EditError
         TrackProp::Hue(hue) => track.hue = *hue,
         TrackProp::Channel(prop) => apply_channel_prop(&mut track.channel, *prop)?,
         TrackProp::Arm(_) | TrackProp::Monitor(_) if track.is_bus() => {}
+        TrackProp::Arm(arm) if track.is_audio() => track.arm = *arm,
+        TrackProp::Monitor(_) | TrackProp::Input(_) | TrackProp::MidiChannel(_)
+            if track.is_audio() => {}
         TrackProp::Arm(arm) => {
             track.arm = *arm;
             track.monitor |= *arm;
@@ -1452,6 +1555,19 @@ fn apply_track_prop(track: &mut Track, prop: &TrackProp) -> Result<(), EditError
         TrackProp::Folded(folded) => track.folded = *folded && track.is_group(),
         TrackProp::Input(input) => track.input = input.clone(),
         TrackProp::MidiChannel(channel) => track.midi_channel = *channel,
+        TrackProp::AudioInput(_) | TrackProp::MonitorMode(_) if !track.is_audio() => {
+            return Err(EditError::Invalid("only an audio track has an audio input"));
+        }
+        TrackProp::AudioInput(input) => {
+            if let AudioInput::Hardware(hw) = input
+                && hw.stereo
+                && hw.first == u16::MAX
+            {
+                return Err(EditError::Invalid("input channel out of range"));
+            }
+            track.audio.input = *input;
+        }
+        TrackProp::MonitorMode(mode) => track.audio.monitor = *mode,
         TrackProp::Height(height) => {
             track.height = (*height).clamp(TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX)
         }
@@ -1674,12 +1790,17 @@ impl ClipGroup {
             delta: delta.max(-earliest),
             track_delta: i64::from(track_delta).clamp(-top, (last - bottom).max(-top)),
         };
-        if group
-            .clips
-            .iter()
-            .any(|&(t, _)| project.tracks[group.target(t)].is_bus())
-        {
-            return Err(EditError::Invalid("a bus holds no clips"));
+        for (t, clip) in &group.clips {
+            let target = &project.tracks[group.target(*t)];
+            if target.is_bus() {
+                return Err(EditError::Invalid("a bus holds no clips"));
+            }
+            if !clip.kind().fits(target.kind) {
+                return Err(EditError::ClipNotAllowed {
+                    track: target.id,
+                    clip: clip.kind(),
+                });
+            }
         }
         Ok(group)
     }
@@ -1731,6 +1852,16 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Cli
             }
             left.loop_length = None;
             right.loop_length = None;
+        }
+        ClipContent::Audio(right_audio) => {
+            let ClipContent::Audio(left_audio) = &mut left.content else {
+                unreachable!("left and right are copies of one clip");
+            };
+            right_audio.shift_sources(at, project.tempo);
+            right_audio.fade_in = Tick::ZERO;
+            left_audio.fade_out = Tick::ZERO;
+            left_audio.clamp(left.length);
+            right_audio.clamp(right.length);
         }
         ClipContent::Step(pattern) => {
             // Start the right part with the step that plays at `at` (exact when `at` lies on a
@@ -1785,7 +1916,7 @@ fn unroll(
 fn midi_mut(clip: &mut Clip) -> Result<&mut MidiClip, EditError> {
     match &mut clip.content {
         ClipContent::Midi(m) => Ok(m),
-        ClipContent::Step(_) => Err(EditError::WrongClipKind {
+        ClipContent::Step(_) | ClipContent::Audio(_) => Err(EditError::WrongClipKind {
             clip: clip.id,
             expected: ClipKind::Midi,
         }),
@@ -1873,7 +2004,7 @@ fn with_step_clip(
 ) -> EditResult {
     edit_clip(project, clip, |c| match &mut c.content {
         ClipContent::Step(s) => f(s),
-        ClipContent::Midi(_) => Err(EditError::WrongClipKind {
+        ClipContent::Midi(_) | ClipContent::Audio(_) => Err(EditError::WrongClipKind {
             clip,
             expected: ClipKind::Step,
         }),

@@ -141,7 +141,7 @@ fn midi_clips(app: &App) -> Vec<(ClipId, Vec<NoteId>)> {
         .flat_map(|t| &t.clips)
         .filter_map(|c| match &c.content {
             ClipContent::Midi(m) => Some((c.id, m.active().notes.iter().map(|n| n.id).collect())),
-            ClipContent::Step(_) => None,
+            ClipContent::Step(_) | ClipContent::Audio(_) => None,
         })
         .collect()
 }

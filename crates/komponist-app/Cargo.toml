@@ -16,6 +16,8 @@ path = "src/bin/komponist-play.rs"
 
 [dependencies]
 komponist-model.workspace = true
+# Waveforms of audio clips: the file pool and its peak cache (`views/arrangement/files`).
+komponist-audiofile.workspace = true
 komponist-engine.workspace = true
 komponist-audio.workspace = true
 komponist-builtin.workspace = true

@@ -186,3 +186,23 @@ undo-param-unnamed = { $plugin }: Parameter ändern
 
 # A state the plugin reports on its own (its GUI).
 undo-plugin-state = { $plugin }: Zustand ändern
+
+# Audio clip envelope gestures.
+undo-clip-gain = Clip-Gain ändern
+undo-clip-fade = Fade ändern
+undo-clip-repitch = Re-Pitch ändern
+undo-clip-original-tempo = Originaltempo ändern
+undo-clip-source-start = Quell-Start ändern
+undo-clip-replace-file = Datei ersetzen
+
+# Audio source window offset.
+
+# Linked audio import and browsing (epic #8).
+undo-import-audio = Audio importieren
+undo-add-audio-track = Audio-Spur hinzufügen
+undo-audio-input = Eingang ändern
+undo-audio-monitor = Monitoring ändern
+undo-record-bus = Bus aufnehmen
+undo-select-audio-take = Take wählen
+undo-rename-audio-take = Take umbenennen
+undo-remove-audio-take = Take entfernen

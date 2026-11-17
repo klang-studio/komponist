@@ -1,0 +1,12 @@
+[package]
+name = "komponist-audiofile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Audio files for komponist: seekable chunked decoding, sample-rate conversion, waveform peak cache, shared file pool"
+
+[dependencies]
+hound.workspace = true
+symphonia.workspace = true
+rubato.workspace = true

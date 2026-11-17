@@ -39,6 +39,12 @@ pub const FILE_NAME: &str = "settings.json";
 pub struct Settings {
     /// Audio driver, device, rate and buffer (S07).
     pub audio: StreamConfig,
+    /// Explicit capture selection; absent in old settings and off by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input: Option<komponist_audio::InputConfig>,
+    /// File encoding for new audio recordings. Existing takes remain untouched.
+    #[serde(default, skip_serializing_if = "CaptureFormat::is_default")]
+    pub capture_format: CaptureFormat,
     /// MIDI inputs switched off in S07, by port name (new ports start enabled).
     pub midi_disabled: Vec<String>,
     /// MIDI inputs the user switched on in S07, by port name. Matters for ports that start
@@ -67,6 +73,23 @@ pub struct Settings {
     pub language: Language,
     /// What the master display of the transport bar shows (#34; a click on it switches).
     pub master_display: MasterDisplay,
+}
+
+/// Encoding of newly recorded audio files (audio proposal §17).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureFormat {
+    /// Signed 24-bit WAV (default).
+    #[default]
+    Pcm24,
+    /// 32-bit floating-point WAV.
+    Float32,
+}
+
+impl CaptureFormat {
+    fn is_default(&self) -> bool {
+        *self == Self::Pcm24
+    }
 }
 
 /// The language setting: follow the system, or one language explicitly.
@@ -361,6 +384,38 @@ fn config_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Opti
     Some(base.join("komponist"))
 }
 
+/// The audio cache folder (created lazily by the file pool). Linux follows
+/// `$XDG_CACHE_HOME`, macOS uses `~/Library/Caches`, Windows `%LOCALAPPDATA%`.
+/// No directory is created by this function or by headless app construction.
+pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join("komponist"))
+    }
+    #[cfg(not(windows))]
+    {
+        let xdg = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
+        let home = crate::dirs::home_dir();
+        cache_dir_from(cfg!(target_os = "macos"), xdg.as_deref(), home.as_deref())
+    }
+}
+
+#[cfg(not(windows))]
+fn cache_dir_from(macos: bool, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home.filter(|p| p.is_absolute());
+    let base = if macos {
+        home?.join("Library/Caches")
+    } else {
+        xdg.filter(|p| p.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|h| h.join(".cache")))?
+    };
+    Some(base.join("komponist"))
+}
+
 /// The default settings file, `<config_dir>/settings.json`.
 pub fn default_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join(FILE_NAME))
@@ -423,6 +478,48 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_settings_keep_capture_off_and_new_capture_settings_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.audio_input.is_none());
+        assert_eq!(old.capture_format, CaptureFormat::Pcm24);
+        let mut settings = old;
+        settings.audio_input = Some(komponist_audio::InputConfig {
+            device: Some("Test input".into()),
+            device_id: Some(komponist_audio::DeviceId("test:input".into())),
+        });
+        settings.capture_format = CaptureFormat::Float32;
+        let stored = serde_json::to_string(&settings).unwrap();
+        let loaded: Settings = serde_json::from_str(&stored).unwrap();
+        assert_eq!(loaded.audio_input, settings.audio_input);
+        assert_eq!(loaded.capture_format, CaptureFormat::Float32);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn cache_dir_follows_the_platform() {
+        let home = Path::new("/users/test");
+        let xdg = Path::new("/cache");
+        assert_eq!(
+            cache_dir_from(true, Some(xdg), Some(home)),
+            Some(home.join("Library/Caches/komponist"))
+        );
+        assert_eq!(
+            cache_dir_from(false, Some(xdg), Some(home)),
+            Some(xdg.join("komponist"))
+        );
+        assert_eq!(
+            cache_dir_from(false, Some(Path::new("relative")), Some(home)),
+            Some(home.join(".cache/komponist"))
+        );
+        assert_eq!(cache_dir_from(false, None, None), None);
+        assert_eq!(cache_dir_from(true, Some(xdg), None), None);
+        assert_eq!(
+            cache_dir_from(false, None, Some(Path::new("relative"))),
+            None
+        );
+    }
 
     #[test]
     #[cfg(not(windows))]

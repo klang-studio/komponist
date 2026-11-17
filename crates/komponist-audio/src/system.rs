@@ -370,6 +370,9 @@ pub struct AudioSystem<P: AudioProcess> {
     /// Reconnection while the configured device is missing.
     retry: Option<Retry>,
     retry_interval: Duration,
+    input: Option<crate::InputConfig>,
+    input_channels: u16,
+    synthetic_input: Option<crate::InputReader>,
 }
 
 /// Looking for a missing device ([`AudioSystem::poll`]).
@@ -397,15 +400,16 @@ struct Current<P: AudioProcess> {
 
 /// Held for its `Drop`, which stops the stream.
 enum Backend {
-    /// `_open` is declared after the stream: the count of open ASIO streams drops once the stream is
-    /// gone.
-    Device {
-        _stream: cpal::Stream,
-        _open: Option<backend::AsioOpen>,
-    },
-    Null {
-        _stream: NullStream,
-    },
+    // CPAL streams are large on Windows; allocate their storage only when starting a device.
+    Device(Box<DeviceStreams>),
+    Null { _stream: NullStream },
+}
+
+struct DeviceStreams {
+    _stream: cpal::Stream,
+    capture: Option<crate::input::CaptureStream>,
+    /// Declared after the streams: the open ASIO count drops only once they are gone.
+    _open: Option<backend::AsioOpen>,
 }
 
 impl<P: AudioProcess> AudioSystem<P> {
@@ -421,6 +425,9 @@ impl<P: AudioProcess> AudioSystem<P> {
             retired: Vec::new(),
             retry: None,
             retry_interval: RETRY_INTERVAL,
+            input: None,
+            input_channels: 0,
+            synthetic_input: None,
         }
     }
 
@@ -444,6 +451,69 @@ impl<P: AudioProcess> AudioSystem<P> {
     /// the buffer range the device reports; starting a stream sets the device's nominal rate.
     pub fn devices(host: HostKind) -> Result<Vec<DeviceInfo>, AudioError> {
         backend::devices(host)
+    }
+
+    /// Input devices of this host. Does not open any input stream.
+    pub fn input_devices(host: HostKind) -> Result<Vec<crate::InputDeviceInfo>, AudioError> {
+        crate::input_devices(host)
+    }
+
+    /// Configures capture explicitly. `None` disables it; a default configuration selects
+    /// the host's default input. Rebuilds a running stream, keeping its output settings.
+    pub fn set_input(&mut self, input: Option<crate::InputConfig>) -> Result<(), AudioError> {
+        if self.detached {
+            return Err(AudioError::Detached);
+        }
+        if self.input == input {
+            return Ok(());
+        }
+        self.input = input;
+        let config = self.current.as_ref().map(|c| c.requested.clone());
+        if let Some(config) = config {
+            self.start(&config)?;
+        }
+        Ok(())
+    }
+
+    /// Capture configuration, absent by default.
+    pub fn input(&self) -> Option<&crate::InputConfig> {
+        self.input.as_ref()
+    }
+
+    /// Channels available from the current capture stream (zero without capture).
+    pub fn input_channels(&self) -> u16 {
+        self.input_channels
+    }
+
+    /// Installs synthetic capture on the null backend. Rebuilding a stream retires this
+    /// source; tests explicitly install a new one after a rebuild. Never opens hardware.
+    pub fn set_test_input(
+        &mut self,
+        channels: u16,
+        sample_rate: u32,
+    ) -> Result<crate::TestAudioSource, AudioError> {
+        if self.detached {
+            return Err(AudioError::Detached);
+        }
+        let config = self
+            .current
+            .as_ref()
+            .map(|c| c.requested.clone())
+            .unwrap_or(StreamConfig {
+                host: HostKind::Null,
+                ..StreamConfig::default()
+            });
+        if config.host != HostKind::Null {
+            return Err(AudioError::UnsupportedConfig(
+                "synthetic input requires the null backend".into(),
+            ));
+        }
+        let capacity = ((config.buffer_frames as usize).saturating_mul(8)).clamp(4096, 65_536);
+        let (source, reader) = crate::test_input(channels, sample_rate, capacity)?;
+        self.teardown();
+        self.synthetic_input = Some(reader);
+        self.start(&config)?;
+        Ok(source)
     }
 
     /// Starts a stream with `config`, replacing a running one (stop → prepare → start). On failure
@@ -526,13 +596,27 @@ impl<P: AudioProcess> AudioSystem<P> {
         let mut failure = None;
         if let Some(current) = self.current.as_mut() {
             returned = current.handle.try_take_engine();
-            let reason = current.shared.lost().or_else(|| {
-                // The callback's thread ended on its own (it panicked).
-                current
-                    .handle
-                    .is_closed()
-                    .then(|| "audio stream stopped".to_owned())
-            });
+            let reason = current
+                .shared
+                .lost()
+                .or_else(|| match &current.backend {
+                    Backend::Device(streams)
+                        if streams
+                            .capture
+                            .as_ref()
+                            .is_some_and(|capture| capture.lost()) =>
+                    {
+                        Some("audio capture device lost".to_owned())
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    // The callback's thread ended on its own (it panicked).
+                    current
+                        .handle
+                        .is_closed()
+                        .then(|| "audio stream stopped".to_owned())
+                });
             match reason {
                 Some(reason) => failure = Some((current.requested.clone(), reason)),
                 None => {
@@ -623,17 +707,36 @@ impl<P: AudioProcess> AudioSystem<P> {
             workgroup: None,
             ..params.clone()
         };
-        let callback = StreamCallback::new(slot, callback_params, Arc::clone(&shared));
+        let (capture, reader) = match &self.input {
+            Some(input) => {
+                let (capture, reader) = crate::input::CaptureStream::start(
+                    config.host,
+                    input,
+                    negotiated.effective.sample_rate,
+                    negotiated.effective.buffer_frames,
+                    Some(&device),
+                )?;
+                self.input_channels = reader.channels() as u16;
+                (Some(capture), Some(reader))
+            }
+            None => {
+                self.input_channels = 0;
+                (None, None)
+            }
+        };
+        let callback =
+            StreamCallback::new(slot, callback_params, Arc::clone(&shared)).with_input(reader);
         // Before the stream exists, so no enumeration sees an ASIO driver that is loading.
         let open = (config.host == HostKind::Asio).then(|| backend::AsioOpen::new(&device));
         let stream =
             backend::build_stream(&device, &negotiated, callback, Arc::clone(&self.stats))?;
         stream.play().map_err(backend::map_err)?;
         self.install(Current {
-            backend: Backend::Device {
+            backend: Backend::Device(Box::new(DeviceStreams {
                 _stream: stream,
+                capture,
                 _open: open,
-            },
+            })),
             handle,
             params,
             shared,
@@ -653,7 +756,10 @@ impl<P: AudioProcess> AudioSystem<P> {
         };
         let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
         let shared = Arc::new(StreamShared::default());
-        let callback = StreamCallback::new(slot, params.clone(), Arc::clone(&shared));
+        let reader = self.synthetic_input.take();
+        self.input_channels = reader.as_ref().map_or(0, |r| r.channels() as u16);
+        let callback =
+            StreamCallback::new(slot, params.clone(), Arc::clone(&shared)).with_input(reader);
         let stream = NullStream::start(callback)?;
         self.install(Current {
             backend: Backend::Null { _stream: stream },
@@ -693,6 +799,7 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Drops the running stream and takes the engine and the MIDI receiver back.
     fn teardown(&mut self) {
+        self.input_channels = 0;
         let Some(current) = self.current.take() else {
             return;
         };

@@ -473,12 +473,22 @@ fn takes_are_listed_and_open_their_clip() {
     let (p, _) = komponist_model::edits::add_take(&p, clip, "Take 1".into()).unwrap();
     let (p, _) = komponist_model::edits::add_take(&p, clip, "Take 2".into()).unwrap();
     let mut app = App::headless(p).with_device_host(Box::new(FakeHost::new()));
+    // Files also shows filesystem navigation. Use an empty fixture directory so this take
+    // interaction never depends on the owner's home folder or its directory count.
+    app.ui_mut().browser.directory = Some(crate::export::scratch("browser-takes"));
     app.dispatch(Action::Ui(UiAction::SetBrowserSegment(
         BrowserSegment::Files,
     )));
     let mut h = harness(app);
     let rows = row_names(&h);
-    assert_eq!(rows, ["Take 1 · Lead", "Take 2 · Lead"]);
+    assert_eq!(
+        rows,
+        [
+            Lang::De.browser_parent_folder(),
+            "Take 1 · Lead",
+            "Take 2 · Lead"
+        ]
+    );
     let take = row(&h, "Take 1 · Lead");
     double_click(&mut h, take.center());
     assert!(

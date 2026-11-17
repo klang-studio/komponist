@@ -87,3 +87,16 @@ browser-preset-hit = { $name } · Hexa
 
 # Accessible name of a row's star.
 browser-star = Favorite: { $name }
+
+# Linked audio import and browsing (epic #8).
+browser-foot-files = Drag an audio file onto an audio track to add a clip. Drag it onto empty space to add a new audio track.
+browser-file-meta = { $duration } · { $channels }
+browser-audio-files = Audio Files
+browser-audio-mono = mono
+browser-audio-stereo = stereo
+browser-audio-channels = { $n } channels
+browser-parent-folder = Parent Folder
+browser-files-loading = Reading files…
+browser-files-unreadable = Cannot read folder: { $why }
+browser-no-audio-files = No audio files
+browser-file-unreadable = cannot be opened

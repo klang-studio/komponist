@@ -41,7 +41,7 @@ fn notes_of(project: &Project, track: usize) -> Vec<Vec<(i64, i64, u8, u8)>> {
                 .iter()
                 .map(|n| (n.start.0, n.length.0, n.pitch, n.velocity))
                 .collect(),
-            ClipContent::Step(_) => Vec::new(),
+            ClipContent::Step(_) | ClipContent::Audio(_) => Vec::new(),
         })
         .collect()
 }
@@ -122,9 +122,13 @@ fn the_song_is_the_design_fixtures_song() {
     assert_eq!(showcase.loop_range, fixture.loop_range);
     assert_eq!(showcase.loop_on, fixture.loop_on);
     // The two buses (group and Reverb) are the showcase's own; the tracks are the song's.
-    let songs: Vec<&Arc<Track>> = showcase.tracks.iter().filter(|t| !t.is_bus()).collect();
+    let songs: Vec<&Arc<Track>> = showcase
+        .tracks
+        .iter()
+        .filter(|t| !t.is_bus() && !t.is_audio())
+        .collect();
     assert_eq!(songs.len(), fixture.tracks.len());
-    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 2);
+    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 4);
     for (i, (a, b)) in songs.iter().zip(&fixture.tracks).enumerate() {
         assert_eq!(
             (&a.name, a.hue, a.channel.pan),
@@ -186,7 +190,10 @@ fn the_demo_shows_group_effect_bus_and_sidechain() {
     assert_eq!(drums.output, TrackOutput::Bus(rhythm.id));
     assert_eq!(bass.output, TrackOutput::Bus(rhythm.id));
     let members = komponist_model::routing::group_members(&project, rhythm.id);
-    assert_eq!(members, [drums.id, bass.id]);
+    assert_eq!(
+        members,
+        [drums.id, bass.id, track_named(&project, "Shaker").id]
+    );
 
     let hall = track_named(&project, "Reverb");
     assert!(hall.is_bus() && !hall.folder);
@@ -239,6 +246,87 @@ fn the_demo_shows_group_effect_bus_and_sidechain() {
     assert_eq!(komponist_model::routing::check(&project), Ok(()));
 }
 
+#[test]
+fn the_demo_shows_repitch_gain_fades_and_mono_and_stereo_audio() {
+    use komponist_model::{AudioInput, ClipTimeMode, Hue, MonitorMode, Tick};
+    let project = showcase_project();
+    assert_eq!(project.tempo.bpm, 124.0);
+    let shaker = track_named(&project, "Shaker");
+    let sweep = track_named(&project, "Sweep");
+    assert_eq!(shaker.hue, Hue::TEAL);
+    assert_eq!(sweep.hue, Hue::ORANGE);
+    for track in [shaker, sweep] {
+        assert!(track.is_audio());
+        assert_eq!(track.channel.volume_db, -12.0);
+        assert_eq!(track.audio.input, AudioInput::None);
+        assert_eq!(track.audio.monitor, MonitorMode::Off);
+        assert!(!track.arm);
+    }
+    assert_eq!(sweep.output, TrackOutput::Master);
+    assert_eq!(shaker.clips.len(), 3);
+    for (clip, (bar, bars, gain, fade_in, fade_out)) in shaker.clips.iter().zip([
+        (0, 8, 0.0, 0, 0),
+        (8, 4, -3.0, 0, 3840),
+        (12, 4, -3.0, 1920, 0),
+    ]) {
+        assert_eq!(
+            (clip.start, clip.length),
+            (Tick(bar * 3840), Tick(bars * 3840))
+        );
+        let ClipContent::Audio(audio) = &clip.content else {
+            panic!("audio clip");
+        };
+        assert_eq!(audio.time_mode, ClipTimeMode::RePitch);
+        assert_eq!(audio.original_tempo.bpm, 120.0);
+        assert_eq!(
+            (audio.gain_db, audio.fade_in, audio.fade_out),
+            (gain, Tick(fade_in), Tick(fade_out))
+        );
+        assert_eq!(audio.file.channels, 1);
+    }
+    let clip = &sweep.clips[0];
+    assert_eq!((clip.start, clip.length), (Tick(6 * 3840), Tick(2 * 3840)));
+    let ClipContent::Audio(audio) = &clip.content else {
+        panic!("audio clip");
+    };
+    assert_eq!(audio.file.channels, 2);
+    assert_eq!((audio.gain_db, audio.fade_in), (2.0, Tick(1920)));
+    assert_eq!(audio.time_mode, ClipTimeMode::Fixed);
+}
+
+#[test]
+fn loading_the_demo_synthesizes_deterministic_non_silent_audio_files() {
+    let dir = scratch("demo-audio");
+    let p = komponist_app::samples::demo_with_kit(showcase_project(), &dir.join("a")).unwrap();
+    let second = komponist_app::samples::demo_with_kit(showcase_project(), &dir.join("b")).unwrap();
+    for name in ["Shaker", "Sweep"] {
+        let clip = &track_named(&p, name).clips[0];
+        let ClipContent::Audio(audio) = &clip.content else {
+            panic!("audio clip");
+        };
+        let ClipContent::Audio(other) = &track_named(&second, name).clips[0].content else {
+            panic!("audio clip");
+        };
+        assert!(audio.file.abs.starts_with(dir.join("a")));
+        assert_eq!(
+            std::fs::read(&audio.file.abs).unwrap(),
+            std::fs::read(&other.file.abs).unwrap()
+        );
+        let wav = read(&audio.file.abs);
+        assert_eq!(wav.spec.channels, audio.file.channels);
+        assert_eq!(wav.spec.sample_rate, 48_000);
+        assert_eq!(wav.spec.bits_per_sample, 24);
+        assert_eq!(wav.frames, audio.file.frames);
+        assert!(peak_db(&wav.samples) > -24.0, "{name} is audible");
+        if wav.spec.channels == 2 {
+            assert!(
+                wav.samples.as_chunks::<2>().0.iter().any(|s| s[0] != s[1]),
+                "stereo noise"
+            );
+        }
+    }
+}
+
 /// Levels of the demo: renders every track alone and the master with and without the Limiter,
 /// offline (no audio device). `SHOWCASE_RENDER_DIR` names the folder for the WAV files.
 /// `cargo test -p komponist-app --test it showcase::render_levels -- --ignored --nocapture`
@@ -276,6 +364,8 @@ fn render_levels() {
             db(rms),
             db(loudest)
         );
+        assert!(rms > 1e-6, "{name} is silent");
+        peak_db(&wav.samples)
     };
     let base = komponist_app::samples::demo_with_kit(showcase_project(), &out.join("kit")).unwrap();
     // Each track alone with its routing (the buses stay, they are silent without input), so the
@@ -311,6 +401,10 @@ fn render_levels() {
     measure(keyed, "track-bass-keyed", BitDepth::Float32);
     let mut no_limiter = base.clone();
     Arc::make_mut(&mut no_limiter.master).devices.clear();
-    measure(no_limiter, "master-no-limiter", BitDepth::Float32);
-    measure(base, "night-drive", BitDepth::Int24);
+    let input_peak = measure(no_limiter, "master-no-limiter", BitDepth::Float32);
+    let master_peak = measure(base, "night-drive", BitDepth::Int24);
+    assert!(master_peak <= -0.29, "master peak {master_peak} dBFS");
+    // The master's Limiter has 3 dB of input gain; keep its peak reduction around 2 dB or less.
+    let reduction = input_peak + 3.0 - master_peak;
+    assert!(reduction <= 2.0, "limiter peak reduction {reduction} dB");
 }

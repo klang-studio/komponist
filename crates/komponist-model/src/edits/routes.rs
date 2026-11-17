@@ -16,6 +16,7 @@ use super::{
     DefaultNames, EditError, EditResult, copy_clip, locate_track, next_hue, track_mut, unique,
     update_track, valid_db, valid_hue, valid_name,
 };
+use crate::audio::AudioInput;
 use crate::ids::{DeviceId, SendId, TrackId};
 use crate::project::{
     Channel, ChannelRef, Device, Hue, MidiChannelSel, MidiInputSel, Project, SEND_LEVEL_DEFAULT_DB,
@@ -90,7 +91,7 @@ pub fn numbered_track_name(project: &Project, base: &str) -> String {
 }
 
 /// Rejects a result that breaks a routing invariant.
-fn check_routing(p: &Project) -> Result<(), EditError> {
+pub(super) fn check_routing(p: &Project) -> Result<(), EditError> {
     routing::check(p).map_err(|issue| match issue {
         RoutingIssue::Cycle | RoutingIssue::SelfReference(_) => EditError::RoutingCycle,
         RoutingIssue::NotABus { target, .. } => EditError::NotABus(target),
@@ -99,6 +100,10 @@ fn check_routing(p: &Project) -> Result<(), EditError> {
             EditError::Invalid("the track already sends to this bus")
         }
         RoutingIssue::BusContent(_) => EditError::Invalid("a bus takes audio effects only"),
+        RoutingIssue::KindContent(_) => {
+            EditError::Invalid("the track kind does not take this content")
+        }
+        RoutingIssue::InputNotABus { target, .. } => EditError::NotABus(target),
         RoutingIssue::NotAGroup(_) | RoutingIssue::GroupOrder => EditError::Invalid("broken group"),
     })
 }
@@ -217,6 +222,7 @@ pub fn add_bus_in(
             monitor: false,
             input: MidiInputSel::All,
             midi_channel: MidiChannelSel::Omni,
+            audio: crate::audio::AudioIo::default(),
             height: TRACK_HEIGHT_DEFAULT,
             clips: Vec::new(),
             output,
@@ -410,6 +416,9 @@ pub fn duplicate_tracks(
             for s in &mut t.sends {
                 s.target = remap(s.target);
             }
+            if let Some(bus) = t.input_bus() {
+                t.audio.input = AudioInput::Bus(remap(bus));
+            }
             for d in &mut t.channel.devices {
                 if let Some(sc) = d.sidechain
                     && copy_of.contains_key(&sc.source)
@@ -447,7 +456,8 @@ pub(super) fn detach_removed(p: &mut Project, before: &Project, removed: &HashSe
         TrackOutput::Master
     };
     let refers = |t: &Track| {
-        matches!(t.output, TrackOutput::Bus(b) if gone(&b))
+        t.input_bus().is_some_and(|b| gone(&b))
+            || matches!(t.output, TrackOutput::Bus(b) if gone(&b))
             || t.sends.iter().any(|s| gone(&s.target))
             || t.channel
                 .devices
@@ -461,6 +471,9 @@ pub(super) fn detach_removed(p: &mut Project, before: &Project, removed: &HashSe
         let t = track_mut(p, index);
         t.output = resolve_output(t.output);
         t.sends.retain(|s| !gone(&s.target));
+        if t.input_bus().is_some_and(|b| gone(&b)) {
+            t.audio.input = AudioInput::None;
+        }
         clear_sidechains(&mut t.channel, removed);
     }
     if p.master

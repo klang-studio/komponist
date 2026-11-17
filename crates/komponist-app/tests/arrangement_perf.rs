@@ -161,7 +161,7 @@ fn the_big_project_has_16_tracks_200_clips_and_10_000_notes() {
         .flat_map(|t| &t.clips)
         .map(|c| match &c.content {
             ClipContent::Midi(m) => m.active().notes.len(),
-            ClipContent::Step(_) => 0,
+            ClipContent::Step(_) | ClipContent::Audio(_) => 0,
         })
         .sum();
     assert_eq!((p.tracks.len(), clips, notes), (TRACKS, CLIPS, 10_000));

@@ -13,7 +13,9 @@
 //!   still restores that step's parameters and samples, with paths for the new folder (#86).
 //! - **"Sammeln und speichern"** ([`ProjectAction::CollectAndSave`]) copies every sample that lies
 //!   outside `<project name> Samples/` into it, next to the project file, and saves. Identical
-//!   files are copied once. It is the only action that creates a folder.
+//!   files are copied once. It is the only action that creates a folder. The files of audio clips
+//!   (`komponist_model::AudioFile`, epic #8) are linked the same way and collected into the same
+//!   folder by the same collector; saving rebases their links like the Sampler's.
 //! - **Missing samples** are listed in the S06 dialog ([`crate::dialogs::missing_plugins`]) and
 //!   found again with "Suchen …"; the other missing samples that lie in the chosen folder follow.
 //! - **Pad selection**: the pad the device frame has selected (`{sel}`), the pad of the step
@@ -31,7 +33,7 @@ use komponist_builtin::Internal;
 use komponist_builtin::sampler::{self, Collector, PadField, SampleLink, links};
 use komponist_engine::Command;
 use komponist_model::edits;
-use komponist_model::{ChannelRef, ClipContent, DeviceId, Project, TrackId};
+use komponist_model::{AudioFile, ChannelRef, ClipContent, DeviceId, Project, TrackId};
 
 use crate::actions::PluginAction;
 use crate::app::App;
@@ -41,7 +43,8 @@ use crate::step_rows;
 use crate::ui_state::{StatusKind, StepCursor};
 
 /// The demo project with the synthesized test kit on the pads of every sampler (`--demo`): the
-/// kit's files are written into `dir` (created), the pads link them. The demo is a throwaway, so
+/// kit's files and showcase audio clips are synthesized into `dir` (created), the pads and clips
+/// link them. The demo is a throwaway, so
 /// `dir` is the system's temporary folder in the app.
 pub fn demo_with_kit(
     mut project: komponist_model::Project,
@@ -65,6 +68,7 @@ pub fn demo_with_kit(
             }
         }
     }
+    crate::showcase::audio::write_files(&mut project, dir)?;
     Ok(project)
 }
 
@@ -294,9 +298,11 @@ impl App {
         };
         let old_dir = self.project_dir();
         self.doc.rewrite_untracked(|p| {
-            rewrite_samplers(p, |state| {
-                links::rebase(state, old_dir.as_deref(), &new_dir)
-            })
+            rewrite_links(
+                p,
+                |state| links::rebase(state, old_dir.as_deref(), &new_dir),
+                |file| Some(file.rebased(old_dir.as_deref(), &new_dir)),
+            )
         });
     }
 
@@ -310,6 +316,12 @@ impl App {
         };
         match self.collect_samples(&file) {
             Ok(collector) => {
+                for path in &collector.skipped {
+                    eprintln!(
+                        "komponist: not collected, not an audio file: {}",
+                        path.display()
+                    );
+                }
                 if self.save_to(&file) {
                     let copied = collector.log.iter().filter(|c| c.copied).count();
                     let folder = sampler::links::samples_folder_name(&file);
@@ -317,7 +329,24 @@ impl App {
                         0 => self.lang.status_collected_none(&folder),
                         n => self.lang.status_collected(n, &folder),
                     };
-                    self.set_status(text, StatusKind::Success);
+                    if collector.skipped.is_empty() {
+                        self.set_status(text, StatusKind::Success);
+                    } else {
+                        let files = collector
+                            .skipped
+                            .iter()
+                            .map(|p| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.set_status(
+                            format!(
+                                "{text} · {}",
+                                self.lang
+                                    .status_collect_skipped(collector.skipped.len(), files)
+                            ),
+                            StatusKind::Error,
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -338,8 +367,18 @@ impl App {
         for (_, _, state) in self.samplers() {
             collector.collect(state.as_deref(), old_dir.as_deref())?;
         }
+        for file in audio_files(self.project()) {
+            if let Some(found) = file.resolve(old_dir.as_deref()) {
+                collector.collect_file(&found)?;
+            }
+        }
+        let project_dir = collector.project_dir().to_path_buf();
         self.doc.rewrite_untracked(|p| {
-            rewrite_samplers(p, |state| collector.relink(state, old_dir.as_deref()))
+            rewrite_links(
+                p,
+                |state| collector.relink(state, old_dir.as_deref()),
+                |file| relink_audio_file(&collector, file, old_dir.as_deref(), &project_dir),
+            )
         });
         Ok(collector)
     }
@@ -369,7 +408,7 @@ impl App {
                     let (t, c) = self.project().find_clip(clip)?;
                     (t.id == track).then(|| match &c.content {
                         ClipContent::Step(p) => Some((clip, p.clone())),
-                        ClipContent::Midi(_) => None,
+                        ClipContent::Midi(_) | ClipContent::Audio(_) => None,
                     })
                 })
                 .flatten();
@@ -428,6 +467,48 @@ impl App {
                 },
             );
         }
+    }
+}
+
+/// All audio take files of `project`, including inactive passes, in track and clip order.
+fn audio_files(project: &Project) -> Vec<&AudioFile> {
+    project
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .flat_map(|c| match &c.content {
+            ClipContent::Audio(a) => a.takes.as_slice(),
+            _ => &[],
+        })
+        .map(|take| &take.file)
+        .collect()
+}
+
+/// `file` pointed where `collector` put it (or, for a file this run did not collect, rebased to
+/// the project's folder); `None` if it does not resolve (a missing file keeps its link).
+fn relink_audio_file(
+    collector: &Collector,
+    file: &AudioFile,
+    old_dir: Option<&Path>,
+    project_dir: &Path,
+) -> Option<AudioFile> {
+    let found = file.resolve(old_dir)?;
+    let to = collector.placed(&found).unwrap_or(found);
+    Some(file.moved_to(&to, project_dir))
+}
+
+/// `project` with the Sampler links rewritten by `samplers` and the audio clip files by `audio`
+/// (`None`: unchanged); `None` if nothing changed.
+fn rewrite_links(
+    project: &Project,
+    samplers: impl FnMut(Option<&[u8]>) -> Option<Vec<u8>>,
+    audio: impl FnMut(&AudioFile) -> Option<AudioFile>,
+) -> Option<Project> {
+    let after_samplers = rewrite_samplers(project, samplers);
+    let base = after_samplers.as_ref().unwrap_or(project);
+    match edits::rewrite_audio_files(base, audio) {
+        Some(next) => Some(next),
+        None => after_samplers,
     }
 }
 

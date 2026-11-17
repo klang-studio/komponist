@@ -43,6 +43,7 @@ pub(super) fn section(
     let kind = match clip.content {
         ClipContent::Midi(_) => t.inspector_clip_midi(),
         ClipContent::Step(_) => t.inspector_clip_step(),
+        ClipContent::Audio(_) => t.inspector_clip_audio(),
     };
     let chip = crate::views::mixer::model::base_color(track.hue.0);
     frame(
@@ -67,6 +68,10 @@ pub(super) fn section(
             match &clip.content {
                 ClipContent::Midi(_) => midi_fields(ui, ctx, project, col, clip),
                 ClipContent::Step(step) => step_fields(ui, ctx, project, col, clip, step),
+                ClipContent::Audio(a) => super::audio::fields(ui, ctx, project, col, clip, a),
+            }
+            if let ClipContent::Audio(audio) = &clip.content {
+                super::audio_takes::show(&mut insp.audio_takes, ui, ctx, col, clip, audio);
             }
             takes(ui, ctx, col, clip);
         },
@@ -74,7 +79,7 @@ pub(super) fn section(
 }
 
 /// Start and Länge, the first two fields of every clip.
-fn position_fields(
+pub(super) fn position_fields(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
     project: &Project,
@@ -396,7 +401,7 @@ pub(super) fn recording_section(
     let name = rec.take_name(track).unwrap_or_else(|| clip.name.clone());
     let notes = match &clip.content {
         ClipContent::Midi(m) => m.active().notes.len(),
-        ClipContent::Step(_) => 0,
+        ClipContent::Step(_) | ClipContent::Audio(_) => 0,
     };
     let meter = project.meter;
     let (start, length) = (clip.start, clip.length);

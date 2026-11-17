@@ -365,7 +365,7 @@ fn the_loader_hands_samples_over_and_takes_the_old_ones_back() {
     // Before the audio thread ran, nothing plays; after one call the sample is in.
     assert_eq!(sounding(&render(&mut p, &[], 64)), 0);
     assert!(sounding(&render(&mut p, &[on(0, 0, 127)], 2000)) > 1000);
-    // A missing file, a file that is no WAV.
+    // A missing file, a file that is no audio.
     handle.load_link(1, SampleLink::new(&dir.join("gone.wav"), None), None);
     let junk = dir.join("junk.wav");
     std::fs::write(&junk, b"not a wav").unwrap();
@@ -515,6 +515,88 @@ fn wav_files_decode_in_the_common_formats() {
     // An empty file is refused with a German reason.
     let empty = write("empty.wav", f32spec, &|_| {});
     assert!(decode(&empty).unwrap_err().contains("leer"));
+}
+
+/// The audio-file crate's fixtures: 0.75 s, 44.1 kHz, stereo, 440 Hz left and 880 Hz right.
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../komponist-audiofile/tests/fixtures")
+        .join(name)
+}
+
+#[test]
+fn flac_ogg_and_mp3_load_like_wav() {
+    let mut p = sampler();
+    let handle = p.sampler().unwrap();
+    for (pad, name) in [
+        "stereo-440-880.flac",
+        "stereo-440-880.ogg",
+        "stereo-440-880.mp3",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        handle.load_link(pad, SampleLink::new(&fixture(name), None), None);
+    }
+    assert!(handle.wait_idle(WAIT));
+    for pad in 0..3 {
+        let view = handle.view(pad);
+        assert_eq!(view.status, PadStatus::Ready, "pad {pad}");
+        assert!(
+            (view.length_s - 0.75).abs() < 0.06,
+            "pad {pad}: {}",
+            view.length_s
+        );
+    }
+    render(&mut p, &[], 1);
+    assert!(
+        sounding(&render(&mut p, &[on(0, 1, 127)], 2000)) > 1000,
+        "the OGG plays"
+    );
+    let s = decode(&fixture("stereo-440-880.flac")).unwrap();
+    assert!(s.is_stereo() && s.sample_rate == 44_100.0 && s.len() == 33_075);
+}
+
+/// The Sampler and the audio clips share one file pool (#10): a file is decoded once however many
+/// pads and Samplers show it, and its pool entry lives exactly as long as a pad shows it.
+#[test]
+fn pads_and_samplers_share_one_pool_entry_and_one_decode() {
+    use komponist_audiofile::FilePool;
+    let dir = scratch("pool");
+    let path = dc_wav(&dir, "shared.wav", 4800, 0.5, 48_000);
+    let (a, b) = (sampler(), sampler());
+    let (ha, hb) = (a.sampler().unwrap(), b.sampler().unwrap());
+    ha.load_link(0, SampleLink::new(&path, None), None);
+    ha.load_link(5, SampleLink::new(&path, None), None);
+    hb.load_link(3, SampleLink::new(&path, None), None);
+    assert!(ha.wait_idle(WAIT) && hb.wait_idle(WAIT));
+    assert_eq!(ha.view(0).status, PadStatus::Ready);
+    assert_eq!(hb.view(3).status, PadStatus::Ready);
+
+    let file = FilePool::global().open(&path).unwrap();
+    assert_eq!(file.decode_count(), 1, "three pads, one decode");
+    // The sample the pads play is the pool's: asking for it builds nothing.
+    let _ = file
+        .derived(None, |_| -> sampler_core::Sample {
+            unreachable!("already built")
+        })
+        .unwrap();
+    let weak = Arc::downgrade(&file);
+    drop(file);
+    assert!(weak.upgrade().is_some(), "the pads hold the entry");
+
+    // Empty the pads one by one: the entry goes with the last one.
+    for (handle, pad) in [(&ha, 0), (&ha, 5)] {
+        handle.clear(pad);
+        assert!(handle.wait_idle(WAIT));
+    }
+    assert!(weak.upgrade().is_some(), "the other Sampler still shows it");
+    hb.clear(3);
+    assert!(hb.wait_idle(WAIT));
+    assert!(
+        weak.upgrade().is_none(),
+        "the pool entry is gone with its last user"
+    );
 }
 
 #[test]

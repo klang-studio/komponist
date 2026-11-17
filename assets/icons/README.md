@@ -26,6 +26,9 @@ root `<svg>` element:
 
 ## Icon list and where the screens use them
 
+`AudioWaveform` (`audio-waveform`) is an original six-stroke geometric waveform under ISC,
+used for audio files and inputs (audio proposal §10), prepared like the Lucide subset.
+
 The screens draw most icons as text glyphs (`⋯ ▾ ▸ ‹ › × ✓ ★ ⚠`) or as plain text buttons. The
 table maps each one to a Lucide icon. Play, Stop and Record stay geometric shapes (no icon).
 

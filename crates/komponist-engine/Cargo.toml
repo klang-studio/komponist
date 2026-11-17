@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 komponist-model.workspace = true
+# Disk streaming of audio clips (#11): seekable decoding, sample-rate conversion, the file pool.
+komponist-audiofile.workspace = true
 klang-dsp.workspace = true
 rtrb.workspace = true
 hound.workspace = true

@@ -87,6 +87,8 @@ pub struct ClipModel<'a> {
     pub loop_mark: bool,
     /// The content preview; `None` for an empty clip.
     pub preview: Option<&'a PreviewMesh>,
+    /// Audio waveform and controls, replacing the MIDI preview.
+    pub audio: Option<&'a super::AudioLook<'a>>,
 }
 
 impl<'a> ClipModel<'a> {
@@ -99,6 +101,7 @@ impl<'a> ClipModel<'a> {
             recording: false,
             loop_mark: false,
             preview: None,
+            audio: None,
         }
     }
 }
@@ -178,6 +181,8 @@ impl PreviewMesh {
         match &clip.content {
             ClipContent::Midi(m) => Self::midi(&m.active().notes, spec),
             ClipContent::Step(s) => Self::steps(s, spec),
+            // #12: the waveform; until then an audio clip shows its body only.
+            ClipContent::Audio(_) => Self::empty(&spec),
         }
     }
 
@@ -426,7 +431,15 @@ pub fn clip_colors(model: &ClipModel<'_>, state: ClipState) -> ClipColors {
 pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: ClipState) {
     let ppp = painter.pixels_per_point();
     let r = px::snap_rect(rect, ppp);
-    let c = clip_colors(model, state);
+    let mut c = clip_colors(model, state);
+    if model
+        .audio
+        .is_some_and(|a| a.file == super::AudioFileState::Missing)
+    {
+        c.head = color32(model.palette.dim);
+        c.body = color32(color::STATE_ERROR_SURFACE);
+        c.name = color32(color::STATE_ERROR);
+    }
     let k = radius::M;
     let head_h = size::CLIP_HEADER.min(r.height());
     let head = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + head_h));
@@ -435,12 +448,29 @@ pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: C
     let mut q = Quads::new(ppp);
     q.rounded(r, k, c.body);
     q.rounded_corners(head, k, [true, true, false, false], c.head);
-    if let Some(preview) = model.preview {
+    if let Some(audio) = model.audio {
+        super::audio_clip::paint_wave(
+            &mut q,
+            body,
+            egui::Rangef::new(
+                body.left().max(painter.clip_rect().left()),
+                body.right().min(painter.clip_rect().right()),
+            ),
+            audio,
+            model,
+        );
+    } else if let Some(preview) = model.preview {
         preview.paint_into(&mut q, body, c.ink, c.ink_repeat, color32(color::SURFACE_0));
     }
     q.paint(painter);
 
-    paint_name(painter, head, model, c.name);
+    let name_head = model.audio.map_or(head, |audio| {
+        super::audio_clip::paint_badge(painter, head, audio, c.name)
+    });
+    paint_name(painter, name_head, model, c.name);
+    if let Some(audio) = model.audio {
+        super::audio_clip::paint_controls(painter, r, audio, state, c.body);
+    }
 
     let mut q = Quads::new(ppp);
     let w = px::line_width(ppp);
@@ -459,13 +489,15 @@ pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: C
             [false, false, true, false],
             handle,
         );
-        let lw = metrics::CLIP_LOOP_HANDLE_WIDTH.min(head.width());
-        q.rounded_corners(
-            Rect::from_min_max(pos2(head.max.x - lw, head.min.y), head.max),
-            k,
-            [false, true, false, false],
-            color32(color::TEXT_1),
-        );
+        if model.audio.is_none() {
+            let lw = metrics::CLIP_LOOP_HANDLE_WIDTH.min(head.width());
+            q.rounded_corners(
+                Rect::from_min_max(pos2(head.max.x - lw, head.min.y), head.max),
+                k,
+                [false, true, false, false],
+                color32(color::TEXT_1),
+            );
+        }
     }
     if model.recording {
         q.quad(
@@ -486,7 +518,7 @@ pub fn paint_clip(painter: &Painter, rect: Rect, model: &ClipModel<'_>, state: C
     }
     q.paint(painter);
 
-    if model.loop_mark {
+    if model.loop_mark && model.audio.is_none() {
         let [mw, mh] = metrics::CLIP_LOOP_MARK;
         let inset = space::SPACE_1;
         let mark = Rect::from_min_size(pos2(r.max.x - inset - mw, r.min.y + inset), vec2(mw, mh));
@@ -561,11 +593,22 @@ pub fn clip_access(
 ) -> Access {
     let name = clip_name(model.name);
     let span = bar_span(t, start, end, meter);
-    let s = if model.muted {
+    let mut s = if model.muted {
         t.a11y_clip_muted(name, span)
     } else {
         t.a11y_clip(name, span)
     };
+    if let Some(audio) = model.audio {
+        if audio.file == super::AudioFileState::Missing {
+            s.push_str(t.a11y_audio_missing_suffix());
+        }
+        if let Some((take, count)) = audio.takes {
+            s.push_str(&t.a11y_audio_takes_suffix(take, count));
+        }
+        if let Some(tempo) = audio.repitch {
+            s.push_str(&t.a11y_audio_repitch_suffix(tempo));
+        }
+    }
     Access::selectable(Role::GridCell, s, state.selected)
 }
 
