@@ -1826,6 +1826,21 @@ controls have localized slider nodes. Audio moves and trims always use the selec
 use unsnapped pointer deltas. Move/copy and both trim gestures apply to the gesture-start document so a
 previewed overlap cut is restored when the pointer returns or enters a refused destination.
 
+The audio editor (`views::audio_editor`, `FocusArea::Waveform`) displays the full source and active
+clip window in mono or separate stereo lanes. `UiState::waveform` keeps horizontal zoom (220 points
+per bar initially) and source-local scroll. Per-channel peak/RMS meshes share the arrangement renderer;
+unchanged full-source meshes survive window gain/fade edits. Source handles and metadata are rechecked
+once a second, and peaks arrive through the existing shared worker with a repaint callback.
+Toolbar and inspector use the same localized numeric controls. Source-start editing changes the active
+take's frame offset without moving the clip, shortening the window only at the source end. The original
+tempo/bar-count conversion uses the entire source duration and the current meter. Trim gestures follow
+the arrangement snap setting; envelope changes use free pointer deltas and preserve a single undo step.
+Only selected windows show the white gain/fade controls. Missing sources expose a recovery banner;
+replacement validates the new header before linking, preserves clip properties and inactive takes,
+rejects a source shorter than the saved offset, and reports any shortened window. The file menu also
+copies the resolved absolute path or opens its parent folder. PCM bit depth is shown when available
+from a WAV header; compressed sources retain their actual rate, channel count and duration metadata.
+
 ### 9.3 App structure (`komponist-app`)
 
 - `App { doc: Document, ui: UiState, engine: EngineHandle, plugins: PluginManager, windows, settings }`.

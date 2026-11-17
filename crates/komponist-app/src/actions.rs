@@ -212,6 +212,13 @@ pub enum EditAction {
         /// New timeline start.
         start: Tick,
     },
+    /// Replace the linked file while preserving the audio clip settings.
+    SetAudioClipFile {
+        /// Clip to relink.
+        clip: ClipId,
+        /// Decoded file metadata and link.
+        file: komponist_model::AudioFile,
+    },
     /// Set an audio clip parameter.
     SetAudioClipProp {
         /// Clip to edit.
@@ -537,6 +544,15 @@ pub enum ProjectAction {
     Open,
     /// Open this file (recent list, start screen Enter).
     OpenPath(PathBuf),
+    /// Open the audio file replacement browser.
+    ReplaceAudio(ClipId),
+    /// Replace with a chosen, decoded file.
+    ReplaceAudioPath {
+        /// Clip to relink.
+        clip: ClipId,
+        /// Source file to link.
+        path: PathBuf,
+    },
     /// Ctrl I: choose linked audio files to import.
     ImportAudio,
     /// Link files on an audio track, or create one track per file when target is absent.

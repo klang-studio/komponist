@@ -18,6 +18,7 @@
 //! a drag is one undo step. The panel scrolls with the wheel when the sections are taller (not over
 //! the channel fader or pan knob: they take the wheel, owner decision 2026-11-15).
 
+mod audio;
 mod audio_takes;
 mod channel;
 mod clip;
@@ -76,6 +77,7 @@ pub struct Inspector {
     /// Per device: the late-block count last seen and when it last grew (egui time).
     late: LateTracker,
     audio_takes: audio_takes::State,
+    audio_source: crate::views::audio_editor::source::Source,
 }
 
 impl Inspector {
@@ -137,7 +139,10 @@ impl View for Inspector {
         let top = body.top() - self.scroll;
         let mut y = top;
         match sections.clip {
-            Some(ClipSection::Clip(id)) => clip::section(self, ui, ctx, &project, x, &mut y, id),
+            Some(ClipSection::Clip(id)) => {
+                clip::section(self, ui, ctx, &project, x, &mut y, id);
+                audio::file_section(ui, ctx, &project, x, &mut y, id, &mut self.audio_source);
+            }
             Some(ClipSection::Recording(track)) => {
                 clip::recording_section(ui, ctx, &project, x, &mut y, track);
             }

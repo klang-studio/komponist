@@ -98,6 +98,8 @@ pub struct TrackPalette {
     pub wave_peak: Srgba,
     /// RMS core of a waveform clip (`wave-rms`: the note colour at velocity 105).
     pub wave_rms: Srgba,
+    /// Source waveform outside the active clip window.
+    pub wave_dim: Srgba,
     notes: [Srgba; 128],
     notes_hover: [Srgba; 128],
 }
@@ -130,6 +132,19 @@ impl TrackPalette {
             note_muted: lc(formula::NOTE_MUTED),
             wave_peak: notes[usize::from(formula::WAVE_PEAK_VELOCITY)],
             wave_rms: notes[usize::from(formula::WAVE_RMS_VELOCITY)],
+            wave_dim: {
+                let overlay = formula::WAVE_DIM_OVERLAY;
+                let peak = notes[usize::from(formula::WAVE_PEAK_VELOCITY)];
+                let a = u32::from(overlay[3]);
+                [0, 1, 2, 3].map(|i| {
+                    if i == 3 {
+                        255
+                    } else {
+                        ((u32::from(overlay[i]) * a + u32::from(peak[i]) * (255 - a) + 127) / 255)
+                            as u8
+                    }
+                })
+            },
             notes,
             notes_hover,
         }

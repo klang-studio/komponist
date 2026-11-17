@@ -42,8 +42,7 @@ pub fn editor_tab(
     let kind = match clip.content {
         ClipContent::Midi(_) => t.dock_piano_roll(),
         ClipContent::Step(_) => t.dock_step_sequencer(),
-        // #12: the audio clip editor.
-        ClipContent::Audio(_) => "",
+        ClipContent::Audio(_) => t.dock_waveform(),
     };
     let mark = color32(TrackPalette::new(track.hue.0).base);
     (clip.name.clone(), kind, Some(mark))
