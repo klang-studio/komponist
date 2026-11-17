@@ -94,6 +94,10 @@ pub struct TrackPalette {
     pub key_playing: Srgba,
     /// Contour of a muted note (`note-muted`).
     pub note_muted: Srgba,
+    /// Peak envelope of a waveform clip (`wave-peak`: the note colour at velocity 50).
+    pub wave_peak: Srgba,
+    /// RMS core of a waveform clip (`wave-rms`: the note colour at velocity 105).
+    pub wave_rms: Srgba,
     notes: [Srgba; 128],
     notes_hover: [Srgba; 128],
 }
@@ -124,6 +128,8 @@ impl TrackPalette {
             clip_handle: lc(formula::CLIP_HANDLE),
             key_playing: lc(formula::KEY_PLAYING),
             note_muted: lc(formula::NOTE_MUTED),
+            wave_peak: notes[usize::from(formula::WAVE_PEAK_VELOCITY)],
+            wave_rms: notes[usize::from(formula::WAVE_RMS_VELOCITY)],
             notes,
             notes_hover,
         }
@@ -265,6 +271,15 @@ mod tests {
             assert_eq!(p.key_playing, rgb(key), "hue {hue} key-playing");
             assert_eq!(p.note_muted, rgb(muted), "hue {hue} note-muted");
             assert_eq!(p.clip_handle, rgb(handle), "hue {hue} clip-handle");
+        }
+    }
+
+    #[test]
+    fn waveform_tones_use_the_approved_note_velocities() {
+        for hue in HUES {
+            let p = TrackPalette::new(hue.degrees);
+            assert_eq!(p.wave_peak, p.note(50));
+            assert_eq!(p.wave_rms, p.note(105));
         }
     }
 

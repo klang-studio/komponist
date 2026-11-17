@@ -1483,9 +1483,26 @@ impl App {
                 }
             }
             EditAction::SetClipLength { clip, length } => {
-                self.apply("undo-clip-length", |p| {
-                    edits::set_clip_length(p, clip, length)
+                self.apply_delta("undo-clip-length", |p| {
+                    edits::set_clip_length(p, clip, length).map(|p| (p, ()))
                 });
+            }
+            EditAction::TrimAudioClipStart { clip, start } => {
+                self.apply_delta("undo-clip-length", |p| {
+                    edits::trim_audio_clip_start(p, clip, start).map(|p| (p, ()))
+                });
+            }
+            EditAction::SetAudioClipProp { clip, prop } => {
+                let label = match prop {
+                    edits::AudioClipProp::GainDb(_) => "undo-clip-gain",
+                    edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
+                        "undo-clip-fade"
+                    }
+                    edits::AudioClipProp::TimeMode(_) | edits::AudioClipProp::OriginalTempo(_) => {
+                        "undo-change-clip"
+                    }
+                };
+                self.apply(label, |p| edits::set_audio_clip_prop(p, clip, prop));
             }
             EditAction::SetClipLoop {
                 clip,

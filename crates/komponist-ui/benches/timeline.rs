@@ -196,6 +196,7 @@ fn arrangement(ppp: f32) -> (Duration, Duration, Duration, usize) {
         let (t, v) = frame(&ctx, |p| {
             for (i, (r, preview)) in rects.iter().zip(&previews).enumerate() {
                 let model = ClipModel {
+                    audio: None,
                     preview: Some(preview),
                     ..ClipModel::new("Bass", &palette)
                 };

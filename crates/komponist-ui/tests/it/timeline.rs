@@ -243,6 +243,7 @@ fn arrangement(ui: &mut Ui) {
             let model = ClipModel {
                 muted: c.mute || model.dimmed(),
                 loop_mark: c.loop_length.is_some() && matches!(c.content, ClipContent::Midi(_)),
+                audio: None,
                 preview: Some(&preview),
                 ..ClipModel::new(&c.name, &palette)
             };
@@ -423,4 +424,101 @@ fn cards_expose_painted_objects() {
     h.get_by_label(&format!("Note C#4, {pos}"));
     h.get_by_label("Note C4, 1.1.096, stumm");
     assert!(h.get_all_by_label_contains("Note C4").count() > 10);
+}
+
+/// Audio proposal 02: all waveform states, wide/narrow Re-Pitch, and selected controls.
+#[test]
+fn audio_clip_states_in_both_languages() {
+    use komponist_i18n::Lang;
+    use komponist_ui::timeline::{AudioFileState, AudioLook, WaveMesh, WaveSpec};
+    let samples: Vec<f32> = (0..48_000)
+        .map(|i| ((i as f32 * 0.08).sin()) * if i % 12000 < 400 { 0.95 } else { 0.25 })
+        .collect();
+    let peaks = komponist_audiofile::PeakData::from_planar(48_000, &[samples]);
+    let spec = WaveSpec {
+        width: 280.0,
+        px_per_tick: 0.02,
+        body_height: 36.0,
+        offset: 0,
+        frames: 48_000,
+        gain: 1.0,
+        fade_in: 30.0,
+        fade_out: 60.0,
+    };
+    let wave = WaveMesh::from_peaks(&peaks, &spec);
+    let flat = WaveMesh::flat(280.0, 0.02, 36.0);
+    let palette = TrackPalette::new(150);
+    let mut results = egui_kittest::SnapshotResults::new();
+    for lang in [Lang::De, Lang::En] {
+        let name = if lang == Lang::De {
+            "timeline-audio-states"
+        } else {
+            "timeline-audio-states-en"
+        };
+        let paint = |ui: &mut Ui| {
+            komponist_ui::set_lang(ui.ctx(), lang);
+            let canvas = area(ui, vec2(568.0, 392.0));
+            for (i, (file, selected, muted, repitch, width)) in [
+                (AudioFileState::Ready, false, false, false, 280.0),
+                (AudioFileState::Ready, true, false, false, 280.0),
+                (AudioFileState::Ready, false, true, false, 280.0),
+                (AudioFileState::Ready, false, false, true, 280.0),
+                (AudioFileState::Ready, false, false, true, 70.0),
+                (AudioFileState::Missing, false, false, false, 560.0),
+                (AudioFileState::Pending, false, false, false, 560.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let rect =
+                    Rect::from_min_size(canvas.min + vec2(0.0, i as f32 * 56.0), vec2(width, 50.0));
+                let message = match file {
+                    AudioFileState::Missing => lang.audio_clip_missing("verse.wav"),
+                    AudioFileState::Pending => lang.audio_clip_peaks().to_owned(),
+                    _ => String::new(),
+                };
+                let audio = AudioLook {
+                    file,
+                    wave: if file == AudioFileState::Ready {
+                        &wave
+                    } else {
+                        &flat
+                    },
+                    repitch: repitch.then_some(120.0),
+                    repitch_label: lang.audio_clip_repitch_badge(),
+                    message: &message,
+                    gain_db: if selected { -3.0 } else { 0.0 },
+                    fade_in: if selected { 30.0 } else { 0.0 },
+                    fade_out: if selected { 60.0 } else { 0.0 },
+                };
+                let mut model = ClipModel::new("Verse", &palette);
+                model.audio = Some(&audio);
+                model.muted = muted;
+                paint_clip(
+                    ui.painter(),
+                    rect,
+                    &model,
+                    if selected {
+                        ClipState::SELECTED
+                    } else {
+                        ClipState::REST
+                    },
+                );
+            }
+        };
+        for ppp in SCALES {
+            // Upload atlas changes as each pass runs. Deferring all texture deltas until the
+            // fourth (English 2×) render can lose earlier glyph/white-pixel atlas regions.
+            let mut h = snapshot::builder(ppp)
+                .with_size(vec2(600.0, 420.0))
+                .wgpu()
+                .build_ui(|ui| {
+                    snapshot::padded(ui, paint);
+                });
+            h.run();
+            h.snapshot(snapshot::file_stem(name, ppp));
+            results.extend_harness(&mut h);
+        }
+    }
+    results.unwrap();
 }

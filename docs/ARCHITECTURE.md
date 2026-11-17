@@ -1118,13 +1118,16 @@ and worker threads and hand finished `Arc`s over.
   `StreamResampler` converts chunk by chunk for the read-ahead thread (`push`, `finish`, `reset` after a seek).
   The Sampler converts nothing (its voices interpolate at playback); audio clips are converted to the engine rate off
   the audio thread.
-- **Peaks (`PeakData`).** Multi-resolution min/max per channel: level 0 has one bucket per 128 source frames, every
-  further level merges 4 buckets, up to one bucket (≈ 4.5 MB for 10 minutes of 48 kHz stereo). `query(channel, start,
+- **Peaks (`PeakData`).** Multi-resolution min/max and measured RMS per channel: level 0 has one bucket per 128 source frames, every
+  further level merges 4 buckets, up to one bucket (≈ 9.6 MB for 10 minutes of 48 kHz stereo). `query(channel, start,
   end, columns)` (or `query_secs`) returns the min/max of `columns` equal slices of a frame range from the coarsest
   level whose buckets are at most a quarter column wide, so a redraw costs the view's width, not the file's length.
   `frames_per_bucket` in the answer tells the arrangement when to switch to raw samples. Frames are source frames
   (`sample_rate()` converts from ticks via seconds). `PeakBuilder` builds from chunks; `PeakData::from_file` streams a
-  decode without holding the file in memory.
+  decode without holding the file in memory. `query_rms(channel, start, end, columns)` returns RMS amplitudes at the
+  same resolution: each bucket stores the sum of squared samples in `f64`, higher levels sum energies, and the
+  query weights the final partial bucket by its actual frame count. Unaligned columns include whole intersecting
+  buckets, as min/max queries do. Cache version `KPK2` stores energy beside min/max; older caches are regenerated.
 - **File pool (`FilePool`, `PoolFile`).** One entry per file, keyed by `FileId` (canonical path, size, mtime), so
   symlinks and spellings of a path are one entry and a changed file is a new one. The pool holds entries weakly:
   the refcount is the `Arc<PoolFile>` the users hold, and an entry and its memory go with the last user. Per entry,
@@ -1768,6 +1771,17 @@ with `Painter`:
 - Accessibility: each canvas registers AccessKit nodes for its **visible** objects (role, name, bounds,
   selected/toggled state). They make the canvases queryable for kittest and the egui MCP server and
   usable with screen readers. Only visible objects, so the cost follows the screen, not the project.
+
+Audio arrangement clips use `timeline::{AudioLook, WaveMesh, WaveSpec, audio_parts}`. The app's
+`arrangement::AudioCache` keeps file handles per linked file and project directory, rechecks file identity
+once a second, requests peak data once with a repaint callback, and caches meshes per clip `Arc`, full
+source window (including tempo), zoom, height and peak-data identity. Ready peaks replace pending flat
+meshes automatically; missing links retain editable model metadata and are checked again. The two waveform
+tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting. Painting is
+clipped to the visible range. `audio_parts` shares control geometry with hit testing; visible gain/fade/trim
+controls have localized slider nodes. Audio moves and trims always use the selected grid; fades and gain
+use unsnapped pointer deltas. Move/copy and both trim gestures apply to the gesture-start document so a
+previewed overlap cut is restored when the pointer returns or enters a refused destination.
 
 ### 9.3 App structure (`komponist-app`)
 

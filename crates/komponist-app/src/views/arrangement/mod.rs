@@ -40,6 +40,7 @@
 
 mod buses;
 mod cache;
+mod files;
 pub mod geometry;
 mod headers;
 mod lanes;
@@ -100,6 +101,21 @@ enum Drag {
     Move(MoveDrag),
     /// The end of a clip.
     Trim(EdgeDrag),
+    /// Audio source-start trim.
+    TrimStart {
+        clip: ClipId,
+        start: Tick,
+        origin: f32,
+    },
+    /// Audio fade or gain control.
+    AudioControl {
+        clip: ClipId,
+        zone: geometry::Zone,
+        origin: Pos2,
+        value: f32,
+        length: Tick,
+        fine: bool,
+    },
     /// The loop corner of a clip.
     Loop(EdgeDrag),
     /// Box selection on empty lane space.
@@ -139,6 +155,8 @@ enum Drag {
 /// A clip move or copy.
 #[derive(Clone, Debug, PartialEq)]
 struct MoveDrag {
+    /// Gesture-start document for overlap previews and destination validation.
+    source: Arc<Project>,
     /// The clips (the originals, for a copy).
     clips: Vec<ClipId>,
     /// Start of the grabbed clip at the press: it snaps to the grid.
@@ -205,6 +223,7 @@ impl Memo {
 pub struct Arrangement {
     palettes: Palettes,
     previews: PreviewCache,
+    audio: files::AudioCache,
     drag: Option<Drag>,
     rename: Option<Rename>,
     /// A press on M S R I opened a gesture (ended on release).
@@ -233,6 +252,7 @@ impl View for Arrangement {
         let project = Arc::clone(ctx.project);
         let body = ui.max_rect();
         self.previews.begin_frame();
+        self.audio.begin_frame();
         self.follow_zoom(ui, ctx, &project, body);
         self.wheel(ui, ctx, &project, body);
         clamp_scroll(&mut ctx.ui.arrangement, &project, body);
@@ -283,6 +303,7 @@ impl View for Arrangement {
             self.toggle_gesture = false;
         }
         self.previews.end_frame();
+        self.audio.end_frame();
         self.memo = Some(Memo::of(&ctx.ui.arrangement));
     }
 }
@@ -381,7 +402,11 @@ impl Arrangement {
                     ctx.send(select_clips(m.clips, SelectMode::Replace));
                 }
             }
-            Drag::Trim(_) | Drag::Loop(_) | Drag::Height { .. } => {
+            Drag::Trim(_)
+            | Drag::Loop(_)
+            | Drag::TrimStart { .. }
+            | Drag::AudioControl { .. }
+            | Drag::Height { .. } => {
                 ctx.send(Action::Edit(EditAction::CancelGesture));
             }
             Drag::Box { base, .. } => {
@@ -415,7 +440,11 @@ impl Arrangement {
                     }
                 }
             }
-            Drag::Trim(_) | Drag::Loop(_) | Drag::Height { .. } => {
+            Drag::Trim(_)
+            | Drag::Loop(_)
+            | Drag::TrimStart { .. }
+            | Drag::AudioControl { .. }
+            | Drag::Height { .. } => {
                 ctx.send(Action::Edit(EditAction::EndGesture));
             }
             Drag::Reorder {

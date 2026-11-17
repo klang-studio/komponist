@@ -228,9 +228,16 @@ fn context(app: &App, s: &mut StatusModel) {
     }
     if !sel.clips.is_empty() {
         s.left = t.status_clips_selected(sel.clips.len());
-        s.mid = platform
-            .pick(t.status_clips_hint(), t.status_clips_hint_mac())
-            .to_owned();
+        let audio = sel.clips.iter().any(|id| {
+            p.find_clip(*id)
+                .is_some_and(|(_, c)| matches!(c.content, komponist_model::ClipContent::Audio(_)))
+        });
+        s.mid = if audio {
+            platform.pick(t.status_audio_clips_hint(), t.status_audio_clips_hint_mac())
+        } else {
+            platform.pick(t.status_clips_hint(), t.status_clips_hint_mac())
+        }
+        .to_owned();
     } else if let Some(tr) = track {
         s.left = t.status_track_selected(&tr.name);
         s.mid = t.status_track_hint().to_owned();
