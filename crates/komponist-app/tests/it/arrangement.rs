@@ -943,6 +943,9 @@ fn ruler_top_sets_the_playhead_bottom_drags_the_loop() {
     let x = x_of(&h, Tick(4 * BAR + 100));
     click(pos2(x, ruler.top() + 4.0), &mut h);
     assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(4 * BAR)));
+    // Telemetry may arrive after the previous frame painted its AccessKit tree. Paint a new
+    // frame after observing the engine position before checking the ruler's accessible value.
+    h.step();
     assert_eq!(
         value_of(&h, Role::Slider, de::A11Y_RULER).as_deref(),
         Some("5.1.000")
