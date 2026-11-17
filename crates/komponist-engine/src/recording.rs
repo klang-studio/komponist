@@ -117,6 +117,9 @@ pub struct RecordingPeak {
     pub max: f32,
     /// Measured RMS (all source channels).
     pub rms: f32,
+    /// Number of source samples across all channels in this bucket. Divide by the
+    /// progress channel count to obtain its frame duration, including a partial bucket.
+    pub samples: u64,
 }
 /// Current pass telemetry. UI polling may allocate; the audio thread never does.
 #[derive(Debug, Clone)]
@@ -190,6 +193,7 @@ impl Bucket {
             min: self.min,
             max: self.max,
             rms: (self.energy / self.count.max(1) as f64).sqrt() as f32,
+            samples: self.count,
         }
     }
 }
@@ -1178,6 +1182,25 @@ mod tests {
         );
         let count: u64 = wave.buckets.iter().map(|b| b.count).sum::<u64>() + wave.current.count;
         assert_eq!(count, frames as u64 * 2);
+        assert_eq!(
+            summary.iter().map(|peak| peak.samples).sum::<u64>() / 2,
+            frames as u64
+        );
+        assert_eq!(summary.last().unwrap().samples, wave.current.count);
+        assert!(wave.filled > 0 && wave.filled < wave.stride);
+    }
+    #[test]
+    fn live_bucket_sample_counts_preserve_a_short_partial_mono_window() {
+        let mut wave = Wave::new();
+        let frames = BASE_WAVE_FRAMES + 17;
+        for _ in 0..frames {
+            wave.push(&[0.25]);
+        }
+        let summary = wave.snapshot();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].samples, BASE_WAVE_FRAMES);
+        assert_eq!(summary[1].samples, 17);
+        assert_eq!(summary.iter().map(|peak| peak.samples).sum::<u64>(), frames);
     }
     #[test]
     fn a_full_capture_queue_fails_explicitly_without_allocating_or_freeing() {
