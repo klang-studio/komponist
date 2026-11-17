@@ -323,7 +323,7 @@ fn the_file_browser_speaks_english() {
     let mut app = english_app();
     app.dispatch(Action::Project(ProjectAction::Open));
     let h = app_harness(app);
-    h.get_by_label(en::FILE_OPEN_TITLE);
+    h.get_by_role_and_label(Role::Dialog, en::FILE_OPEN_TITLE);
     h.get_by_role_and_label(Role::Button, en::FILE_OPEN);
     h.get_by_role_and_label(Role::Button, en::DIALOG_CANCEL);
     h.get_by_label(en::FILE_FOLDER);

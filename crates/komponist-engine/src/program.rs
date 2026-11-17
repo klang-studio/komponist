@@ -15,6 +15,7 @@ use komponist_model::{DeviceId, DeviceRole, Tick, TickRange, TrackId};
 use komponist_model::{TempoMap, Track};
 
 use crate::api::TrackMeter;
+use crate::audio::{AudioPlan, ClipSource};
 use crate::route::Routing;
 
 /// [`SeqNote::probability`] value meaning "plays if and only if the last rolled note with the same
@@ -73,6 +74,33 @@ impl Program {
     pub fn meter(&self, id: TrackId) -> Option<&Arc<TrackMeter>> {
         self.track(id).map(|t| &t.meter)
     }
+
+    /// The files audio clips play in this program, each once (status for the UI's missing-file
+    /// marks: [`ClipSource::status`]).
+    pub fn audio_sources(&self) -> Vec<Arc<ClipSource>> {
+        let mut out: Vec<Arc<ClipSource>> = Vec::new();
+        for source in self
+            .tracks
+            .iter()
+            .filter_map(|t| t.audio.as_ref())
+            .flat_map(|p| p.sources())
+        {
+            if !out.iter().any(|s| Arc::ptr_eq(s, source)) {
+                out.push(Arc::clone(source));
+            }
+        }
+        out
+    }
+
+    /// The file the audio clip `clip` of track `track` plays (`None` for a clip that makes no
+    /// segment: muted, empty, or not an audio clip).
+    pub fn clip_source(
+        &self,
+        track: TrackId,
+        clip: komponist_model::ClipId,
+    ) -> Option<&Arc<ClipSource>> {
+        self.track(track)?.audio.as_ref()?.source_of(clip)
+    }
 }
 
 /// One compiled track.
@@ -112,6 +140,9 @@ pub struct TrackProgram {
     /// Peak meter after fader, pan, mute and solo (buses too); the same `Arc` survives rebuilds of
     /// the track.
     pub meter: Arc<TrackMeter>,
+    /// What an audio track plays (`Some` on audio tracks, also without clips); its source node
+    /// replaces sequencer and instrument at the head of the chain (ARCHITECTURE §6.9.3).
+    pub audio: Option<Arc<AudioPlan>>,
 }
 
 impl TrackProgram {

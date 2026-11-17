@@ -19,6 +19,7 @@ komponist-audio = { path = "crates/komponist-audio" }
 komponist-builtin = { path = "crates/komponist-builtin" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-rt = { path = "crates/komponist-rt" }
+komponist-audiofile = { path = "crates/komponist-audiofile" }
 komponist-hosting = { path = "crates/komponist-hosting" }
 komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-bridge = { path = "crates/komponist-bridge" }
@@ -90,6 +91,11 @@ serde_json = "1.0.154"
 postcard = "1.1.3"
 base64 = "0.23.1"
 hound = "3.5.1"
+# komponist-audiofile (#10): FLAC, OGG Vorbis and MP3 decoding (pure Rust, MPL-2.0, which is GPL-3.0-compatible; WAV
+# stays on hound) and sample-rate conversion (rubato, MIT OR Apache-2.0; its FFT resampler uses realfft, already
+# in the tree).
+symphonia = { version = "0.6.1", default-features = false, features = ["aiff", "pcm", "flac", "mp3", "ogg", "vorbis"] }
+rubato = "5.1.0"
 
 # komponist-app: the EQ's live spectrum (WP-92). Real-input FFT on top of rustfft, MIT.
 realfft = "3.5.1"

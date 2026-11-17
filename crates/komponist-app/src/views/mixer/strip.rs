@@ -356,7 +356,35 @@ pub(super) fn show(
     ui.ctx()
         .accesskit_node_builder(ui.unique_id(), |n| n.set_selected(selected));
     let mods = ui.input(|i| i.modifiers);
-    let rows = Rows::new(rect, tier);
+    let mut rows = Rows::new(rect, tier);
+    let audio_track = s
+        .track()
+        .and_then(|track| ctx.project.track(track))
+        .filter(|track| track.is_audio())
+        .cloned();
+    let input = if audio_track.is_some() && !tier.lean {
+        let dy = size::CONTROL + komponist_tokens::space::SPACE_1;
+        let input = Rect::from_min_size(
+            pos2(
+                rows.line.left(),
+                rows.line.bottom() + komponist_tokens::space::SPACE_1,
+            ),
+            vec2(rows.line.width(), size::CONTROL),
+        );
+        let shift = vec2(0.0, dy);
+        rows.inserts_label = rows.inserts_label.map(|r| r.translate(shift));
+        rows.inserts = rows.inserts.translate(shift);
+        rows.sends = rows
+            .sends
+            .map(|(a, b)| (a.translate(shift), b.translate(shift)));
+        rows.knob = rows.knob.translate(shift);
+        rows.pan_value = rows.pan_value.translate(shift);
+        rows.toggles = rows.toggles.translate(shift);
+        rows.fader.min.y = (rows.fader.top() + dy).min(rows.fader.bottom());
+        Some(input)
+    } else {
+        None
+    };
 
     // The strip itself: a click selects the track.
     let bg = ui.interact(rect, ui.scope_id().with("strip"), Sense::CLICK);
@@ -365,6 +393,10 @@ pub(super) fn show(
     }
     paint_frame(ui, s, &rows, rect);
     name_and_line(ui, ctx, s, &rows, mods, tier, rename);
+    if let (Some(input), Some(track)) = (input, audio_track.as_ref()) {
+        let project = std::sync::Arc::clone(ctx.project);
+        crate::views::audio_inputs::input_button(ui, ctx, &project, track, input);
+    }
     if let Some(label) = rows.inserts_label {
         let g = w::styled_galley(ui, ctx.lang.mixer_inserts(), &typography::LABEL);
         let pos = w::text_pos(label, &g, label.left(), ui.pixels_per_point());
@@ -537,13 +569,20 @@ fn name_rename(
             edit: RenameState::new(&s.name),
         });
     }
-    let entries = [Entry::action(t.routing_rename(), ())];
+    let mut entries = vec![Entry::action(t.routing_rename(), false)];
+    if s.is_bus() {
+        entries.push(Entry::action(t.routing_record_bus(), true));
+    }
     let menu = if s.is_bus() {
         t.routing_kind_bus()
     } else {
         t.arrangement_track_menu()
     };
-    if ContextMenu::new(menu, &entries).show_on(name).is_some() {
+    if let Some(record) = ContextMenu::new(menu, &entries).show_on(name) {
+        if record {
+            ctx.send(Action::Edit(EditAction::RecordBus(track)));
+            return;
+        }
         *rename = Some(Rename {
             track,
             edit: RenameState::new(&s.name),
@@ -974,12 +1013,65 @@ fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
 }
 
 /// M S R (track) or M (master), 22 × 18, centred.
+/// Audio proposal D8A: four 18 px buttons with 2 px gaps inside the 80 px strip.
+fn audio_toggles(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    s: &Strip,
+    track: &komponist_model::Track,
+    row: Rect,
+) -> Vec<(ToggleKind, ToggleEvent)> {
+    let [width, height] = m::AUDIO_TOGGLE;
+    let gap = komponist_tokens::space::SPACE_0_5;
+    let left = row.center().x - (4.0 * width + 3.0 * gap) / 2.0;
+    let mut events = Vec::new();
+    for (i, kind) in [ToggleKind::Mute, ToggleKind::Solo, ToggleKind::Arm]
+        .into_iter()
+        .enumerate()
+    {
+        let rect = Rect::from_min_size(
+            pos2(left + i as f32 * (width + gap), row.top()),
+            vec2(width, height),
+        );
+        let on = match kind {
+            ToggleKind::Mute => s.mute,
+            ToggleKind::Solo => s.solo,
+            ToggleKind::Arm => s.arm,
+            ToggleKind::Monitor => false,
+        };
+        let shown = place(ui, rect, ("audio_toggle", i), |ui| {
+            TrackToggle::new(kind, on)
+                .implied(kind == ToggleKind::Mute && s.implied)
+                .track(&track.name)
+                .size(rect.size())
+                .show(ui)
+        });
+        if let Some(event) = shown.event {
+            events.push((kind, event));
+        }
+    }
+    let rect = Rect::from_min_size(
+        pos2(left + 3.0 * (width + gap), row.top()),
+        vec2(width, height),
+    );
+    crate::views::audio_inputs::monitor_button(ui, ctx, track, rect);
+    events
+}
+
 fn toggles(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
     s: &Strip,
     row: Rect,
 ) -> Vec<(ToggleKind, ToggleEvent)> {
+    if let Some(track) = s
+        .track()
+        .and_then(|id| ctx.project.track(id))
+        .filter(|t| t.is_audio())
+        .cloned()
+    {
+        return audio_toggles(ui, ctx, s, &track, row);
+    }
     let kinds: &[ToggleKind] = if s.is_master() {
         &[ToggleKind::Mute]
     } else if s.is_bus() {
@@ -1075,6 +1167,21 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
                 .length(meter_rect.height()),
         )
     });
+    if let Some(track) = s
+        .track()
+        .and_then(|id| ctx.project.track(id))
+        .filter(|track| track.is_audio() && track.arm)
+        .cloned()
+    {
+        let input = Rect::from_x_y_ranges(
+            meter_rect.left()
+                - crate::views::audio_inputs::INPUT_BAR
+                - komponist_tokens::space::SPACE_0_5
+                ..=meter_rect.left() - komponist_tokens::space::SPACE_0_5,
+            meter_rect.y_range(),
+        );
+        crate::views::audio_inputs::input_meter(ui, ctx, &track, input);
+    }
     if response.clicked() {
         ctx.send(Action::Ui(UiAction::ResetMeters {
             track: s.track(),

@@ -9,6 +9,7 @@
 //! - [`processor`]: the [`Processor`] trait, the [`EventProcessor`] stage of MIDI effects, events,
 //!   [`ProcessContext`], [`StereoIo`].
 //! - [`program`]: the compiled [`Program`] the engine plays.
+//! - [`audio`]: audio clips: the [`AudioPlan`] of an audio track, disk streaming, the voice.
 //! - [`compile`]: project → program, with processor-slot mapping and the routing graph.
 //! - [`route`]: the compiled routing graph of a program (buses, sends, sidechains, gates).
 //! - [`api`]: [`Command`], [`EngineEvent`], [`Garbage`], [`Telemetry`], [`TrackMeter`], [`DeviceMeter`],
@@ -29,6 +30,7 @@
 //! a segment also run on the engine's worker threads (see [`workers`]).
 
 pub mod api;
+pub mod audio;
 pub mod compile;
 pub mod engine;
 pub mod export;
@@ -38,6 +40,7 @@ mod metronome;
 mod mixer;
 pub mod processor;
 pub mod program;
+pub mod recording;
 pub mod route;
 mod sequencer;
 mod slots;
@@ -57,7 +60,8 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 pub use api::{
     Command, DeviceMeter, EngineEvent, EngineHandle, Garbage, Telemetry, TrackMeter, TransportState,
 };
-pub use engine::{Engine, EngineConfig, LiveInput, MidiInEvent};
+pub use audio::{AudioPlan, ClipSource, Segment, SourceStatus};
+pub use engine::{AudioInputBuffer, Engine, EngineConfig, LiveInput, MidiInEvent};
 pub use processor::{
     Event, EventBuffer, EventKind, EventProcessor, EventSink, NOTE_ID_NONE, ProcessContext,
     ProcessStatus, Processor, ProcessorError, StereoIo, TransportInfo,

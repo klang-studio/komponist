@@ -3,8 +3,9 @@
 //!
 //! ```text
 //!  UI thread                    loader thread                       audio thread
-//!  SamplerHandle::load_link ──► decode (hound), peaks ──► rtrb ──► SamplerDsp::process swaps the
-//!  (mpsc request)               fills the pad's PadView            slot, sends the old Arc back
+//!  SamplerHandle::load_link ──► file pool: open, decode ──► rtrb ──► SamplerDsp::process swaps the
+//!  (mpsc request)               (once per file), peaks      slot, sends the old Arc back
+//!                               fills the pad's PadView
 //!                               drops what comes back ◄── rtrb ◄── (never frees on the audio thread)
 //! ```
 //!
@@ -14,10 +15,13 @@
 //! [`PadView`] the loader fills under a mutex only the UI and loader threads take; the audio
 //! thread writes the playheads and the last hit into atomics.
 //!
-//! Formats: WAV through `hound` (8/16/24/32-bit integer and 32-bit float, mono, stereo, or the
-//! first two channels of more). No other decoder crate is in the dependency tree, so other
-//! formats are refused with a message; any sample rate is played back resampled (the voice
-//! interpolates), nothing is converted here.
+//! Decoding and the files belong to the one file pool ([`komponist_audiofile::FilePool::global`],
+//! #10), shared with the audio clips: WAV, FLAC, OGG Vorbis and MP3, mono, stereo, or the first
+//! two channels of more. A file is decoded once however many pads and Samplers use it: the
+//! pool entry keeps the finished `Arc<Sample>` (`PoolFile::derived`), every pad that loads the
+//! file gets that same `Arc`, and the loader thread holds the entry for as long as a pad shows
+//! it. Any sample rate is played back resampled (the voice interpolates), nothing is converted
+//! here.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -25,6 +29,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use komponist_audiofile::{AudioError, Decoded, FilePool, PoolFile};
 use rtrb::{Consumer, Producer, RingBuffer};
 use sampler_core::Sample;
 
@@ -269,6 +274,8 @@ fn run_loader(
     mut to_audio: Producer<Loaded>,
     mut from_audio: Consumer<Option<Arc<Sample>>>,
 ) {
+    // The pool entry of every pad that has a sample: it lives while the pad shows the sample.
+    let mut held: Vec<Option<Arc<PoolFile>>> = vec![None; PADS];
     loop {
         // Dropping the old samples is this thread's job.
         while from_audio.pop().is_ok() {}
@@ -279,6 +286,7 @@ fn run_loader(
         };
         match request {
             Request::Clear { pad } => {
+                held[pad] = None;
                 send(&mut to_audio, &mut from_audio, Loaded { pad, sample: None });
             }
             Request::Load {
@@ -287,15 +295,16 @@ fn run_loader(
                 project_dir,
             } => match link.resolve(project_dir.as_deref()) {
                 None => shared.update(pad, |v| v.status = PadStatus::Missing),
-                Some(path) => match decode(&path) {
-                    Ok(sample) => {
+                Some(path) => match open_sample(&path) {
+                    Ok((file, sample)) => {
                         let (length_s, peaks) = (sample.duration_secs() as f64, peaks_of(&sample));
+                        held[pad] = Some(file);
                         send(
                             &mut to_audio,
                             &mut from_audio,
                             Loaded {
                                 pad,
-                                sample: Some(Arc::new(sample)),
+                                sample: Some(sample),
                             },
                         );
                         shared.update(pad, |v| {
@@ -351,49 +360,51 @@ fn peaks_of(sample: &Sample) -> Arc<[f32]> {
         .collect()
 }
 
-/// Reads a WAV file as a sampler sample; the error is the reason in German.
-pub fn decode(path: &Path) -> Result<Sample, String> {
+/// Opens `path` in the global file pool and returns the entry with the sample of it (shared:
+/// every call for the same file gives the same `Arc<Sample>` while somebody holds the entry); the
+/// error is the reason in German.
+fn open_sample(path: &Path) -> Result<(Arc<PoolFile>, Arc<Sample>), String> {
     let name = path
         .file_name()
         .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
-    let fail = |why: &str| format!("„{name}“ lässt sich nicht laden: {why}");
-    let mut reader = hound::WavReader::open(path).map_err(|e| match e {
-        hound::Error::IoError(e) => fail(&e.to_string()),
-        _ => fail("kein WAV oder ein Format, das komponist nicht liest"),
-    })?;
-    let spec = reader.spec();
-    let channels = usize::from(spec.channels.max(1));
-    let rate = spec.sample_rate;
-    if rate == 0 {
-        return Err(fail("Abtastrate fehlt"));
-    }
-    if f64::from(reader.duration()) / f64::from(rate) > MAX_SECONDS {
-        return Err(fail("länger als zehn Minuten"));
-    }
-    let interleaved: Vec<f32> = match (spec.sample_format, spec.bits_per_sample) {
-        (hound::SampleFormat::Float, 32) => reader
-            .samples::<f32>()
-            .collect::<Result<_, _>>()
-            .map_err(|e| fail(&e.to_string()))?,
-        (hound::SampleFormat::Int, bits @ (8 | 16 | 24 | 32)) => {
-            let scale = 1.0 / (1i64 << (bits - 1)) as f32;
-            reader
-                .samples::<i32>()
-                .map(|s| s.map(|v| v as f32 * scale))
-                .collect::<Result<_, _>>()
-                .map_err(|e| fail(&e.to_string()))?
+    let fail = |e: AudioError| format!("„{name}“ lässt sich nicht laden: {}", reason(&e));
+    let file = FilePool::global().open(path).map_err(fail)?;
+    let sample = file.derived(Some(MAX_SECONDS), sample_of).map_err(fail)?;
+    Ok((file, sample))
+}
+
+/// A decoded file as the sampler's `Sample`; moves the buffers when nobody else holds them.
+fn sample_of(decoded: Arc<Decoded>) -> Sample {
+    let Decoded {
+        sample_rate,
+        mut channels,
+    } = Arc::try_unwrap(decoded).unwrap_or_else(|shared| (*shared).clone());
+    let rate = sample_rate as f32;
+    match channels.len() {
+        1 => Sample::mono(rate, channels.remove(0)),
+        _ => {
+            let right = channels.remove(1);
+            Sample::stereo(rate, channels.remove(0), right)
         }
-        _ => return Err(fail("Sample-Format wird nicht unterstützt")),
-    };
-    let frames = interleaved.len() / channels;
-    if frames == 0 {
-        return Err(fail("die Datei ist leer"));
     }
-    let channel =
-        |c: usize| -> Vec<f32> { (0..frames).map(|i| interleaved[i * channels + c]).collect() };
-    Ok(if channels == 1 {
-        Sample::mono(rate as f32, channel(0))
-    } else {
-        Sample::stereo(rate as f32, channel(0), channel(1))
-    })
+}
+
+/// Why a file does not load, in German.
+fn reason(e: &AudioError) -> String {
+    match e {
+        AudioError::Io(e) => e.clone(),
+        AudioError::Unsupported(_) => {
+            "kein WAV, FLAC, OGG oder MP3 oder ein Format, das komponist nicht liest".into()
+        }
+        AudioError::Malformed(_) => "die Datei ist beschädigt".into(),
+        AudioError::Empty => "die Datei ist leer".into(),
+        AudioError::TooLong => "länger als zehn Minuten".into(),
+        AudioError::Resample(_) => "die Abtastrate wird nicht unterstützt".into(),
+    }
+}
+
+/// Reads an audio file (WAV, FLAC, OGG, MP3) as a sampler sample through the file pool; the error
+/// is the reason in German.
+pub fn decode(path: &Path) -> Result<Sample, String> {
+    open_sample(path).map(|(_, sample)| (*sample).clone())
 }

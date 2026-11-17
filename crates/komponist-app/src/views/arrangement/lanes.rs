@@ -15,8 +15,8 @@ use komponist_tokens::{color, radius};
 use komponist_ui::px;
 use komponist_ui::timeline::clip::body_height;
 use komponist_ui::timeline::{
-    ClipEdge, ClipModel, ClipState, GridSpec, PreviewMesh, clip_access, grid_lines, paint_clip,
-    paint_clip_ghost, paint_grid, paint_playhead,
+    AudioFileState, AudioLook, ClipEdge, ClipModel, ClipState, GridSpec, PreviewMesh, clip_access,
+    grid_lines, paint_clip, paint_clip_ghost, paint_grid, paint_playhead,
 };
 use komponist_ui::tooltip::{self, Placement};
 
@@ -165,8 +165,20 @@ impl Arrangement {
             && let Some(pos) = response.interact_pointer_pos()
         {
             match g.clip_at(project, pos) {
+                Some(hit) if hit.zone == Zone::Gain => {
+                    ctx.send(Action::Edit(EditAction::SetAudioClipProp {
+                        clip: hit.clip,
+                        prop: komponist_model::edits::AudioClipProp::GainDb(0.0),
+                    }))
+                }
                 Some(hit) => ctx.send(Action::Ui(UiAction::OpenClip(hit.clip))),
                 None => {
+                    if g.row_at(pos.y).is_some_and(|i| {
+                        project.tracks[i].kind == komponist_model::TrackKind::Audio
+                    }) {
+                        // An audio clip needs a linked file; import/drop creates it (#12 part B).
+                        return;
+                    }
                     if g.row_at(pos.y).is_some_and(|i| !g.rows[i].takes_clips()) {
                         // A bus holds no clips: say why instead of adding one (the model refuses
                         // it as well).
@@ -200,6 +212,17 @@ impl Arrangement {
         {
             let mode = click_mode(mods);
             match g.clip_at(project, pos) {
+                Some(hit) if mods.ctrl && matches!(hit.zone, Zone::FadeIn | Zone::FadeOut) => {
+                    let prop = if hit.zone == Zone::FadeIn {
+                        komponist_model::edits::AudioClipProp::FadeIn(Tick::ZERO)
+                    } else {
+                        komponist_model::edits::AudioClipProp::FadeOut(Tick::ZERO)
+                    };
+                    ctx.send(Action::Edit(EditAction::SetAudioClipProp {
+                        clip: hit.clip,
+                        prop,
+                    }));
+                }
                 Some(hit) => ctx.send(select_clips(vec![hit.clip], clip_mode(mode))),
                 None if mode == SelectMode::Replace => {
                     // Prototype `laneDown`: the track is selected, the clip selection goes.
@@ -215,13 +238,23 @@ impl Arrangement {
         // Cursor: what a press would do here.
         let cursor = match &self.drag {
             Some(Drag::Move(_)) => Some(CursorIcon::Grabbing),
-            Some(Drag::Trim(_) | Drag::Loop(_)) => Some(CursorIcon::ResizeHorizontal),
+            Some(Drag::Trim(_) | Drag::Loop(_) | Drag::TrimStart { .. }) => {
+                Some(CursorIcon::ResizeHorizontal)
+            }
+            Some(Drag::AudioControl { zone, .. }) => Some(if *zone == Zone::Gain {
+                CursorIcon::ResizeVertical
+            } else {
+                CursorIcon::ResizeHorizontal
+            }),
             Some(_) => None,
             None => pointer_over(ui, g.lanes())
                 .and_then(|p| g.clip_at(project, p))
                 .map(|hit| match hit.zone {
                     Zone::Body => CursorIcon::Grab,
-                    Zone::End | Zone::Loop => CursorIcon::ResizeHorizontal,
+                    Zone::End | Zone::Loop | Zone::Start | Zone::FadeIn | Zone::FadeOut => {
+                        CursorIcon::ResizeHorizontal
+                    }
+                    Zone::Gain => CursorIcon::ResizeVertical,
                 }),
         };
         if let Some(c) = cursor {
@@ -273,6 +306,7 @@ impl Arrangement {
                     label: label.to_owned(),
                 }));
                 self.drag = Some(Drag::Move(MoveDrag {
+                    source: Arc::clone(ctx.project),
                     clips,
                     grab_start: clip.start,
                     grab_row: hit.row,
@@ -280,6 +314,41 @@ impl Arrangement {
                     copy,
                     last: None,
                 }));
+            }
+            Zone::Start => {
+                ctx.send(Action::Edit(EditAction::BeginGesture {
+                    label: "undo-clip-length".into(),
+                }));
+                self.drag = Some(Drag::TrimStart {
+                    clip: hit.clip,
+                    start: clip.start,
+                    origin: origin.x,
+                });
+            }
+            Zone::FadeIn | Zone::FadeOut | Zone::Gain => {
+                if let ClipContent::Audio(a) = &clip.content {
+                    let value = match hit.zone {
+                        Zone::FadeIn => a.fade_in.0 as f32,
+                        Zone::FadeOut => a.fade_out.0 as f32,
+                        _ => a.gain_db,
+                    };
+                    ctx.send(Action::Edit(EditAction::BeginGesture {
+                        label: if hit.zone == Zone::Gain {
+                            "undo-clip-gain"
+                        } else {
+                            "undo-clip-fade"
+                        }
+                        .into(),
+                    }));
+                    self.drag = Some(Drag::AudioControl {
+                        clip: hit.clip,
+                        zone: hit.zone,
+                        origin,
+                        value,
+                        length: clip.length,
+                        fine: mods.shift,
+                    });
+                }
             }
             Zone::End | Zone::Loop => {
                 let step = matches!(clip.content, ClipContent::Step(_));
@@ -318,9 +387,67 @@ impl Arrangement {
         match &mut self.drag {
             Some(Drag::Move(m)) => {
                 let raw = m.grab_start.0 as f64 + f64::from(pos.x - m.origin.x) / ppt;
-                let delta = snap_tick(raw, &view, free, project) - m.grab_start;
+                let audio = m.clips.iter().any(|id| {
+                    m.source
+                        .find_clip(*id)
+                        .is_some_and(|(_, c)| matches!(c.content, ClipContent::Audio(_)))
+                });
+                let delta = if audio && view.snap && !free {
+                    // Snap from an audio anchor even when the grabbed MIDI clip is off-grid.
+                    let anchor = m
+                        .clips
+                        .iter()
+                        .find_map(|id| {
+                            m.source.find_clip(*id).and_then(|(_, c)| {
+                                matches!(c.content, ClipContent::Audio(_)).then_some(c.start)
+                            })
+                        })
+                        .unwrap_or(m.grab_start);
+                    view.grid.snap(
+                        Tick((anchor.0 as f64 + raw - m.grab_start.0 as f64).round() as i64),
+                        project.meter,
+                    ) - anchor
+                } else {
+                    snap_tick(raw, &view, free, project) - m.grab_start
+                };
                 let row = g.nearest_row(pos.y).unwrap_or(m.grab_row);
                 let track_delta = row as i32 - m.grab_row as i32;
+                if m.clips.iter().any(|id| {
+                    m.source.find_clip(*id).is_some_and(|(track, _)| {
+                        project
+                            .tracks
+                            .iter()
+                            .position(|t| t.id == track.id)
+                            .and_then(|i| usize::try_from(i as i32 + track_delta).ok())
+                            .and_then(|i| m.source.tracks.get(i))
+                            .is_none_or(|target| target.kind != track.kind)
+                    })
+                }) {
+                    // Refusing a destination rolls back the preview; a release there must not
+                    // commit an intermediate move to a track the pointer crossed on its way.
+                    if m.last.take().is_some() {
+                        ctx.send(Action::Edit(EditAction::CancelGesture));
+                        ctx.send(Action::Edit(EditAction::BeginGesture {
+                            label: if m.copy {
+                                "undo-copy-clips"
+                            } else {
+                                "undo-move-clips"
+                            }
+                            .into(),
+                        }));
+                        ctx.send(select_clips(m.clips.clone(), SelectMode::Replace));
+                    }
+                    ctx.send(Action::Ui(UiAction::ShowStatus {
+                        text: if audio {
+                            ctx.lang.status_drop_refused_midi()
+                        } else {
+                            ctx.lang.status_drop_refused_audio()
+                        }
+                        .to_owned(),
+                        kind: crate::ui_state::StatusKind::Info,
+                    }));
+                    return;
+                }
                 if m.last != Some((delta, track_delta)) {
                     m.last = Some((delta, track_delta));
                     let (clips, copy) = (m.clips.clone(), m.copy);
@@ -339,8 +466,83 @@ impl Arrangement {
                     }));
                 }
             }
+            Some(Drag::TrimStart {
+                clip,
+                start,
+                origin,
+            }) => {
+                let raw = start.0 as f64 + f64::from(pos.x - *origin) / ppt;
+                let start = snap_tick(raw, &view, free, project);
+                ctx.send(Action::Edit(EditAction::TrimAudioClipStart {
+                    clip: *clip,
+                    start,
+                }));
+            }
+            Some(Drag::AudioControl {
+                clip,
+                zone,
+                origin,
+                value,
+                length,
+                fine,
+            }) => {
+                use komponist_model::edits::AudioClipProp;
+                let prop = if *zone == Zone::Gain {
+                    let height = project
+                        .find_clip(*clip)
+                        .and_then(|(t, _)| project.tracks.iter().position(|v| v.id == t.id))
+                        .map_or(
+                            komponist_tokens::size::track::DEFAULT
+                                - komponist_tokens::size::CLIP_HEADER
+                                - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_Y,
+                            |row| {
+                                body_height(
+                                g.lane(row).height()
+                                    - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_Y,
+                            )
+                            },
+                        );
+                    let [lo, hi] = komponist_ui::widgets::metrics::timeline::GAIN_RANGE_DB;
+                    let db = (*value
+                        - (pos.y - origin.y) * (hi - lo) / height.max(1.0)
+                            * if *fine {
+                                komponist_ui::widgets::metrics::timeline::GAIN_FINE_FACTOR
+                            } else {
+                                1.0
+                            })
+                    .clamp(lo, hi);
+                    AudioClipProp::GainDb(db)
+                } else {
+                    let sign = if *zone == Zone::FadeIn { 1.0 } else { -1.0 };
+                    let ticks = Tick(
+                        (*value as f64 + sign * f64::from(pos.x - origin.x) / ppt).round() as i64,
+                    )
+                    .max(Tick::ZERO)
+                    .min(*length);
+                    if *zone == Zone::FadeIn {
+                        AudioClipProp::FadeIn(ticks)
+                    } else {
+                        AudioClipProp::FadeOut(ticks)
+                    }
+                };
+                ctx.send(Action::Edit(EditAction::SetAudioClipProp {
+                    clip: *clip,
+                    prop,
+                }));
+            }
             Some(Drag::Trim(e)) => {
-                if let Some(length) = edge_length(e, pos.x, ppt, &view, free, project) {
+                let audio = project.find_clip(e.clip).and_then(|(_, c)| {
+                    if let ClipContent::Audio(a) = &c.content {
+                        Some(a)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(mut length) = edge_length(e, pos.x, ppt, &view, free, project) {
+                    if let Some(a) = audio {
+                        length = length.min(a.max_length(project.tempo));
+                        e.length = length;
+                    }
                     ctx.send(Action::Edit(EditAction::SetClipLength {
                         clip: e.clip,
                         length,
@@ -433,12 +635,53 @@ impl Arrangement {
                     trim: (trimming == Some(clip.id)).then_some(ClipEdge::End),
                 };
                 let preview = self.previews.get(clip, ppt, body_height(rect.height()));
+                let audio = self.audio.get(
+                    clip,
+                    project.tempo,
+                    ctx.project_dir,
+                    ppt,
+                    body_height(rect.height()),
+                    ui.ctx(),
+                );
+                let message = audio
+                    .as_ref()
+                    .map_or_else(String::new, |(state, _)| match state {
+                        AudioFileState::Missing => {
+                            if let ClipContent::Audio(a) = &clip.content {
+                                ctx.lang.audio_clip_missing(
+                                    a.file.abs.file_name().unwrap_or_default().to_string_lossy(),
+                                )
+                            } else {
+                                String::new()
+                            }
+                        }
+                        AudioFileState::Pending => ctx.lang.audio_clip_peaks().to_owned(),
+                        AudioFileState::Ready => String::new(),
+                    });
+                let audio_look = audio.and_then(|(file, wave)| {
+                    let ClipContent::Audio(a) = &clip.content else {
+                        return None;
+                    };
+                    Some(AudioLook {
+                        takes: (a.takes.len() > 1).then_some((a.active_take + 1, a.takes.len())),
+                        file,
+                        wave,
+                        repitch: (a.time_mode == komponist_model::ClipTimeMode::RePitch)
+                            .then_some(a.original_tempo.bpm),
+                        repitch_label: ctx.lang.audio_clip_repitch_badge(),
+                        message: &message,
+                        gain_db: a.gain_db,
+                        fade_in: a.fade_in.0 as f32 * ppt,
+                        fade_out: a.fade_out.0 as f32 * ppt,
+                    })
+                });
                 let model = ClipModel {
                     name: &clip.name,
                     palette,
                     muted: clip.mute || track_muted,
                     recording: false,
                     loop_mark: clip.loop_length.is_some(),
+                    audio: audio_look.as_ref(),
                     preview: Some(preview),
                 };
                 paint_clip(painter, rect, &model, state);
@@ -459,6 +702,154 @@ impl Arrangement {
                     Sense::hover(),
                 );
                 register(&node, &access);
+                if let ClipContent::Audio(audio) = &clip.content {
+                    audio_clip_menu(ui, ctx, clip, audio, &node);
+                }
+                if let Some(audio) = audio_look.as_ref() {
+                    let parts = komponist_ui::timeline::audio_parts(
+                        rect,
+                        audio.fade_in,
+                        audio.fade_out,
+                        audio.gain_db,
+                    );
+                    if state.selected || state.hovered {
+                        let ms = |px: f32| {
+                            format!(
+                                "{:.0} ms",
+                                f64::from(px / ppt) / komponist_model::PPQ as f64 * 60000.0
+                                    / project.tempo.bpm
+                            )
+                        };
+                        let trim_w = komponist_ui::widgets::metrics::timeline::CLIP_HANDLE_WIDTH
+                            .min(rect.width() / 3.0);
+                        for (key, r, name, value) in [
+                            (
+                                "fade-in",
+                                parts.fade_in,
+                                ctx.lang.audio_clip_fade_in(),
+                                ms(audio.fade_in),
+                            ),
+                            (
+                                "fade-out",
+                                parts.fade_out,
+                                ctx.lang.audio_clip_fade_out(),
+                                ms(audio.fade_out),
+                            ),
+                            (
+                                "gain",
+                                parts.gain_band,
+                                ctx.lang.audio_clip_gain_line(),
+                                format!("{:.1} dB", audio.gain_db).replace('-', "−"),
+                            ),
+                            (
+                                "start",
+                                Rect::from_min_max(
+                                    rect.min,
+                                    pos2(rect.left() + trim_w, rect.bottom()),
+                                ),
+                                ctx.lang.audio_clip_start(),
+                                komponist_model::format::fmt_pos(clip.start, project.meter),
+                            ),
+                            (
+                                "end",
+                                Rect::from_min_max(
+                                    pos2(rect.right() - trim_w, rect.top()),
+                                    rect.max,
+                                ),
+                                ctx.lang.audio_clip_end(),
+                                komponist_model::format::fmt_pos(clip.end(), project.meter),
+                            ),
+                        ] {
+                            let access =
+                                komponist_ui::timeline::Access::new(egui::Role::Slider, name)
+                                    .with_value(value);
+                            let response = ui.interact(
+                                r.intersect(lanes),
+                                Id::unique(("audio-control", clip.id.0, key)),
+                                Sense::hover(),
+                            );
+                            register(&response, &access);
+                        }
+                    }
+                    if hover.is_some_and(|h| h.clip == clip.id)
+                        && ui
+                            .input(|i| i.pointer.hover_pos())
+                            .is_some_and(|p| p.y < parts.body.top())
+                        && let Some(orig) = audio.repitch
+                    {
+                        tooltip::show_value(
+                            ui.ctx(),
+                            Id::unique(("audio-repitch", clip.id.0)),
+                            rect,
+                            Placement::Above,
+                            &ctx.lang.audio_clip_repitch_tip(orig, project.tempo.bpm),
+                        );
+                    }
+                }
+            }
+            // Audio capture is drawn directly from bounded writer telemetry. Never request
+            // peaks from an unfinished WAV; the current lap may contain only a partial bucket.
+            if let Some(recording) = ctx.audio_recording
+                && let Some(rec) = recording.clip(track.id)
+                && let Some(progress) = recording.progress(track.id)
+                && rec.end() >= t0
+                && rec.start <= t1
+            {
+                let rect = g.clip_rect(i, rec);
+                let data = crate::views::audio_editor::live::summaries(
+                    &progress.waveform,
+                    progress.channels,
+                );
+                let wave = komponist_ui::timeline::WaveMesh::from_summaries(
+                    &data,
+                    &komponist_ui::timeline::WaveSpec {
+                        width: (rect.width()
+                            - 2.0 * komponist_ui::widgets::metrics::timeline::CLIP_INSET_X)
+                            .max(0.0),
+                        px_per_tick: ppt,
+                        body_height: body_height(rect.height()),
+                        offset: 0,
+                        frames: progress.frames,
+                        gain: 1.0,
+                        fade_in: 0.0,
+                        fade_out: 0.0,
+                    },
+                );
+                let audio = AudioLook {
+                    file: AudioFileState::Ready,
+                    wave: &wave,
+                    takes: None,
+                    repitch: None,
+                    repitch_label: "",
+                    message: "",
+                    gain_db: 0.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                };
+                let model = ClipModel {
+                    name: rec.name.trim_start_matches("● "),
+                    palette,
+                    muted: false,
+                    recording: true,
+                    loop_mark: false,
+                    audio: Some(&audio),
+                    preview: None,
+                };
+                paint_clip(painter, rect, &model, ClipState::REST);
+                let access = clip_access(
+                    ctx.lang,
+                    &model,
+                    rec.start,
+                    rec.end(),
+                    project.meter,
+                    ClipState::REST,
+                );
+                let node = ui.interact(
+                    rect.intersect(lanes),
+                    Id::unique(("arrangement-audio-recording", track.id.0)),
+                    Sense::hover(),
+                );
+                register(&node, &access);
             }
             // The take being recorded on this track (S02): red head, growing with the playhead.
             if let Some(rec) = ctx.recording.and_then(|r| r.clip(track.id))
@@ -473,6 +864,7 @@ impl Arrangement {
                     muted: false,
                     recording: true,
                     loop_mark: false,
+                    audio: None,
                     preview: Some(&preview),
                 };
                 paint_clip(painter, rect, &model, ClipState::REST);
@@ -496,6 +888,29 @@ impl Arrangement {
             paint_clip_ghost(painter, r);
         }
 
+        if let Some(Drag::Move(m)) = &self.drag
+            && let Some(p) = ui.input(|i| i.pointer.hover_pos())
+            && let Some(row) = g.row_at(p.y)
+            && let Some(grabbed) = m.source.tracks.get(m.grab_row)
+            && project.tracks[row].kind != grabbed.kind
+        {
+            ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
+            let reason = if project.tracks[row].is_bus() {
+                ctx.lang.routing_no_clips()
+            } else if grabbed.kind == komponist_model::TrackKind::Audio {
+                ctx.lang.status_drop_refused_midi()
+            } else {
+                ctx.lang.status_drop_refused_audio()
+            };
+            tooltip::show_value(
+                ui.ctx(),
+                Id::unique("audio-refused-kind"),
+                g.lane(row),
+                Placement::Above,
+                reason,
+            );
+        }
+
         // A clip dragged over a bus row is refused: it stays on the nearest track, and the pointer
         // says why.
         if let Some(Drag::Move(_)) = &self.drag
@@ -510,6 +925,81 @@ impl Arrangement {
                 Placement::Above,
                 ctx.lang.routing_no_clips(),
             );
+        }
+
+        if let Some(Drag::Trim(e)) = &self.drag
+            && let Some((_, clip)) = project.find_clip(e.clip)
+            && let ClipContent::Audio(a) = &clip.content
+            && let Some(p) = ui.input(|i| i.pointer.hover_pos())
+            && e.end.0 as f64 + f64::from(p.x - e.origin) / f64::from(ppt)
+                > (e.start + a.max_length(project.tempo)).0 as f64
+        {
+            ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
+            if let Some(i) = project
+                .tracks
+                .iter()
+                .position(|t| t.clips.iter().any(|c| c.id == e.clip))
+            {
+                let r = g.clip_rect(i, clip);
+                px::vline(painter, r.right(), r.y_range(), color32(color::STATE_ERROR));
+                tooltip::show_value(
+                    ui.ctx(),
+                    Id::unique("audio-eof"),
+                    r,
+                    Placement::Above,
+                    ctx.lang.audio_clip_end_of_file(),
+                );
+            }
+        }
+
+        // Show the material the move/copy will cut, using the immutable gesture-start document.
+        if let Some(Drag::Move(m)) = &self.drag
+            && let Some((delta, rows)) = m.last
+        {
+            for id in &m.clips {
+                if let Some((from, clip)) = m.source.find_clip(*id)
+                    && matches!(clip.content, ClipContent::Audio(_))
+                    && let Some(row) = m
+                        .source
+                        .tracks
+                        .iter()
+                        .position(|t| t.id == from.id)
+                        .and_then(|i| usize::try_from(i as i32 + rows).ok())
+                    && let Some(track) = m.source.tracks.get(row)
+                {
+                    let start = clip.start + delta;
+                    let end = clip.end() + delta;
+                    for below in &track.clips {
+                        if m.clips.contains(&below.id) {
+                            continue;
+                        }
+                        let left = start.max(below.start);
+                        let right = end.min(below.end());
+                        if left < right {
+                            let r = g.clip_rect(row, below).intersect(Rect::from_x_y_ranges(
+                                Rangef::new(g.axis.x(left), g.axis.x(right)),
+                                g.lane(row).y_range(),
+                            ));
+                            px::fill(
+                                painter,
+                                r,
+                                0.0,
+                                color32(color::ACCENT).gamma_multiply(
+                                    komponist_ui::widgets::metrics::timeline::CUT_SHADE_ALPHA,
+                                ),
+                            );
+                            px::vline(painter, r.left(), r.y_range(), color32(color::ACCENT));
+                            tooltip::show_value(
+                                ui.ctx(),
+                                Id::unique("audio-overlap"),
+                                r,
+                                Placement::Above,
+                                ctx.lang.audio_clip_cuts_below(),
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // The length while an edge is dragged ("Länge im Tooltip").
@@ -555,6 +1045,86 @@ impl Arrangement {
                 );
             }
         }
+    }
+}
+
+/// The audio clip's approved context menu. The canvas retains primary drag handling;
+/// a secondary click explicitly opens the stable clip node's menu.
+fn audio_clip_menu(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    clip: &komponist_model::Clip,
+    audio: &komponist_model::AudioClip,
+    node: &egui::Response,
+) {
+    use crate::actions::ProjectAction;
+    use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
+    if ui.input(|i| i.pointer.secondary_clicked())
+        && ui
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| node.rect.contains(p))
+    {
+        let pos = ui.input(|i| i.pointer.interact_pos()).unwrap();
+        ContextMenu::<Action>::open_at(ui.ctx(), node.id, pos);
+        if !ctx.ui.selection.clips.contains(&clip.id) {
+            ctx.send(select_clips(vec![clip.id], SelectMode::Replace));
+        }
+    }
+    let path = audio
+        .file
+        .resolve(ctx.project_dir)
+        .unwrap_or_else(|| audio.file.abs.clone());
+    let folder = path.parent().map(ToOwned::to_owned);
+    let show = Entry::action(
+        ctx.lang.audio_file_show(),
+        Action::Project(ProjectAction::ShowInFolder(
+            folder.clone().unwrap_or_default(),
+        )),
+    );
+    let show = if folder.is_some() {
+        show
+    } else {
+        show.disabled()
+    };
+    let split = Entry::action(
+        ctx.lang.audio_clip_context_split(),
+        Action::Edit(EditAction::SplitAtPlayhead),
+    );
+    let split = if ctx.engine.playhead() > clip.start && ctx.engine.playhead() < clip.end() {
+        split
+    } else {
+        split.disabled()
+    };
+    let entries = [
+        Entry::action(
+            ctx.lang.audio_clip_context_mute(),
+            Action::Edit(EditAction::SetClipsMuted {
+                clips: vec![clip.id],
+                muted: !clip.mute,
+            }),
+        )
+        .checked(clip.mute),
+        Entry::action(
+            ctx.lang.audio_clip_context_duplicate(),
+            Action::Edit(EditAction::DuplicateSelection),
+        ),
+        split,
+        Entry::separator(),
+        Entry::action(
+            ctx.lang.audio_file_replace(),
+            Action::Project(ProjectAction::ReplaceAudio(clip.id)),
+        ),
+        show,
+        Entry::separator(),
+        Entry::action(
+            ctx.lang.arrangement_delete(),
+            Action::Edit(EditAction::DeleteSelection),
+        ),
+    ];
+    if let Some(action) =
+        ContextMenu::new(ctx.lang.audio_clip_context_menu(), &entries).show_on(node)
+    {
+        ctx.send(action);
     }
 }
 

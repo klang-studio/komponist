@@ -1501,3 +1501,394 @@ mod new_track {
         results.unwrap();
     }
 }
+
+// Audio clips use the same canvas and undo grouping as MIDI, with source trim and envelopes.
+fn audio_project() -> (Project, ClipId) {
+    use komponist_model::AudioFile;
+    use komponist_model::edits::{self, NewAudioTrack, NewClip, NewClipContent};
+    let mut p = Project::new("Audio gestures");
+    p.tempo = komponist_model::Tempo::new(120.0);
+    let (p, track) = edits::add_audio_track(&p, NewAudioTrack::default()).unwrap();
+    let file = AudioFile::new(
+        std::path::Path::new("/missing/verse.wav"),
+        None,
+        384000,
+        48000,
+        1,
+    );
+    let (p, clip) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            start: Tick(BAR),
+            length: Tick(2 * BAR),
+            name: "Verse".into(),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    let (p, _) = edits::add_audio_track(&p, NewAudioTrack::default()).unwrap();
+    (p, clip)
+}
+fn audio_data(h: &Harness<'_, App>, clip: ClipId) -> komponist_model::AudioClip {
+    let (_, c) = h.state().project().find_clip(clip).unwrap();
+    let komponist_model::ClipContent::Audio(a) = &c.content else {
+        panic!("audio clip expected")
+    };
+    a.clone()
+}
+fn audio_rect(h: &Harness<'_, App>, clip: ClipId) -> Rect {
+    let (_, c) = h.state().project().find_clip(clip).unwrap();
+    let palette = komponist_tokens::TrackPalette::new(150);
+    let model = komponist_ui::timeline::ClipModel::new(&c.name, &palette);
+    let name = komponist_ui::timeline::clip_access(
+        Lang::De,
+        &model,
+        c.start,
+        c.end(),
+        h.state().project().meter,
+        komponist_ui::timeline::ClipState::REST,
+    )
+    .name;
+    clip_rect(
+        h,
+        &format!("{name}{}", Lang::De.a11y_audio_missing_suffix()),
+    )
+}
+#[test]
+fn audio_gain_fades_and_source_trim_are_single_undo_steps() {
+    let (p, id) = audio_project();
+    let mut h = harness(App::headless(p));
+    let r = audio_rect(&h, id);
+    // The grip at unity is one third below the header. Move it down by twelve dB.
+    let parts = komponist_ui::timeline::audio_parts(r, 0.0, 0.0, 0.0);
+    drag(
+        parts.gain.center(),
+        parts.gain.center() + vec2(0.0, 12.0),
+        &mut h,
+    );
+    assert!(
+        (audio_data(&h, id).gain_db + 12.0).abs() < 0.1,
+        "gain was {}",
+        audio_data(&h, id).gain_db
+    );
+    undo(&mut h);
+    assert_eq!(audio_data(&h, id).gain_db, 0.0);
+    let parts = komponist_ui::timeline::audio_parts(audio_rect(&h, id), 0.0, 0.0, 0.0);
+    drag(
+        parts.fade_in.center(),
+        parts.fade_in.center() + vec2(18.0, 0.0),
+        &mut h,
+    );
+    assert!(audio_data(&h, id).fade_in > Tick::ZERO);
+    undo(&mut h);
+    assert_eq!(audio_data(&h, id).fade_in, Tick::ZERO);
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.left() + 2.0, r.bottom() - 4.0),
+        pos2(r.left() + 74.0, r.bottom() - 4.0),
+        &mut h,
+    );
+    let (_, c) = h.state().project().find_clip(id).unwrap();
+    assert_eq!(c.start, Tick(2 * BAR));
+    assert_eq!(audio_data(&h, id).offset, 96000);
+    undo(&mut h);
+    assert_eq!(audio_data(&h, id).offset, 0);
+}
+#[test]
+fn audio_controls_expose_localized_accesskit_values() {
+    for lang in [Lang::De, Lang::En] {
+        let (p, id) = audio_project();
+        let mut h = harness(App::headless(p).with_lang(lang));
+        h.state_mut()
+            .dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+                clips: vec![id],
+                mode: SelectMode::Replace,
+            })));
+        h.run_steps(2);
+        assert!(
+            h.query_by_role_and_label(Role::Slider, lang.audio_clip_fade_in())
+                .is_some()
+        );
+        assert_eq!(
+            value_of(&h, Role::Slider, lang.audio_clip_gain_line()),
+            Some("0.0 dB".into())
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Slider, lang.audio_clip_start())
+                .is_some()
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Slider, lang.audio_clip_end())
+                .is_some()
+        );
+    }
+}
+#[test]
+fn audio_end_trim_never_loops_or_passes_the_source_end() {
+    let (p, id) = audio_project();
+    let mut h = harness(App::headless(p));
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.right() - 2.0, r.top() + 4.0),
+        pos2(r.right() + 720.0, r.top() + 4.0),
+        &mut h,
+    );
+    let (_, c) = h.state().project().find_clip(id).unwrap();
+    assert!(c.loop_length.is_none());
+    assert_eq!(
+        c.length,
+        audio_data(&h, id).max_length(h.state().project().tempo)
+    );
+    undo(&mut h);
+    assert_eq!(
+        h.state().project().find_clip(id).unwrap().1.length,
+        Tick(2 * BAR)
+    );
+}
+#[test]
+fn audio_trimming_out_and_back_restores_covered_material() {
+    use komponist_model::edits::{self, NewClip, NewClipContent};
+    let (p, id) = audio_project();
+    let track = p.tracks[0].id;
+    let file = match &p.find_clip(id).unwrap().1.content {
+        komponist_model::ClipContent::Audio(a) => a.file.clone(),
+        _ => unreachable!(),
+    };
+    let (p, neighbor) = edits::add_clip(
+        &p,
+        track,
+        NewClip {
+            start: Tick(3 * BAR),
+            length: Tick(BAR),
+            name: "Next".into(),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(p.clone());
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "undo-clip-length".into(),
+    }));
+    app.dispatch(Action::Edit(EditAction::SetClipLength {
+        clip: id,
+        length: Tick(3 * BAR),
+    }));
+    assert!(app.project().find_clip(neighbor).is_none());
+    app.dispatch(Action::Edit(EditAction::SetClipLength {
+        clip: id,
+        length: Tick(2 * BAR),
+    }));
+    assert_eq!(
+        app.project().find_clip(neighbor).unwrap().1,
+        p.find_clip(neighbor).unwrap().1
+    );
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+}
+
+#[test]
+fn audio_left_trim_out_and_back_restores_covered_material() {
+    use komponist_model::edits::{self, NewClip, NewClipContent};
+    use std::sync::Arc;
+    let (mut p, id) = audio_project();
+    let track = Arc::make_mut(&mut p.tracks[0]);
+    let main = Arc::make_mut(&mut track.clips[0]);
+    let komponist_model::ClipContent::Audio(a) = &mut main.content else {
+        unreachable!()
+    };
+    a.offset = 96000;
+    let file = a.file.clone();
+    let (p, prior) = edits::add_clip(
+        &p,
+        p.tracks[0].id,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(BAR),
+            name: "Before".into(),
+            content: NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(p.clone());
+    app.dispatch(Action::Edit(EditAction::BeginGesture {
+        label: "undo-clip-length".into(),
+    }));
+    app.dispatch(Action::Edit(EditAction::TrimAudioClipStart {
+        clip: id,
+        start: Tick::ZERO,
+    }));
+    assert!(app.project().find_clip(prior).is_none());
+    app.dispatch(Action::Edit(EditAction::TrimAudioClipStart {
+        clip: id,
+        start: Tick(BAR),
+    }));
+    assert_eq!(
+        app.project().find_clip(prior).unwrap().1,
+        p.find_clip(prior).unwrap().1
+    );
+    assert_eq!(
+        app.project().find_clip(id).unwrap().1,
+        p.find_clip(id).unwrap().1
+    );
+}
+#[test]
+fn audio_split_and_duplicate_keep_file_windows() {
+    let (p, id) = audio_project();
+    let mut h = harness(App::headless(p));
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+            clips: vec![id],
+            mode: SelectMode::Replace,
+        })));
+    h.state_mut()
+        .dispatch(Action::Transport(TransportAction::Locate(Tick(2 * BAR))));
+    assert!(step_until(&mut h, |a| a.engine().playhead() == Tick(2 * BAR)));
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::SplitAtPlayhead));
+    h.run_steps(2);
+    let right = h.state().project().tracks[0].clips[1].id;
+    assert_eq!(audio_data(&h, right).offset, 96000);
+    assert_eq!(audio_data(&h, id).file, audio_data(&h, right).file);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+            clips: vec![right],
+            mode: SelectMode::Replace,
+        })));
+    h.state_mut()
+        .dispatch(Action::Edit(EditAction::DuplicateSelection));
+    h.run_steps(2);
+    let clips = &h.state().project().tracks[0].clips;
+    assert_eq!(clips.len(), 3);
+    let copy = clips[2].id;
+    assert_eq!(clips[2].start, Tick(3 * BAR));
+    assert_eq!(audio_data(&h, copy).offset, 96000);
+    assert_eq!(audio_data(&h, copy).file, audio_data(&h, right).file);
+}
+#[test]
+fn audio_mixed_selection_stays_on_grid_and_wrong_track_refuses() {
+    use komponist_model::edits::{self, NewClip, NewClipContent, NewTrack};
+    let (p, audio) = audio_project();
+    let (p, midi_track) = edits::add_track(
+        &p,
+        NewTrack {
+            name: None,
+            hue: None,
+            instrument: None,
+            index: None,
+            arm_exclusive: false,
+        },
+    )
+    .unwrap();
+    let (p, midi) = edits::add_clip(
+        &p,
+        midi_track,
+        NewClip {
+            start: Tick(1000),
+            length: Tick(BAR),
+            name: "MIDI".into(),
+            content: NewClipContent::Midi {
+                notes: vec![],
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let mut app = App::headless(p);
+    app.ui_mut().arrangement.snap = true;
+    app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+        clips: vec![audio, midi],
+        mode: SelectMode::Replace,
+    })));
+    let mut h = harness(app);
+    let name = Lang::De.a11y_clip("MIDI", Lang::De.a11y_bars(1, 2));
+    let r = clip_rect(&h, &name);
+    drag(
+        pos2(r.center().x, r.bottom() - 4.0),
+        pos2(r.center().x + 43.0, r.bottom() - 4.0),
+        &mut h,
+    );
+    let (_, c) = h.state().project().find_clip(audio).unwrap();
+    assert_eq!(c.start, Tick(2 * BAR));
+    undo(&mut h);
+    h.state_mut()
+        .dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
+            clips: vec![audio],
+            mode: SelectMode::Replace,
+        })));
+    h.run_steps(2);
+    let r = audio_rect(&h, audio);
+    drag(
+        pos2(r.center().x, r.bottom() - 4.0),
+        pos2(r.center().x + 72.0, r.bottom() + 108.0),
+        &mut h,
+    );
+    let (track, c) = h.state().project().find_clip(audio).unwrap();
+    assert_ne!(track.id, midi_track);
+    assert_eq!(c.start, Tick(BAR));
+}
+
+#[test]
+fn audio_move_and_both_trim_edges_honor_disabled_grid_snapping() {
+    let (p, id) = audio_project();
+    let mut app = App::headless(p);
+    app.ui_mut().arrangement.snap = false;
+    let mut h = harness(app);
+    let grid = h
+        .state()
+        .ui()
+        .arrangement
+        .grid
+        .ticks(h.state().project().meter)
+        .0;
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.center().x, r.bottom() - 4.0),
+        pos2(r.center().x + 19.0, r.bottom() - 4.0),
+        &mut h,
+    );
+    let start = h.state().project().find_clip(id).unwrap().1.start.0;
+    assert!(start > BAR && start < 2 * BAR);
+    assert_ne!(
+        start.rem_euclid(grid),
+        0,
+        "disabled snap must keep the free move"
+    );
+    undo(&mut h);
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.left() + 2.0, r.bottom() - 4.0),
+        pos2(r.left() + 21.0, r.bottom() - 4.0),
+        &mut h,
+    );
+    let start = h.state().project().find_clip(id).unwrap().1.start.0;
+    assert!(start > BAR && start < 2 * BAR);
+    assert_ne!(
+        start.rem_euclid(grid),
+        0,
+        "source start follows the free pointer"
+    );
+    assert!(audio_data(&h, id).offset > 0);
+    undo(&mut h);
+    let r = audio_rect(&h, id);
+    drag(
+        pos2(r.right() - 2.0, r.top() + 3.0),
+        pos2(r.right() - 21.0, r.top() + 3.0),
+        &mut h,
+    );
+    let length = h.state().project().find_clip(id).unwrap().1.length.0;
+    assert!(length < 2 * BAR && length > BAR);
+    assert_ne!(
+        length.rem_euclid(grid),
+        0,
+        "end trim follows the free pointer"
+    );
+    undo(&mut h);
+    assert_eq!(
+        h.state().project().find_clip(id).unwrap().1.start,
+        Tick(BAR)
+    );
+    assert_eq!(
+        h.state().project().find_clip(id).unwrap().1.length,
+        Tick(2 * BAR)
+    );
+}

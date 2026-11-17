@@ -61,6 +61,10 @@
 //!   recording. Captured keys
 //!   still down get their `RecordedNoteOff` at the playhead on `Stop`, `StopRecording` and
 //!   `Locate`, and at the loop end when the loop wraps (each lap is a take of its own).
+//! - Audio tracks (#11, ARCHITECTURE §6.9.3): the track's source node is its clips' stream, read from a
+//!   ring that the read-ahead thread fills (see the `audio` module); a jump of the playhead asks for a new
+//!   epoch, the segment heads cover the gap, a late stream is silence and an underrun count. An offline render
+//!   runs the read-ahead's work itself before each block.
 //! - Instruments get note, MIDI, parameter and `AllNotesOff` events; effects get their parameters
 //!   and `AllNotesOff`. On a track with MIDI effects the instrument gets what the stage chain makes
 //!   of the track's events, with note ids and note-offs guaranteed by the stage's guard
@@ -73,6 +77,8 @@ use klang_dsp::buffer::{add, peak};
 use komponist_model::{Tap, Tick, TrackId};
 
 use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TransportState};
+use crate::audio::streamer::{Msg, StreamShared};
+use crate::audio::voice::{Prepare, Voice};
 use crate::garbage::Outbox;
 use crate::graph::EdgeState;
 use crate::metronome::Metronome;
@@ -147,9 +153,51 @@ pub struct LiveInput<'a> {
     pub output_latency: u32,
 }
 
+/// Borrowed interleaved capture at the engine rate; independent of the device/backend crate.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AudioInputBuffer<'a> {
+    /// Interleaved samples; unavailable channels/frames read as silence.
+    pub data: &'a [f32],
+    /// Number of source channels.
+    pub channels: usize,
+    /// Capture-to-processing latency in engine frames (excluding output latency).
+    pub latency: u32,
+    /// The capture bridge lost samples; recording fails explicitly.
+    pub discontinuous: bool,
+}
+impl AudioInputBuffer<'_> {
+    /// No input, used by existing process callers and offline renders.
+    pub const fn empty() -> Self {
+        Self {
+            data: &[],
+            channels: 0,
+            latency: 0,
+            discontinuous: false,
+        }
+    }
+    fn sample(&self, channel: usize, frame: usize) -> f32 {
+        if channel >= self.channels {
+            return 0.0;
+        }
+        let value = frame
+            .checked_mul(self.channels)
+            .and_then(|i| i.checked_add(channel))
+            .and_then(|i| self.data.get(i))
+            .copied()
+            .unwrap_or(0.0);
+        if value.is_finite() { value } else { 0.0 }
+    }
+    fn available(&self, first: usize, channels: usize, frames: usize) -> bool {
+        self.channels >= first.saturating_add(channels)
+            && self.data.len().checked_div(self.channels).unwrap_or(0) >= frames
+    }
+}
+
 /// The engine. Lives in a `Box` owned by the audio callback (or a render worker).
 pub struct Engine {
     core: Core,
+    /// The read-ahead thread of the audio clips (ARCHITECTURE §6.9.3); ended and joined on drop.
+    streamer: Option<std::thread::JoinHandle<()>>,
     render_l: Box<[f32]>,
     render_r: Box<[f32]>,
     render_out: Box<[f32]>,
@@ -171,7 +219,11 @@ impl Engine {
         let (event_tx, event_rx) = rtrb::RingBuffer::new(EVENT_CAPACITY);
         let telemetry = Arc::new(Telemetry::new());
         telemetry.master_tap.set_rate(config.sample_rate);
+        let (stream, stream_tx) = StreamShared::new();
+        let streamer = stream.spawn();
         let core = Core {
+            stream,
+            stream_tx,
             sample_rate: config.sample_rate,
             max_block: config.max_block.clamp(1, MAX_BLOCK),
             seed: config.seed,
@@ -179,6 +231,11 @@ impl Engine {
             outbox: Outbox::new(event_tx),
             telemetry: telemetry.clone(),
             program: None,
+            recorder: None,
+            capture_tail: None,
+            capture_lap: 0,
+            capture_latency: 0,
+            record_latency: None,
             song: Song::default(),
             transport: Transport::default(),
             tracks: (0..MAX_TRACKS).map(|_| TrackState::new()).collect(),
@@ -212,6 +269,7 @@ impl Engine {
         };
         let engine = Box::new(Engine {
             core,
+            streamer,
             render_l: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_r: vec![0.0; MAX_BLOCK].into_boxed_slice(),
             render_out: vec![0.0; 2 * MAX_BLOCK].into_boxed_slice(),
@@ -357,6 +415,20 @@ impl Engine {
         tracks + chain(&program.master.chain)
     }
 
+    /// Holds the read-ahead of the audio clips (`true`) or lets it go on (`false`): what a disk
+    /// that cannot keep up looks like. Realtime playback then runs on the heads and the ring's
+    /// content and plays silence, counted in [`Telemetry::audio_underruns`], where they run out;
+    /// offline renders are not affected. For tests and diagnostics.
+    pub fn stall_streaming(&self, stalled: bool) {
+        self.core.stream.stall(stalled);
+    }
+
+    /// How much the read-ahead thread of the audio clips works (shared; for diagnostics and the
+    /// perf suite).
+    pub fn stream_stats(&self) -> Arc<crate::audio::StreamStats> {
+        Arc::clone(&self.core.stream.stats)
+    }
+
     /// The worker pool's counters (shared; they survive [`Engine::set_workers`]).
     pub fn worker_stats(&self) -> Arc<WorkerStats> {
         Arc::clone(&self.core.stats)
@@ -366,8 +438,19 @@ impl Engine {
     /// master output into the two planar buffers, overwriting them. `input` carries this callback's
     /// live MIDI.
     pub fn process(&mut self, out_l: &mut [f32], out_r: &mut [f32], input: &LiveInput<'_>) {
+        self.process_with_audio(out_l, out_r, input, &AudioInputBuffer::empty());
+    }
+
+    /// RT. As [`Engine::process`], with borrowed hardware capture for monitoring/recording.
+    pub fn process_with_audio(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        input: &LiveInput<'_>,
+        audio: &AudioInputBuffer<'_>,
+    ) {
         self.core
-            .run(out_l, out_r, input.midi, input.output_latency, false);
+            .run(out_l, out_r, input.midi, input.output_latency, audio, false);
     }
 
     /// RT-safe, for offline use. Processes `frames` (1 ..= [`crate::MAX_BLOCK`]) frames with
@@ -380,7 +463,8 @@ impl Engine {
             "render: {frames} frames, expected 1 ..= {MAX_BLOCK}"
         );
         let (l, r) = (&mut self.render_l[..frames], &mut self.render_r[..frames]);
-        self.core.run(l, r, &[], 0, true);
+        self.core
+            .run(l, r, &[], 0, &AudioInputBuffer::empty(), true);
         let out = &mut self.render_out[..2 * frames];
         let (frames_out, _) = out.as_chunks_mut::<2>();
         for (frame, (l, r)) in frames_out.iter_mut().zip(l.iter().zip(r.iter())) {
@@ -388,6 +472,15 @@ impl Engine {
             frame[1] = *r;
         }
         out
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.core.stream.stop();
+        if let Some(thread) = self.streamer.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -437,6 +530,11 @@ struct TrackState {
     stage: StageState,
     /// Events the stage dropped in the current segment (counted in the sum phase).
     stage_dropped: u32,
+    /// Audio clip playback of an audio track (ARCHITECTURE §6.9.3).
+    voice: Voice,
+    /// Preallocated input capture before monitor/effects.
+    input_audio: [Box<[f32]>; 2],
+    input_pdc: DelayLine,
 }
 
 impl TrackState {
@@ -459,6 +557,9 @@ impl TrackState {
             failed: false,
             stage: StageState::new(),
             stage_dropped: 0,
+            voice: Voice::new(),
+            input_audio: stereo(),
+            input_pdc: DelayLine::new(),
         }
     }
 
@@ -481,7 +582,23 @@ struct Cut {
     len: u32,
 }
 
+#[derive(Clone, Copy)]
+struct CaptureTail {
+    pos: i64,
+    lap: u32,
+    left: u32,
+    total: u32,
+}
+
 struct Core {
+    recorder: Option<Box<crate::recording::Recorder>>,
+    capture_tail: Option<CaptureTail>,
+    capture_lap: u32,
+    capture_latency: u32,
+    record_latency: Option<u32>,
+    /// The read-ahead of the audio clips and the queue the audio thread asks it through.
+    stream: Arc<StreamShared>,
+    stream_tx: rtrb::Producer<Msg>,
     sample_rate: f32,
     max_block: usize,
     seed: u32,
@@ -589,6 +706,16 @@ struct TrackJobs<'a> {
     ctx: &'a ProcessContext,
     any_solo: bool,
     n: usize,
+    /// Song frame of the segment's first frame, whether the transport runs, and the engine rate:
+    /// what audio tracks read their clips with.
+    at_frame: i64,
+    playing: bool,
+    rate: u32,
+    audio: AudioInputBuffer<'a>,
+    frame0: usize,
+    recorder: Option<&'a crate::recording::Recorder>,
+    capture: Option<(crate::recording::CaptureWindow, usize, Option<u32>)>,
+    capture_latency: u32,
 }
 
 // SAFETY: the raw pointers are only dereferenced in `TrackJobs::run`, whose contract keeps the
@@ -725,6 +852,29 @@ impl TrackJobs<'_> {
         if route.bus {
             self.sum_inputs(route, bufs);
         }
+        if let Some(plan) = &track.audio {
+            // The source node of an audio track: its clips, in place of an instrument. (#13: live
+            // input and monitoring mix in here, before the chain.)
+            let [al, ar] = &mut bufs.a;
+            let silent = plan.rate() != self.rate;
+            state.voice.render(
+                plan,
+                self.at_frame,
+                self.playing,
+                silent,
+                [&mut al[..n], &mut ar[..n]],
+            );
+        }
+        if track.source.is_audio() {
+            // Source clips start at graph time zero. Align them before adding a live input,
+            // whose bus tap already carries its source latency.
+            if let Some(delay) = route.head {
+                let edge = unsafe { self.edges.get(delay) };
+                let [l, r] = &mut bufs.a;
+                edge.line.process(&mut l[..n], &mut r[..n], delay.frames);
+            }
+            self.audio_source(track, state, route, bufs);
+        }
         let mut slots = self.slots;
         // The MIDI effect stage rewrites the track's events for the instrument (a track without
         // MIDI effects and without notes left over from some goes straight on).
@@ -747,7 +897,11 @@ impl TrackJobs<'_> {
         };
         let mut hook = Hook {
             sidechains: self.routing.sidechains(route.sidechains),
-            head: route.head,
+            head: if track.source.is_audio() {
+                None
+            } else {
+                route.head
+            },
             states: self.states,
             map: self.map,
             edges: self.edges,
@@ -801,6 +955,98 @@ impl TrackJobs<'_> {
 
     /// RT. A bus's input sum into `bufs.a` (zeroed): its sources' outputs and sends, in the
     /// program's order. `bufs.b` is scratch.
+    fn audio_source(
+        &self,
+        track: &TrackProgram,
+        state: &mut TrackState,
+        route: NodeRoute,
+        bufs: &mut Bufs,
+    ) {
+        use komponist_model::{AudioInput, MonitorMode};
+        let input = track.source.audio.input;
+        let n = self.n;
+        let [l, r] = &mut state.input_audio;
+        l[..n].fill(0.0);
+        r[..n].fill(0.0);
+        let mut available = true;
+        let mut bus_latency = 0;
+        match input {
+            AudioInput::None => available = false,
+            AudioInput::Hardware(hw) => {
+                let first = usize::from(hw.first);
+                available =
+                    self.audio
+                        .available(first, usize::from(hw.channel_count()), self.frame0 + n);
+                for i in 0..n {
+                    l[i] = self.audio.sample(first, self.frame0 + i);
+                    r[i] = self
+                        .audio
+                        .sample(first + usize::from(hw.stereo), self.frame0 + i);
+                }
+            }
+            AudioInput::Bus(_) => {
+                if let Some(source) = route.audio_input {
+                    // SAFETY: compile adds the input dependency; this source job is complete,
+                    // distinct from this state, and nobody writes it during the segment.
+                    let source_state = unsafe {
+                        &*self
+                            .states
+                            .add(usize::from(self.map[usize::from(source.from)]))
+                    };
+                    l[..n].copy_from_slice(&source_state.post[0][..n]);
+                    r[..n].copy_from_slice(&source_state.post[1][..n]);
+                    bus_latency = self.routing.node(usize::from(source.from)).latency_out;
+                } else {
+                    available = false;
+                }
+            }
+        }
+        track.meter.record_input(peak(&l[..n]), peak(&r[..n]));
+        if let Some(rec) = self.recorder
+            && rec.input(track.id).is_some()
+            && let Some((mut window, frames, draining)) = self.capture
+            && (track.arm || draining.is_some())
+        {
+            if !available {
+                rec.fail(3);
+            } else if matches!(input, AudioInput::Hardware(_)) && self.audio.discontinuous {
+                rec.fail(2);
+            } else {
+                let correction = if matches!(input, AudioInput::Hardware(_)) {
+                    self.capture_latency
+                } else {
+                    bus_latency
+                };
+                window.at = window.at.saturating_sub(i64::from(correction));
+                let frames = draining.map_or(frames, |progress| {
+                    frames.min(correction.saturating_sub(progress) as usize)
+                });
+                rec.capture(track.id, &l[..frames], &r[..frames], window);
+            }
+        }
+        let monitors = match track.source.audio.monitor {
+            MonitorMode::Off => false,
+            MonitorMode::Auto => track.arm,
+            MonitorMode::On => true,
+        };
+        // Keep input delay state moving even with monitoring off, so enabling it has no stale tail.
+        if let Some(input_route) = route.audio_input {
+            let edge = unsafe { self.edges.get(input_route.delay) };
+            edge.line
+                .process(&mut l[..n], &mut r[..n], input_route.delay.frames);
+        } else {
+            state
+                .input_pdc
+                .process(&mut l[..n], &mut r[..n], route.latency_in);
+        }
+        if monitors {
+            for i in 0..n {
+                bufs.a[0][i] += l[i];
+                bufs.a[1][i] += r[i];
+            }
+        }
+    }
+
     fn sum_inputs(&self, route: NodeRoute, bufs: &mut Bufs) {
         let n = self.n;
         let Bufs { a, b, .. } = bufs;
@@ -876,7 +1122,10 @@ fn restage(state: &mut TrackState, new: StageSig) {
 fn retires(command: &Command) -> bool {
     matches!(
         command,
-        Command::SetProgram(_) | Command::InsertProcessor { .. } | Command::RemoveProcessor { .. }
+        Command::SetProgram(_)
+            | Command::SetRecorder(_)
+            | Command::InsertProcessor { .. }
+            | Command::RemoveProcessor { .. }
     )
 }
 
@@ -918,12 +1167,19 @@ impl Core {
         out_r: &mut [f32],
         midi: &[MidiInEvent],
         latency: u32,
+        audio: &AudioInputBuffer<'_>,
         offline: bool,
     ) {
         // Taken once per callback; every segment and processor shares it.
         let entered = std::time::Instant::now();
+        self.capture_latency = latency.saturating_add(audio.latency);
         self.outbox.flush();
         self.drain_commands();
+        if let Some(rec) = &self.recorder
+            && rec.rate != self.sample_rate.round() as u32
+        {
+            rec.fail(4);
+        }
         if self.unreported {
             self.report_failures();
         }
@@ -936,6 +1192,10 @@ impl Core {
         let mut midi_next = 0;
         while done < n {
             if let Some(at) = self.transport.count_in_done(&self.song, rate) {
+                if let Some(rec) = &mut self.recorder {
+                    rec.start = Some(self.transport.pos);
+                    self.record_latency = Some(self.capture_latency);
+                }
                 self.send(EngineEvent::CountInDone { at });
             }
             let max = (n - done).min(self.max_block);
@@ -953,12 +1213,34 @@ impl Core {
                 &midi[midi_first..midi_next],
                 done,
                 latency,
+                audio,
                 deadline,
             );
+            if let Some(mut tail) = self.capture_tail {
+                let advanced = (len as u32).min(tail.left);
+                tail.left -= advanced;
+                tail.pos = tail.pos.saturating_add(i64::from(advanced));
+                if let Some((lo, hi)) = self.song.loop_samples(rate)
+                    && tail.pos >= hi
+                {
+                    let wraps = (tail.pos - lo) / (hi - lo);
+                    tail.pos = lo + (tail.pos - lo).rem_euclid(hi - lo);
+                    tail.lap = tail.lap.saturating_add(wraps as u32);
+                }
+                if tail.left == 0 {
+                    if let Some(rec) = &self.recorder {
+                        rec.finish();
+                    }
+                    self.capture_tail = None;
+                } else {
+                    self.capture_tail = Some(tail);
+                }
+            }
             if let Some(to) = self.transport.advance(len, end, &self.song, rate) {
                 if self.transport.state == TransportState::Recording {
                     // Every lap is its own take: keys held across the wrap end at the loop end.
                     self.close_captures(self.song.loop_range.end);
+                    self.capture_lap = self.capture_lap.saturating_add(1);
                 }
                 let count = self.track_count();
                 for &state in &self.map[..count] {
@@ -1000,6 +1282,9 @@ impl Core {
     fn drain_commands(&mut self) {
         for _ in 0..MAX_COMMANDS_PER_BLOCK {
             match self.commands.peek() {
+                // A restart after the speaker hard-cut must chase notes after the deferred
+                // processor reset, not before it. Preserve queue order until capture drains.
+                Ok(Command::Play) if self.capture_tail.is_some() && self.cut.is_some() => break,
                 Ok(next) if retires(next) && !self.outbox.can_retire() => break,
                 Ok(_) => {}
                 Err(_) => break,
@@ -1015,6 +1300,43 @@ impl Core {
         self.outbox.send(event, &self.telemetry);
     }
 
+    fn stop_audio_capture(&mut self) {
+        if self.capture_tail.is_some() {
+            return;
+        }
+        if let Some(rec) = &self.recorder
+            && rec.active()
+        {
+            let mut latency = if rec.has_hardware() {
+                self.record_latency.unwrap_or(self.capture_latency)
+            } else {
+                0
+            };
+            if let Some(program) = &self.program {
+                for (i, track) in program.tracks.iter().enumerate() {
+                    if matches!(
+                        rec.input(track.id),
+                        Some(komponist_model::AudioInput::Bus(_))
+                    ) && let Some(input) = program.routing.node(i).audio_input
+                    {
+                        latency =
+                            latency.max(program.routing.node(usize::from(input.from)).latency_out);
+                    }
+                }
+            }
+            if rec.start.is_some() && latency > 0 {
+                self.capture_tail = Some(CaptureTail {
+                    pos: self.transport.pos,
+                    lap: self.capture_lap,
+                    left: latency,
+                    total: latency,
+                });
+            } else {
+                rec.finish();
+            }
+        }
+    }
+
     /// RT. Applies one command.
     fn apply(&mut self, command: Command) {
         let rate = f64::from(self.sample_rate);
@@ -1025,7 +1347,25 @@ impl Core {
                     self.start(TransportState::Playing);
                 }
             }
+            Command::AbortAudioRecording => {
+                if let Some(rec) = &self.recorder
+                    && rec.active()
+                {
+                    rec.fail(5);
+                }
+                self.capture_tail = None;
+            }
+            Command::SetRecorder(recorder) => {
+                if let Some(old) = self.recorder.replace(recorder) {
+                    old.finish();
+                    self.outbox.retire(Garbage::Recorder(old));
+                }
+                self.capture_tail = None;
+                self.capture_lap = 0;
+                self.record_latency = None;
+            }
             Command::Stop => {
+                self.stop_audio_capture();
                 // A second Stop (already stopped) is the hard cut: reset, tails end at once.
                 let hard = !self.transport.playing();
                 self.close_captures(self.transport.tick(&self.song, rate));
@@ -1037,6 +1377,13 @@ impl Core {
                 }
             }
             Command::Locate(tick) => {
+                if self.capture_tail.is_none()
+                    && let Some(rec) = &self.recorder
+                    && rec.start.is_some()
+                    && rec.active()
+                {
+                    rec.fail(5);
+                }
                 if self.transport.playing() {
                     self.close_captures(self.transport.tick(&self.song, rate));
                     self.silence(false);
@@ -1058,19 +1405,26 @@ impl Core {
                 }
                 TransportState::Playing => {
                     self.transport.state = TransportState::Recording;
+                    if let Some(rec) = &mut self.recorder {
+                        rec.start = Some(self.transport.pos);
+                        self.record_latency = Some(self.capture_latency);
+                    }
                     let at = self.transport.tick(&self.song, rate);
                     self.send(EngineEvent::CountInDone { at });
                 }
                 TransportState::CountIn | TransportState::Recording => {}
             },
-            Command::StopRecording => match self.transport.state {
-                TransportState::Recording => {
-                    self.close_captures(self.transport.tick(&self.song, rate));
-                    self.transport.state = TransportState::Playing;
+            Command::StopRecording => {
+                self.stop_audio_capture();
+                match self.transport.state {
+                    TransportState::Recording => {
+                        self.close_captures(self.transport.tick(&self.song, rate));
+                        self.transport.state = TransportState::Playing;
+                    }
+                    TransportState::CountIn => self.transport.state = TransportState::Playing,
+                    TransportState::Stopped | TransportState::Playing => {}
                 }
-                TransportState::CountIn => self.transport.state = TransportState::Playing,
-                TransportState::Stopped | TransportState::Playing => {}
-            },
+            }
             Command::SetProgram(program) => {
                 // The cut resets the processors of the program it fades out.
                 self.finish_cut();
@@ -1232,6 +1586,11 @@ impl Core {
     /// RT. Ends a running hard cut at once: resets every processor and gives the output its full
     /// level back (the processors are silent after the reset). No-op without a cut.
     fn finish_cut(&mut self) {
+        // A hard cut may silence speakers while corrected capture still needs delayed bus
+        // samples. Keep processing those delays until the independent capture cursor drains.
+        if self.capture_tail.is_some() {
+            return;
+        }
         if self.cut.take().is_some() {
             self.silence(true);
         }
@@ -1265,7 +1624,12 @@ impl Core {
     fn silence(&mut self, reset: bool) {
         let count = self.track_count();
         for &index in &self.map[..count] {
-            self.tracks[usize::from(index)].seq.flush(true);
+            let state = &mut self.tracks[usize::from(index)];
+            state.seq.flush(true);
+            if reset {
+                // A hard cut also ends the fade-out tails of audio tracks.
+                state.voice.clear_tail();
+            }
         }
         let Some(program) = self.program.as_deref() else {
             return;
@@ -1303,6 +1667,16 @@ impl Core {
     fn install(&mut self, program: Box<Program>) {
         let rate = f64::from(self.sample_rate);
         let song = Song::of(&program);
+        if let Some(rec) = &self.recorder
+            && rec.start.is_some()
+            && rec.active()
+            && (song.map != self.song.map
+                || song.loop_on != self.song.loop_on
+                || song.loop_range != self.song.loop_range)
+        {
+            rec.fail(5);
+            self.capture_tail = None;
+        }
         if song.map != self.song.map {
             self.transport
                 .rescale((&self.song.map, rate), (&song.map, rate));
@@ -1337,6 +1711,8 @@ impl Core {
             let state = &mut self.tracks[free];
             state.id = Some(track.id);
             state.seq.clear();
+            state.voice.clear();
+            state.input_pdc.forget();
             state.stage.clear();
             state.stage.sig = StageSig::of(&track.chain);
             state.seq.reseed(track_seed(self.seed, track.id));
@@ -1434,6 +1810,7 @@ impl Core {
     /// messages of the segment, with frames counted from the start of the call; the segment
     /// starts at frame `frame0` of the call. `deadline` is the callback's (`run` sets one exactly
     /// for realtime calls, so `None` means offline).
+    #[allow(clippy::too_many_arguments)] // One callback segment shares its timing and borrowed inputs.
     fn segment(
         &mut self,
         out_l: &mut [f32],
@@ -1441,6 +1818,7 @@ impl Core {
         midi: &[MidiInEvent],
         frame0: usize,
         latency: u32,
+        audio: &AudioInputBuffer<'_>,
         deadline: Option<std::time::Instant>,
     ) {
         let n = out_l.len();
@@ -1462,7 +1840,35 @@ impl Core {
             frames: n as u32,
             playing: transport.playing(),
         };
+        let capture_latency = self
+            .record_latency
+            .unwrap_or(latency.saturating_add(audio.latency));
         let recording = transport.state == TransportState::Recording;
+        let capture = if let Some(tail) = self.capture_tail {
+            Some((
+                crate::recording::CaptureWindow {
+                    at: tail.pos,
+                    lap: tail.lap,
+                    lp: song.loop_samples(rate),
+                    map: song.map,
+                },
+                (tail.left as usize).min(n),
+                Some(tail.total - tail.left),
+            ))
+        } else if recording {
+            Some((
+                crate::recording::CaptureWindow {
+                    at: transport.pos,
+                    lap: self.capture_lap,
+                    lp: song.loop_samples(rate),
+                    map: song.map,
+                },
+                n,
+                None,
+            ))
+        } else {
+            None
+        };
         let loop_samples = song.loop_samples(rate);
         // Song tick of captured input at `sample`, corrected by the output latency (and back over
         // the loop start after a wrap).
@@ -1479,6 +1885,9 @@ impl Core {
         };
 
         let Core {
+            stream,
+            stream_tx,
+            recorder,
             program,
             tracks,
             map,
@@ -1519,6 +1928,11 @@ impl Core {
                 bufs.bus[0][..n].fill(0.0);
                 bufs.bus[1][..n].fill(0.0);
                 let count = program.tracks.len().min(MAX_TRACKS);
+                if capture.is_some()
+                    && let Some(rec) = recorder.as_deref()
+                {
+                    rec.validate(&program.tracks[..count]);
+                }
                 let any_solo = program.tracks[..count]
                     .iter()
                     .zip(&map[..count])
@@ -1533,7 +1947,29 @@ impl Core {
                 let tracks_and_states = program.tracks[..count].iter().zip(&map[..count]);
                 for (index, (track, &state)) in tracks_and_states.enumerate() {
                     let state = &mut tracks[usize::from(state)];
-                    // Live input of this track.
+                    if let Some(plan) = &track.audio {
+                        // Audio clips: does the playhead continue the stream, or does it jump?
+                        if plan.rate() == sample_rate.round() as u32 {
+                            state.voice.prepare(
+                                plan,
+                                Prepare {
+                                    pos: transport.pos,
+                                    n,
+                                    playing: transport.playing(),
+                                    lp: loop_samples,
+                                    tx: stream_tx,
+                                    offline: deadline.is_none().then_some(&**stream),
+                                },
+                            );
+                        } else {
+                            state.voice.clear();
+                        }
+                    }
+                    if track.source.is_audio() {
+                        state.events.clear();
+                        continue;
+                    }
+                    // Live MIDI input of this track.
                     live.clear();
                     let capture = track.arm && recording;
                     if frame0 == 0 {
@@ -1696,6 +2132,14 @@ impl Core {
                     ctx: &ctx,
                     any_solo,
                     n,
+                    at_frame: transport.pos,
+                    playing: transport.playing(),
+                    rate: sample_rate.round() as u32,
+                    audio: *audio,
+                    frame0,
+                    recorder: recorder.as_deref(),
+                    capture,
+                    capture_latency,
                 };
                 // SAFETY: `Pool::run_graph` gives every thread its own lane (0 here, 1 ..= threads
                 // for the workers, all < `lanes.len()`) and claims every job once, when it was
@@ -1719,11 +2163,22 @@ impl Core {
                 }
                 // 3. The master bus: what outputs to it, summed in a fixed order (track order
                 // without routing), whichever thread ran the jobs.
-                for &state in &map[..count] {
+                let (mut underruns, mut pending) = (0u32, 0u32);
+                for (track, &state) in program.tracks[..count].iter().zip(&map[..count]) {
                     let state = &tracks[usize::from(state)];
                     *unreported |= state.failed;
                     *dropped += state.stage_dropped;
+                    if track.audio.is_some() {
+                        underruns += u32::from(state.voice.underrun);
+                        pending += u32::from(!state.voice.primed);
+                    }
                 }
+                if underruns > 0 {
+                    telemetry
+                        .audio_underruns
+                        .fetch_add(underruns, Ordering::Relaxed);
+                }
+                telemetry.audio_pending.store(pending, Ordering::Relaxed);
                 let [bus_l, bus_r] = &mut bufs.bus;
                 let mut sum = |from: usize| {
                     let state = &tracks[usize::from(map[from])];

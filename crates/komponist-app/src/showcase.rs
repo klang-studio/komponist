@@ -10,6 +10,8 @@
 //! | Rhythm | 0 dB | group (folder) of Drums and Bass, outputs to the master |
 //! | Drums | see `VOLUMES_DB` | Sampler (test kit), presse („Tight Drums“) |
 //! | Bass | see `VOLUMES_DB` | volt („Fat Saw“), EQ („Warm Bass“), presse („Ducking“, gentler: ratio 3, −20 dB, 120 ms; sidechain: Drums, pre-fader) |
+//! | Shaker | −12 dB | mono audio in Rhythm; Re-Pitch 120 → 124 BPM, clip gain and fades |
+//! | Sweep | −12 dB | stereo audio riser into bar 9, clip gain and fade-in |
 //! | Lead | see `VOLUMES_DB` | hexa („Saw Lead“), EQ („Low Cut 80 Hz“), Delay („Dotted Eighths“); post-fader send to Reverb |
 //! | Pad | see `VOLUMES_DB` | volt („Wide Pad“), EQ („Low Cut 80 Hz“); post-fader send to Reverb |
 //! | Keys | −8 dB | hexa („E-Piano“), Delay („Soft Tape“) |
@@ -22,6 +24,7 @@
 //!
 //! Device states are written like the presets of the UI do: `{"params": …, "preset": "<name>"}`
 //! ([`Internal::preset_state`]); hexa's state is the factory patch.
+//! The audio links are metadata until `samples::demo_with_kit` synthesizes their WAVs at load.
 
 use std::sync::Arc;
 
@@ -32,6 +35,8 @@ use komponist_model::{
     ClipContent, Device, DeviceId, DeviceRole, MidiClip, Note, NoteId, Project, Sidechain, Take,
     Tap, Tick,
 };
+
+pub(crate) mod audio;
 
 /// Volumes of the tracks in dB, in track order (Drums, Bass, Lead, Pad, Keys, Arp), set by
 /// render analysis: the built-in instruments are louder than the old plugin chain's.
@@ -224,6 +229,7 @@ pub fn showcase_project() -> Project {
     });
     project.next_id = d.next;
     add_routing(&mut project);
+    audio::add_tracks(&mut project);
     project
 }
 

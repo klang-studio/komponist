@@ -88,13 +88,13 @@ fn the_arrangement_speaks_english() {
     has_role!(h, Role::Button, en::ARRANGEMENT_NEW_TRACK_BUTTON);
     assert!(h.query_by_label(de::ARRANGEMENT_NEW_TRACK_BUTTON).is_none());
     assert!(
-        h.query_all_by_label_contains("Drag an instrument here or")
+        h.query_all_by_label_contains("Drag an instrument or audio file here")
             .next()
             .is_some()
             || description(
                 &h.get_by_role_and_label(Role::Button, en::ARRANGEMENT_NEW_TRACK_BUTTON)
             )
-            .starts_with("Drag an instrument here or")
+            .starts_with("Drag an instrument or audio file here")
     );
     // Status and text builders.
     assert_eq!(Lang::En.arrangement_count_tracks(1), "1 track",);

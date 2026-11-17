@@ -6,29 +6,30 @@
   </picture>
 </p>
 
-<p align="center"><b>A MIDI DAW for Linux, macOS and Windows. Fast, small, and made for writing music.</b></p>
+<p align="center"><b>An audio and MIDI DAW for Linux, macOS and Windows. Fast, small, and made for writing music.</b></p>
 
 <p align="center">
   <a href="https://github.com/klang-studio/komponist/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/klang-studio/komponist/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue"></a>
   <img alt="Platform: Linux, macOS and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-informational">
-  <img alt="Status: early, v0.2" src="https://img.shields.io/badge/status-early%20(v0.2)-orange">
+  <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-orange">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
 ![komponist with the demo project "Night Drive": arrangement, piano roll and track meters while the transport plays](docs/media/hero.png)
 
-komponist is a MIDI DAW written in Rust with [egui](https://github.com/emilk/egui). You arrange clips, edit notes and
-steps, shape sounds with built-in instruments and effects, host CLAP and VST3 plugins, and mix it all on the same
-screen. Everything above is the demo project that ships with the app (`komponist --demo`). The interface is available in
+komponist is an audio and MIDI DAW written in Rust with [egui](https://github.com/emilk/egui). You arrange audio and MIDI
+clips, edit waveforms, notes and steps, record inputs and buses, shape sounds with built-in instruments and effects,
+host CLAP and VST3 plugins, and mix it all on the same screen. Everything above is the demo project that ships with
+the app (`komponist --demo`). The interface is available in
 English and German; it follows your desktop language, and Settings › Appearance (or `--lang de|en`) switches it.
 
 ## Features
 
 ### Arrangement, piano roll, step sequencer
 
-Arrange MIDI and step clips on tracks, with a snapping grid, loop range, split, duplicate, and a full undo history.
-Open a clip in the dock below to edit it.
+Arrange MIDI, step and linked audio clips on tracks, with a snapping grid, loop range, split, duplicate, and a full undo history.
+Open a clip in the dock below to edit it. The demo includes a mono Shaker loop and a stereo Sweep alongside the instruments.
 
 ![The arrangement of the demo project with the playhead running](docs/media/arrangement.png)
 
@@ -39,6 +40,32 @@ The piano roll has pointer, pencil and eraser tools, a velocity lane, quantize a
 The step sequencer is made for drums and Sampler kits. Toggle steps while the pattern plays:
 
 ![Toggling steps in the step sequencer while the pattern loops](docs/media/step-sequencer.gif)
+
+### Audio tracks and clip editing
+
+Import **WAV, AIFF, FLAC, MP3 and OGG** files with **Ctrl+I**, or drag an audio file from the browser into the
+arrangement. **Ctrl+Shift+T** opens the audio-track dialog. Files stay linked to their sources; **Collect and Save**
+copies supported audio sources into the project folder for moving or sharing a session.
+
+The waveform editor shows mono and stereo sources. Trim clips, change their source start, adjust clip gain and linear
+fades, and use **Re-Pitch** to follow the project tempo from an original BPM or bar count. Edits leave the source file
+intact. Missing files keep their clips and can be relinked with **Replace File…**.
+
+![The waveform editor in the dock, showing the stereo Sweep with its fade-in and clip controls](docs/media/audio-editor.png)
+
+### Audio recording and takes
+
+Choose a hardware input or a bus, arm an audio track and press **R** to record. Inputs can be mono or stereo, with
+**Off**, **Auto (When Armed)** and **On** monitoring. Settings › Audio selects the input device and recording format:
+**24-bit WAV** or **32-bit Float WAV**.
+
+The arrangement and waveform dock show the recording as it grows. **Record Bus** creates an audio track fed by a
+group or effect bus; the example below records the demo's Rhythm group without an external input:
+
+![Recording the Rhythm bus into an audio track, with the live waveform and input levels](docs/media/audio-recording.png)
+
+Loop passes become takes in the same clip. Choose, rename or remove takes in the inspector. Recordings made before
+the project is saved stay in a temporary folder and move into the project when you save.
 
 ### Built-in instruments
 
@@ -82,7 +109,7 @@ komponist hosts **CLAP** and **VST3** plugins. Every plugin runs in a bridge pro
 does not take your project down with it. Plugin windows open as native windows: X11 on Linux, a window of the plugin's
 bridge on macOS and Windows.
 
-### Mixer, routing, recording
+### Mixer, routing and MIDI recording
 
 - Record MIDI from any connected MIDI input (or the computer keyboard) into a take.
 - Route tracks into **groups** (Ctrl+G) and **effect buses** with pre/post-fader sends; sidechain Presse, or a CLAP or
@@ -92,17 +119,18 @@ bridge on macOS and Windows.
 
 The mixer shows every track with its inserts, sends, pan, mute/solo, faders and level meters. The group (named Rhythm in the demo) and the effect bus (named Reverb) have strips of their own on the right, next to the master channel:
 
-![The mixer with the arrangement above it, playing](docs/media/mixer.png)
+![The mixer dock with tracks, group, effect bus and master channel while playing](docs/media/mixer.png)
 
 ## Status
 
-komponist is **early software (v0.2)**. The MIDI workflow works end to end: arrange, edit, play, record, mix, save,
-export. Expect rough edges and file-format changes.
+komponist is **early software**. The current development version covers audio and MIDI workflows: arrange, edit,
+play, record, mix, save and export. Expect rough edges and file-format changes; released builds may have fewer features.
 
-What works: MIDI and step clips, piano roll, step sequencer, Hexa / Volt / Sampler, the built-in effects, sidechains
-(also into CLAP and VST3 plugins with a sidechain input), CLAP and VST3 hosting, mixer with groups, buses and sends, recording, undo and redo, project files, export.
+What works: audio, MIDI and step clips; waveform, piano roll and step editors; audio and MIDI recording with takes;
+Hexa / Volt / Sampler; built-in effects; sidechains (also into CLAP and VST3 plugins with a sidechain input); CLAP and
+VST3 hosting; mixer with groups, buses and sends; undo and redo; project files, linked audio, Collect and Save, and export.
 
-What is coming: **audio tracks**, automation.
+What is coming: automation.
 
 ## Install
 
@@ -147,10 +175,13 @@ The pictures in this README come from the demo project and are produced by a scr
 ```bash
 scripts/readme-media.sh            # everything into docs/media/
 scripts/readme-media.sh hero mixer # only these scenarios
+scripts/readme-media.sh audio_editor audio_recording # waveform editor and live recording
 ```
 
 It runs komponist in English (`--lang en`) under a private Xvfb with `--null-audio` (no audio or MIDI hardware, no
-sound) and drives the UI through its accessibility tree. It needs `xvfb-run`, `ffmpeg`, ImageMagick, Python 3 and `egui-mcp`.
+sound) and drives the UI through its accessibility tree. The recording scenario captures the Rhythm bus with the
+loop and count-in switched off. It needs `xvfb-run`, `ffmpeg`, ImageMagick, Python 3 and `egui-mcp`.
+If Vulkan cannot present through your local Xvfb, use `WGPU_BACKEND=gl scripts/readme-media.sh`.
 
 ## Architecture
 

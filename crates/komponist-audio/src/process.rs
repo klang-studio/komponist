@@ -23,6 +23,18 @@ pub trait AudioProcess: Send + 'static {
     /// RT, audio thread. Fills `out` (every frame of every channel). Must not allocate, free, lock,
     /// log, do IO or block. `midi` yields the live MIDI messages that arrived before this callback.
     fn process(&mut self, out: &mut OutputBuffer<'_>, info: &CallbackInfo, midi: &mut MidiIn<'_>);
+
+    /// RT. Duplex callback, with captured audio converted to the output clock. The default
+    /// preserves output-only processors; engines that record or monitor override this method.
+    fn process_input(
+        &mut self,
+        out: &mut OutputBuffer<'_>,
+        info: &CallbackInfo,
+        midi: &mut MidiIn<'_>,
+        _input: &crate::InputBuffer<'_>,
+    ) {
+        self.process(out, info, midi);
+    }
 }
 
 /// Parameters of the stream an [`AudioProcess`] is prepared for.

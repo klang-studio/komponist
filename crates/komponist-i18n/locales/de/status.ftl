@@ -91,10 +91,10 @@ status-track-hint = Doppelklick in die Spur legt einen Clip an · R nimmt auf
 status-project-unsaved = { $name } · nicht gespeichert
 
 # Middle text of a project without tracks.
-status-empty-hint = Strg T: MIDI-Spur · Strg S: speichern
+status-empty-hint = Strg T: MIDI-Spur · Strg Shift T: Audio-Spur · Strg S: speichern
 
 # Same on macOS: ⌘ instead of Strg, ⌥ instead of Alt.
-status-empty-hint-mac = ⌘T: MIDI-Spur · ⌘S: speichern
+status-empty-hint-mac = ⌘T: MIDI-Spur · ⌘⇧T: Audio-Spur · ⌘S: speichern
 
 ## Messages (`App::set_status`).
 
@@ -154,3 +154,12 @@ status-collected = Gesammelt und gespeichert · { $count ->
 
 # Collecting the samples failed; `$reason` is the system's text.
 status-collect-failed = Sammeln fehlgeschlagen: { $reason }
+
+# Audio clip editing and refused drops.
+status-audio-clips-hint = Ziehen verschiebt · Alt-Ziehen kopiert · Kanten kürzen · Ecken: Fades · Linie: Gain · Strg E teilt · Strg D dupliziert · Entf löscht
+status-audio-clips-hint-mac = Ziehen verschiebt · ⌥-Ziehen kopiert · Kanten kürzen · Ecken: Fades · Linie: Gain · ⌘ E teilt · ⌘ D dupliziert · Entf löscht
+status-drop-refused-midi = MIDI-Spuren nehmen keine Audio-Dateien auf.
+status-drop-refused-audio = Audio-Spuren nehmen keine MIDI-Clips auf.
+
+# Linked audio import and browsing (epic #8).
+status-collect-skipped = { $count } Dateien nicht gesammelt: keine unterstützten Audio-Dateien · { $files }

@@ -21,8 +21,10 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
+use komponist_model::paths::normalize;
+pub use komponist_model::paths::{absolute, relative};
 use serde_json::{Map, Value};
 
 use super::PADS;
@@ -219,6 +221,48 @@ pub struct Collector {
     done: HashMap<PathBuf, PathBuf>,
     /// The log of this run.
     pub log: Vec<Collected>,
+    /// Files that were **not** collected because they are not audio (see [`is_audio_file`]); their
+    /// links stay as they were. A crafted project must not make "Sammeln und speichern" copy an
+    /// arbitrary file (a key, a document) next to the project.
+    pub skipped: Vec<PathBuf>,
+}
+
+/// File name extensions of audio files that may be collected (lower case).
+const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "wave", "aif", "aiff", "flac", "ogg", "oga", "mp3"];
+
+/// Whether `path` is an audio file worth copying: its extension is on the allowlist
+/// (case-insensitive) **and** its first bytes are a known audio signature (RIFF/WAVE, FORM/AIFF or
+/// AIFC, fLaC, OggS, ID3 or an MPEG frame sync). A tiny check on purpose; it decodes nothing.
+pub fn is_audio_file(path: &Path) -> bool {
+    use std::io::Read as _;
+    let allowed = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.as_str()));
+    if !allowed {
+        return false;
+    }
+    let mut head = [0u8; 12];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut n = 0;
+    while n < head.len() {
+        match file.read(&mut head[n..]) {
+            Ok(0) | Err(_) => break,
+            Ok(k) => n += k,
+        }
+    }
+    let head = &head[..n];
+    let riff = head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WAVE";
+    let aiff =
+        head.len() >= 12 && &head[..4] == b"FORM" && matches!(&head[8..12], b"AIFF" | b"AIFC");
+    let mpeg = head.len() >= 2 && head[0] == 0xFF && head[1] & 0xE0 == 0xE0;
+    riff || aiff
+        || mpeg
+        || head.starts_with(b"fLaC")
+        || head.starts_with(b"OggS")
+        || head.starts_with(b"ID3")
 }
 
 /// The name of the samples folder of project file `project_file`: `<stem> Samples`.
@@ -242,6 +286,7 @@ impl Collector {
             scanned: false,
             done: HashMap::new(),
             log: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
@@ -309,11 +354,35 @@ impl Collector {
         (relinked != links).then(|| write_all(state, &relinked))
     }
 
+    /// Collects one file (resolved already) into the samples folder, like [`Collector::collect`]
+    /// does for the links of a state: copied unless it lies in the folder or an identical copy does.
+    /// Returns where it is now. Audio clips use it (#9).
+    pub fn collect_file(&mut self, file: &Path) -> io::Result<PathBuf> {
+        self.place(file)
+    }
+
+    /// Where `file` went in this run ([`Collector::collect_file`], [`Collector::collect`]); `None`
+    /// if it was not collected. Does not copy.
+    pub fn placed(&self, file: &Path) -> Option<PathBuf> {
+        self.done.get(&normalize(file)).cloned()
+    }
+
+    /// The folder of the project file the collector works for.
+    pub fn project_dir(&self) -> &Path {
+        &self.project_dir
+    }
+
     /// The path `file` has in the samples folder after collecting (copied if needed).
     fn place(&mut self, file: &Path) -> io::Result<PathBuf> {
         let file = normalize(file);
         if let Some(target) = self.done.get(&file) {
             return Ok(target.clone());
+        }
+        if !is_audio_file(&file) {
+            // Not copied, not changed: the link keeps naming the file where it is.
+            self.skipped.push(file.clone());
+            self.done.insert(file.clone(), file.clone());
+            return Ok(file);
         }
         let inside = file.starts_with(&self.samples_dir);
         if !self.scanned {
@@ -402,53 +471,6 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
     Ok(std::fs::read(a)? == std::fs::read(b)?)
 }
 
-/// `path` as an absolute path (against the current folder), without touching the file system.
-pub fn absolute(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        normalize(path)
-    } else {
-        std::env::current_dir()
-            .map(|d| normalize(&d.join(path)))
-            .unwrap_or_else(|_| path.to_path_buf())
-    }
-}
-
-/// `path` without `.` and resolvable `..` parts (lexically).
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// `path` relative to the folder `base` (both absolute): `Kit/kick.wav`, `../Samples/kick.wav`.
-pub fn relative(path: &Path, base: &Path) -> PathBuf {
-    let path = normalize(path);
-    let base = normalize(base);
-    let (p, b): (Vec<_>, Vec<_>) = (path.components().collect(), base.components().collect());
-    let common = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    if common == 0 {
-        return path;
-    }
-    let mut out = PathBuf::new();
-    for _ in common..b.len() {
-        out.push("..");
-    }
-    for c in &p[common..] {
-        out.push(c.as_os_str());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,14 +488,6 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
         path
-    }
-
-    #[test]
-    fn relative_paths_climb_and_descend() {
-        let r = |p: &str, b: &str| relative(Path::new(p), Path::new(b));
-        assert_eq!(r("/a/b/k.wav", "/a/b"), Path::new("k.wav"));
-        assert_eq!(r("/a/b/S/k.wav", "/a/b"), Path::new("S/k.wav"));
-        assert_eq!(r("/a/x/k.wav", "/a/b/c"), Path::new("../../x/k.wav"));
     }
 
     #[test]
@@ -553,10 +567,10 @@ mod tests {
         let dir = scratch("collect");
         let project = dir.join("proj/Hafenlicht.komponist");
         std::fs::create_dir_all(project.parent().unwrap()).unwrap();
-        let kick = file(&dir, "lib/kick.wav", b"kick-bytes");
-        let kick_copy = file(&dir, "other/kick-again.wav", b"kick-bytes");
-        let other_kick = file(&dir, "third/kick.wav", b"different");
-        let snare = file(&dir, "proj/Hafenlicht Samples/snare.wav", b"snare");
+        let kick = file(&dir, "lib/kick.wav", &wavb(b"kick-bytes"));
+        let kick_copy = file(&dir, "other/kick-again.wav", &wavb(b"kick-bytes"));
+        let other_kick = file(&dir, "third/kick.wav", &wavb(b"different"));
+        let snare = file(&dir, "proj/Hafenlicht Samples/snare.wav", &wavb(b"snare"));
         let mut state = None;
         for (pad, path) in [&kick, &kick_copy, &other_kick, &snare]
             .into_iter()
@@ -581,7 +595,7 @@ mod tests {
         assert_eq!(links[0].1.rel, Path::new("Hafenlicht Samples/kick.wav"));
         assert_eq!(
             std::fs::read(folder.join("kick 2.wav")).unwrap(),
-            b"different"
+            wavb(b"different")
         );
         assert_eq!(c.log.iter().filter(|e| e.copied).count(), 2);
         // The originals stay.
@@ -597,8 +611,8 @@ mod tests {
         let dir = scratch("relink");
         let project = dir.join("proj/Hafenlicht.komponist");
         std::fs::create_dir_all(project.parent().unwrap()).unwrap();
-        let kick = file(&dir, "lib/kick.wav", b"kick-bytes");
-        let snare = file(&dir, "lib/snare.wav", b"snare-bytes");
+        let kick = file(&dir, "lib/kick.wav", &wavb(b"kick-bytes"));
+        let snare = file(&dir, "lib/snare.wav", &wavb(b"snare-bytes"));
         let current = write(None, 0, Some(&SampleLink::new(&kick, None)));
         let mut c = Collector::new(&project);
         c.collect(Some(&current), None).unwrap().unwrap();
@@ -633,5 +647,73 @@ mod tests {
         );
         // Relinking a relinked state changes nothing.
         assert!(c.relink(Some(&relinked), None).is_none());
+    }
+
+    /// A WAV header followed by `payload` (enough for the audio check; the tests copy bytes only).
+    fn wavb(payload: &[u8]) -> Vec<u8> {
+        let mut b = wav_bytes();
+        b.extend_from_slice(payload);
+        b
+    }
+
+    /// The smallest valid WAV: header only.
+    fn wav_bytes() -> Vec<u8> {
+        let mut b = b"RIFF".to_vec();
+        b.extend_from_slice(&36u32.to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b
+    }
+
+    #[test]
+    fn only_real_audio_files_are_collected() {
+        let dir = scratch("audio-only");
+        let project = dir.join("proj");
+        let real = file(&dir, "lib/Kick.WAV", &wav_bytes());
+        let fake = file(
+            &dir,
+            "lib/secret.wav",
+            b"-----BEGIN OPENSSH PRIVATE KEY-----",
+        );
+        let other = file(&dir, "lib/id_ed25519", &wav_bytes());
+        let mut c = Collector::new(&project.join("Song.komponist"));
+        let copied = c.collect_file(&real).unwrap();
+        assert_eq!(copied, c.samples_dir().join("Kick.WAV"));
+        assert!(copied.is_file());
+        // A file that only has the extension, and one that only has the content: left alone.
+        for path in [&fake, &other] {
+            assert_eq!(&c.collect_file(path).unwrap(), path);
+        }
+        assert_eq!(c.skipped, vec![fake.clone(), other.clone()]);
+        let names: Vec<_> = std::fs::read_dir(c.samples_dir())
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(names.len(), 1, "only the real WAV was copied");
+        // The Sampler's links go through the same check.
+        let state = write(None, 0, Some(&SampleLink::new(&fake, None)));
+        let other_project = dir.join("proj2");
+        let mut c = Collector::new(&other_project.join("Song.komponist"));
+        c.collect(Some(&state), None).unwrap();
+        assert_eq!(c.skipped, vec![fake]);
+        assert!(!c.samples_dir().exists());
+    }
+
+    #[test]
+    fn audio_signatures() {
+        let dir = scratch("audio-magic");
+        for (name, bytes, ok) in [
+            ("a.flac", &b"fLaC\0\0\0\0"[..], true),
+            ("a.ogg", b"OggS\0\x02", true),
+            ("a.mp3", b"ID3\x04\0\0", true),
+            ("b.mp3", &[0xFF, 0xFB, 0x90, 0x00][..], true),
+            ("a.aiff", b"FORM\0\0\0\0AIFF", true),
+            ("a.aif", b"FORM\0\0\0\0AIFC", true),
+            ("a.wav", b"RIFF\0\0\0\0AVI ", false),
+            ("a.txt", b"RIFF\0\0\0\0WAVE", false),
+            ("empty.wav", b"", false),
+        ] {
+            assert_eq!(is_audio_file(&file(&dir, name, bytes)), ok, "{name}");
+        }
+        assert!(!is_audio_file(&dir.join("missing.wav")));
     }
 }

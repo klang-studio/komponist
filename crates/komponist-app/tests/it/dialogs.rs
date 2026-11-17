@@ -1267,6 +1267,12 @@ fn s07_model_in(lang: Lang) -> settings::Model {
         removable: false,
     };
     settings::Model {
+        input_devices: vec![settings::InputEntry {
+            label: lang.audio_input_none().to_owned(),
+            config: None,
+        }],
+        input_device: 0,
+        capture_format: komponist_app::settings::CaptureFormat::Pcm24,
         section: SettingsSection::Audio,
         hosts: vec![
             HostKind::PipeWire,

@@ -131,6 +131,7 @@ pub(crate) struct StreamCallback<P: AudioProcess> {
     params: StreamParams,
     /// Interleaved, `max_frames × channels`.
     scratch: Vec<f32>,
+    input: Option<(crate::InputReader, Vec<f32>)>,
     shared: Arc<StreamShared>,
 }
 
@@ -146,8 +147,18 @@ impl<P: AudioProcess> StreamCallback<P> {
             slot,
             params,
             scratch,
+            input: None,
             shared,
         }
+    }
+
+    /// Non-RT. Installs a capture consumer and preallocates its interleaved scratch space.
+    pub(crate) fn with_input(mut self, reader: Option<crate::InputReader>) -> Self {
+        self.input = reader.map(|reader| {
+            let scratch = vec![0.0; self.params.max_frames as usize * reader.channels()];
+            (reader, scratch)
+        });
+        self
     }
 
     /// RT. Fills `data` (interleaved, `params.channels` channels). Runs inside `assert_no_alloc`,
@@ -191,8 +202,15 @@ impl<P: AudioProcess> StreamCallback<P> {
                     + crate::frames_to_duration(offset as u64, sample_rate),
             };
             let scratch = &mut self.scratch[..chunk.len()];
+            let input = match self.input.as_mut() {
+                Some((reader, data)) => {
+                    let n = frames * reader.channels();
+                    reader.read(&mut data[..n], sample_rate, info.now)
+                }
+                None => crate::InputBuffer::empty(),
+            };
             self.slot
-                .process(&mut OutputBuffer::new(scratch, channels), &info);
+                .process_input(&mut OutputBuffer::new(scratch, channels), &info, &input);
             for (out, &sample) in chunk.iter_mut().zip(scratch.iter()) {
                 *out = T::from_sample(sample);
             }
@@ -446,6 +464,9 @@ fn device_info(
     device: &cpal::Device,
     is_default: bool,
 ) -> Option<DeviceInfo> {
+    if kind == HostKind::Asio {
+        crate::input::remember_asio(device);
+    }
     let config = device.default_output_config().ok()?;
     let ranges: Vec<SupportedStreamConfigRange> = device
         .supported_output_configs()
@@ -489,7 +510,7 @@ fn asio_cache() -> Vec<DeviceInfo> {
     asio_cache_lock().clone()
 }
 
-fn asio_open() -> bool {
+pub(crate) fn asio_open() -> bool {
     ASIO_STREAMS.load(Ordering::Acquire) > 0
 }
 

@@ -746,6 +746,7 @@ fn raw_project(nodes: &[RawNode], master_sidechain: Option<u8>, forward: bool) -
             monitor: false,
             input: MidiInputSel::All,
             midi_channel: MidiChannelSel::Omni,
+            audio: crate::AudioIo::default(),
             height: 56,
             clips: Vec::new(),
             output: output

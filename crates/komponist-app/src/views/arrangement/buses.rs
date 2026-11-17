@@ -62,7 +62,7 @@ fn bus_layout(rect: Rect, ppp: f32, kind: RowKind) -> BusLayout {
         folder = Some(i);
     }
     // M and S of a bus stand at the right end; the name has the room up to them.
-    let right = l.toggles[2].min.x - space::SPACE_1;
+    let right = l.toggles[0].min.x - space::SPACE_1;
     let name_h = typography::TRACK.line_height;
     let sub_h = typography::SMALL.line_height;
     let block = if group {
@@ -307,6 +307,7 @@ impl Arrangement {
         #[derive(Clone, Copy)]
         enum Pick {
             Rename,
+            Record,
             Color(usize),
             Group,
             SendNew,
@@ -372,6 +373,7 @@ impl Arrangement {
             Entry::separator(),
         ];
         if track.is_bus() {
+            entries.push(Entry::action(t.routing_record_bus(), Pick::Record));
             entries.push(Entry::submenu(t.routing_output_to(), &output_entries));
             entries.push(Entry::separator());
             if track.folder {
@@ -400,6 +402,7 @@ impl Arrangement {
         let picked = ContextMenu::new(name, &entries).show_on(response)?;
         Some(match picked {
             Pick::Rename => MenuAction::Rename,
+            Pick::Record => MenuAction::Edit(Action::Edit(EditAction::RecordBus(track.id))),
             Pick::Color(i) => MenuAction::Edit(Action::Edit(EditAction::SetTrackProp {
                 tracks,
                 prop: TrackProp::Hue(Hue::ALL[i]),

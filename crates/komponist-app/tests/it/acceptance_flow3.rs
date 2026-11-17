@@ -108,7 +108,7 @@ fn a_drum_beat_built_in_the_step_sequencer_plays() {
     assert_eq!(h.state().ui().editor.clip, Some(clip));
     let rows = match &h.state().project().find_clip(clip).unwrap().1.content {
         ClipContent::Step(s) => s.rows.clone(),
-        ClipContent::Midi(_) => panic!("not a step clip"),
+        ClipContent::Midi(_) | ClipContent::Audio(_) => panic!("not a step clip"),
     };
     // The pads of the kit are the rows, named after its files.
     let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();

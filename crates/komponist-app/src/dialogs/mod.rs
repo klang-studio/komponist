@@ -436,7 +436,9 @@ impl crate::App {
                 // found leaves the list.
                 let samples =
                     missing_plugins::missing_samples(self.project(), self.project_dir().as_deref());
-                if missing.is_empty() && samples.is_empty() {
+                let audio =
+                    missing_plugins::missing_audio(self.project(), self.project_dir().as_deref());
+                if missing.is_empty() && samples.is_empty() && audio.is_empty() {
                     self.queue.push(Action::Project(
                         crate::actions::ProjectAction::ContinueWithMissing,
                     ));
@@ -448,10 +450,15 @@ impl crate::App {
                     self.project(),
                     &samples,
                 );
+                let model = missing_plugins::with_audio(self.lang, model, self.project(), &audio);
                 if let Some(output) =
                     missing_plugins::show(ctx, &model, self.dialogs.overlay.is_none())
                 {
                     let action = match output {
+                        missing_plugins::Output::OpenAudio(clip) => {
+                            self.queue.push(Action::Ui(UiAction::CloseDialog));
+                            Action::Ui(UiAction::OpenClip(clip))
+                        }
                         missing_plugins::Output::Continue => {
                             Action::Project(crate::actions::ProjectAction::ContinueWithMissing)
                         }
@@ -475,6 +482,7 @@ impl crate::App {
                 let purpose = browser.purpose;
                 match file::show(ctx, browser) {
                     Some(file::Output::Chosen(path)) => self.file_chosen(purpose, path),
+                    Some(file::Output::ChosenMany(paths)) => self.audio_import_chosen(paths),
                     Some(file::Output::Cancel) => {
                         self.queue.push(Action::Ui(UiAction::CloseDialog));
                     }
@@ -511,7 +519,7 @@ impl crate::App {
                 };
                 match new_track::show(ctx, state, &view) {
                     Some(new_track::Output::Create(spec)) => {
-                        if !spec.bus {
+                        if !spec.bus && !spec.audio {
                             self.dialogs.last_instrument = Some(spec.instrument.clone());
                         }
                         self.close_overlay();

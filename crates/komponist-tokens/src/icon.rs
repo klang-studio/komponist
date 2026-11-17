@@ -77,6 +77,8 @@ icons! {
     Folder => "folder",
     /// `folder-open`: open a project, show in folder.
     FolderOpen => "folder-open",
+    /// Geometric waveform: audio-file rows, audio inputs and the waveform editor.
+    AudioWaveform => "audio-waveform",
     /// `maximize-2`: maximise the dock.
     Maximize2 => "maximize-2",
     /// `minimize-2`: restore the maximised dock.
@@ -142,7 +144,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 29);
+        assert_eq!(Icon::ALL.len(), 30);
     }
 
     #[test]
@@ -161,10 +163,12 @@ mod tests {
     fn icons_are_prepared() {
         for &icon in Icon::ALL {
             let svg = text(icon);
-            assert!(
-                svg.contains("@license lucide-static"),
-                "{icon:?} lost its licence header"
-            );
+            let licence = if icon == Icon::AudioWaveform {
+                "@license komponist-original"
+            } else {
+                "@license lucide-static"
+            };
+            assert!(svg.contains(licence), "{icon:?} lost its licence header");
             assert!(
                 svg.contains("width=\"16\"") && svg.contains("height=\"16\""),
                 "{icon:?}"

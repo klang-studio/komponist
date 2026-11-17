@@ -267,6 +267,10 @@ impl App {
                 None => self.open_file_browser(Purpose::Save),
             },
             ProjectAction::SaveAs => self.open_file_browser(Purpose::Save),
+            ProjectAction::ReplaceAudio(clip) => {
+                self.open_file_browser(Purpose::ReplaceAudio(clip))
+            }
+            ProjectAction::ReplaceAudioPath { clip, path } => self.replace_audio_path(clip, path),
             ProjectAction::CollectAndSave => self.collect_and_save(),
             ProjectAction::ShowStartScreen => self.guard(Pending::StartScreen),
             ProjectAction::ContinueWithMissing => {
@@ -410,11 +414,21 @@ impl App {
             self.project_dir().as_deref(),
         )
         .len();
-        if missing.is_empty() && samples == 0 {
+        let audio = crate::dialogs::missing_plugins::missing_audio(
+            self.project(),
+            self.project_dir().as_deref(),
+        );
+        if missing.is_empty() && samples == 0 && audio.is_empty() {
             self.set_status(self.lang.project_opened_ready(&name), StatusKind::Info);
             return;
         }
-        let n = crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples);
+        let n = if audio.is_empty() {
+            crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples)
+        } else if missing.is_empty() {
+            self.lang.missing_audio_files().to_owned()
+        } else {
+            self.lang.missing_plugins_and_files().to_owned()
+        };
         self.set_status(
             self.lang.project_opened_problems(&name, n),
             StatusKind::Error,
@@ -435,6 +449,10 @@ impl App {
     /// file without ending (module docs). `false` if writing failed (the status bar says why).
     pub(crate) fn save_to(&mut self, path: &Path) -> bool {
         let path = with_extension(path);
+        if !self.await_audio_take() {
+            return false;
+        }
+        self.migrate_recordings_for_save(&path);
         // The bridged plugins' current states go into the file (blocking, bounded).
         for (device, state) in self
             .engine
@@ -446,7 +464,10 @@ impl App {
         // The sample links get the paths for this file's folder.
         self.rebase_samples(&path);
         // A running take so far, with the notes still in flight, on top of all that (#85).
-        let with_take = self.project_with_take();
+        let with_take = match self.project_with_take() {
+            Ok(project) => project,
+            Err(()) => return false,
+        };
         // A new file renames the project after it; the rename happens only if writing works.
         let rename = name_from_path(&path).filter(|name| {
             self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
@@ -486,6 +507,7 @@ impl App {
                     StatusKind::Success,
                 );
                 self.remember(path);
+                self.recordings_saved();
                 true
             }
             Err(e) => {
@@ -578,7 +600,7 @@ impl App {
             // A running take records on.
             Answer::Cancel => {}
             Answer::Discard => {
-                if self.recording.is_some() {
+                if self.recording.is_some() || self.audio_recording.is_active() {
                     self.discard_take();
                 }
                 self.proceed(next);
@@ -622,6 +644,8 @@ impl App {
                 }
             }
             Purpose::Sample => self.sample_chosen(path),
+            Purpose::ReplaceAudio(clip) => self.replace_audio_path(clip, path),
+            Purpose::ImportAudio => self.audio_import_chosen(vec![path]),
             Purpose::ExportFolder => self.export_folder_chosen(path),
             Purpose::Folder => {
                 let (clap, vst3) = crate::dialogs::settings::folder_formats(&path);
@@ -644,6 +668,60 @@ fn file_name(path: &Path) -> String {
         || path.display().to_string(),
         |f| f.to_string_lossy().into_owned(),
     )
+}
+
+impl App {
+    /// Relink without copying a file. Failed decoding or a source offset beyond its end keeps
+    /// both the document and undo history untouched.
+    pub(crate) fn replace_audio_path(&mut self, clip: komponist_model::ClipId, path: PathBuf) {
+        let Some((_, before)) = self.project().find_clip(clip) else {
+            return;
+        };
+        let komponist_model::ClipContent::Audio(a) = &before.content else {
+            return;
+        };
+        let old_length = before.length;
+        let name = before.name.clone();
+        let offset = a.offset;
+        let Ok(source) = komponist_audiofile::FilePool::global().open(&path) else {
+            self.set_status(
+                self.lang
+                    .audio_file_replace_failed(self.lang.audio_file_no_audio()),
+                StatusKind::Error,
+            );
+            return;
+        };
+        let info = source.info();
+        if offset >= info.frames {
+            self.set_status(
+                self.lang
+                    .audio_file_replace_failed(self.lang.audio_file_too_short()),
+                StatusKind::Error,
+            );
+            return;
+        }
+        let file = komponist_model::AudioFile::new(
+            &path,
+            self.project_dir().as_deref(),
+            info.frames,
+            info.sample_rate,
+            info.channels as u16,
+        );
+        self.dispatch(Action::Edit(crate::EditAction::SetAudioClipFile {
+            clip,
+            file,
+        }));
+        if self
+            .project()
+            .find_clip(clip)
+            .is_some_and(|(_, c)| c.length < old_length)
+        {
+            self.set_status(
+                self.lang.audio_file_replace_shortened(name),
+                StatusKind::Info,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

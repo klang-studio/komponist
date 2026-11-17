@@ -155,6 +155,7 @@ komponist/
     sampler-core/               vendored sampler engine of the Sampler (from klopfer's dsp crate)
     komponist-builtin/          Hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
+    komponist-audiofile/        audio files: seekable chunked decoding (hound, symphonia), sample-rate conversion (rubato), waveform peak cache, the file pool; leaf crate, no studio dependency
     komponist-rt/               realtime thread set-up: SCHED_FIFO, time-constraint policy, audio workgroups, os_sync waits (macOS); depends on libc only
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
@@ -257,10 +258,11 @@ pub struct Project {
 }
 pub struct Track {
     pub id: TrackId, pub name: String, pub hue: Hue,       // Hue = one of the 14 token hues
-    pub kind: TrackKind,                                   // Midi | Bus (wave 9); Audio in wave 10
+    pub kind: TrackKind,                                   // Midi | Bus (wave 9) | Audio (wave 10, §6.9)
     pub channel: Channel,                                  // volume_db, pan (-1..1), mute, solo, devices
     pub arm: bool, pub monitor: bool,                      // R, I
     pub input: MidiInputSel, pub midi_channel: MidiChannelSel, // "Alle MIDI-Eingänge", "Omni"
+    pub audio: AudioIo,                                    // audio input + monitoring, audio tracks only (§6.9)
     pub height: u16,                                       // 32..=160, part of the project
     pub clips: Vec<Arc<Clip>>,                             // empty on a bus
     pub output: TrackOutput,                               // Master | Bus(id)       (routing, §6.8)
@@ -281,7 +283,7 @@ pub struct Clip {
     pub start: Tick, pub length: Tick,                     // on the timeline
     pub loop_length: Option<Tick>,                         // "loopen": repetitions of the content
     pub mute: bool,
-    pub content: ClipContent,                              // Midi(MidiClip) | Step(StepClip)
+    pub content: ClipContent,                              // Midi(MidiClip) | Step(StepClip) | Audio(AudioClip) (§6.9)
 }
 pub struct MidiClip { pub takes: Vec<Take>, pub active_take: usize }  // loop recording → takes
 pub struct Take { pub name: String, pub notes: Arc<Vec<Note>> }       // sorted by start
@@ -350,10 +352,11 @@ U+2212 minus), `fmt_pan` (`C`, `L 12`, `R 50`), `note_name` (`C4` = 60). Rules f
 
 ### 5.5 Persistence (D7)
 
-- `*.komponist`: JSON `{ "format": "komponist", "version": 2, "project": … }`. Plugin states are base64.
+- `*.komponist`: JSON `{ "format": "komponist", "version": 3, "project": … }`. Plugin states are base64.
   A missing plugin keeps its state unchanged (S06).
 - Migrations: `version` → `migrate_vN_to_vN+1` functions, with a test per version. Version 2 (WP-101) adds the
-  routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master.
+  routing (§6.8.3); `migrate_v1_to_v2` routes every track of an older file to the master. Version 3 (#9, wave 10) adds audio tracks and clips (§6.9); it is
+  all optional data, so `migrate_v2_to_v3` changes nothing, and the bump only keeps older builds from opening it.
 - Settings: `~/.config/komponist/settings.json` (driver, device, rate, buffer, MIDI inputs, plugin
   folders, last export settings, UI scale). Recent projects: `~/.config/komponist/recent.json`. (macOS:
   `~/Library/Application Support/komponist/`; Windows: `%APPDATA%\komponist\`, see §9.3.)
@@ -438,7 +441,7 @@ internal audio effects and, with an event stage, the MIDI effects Arpeggiator an
 - **Telemetry** (atomics, read every UI frame): playhead tick, play/record state, CPU load (callback
   time / buffer period, smoothed), xrun count, per-track `TrackMeter` (`Arc` shared with the program:
   peak L/R since the last read, as `AtomicU32` f32 bits, taken with `swap(0)`), master meter,
-  MIDI activity per input, keys held on the MIDI inputs (`Telemetry::held_input_keys`, a 128-bit
+  audio clip streaming (`audio_underruns`, `audio_pending`, §6.9.3), MIDI activity per input, keys held on the MIDI inputs (`Telemetry::held_input_keys`, a 128-bit
   map in two atomics; the piano roll's keyboard lights them, WP-61), and the master tap (`Telemetry::master_tap`, #34:
   a `SampleTap` of the master output's mono sum at the master meter's point, written only while the transport bar's
   scope renews its lease and never in an offline render). Ballistics (peak hold 1.5 s, 20 dB/s, clip latch) run in the UI with
@@ -639,6 +642,8 @@ special case.
   engine's processors (`komponist_engine::export::recompile`, after `Engine::settle` applied the queued commands, e.g. a
   lookahead switched a moment before), so the program's delay compensation and `Routing::latency()` are in export-rate
   frames (see 6.8.10 item 8). The stream gets the program the app compiled back afterwards.
+- Audio clips render through the same streamer, which the render thread runs itself (§6.9.3 "Offline"); the export is
+  refused with the missing file named when a clip in its range has none.
 - Dither and PCM quantisation stay in `komponist-engine::export` (only one user, see §10).
 
 ### 6.8 Routing: buses, sends, sidechains (wave 9)
@@ -653,17 +658,18 @@ colours from the palette (14 A). Model code: `komponist_model::routing` (pure qu
 
 #### 6.8.1 The graph, track kinds and the UI
 
-One graph for everything. **Nodes:** every track (`TrackKind::Midi`, `TrackKind::Bus`, later `Audio`) and the
+One graph for everything. **Nodes:** every track (`TrackKind::Midi`, `TrackKind::Bus`, `TrackKind::Audio`) and the
 master. **Edges:**
 
 | Edge | From → to | Model | Carries |
 |---|---|---|---|
 | Output | track or bus → master or bus | `Track::output: TrackOutput` (`Master` \| `Bus(TrackId)`) | the node's signal after fader, pan and mute |
 | Send | MIDI track → bus | `Track::sends: Vec<TrackSend>` (`id: SendId`, `target`, `level_db`, `tap: Pre \| Post`, `enabled`) | a copy at the tap, scaled by the send level |
+| Input | bus → audio track (§6.9) | `Track::audio.input: AudioInput::Bus(TrackId)` | what leaves the bus (behind its fader, pan, mute), recorded and monitored by the audio track; nothing into the mix |
 | Sidechain | track or bus → the node holding the device | `Device::sidechain: Option<Sidechain>` (`source: TrackId`, `tap`) | the source's signal at the tap into the device's sidechain input; nothing into the mix |
 
 ```rust
-pub enum TrackKind { #[default] Midi, Bus }            // Audio reserved for wave 10 (WP-111)
+pub enum TrackKind { #[default] Midi, Bus, Audio }     // Audio: wave 10, §6.9
 pub struct Track { /* … as in 5.2 … */
     pub output: TrackOutput,                            // required from file version 2
     pub sends: Vec<TrackSend>,                          // empty on buses (11 A)
@@ -741,6 +747,9 @@ Invariants (`routing::check`, asserted after every edit in the property tests):
 3. Output and send targets are buses; a track sends at most once to a bus; buses have no sends (edits, 11 A).
 4. Groups: `folder` only on buses, `folded` only on groups, members directly behind their group (6.8.1).
 5. A bus holds no clips, no instrument, no MIDI effects, is not armed and not monitoring.
+6. A track holds only content its kind takes (`RoutingIssue::KindContent`): an audio track audio clips and audio
+   effects, a MIDI track MIDI and step clips; `Track::audio` is non-default only on audio tracks; an audio track's
+   input bus exists, is a bus and closes no cycle (§6.9).
 
 **Queries for the UI** (grey out what would close a cycle, WP-100 §7): `routing::output_targets(track)` (master
 first, then every bus that is not upstream of the track), `send_targets(track)` (the same buses minus those it
@@ -910,11 +919,13 @@ Per-bus stems later are one more output: copy a node's post buffer into a second
 
 #### 6.8.9 Audio tracks (wave 10)
 
-An audio track (`TrackKind::Audio`, WP-111) is one more source node: clip playback (and live input) replaces
+An audio track (`TrackKind::Audio`, §6.9) is one more source node: clip playback (and live input) replaces
 sequencer and instrument at the head of the chain; output, sends, sidechain taps, groups, mute, solo and PDC are
 the same, so nothing in this section changes. „Bus aufnehmen“ (16 A) creates an audio track whose **input** is a
-bus: that adds an input edge bus → audio track, which counts for the cycle check like a sidechain (the audio track
-must not output back into that bus).
+bus: that adds an input edge bus → audio track (`routing::EdgeKind::Input`), which counts for the cycle check like a
+sidechain (the audio track must not output back into that bus or into anything that feeds it; `output_targets` and
+`routing::input_sources` grey those out). It is a tap, not a gate: mute and solo do not close it
+(`routing::gates` ignores it), the bus is just processed before the track (`topo_order`).
 
 #### 6.8.10 Open questions
 
@@ -937,11 +948,305 @@ must not output back into that bus).
    The same step fixed a race at the same rate: a latency published after the app's last compile (a lookahead switched
    right before the export) made the skip and the compensation disagree.
 
+### 6.9 Audio tracks and audio clips (wave 10, epic #8)
+
+Model and file format: #9 (this section). Decoding, resampling, peaks and the file pool: #10. Playback and streaming:
+#11. Arrangement, waveform and inspector: #12. Recording: #13. Warp, if it comes: #14. Owner decisions on the epic
+(2026-11-17): separate track kinds (no hybrid tracks); clip positions follow the bar grid and the content stays fixed
+(optional per clip „Re-Pitch“); files are linked like the Sampler's and „Sammeln und speichern“ copies them; a moved clip
+cuts the one below it (3 ms edge fades, no crossfade in v1); no audio files on MIDI tracks; no Reverse in v1; monitoring
+of a new audio track is off.
+
+#### 6.9.1 Data model
+
+```rust
+pub enum TrackKind { Midi, Bus, Audio }
+pub struct AudioIo { pub input: AudioInput, pub monitor: MonitorMode }   // Track::audio, default = {None, Off}
+pub enum AudioInput { None, Hardware(HardwareInput), Bus(TrackId) }       // Bus: input edge, §6.8.9
+pub struct HardwareInput { pub first: u16, pub stereo: bool }             // channel `first` (and `first + 1`), from 0
+pub enum MonitorMode { Off, Auto, On }                                    // Auto: armed and not playing back
+
+pub enum ClipContent { Midi(MidiClip), Step(StepClip), Audio(AudioClip) } // ClipKind::{Midi, Step, Audio}
+pub struct AudioClip {
+    pub takes: Vec<AudioTake>,      // nonempty; file/offset access dereferences to active take
+    pub active_take: usize,         // index into takes
+    pub gain_db: f32,               // -70 (silence) ..= +24
+    pub fade_in: Tick, pub fade_out: Tick,   // timeline ticks, fade_in + fade_out <= Clip::length
+    pub time_mode: ClipTimeMode,    // Fixed (default) | RePitch; an enum so warp (#14) is a new variant
+    pub original_tempo: Tempo,      // project tempo at creation, set by hand; used by RePitch
+}
+pub struct AudioTake { pub name: String, pub file: AudioFile, pub offset: u64 /* source frames */ }
+pub struct AudioFile { pub abs: PathBuf, pub rel: PathBuf /* empty before the project has a file */,
+                       pub frames: u64, pub sample_rate: u32, pub channels: u16 }
+```
+
+`Clip` is unchanged around it: `start` and `length` are timeline ticks (the bar grid), `mute` works, `loop_length` is
+always `None`, `transpose` and `velocity_pct` are 0. The **window** is `offset` frames into the file for `length`
+ticks. How many frames that is depends on the mode, `AudioClip::source_frames(ticks, project_tempo)`:
+
+- **Fixed:** the content plays at its own speed, one tick lasts what the project tempo says. A tempo change keeps the
+  clip's duration in **seconds**: `set_project_prop(Tempo)` scales the length and fades of every Fixed clip (the start
+  stays on the grid), then `normalize_overlaps` cuts what the longer clips now run into (the clip that starts later
+  wins).
+- **RePitch:** one tick plays what it lasts at `original_tempo`, so the clip keeps its length in ticks and plays at
+  `project / original` speed (`AudioClip::speed`), pitch following.
+- The clip never reaches past the file: `AudioClip::max_length(project_tempo)` is what is left behind `offset`; adding,
+  stretching, switching the mode and changing the original tempo clamp to it. `frames`, `sample_rate` and `channels` are
+  those of the file when it was linked, so this works with the file missing and the UI can draw an extent for it.
+
+**Audio takes (#13).** `AudioClip::takes` holds nonempty `AudioTake { name, file, offset }` source windows;
+`active_take` selects playback. `Deref`/`DerefMut` preserve existing `audio.file`/`audio.offset` access without
+separate active-source storage. Gain, fades, mode and original tempo belong to the clip and are shared. Splits,
+overlap cuts and left trims shift every take's window at its own sample rate. An inactive short take may retain
+an offset beyond EOF after a split; it keeps its exact alignment and cannot be selected until it has material.
+`add_audio_take`, `select_audio_take`, `rename_audio_take` and `remove_audio_take` are immutable edits; selecting a
+shorter source clamps the clip length/fades, removing the final source is refused. `AudioClipProp::SourceOffset`
+edits only the active source start without moving the clip. File rewrites and collection include inactive takes.
+Version 3 loads legacy `file`/`offset` as one unnamed take. Saving keeps the active legacy pair and, for named or
+multiple takes, additionally writes `takes`/`active_take`; invalid lists, indices and conflicting active pairs are
+errors before any active-source access. This needs no project version bump and older readers play the active pair.
+
+**Files.** `AudioFile` is the Sampler's link (§8.5, `sampler::links`): the file is found through `rel` against the
+folder of the project file first, then through `abs` (`AudioFile::resolve`). Saving rebases resolving links to the new
+file (`AudioFile::rebased`); a link that does not resolve stays. „Sammeln und speichern“ copies the files of audio clips
+into `<project name> Samples/` with the **same collector** as the Sampler's samples (identical content is copied once;
+`Collector::collect_file`), and `edits::rewrite_audio_files` points the clips (and every undo step, per step) at the
+copies. A recording of a project without a file lives in the user's recordings folder (its `abs`, empty `rel`); the app
+knows that folder and moves such files into the project's `Takes/` folder on the first save (#13): no extra state in
+the model. The path helpers moved to `komponist_model::paths` for this.
+
+**Kinds are enforced** by the edits (`EditError::ClipNotAllowed { track, clip }`) and by `routing::check` /
+loading: audio clips only on audio tracks (add, move and copy refuse the target), MIDI and step clips only on MIDI
+tracks, an audio track takes audio effects only (`insert_device`, `replace_instrument`). `Track::audio` is read on audio
+tracks only; MIDI props (`Input`, `MidiChannel`, `Monitor`) are ignored on them, `AudioInput` and `MonitorMode` are
+`Invalid` elsewhere. Arming an audio track does not touch `Track::monitor`; monitoring is `AudioIo::monitor`.
+
+#### 6.9.2 Edits, the overlap-cut rule, undo
+
+All edits are pure functions as in §5.3, one undo step each. Added: `add_audio_track(_in)` (`NewAudioTrack`, default
+name „Audio“, `DefaultNames::audio`), `NewClipContent::Audio { file, offset }` for `add_clip`, `set_audio_clip_prop`
+(`AudioClipProp::{GainDb, FadeIn, FadeOut, TimeMode, OriginalTempo, SourceOffset}`), `set_audio_clip_file` (relink),
+`trim_audio_clip_start` (left edge: the window follows the edge), `TrackProp::{AudioInput, MonitorMode}`.
+`split_clips` advances the right part's offset; `set_clip_length` clamps to the file.
+
+**Audio clips on one track never overlap.** Whatever puts a clip on a track (add, move, Alt-drag copy, Ctrl D, stretch,
+left trim, `ClipProp::Start`) cuts the clips below it in the same step: a covered clip is removed, a clip hit on one
+side is shortened (a cut start advances its `offset`), a clip with the new one in the middle becomes two (the left part
+keeps the id, the right part gets a new one). A cut edge loses its fade. The model therefore always says exactly what
+plays and the engine needs no z-order. Dragging the clip away does not restore the hidden part (undo does); the edge of
+the clip below can be dragged back out, because the pieces keep their window into the file.
+`EDGE_FADE_MS` (3 ms) is applied by the playback at every edge a cut or a clip border creates; it is not stored.
+
+#### 6.9.3 Engine: playback and disk streaming (#11)
+
+Built in `komponist-engine`, module `audio` (a plan per track, the ring, the streamer, the voice).
+
+- **Compile.** An audio track compiles as a source node: no sequencer notes, no instrument, an effect chain
+  (`ChainKind::Master`), output, sends, sidechain taps, PDC and gates as any track (the head delay of §6.8.5 applies
+  to its effects like to a MIDI track's). `TrackProgram::audio` is an `AudioPlan`, built by `compile::build` from the
+  unmuted audio clips, the tempo map, the engine rate (`CompileEnv::sample_rate`, default 48 kHz; a plan of another
+  rate than the engine plays silence until the program is compiled again) and the project folder
+  (`CompileEnv::project_dir`, for the relative links). The compile does no IO.
+- **Segments.** The plan holds a sorted table of non-overlapping `Segment`s in **song frames of the engine rate**
+  (`tick_to_sample` of the clip's start and end), each with the file frame at its start converted to the engine rate
+  and rounded (`x0`, from `AudioClip::offset`), the speed (1 for Fixed, `AudioClip::speed` = project / original tempo
+  for Re-Pitch), the clip gain, the clip's fades in frames, and flags for the two edge fades. Clips never overlap in
+  the model, so the audio thread needs no mixing of clips and no priority; a hand-made overlap is resolved at compile
+  time (the later clip wins). `Arc::ptr_eq` per clip, the rate, the tempo map and the folder decide whether a
+  recompile keeps the plan (its ring, heads and open files): a fader move does, an edit or a tempo change does not.
+- **Edges.** `EDGE_FADE_MS` (3 ms) is a linear fade at the start and the end of every segment, on top of the clip's
+  own fades and gain, **except** between two segments that are one continuous stretch of the same file (same file,
+  speed and gain, no clip fade at the cut, the second starting where the first stops, within a frame): a split clip
+  plays through its cut. Fade-in frame `j` has gain `j / length` (0 at the first frame), fade-out frame `j` has
+  `(len − 1 − j) / length` (0 at the last frame).
+- **The stream.** The source of a segment is the file **resampled to the engine rate** (`komponist_audiofile`'s
+  `StreamResampler`; none if the rates are equal, then it is a bit-exact copy), an infinite signal with zeros outside
+  the file. `SourceReader` produces it from any frame: it seeks a pre-roll before the target, aligned to
+  `rate_in / gcd(rate_in, rate_out)` file frames so the converter's phase is right, and decodes forward, so a seek
+  and a continuous play give the same frames. A Re-Pitch segment reads that stream at `speed` frames per output frame
+  with a four-point cubic interpolation (the pitch follows, there is no anti-alias filter for speeds above 1).
+- **The streamer** (`komponist-stream`, one thread per engine) renders every audio track's output (stream, gain,
+  fades, edge fades) **in playback order** into that track's **ring**: lock-free single-producer single-consumer,
+  planar `f32` in atomics (no `unsafe`), 32 768 frames (0.68 s at 48 kHz). The audio thread talks to it through one
+  SPSC queue of `Start { plan, epoch, position, loop }` messages and sends one only when the playhead jumps; the
+  streamer never waits for the audio thread, which never blocks (no `unpark`: the thread polls every 2 ms when idle).
+  Ring positions count frames per **epoch**; both indices carry the epoch, so a word of an older epoch is never
+  mistaken for the current one.
+- **The voice** (audio thread, in the track state) compares the playhead with where the stream goes on: after `n`
+  frames from `p` the stream continues at `p + n`, or at the loop start when the segment ended at the loop end (the
+  transport splits segments exactly there; the streamer follows the same rule, so **loop wraps are predicted** and
+  seamless). If the plan, the position or the loop is not the one of the epoch, the voice starts a new epoch (a locate
+  while playing, a program that changed the track, a changed loop, a start from another position). **Stopped** voices
+  do that too, so the ring is filled for the playhead and **starting is immediate**.
+- **Heads.** For every segment the streamer keeps its first `HEAD_MS` (100 ms) rendered in memory (built in the
+  background after a plan first plays, `AudioPlan::heads_ready`). Until the new epoch's frames arrive, the voice plays
+  from the head of the segment it is in; a position that is not in a head (a locate into the middle of a clip) plays
+  silence until the streamer has caught up, a few milliseconds. Frames inside a segment that neither the ring nor a
+  head could deliver are an **underrun**: silence, one count per block in `Telemetry::audio_underruns`, never a wait.
+  `Telemetry::audio_pending` counts the audio tracks whose ring has not reached the playhead yet.
+- **De-click.** A stop or a locate while playing copies the next 3 ms of the old position, faded out, into a tail that
+  plays out over the next blocks; a start or a jump fades in over 3 ms unless it lands on a segment start (which has its
+  edge fade). A loop wrap has its fades in the stream: the last 3 ms before the loop end and the first 3 ms after the
+  loop start. A hard cut (second Stop) ends tails at once.
+- **Files.** `ClipSource` is one file for all clips that link it (keyed by link and folder), opened by the streamer
+  through the pool (`FilePool::global`; the `Arc<PoolFile>` lives as long as a program plays a clip of it), looked for
+  again at most every 500 ms while missing. `ClipSource::status()` (`Pending`, `Ready`, `Missing`, `Unreadable`) and
+  `Program::clip_source` / `Program::audio_sources` are what the UI shows. A missing file plays silence.
+- **Offline.** An offline render (`Engine::render`, the export) has no deadline: before every block the render thread
+  runs the streamer's own work for the voice (`StreamShared::ensure`, behind the streamer's mutex, with
+  `permit_alloc` around the IO), so the stream is exactly what the thread would have written and the result does not
+  depend on thread timing. Offline renders start without the 3 ms fade-in of a jump (a file has no speakers to click),
+  so they differ from a realtime run only in the first 3 ms after a start in the middle of a clip. The export checks
+  that every file in its range is there (`ExportError::MissingAudio`) and cuts audio at the end of its range like it
+  cuts notes (a plan of its own with its own ring, `AudioPlan::cut_at`).
+- **One engine per plan.** A plan's ring belongs to the engine that plays its program; two engines must not play
+  programs that share a plan (tests compile one program per engine).
+- **Input and monitoring (#13).** The source stage of an audio track is `Voice::render` into the chain's input buffer
+  (marked `#13` in `TrackJobs::run`): `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from
+  the bus's post-fader line (like a send tap, §6.8.2), mixed in when monitoring (`Off` never, `On` always, `Auto` while
+  armed, including ordinary playback) before the chain; the recorder (#13) taps the input in the engine, not the voice.
+  Not built by #11.
+- **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
+  conversion and the fades are the streamer's.
+
+#### 6.9.4 Live audio inputs and bounded recording (#13)
+
+`Engine::process_with_audio` adds a borrowed interleaved `AudioInputBuffer` to the existing MIDI callback
+contract; `process` and offline renders use an empty audio input. `EngineProcess::process_input` bridges the
+backend's captured samples, input latency and discontinuity flag without allocation. Hardware channel selection
+is per audio track. Its input meter (`TrackMeter::take_input`) is independent of the output meter. Monitoring
+mixes the input before effects: Off never monitors, Auto monitors while armed (including ordinary playback),
+On always monitors. Capturing taps the input regardless of monitor, track mute or fader. MIDI capture does not
+run on audio tracks.
+
+A bus input is its post-fader/pan/mute tap. The compiler includes bus-input dependencies in the worker graph,
+marks the tap live and allocates a separate delay line. Playback clips are aligned before the already-delayed
+bus input is mixed, so the input is not delayed twice. Bus recording corrects only its graph latency; hardware
+recording corrects input plus output latency, frozen at the session start to avoid timestamp jitter changing
+sample alignment. STOP/punch-out continues capture through a virtual cursor for each source's remaining latency
+before marking the session ended. A source contributes only its own delayed tail, even in mixed bus/hardware
+sessions. Count-in samples and corrected pre-roll before the recording start are excluded.
+
+`recording::prepare(RecordingConfig)` runs non-RT, creates exclusive unique WAV paths, preallocates per-track
+SPSC queues (32 chunks of at most 2048 stereo frames, about 0.5 MB per prepared track) and starts the file worker.
+Install the returned `Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through
+`Garbage::Recorder`. Track jobs enqueue fixed-size chunks without allocation, locks, logging or IO. The worker
+writes either signed PCM24 (default) or Float32 WAVs, flushes valid headers before progress publication, and
+finalizes old laps as soon as their input is complete, bounding open file handles. Cycle passes are padded with
+silence to their common loop window, including first/last partial passes. A growing checkpoint also reports
+`window_frames`, so the app can preserve that window before final padding.
+
+`RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
+buckets per track, both combined and separately for each native channel. Buckets carry exact sample counts;
+per-channel counts equal source frames, including a final partial bucket. The worker compacts pairs by summing
+sample energy/counts; UI polling clones only summaries. Progress locks always follow waveform → path order.
+`poll` returns finalized files after queues drain. `checkpoint` flushes and returns saveable prefixes (2 s timeout);
+`relocate` closes handles, stages exclusive hard links on one filesystem and reopens every append handle before
+publishing paths and unlinking originals. Failed moves remove only their own links and retain the old paths;
+cross-device moves are explicit errors for the app to copy after stop. Relocation waits
+for its transaction result so a delayed completion cannot silently invalidate links. Cancellation removes live
+session files; a saved checkpoint must therefore reference independent preserved assets.
+
+Queue overflow, discontinuous/unavailable input, sample-rate/source/tempo/loop changes and write/finalize errors
+fail explicitly, retaining partial files for recovery. `AbortAudioRecording` handles stream rebuilds without
+silently joining different devices. Synthetic-input tests cover monitoring, mono/stereo PCM24/Float32, count-in,
+latency and stop tails, cycle padding, parallel bus taps/PDC, live checkpoints, relocation and cancellation;
+every tested engine callback runs under `assert_no_alloc`.
+
+#### 6.9.5 Linked import and file browsing (#12)
+
+`komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
+undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
+creates an audio track at the pointer; several files create separate tracks at tick zero. An existing audio track
+receives files in sequence. The arrangement grid is applied only while snapping is enabled; MIDI and bus lanes
+refuse audio drops. Ctrl I captures the selected audio track and playhead before opening a multi-select file dialog.
+
+The browser Files tab enumerates directories and reads audio headers on a worker, with duration/channel metadata
+and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
+a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
+files through the localized status bar while preserving their links.
+
+#### 6.9.6 App recording lifecycle and live views (#13)
+
+`audio_record::State` owns the non-RT session until its latency tail and file worker finish. A live
+`AudioRecording` is an overlay, not a document edit. Arrangement and audio editor render measured bounded summaries
+without opening the unfinished WAV. The selected armed track chooses the MIDI or audio live editor, including
+count-in before audio frames exist. The input meter is drained once per UI frame and shared by header, mixer and
+inspector. Input/device changes are refused during capture; monitoring remains switchable.
+
+Stop/punch-out freezes the MIDI overlay and waits for audio finalization. Both become one document transaction
+and undo step; cycle laps become takes of the same audio clip. Undo retains files for redo. Export and project
+save-and-leave wait for a stopped session before taking their project/program snapshot; a timeout keeps the project
+open. Capture failures preserve partial files and any MIDI notes already recorded.
+
+A save during capture flushes a checkpoint and copies its exact frame prefix into an independent valid WAV,
+padding a partial loop window if necessary. Esc deletes only worker-owned live files, so the saved project remains
+playable. Unsaved projects use a unique directory under the user's Music folder and show a persistent provisional
+recordings chip. First save moves live files transactionally on the same filesystem, or copies closed files later
+when a live move is unsupported. Migration rewrites all undo/redo states. Originals survive until the project
+file itself has been written successfully; failed migrations retain their provisional registry for retry.
+
+### 6.10 Audio files (`komponist-audiofile`)
+
+Everything that reads an audio file lives in one leaf crate with no studio dependency (no model, no engine, no
+egui): a decoder is needed by the Sampler's loader (`komponist-builtin`) today, by the engine's disk streaming (#11)
+and by the arrangement's waveforms (#12) next, and none of them may pull the others in. **Nothing in it runs in the
+audio thread** (§6.1): decoding, conversion and peak computation allocate and do IO, so they run on loader, read-ahead
+and worker threads and hand finished `Arc`s over.
+
+- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), AIFF/AIFF-C PCM, FLAC, OGG Vorbis and MP3
+  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `aiff`, `pcm`, `flac`, `mp3`, `ogg` and `vorbis` features).
+  The format is chosen by the first bytes, not the extension. The API is seekable and chunked: `open`, `info`
+  (rate, channels, frames), `seek(frame)`, `read(&mut [f32])` (interleaved, from the current position), `read_full`. A
+  seek lands 8192 frames before the target, rebuilds the decoder state and drops the frames in between; each decoded
+  buffer is placed by its packet's end timestamp, so seeks are frame-exact (tests compare them with a sequential
+  decode). One `AudioFile` has one position: every streaming reader opens its own on `PoolFile::path`. Files with more
+  than two channels give their first two. `decode_all` reads a whole file into planar `f32` (`Decoded`).
+- **Sample-rate conversion.** klang-dsp has no resampler (`no_std` building blocks, §10), so `rubato`'s synchronous
+  FFT resampler is used (MIT/Apache-2.0; `realfft` was already in the tree): fixed ratio, no quality knobs, ≈ −130 dB
+  error on sines, flat to 20 kHz. `resample` converts a clip (delay trimmed, exactly `ceil(frames × to / from)` frames);
+  `StreamResampler` converts chunk by chunk for the read-ahead thread (`push`, `finish`, `reset` after a seek).
+  The Sampler converts nothing (its voices interpolate at playback); audio clips are converted to the engine rate off
+  the audio thread.
+- **Peaks (`PeakData`).** Multi-resolution min/max and measured RMS per channel: level 0 has one bucket per 128 source frames, every
+  further level merges 4 buckets, up to one bucket (≈ 9.6 MB for 10 minutes of 48 kHz stereo). `query(channel, start,
+  end, columns)` (or `query_secs`) returns the min/max of `columns` equal slices of a frame range from the coarsest
+  level whose buckets are at most a quarter column wide, so a redraw costs the view's width, not the file's length.
+  `frames_per_bucket` in the answer tells the arrangement when to switch to raw samples. Frames are source frames
+  (`sample_rate()` converts from ticks via seconds). `PeakBuilder` builds from chunks; `PeakData::from_file` streams a
+  decode without holding the file in memory. `query_rms(channel, start, end, columns)` returns RMS amplitudes at the
+  same resolution: each bucket stores the sum of squared samples in `f64`, higher levels sum energies, and the
+  query weights the final partial bucket by its actual frame count. Unaligned columns include whole intersecting
+  buckets, as min/max queries do. Cache version `KPK2` stores energy beside min/max; older caches are regenerated.
+- **File pool (`FilePool`, `PoolFile`).** One entry per file, keyed by `FileId` (canonical path, size, mtime), so
+  symlinks and spellings of a path are one entry and a changed file is a new one. The pool holds entries weakly:
+  the refcount is the `Arc<PoolFile>` the users hold, and an entry and its memory go with the last user. Per entry,
+  computed once however many users ask: the header (`info`), the decoded audio (`decoded`; in memory while somebody
+  holds it), data derived from it (`derived::<T>`, e.g. the Sampler's `Arc<Sample>`, so two Samplers share one buffer),
+  and the peaks. The Sampler's loader and the audio clips use the process-wide `FilePool::global()`.
+- **Peak cache.** `request_peaks(on_done)` queues the entry on the pool's one worker thread and returns at once; the UI
+  polls `peaks_state()` / `peaks_ready()` and passes a repaint request as `on_done`. The worker reads the on-disk cache
+  first (`FilePool::set_cache_dir`, a folder in the user's cache directory, never the repository or the project folder;
+  one `<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
+  streaming pass and writes the cache. Without a cache folder peaks live in memory only.
+
 ---
 
 ## 7. Audio and MIDI I/O (`komponist-audio`)
 
 - `AudioSystem::available_hosts()` → the drivers of this OS (see below), devices, rates, buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
+- **Audio capture (#13):** input devices are enumerated separately (`AudioSystem::input_devices`).
+  Capture is off until `set_input(Some(InputConfig))`; an absent setting never opens a microphone.
+  `AudioProcess::process_input` receives a borrowed interleaved `InputBuffer` at the output rate;
+  its default implementation preserves output-only processors. A bounded SPSC bridge carries
+  timestamped frames from the input callback to the output callback. Linear rate conversion and
+  a queue-depth clock follower (at most ±0.2%) align separate device clocks; a short priming lead
+  avoids recurring startup underruns. `InputBuffer::latency` includes capture and queue delay.
+  Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
+  instead of joining samples across a gap. Callback buffers and queue storage are preallocated.
+  ASIO capture uses the output's driver and caches input metadata during normal enumeration;
+  it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
+  inject synthetic capture into the same bridge/null backend without opening hardware.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
@@ -1568,6 +1873,37 @@ with `Painter`:
 - Accessibility: each canvas registers AccessKit nodes for its **visible** objects (role, name, bounds,
   selected/toggled state). They make the canvases queryable for kittest and the egui MCP server and
   usable with screen readers. Only visible objects, so the cost follows the screen, not the project.
+
+Audio arrangement clips use `timeline::{AudioLook, WaveMesh, WaveSpec, audio_parts}`. The app's
+`arrangement::AudioCache` keeps file handles per linked file and project directory, rechecks file identity
+once a second, requests peak data once with a repaint callback, and caches meshes per clip `Arc`, full
+source window (including tempo), zoom, height and peak-data identity. Ready peaks replace pending flat
+meshes automatically; missing links retain editable model metadata and are checked again. The two waveform
+tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting.
+Waveform meshes keep fractional-point envelopes at two samples per point (retina 2×), painted as
+continuous triangle ribbons with one-physical-pixel alpha feathers rather than integer-height rectangles.
+Linear interpolation preserves measured min/max transients and RMS without temporal smoothing.
+Meshes keep at most 32,768 samples; wider clips use proportionally wider columns over the full
+source window, preserving temporal coverage, fade positions and visible-range culling. Painting is
+clipped to the visible range. `audio_parts` shares control geometry with hit testing; visible gain/fade/trim
+controls have localized slider nodes. Audio moves and trims always use the selected grid; fades and gain
+use unsnapped pointer deltas. Move/copy and both trim gestures apply to the gesture-start document so a
+previewed overlap cut is restored when the pointer returns or enters a refused destination.
+
+The audio editor (`views::audio_editor`, `FocusArea::Waveform`) displays the full source and active
+clip window in mono or separate stereo lanes. `UiState::waveform` keeps horizontal zoom (220 points
+per bar initially) and source-local scroll. Per-channel peak/RMS meshes share the arrangement renderer;
+unchanged full-source meshes survive window gain/fade edits. Source handles and metadata are rechecked
+once a second, and peaks arrive through the existing shared worker with a repaint callback.
+Toolbar and inspector use the same localized numeric controls. Source-start editing changes the active
+take's frame offset without moving the clip, shortening the window only at the source end. The original
+tempo/bar-count conversion uses the entire source duration and the current meter. Trim gestures follow
+the arrangement snap setting; envelope changes use free pointer deltas and preserve a single undo step.
+Only selected windows show the white gain/fade controls. Missing sources expose a recovery banner;
+replacement validates the new header before linking, preserves clip properties and inactive takes,
+rejects a source shorter than the saved offset, and reports any shortened window. The file menu also
+copies the resolved absolute path or opens its parent folder. PCM bit depth is shown when available
+from a WAV header; compressed sources retain their actual rate, channel count and duration metadata.
 
 ### 9.3 App structure (`komponist-app`)
 

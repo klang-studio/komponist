@@ -242,6 +242,12 @@ def dock_top(s):
     return int(s.bounds(role="Tab", label="Devices")["y"]) - 6
 
 
+def shot_dock(s, name):
+    """Capture the dock, including its tabs, without the browser, inspector or status bar."""
+    top = dock_top(s) + 4  # exclude the splitter and the last pixels of the arrangement above it
+    s.shot(name, crop=(DOCK_X, top, 1379, H - 22 - top))
+
+
 # -- scenarios ---------------------------------------------------------------------------------------------------------
 # Every scenario: a short docstring (printed), one fresh app, its own output files. GIF crops are (x, y, w, h) in
 # the 1920x1080 frame; the dock's top edge is read from the app, the rest is relative to it.
@@ -263,6 +269,34 @@ def arrangement(s):
     play(s)
     s.pause(3.5)
     s.shot("arrangement")
+    stop(s)
+
+
+def audio_editor(s):
+    """Linked audio: stereo source waveform, fades and clip properties (PNG)."""
+    s.click(role="Button", label="Collapse dock")
+    s.pause(0.5)
+    # An audio clip's centre is its gain line: double-clicking there resets gain instead of opening it.
+    b = s.bounds(role="GridCell", contains="Clip Riser,")
+    s.click_pos({"x": b["x"] + b["w"] / 2, "y": b["y"] + 8}, count=2)
+    s.click(role="Tab", label="Riser · Waveform")
+    open_dock(s, 450)
+    s.wait_for(role="Tab", label="Riser · Waveform")
+    s.pause(2.0)  # let the background waveform cache finish
+    shot_dock(s, "audio-editor")
+
+
+def audio_recording(s):
+    """Record the Rhythm bus into an audio track, with a live waveform (PNG)."""
+    s.click(role="Button", label="Record bus, Rhythm")
+    open_dock(s, 450)
+    s.click(role="Button", label="Count-in 1")
+    s.click(role="Button", label="Loop")
+    s.click(role="Button", label="Record")
+    s.wait_for(role="Group", label="Waveform · live")
+    s.pause(3.0)
+    s.find(role="Group", label="Waveform · live")
+    s.shot("audio-recording")
     stop(s)
 
 
@@ -372,13 +406,13 @@ def eq_spectrum(s):
 
 
 def mixer(s):
-    """Mixer tab with the arrangement above, playing (PNG)."""
+    """Only the mixer dock, playing (PNG)."""
     open_dock(s, 380)
     s.click(role="Tab", label="Mixer")
     s.click_pos({"x": 1068, "y": 83})
     play(s)
     s.pause(4.0)
-    s.shot("mixer")
+    shot_dock(s, "mixer")
     stop(s)
 
 
@@ -400,7 +434,8 @@ def add_device(s):
     s.gif("add-device", (DOCK_X + 300, top, 1340, 330), 1040, fps=12, trim=(0.4, None))
 
 
-SCENARIOS = [hero, arrangement, piano_roll, step_sequencer, devices, sidechain, eq_spectrum, mixer, add_device]
+SCENARIOS = [hero, arrangement, audio_editor, audio_recording, piano_roll, step_sequencer, devices,
+             sidechain, eq_spectrum, mixer, add_device]
 
 
 def main():
