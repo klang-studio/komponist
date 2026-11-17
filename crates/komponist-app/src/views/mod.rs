@@ -20,6 +20,7 @@
 //! the placeholder in [`Views::new`] with its own type implementing [`View`].
 
 pub mod arrangement;
+pub mod audio_inputs;
 pub mod browser;
 pub mod devices;
 pub mod grid;

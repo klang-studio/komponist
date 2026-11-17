@@ -62,8 +62,13 @@ pub(super) fn section(
         });
         swatches(ui, ctx, col, track);
         // A bus has no instrument, no MIDI input and no MIDI channel.
-        if !track.is_bus() {
+        if track.is_audio() {
+            audio_fields(ui, ctx, project, col, track);
+        } else if !track.is_bus() {
             dropdowns(ui, ctx, col, track);
+        } else {
+            let rect = col.take(komponist_tokens::size::CONTROL);
+            crate::views::audio_inputs::record_bus_button(ui, ctx, track, rect, false);
         }
     });
 }
@@ -121,6 +126,49 @@ fn swatches(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
 }
 
 /// Instrument, Eingang and Kanal: keys in a 72 px column, the dropdowns filling the rest.
+fn audio_fields(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    project: &Project,
+    col: &mut Col,
+    track: &Track,
+) {
+    let t = ctx.lang;
+    let height = komponist_tokens::size::CONTROL;
+    let area = col.take(2.0 * height + m::DD_ROW_GAP);
+    let left = area.left() + m::DD_KEY_WIDTH + m::DD_COLUMN_GAP;
+    let key = Rect::from_min_size(area.min, vec2(m::DD_KEY_WIDTH, height));
+    let input = Rect::from_x_y_ranges(left..=area.right(), key.y_range());
+    super::field_key(ui, key, t.new_track_input());
+    crate::views::audio_inputs::input_button(ui, ctx, project, track, input);
+    let key = key.translate(vec2(0.0, height + m::DD_ROW_GAP));
+    let field = Rect::from_x_y_ranges(left..=area.right(), key.y_range());
+    super::field_key(ui, key, t.audio_monitoring());
+    let modes = [
+        komponist_model::MonitorMode::Off,
+        komponist_model::MonitorMode::Auto,
+        komponist_model::MonitorMode::On,
+    ];
+    let mut selected = modes
+        .iter()
+        .position(|mode| *mode == track.audio.monitor)
+        .unwrap_or(0);
+    let items = [
+        Item::new(t.ui_monitor_menu_off()),
+        Item::new(t.ui_monitor_menu_auto()),
+        Item::new(t.ui_monitor_menu_on()),
+    ];
+    let response = place(ui, field, "audio_monitor_mode", |ui| {
+        ui.add(Dropdown::new(t.audio_monitoring(), &mut selected, &items).width(field.width()))
+    });
+    if response.changed() {
+        ctx.send(Action::Edit(EditAction::SetTrackProp {
+            tracks: vec![track.id],
+            prop: TrackProp::MonitorMode(modes[selected]),
+        }));
+    }
+}
+
 fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {
     let t = ctx.lang;
     let rows = 3;

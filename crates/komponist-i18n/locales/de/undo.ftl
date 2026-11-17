@@ -197,3 +197,9 @@ undo-clip-source-start = Quell-Start ändern
 # Linked audio import and browsing (epic #8).
 undo-import-audio = Audio importieren
 undo-add-audio-track = Audio-Spur hinzufügen
+undo-audio-input = Eingang ändern
+undo-audio-monitor = Monitoring ändern
+undo-record-bus = Bus aufnehmen
+undo-select-audio-take = Take wählen
+undo-rename-audio-take = Take umbenennen
+undo-remove-audio-take = Take entfernen

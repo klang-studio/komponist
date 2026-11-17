@@ -21,6 +21,7 @@ mod acceptance_flow4;
 mod acceptance_flow5;
 mod arrangement;
 mod audio_import;
+mod audio_recording_ui;
 mod bridge_mode;
 mod browser;
 mod device_events;

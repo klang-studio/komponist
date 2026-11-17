@@ -22,6 +22,8 @@ pub enum AudioFileState {
 pub struct AudioLook<'a> {
     /// File/peak status.
     pub file: AudioFileState,
+    /// One-based active take and total count; omitted for a single source.
+    pub takes: Option<(usize, usize)>,
     /// Cached envelope.
     pub wave: &'a WaveMesh,
     /// Original BPM when Re-Pitch is enabled.
@@ -119,6 +121,31 @@ pub(super) fn paint_badge(
     audio: &AudioLook<'_>,
     ink: egui::Color32,
 ) -> Rect {
+    let head =
+        if let Some((take, count)) = audio.takes.filter(|_| head.width() >= m::CLIP_TAKES_MIN_W) {
+            let galley = painter.layout_no_wrap(
+                format!("{take}/{count}"),
+                fonts::font_id(&typography::MONO_XS),
+                ink,
+            );
+            let width = galley.size().x + 2.0 * m::CLIP_BADGE_PAD_X;
+            let badge = Rect::from_center_size(
+                pos2(
+                    head.right() - width / 2.0 - m::CLIP_BADGE_PAD_X,
+                    head.center().y,
+                ),
+                vec2(width, m::CLIP_BADGE_H),
+            );
+            painter.rect_filled(
+                badge,
+                komponist_tokens::radius::S,
+                color32(color::CANVAS_BOX_SELECT),
+            );
+            painter.galley(badge.min + vec2(m::CLIP_BADGE_PAD_X, 0.0), galley, ink);
+            Rect::from_min_max(head.min, pos2(badge.left(), head.bottom()))
+        } else {
+            head
+        };
     let Some(tempo) = audio.repitch else {
         return head;
     };
@@ -293,6 +320,7 @@ mod tests {
     fn gain_and_fade_lines_are_hidden_until_selected_even_when_hovered() {
         let wave = WaveMesh::flat(200.0, 0.02, 36.0);
         let audio = AudioLook {
+            takes: None,
             file: AudioFileState::Ready,
             wave: &wave,
             repitch: None,
@@ -360,6 +388,7 @@ mod access_tests {
         let wave = WaveMesh::flat(140.0, 0.02, 36.0);
         for lang in [Lang::De, Lang::En] {
             let audio = AudioLook {
+                takes: None,
                 file: AudioFileState::Missing,
                 wave: &wave,
                 repitch: Some(120.0),

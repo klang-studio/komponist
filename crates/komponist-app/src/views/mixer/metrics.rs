@@ -301,3 +301,6 @@ mod tests {
         assert_eq!(rows_height(4), 86.0);
     }
 }
+
+/// Four-button audio strip controls (audio proposal D8A).
+pub const AUDIO_TOGGLE: [f32; 2] = [18.0, 16.0];

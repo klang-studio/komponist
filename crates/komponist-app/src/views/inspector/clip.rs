@@ -71,6 +71,9 @@ pub(super) fn section(
                 ClipContent::Step(step) => step_fields(ui, ctx, project, col, clip, step),
                 ClipContent::Audio(_) => {} // #12
             }
+            if let ClipContent::Audio(audio) = &clip.content {
+                super::audio_takes::show(&mut insp.audio_takes, ui, ctx, col, clip, audio);
+            }
             takes(ui, ctx, col, clip);
         },
     );

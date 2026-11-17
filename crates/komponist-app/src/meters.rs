@@ -89,6 +89,7 @@ pub struct Meters {
     /// The master strip (transport bar, mixer master).
     pub master: MeterState,
     tracks: HashMap<TrackId, MeterState>,
+    inputs: HashMap<TrackId, MeterState>,
     devices: HashMap<DeviceId, DeviceBallistics>,
     /// The sample taps of the devices that have one (WP-92) and the analyzers of the ones whose
     /// spectrum is visible right now.
@@ -137,13 +138,18 @@ impl Meters {
         self.traces.retain(|id, _| seen.contains(id));
         let Some(program) = engine.program() else {
             self.tracks.clear();
+            self.inputs.clear();
             return;
         };
         self.tracks
             .retain(|id, _| program.tracks.iter().any(|t| t.id == *id));
+        self.inputs
+            .retain(|id, _| program.tracks.iter().any(|t| t.id == *id));
         for track in &program.tracks {
             let (l, r) = track.meter.take();
             self.tracks.entry(track.id).or_default().tick([l, r], now);
+            let (l, r) = track.meter.take_input();
+            self.inputs.entry(track.id).or_default().tick([l, r], now);
         }
     }
 
@@ -195,6 +201,11 @@ impl Meters {
         self.tracks.get(&track)
     }
 
+    /// Input peaks, drained exactly once in update and shared by every view.
+    pub fn input(&self, track: TrackId) -> Option<&MeterState> {
+        self.inputs.get(&track)
+    }
+
     /// The meter of `track`, mutable (click resets).
     pub fn track_mut(&mut self, track: TrackId) -> Option<&mut MeterState> {
         self.tracks.get_mut(&track)
@@ -205,11 +216,15 @@ impl Meters {
         if all {
             self.master.reset();
             self.tracks.values_mut().for_each(MeterState::reset);
+            self.inputs.values_mut().for_each(MeterState::reset);
             return;
         }
         match track {
             None => self.master.reset(),
             Some(id) => {
+                if let Some(input) = self.inputs.get_mut(&id) {
+                    input.reset();
+                }
                 if let Some(m) = self.tracks.get_mut(&id) {
                     m.reset();
                 }
@@ -221,6 +236,7 @@ impl Meters {
     pub fn is_active(&self) -> bool {
         self.master.is_active()
             || self.tracks.values().any(MeterState::is_active)
+            || self.inputs.values().any(MeterState::is_active)
             || self.devices.values().any(DeviceBallistics::is_active)
             || self.spectra.values().any(SpectrumAnalyzer::is_active)
             || self.traces.values().any(GainTrace::is_active)

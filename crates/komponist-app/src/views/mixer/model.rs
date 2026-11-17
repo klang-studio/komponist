@@ -243,7 +243,9 @@ pub fn strips(
             None => false,
         };
         let follows_solo = t.is_bus() && any_solo && !ch.solo && !ch.mute && !implied;
-        let line = if t.is_bus() {
+        let line = if t.is_audio() {
+            lang.mixer_audio().to_owned()
+        } else if t.is_bus() {
             if t.folder {
                 lang.routing_kind_group()
             } else {

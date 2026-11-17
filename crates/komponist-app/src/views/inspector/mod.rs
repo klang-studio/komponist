@@ -18,6 +18,7 @@
 //! a drag is one undo step. The panel scrolls with the wheel when the sections are taller (not over
 //! the channel fader or pan knob: they take the wheel, owner decision 2026-11-15).
 
+mod audio_takes;
 mod channel;
 mod clip;
 pub mod metrics;
@@ -74,6 +75,7 @@ pub struct Inspector {
     rename: Option<Rename>,
     /// Per device: the late-block count last seen and when it last grew (egui time).
     late: LateTracker,
+    audio_takes: audio_takes::State,
 }
 
 impl Inspector {

@@ -134,3 +134,8 @@ settings-scan-skipped = { $n ->
         [one] 1 Plugin übersprungen (lässt sich nicht laden)
        *[other] { $n } Plugins übersprungen (lassen sich nicht laden)
     }
+
+settings-input-device = Eingabegerät
+settings-capture-format = Aufnahmeformat
+settings-capture-pcm24 = 24 bit WAV
+settings-capture-float32 = 32 bit Float WAV

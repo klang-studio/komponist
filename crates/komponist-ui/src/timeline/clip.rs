@@ -602,6 +602,9 @@ pub fn clip_access(
         if audio.file == super::AudioFileState::Missing {
             s.push_str(t.a11y_audio_missing_suffix());
         }
+        if let Some((take, count)) = audio.takes {
+            s.push_str(&t.a11y_audio_takes_suffix(take, count));
+        }
         if let Some(tempo) = audio.repitch {
             s.push_str(&t.a11y_audio_repitch_suffix(tempo));
         }

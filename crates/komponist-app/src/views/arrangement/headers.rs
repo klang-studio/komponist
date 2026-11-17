@@ -171,7 +171,11 @@ impl Arrangement {
             );
             buses::bus_name_rect(rect, ppp, row.kind)
         } else {
-            let (instrument, error) = instrument_line(ctx.lang, track, implied_mute, ctx.engine);
+            let (instrument, error) = if track.is_audio() {
+                (String::new(), false)
+            } else {
+                instrument_line(ctx.lang, track, implied_mute, ctx.engine)
+            };
             if row.depth > 0 {
                 buses::paint_brackets(ui.painter(), project, g, i, &mut self.palettes);
             }
@@ -183,21 +187,58 @@ impl Arrangement {
                 mute: track.channel.mute,
                 solo: track.channel.solo,
                 arm: track.arm,
-                monitor: track.monitor,
+                monitor: if track.is_audio() {
+                    crate::views::audio_inputs::monitoring(track)
+                } else {
+                    track.monitor
+                },
                 implied_mute,
                 meter: None,
             };
             paint_track_header(ui.painter(), rect, &model, state);
             let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
             register(&response, &access);
+            if track.is_audio() {
+                let name = name_rect(rect, ppp);
+                let input = if rect.height() >= crate::views::audio_inputs::INPUT_LINE_MIN {
+                    Rect::from_min_size(
+                        pos2(l.text.left(), name.bottom() + tm::HEADER_TEXT_GAP),
+                        egui::vec2(l.text.width(), typography::SMALL.line_height),
+                    )
+                } else {
+                    Rect::from_center_size(
+                        pos2(
+                            l.toggles[0].left() - komponist_tokens::size::ICON / 2.0,
+                            rect.center().y,
+                        ),
+                        egui::vec2(komponist_tokens::size::ICON, komponist_tokens::size::ICON),
+                    )
+                };
+                crate::views::audio_inputs::input_button(ui, ctx, project, track, input);
+                if rect.height() >= crate::views::audio_inputs::INPUT_LINE_MIN
+                    && (track.arm || crate::views::audio_inputs::monitoring(track))
+                {
+                    let bar = Rect::from_min_size(
+                        pos2(
+                            input.left(),
+                            input.bottom() + komponist_tokens::space::SPACE_0_5,
+                        ),
+                        egui::vec2(
+                            crate::views::audio_inputs::HEADER_INPUT_WIDTH.min(input.width()),
+                            crate::views::audio_inputs::INPUT_BAR,
+                        ),
+                    );
+                    crate::views::audio_inputs::input_meter(ui, ctx, track, bar);
+                }
+            }
             name_rect(rect, ppp)
         };
 
         // Select, rename, reorder.
         if response.double_clicked()
-            && response
-                .interact_pointer_pos()
-                .is_some_and(|p| name.contains(p) || header_layout(rect).text.contains(p))
+            && response.interact_pointer_pos().is_some_and(|p| {
+                name.contains(p) || (!track.is_audio() && header_layout(rect).text.contains(p))
+            })
         {
             self.rename = Some(Rename {
                 track: track.id,
@@ -247,6 +288,8 @@ impl Arrangement {
             let [_, _, m, s] = l.toggles;
             let rects = [(ToggleKind::Mute, m), (ToggleKind::Solo, s)];
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
+            let record = l.toggles[0].union(l.toggles[1]);
+            crate::views::audio_inputs::record_bus_button(ui, ctx, track, record, true);
         } else {
             let rects: Vec<(ToggleKind, Rect)> =
                 ToggleKind::ALL.into_iter().zip(l.toggles).collect();
@@ -273,6 +316,10 @@ impl Arrangement {
         implied_mute: bool,
     ) {
         for (k, &(kind, rect)) in rects.iter().enumerate() {
+            if track.is_audio() && kind == ToggleKind::Monitor {
+                crate::views::audio_inputs::monitor_button(ui, ctx, track, rect);
+                continue;
+            }
             let mut child = ui.new_child(
                 UiBuilder::new()
                     .max_rect(rect)
