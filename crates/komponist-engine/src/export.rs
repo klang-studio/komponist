@@ -72,6 +72,7 @@ use komponist_model::{DeviceId, Project, TempoMap, Tick, TickRange};
 
 use crate::MAX_BLOCK;
 use crate::api::{Command, EngineHandle, TrackMeter};
+use crate::audio::SourceStatus;
 use crate::compile::{self, CompileEnv};
 use crate::engine::Engine;
 use crate::program::{MidiPort, Program, SeqNote, TrackProgram};
@@ -193,6 +194,9 @@ pub enum ExportError {
     },
     /// The engine's command queue has no room for the export's commands. Nothing was changed.
     QueueFull,
+    /// An audio clip in the range plays a file that is missing or cannot be read (the path of the
+    /// link). Nothing was changed: an export without it would be silent where the clip is.
+    MissingAudio(PathBuf),
     /// The target cannot be created (checked before anything changes), the render does not fit
     /// into memory, or writing failed. No partial file is left.
     Io(io::Error),
@@ -208,6 +212,9 @@ impl fmt::Display for ExportError {
                 "the engine runs at {engine} Hz, the export asks for {job} Hz"
             ),
             ExportError::QueueFull => f.write_str("engine command queue full"),
+            ExportError::MissingAudio(path) => {
+                write!(f, "audio file missing or unreadable: {}", path.display())
+            }
             ExportError::Io(error) => write!(f, "{error}"),
         }
     }
@@ -256,6 +263,7 @@ pub fn export(
     if handle.commands.slots() < COMMANDS {
         return Err(ExportError::QueueFull);
     }
+    check_audio_files(program, job)?;
     let output = Output::create(job)?;
     let map = &program.tempo_map;
     let rate = f64::from(job.sample_rate);
@@ -330,6 +338,37 @@ impl CompileEnv for EngineEnv<'_> {
             .slot(device)
             .map_or(0, |slot| self.engine.processor_latency(slot))
     }
+
+    fn sample_rate(&self) -> f64 {
+        f64::from(self.engine.sample_rate())
+    }
+
+    fn project_dir(&self) -> Option<PathBuf> {
+        // The program the app compiled knows the folder its audio links resolve against.
+        self.slots
+            .tracks
+            .iter()
+            .filter_map(|t| t.audio.as_ref())
+            .find_map(|plan| plan.dir().map(Into::into))
+    }
+}
+
+/// The audio files the clips in the render's range play must be there (looked for right now, no
+/// retry delay): an export would be silent where a clip is, and the user should hear about it
+/// before, not find out in the file.
+fn check_audio_files(program: &Program, job: &ExportJob) -> Result<(), ExportError> {
+    let (from, to) = (job.range.start as i64, (job.range.end + job.tail) as i64);
+    for plan in program.tracks.iter().filter_map(|t| t.audio.as_ref()) {
+        for segment in plan.segments() {
+            if segment.start < to && segment.end > from {
+                let source = &plan.sources()[segment.source as usize];
+                if source.open_now() != SourceStatus::Ready {
+                    return Err(ExportError::MissingAudio(source.link().abs.clone()));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Queues `commands` in order.
@@ -376,6 +415,7 @@ fn end_tick(map: &TempoMap, rate: f64, end: u64) -> Tick {
 /// The program the export plays: `program` with loop and metronome off, without notes starting
 /// at or after `end`, notes sounding at `end` cut there, and fresh track meters.
 fn export_program(program: &Program, end: Tick) -> Program {
+    let map = &program.tempo_map;
     let tracks = program
         .tracks
         .iter()
@@ -394,9 +434,16 @@ fn export_program(program: &Program, end: Tick) -> Program {
                     })
                     .collect()
             };
+            // Audio is cut at the end of the range like the notes (a plan of its own, with its
+            // own ring, so the export does not touch the live stream).
+            let audio = track.audio.as_ref().map(|plan| {
+                let end = map.tick_to_sample(end, f64::from(plan.rate()));
+                plan.cut_at(end).unwrap_or_else(|| Arc::clone(plan))
+            });
             Arc::new(TrackProgram {
                 notes,
                 meter: Arc::new(TrackMeter::new()),
+                audio,
                 ..TrackProgram::clone(track)
             })
         })
@@ -906,6 +953,7 @@ mod tests {
                 },
                 pdc_delay: 0,
                 meter: Arc::new(TrackMeter::new()),
+                audio: None,
             })
         };
         let program = Program {
