@@ -277,11 +277,18 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
                     }
                 }
                 ClipContent::Audio(a) => {
-                    let file = &a.file;
-                    if file.frames == 0 || file.sample_rate == 0 || file.channels == 0 {
-                        return Err(format!("clip {}: audio file without frames", clip.id.0));
+                    // Validate structure before dereferencing the active take; malformed files
+                    // must return an error, never panic through field compatibility access.
+                    if a.takes.is_empty() || a.active_take >= a.takes.len() {
+                        return Err(format!("clip {}: invalid audio take index", clip.id.0));
                     }
-                    if a.offset >= file.frames {
+                    for take in &a.takes {
+                        let file = &take.file;
+                        if file.frames == 0 || file.sample_rate == 0 || file.channels == 0 {
+                            return Err(format!("clip {}: audio file without frames", clip.id.0));
+                        }
+                    }
+                    if a.offset >= a.file.frames {
                         return Err(format!("clip {}: offset behind the file's end", clip.id.0));
                     }
                     let bpm = a.original_tempo.bpm;
@@ -1132,5 +1139,93 @@ mod tests {
         let clips = &p.tracks[1].clips;
         assert_eq!(clips.len(), 2);
         assert!(clips[0].end() <= clips[1].start);
+    }
+
+    #[test]
+    fn audio_take_lists_round_trip_legacy_sources_and_reject_invalid_shapes() {
+        let p = audio_project();
+        let clip = p.tracks[1].clips[0].id;
+        let legacy = serde_json::to_value(&p).unwrap();
+        assert!(
+            legacy["tracks"][1]["clips"][0]["content"]
+                .get("takes")
+                .is_none()
+        );
+        let (p, _) = edits::add_audio_take(
+            &p,
+            clip,
+            crate::AudioTake {
+                name: "Take 2".into(),
+                file: AudioFile {
+                    abs: "/t/second.wav".into(),
+                    ..audio_file()
+                },
+                offset: 96000,
+            },
+        )
+        .unwrap();
+        assert_eq!(from_json(&to_json(&p).unwrap()).unwrap(), p);
+        let value = serde_json::to_value(&p).unwrap();
+        let content = &value["tracks"][1]["clips"][0]["content"];
+        assert_eq!(content["active_take"], 1);
+        assert_eq!(content["file"], content["takes"][1]["file"]);
+        assert_eq!(content["offset"], content["takes"][1]["offset"]);
+        for malformed in [
+            {
+                let mut v = value.clone();
+                v["tracks"][1]["clips"][0]["content"]["takes"] = serde_json::json!([]);
+                v
+            },
+            {
+                let mut v = value.clone();
+                v["tracks"][1]["clips"][0]["content"]["active_take"] = 200.into();
+                v
+            },
+            {
+                let mut v = value.clone();
+                v["tracks"][1]["clips"][0]["content"]["offset"] = 1.into();
+                v
+            },
+        ] {
+            assert!(serde_json::from_value::<Project>(malformed).is_err());
+        }
+        // Structural checks run in Deserialize, before field Deref can index an empty take list.
+        let mut empty = value;
+        empty["tracks"][1]["clips"][0]["content"]["takes"] = serde_json::json!([]);
+        let envelope = serde_json::json!({"format":"komponist", "version":3, "project":empty});
+        assert!(matches!(
+            from_json(&envelope.to_string()),
+            Err(PersistError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn inactive_exhausted_audio_takes_survive_save_and_invalid_metadata_is_rejected() {
+        let p = audio_project();
+        let clip = p.tracks[1].clips[0].id;
+        let (p, _) = edits::add_audio_take(
+            &p,
+            clip,
+            crate::AudioTake {
+                name: "Short".into(),
+                file: AudioFile {
+                    frames: 24000,
+                    ..audio_file()
+                },
+                offset: 0,
+            },
+        )
+        .unwrap();
+        let p = edits::select_audio_take(&p, clip, 0).unwrap();
+        let p = edits::set_clip_length(&p, clip, crate::Tick(7680)).unwrap();
+        let (p, _) = edits::split_clips(&p, &[clip], crate::Tick(7680)).unwrap();
+        assert_eq!(from_json(&to_json(&p).unwrap()).unwrap(), p);
+        let mut value = serde_json::to_value(&p).unwrap();
+        value["tracks"][1]["clips"][0]["content"]["takes"][1]["file"]["sample_rate"] = 0.into();
+        let envelope = serde_json::json!({"format":"komponist", "version":3, "project":value});
+        assert!(matches!(
+            from_json(&envelope.to_string()),
+            Err(PersistError::Malformed(_))
+        ));
     }
 }
