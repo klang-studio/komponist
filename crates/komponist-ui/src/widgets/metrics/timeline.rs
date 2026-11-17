@@ -33,6 +33,48 @@ pub const CLIP_TRIM_EDGE: f32 = 2.0;
 /// Clip: the loop mark ▾ in the head (`loopMark`: borders 3 + 3 wide, 5 high).
 pub const CLIP_LOOP_MARK: [f32; 2] = [6.0, 5.0];
 
+/// Audio clips (audio proposal `SPEC.md` §3, §10; mockups 02 and 03). Sizes without a token; the
+/// source is the proposal's mockup unless noted.
+///
+/// Fade handle: the square at the top of a fade ramp's end (mockup 02: 7 px).
+pub const FADE_HANDLE: f32 = 7.0;
+/// Clip-gain grip: the circle on the gain line (mockup 02: 8 px).
+pub const GAIN_GRIP: f32 = 8.0;
+/// Clip-gain line range in dB: −24 at the bottom of the body, +12 at the top (`SPEC.md` §3.2,
+/// 1 px = 1 dB on the 36 px body).
+pub const GAIN_RANGE_DB: [f32; 2] = [-24.0, 12.0];
+/// Clip-gain line: width of the hit band, centred on the line (`SPEC.md` §10: „6 px around the
+/// line“, read as 6 px in all, so the rest of the body still moves the clip).
+pub const GAIN_HIT: f32 = 6.0;
+/// Clip-gain line: stroke width (`SPEC.md` §3.2: 1 px).
+pub const GAIN_LINE_WIDTH: f32 = 1.0;
+/// Fade ramps stay drawn without hover from this length on (`SPEC.md` D3 B: „fade > 6 px“).
+pub const FADE_VISIBLE_MIN: f32 = 6.0;
+/// Audio clip badge (Re-Pitch): height in the 14 px head (`SPEC.md` §10; mono-xs 8 px text).
+pub const CLIP_BADGE_H: f32 = 10.0;
+/// Audio clip: from this clip width on the Re-Pitch badge shows the original tempo („⇅ 120“),
+/// below it only „RP“ (`SPEC.md` D2 B).
+pub const CLIP_BADGE_MIN_W: f32 = 90.0;
+/// Audio clip: the takes chip („2/3“) is dropped below this clip width (`SPEC.md` §3.1, #13).
+pub const CLIP_TAKES_MIN_W: f32 = 64.0;
+/// Audio clip badge: horizontal padding inside the pill (mockup 02: 4 px).
+pub const CLIP_BADGE_PAD_X: f32 = 4.0;
+/// Waveform: the envelope never reaches the body's top and bottom by this much (the 1 px ring and
+/// 1 px air), so a full-scale waveform stays inside the clip.
+pub const WAVE_PAD: f32 = 2.0;
+/// Waveform: share of the peak envelope the RMS core shows (the peak pyramid stores no RMS, so the
+/// core is a fixed fraction of the local peak; see the report of #12 a/b).
+pub const WAVE_CORE_SHARE: f32 = 0.55;
+/// Missing-file hatching and the missing-file text: stripe width and gap in px (`canvas.hatch`
+/// in `SPEC.md` §10: 2 px on, 5 px off, 135°).
+pub const HATCH_ON: f32 = 2.0;
+/// See [`HATCH_ON`].
+pub const HATCH_OFF: f32 = 5.0;
+/// The accent shading over the part of a clip an overlap cuts (`SPEC.md` §3.3: 14 %).
+pub const CUT_SHADE_ALPHA: f32 = 0.14;
+/// The warning mark in front of „Datei fehlt“ in a clip: triangle width (drawn with shapes).
+pub const MISSING_MARK: f32 = 9.0;
+
 /// Clip preview: height of a note mark (`marks`: `height:2`).
 pub const PREVIEW_NOTE_HEIGHT: f32 = 2.0;
 /// Clip preview: space above the highest note mark in the body (`top: hh + 4`).

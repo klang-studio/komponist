@@ -191,6 +191,15 @@ fn gen_track(track: &Value) -> Result<String> {
                 )
                 .unwrap();
             }
+            "wave-peak" | "wave-rms" => {
+                let velocity = parse_note_at_velocity(text, &path)?;
+                writeln!(
+                    out,
+                    "    /// `{path}` = `{text}`: the note colour at this velocity."
+                )
+                .unwrap();
+                writeln!(out, "    pub const {name}_VELOCITY: u8 = {velocity};").unwrap();
+            }
             "note-hover" => {
                 let delta = parse_note_hover(text, &path)?;
                 writeln!(
@@ -217,6 +226,8 @@ fn gen_track(track: &Value) -> Result<String> {
         "ink-dim",
         "note",
         "note-hover",
+        "wave-peak",
+        "wave-rms",
         "note-playing",
         "clip-head-hover",
         "key-playing",
@@ -1069,6 +1080,14 @@ fn parse_note_formula(text: &str, path: &str) -> Result<(f64, f64, f64)> {
     let b = rest.strip_suffix("*vel/127").ok_or_else(bad)?;
     let parse = |s: &str| s.parse::<f64>().map_err(|_| bad());
     Ok((parse(a)?, parse(b)?, parse(c)?))
+}
+
+/// `note at velocity <v>` → v (0–127).
+fn parse_note_at_velocity(text: &str, path: &str) -> Result<u8> {
+    text.strip_prefix("note at velocity ")
+        .and_then(|v| v.trim().parse::<u8>().ok())
+        .filter(|v| *v <= 127)
+        .ok_or_else(|| format!("`{path}`: expected `note at velocity <0-127>`, got `{text}`"))
 }
 
 /// `note L + <d>` → d.
