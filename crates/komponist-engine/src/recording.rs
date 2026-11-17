@@ -250,6 +250,24 @@ struct Progress {
     peak: AtomicU32,
     wave: Mutex<Wave>,
 }
+impl Progress {
+    fn snapshot(&self) -> RecordingProgress {
+        // Publication and polling both acquire wave before path. Keep the waveform guard
+        // through the metadata reads so a lap change cannot produce a mixed snapshot.
+        let wave = self.wave.lock().unwrap_or_else(|e| e.into_inner());
+        let path = self.path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        RecordingProgress {
+            track: self.track,
+            path,
+            start: Tick(self.start.load(Ordering::Acquire)),
+            channels: self.channels,
+            frames: self.frames.load(Ordering::Acquire),
+            lap: self.lap.load(Ordering::Acquire),
+            peak: f32::from_bits(self.peak.swap(0, Ordering::Relaxed)),
+            waveform: wave.snapshot(),
+        }
+    }
+}
 struct Shared {
     ended: AtomicBool,
     cancelled: AtomicBool,
@@ -336,20 +354,7 @@ impl RecordingSession {
     }
     /// Current live waveforms. At most one small summary per prepared track.
     pub fn progress(&self) -> Vec<RecordingProgress> {
-        self.shared
-            .progress
-            .iter()
-            .map(|p| RecordingProgress {
-                track: p.track,
-                path: p.path.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-                start: Tick(p.start.load(Ordering::Acquire)),
-                channels: p.channels,
-                frames: p.frames.load(Ordering::Acquire),
-                lap: p.lap.load(Ordering::Acquire),
-                peak: f32::from_bits(p.peak.swap(0, Ordering::Relaxed)),
-                waveform: p.wave.lock().unwrap_or_else(|e| e.into_inner()).snapshot(),
-            })
-            .collect()
+        self.shared.progress.iter().map(|p| p.snapshot()).collect()
     }
 }
 impl Drop for RecordingSession {
@@ -974,12 +979,12 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             let result = relocate_outputs(&mut all, &directory).map(|()| {
                                 config.directory = directory;
                                 for (i, passes) in all.iter().enumerate() {
-                                    let lap = shared.progress[i].lap.load(Ordering::Acquire);
+                                    let progress = &shared.progress[i];
+                                    let _wave =
+                                        progress.wave.lock().unwrap_or_else(|e| e.into_inner());
+                                    let lap = progress.lap.load(Ordering::Acquire);
                                     if let Some(output) = passes.get(&lap) {
-                                        *shared.progress[i]
-                                            .path
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner()) =
+                                        *progress.path.lock().unwrap_or_else(|e| e.into_inner()) =
                                             output.path.clone();
                                     }
                                 }
@@ -1080,6 +1085,82 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
 mod tests {
     use super::*;
     use komponist_model::{HardwareInput, Meter, Tempo};
+    #[test]
+    fn progress_polling_uses_publication_lock_order_and_keeps_lap_metadata_together() {
+        let progress = Arc::new(Progress {
+            track: TrackId(1),
+            path: Mutex::new(PathBuf::from("0.wav")),
+            start: AtomicI64::new(0),
+            channels: 1,
+            frames: AtomicU64::new(1),
+            lap: AtomicU32::new(0),
+            peak: AtomicU32::new(0),
+            wave: Mutex::new(Wave::new()),
+        });
+        // Holding path forces the reader to stop between its two acquisitions. Observing
+        // wave locked proves the lock order without relying on thread scheduling or sleeps.
+        let path = progress.path.lock().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let reader = progress.clone();
+        let polling = std::thread::spawn(move || sent.send(reader.snapshot()).unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let ordered = loop {
+            if matches!(
+                progress.wave.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        drop(path);
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        polling.join().unwrap();
+        assert!(ordered, "polling must acquire wave before waiting for path");
+
+        let publisher = progress.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let publishing = std::thread::spawn(move || {
+            for lap in 1..1000_u32 {
+                let mut wave = publisher.wave.lock().unwrap();
+                *wave = Wave::new();
+                wave.push(&[lap as f32]);
+                *publisher.path.lock().unwrap() = PathBuf::from(format!("{lap}.wav"));
+                publisher.start.store(i64::from(lap), Ordering::Release);
+                publisher
+                    .frames
+                    .store(u64::from(lap) + 1, Ordering::Release);
+                publisher.lap.store(lap, Ordering::Release);
+                drop(wave);
+                std::thread::yield_now();
+            }
+            sent.send(()).unwrap();
+        });
+        let reader = progress.clone();
+        let (sent, snapshots) = std::sync::mpsc::channel();
+        let polling = std::thread::spawn(move || {
+            for _ in 0..1000 {
+                let snapshot = reader.snapshot();
+                assert_eq!(
+                    snapshot.path,
+                    PathBuf::from(format!("{}.wav", snapshot.lap))
+                );
+                assert_eq!(snapshot.start.0, i64::from(snapshot.lap));
+                assert_eq!(snapshot.frames, u64::from(snapshot.lap) + 1);
+                if snapshot.lap > 0 {
+                    assert_eq!(snapshot.waveform[0].max, snapshot.lap as f32);
+                }
+            }
+            sent.send(()).unwrap();
+        });
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+        snapshots.recv_timeout(Duration::from_secs(5)).unwrap();
+        publishing.join().unwrap();
+        polling.join().unwrap();
+    }
     #[test]
     fn the_live_waveform_is_bounded_and_preserves_weighted_energy() {
         let mut wave = Wave::new();
