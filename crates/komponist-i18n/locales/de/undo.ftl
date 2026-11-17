@@ -190,3 +190,7 @@ undo-plugin-state = { $plugin }: Zustand ändern
 # Audio clip envelope gestures.
 undo-clip-gain = Clip-Gain ändern
 undo-clip-fade = Fade ändern
+
+# Linked audio import and browsing (epic #8).
+undo-import-audio = Audio importieren
+undo-add-audio-track = Audio-Spur hinzufügen

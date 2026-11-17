@@ -72,6 +72,13 @@ fn category_id(category: EffectCategory) -> &'static str {
 pub enum RowKind {
     /// A section header („FAVORITEN“).
     Section,
+    /// A filesystem directory.
+    Directory(std::path::PathBuf),
+    /// An audio file, with metadata when it can be opened.
+    AudioFile {
+        path: std::path::PathBuf,
+        file: Option<komponist_model::AudioFile>,
+    },
     /// Text without action: a category sub-header in the Effekte segment, „Noch keine Aufnahmen“.
     Plain,
     /// A plugin of the catalog.
@@ -115,7 +122,12 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(kind: RowKind, name: impl Into<String>, tag: impl Into<String>, level: u8) -> Row {
+    pub(super) fn new(
+        kind: RowKind,
+        name: impl Into<String>,
+        tag: impl Into<String>,
+        level: u8,
+    ) -> Row {
         Row {
             kind,
             name: name.into(),
@@ -139,6 +151,8 @@ impl Row {
             RowKind::Plugin { plugin, .. } => format!("plugin:{:?}:{}", plugin.format, plugin.id),
             RowKind::Folder { key, .. } => format!("folder:{key}"),
             RowKind::Preset(i) => format!("preset:{i}"),
+            RowKind::Directory(path) => format!("dir:{}", path.display()),
+            RowKind::AudioFile { path, .. } => format!("audio:{}", path.display()),
             RowKind::Take { clip, take } => format!("take:{}:{take}", clip.0),
             RowKind::Section | RowKind::Plain => format!("text:{}", self.name),
         }
@@ -650,7 +664,11 @@ pub fn activate(row: &Row, project: &Project, track: Option<TrackId>) -> Vec<Act
             }),
             Action::Ui(UiAction::OpenClip(*clip)),
         ],
-        RowKind::Section | RowKind::Plain | RowKind::Folder { .. } => Vec::new(),
+        RowKind::Section
+        | RowKind::Plain
+        | RowKind::Folder { .. }
+        | RowKind::Directory(_)
+        | RowKind::AudioFile { .. } => Vec::new(),
     }
 }
 

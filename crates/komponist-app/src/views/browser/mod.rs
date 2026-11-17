@@ -15,6 +15,7 @@
 //! The rows come from [`model::rows`]; their view state (segment, search text, marked row, closed
 //! folders, favourites) lives in [`crate::ui_state::BrowserView`].
 
+mod files;
 pub mod metrics;
 pub mod model;
 
@@ -49,6 +50,7 @@ const SEGMENTS: [BrowserSegment; 4] = [
 /// being edited and bookkeeping.
 #[derive(Debug, Default)]
 pub struct Browser {
+    files: files::Files,
     /// The search field's text (the view state's query follows it through `SetBrowserQuery`).
     query: String,
     /// The default-closed folders went into the view state.
@@ -97,7 +99,9 @@ impl View for Browser {
             self.query = ctx.ui.browser.query.clone();
         }
 
-        let foot_text = if self.query.trim().is_empty() {
+        let foot_text = if segment == BrowserSegment::Files {
+            ctx.lang.browser_foot_files()
+        } else if self.query.trim().is_empty() {
             ctx.lang.browser_foot()
         } else {
             ctx.lang.browser_foot_search()
@@ -105,7 +109,7 @@ impl View for Browser {
         let layout = layout(ui, foot_text);
         let catalog = ctx.engine.host().catalog();
         let exports = model::export_names(ctx.exports);
-        let rows = model::rows(
+        let mut rows = model::rows(
             ctx.lang,
             &Input {
                 catalog,
@@ -117,6 +121,19 @@ impl View for Browser {
                 exports: &exports,
             },
         );
+        if segment == BrowserSegment::Files {
+            let directory = ctx
+                .ui
+                .browser
+                .directory
+                .clone()
+                .or_else(|| ctx.project_dir.map(std::path::Path::to_path_buf))
+                .or_else(crate::dirs::home_dir)
+                .unwrap_or_else(crate::dirs::filesystem_root);
+            let mut filesystem = self.files.rows(ui.ctx(), directory, ctx.lang, &self.query);
+            filesystem.append(&mut rows);
+            rows = filesystem;
+        }
         self.keys(ui, ctx, &rows, search_focused);
         self.search_field(ui, ctx, layout.search);
         segments(ui, ctx, layout.segments);
@@ -316,6 +333,11 @@ fn segments(ui: &mut Ui, ctx: &mut ViewCtx<'_>, rect: Rect) {
 
 /// What Enter or a double-click on `row` does; a folder opens or closes.
 fn activate(ctx: &mut ViewCtx<'_>, row: &Row) {
+    if let RowKind::Directory(path) = &row.kind {
+        ctx.ui.browser.directory = Some(path.clone());
+        ctx.ui.browser.highlighted = None;
+        return;
+    }
     if let RowKind::Folder { key, .. } = &row.kind {
         toggle_folder(ctx, key);
         return;
@@ -350,7 +372,7 @@ fn row_ui(
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let sense = match row.kind {
         RowKind::Section | RowKind::Plain => Sense::hover(),
-        RowKind::Plugin { .. } => Sense::click_and_drag(),
+        RowKind::Plugin { .. } | RowKind::AudioFile { .. } => Sense::click_and_drag(),
         _ => Sense::click(),
     };
     let response = ui.interact(rect, id, sense);
@@ -365,6 +387,19 @@ fn row_ui(
     match &row.kind {
         RowKind::Plugin { plugin, .. } => {
             response.dnd_set_drag_payload(plugin.clone());
+            if response.double_clicked() {
+                activate(ctx, row);
+            }
+        }
+        RowKind::AudioFile { path, file } => {
+            response.dnd_set_drag_payload(crate::audio_import::AudioDrag {
+                paths: vec![path.clone()],
+                files: file.iter().cloned().collect(),
+                name: row.name.clone(),
+                meta: row.tag.clone(),
+            });
+        }
+        RowKind::Directory(_) => {
             if response.double_clicked() {
                 activate(ctx, row);
             }
@@ -509,6 +544,12 @@ fn paint_row(
             let r = px::snap_rect(Rect::from_center_size(icon_rect.center(), size), ppp);
             icons::paint_caret(painter, r, caret, color32(color::TEXT_3));
         }
+        RowKind::Directory(_) => {
+            icons::paint_in(ui, icon_rect, Icon::Folder, color32(color::TEXT_3))
+        }
+        RowKind::AudioFile { .. } => {
+            icons::paint_in(ui, icon_rect, Icon::AudioWaveform, color32(color::TEXT_3))
+        }
         RowKind::Preset(_) => {
             let g = w::galley(
                 ui,
@@ -601,7 +642,11 @@ fn footer(ui: &mut Ui, rect: Rect, text: &str) {
 
 /// While a plugin is dragged: its name at the pointer, in a tooltip frame.
 fn drag_ghost(ctx: &egui::Context) {
-    let Some(plugin) = egui::DragAndDrop::payload::<PluginRef>(ctx) else {
+    let text = if let Some(plugin) = egui::DragAndDrop::payload::<PluginRef>(ctx) {
+        crate::views::plugin_name(komponist_ui::lang(ctx), &plugin)
+    } else if let Some(audio) = egui::DragAndDrop::payload::<crate::audio_import::AudioDrag>(ctx) {
+        format!("{} · {}", audio.name, audio.meta)
+    } else {
         return;
     };
     let Some(pos) = ctx.pointer_latest_pos() else {
@@ -614,13 +659,7 @@ fn drag_ghost(ctx: &egui::Context) {
         .interactable(false)
         .show(ctx, |ui| {
             tooltip::frame().show(ui, |ui| {
-                ui.label(
-                    fonts::rich_text(
-                        &crate::views::plugin_name(komponist_ui::lang(ctx), &plugin),
-                        &tooltip::TEXT,
-                    )
-                    .color(color32(color::TEXT_1)),
-                );
+                ui.label(fonts::rich_text(&text, &tooltip::TEXT).color(color32(color::TEXT_1)));
             });
         });
 }

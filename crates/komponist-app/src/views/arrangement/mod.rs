@@ -38,6 +38,7 @@
 //!
 //! Keys (Strg D, Strg E, 0, Entf, +, −, Z, Strg [ ]) are the keymap's.
 
+mod audio_drop;
 mod buses;
 mod cache;
 mod files;
@@ -221,6 +222,7 @@ impl Memo {
 /// The arrangement view.
 #[derive(Debug, Default)]
 pub struct Arrangement {
+    audio_hover: audio_drop::HoverFile,
     palettes: Palettes,
     previews: PreviewCache,
     audio: files::AudioCache,
@@ -293,6 +295,7 @@ impl View for Arrangement {
             self.empty_hint(&mut tracks, ctx, &g);
         }
         self.drop_target(&mut tracks, ctx, &project, &g);
+        self.drop_audio(&mut tracks, ctx, &project, &g);
 
         // Safety net: a drag whose release no response reported (released over a popup, …).
         if self.drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {

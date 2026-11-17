@@ -27,8 +27,8 @@ English and German; it follows your desktop language, and Settings › Appearanc
 
 ### Arrangement, piano roll, step sequencer
 
-Arrange MIDI and step clips on tracks, with a snapping grid, loop range, split, duplicate, and a full undo history.
-Open a clip in the dock below to edit it.
+Arrange MIDI, step and linked audio clips on tracks, with a snapping grid, loop range, split, duplicate, and a full undo history.
+Open a clip in the dock below to edit it. Audio tracks stream WAV, AIFF, FLAC, MP3 and OGG files with sample-rate conversion, Re-Pitch, clip gain and linear fades. Import linked files with Ctrl+I; Ctrl+Shift+T opens the audio-track dialog.
 
 ![The arrangement of the demo project with the playhead running](docs/media/arrangement.png)
 

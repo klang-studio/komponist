@@ -457,6 +457,8 @@ pub enum BrowserSegment {
 /// Browser panel.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BrowserView {
+    /// Directory shown by the Files tab; empty follows the project folder.
+    pub directory: Option<std::path::PathBuf>,
     /// Segment.
     pub segment: BrowserSegment,
     /// Search text (Ctrl F; typing filters at once, Esc clears).

@@ -1096,6 +1096,19 @@ Built in `komponist-engine`, module `audio` (a plan per track, the ring, the str
 - **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
   conversion and the fades are the streamer's.
 
+#### 6.9.4 Linked import and file browsing (#12)
+
+`komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
+undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
+creates an audio track at the pointer; several files create separate tracks at tick zero. An existing audio track
+receives files in sequence. The arrangement grid is applied only while snapping is enabled; MIDI and bus lanes
+refuse audio drops. Ctrl I captures the selected audio track and playhead before opening a multi-select file dialog.
+
+The browser Files tab enumerates directories and reads audio headers on a worker, with duration/channel metadata
+and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
+a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
+files through the localized status bar while preserving their links.
+
 ### 6.10 Audio files (`komponist-audiofile`)
 
 Everything that reads an audio file lives in one leaf crate with no studio dependency (no model, no engine, no
@@ -1104,8 +1117,8 @@ and by the arrangement's waveforms (#12) next, and none of them may pull the oth
 audio thread** (§6.1): decoding, conversion and peak computation allocate and do IO, so they run on loader, read-ahead
 and worker threads and hand finished `Arc`s over.
 
-- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), FLAC, OGG Vorbis and MP3
-  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `flac`, `mp3`, `ogg` and `vorbis` features).
+- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), AIFF/AIFF-C PCM, FLAC, OGG Vorbis and MP3
+  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `aiff`, `pcm`, `flac`, `mp3`, `ogg` and `vorbis` features).
   The format is chosen by the first bytes, not the extension. The API is seekable and chunked: `open`, `info`
   (rate, channels, frames), `seek(frame)`, `read(&mut [f32])` (interleaved, from the current position), `read_full`. A
   seek lands 8192 frames before the target, rebuilds the decoder state and drops the frames in between; each decoded
