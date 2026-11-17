@@ -689,16 +689,96 @@ mod tests {
         assert!(p90 <= 600.0, "p90 {p90} µs");
     }
 
-    /// Windows, `Mode::Relaxed`: the timer at the deadline; spike S1 measured p50 +13–20 µs and a
-    /// tail of one 0.5 ms quantum (1–2 %). Bounds: median ≤ 500 µs (a missed quantum on a loaded
-    /// machine), never early.
+    /// Windows, `Mode::Relaxed`: never early, with lateness comparable to this machine's native
+    /// high-resolution timer. A shared runner can add a whole scheduling quantum even to the
+    /// median; compare against the interleaved native timer's p90 plus 50 µs of wrapper overhead.
     #[test]
     #[cfg(windows)]
     fn relaxed_event_waits_end_after_their_deadline() {
-        let late = event_wait_lateness(Mode::Relaxed, 50);
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE,
+            SetWaitableTimerEx, TIMER_ALL_ACCESS, WaitForSingleObject,
+        };
+
+        // Build the reference independently, so a regression in DeadlineTimer's creation or
+        // arming cannot make both the implementation and its baseline equally slow.
+        // SAFETY: unnamed, non-inheritable timer with no security attributes.
+        let handle = unsafe {
+            CreateWaitableTimerExW(
+                core::ptr::null(),
+                core::ptr::null(),
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                TIMER_ALL_ACCESS,
+            )
+        };
+        assert!(!handle.is_null(), "{}", std::io::Error::last_os_error());
+        // SAFETY: a fresh valid timer handle, transferred to its sole owner.
+        let reference = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let (event, timer) = (WakeEvent::new().unwrap(), DeadlineTimer::new().unwrap());
+        let word = AtomicU32::new(0);
+        let (mut native, mut late) = (Vec::new(), Vec::new());
+        for ms in [1_u32, 2, 3] {
+            for round in 0..50 {
+                // Alternate order to avoid giving either wait a consistent timer-phase bias.
+                for baseline in [round % 2 == 0, round % 2 != 0] {
+                    let deadline = Instant::now() + Duration::from_millis(u64::from(ms));
+                    if baseline {
+                        let due = -i64::from(ms) * 10_000; // relative time, in 100 ns units
+                        // SAFETY: the reference timer is valid for both calls, with no callback
+                        // or coalescing delay. This thread is its only user.
+                        unsafe {
+                            assert_ne!(
+                                SetWaitableTimerEx(
+                                    reference.as_raw_handle(),
+                                    &due,
+                                    0,
+                                    None,
+                                    core::ptr::null(),
+                                    core::ptr::null(),
+                                    0,
+                                ),
+                                0
+                            );
+                            assert_eq!(
+                                WaitForSingleObject(reference.as_raw_handle(), INFINITE),
+                                WAIT_OBJECT_0
+                            );
+                        }
+                    } else {
+                        assert_eq!(
+                            wait_while_event(
+                                &word,
+                                0,
+                                Some(deadline),
+                                &event,
+                                &timer,
+                                Mode::Relaxed,
+                            ),
+                            WaitOutcome::TimedOut
+                        );
+                    }
+                    let now = Instant::now();
+                    assert!(now >= deadline, "baseline={baseline} woke early");
+                    let samples = if baseline { &mut native } else { &mut late };
+                    samples.push((now - deadline).as_secs_f64() * 1e6);
+                }
+            }
+        }
+        native.sort_by(f64::total_cmp);
+        late.sort_by(f64::total_cmp);
         let (p50, max) = (percentile(&late, 0.5), late[late.len() - 1]);
-        eprintln!("Relaxed, timed out at 1/2/3 ms, µs late: p50 {p50:.1} max {max:.1}");
-        assert!(p50 <= 500.0, "p50 {p50} µs");
+        let native_p90 = percentile(&native, 0.9);
+        eprintln!(
+            "Relaxed, timed out at 1/2/3 ms, µs late: p50 {p50:.1} max {max:.1}; \
+             native timer p50 {:.1} p90 {native_p90:.1}",
+            percentile(&native, 0.5)
+        );
+        assert!(
+            p50 <= native_p90 + 50.0,
+            "p50 {p50} µs, native timer p90 {native_p90} µs"
+        );
     }
 
     /// Windows: an event wake from another thread, with and without a deadline, in both modes;
