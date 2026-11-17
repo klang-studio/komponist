@@ -761,6 +761,31 @@ fn a_missing_file_plays_silence_reports_its_status_and_stops_an_export() {
 }
 
 #[test]
+fn export_revalidates_a_file_that_was_ready_before_it_disappeared() {
+    let mut s = Studio::new("removed-after-ready");
+    let track = s.track();
+    let file = s.wav("gone.wav", 48_000, 2, 48_000, noise);
+    let clip = s.clip(track, &file, 0, BEAT, 0);
+    let program = s.program();
+    let source = program.clip_source(track, clip).unwrap();
+    assert_eq!(source.open_now(), SourceStatus::Ready);
+    std::fs::remove_file(&file.abs).unwrap();
+    let mut rig = Rig::new(RATE, 512);
+    let job = export_job(s.dir.join("never.wav"), 4000);
+    let result = export(
+        &mut rig.engine,
+        &mut rig.handle,
+        &program,
+        &job,
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert!(matches!(result, Err(ExportError::MissingAudio(p)) if p == file.abs));
+    assert_eq!(source.status(), SourceStatus::Missing);
+    assert!(!job.path.exists());
+}
+
+#[test]
 fn a_recompile_keeps_the_plan_while_the_clips_and_the_tempo_stay() {
     let mut s = Studio::new("incremental");
     let track = s.track();

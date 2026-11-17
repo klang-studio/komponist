@@ -133,13 +133,16 @@ impl ClipSource {
 
     fn open_with(&self, force: bool) -> Option<Arc<PoolFile>> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(file) = &inner.file {
+        if !force && let Some(file) = &inner.file {
             return Some(Arc::clone(file));
         }
         if !force && inner.tried.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
             return None;
         }
         inner.tried = Some(Instant::now());
+        // An export must validate the link again: PoolFile caches metadata, not an open
+        // decoder, so a previously playable file can have disappeared or changed meanwhile.
+        inner.file = None;
         let status = match self.link.resolve(self.dir.as_deref()) {
             None => SourceStatus::Missing,
             Some(path) => match FilePool::global().open(&path) {

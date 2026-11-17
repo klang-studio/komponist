@@ -29,6 +29,8 @@ const PRIME_FRAMES: i32 = 4096;
 pub(crate) struct Voice {
     /// Id of the plan the current epoch plays (0: none).
     plan: u64,
+    /// Identity only: keeping an Arc here could free the outgoing ring on the audio thread.
+    ring: usize,
     epoch: u32,
     /// The song frame the next read continues at (the transport's, after the loop rule).
     next_pos: i64,
@@ -73,6 +75,7 @@ impl Voice {
         let plane = || vec![0.0; MAX_EDGE_FRAMES].into_boxed_slice();
         Voice {
             plan: 0,
+            ring: 0,
             epoch: 0,
             next_pos: 0,
             elapsed: 0,
@@ -91,6 +94,7 @@ impl Voice {
     /// RT. Forgets the plan (a track state that changed hands, or a plan the engine cannot play).
     pub(crate) fn clear(&mut self) {
         self.plan = 0;
+        self.ring = 0;
         self.active = false;
         self.ramp = None;
         self.tail_len = 0;
@@ -115,7 +119,7 @@ impl Voice {
         let stale =
             self.plan != plan.id || self.unsent || self.next_pos != p.pos || self.lp != p.lp;
         if stale {
-            if was_active {
+            if was_active && self.ring == Arc::as_ptr(&plan.ring) as usize {
                 self.capture_tail(plan);
             }
             self.restart(plan, &mut p);
@@ -163,6 +167,7 @@ impl Voice {
         }
         self.unsent = !sent;
         self.plan = if sent { plan.id } else { 0 };
+        self.ring = Arc::as_ptr(&plan.ring) as usize;
     }
 
     /// RT. Copies the next edge-length of the old position into the tail, faded out.
@@ -327,5 +332,74 @@ impl Voice {
         }
         let next = done + out_l.len() as u32;
         (next < edge).then_some(next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::{self, NoEnv};
+    use komponist_model::edits::{self, AudioClipProp, NewAudioTrack, NewClip, NewClipContent};
+    use komponist_model::{AudioFile, Project, Tick};
+
+    #[test]
+    fn a_plan_change_captures_only_the_outgoing_rings_tail() {
+        let (project, track) =
+            edits::add_audio_track(&Project::new("Tail"), NewAudioTrack::default()).unwrap();
+        let (project, clip) = edits::add_clip(
+            &project,
+            track,
+            NewClip {
+                start: Tick::ZERO,
+                length: Tick(960),
+                name: "Tail".into(),
+                content: NewClipContent::Audio {
+                    file: AudioFile::new(
+                        std::path::Path::new("unused.wav"),
+                        None,
+                        48_000,
+                        48_000,
+                        2,
+                    ),
+                    offset: 0,
+                },
+            },
+        )
+        .unwrap();
+        let original = compile::build(&project, None, &NoEnv);
+        let outgoing = original.tracks[0].audio.as_ref().unwrap();
+        let changed =
+            edits::set_audio_clip_prop(&project, clip, AudioClipProp::GainDb(-3.0)).unwrap();
+        // Incremental edits retain the ring; independently compiled plans do not.
+        for shared in [false, true] {
+            let next = compile::build(&changed, shared.then_some(&original), &NoEnv);
+            let incoming = next.tracks[0].audio.as_ref().unwrap();
+            assert_eq!(Arc::ptr_eq(&outgoing.ring, &incoming.ring), shared);
+            incoming.ring.begin_read(1);
+            incoming.ring.begin_write(1);
+            incoming.ring.push(1, &[0.75; 256], &[0.75; 256]);
+            let mut voice = Voice::new();
+            voice.plan = outgoing.id;
+            voice.ring = Arc::as_ptr(&outgoing.ring) as usize;
+            voice.epoch = 1;
+            voice.active = true;
+            let (mut tx, _rx) = rtrb::RingBuffer::new(4);
+            voice.prepare(
+                incoming,
+                Prepare {
+                    pos: 0,
+                    n: 64,
+                    playing: true,
+                    lp: None,
+                    tx: &mut tx,
+                    offline: None,
+                },
+            );
+            assert_eq!(voice.tail_len, if shared { 144 } else { 0 });
+            if shared {
+                assert!(voice.tail[0][0] > 0.7);
+                assert_eq!(voice.tail[0][143], 0.0);
+            }
+        }
     }
 }
