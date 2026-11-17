@@ -29,6 +29,7 @@ use crate::views::{View, ViewCtx, centered_text};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DockBody {
     PianoRoll,
+    Waveform,
     StepSeq,
     NoClip,
     Devices,
@@ -326,6 +327,7 @@ impl App {
             DockTab::Editor => match self.ui.editor_area(p) {
                 _ if self.ui.editor.clip.and_then(|c| p.find_clip(c)).is_none() => DockBody::NoClip,
                 FocusArea::StepSequencer => DockBody::StepSeq,
+                FocusArea::Waveform => DockBody::Waveform,
                 _ => DockBody::PianoRoll,
             },
             DockTab::Devices => {
@@ -391,6 +393,7 @@ impl App {
             kind => self.with_view(area, |views, ctx| {
                 let view: &mut dyn View = match kind {
                     DockBody::StepSeq => &mut *views.step_seq,
+                    DockBody::Waveform => &mut *views.waveform,
                     DockBody::Devices => &mut *views.devices,
                     DockBody::Mixer => &mut *views.mixer,
                     _ => &mut *views.piano_roll,

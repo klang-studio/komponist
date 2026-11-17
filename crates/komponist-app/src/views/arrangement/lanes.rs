@@ -392,7 +392,7 @@ impl Arrangement {
                         .find_clip(*id)
                         .is_some_and(|(_, c)| matches!(c.content, ClipContent::Audio(_)))
                 });
-                let delta = if audio {
+                let delta = if audio && view.snap && !free {
                     // Snap from an audio anchor even when the grabbed MIDI clip is off-grid.
                     let anchor = m
                         .clips
@@ -472,7 +472,7 @@ impl Arrangement {
                 origin,
             }) => {
                 let raw = start.0 as f64 + f64::from(pos.x - *origin) / ppt;
-                let start = view.grid.snap(Tick(raw.round() as i64), project.meter);
+                let start = snap_tick(raw, &view, free, project);
                 ctx.send(Action::Edit(EditAction::TrimAudioClipStart {
                     clip: *clip,
                     start,
@@ -538,13 +538,7 @@ impl Arrangement {
                         None
                     }
                 });
-                let mut snapped = view;
-                if audio.is_some() {
-                    snapped.snap = true;
-                }
-                if let Some(mut length) =
-                    edge_length(e, pos.x, ppt, &snapped, free && audio.is_none(), project)
-                {
+                if let Some(mut length) = edge_length(e, pos.x, ppt, &view, free, project) {
                     if let Some(a) = audio {
                         length = length.min(a.max_length(project.tempo));
                         e.length = length;
@@ -707,6 +701,9 @@ impl Arrangement {
                     Sense::hover(),
                 );
                 register(&node, &access);
+                if let ClipContent::Audio(audio) = &clip.content {
+                    audio_clip_menu(ui, ctx, clip, audio, &node);
+                }
                 if let Some(audio) = audio_look.as_ref() {
                     let parts = komponist_ui::timeline::audio_parts(
                         rect,
@@ -983,6 +980,86 @@ impl Arrangement {
                 );
             }
         }
+    }
+}
+
+/// The audio clip's approved context menu. The canvas retains primary drag handling;
+/// a secondary click explicitly opens the stable clip node's menu.
+fn audio_clip_menu(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    clip: &komponist_model::Clip,
+    audio: &komponist_model::AudioClip,
+    node: &egui::Response,
+) {
+    use crate::actions::ProjectAction;
+    use komponist_ui::widgets::context_menu::{ContextMenu, Entry};
+    if ui.input(|i| i.pointer.secondary_clicked())
+        && ui
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| node.rect.contains(p))
+    {
+        let pos = ui.input(|i| i.pointer.interact_pos()).unwrap();
+        ContextMenu::<Action>::open_at(ui.ctx(), node.id, pos);
+        if !ctx.ui.selection.clips.contains(&clip.id) {
+            ctx.send(select_clips(vec![clip.id], SelectMode::Replace));
+        }
+    }
+    let path = audio
+        .file
+        .resolve(ctx.project_dir)
+        .unwrap_or_else(|| audio.file.abs.clone());
+    let folder = path.parent().map(ToOwned::to_owned);
+    let show = Entry::action(
+        ctx.lang.audio_file_show(),
+        Action::Project(ProjectAction::ShowInFolder(
+            folder.clone().unwrap_or_default(),
+        )),
+    );
+    let show = if folder.is_some() {
+        show
+    } else {
+        show.disabled()
+    };
+    let split = Entry::action(
+        ctx.lang.audio_clip_context_split(),
+        Action::Edit(EditAction::SplitAtPlayhead),
+    );
+    let split = if ctx.engine.playhead() > clip.start && ctx.engine.playhead() < clip.end() {
+        split
+    } else {
+        split.disabled()
+    };
+    let entries = [
+        Entry::action(
+            ctx.lang.audio_clip_context_mute(),
+            Action::Edit(EditAction::SetClipsMuted {
+                clips: vec![clip.id],
+                muted: !clip.mute,
+            }),
+        )
+        .checked(clip.mute),
+        Entry::action(
+            ctx.lang.audio_clip_context_duplicate(),
+            Action::Edit(EditAction::DuplicateSelection),
+        ),
+        split,
+        Entry::separator(),
+        Entry::action(
+            ctx.lang.audio_file_replace(),
+            Action::Project(ProjectAction::ReplaceAudio(clip.id)),
+        ),
+        show,
+        Entry::separator(),
+        Entry::action(
+            ctx.lang.arrangement_delete(),
+            Action::Edit(EditAction::DeleteSelection),
+        ),
+    ];
+    if let Some(action) =
+        ContextMenu::new(ctx.lang.audio_clip_context_menu(), &entries).show_on(node)
+    {
+        ctx.send(action);
     }
 }
 

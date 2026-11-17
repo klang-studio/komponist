@@ -454,6 +454,16 @@ impl Keymap {
                 Global,
                 e(EditAction::GroupSelection),
             ),
+            (
+                KeyChord::command_shift(Key::T),
+                Global,
+                e(EditAction::NewAudioTrack),
+            ),
+            (
+                KeyChord::command(Key::I),
+                Global,
+                p(ProjectAction::ImportAudio),
+            ),
             (KeyChord::command(Key::N), Global, p(ProjectAction::New)),
             (KeyChord::command(Key::O), Global, p(ProjectAction::Open)),
             (KeyChord::command(Key::S), Global, p(ProjectAction::Save)),

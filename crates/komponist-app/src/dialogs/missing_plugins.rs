@@ -39,6 +39,8 @@ pub struct Row {
     pub module: String,
     /// A missing sample: the sampler device and pad (0-based) "Suchen …" relinks.
     pub search: Option<(DeviceId, usize)>,
+    /// Missing audio clip to open for file recovery.
+    pub audio: Option<komponist_model::ClipId>,
 }
 
 /// What the dialog shows.
@@ -50,6 +52,8 @@ pub struct Model {
     pub rows: Vec<Row>,
     /// The missing samples in document order (after the devices).
     pub samples: Vec<Row>,
+    /// Missing linked audio clips.
+    pub audio: Vec<Row>,
 }
 
 /// What the user chose.
@@ -61,6 +65,8 @@ pub enum Output {
     CheckFolders,
     /// "Suchen …" on a missing sample: the file browser for this pad.
     Search(DeviceId, usize),
+    /// Open a missing audio clip in its editor.
+    OpenAudio(komponist_model::ClipId),
 }
 
 /// The format chip of a plugin format ("INTERN" / "BUILT-IN" for the built-in devices).
@@ -120,6 +126,7 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
                 place: t.missing_place(owner, role),
                 module: module_label(&mp.plugin),
                 search: None,
+                audio: None,
             }
         })
         .collect();
@@ -127,6 +134,7 @@ pub fn model(t: Lang, project: &Project, missing: &[MissingPlugin]) -> Model {
         project: project.name.clone(),
         rows,
         samples: Vec::new(),
+        audio: Vec::new(),
     }
 }
 
@@ -183,6 +191,59 @@ pub fn missing_samples(
     out
 }
 
+/// Linked audio clips whose source cannot be resolved, in document order.
+pub fn missing_audio(
+    project: &Project,
+    project_dir: Option<&std::path::Path>,
+) -> Vec<komponist_model::ClipId> {
+    project
+        .tracks
+        .iter()
+        .flat_map(|track| &track.clips)
+        .filter_map(|clip| match &clip.content {
+            komponist_model::ClipContent::Audio(audio)
+                if audio.file.resolve(project_dir).is_none() =>
+            {
+                Some(clip.id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Adds file-recovery rows without changing the project or dropping its missing links.
+pub fn with_audio(
+    t: Lang,
+    mut model: Model,
+    project: &Project,
+    clips: &[komponist_model::ClipId],
+) -> Model {
+    model.audio = clips
+        .iter()
+        .filter_map(|&id| {
+            let (track, clip) = project.find_clip(id)?;
+            let komponist_model::ClipContent::Audio(audio) = &clip.content else {
+                return None;
+            };
+            Some(Row {
+                name: clip.name.clone(),
+                format: t.missing_audio_chip(),
+                place: t.missing_audio_place(&track.name, &clip.name),
+                module: audio
+                    .file
+                    .abs
+                    .file_name()
+                    .unwrap_or(audio.file.abs.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                search: None,
+                audio: Some(id),
+            })
+        })
+        .collect();
+    model
+}
+
 /// The model with the missing samples added.
 pub fn with_samples(
     t: Lang,
@@ -204,6 +265,7 @@ pub fn with_samples(
                 place: t.missing_place_pad(owner, s.pad + 1),
                 module: s.file.clone(),
                 search: Some((s.device, s.pad)),
+                audio: None,
             }
         })
         .collect();
@@ -262,9 +324,18 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         ui.add_space(dm::PADDING);
         let inner = width - 2.0 * dm::PADDING;
         indented(ui, dm::PADDING, |ui| {
-            title_row(ui, &title_for(t, n, samples));
+            let title = if model.audio.is_empty() {
+                title_for(t, n, samples)
+            } else if n == 0 {
+                t.missing_audio_files().to_owned()
+            } else {
+                t.missing_plugins_and_files().to_owned()
+            };
+            title_row(ui, &title);
             ui.add_space(m::TEXT_GAP);
-            let body = if n == 0 {
+            let body = if !model.audio.is_empty() {
+                t.missing_audio_text(&model.project)
+            } else if n == 0 {
                 samples_text(t, &model.project, samples)
             } else {
                 text(t, &model.project, n)
@@ -286,7 +357,7 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = m::LIST_GAP;
-                    for row in model.rows.iter().chain(&model.samples) {
+                    for row in model.rows.iter().chain(&model.samples).chain(&model.audio) {
                         if let Some(search) = missing_row(ui, t, inner, row) {
                             out = Some(search);
                         }
@@ -295,24 +366,31 @@ pub fn show(ctx: &Context, model: &Model, keys: bool) -> Option<Output> {
         });
         ui.add_space(m::LIST_MARGIN_Y + m::FOOTER_PADDING_TOP);
         indented(ui, dm::PADDING, |ui| {
-            let primary = match (n, samples) {
-                (0, 1) => t.missing_continue_sample(),
-                (0, _) => t.missing_continue_samples(),
-                (1, 0) => t.missing_continue_one(),
-                _ => t.missing_continue_many(),
+            let primary = if !model.audio.is_empty() {
+                t.missing_continue_files()
+            } else {
+                match (n, samples) {
+                    (0, 1) => t.missing_continue_sample(),
+                    (0, _) => t.missing_continue_samples(),
+                    (1, 0) => t.missing_continue_one(),
+                    _ => t.missing_continue_many(),
+                }
             };
-            let r = button_row(
-                ui,
-                inner,
-                vec![
-                    ActionButton::dialog(t.missing_check_folders(), Kind::Secondary, 3),
-                    ActionButton::dialog(primary, Kind::Primary, 3),
-                ],
-            );
-            if r[0].clicked() {
+            let mut buttons = Vec::new();
+            let check = n > 0 || model.audio.is_empty();
+            if check {
+                buttons.push(ActionButton::dialog(
+                    t.missing_check_folders(),
+                    Kind::Secondary,
+                    3,
+                ));
+            }
+            buttons.push(ActionButton::dialog(primary, Kind::Primary, 3));
+            let r = button_row(ui, inner, buttons);
+            if check && r[0].clicked() {
                 out = Some(Output::CheckFolders);
             }
-            if r[1].clicked() {
+            if r[usize::from(check)].clicked() {
                 out = Some(Output::Continue);
             }
         });
@@ -445,7 +523,11 @@ fn missing_row(ui: &mut Ui, t: Lang, width: f32, row: &Row) -> Option<Output> {
     };
     label_node(ui, rect, &label, Role::ListItem);
     // "Suchen …" of a missing sample, left of the chip column, centred on the first line.
-    let (device, pad) = row.search?;
+    let output = if let Some((device, pad)) = row.search {
+        Output::Search(device, pad)
+    } else {
+        Output::OpenAudio(row.audio?)
+    };
     let size = vec2(m::SEARCH_WIDTH, m::SEARCH_HEIGHT);
     // The buttons share one column, whatever the width of the file name beside them.
     let button_right = (inner.right() - m::SAMPLE_COLUMN).min(col_x - gap_x);
@@ -456,11 +538,15 @@ fn missing_row(ui: &mut Ui, t: Lang, width: f32, row: &Row) -> Option<Output> {
     // A child at a fixed place: `put` would move the list's cursor.
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(at));
     let button = child.add(
-        komponist_ui::widgets::button::Button::new(t.missing_search())
-            .small()
-            .ground(2),
+        komponist_ui::widgets::button::Button::new(if row.audio.is_some() {
+            t.missing_audio_open_clip()
+        } else {
+            t.missing_search()
+        })
+        .small()
+        .ground(2),
     );
-    button.clicked().then_some(Output::Search(device, pad))
+    button.clicked().then_some(output)
 }
 
 #[cfg(test)]

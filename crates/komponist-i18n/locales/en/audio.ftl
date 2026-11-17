@@ -22,3 +22,62 @@ audio-record-failed = Recording failed: { $reason }
 audio-record-move-failed = Recording remains provisional: { $reason }
 audio-record-complete = Recording finished · { $count } takes
 audio-record-apply-failed = Could not add recording to the project · files are preserved
+# Audio source editor and file inspector.
+dock-waveform = Waveform
+inspector-clip-audio = AUDIO
+audio-clip-source-start = Source start
+audio-clip-gain = Gain
+audio-clip-repitch = Re-Pitch
+audio-clip-original-tempo = Original tempo
+audio-clip-bar-count = Bars
+audio-clip-bars = = { $n } bars
+audio-waveform-title = Waveform, { $name }
+audio-source-start = File start
+audio-source-end = File end
+audio-channel-left = L
+audio-channel-right = R
+audio-channel-mono = mono
+audio-channel-stereo = stereo
+audio-amplitude-zero = 0 dB
+audio-amplitude-silence = −∞
+audio-file = File
+audio-file-replace = Replace File…
+audio-file-copy-path = Copy Path
+audio-file-show = Show in Folder
+audio-file-actions = File actions
+audio-file-external = external link
+audio-file-in-project = in project
+audio-file-path = File path
+audio-file-metadata = { $rate } kHz · { $channels } · { $duration }
+audio-file-bit-depth = { $bits } bit
+audio-factor = { $pct } · { $st } st
+audio-file-replace-shortened = “{ $name }” replaced · clip trimmed to the end of the file
+audio-file-replace-failed = Could not replace the file: { $reason }
+audio-file-no-audio = No readable audio file
+audio-file-too-short = The file ends before the clip’s source start.
+audio-zoom-in = Zoom In Waveform
+audio-zoom-out = Zoom Out Waveform
+audio-waveform-pending = Calculating waveform…
+audio-waveform-controls = Waveform controls
+# Linked audio import and browsing (epic #8).
+menu-import-audio = Import Audio File…
+menu-new-audio-track = New Audio Track
+audio-import-confirm = Import
+status-audio-import-failed = Could not import audio file · { $file } · { $why }
+status-audio-imported =
+    { $count ->
+        [one] 1 audio file linked
+       *[other] { $count } audio files linked
+    }
+audio-file-empty = The audio file is empty.
+missing-audio-files = Files Missing
+missing-plugins-and-files = Plugins and Files Missing
+missing-audio-text = Linked audio files are missing from “{ $project }”. Open a clip and choose “Replace File…” to locate its source. The clips are kept.
+missing-continue-files = Continue
+missing-audio-open-clip = Open Clip
+missing-audio-chip = AUDIO
+missing-audio-place = Track { $track } · Clip { $clip }
+audio-clip-context-menu = Audio Clip
+audio-clip-context-mute = Mute
+audio-clip-context-duplicate = Duplicate
+audio-clip-context-split = Split

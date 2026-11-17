@@ -35,7 +35,11 @@ impl Arrangement {
             .label_for(&Action::Edit(EditAction::NewMidiTrack), ctx.lang)
             .unwrap_or_default();
         let t = ctx.lang;
-        let hint = t.arrangement_new_track_hint(&shortcut);
+        let audio_shortcut = ctx
+            .keymap
+            .label_for(&Action::Edit(EditAction::NewAudioTrack), ctx.lang)
+            .unwrap_or_default();
+        let hint = t.arrangement_new_track_hint_audio(&shortcut, &audio_shortcut);
         let hint = hint.trim_end();
 
         let inset = metrics::NEW_TRACK_BOX_INSET;
@@ -74,10 +78,14 @@ impl Arrangement {
             (t.arrangement_new_track(), typography::UI, title_ink),
             (hint, typography::SMALL, ink),
         ] {
-            let galley = w::styled_galley(ui, text, &style);
+            let mut job = fonts::layout_job(text, &style, color32(c));
+            job.wrap.max_width = (left.width() - 2.0 * pad_x).max(0.0);
+            let galley = ui.painter().layout_job(job);
             let r = Rect::from_min_size(pos2(x, y), galley.size());
             y = px::snap(r.bottom() + metrics::NEW_TRACK_GAP, ppp);
-            ui.painter().galley(r.min, galley, color32(c));
+            ui.painter()
+                .with_clip_rect(boxed.intersect(ui.clip_rect()))
+                .galley(r.min, galley, color32(c));
         }
         if response.clicked() {
             ctx.send(Action::Ui(UiAction::OpenNewTrackDialog));

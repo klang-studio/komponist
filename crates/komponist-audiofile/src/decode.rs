@@ -48,6 +48,8 @@ const PREROLL: u64 = 8192;
 pub enum Format {
     /// RIFF WAVE, PCM.
     Wav,
+    /// AIFF / AIFF-C PCM.
+    Aiff,
     /// Native FLAC.
     Flac,
     /// OGG Vorbis.
@@ -199,6 +201,11 @@ fn read_up_to(file: &mut File, buf: &mut [u8]) -> Result<usize, AudioError> {
 fn sniff(magic: &[u8]) -> Format {
     if magic.len() >= 12 && &magic[..4] == b"RIFF" && &magic[8..12] == b"WAVE" {
         Format::Wav
+    } else if magic.len() >= 12
+        && &magic[..4] == b"FORM"
+        && matches!(&magic[8..12], b"AIFF" | b"AIFC")
+    {
+        Format::Aiff
     } else if magic.starts_with(b"fLaC") {
         Format::Flac
     } else if magic.starts_with(b"OggS") {

@@ -191,6 +191,15 @@ fn gen_track(track: &Value) -> Result<String> {
                 )
                 .unwrap();
             }
+            "wave-dim" => {
+                if text != "wave-peak under canvas.outside-clip" {
+                    return Err(format!(
+                        "{path}: expected wave-peak under canvas.outside-clip"
+                    ));
+                }
+                writeln!(out, "    /// `{path}` = `{text}`.").unwrap();
+                writeln!(out,"    pub const WAVE_DIM_OVERLAY: crate::Srgba = crate::color::CANVAS_OUTSIDE_CLIP;").unwrap();
+            }
             "wave-peak" | "wave-rms" => {
                 let velocity = parse_note_at_velocity(text, &path)?;
                 writeln!(
@@ -228,6 +237,7 @@ fn gen_track(track: &Value) -> Result<String> {
         "note-hover",
         "wave-peak",
         "wave-rms",
+        "wave-dim",
         "note-playing",
         "clip-head-hover",
         "key-playing",

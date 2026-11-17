@@ -47,6 +47,7 @@ pub const APP_ID: &str = "io.github.klang_studio.komponist";
 pub mod actions;
 pub mod audio_record;
 pub mod app;
+pub mod audio_import;
 pub mod device_host;
 pub mod dialogs;
 pub mod dirs;

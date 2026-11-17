@@ -1104,7 +1104,7 @@ Built in `komponist-engine`, module `audio` (a plan per track, the ring, the str
 - **Input and monitoring (#13).** The source stage of an audio track is `Voice::render` into the chain's input buffer
   (marked `#13` in `TrackJobs::run`): `Hardware` channels come from the audio callback's input buffer, `Bus(id)` from
   the bus's post-fader line (like a send tap, §6.8.2), mixed in when monitoring (`Off` never, `On` always, `Auto` while
-  armed and not playing back) before the chain; the recorder (#13) taps the input in the engine, not the voice.
+  armed, including ordinary playback) before the chain; the recorder (#13) taps the input in the engine, not the voice.
   Not built by #11.
 - **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
   conversion and the fades are the streamer's.
@@ -1149,6 +1149,18 @@ fail explicitly, retaining partial files for recovery. `AbortAudioRecording` han
 silently joining different devices. Synthetic-input tests cover monitoring, mono/stereo PCM24/Float32, count-in,
 latency and stop tails, cycle padding, parallel bus taps/PDC, live checkpoints, relocation and cancellation;
 every tested engine callback runs under `assert_no_alloc`.
+#### 6.9.5 Linked import and file browsing (#12)
+
+`komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
+undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
+creates an audio track at the pointer; several files create separate tracks at tick zero. An existing audio track
+receives files in sequence. The arrangement grid is applied only while snapping is enabled; MIDI and bus lanes
+refuse audio drops. Ctrl I captures the selected audio track and playhead before opening a multi-select file dialog.
+
+The browser Files tab enumerates directories and reads audio headers on a worker, with duration/channel metadata
+and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
+a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
+files through the localized status bar while preserving their links.
 
 ### 6.10 Audio files (`komponist-audiofile`)
 
@@ -1158,8 +1170,8 @@ and by the arrangement's waveforms (#12) next, and none of them may pull the oth
 audio thread** (§6.1): decoding, conversion and peak computation allocate and do IO, so they run on loader, read-ahead
 and worker threads and hand finished `Arc`s over.
 
-- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), FLAC, OGG Vorbis and MP3
-  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `flac`, `mp3`, `ogg` and `vorbis` features).
+- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), AIFF/AIFF-C PCM, FLAC, OGG Vorbis and MP3
+  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `aiff`, `pcm`, `flac`, `mp3`, `ogg` and `vorbis` features).
   The format is chosen by the first bytes, not the extension. The API is seekable and chunked: `open`, `info`
   (rate, channels, frames), `seek(frame)`, `read(&mut [f32])` (interleaved, from the current position), `read_full`. A
   seek lands 8192 frames before the target, rebuilds the decoder state and drops the frames in between; each decoded
@@ -1844,12 +1856,30 @@ once a second, requests peak data once with a repaint callback, and caches meshe
 source window (including tempo), zoom, height and peak-data identity. Ready peaks replace pending flat
 meshes automatically; missing links retain editable model metadata and are checked again. The two waveform
 tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting.
-Waveform meshes keep at most 32,768 columns; wider clips use proportionally wider columns over the full
+Waveform meshes keep fractional-point envelopes at two samples per point (retina 2×), painted as
+continuous triangle ribbons with one-physical-pixel alpha feathers rather than integer-height rectangles.
+Linear interpolation preserves measured min/max transients and RMS without temporal smoothing.
+Meshes keep at most 32,768 samples; wider clips use proportionally wider columns over the full
 source window, preserving temporal coverage, fade positions and visible-range culling. Painting is
 clipped to the visible range. `audio_parts` shares control geometry with hit testing; visible gain/fade/trim
 controls have localized slider nodes. Audio moves and trims always use the selected grid; fades and gain
 use unsnapped pointer deltas. Move/copy and both trim gestures apply to the gesture-start document so a
 previewed overlap cut is restored when the pointer returns or enters a refused destination.
+
+The audio editor (`views::audio_editor`, `FocusArea::Waveform`) displays the full source and active
+clip window in mono or separate stereo lanes. `UiState::waveform` keeps horizontal zoom (220 points
+per bar initially) and source-local scroll. Per-channel peak/RMS meshes share the arrangement renderer;
+unchanged full-source meshes survive window gain/fade edits. Source handles and metadata are rechecked
+once a second, and peaks arrive through the existing shared worker with a repaint callback.
+Toolbar and inspector use the same localized numeric controls. Source-start editing changes the active
+take's frame offset without moving the clip, shortening the window only at the source end. The original
+tempo/bar-count conversion uses the entire source duration and the current meter. Trim gestures follow
+the arrangement snap setting; envelope changes use free pointer deltas and preserve a single undo step.
+Only selected windows show the white gain/fade controls. Missing sources expose a recovery banner;
+replacement validates the new header before linking, preserves clip properties and inactive takes,
+rejects a source shorter than the saved offset, and reports any shortened window. The file menu also
+copies the resolved absolute path or opens its parent folder. PCM bit depth is shown when available
+from a WAV header; compressed sources retain their actual rate, channel count and duration metadata.
 
 ### 9.3 App structure (`komponist-app`)
 
