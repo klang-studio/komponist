@@ -136,7 +136,8 @@ differ on other distributions. `komponist --help` lists the options (`--demo`, `
 
 ## Contributing
 
-Issues and pull requests are welcome. Before you send a change, run `scripts/check.sh`: `cargo fmt --check`, `clippy -D
+Issues and pull requests are welcome. Build the test plugins once with `scripts/build-test-plugins.sh`, then run
+`scripts/check.sh` before you send a change. The gate requires all fixture bundles (`KOMPONIST_REQUIRE_FIXTURES=1`): `cargo fmt --check`, `clippy -D
 warnings` and the tests. Translations are the easiest way in: add or complete `crates/komponist-i18n/locales/<lang>/*.ftl`
 as described in [docs/I18N.md](docs/I18N.md). Performance notes are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 

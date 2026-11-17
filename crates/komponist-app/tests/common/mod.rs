@@ -9,6 +9,10 @@
 
 #![allow(dead_code)]
 
+#[allow(dead_code)]
+#[path = "../../../../scripts/test-fixtures.rs"]
+mod test_fixtures;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,16 +51,12 @@ pub fn fixture_dirs() -> Option<PluginDirs> {
         .join("test-plugins")
         .join(std::env::consts::OS)
         .join("clap");
-    if dir.join("kp-test-synth.clap").exists() {
+    if test_fixtures::bundle_dir(&dir, "clap") {
         Some(PluginDirs {
             clap: vec![std::fs::canonicalize(dir).unwrap()],
             vst3: Vec::new(),
         })
     } else {
-        eprintln!(
-            "skipped: {} is missing; run scripts/build-test-plugins.sh",
-            dir.display()
-        );
         None
     }
 }

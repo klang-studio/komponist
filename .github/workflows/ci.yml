@@ -28,6 +28,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Missing test bundles must fail instead of silently skipping plugin coverage.
+  KOMPONIST_REQUIRE_FIXTURES: "1"
   # Software Vulkan (lavapipe, from mesa-vulkan-drivers); there is no GPU on the runner.
   WGPU_BACKEND: vulkan
   # kittest tolerance on CI only (per-pixel YIQ distance, number of pixels allowed over it).
