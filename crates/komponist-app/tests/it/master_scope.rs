@@ -163,6 +163,13 @@ fn bar(mode: MasterDisplay, ppp: f32) -> Harness<'static, Bar> {
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             |ui, bar: &mut Bar| {
+                let menu = komponist_app::application_menu::Snapshot::new(
+                    Lang::De,
+                    &bar.keymap,
+                    komponist_app::application_menu::Backend::Egui,
+                    &[],
+                    true,
+                );
                 let model = TransportModel {
                     provisional_recordings: None,
                     project: &bar.project,
@@ -174,7 +181,7 @@ fn bar(mode: MasterDisplay, ppp: f32) -> Harness<'static, Bar> {
                     keymap: &bar.keymap,
                     lang: Lang::De,
                     master_display: bar.mode,
-                    plugin_windows: &[],
+                    menu: &menu,
                 };
                 let mut actions = Vec::new();
                 transport::show(ui, ui.max_rect(), &model, &mut bar.meters, &mut actions);

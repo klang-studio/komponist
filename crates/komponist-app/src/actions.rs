@@ -714,6 +714,8 @@ pub enum UiAction {
     SetBrowserQuery(String),
     /// Ctrl , : open the settings (at a section).
     OpenSettings(SettingsSection),
+    /// Portable About dialog (native AppKit keeps its standard panel).
+    OpenAbout,
     /// The "Ansicht" toggle of a plugin frame: the plugin's own GUI or the parameter grid.
     SetPluginView {
         /// The device.

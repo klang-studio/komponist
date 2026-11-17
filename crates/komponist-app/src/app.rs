@@ -139,6 +139,8 @@ pub struct App {
 /// Per-session state of the shell that is not view state.
 #[derive(Debug, Default)]
 pub(crate) struct ShellState {
+    /// The successfully installed application-menu backend; otherwise the local fallback.
+    pub(crate) menu_backend: crate::application_menu::Backend,
     /// Focus to restore when the dialog closes.
     focus_before_dialog: Option<FocusArea>,
     /// Computer-keyboard notes held down: physical key, MIDI note and original target track.
@@ -2285,6 +2287,7 @@ impl App {
                 self.ui.browser.query = query;
                 self.ui.browser.highlighted = None;
             }
+            UiAction::OpenAbout => self.open_dialog(Dialog::About),
             UiAction::OpenSettings(section) => self.open_dialog(Dialog::Settings(section)),
             UiAction::OpenNewTrackDialog => self.open_new_track_dialog(),
             UiAction::SetPluginView { device, view } => self.set_plugin_view(device, view),
@@ -2913,7 +2916,7 @@ fn on_start_screen(action: &Action) -> bool {
         || matches!(
             action,
             Action::Project(ProjectAction::New | ProjectAction::Open | ProjectAction::Quit)
-                | Action::Ui(UiAction::OpenSettings(_))
+                | Action::Ui(UiAction::OpenSettings(_) | UiAction::OpenAbout)
         )
 }
 
