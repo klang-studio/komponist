@@ -2704,6 +2704,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "komponist-stretch"
+version = "0.2.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "komponist-tokens"
 version = "0.2.0"
 dependencies = [

@@ -94,8 +94,10 @@ allows the redistribution. Left out are the driver side, the PDFs and three old 
 
 ## Build from source
 
-You need a Rust toolchain (`rust-toolchain.toml` pins the version) and the usual system libraries for egui/wgpu and
-ALSA/PipeWire/JACK. Everything else is fetched by cargo: komponist depends on the public DSP library
+You need a Rust toolchain (`rust-toolchain.toml` pins the version), a C++17 compiler (GCC/Clang on Linux,
+Xcode Clang on macOS, MSVC on Windows), and the usual system libraries for egui/wgpu and
+ALSA/PipeWire/JACK. The worker-only stretch wrapper builds its vendored Signalsmith sources locally;
+it downloads no C++ dependencies and needs no FFT library. Other dependencies are fetched by cargo: komponist depends on the public DSP library
 [klang-dsp](https://github.com/klang-studio/klang-dsp) as a git dependency pinned to one commit (`Cargo.toml`,
 `[workspace.dependencies]`), so a plain clone builds without any sibling checkout.
 
