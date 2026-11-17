@@ -588,3 +588,218 @@ fn a_clip_can_be_relinked_to_another_file() {
     shorter.frames = 0;
     assert!(set_audio_clip_file(&p, c, shorter).is_err());
 }
+
+// --- Audio recording takes (#13) --------------------------------------------------------------
+
+fn take(name: &str, rate: u32, frames: u64, offset: u64) -> crate::AudioTake {
+    crate::AudioTake {
+        name: name.into(),
+        file: AudioFile {
+            abs: format!("/takes/{name}.wav").into(),
+            sample_rate: rate,
+            frames,
+            ..file()
+        },
+        offset,
+    }
+}
+
+fn two_takes() -> (Project, TrackId, ClipId) {
+    let (p, track) = audio_track(&Project::new("Takes"));
+    let (p, clip) = ok_with(add_clip(&p, track, new_audio(3840, 7680)));
+    let (p, index) = ok_with(add_audio_take(
+        &p,
+        clip,
+        take("Take 2", 44100, 441000, 44100),
+    ));
+    assert_eq!(index, 1);
+    (p, track, clip)
+}
+
+#[test]
+fn audio_takes_append_select_rename_remove_and_keep_shared_settings() {
+    let (p, _, clip) = two_takes();
+    let p = ok(set_audio_clip_prop(&p, clip, AudioClipProp::GainDb(-3.0)));
+    let p = ok(set_audio_clip_prop(
+        &p,
+        clip,
+        AudioClipProp::FadeIn(Tick(240)),
+    ));
+    assert_eq!(audio_of(&p, clip).active_take, 1);
+    assert_eq!(audio_of(&p, clip).file.sample_rate, 44100);
+    assert_eq!(next_take_number(&p), 3);
+    let p = ok(rename_audio_take(&p, clip, 0, "Take 19".into()));
+    assert_eq!(next_take_number(&p), 20);
+    let p = ok(select_audio_take(&p, clip, 0));
+    assert_eq!(audio_of(&p, clip).file.sample_rate, 48000);
+    assert_eq!(
+        (audio_of(&p, clip).gain_db, audio_of(&p, clip).fade_in),
+        (-3.0, Tick(240))
+    );
+    let p = ok(remove_audio_take(&p, clip, 0));
+    let a = audio_of(&p, clip);
+    assert_eq!(
+        (a.takes.len(), a.active_take, a.active().name.as_str()),
+        (1, 0, "Take 2")
+    );
+    assert!(remove_audio_take(&p, clip, 0).is_err());
+    assert!(select_audio_take(&p, clip, 1).is_err());
+    assert!(rename_audio_take(&p, clip, 0, " ".into()).is_err());
+    assert!(add_audio_take(&p, clip, take("empty", 48000, 1, 1)).is_err());
+    // Structural changes are normal immutable edits, so undo restores every source.
+    let mut doc = Document::new(p.clone());
+    doc.apply("append", |p| {
+        add_audio_take(p, clip, take("Take 20", 48000, 480000, 0)).map(|(p, _)| p)
+    })
+    .unwrap();
+    doc.undo();
+    assert_eq!(doc.project().as_ref(), &p);
+    doc.redo();
+    assert_eq!(audio_of(doc.project(), clip).takes.len(), 2);
+}
+
+#[test]
+fn selecting_a_short_audio_take_shrinks_length_and_fades_without_moving_start() {
+    let (p, _, clip) = two_takes();
+    let p = ok(set_audio_clip_prop(
+        &p,
+        clip,
+        AudioClipProp::FadeOut(Tick(3000)),
+    ));
+    let (p, _) = ok_with(add_audio_take(&p, clip, take("Short", 48000, 24000, 0)));
+    let c = p.find_clip(clip).unwrap().1;
+    assert_eq!((c.start, c.length), (Tick(3840), Tick(960)));
+    assert_eq!(audio_of(&p, clip).fade_out, Tick(960));
+    assert_eq!(audio_of(&p, clip).takes[0].file.frames, 480000);
+}
+
+#[test]
+fn splitting_and_trimming_audio_updates_every_take_at_its_own_sample_rate() {
+    let (p, _, clip) = two_takes();
+    let p = ok(set_audio_clip_prop(
+        &p,
+        clip,
+        AudioClipProp::FadeIn(Tick(480)),
+    ));
+    let p = ok(set_audio_clip_prop(
+        &p,
+        clip,
+        AudioClipProp::FadeOut(Tick(960)),
+    ));
+    let (p, rights) = ok_with(split_clips(&p, &[clip], Tick(7680)));
+    let left = audio_of(&p, clip);
+    let right = audio_of(&p, rights[0]);
+    assert_eq!(
+        left.takes.iter().map(|t| t.offset).collect::<Vec<_>>(),
+        [0, 44100]
+    );
+    assert_eq!(
+        right.takes.iter().map(|t| t.offset).collect::<Vec<_>>(),
+        [96000, 132300]
+    );
+    assert_eq!((left.active_take, right.active_take), (1, 1));
+    assert_eq!((left.fade_out, right.fade_in), (Tick::ZERO, Tick::ZERO));
+    let p = ok(trim_audio_clip_start(&p, rights[0], Tick(8640)));
+    assert_eq!(
+        audio_of(&p, rights[0])
+            .takes
+            .iter()
+            .map(|t| t.offset)
+            .collect::<Vec<_>>(),
+        [120000, 154350]
+    );
+    let p = ok(trim_audio_clip_start(&p, rights[0], Tick(7680)));
+    assert_eq!(
+        audio_of(&p, rights[0])
+            .takes
+            .iter()
+            .map(|t| t.offset)
+            .collect::<Vec<_>>(),
+        [96000, 132300]
+    );
+}
+
+#[test]
+fn overlap_cuts_keep_short_inactive_takes_and_refuse_selecting_exhausted_windows() {
+    let (p, track, clip) = two_takes();
+    // Keep a short inactive pass while selecting the original long pass for playback.
+    let (p, _) = ok_with(add_audio_take(&p, clip, take("Short", 48000, 24000, 0)));
+    let p = ok(select_audio_take(&p, clip, 0));
+    let p = ok(set_clip_length(&p, clip, Tick(7680)));
+    let (p, _) = ok_with(add_clip(&p, track, new_audio(4800, 2880)));
+    let right = p
+        .track(track)
+        .unwrap()
+        .clips
+        .iter()
+        .find(|c| c.start == Tick(7680))
+        .unwrap();
+    let a = audio_of(&p, right.id);
+    assert_eq!(a.takes.len(), 3);
+    assert_eq!(
+        a.takes[2].offset, 96000,
+        "retain true offset beyond short source EOF"
+    );
+    assert!(select_audio_take(&p, right.id, 2).is_err());
+    // The extended edge comes back to the original timeline alignment of every pass.
+    let p = ok(trim_audio_clip_start(&p, right.id, Tick(3840)));
+    let c = p
+        .track(track)
+        .unwrap()
+        .clips
+        .iter()
+        .find(|c| c.start == Tick(3840))
+        .unwrap();
+    assert_eq!(audio_of(&p, c.id).takes[2].offset, 0);
+}
+
+#[test]
+fn source_offset_edits_only_the_active_take_and_preserve_timeline_start() {
+    let (p, _, clip) = two_takes();
+    let p = ok(set_audio_clip_prop(
+        &p,
+        clip,
+        AudioClipProp::SourceOffset(88200),
+    ));
+    let a = audio_of(&p, clip);
+    assert_eq!((a.takes[0].offset, a.takes[1].offset), (0, 88200));
+    assert_eq!(p.find_clip(clip).unwrap().1.start, Tick(3840));
+    let p = ok(set_audio_clip_prop(
+        &p,
+        clip,
+        AudioClipProp::SourceOffset(u64::MAX),
+    ));
+    assert_eq!(audio_of(&p, clip).offset, 440999);
+    assert_eq!(p.find_clip(clip).unwrap().1.length, Tick(1));
+}
+
+#[test]
+fn rewriting_audio_links_visits_inactive_takes_and_keeps_unchanged_arcs() {
+    let (p, track, clip) = two_takes();
+    let mut seen = Vec::new();
+    assert!(
+        rewrite_audio_files(&p, |f| {
+            seen.push(f.abs.clone());
+            None
+        })
+        .is_none()
+    );
+    assert_eq!(seen.len(), 2);
+    let original_active = audio_of(&p, clip).file.clone();
+    let q = rewrite_audio_files(&p, |f| {
+        (f.sample_rate == 48000).then(|| AudioFile {
+            rel: "Takes/original.wav".into(),
+            ..f.clone()
+        })
+    })
+    .unwrap();
+    assert!(!Arc::ptr_eq(
+        p.track(track).unwrap(),
+        q.track(track).unwrap()
+    ));
+    assert_eq!(
+        audio_of(&q, clip).takes[0].file.rel,
+        PathBuf::from("Takes/original.wav")
+    );
+    assert_eq!(audio_of(&q, clip).file, original_active);
+}

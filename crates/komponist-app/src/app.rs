@@ -1495,6 +1495,7 @@ impl App {
             EditAction::SetAudioClipProp { clip, prop } => {
                 let label = match prop {
                     edits::AudioClipProp::GainDb(_) => "undo-clip-gain",
+                    edits::AudioClipProp::SourceOffset(_) => "undo-clip-source-start",
                     edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
                         "undo-clip-fade"
                     }

@@ -453,16 +453,17 @@ impl App {
     }
 }
 
-/// The audio files of the clips of `project`, in track and clip order.
+/// All audio take files of `project`, including inactive passes, in track and clip order.
 fn audio_files(project: &Project) -> Vec<&AudioFile> {
     project
         .tracks
         .iter()
         .flat_map(|t| t.clips.iter())
-        .filter_map(|c| match &c.content {
-            ClipContent::Audio(a) => Some(&a.file),
-            _ => None,
+        .flat_map(|c| match &c.content {
+            ClipContent::Audio(a) => a.takes.as_slice(),
+            _ => &[],
         })
+        .map(|take| &take.file)
         .collect()
 }
 

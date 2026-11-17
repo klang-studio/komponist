@@ -461,7 +461,22 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
             offset: 0,
         },
     };
-    let (p, _) = edits::add_clip(&p, track, clip(0, &take)).unwrap();
+    let (p, first) = edits::add_clip(&p, track, clip(0, &take)).unwrap();
+    let inactive = library.join("take 2.wav");
+    let mut other_wav = std::fs::read(&take).unwrap();
+    other_wav.extend_from_slice(b"inactive take");
+    std::fs::write(&inactive, other_wav).unwrap();
+    let (p, _) = edits::add_audio_take(
+        &p,
+        first,
+        komponist_model::AudioTake {
+            name: "Take 2".into(),
+            file: link(&inactive),
+            offset: 0,
+        },
+    )
+    .unwrap();
+    let p = edits::select_audio_take(&p, first, 0).unwrap();
     let (p, _) = edits::add_clip(&p, track, clip(960, &gone)).unwrap();
     // A file that only looks like audio by its name must never be copied next to the project.
     let secret = library.join("secret.wav");
@@ -476,6 +491,10 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
     app.dispatch(Action::Project(ProjectAction::CollectAndSave));
     let folder = home.join("Aufnahme Samples");
     assert!(folder.join("take 1.wav").is_file());
+    assert!(
+        folder.join("take 2.wav").is_file(),
+        "inactive audio take is collected"
+    );
     assert!(library.join("take 1.wav").is_file(), "the original stays");
     let saved = persist::from_json(&std::fs::read_to_string(&file).unwrap()).unwrap();
     let files: Vec<_> = saved.tracks[0]
@@ -486,6 +505,10 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
             _ => unreachable!(),
         })
         .collect();
+    let komponist_model::ClipContent::Audio(audio) = &saved.tracks[0].clips[0].content else {
+        unreachable!()
+    };
+    assert_eq!(audio.takes[1].file.abs, folder.join("take 2.wav"));
     assert_eq!(files[0].abs, folder.join("take 1.wav"));
     assert_eq!(files[0].rel, Path::new("Aufnahme Samples/take 1.wav"));
     // A file that is missing keeps its link.

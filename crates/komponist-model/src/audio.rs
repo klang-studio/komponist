@@ -182,9 +182,22 @@ pub enum ClipTimeMode {
     RePitch,
 }
 
+/// One recording pass (or the original linked source) of an audio clip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioTake {
+    /// Take name; empty for an imported source.
+    #[serde(default)]
+    pub name: String,
+    /// The linked source file, kept even while this take is inactive.
+    pub file: AudioFile,
+    /// Source start in this file's own frames. An inactive take may start beyond EOF after a
+    /// split; keeping that offset preserves its timeline alignment when the edge is extended.
+    pub offset: u64,
+}
+
 /// Audio content of a clip: a window into a linked file.
 ///
-/// The window starts at [`AudioClip::offset`] frames into the file and runs for the clip's
+/// The window starts at [`AudioTake::offset`] frames into the file and runs for the clip's
 /// timeline length ([`crate::Clip::length`]): how many frames that is depends on the tempo, see
 /// [`AudioClip::source_frames`]. Past the end of the file the clip is silent; edits keep the clip
 /// inside the file ([`AudioClip::max_length`]).
@@ -193,30 +206,111 @@ pub enum ClipTimeMode {
 /// is added, moved, copied or stretched over others cuts them (the clip below is shortened, split
 /// or removed, each piece keeping its window into the file), so the model always says what plays;
 /// the playback puts [`EDGE_FADE_MS`] fades on the cut edges.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Field access dereferences to the active take.
+#[derive(Debug, Clone, PartialEq)]
 pub struct AudioClip {
-    /// The linked file.
-    pub file: AudioFile,
-    /// Start of the window in the file, in frames of the file's rate, `0 ..< file.frames`.
-    pub offset: u64,
-    /// Clip gain in dB, [`CLIP_GAIN_DB_MIN`] ..= [`CLIP_GAIN_DB_MAX`]. Default 0.
-    #[serde(default)]
+    /// All source windows, oldest first. Never empty.
+    pub takes: Vec<AudioTake>,
+    /// The source used for playback and field access; always less than `takes.len()`.
+    pub active_take: usize,
+    /// Clip gain in dB, shared by every take.
     pub gain_db: f32,
-    /// Fade-in length from the clip start, in timeline ticks, ≥ 0. `fade_in + fade_out` never
-    /// exceeds the clip length.
-    #[serde(default)]
+    /// Fade-in length in timeline ticks, shared by every take.
     pub fade_in: Tick,
-    /// Fade-out length to the clip end, in timeline ticks, ≥ 0.
-    #[serde(default)]
+    /// Fade-out length in timeline ticks, shared by every take.
     pub fade_out: Tick,
-    /// How the content follows the project tempo ([`ClipTimeMode`]). Files without the field load
-    /// as [`ClipTimeMode::Fixed`].
-    #[serde(default)]
+    /// How the clip follows project tempo.
     pub time_mode: ClipTimeMode,
-    /// The tempo the content was recorded or made at: the project tempo when the clip was created,
-    /// changed by hand. Used by [`ClipTimeMode::RePitch`] (and kept while the mode is `Fixed`, so
-    /// switching Re-Pitch on starts from it).
+    /// Original tempo, retained while Re-Pitch is off.
     pub original_tempo: Tempo,
+}
+
+// Keep `audio.file` and `audio.offset` source-compatible without a second, potentially stale
+// copy of the active source. Structural edits and loading establish the same invariants as MIDI.
+impl std::ops::Deref for AudioClip {
+    type Target = AudioTake;
+    fn deref(&self) -> &AudioTake {
+        self.active()
+    }
+}
+impl std::ops::DerefMut for AudioClip {
+    fn deref_mut(&mut self) -> &mut AudioTake {
+        &mut self.takes[self.active_take]
+    }
+}
+
+// Version 3 originally stored one file/offset pair. Keep writing the active pair so older
+// readers play the selected take, while newer readers retain the optional complete take list.
+impl Serialize for AudioClip {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let active = self
+            .takes
+            .get(self.active_take)
+            .ok_or_else(|| <S::Error as serde::ser::Error>::custom("invalid audio take index"))?;
+        let extended = self.takes.len() > 1 || !active.name.is_empty();
+        let mut s = serializer.serialize_struct("AudioClip", if extended { 9 } else { 7 })?;
+        s.serialize_field("file", &active.file)?;
+        s.serialize_field("offset", &active.offset)?;
+        s.serialize_field("gain_db", &self.gain_db)?;
+        s.serialize_field("fade_in", &self.fade_in)?;
+        s.serialize_field("fade_out", &self.fade_out)?;
+        s.serialize_field("time_mode", &self.time_mode)?;
+        s.serialize_field("original_tempo", &self.original_tempo)?;
+        if extended {
+            s.serialize_field("takes", &self.takes)?;
+            s.serialize_field("active_take", &self.active_take)?;
+        }
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AudioClip {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Stored {
+            file: AudioFile,
+            offset: u64,
+            #[serde(default)]
+            takes: Option<Vec<AudioTake>>,
+            #[serde(default)]
+            active_take: usize,
+            #[serde(default)]
+            gain_db: f32,
+            #[serde(default)]
+            fade_in: Tick,
+            #[serde(default)]
+            fade_out: Tick,
+            #[serde(default)]
+            time_mode: ClipTimeMode,
+            original_tempo: Tempo,
+        }
+        let s = Stored::deserialize(deserializer)?;
+        let takes = s.takes.unwrap_or_else(|| {
+            vec![AudioTake {
+                name: String::new(),
+                file: s.file.clone(),
+                offset: s.offset,
+            }]
+        });
+        let active = takes.get(s.active_take).ok_or_else(|| {
+            <D::Error as serde::de::Error>::custom("invalid audio take index or empty takes")
+        })?;
+        if active.file != s.file || active.offset != s.offset {
+            return Err(<D::Error as serde::de::Error>::custom(
+                "audio take disagrees with legacy source",
+            ));
+        }
+        Ok(Self {
+            takes,
+            active_take: s.active_take,
+            gain_db: s.gain_db,
+            fade_in: s.fade_in,
+            fade_out: s.fade_out,
+            time_mode: s.time_mode,
+            original_tempo: s.original_tempo,
+        })
+    }
 }
 
 impl AudioClip {
@@ -224,13 +318,44 @@ impl AudioClip {
     /// `original_tempo` = the project tempo.
     pub fn new(file: AudioFile, offset: u64, original_tempo: Tempo) -> AudioClip {
         AudioClip {
-            file,
-            offset,
+            takes: vec![AudioTake {
+                name: String::new(),
+                file,
+                offset,
+            }],
+            active_take: 0,
             gain_db: 0.0,
             fade_in: Tick::ZERO,
             fade_out: Tick::ZERO,
             time_mode: ClipTimeMode::Fixed,
             original_tempo,
+        }
+    }
+
+    /// The active source window.
+    pub fn active(&self) -> &AudioTake {
+        &self.takes[self.active_take]
+    }
+
+    /// Source frames in `take` for a timeline duration, using that take's own sample rate.
+    pub fn take_source_frames(&self, take: &AudioTake, ticks: Tick, project: Tempo) -> u64 {
+        (ticks.0.max(0) as f64
+            * self.source_secs_per_tick(project)
+            * f64::from(take.file.sample_rate))
+        .round() as u64
+    }
+
+    /// Advances every take's source window by a signed timeline duration. Inactive windows
+    /// retain beyond-EOF offsets, so split/trim never discard their alignment or source link.
+    pub(crate) fn shift_sources(&mut self, delta: Tick, project: Tempo) {
+        let seconds = delta.0.unsigned_abs() as f64 * self.source_secs_per_tick(project);
+        for take in &mut self.takes {
+            let frames = (seconds * f64::from(take.file.sample_rate)).round() as u64;
+            take.offset = if delta.0 >= 0 {
+                take.offset.saturating_add(frames)
+            } else {
+                take.offset.saturating_sub(frames)
+            };
         }
     }
 
@@ -267,7 +392,7 @@ impl AudioClip {
     }
 
     /// The longest clip length in ticks that stays inside the file: what is left behind
-    /// [`AudioClip::offset`], floored. 0 when the window is empty.
+    /// [`AudioTake::offset`], floored. 0 when the window is empty.
     pub fn max_length(&self, project: Tempo) -> Tick {
         self.frames_to_ticks(self.file.frames.saturating_sub(self.offset), project)
     }

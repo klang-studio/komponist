@@ -190,3 +190,6 @@ undo-plugin-state = { $plugin }: Change State
 # Audio clip envelope gestures.
 undo-clip-gain = Change Clip Gain
 undo-clip-fade = Change Fade
+
+# Audio source window offset.
+undo-clip-source-start = Change Source Start

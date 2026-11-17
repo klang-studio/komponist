@@ -40,7 +40,8 @@ mod routes;
 pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
 
 pub use audio::{
-    AudioClipProp, NewAudioTrack, add_audio_track, add_audio_track_in, rewrite_audio_files,
+    AudioClipProp, NewAudioTrack, add_audio_take, add_audio_track, add_audio_track_in,
+    remove_audio_take, rename_audio_take, rewrite_audio_files, select_audio_take,
     set_audio_clip_file, set_audio_clip_prop, trim_audio_clip_start,
 };
 
@@ -402,20 +403,24 @@ pub fn next_take_number(project: &Project) -> u32 {
         }
         digits.parse().ok()
     }
-    project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .flat_map(|c| {
-            let takes = match &c.content {
-                ClipContent::Midi(m) => m.takes.as_slice(),
-                ClipContent::Step(_) | ClipContent::Audio(_) => &[],
-            };
-            std::iter::once(c.name.as_str()).chain(takes.iter().map(|t| t.name.as_str()))
-        })
-        .filter_map(number)
-        .max()
-        .map_or(1, |n| n.saturating_add(1))
+    let mut highest = 0;
+    for c in project.tracks.iter().flat_map(|t| &t.clips) {
+        highest = highest.max(number(&c.name).unwrap_or(0));
+        match &c.content {
+            ClipContent::Midi(m) => {
+                for t in &m.takes {
+                    highest = highest.max(number(&t.name).unwrap_or(0));
+                }
+            }
+            ClipContent::Audio(a) => {
+                for t in &a.takes {
+                    highest = highest.max(number(&t.name).unwrap_or(0));
+                }
+            }
+            ClipContent::Step(_) => {}
+        }
+    }
+    highest.saturating_add(1)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1839,7 +1844,7 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> (Clip, Clip) {
             let ClipContent::Audio(left_audio) = &mut left.content else {
                 unreachable!("left and right are copies of one clip");
             };
-            right_audio.offset += left_audio.source_frames(at, project.tempo);
+            right_audio.shift_sources(at, project.tempo);
             right_audio.fade_in = Tick::ZERO;
             left_audio.fade_out = Tick::ZERO;
             left_audio.clamp(left.length);

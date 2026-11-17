@@ -170,6 +170,16 @@ impl<P: AudioProcess> EngineSlot<P> {
     /// first; then runs [`AudioProcess::process`] (with FTZ/DAZ set and the load measured) or, with
     /// no engine, writes silence.
     pub fn process(&mut self, out: &mut OutputBuffer<'_>, info: &CallbackInfo) {
+        self.process_input(out, info, &crate::InputBuffer::empty());
+    }
+
+    /// RT. The duplex form of [`EngineSlot::process`], with borrowed captured audio.
+    pub fn process_input(
+        &mut self,
+        out: &mut OutputBuffer<'_>,
+        info: &CallbackInfo,
+        input: &crate::InputBuffer<'_>,
+    ) {
         let start = Instant::now();
         self.exchange();
 
@@ -179,7 +189,7 @@ impl<P: AudioProcess> EngineSlot<P> {
                 Some(receiver) => MidiIn::new(receiver, *info),
                 None => MidiIn::empty(*info),
             };
-            engine.process(out, info, &mut midi);
+            engine.process_input(out, info, &mut midi, input);
         } else {
             out.silence();
             if let Some(receiver) = self.midi.as_deref_mut() {
