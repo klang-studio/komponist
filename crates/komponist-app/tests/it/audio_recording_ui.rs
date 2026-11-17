@@ -645,14 +645,15 @@ fn live_audio_inspector_and_input_status_render_in_both_languages() {
             expected
         );
         let mut h = harness(app);
-        h.get_by_role_and_label(
-            Role::Label,
-            &format!(
-                "{} {}",
-                lang.new_track_input(),
-                lang.audio_input_bus("Source Bus")
-            ),
-        );
+        h.get_by_role_and_label(Role::Group, lang.inspector_section_clip())
+            .get_by_role_and_label(
+                Role::Label,
+                &format!(
+                    "{} {}",
+                    lang.new_track_input(),
+                    lang.audio_input_bus("Source Bus")
+                ),
+            );
         h.get_by_role_and_label(Role::Label, &format!("{} 1", lang.inspector_clip_takes()));
         assert!(
             h.get_all_by_role(Role::Label).any(
