@@ -20,6 +20,7 @@ komponist-builtin = { path = "crates/komponist-builtin" }
 komponist-ipc = { path = "crates/komponist-ipc" }
 komponist-rt = { path = "crates/komponist-rt" }
 komponist-audiofile = { path = "crates/komponist-audiofile" }
+komponist-stretch = { path = "crates/komponist-stretch" }
 komponist-hosting = { path = "crates/komponist-hosting" }
 komponist-plugins = { path = "crates/komponist-plugins" }
 komponist-bridge = { path = "crates/komponist-bridge" }
@@ -85,6 +86,9 @@ fluent-syntax = "0.12.0"
 # komponist: the system language for "System" in the language setting (MIT OR Apache-2.0; already in the tree via egui).
 sys-locale = "0.3.2"
 
+# Portable C++17 compilation for the vendored worker-only Signalsmith wrapper (MIT OR Apache-2.0).
+cc = "1.11.2"
+
 # Serialization and files.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -121,4 +125,8 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.klang-dsp]
+opt-level = 2
+
+# Rust-side chunk validation and mapping accompany optimized C++ even in dev/test.
+[profile.dev.package.komponist-stretch]
 opt-level = 2

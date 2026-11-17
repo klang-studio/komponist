@@ -156,6 +156,7 @@ komponist/
     komponist-builtin/          Hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-audiofile/        audio files: seekable chunked decoding (hound, symphonia), sample-rate conversion (rubato), waveform peak cache, the file pool; leaf crate, no studio dependency
+    komponist-stretch/          worker-only Signalsmith Default chunks, priming/reset and latency; no engine integration yet (#14 WP-B)
     komponist-rt/               realtime thread set-up: SCHED_FIFO, time-constraint policy, audio workgroups, os_sync waits (macOS); depends on libc only
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
@@ -1231,6 +1232,20 @@ and worker threads and hand finished `Arc`s over.
   first (`FilePool::set_cache_dir`, a folder in the user's cache directory, never the repository or the project folder;
   one `<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
   streaming pass and writes the cache. Without a cache folder peaks live in memory only.
+
+
+### 6.11 Stretch chunks (`komponist-stretch`, #14 WP-B)
+
+A leaf crate wraps vendored Signalsmith Stretch/Linear (MIT, exact commits and notices in
+`vendor/signalsmith-stretch/VENDORED.md`) behind a checked Rust/C++ boundary. All construction,
+seek/reset, processing and destruction belong off the audio thread. Mono/stereo planar input
+and output share an 8–192 kHz rate; duration ratios are output/input, validated at 0.5–2.0.
+`seek` consumes source look-ahead and discards algorithmic output delay before publishing audio.
+The worker API emits fixed 512-frame chunks and an optional terminal partial chunk; callers
+zero-pad EOF reads and control rounded finite output length. Ratio changes require re-priming.
+The C++17 backend is optimized in dev/test too, using the portable FFT without fast-math or
+host-specific instruction flags. The current engine does not use this crate: track-ring/head
+buffering, playback/export integration, warp persistence, UI and tempo detection follow later.
 
 ---
 
