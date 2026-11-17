@@ -11,6 +11,46 @@ fn audio_file_can_move_to_a_reader_thread() {
 }
 
 #[test]
+fn aiff_big_endian_pcm_supports_chunked_reads_and_seeks() {
+    let dir = Scratch::new("aiff");
+    let path = dir.path("stereo.aiff");
+    let samples = [16384_i16, -16384, 0, 32767, -32768, 8192];
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"FORM");
+    bytes.extend_from_slice(&58_u32.to_be_bytes());
+    bytes.extend_from_slice(b"AIFFCOMM");
+    bytes.extend_from_slice(&18_u32.to_be_bytes());
+    bytes.extend_from_slice(&2_u16.to_be_bytes());
+    bytes.extend_from_slice(&3_u32.to_be_bytes());
+    bytes.extend_from_slice(&16_u16.to_be_bytes());
+    // 44,100 in AIFF's 80-bit extended precision representation.
+    bytes.extend_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+    bytes.extend_from_slice(b"SSND");
+    bytes.extend_from_slice(&20_u32.to_be_bytes());
+    bytes.extend_from_slice(&[0; 8]);
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_be_bytes());
+    }
+    std::fs::write(&path, bytes).unwrap();
+    let mut file = AudioFile::open(&path).unwrap();
+    assert_eq!(file.info().format, Format::Aiff);
+    assert_eq!(
+        (
+            file.info().sample_rate,
+            file.info().channels,
+            file.info().frames
+        ),
+        (44_100, 2, 3)
+    );
+    let mut out = [0.0; 4];
+    assert_eq!(file.read(&mut out).unwrap(), 2);
+    assert_eq!(out, [0.5, -0.5, 0.0, 32767.0 / 32768.0]);
+    file.seek(2).unwrap();
+    assert_eq!(file.read(&mut out).unwrap(), 1);
+    assert_eq!(&out[..2], &[-1.0, 0.25]);
+}
+
+#[test]
 fn wav_sample_formats_decode_to_the_same_values() {
     let dir = Scratch::new("wav-formats");
     // 16-bit stereo: exact scaling by 1/32768.

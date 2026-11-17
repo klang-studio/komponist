@@ -14,10 +14,11 @@
 use egui::{Color32, Context, Id, Key, Modifiers, Role, Sense, Ui, UiBuilder, WidgetInfo, vec2};
 use komponist_i18n::Lang;
 use komponist_model::edits::{self, DefaultNames, NewTrack};
-use komponist_model::{PluginRef, Project};
+use komponist_model::{AudioInput, HardwareInput, PluginRef, Project};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, size, space, typography};
 use komponist_ui::widgets::button::Kind;
+use komponist_ui::widgets::dropdown::{Dropdown, Item as DropItem};
 use komponist_ui::widgets::number_field::NumberField;
 use komponist_ui::widgets::tabs::{Item, Segmented};
 use komponist_ui::widgets::text_field::TextField;
@@ -33,12 +34,61 @@ use crate::views::format_tag;
 
 /// The names of the track types the dialog offers, in segment order; a later wave adds "Audio"
 /// here.
-fn kinds(t: Lang) -> [&'static str; 2] {
-    [t.new_track_midi(), t.new_track_bus()]
+fn kinds(t: Lang) -> [&'static str; 3] {
+    [
+        t.new_track_midi(),
+        t.new_track_type_audio(),
+        t.new_track_bus(),
+    ]
 }
 
 /// Index of "Bus" in [`kinds`].
-pub const KIND_BUS: usize = 1;
+pub const KIND_BUS: usize = 2;
+/// Index of Audio in the track type control.
+pub const KIND_AUDIO: usize = 1;
+
+/// Reusable input choices for a new track, before it has any output edges.
+pub fn input_choices(project: &Project, t: Lang, channels: u16) -> Vec<(AudioInput, String)> {
+    let mut choices = vec![(AudioInput::None, t.new_track_no_input().to_owned())];
+    for first in 0..channels {
+        choices.push((
+            AudioInput::Hardware(HardwareInput {
+                first,
+                stereo: false,
+            }),
+            t.new_track_input_mono(first + 1),
+        ));
+    }
+    for first in (0..channels.saturating_sub(1)).step_by(2) {
+        choices.push((
+            AudioInput::Hardware(HardwareInput {
+                first,
+                stereo: true,
+            }),
+            t.new_track_input_pair(first + 1, first + 2),
+        ));
+    }
+    choices.extend(
+        project
+            .tracks
+            .iter()
+            .filter(|track| track.is_bus())
+            .map(|track| {
+                (
+                    AudioInput::Bus(track.id),
+                    t.new_track_input_bus(&track.name),
+                )
+            }),
+    );
+    choices
+}
+
+/// First unused mono channel of the configured capture device; no input on the null backend.
+pub fn first_unused_input(project: &Project, channels: u16) -> AudioInput {
+    (0..channels).find(|channel| !project.tracks.iter().any(|track| {
+        matches!(track.audio.input, AudioInput::Hardware(h) if h.first == *channel || (h.stereo && h.first.checked_add(1) == Some(*channel)))
+    })).map_or(AudioInput::None, |first| AudioInput::Hardware(HardwareInput { first, stereo: false }))
+}
 
 /// Most tracks one dialog creates.
 pub const COUNT_MAX: u32 = 16;
@@ -53,6 +103,10 @@ pub struct State {
     pub kind: usize,
     /// The chosen instrument, `None` = "Kein Instrument".
     pub instrument: Option<PluginRef>,
+    /// Input chosen for new audio tracks.
+    pub input: AudioInput,
+    /// Configured capture channel count; zero on the null backend.
+    pub available_input_channels: u16,
     /// The search text.
     pub query: String,
     /// The name field.
@@ -73,6 +127,8 @@ impl State {
         State {
             kind: 0,
             instrument,
+            input: AudioInput::None,
+            available_input_channels: 0,
             query: String::new(),
             name: String::new(),
             name_touched: false,
@@ -88,7 +144,13 @@ impl State {
         let bus = self.kind == KIND_BUS;
         Spec {
             bus,
-            instrument: if bus { None } else { self.instrument.clone() },
+            audio: self.kind == KIND_AUDIO,
+            input: self.input,
+            instrument: if bus || self.kind == KIND_AUDIO {
+                None
+            } else {
+                self.instrument.clone()
+            },
             name: (self.name_touched && !name.is_empty()).then(|| name.to_owned()),
             count: self.count.clamp(1, COUNT_MAX) as usize,
         }
@@ -100,6 +162,10 @@ impl State {
 pub struct Spec {
     /// An effect bus instead of a MIDI track (no instrument).
     pub bus: bool,
+    /// Audio track instead of MIDI.
+    pub audio: bool,
+    /// Input for each audio track.
+    pub input: AudioInput,
     /// The instrument, `None` = none.
     pub instrument: Option<PluginRef>,
     /// The typed name; `None` = the automatic names.
@@ -194,7 +260,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
     let focused = ctx.memory(|mem| mem.focused());
     // Enter and ↑ ↓ belong to the dialog while no button and no number entry has the focus.
     let keys = focused.is_none() || focused == Some(search_id) || focused == Some(name_id);
-    let bus = s.kind == KIND_BUS;
+    let bus = s.kind != 0;
     let (mut up, mut down, mut enter) = (false, false, false);
     if keys {
         ctx.input_mut(|i| {
@@ -246,13 +312,38 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                     ui.add(Segmented::new(t.new_track_kind(), &mut s.kind, &items));
                 });
                 gap(ui);
-                if s.kind != KIND_BUS {
+                if s.kind == 0 {
                     instrument_row(ui, t, s, view, &mut rows, control, search_id);
+                    gap(ui);
+                }
+                if s.kind == KIND_AUDIO {
+                    row(ui, t.new_track_input(), |ui| {
+                        let choices = input_choices(view.project, t, s.available_input_channels);
+                        let mut selected = choices
+                            .iter()
+                            .position(|(input, _)| *input == s.input)
+                            .unwrap_or(0);
+                        let items: Vec<_> = choices
+                            .iter()
+                            .map(|(_, name)| DropItem::new(name))
+                            .collect();
+                        if ui
+                            .add(
+                                Dropdown::new(t.new_track_input(), &mut selected, &items)
+                                    .width(control),
+                            )
+                            .changed()
+                        {
+                            s.input = choices[selected].0;
+                        }
+                    });
                     gap(ui);
                 }
                 row(ui, t.new_track_name(), |ui| {
                     let hint = if s.kind == KIND_BUS {
                         auto_bus_name(t, view.project)
+                    } else if s.kind == KIND_AUDIO {
+                        t.default_name_audio().to_owned()
                     } else {
                         auto_name(t, view.project, s.instrument.as_ref())
                     };

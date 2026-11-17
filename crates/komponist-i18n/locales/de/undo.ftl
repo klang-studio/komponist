@@ -193,3 +193,7 @@ undo-clip-fade = Fade ändern
 
 # Audio source window offset.
 undo-clip-source-start = Quell-Start ändern
+
+# Linked audio import and browsing (epic #8).
+undo-import-audio = Audio importieren
+undo-add-audio-track = Audio-Spur hinzufügen

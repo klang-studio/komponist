@@ -29,3 +29,11 @@ new-track-count = Count
 
 # Primary button (Enter).
 new-track-create = Create
+
+# Linked audio import and browsing (epic #8).
+new-track-type-audio = Audio
+new-track-input = Input
+new-track-no-input = No input
+new-track-input-mono = Input { $n }
+new-track-input-pair = Input { $a }+{ $b }
+new-track-input-bus = Bus { $name }
