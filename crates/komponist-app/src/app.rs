@@ -140,8 +140,8 @@ pub struct App {
 pub(crate) struct ShellState {
     /// Focus to restore when the dialog closes.
     focus_before_dialog: Option<FocusArea>,
-    /// Computer-keyboard notes held down: key and MIDI note.
-    pub(crate) held_notes: Vec<(Key, u8)>,
+    /// Computer-keyboard notes held down: physical key, MIDI note and original target track.
+    pub(crate) held_notes: Vec<(Key, u8, TrackId)>,
     /// One-shot requests for the views of the next frame.
     pub(crate) requests: Requests,
     /// A UI scale change to apply at the start of the next frame.
@@ -770,6 +770,7 @@ impl App {
         self.engine
             .sync_device_states(before, &after, dir.as_deref());
         self.expect_echo(before, &after);
+        self.release_keyboard_notes_if(|id| after.track(id).is_none());
     }
 
     /// After a scan: devices that were missing and whose plugin is now in the catalog get a
@@ -937,7 +938,8 @@ impl App {
             let ctrl = modifiers.command;
             let physical = key_from_egui(physical_key.unwrap_or(key));
             // A held note ends on release even if the layer turned off meanwhile.
-            let held = physical.is_some_and(|k| self.shell.held_notes.iter().any(|(h, _)| *h == k));
+            let held =
+                physical.is_some_and(|k| self.shell.held_notes.iter().any(|(h, _, _)| *h == k));
             let layer = self.keyboard_midi_active() && !ctrl && !modifiers.alt;
             if let Some(k) = physical
                 && let Some(note) = keymap::note_for(k)
@@ -1029,22 +1031,50 @@ impl App {
 
     pub(crate) fn keyboard_note(&mut self, key: Key, note: u8, pressed: bool, repeat: bool) {
         if pressed {
-            if repeat || self.shell.held_notes.iter().any(|(k, _)| *k == key) {
+            if repeat || self.shell.held_notes.iter().any(|(k, _, _)| *k == key) {
                 return;
             }
-            self.shell.held_notes.push((key, note));
+            let Some(track) = self
+                .live_track()
+                .filter(|id| self.project().track(*id).is_some())
+            else {
+                return;
+            };
+            self.shell.held_notes.push((key, note, track));
             self.dispatch(Action::Transport(TransportAction::LiveNote {
-                track: None,
+                track: Some(track),
                 key: note,
                 velocity: KEYBOARD_VELOCITY,
             }));
-        } else if let Some(i) = self.shell.held_notes.iter().position(|(k, _)| *k == key) {
-            let (_, note) = self.shell.held_notes.remove(i);
+        } else if let Some(i) = self.shell.held_notes.iter().position(|(k, _, _)| *k == key) {
+            let (_, note, track) = self.shell.held_notes.remove(i);
+            if self.project().track(track).is_none() {
+                return;
+            }
             self.dispatch(Action::Transport(TransportAction::LiveNote {
-                track: None,
+                track: Some(track),
                 key: note,
                 velocity: 0,
             }));
+        }
+    }
+
+    /// Releases keys before their target or keyboard layer disappears. Explicit targets prevent
+    /// late releases from reaching another selected track or a new document reusing the same id.
+    fn release_keyboard_notes_if(&mut self, mut release: impl FnMut(TrackId) -> bool) {
+        let mut index = 0;
+        while index < self.shell.held_notes.len() {
+            let (_, key, track) = self.shell.held_notes[index];
+            if release(track) {
+                self.shell.held_notes.remove(index);
+                self.engine.send(Command::LiveNote {
+                    track,
+                    key,
+                    velocity: 0,
+                });
+            } else {
+                index += 1;
+            }
         }
     }
 
@@ -1066,6 +1096,9 @@ impl App {
             Action::Plugin(a) => self.plugin_action(a),
             Action::Project(a) => self.project_action(a),
             Action::Settings(a) => self.settings_action(a),
+        }
+        if !self.keyboard_midi_active() {
+            self.release_keyboard_notes_if(|_| true);
         }
     }
 
@@ -2167,7 +2200,12 @@ impl App {
                     self.open_dialog(next);
                 }
             }
-            UiAction::ToggleKeyboardMidi => self.ui.keyboard_midi = !self.ui.keyboard_midi,
+            UiAction::ToggleKeyboardMidi => {
+                self.ui.keyboard_midi = !self.ui.keyboard_midi;
+                if !self.ui.keyboard_midi {
+                    self.release_keyboard_notes_if(|_| true);
+                }
+            }
             UiAction::ResetMeters { track, all } => self.meters.reset(track, all),
             UiAction::ResizePanel { panel, size } => {
                 let layout = &mut self.ui.layout;
@@ -2583,6 +2621,7 @@ impl App {
     /// at 1 in every project, [`EngineSync::reset`]), fresh selection, editor, plugin windows,
     /// meters and scroll position.
     pub(crate) fn open_document(&mut self, doc: Document, path: Option<PathBuf>) {
+        self.release_keyboard_notes_if(|_| true);
         // Plugin GUIs close in their bridges before the reset releases the bridges.
         self.close_all_plugin_frames();
         // A take of the old project does not go into the new one, nor does a count-in that ends

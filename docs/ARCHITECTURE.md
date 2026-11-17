@@ -310,6 +310,8 @@ Runtime status of a device (ok / lädt / abgestürzt / fehlt) is **not** part of
 in `komponist-plugins` and is shown by the UI. The document only keeps what must survive a save.
 
 IDs are `u64` from `Project::next_id`, so they stay stable across undo and redo (sends have ids too, `SendId`).
+Allocation is checked and fallible; an exhausted counter rejects the edit without changing the document. Project
+loading rejects maximal object IDs and an exhausted `next_id` instead of wrapping the counter.
 
 **Routing (wave 9).** Buses, outputs, sends and sidechains, their invariants, edits and file format: §6.8. A project
 without buses has every track's output on the master and no sends, which is the pre-wave-9 behaviour.
@@ -1577,7 +1579,9 @@ with `Painter`:
   testable without pixels.
 - **Keymap:** a table from (key, modifiers, focus area) → `Action`, filled from the shortcut lists in
   `HANDOFF.md` §7 and `Designsystem.dc.html` `ix`. Computer keyboard MIDI (A W S E D F T G Y/Z H U J K
-  from C4, as in the prototype) is a keymap layer, see §13.
+  from C4, as in the prototype) is a keymap layer, see §13. Each held key remembers its original target track;
+  selection or arm changes do not reroute its release. Deleting the target, disabling the layer or replacing the
+  document clears held keys, so releases cannot leak into a new project that reuses the same IDs.
 - **Layout 2a with dock:** transport 44 / browser 260 (200–420) / arrangement / inspector 280 (240–360) /
   dock 320 (200 … 70 %, collapsed 28, double-click 320) / status bar 22. Ctrl 1/2/3 toggles panels,
   Ctrl ↑ maximises the dock, Tab switches arrangement ↔ mixer (maximised dock on the mixer tab).
@@ -1769,7 +1773,10 @@ These need a decision (the handoff says: report contradictions; the design syste
 11. **Auto-monitoring (owner decision 2026-11-15).** An armed track (R) monitors live MIDI input
     automatically, so you hear what you play (like Ableton's "Auto"); I stays an explicit switch
     that monitors without arming. The engine plays live input when `track.monitor || track.arm`;
-    capture while recording is unchanged. When a track is armed but I is off, the I toggle shows
+    capture while recording is unchanged. Per-track, per-channel key bitsets remember hardware notes. When
+    monitoring stops or the port/channel filter changes, pending releases end those live notes at the next
+    segment without flushing sequencer notes; removing a track resets its old processor chain.
+    When a track is armed but I is off, the I toggle shows
     the implied look (the one of "stumm durch Solo") and its tooltip and AccessKit value say
     "durch Record-Arm".
 

@@ -150,7 +150,7 @@ impl App {
             .shell
             .held_notes
             .iter()
-            .map(|(_, note)| *note)
+            .map(|(_, note, _)| *note)
             .filter(|note| midi & 1 << note == 0)
             .chain((0..128u8).filter(|key| midi & 1 << key != 0))
             .collect();
