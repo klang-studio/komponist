@@ -103,7 +103,12 @@ pub(super) fn paint_wave(
 ) {
     let p: &TrackPalette = model.palette;
     if audio.file != AudioFileState::Missing {
-        let (peak, core) = if model.muted {
+        let (peak, core) = if model.recording {
+            (
+                color32(color::STATE_RECORD),
+                color32(color::STATE_RECORD_INK),
+            )
+        } else if model.muted {
             (color32(color::TEXT_3), color32(color::TEXT_3))
         } else {
             (color32(p.wave_peak), color32(p.wave_rms))

@@ -81,3 +81,9 @@ audio-clip-context-menu = Audio Clip
 audio-clip-context-mute = Mute
 audio-clip-context-duplicate = Duplicate
 audio-clip-context-split = Split
+
+# Live recording waveform toolbar.
+audio-live-waveform = Waveform · live
+audio-live-input = Input { $input }
+audio-live-peak = Peak { $db } dBFS
+audio-live-duration = Duration { $time }

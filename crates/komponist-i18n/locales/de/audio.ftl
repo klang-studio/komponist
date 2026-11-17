@@ -81,3 +81,9 @@ audio-clip-context-menu = Audio-Clip
 audio-clip-context-mute = Stumm
 audio-clip-context-duplicate = Duplizieren
 audio-clip-context-split = Teilen
+
+# Live recording waveform toolbar.
+audio-live-waveform = Wellenform · live
+audio-live-input = Eingang { $input }
+audio-live-peak = Peak { $db } dBFS
+audio-live-duration = Dauer { $time }

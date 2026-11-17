@@ -319,11 +319,26 @@ impl App {
         });
     }
 
+    pub(crate) fn live_editor_area(&self) -> Option<FocusArea> {
+        crate::views::audio_editor::live::recording_area(
+            self.doc.project(),
+            &self.ui,
+            self.recording.as_ref(),
+            self.audio_recording.running(),
+        )
+    }
+
     fn dock_body(&self) -> DockBody {
         let p = self.doc.project();
         match self.ui.layout.dock_tab {
             // While recording, the editor shows the take (S02 "Piano Roll · live").
-            DockTab::Editor if self.recording.is_some() => DockBody::PianoRoll,
+            DockTab::Editor if self.live_editor_area().is_some() => {
+                if self.live_editor_area() == Some(FocusArea::Waveform) {
+                    DockBody::Waveform
+                } else {
+                    DockBody::PianoRoll
+                }
+            }
             DockTab::Editor => match self.ui.editor_area(p) {
                 _ if self.ui.editor.clip.and_then(|c| p.find_clip(c)).is_none() => DockBody::NoClip,
                 FocusArea::StepSequencer => DockBody::StepSeq,
@@ -359,7 +374,7 @@ impl App {
             strip,
             self.doc.project(),
             &self.ui,
-            self.recording.is_some(),
+            self.live_editor_area(),
             &self.keymap,
             self.lang,
             &mut self.queue,
