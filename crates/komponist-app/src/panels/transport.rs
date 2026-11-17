@@ -49,6 +49,8 @@ pub struct TransportModel<'a> {
     pub project: &'a Arc<Project>,
     /// Unsaved changes.
     pub dirty: bool,
+    /// Unsaved-project audio files awaiting the first project save.
+    pub provisional_recordings: Option<&'a std::path::Path>,
     /// Transport state.
     pub state: TransportState,
     /// Playhead.
@@ -182,6 +184,69 @@ fn text_node(ui: &Ui, rect: Rect, key: &str, text: &str) -> Response {
 
 fn wordmark(ui: &mut Ui, model: &TransportModel<'_>) {
     let (rect, _) = ui.allocate_exact_size(vec2(m::WORDMARK_WIDTH, size::CONTROL), Sense::hover());
+    if let Some(folder) = model.provisional_recordings {
+        let chip = w::styled_galley(
+            ui,
+            model.lang.audio_recordings_provisional(),
+            &typography::VALUE_S,
+        );
+        let chip_width = chip.size().x + 2.0 * space::SPACE_2;
+        let chip_rect = Rect::from_min_max(pos2(rect.right() - chip_width, rect.top()), rect.max);
+        let available = (chip_rect.left() - rect.left() - m::WORDMARK_GAP).max(0.0);
+        for (i, (text, style)) in [
+            (WORDMARK, typography::LABEL),
+            (model.project.name.as_str(), typography::SMALL),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let g = crate::views::elided_galley(
+                ui,
+                text,
+                fonts::font_id(&style),
+                style.line_height,
+                available
+                    - if model.dirty && i == 1 {
+                        m::DIRTY_DOT + m::WORDMARK_GAP
+                    } else {
+                        0.0
+                    },
+            );
+            let at = pos2(
+                rect.left(),
+                if i == 0 {
+                    rect.top()
+                } else {
+                    rect.bottom() - g.size().y
+                },
+            );
+            let painted = Rect::from_min_size(at, g.size());
+            ui.painter().galley(at, g, color32(color::TEXT_2));
+            let project_name = if model.dirty && i == 1 {
+                model.lang.transport_project_unsaved(text)
+            } else {
+                text.to_owned()
+            };
+            text_node(
+                ui,
+                painted,
+                if i == 0 { "wordmark" } else { "project" },
+                &project_name,
+            );
+            if model.dirty && i == 1 {
+                ui.painter().circle_filled(
+                    pos2(
+                        painted.right() + m::WORDMARK_GAP + m::DIRTY_DOT / 2.0,
+                        painted.center().y,
+                    ),
+                    m::DIRTY_DOT / 2.0,
+                    color32(color::TEXT_3),
+                );
+            }
+        }
+        provisional_chip(ui, model.lang, folder, chip_rect);
+        return;
+    }
     let mark = w::styled_galley(ui, WORDMARK, &typography::TRACK);
     let name = w::styled_galley(ui, &model.project.name, &typography::UI);
     let rects = paint_on_baseline(
@@ -205,6 +270,30 @@ fn wordmark(ui: &mut Ui, model: &TransportModel<'_>) {
         ui.painter()
             .circle_filled(c, m::DIRTY_DOT / 2.0, color32(color::TEXT_3));
     }
+}
+
+fn provisional_chip(ui: &mut Ui, t: Lang, folder: &std::path::Path, rect: Rect) {
+    let text = t.audio_recordings_provisional();
+    let g = w::styled_galley(ui, text, &typography::VALUE_S);
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("provisional_recordings"),
+        Sense::hover(),
+    );
+    px::fill(
+        ui.painter(),
+        rect,
+        radius::S,
+        color32(color::STATE_RECORD_SURFACE),
+    );
+    ui.painter().galley(
+        w::text_pos_centered(rect, &g, ui.pixels_per_point()),
+        g,
+        color32(color::STATE_RECORD_INK),
+    );
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+    let detail = t.audio_recordings_provisional_tip(folder.display());
+    Tip::new(text).detail(&detail).attach(&response);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

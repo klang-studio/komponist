@@ -160,34 +160,6 @@ impl App {
         self.audio_recording.folder()
     }
 
-    /// Validates capture sources before either automatic arm or a recording attempt.
-    pub(crate) fn audio_record_track_available(&mut self, id: TrackId) -> bool {
-        let Some(track) = self.project().track(id) else {
-            return false;
-        };
-        if track.kind != TrackKind::Audio {
-            return true;
-        }
-        let available = match track.audio.input {
-            AudioInput::None => false,
-            AudioInput::Hardware(input) => input
-                .first
-                .checked_add(input.channel_count())
-                .is_some_and(|end| end <= self.engine.audio_input_channels()),
-            AudioInput::Bus(bus) => self
-                .project()
-                .track(bus)
-                .is_some_and(|track| track.is_bus()),
-        };
-        if !available {
-            self.set_status(
-                self.lang.audio_record_input_unavailable(&track.name),
-                StatusKind::Error,
-            );
-        }
-        available
-    }
-
     pub(crate) fn prepare_audio_take(&mut self, from: Tick) -> bool {
         if self.audio_recording.capture.is_some() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
@@ -205,7 +177,7 @@ impl App {
         }
         if armed
             .iter()
-            .any(|id| !self.audio_record_track_available(*id))
+            .any(|id| !self.audio_arm_allowed(*id))
         {
             return false;
         }

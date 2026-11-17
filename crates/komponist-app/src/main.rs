@@ -218,8 +218,12 @@ fn run_app() -> eframe::Result {
     options.pixels_per_point = args.scale.or(settings.ui_scale);
     let mut app = App::new(Document::new(first), engine, settings, settings_path).with_lang(lang);
     if let Some(input) = app.settings().audio_input.clone()
-        && let Err(error) = app.engine_mut().set_audio_input(Some(input)) {
-        app.set_status(lang.audio_record_failed(error), komponist_app::ui_state::StatusKind::Error);
+        && let Err(error) = app.engine_mut().set_audio_input(Some(input))
+    {
+        app.set_status(
+            lang.audio_record_failed(error),
+            komponist_app::ui_state::StatusKind::Error,
+        );
     }
     if !args.no_plugin_scan {
         app.scan_plugins();

@@ -1221,7 +1221,7 @@ impl App {
                         self.set_status(self.lang.record_no_track(), StatusKind::Error);
                         return;
                     };
-                    if !self.audio_record_track_available(track) {
+                    if !self.audio_arm_allowed(track) {
                         return;
                     }
                     // Arming switches monitoring on (S02 "I").
@@ -1463,6 +1463,22 @@ impl App {
             }
             EditAction::NewMidiTrack => self.new_midi_track(None, hexa_ref()),
             EditAction::NewAudioTrack => self.open_new_audio_track_dialog(),
+            EditAction::RecordBus(bus) => self.record_bus(bus),
+            EditAction::SelectAudioTake { clip, take } => {
+                self.apply_with("undo-select-audio-take", |p| {
+                    edits::select_audio_take(p, clip, take).map(|p| (p, ()))
+                });
+            }
+            EditAction::RenameAudioTake { clip, take, name } => {
+                self.apply_with("undo-rename-audio-take", |p| {
+                    edits::rename_audio_take(p, clip, take, name).map(|p| (p, ()))
+                });
+            }
+            EditAction::RemoveAudioTake { clip, take } => {
+                self.apply_with("undo-remove-audio-take", |p| {
+                    edits::remove_audio_take(p, clip, take).map(|p| (p, ()))
+                });
+            }
             EditAction::SetProjectProp(prop) => {
                 self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
@@ -1497,6 +1513,9 @@ impl App {
             }
             EditAction::SetTrackProp { tracks, prop } => self.set_track_prop(tracks, prop),
             EditAction::SetExclusive { track, flag } => {
+                if flag == edits::ExclusiveFlag::Arm && !self.audio_arm_allowed(track) {
+                    return;
+                }
                 self.apply("undo-exclusive", |p| edits::set_exclusive(p, track, flag));
             }
             EditAction::AddClip { track, clip } => {
@@ -1724,14 +1743,26 @@ impl App {
     }
 
     fn set_track_prop(&mut self, tracks: Vec<TrackId>, prop: TrackProp) {
+        if matches!(&prop, TrackProp::AudioInput(_)) && self.audio_recording().is_some() {
+            self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
+            return;
+        }
+        if prop == TrackProp::Arm(true)
+            && tracks.iter().any(|&track| !self.audio_arm_allowed(track))
+        {
+            return;
+        }
+        let label = match prop {
+            TrackProp::AudioInput(_) => "undo-audio-input",
+            TrackProp::MonitorMode(_) => "undo-audio-monitor",
+            _ => "undo-change-track",
+        };
         let before = self.doc.revision();
         let fast = match &prop {
             TrackProp::Channel(c) => Some(*c),
             _ => None,
         };
-        if !self.apply("undo-change-track", |p| {
-            edits::set_track_prop(p, &tracks, prop)
-        }) {
+        if !self.apply(label, |p| edits::set_track_prop(p, &tracks, prop)) {
             return;
         }
         let (Some(channel), true) = (fast, self.doc.in_gesture()) else {
@@ -1976,9 +2007,13 @@ impl App {
             .last_instrument
             .clone()
             .unwrap_or_else(|| Some(hexa_ref()));
-        self.open_overlay(crate::dialogs::Overlay::NewTrack(
-            crate::dialogs::new_track::State::new(instrument),
-        ));
+        let mut state = crate::dialogs::new_track::State::new(instrument);
+        state.available_input_channels = self.engine.audio_input_channels();
+        state.input = crate::dialogs::new_track::first_unused_input(
+            self.project(),
+            state.available_input_channels,
+        );
+        self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
     }
 
     /// Drops selected objects that no longer exist.
@@ -2698,10 +2733,50 @@ impl App {
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
+        if matches!(
+            &action,
+            SettingsAction::SetAudioInput(_) | SettingsAction::ChooseTrackAudioInput { .. }
+        ) && self.audio_recording().is_some()
+        {
+            self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
+            return;
+        }
         match action {
             SettingsAction::SetAudio(config) => {
                 let _ = self.engine.set_audio(&config);
                 self.settings.audio = config;
+                self.save_settings();
+            }
+            SettingsAction::SetAudioInput(input) => {
+                match self.engine.set_audio_input(input.clone()) {
+                    Ok(()) => {
+                        self.settings.audio_input = input;
+                        self.save_settings();
+                    }
+                    Err(error) => {
+                        self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error)
+                    }
+                }
+            }
+            SettingsAction::ChooseTrackAudioInput {
+                track,
+                input,
+                device,
+            } => match self.engine.set_audio_input(Some(device.clone())) {
+                Ok(()) => {
+                    self.settings.audio_input = Some(device);
+                    self.save_settings();
+                    self.dispatch(Action::Edit(EditAction::SetTrackProp {
+                        tracks: vec![track],
+                        prop: TrackProp::AudioInput(input),
+                    }));
+                }
+                Err(error) => {
+                    self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error)
+                }
+            },
+            SettingsAction::SetCaptureFormat(format) => {
+                self.settings.capture_format = format;
                 self.save_settings();
             }
             SettingsAction::RetryAudio => {

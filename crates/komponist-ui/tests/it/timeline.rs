@@ -478,6 +478,7 @@ fn audio_clip_states_in_both_languages() {
                     _ => String::new(),
                 };
                 let audio = AudioLook {
+                    takes: None,
                     file,
                     wave: if file == AudioFileState::Ready {
                         &wave

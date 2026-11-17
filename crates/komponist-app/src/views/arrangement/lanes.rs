@@ -663,6 +663,7 @@ impl Arrangement {
                         return None;
                     };
                     Some(AudioLook {
+                        takes: (a.takes.len() > 1).then_some((a.active_take + 1, a.takes.len())),
                         file,
                         wave,
                         repitch: (a.time_mode == komponist_model::ClipTimeMode::RePitch)

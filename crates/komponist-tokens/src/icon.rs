@@ -163,11 +163,12 @@ mod tests {
     fn icons_are_prepared() {
         for &icon in Icon::ALL {
             let svg = text(icon);
-            let licence=if icon==Icon::AudioWaveform {"@license komponist-original"} else {"@license lucide-static"};
-            assert!(
-                svg.contains(licence),
-                "{icon:?} lost its licence header"
-            );
+            let licence = if icon == Icon::AudioWaveform {
+                "@license komponist-original"
+            } else {
+                "@license lucide-static"
+            };
+            assert!(svg.contains(licence), "{icon:?} lost its licence header");
             assert!(
                 svg.contains("width=\"16\"") && svg.contains("height=\"16\""),
                 "{icon:?}"
