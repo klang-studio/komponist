@@ -35,6 +35,8 @@ pub enum FocusArea {
     Inspector,
     /// Piano roll in the dock's editor tab.
     PianoRoll,
+    /// Audio source waveform editor.
+    Waveform,
     /// Step sequencer in the dock's editor tab.
     StepSequencer,
     /// Device chain in the dock's "Geräte" tab.
@@ -53,6 +55,7 @@ impl FocusArea {
             self,
             FocusArea::Arrangement
                 | FocusArea::PianoRoll
+                | FocusArea::Waveform
                 | FocusArea::StepSequencer
                 | FocusArea::Mixer
         )
@@ -76,6 +79,8 @@ pub struct UiState {
     pub editor: EditorView,
     /// Piano roll view.
     pub piano_roll: PianoRollView,
+    /// Source waveform zoom and scroll.
+    pub waveform: WaveformView,
     /// Step sequencer view.
     pub step_seq: StepSeqView,
     /// Mixer view.
@@ -109,6 +114,7 @@ impl UiState {
             arrangement: ArrangementView::default(),
             editor: EditorView::default(),
             piano_roll: PianoRollView::default(),
+            waveform: WaveformView::default(),
             step_seq: StepSeqView::default(),
             mixer: MixerView::default(),
             devices: DevicesView::default(),
@@ -132,6 +138,13 @@ impl UiState {
             .is_some_and(|(_, clip)| matches!(clip.content, ClipContent::Step(_)));
         if step {
             FocusArea::StepSequencer
+        } else if self
+            .editor
+            .clip
+            .and_then(|id| project.find_clip(id))
+            .is_some_and(|(_, clip)| matches!(clip.content, ClipContent::Audio(_)))
+        {
+            FocusArea::Waveform
         } else {
             FocusArea::PianoRoll
         }
@@ -152,7 +165,11 @@ impl FocusArea {
     pub fn in_dock(self) -> bool {
         matches!(
             self,
-            FocusArea::PianoRoll | FocusArea::StepSequencer | FocusArea::Devices | FocusArea::Mixer
+            FocusArea::PianoRoll
+                | FocusArea::Waveform
+                | FocusArea::StepSequencer
+                | FocusArea::Devices
+                | FocusArea::Mixer
         )
     }
 }
@@ -636,4 +653,21 @@ pub struct StatusMessage {
     pub since: Instant,
     /// Optional action link ("Im Ordner zeigen") with its label.
     pub link: Option<(String, Box<Action>)>,
+}
+
+/// Audio source editor view state; positions are source-local timeline ticks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaveformView {
+    /// Horizontal points per bar.
+    pub px_per_bar: f32,
+    /// Source-local leftmost tick.
+    pub scroll_tick: f64,
+}
+impl Default for WaveformView {
+    fn default() -> Self {
+        Self {
+            px_per_bar: crate::views::audio_editor::metrics::PPB_DEFAULT,
+            scroll_tick: 0.0,
+        }
+    }
 }

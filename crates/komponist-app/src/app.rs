@@ -1495,6 +1495,11 @@ impl App {
                     edits::trim_audio_clip_start(p, clip, start).map(|p| (p, ()))
                 });
             }
+            EditAction::SetAudioClipFile { clip, file } => {
+                self.apply("undo-clip-replace-file", |p| {
+                    edits::set_audio_clip_file(p, clip, file)
+                });
+            }
             EditAction::SetAudioClipProp { clip, prop } => {
                 let label = match prop {
                     edits::AudioClipProp::GainDb(_) => "undo-clip-gain",
@@ -1502,11 +1507,12 @@ impl App {
                     edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
                         "undo-clip-fade"
                     }
-                    edits::AudioClipProp::TimeMode(_) | edits::AudioClipProp::OriginalTempo(_) => {
-                        "undo-change-clip"
-                    }
+                    edits::AudioClipProp::TimeMode(_) => "undo-clip-repitch",
+                    edits::AudioClipProp::OriginalTempo(_) => "undo-clip-original-tempo",
                 };
-                self.apply(label, |p| edits::set_audio_clip_prop(p, clip, prop));
+                self.apply_delta(label, |p| {
+                    edits::set_audio_clip_prop(p, clip, prop).map(|p| (p, ()))
+                });
             }
             EditAction::SetClipLoop {
                 clip,
@@ -2346,6 +2352,13 @@ impl App {
                     self.shell.requests.piano_roll_zoom += steps;
                 }
             }
+            FocusArea::Waveform if !vertical => {
+                let w = &mut self.ui.waveform;
+                w.px_per_bar = (w.px_per_bar * factor).clamp(
+                    crate::views::audio_editor::metrics::PPB_MIN,
+                    crate::views::audio_editor::metrics::PPB_MAX,
+                );
+            }
             FocusArea::Arrangement => {
                 let a = &mut self.ui.arrangement;
                 if vertical {
@@ -2581,6 +2594,8 @@ impl App {
             ProjectAction::New
             | ProjectAction::Open
             | ProjectAction::OpenPath(_)
+            | ProjectAction::ReplaceAudio(_)
+            | ProjectAction::ReplaceAudioPath { .. }
             | ProjectAction::Save
             | ProjectAction::SaveAs
             | ProjectAction::CollectAndSave

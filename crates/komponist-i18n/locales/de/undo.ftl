@@ -190,9 +190,12 @@ undo-plugin-state = { $plugin }: Zustand ändern
 # Audio clip envelope gestures.
 undo-clip-gain = Clip-Gain ändern
 undo-clip-fade = Fade ändern
+undo-clip-repitch = Re-Pitch ändern
+undo-clip-original-tempo = Originaltempo ändern
+undo-clip-source-start = Quell-Start ändern
+undo-clip-replace-file = Datei ersetzen
 
 # Audio source window offset.
-undo-clip-source-start = Quell-Start ändern
 
 # Linked audio import and browsing (epic #8).
 undo-import-audio = Audio importieren

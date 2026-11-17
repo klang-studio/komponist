@@ -149,6 +149,7 @@ fn komponist_formulas_are_required() {
         "clip-handle",
         "wave-peak",
         "wave-rms",
+        "wave-dim",
     ] {
         let e = error_after(|t| {
             t["track"]["$formula"].as_object_mut().unwrap().remove(key);
