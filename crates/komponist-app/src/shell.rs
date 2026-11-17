@@ -53,7 +53,7 @@ impl App {
         let provisional_recordings = self
             .provisional_recordings_folder()
             .map(std::path::Path::to_path_buf);
-        let plugin_windows = self.plugin_window_entries();
+        let menu = self.menu_snapshot();
         let model = transport::TransportModel {
             provisional_recordings: provisional_recordings.as_deref(),
             project: self.doc.project(),
@@ -65,7 +65,7 @@ impl App {
             keymap: &self.keymap,
             lang: self.lang,
             master_display: self.settings.master_display,
-            plugin_windows: &plugin_windows,
+            menu: &menu,
         };
         transport::show(ui, l.transport, &model, &mut self.meters, &mut self.queue);
 

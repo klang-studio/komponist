@@ -19,6 +19,7 @@
 //! Ctrl O / Ctrl S flows could not be tested. The own browser needs no new dependency, uses the
 //! design tokens and keyboard rules of the other dialogs, and works under Xvfb.
 
+pub mod about;
 pub mod export;
 pub mod file;
 pub mod format;
@@ -406,6 +407,11 @@ impl crate::App {
         use crate::actions::{Action, UiAction};
         use crate::ui_state::Dialog;
         match self.ui.dialog.clone() {
+            Some(Dialog::About) => {
+                if about::show(ctx, self.lang) {
+                    self.queue.push(Action::Ui(UiAction::CloseDialog));
+                }
+            }
             Some(Dialog::Settings(section)) => {
                 let model = self.settings_model(section);
                 let scroll = self.dialogs.settings.scroll_to.take();

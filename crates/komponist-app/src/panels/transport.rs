@@ -31,14 +31,12 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, icons, px};
 
-use crate::actions::{
-    Action, EditAction, PluginAction, ProjectAction, SettingsAction, TransportAction,
-};
+use crate::actions::{Action, EditAction, SettingsAction, TransportAction};
+use crate::application_menu::{Item as MenuItem, Snapshot};
 use crate::keymap::Keymap;
 use crate::master_scope::{MasterDisplay, Picture};
 use crate::meters::Meters;
 use crate::metrics::transport as m;
-use crate::windows::window_list::WindowEntry;
 
 /// The DAW's name in the wordmark and window title (ARCHITECTURE §13.6).
 pub const WORDMARK: &str = komponist_ui::WORDMARK;
@@ -65,8 +63,8 @@ pub struct TransportModel<'a> {
     pub lang: Lang,
     /// What the master display shows (the settings' choice).
     pub master_display: MasterDisplay,
-    /// The open plugin windows: the "⋯" menu's "Fenster" submenu (#95), absent when empty.
-    pub plugin_windows: &'a [WindowEntry],
+    /// Shared localized projections and installed-backend ownership.
+    pub menu: &'a Snapshot,
 }
 
 impl TransportModel<'_> {
@@ -824,54 +822,55 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         ctx.request_repaint();
     }
     let t = model.lang;
-    let p = |a| Action::Project(a);
-    let entries_spec = [
-        (t.transport_menu_new(), p(ProjectAction::New)),
-        (t.transport_menu_open(), p(ProjectAction::Open)),
-        (t.menu_import_audio(), p(ProjectAction::ImportAudio)),
-        (
-            t.menu_new_audio_track(),
-            Action::Edit(crate::actions::EditAction::NewAudioTrack),
-        ),
-        (t.transport_menu_save(), p(ProjectAction::Save)),
-        (t.transport_menu_save_as(), p(ProjectAction::SaveAs)),
-        (t.transport_menu_collect(), p(ProjectAction::CollectAndSave)),
-        (
-            t.transport_menu_export(),
-            p(ProjectAction::OpenExportDialog),
-        ),
-        (t.transport_menu_start(), p(ProjectAction::ShowStartScreen)),
-    ];
-    let labels: Vec<Option<String>> = entries_spec
+    let snapshot = model.menu;
+    let window_items = snapshot.egui_window();
+    let window_labels: Vec<_> = window_items
         .iter()
-        .map(|(_, a)| model.keymap.label_for(a, t))
+        .map(|item| item.shortcut_label(t, crate::platform::Platform::current()))
         .collect();
-    let windows: Vec<Entry<'_, Action>> = model
-        .plugin_windows
+    let windows = menu_entries(window_items, &window_labels);
+    let local_items: Vec<_> = snapshot
+        .project
         .iter()
-        .map(|w| {
-            Entry::action(
-                &w.label,
-                Action::Plugin(PluginAction::FocusWindow(w.device)),
-            )
-        })
+        .chain(snapshot.egui_application())
+        .cloned()
         .collect();
-    let mut entries: Vec<Entry<'_, Action>> = entries_spec
+    let labels: Vec<_> = local_items
         .iter()
-        .zip(&labels)
-        .map(|((name, action), label)| {
-            let e = Entry::action(name, action.clone());
-            match label {
-                Some(l) => e.shortcut(l),
-                None => e,
-            }
-        })
+        .map(|item| item.shortcut_label(t, crate::platform::Platform::current()))
         .collect();
+    let (project, application) = local_items.split_at(snapshot.project.len());
+    let mut entries = menu_entries(project, &labels[..project.len()]);
     if !windows.is_empty() {
         entries.push(Entry::separator());
-        entries.push(Entry::submenu(t.app_menu_window(), &windows));
+        entries.push(Entry::submenu(&snapshot.window_title, &windows));
+    }
+    if !application.is_empty() {
+        entries.push(Entry::separator());
+        entries.extend(menu_entries(application, &labels[project.len()..]));
     }
     if let Some(action) = ContextMenu::new(t.transport_menu(), &entries).show_on(&response) {
         actions.push(action);
     }
+}
+
+/// Convert the shared definitions; labels and command choices never live in the egui adapter.
+fn menu_entries<'a>(items: &'a [MenuItem], labels: &'a [Option<String>]) -> Vec<Entry<'a, Action>> {
+    items
+        .iter()
+        .zip(labels)
+        .map(|(item, label)| {
+            let Some(action) = item.command.and_then(|command| command.action()) else {
+                return Entry::separator();
+            };
+            let mut entry = Entry::action(&item.label, action);
+            if let Some(label) = label {
+                entry = entry.shortcut(label);
+            }
+            if !item.enabled {
+                entry = entry.disabled();
+            }
+            entry
+        })
+        .collect()
 }

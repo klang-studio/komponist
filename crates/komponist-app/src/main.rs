@@ -258,7 +258,21 @@ fn run_app() -> eframe::Result {
     komponist_ui::run(options, move |cc| {
         // After winit's own default menu exists: this replaces it.
         #[cfg(target_os = "macos")]
-        let menu = komponist_app::macos_menu::MacMenu::install(&cc.egui_ctx, app.lang());
+        let menu = {
+            use komponist_app::application_menu::{Backend, Snapshot};
+            let snapshot = Snapshot::new(
+                app.lang(),
+                app.keymap(),
+                Backend::AppKit,
+                &app.plugin_window_entries(),
+                true,
+            );
+            let menu = komponist_app::macos_menu::MacMenu::install(&cc.egui_ctx, &snapshot);
+            if menu.is_some() {
+                app.set_menu_backend(Backend::AppKit);
+            }
+            menu
+        };
         #[cfg(target_os = "macos")]
         komponist_app::macos_delegate::set_waker(&cc.egui_ctx);
         // Only the macOS menu and delegate use the creation context.
@@ -283,9 +297,15 @@ impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.menu {
-            menu.update(self.app.lang(), &self.app.plugin_window_entries());
+            menu.update(&self.app.menu_snapshot());
             for command in menu.drain() {
-                self.app.dispatch(command.action());
+                if self.app.menu_command_enabled(command) {
+                    if command == komponist_app::application_menu::Command::About {
+                        menu.show_about();
+                    } else {
+                        self.app.dispatch_menu(command);
+                    }
+                }
             }
         }
         // Documents from Finder or the Dock icon (#96), also those of the launch.

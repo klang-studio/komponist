@@ -19,6 +19,7 @@ mod acceptance_flow2_realtime;
 mod acceptance_flow3;
 mod acceptance_flow4;
 mod acceptance_flow5;
+mod application_menu;
 mod arrangement;
 mod audio_editor;
 mod audio_import;

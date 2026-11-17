@@ -551,6 +551,8 @@ pub enum SettingsSection {
 /// A modal dialog.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dialog {
+    /// Portable About dialog.
+    About,
     /// S07 settings at a section.
     Settings(SettingsSection),
     /// S08 export.

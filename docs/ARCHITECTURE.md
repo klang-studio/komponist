@@ -1650,8 +1650,8 @@ table of CLAP features / VST3 subcategories.
   these frames under komponist, so the app lists them itself (#95, `windows::window_list`): the
   "Fenster" menu of the native menu bar (Minimize, Zoom, then the frames), the Dock menu
   (`applicationDockMenu:`, a method komponist adds to winit's application delegate at
-  `applicationWillFinishLaunching`, `macos_delegate`) and the "Fenster" submenu of the "⋯" menu (all
-  platforms). A pick sends `FocusWindow`: the same yield + `ActivateFrame`, after the app's own
+  `applicationWillFinishLaunching`, `macos_delegate`). The shared application-menu model (#108)
+  exposes the "Fenster" submenu of "⋯" only without a successfully installed native menu. A pick sends `FocusWindow`: the same yield + `ActivateFrame`, after the app's own
   activation when it was not active (the Dock menu); an app-owned frame gets
   `ViewportCommand::Focus`. Header tooltips go
   beside their control (`komponist_ui::tooltip::HoverSide::Beside`): egui draws in winit's Metal
@@ -1734,6 +1734,25 @@ kept, S06 dialog on open), plus `Bypassed`. Held by `komponist-plugins::PluginMa
 `Loading` also covers a running bridge that re-activates (another sample rate, the render-mode
 switch around an export) and a warm-up of `komponist_plugins::WARM_UP` (250 ms) after every
 activation, so `Ok` means "renders real audio now"; the export waits for it (WP-61).
+
+### Shared application-menu model (#108)
+
+`komponist-app::application_menu` defines semantic commands, localized labels, enabled state and keymap chords for
+project, application and Window projections. `Backend` records a successful native installation (`AppKit` or the
+future `Win32` adapter), independently of `Platform::Pc` shortcut formatting. A missing/failed installation uses
+`Egui`: the project menu retains About, Settings, Quit and the nonempty plugin-window submenu. With AppKit those
+application/window entries occur only in the native menus; its Dock remains a separate OS entry point.
+
+`App::dispatch_menu` validates queued picks against current modal/closing state and the project's current open device
+IDs before central action dispatch. The eframe shell drains native commands before `App::show`; AppKit About is
+queued too, then opens the existing standard panel on the main thread. The portable About dialog shares the normal
+focus-restoration path. Native Hide/Minimize/Zoom remain AppKit responder operations.
+
+AppKit updates only changed snapshots and defers replacement while any application, Window or Dock popup is
+tracking. Plugin item tags are monotonic opaque IDs, mapped to `DeviceId`; discarded menu IDs are never reused for
+another device. The mapping is revalidated at activation and again at dispatch. All menu creation, mutation and
+teardown stay on the owner thread; none touches the realtime callback. Linux-specific desktop accessibility
+acceptance is tracked in #109, Windows native attachment in #110; this foundation adds neither GTK nor DBus.
 
 ### 8.7 macOS app bundle, signing and release (#53)
 

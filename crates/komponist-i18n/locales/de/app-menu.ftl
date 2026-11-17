@@ -31,3 +31,7 @@ app-menu-zoom = Zoomen
 
 # Window menu, Dock menu and the "⋯" menu: one open plugin window, brings it to the front; `$plugin` is the plugin name, `$track` the track (or "Master"), as in the frame's window title.
 app-menu-plugin-window = { $plugin } · { $track }
+
+# Portable About dialog.
+about-version = Version { $version }
+about-license = Lizenz: { $license }

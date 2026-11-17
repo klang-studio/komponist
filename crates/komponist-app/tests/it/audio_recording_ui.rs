@@ -515,6 +515,13 @@ fn provisional_recordings_chip_is_persistent_and_fits_the_transport_in_both_lang
             ))
             .build_ui_state(
                 |ui, state: &mut Bar| {
+                    let menu = komponist_app::application_menu::Snapshot::new(
+                        state.lang,
+                        &state.keymap,
+                        komponist_app::application_menu::Backend::Egui,
+                        &[],
+                        true,
+                    );
                     let model = TransportModel {
                         project: &state.project,
                         dirty: true,
@@ -525,7 +532,7 @@ fn provisional_recordings_chip_is_persistent_and_fits_the_transport_in_both_lang
                         keymap: &state.keymap,
                         lang: state.lang,
                         master_display: Default::default(),
-                        plugin_windows: &[],
+                        menu: &menu,
                         provisional_recordings: Some(std::path::Path::new(
                             "/tmp/komponist/Voice Session",
                         )),

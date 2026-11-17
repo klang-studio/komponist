@@ -69,13 +69,30 @@ pub enum WindowMenuItem<'a> {
 
 /// The Window menu in `lang`: Minimize and Zoom, then the open plugin windows below a separator.
 pub fn window_menu(lang: Lang, entries: &[WindowEntry]) -> Vec<WindowMenuItem<'_>> {
-    let mut items = vec![
-        WindowMenuItem::Minimize(lang.app_menu_minimize()),
-        WindowMenuItem::Zoom(lang.app_menu_zoom()),
-    ];
-    if !entries.is_empty() {
-        items.push(WindowMenuItem::Separator);
-        items.extend(entries.iter().map(WindowMenuItem::Window));
-    }
-    items
+    use crate::application_menu::{Backend, Command, NativeCommand, Snapshot};
+    let snapshot = Snapshot::new(
+        lang,
+        &crate::Keymap::default_bindings_for(crate::platform::Platform::Mac),
+        Backend::AppKit,
+        entries,
+        true,
+    );
+    snapshot
+        .native_window()
+        .iter()
+        .filter_map(|item| match item.command {
+            Some(Command::Native(NativeCommand::Minimize)) => {
+                Some(WindowMenuItem::Minimize(lang.app_menu_minimize()))
+            }
+            Some(Command::Native(NativeCommand::Zoom)) => {
+                Some(WindowMenuItem::Zoom(lang.app_menu_zoom()))
+            }
+            Some(Command::FocusPlugin(device)) => entries
+                .iter()
+                .find(|entry| entry.device == device)
+                .map(WindowMenuItem::Window),
+            None => Some(WindowMenuItem::Separator),
+            _ => None,
+        })
+        .collect()
 }
