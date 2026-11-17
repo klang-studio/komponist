@@ -408,6 +408,9 @@ fn stereo() -> [Box<[f32]>; 2] {
 /// Runtime state of one track or bus (a node of the routing graph), kept across program swaps by
 /// track id.
 struct TrackState {
+    /// Hardware input notes and releases pending after a routing change (channel × key).
+    hardware: [u128; 16],
+    release_hardware: [u128; 16],
     /// The track this state belongs to (`None`: free).
     id: Option<TrackId>,
     seq: TrackSeq,
@@ -442,6 +445,8 @@ struct TrackState {
 impl TrackState {
     fn new() -> TrackState {
         TrackState {
+            hardware: [0; 16],
+            release_hardware: [0; 16],
             id: None,
             seq: TrackSeq::new(),
             fader: Fader::at((0.0, 0.0)),
@@ -1265,7 +1270,10 @@ impl Core {
     fn silence(&mut self, reset: bool) {
         let count = self.track_count();
         for &index in &self.map[..count] {
-            self.tracks[usize::from(index)].seq.flush(true);
+            let state = &mut self.tracks[usize::from(index)];
+            state.seq.flush(true);
+            state.hardware.fill(0);
+            state.release_hardware.fill(0);
         }
         let Some(program) = self.program.as_deref() else {
             return;
@@ -1318,7 +1326,20 @@ impl Core {
                 if !used[index] && self.tracks[index].id == Some(track.id) {
                     used[index] = true;
                     map[i] = index as u16;
-                    self.tracks[index].clear_fast_path();
+                    let state = &mut self.tracks[index];
+                    if let Some(old) = self
+                        .program
+                        .as_deref()
+                        .and_then(|p| p.tracks.iter().find(|t| t.id == track.id))
+                        && (old.input != track.input
+                            || ((old.monitor || old.arm) && !(track.monitor || track.arm)))
+                    {
+                        for channel in 0..16 {
+                            state.release_hardware[channel] |= state.hardware[channel];
+                            state.hardware[channel] = 0;
+                        }
+                    }
+                    state.clear_fast_path();
                     break;
                 }
             }
@@ -1337,6 +1358,8 @@ impl Core {
             let state = &mut self.tracks[free];
             state.id = Some(track.id);
             state.seq.clear();
+            state.hardware.fill(0);
+            state.release_hardware.fill(0);
             state.stage.clear();
             state.stage.sig = StageSig::of(&track.chain);
             state.seq.reseed(track_seed(self.seed, track.id));
@@ -1348,9 +1371,28 @@ impl Core {
             state.fader = Fader::at(targets(track.gain, track.pan, open));
             state.post_on = false;
         }
+        // Removed tracks no longer have a segment in which to send releases. Reset their
+        // old chains before retiring the program, so a reused processor cannot keep live keys.
+        if let Some(old) = self.program.as_deref() {
+            for track in &old.tracks {
+                if !program.tracks.iter().any(|next| next.id == track.id) {
+                    for device in &track.chain {
+                        if let Some(processor) = self
+                            .slots
+                            .get_mut(device.slot.0 as usize)
+                            .and_then(|slot| slot.processor.as_mut())
+                        {
+                            processor.reset();
+                        }
+                    }
+                }
+            }
+        }
         for (index, state) in self.tracks.iter_mut().enumerate() {
             if !used[index] {
                 state.id = None;
+                state.hardware.fill(0);
+                state.release_hardware.fill(0);
             }
         }
         self.map[..count].copy_from_slice(&map[..count]);
@@ -1536,6 +1578,18 @@ impl Core {
                     // Live input of this track.
                     live.clear();
                     let capture = track.arm && recording;
+                    for (channel, pending) in state.release_hardware.iter_mut().enumerate() {
+                        while *pending != 0 && live.len() < live.capacity() {
+                            let key = pending.trailing_zeros() as u8;
+                            *pending &= !(1u128 << key);
+                            live.push(LiveMsg {
+                                offset: 0,
+                                data: [0x80 | channel as u8, key, 0],
+                                play: true,
+                                capture: true,
+                            });
+                        }
+                    }
                     if frame0 == 0 {
                         for &(id, key, velocity) in live_notes.iter() {
                             if id == track.id && live.len() < live.capacity() {
@@ -1559,6 +1613,15 @@ impl Core {
                                 break;
                             }
                             let frame = (m.frame as usize).clamp(frame0, frame0 + n - 1);
+                            if play {
+                                let held = &mut state.hardware[usize::from(m.data[0] & 0x0f)];
+                                let bit = 1u128 << (m.data[1] & 0x7f);
+                                match m.data[0] & 0xf0 {
+                                    0x90 if m.data[2] & 0x7f != 0 => *held |= bit,
+                                    0x80 | 0x90 => *held &= !bit,
+                                    _ => {}
+                                }
+                            }
                             live.push(LiveMsg {
                                 offset: (frame - frame0) as u32,
                                 data: m.data,
