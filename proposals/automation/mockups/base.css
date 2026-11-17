@@ -1,0 +1,91 @@
+/* komponist automation mockups: design tokens from komponist/design/tokens.json (+ device-tokens.json),
+   IBM Plex from komponist/assets/fonts. Base panels are the app's Linux snapshots. */
+@font-face { font-family: "Plex Sans"; font-weight: 400; src: url("../../../../../komponist/assets/fonts/IBMPlexSans-Regular.ttf"); }
+@font-face { font-family: "Plex Sans"; font-weight: 500; src: url("../../../../../komponist/assets/fonts/IBMPlexSans-Medium.ttf"); }
+@font-face { font-family: "Plex Sans"; font-weight: 600; src: url("../../../../../komponist/assets/fonts/IBMPlexSans-SemiBold.ttf"); }
+@font-face { font-family: "Plex Mono"; font-weight: 400; src: url("../../../../../komponist/assets/fonts/IBMPlexMono-Regular.ttf"); }
+@font-face { font-family: "Plex Mono"; font-weight: 500; src: url("../../../../../komponist/assets/fonts/IBMPlexMono-Medium.ttf"); }
+@font-face { font-family: "Plex Mono"; font-weight: 600; src: url("../../../../../komponist/assets/fonts/IBMPlexMono-SemiBold.ttf"); }
+
+:root {
+  --surface-0: #111214; --surface-1: #17181a; --surface-2: #1e1f22; --surface-3: #26282b; --surface-4: #303236; --surface-5: #3b3d42;
+  --text-1: #e8e9eb; --text-2: #a2a5aa; --text-3: #6a6d72; --text-4: #4a4d52;
+  --line-0: #232427; --line-1: #2b2d30; --line-2: #45484d;
+  --accent: #4ea7e6; --accent-hover: #6db8ec; --accent-surface: #1c3346; --accent-ink: #0b1620;
+  --record: #e5484d; --record-surface: #3a1d1f; --record-ink: #f2a6a8;
+  --solo: #e3c14a; --play: #46c08a; --error: #ff5a5f; --error-surface: #2c1c1e;
+  --lane-selected: #1a1c1f; --outside-clip: #11121499; --box-select: #4ea7e61a;
+  --shadow-float: 0 6px 16px rgba(0,0,0,0.45);
+  /* track colours used in the mockups (tokens.json track.colors.*) */
+  --green-base: #63b376; --green-body: #14361d; --green-dim: #425244; --green-ink: #b0e8bb; --green-ink-dim: #62946c;
+  --violet-base: #aa8dde; --violet-body: #332647; --violet-dim: #4f4a5b;
+  --blue-base: #61a3e6;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--surface-0); }
+body { position: relative; font-family: "Plex Sans", sans-serif; color: var(--text-1); -webkit-font-smoothing: antialiased; }
+.abs { position: absolute; }
+.snap { position: absolute; background-image: url("../../../../../komponist/crates/komponist-app/tests/snapshots/arrangement-s01-2x.png"); background-size: 1920px 1080px; background-repeat: no-repeat; }
+.snap-hexa { background-image: url("../../../../../komponist/crates/komponist-app/tests/snapshots/devices-hexa-operators-1x.png"); }
+.fill { position: absolute; }
+
+/* type tokens */
+.t-track { font: 600 13px/16px "Plex Sans"; }
+.t-ui { font: 400 12px/16px "Plex Sans"; }
+.t-ui5 { font: 500 12px/16px "Plex Sans"; }
+.t-small { font: 400 11px/14px "Plex Sans"; color: var(--text-2); }
+.t-label { font: 600 10px/12px "Plex Sans"; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.t-vm { font: 400 12px/16px "Plex Mono"; }
+.t-vs { font: 400 10px/12px "Plex Mono"; color: var(--text-3); }
+.t-dlabel { font: 400 10px/12px "Plex Sans"; color: var(--text-2); }
+
+/* track header (redrawn) */
+.thead { position: absolute; left: 260px; width: 224px; background: var(--surface-2); }
+.thead.sel { background: var(--accent-surface); }
+.thead .bar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+.thead .name { position: absolute; left: 14px; top: 12px; width: 82px; white-space: nowrap; overflow: hidden; }
+.thead .sub { position: absolute; left: 14px; top: 29px; width: 82px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); }
+.thead .sub.err { color: var(--error); }
+.toggle { position: absolute; width: 18px; height: 16px; border-radius: 2px; background: var(--surface-4); display: flex; align-items: center; justify-content: center; color: #919399; }
+.toggle.on { background: var(--surface-5); color: var(--text-1); }
+.toggle.rec { background: var(--record); color: var(--surface-0); }
+.toggle svg { width: 12px; height: 12px; }
+
+/* lane header */
+.lhead { position: absolute; left: 260px; width: 224px; background: var(--surface-1); border-top: 1px solid var(--line-0); }
+.lhead.sel { background: var(--lane-selected); }
+.lhead .bar { position: absolute; left: 0; top: -1px; bottom: 0; width: 3px; }
+.lhead .tree { position: absolute; left: 12px; top: -1px; bottom: 0; width: 1px; background: var(--line-1); }
+.chooser { position: absolute; left: 17px; top: 4px; height: 20px; max-width: 142px; padding: 2px 14px 0 6px; border-radius: 2px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chooser.hover, .chooser.open { background: var(--surface-3); }
+.chooser .dev { color: var(--text-3); }
+.chooser .caret, .chip .caret { position: absolute; right: 5px; top: 8px; width: 0; height: 0; border-left: 3.5px solid transparent; border-right: 3.5px solid transparent; border-top: 4px solid var(--text-2); }
+.chip { position: absolute; top: 4px; right: 6px; height: 20px; width: 58px; padding-left: 6px; border-radius: 2px; background: var(--surface-3); display: flex; align-items: center; font: 400 11px/14px "Plex Sans"; color: var(--text-2); }
+.chip.write { background: var(--record-surface); color: var(--record-ink); }
+.chip.write .caret { border-top-color: var(--record-ink); }
+.chip.off { color: var(--text-3); }
+.lhead .val { position: absolute; left: 28px; top: 26px; }
+.badge { position: absolute; right: 6px; top: 26px; font: 600 10px/12px "Plex Sans"; color: var(--record); letter-spacing: 0.04em; display: flex; align-items: center; gap: 4px; }
+.badge i { width: 6px; height: 6px; border-radius: 3px; background: var(--record); display: inline-block; }
+.lhead .warn { position: absolute; left: 28px; top: 25px; width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--error); font: 400 11px/14px "Plex Sans"; }
+
+/* tooltip, menus */
+.tooltip { position: absolute; height: 22px; padding: 0 8px; border-radius: 3px; background: var(--surface-4); box-shadow: var(--shadow-float); display: flex; align-items: center; white-space: nowrap; font: 400 12px/16px "Plex Mono"; color: var(--text-1); }
+.tooltip .k { font-family: "Plex Sans"; color: var(--text-2); }
+.menu { position: absolute; width: 220px; background: var(--surface-3); border-radius: 3px; box-shadow: 0 6px 16px rgba(0,0,0,0.45), 0 0 0 1px var(--surface-0); padding: 4px 0; }
+.menu .row { position: relative; height: 24px; padding: 0 10px 0 22px; display: flex; align-items: center; font: 400 12px/16px "Plex Sans"; color: var(--text-1); white-space: nowrap; }
+.menu .row.hl { background: var(--accent-surface); }
+.menu .row .r { margin-left: auto; color: var(--text-3); font: 400 11px/14px "Plex Sans"; }
+.menu .row .dot { position: absolute; left: 10px; top: 10px; width: 5px; height: 5px; border-radius: 3px; }
+.menu .sec { height: 22px; padding: 8px 10px 0; }
+.menu .sep { height: 1px; background: var(--line-1); margin: 4px 0; }
+.menu .search { margin: 2px 6px 4px; height: 24px; border-radius: 2px; background: var(--surface-1); display: flex; align-items: center; padding: 0 8px; font: 400 12px/16px "Plex Sans"; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--accent); }
+.menu .search .cur { width: 1px; height: 14px; background: var(--text-1); margin-right: 4px; }
+.menu .row.dis { color: var(--text-3); }
+
+/* annotation callouts (mockup only, not UI) */
+.note { position: absolute; font: 500 12px/16px "Plex Sans"; color: #0b1620; background: #f5d76e; padding: 4px 8px; border-radius: 3px; box-shadow: 0 2px 6px rgba(0,0,0,.5); max-width: 280px; }
+.note b { font-weight: 600; }
+.note::before { content: attr(data-n); display: inline-block; min-width: 16px; height: 16px; border-radius: 8px; background: #0b1620; color: #f5d76e; font: 600 10px/16px "Plex Sans"; text-align: center; margin-right: 6px; }
+.pin { position: absolute; width: 18px; height: 18px; border-radius: 9px; background: #f5d76e; color: #0b1620; font: 600 11px/18px "Plex Sans"; text-align: center; box-shadow: 0 0 0 2px #0b1620; }
+.snap-mixer { background-image: url("../../../../../komponist/crates/komponist-app/tests/snapshots/mixer-dock-1x.png"); }

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Automation lanes</title>
+<link rel="stylesheet" href="base.css"><script src="lib.js"></script></head>
+<body>
+<script>
+// Variant: 01 (lanes, selection, tooltip) or 02 (parameter chooser open), chosen by the URL hash.
+const CHOOSER = location.hash.includes("chooser");
+const GREEN = "#63b376", VIOLET = "#aa8dde";
+
+// The unchanged app: the S01 snapshot (2x, drawn at 1x points).
+crop(0, 0, 1920, 1080, 0, 0);
+// Arrangement track area, recomposed.
+rect(260, 95, 1378, 642, "var(--surface-1)");
+
+// rows: [dstY, srcY]
+const rows = { drums: [96, 96], bass: [152, 152], lead: [208, 208], pad: [376, 264], keys: [472, 320], arp: [528, 376] };
+for (const k in rows) crop(485, rows[k][1], 1153, 56, 485, rows[k][0]);
+crop(260, 432, 1378, 153, 260, 584);   // "Neue Spur" and the empty grid below
+rect(1160, 584, 1, 153, "var(--text-1)");
+
+trackHeader({ y: 96, srcY: 96, color: "#dc855d", name: "Drums", sub: "Sampler", auto: "none" });
+trackHeader({ y: 152, srcY: 152, color: "#61a3e6", name: "Bass", sub: "Hexa", auto: "hidden" });
+trackHeader({ y: 208, srcY: 208, color: GREEN, name: "Lead", sub: "Hexa", auto: "shown", sel: true });
+trackHeader({ y: 376, srcY: 264, color: VIOLET, name: "Pad", sub: "⚠ Plugin fehlt: Surge XT", subErr: true, auto: "shown" });
+trackHeader({ y: 472, srcY: 320, color: "#b69d3a", name: "Keys", sub: "Dexed", auto: "none" });
+trackHeader({ y: 528, srcY: 376, color: "#5e7d80", name: "Arp", sub: "Vital", auto: "none", muted: true });
+
+// Clip automation markers in the clip headers of both "Lead A" clips.
+for (const x of [1204 - 13, 1348 - 13]) {
+  const i = el("div", "abs", { left: px(x), top: px(211), width: "10px", height: "10px", color: "#14361d" }, ICON.spline);
+}
+
+// --- Lane 1: Hexa · Feedback (72 px) ---------------------------------------------------------
+const L1 = { y: 264, h: 72 };
+const lane = [
+  { b: 1, v: 0.30, s: "lin" }, { b: 8, v: 0.30, s: "lin" }, { b: 9, v: 0.42, s: "lin" },
+  { b: 13, v: 0.35, s: 0.55 }, { b: 15, v: 0.85, s: "hold" }, { b: 15.5, v: 0.55, s: "lin" }, { b: 17, v: 0.40, s: "lin" },
+];
+const clip = (o) => [{ b: 9 + o, v: 0.20, s: -0.45 }, { b: 10.5 + o, v: 0.90, s: "lin" }, { b: 10.98 + o, v: 0.28, s: "lin" }];
+const spans = [[X(9) + 1, X(11) - 1, clip(0)], [X(11) + 1, X(13) - 1, clip(2)]];
+const b1 = laneBody({ y: L1.y, h: L1.h, bg: "var(--lane-selected)" });
+const bottom1 = L1.y + L1.h;
+// lane curve outside the spans
+drawCurve(b1.svg, b1.Y, lane, { from: BODY_X0, to: X(9), line: GREEN, fill: "#14361d", bottom: bottom1 });
+drawCurve(b1.svg, b1.Y, lane, { from: X(13), to: BODY_X1 - 1, line: GREEN, fill: "#14361d", bottom: bottom1 });
+// clip spans: hatched, the lane's own curve dim underneath, the clip's curve dashed on top
+spans.forEach(([x0, x1, pts], i) => {
+  hatch(b1.svg, x0, x1, L1.y, L1.h, "h1" + i);
+  drawCurve(b1.svg, b1.Y, lane, { from: x0, to: x1, line: "#4a4d52", width: 1 });
+  drawCurve(b1.svg, b1.Y, pts, { from: x0, to: x1, line: "#62946c", width: 1.5, dash: "4 3" });
+});
+text(X(9) + 4, L1.y + 3, "t-label", "durch Clip-Automation", { color: "var(--text-2)", fontSize: "9px", background: "var(--lane-selected)", padding: "0 3px" });
+drawPoints(b1.svg, b1.Y, lane, { color: GREEN, selected: CHOOSER ? [] : [4, 5], handles: CHOOSER ? [] : [3], from: BODY_X0, to: X(9) + 0.1 });
+drawPoints(b1.svg, b1.Y, lane, { color: GREEN, selected: CHOOSER ? [] : [4, 5], handles: CHOOSER ? [] : [3], from: X(13) - 0.1, to: BODY_X1 });
+// the effective value at the playhead (10.2.120 lies in the first Lead A clip)
+const pb = 1 + (1160 - BAR0) / PX_PER_BAR;
+const eff = Math.round(valueAt(clip(0), pb) * 100);
+laneHeader({ y: L1.y, h: L1.h, color: GREEN, dev: "Hexa", param: "Feedback", mode: "Lesen", value: eff + " %", sel: true });
+
+// --- Lane 2: Lautstärke (40 px), or an empty lane with the chooser open (02) -----------------
+const L2 = { y: 336, h: 40 };
+const vol = [{ b: 1, v: 0.74, s: "lin" }, { b: 14, v: 0.74, s: -0.5 }, { b: 15, v: 0.52, s: "lin" }, { b: 17, v: 0.52 }];
+const b2 = laneBody({ y: L2.y, h: L2.h });
+if (!CHOOSER) {
+  drawCurve(b2.svg, b2.Y, vol, { line: GREEN, fill: "#14361d", bottom: L2.y + L2.h, to: BODY_X1 - 1 });
+  drawPoints(b2.svg, b2.Y, vol, { color: GREEN });
+  laneHeader({ y: L2.y, h: L2.h, color: GREEN, param: "Lautstärke", mode: "Lesen", value: "−3.0 dB" });
+} else {
+  text(X(5), L2.y + 13, "t-small", "Doppelklick setzt einen Punkt", { color: "var(--text-3)" });
+  laneHeader({ y: L2.y, h: L2.h, color: GREEN, empty: "Parameter wählen …", mode: "Lesen", open: true });
+}
+
+// --- Pad lane: target of a missing plugin (40 px) -----------------------------------------------
+const L3 = { y: 432, h: 40 };
+const cut = [{ b: 1, v: 0.22, s: "lin" }, { b: 5, v: 0.22, s: 0.5 }, { b: 9, v: 0.78, s: "lin" }, { b: 13, v: 0.78, s: "lin" }, { b: 17, v: 0.30 }];
+const b3 = laneBody({ y: L3.y, h: L3.h });
+drawCurve(b3.svg, b3.Y, cut, { line: "#4a4d52", width: 1.5, to: BODY_X1 - 1 });
+drawPoints(b3.svg, b3.Y, cut, { color: "#4a4d52" });
+laneHeader({ y: L3.y, h: L3.h, color: VIOLET, dev: "Surge XT", param: "Filter 1 Cutoff", paramColor: "var(--error)", mode: "Lesen", warn: "⚠ Plugin fehlt: Surge XT" });
+
+playhead(1160, 264, 376);
+playhead(1160, 432, 472);
+
+if (!CHOOSER) {
+  // value tooltip while dragging the selected point at 15.1.000
+  const tx = X(15) - 196, ty = b1.Y(0.85) - 11;
+  const tip = el("div", "tooltip", { left: px(tx), top: px(ty) },
+    '<span class="k">Feedback</span>&nbsp;·&nbsp;85 %&nbsp;·&nbsp;15.1.000');
+  tip.style.left = px(X(15) - 12 - tip.getBoundingClientRect().width);
+  // box-selection remnant is not shown; status bar: selection + hint
+  rect(0, 1059, 1000, 21, "var(--surface-1)");
+  text(12, 1062, "t-small", "Lead · Feedback · 2 Punkte ausgewählt", { color: "var(--text-1)" });
+  text(232, 1062, "t-small", "Doppelklick: Punkt · Strg-Ziehen: zeichnen · Alt-Ziehen: Kopie · Shift: fein", { color: "var(--text-2)" });
+} else {
+  // parameter chooser popover under the empty lane's chooser
+  const m = el("div", "menu", { left: px(282), top: px(L2.y + 26), width: "280px" });
+  m.innerHTML = `
+    <div class="search"><span class="cur"></span>Parameter suchen</div>
+    <div class="sec t-label">Zuletzt bewegt</div>
+    <div class="row"><span class="dot" style="background:${GREEN}"></span>Feedback<span class="r">Hexa</span></div>
+    <div class="row">Mix<span class="r">Dragonfly Hall Reverb</span></div>
+    <div class="sep"></div>
+    <div class="sec t-label">Mixer</div>
+    <div class="row"><span class="dot" style="background:${GREEN}"></span>Lautstärke</div>
+    <div class="row">Pan</div>
+    <div class="sep"></div>
+    <div class="sec t-label">Spur-Makros</div>
+    <div class="row">1 · Open</div>
+    <div class="row">2 · Space</div>
+    <div class="sep"></div>
+    <div class="sec t-label">Hexa</div>
+    <div class="row">Algorithmus</div>
+    <div class="row">Ratio 2</div>
+    <div class="row hl">Index</div>
+    <div class="row"><span class="dot" style="background:${GREEN}"></span>Feedback</div>
+    <div class="row">Attack</div>
+    <div class="row">Decay</div>
+    <div class="sep"></div>
+    <div class="sec t-label">LSP Para EQ x8</div>
+    <div class="row">Low Cut</div>
+    <div class="row dis">Mid Freq<span class="r">über Spur-Makro 1 „Open“</span></div>`;
+  // scroll hint: the list continues (TAL-Chorus-LX, Dragonfly Hall Reverb)
+  const mr = m.getBoundingClientRect();
+  rect(mr.left + 274, mr.top + 120, 3, 140, "var(--surface-5)", { borderRadius: "2px" });
+  rect(0, 1059, 1000, 21, "var(--surface-1)");
+  text(12, 1062, "t-small", "Lead · Automationsspur", { color: "var(--text-1)" });
+  text(150, 1062, "t-small", "Pfeiltasten wählen · Enter übernimmt · Esc schließt", { color: "var(--text-2)" });
+}
+translateEn();
+</script>
+</body></html>

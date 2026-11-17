@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="kit.js"></script></head>
+<body><script>
+// 01: the 8 track macros in their places: pinned at the head of the device chain, and compact in
+// the inspector. Parameters driven by a macro carry its number and show the mapped range as the
+// knob's modulation ring in the track colour.
+const M = padMacros();
+const d1 = { badge: '1', mod: [0.62, 0.95] };
+const chain =
+  macroCard(0, M, { selected: 1 }) +
+  `<div class="abs" style="left:258px;top:0;width:1px;height:244px;background:var(--l2)"></div>` +
+  collapsed(264, 'Volt') +
+  eqCard(300, { freqV: 0.752, freqText: '3.6 kHz', map: { freq: d1 } }) +
+  delayCard(680, { mixV: 0.37, mixText: '37 %', map: { mix: { badge: '1', mod: [0.15, 0.45] } } }) +
+  hallCard(940, { mixV: 0.19, mixText: '19 %', decayV: 0.4, decayText: '2.10 s', sizeV: 0.5, sizeText: '24 m',
+    map: { mix: { badge: '2', mod: [0.12, 0.40] }, decay: { badge: '2', mod: [0.3, 0.7] }, size: { badge: '2', mod: [0.4, 0.8] } } }) +
+  `<div class="abs" style="left:1200px;top:0;width:120px;height:244px;border:1px dashed var(--l2);border-radius:3px;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px;color:var(--t3);font-size:11px">${t.dropHint}</div>`;
+const inspector = inspectorTrack() + inspectorDevices() + inspectorMacros(M, { selected: 1 }) +
+  `<div class="isec"><div class="hd"><span class="label">${t.channel}</span><span class="meta">${t.showInMixer}</span></div>` +
+  `<div style="display:flex;gap:16px;align-items:flex-start"><div style="width:4px;height:80px;background:var(--s0);border-radius:2px;margin-left:30px;position:relative"><div class="abs" style="left:-14px;top:22px;width:32px;height:14px;background:var(--s4);border-radius:2px"></div></div>` +
+  `<div style="margin-left:24px"><div class="small">${t.volume}</div><div class="mono" style="margin-top:4px">−6.0 dB</div><div class="small" style="margin-top:12px">${t.pan}</div><div class="mono" style="margin-top:4px">C</div></div></div></div>`;
+page({ chain, inspector });
+</script></body></html>

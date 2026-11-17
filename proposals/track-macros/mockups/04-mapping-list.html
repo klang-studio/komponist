@@ -1,0 +1,47 @@
+<!doctype html>
+<html data-size="980x600x2"><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="kit.js"></script></head>
+<body><script>
+// 04 (component sheet, 2x): the mapping list in the inspector, its empty state, the value menu of a
+// macro knob, the hover text of a driven parameter and the collapsed macro card.
+const M = padMacros();
+const rows = [
+  { dev: 'Volt', par: 'Cutoff', min: 0.35, max: 0.8, cur: 0.42, loText: '320 Hz', hiText: '4.8 kHz', curText: '600 Hz', bend: 0.4, bendOn: true },
+  { dev: 'EQ', par: t.freq(5), min: 0.62, max: 0.95, cur: 0.752, loText: '1.4 kHz', hiText: '14.2 kHz', curText: '3.6 kHz' },
+  { dev: 'Delay', par: t.mix, min: 0.15, max: 0.45, cur: 0.37, loText: pct(15), hiText: pct(45), curText: pct(37), bend: -0.5 },
+  { dev: 'Volt', par: t.resonance, min: 0.1, max: 0.3, cur: 0.22, inv: true, loText: pct(10), hiText: pct(30), curText: pct(22) },
+];
+let h = '';
+// A: macro 1 selected, its mappings; the Cutoff minimum is being dragged.
+h += caption(20, 14, LANG === 'de' ? 'Spur-Makro 1 gewählt · Kurve von Cutoff wird gebogen' : 'Track macro 1 selected · bending the Cutoff curve');
+h += `<div class="abs" style="left:20px;top:34px;width:280px;background:var(--s1);border-radius:3px">${inspectorMacros(M, { selected: 1, detail: macroDetail(1, M[0], rows) })}</div>`;
+h += `<div class="tip" style="left:118px;top:300px">${t.bend} <span class="mono">+0.40</span><br><span class="t2">${t.bendTip}</span></div>`;
+// B: an unused macro (no mappings) and the value menu of a macro knob.
+h += caption(330, 14, LANG === 'de' ? 'Spur-Makro 5 gewählt · keine Zuordnungen' : 'Track macro 5 selected · no mappings');
+h += `<div class="abs" style="left:330px;top:34px;width:280px;background:var(--s1);border-radius:3px">${inspectorMacros(M, { selected: 5, detail: macroDetail(5, { name: '', v: 0 }, []) })}</div>`;
+h += caption(330, 330, LANG === 'de' ? 'Wertmenü eines Spur-Makros (Rechtsklick)' : 'Value menu of a track macro (right-click)');
+h += `<div class="abs" style="left:330px;top:350px;width:252px;height:100px;background:var(--s2);border-radius:3px">` +
+  cell(0, 0, { v: 0.4, name: 'Open', value: pct(40), color: 'var(--hue)', badge: '1', badgeCls: 'sel', cls: 'selring' }) + `</div>`;
+h += `<div class="menu" style="left:380px;top:390px;width:230px"><div class="mi"><span>${t.toDefault}</span><span class="sc">${t.toDefaultKey}</span></div>` +
+  `<div class="mi"><span>${t.enterValue}</span></div><div class="sep"></div><div class="mi hl"><span>${t.rename}</span></div>` +
+  `<div class="mi"><span>${t.removeAll}</span></div></div>`;
+// C: hover text of a driven parameter; the collapsed macro card.
+h += caption(640, 14, LANG === 'de' ? 'Gesteuerter Parameter, Mauszeiger darüber' : 'Driven parameter, hovered');
+h += `<div class="abs" style="left:640px;top:70px;width:200px;height:84px;background:var(--s2);border-radius:3px">` +
+  cell(1, 0, { v: 0.752, name: t.freq(5), value: '3.6 kHz', badge: '1', mod: [0.62, 0.95] }) + `</div>`;
+h += `<div class="tip" style="left:640px;top:30px">${t.drivenTip(1, 'Open')}<br><span class="mono t2">${t.range('1.4 kHz', '14.2 kHz')}</span></div>`;
+h += caption(640, 180, LANG === 'de' ? 'Andere Widgets: nur die Nummer, Ring entfällt' : 'Other widgets: the badge only, no ring');
+h += `<div class="abs" style="left:640px;top:200px;width:200px;height:90px;background:var(--s2);border-radius:3px">` +
+  `<div class="seg" style="left:8px;top:22px;width:116px"><span>${t.rooms[0]}</span><span class="on">${t.rooms[1]}</span><span>${t.rooms[2]}</span></div>` +
+  `<div class="minilabel" style="left:8px;top:8px">${t.room}</div><div class="badge drive" style="left:112px;top:6px">2</div>` +
+  `<div class="tgl on" style="left:8px;top:56px;width:56px">${t.freeze}</div><div class="badge drive" style="left:68px;top:59px">3</div></div>`;
+h += caption(640, 316, LANG === 'de' ? 'Eingeklappt (28 px), wie ein Gerät' : 'Collapsed (28 px), like a device');
+h += `<div class="abs" style="left:640px;top:336px;width:28px;height:244px">` +
+  `<div class="frame" style="left:0;width:28px;background:var(--s3)"><div class="tbar" style="position:absolute;left:12px;top:8px"></div>` +
+  `<div style="position:absolute;left:7px;top:30px;writing-mode:vertical-rl;font-weight:600;font-size:12px">${t.macros}</div></div></div>`;
+h += caption(690, 336, LANG === 'de' ? 'EQ-Griff eines gesteuerten Bands: Ring in Spurfarbe' : 'EQ handle of a driven band: ring in the track colour');
+h += `<div class="abs" style="left:690px;top:356px;width:150px;height:80px;background:var(--s1);border-radius:3px"><svg width="150" height="80">` +
+  `<path d="M0 50 C 40 48, 60 30, 90 34 C 110 36, 120 60, 140 80" stroke="var(--hue)" stroke-width="1.5" fill="none"/>` +
+  `<circle cx="90" cy="34" r="5" fill="var(--s0)" stroke="var(--t1)" stroke-width="1.5"/><circle cx="90" cy="34" r="8" fill="none" stroke="var(--hue)" stroke-width="1.5"/>` +
+  `<text x="90" y="37" font-family="IBM Plex Mono" font-size="8" fill="var(--t1)" text-anchor="middle">5</text></svg></div>`;
+sheet(h);
+</script></body></html>

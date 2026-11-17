@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="kit.js"></script></head>
+<body><script>
+// 02: mapping mode. „Zuordnen“ is on and macro 1 „Open“ is selected (`knob.learn` ground). On the
+// device cards every parameter that can be mapped has the light accent ground; the ones that macro
+// 1 already drives carry the full learn style and its badge; parameters of another macro keep that
+// macro's badge (moving one moves it to macro 1); what cannot be mapped (graphs, the XY pad, a
+// collapsed device) is dimmed. The inspector shows macro 1's mapping list.
+const M = padMacros();
+const C = { cls: 'cand' };
+const mine = (mod) => ({ cls: 'learn', badge: '1', mod });
+const other = (mod) => ({ cls: 'cand', badge: '2', mod });
+const eqMap = { freq: mine([0.62, 0.95]), gain: C, q: C, out: C, type: C, on: C, an: C };
+const dlMap = { mix: mine([0.15, 0.45]), time: C, fb: C, lc: C, hc: C, width: C, pp: C, nv: C, xy: { cls: 'dim' } };
+const hlMap = { mix: other([0.12, 0.40]), decay: other([0.3, 0.7]), size: other([0.4, 0.8]), pre: C, damp: C, diff: C, width: C, mod: C, room: C, fr: C, wo: C };
+const chain =
+  macroCard(0, M, { selected: 1, mapping: true }) +
+  `<div class="abs" style="left:258px;top:0;width:1px;height:244px;background:var(--l2)"></div>` +
+  `<div class="dim">${collapsed(264, 'Volt')}</div>` +
+  eqCard(300, { freqV: 0.752, freqText: '3.6 kHz', map: eqMap, graphCls: 'dim' }) +
+  delayCard(680, { mixV: 0.37, mixText: '37 %', map: dlMap }) +
+  hallCard(940, { mixV: 0.19, mixText: '19 %', decayV: 0.4, decayText: '2.10 s', sizeV: 0.5, sizeText: '24 m', map: hlMap });
+const rows = [
+  { dev: 'Volt', par: 'Cutoff', min: 0.35, max: 0.8, cur: 0.42, loText: '320 Hz', hiText: '4.8 kHz', curText: '600 Hz', bend: 0.4 },
+  { dev: 'EQ', par: t.freq(5), min: 0.62, max: 0.95, cur: 0.752, loText: '1.4 kHz', hiText: '14.2 kHz', curText: '3.6 kHz' },
+  { dev: 'Delay', par: t.mix, min: 0.15, max: 0.45, cur: 0.37, loText: pct(15), hiText: pct(45), curText: pct(37), bend: -0.5 },
+  { dev: 'Volt', par: t.resonance, min: 0.1, max: 0.3, cur: 0.22, inv: true, loText: pct(10), hiText: pct(30), curText: pct(22) },
+];
+const inspector = inspectorTrack() + inspectorDevices() +
+  inspectorMacros(M, { selected: 1, mapping: true, detail: macroDetail(1, M[0], rows, { mapping: true }) });
+page({ chain, inspector, chainChip: t.mapChip(1, 'Open'), statusLeft: t.selected, status: t.mapStatus(1) });
+</script></body></html>

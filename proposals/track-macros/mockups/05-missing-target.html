@@ -1,0 +1,33 @@
+<!doctype html>
+<html data-size="980x390x2"><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="kit.js"></script></head>
+<body><script>
+// 05 (component sheet, 2x): targets that are not there. TAL-Chorus-LX is missing (S06): its
+// mapping stays, is skipped and shows red; a Dragonfly update dropped „Early Level“: the mapping
+// keeps the parameter's last known name. The macro's badge gets the error dot, its tooltip counts.
+const M = padMacros();
+M[1].warn = true; M[1].targets = 3; M[1].list = [t.mix, 'Mix', 'Early Level'];
+const rows = [
+  { dev: LANG === 'de' ? 'Hall' : 'Reverb', par: t.mix, min: 0.12, max: 0.4, cur: 0.19, loText: pct(12), hiText: pct(40), curText: pct(19) },
+  { dev: 'TAL-Chorus-LX', par: 'Mix', min: 0.0, max: 0.5, missing: true, status: t.missing },
+  { dev: 'Dragonfly Hall Reverb', par: 'Early Level', min: 0.2, max: 0.6, paramMissing: true, status: t.missing },
+];
+let h = '';
+h += caption(20, 14, LANG === 'de' ? 'Karte: Fehlerpunkt an Makro 2, Tooltip zählt' : 'Card: error dot on macro 2, the tooltip counts');
+h += `<div class="abs" style="left:20px;top:34px;width:252px;height:244px">${macroCard(0, M, { selected: 2 })}</div>`;
+h += `<div class="tip" style="left:${20 + 40}px;top:${34 + 28 + 78}px">${t.macro(2)} ${t.quote('Space')} · ${t.targetsMissing(2)}</div>`;
+h += caption(300, 14, LANG === 'de' ? 'Inspector: Zuordnungen von Spur-Makro 2' : 'Inspector: mappings of track macro 2');
+h += `<div class="abs" style="left:300px;top:34px;width:280px;background:var(--s1);border-radius:3px;padding:12px">` +
+  macroDetail(2, M[1], rows).replace('margin-top:12px', 'margin-top:0') + `</div>`;
+h += caption(610, 14, LANG === 'de' ? 'Fehlendes Gerät: Hinweis auf gespeicherte Zuordnungen' : 'Missing device: note on the kept mappings');
+const kept = LANG === 'de' ? '1 Zuordnung bleibt gespeichert' : '1 mapping kept';
+h += `<div class="abs" style="left:610px;top:34px;width:252px;height:244px">` +
+  frame(0, W(4), {
+    head: `<div class="power" style="background:var(--s4);box-shadow:inset 0 0 0 1px var(--t3)"></div><div class="nm t2">TAL-Chorus-LX</div><div style="flex:1"></div>` +
+      `<span class="mono err" style="font-size:9px;padding:1px 4px">VST3</span><div class="menu3">•••</div>`,
+    body: `<div style="padding:12px"><div class="err" style="font-weight:600">${t.pluginMissing}</div>` +
+      `<div class="small" style="margin-top:8px;color:var(--t2)">${LANG === 'de' ? 'Nicht installiert oder nicht in einem Plugin-Ordner. Die Einstellungen bleiben im Projekt gespeichert und werden wieder geladen, sobald das Plugin gefunden wird.' : 'Not installed, or not in a plugin folder. The settings stay saved in the project and load again as soon as the plugin is found.'}</div>` +
+      `<div style="position:absolute;left:12px;bottom:12px;right:12px;display:flex;gap:6px;align-items:center;border-top:1px solid var(--l1);padding-top:8px">` +
+      `<span class="badge drive" style="position:static">2</span><span class="small">${kept}</span></div></div>`,
+  }) + `</div>`;
+sheet(h);
+</script></body></html>

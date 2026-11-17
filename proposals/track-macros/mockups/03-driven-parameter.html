@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="kit.js"></script></head>
+<body><script>
+// 03: a parameter driven by a track macro. „Frequenz 5“ carries badge 1 and its mapped range as the
+// track-coloured ring; it does not follow the mouse (the macro wins): a drag only puts the status
+// text up. Its value menu greys out „Auf Standard“ and „Wert eingeben“ and offers the way to the
+// macro. The inspector's Parameter section says who drives it, with the range.
+const M = padMacros();
+const chain =
+  macroCard(0, M, { selected: 1 }) +
+  `<div class="abs" style="left:258px;top:0;width:1px;height:244px;background:var(--l2)"></div>` +
+  collapsed(264, 'Volt') +
+  eqCard(300, { freqV: 0.752, freqText: '3.6 kHz', hcBadge: true, map: { freq: { badge: '1', mod: [0.62, 0.95], cls: 'selring' } } }) +
+  delayCard(680, { mixV: 0.37, mixText: '37 %', map: { mix: { badge: '1', mod: [0.15, 0.45] } } }) +
+  hallCard(940, { mixV: 0.19, mixText: '19 %', decayV: 0.4, decayText: '2.10 s', sizeV: 0.5, sizeText: '24 m',
+    map: { mix: { badge: '2', mod: [0.12, 0.40] }, decay: { badge: '2', mod: [0.3, 0.7] }, size: { badge: '2', mod: [0.4, 0.8] } } });
+// The value menu at the knob (chain x 10 + dock 24; EQ at 300, cell col 2 row 2 → 300+128, 28+144).
+const mx = 34 + 300 + 128 + 40, my = 806 + 28 + 144 + 30;
+const menu = `<div class="menu" style="left:${mx}px;top:${my - 150}px;width:236px">` +
+  `<div class="mi off"><span>${t.toDefault}</span><span class="sc" style="color:var(--t4)">${t.toDefaultKey}</span></div>` +
+  `<div class="mi off"><span>${t.enterValue}</span></div><div class="sep"></div>` +
+  `<div class="mi hl"><span>${t.showMacro}</span><span style="display:flex;gap:6px;align-items:center"><span class="badge drive" style="position:static">1</span>Open</span></div>` +
+  `<div class="mi"><span>${t.removeMenu}</span></div></div>`;
+const param = `<div class="isec"><div class="hd"><span class="label">${t.parameter}</span></div>` +
+  `<div style="font-weight:600">${t.freq(5)}</div><div class="small" style="margin:4px 0 10px 0">EQ · Band 5 · Pad</div>` +
+  `<div style="display:flex;gap:8px"><div style="flex:1"><div class="small" style="margin-bottom:4px">${t.value}</div><div class="field" style="background:var(--s1);box-shadow:inset 0 0 0 1px var(--l1);color:var(--t2)">3.6 kHz</div></div>` +
+  `<div style="flex:1"><div class="small" style="margin-bottom:4px">${t.default}</div><div class="field">20.0 kHz</div></div></div>` +
+  `<div class="small" style="margin:10px 0 4px 0">${t.rangeL}</div><div class="field">${t.range('20 Hz', '20.0 kHz')}</div>` +
+  `<div class="small" style="margin:10px 0 4px 0">${t.controlledBy}</div>` +
+  `<div class="field sans" style="gap:8px"><span class="badge drive" style="position:static">1</span><span>Open</span>` +
+  `<span class="mono t2" style="margin-left:auto;font-size:11px">${t.range('1.4 kHz', '14.2 kHz')}</span></div></div>`;
+const inspector = inspectorTrack() + inspectorDevices() + param + inspectorMacros(M, { selected: 1 });
+page({ chain, inspector, overlay: menu, status: t.lockedStatus(t.freq(5), 1, 'Open') });
+</script></body></html>

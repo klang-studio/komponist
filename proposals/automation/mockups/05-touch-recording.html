@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Touch recording</title>
+<link rel="stylesheet" href="base.css"><script src="lib.js"></script></head>
+<body>
+<script>
+const G = "#63b376", VIOLET = "#aa8dde", REC = "#e5484d";
+crop(0, 0, 1920, 1080, 0, 0);
+
+// Transport: playing at 14.3.000
+rect(264, 8, 30, 28, "var(--surface-4)", { borderRadius: "3px" });
+el("div", "abs", { left: "274px", top: "15px", width: 0, height: 0, borderTop: "7px solid transparent", borderBottom: "7px solid transparent", borderLeft: "11px solid var(--play)" });
+rect(497, 6, 215, 32, "var(--surface-1)");
+text(499, 10, "", "14.3.000", { font: "500 20px/24px 'Plex Mono'", color: "var(--text-1)" });
+text(605, 16, "t-vm", "00:26.129", { color: "var(--text-3)" });
+// ruler playhead marker
+const PH = X(14) + 36;
+crop(1128, 72, 22, 8, 1150, 72);
+crop(1150, 79, 8, 16, 1157, 79);
+rect(PH - 4, 73, 9, 6, "var(--text-1)");
+rect(PH, 79, 1, 17, "var(--text-1)");
+
+// Arrangement as in mockup 01, Lead in Touch, writing Feedback.
+rect(260, 95, 1378, 642, "var(--surface-1)");
+const rows = { drums: [96, 96], bass: [152, 152], lead: [208, 208], pad: [376, 264], keys: [472, 320], arp: [528, 376] };
+for (const k in rows) crop(485, rows[k][1], 1153, 56, 485, rows[k][0]);
+crop(260, 432, 1378, 153, 260, 584);
+trackHeader({ y: 96, srcY: 96, color: "#dc855d", name: "Drums", sub: "Sampler", auto: "none" });
+trackHeader({ y: 152, srcY: 152, color: "#61a3e6", name: "Bass", sub: "Hexa", auto: "hidden" });
+trackHeader({ y: 208, srcY: 208, color: G, name: "Lead", sub: "Hexa", auto: "rec", sel: true });
+trackHeader({ y: 376, srcY: 264, color: VIOLET, name: "Pad", sub: "Surge XT", auto: "shown" });
+trackHeader({ y: 472, srcY: 320, color: "#b69d3a", name: "Keys", sub: "Dexed", auto: "none" });
+trackHeader({ y: 528, srcY: 376, color: "#5e7d80", name: "Arp", sub: "Vital", auto: "none", muted: true });
+for (const x of [1204 - 13, 1348 - 13]) el("div", "abs", { left: px(x), top: px(211), width: "10px", height: "10px", color: "#14361d" }, ICON.spline);
+
+// Lane 1: Feedback, being written from 13.2.000 to the playhead
+const L1 = { y: 264, h: 72 };
+const lane = [
+  { b: 1, v: 0.30, s: "lin" }, { b: 8, v: 0.30, s: "lin" }, { b: 9, v: 0.42, s: "lin" },
+  { b: 13, v: 0.35, s: 0.55 }, { b: 15, v: 0.85, s: "hold" }, { b: 15.5, v: 0.55, s: "lin" }, { b: 17, v: 0.40, s: "lin" },
+];
+const clip = (o) => [{ b: 9 + o, v: 0.20, s: -0.45 }, { b: 10.5 + o, v: 0.90, s: "lin" }, { b: 10.98 + o, v: 0.28, s: "lin" }];
+const b1 = laneBody({ y: L1.y, h: L1.h, bg: "var(--lane-selected)" });
+const bottom1 = L1.y + L1.h;
+const T0 = 13.25, T1 = 1 + (PH - BAR0) / PX_PER_BAR;
+// raw values of the running write (one per block, shown un-thinned)
+const raw = [];
+let v = valueAt(lane, T0);
+for (let b = T0, i = 0; b <= T1 + 1e-9; b += 0.02, i++) {
+  const target = 0.35 + 0.42 * Math.sin((b - T0) * 2.1) + 0.05 * Math.sin(i * 0.9);
+  v += (target - v) * 0.35;
+  raw.push({ b, v: Math.max(0.05, Math.min(0.95, v)), s: "lin" });
+}
+drawCurve(b1.svg, b1.Y, lane, { from: BODY_X0, to: X(9), line: G, fill: "#14361d", bottom: bottom1 });
+[[X(9) + 1, X(11) - 1, clip(0)], [X(11) + 1, X(13) - 1, clip(2)]].forEach(([x0, x1, pts], i) => {
+  hatch(b1.svg, x0, x1, L1.y, L1.h, "h" + i);
+  drawCurve(b1.svg, b1.Y, lane, { from: x0, to: x1, line: "#4a4d52", width: 1 });
+  drawCurve(b1.svg, b1.Y, pts, { from: x0, to: x1, line: "#62946c", dash: "4 3" });
+});
+drawCurve(b1.svg, b1.Y, lane, { from: X(13), to: X(T0), line: G, fill: "#14361d", bottom: bottom1 });
+drawCurve(b1.svg, b1.Y, raw, { from: X(T0), to: PH, line: REC, fill: "#3a1d1f", fillOpacity: 0.95, bottom: bottom1 });
+drawCurve(b1.svg, b1.Y, lane, { from: PH, to: BODY_X1 - 1, line: G, fill: "#14361d", bottom: bottom1, opacity: 0.55 });
+drawPoints(b1.svg, b1.Y, lane, { color: G, from: BODY_X0, to: X(9) + 0.1 });
+drawPoints(b1.svg, b1.Y, lane.slice(0), { color: G, from: PH, to: BODY_X1 });
+const cur = Math.round(raw[raw.length - 1].v * 100);
+laneHeader({ y: L1.y, h: L1.h, color: G, dev: "Hexa", param: "Feedback", mode: "Touch", chip: "write", value: cur + " %", writing: "schreibt", sel: true });
+
+// Lane 2: volume, its own mode (Read): it plays, nothing writes it
+const L2 = { y: 336, h: 40 };
+const vol = [{ b: 1, v: 0.74, s: "lin" }, { b: 14, v: 0.74, s: -0.5 }, { b: 15, v: 0.52, s: "lin" }, { b: 17, v: 0.52 }];
+const b2 = laneBody({ y: L2.y, h: L2.h });
+drawCurve(b2.svg, b2.Y, vol, { line: G, fill: "#14361d", bottom: L2.y + L2.h, to: BODY_X1 - 1 });
+drawPoints(b2.svg, b2.Y, vol, { color: G });
+laneHeader({ y: L2.y, h: L2.h, color: G, param: "Lautstärke", mode: "Lesen", value: "−3.2 dB" });
+
+// Pad lane (Read)
+const L3 = { y: 432, h: 40 };
+const cut = [{ b: 1, v: 0.22, s: "lin" }, { b: 5, v: 0.22, s: 0.5 }, { b: 9, v: 0.78, s: "lin" }, { b: 13, v: 0.78, s: "lin" }, { b: 17, v: 0.30 }];
+const b3 = laneBody({ y: L3.y, h: L3.h });
+drawCurve(b3.svg, b3.Y, cut, { line: VIOLET, fill: "#332647", bottom: L3.y + L3.h, to: BODY_X1 - 1 });
+drawPoints(b3.svg, b3.Y, cut, { color: VIOLET });
+laneHeader({ y: L3.y, h: L3.h, color: VIOLET, dev: "Surge XT", param: "Filter 1 Cutoff", mode: "Lesen", value: "2.4 kHz" });
+
+// playhead over everything in the arrangement (the clip rows carry the snapshot's playhead at 10.2.120: covered)
+// repaint 1158..1163 from neighbouring columns (the old playhead) and draw the new one
+for (const [dst, src] of [[96, 96], [152, 152], [208, 208], [376, 264], [472, 320], [528, 376]]) crop(1150, src, 8, 56, 1158, dst);
+crop(1150, 432, 8, 153, 1158, 584);
+playhead(PH, 96, 737);
+
+// Dock: devices of Lead (Hexa card from the Hexa snapshot), Feedback being turned
+crop(260, 737, 1378, 320, 260, 737, "snap-hexa");
+rect(285, 772, 36, 16, "var(--surface-1)");
+text(287, 772, "t-ui5", "Lead", { color: "var(--text-1)" });
+// automation dot in front of "Feedback" (state.record while written) and the live value
+rect(700, 1015, 5, 5, REC, { borderRadius: "3px" });
+rect(708, 1025, 40, 14, "var(--surface-2)");
+text(712, 1025, "", cur + " %", { font: "400 10px/12px 'Plex Mono'", color: "var(--text-1)" });
+el("div", "abs", { left: "711px", top: "978px", width: "30px", height: "30px", borderRadius: "15px", boxShadow: "0 0 0 1px var(--accent)" });
+const tip = el("div", "tooltip", { top: "944px" }, '<span class="k">Feedback</span>&nbsp;·&nbsp;' + cur + ' %');
+tip.style.left = px(726 - tip.getBoundingClientRect().width / 2);
+// automation dot on the volume knob (automated, read)
+rect(806, 860, 5, 5, G, { borderRadius: "3px" });
+// dock tab: "Geräte" active (from the Hexa snapshot)
+
+// Inspector: the selected parameter with its automation row (from the Hexa snapshot)
+crop(1640, 46, 280, 1011, 1640, 46, "snap-hexa");
+rect(1660, 108, 120, 20, "var(--surface-1)"); text(1663, 110, "t-track", "Lead");
+rect(1650, 372, 260, 46, "var(--surface-1)");
+text(1652, 374, "t-track", "Feedback");
+text(1652, 398, "t-small", "Hexa · Global · Hexa", { color: "var(--text-3)" });
+rect(1652, 443, 255, 20, "var(--surface-1)");
+const field = (x, y, w, t, st) => { rect(x, y, w, 22, "var(--surface-2)", { borderRadius: "2px" }); text(x + 8, y + 3, "t-vm", t, st); };
+field(1652, 443, 124, cur + " %", { color: "var(--record-ink)" });
+field(1784, 443, 124, "20 %");
+rect(1650, 478, 262, 40, "var(--surface-1)");
+text(1652, 480, "t-small", "Automation", { color: "var(--text-2)" });
+field(1652, 495, 196, "14 Punkte · Touch", { color: "var(--text-1)", fontFamily: "'Plex Sans'" });
+el("div", "abs", { left: "1854px", top: "495px", width: "54px", height: "22px", borderRadius: "2px", background: "var(--surface-3)", color: "var(--text-1)", display: "flex", alignItems: "center", justifyContent: "center" }, '<span style="width:12px;height:12px;display:block">' + ICON.spline + "</span>");
+
+rect(1736, 586, 70, 18, "var(--surface-1)");
+text(1739, 588, "t-vm", "−3.2 dB", { color: "var(--text-1)" });
+// status bar
+rect(0, 1059, 1000, 21, "var(--surface-1)");
+text(12, 1062, "t-small", "Lead · schreibt Feedback (Touch)", { color: "var(--record-ink)" });
+text(212, 1062, "t-small", "Loslassen: zurück zur Kurve in 250 ms · Esc verwirft den Durchgang", { color: "var(--text-2)" });
+translateEn();
+</script>
+</body></html>

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Automation header states</title>
+<link rel="stylesheet" href="base.css"><script src="lib.js"></script>
+<style>
+  html, body { width: 1400px; height: 1060px; background: var(--surface-1); }
+  .cap { position: absolute; width: 232px; }
+  .cap .t { font: 600 10px/12px "Plex Sans"; letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); }
+  .cap .d { font: 400 11px/14px "Plex Sans"; color: var(--text-3); margin-top: 2px; }
+  .sect { position: absolute; font: 600 11px/14px "Plex Sans"; letter-spacing: .08em; text-transform: uppercase; color: var(--text-1); }
+  .menu .row.two { height: 38px; flex-direction: column; align-items: flex-start; justify-content: center; }
+  .menu .row.two .h { font: 400 11px/14px "Plex Sans"; color: var(--text-3); }
+  .check { position: absolute; left: 8px; top: 7px; color: var(--text-1); font: 600 11px/14px "Plex Sans"; }
+</style></head>
+<body>
+<script>
+BODY_X1 = 920;
+const G = "#63b376", GB = "#14361d", V = "#aa8dde";
+function cap(y, t, d) { const c = el("div", "cap", { left: "16px", top: px(y) }); c.innerHTML = `<div class="t">${t}</div><div class="d">${d || ""}</div>`; }
+function sect(x, y, t) { const s = el("div", "sect", { left: px(x), top: px(y) }); s.textContent = t; }
+
+// --- A: track header toggle ------------------------------------------------------------------
+sect(16, 16, "Spur-Kopf · Automations-Schalter");
+const heads = [
+  ["none", "keine Automation", "text.3, wie ein leerer Schalter"],
+  ["hidden", "Automation vorhanden, ausgeblendet", "Symbol in der Spurfarbe (base)"],
+  ["shown", "Automationsspuren sichtbar", "gedrückt: surface.5 / text.1"],
+  ["rec", "Touch oder Latch schreibt", "state.record, solange geschrieben wird"],
+];
+heads.forEach(([a, t, d], i) => {
+  const y = 44 + i * 60;
+  rect(260, y - 1, 224, 57, "var(--surface-0)");
+  trackHeader({ y, srcY: 152, color: G, name: "Lead", sub: "Hexa", auto: a });
+  cap(y + 14, t, d);
+});
+
+// --- B: lane header states -------------------------------------------------------------------
+sect(16, 300, "Automationsspur · Zustände (Kopf 224 px, Höhe 24–160, Standard 40)");
+const base = [{ b: 1, v: 0.25, s: 0.4 }, { b: 3, v: 0.8, s: "lin" }, { b: 4.5, v: 0.6, s: "hold" }, { b: 5.25, v: 0.35, s: "lin" }, { b: 7, v: 0.5 }];
+let y = 328;
+function lane(h, hd, body, t, d) {
+  rect(260, y - 1, 660, h + 1, "var(--surface-0)");
+  const b = laneBody({ y, h });
+  body && body(b, y, h);
+  laneHeader(Object.assign({ y, h, color: G }, hd));
+  cap(y + Math.max(2, (h - 28) / 2), t, d);
+  y += h + 12;
+}
+const normal = (b, y0, h) => { drawCurve(b.svg, b.Y, base, { line: G, fill: GB, bottom: y0 + h, to: BODY_X1 - 1 }); drawPoints(b.svg, b.Y, base, { color: G }); };
+const grey = (b, y0, h) => { drawCurve(b.svg, b.Y, base, { line: "#4a4d52", to: BODY_X1 - 1 }); drawPoints(b.svg, b.Y, base, { color: "#4a4d52" }); };
+lane(40, { dev: "Hexa", param: "Feedback", mode: "Lesen", value: "64 %" }, normal, "Lesen · 40 px", "Wert am Playhead in value.s");
+lane(24, { dev: "Hexa", param: "Feedback", mode: "Lesen" }, normal, "Lesen · Mindesthöhe 24 px", "nur Zeile 1");
+lane(40, { dev: "Hexa", param: "Feedback", mode: "Aus", chip: "off", value: "40 %" }, grey, "Aus", "Kurve text.4, Grundwert gilt");
+lane(40, { dev: "Hexa", param: "Feedback", mode: "Touch", chip: "write", value: "64 %" }, normal, "Touch · Transport steht", "Chip rot getönt: Schreibmodus");
+const written = [{ b: 2.4, v: 0.62, s: "lin" }, { b: 2.7, v: 0.70 }, { b: 3.0, v: 0.55 }, { b: 3.3, v: 0.86 }, { b: 3.6, v: 0.78 }, { b: 3.9, v: 0.92 }, { b: 4.2, v: 0.84 }];
+const writing = (b, y0, h) => {
+  drawCurve(b.svg, b.Y, base, { line: G, fill: GB, bottom: y0 + h, from: BODY_X0, to: X(2.4) });
+  drawCurve(b.svg, b.Y, base, { line: G, fill: GB, bottom: y0 + h, from: X(4.2), to: BODY_X1 - 1, opacity: 0.6 });
+  drawCurve(b.svg, b.Y, written, { line: "#e5484d", fill: "#3a1d1f", fillOpacity: 0.9, bottom: y0 + h, from: X(2.4), to: X(4.2) });
+  playhead(X(4.2), y0, y0 + h);
+};
+lane(40, { dev: "Hexa", param: "Feedback", mode: "Touch", chip: "write", value: "84 %", writing: "schreibt" }, writing, "Touch · schreibt", "Regler gehalten · Rückkehr 250 ms");
+lane(40, { dev: "Hexa", param: "Feedback", mode: "Latch", chip: "write", value: "84 %", writing: "schreibt" }, writing, "Latch · schreibt", "bis Stopp oder Loop-Ende");
+lane(40, { dev: "Surge XT", param: "Filter 1 Cutoff", paramColor: "var(--error)", mode: "Lesen", warn: "⚠ Plugin fehlt: Surge XT" }, grey, "Plugin fehlt", "Daten bleiben, bearbeitbar, Werte in %");
+lane(40, { dev: "Vital", param: "Osc 2 Warp", paramColor: "var(--error)", mode: "Lesen", warn: "⚠ Parameter fehlt" }, grey, "Parameter fehlt", "Plugin-Update ohne diese id");
+lane(40, { dev: "Dexed", param: "Algorithm", paramColor: "var(--error)", mode: "Lesen", warn: "⚠ nicht automatisierbar" }, grey, "nicht automatisierbar", "Plugin meldet das Flag nicht mehr");
+
+// --- C: mode menu ----------------------------------------------------------------------------
+sect(960, 16, "Modus-Chip · Menü");
+rect(960, 44, 224, 41, "var(--surface-0)");
+laneHeader({ y: 44, h: 40, color: G, dev: "Hexa", param: "Feedback", mode: "Lesen", value: "64 %" });
+// re-place the lane header at x 960 (the helper draws at 260)
+document.querySelectorAll(".lhead")[document.querySelectorAll(".lhead").length - 1].style.left = "960px";
+const mm = el("div", "menu", { left: px(960 + 224 - 6 - 58), top: px(44 + 26), width: "250px" });
+mm.innerHTML = `
+  <div class="row two"><span>Aus</span><span class="h">Automation spielt nicht, Regler gelten</span></div>
+  <div class="row two hl"><span class="check">✓</span><span>Lesen</span><span class="h">Spielt die Automation ab</span></div>
+  <div class="row two"><span>Touch</span><span class="h">Schreibt, solange du einen Regler hältst</span></div>
+  <div class="row two"><span>Latch</span><span class="h">Schreibt ab dem ersten Griff bis zum Stopp</span></div>`;
+el("div", "cap", { left: "960px", top: "250px", width: "420px" }).innerHTML =
+  '<div class="d">Modus je Automationsspur (Entscheidung 2026-11-16); neue Automationsspuren starten in Lesen.</div>';
+
+// --- D: points, segments, point menu -------------------------------------------------------------
+sect(960, 300, "Punkte und Segmente");
+BAR0 = 990; PX_PER_BAR = 96; BODY_X0 = 960; BODY_X1 = 1384;
+rect(960, 327, 424, 121, "var(--surface-0)");
+const bd = laneBody({ y: 328, h: 120 });
+const demo = [{ b: 1, v: 0.2, s: "lin" }, { b: 2, v: 0.75, s: 0.6 }, { b: 3, v: 0.3, s: "hold" }, { b: 3.6, v: 0.65, s: -0.5 }, { b: 4.6, v: 0.9 }];
+drawCurve(bd.svg, bd.Y, demo, { line: G, fill: GB, bottom: 448, from: 961, to: 1383 });
+drawPoints(bd.svg, bd.Y, demo, { color: G, selected: [2, 3], handles: [1, 3] });
+// box selection hint
+rect(X(2.8), 340, X(3.75) - X(2.8), 96, "var(--box-select)", { boxShadow: "inset 0 0 0 1px var(--accent)" });
+const lbl = (x, yy, t) => text(x, yy, "t-label", t, { color: "var(--text-2)", fontSize: "9px" });
+lbl(X(1) - 6, 452, "Linear");
+lbl(X(2) + 4, 452, "Kurve (Griff)");
+lbl(X(3) - 4, 452, "Halten");
+lbl(X(3.6) + 10, 452, "Kurve −");
+el("div", "cap", { left: "960px", top: "470px", width: "424px" }).innerHTML =
+  '<div class="d">Punkt 7 px in base mit 1-px-Rand surface.0 · ausgewählt text.1 mit 1-px-accent-Ring · Kurvengriff 7-px-Raute (hohl) in der Segmentmitte bei Hover und für ausgewählte Punkte · Kastenauswahl box-select.</div>';
+
+// point context menu with the shape submenu
+const pm = el("div", "menu", { left: "960px", top: "530px", width: "200px" });
+pm.innerHTML = `
+  <div class="row hl">Form<span class="r">›</span></div>
+  <div class="row">Wert eingeben</div>
+  <div class="sep"></div>
+  <div class="row">Punkte löschen<span class="r">Entf</span></div>`;
+const sm = el("div", "menu", { left: "1164px", top: "530px", width: "140px" });
+sm.innerHTML = `
+  <div class="row">Linear</div>
+  <div class="row"><span class="check">✓</span>Kurve</div>
+  <div class="row">Halten</div>`;
+
+// --- E: one track, a mode per lane, bulk menu --------------------------------------------------
+BAR0 = 485; PX_PER_BAR = 72; BODY_X0 = 485; BODY_X1 = 920;
+sect(16, 840, "Eine Spur · Modus je Automationsspur");
+cap(880, "Lead mit drei Automationsspuren", "Feedback schreibt (Touch), Lautstärke liest, Pan ist aus. Der Spur-Schalter ist rot, solange eine Spur schreibt.");
+rect(260, 867, 660, 177, "var(--surface-0)");
+rect(485, 868, 435, 55, "var(--lane-selected)");
+for (let b = 2; X(b) < 920; b++) rect(X(b), 868, 1, 55, "var(--line-2)");
+trackHeader({ y: 868, srcY: 152, color: G, name: "Lead", sub: "Hexa", auto: "rec", sel: true });
+let ye = 924;
+const fb = laneBody({ y: ye, h: 40 }); writing(fb, ye, 40);
+laneHeader({ y: ye, h: 40, color: G, dev: "Hexa", param: "Feedback", mode: "Touch", chip: "write", value: "84 %", writing: "schreibt", sel: true });
+ye += 40;
+const vl = laneBody({ y: ye, h: 40 }); normal(vl, ye, 40);
+laneHeader({ y: ye, h: 40, color: G, param: "Lautstärke", mode: "Lesen", value: "−3.0 dB" });
+ye += 40;
+const pn = laneBody({ y: ye, h: 40 }); grey(pn, ye, 40);
+laneHeader({ y: ye, h: 40, color: G, param: "Pan", mode: "Aus", chip: "off", value: "C" });
+// track context menu with the bulk submenu
+sect(960, 840, "Spur-Kontextmenü");
+const tm = el("div", "menu", { left: "960px", top: "868px", width: "250px" });
+tm.innerHTML = `
+  <div class="row">Automation ausblenden</div>
+  <div class="row">Automationsspur hinzufügen</div>
+  <div class="row hl">Modus für alle Automationsspuren<span class="r">›</span></div>`;
+const bm = el("div", "menu", { left: "1214px", top: "924px", width: "150px" });
+bm.innerHTML = `<div class="row">Aus</div><div class="row">Lesen</div><div class="row">Touch</div><div class="row">Latch</div>`;
+el("div", "cap", { left: "960px", top: "1000px", width: "250px" }).innerHTML = '<div class="d">setzt alle Automationsspuren der Spur auf einmal (ein Undo-Schritt „Automationsmodi“); es gibt keinen gespeicherten Spur-Modus</div>';
+
+// value text entry on a point
+el("div", "cap", { left: "960px", top: "660px" }).innerHTML = '<div class="t">Wert eingeben (Enter)</div>';
+el("div", "abs", { left: "960px", top: "680px", width: "96px", height: "20px", background: "var(--surface-0)", boxShadow: "inset 0 0 0 1px var(--accent)", borderRadius: "2px", font: "400 12px/20px 'Plex Mono'", color: "var(--text-1)", padding: "0 6px" }).textContent = "1.2 kHz";
+el("div", "cap", { left: "1066px", top: "683px", width: "320px" }).innerHTML = '<div class="d">im Format des Parameters, wie die Texteingabe der Regler</div>';
+translateEn();
+</script>
+</body></html>

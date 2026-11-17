@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Master row</title>
+<link rel="stylesheet" href="base.css"><script src="lib.js"></script>
+<style>
+  .mtoggle { position: absolute; width: 18px; height: 16px; border-radius: 2px; background: var(--surface-4); color: #919399; font: 600 10px/16px "Plex Mono"; text-align: center; }
+</style></head>
+<body>
+<script>
+const G = "#63b376", NEUTRAL = "#a2a5aa";
+// The unchanged app: the mixer-dock snapshot (1x), arrangement on top, mixer in the dock.
+crop(0, 0, 1920, 1080, 0, 0, "snap-mixer");
+const hdr = [[96, "#dc855d", "Drums", "Sampler", "none"], [152, "#61a3e6", "Bass", "Hexa", "hidden"], [208, G, "Lead", "Hexa", "hidden"],
+             [264, "#aa8dde", "Pad", "Surge XT", "none"], [320, "#b69d3a", "Keys", "Dexed", "none"], [376, "#5e7d80", "Arp", "Vital", "none"]];
+hdr.forEach(([y, c, n, s, a]) => trackHeader({ y, srcY: y, color: c, name: n, sub: s, auto: a, sel: n === "Lead", muted: n === "Arp" }));
+
+// --- master row: the last row of the arrangement -------------------------------------------------
+const MY = 499;
+rect(260, MY - 1, 1378, 1, "var(--line-2)");
+const mh = el("div", "thead", { top: px(MY), height: "32px" });
+mh.innerHTML = `<div class="bar" style="background:var(--text-3)"></div>`;
+text(274, MY + 8, "t-track", "Master");
+const st = el("div", "toggle on", { left: "354px", top: px(MY + 8) }, ICON.spline);
+el("div", "mtoggle", { left: "378px", top: px(MY + 8) }, "M");
+rect(470, MY + 4, 3, 24, "var(--surface-0)"); rect(474, MY + 4, 3, 24, "var(--surface-0)");
+rect(485, MY, 1153, 32, "var(--surface-1)");
+const ms = svgLayer(485, MY, 1153, 32);
+for (let b = 2; b <= 16; b++) svgEl(ms, "line", { x1: X(b) + 0.5, y1: MY, x2: X(b) + 0.5, y2: MY + 32, stroke: "#45484d" });
+text(493, MY + 9, "t-small", "Master · 2 Effekte", { color: "var(--text-3)", background: "var(--surface-1)", padding: "0 4px 0 0" });
+
+// lane 1: master volume, a fade-out at the end of the song
+const L1 = { y: MY + 32, h: 48 };
+const vol = [{ b: 1, v: 0.80, s: "lin" }, { b: 15, v: 0.80, s: -0.55 }, { b: 17, v: 0.0 }];
+const b1 = laneBody({ y: L1.y, h: L1.h, bg: "var(--lane-selected)" });
+drawCurve(b1.svg, b1.Y, vol, { line: NEUTRAL, fill: "#26282b", fillOpacity: 0.9, bottom: L1.y + L1.h, to: BODY_X1 - 1 });
+drawPoints(b1.svg, b1.Y, vol, { color: NEUTRAL, selected: [1], handles: [1] });
+laneHeader({ y: L1.y, h: L1.h, color: "var(--text-3)", param: "Lautstärke", mode: "Lesen", value: "0.0 dB", sel: true });
+// lane 2: the limiter's input gain, stepped up for the last chorus
+const L2 = { y: L1.y + L1.h, h: 40 };
+const lim = [{ b: 1, v: 0.50, s: "hold" }, { b: 9, v: 0.62, s: "hold" }, { b: 13, v: 0.70, s: "lin" }, { b: 17, v: 0.70 }];
+const b2 = laneBody({ y: L2.y, h: L2.h });
+drawCurve(b2.svg, b2.Y, lim, { line: NEUTRAL, fill: "#26282b", fillOpacity: 0.9, bottom: L2.y + L2.h, to: BODY_X1 - 1 });
+drawPoints(b2.svg, b2.Y, lim, { color: NEUTRAL });
+laneHeader({ y: L2.y, h: L2.h, color: "var(--text-3)", dev: "Limiter", param: "Eingang", mode: "Lesen", value: "+0.0 dB" });
+playhead(486, MY, L2.y + L2.h);
+const tip = el("div", "tooltip", { top: px(b1.Y(0.8) - 30) }, '<span class="k">Lautstärke</span>&nbsp;·&nbsp;0.0 dB&nbsp;·&nbsp;15.1.000');
+tip.style.left = px(X(15) - tip.getBoundingClientRect().width / 2);
+
+// --- mixer dock: the master strip shows the automation dot next to its value ----------------------
+rect(1576, 1041, 5, 5, NEUTRAL, { borderRadius: "3px" });
+
+// status bar
+rect(0, 1059, 1000, 21, "var(--surface-1)");
+text(12, 1062, "t-small", "Master · Lautstärke · 1 Punkt ausgewählt", { color: "var(--text-1)" });
+text(250, 1062, "t-small", "Doppelklick: Punkt · Strg-Ziehen: zeichnen · Alt-Ziehen: Kopie · Shift: fein", { color: "var(--text-2)" });
+translateEn();
+</script>
+</body></html>
