@@ -11,7 +11,7 @@ use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, size, space, typography};
 use komponist_ui::timeline::{
     GridSpec, RulerKind, RulerModel, TimeAxis, WaveMesh, WaveSpec, WaveSummary, grid_lines,
-    paint_grid, paint_playhead, paint_ruler,
+    paint_grid, paint_ruler,
 };
 use komponist_ui::{fonts, px};
 
@@ -23,7 +23,11 @@ pub fn recording_area(
     midi: Option<&Recording>,
     audio: Option<&AudioRecording>,
 ) -> Option<FocusArea> {
-    for id in &ui.selection.tracks {
+    let selected = ui
+        .selection
+        .anchor_track
+        .filter(|id| ui.selection.tracks.contains(id));
+    for id in selected.iter().chain(ui.selection.tracks.iter()) {
         if audio.is_some()
             && project
                 .track(*id)
@@ -46,8 +50,10 @@ pub fn recording_area(
 
 fn track<'a>(project: &'a Project, ui: &UiState, rec: &AudioRecording) -> Option<&'a Track> {
     ui.selection
-        .tracks
+        .anchor_track
         .iter()
+        .filter(|id| ui.selection.tracks.contains(*id))
+        .chain(ui.selection.tracks.iter())
         .filter_map(|id| project.track(*id))
         .find(|t| t.kind == TrackKind::Audio && (t.arm || rec.progress(t.id).is_some()))
         .or_else(|| rec.first().and_then(|(id, _)| project.track(id)))
@@ -188,7 +194,12 @@ impl AudioEditor {
                 px::hline(&painter, lane.x_range(), lane.top(), color32(color::LINE_2));
             }
         }
-        paint_playhead(&painter, axis.x(start + ticks), canvas.y_range());
+        px::vline(
+            &painter,
+            axis.x(start + ticks),
+            canvas.y_range(),
+            color32(color::STATE_RECORD),
+        );
         let name = clip.map_or(name, |c| c.name.trim_start_matches("● "));
         ui.interact(
             canvas,
@@ -246,6 +257,11 @@ fn live_toolbar(
                 ui.label(t.audio_monitoring());
                 let (_, monitor_rect) = ui.allocate_space(vec2(size::CONTROL, size::CONTROL));
                 crate::views::audio_inputs::monitor_button(ui, ctx, track, monitor_rect);
+                ui.label(match track.audio.monitor {
+                    komponist_model::MonitorMode::Off => t.ui_monitor_off(),
+                    komponist_model::MonitorMode::Auto => t.ui_monitor_auto(),
+                    komponist_model::MonitorMode::On => t.ui_monitor_on(),
+                });
                 if let Some(p) = progress {
                     ui.label(
                         egui::RichText::new(
@@ -283,13 +299,14 @@ fn live_toolbar(
 mod tests {
     use super::*;
     use crate::App;
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use egui_kittest::kittest::Queryable as _;
     use komponist_i18n::Lang;
     use komponist_model::{AudioFile, ClipContent, TrackId, edits};
     use std::sync::Arc;
 
     fn fixture(lang: Lang, stereo: bool) -> (App, AudioRecording, TrackId, TrackId) {
         let p = Project::new("Live capture");
+        let (p, bus) = edits::add_bus(&p, edits::NewBus::default()).unwrap();
         let (p, midi) = edits::add_track(
             &p,
             edits::NewTrack {
@@ -305,12 +322,17 @@ mod tests {
             &p,
             edits::NewAudioTrack {
                 name: Some("Vocal".into()),
+                input: komponist_model::AudioInput::Bus(bus),
                 ..Default::default()
             },
         )
         .unwrap();
         for track in &mut p.tracks {
-            Arc::make_mut(track).arm = true;
+            let track = Arc::make_mut(track);
+            track.arm = !track.is_bus();
+            if track.kind == TrackKind::Audio {
+                track.audio.monitor = komponist_model::MonitorMode::Auto;
+            }
         }
         let start = Tick(12 * 3840);
         let frames = 133920;
@@ -330,8 +352,7 @@ mod tests {
             .collect();
         let right: Vec<_> = left
             .iter()
-            .enumerate()
-            .map(|(i, p)| RecordingPeak {
+            .map(|p| RecordingPeak {
                 min: p.min * 0.3,
                 max: p.max * 0.3,
                 rms: p.rms * 0.3,
@@ -342,6 +363,7 @@ mod tests {
             .iter()
             .map(|p| RecordingPeak {
                 samples: p.samples * u64::from(channels),
+                rms: p.rms * if stereo { 0.545f32.sqrt() } else { 1.0 },
                 ..*p
             })
             .collect();
@@ -388,6 +410,7 @@ mod tests {
         let rec =
             AudioRecording::preview(start, start + length, vec![progress], vec![(audio, clip)]);
         let mut app = App::headless(p).with_lang(lang);
+        app.ui.selection.tracks.clear();
         app.ui.selection.tracks.insert(audio);
         app.ui.arrangement.scroll_tick = start.0 as f64;
         app.ui.waveform.px_per_bar = m::PPB_DEFAULT;
@@ -402,13 +425,14 @@ mod tests {
             recording_area(app.project(), &app.ui, Some(&midi), Some(&audio)),
             Some(FocusArea::Waveform)
         );
-        app.ui.selection.tracks.clear();
         app.ui.selection.tracks.insert(midi_id);
+        app.ui.selection.anchor_track = Some(midi_id);
         assert_eq!(
             recording_area(app.project(), &app.ui, Some(&midi), Some(&audio)),
             Some(FocusArea::PianoRoll)
         );
         app.ui.selection.tracks.clear();
+        app.ui.selection.anchor_track = Some(audio_id);
         app.ui.selection.tracks.insert(audio_id);
         assert_eq!(
             recording_area(
@@ -489,11 +513,8 @@ mod tests {
                 h.query_by_role_and_label(Role::Slider, lang.audio_clip_gain_line())
                     .is_none()
             );
-            let status = h.get_by_role_and_label(
-                Role::Label,
-                lang.record_clip(lang.record_take(1))
-                    .trim_start_matches("● "),
-            );
+            let name = lang.record_clip(lang.record_take(1));
+            let status = h.get_by_role_and_label(Role::Label, name.trim_start_matches("● "));
             assert!(status.rect().width() > 100.0);
             let ClipContent::Audio(a) = &h.state().1.first().unwrap().1.content else {
                 panic!("audio");

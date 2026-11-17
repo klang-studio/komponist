@@ -70,6 +70,9 @@ pub struct AudioEditor {
 }
 impl View for AudioEditor {
     fn show(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
+        if ctx.audio_recording.is_some() && self.gesture.take().is_some() {
+            ctx.send(Action::Edit(EditAction::CancelGesture));
+        }
         if self.live(ui, ctx) {
             return;
         }

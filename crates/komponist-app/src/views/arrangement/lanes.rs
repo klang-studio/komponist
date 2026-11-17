@@ -818,6 +818,7 @@ impl Arrangement {
                 let audio = AudioLook {
                     file: AudioFileState::Ready,
                     wave: &wave,
+                    takes: None,
                     repitch: None,
                     repitch_label: "",
                     message: "",
