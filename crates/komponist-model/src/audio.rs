@@ -324,8 +324,8 @@ pub enum MonitorMode {
     /// Never (the default of a new audio track: no feedback surprises).
     #[default]
     Off,
-    /// While the track is armed and the transport is stopped or recording, not during playback of
-    /// its clips (the usual tape-style auto monitoring).
+    /// While the track is armed, including ordinary playback (audio UI owner decision,
+    /// 2026-11-17). The transport state does not change Auto monitoring.
     Auto,
     /// Always, whatever the transport does.
     On,
