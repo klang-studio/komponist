@@ -127,6 +127,8 @@ pub enum EditAction {
     NudgeSelection(i32),
     /// Ctrl T: new MIDI track with hexa, armed exclusively.
     NewMidiTrack,
+    /// Ctrl Shift T: open the new-track dialog with Audio selected.
+    NewAudioTrack,
 
     /// `edits::set_project_prop`.
     SetProjectProp(ProjectProp),
@@ -538,6 +540,17 @@ pub enum ProjectAction {
         clip: ClipId,
         /// Source file to link.
         path: PathBuf,
+    },
+    /// Ctrl I: choose linked audio files to import.
+    ImportAudio,
+    /// Link files on an audio track, or create one track per file when target is absent.
+    ImportAudioPaths {
+        /// Files in import order.
+        paths: Vec<PathBuf>,
+        /// Existing audio track, or new tracks.
+        target: Option<TrackId>,
+        /// Grid position, in ticks.
+        at: Tick,
     },
     /// Ctrl S: save (file dialog the first time).
     Save,

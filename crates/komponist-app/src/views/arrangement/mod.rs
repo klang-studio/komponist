@@ -38,6 +38,7 @@
 //!
 //! Keys (Strg D, Strg E, 0, Entf, +, −, Z, Strg [ ]) are the keymap's.
 
+mod audio_drop;
 mod buses;
 mod cache;
 mod files;
@@ -221,6 +222,7 @@ impl Memo {
 /// The arrangement view.
 #[derive(Debug, Default)]
 pub struct Arrangement {
+    audio_hover: audio_drop::HoverFile,
     palettes: Palettes,
     previews: PreviewCache,
     audio: files::AudioCache,
@@ -285,7 +287,16 @@ impl View for Arrangement {
                 .id_salt("komponist_arrangement_tracks"),
         );
         tracks.set_clip_rect(g.tracks.intersect(ui.clip_rect()));
-        self.lanes(&mut tracks, ctx, &project, &g);
+        // Timeline objects can extend left of tick zero while horizontally scrolled. Clip
+        // their paint and hit area to the lanes themselves, not the combined header/track
+        // region: indented group headers deliberately leave their ancestor bracket gutter open.
+        let mut lanes = tracks.new_child(
+            UiBuilder::new()
+                .max_rect(g.lanes())
+                .id_salt("komponist_arrangement_lane_canvas"),
+        );
+        lanes.set_clip_rect(g.lanes().intersect(tracks.clip_rect()));
+        self.lanes(&mut lanes, ctx, &project, &g);
         self.headers(&mut tracks, ctx, &project, &g);
         self.new_track_area(&mut tracks, ctx, &g);
         self.overlays(&mut tracks, ctx, &project, &g);
@@ -293,6 +304,7 @@ impl View for Arrangement {
             self.empty_hint(&mut tracks, ctx, &g);
         }
         self.drop_target(&mut tracks, ctx, &project, &g);
+        self.drop_audio(&mut tracks, ctx, &project, &g);
 
         // Safety net: a drag whose release no response reported (released over a popup, …).
         if self.drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {

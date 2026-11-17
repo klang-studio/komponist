@@ -150,6 +150,8 @@ pub(crate) struct ShellState {
     pub(crate) pending_clipboard_text: Option<String>,
     /// Width of the arrangement's timeline in the last frame (for "Z: einpassen").
     pub(crate) timeline_width: f32,
+    /// Destination captured when the audio-import dialog opens.
+    pub(crate) audio_import_target: Option<(Option<komponist_model::TrackId>, Tick)>,
     /// The panel settings last written to the settings file.
     saved_panels: Option<PanelSettings>,
     /// The last edit that failed (diagnostics, tests).
@@ -1244,7 +1246,7 @@ impl App {
     }
 
     /// Like [`App::apply`] for edits returning a value.
-    fn apply_with<T>(
+    pub(crate) fn apply_with<T>(
         &mut self,
         label: &str,
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
@@ -1413,6 +1415,7 @@ impl App {
                 });
             }
             EditAction::NewMidiTrack => self.new_midi_track(None, hexa_ref()),
+            EditAction::NewAudioTrack => self.open_new_audio_track_dialog(),
             EditAction::SetProjectProp(prop) => {
                 self.apply("undo-change-project", |p| edits::set_project_prop(p, prop));
             }
@@ -1500,12 +1503,12 @@ impl App {
             EditAction::SetAudioClipProp { clip, prop } => {
                 let label = match prop {
                     edits::AudioClipProp::GainDb(_) => "undo-clip-gain",
+                    edits::AudioClipProp::SourceOffset(_) => "undo-clip-source-start",
                     edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
                         "undo-clip-fade"
                     }
                     edits::AudioClipProp::TimeMode(_) => "undo-clip-repitch",
                     edits::AudioClipProp::OriginalTempo(_) => "undo-clip-original-tempo",
-                    edits::AudioClipProp::SourceOffset(_) => "undo-clip-source-start",
                 };
                 self.apply_delta(label, |p| {
                     edits::set_audio_clip_prop(p, clip, prop).map(|p| (p, ()))
@@ -1856,6 +1859,9 @@ impl App {
     pub(crate) fn create_tracks(&mut self, spec: &crate::dialogs::new_track::Spec) {
         if spec.bus {
             return self.create_buses(spec);
+        }
+        if spec.audio {
+            return self.create_audio_tracks(spec);
         }
         let tracks = spec.tracks();
         let label = if tracks.len() > 1 {
@@ -2598,6 +2604,10 @@ impl App {
             | ProjectAction::ContinueWithMissing
             | ProjectAction::CheckPluginFolders => self.lifecycle_action(action),
             // The export (WP-53b): `crate::export`.
+            ProjectAction::ImportAudio => self.open_audio_import(),
+            ProjectAction::ImportAudioPaths { paths, target, at } => {
+                self.import_audio_paths(&paths, target, at)
+            }
             ProjectAction::OpenExportDialog => self.open_export_dialog(),
             ProjectAction::StartExport(export) => self.start_export(export),
             ProjectAction::CancelExport => self.cancel_export(),

@@ -94,7 +94,7 @@ hound = "3.5.1"
 # komponist-audiofile (#10): FLAC, OGG Vorbis and MP3 decoding (pure Rust, MPL-2.0, which is GPL-3.0-compatible; WAV
 # stays on hound) and sample-rate conversion (rubato, MIT OR Apache-2.0; its FFT resampler uses realfft, already
 # in the tree).
-symphonia = { version = "0.6.1", default-features = false, features = ["flac", "mp3", "ogg", "vorbis"] }
+symphonia = { version = "0.6.1", default-features = false, features = ["aiff", "pcm", "flac", "mp3", "ogg", "vorbis"] }
 rubato = "5.1.0"
 
 # komponist-app: the EQ's live spectrum (WP-92). Real-input FFT on top of rustfft, MIT.

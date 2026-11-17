@@ -194,3 +194,9 @@ undo-clip-repitch = Re-Pitch ändern
 undo-clip-original-tempo = Originaltempo ändern
 undo-clip-source-start = Quell-Start ändern
 undo-clip-replace-file = Datei ersetzen
+
+# Audio source window offset.
+
+# Linked audio import and browsing (epic #8).
+undo-import-audio = Audio importieren
+undo-add-audio-track = Audio-Spur hinzufügen

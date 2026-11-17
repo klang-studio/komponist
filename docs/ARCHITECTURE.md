@@ -968,13 +968,14 @@ pub enum MonitorMode { Off, Auto, On }                                    // Aut
 
 pub enum ClipContent { Midi(MidiClip), Step(StepClip), Audio(AudioClip) } // ClipKind::{Midi, Step, Audio}
 pub struct AudioClip {
-    pub file: AudioFile,            // the link, plus what the file is
-    pub offset: u64,                // start of the window in the file, frames of the file's own rate
+    pub takes: Vec<AudioTake>,      // nonempty; file/offset access dereferences to active take
+    pub active_take: usize,         // index into takes
     pub gain_db: f32,               // -70 (silence) ..= +24
     pub fade_in: Tick, pub fade_out: Tick,   // timeline ticks, fade_in + fade_out <= Clip::length
     pub time_mode: ClipTimeMode,    // Fixed (default) | RePitch; an enum so warp (#14) is a new variant
     pub original_tempo: Tempo,      // project tempo at creation, set by hand; used by RePitch
 }
+pub struct AudioTake { pub name: String, pub file: AudioFile, pub offset: u64 /* source frames */ }
 pub struct AudioFile { pub abs: PathBuf, pub rel: PathBuf /* empty before the project has a file */,
                        pub frames: u64, pub sample_rate: u32, pub channels: u16 }
 ```
@@ -993,13 +994,25 @@ ticks. How many frames that is depends on the mode, `AudioClip::source_frames(ti
   stretching, switching the mode and changing the original tempo clamp to it. `frames`, `sample_rate` and `channels` are
   those of the file when it was linked, so this works with the file missing and the UI can draw an extent for it.
 
+**Audio takes (#13).** `AudioClip::takes` holds nonempty `AudioTake { name, file, offset }` source windows;
+`active_take` selects playback. `Deref`/`DerefMut` preserve existing `audio.file`/`audio.offset` access without
+separate active-source storage. Gain, fades, mode and original tempo belong to the clip and are shared. Splits,
+overlap cuts and left trims shift every take's window at its own sample rate. An inactive short take may retain
+an offset beyond EOF after a split; it keeps its exact alignment and cannot be selected until it has material.
+`add_audio_take`, `select_audio_take`, `rename_audio_take` and `remove_audio_take` are immutable edits; selecting a
+shorter source clamps the clip length/fades, removing the final source is refused. `AudioClipProp::SourceOffset`
+edits only the active source start without moving the clip. File rewrites and collection include inactive takes.
+Version 3 loads legacy `file`/`offset` as one unnamed take. Saving keeps the active legacy pair and, for named or
+multiple takes, additionally writes `takes`/`active_take`; invalid lists, indices and conflicting active pairs are
+errors before any active-source access. This needs no project version bump and older readers play the active pair.
+
 **Files.** `AudioFile` is the Sampler's link (§8.5, `sampler::links`): the file is found through `rel` against the
 folder of the project file first, then through `abs` (`AudioFile::resolve`). Saving rebases resolving links to the new
 file (`AudioFile::rebased`); a link that does not resolve stays. „Sammeln und speichern“ copies the files of audio clips
 into `<project name> Samples/` with the **same collector** as the Sampler's samples (identical content is copied once;
 `Collector::collect_file`), and `edits::rewrite_audio_files` points the clips (and every undo step, per step) at the
 copies. A recording of a project without a file lives in the user's recordings folder (its `abs`, empty `rel`); the app
-knows that folder and moves such files into the project's samples folder on the first save (#13): no extra state in
+knows that folder and moves such files into the project's `Takes/` folder on the first save (#13): no extra state in
 the model. The path helpers moved to `komponist_model::paths` for this.
 
 **Kinds are enforced** by the edits (`EditError::ClipNotAllowed { track, clip }`) and by `routing::check` /
@@ -1012,7 +1025,7 @@ tracks only; MIDI props (`Input`, `MidiChannel`, `Monitor`) are ignored on them,
 
 All edits are pure functions as in §5.3, one undo step each. Added: `add_audio_track(_in)` (`NewAudioTrack`, default
 name „Audio“, `DefaultNames::audio`), `NewClipContent::Audio { file, offset }` for `add_clip`, `set_audio_clip_prop`
-(`AudioClipProp::{GainDb, FadeIn, FadeOut, TimeMode, OriginalTempo}`), `set_audio_clip_file` (relink),
+(`AudioClipProp::{GainDb, FadeIn, FadeOut, TimeMode, OriginalTempo, SourceOffset}`), `set_audio_clip_file` (relink),
 `trim_audio_clip_start` (left edge: the window follows the edge), `TrackProp::{AudioInput, MonitorMode}`.
 `split_clips` advances the right part's offset; `set_clip_length` clamps to the file.
 
@@ -1096,6 +1109,19 @@ Built in `komponist-engine`, module `audio` (a plan per track, the ring, the str
 - **Cost** (docs/PERFORMANCE.md §10): the audio thread copies from the ring (a few µs per track per block); decoding,
   conversion and the fades are the streamer's.
 
+#### 6.9.4 Linked import and file browsing (#12)
+
+`komponist-app::audio_import` reads source metadata through the shared file pool, then applies an import as one
+undo step. Files remain linked; no source is copied or resampled on import. One file dropped on empty space
+creates an audio track at the pointer; several files create separate tracks at tick zero. An existing audio track
+receives files in sequence. The arrangement grid is applied only while snapping is enabled; MIDI and bus lanes
+refuse audio drops. Ctrl I captures the selected audio track and playhead before opening a multi-select file dialog.
+
+The browser Files tab enumerates directories and reads audio headers on a worker, with duration/channel metadata
+and drag payloads reused by the arrangement preview. Missing audio links are listed when opening a project; opening
+a listed clip closes the warning and selects its editor for file recovery. Collect-and-save reports skipped non-audio
+files through the localized status bar while preserving their links.
+
 ### 6.10 Audio files (`komponist-audiofile`)
 
 Everything that reads an audio file lives in one leaf crate with no studio dependency (no model, no engine, no
@@ -1104,8 +1130,8 @@ and by the arrangement's waveforms (#12) next, and none of them may pull the oth
 audio thread** (§6.1): decoding, conversion and peak computation allocate and do IO, so they run on loader, read-ahead
 and worker threads and hand finished `Arc`s over.
 
-- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), FLAC, OGG Vorbis and MP3
-  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `flac`, `mp3`, `ogg` and `vorbis` features).
+- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), AIFF/AIFF-C PCM, FLAC, OGG Vorbis and MP3
+  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `aiff`, `pcm`, `flac`, `mp3`, `ogg` and `vorbis` features).
   The format is chosen by the first bytes, not the extension. The API is seekable and chunked: `open`, `info`
   (rate, channels, frames), `seek(frame)`, `read(&mut [f32])` (interleaved, from the current position), `read_full`. A
   seek lands 8192 frames before the target, rebuilds the decoder state and drops the frames in between; each decoded
@@ -1145,6 +1171,18 @@ and worker threads and hand finished `Arc`s over.
 ## 7. Audio and MIDI I/O (`komponist-audio`)
 
 - `AudioSystem::available_hosts()` → the drivers of this OS (see below), devices, rates, buffer sizes. A `NullBackend` drives the engine from a timer thread (tests, "Kein Audio-Gerät").
+- **Audio capture (#13):** input devices are enumerated separately (`AudioSystem::input_devices`).
+  Capture is off until `set_input(Some(InputConfig))`; an absent setting never opens a microphone.
+  `AudioProcess::process_input` receives a borrowed interleaved `InputBuffer` at the output rate;
+  its default implementation preserves output-only processors. A bounded SPSC bridge carries
+  timestamped frames from the input callback to the output callback. Linear rate conversion and
+  a queue-depth clock follower (at most ±0.2%) align separate device clocks; a short priming lead
+  avoids recurring startup underruns. `InputBuffer::latency` includes capture and queue delay.
+  Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
+  instead of joining samples across a gap. Callback buffers and queue storage are preallocated.
+  ASIO capture uses the output's driver and caches input metadata during normal enumeration;
+  it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
+  inject synthetic capture into the same bridge/null backend without opening hardware.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back
@@ -1778,7 +1816,10 @@ once a second, requests peak data once with a repaint callback, and caches meshe
 source window (including tempo), zoom, height and peak-data identity. Ready peaks replace pending flat
 meshes automatically; missing links retain editable model metadata and are checked again. The two waveform
 tones use measured min/max and RMS data (§6.10), with gain and fades applied before painting.
-Waveform meshes keep at most 32,768 columns; wider clips use proportionally wider columns over the full
+Waveform meshes keep fractional-point envelopes at two samples per point (retina 2×), painted as
+continuous triangle ribbons with one-physical-pixel alpha feathers rather than integer-height rectangles.
+Linear interpolation preserves measured min/max transients and RMS without temporal smoothing.
+Meshes keep at most 32,768 samples; wider clips use proportionally wider columns over the full
 source window, preserving temporal coverage, fade positions and visible-range culling. Painting is
 clipped to the visible range. `audio_parts` shares control geometry with hit testing; visible gain/fade/trim
 controls have localized slider nodes. Audio moves and trims always use the selected grid; fades and gain

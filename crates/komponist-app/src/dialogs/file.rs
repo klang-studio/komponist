@@ -12,6 +12,7 @@
 //! double-click opens a folder or takes a file. Saving over an existing file asks once more: the
 //! primary button becomes "Ersetzen".
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use egui::{Color32, Context, Id, Key, Modifiers, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
@@ -40,6 +41,8 @@ pub enum Purpose {
     ExportFolder,
     /// Choose a sample (WAV) for a sampler pad: "Sample laden …", and "Suchen …" for a missing one.
     Sample,
+    /// Import linked audio files, with multiple selection.
+    ImportAudio,
     /// Relink one audio clip using a supported source file.
     ReplaceAudio(komponist_model::ClipId),
 }
@@ -67,6 +70,8 @@ pub struct Entry {
 pub enum Output {
     /// The file to open or save, or the folder.
     Chosen(PathBuf),
+    /// Audio files in list order.
+    ChosenMany(Vec<PathBuf>),
     /// Cancelled.
     Cancel,
 }
@@ -85,6 +90,8 @@ pub struct FileBrowser {
     pub entries: Vec<Entry>,
     /// The highlighted row.
     pub selected: Option<usize>,
+    /// Multi-selection for audio import; directories are never included.
+    pub multi_selected: BTreeSet<usize>,
     /// The file name (saving).
     pub name: String,
     /// The folder field's text.
@@ -107,6 +114,7 @@ impl FileBrowser {
             dir: dir.clone(),
             entries: Vec::new(),
             selected: None,
+            multi_selected: BTreeSet::new(),
             name,
             location: super::format::tilde(&dir),
             replace: None,
@@ -125,6 +133,7 @@ impl FileBrowser {
             Purpose::Folder => t.file_folder_title(),
             Purpose::ExportFolder => t.export_folder_title(),
             Purpose::Sample => t.file_sample_title(),
+            Purpose::ImportAudio => t.menu_import_audio(),
             Purpose::ReplaceAudio(_) => t.audio_file_replace(),
         }
     }
@@ -137,6 +146,7 @@ impl FileBrowser {
             Purpose::Save => t.file_save(),
             Purpose::Folder | Purpose::ExportFolder => t.file_choose_folder(),
             Purpose::Sample | Purpose::ReplaceAudio(_) => t.file_load(),
+            Purpose::ImportAudio => t.audio_import_confirm(),
         }
     }
 
@@ -147,6 +157,7 @@ impl FileBrowser {
                 self.entries = entries;
                 self.dir = dir;
                 self.selected = None;
+                self.multi_selected.clear();
                 self.message = None;
                 self.replace = None;
             }
@@ -191,6 +202,34 @@ impl FileBrowser {
             self.replace = None;
         }
         self.selected = Some(index);
+        self.multi_selected.clear();
+        if self.purpose == Purpose::ImportAudio && !entry.is_dir {
+            self.multi_selected.insert(index);
+        }
+    }
+
+    /// Import-only Ctrl/Command toggle and Shift range, preserving the keyboard anchor.
+    pub fn select_with(&mut self, index: usize, modifiers: Modifiers) {
+        if self.purpose != Purpose::ImportAudio
+            || !(modifiers.command || modifiers.ctrl || modifiers.shift)
+        {
+            self.select(index);
+            return;
+        }
+        if self.entries.get(index).is_none_or(|e| e.is_dir) {
+            self.select(index);
+            return;
+        }
+        if modifiers.shift {
+            let anchor = self.selected.unwrap_or(index);
+            self.multi_selected.clear();
+            self.multi_selected.extend(
+                (anchor.min(index)..=anchor.max(index)).filter(|&i| !self.entries[i].is_dir),
+            );
+        } else if !self.multi_selected.remove(&index) {
+            self.multi_selected.insert(index);
+        }
+        self.selected = Some(index);
     }
 
     /// Double-click or Enter on row `index`: a folder opens, a file is taken.
@@ -204,6 +243,7 @@ impl FileBrowser {
             Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_) => {
                 Some(Output::Chosen(entry.path))
             }
+            Purpose::ImportAudio => Some(Output::ChosenMany(vec![entry.path])),
             Purpose::Save => {
                 self.name = entry.name;
                 self.confirm()
@@ -215,6 +255,20 @@ impl FileBrowser {
     /// The primary button (or Enter without a highlighted row).
     pub fn confirm(&mut self) -> Option<Output> {
         match self.purpose {
+            Purpose::ImportAudio => {
+                let paths: Vec<_> = self
+                    .multi_selected
+                    .iter()
+                    .filter_map(|&i| self.entries.get(i))
+                    .filter(|e| !e.is_dir)
+                    .map(|e| e.path.clone())
+                    .collect();
+                if paths.is_empty() {
+                    self.selected.and_then(|i| self.activate(i))
+                } else {
+                    Some(Output::ChosenMany(paths))
+                }
+            }
             Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_) => {
                 let i = self.selected?;
                 self.activate(i)
@@ -268,10 +322,14 @@ impl FileBrowser {
             None
         } else if matches!(
             self.purpose,
-            Purpose::Open | Purpose::Sample | Purpose::ReplaceAudio(_)
+            Purpose::Open | Purpose::Sample | Purpose::ImportAudio | Purpose::ReplaceAudio(_)
         ) && path.is_file()
         {
-            Some(Output::Chosen(path))
+            if self.purpose == Purpose::ImportAudio {
+                Some(Output::ChosenMany(vec![path]))
+            } else {
+                Some(Output::Chosen(path))
+            }
         } else {
             self.message = Some(self.lang.file_no_such_path(path.display()));
             None
@@ -283,6 +341,17 @@ impl FileBrowser {
 pub fn is_sample_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
+}
+
+/// Formats supported by the shared audio decoder, matched case-insensitively.
+pub fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|extension| {
+            ["wav", "wave", "flac", "aif", "aiff", "mp3", "ogg", "oga"]
+                .iter()
+                .any(|e| extension.eq_ignore_ascii_case(e))
+        })
 }
 
 /// `~` and `~/…` with the home folder (on Windows `~\…` too).
@@ -329,7 +398,7 @@ pub fn list(dir: &Path, purpose: Purpose) -> std::io::Result<Vec<Entry>> {
             dirs.push(Entry { name, path, is_dir });
         } else if match purpose {
             Purpose::Sample => is_sample_file(&path),
-            Purpose::ReplaceAudio(_) => is_audio_file(&path),
+            Purpose::ImportAudio | Purpose::ReplaceAudio(_) => is_audio_file(&path),
             _ => !purpose.is_folder() && is_project_file(&path),
         } {
             files.push(Entry { name, path, is_dir });
@@ -369,6 +438,9 @@ pub fn show(ctx: &Context, b: &mut FileBrowser) -> Option<Output> {
     let width = size.x;
     let response = modal(ctx, "file", color32(color::SURFACE_2), |ui| {
         ui.set_width(width);
+        let title = b.title(t);
+        ui.response()
+            .widget_info(|| WidgetInfo::labeled(Role::Dialog, true, title));
         if header(ui, width, b.title(t)) {
             out = Some(Output::Cancel);
         }
@@ -479,9 +551,13 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
             b.parent();
         }
         if enter {
-            out = match b.selected {
-                Some(i) => b.activate(i),
-                None => b.confirm(),
+            out = if b.purpose == Purpose::ImportAudio {
+                b.confirm()
+            } else {
+                match b.selected {
+                    Some(i) => b.activate(i),
+                    None => b.confirm(),
+                }
             };
         }
     }
@@ -508,7 +584,7 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                     if b.entries.is_empty() {
                         let text = match b.purpose {
                             Purpose::Folder | Purpose::ExportFolder => t.file_no_folders(),
-                            Purpose::Sample => t.file_no_samples(),
+                            Purpose::Sample | Purpose::ImportAudio => t.file_no_samples(),
                             Purpose::ReplaceAudio(_) => t.audio_file_no_audio(),
                             _ => t.file_no_projects(),
                         };
@@ -518,7 +594,12 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                     let mut clicked = None;
                     let mut activated = None;
                     for (i, entry) in b.entries.iter().enumerate() {
-                        let r = row(ui, inner, entry, b.selected == Some(i));
+                        let r = row(
+                            ui,
+                            inner,
+                            entry,
+                            b.selected == Some(i) || b.multi_selected.contains(&i),
+                        );
                         if scroll_to == Some(i) && r.rect.height() > 0.0 {
                             r.scroll_to_me(None);
                         }
@@ -529,7 +610,7 @@ fn file_list(ui: &mut Ui, t: Lang, b: &mut FileBrowser, width: f32) -> Option<Ou
                         }
                     }
                     if let Some(i) = clicked {
-                        b.select(i);
+                        b.select_with(i, ui.input(|input| input.modifiers));
                     }
                     if let Some(i) = activated {
                         out = b.activate(i);
@@ -603,15 +684,6 @@ fn name_row(ui: &mut Ui, t: Lang, b: &mut FileBrowser) -> bool {
         r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
     })
     .inner
-}
-
-/// Source formats supported by the audio-file decoder.
-pub fn is_audio_file(path: &Path) -> bool {
-    path.extension().is_some_and(|e| {
-        ["wav", "flac", "ogg", "mp3"]
-            .iter()
-            .any(|ext| e.eq_ignore_ascii_case(ext))
-    })
 }
 
 #[cfg(test)]

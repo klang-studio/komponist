@@ -12,10 +12,13 @@
 use std::sync::Arc;
 
 use super::{
-    DefaultNames, EditError, EditResult, MIN_LENGTH, edit_clip, track_mut, valid_hue, valid_name,
+    DefaultNames, EditError, EditResult, MIN_LENGTH, edit_clip, edit_clip_with, track_mut,
+    valid_hue, valid_name,
 };
 use crate::audio::ClipTimeMode;
-use crate::audio::{AudioClip, AudioFile, AudioInput, AudioIo, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN};
+use crate::audio::{
+    AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
+};
 use crate::ids::{ClipId, TrackId};
 use crate::project::{
     Channel, Clip, ClipContent, ClipKind, Hue, MidiChannelSel, MidiInputSel, Project,
@@ -99,10 +102,10 @@ pub fn add_audio_track_in(
 /// A property of an audio clip (inspector, clip handles).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AudioClipProp {
-    /// Start frame of the active source window; keeps the timeline start and shortens at file end.
-    SourceOffset(u64),
     /// Clip gain in dB, clamped to `CLIP_GAIN_DB_MIN ..= CLIP_GAIN_DB_MAX`; NaN is `Invalid`.
     GainDb(f32),
+    /// Active take source start in file frames; clip position stays, length may shrink.
+    SourceOffset(u64),
     /// Fade-in length in ticks, clamped to `0 ..= length − fade_out`.
     FadeIn(Tick),
     /// Fade-out length in ticks, clamped to `0 ..= length − fade_in`.
@@ -123,7 +126,7 @@ pub fn set_audio_clip_prop(project: &Project, clip: ClipId, prop: AudioClipProp)
         let a = audio_mut(c)?;
         match prop {
             AudioClipProp::SourceOffset(offset) => {
-                a.offset = offset.min(a.file.frames.saturating_sub(1))
+                a.offset = offset.min(a.file.frames.saturating_sub(1));
             }
             AudioClipProp::GainDb(db) => {
                 if db.is_nan() {
@@ -188,17 +191,21 @@ pub fn trim_audio_clip_start(project: &Project, clip: ClipId, start: Tick) -> Ed
         let end = c.end();
         let (old_start, old_length) = (c.start, c.length);
         let a = audio_mut(c)?;
-        let back = a.frames_to_ticks(a.offset, tempo);
+        let back = a
+            .takes
+            .iter()
+            .map(|take| {
+                let secs = take.offset as f64 / f64::from(take.file.sample_rate.max(1));
+                Tick((secs / a.source_secs_per_tick(tempo) + 1e-6).floor() as i64)
+            })
+            .min()
+            .unwrap_or(Tick::ZERO);
         let start = start
             .max(Tick::ZERO)
             .max(old_start - back)
             .min(end - MIN_LENGTH);
         let delta = start - old_start;
-        if delta > Tick::ZERO {
-            a.offset += a.source_frames(delta, tempo);
-        } else {
-            a.offset -= a.source_frames(-delta, tempo).min(a.offset);
-        }
+        a.shift_sources(delta, tempo);
         let length = (old_length - delta).min(a.max_length(tempo).max(MIN_LENGTH));
         a.fade_in = Tick::ZERO.max(a.fade_in);
         a.clamp(length);
@@ -208,6 +215,114 @@ pub fn trim_audio_clip_start(project: &Project, clip: ClipId, start: Tick) -> Ed
     })?;
     cut_below(&mut p, &[clip]);
     Ok(p)
+}
+
+/// Appends a recorded source window and selects it. Other takes and shared clip settings stay.
+/// The clip length is shortened only when the new source has less material behind its offset.
+pub fn add_audio_take(
+    project: &Project,
+    clip: ClipId,
+    mut take: AudioTake,
+) -> Result<(Project, usize), EditError> {
+    take.name = valid_name(&take.name)?;
+    check_file(&take.file)?;
+    if take.offset >= take.file.frames {
+        return Err(EditError::Invalid("the audio take is empty"));
+    }
+    let tempo = project.tempo;
+    edit_clip_with(project, clip, |c| {
+        let length = c.length;
+        let a = audio_mut(c)?;
+        a.takes.push(take);
+        let index = a.takes.len() - 1;
+        select_source(a, index, length, tempo).map(|length| {
+            c.length = length;
+            index
+        })
+    })
+}
+
+/// Selects an existing audio take. An exhausted inactive window cannot be selected.
+pub fn select_audio_take(project: &Project, clip: ClipId, take: usize) -> EditResult {
+    let tempo = project.tempo;
+    edit_clip(project, clip, |c| {
+        let length = c.length;
+        let a = audio_mut(c)?;
+        let length = select_source(a, take, length, tempo)?;
+        c.length = length;
+        Ok(())
+    })
+}
+
+/// Renames one audio take without changing which one plays or the clip's own name.
+pub fn rename_audio_take(project: &Project, clip: ClipId, take: usize, name: String) -> EditResult {
+    let name = valid_name(&name)?;
+    edit_clip(project, clip, |c| {
+        let a = audio_mut(c)?;
+        let take = a.takes.get_mut(take).ok_or(EditError::IndexOutOfRange {
+            what: "take",
+            index: take,
+        })?;
+        take.name = name;
+        Ok(())
+    })
+}
+
+/// Removes a take, keeping the active source when possible. The final take cannot be removed;
+/// remove the clip instead. Removing the active take chooses the nearest remaining playable one.
+pub fn remove_audio_take(project: &Project, clip: ClipId, take: usize) -> EditResult {
+    let tempo = project.tempo;
+    edit_clip(project, clip, |c| {
+        let length = c.length;
+        let a = audio_mut(c)?;
+        if take >= a.takes.len() {
+            return Err(EditError::IndexOutOfRange {
+                what: "take",
+                index: take,
+            });
+        }
+        if a.takes.len() == 1 {
+            return Err(EditError::Invalid("cannot remove the final audio take"));
+        }
+        let old_active = a.active_take;
+        a.takes.remove(take);
+        let active = if take != old_active {
+            old_active - usize::from(take < old_active)
+        } else {
+            a.takes
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.offset < t.file.frames)
+                .min_by_key(|(i, _)| i.abs_diff(take))
+                .map(|(i, _)| i)
+                .ok_or(EditError::Invalid("no playable audio take remains"))?
+        };
+        let length = select_source(a, active, length, tempo)?;
+        c.length = length;
+        Ok(())
+    })
+}
+
+fn select_source(
+    a: &mut AudioClip,
+    index: usize,
+    length: Tick,
+    tempo: Tempo,
+) -> Result<Tick, EditError> {
+    let take = a.takes.get(index).ok_or(EditError::IndexOutOfRange {
+        what: "take",
+        index,
+    })?;
+    if take.offset >= take.file.frames {
+        return Err(EditError::Invalid("the audio take is empty"));
+    }
+    a.active_take = index;
+    let length = length.min(a.max_length(tempo));
+    if length < MIN_LENGTH {
+        return Err(EditError::Invalid("the audio take is empty"));
+    }
+    a.clamp(length);
+    Ok(length)
 }
 
 /// The audio content of a clip or `WrongClipKind { expected: Audio }`.
@@ -277,7 +392,7 @@ pub(super) fn fit_length(c: &mut Clip, length: Tick, tempo: Tempo) -> Result<(),
 /// The clip `piece` of `c` between `a` and `b` (timeline ticks, `c.start ≤ a < b ≤ c.end()`): the
 /// window moves with the start, an edge the cut created loses its fade.
 fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Option<Clip> {
-    let ClipContent::Audio(audio) = &c.content else {
+    let ClipContent::Audio(_) = &c.content else {
         return None;
     };
     let mut out = c.clone();
@@ -285,7 +400,7 @@ fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Option<Clip> {
         unreachable!("a copy of an audio clip");
     };
     if a > c.start {
-        na.offset += audio.source_frames(a - c.start, tempo);
+        na.shift_sources(a - c.start, tempo);
         na.fade_in = Tick::ZERO;
     }
     if b < c.end() {
@@ -463,18 +578,26 @@ pub fn rewrite_audio_files(
             .clips
             .iter()
             .map(|c| match &c.content {
-                ClipContent::Audio(a) => match f(&a.file) {
-                    Some(file) if file != a.file => {
+                ClipContent::Audio(a) => {
+                    let mut next = a.clone();
+                    let mut modified = false;
+                    for take in &mut next.takes {
+                        if let Some(file) = f(&take.file)
+                            && file != take.file
+                        {
+                            take.file = file;
+                            modified = true;
+                        }
+                    }
+                    if modified {
                         track_changed = true;
                         let mut c = Clip::clone(c);
-                        let ClipContent::Audio(a) = &mut c.content else {
-                            unreachable!("matched above");
-                        };
-                        a.file = file;
+                        c.content = ClipContent::Audio(next);
                         Arc::new(c)
+                    } else {
+                        Arc::clone(c)
                     }
-                    _ => Arc::clone(c),
-                },
+                }
                 _ => Arc::clone(c),
             })
             .collect();

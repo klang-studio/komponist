@@ -39,8 +39,8 @@ pub mod time;
 mod proptests;
 
 pub use audio::{
-    AudioClip, AudioFile, AudioInput, AudioIo, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN, ClipTimeMode,
-    EDGE_FADE_MS, HardwareInput, MonitorMode,
+    AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
+    ClipTimeMode, EDGE_FADE_MS, HardwareInput, MonitorMode,
 };
 pub use document::{Document, Gesture, UNDO_LIMIT, UndoStep};
 pub use edits::EditError;

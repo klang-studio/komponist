@@ -503,4 +503,137 @@ mod tests {
         // Block of 16 + 1 + 14 centred in the 55 px body: top at 12.
         assert_eq!(n.top(), 12.0);
     }
+
+    #[test]
+    fn scrolled_midi_and_audio_clips_cannot_paint_in_group_header_gutters() {
+        use komponist_model::edits::{NewAudioTrack, NewBus, NewClip, NewClipContent, NewTrack};
+        use komponist_model::{AudioFile, Tick, edits};
+        let p = Project::new("Header clipping");
+        let (p, bass) = edits::add_track(
+            &p,
+            NewTrack {
+                name: Some("Bass".into()),
+                hue: None,
+                instrument: None,
+                index: None,
+                arm_exclusive: false,
+            },
+        )
+        .unwrap();
+        let (p, shaker) = edits::add_audio_track(
+            &p,
+            NewAudioTrack {
+                name: Some("Shaker".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (p, bass_clip) = edits::add_clip(
+            &p,
+            bass,
+            NewClip {
+                start: Tick::ZERO,
+                length: Tick(8 * 3840),
+                name: "Bass phrase".into(),
+                content: NewClipContent::Midi {
+                    notes: Vec::new(),
+                    take_name: String::new(),
+                },
+            },
+        )
+        .unwrap();
+        let (p, shaker_clip) = edits::add_clip(
+            &p,
+            shaker,
+            NewClip {
+                start: Tick::ZERO,
+                length: Tick(8 * 3840),
+                name: "Shaker loop".into(),
+                content: NewClipContent::Audio {
+                    file: AudioFile {
+                        abs: "/missing/header-clipping.wav".into(),
+                        rel: Default::default(),
+                        frames: 48_000 * 16,
+                        sample_rate: 48_000,
+                        channels: 1,
+                    },
+                    offset: 0,
+                },
+            },
+        )
+        .unwrap();
+        let (p, _) = edits::add_bus(&p, NewBus::group(vec![bass, shaker])).unwrap();
+        let mut app = crate::App::headless(p);
+        app.ui.arrangement.scroll_tick = 4.0 * 3840.0;
+        app.ui.selection.tracks.insert(shaker);
+        app.ui.selection.clips.extend([bass_clip, shaker_clip]);
+        let project = Arc::clone(app.project());
+        let context = egui::Context::default();
+        komponist_ui::install(&context);
+        let mut geometry = None;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    pos2(0.0, 0.0),
+                    egui::vec2(900.0, 500.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                geometry = Some(Geometry::new(ui.max_rect(), &project, &app.ui.arrangement));
+                let mut ctx = ViewCtx::new(
+                    &project,
+                    &mut app.ui,
+                    &app.engine,
+                    &mut app.meters,
+                    &app.keymap,
+                    &mut app.queue,
+                );
+                app.views.arrangement.show(ui, &mut ctx);
+            },
+        );
+        output.textures_delta.clear();
+        let g = geometry.unwrap();
+        for track in [bass, shaker] {
+            let row = project.tracks.iter().position(|t| t.id == track).unwrap();
+            assert!(
+                g.header(row).left() > g.header_full(row).left(),
+                "fixture must be indented"
+            );
+            let clip = &project.tracks[row].clips[0];
+            let r = g.clip_rect(row, clip);
+            assert!(
+                r.left() < g.header_full(row).left(),
+                "fixture must scroll beneath the gutter"
+            );
+            let mut clipped_meshes = 0;
+            for shape in &output.shapes {
+                let egui::Shape::Mesh(mesh) = &shape.shape else {
+                    continue;
+                };
+                let in_row = |v: &egui::epaint::Vertex| v.pos.y >= r.top() && v.pos.y <= r.bottom();
+                if mesh
+                    .vertices
+                    .iter()
+                    .any(|v| in_row(v) && v.pos.x < g.header(row).left())
+                    && mesh
+                        .vertices
+                        .iter()
+                        .any(|v| in_row(v) && v.pos.x > g.lane_x.min)
+                {
+                    clipped_meshes += 1;
+                    assert!(
+                        shape.clip_rect.left() >= g.lane_x.min,
+                        "{} clip mesh leaks into the ancestor gutter: {:?}",
+                        project.tracks[row].name,
+                        shape.clip_rect
+                    );
+                }
+            }
+            assert!(
+                clipped_meshes > 0,
+                "fixture must paint a crossing clip mesh"
+            );
+        }
+    }
 }

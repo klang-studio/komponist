@@ -414,11 +414,21 @@ impl App {
             self.project_dir().as_deref(),
         )
         .len();
-        if missing.is_empty() && samples == 0 {
+        let audio = crate::dialogs::missing_plugins::missing_audio(
+            self.project(),
+            self.project_dir().as_deref(),
+        );
+        if missing.is_empty() && samples == 0 && audio.is_empty() {
             self.set_status(self.lang.project_opened_ready(&name), StatusKind::Info);
             return;
         }
-        let n = crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples);
+        let n = if audio.is_empty() {
+            crate::dialogs::missing_plugins::title_for(self.lang, missing.len(), samples)
+        } else if missing.is_empty() {
+            self.lang.missing_audio_files().to_owned()
+        } else {
+            self.lang.missing_plugins_and_files().to_owned()
+        };
         self.set_status(
             self.lang.project_opened_problems(&name, n),
             StatusKind::Error,
@@ -627,6 +637,7 @@ impl App {
             }
             Purpose::Sample => self.sample_chosen(path),
             Purpose::ReplaceAudio(clip) => self.replace_audio_path(clip, path),
+            Purpose::ImportAudio => self.audio_import_chosen(vec![path]),
             Purpose::ExportFolder => self.export_folder_chosen(path),
             Purpose::Folder => {
                 let (clap, vst3) = crate::dialogs::settings::folder_formats(&path);

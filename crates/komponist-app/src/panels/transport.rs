@@ -739,6 +739,11 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
     let entries_spec = [
         (t.transport_menu_new(), p(ProjectAction::New)),
         (t.transport_menu_open(), p(ProjectAction::Open)),
+        (t.menu_import_audio(), p(ProjectAction::ImportAudio)),
+        (
+            t.menu_new_audio_track(),
+            Action::Edit(crate::actions::EditAction::NewAudioTrack),
+        ),
         (t.transport_menu_save(), p(ProjectAction::Save)),
         (t.transport_menu_save_as(), p(ProjectAction::SaveAs)),
         (t.transport_menu_collect(), p(ProjectAction::CollectAndSave)),

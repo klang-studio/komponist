@@ -392,7 +392,7 @@ impl Arrangement {
                         .find_clip(*id)
                         .is_some_and(|(_, c)| matches!(c.content, ClipContent::Audio(_)))
                 });
-                let delta = if audio {
+                let delta = if audio && view.snap && !free {
                     // Snap from an audio anchor even when the grabbed MIDI clip is off-grid.
                     let anchor = m
                         .clips
@@ -472,7 +472,7 @@ impl Arrangement {
                 origin,
             }) => {
                 let raw = start.0 as f64 + f64::from(pos.x - *origin) / ppt;
-                let start = view.grid.snap(Tick(raw.round() as i64), project.meter);
+                let start = snap_tick(raw, &view, free, project);
                 ctx.send(Action::Edit(EditAction::TrimAudioClipStart {
                     clip: *clip,
                     start,
@@ -538,13 +538,7 @@ impl Arrangement {
                         None
                     }
                 });
-                let mut snapped = view;
-                if audio.is_some() {
-                    snapped.snap = true;
-                }
-                if let Some(mut length) =
-                    edge_length(e, pos.x, ppt, &snapped, free && audio.is_none(), project)
-                {
+                if let Some(mut length) = edge_length(e, pos.x, ppt, &view, free, project) {
                     if let Some(a) = audio {
                         length = length.min(a.max_length(project.tempo));
                         e.length = length;
