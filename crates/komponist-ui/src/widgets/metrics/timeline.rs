@@ -64,6 +64,8 @@ pub const CLIP_BADGE_PAD_X: f32 = 4.0;
 pub const WAVE_PAD: f32 = 2.0;
 /// Gain drag sensitivity with Shift held, matching the fine adjustment of other controls.
 pub const GAIN_FINE_FACTOR: f32 = 0.1;
+/// Envelope samples per logical point: one per physical pixel at the supported 2× retina scale.
+pub const WAVE_SAMPLES_PER_POINT: f32 = 2.0;
 /// Overload tips on waveform peaks (audio proposal mockup 02).
 pub const WAVE_OVER_TIP: f32 = 2.0;
 /// Missing-file hatching and the missing-file text: stripe width and gap in px (`canvas.hatch`

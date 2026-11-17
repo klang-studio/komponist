@@ -516,6 +516,15 @@ fn audio_clip_states_in_both_languages() {
                     snapshot::padded(ui, paint);
                 });
             h.run();
+            if std::env::var_os("KOMPONIST_WAVE_PREVIEW").is_some() {
+                h.render()
+                    .expect("waveform preview")
+                    .save(
+                        std::env::temp_dir()
+                            .join(format!("komponist-wave-quality-{name}-{ppp}x.png")),
+                    )
+                    .expect("waveform preview PNG");
+            }
             h.snapshot(snapshot::file_stem(name, ppp));
             results.extend_harness(&mut h);
         }
