@@ -264,6 +264,9 @@ pub fn scale_fits(length: f32) -> bool {
 /// reads on the fader's scale.
 pub const METER_LED: f32 = meter_metrics::LED_HEIGHT + meter_metrics::LED_GAP;
 
+/// Four-button audio strip controls (audio proposal D8A).
+pub const AUDIO_TOGGLE: [f32; 2] = [18.0, 16.0];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +304,3 @@ mod tests {
         assert_eq!(rows_height(4), 86.0);
     }
 }
-
-/// Four-button audio strip controls (audio proposal D8A).
-pub const AUDIO_TOGGLE: [f32; 2] = [18.0, 16.0];
