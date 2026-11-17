@@ -402,3 +402,73 @@ fn capture_is_unchanged_by_auto_monitoring() {
         "the armed track sounds while recording"
     );
 }
+
+#[test]
+fn hardware_notes_release_on_routing_changes_without_cutting_the_sequence() {
+    for change in 0..4 {
+        let mut t = track(1, 0, vec![note(0, BAR, 48)]);
+        t.monitor = change != 1;
+        t.arm = change == 1;
+        let mut p = program(120.0, vec![t]);
+        let mut rig = Rig::new(RATE, 256);
+        let (sine, mut log) = TestSine::logged(4096);
+        rig.insert(0, sine);
+        rig.set_program(&p);
+        rig.send(Command::Play);
+        rig.process_with(256, &[midi(10, 1, [0x90, 60, 100])], 0);
+        drain(&mut log);
+        match change {
+            0 => std::sync::Arc::make_mut(&mut p.tracks[0]).monitor = false,
+            1 => std::sync::Arc::make_mut(&mut p.tracks[0]).arm = false,
+            2 => std::sync::Arc::make_mut(&mut p.tracks[0]).input.port = Some(MidiPort(2)),
+            _ => std::sync::Arc::make_mut(&mut p.tracks[0]).input.channel = Some(3),
+        }
+        rig.set_program(&p);
+        rig.process_with(256, &[midi(10, 1, [0x80, 60, 0])], 0);
+        let got = events(&drain(&mut log));
+        assert_eq!(
+            got.iter().filter(|(_, e)| off(60, 0)(e)).count(),
+            1,
+            "change {change}: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|(_, e)| off(48, 0)(e)),
+            "sequencer note was cut"
+        );
+        // The new input takes effect in the very next block.
+        let (port, channel) = if change == 2 { (2, 0) } else { (1, 3) };
+        rig.process_with(256, &[midi(0, port, [0x90 | channel, 64, 100])], 0);
+        let got = events(&drain(&mut log));
+        assert_eq!(
+            got.iter().any(|(_, e)| on(64, 100, channel)(e)),
+            change >= 2
+        );
+    }
+}
+
+#[test]
+fn removed_tracks_reset_their_live_voices_before_a_processor_is_reused() {
+    let mut t = track(1, 0, vec![]);
+    t.monitor = true;
+    let mut p = program(120.0, vec![t.clone()]);
+    let mut rig = Rig::new(RATE, 256);
+    let (sine, mut log) = TestSine::logged(4096);
+    rig.insert(0, sine);
+    rig.set_program(&p);
+    rig.process_with(256, &[midi(0, 1, [0x90, 60, 100])], 0);
+    drain(&mut log);
+    p.tracks.clear();
+    rig.set_program(&p);
+    rig.process(256, 256);
+    assert!(
+        drain(&mut log)
+            .iter()
+            .any(|entry| matches!(entry, Logged::Reset { .. }))
+    );
+    p.tracks.push(std::sync::Arc::new(t));
+    rig.set_program(&p);
+    rig.l.clear();
+    rig.r.clear();
+    rig.process(256, 256);
+    assert!(rig.l.iter().chain(&rig.r).all(|sample| *sample == 0.0));
+}

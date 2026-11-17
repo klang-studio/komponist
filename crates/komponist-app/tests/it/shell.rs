@@ -513,15 +513,16 @@ fn the_count_in_button_has_room_for_two_digits() {
 #[test]
 fn an_armed_track_turns_letters_into_notes() {
     use komponist_app::{EditAction, TransportAction};
+    let mut app = demo();
+    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
+    let track = app.project().tracks.iter().find(|t| t.arm).unwrap().id;
     let note = |key, velocity| {
         Action::Transport(TransportAction::LiveNote {
-            track: None,
+            track: Some(track),
             key,
             velocity,
         })
     };
-    let mut app = demo();
-    app.dispatch(Action::Edit(EditAction::NewMidiTrack));
     let mut h = harness(app);
     h.state_mut().clear_dispatched();
     h.key_press(egui::Key::A);

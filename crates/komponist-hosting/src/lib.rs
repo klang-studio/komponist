@@ -126,3 +126,8 @@ mod tests {
         assert!(!rw.contains(FdEvents::ERROR));
     }
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../scripts/test-fixtures.rs"]
+mod test_fixtures;

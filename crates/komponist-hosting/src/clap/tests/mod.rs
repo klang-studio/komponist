@@ -19,6 +19,8 @@ mod fixtures;
 pub(crate) mod gui;
 mod installed;
 
+use crate::test_fixtures;
+
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -46,13 +48,9 @@ pub(super) fn fixture(name: &str) -> Option<PathBuf> {
         .join(std::env::consts::OS)
         .join("clap")
         .join(format!("{name}.clap"));
-    if path.exists() {
+    if test_fixtures::available(&path) {
         Some(path)
     } else {
-        eprintln!(
-            "skipped: {} is missing; run scripts/build-test-plugins.sh",
-            path.display()
-        );
         None
     }
 }

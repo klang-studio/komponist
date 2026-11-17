@@ -43,6 +43,7 @@ mod i18n_views;
 mod inspector;
 mod internal_devices;
 mod internal_presets;
+mod keyboard_notes;
 mod master_scope;
 mod mixer;
 mod packaging;

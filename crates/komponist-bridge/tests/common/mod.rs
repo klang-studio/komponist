@@ -7,6 +7,10 @@
 
 #![allow(dead_code)]
 
+#[allow(dead_code)]
+#[path = "../../../../scripts/test-fixtures.rs"]
+mod test_fixtures;
+
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 #[cfg(unix)]
@@ -69,13 +73,9 @@ pub fn fixture_in(format: &str, name: &str) -> Option<PathBuf> {
         .join(std::env::consts::OS)
         .join(format)
         .join(format!("{name}.{format}"));
-    if path.exists() {
+    if test_fixtures::available(&path) {
         Some(std::fs::canonicalize(path).unwrap())
     } else {
-        eprintln!(
-            "skipped: {} is missing; run scripts/build-test-plugins.sh",
-            path.display()
-        );
         None
     }
 }

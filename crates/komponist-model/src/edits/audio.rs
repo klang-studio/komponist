@@ -64,7 +64,7 @@ pub fn add_audio_track_in(
         None => super::unique_track_name(project, names.audio),
     };
     let mut p = project.clone();
-    let id = TrackId(p.alloc_id());
+    let id = TrackId(p.alloc_id()?);
     let index = spec.index.unwrap_or(p.tracks.len()).min(p.tracks.len());
     let group = p
         .tracks
@@ -213,7 +213,7 @@ pub fn trim_audio_clip_start(project: &Project, clip: ClipId, start: Tick) -> Ed
         c.length = length;
         Ok(())
     })?;
-    cut_below(&mut p, &[clip]);
+    cut_below(&mut p, &[clip])?;
     Ok(p)
 }
 
@@ -425,7 +425,7 @@ fn cut_victims(
     track_index: usize,
     tops: &[(Tick, Tick)],
     is_victim: impl Fn(&Clip) -> bool,
-) {
+) -> Result<(), EditError> {
     let tempo = p.tempo;
     let mut tops = tops.to_vec();
     tops.sort();
@@ -459,7 +459,7 @@ fn cut_victims(
         for (a, b) in spans {
             if let Some(mut cut) = piece(&clip, a, b, tempo) {
                 if !std::mem::take(&mut first) {
-                    cut.id = ClipId(p.alloc_id());
+                    cut.id = ClipId(p.alloc_id()?);
                 }
                 out.push(Arc::new(cut));
             }
@@ -469,11 +469,12 @@ fn cut_victims(
         out.sort_by_key(|c| (c.start, c.id));
         track_mut(p, track_index).clips = out;
     }
+    Ok(())
 }
 
 /// The overlap-cut rule: the clips `tops` (ids, on whatever tracks) cut the other audio clips of
 /// their tracks. Ids that are not audio clips are ignored.
-pub(super) fn cut_below(p: &mut Project, tops: &[ClipId]) {
+pub(super) fn cut_below(p: &mut Project, tops: &[ClipId]) -> Result<(), EditError> {
     for track_index in 0..p.tracks.len() {
         let track = &p.tracks[track_index];
         if !track.is_audio() {
@@ -486,15 +487,16 @@ pub(super) fn cut_below(p: &mut Project, tops: &[ClipId]) {
             .map(|c| (c.start, c.end()))
             .collect();
         if !intervals.is_empty() {
-            cut_victims(p, track_index, &intervals, |c| !tops.contains(&c.id));
+            cut_victims(p, track_index, &intervals, |c| !tops.contains(&c.id))?;
         }
     }
+    Ok(())
 }
 
 /// Makes every audio track overlap-free: where clips overlap, the one that starts later cuts the
 /// one before it (equal starts: the higher id wins). A project made by the edits has no overlaps;
 /// this repairs a hand-edited file and the effect of a tempo change.
-pub(crate) fn normalize_overlaps(p: &mut Project) {
+pub(crate) fn normalize_overlaps(p: &mut Project) -> Result<(), EditError> {
     for track_index in 0..p.tracks.len() {
         if !p.tracks[track_index].is_audio() {
             continue;
@@ -507,18 +509,19 @@ pub(crate) fn normalize_overlaps(p: &mut Project) {
         for (id, start, end) in tops {
             cut_victims(p, track_index, &[(start, end)], |c| {
                 c.start < start || (c.start == start && c.id < id)
-            });
+            })?;
         }
     }
+    Ok(())
 }
 
 /// After a tempo change from `old` to `new`: audio clips in Fixed mode keep their duration in
 /// seconds (length and fades scale with the tempo, the start stays on the bar grid). Where a longer
 /// clip now runs into the next one, the clip that starts later wins ([`normalize_overlaps`]).
 /// Re-Pitch clips keep their ticks.
-pub(super) fn retime(p: &mut Project, old: Tempo, new: Tempo) {
+pub(super) fn retime(p: &mut Project, old: Tempo, new: Tempo) -> Result<(), EditError> {
     if old.bpm == new.bpm {
-        return;
+        return Ok(());
     }
     let factor = new.bpm / old.bpm;
     let scale = |t: Tick| Tick((t.0 as f64 * factor).round() as i64);
@@ -551,8 +554,9 @@ pub(super) fn retime(p: &mut Project, old: Tempo, new: Tempo) {
         track_mut(p, track_index).clips = clips;
     }
     if any {
-        normalize_overlaps(p);
+        normalize_overlaps(p)?;
     }
+    Ok(())
 }
 
 /// `project` with `f` applied to every audio file link of every audio clip; `None` when `f` returns

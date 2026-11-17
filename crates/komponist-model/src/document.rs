@@ -523,12 +523,72 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_identifiers_reject_edits_without_changing_the_document() {
+        let mut project = Project::new("Exhausted");
+        project.next_id = u64::MAX;
+        assert_eq!(project.alloc_id(), Err(EditError::IdsExhausted));
+        assert_eq!(project.next_id, u64::MAX);
+        let mut doc = Document::new(project);
+        let root = Arc::clone(doc.project());
+        assert_eq!(
+            doc.apply("Add track", |p| crate::edits::add_track(
+                p,
+                crate::edits::NewTrack {
+                    name: None,
+                    hue: None,
+                    instrument: None,
+                    index: None,
+                    arm_exclusive: false
+                }
+            )
+            .map(|(p, _)| p)),
+            Err(EditError::IdsExhausted)
+        );
+        assert!(Arc::ptr_eq(&root, doc.project()));
+        assert_eq!(doc.revision(), 0);
+        assert_eq!(doc.undo_label(), None);
+    }
+
+    #[test]
+    fn partial_identifier_allocation_does_not_commit_an_edit() {
+        let mut project = Project::new("Nearly exhausted");
+        project.next_id = u64::MAX - 2;
+        let mut doc = Document::new(project);
+        let root = Arc::clone(doc.project());
+        let plugin = crate::PluginRef {
+            format: crate::PluginFormat::Builtin,
+            id: crate::project::BUILTIN_HEXA.into(),
+            name: crate::project::HEXA_NAME.into(),
+            vendor: String::new(),
+            version: String::new(),
+            module: Box::default(),
+        };
+        assert_eq!(
+            doc.apply("Add instrument", |p| crate::edits::add_track(
+                p,
+                crate::edits::NewTrack {
+                    name: None,
+                    hue: None,
+                    instrument: Some(plugin),
+                    index: None,
+                    arm_exclusive: false,
+                }
+            )
+            .map(|(p, _)| p)),
+            Err(EditError::IdsExhausted)
+        );
+        assert!(Arc::ptr_eq(&root, doc.project()));
+        assert_eq!(doc.project().next_id, u64::MAX - 2);
+        assert_eq!(doc.revision(), 0);
+    }
+
+    #[test]
     fn apply_with_returns_the_value() {
         let mut doc = Document::new(Project::new("A"));
         let id = doc
             .apply_with("Spur", |p| {
                 let mut p = p.clone();
-                let id = p.alloc_id();
+                let id = p.alloc_id()?;
                 Ok((p, id))
             })
             .unwrap();
@@ -546,7 +606,7 @@ mod tests {
             let id = doc
                 .apply_in_gesture_with(|p| {
                     let mut p = p.clone();
-                    let id = p.alloc_id();
+                    let id = p.alloc_id()?;
                     p.name = format!("A{n}");
                     Ok((p, id))
                 })

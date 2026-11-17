@@ -803,3 +803,41 @@ fn rewriting_audio_links_visits_inactive_takes_and_keeps_unchanged_arcs() {
     );
     assert_eq!(audio_of(&q, clip).file, original_active);
 }
+
+#[test]
+fn exhausted_audio_identifiers_reject_tracks_and_overlap_splits_atomically() {
+    let mut empty = Project::new("Exhausted audio");
+    empty.next_id = u64::MAX;
+    assert_eq!(
+        add_audio_track(&empty, NewAudioTrack::default()).unwrap_err(),
+        EditError::IdsExhausted
+    );
+
+    let (p, track) = audio_track(&Project::new("Overlap"));
+    let (mut p, _) = ok_with(add_clip(&p, track, new_audio(0, 3840)));
+    p.next_id = u64::MAX - 2; // one ID for the new clip, no room for the victim's right half
+    let mut doc = Document::new(p);
+    let before = Arc::clone(doc.project());
+    assert_eq!(
+        doc.apply_with("overlap", |p| add_clip(p, track, new_audio(960, 960))),
+        Err(EditError::IdsExhausted)
+    );
+    assert!(Arc::ptr_eq(&before, doc.project()));
+    assert_eq!(doc.revision(), 0);
+}
+
+#[test]
+fn overlap_repair_rejects_an_exhausted_file_instead_of_panicking() {
+    let (p, track) = audio_track(&Project::new("Overlap repair"));
+    let (p, _) = ok_with(add_clip(&p, track, new_audio(0, 3840)));
+    let (mut p, clip) = ok_with(add_clip(&p, track, new_audio(5000, 960)));
+    let t = Arc::make_mut(&mut p.tracks[0]);
+    let c = t.clips.iter_mut().find(|c| c.id == clip).unwrap();
+    Arc::make_mut(c).start = Tick(960); // hand-edited file; repair needs a second victim piece
+    p.next_id = u64::MAX - 1;
+    let text = crate::persist::to_json(&p).unwrap();
+    let error = crate::persist::from_json(&text).unwrap_err();
+    assert!(
+        matches!(error, crate::persist::PersistError::Malformed(message) if message.contains("identifiers exhausted"))
+    );
+}

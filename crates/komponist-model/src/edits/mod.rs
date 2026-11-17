@@ -64,6 +64,8 @@ pub(crate) mod tests;
 /// Why an edit was rejected. The input project is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditError {
+    /// The project has no unused object identifiers left.
+    IdsExhausted,
     /// No track with this id.
     TrackNotFound(TrackId),
     /// No clip with this id.
@@ -109,6 +111,7 @@ pub enum EditError {
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            EditError::IdsExhausted => write!(f, "project object identifiers exhausted"),
             EditError::TrackNotFound(id) => write!(f, "track {} not found", id.0),
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
             EditError::NoteNotFound(id) => write!(f, "note {} not found", id.0),
@@ -438,7 +441,7 @@ pub fn set_project_prop(project: &Project, prop: ProjectProp) -> EditResult {
             }
             let old = p.tempo;
             p.tempo = tempo;
-            audio::retime(&mut p, old, tempo);
+            audio::retime(&mut p, old, tempo)?;
         }
         ProjectProp::Meter(meter) => {
             if !valid_meter(meter) {
@@ -537,11 +540,11 @@ pub fn add_track_in(
         }
     };
     let mut p = project.clone();
-    let id = TrackId(p.alloc_id());
+    let id = TrackId(p.alloc_id()?);
     let mut channel = Channel::default();
     if let Some(plugin) = spec.instrument {
         channel.devices.push(Arc::new(Device {
-            id: DeviceId(p.alloc_id()),
+            id: DeviceId(p.alloc_id()?),
             role: DeviceRole::Instrument,
             plugin,
             bypass: false,
@@ -695,14 +698,14 @@ pub fn add_clip(
         });
     }
     let mut p = project.clone();
-    let id = ClipId(p.alloc_id());
+    let id = ClipId(p.alloc_id()?);
     let mut length = spec.length.max(MIN_LENGTH);
     let content = match spec.content {
         NewClipContent::Midi { notes, take_name } => {
             let mut notes: Vec<Note> = notes
                 .iter()
-                .map(|n| new_note(NoteId(p.alloc_id()), n))
-                .collect();
+                .map(|n| Ok(new_note(NoteId(p.alloc_id()?), n)))
+                .collect::<Result<_, EditError>>()?;
             sort_notes(&mut notes);
             ClipContent::Midi(MidiClip {
                 takes: vec![Take {
@@ -731,7 +734,7 @@ pub fn add_clip(
         content,
     };
     insert_clip(track_mut(&mut p, track_index), Arc::new(clip));
-    audio::cut_below(&mut p, &[id]);
+    audio::cut_below(&mut p, &[id])?;
     Ok((p, id))
 }
 
@@ -785,7 +788,7 @@ pub fn move_clips(
         );
     }
     let moved: Vec<ClipId> = group.clips.iter().map(|(_, c)| c.id).collect();
-    audio::cut_below(&mut p, &moved);
+    audio::cut_below(&mut p, &moved)?;
     Ok(p)
 }
 
@@ -801,7 +804,7 @@ pub fn copy_clips(
     let mut p = project.clone();
     let mut copies = Vec::with_capacity(group.clips.len());
     for (track_index, clip) in &group.clips {
-        let mut copy = copy_clip(&mut p, clip);
+        let mut copy = copy_clip(&mut p, clip)?;
         copy.start += group.delta;
         copies.push(copy.id);
         insert_clip(
@@ -809,7 +812,7 @@ pub fn copy_clips(
             Arc::new(copy),
         );
     }
-    audio::cut_below(&mut p, &copies);
+    audio::cut_below(&mut p, &copies)?;
     Ok((p, copies))
 }
 
@@ -832,12 +835,12 @@ pub fn duplicate_clips(
     let mut p = project.clone();
     let mut copies = Vec::with_capacity(located.len());
     for (track_index, clip) in located {
-        let mut copy = copy_clip(&mut p, &clip);
+        let mut copy = copy_clip(&mut p, &clip)?;
         copy.start = clip.end();
         copies.push(copy.id);
         insert_clip(track_mut(&mut p, track_index), Arc::new(copy));
     }
-    audio::cut_below(&mut p, &copies);
+    audio::cut_below(&mut p, &copies)?;
     Ok((p, copies))
 }
 
@@ -849,7 +852,7 @@ pub fn duplicate_clips(
 pub fn set_clip_length(project: &Project, clip: ClipId, length: Tick) -> EditResult {
     let tempo = project.tempo;
     let mut p = edit_clip(project, clip, |c| audio::fit_length(c, length, tempo))?;
-    audio::cut_below(&mut p, &[clip]);
+    audio::cut_below(&mut p, &[clip])?;
     Ok(p)
 }
 
@@ -873,7 +876,7 @@ pub fn set_clip_loop(
         c.loop_length = loop_length.map(|l| l.max(MIN_LENGTH));
         audio::fit_length(c, length, tempo)
     })?;
-    audio::cut_below(&mut p, &[clip]);
+    audio::cut_below(&mut p, &[clip])?;
     Ok(p)
 }
 
@@ -900,7 +903,7 @@ pub fn split_clips(
         if !(clip.start < at && at < clip.end()) {
             continue;
         }
-        let (left, right) = split_clip(&mut p, &clip, at - clip.start);
+        let (left, right) = split_clip(&mut p, &clip, at - clip.start)?;
         rights.push(right.id);
         let track = track_mut(&mut p, track_index);
         // Same id and start: the left part keeps the clip's place in the order.
@@ -948,7 +951,7 @@ pub fn set_clip_prop(project: &Project, clip: ClipId, prop: ClipProp) -> EditRes
         }
         Ok(())
     })?;
-    audio::cut_below(&mut p, &[clip]);
+    audio::cut_below(&mut p, &[clip])?;
     Ok(p)
 }
 
@@ -963,7 +966,10 @@ pub fn add_notes(
     notes: &[NewNote],
 ) -> Result<(Project, Vec<NoteId>), EditError> {
     let mut p = project.clone();
-    let ids: Vec<NoteId> = notes.iter().map(|_| NoteId(p.alloc_id())).collect();
+    let ids: Vec<NoteId> = notes
+        .iter()
+        .map(|_| p.alloc_id().map(NoteId))
+        .collect::<Result<_, _>>()?;
     with_notes(&mut p, clip, |list| {
         list.extend(notes.iter().zip(&ids).map(|(n, &id)| new_note(id, n)));
         Ok(())
@@ -1019,7 +1025,10 @@ pub fn copy_notes(
     let selection = NoteSelection::new(notes);
     let order = unique(notes);
     let mut p = project.clone();
-    let ids: Vec<NoteId> = order.iter().map(|_| NoteId(p.alloc_id())).collect();
+    let ids: Vec<NoteId> = order
+        .iter()
+        .map(|_| p.alloc_id().map(NoteId))
+        .collect::<Result<_, _>>()?;
     with_notes(&mut p, clip, |list| {
         selection.check(list)?;
         let (delta, pitch_delta) = clamp_note_move(list, &selection, delta, pitch_delta);
@@ -1221,14 +1230,16 @@ pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
     let notes: Vec<Note> = hits
         .into_iter()
         .filter(|h| h.probability > 0)
-        .map(|h| Note {
-            id: NoteId(p.alloc_id()),
-            start: h.start,
-            length: h.length,
-            pitch: h.note,
-            velocity: h.velocity,
+        .map(|h| {
+            Ok(Note {
+                id: NoteId(p.alloc_id()?),
+                start: h.start,
+                length: h.length,
+                pitch: h.note,
+                velocity: h.velocity,
+            })
         })
-        .collect();
+        .collect::<Result<_, EditError>>()?;
     update_clip(&mut p, location, |c| {
         c.loop_length = None;
         c.content = ClipContent::Midi(MidiClip {
@@ -1294,7 +1305,7 @@ pub fn insert_device(
         DeviceRole::Effect => index.max(chain.first_effect_index()),
     };
     let mut p = project.clone();
-    let id = DeviceId(p.alloc_id());
+    let id = DeviceId(p.alloc_id()?);
     channel_mut(&mut p, channel)?.devices.insert(
         index,
         Arc::new(Device {
@@ -1333,7 +1344,7 @@ pub fn replace_instrument(
         ));
     }
     let mut p = project.clone();
-    let id = DeviceId(p.alloc_id());
+    let id = DeviceId(p.alloc_id()?);
     let device = Arc::new(Device {
         id,
         role: DeviceRole::Instrument,
@@ -1721,23 +1732,25 @@ fn new_step_clip(rows: &[StepRowSpec]) -> StepClip {
 }
 
 /// A copy of `clip` with a new clip id and new note ids (same order, so the notes stay sorted).
-fn copy_clip(project: &mut Project, clip: &Clip) -> Clip {
+fn copy_clip(project: &mut Project, clip: &Clip) -> Result<Clip, EditError> {
     let mut copy = clip.clone();
-    copy.id = ClipId(project.alloc_id());
+    copy.id = ClipId(project.alloc_id()?);
     if let ClipContent::Midi(m) = &mut copy.content {
         for take in &mut m.takes {
             let notes = take
                 .notes
                 .iter()
-                .map(|n| Note {
-                    id: NoteId(project.alloc_id()),
-                    ..*n
+                .map(|n| {
+                    Ok(Note {
+                        id: NoteId(project.alloc_id()?),
+                        ..*n
+                    })
                 })
-                .collect();
+                .collect::<Result<_, EditError>>()?;
             take.notes = Arc::new(notes);
         }
     }
-    copy
+    Ok(copy)
 }
 
 /// The clips of a move or copy with the group's clamped deltas.
@@ -1800,10 +1813,10 @@ impl ClipGroup {
 
 /// Splits `clip` at clip-local `at` (`0 < at < length`) into a left part (same id) and a right
 /// part (new id); see [`split_clips`].
-fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> (Clip, Clip) {
+fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Clip), EditError> {
     let mut left = clip.clone();
     let mut right = clip.clone();
-    right.id = ClipId(project.alloc_id());
+    right.id = ClipId(project.alloc_id()?);
     right.start = clip.start + at;
     right.length = clip.length - at;
     left.length = at;
@@ -1814,7 +1827,7 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> (Clip, Clip) {
             };
             for (l, r) in left_midi.takes.iter_mut().zip(&mut right_midi.takes) {
                 let notes = match clip.loop_length {
-                    Some(loop_length) => unroll(project, &l.notes, loop_length, clip.length),
+                    Some(loop_length) => unroll(project, &l.notes, loop_length, clip.length)?,
                     None => l.notes.to_vec(),
                 };
                 let (mut before, mut after) = (Vec::new(), Vec::new());
@@ -1826,7 +1839,7 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> (Clip, Clip) {
                         });
                     } else {
                         after.push(Note {
-                            id: NoteId(project.alloc_id()),
+                            id: NoteId(project.alloc_id()?),
                             start: n.start - at,
                             ..n
                         });
@@ -1860,12 +1873,17 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> (Clip, Clip) {
             }
         }
     }
-    (left, right)
+    Ok((left, right))
 }
 
 /// The notes a looped take plays within `length`: repetitions of `0 .. loop_length`, each note cut
 /// at its repetition's end and at `length`. The first repetition keeps the note ids.
-fn unroll(project: &mut Project, notes: &[Note], loop_length: Tick, length: Tick) -> Vec<Note> {
+fn unroll(
+    project: &mut Project,
+    notes: &[Note],
+    loop_length: Tick,
+    length: Tick,
+) -> Result<Vec<Note>, EditError> {
     let mut out = Vec::new();
     let mut offset = Tick::ZERO;
     while offset < length {
@@ -1878,7 +1896,7 @@ fn unroll(project: &mut Project, notes: &[Note], loop_length: Tick, length: Tick
             let id = if offset == Tick::ZERO {
                 n.id
             } else {
-                NoteId(project.alloc_id())
+                NoteId(project.alloc_id()?)
             };
             out.push(Note {
                 id,
@@ -1889,7 +1907,7 @@ fn unroll(project: &mut Project, notes: &[Note], loop_length: Tick, length: Tick
         }
         offset += loop_length;
     }
-    out
+    Ok(out)
 }
 
 // --- Notes --------------------------------------------------------------------------------------

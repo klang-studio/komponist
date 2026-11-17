@@ -9,6 +9,10 @@
 
 #![allow(dead_code)]
 
+#[allow(dead_code)]
+#[path = "../../../../scripts/test-fixtures.rs"]
+mod test_fixtures;
+
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -146,13 +150,9 @@ pub fn fixture_dir() -> Option<PathBuf> {
         .join("test-plugins")
         .join(std::env::consts::OS)
         .join("clap");
-    if dir.join("kp-test-synth.clap").exists() {
+    if test_fixtures::bundle_dir(&dir, "clap") {
         Some(canonical(&dir))
     } else {
-        eprintln!(
-            "skipped: {} is missing; run scripts/build-test-plugins.sh",
-            dir.display()
-        );
         None
     }
 }

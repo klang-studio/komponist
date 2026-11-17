@@ -155,6 +155,8 @@ status-collected = Collected and saved · { $count ->
 # Collecting the samples failed; `$reason` is the system's text.
 status-collect-failed = Collecting failed: { $reason }
 
+# Editing cannot create an object once the project ID counter is exhausted.
+status-id-space-exhausted = No unused object IDs remain in this project.
 # Audio clip editing and refused drops.
 status-audio-clips-hint = Drag moves · Alt+drag copies · Edges trim · Corners: fades · Line: gain · Ctrl+E splits · Ctrl+D duplicates · Del deletes
 status-audio-clips-hint-mac = Drag moves · ⌥+drag copies · Edges trim · Corners: fades · Line: gain · ⌘ E splits · ⌘ D duplicates · Del deletes

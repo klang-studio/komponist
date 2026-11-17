@@ -423,7 +423,7 @@ fn bus_latency_is_compensated_once_and_its_delayed_tail_is_drained() {
         }
     }
     let (mut p, source) = project(MonitorMode::On, false);
-    let device = DeviceId(p.alloc_id());
+    let device = DeviceId(p.alloc_id().expect("fixture identifiers"));
     Arc::make_mut(p.tracks.iter_mut().find(|t| t.id == source).unwrap())
         .channel
         .devices
@@ -493,7 +493,7 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
         }
     }
     let (mut p, source) = project(MonitorMode::On, true);
-    let device = DeviceId(p.alloc_id());
+    let device = DeviceId(p.alloc_id().expect("fixture identifiers"));
     Arc::make_mut(p.tracks.iter_mut().find(|t| t.id == source).unwrap())
         .channel
         .devices

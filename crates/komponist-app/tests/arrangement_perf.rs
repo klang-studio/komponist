@@ -37,10 +37,11 @@ fn big_project() -> Project {
     while p.tracks.len() < TRACKS {
         let t = Arc::clone(&p.tracks[p.tracks.len() % 6]);
         let mut t = komponist_model::Track::clone(&t);
-        t.id = komponist_model::TrackId(p.alloc_id());
+        t.id = komponist_model::TrackId(p.alloc_id().expect("fixture identifiers"));
         // Own devices (the engine plays every track).
         for d in &mut t.channel.devices {
-            Arc::make_mut(d).id = komponist_model::DeviceId(p.alloc_id());
+            Arc::make_mut(d).id =
+                komponist_model::DeviceId(p.alloc_id().expect("fixture identifiers"));
         }
         p.tracks.push(Arc::new(t));
     }
@@ -56,7 +57,7 @@ fn big_project() -> Project {
     for ci in 0..CLIPS {
         let mut notes: Vec<Note> = (0..NOTES_PER_CLIP)
             .map(|n| Note {
-                id: NoteId(p.alloc_id()),
+                id: NoteId(p.alloc_id().expect("fixture identifiers")),
                 start: Tick((n as i64 * BAR) / NOTES_PER_CLIP as i64),
                 length: Tick::from_steps(1 + (next() % 4) as i64),
                 pitch: 40 + (next() % 40) as u8,
@@ -65,7 +66,7 @@ fn big_project() -> Project {
             .collect();
         notes.sort_by_key(|n| (n.start, n.pitch));
         let mut c = template.clone();
-        c.id = ClipId(p.alloc_id());
+        c.id = ClipId(p.alloc_id().expect("fixture identifiers"));
         c.start = Tick((ci / TRACKS) as i64 * BAR);
         c.length = Tick(BAR);
         c.loop_length = None;
