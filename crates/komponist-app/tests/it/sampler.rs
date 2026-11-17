@@ -445,7 +445,10 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
     let library = dir.join("library");
     std::fs::create_dir_all(&library).unwrap();
     let take = library.join("take 1.wav");
-    std::fs::write(&take, b"not really a wav").unwrap();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend_from_slice(&36u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    std::fs::write(&take, wav).unwrap();
     let gone = library.join("gone.wav");
     let link = |path: &Path| komponist_model::AudioFile::new(path, None, 48_000, 48_000, 2);
     let (p, track) = edits::add_audio_track(&Project::new("Audio"), Default::default()).unwrap();
@@ -460,6 +463,10 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
     };
     let (p, _) = edits::add_clip(&p, track, clip(0, &take)).unwrap();
     let (p, _) = edits::add_clip(&p, track, clip(960, &gone)).unwrap();
+    // A file that only looks like audio by its name must never be copied next to the project.
+    let secret = library.join("secret.wav");
+    std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+    let (p, _) = edits::add_clip(&p, track, clip(1920, &secret)).unwrap();
     let home = dir.join("proj");
     std::fs::create_dir_all(&home).unwrap();
     let file = home.join("Aufnahme.komponist");
@@ -484,6 +491,11 @@ fn collect_and_save_also_copies_the_files_of_audio_clips() {
     // A file that is missing keeps its link.
     assert_eq!(files[1].abs, gone);
     assert!(!folder.join("gone.wav").exists());
+    assert_eq!(files[2].abs, secret);
+    assert!(
+        !folder.join("secret.wav").exists(),
+        "not audio: not collected"
+    );
 }
 
 #[test]

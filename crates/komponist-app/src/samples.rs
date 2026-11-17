@@ -314,6 +314,12 @@ impl App {
         };
         match self.collect_samples(&file) {
             Ok(collector) => {
+                for path in &collector.skipped {
+                    eprintln!(
+                        "komponist: not collected, not an audio file: {}",
+                        path.display()
+                    );
+                }
                 if self.save_to(&file) {
                     let copied = collector.log.iter().filter(|c| c.copied).count();
                     let folder = sampler::links::samples_folder_name(&file);
