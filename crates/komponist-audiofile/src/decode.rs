@@ -25,6 +25,18 @@ use symphonia::core::units::{Duration, Time, TimeBase, Timestamp};
 
 use crate::{AudioError, MAX_CHANNELS};
 
+/// Highest sample rate accepted; a header claiming more is damaged or hostile.
+pub const MAX_SAMPLE_RATE: u32 = 768_000;
+
+/// Most frames [`decode_all`] holds in memory (2^27: 46 minutes at 48 kHz, 1 GiB in stereo).
+pub const MAX_DECODE_FRAMES: u64 = 1 << 27;
+
+/// Largest timestamp magnitude (in container ticks) that is believed.
+const MAX_TICKS: u64 = 1 << 50;
+
+/// Frames a whole-file decode reserves up front; the vectors grow with what is really decoded.
+const INITIAL_FRAMES: usize = 1 << 20;
+
 /// Frames a whole-file decode reads per call.
 const CHUNK_FRAMES: usize = 16 * 1024;
 
@@ -221,12 +233,19 @@ impl Wav {
         if spec.sample_rate == 0 || spec.channels == 0 {
             return Err(AudioError::Malformed("no sample rate or channels".into()));
         }
+        if spec.sample_rate > MAX_SAMPLE_RATE {
+            return Err(AudioError::Unsupported(format!("{} Hz", spec.sample_rate)));
+        }
+        // The header's length may promise more than the file holds.
+        let bytes_per_frame = u64::from(spec.channels) * u64::from(spec.bits_per_sample / 8);
+        // (44 bytes: the smallest WAV header; a larger one only makes the bound a little generous.)
+        let holds = std::fs::metadata(path)?.len().saturating_sub(44) / bytes_per_frame.max(1);
         let source_channels = usize::from(spec.channels);
         let info = AudioInfo {
             sample_rate: spec.sample_rate,
             channels: source_channels.min(MAX_CHANNELS),
             source_channels,
-            frames: u64::from(reader.duration()),
+            frames: u64::from(reader.duration()).min(holds),
             format: Format::Wav,
         };
         Ok((info, Wav { reader, spec }))
@@ -340,6 +359,9 @@ impl Sym {
         if sample_rate == 0 || source_channels == 0 {
             return Err(AudioError::Malformed("no sample rate or channels".into()));
         }
+        if sample_rate > MAX_SAMPLE_RATE {
+            return Err(AudioError::Unsupported(format!("{sample_rate} Hz")));
+        }
         if frames.is_none() {
             // No length in the container: add up the packet durations (no decoding), then rewind.
             frames = Some(Self::sum_packets(path, track_id, time_base, sample_rate)?);
@@ -423,7 +445,10 @@ impl Sym {
                     .dur
                     .saturating_sub(packet.trim_start)
                     .saturating_sub(packet.trim_end);
-                ticks += dur.get();
+                ticks = ticks
+                    .checked_add(dur.get())
+                    .filter(|t| *t <= MAX_TICKS)
+                    .ok_or_else(|| AudioError::Malformed("implausible length".into()))?;
             }
         }
         Ok(ticks_to_frames(time_base, ticks, rate))
@@ -487,6 +512,9 @@ impl Sym {
             if packet.track_id != self.track_id {
                 continue;
             }
+            if packet.pts.get().unsigned_abs() > MAX_TICKS || packet.dur.get() > MAX_TICKS {
+                return Err(AudioError::Malformed("implausible timestamp".into()));
+            }
             let buf = match self.decoder.decode(&packet) {
                 Ok(buf) => buf,
                 // A damaged packet is skipped (the stream resyncs), like every player does.
@@ -504,8 +532,9 @@ impl Sym {
                 packet.pts.saturating_add(packet.dur),
                 self.sample_rate,
             );
-            let start = end - frames as i64;
-            let first = usize::try_from((self.target as i64 - start).max(0))
+            let start = end.saturating_sub(frames as i64);
+            let target = i64::try_from(self.target).unwrap_or(i64::MAX);
+            let first = usize::try_from(target.saturating_sub(start).max(0))
                 .unwrap_or(usize::MAX)
                 .min(frames);
             if first == frames {
@@ -534,7 +563,8 @@ fn ticks_to_frames(tb: Option<TimeBase>, ticks: u64, rate: u32) -> u64 {
 fn ts_to_frames(tb: Option<TimeBase>, ts: Timestamp, rate: u32) -> i64 {
     match tb {
         Some(tb) => {
-            let (negative, ticks) = (ts.get() < 0, Timestamp::new(ts.get().abs()));
+            let magnitude = ts.get().unsigned_abs().min(MAX_TICKS);
+            let (negative, ticks) = (ts.get() < 0, Timestamp::new(magnitude as i64));
             let frames =
                 (tb.calc_time_saturating(ticks).as_secs_f64() * f64::from(rate)).round() as i64;
             if negative { -frames } else { frames }
@@ -547,7 +577,7 @@ fn frames_to_ts(tb: Option<TimeBase>, frame: u64, rate: u32) -> Timestamp {
     let secs = frame as f64 / f64::from(rate);
     match tb.and_then(|tb| Time::try_from_secs_f64(secs).and_then(|t| tb.calc_timestamp(t))) {
         Some(ts) => ts,
-        None => Timestamp::new(frame as i64),
+        None => Timestamp::new(i64::try_from(frame).unwrap_or(i64::MAX)),
     }
 }
 
@@ -590,7 +620,13 @@ pub fn decode_all(path: &Path, max_seconds: Option<f64>) -> Result<Decoded, Audi
     if max_seconds.is_some_and(|max| info.duration_secs() > max) {
         return Err(AudioError::TooLong);
     }
-    let cap = usize::try_from(info.frames).unwrap_or(0);
+    if info.frames > MAX_DECODE_FRAMES {
+        return Err(AudioError::TooLong);
+    }
+    // The header's length is a hint, not a promise: reserve a bounded amount and grow.
+    let cap = usize::try_from(info.frames)
+        .unwrap_or(0)
+        .min(INITIAL_FRAMES);
     let mut channels: Vec<Vec<f32>> = (0..info.channels)
         .map(|_| Vec::with_capacity(cap))
         .collect();
@@ -606,6 +642,9 @@ pub fn decode_all(path: &Path, max_seconds: Option<f64>) -> Result<Decoded, Audi
             }
         }
         // A container that understates its length must not grow without bound.
+        if channels[0].len() as u64 > MAX_DECODE_FRAMES {
+            return Err(AudioError::TooLong);
+        }
         if max_seconds
             .is_some_and(|max| channels[0].len() as f64 > max * f64::from(info.sample_rate))
         {
@@ -619,4 +658,26 @@ pub fn decode_all(path: &Path, max_seconds: Option<f64>) -> Result<Decoded, Audi
         sample_rate: info.sample_rate,
         channels,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hostile_timestamps_do_not_overflow() {
+        let tb = TimeBase::try_new(1, 44100);
+        for ts in [i64::MIN, i64::MIN + 1, -1, 0, i64::MAX] {
+            let _ = ts_to_frames(tb, Timestamp::new(ts), 44100);
+            let _ = ts_to_frames(None, Timestamp::new(ts), 44100);
+        }
+        for ticks in [0, 1, u64::MAX] {
+            let _ = ticks_to_frames(tb, ticks, 44100);
+            let _ = ticks_to_frames(None, ticks, 44100);
+        }
+        for frame in [0, u64::MAX] {
+            let _ = frames_to_ts(tb, frame, 44100);
+            let _ = frames_to_ts(None, frame, 44100);
+        }
+    }
 }

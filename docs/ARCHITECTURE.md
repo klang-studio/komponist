@@ -155,6 +155,7 @@ komponist/
     sampler-core/               vendored sampler engine of the Sampler (from klopfer's dsp crate)
     komponist-builtin/          Hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
+    komponist-audiofile/        audio files: seekable chunked decoding (hound, symphonia), sample-rate conversion (rubato), waveform peak cache, the file pool; leaf crate, no studio dependency
     komponist-rt/               realtime thread set-up: SCHED_FIFO, time-constraint policy, audio workgroups, os_sync waits (macOS); depends on libc only
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
@@ -936,6 +937,47 @@ must not output back into that bus).
    routing latency and the delay compensation are in frames of the export rate and agree with the skipped latency.
    The same step fixed a race at the same rate: a latency published after the app's last compile (a lookahead switched
    right before the export) made the skip and the compensation disagree.
+
+### 6.9 Audio files (`komponist-audiofile`)
+
+Everything that reads an audio file lives in one leaf crate with no studio dependency (no model, no engine, no
+egui): a decoder is needed by the Sampler's loader (`komponist-builtin`) today, by the engine's disk streaming (#11)
+and by the arrangement's waveforms (#12) next, and none of them may pull the others in. **Nothing in it runs in the
+audio thread** (§6.1): decoding, conversion and peak computation allocate and do IO, so they run on loader, read-ahead
+and worker threads and hand finished `Arc`s over.
+
+- **Decoders (`AudioFile`).** WAV through `hound` (8/16/24/32-bit integer, 32-bit float), FLAC, OGG Vorbis and MP3
+  through `symphonia` (MPL-2.0, GPL-compatible; pure Rust; only the `flac`, `mp3`, `ogg` and `vorbis` features).
+  The format is chosen by the first bytes, not the extension. The API is seekable and chunked: `open`, `info`
+  (rate, channels, frames), `seek(frame)`, `read(&mut [f32])` (interleaved, from the current position), `read_full`. A
+  seek lands 8192 frames before the target, rebuilds the decoder state and drops the frames in between; each decoded
+  buffer is placed by its packet's end timestamp, so seeks are frame-exact (tests compare them with a sequential
+  decode). One `AudioFile` has one position: every streaming reader opens its own on `PoolFile::path`. Files with more
+  than two channels give their first two. `decode_all` reads a whole file into planar `f32` (`Decoded`).
+- **Sample-rate conversion.** klang-dsp has no resampler (`no_std` building blocks, §10), so `rubato`'s synchronous
+  FFT resampler is used (MIT/Apache-2.0; `realfft` was already in the tree): fixed ratio, no quality knobs, ≈ −130 dB
+  error on sines, flat to 20 kHz. `resample` converts a clip (delay trimmed, exactly `ceil(frames × to / from)` frames);
+  `StreamResampler` converts chunk by chunk for the read-ahead thread (`push`, `finish`, `reset` after a seek).
+  The Sampler converts nothing (its voices interpolate at playback); audio clips are converted to the engine rate off
+  the audio thread.
+- **Peaks (`PeakData`).** Multi-resolution min/max per channel: level 0 has one bucket per 128 source frames, every
+  further level merges 4 buckets, up to one bucket (≈ 4.5 MB for 10 minutes of 48 kHz stereo). `query(channel, start,
+  end, columns)` (or `query_secs`) returns the min/max of `columns` equal slices of a frame range from the coarsest
+  level whose buckets are at most a quarter column wide, so a redraw costs the view's width, not the file's length.
+  `frames_per_bucket` in the answer tells the arrangement when to switch to raw samples. Frames are source frames
+  (`sample_rate()` converts from ticks via seconds). `PeakBuilder` builds from chunks; `PeakData::from_file` streams a
+  decode without holding the file in memory.
+- **File pool (`FilePool`, `PoolFile`).** One entry per file, keyed by `FileId` (canonical path, size, mtime), so
+  symlinks and spellings of a path are one entry and a changed file is a new one. The pool holds entries weakly:
+  the refcount is the `Arc<PoolFile>` the users hold, and an entry and its memory go with the last user. Per entry,
+  computed once however many users ask: the header (`info`), the decoded audio (`decoded`; in memory while somebody
+  holds it), data derived from it (`derived::<T>`, e.g. the Sampler's `Arc<Sample>`, so two Samplers share one buffer),
+  and the peaks. The Sampler's loader and the audio clips use the process-wide `FilePool::global()`.
+- **Peak cache.** `request_peaks(on_done)` queues the entry on the pool's one worker thread and returns at once; the UI
+  polls `peaks_state()` / `peaks_ready()` and passes a repaint request as `on_done`. The worker reads the on-disk cache
+  first (`FilePool::set_cache_dir`, a folder in the user's cache directory, never the repository or the project folder;
+  one `<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
+  streaming pass and writes the cache. Without a cache folder peaks live in memory only.
 
 ---
 

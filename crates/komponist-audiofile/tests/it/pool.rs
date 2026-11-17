@@ -280,3 +280,24 @@ fn streaming_users_open_their_own_decoder_on_the_entry() {
     b.read(&mut buf).unwrap();
     assert_eq!((a.position(), b.position()), (5000, 2));
 }
+
+#[test]
+fn a_panicking_peak_computation_does_not_kill_the_worker() {
+    let dir = Scratch::new("pool-peaks-panic");
+    let pool = FilePool::new();
+    let a = pool.open(&wav(&dir, "a.wav", 5000)).unwrap();
+    let b = pool.open(&wav(&dir, "b.wav", 6000)).unwrap();
+    pool.inject_peak_panic_for_tests();
+    let (tx, rx) = mpsc::channel();
+    let tx2 = tx.clone();
+    a.request_peaks(move || tx.send(()).unwrap());
+    wait(&rx);
+    assert!(matches!(
+        a.peaks_state(),
+        PeakState::Failed(AudioError::Malformed(ref why)) if why.contains("panicked")
+    ));
+    // The same worker still serves the next file.
+    b.request_peaks(move || tx2.send(()).unwrap());
+    wait(&rx);
+    assert!(b.peaks_ready().is_some());
+}

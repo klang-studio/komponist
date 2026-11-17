@@ -25,7 +25,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::UNIX_EPOCH;
@@ -113,6 +113,23 @@ struct PoolInner {
     cache_dir: Mutex<Option<PathBuf>>,
     /// The peak worker's queue, started with the first request.
     worker: Mutex<Option<Sender<Job>>>,
+    /// Test hook: the next peak computation panics.
+    panic_next: AtomicBool,
+}
+
+/// Starts the peak worker: one thread, ends when the pool and all entries are gone and the queue
+/// is empty.
+fn spawn_worker() -> Sender<Job> {
+    let (tx, rx) = mpsc::channel::<Job>();
+    std::thread::Builder::new()
+        .name("komponist-peaks".into())
+        .spawn(move || {
+            while let Ok(job) = rx.recv() {
+                job.file.compute_peaks();
+            }
+        })
+        .expect("the peak worker starts");
+    tx
 }
 
 /// The pool. Cheap to clone (a handle); the process-wide one is [`FilePool::global`].
@@ -141,6 +158,7 @@ impl FilePool {
                 entries: Mutex::new(HashMap::new()),
                 cache_dir: Mutex::new(None),
                 worker: Mutex::new(None),
+                panic_next: AtomicBool::new(false),
             }),
         }
     }
@@ -155,6 +173,13 @@ impl FilePool {
     /// choice, normally a folder in the user's cache directory; the pool creates it on the first write.
     pub fn set_cache_dir(&self, dir: Option<PathBuf>) {
         *lock(&self.inner.cache_dir) = dir;
+    }
+
+    /// Makes the next peak computation panic, to test that the worker survives one. Not for use
+    /// outside tests.
+    #[doc(hidden)]
+    pub fn inject_peak_panic_for_tests(&self) {
+        self.inner.panic_next.store(true, Ordering::SeqCst);
     }
 
     /// The peak cache folder, if one is set.
@@ -316,23 +341,25 @@ impl PoolFile {
             }
         }
         let mut worker = lock(&self.pool.worker);
-        let tx = worker.get_or_insert_with(|| {
-            let (tx, rx) = mpsc::channel::<Job>();
-            std::thread::Builder::new()
-                .name("komponist-peaks".into())
-                .spawn(move || {
-                    // Ends when the pool and all entries are gone and the queue is empty.
-                    while let Ok(job) = rx.recv() {
-                        job.file.compute_peaks();
-                    }
-                })
-                .expect("the peak worker starts");
-            tx
-        });
-        let _ = tx.send(Job {
+        let mut job = Job {
             file: Arc::clone(self),
-        });
-        PeakState::Pending
+        };
+        // A worker that died (its receiver is gone) is replaced once; if the new one is gone
+        // too, the request fails instead of staying pending forever.
+        for _ in 0..2 {
+            let tx = worker.get_or_insert_with(spawn_worker);
+            match tx.send(job) {
+                Ok(()) => return PeakState::Pending,
+                Err(mpsc::SendError(back)) => {
+                    job = back;
+                    *worker = None;
+                }
+            }
+        }
+        drop(worker);
+        let err = AudioError::Malformed("peak worker unavailable".into());
+        self.finish_peaks(Err(err.clone()));
+        PeakState::Failed(err)
     }
 
     /// The peaks, waiting for them (computes them on the calling thread if nobody did). For
@@ -348,8 +375,15 @@ impl PoolFile {
         result
     }
 
+    /// Runs on the worker: a panic in a decoder fails this file's peaks, not the worker.
     fn compute_peaks(&self) {
-        let result = self.build_peaks();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if self.pool.panic_next.swap(false, Ordering::SeqCst) {
+                panic!("injected peak panic");
+            }
+            self.build_peaks()
+        }))
+        .unwrap_or_else(|_| Err(AudioError::Malformed("decoder panicked".into())));
         self.finish_peaks(result);
     }
 

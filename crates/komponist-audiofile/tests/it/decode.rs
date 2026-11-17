@@ -243,3 +243,73 @@ fn errors_name_what_is_wrong() {
     std::fs::write(&text, b"RIFF....WAVEjunk").unwrap();
     assert!(AudioFile::open(&text).is_err());
 }
+
+#[test]
+fn a_header_that_promises_too_much_fails_or_clamps_cleanly() {
+    let dir = Scratch::new("hostile-header");
+    // A WAV with 4 frames whose RIFF and data chunk sizes claim almost 4 GiB.
+    let path = dir.path("huge.wav");
+    write_wav_i16(&path, 44100, 1, &[1, 2, 3, 4]);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[4..8].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+    let data = bytes.windows(4).position(|w| w == b"data").unwrap();
+    bytes[data + 4..data + 8].copy_from_slice(&0xFFFF_FFC0u32.to_le_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    // Refused or clamped to what the file holds; never a huge allocation.
+    if let Ok(file) = AudioFile::open(&path) {
+        assert!(file.info().frames <= 4, "{}", file.info().frames);
+        assert!(decode_all(&path, None).is_ok_and(|d| d.frames() <= 4));
+    }
+}
+
+#[test]
+fn absurd_sample_rates_are_refused() {
+    let dir = Scratch::new("hostile-rate");
+    let path = dir.path("fast.wav");
+    write_wav_i16(&path, 50_000_000, 1, &[1, 2, 3]);
+    assert!(matches!(
+        AudioFile::open(&path),
+        Err(AudioError::Unsupported(_))
+    ));
+    let ok = dir.path("ok.wav");
+    write_wav_i16(&ok, 768_000, 1, &[1, 2, 3]);
+    assert!(AudioFile::open(&ok).is_ok());
+}
+
+#[test]
+fn damaged_files_fail_cleanly_and_never_panic() {
+    // Deterministic byte flips and truncations of every fixture: any outcome but a panic is fine.
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let dir = Scratch::new("fuzz");
+    for name in FIXTURES {
+        let original = std::fs::read(fixture(name)).unwrap();
+        let ext = name.rsplit('.').next().unwrap();
+        for round in 0..60 {
+            let mut bytes = original.clone();
+            for _ in 0..1 + round % 8 {
+                // Half of the flips hit the header area, where the lengths and rates are.
+                let limit = if next() % 2 == 0 { 400 } else { bytes.len() };
+                let at = (next() as usize) % limit.min(bytes.len());
+                bytes[at] = next() as u8;
+            }
+            if round % 5 == 0 {
+                let keep = (next() as usize) % bytes.len();
+                bytes.truncate(keep);
+            }
+            let path = dir.path(&format!("f{round}.{ext}"));
+            std::fs::write(&path, &bytes).unwrap();
+            let _ = decode_all(&path, Some(60.0));
+            if let Ok(mut file) = AudioFile::open(&path) {
+                let _ = file.seek(next() % 40_000);
+                let mut buf = [0.0f32; 512];
+                let _ = file.read_full(&mut buf);
+            }
+        }
+    }
+}
