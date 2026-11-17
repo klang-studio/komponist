@@ -38,8 +38,18 @@ pub struct AudioRecording {
 impl AudioRecording {
     /// Deterministic view-only fixture; it cannot start capture or own recording files.
     #[cfg(test)]
-    pub(crate) fn preview(start: Tick, head: Tick, progress: Vec<RecordingProgress>, clips: Vec<(TrackId, Arc<Clip>)>) -> Self {
-        Self { start, head, progress, clips }
+    pub(crate) fn preview(
+        start: Tick,
+        head: Tick,
+        progress: Vec<RecordingProgress>,
+        clips: Vec<(TrackId, Arc<Clip>)>,
+    ) -> Self {
+        Self {
+            start,
+            head,
+            progress,
+            clips,
+        }
     }
 
     /// Current drawn clip on one track (not yet in the document).
@@ -175,10 +185,7 @@ impl App {
         if armed.is_empty() {
             return true;
         }
-        if armed
-            .iter()
-            .any(|id| !self.audio_arm_allowed(*id))
-        {
+        if armed.iter().any(|id| !self.audio_arm_allowed(*id)) {
             return false;
         }
         let provisional = self.project_path.is_none();
@@ -811,7 +818,10 @@ mod tests {
         app.open_export_dialog();
         assert!(!app.audio_recording.is_active());
         assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
-        assert!(matches!(app.ui.dialog, Some(crate::ui_state::Dialog::Export(_))));
+        assert!(matches!(
+            app.ui.dialog,
+            Some(crate::ui_state::Dialog::Export(_))
+        ));
         drop(app);
         std::fs::remove_dir_all(root).unwrap();
     }
