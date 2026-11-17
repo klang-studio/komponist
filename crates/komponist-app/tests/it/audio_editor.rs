@@ -393,13 +393,25 @@ fn audio_editor_snapshots() {
                 h.mask(cpu.expand(2.0));
                 let resolved = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
                 let path_label = resolved.display().to_string();
+                let waveform_name = lang.audio_waveform_title("Verse");
+                let waveform = h.get_by_role_and_label(Role::Group, &waveform_name).rect();
+                let stable_path_mask = |rect: egui::Rect| {
+                    if waveform.contains(rect.center()) {
+                        // The centered missing-file banner label grows with the scratch PID.
+                        // Keep its mask tied to the editor, not the path's glyph width.
+                        egui::Rect::from_x_y_ranges(waveform.x_range(), rect.y_range())
+                    } else {
+                        // Inspector path rows already have fixed field bounds.
+                        rect
+                    }
+                };
                 let mut masks: Vec<_> = h
                     .query_all_by_role_and_label(Role::Label, &path_label)
-                    .map(|n| n.rect())
+                    .map(|n| stable_path_mask(n.rect()))
                     .collect();
                 masks.extend(
                     h.query_all_by_role_and_label(Role::Label, lang.audio_file_path())
-                        .map(|n| n.rect()),
+                        .map(|n| stable_path_mask(n.rect())),
                 );
                 for rect in masks {
                     h.mask(rect);
