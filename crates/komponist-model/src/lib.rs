@@ -5,6 +5,8 @@
 //! the UI shows. Depends on no other studio crate.
 //!
 //! Module map (ARCHITECTURE §5):
+//! - [`audio`]: audio files, audio clips, audio track input and monitoring (epic #8).
+//! - [`paths`]: lexical path helpers for file links.
 //! - [`ids`]: stable ids from one per-project counter.
 //! - [`time`]: [`Tick`], [`Tempo`], [`Meter`], [`TickRange`], [`TempoMap`], grids.
 //! - [`project`]: the document tree ([`Project`], [`Track`], [`Clip`], [`Device`], …).
@@ -20,12 +22,14 @@
 //! Threads: everything here is plain data and pure functions, used on the UI thread and on workers.
 //! Nothing in this crate runs on the audio thread.
 
+pub mod audio;
 pub mod document;
 pub mod edits;
 pub mod fixtures;
 pub mod format;
 pub mod ids;
 pub mod params;
+pub mod paths;
 pub mod persist;
 pub mod project;
 pub mod routing;
@@ -34,6 +38,10 @@ pub mod time;
 #[cfg(test)]
 mod proptests;
 
+pub use audio::{
+    AudioClip, AudioFile, AudioInput, AudioIo, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN, ClipTimeMode,
+    EDGE_FADE_MS, HardwareInput, MonitorMode,
+};
 pub use document::{Document, Gesture, UNDO_LIMIT, UndoStep};
 pub use edits::EditError;
 pub use ids::{ClipId, DeviceId, NoteId, SendId, TrackId};

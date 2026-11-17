@@ -41,7 +41,7 @@ fn notes_of(project: &Project, track: usize) -> Vec<Vec<(i64, i64, u8, u8)>> {
                 .iter()
                 .map(|n| (n.start.0, n.length.0, n.pitch, n.velocity))
                 .collect(),
-            ClipContent::Step(_) => Vec::new(),
+            ClipContent::Step(_) | ClipContent::Audio(_) => Vec::new(),
         })
         .collect()
 }

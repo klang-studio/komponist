@@ -238,7 +238,7 @@ fn piano_roll_keys_edit_the_selected_notes() {
     a.dispatch(ui(UiAction::SelectAll));
     let notes = |a: &App| match &a.project().find_clip(clip).unwrap().1.content {
         ClipContent::Midi(m) => m.active().notes.clone(),
-        ClipContent::Step(_) => unreachable!(),
+        ClipContent::Step(_) | ClipContent::Audio(_) => unreachable!(),
     };
     let before = notes(&a);
     assert_eq!(a.ui().selection.notes.len(), before.len());

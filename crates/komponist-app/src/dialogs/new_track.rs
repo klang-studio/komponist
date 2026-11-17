@@ -155,6 +155,7 @@ pub fn default_names(t: Lang) -> DefaultNames {
         drums: t.default_name_drums(),
         bus: t.default_name_bus(),
         group: t.default_name_group(),
+        audio: t.default_name_audio(),
     }
 }
 

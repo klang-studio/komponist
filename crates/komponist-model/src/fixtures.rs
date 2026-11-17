@@ -298,6 +298,7 @@ fn demo_track(
         monitor: false,
         input: MidiInputSel::All,
         midi_channel: MidiChannelSel::Omni,
+        audio: crate::AudioIo::default(),
         height: TRACK_HEIGHT_DEFAULT,
         clips: clips(ids).into_iter().map(Arc::new).collect(),
         output: TrackOutput::Master,
@@ -494,7 +495,7 @@ mod tests {
     fn notes(clip: &Clip) -> &[Note] {
         match &clip.content {
             ClipContent::Midi(m) => &m.active().notes,
-            ClipContent::Step(_) => panic!("step clip"),
+            ClipContent::Step(_) | ClipContent::Audio(_) => panic!("not a MIDI clip"),
         }
     }
 
@@ -610,6 +611,7 @@ mod tests {
                         let count = match &c.content {
                             ClipContent::Midi(m) => m.active().notes.len(),
                             ClipContent::Step(s) => s.rows.len(),
+                            ClipContent::Audio(_) => 0,
                         };
                         (c.name.as_str(), c.start.0 / 3840, c.length.0 / 3840, count)
                     })

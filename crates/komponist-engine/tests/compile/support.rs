@@ -39,6 +39,7 @@ pub fn track(id: u64, name: &str, clips: Vec<Clip>) -> Track {
         monitor: false,
         input: MidiInputSel::All,
         midi_channel: MidiChannelSel::Omni,
+        audio: komponist_model::AudioIo::default(),
         height: TRACK_HEIGHT_DEFAULT,
         clips: clips.into_iter().map(Arc::new).collect(),
         output: komponist_model::TrackOutput::Master,

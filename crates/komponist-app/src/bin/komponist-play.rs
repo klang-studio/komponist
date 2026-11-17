@@ -375,6 +375,7 @@ fn drum_pads(track: &Track) -> Vec<PadPlan> {
                     }
                 }
             }
+            ClipContent::Audio(_) => {} // no drum notes
         }
     }
     names.sort_by_key(|(note, _)| *note);

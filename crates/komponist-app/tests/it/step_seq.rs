@@ -83,7 +83,7 @@ fn pattern(app: &App, clip: ClipId) -> StepClip {
     let (_, c) = app.project().find_clip(clip).expect("clip");
     match &c.content {
         ClipContent::Step(s) => s.clone(),
-        ClipContent::Midi(_) => panic!("not a step clip"),
+        ClipContent::Midi(_) | ClipContent::Audio(_) => panic!("not a step clip"),
     }
 }
 

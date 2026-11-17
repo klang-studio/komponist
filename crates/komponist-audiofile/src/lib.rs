@@ -5,7 +5,7 @@
 //! uses it today, the engine's disk streaming (#11) and the arrangement's waveforms (#12) build
 //! on it. Nothing here runs inside the audio thread: decoding, resampling and peak computation
 //! allocate and do file IO, so they run on loader or UI-adjacent worker threads and hand finished
-//! `Arc`s over. See `docs/ARCHITECTURE.md` §6.9.
+//! `Arc`s over. See `docs/ARCHITECTURE.md` §6.10.
 //!
 //! - [`AudioFile`]: a seekable, chunked decoder (WAV through `hound`; FLAC, OGG Vorbis and MP3
 //!   through `symphonia`) delivering interleaved `f32` frames from any frame offset.

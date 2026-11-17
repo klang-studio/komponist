@@ -47,6 +47,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         monitor: false,
         input: MidiInputSel::All,
         midi_channel: MidiChannelSel::Omni,
+        audio: komponist_model::AudioIo::default(),
         height: 56,
         clips: Vec::new(),
         output: komponist_model::TrackOutput::Master,
