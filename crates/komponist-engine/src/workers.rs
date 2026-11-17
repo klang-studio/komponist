@@ -860,27 +860,31 @@ mod tests {
         let (pool, _) = Pool::start(1, None, Arc::clone(&stats));
         let mut pool = pool.unwrap();
         let done = AtomicUsize::new(0);
+        let worker_started = AtomicBool::new(false);
+        let worker_saw_lateness = AtomicBool::new(false);
         let job = |_: usize, lane: usize| {
+            let timeout = Instant::now() + Duration::from_secs(5);
             if lane != 0 {
-                std::thread::sleep(Duration::from_millis(30));
+                worker_started.store(true, Ordering::Release);
+                // Stay unfinished until the dispatcher has actually exhausted a wait period.
+                // Fixed sleeps can both end before the dispatcher resumes on a loaded runner.
+                while stats.late() == 0 && Instant::now() < timeout {
+                    std::thread::yield_now();
+                }
+                worker_saw_lateness.store(stats.late() > 0, Ordering::Release);
             } else {
-                // Keep the caller busy so the worker can claim the other job even when the
-                // machine is loaded (the caller took both jobs under parallel builds).
-                std::thread::sleep(Duration::from_millis(5));
+                // Leave the second job for the worker before entering the deadline wait.
+                while !worker_started.load(Ordering::Acquire) && Instant::now() < timeout {
+                    std::thread::yield_now();
+                }
             }
             done.fetch_add(1, Ordering::Relaxed);
         };
-        // Retry until the worker took one of the two jobs (it may wake after the caller took
-        // both).
-        for _ in 0..100 {
-            pool.run(2, &job, Duration::from_millis(5));
-            if stats.worker_jobs() > 0 {
-                break;
-            }
-        }
-        assert!(stats.worker_jobs() > 0);
+        pool.run(2, &job, Duration::from_millis(5));
+        assert_eq!(stats.worker_jobs(), 1, "the worker must claim one job");
+        assert!(worker_saw_lateness.load(Ordering::Acquire));
         assert!(stats.late() > 0);
-        assert_eq!(done.load(Ordering::Relaxed) % 2, 0);
+        assert_eq!(done.load(Ordering::Relaxed), 2);
     }
 
     /// Release builds only: in debug builds the panic's allocation inside `assert_no_alloc`
