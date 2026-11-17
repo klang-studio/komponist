@@ -975,8 +975,9 @@ pub struct AudioClip {
     pub active_take: usize,         // index into takes
     pub gain_db: f32,               // -70 (silence) ..= +24
     pub fade_in: Tick, pub fade_out: Tick,   // timeline ticks, fade_in + fade_out <= Clip::length
-    pub time_mode: ClipTimeMode,    // Fixed (default) | RePitch; an enum so warp (#14) is a new variant
-    pub original_tempo: Tempo,      // project tempo at creation, set by hand; used by RePitch
+    pub time_mode: ClipTimeMode,    // Fixed (default) | RePitch, retained as the legacy fallback
+    pub original_tempo: Tempo,      // shared source tempo, used by RePitch and Warp
+    pub warp: Option<AudioWarp>,    // optional versioned tempo-follow data (#14 WP-C)
 }
 pub struct AudioTake { pub name: String, pub file: AudioFile, pub offset: u64 /* source frames */ }
 pub struct AudioFile { pub abs: PathBuf, pub rel: PathBuf /* empty before the project has a file */,
@@ -1009,6 +1010,24 @@ Version 3 loads legacy `file`/`offset` as one unnamed take. Saving keeps the act
 multiple takes, additionally writes `takes`/`active_take`; invalid lists, indices and conflicting active pairs are
 errors before any active-source access. This needs no project version bump and older readers play the active pair.
 
+**Warp model (#14 WP-C).** Optional `warp: { "version": 1, "enabled": true, "phase": 0 }` enables
+an affine source/tick map from the shared `original_tempo`. `WarpMap` converts each take at its
+own native sample rate using exact rational arithmetic for the stored f64 BPM. The tick phase
+advances on split/left trim/overlap cuts, so repeated cuts telescope without rounding drift;
+clip moves/copies keep the same source mapping. Right trim keeps the map, tempo changes keep
+Warp ticks/fades, and an original-tempo edit reanchors at the current native source starts.
+`set_audio_clip_warp` is a pure undoable edit; selecting Fixed/RePitch disables Warp. The map
+reports duration ratio `original / project`, including model-valid ratios beyond the first
+worker wrapper's tested range; playback integration must handle backend capabilities.
+
+Enabled Warp writes legacy `time_mode: "fixed"`, never an unknown enum variant, and retains
+active `file`/`offset` plus optional takes. There is no project version bump: older v3 builds open
+and play the selected source unwarped. They may shorten a stretched timeline span to the fixed
+source length, compressed clips play only their fixed-duration source portion, and old resaves
+discard Warp data. Non-Warp files retain their existing serialization. Warp metadata/version,
+tempo, tick phase/span and native frame bounds are validated on load; no marker editing exists.
+The current engine does not consume the Warp map or perform pitch-preserving playback yet.
+
 **Files.** `AudioFile` is the Sampler's link (§8.5, `sampler::links`): the file is found through `rel` against the
 folder of the project file first, then through `abs` (`AudioFile::resolve`). Saving rebases resolving links to the new
 file (`AudioFile::rebased`); a link that does not resolve stays. „Sammeln und speichern“ copies the files of audio clips
@@ -1029,7 +1048,8 @@ tracks only; MIDI props (`Input`, `MidiChannel`, `Monitor`) are ignored on them,
 All edits are pure functions as in §5.3, one undo step each. Added: `add_audio_track(_in)` (`NewAudioTrack`, default
 name „Audio“, `DefaultNames::audio`), `NewClipContent::Audio { file, offset }` for `add_clip`, `set_audio_clip_prop`
 (`AudioClipProp::{GainDb, FadeIn, FadeOut, TimeMode, OriginalTempo, SourceOffset}`), `set_audio_clip_file` (relink),
-`trim_audio_clip_start` (left edge: the window follows the edge), `TrackProp::{AudioInput, MonitorMode}`.
+`trim_audio_clip_start` (left edge: the window follows the edge), `set_audio_clip_warp` (model-only mode),
+`TrackProp::{AudioInput, MonitorMode}`.
 `split_clips` advances the right part's offset; `set_clip_length` clamps to the file.
 
 **Audio clips on one track never overlap.** Whatever puts a clip on a track (add, move, Alt-drag copy, Ctrl D, stretch,
@@ -2027,6 +2047,16 @@ An FTZ/DAZ guard stays in `komponist-audio`.
 ---
 
 ## 11. Testing strategy
+
+`scripts/check-warp-compat.sh` builds the unmodified pre-Warp model/token sources and assets from
+pinned Git revision `f704f69e83b9ec278fdf7319b6a7d0351d4ffb82` in a separate target directory.
+Only helper package manifests and an exchange executable are added; historical reader code and
+dependency locks are retained. The check exchanges generated Warp/split/take files and ordinary
+Fixed/RePitch files between both real readers, proving unwarped fallback, old length repair,
+optional-data loss and unchanged non-Warp serialization. Linux CI checks out full Git history and
+runs this alongside the ordinary gate. It opens no audio files/hardware; generated JSON and old
+source remain in the worktree target for inspection.
+
 
 | Level | What | Tool |
 |---|---|---|
