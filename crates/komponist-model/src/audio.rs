@@ -8,9 +8,9 @@
 //! - Separate track kinds: [`crate::TrackKind::Audio`] holds audio clips only, MIDI and bus
 //!   tracks refuse them, there are no hybrid tracks.
 //! - Clip **positions** follow the bar grid ([`crate::Clip::start`] in ticks); the **content** stays
-//!   fixed. Without Re-Pitch a clip keeps its duration in seconds when the tempo changes, with
-//!   Re-Pitch ([`ClipTimeMode::RePitch`]) the content is resampled with the tempo and the clip keeps
-//!   its length in ticks.
+//!   fixed in Fixed mode. Fixed clips keep seconds across tempo changes; Re-Pitch and enabled
+//!   Warp keep ticks. Warp describes pitch-preserving tempo-follow mapping for a future worker;
+//!   the legacy resampling speed does not implement it.
 //! - Files are **linked** like the Sampler's samples ([`AudioFile`]: absolute path and path relative
 //!   to the project file); „Sammeln und speichern“ copies them next to the project.
 //! - No Reverse in v1.
@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::TrackId;
 use crate::project::VOLUME_DB_MIN;
 use crate::time::{PPQ, Tempo, Tick};
+use crate::warp::{AudioWarp, WarpError, WarpMap};
 
 /// Lowest clip gain in dB; the value means silence (like [`VOLUME_DB_MIN`] on a fader).
 pub const CLIP_GAIN_DB_MIN: f32 = VOLUME_DB_MIN;
@@ -168,8 +169,8 @@ mod path_text {
     }
 }
 
-/// How an audio clip's content follows the project tempo. An enum, so one mode is active at a time
-/// and later modes (warp, #14) are a new variant, not a new flag.
+/// Legacy playback mode understood by pre-Warp readers. Enabled [`AudioClip::warp`] requires
+/// Fixed here; [`AudioClip::warp_enabled`] selects the separate pitch-preserving mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClipTimeMode {
@@ -219,10 +220,12 @@ pub struct AudioClip {
     pub fade_in: Tick,
     /// Fade-out length in timeline ticks, shared by every take.
     pub fade_out: Tick,
-    /// How the clip follows project tempo.
+    /// Legacy Fixed/RePitch fallback; enabled Warp is selected by the separate optional data.
     pub time_mode: ClipTimeMode,
-    /// Original tempo, retained while Re-Pitch is off.
+    /// Shared source tempo for Re-Pitch/Warp, retained in Fixed mode too.
     pub original_tempo: Tempo,
+    /// Optional tempo-follow warp state; enabled Warp requires `time_mode == Fixed` for old readers.
+    pub warp: Option<AudioWarp>,
 }
 
 // Keep `audio.file` and `audio.offset` source-compatible without a second, potentially stale
@@ -249,7 +252,12 @@ impl Serialize for AudioClip {
             .get(self.active_take)
             .ok_or_else(|| <S::Error as serde::ser::Error>::custom("invalid audio take index"))?;
         let extended = self.takes.len() > 1 || !active.name.is_empty();
-        let mut s = serializer.serialize_struct("AudioClip", if extended { 9 } else { 7 })?;
+        self.validate_warp(Tick::ZERO)
+            .map_err(<S::Error as serde::ser::Error>::custom)?;
+        let mut s = serializer.serialize_struct(
+            "AudioClip",
+            (if extended { 9 } else { 7 }) + usize::from(self.warp.is_some()),
+        )?;
         s.serialize_field("file", &active.file)?;
         s.serialize_field("offset", &active.offset)?;
         s.serialize_field("gain_db", &self.gain_db)?;
@@ -260,6 +268,9 @@ impl Serialize for AudioClip {
         if extended {
             s.serialize_field("takes", &self.takes)?;
             s.serialize_field("active_take", &self.active_take)?;
+        }
+        if let Some(warp) = self.warp {
+            s.serialize_field("warp", &warp)?;
         }
         s.end()
     }
@@ -284,6 +295,8 @@ impl<'de> Deserialize<'de> for AudioClip {
             #[serde(default)]
             time_mode: ClipTimeMode,
             original_tempo: Tempo,
+            #[serde(default)]
+            warp: Option<AudioWarp>,
         }
         let s = Stored::deserialize(deserializer)?;
         let takes = s.takes.unwrap_or_else(|| {
@@ -301,7 +314,7 @@ impl<'de> Deserialize<'de> for AudioClip {
                 "audio take disagrees with legacy source",
             ));
         }
-        Ok(Self {
+        let clip = Self {
             takes,
             active_take: s.active_take,
             gain_db: s.gain_db,
@@ -309,7 +322,11 @@ impl<'de> Deserialize<'de> for AudioClip {
             fade_out: s.fade_out,
             time_mode: s.time_mode,
             original_tempo: s.original_tempo,
-        })
+            warp: s.warp,
+        };
+        clip.validate_warp(Tick::ZERO)
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+        Ok(clip)
     }
 }
 
@@ -329,6 +346,7 @@ impl AudioClip {
             fade_out: Tick::ZERO,
             time_mode: ClipTimeMode::Fixed,
             original_tempo,
+            warp: None,
         }
     }
 
@@ -337,41 +355,103 @@ impl AudioClip {
         &self.takes[self.active_take]
     }
 
+    /// Whether the optional Warp mode is enabled. `speed` deliberately remains legacy playback
+    /// until the worker integration; use `warp_map` for pitch-preserving source/tick mapping.
+    pub fn warp_enabled(&self) -> bool {
+        self.warp.is_some_and(AudioWarp::enabled)
+    }
+
+    /// Checked source/tick mapping for one take, using its own native rate and offset.
+    pub fn warp_map(&self, take: usize) -> Result<WarpMap, WarpError> {
+        let take = self.takes.get(take).ok_or(WarpError::Take)?;
+        self.warp_map_for_take(take)
+    }
+    fn warp_map_for_take(&self, take: &AudioTake) -> Result<WarpMap, WarpError> {
+        let warp = self
+            .warp
+            .filter(|w| w.enabled())
+            .ok_or(WarpError::Inactive)?;
+        if self.time_mode != ClipTimeMode::Fixed {
+            return Err(WarpError::Mode);
+        }
+        WarpMap::new(take, warp, self.original_tempo)
+    }
+    /// Checks the complete enabled mapping span, including inactive beyond-EOF take windows.
+    pub fn validate_warp(&self, length: Tick) -> Result<(), WarpError> {
+        if self.warp_enabled() {
+            if length < Tick::ZERO {
+                return Err(WarpError::Phase);
+            }
+            if self.takes.is_empty() || self.active_take >= self.takes.len() {
+                return Err(WarpError::Take);
+            }
+            for take in &self.takes {
+                self.warp_map_for_take(take)?.source_frame(length)?;
+            }
+        }
+        Ok(())
+    }
     /// Source frames in `take` for a timeline duration, using that take's own sample rate.
     pub fn take_source_frames(&self, take: &AudioTake, ticks: Tick, project: Tempo) -> u64 {
+        if self.warp_enabled() {
+            return self
+                .warp_map_for_take(take)
+                .and_then(|m| m.source_frames(ticks.max(Tick::ZERO)))
+                .unwrap_or(0);
+        }
         (ticks.0.max(0) as f64
             * self.source_secs_per_tick(project)
             * f64::from(take.file.sample_rate))
         .round() as u64
     }
-
-    /// Advances every take's source window by a signed timeline duration. Inactive windows
-    /// retain beyond-EOF offsets, so split/trim never discard their alignment or source link.
-    pub(crate) fn shift_sources(&mut self, delta: Tick, project: Tempo) {
-        let seconds = delta.0.unsigned_abs() as f64 * self.source_secs_per_tick(project);
-        for take in &mut self.takes {
-            let frames = (seconds * f64::from(take.file.sample_rate)).round() as u64;
-            take.offset = if delta.0 >= 0 {
-                take.offset.saturating_add(frames)
-            } else {
-                take.offset.saturating_sub(frames)
-            };
+    /// Shift all native windows atomically. Enabled Warp uses shared phase boundaries rather
+    /// than accumulating independently rounded deltas, preserving exact split/trim continuity.
+    pub(crate) fn shift_sources(&mut self, delta: Tick, project: Tempo) -> Result<(), WarpError> {
+        if self.warp_enabled() {
+            let next = self.warp.expect("enabled").shifted(delta)?;
+            let offsets: Vec<u64> = self
+                .takes
+                .iter()
+                .map(|take| self.warp_map_for_take(take)?.source_frame(delta))
+                .collect::<Result<_, _>>()?;
+            for (take, offset) in self.takes.iter_mut().zip(offsets) {
+                take.offset = offset;
+            }
+            self.warp = Some(next);
+        } else {
+            let seconds = delta.0.unsigned_abs() as f64 * self.source_secs_per_tick(project);
+            for take in &mut self.takes {
+                let frames = (seconds * f64::from(take.file.sample_rate)).round() as u64;
+                take.offset = if delta.0 >= 0 {
+                    take.offset.saturating_add(frames)
+                } else {
+                    take.offset.saturating_sub(frames)
+                };
+            }
+            if self.warp.is_some() {
+                self.warp = Some(AudioWarp::new(false));
+            }
         }
+        Ok(())
     }
 
     /// Seconds of the file one timeline tick plays at the project tempo `project`: without Re-Pitch
     /// the content runs in real time (a tick lasts what the project tempo says); with it a tick
     /// plays what a tick lasts at the original tempo.
     pub fn source_secs_per_tick(&self, project: Tempo) -> f64 {
-        let bpm = match self.time_mode {
-            ClipTimeMode::RePitch => self.original_tempo.bpm,
-            ClipTimeMode::Fixed => project.bpm,
+        let bpm = if self.warp_enabled() {
+            self.original_tempo.bpm
+        } else {
+            match self.time_mode {
+                ClipTimeMode::RePitch => self.original_tempo.bpm,
+                ClipTimeMode::Fixed => project.bpm,
+            }
         };
         60.0 / (bpm * PPQ as f64)
     }
 
-    /// Playback speed relative to the file: `project / original` with Re-Pitch, else 1. The
-    /// engine resamples by this on top of the rate conversion of the file (#11).
+    /// Legacy playback speed: `project / original` with Re-Pitch, else 1. Warp is not implemented
+    /// by this resampling factor; a pitch-preserving worker must use [`AudioClip::warp_map`].
     pub fn speed(&self, project: Tempo) -> f64 {
         match self.time_mode {
             ClipTimeMode::RePitch => project.bpm / self.original_tempo.bpm,
@@ -381,12 +461,18 @@ impl AudioClip {
 
     /// How many frames of the file (at the file's rate) `ticks` timeline ticks play, rounded.
     pub fn source_frames(&self, ticks: Tick, project: Tempo) -> u64 {
-        let secs = ticks.0.max(0) as f64 * self.source_secs_per_tick(project);
-        (secs * f64::from(self.file.sample_rate)).round() as u64
+        self.take_source_frames(self.active(), ticks, project)
     }
 
-    /// How many whole timeline ticks `frames` frames of the file last, floored.
+    /// Whole timeline ticks for this source-frame budget: legacy durations are floored;
+    /// Warp uses the longest duration whose rounded native mapping fits the budget.
     pub fn frames_to_ticks(&self, frames: u64, project: Tempo) -> Tick {
+        if self.warp_enabled() {
+            return self
+                .warp_map(self.active_take)
+                .map(|m| m.ticks_for_frames(frames))
+                .unwrap_or(Tick::ZERO);
+        }
         let secs = frames as f64 / f64::from(self.file.sample_rate.max(1));
         Tick((secs / self.source_secs_per_tick(project) + 1e-6).floor() as i64)
     }
@@ -394,6 +480,9 @@ impl AudioClip {
     /// The longest clip length in ticks that stays inside the file: what is left behind
     /// [`AudioTake::offset`], floored. 0 when the window is empty.
     pub fn max_length(&self, project: Tempo) -> Tick {
+        if self.offset >= self.file.frames {
+            return Tick::ZERO;
+        }
         self.frames_to_ticks(self.file.frames.saturating_sub(self.offset), project)
     }
 

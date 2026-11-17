@@ -136,12 +136,20 @@ pub fn set_audio_clip_prop(project: &Project, clip: ClipId, prop: AudioClipProp)
             }
             AudioClipProp::FadeIn(t) => a.fade_in = t.max(Tick::ZERO).min(length - a.fade_out),
             AudioClipProp::FadeOut(t) => a.fade_out = t.max(Tick::ZERO).min(length - a.fade_in),
-            AudioClipProp::TimeMode(mode) => a.time_mode = mode,
+            AudioClipProp::TimeMode(mode) => {
+                a.time_mode = mode;
+                if a.warp.is_some() {
+                    a.warp = Some(crate::AudioWarp::new(false));
+                }
+            }
             AudioClipProp::OriginalTempo(t) => {
                 if !(Tempo::MIN_BPM..=Tempo::MAX_BPM).contains(&t.bpm) {
                     return Err(EditError::Invalid("tempo out of range"));
                 }
                 a.original_tempo = t;
+                if a.warp_enabled() {
+                    a.warp = Some(crate::AudioWarp::new(true));
+                }
             }
         }
         if matches!(
@@ -153,8 +161,34 @@ pub fn set_audio_clip_prop(project: &Project, clip: ClipId, prop: AudioClipProp)
             let max = a.max_length(tempo).max(MIN_LENGTH);
             let new_length = length.min(max);
             a.clamp(new_length);
+            a.validate_warp(new_length)?;
             c.length = new_length;
         }
+        Ok(())
+    })
+}
+
+/// Enables/disables pitch-preserving tempo-follow data without extending the legacy time-mode
+/// enum. The current window/start stays; source-limited length/fades are clamped as for mode
+/// changes. Existing Warp keeps its split/trim phase; a newly enabled mapping starts locally.
+/// This edit is model-only: worker playback and UI activation are later work packages.
+pub fn set_audio_clip_warp(project: &Project, clip: ClipId, enabled: bool) -> EditResult {
+    let tempo = project.tempo;
+    edit_clip(project, clip, |c| {
+        let length = c.length;
+        let a = audio_mut(c)?;
+        if enabled {
+            if !a.warp_enabled() {
+                a.warp = Some(crate::AudioWarp::new(true));
+            }
+            a.time_mode = ClipTimeMode::Fixed;
+        } else if a.warp.is_some() {
+            a.warp = Some(crate::AudioWarp::new(false));
+        }
+        let length = length.min(a.max_length(tempo).max(MIN_LENGTH));
+        a.validate_warp(length)?;
+        a.clamp(length);
+        c.length = length;
         Ok(())
     })
 }
@@ -175,6 +209,7 @@ pub fn set_audio_clip_file(project: &Project, clip: ClipId, file: AudioFile) -> 
         }
         a.file = file;
         let new_length = length.min(a.max_length(tempo).max(MIN_LENGTH));
+        a.validate_warp(new_length)?;
         a.clamp(new_length);
         c.length = new_length;
         Ok(())
@@ -191,21 +226,29 @@ pub fn trim_audio_clip_start(project: &Project, clip: ClipId, start: Tick) -> Ed
         let end = c.end();
         let (old_start, old_length) = (c.start, c.length);
         let a = audio_mut(c)?;
-        let back = a
-            .takes
-            .iter()
-            .map(|take| {
-                let secs = take.offset as f64 / f64::from(take.file.sample_rate.max(1));
-                Tick((secs / a.source_secs_per_tick(tempo) + 1e-6).floor() as i64)
-            })
-            .min()
-            .unwrap_or(Tick::ZERO);
+        let back = if a.warp_enabled() {
+            (0..a.takes.len())
+                .map(|i| a.warp_map(i).map(crate::WarpMap::available_before))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .min()
+                .unwrap_or(Tick::ZERO)
+        } else {
+            a.takes
+                .iter()
+                .map(|take| {
+                    let secs = take.offset as f64 / f64::from(take.file.sample_rate.max(1));
+                    Tick((secs / a.source_secs_per_tick(tempo) + 1e-6).floor() as i64)
+                })
+                .min()
+                .unwrap_or(Tick::ZERO)
+        };
         let start = start
             .max(Tick::ZERO)
             .max(old_start - back)
             .min(end - MIN_LENGTH);
         let delta = start - old_start;
-        a.shift_sources(delta, tempo);
+        a.shift_sources(delta, tempo)?;
         let length = (old_length - delta).min(a.max_length(tempo).max(MIN_LENGTH));
         a.fade_in = Tick::ZERO.max(a.fade_in);
         a.clamp(length);
@@ -321,6 +364,7 @@ fn select_source(
     if length < MIN_LENGTH {
         return Err(EditError::Invalid("the audio take is empty"));
     }
+    a.validate_warp(length)?;
     a.clamp(length);
     Ok(length)
 }
@@ -377,6 +421,7 @@ pub(super) fn fit_length(c: &mut Clip, length: Tick, tempo: Tempo) -> Result<(),
             return Err(EditError::Invalid("the audio window is empty"));
         }
         let length = length.min(max);
+        a.validate_warp(length)?;
         a.clamp(length);
         c.length = length;
     } else {
@@ -391,16 +436,16 @@ pub(super) fn fit_length(c: &mut Clip, length: Tick, tempo: Tempo) -> Result<(),
 
 /// The clip `piece` of `c` between `a` and `b` (timeline ticks, `c.start ≤ a < b ≤ c.end()`): the
 /// window moves with the start, an edge the cut created loses its fade.
-fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Option<Clip> {
+fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Result<Option<Clip>, EditError> {
     let ClipContent::Audio(_) = &c.content else {
-        return None;
+        return Ok(None);
     };
     let mut out = c.clone();
     let ClipContent::Audio(na) = &mut out.content else {
         unreachable!("a copy of an audio clip");
     };
     if a > c.start {
-        na.shift_sources(a - c.start, tempo);
+        na.shift_sources(a - c.start, tempo)?;
         na.fade_in = Tick::ZERO;
     }
     if b < c.end() {
@@ -409,11 +454,12 @@ fn piece(c: &Clip, a: Tick, b: Tick, tempo: Tempo) -> Option<Clip> {
     out.start = a;
     let length = (b - a).min(na.max_length(tempo));
     if length < MIN_LENGTH {
-        return None;
+        return Ok(None);
     }
     out.length = length;
+    na.validate_warp(length)?;
     na.clamp(length);
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Cuts the audio clips of track `track_index` that `is_victim` accepts against the intervals
@@ -457,7 +503,7 @@ fn cut_victims(
         }
         let mut first = true;
         for (a, b) in spans {
-            if let Some(mut cut) = piece(&clip, a, b, tempo) {
+            if let Some(mut cut) = piece(&clip, a, b, tempo)? {
                 if !std::mem::take(&mut first) {
                     cut.id = ClipId(p.alloc_id()?);
                 }
@@ -534,7 +580,9 @@ pub(super) fn retime(p: &mut Project, old: Tempo, new: Tempo) -> Result<(), Edit
             .clips
             .iter()
             .map(|c| match &c.content {
-                ClipContent::Audio(a) if a.time_mode == ClipTimeMode::Fixed => {
+                ClipContent::Audio(a)
+                    if a.time_mode == ClipTimeMode::Fixed && !a.warp_enabled() =>
+                {
                     any = true;
                     let mut c = Clip::clone(c);
                     let ClipContent::Audio(a) = &mut c.content else {
