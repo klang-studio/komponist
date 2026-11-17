@@ -83,6 +83,7 @@ pub struct Entry<'a, A> {
     pub checked: Option<bool>,
     /// What it does.
     pub kind: Kind<'a, A>,
+    elide_label: bool,
 }
 
 impl<'a, A> Entry<'a, A> {
@@ -93,6 +94,7 @@ impl<'a, A> Entry<'a, A> {
             enabled: true,
             checked: None,
             kind,
+            elide_label: false,
         }
     }
 
@@ -134,6 +136,13 @@ impl<'a, A> Entry<'a, A> {
     #[must_use]
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
+        self
+    }
+
+    /// Elide a dynamic label at the end of its row. AccessKit retains the original text.
+    #[must_use]
+    pub fn elide_label(mut self) -> Self {
+        self.elide_label = true;
         self
     }
 
@@ -279,15 +288,9 @@ fn entry_rows_v<A>(
         if e.checked == Some(true) {
             super::paint_check(ui, rect, check_left, l.check);
         }
-        let label = super::galley(
-            ui,
-            e.label,
-            fonts::font_id(&typography::UI),
-            typography::UI.line_height,
-        );
         let x = check_left + metrics::CHECK_COLUMN + space::SPACE_1;
-        painter.galley(super::text_pos(rect, &label, x, ppp), label, l.text);
         let right = rect.right() - space::SPACE_2;
+        let mut label_right = right;
         if e.has_submenu() {
             let [w, h] = metrics::CARET;
             let caret = px::snap_rect(
@@ -295,6 +298,7 @@ fn entry_rows_v<A>(
                 ppp,
             );
             icons::paint_caret(painter, caret, Caret::Right, l.shortcut);
+            label_right = caret.left() - space::SPACE_1;
         } else if let Some(sc) = e.shortcut {
             let g = super::galley(
                 ui,
@@ -304,7 +308,23 @@ fn entry_rows_v<A>(
             );
             let x = right - g.size().x;
             painter.galley(super::text_pos(rect, &g, x, ppp), g, l.shortcut);
+            label_right = x - space::SPACE_1;
         }
+        let mut label = super::galley(
+            ui,
+            e.label,
+            fonts::font_id(&typography::UI),
+            typography::UI.line_height,
+        );
+        let label_width = (label_right - x).max(0.0);
+        if e.elide_label && label.size().x > label_width {
+            let mut job = (*label.job).clone();
+            job.wrap.max_width = label_width;
+            job.wrap.max_rows = 1;
+            job.break_on_newline = false;
+            label = painter.layout_job(job);
+        }
+        painter.galley(super::text_pos(rect, &label, x, ppp), label, l.text);
     }
     out
 }

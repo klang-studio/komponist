@@ -31,7 +31,9 @@ use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, metrics as wm};
 use komponist_ui::{focus, fonts, icons, px};
 
-use crate::actions::{Action, EditAction, SettingsAction, TransportAction};
+use crate::actions::{
+    Action, EditAction, ProjectAction, SettingsAction, TransportAction, UiAction,
+};
 use crate::application_menu::{Item as MenuItem, Snapshot};
 use crate::keymap::Keymap;
 use crate::master_scope::{MasterDisplay, Picture};
@@ -802,33 +804,75 @@ fn no_device_chip(ui: &mut Ui, t: Lang) {
     text_node(ui, rect, "no_device", t.transport_no_device());
 }
 
-/// The "⋯" menu (prototype `menu`): new, open, save, export, start screen; then "Fenster" with the
-/// open plugin windows (#95) while there are any.
+/// The project menu also owns application and plugin navigation when no native menu is installed.
 fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
-    let response = ui.add(Button::icon(Icon::Ellipsis, model.lang.transport_menu()));
-    // The menu opens one frame after the click: a press and release delivered in one frame
-    // (egui-mcp, fast touchpads) would otherwise count as a press outside the new menu and close
-    // it at once (the context menu exempts only its own right-click).
-    let pending = response.id.with("komponist_menu_pending");
-    let ctx = ui.ctx().clone();
-    if ctx
-        .data_mut(|d| d.remove_temp::<bool>(pending))
-        .unwrap_or(false)
-    {
-        ContextMenu::<Action>::open_at(&ctx, response.id, response.rect.left_bottom());
-    }
-    if response.clicked() {
-        ctx.data_mut(|d| d.insert_temp(pending, true));
-        ctx.request_repaint();
-    }
     let t = model.lang;
+    let response = ui.add(Button::icon(Icon::Ellipsis, t.transport_menu()));
+    let ctx = &response.ctx;
+    let pending = response.id.with("komponist_menu_pending");
+    let snapshot_id = response.id.with("komponist_menu_contents");
+    let return_focus = response.id.with("komponist_menu_return_focus");
     let snapshot = model.menu;
+    let commands_enabled = snapshot.project.iter().any(|item| item.enabled);
+    let menu_id = ContextMenu::<Action>::id_for(response.id);
+
+    if let Some(pos) = ctx.data_mut(|d| d.remove_temp::<egui::Pos2>(pending))
+        && commands_enabled
+    {
+        ContextMenu::<Action>::open_at(ctx, response.id, pos);
+        ctx.data_mut(|d| d.insert_temp(snapshot_id, snapshot.clone()));
+    }
+    let open = ContextMenu::<Action>::is_open(ctx, response.id);
+    komponist_ui::widgets::accesskit(&response, |node| {
+        node.set_has_popup(egui::accesskit::HasPopup::Menu);
+        node.set_expanded(open);
+    });
+    if !open {
+        if !commands_enabled {
+            return;
+        }
+        if ctx
+            .data_mut(|d| d.remove_temp::<bool>(return_focus))
+            .unwrap_or_default()
+        {
+            response.request_focus();
+        }
+        // Defer opening after a press and release in one frame. The press would
+        // otherwise count as a click outside the new popup.
+        if response.clicked() || response.secondary_clicked() {
+            let anchor = if response.secondary_clicked() {
+                response
+                    .interact_pointer_pos()
+                    .unwrap_or(response.rect.center())
+            } else {
+                response.rect.left_bottom()
+            };
+            ctx.data_mut(|d| d.insert_temp(pending, anchor));
+            ctx.request_repaint();
+        }
+        return;
+    }
+    // Menu rows are indexed while open. Close if the presentation changed so
+    // Enter cannot act on a different device now occupying the same row.
+    if !ctx.data(|d| d.get_temp::<Snapshot>(snapshot_id).as_ref() == Some(snapshot)) {
+        komponist_ui::widgets::floating::close(ctx, menu_id);
+        ctx.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
+        if commands_enabled {
+            response.request_focus();
+        }
+        ctx.request_repaint();
+        return;
+    }
+    let escape = ctx.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::Escape));
     let window_items = snapshot.egui_window();
     let window_labels: Vec<_> = window_items
         .iter()
         .map(|item| item.shortcut_label(t, crate::platform::Platform::current()))
         .collect();
-    let windows = menu_entries(window_items, &window_labels);
+    let windows: Vec<_> = menu_entries(window_items, &window_labels)
+        .into_iter()
+        .map(Entry::elide_label)
+        .collect();
     let local_items: Vec<_> = snapshot
         .project
         .iter()
@@ -850,7 +894,25 @@ fn menu(ui: &mut Ui, model: &TransportModel<'_>, actions: &mut Vec<Action>) {
         entries.extend(menu_entries(application, &labels[project.len()..]));
     }
     if let Some(action) = ContextMenu::new(t.transport_menu(), &entries).show_on(&response) {
+        if focus::is_visible(ctx)
+            && matches!(
+                action,
+                Action::Ui(UiAction::OpenAbout | UiAction::OpenSettings(_))
+                    | Action::Project(ProjectAction::Quit)
+            )
+        {
+            // Escape clears egui widget focus. Wait until the dialog has closed
+            // before returning to the menu button.
+            ctx.data_mut(|d| d.insert_temp(return_focus, true));
+        }
         actions.push(action);
+    }
+    if !ContextMenu::<Action>::is_open(ctx, response.id) {
+        ctx.data_mut(|d| d.remove::<Snapshot>(snapshot_id));
+        if escape {
+            response.request_focus();
+        }
+        ctx.request_repaint();
     }
 }
 

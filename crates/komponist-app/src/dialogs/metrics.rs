@@ -48,6 +48,14 @@ pub mod dialog {
     pub const FIELD_LABEL_WIDTH: f32 = 72.0;
 }
 
+/// The portable About dialog artwork.
+pub mod about {
+    /// Caps the README wordmark so it fits above the metadata inside a small dialog.
+    pub const LOGO_MAX_WIDTH: f32 = 256.0;
+    /// Aspect ratio of the README logo's SVG viewBox (5924 × 1000).
+    pub const LOGO_ASPECT: f32 = 5924.0 / 1000.0;
+}
+
 /// S06 "Plugins fehlen" (`ovMissing` markup).
 pub mod missing {
     use super::space;
