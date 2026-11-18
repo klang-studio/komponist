@@ -35,3 +35,6 @@ undo-swing = Swing
 
 # Undo step: the length of a pattern.
 undo-pattern-length = Pattern Length
+
+# Audio playback mode, including opt-in Warp.
+undo-clip-audio-mode = Change Audio Mode

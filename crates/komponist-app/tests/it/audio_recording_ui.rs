@@ -387,6 +387,155 @@ fn capture_device_choices_distinguish_disabled_default_and_disconnected() {
 }
 
 #[test]
+fn reselecting_the_same_input_retries_saving_settings() {
+    use komponist_app::device_host::BuiltinHost;
+    use komponist_app::engine_sync::EngineSync;
+    use komponist_app::settings::Settings;
+    use komponist_audio::{DeviceId, HostKind, InputConfig};
+    use komponist_model::Document;
+
+    let dir = crate::export::scratch("capture-settings-write");
+    let path = dir.join("settings.json");
+    let previous = InputConfig {
+        device: Some("Previous capture input".into()),
+        device_id: Some(DeviceId("fake:previous".into())),
+    };
+    let other = InputConfig {
+        device: Some("New capture input".into()),
+        device_id: Some(DeviceId("fake:new".into())),
+    };
+    let mut settings = Settings::default();
+    settings.audio.host = HostKind::Null;
+    settings.audio_input = Some(previous.clone());
+    settings.save(&path).unwrap();
+    // A directory at the temporary-write path fails on all platforms, independent of user IDs.
+    let blocked = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let (project, _) = audio(AudioInput::None);
+    let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
+    let choose = || Action::Settings(SettingsAction::SetAudioInput(Some(other.clone())));
+    app.dispatch(choose());
+    assert_eq!(app.settings().audio_input, Some(other.clone()));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
+    std::fs::remove_dir(blocked).unwrap();
+    app.dispatch(choose());
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(other));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_track_input_selection_keeps_the_previous_route_and_device() {
+    use komponist_app::device_host::BuiltinHost;
+    use komponist_app::engine_sync::EngineSync;
+    use komponist_app::settings::Settings;
+    use komponist_audio::{DeviceId, HostKind, InputConfig, StreamConfig};
+    use komponist_model::Document;
+
+    let dir = crate::export::scratch("capture-settings-rollback");
+    let path = dir.join("settings.json");
+    let config = |name: &str| InputConfig {
+        device: Some(name.into()),
+        device_id: Some(DeviceId(format!("test:{name}"))),
+    };
+    let previous = config("previous");
+    let attempted = config("failed");
+    let mut settings = Settings::default();
+    settings.audio.host = HostKind::Null;
+    settings.audio_input = Some(previous.clone());
+    settings.save(&path).unwrap();
+
+    let mut engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    engine.set_audio_input(Some(previous.clone())).unwrap();
+    // Reject the stream launch without asking a hardware backend to open a device.
+    assert!(
+        engine
+            .set_audio(&StreamConfig {
+                sample_rate: 0,
+                ..settings.audio.clone()
+            })
+            .is_err()
+    );
+    let old_route = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    let new_route = AudioInput::Hardware(HardwareInput {
+        first: 1,
+        stereo: false,
+    });
+    let (project, track) = audio(old_route);
+    let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
+    app.dispatch(Action::Settings(SettingsAction::ChooseTrackAudioInput {
+        track,
+        input: new_route,
+        device: attempted.clone(),
+    }));
+    assert_eq!(app.project().track(track).unwrap().audio.input, old_route);
+    assert_eq!(app.engine().audio_input_config(), Some(&previous));
+    assert_eq!(app.settings().audio_input, Some(previous.clone()));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
+
+    app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+        attempted.clone(),
+    ))));
+    assert_eq!(app.engine().audio_input_config(), Some(&attempted));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(attempted));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn track_input_choice_validates_the_open_streams_channel_count() {
+    use komponist_audio::{AudioState, DeviceId, InputConfig};
+
+    let config = InputConfig {
+        device: Some("Two-channel input".into()),
+        device_id: Some(DeviceId("mock:capture".into())),
+    };
+    let initial = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    let (project, track) = audio(initial);
+    let mut app = App::headless(project);
+    app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+        config.clone(),
+    ))));
+    let _source = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
+    let choose = |input| {
+        Action::Settings(SettingsAction::ChooseTrackAudioInput {
+            track,
+            input: AudioInput::Hardware(input),
+            device: config.clone(),
+        })
+    };
+
+    // A stale four-channel inventory may still have offered stereo channels three and four.
+    app.dispatch(choose(HardwareInput {
+        first: 2,
+        stereo: true,
+    }));
+    assert_eq!(app.project().track(track).unwrap().audio.input, initial);
+    assert_eq!(app.settings().audio_input.as_ref(), Some(&config));
+    assert_eq!(app.engine().audio_input_config(), Some(&config));
+    assert_eq!(app.engine().audio_input_channels(), 2);
+    assert!(matches!(
+        app.engine().audio_state(),
+        AudioState::Running { .. }
+    ));
+
+    let stereo = HardwareInput {
+        first: 0,
+        stereo: true,
+    };
+    app.dispatch(choose(stereo));
+    assert_eq!(
+        app.project().track(track).unwrap().audio.input,
+        AudioInput::Hardware(stereo)
+    );
+}
+
+#[test]
 fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
     use komponist_audio::{DeviceId, InputConfig, InputDeviceInfo};
 
@@ -573,10 +722,22 @@ fn take_rows_expose_selection_duration_and_delete_in_both_languages() {
             panic!("audio")
         };
         assert_eq!(audio.active_take, 0);
-        for _ in 0..12 {
+        // A fixed sleep can capture empty take/arranger waves when the shared peak worker
+        // is busy with other parallel tests. Wait for the actual source state, then paint it.
+        let pooled = komponist_audiofile::FilePool::global().open(&path).unwrap();
+        let deadline = std::time::Instant::now() + crate::common::PATIENCE;
+        while !matches!(
+            pooled.peaks_state(),
+            komponist_audiofile::PeakState::Ready(_)
+        ) {
             h.run_steps(1);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "take waveform never became ready"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+        h.run_steps(3);
         // Scratch paths and CPU are nondeterministic; their labels retain their full accessible value.
         if let Some(path) = h.query_by_role_and_label(Role::Label, lang.audio_file_path()) {
             h.mask(path.rect());

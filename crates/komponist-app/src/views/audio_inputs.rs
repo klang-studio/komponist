@@ -114,13 +114,17 @@ impl NamedJackInput {
     }
 }
 
+pub(crate) fn hardware_input_available(input: HardwareInput, channels: u16) -> bool {
+    input
+        .first
+        .checked_add(input.channel_count())
+        .is_some_and(|end| end <= channels)
+}
+
 pub fn input_available(project: &Project, track: &Track, channels: u16) -> bool {
     match track.audio.input {
         AudioInput::None => true,
-        AudioInput::Hardware(h) => h
-            .first
-            .checked_add(h.channel_count())
-            .is_some_and(|end| end <= channels),
+        AudioInput::Hardware(input) => hardware_input_available(input, channels),
         AudioInput::Bus(bus) => {
             komponist_model::routing::input_sources(project, track.id).contains(&bus)
         }

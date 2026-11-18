@@ -36,6 +36,11 @@ use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
 
+/// Minimum output/input duration ratio, covering 40/240 BPM.
+pub const MIN_RATIO: f64 = 1.0 / 6.0;
+/// Maximum output/input duration ratio, covering 240/40 BPM.
+pub const MAX_RATIO: f64 = 6.0;
+
 /// Fixed worker output chunk; only a terminal chunk may be shorter.
 pub const CHUNK_FRAMES: usize = 512;
 /// Valid planar source headroom (60 dBFS). Larger finite values can overflow DSP intermediates.
@@ -55,11 +60,11 @@ pub struct Latency {
 /// A rejected call leaves state unchanged; a backend failure requires another reset/seek.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// Only 8–192 kHz is supported by this bounded wrapper.
+    /// Only 8–384 kHz is supported by this bounded wrapper.
     SampleRate,
     /// Only mono and stereo are supported; this is unrelated to simultaneous voice counts.
     Channels,
-    /// Duration ratio must be finite and in 0.5..=2.0.
+    /// Duration ratio must be finite and in MIN_RATIO..=MAX_RATIO.
     Ratio,
     /// Output must contain 1..=512 frames; a short output terminates the stream.
     OutputFrames,
@@ -82,9 +87,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::SampleRate => "stretch sample rate must be 8000..=192000 Hz",
+            Self::SampleRate => "stretch sample rate must be 8000..=384000 Hz",
             Self::Channels => "stretch supports one or two planar channels",
-            Self::Ratio => "stretch duration ratio must be finite and 0.5..=2.0",
+            Self::Ratio => "stretch duration ratio must be finite and 1/6..=6",
             Self::OutputFrames => "stretch output must contain 1..=512 frames",
             Self::Input => "stretch input has invalid dimensions, nonfinite or excessive samples",
             Self::Output => "stretch output has invalid planar dimensions",
@@ -99,7 +104,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 fn validate_ratio(ratio: f64) -> Result<(), Error> {
-    if ratio.is_finite() && (0.5..=2.0).contains(&ratio) {
+    if ratio.is_finite() && (MIN_RATIO..=MAX_RATIO).contains(&ratio) {
         Ok(())
     } else {
         Err(Error::Ratio)
@@ -134,9 +139,9 @@ pub struct Stretcher {
 unsafe impl Send for Stretcher {}
 
 impl Stretcher {
-    /// Create an unprimed mono/stereo instance at 8–192 kHz, ratio 0.5..=2.0.
+    /// Create an unprimed mono/stereo instance at 8–384 kHz, ratio MIN_RATIO..=MAX_RATIO.
     pub fn new(sample_rate: u32, channels: usize, ratio: f64) -> Result<Self, Error> {
-        if !(8000..=192000).contains(&sample_rate) {
+        if !(8000..=384000).contains(&sample_rate) {
             return Err(Error::SampleRate);
         }
         if !(1..=2).contains(&channels) {
@@ -278,7 +283,7 @@ impl Stretcher {
             *ptr = channel.as_mut_ptr();
         }
         // SAFETY: exclusive, disjoint output slices and shared input slices have validated
-        // dimensions/bounded samples. Counts are <=1024 input and <=512 output, fit C++ int.
+        // dimensions/bounded samples. Counts are <=3072 input and <=512 output, fit C++ int.
         // The handle is live and exclusively borrowed; native code catches every exception.
         let result = status(unsafe {
             kp_stretch_process(
@@ -334,7 +339,15 @@ fn status(code: i32) -> Result<(), Error> {
         _ => Err(Error::Backend),
     }
 }
+/// Native API entries executed on this thread, excluding this diagnostic read. Comparing this
+/// outside `Engine::process` proves the callback did not create/reset/process/drop a stretcher.
+pub fn thread_native_calls() -> u64 {
+    // SAFETY: a noexcept, argument-free read of this thread's native diagnostic counter.
+    unsafe { kp_stretch_thread_calls() }
+}
+
 unsafe extern "C" {
+    fn kp_stretch_thread_calls() -> u64;
     fn kp_stretch_new(
         rate: u32,
         channels: u32,

@@ -732,6 +732,17 @@ impl App {
                 self.lang.export_missing_audio(path.display()),
                 StatusKind::Error,
             ),
+            Err(ExportError::Stretch { clip, reason }) => {
+                let name = self
+                    .project()
+                    .find_clip(clip)
+                    .map(|(_, clip)| &clip.name)
+                    .filter(|name| !name.trim().is_empty())
+                    .map_or_else(|| clip.0.to_string(), String::clone);
+                let lang = self.lang;
+                let why = crate::audio_error::reason(lang, reason);
+                self.set_status(lang.export_warp_failed(name, why), StatusKind::Error);
+            }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }
     }

@@ -18,6 +18,9 @@ const RATE: u32 = 48_000;
 const BAR: i64 = 3840;
 const SHAKER: &str = "Shaker Loop.wav";
 const RISER: &str = "Riser.wav";
+const PULSE: &str = "Pulse 90.wav";
+/// Eight beats at 90 BPM, stereo 48 kHz. Warp follows the existing showcase's 124 BPM.
+const PULSE_FRAMES: u64 = 256000;
 const ORIGINAL_BPM: f64 = 120.0;
 const SHAKER_FRAMES: u64 = 16 * RATE as u64;
 
@@ -102,7 +105,36 @@ pub(super) fn add_tracks(project: &mut Project) {
     ] {
         *project = edits::set_audio_clip_prop(project, clip, prop).unwrap();
     }
+    let (p, pulse) = edits::add_audio_track(
+        project,
+        NewAudioTrack {
+            name: Some("Pulse 90".into()),
+            hue: Some(Hue::GREEN),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (p, clip) = edits::add_clip(
+        &p,
+        pulse,
+        NewClip {
+            start: Tick(4 * BAR),
+            length: Tick(2 * BAR),
+            name: "Pulse 90".into(),
+            content: NewClipContent::Audio {
+                file: AudioFile::new(Path::new(PULSE), None, PULSE_FRAMES, RATE, 2),
+                offset: 0,
+            },
+        },
+    )
+    .unwrap();
+    let p = edits::set_audio_clip_prop(&p, clip, AudioClipProp::OriginalTempo(Tempo::new(90.0)))
+        .unwrap();
+    *project = edits::set_audio_clip_warp(&p, clip, true).unwrap();
     for track in &mut project.tracks {
+        if track.id == pulse {
+            Arc::make_mut(track).channel.volume_db = -24.0;
+        }
         if track.id == shaker || track.id == sweep {
             Arc::make_mut(track).channel.volume_db = -12.0;
         }
@@ -114,6 +146,7 @@ pub(crate) fn write_files(project: &mut Project, dir: &Path) -> io::Result<()> {
     for (name, frames, channels) in [
         (SHAKER, SHAKER_FRAMES, 1),
         (RISER, riser_frames(project), 2),
+        (PULSE, PULSE_FRAMES, 2),
     ] {
         let uses_file = |audio: &komponist_model::AudioClip| {
             audio.file.abs.file_name().is_some_and(|f| f == name)
@@ -144,7 +177,22 @@ pub(crate) fn write_files(project: &mut Project, dir: &Path) -> io::Result<()> {
             let progress = frame as f32 / frames as f32;
             for channel in 0..usize::from(channels) {
                 let raw = noise.next();
-                let sample = if name == SHAKER {
+                let sample = if name == PULSE {
+                    let seconds = frame as f64 / f64::from(RATE);
+                    let age = (frame % 32000) as f64 / f64::from(RATE);
+                    let attack = (age / 0.002).min(1.0);
+                    let transient = 0.42
+                        * (-age / 0.035).exp()
+                        * attack
+                        * (std::f64::consts::TAU * 95.0 * age).sin();
+                    let carrier = 0.2 * (std::f64::consts::TAU * 440.0 * seconds).sin();
+                    let detail = 0.015
+                        * (std::f64::consts::TAU
+                            * (if channel == 0 { 660.0 } else { 880.0 })
+                            * seconds)
+                            .sin();
+                    (carrier + transient + detail) as f32
+                } else if name == SHAKER {
                     // Eight eighth-note bursts per bar, accented on beats 1 and 3.
                     let eighth = RATE / 4;
                     let hit = frame / u64::from(eighth);

@@ -448,3 +448,31 @@ the stall tests.
   `100 ms × 8 bytes × rate` ≈ 38 KB per clip at 48 kHz (1 000 clips: 38 MB), built in the background.
 - RT: no allocation or free on the audio thread with audio clips playing, looping, locating, stopping and swapping
   programs (`playing_clips_never_allocate_on_the_audio_thread`, debug, odd block sizes).
+
+## 11. Warp worker (#14 WP-D)
+
+Measured 2026-11-18 on AMD Ryzen 5 5600 (6 cores/12 threads), Linux x86_64, release,
+48 kHz, actual 256-frame callbacks paced at the sample clock. Generated stereo sources,
+warm heads/rings, one second per case, Signalsmith Default portable FFT. Run separately
+under the shared build lock to avoid competing builds:
+
+```bash
+cargo test --release -p komponist-engine --test engine warp::worker_load -- --ignored --nocapture --test-threads=1
+```
+
+| Stereo tracks | Duration ratio | Worker µs / 256 | Equivalent share of one core | Underruns |
+| --- | --- | --- | --- | --- |
+| 8 | 1/6 | 978.1 | 18.34% | 0 |
+| 8 | 1.5 | 650.9 | 12.20% | 0 |
+| 8 | 6 | 655.9 | 12.30% | 0 |
+| 16 | 1/6 | 1914.7 | 35.90% | 0 |
+| 16 | 1.5 | 1206.4 | 22.62% | 0 |
+| 16 | 6 | 1249.2 | 23.42% | 0 |
+
+The worker time includes file decoding, stretching and ring writes, normalized to produced
+frames per track. It is separate from callback processing; observed wall-time CPU share
+agreed within 0.1 percentage points. This warmed single-worker probe does not characterize
+cold priming peaks, long-session load, high-rate capacity or every target machine. Native
+macOS/MSVC validation of WP-D remains pending; the earlier WP-B platform gates covered the
+wrapper's original domain. Architecture §6.11 describes buffering, errors and seek behavior;
+the WP-D internal notes retain logs and the native sanitizer probe.

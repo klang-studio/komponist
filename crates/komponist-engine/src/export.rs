@@ -197,6 +197,11 @@ pub enum ExportError {
     /// An audio clip in the range plays a file that is missing or cannot be read (the path of the
     /// link). Nothing was changed: an export without it would be silent where the clip is.
     MissingAudio(PathBuf),
+    /// A worker could not render a warped clip. No silent/partial export is committed.
+    Stretch {
+        clip: komponist_model::ClipId,
+        reason: crate::audio::StretchError,
+    },
     /// The target cannot be created (checked before anything changes), the render does not fit
     /// into memory, or writing failed. No partial file is left.
     Io(io::Error),
@@ -215,6 +220,7 @@ impl fmt::Display for ExportError {
             ExportError::MissingAudio(path) => {
                 write!(f, "audio file missing or unreadable: {}", path.display())
             }
+            ExportError::Stretch { clip, reason } => write!(f, "audio clip {}: {reason}", clip.0),
             ExportError::Io(error) => write!(f, "{error}"),
         }
     }
@@ -224,6 +230,7 @@ impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ExportError::Io(error) => Some(error),
+            ExportError::Stretch { reason, .. } => Some(reason),
             _ => None,
         }
     }
@@ -260,6 +267,17 @@ pub fn export(
             job: job.sample_rate,
         });
     }
+    if job.range.is_empty() && job.tail == 0 {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
+        }
+        let output = Output::create(job)?;
+        progress(Progress {
+            fraction: 1.0,
+            peak_db: gain_to_db(0.0),
+        });
+        return output.write(job, Vec::new(), 0.0, cancel);
+    }
     if handle.commands.slots() < COMMANDS {
         return Err(ExportError::QueueFull);
     }
@@ -273,18 +291,34 @@ pub fn export(
     let preroll = preroll + engine.project_latency(program);
     let end = end_tick(map, rate, job.range.end);
     let playhead = handle.telemetry().playhead();
+    let exporting = export_program(program, end, job.range.end as i64);
+    let failures: Vec<_> = exporting
+        .tracks
+        .iter()
+        .filter_map(|t| t.audio.as_ref())
+        .flat_map(|plan| {
+            plan.segments()
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    s.start < (job.range.end + job.tail) as i64 && s.end > job.range.start as i64
+                })
+                .map(|(i, s)| (Arc::clone(plan), i, s.clip))
+                .collect::<Vec<_>>()
+        })
+        .collect();
     send_all(
         handle,
         [
             // Two Stops: the second is the hard cut, so no live tail bleeds into the file.
             Command::Stop,
             Command::Stop,
-            Command::SetProgram(Box::new(export_program(program, end))),
+            Command::SetProgram(Box::new(exporting)),
             Command::Locate(from),
             Command::Play,
         ],
     )?;
-    let result = render(engine, job, preroll, cancel, &mut progress)
+    let result = render(engine, job, preroll, cancel, &mut progress, &failures)
         .and_then(|(samples, peak)| output.write(job, samples, peak, cancel));
     let restored = send_all(
         handle,
@@ -414,8 +448,7 @@ fn end_tick(map: &TempoMap, rate: f64, end: u64) -> Tick {
 
 /// The program the export plays: `program` with loop and metronome off, without notes starting
 /// at or after `end`, notes sounding at `end` cut there, and fresh track meters.
-fn export_program(program: &Program, end: Tick) -> Program {
-    let map = &program.tempo_map;
+fn export_program(program: &Program, end: Tick, audio_end: i64) -> Program {
     let tracks = program
         .tracks
         .iter()
@@ -434,12 +467,8 @@ fn export_program(program: &Program, end: Tick) -> Program {
                     })
                     .collect()
             };
-            // Audio is cut at the end of the range like the notes (a plan of its own, with its
-            // own ring, so the export does not touch the live stream).
-            let audio = track.audio.as_ref().map(|plan| {
-                let end = map.tick_to_sample(end, f64::from(plan.rate()));
-                plan.cut_at(end).unwrap_or_else(|| Arc::clone(plan))
-            });
+            // Audio is cut at the exact sample boundary. Its offline plan owns a fresh ring.
+            let audio = track.audio.as_ref().map(|plan| plan.for_export(audio_end));
             Arc::new(TrackProgram {
                 notes,
                 meter: Arc::new(TrackMeter::new()),
@@ -470,7 +499,21 @@ fn render(
     preroll: u64,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(Progress),
+    failures: &[(Arc<crate::AudioPlan>, usize, komponist_model::ClipId)],
 ) -> Result<(Vec<f32>, f32), ExportError> {
+    let check = || -> Result<(), ExportError> {
+        for (plan, i, clip) in failures {
+            if plan.failure_count(*i) != 0 {
+                return Err(ExportError::Stretch {
+                    clip: *clip,
+                    reason: plan
+                        .failure_reason(*i)
+                        .unwrap_or(crate::audio::StretchError::Backend),
+                });
+            }
+        }
+        Ok(())
+    };
     let too_long = || io::Error::new(io::ErrorKind::OutOfMemory, "export too long for memory");
     let len = usize::try_from(job.frames())
         .ok()
@@ -485,17 +528,10 @@ fn render(
         }
         let n = skip.min(MAX_BLOCK as u64) as usize;
         render_block(engine, n);
+        check()?;
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
-    let report = |peak: f32, done: usize| Progress {
-        fraction: if len == 0 {
-            1.0
-        } else {
-            (done as f64 / len as f64) as f32
-        },
-        peak_db: gain_to_db(peak),
-    };
     while samples.len() < len {
         if cancel.load(Ordering::Relaxed) {
             return Err(ExportError::Cancelled);
@@ -503,16 +539,17 @@ fn render(
         let n = MAX_BLOCK.min((len - samples.len()) / 2);
         let first = samples.len();
         samples.extend_from_slice(render_block(engine, n));
+        check()?;
         for s in &mut samples[first..] {
             if !s.is_finite() {
                 *s = 0.0;
             }
             peak = peak.max(s.abs());
         }
-        progress(report(peak, samples.len()));
-    }
-    if len == 0 {
-        progress(report(peak, 0));
+        progress(Progress {
+            fraction: (samples.len() as f64 / len as f64) as f32,
+            peak_db: gain_to_db(peak),
+        });
     }
     Ok((samples, peak))
 }
@@ -576,6 +613,9 @@ impl Output {
                 };
                 written.map_err(wav_error)?;
             }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
         }
         let Output { writer, part } = self;
         writer.finalize().map_err(wav_error)?;
@@ -980,7 +1020,7 @@ mod tests {
             slots: Arc::new(SlotMap::default()),
             routing: Default::default(),
         };
-        let export = export_program(&program, Tick(1000));
+        let export = export_program(&program, Tick(1000), 25_000);
         assert!(!export.loop_on && !export.metronome);
         assert_eq!(export.song_end, program.song_end);
         assert_eq!(
@@ -997,7 +1037,7 @@ mod tests {
             &program.tracks[1].meter
         ));
         assert!(
-            export_program(&program, Tick(0))
+            export_program(&program, Tick(0), 0)
                 .tracks
                 .iter()
                 .all(|t| t.notes.is_empty())

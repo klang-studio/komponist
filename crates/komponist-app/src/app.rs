@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use egui::{Context, Event, FocusDirection, Ui};
-use komponist_audio::AudioState;
+use komponist_audio::{AudioError, AudioState, InputConfig};
 use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
@@ -44,8 +44,8 @@ use komponist_model::edits::{
 };
 use komponist_model::project::{BUILTIN_HEXA, VOLUME_DB_MIN};
 use komponist_model::{
-    ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat, PluginRef,
-    Project, Tick, TickRange, TrackId,
+    AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat,
+    PluginRef, Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
@@ -85,6 +85,8 @@ const KEYBOARD_VELOCITY: u8 = 100;
 /// How often an idle app still polls a device host that has work (bridges loading, running or
 /// crashing, a scan): status changes show up within this time.
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Check capture availability on an otherwise idle project.
+const CAPTURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Delay of the frame a MIDI message requests (the audio callback takes the message first).
 const MIDI_REPAINT_DELAY: Duration = Duration::from_millis(10);
@@ -885,6 +887,13 @@ impl App {
                 || self.settings.audio_input.is_some());
         if self.engine.host().needs_polling() || jack_routes {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
+        } else if self.engine.audio_input_config().is_some()
+            && matches!(
+                self.engine.audio_state(),
+                AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
+            )
+        {
+            ctx.request_repaint_after(CAPTURE_POLL_INTERVAL);
         }
         // A frame now and then looks for MIDI devices that were plugged in meanwhile.
         if self.engine.midi().is_some() {
@@ -1620,11 +1629,16 @@ impl App {
                     edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
                         "undo-clip-fade"
                     }
-                    edits::AudioClipProp::TimeMode(_) => "undo-clip-repitch",
+                    edits::AudioClipProp::TimeMode(_) => "undo-clip-audio-mode",
                     edits::AudioClipProp::OriginalTempo(_) => "undo-clip-original-tempo",
                 };
                 self.apply_delta(label, |p| {
                     edits::set_audio_clip_prop(p, clip, prop).map(|p| (p, ()))
+                });
+            }
+            EditAction::SetAudioClipWarp { clip, enabled } => {
+                self.apply_delta("undo-clip-audio-mode", |p| {
+                    edits::set_audio_clip_warp(p, clip, enabled).map(|p| (p, ()))
                 });
             }
             EditAction::SetClipLoop {
@@ -2782,18 +2796,56 @@ impl App {
         self.ui.focus = FocusArea::Arrangement;
     }
 
-    fn apply_audio_input(&mut self, input: Option<komponist_audio::InputConfig>) -> bool {
-        let result = self.engine.set_audio_input(input);
+    fn persist_audio_input(&mut self, successful_choice: bool) {
         let requested = self.engine.audio_input_config();
-        if self.settings.audio_input.as_ref() != requested {
+        // A previous write may have failed after the in-memory preference changed.
+        if successful_choice || self.settings.audio_input.as_ref() != requested {
             self.settings.audio_input = requested.cloned();
             self.save_settings();
         }
-        if let Err(error) = result {
-            self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
-            return false;
+    }
+
+    fn choose_track_audio_input(
+        &mut self,
+        track: TrackId,
+        input: AudioInput,
+        device: InputConfig,
+        mut set_input: impl FnMut(&mut EngineSync, Option<InputConfig>) -> Result<(), AudioError>,
+    ) {
+        use crate::views::audio_inputs::{hardware_input_available, input_label};
+
+        let previous = self.engine.audio_input_config().cloned();
+        let problem = match set_input(&mut self.engine, Some(device)) {
+            Ok(())
+                if matches!(input, AudioInput::Hardware(hardware)
+                    if !hardware_input_available(hardware, self.engine.audio_input_channels())) =>
+            {
+                let label = input_label(self.lang, self.project(), input);
+                Some(self.lang.audio_input_unavailable(label))
+            }
+            Ok(()) => {
+                self.persist_audio_input(true);
+                self.dispatch(Action::Edit(EditAction::SetTrackProp {
+                    tracks: vec![track],
+                    prop: TrackProp::AudioInput(input),
+                }));
+                return;
+            }
+            Err(error)
+                if self.engine.audio_input_error().is_some()
+                    || !matches!(self.engine.audio_state(), AudioState::NoDevice { .. }) =>
+            {
+                Some(self.lang.audio_input_open_failed(error))
+            }
+            Err(_) => None,
+        };
+
+        if self.engine.audio_input_config() != previous.as_ref() {
+            let _ = set_input(&mut self.engine, previous);
         }
-        true
+        if let Some(problem) = problem {
+            self.set_status(problem, StatusKind::Error);
+        }
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
@@ -2826,20 +2878,20 @@ impl App {
                 self.save_settings();
             }
             SettingsAction::SetAudioInput(input) => {
-                self.apply_audio_input(input);
+                let result = self.engine.set_audio_input(input);
+                self.persist_audio_input(result.is_ok());
+                if let Err(error) = result
+                    && self.engine.audio_input_error().is_none()
+                    && !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
+                {
+                    self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+                }
             }
             SettingsAction::ChooseTrackAudioInput {
                 track,
                 input,
                 device,
-            } => {
-                if self.apply_audio_input(Some(device)) {
-                    self.dispatch(Action::Edit(EditAction::SetTrackProp {
-                        tracks: vec![track],
-                        prop: TrackProp::AudioInput(input),
-                    }));
-                }
-            }
+            } => self.choose_track_audio_input(track, input, device, EngineSync::set_audio_input),
             SettingsAction::SetCaptureFormat(format) => {
                 self.settings.capture_format = format;
                 self.save_settings();
@@ -3099,6 +3151,68 @@ mod tests {
         let mut app = App::headless(empty_project());
         app.dispatch(Action::Edit(EditAction::NewMidiTrack));
         app
+    }
+
+    #[test]
+    fn capture_open_failure_rolls_back_the_track_choice_while_output_runs() {
+        use komponist_model::{HardwareInput, edits::NewAudioTrack};
+
+        let old_route = AudioInput::Hardware(HardwareInput {
+            first: 0,
+            stereo: false,
+        });
+        let new_route = AudioInput::Hardware(HardwareInput {
+            first: 1,
+            stereo: false,
+        });
+        let (project, track) = edits::add_audio_track(
+            &empty_project(),
+            NewAudioTrack {
+                input: old_route,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut app = App::headless(project);
+        let previous = InputConfig {
+            device: Some("Previous input".into()),
+            device_id: None,
+        };
+        let failed = InputConfig {
+            device: Some("Unavailable input".into()),
+            device_id: None,
+        };
+        app.engine.set_audio_input(Some(previous.clone())).unwrap();
+        app.settings.audio_input = Some(previous.clone());
+        let scratch = std::env::temp_dir().join(format!(
+            "komponist-track-capture-rollback-{}",
+            std::process::id()
+        ));
+        let settings_path = scratch.join("settings.json");
+        app.settings.save(&settings_path).unwrap();
+        app.settings_path = Some(settings_path.clone());
+
+        app.choose_track_audio_input(track, new_route, failed.clone(), |engine, input| {
+            let capture_rejected = input.as_ref() == Some(&failed);
+            engine.set_audio_input(input)?;
+            assert!(matches!(engine.audio_state(), AudioState::Running { .. }));
+            if capture_rejected {
+                return Err(AudioError::NoDevice("test capture open failed".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            app.engine.audio_state(),
+            AudioState::Running { .. }
+        ));
+        assert_eq!(app.engine.audio_input_config(), Some(&previous));
+        assert_eq!(app.project().track(track).unwrap().audio.input, old_route);
+        assert_eq!(app.settings.audio_input, Some(previous.clone()));
+        assert_eq!(
+            Settings::load(&settings_path).unwrap().audio_input,
+            Some(previous)
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     /// A count-in whose end is still in flight while a project opens (the audio block ends it

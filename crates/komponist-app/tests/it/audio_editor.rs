@@ -67,7 +67,7 @@ fn app(path: &Path, channels: u16, lang: Lang) -> (App, ClipId) {
     app.dispatch(Action::Ui(UiAction::OpenClip(id)));
     (app, id)
 }
-fn harness(app: App) -> Harness<'static, App> {
+pub(super) fn harness(app: App) -> Harness<'static, App> {
     let mut h = komponist_ui::snapshot::builder(1.0)
         .with_size(vec2(1920.0, 1080.0))
         .with_max_steps(96)
@@ -76,13 +76,13 @@ fn harness(app: App) -> Harness<'static, App> {
     h.run_steps(3);
     h
 }
-fn data(h: &Harness<'_, App>, id: ClipId) -> AudioClip {
+pub(super) fn data(h: &Harness<'_, App>, id: ClipId) -> AudioClip {
     let ClipContent::Audio(a) = &h.state().project().find_clip(id).unwrap().1.content else {
         panic!("audio")
     };
     a.clone()
 }
-fn wait_peaks(h: &mut Harness<'_, App>, lang: Lang) {
+pub(super) fn wait_peaks(h: &mut Harness<'_, App>, lang: Lang) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while h
         .query_by_role_and_label(Role::Label, lang.audio_waveform_pending())
@@ -115,10 +115,11 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
     press(h, to, false);
     h.run_steps(3);
 }
-fn enter(h: &mut Harness<'_, App>, lang: Lang, name: &str, text: &str) {
+pub(super) fn enter(h: &mut Harness<'_, App>, lang: Lang, name: &str, text: &str) {
     let p = h
-        .get_by_role_and_label(Role::Toolbar, lang.audio_waveform_controls())
-        .get_by_role_and_label(Role::SpinButton, name)
+        .query_all_by_role_and_label(Role::SpinButton, name)
+        .last()
+        .expect("audio field")
         .rect()
         .center();
     h.run_steps(30);
@@ -247,7 +248,25 @@ fn waveform_wheel_preserves_plain_scrolling_and_clamps_zoom() {
     h.run_steps(2);
     wheel(&mut h, pointer, -120.0, Modifiers::CTRL);
     assert_eq!(h.state().ui().waveform.px_per_bar, metrics::PPB_MIN);
-    assert_eq!(h.state().ui().waveform.scroll_tick, 0.0);
+    let clip = h
+        .state()
+        .project()
+        .tracks
+        .iter()
+        .flat_map(|t| &t.clips)
+        .find(|c| matches!(c.content, ClipContent::Audio(_)))
+        .unwrap();
+    let ClipContent::Audio(a) = &clip.content else {
+        unreachable!()
+    };
+    let start = komponist_app::views::audio_editor::mapping::Mapping::new(
+        clip,
+        a,
+        h.state().project().tempo,
+    )
+    .bounds()
+    .start;
+    assert_eq!(h.state().ui().waveform.scroll_tick, start);
 }
 
 #[test]
@@ -273,8 +292,11 @@ fn toolbar_gain_source_start_repitch_tempo_and_bars_edit_the_document() {
         h.state().project().find_clip(id).unwrap().1.start,
         Tick(BAR)
     );
-    h.get_by_role_and_label(Role::Toolbar, Lang::De.audio_waveform_controls())
-        .get_by_role_and_label(Role::Button, Lang::De.audio_clip_repitch())
+    h.get_by_role_and_label(Role::Toolbar, Lang::De.audio_clip_mode())
+        .get_by_role_and_label(Role::ComboBox, Lang::De.audio_clip_mode())
+        .click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::ListBoxOption, Lang::De.audio_clip_repitch())
         .click();
     h.run_steps(3);
     enter(

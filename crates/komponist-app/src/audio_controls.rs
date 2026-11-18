@@ -7,6 +7,7 @@ use crate::actions::{Action, SelectMode, SelectionChange, UiAction};
 use crate::app::App;
 use crate::dialogs::new_track::default_names;
 use crate::ui_state::StatusKind;
+use crate::views::audio_inputs::hardware_input_available;
 
 impl App {
     /// Checks explicit arm commands and recording startup; MIDI tracks keep their own rules.
@@ -20,10 +21,7 @@ impl App {
         let reason = match track.audio.input {
             AudioInput::None => Some(self.lang.audio_arm_no_input().to_owned()),
             AudioInput::Hardware(input)
-                if input
-                    .first
-                    .checked_add(input.channel_count())
-                    .is_none_or(|end| end > self.engine.audio_input_channels()) =>
+                if !hardware_input_available(input, self.engine.audio_input_channels()) =>
             {
                 Some(
                     self.lang

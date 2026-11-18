@@ -171,7 +171,7 @@ pub fn set_audio_clip_prop(project: &Project, clip: ClipId, prop: AudioClipProp)
 /// Enables/disables pitch-preserving tempo-follow data without extending the legacy time-mode
 /// enum. The current window/start stays; source-limited length/fades are clamped as for mode
 /// changes. Existing Warp keeps its split/trim phase; a newly enabled mapping starts locally.
-/// This edit is model-only: worker playback and UI activation are later work packages.
+/// This pure model edit is shared by the UI; worker state follows through program compilation.
 pub fn set_audio_clip_warp(project: &Project, clip: ClipId, enabled: bool) -> EditResult {
     let tempo = project.tempo;
     edit_clip(project, clip, |c| {

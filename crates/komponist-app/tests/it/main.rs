@@ -62,3 +62,5 @@ mod sidechain;
 mod state_sync;
 mod step_seq;
 mod volt;
+
+mod audio_warp;

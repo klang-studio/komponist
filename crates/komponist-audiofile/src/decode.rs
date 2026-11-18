@@ -12,14 +12,14 @@
 //! deliver their first two.
 
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read, Seek};
 use std::path::Path;
 
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Duration, Time, TimeBase, Timestamp};
 
@@ -67,8 +67,9 @@ pub struct AudioInfo {
     pub channels: usize,
     /// Channels the file has (more than [`AudioInfo::channels`] are dropped).
     pub source_channels: usize,
-    /// Length in frames at `sample_rate`. Exact for WAV and FLAC; for OGG and MP3 the container's
-    /// count, or the sum of the packet durations when the container has none.
+    /// Length in frames at `sample_rate`. For WAV this is bounded by the file size. Reads can
+    /// still report missing declared samples. For FLAC, OGG and MP3 it is the container's count
+    /// or the sum of packet durations when absent.
     pub frames: u64,
     /// Container/codec.
     pub format: Format,
@@ -103,14 +104,14 @@ impl AudioFile {
         let mut magic = [0u8; 12];
         let n = read_up_to(&mut file, &mut magic)?;
         let format = sniff(&magic[..n]);
-        drop(file);
+        file.rewind()?;
         let (info, backend) = match format {
             Format::Wav => {
-                let (info, wav) = Wav::open(path)?;
+                let (info, wav) = Wav::open(file)?;
                 (info, Backend::Wav(wav))
             }
             _ => {
-                let (info, sym) = Sym::open(path, format)?;
+                let (info, sym) = Sym::open(path, file, format)?;
                 (info, Backend::Sym(Box::new(sym)))
             }
         };
@@ -134,9 +135,16 @@ impl AudioFile {
         self.position
     }
 
-    /// Moves to `frame`; a frame at or past the end puts the position at the end (reads give 0).
+    fn declared_end(&self) -> u64 {
+        match &self.backend {
+            Backend::Wav(wav) => wav.declared_frames,
+            Backend::Sym(_) => self.info.frames,
+        }
+    }
+
+    /// Moves to `frame`; a frame at or past the declared end puts the position there (reads give 0).
     pub fn seek(&mut self, frame: u64) -> Result<(), AudioError> {
-        let frame = frame.min(self.info.frames);
+        let frame = frame.min(self.declared_end());
         match &mut self.backend {
             Backend::Wav(w) => w.seek(frame)?,
             Backend::Sym(s) => s.seek(frame, self.info.frames)?,
@@ -152,12 +160,24 @@ impl AudioFile {
         let channels = self.info.channels;
         let usable = out.len() / channels * channels;
         let out = &mut out[..usable];
-        if out.is_empty() || self.position >= self.info.frames {
+        let remaining = self.declared_end().saturating_sub(self.position);
+        if out.is_empty() || remaining == 0 {
             return Ok(0);
         }
         let n = match &mut self.backend {
-            Backend::Wav(w) => w.read(out, self.info.frames - self.position)?,
-            Backend::Sym(s) => s.read(out)?,
+            Backend::Wav(w) => w.read(out, remaining)?,
+            Backend::Sym(s) => {
+                let n = s.read(out)?;
+                if n == 0
+                    && let Some(end) = s.declared_frames.filter(|&end| self.position < end)
+                {
+                    return Err(AudioError::Malformed(format!(
+                        "stream ended at frame {} before the declared end at frame {end}",
+                        self.position,
+                    )));
+                }
+                n
+            }
         };
         self.position += n as u64;
         Ok(n)
@@ -219,17 +239,25 @@ fn sniff(magic: &[u8]) -> Format {
 // ---------------------------------------------------------------------------------------- WAV
 
 struct Wav {
-    reader: hound::WavReader<BufReader<File>>,
+    reader: Option<hound::WavReader<BufReader<File>>>,
     spec: hound::WavSpec,
+    declared_frames: u64,
+    // The active reader's cursor is discarded on error. Keep the underlying handle for a retry.
+    failed_file: Option<File>,
+}
+
+fn wav_error(error: hound::Error) -> AudioError {
+    match error {
+        hound::Error::IoError(e) => AudioError::Io(e.to_string()),
+        hound::Error::Unsupported => AudioError::Unsupported("WAV variant".into()),
+        e => AudioError::Malformed(e.to_string()),
+    }
 }
 
 impl Wav {
-    fn open(path: &Path) -> Result<(AudioInfo, Wav), AudioError> {
-        let reader = hound::WavReader::open(path).map_err(|e| match e {
-            hound::Error::IoError(e) => AudioError::Io(e.to_string()),
-            hound::Error::Unsupported => AudioError::Unsupported("WAV variant".into()),
-            e => AudioError::Malformed(e.to_string()),
-        })?;
+    fn open(file: File) -> Result<(AudioInfo, Wav), AudioError> {
+        let file_len = file.metadata()?.len();
+        let reader = hound::WavReader::new(BufReader::new(file)).map_err(wav_error)?;
         let spec = reader.spec();
         match (spec.sample_format, spec.bits_per_sample) {
             (hound::SampleFormat::Float, 32) | (hound::SampleFormat::Int, 8 | 16 | 24 | 32) => {}
@@ -243,28 +271,57 @@ impl Wav {
         if spec.sample_rate > MAX_SAMPLE_RATE {
             return Err(AudioError::Unsupported(format!("{} Hz", spec.sample_rate)));
         }
-        // The header's length may promise more than the file holds.
+        let declared_frames = u64::from(reader.duration());
         let bytes_per_frame = u64::from(spec.channels) * u64::from(spec.bits_per_sample / 8);
-        // (44 bytes: the smallest WAV header; a larger one only makes the bound a little generous.)
-        let holds = std::fs::metadata(path)?.len().saturating_sub(44) / bytes_per_frame.max(1);
+        // Keep metadata/allocation bounds conservative, including for implausible headers. The
+        // reader separately checks the header's declared length when it encounters missing data.
+        let holds = file_len.saturating_sub(44) / bytes_per_frame;
         let source_channels = usize::from(spec.channels);
         let info = AudioInfo {
             sample_rate: spec.sample_rate,
             channels: source_channels.min(MAX_CHANNELS),
             source_channels,
-            frames: u64::from(reader.duration()).min(holds),
+            frames: declared_frames.min(holds),
             format: Format::Wav,
         };
-        Ok((info, Wav { reader, spec }))
+        Ok((
+            info,
+            Wav {
+                reader: Some(reader),
+                spec,
+                declared_frames,
+                failed_file: None,
+            },
+        ))
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), AudioError> {
         let frame = u32::try_from(frame).map_err(|_| AudioError::TooLong)?;
-        self.reader.seek(frame).map_err(AudioError::from)
+        if let Some(file) = &self.failed_file {
+            // Hound advances its sample count even if a read fails. Rebuild with a temporary
+            // duplicate of the same file handle, keeping the original if the header is unreadable.
+            let mut candidate = file.try_clone()?;
+            candidate.rewind()?;
+            let reader = hound::WavReader::new(BufReader::new(candidate)).map_err(wav_error)?;
+            if reader.spec() != self.spec {
+                return Err(AudioError::Malformed(
+                    "WAV format changed while reading".into(),
+                ));
+            }
+            self.reader = Some(reader);
+            self.failed_file = None;
+        }
+        let reader = self.reader.as_mut().ok_or_else(wav_decoder_unavailable)?;
+        let result = reader.seek(frame).map_err(AudioError::from);
+        if result.is_err() {
+            self.discard_cursor();
+        }
+        result
     }
 
     /// Reads at most `remaining` frames.
     fn read(&mut self, out: &mut [f32], remaining: u64) -> Result<usize, AudioError> {
+        let reader = self.reader.as_mut().ok_or_else(wav_decoder_unavailable)?;
         let source = usize::from(self.spec.channels);
         let channels = source.min(MAX_CHANNELS);
         let frames = (out.len() / channels).min(usize::try_from(remaining).unwrap_or(usize::MAX));
@@ -279,23 +336,39 @@ impl Wav {
             }
             Ok::<_, hound::Error>(())
         };
+        let unexpected_end = || hound::Error::IoError(io::ErrorKind::UnexpectedEof.into());
         let done = match (self.spec.sample_format, self.spec.bits_per_sample) {
             (hound::SampleFormat::Float, _) => {
-                let mut it = self.reader.samples::<f32>();
-                fill(&mut || it.next().unwrap_or(Ok(0.0)))
+                let mut it = reader.samples::<f32>();
+                fill(&mut || it.next().unwrap_or_else(|| Err(unexpected_end())))
             }
             (_, bits) => {
                 let scale = 1.0 / (1i64 << (bits - 1)) as f32;
-                let mut it = self.reader.samples::<i32>();
-                fill(&mut || it.next().unwrap_or(Ok(0)).map(|v| v as f32 * scale))
+                let mut it = reader.samples::<i32>();
+                fill(&mut || {
+                    it.next()
+                        .unwrap_or_else(|| Err(unexpected_end()))
+                        .map(|v| v as f32 * scale)
+                })
             }
         };
-        done.map_err(|e| match e {
-            hound::Error::IoError(e) => AudioError::Io(e.to_string()),
-            e => AudioError::Malformed(e.to_string()),
-        })?;
+        if let Err(error) = done {
+            self.discard_cursor();
+            return Err(wav_error(error));
+        }
         Ok(frames)
     }
+
+    fn discard_cursor(&mut self) {
+        self.failed_file = self
+            .reader
+            .take()
+            .map(|reader| reader.into_inner().into_inner());
+    }
+}
+
+fn wav_decoder_unavailable() -> AudioError {
+    AudioError::Malformed("seek required after a failed WAV read".into())
 }
 
 // ----------------------------------------------------------------------------------- symphonia
@@ -316,6 +389,8 @@ struct Sym {
     /// a seek's landing point and its target, and the encoder delay at the start of a file).
     target: u64,
     ended: bool,
+    /// A duration declared by the container, excluding inferred packet counts or estimates.
+    declared_frames: Option<u64>,
 }
 
 fn map_sym(e: SymError) -> AudioError {
@@ -330,8 +405,23 @@ fn map_sym(e: SymError) -> AudioError {
 }
 
 impl Sym {
-    fn open(path: &Path, expected: Format) -> Result<(AudioInfo, Sym), AudioError> {
-        let (mut format, mut decoder, track_id) = Self::probe(path)?;
+    fn open(path: &Path, mut file: File, expected: Format) -> Result<(AudioInfo, Sym), AudioError> {
+        let mp3_declared = if expected == Format::Mp3 {
+            // Symphonia estimates the duration of seekable MP3s without a duration tag. Inspect
+            // the same file as a stream to find out which length is declared in its metadata.
+            let declared = Self::probe_format(path, Box::new(ReadOnlySource::new(&mut file)))
+                .ok()
+                .and_then(|format| {
+                    format
+                        .default_track(TrackType::Audio)
+                        .and_then(|track| track.num_frames)
+                });
+            file.rewind()?;
+            declared
+        } else {
+            None
+        };
+        let (mut format, mut decoder, track_id) = Self::probe(path, file)?;
         let track = format
             .tracks()
             .iter()
@@ -345,7 +435,12 @@ impl Sym {
             .ok_or_else(|| AudioError::Unsupported("no audio codec parameters".into()))?;
         let mut sample_rate = params.sample_rate;
         let mut source_channels = params.channels.as_ref().map(|c| c.count());
-        let mut frames = track.num_frames;
+        let frames = track.num_frames;
+        let declared_frames = if expected == Format::Mp3 {
+            frames.filter(|&n| mp3_declared == Some(n))
+        } else {
+            frames
+        };
         // Rate or channels missing from the header: they are in the first decoded packet.
         let mut planar = Vec::new();
         if sample_rate.is_none() || source_channels.is_none() {
@@ -369,10 +464,6 @@ impl Sym {
         if sample_rate > MAX_SAMPLE_RATE {
             return Err(AudioError::Unsupported(format!("{sample_rate} Hz")));
         }
-        if frames.is_none() {
-            // No length in the container: add up the packet durations (no decoding), then rewind.
-            frames = Some(Self::sum_packets(path, track_id, time_base, sample_rate)?);
-        }
         let mut sym = Sym {
             format,
             decoder,
@@ -385,14 +476,23 @@ impl Sym {
             pending_pos: 0,
             target: 0,
             ended: false,
+            declared_frames,
         };
-        // Probing consumed packets: start over from the top.
+        // Probing consumed packets. Start at the top, including before any duration scan.
         sym.rewind()?;
+        let frames = match frames {
+            Some(frames) => frames,
+            None => {
+                let frames = sym.sum_packets()?;
+                sym.rewind()?;
+                frames
+            }
+        };
         let info = AudioInfo {
             sample_rate,
             channels: sym.channels,
             source_channels,
-            frames: frames.unwrap_or(0),
+            frames,
             format: expected,
         };
         Ok((info, sym))
@@ -401,24 +501,9 @@ impl Sym {
     #[allow(clippy::type_complexity)]
     fn probe(
         path: &Path,
+        file: File,
     ) -> Result<(Box<dyn FormatReader>, Box<dyn AudioDecoder>, u32), AudioError> {
-        let file = File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-        let format = symphonia::default::get_probe()
-            .probe(
-                &hint,
-                mss,
-                FormatOptions::default(),
-                MetadataOptions::default(),
-            )
-            .map_err(|e| match e {
-                SymError::Unsupported(_) => AudioError::Unsupported("unknown audio format".into()),
-                e => map_sym(e),
-            })?;
+        let format = Self::probe_format(path, Box::new(file))?;
         let track = format
             .default_track(TrackType::Audio)
             .ok_or_else(|| AudioError::Unsupported("no audio track".into()))?;
@@ -437,17 +522,33 @@ impl Sym {
         Ok((format, decoder, track_id))
     }
 
-    /// Length in frames from the packet durations, reading the file once without decoding.
-    fn sum_packets(
+    fn probe_format<'a>(
         path: &Path,
-        track_id: u32,
-        time_base: Option<TimeBase>,
-        rate: u32,
-    ) -> Result<u64, AudioError> {
-        let (mut format, _decoder, _) = Self::probe(path)?;
+        media: Box<dyn MediaSource + 'a>,
+    ) -> Result<Box<dyn FormatReader + 'a>, AudioError> {
+        let mss = MediaSourceStream::new(media, Default::default());
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        symphonia::default::get_probe()
+            .probe(
+                &hint,
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|e| match e {
+                SymError::Unsupported(_) => AudioError::Unsupported("unknown audio format".into()),
+                e => map_sym(e),
+            })
+    }
+
+    /// Length in frames from the packet durations, reading the file once without decoding.
+    fn sum_packets(&mut self) -> Result<u64, AudioError> {
         let mut ticks = 0u64;
-        while let Some(packet) = format.next_packet().map_err(map_sym)? {
-            if packet.track_id == track_id {
+        while let Some(packet) = self.format.next_packet().map_err(map_sym)? {
+            if packet.track_id == self.track_id {
                 let dur = packet
                     .dur
                     .saturating_sub(packet.trim_start)
@@ -458,7 +559,7 @@ impl Sym {
                     .ok_or_else(|| AudioError::Malformed("implausible length".into()))?;
             }
         }
-        Ok(ticks_to_frames(time_base, ticks, rate))
+        Ok(ticks_to_frames(self.time_base, ticks, self.sample_rate))
     }
 
     fn rewind(&mut self) -> Result<(), AudioError> {
