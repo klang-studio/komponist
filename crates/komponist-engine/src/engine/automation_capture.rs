@@ -73,6 +73,10 @@ impl Core {
     ) {
         let rate = f64::from(self.sample_rate);
         let tick = self.transport.tick(&self.song, rate);
+        let fractional_tick = self
+            .song
+            .map
+            .samples_to_ticks(self.transport.pos as f64, rate);
         let playing = self.transport.playing() && !self.offline;
         let time = self.automation_time;
         let Some((lanes, state)) = self.locate_automation(owner) else {
@@ -93,7 +97,7 @@ impl Core {
         let notify = if begin {
             cursor.begin(lane.mode, playing, None)
         } else {
-            cursor.end(lane, tick.0 as f64, time)
+            cursor.end(lane, fractional_tick, time)
         };
         if let Some((tick, value)) = value {
             self.send(EngineEvent::AutomationValue {

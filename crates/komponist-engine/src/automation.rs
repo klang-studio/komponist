@@ -175,6 +175,24 @@ impl CompiledTarget {
         value_at_fractional(&self.points, tick).unwrap_or(self.base)
     }
 
+    fn changed_since(&self, from: f64, reference: f32, to: f64) -> bool {
+        if to <= from {
+            return false;
+        }
+        if (self.value(to) - reference).abs() > VALUE_EPSILON {
+            return true;
+        }
+        let first = self
+            .points
+            .partition_point(|point| point.tick.0 as f64 <= from);
+        let last = self
+            .points
+            .partition_point(|point| point.tick.0 as f64 <= to);
+        self.points[first..last]
+            .iter()
+            .any(|point| (point.value - reference).abs() > VALUE_EPSILON)
+    }
+
     pub(crate) fn reads(&self) -> bool {
         self.mode != AutomationMode::Off && !self.points.is_empty()
     }
@@ -259,6 +277,7 @@ enum Gesture {
     Latch,
     ReadOverride {
         reference: f32,
+        at: f64,
     },
     Return {
         from: f32,
@@ -357,6 +376,7 @@ impl Cursor {
             }
             (_, _, true) if lane.reads() => Gesture::ReadOverride {
                 reference: lane.value(tick),
+                at: tick,
             },
             _ => Gesture::Idle,
         };
@@ -411,6 +431,13 @@ impl Cursor {
         restarted
     }
 
+    fn return_end(&self, rate: f64) -> Option<u64> {
+        match self.gesture {
+            Gesture::Return { start, .. } => Some(start + return_frames(rate)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn mixer_value(
         &self,
         lane: &CompiledTarget,
@@ -427,23 +454,23 @@ impl Cursor {
         if !lane.reads() && !matches!(self.gesture, Gesture::Return { .. }) {
             return None;
         }
-        let value = lane.value(tick_at(window, sample));
+        let tick = tick_at(window, sample);
         Some(match self.gesture {
-            Gesture::ReadOverride { reference } if (reference - value).abs() <= VALUE_EPSILON => {
+            Gesture::ReadOverride { reference, at } if !lane.changed_since(at, reference, tick) => {
                 self.manual
             }
             Gesture::Return { from, start } => {
-                let frames = (window.rate * f64::from(TOUCH_RETURN_SECONDS)) as u64;
+                let frames = return_frames(window.rate);
                 let progress = time.saturating_sub(start) as f32 / frames.max(1) as f32;
                 if progress < 1.0 {
                     let end = sample
                         .saturating_add(frames.saturating_sub(time.saturating_sub(start)) as i64);
                     from + (lane.value(tick_at(window, end)) - from) * progress
                 } else {
-                    value
+                    lane.value(tick)
                 }
             }
-            _ => value,
+            _ => lane.value(tick),
         })
     }
 }
@@ -622,11 +649,15 @@ impl State {
                     window.map.tick_to_sample(tick, window.rate) < window.start
                 });
                 let mut jumps = lane.jumps[next_jump..].iter().peekable();
-                while grid < end || jumps.peek().is_some() {
+                let return_end = cursor.return_end(window.rate);
+                let mut return_at = return_end.map_or(end, |at| {
+                    window.start.saturating_add(at.saturating_sub(time) as i64)
+                });
+                while grid < end || jumps.peek().is_some() || return_at < end {
                     let jump = jumps
                         .peek()
                         .map_or(end, |&&tick| window.map.tick_to_sample(tick, window.rate));
-                    let sample = grid.min(jump);
+                    let sample = grid.min(jump).min(return_at);
                     if sample >= end {
                         break;
                     }
@@ -641,11 +672,17 @@ impl State {
                         };
                         emit(&mut cursor.last, sample, value, true);
                     } else if let Some(value) = view.mixer_value(lane, window, sample, elapsed) {
-                        emit(&mut cursor.last, sample, value, false);
+                        emit(&mut cursor.last, sample, value, sample == return_at);
+                    }
+                    if return_at == sample {
+                        return_at = end;
                     }
                     if grid == sample {
                         grid += step;
                     }
+                }
+                if return_end.is_some_and(|at| at < time + u64::from(window.frames)) {
+                    cursor.gesture = Gesture::Idle;
                 }
             }
             // Reserve every target's final emitted value even if some intermediate steps were lost.
@@ -667,12 +704,13 @@ impl State {
                     );
                 }
             }
-            if let Gesture::ReadOverride { reference } = cursor.gesture
+            if let Gesture::ReadOverride { reference, at } = cursor.gesture
                 && window.playing
-                && (lane.value(tick_at(window, window.start + i64::from(window.frames - 1)))
-                    - reference)
-                    .abs()
-                    > VALUE_EPSILON
+                && lane.changed_since(
+                    at,
+                    reference,
+                    tick_at(window, window.start + i64::from(window.frames - 1)),
+                )
             {
                 cursor.gesture = Gesture::Idle;
             }
@@ -728,6 +766,10 @@ fn index(lanes: &[CompiledTarget], target: EngineTarget) -> Option<usize> {
 
 pub(crate) fn tick_at(window: Window<'_>, sample: i64) -> f64 {
     window.map.samples_to_ticks(sample as f64, window.rate)
+}
+
+fn return_frames(rate: f64) -> u64 {
+    (rate * f64::from(TOUCH_RETURN_SECONDS)).round().max(1.0) as u64
 }
 
 pub(crate) fn ramp_step(rate: f64) -> i64 {

@@ -96,6 +96,30 @@ impl Program {
             .map(|lane| lane.base)
     }
 
+    /// Converts a control's plain value to its compiled lane domain.
+    ///
+    /// Fader and send values are in dB, pan is −1 to +1, and device values are given in
+    /// their own plain ranges. Returns `None` for an unresolved target.
+    pub fn automation_parameter_value(
+        &self,
+        owner: AutomationOwner,
+        target: &AutomationTarget,
+        plain: f64,
+    ) -> Option<f32> {
+        let lane = self
+            .automation_of(owner)?
+            .iter()
+            .find(|lane| &lane.model == target)?;
+        Some(match lane.target {
+            EngineTarget::Slot { .. } => lane.map.normalize(plain),
+            EngineTarget::Gain | EngineTarget::Send(_) => {
+                1.0 - komponist_model::params::db_to_p(plain as f32)
+            }
+            EngineTarget::Pan => (plain.clamp(-1.0, 1.0) as f32 + 1.0) * 0.5,
+            EngineTarget::Macro(_) => plain.clamp(0.0, 1.0) as f32,
+        })
+    }
+
     /// Project identity corresponding to an engine capture event.
     pub fn automation_model_target(
         &self,

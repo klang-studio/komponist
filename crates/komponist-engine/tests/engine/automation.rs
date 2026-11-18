@@ -307,10 +307,11 @@ fn short_touch_sends_begin_value_then_release_and_returns_to_existing_curve() {
         AutomationMode::Touch,
         vec![Point::linear(Tick::ZERO, 0.25)],
     );
-    let (mut rig, program, _) = rig(&project);
+    let (mut rig, program, mut log) = rig(&project);
     let target = program.automation_target(owner, &target).unwrap();
     let slot = program.slots.slot(device).unwrap();
     rig.send(Command::Play);
+    rig.process(17, 17);
     rig.send(Command::Touch {
         owner,
         target,
@@ -347,9 +348,13 @@ fn short_touch_sends_begin_value_then_release_and_returns_to_existing_curve() {
             },
         ]
     ));
-    assert_eq!(rig.l[0], 0.75);
+    assert_eq!(rig.l[17], 0.75);
     assert!((rig.l[6000] - 0.5).abs() < 0.01);
     assert_eq!(rig.l[12_499], 0.25);
+    assert_eq!(
+        core::iter::from_fn(|| log.pop().ok()).last(),
+        Some((12_017, 0, 0.25))
+    );
 }
 
 #[test]
@@ -615,4 +620,45 @@ fn locate_ends_the_pass_even_after_touch_release() {
             tick: Tick(4)
         }]
     ));
+}
+
+#[test]
+fn read_override_does_not_return_on_a_curve_that_visits_the_same_value_again() {
+    let (project, owner, device) = source();
+    let target = parameter(device, 0);
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Read,
+        vec![
+            Point::linear(Tick::ZERO, 0.25),
+            Point::linear(Tick(2), 0.25),
+            Point::linear(Tick(3), 0.8),
+            Point::linear(Tick(4), 0.25),
+        ],
+    );
+    let (mut rig, program, _) = rig(&project);
+    let target = program.automation_target(owner, &target).unwrap();
+    let slot = program.slots.slot(device).unwrap();
+    rig.send(Command::Play);
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: true,
+    });
+    rig.send(Command::SetParam {
+        slot,
+        id: 0,
+        value: 0.75,
+    });
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: false,
+    });
+    rig.process(256, 256);
+    assert_eq!(rig.l[0], 0.75); // The curve is still on the release value.
+    assert_eq!(rig.l[180], 0.25); // The curve changed, then returned within this callback.
+    assert!(rig.events.is_empty());
 }
