@@ -89,6 +89,12 @@ pub trait Processor: Send {
     /// (`compile::CompileEnv::device_latency`).
     fn latency(&self) -> u32;
 
+    /// Offline blocks for which the processor returned fallback audio. Used by renders that
+    /// must abort on incomplete processing, even when the processor can recover on the next call.
+    fn offline_failures(&self) -> u64 {
+        0
+    }
+
     /// RT. Silences all voices and clears internal state (tails, delay lines) without
     /// deallocating. Called on stop, on locate while playing and when bypass turns on. Not on a loop
     /// wrap: there only the sequenced notes end, so tails keep sounding across the loop.

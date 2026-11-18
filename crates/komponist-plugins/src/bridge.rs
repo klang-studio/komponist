@@ -413,6 +413,11 @@ impl Bridge {
         Some(request)
     }
 
+    /// Whether this request still awaits a state reply or a state error.
+    pub(crate) fn state_request_pending(&self, request: u32) -> bool {
+        self.state_requests.iter().any(|&(seq, _)| seq == request)
+    }
+
     /// Schedules a debounced `StateSnapshot`.
     pub(crate) fn snapshot_soon(&mut self) {
         if self.snapshot_due.is_none() {

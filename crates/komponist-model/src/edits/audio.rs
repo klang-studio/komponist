@@ -411,6 +411,45 @@ pub(super) fn new_audio(
     Ok((a, length))
 }
 
+/// Replaces a MIDI track's arrangement clips and device chain with a rendered audio file.
+/// Keeping its ID and channel strip preserves routing, sends and sidechains that read this track.
+pub fn flatten_midi_track(
+    project: &Project,
+    id: TrackId,
+    start: Tick,
+    file: AudioFile,
+) -> Result<(Project, ClipId), EditError> {
+    let index = project
+        .track_index(id)
+        .ok_or(EditError::TrackNotFound(id))?;
+    let source = &project.tracks[index];
+    if source.kind != TrackKind::Midi || source.clips.is_empty() {
+        return Err(EditError::Invalid(
+            "flattening requires a MIDI track with clips",
+        ));
+    }
+    let mut next = project.clone();
+    let track = Arc::make_mut(&mut next.tracks[index]);
+    track.kind = TrackKind::Audio;
+    track.channel.devices.clear();
+    track.clips.clear();
+    track.arm = false;
+    track.monitor = false;
+    track.input = Default::default();
+    track.midi_channel = Default::default();
+    track.audio = Default::default();
+    super::add_clip(
+        &next,
+        id,
+        super::NewClip {
+            name: source.name.clone(),
+            start,
+            length: Tick(i64::MAX),
+            content: super::NewClipContent::Audio { file, offset: 0 },
+        },
+    )
+}
+
 /// Clamps the length of an audio clip's window in `c` to the file ([`AudioClip::max_length`]) and
 /// its fades to the length; other clips get `length` as it is.
 pub(super) fn fit_length(c: &mut Clip, length: Tick, tempo: Tempo) -> Result<(), EditError> {

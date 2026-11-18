@@ -32,7 +32,9 @@ use komponist_ipc::shm::{
     BLOCK_FLAG_OFFLINE, BLOCK_FLAG_RESET, INPUT_EVENT_CAPACITY, MAX_BLOCK, TRANSPORT_LOOPING,
     TRANSPORT_PLAYING, TRANSPORT_RECORDING,
 };
-use komponist_ipc::{BlockError, BlockSpec, BridgeClient, WireEvent, WireEventKind, WireTransport};
+use komponist_ipc::{
+    BlockError, BlockSpec, BlockStatus, BridgeClient, WireEvent, WireEventKind, WireTransport,
+};
 use komponist_model::{DeviceRole, PPQ};
 
 use crate::manager::ProcessorSetup;
@@ -102,6 +104,8 @@ pub struct ExternalProcessor {
     pending_all_off: bool,
     /// A call started by [`Processor::begin`], completed by the next `process`.
     begun: Option<Started>,
+    /// Offline fallback blocks, including unsuccessful replies from a plugin that is still alive.
+    offline_failures: u64,
 }
 
 impl ExternalProcessor {
@@ -123,6 +127,7 @@ impl ExternalProcessor {
             pending: Vec::with_capacity(PENDING_CAPACITY),
             pending_all_off: false,
             begun: None,
+            offline_failures: 0,
         }
     }
 
@@ -278,11 +283,11 @@ impl ExternalProcessor {
     }
 
     /// RT. The second half of a call: wait for the bridge's output, or write the fallback.
-    fn finish(&mut self, started: Started, io: &mut StereoIo<'_>) -> ProcessStatus {
-        match started.outcome {
+    fn finish(&mut self, started: Started, io: &mut StereoIo<'_>, offline: bool) -> ProcessStatus {
+        let (status, fallback) = match started.outcome {
             Outcome::Fallback(status) => {
                 self.fallback(io);
-                status
+                (status, true)
             }
             Outcome::Sent { seq, deadline } => {
                 let [left, right] = &mut io.output;
@@ -292,15 +297,22 @@ impl ExternalProcessor {
                 {
                     // `PluginError` / `Inactive` results carry the bridge's own fallback in the
                     // output.
-                    Ok(_) => ProcessStatus::Continue,
+                    Ok(result) => (
+                        ProcessStatus::Continue,
+                        result.status != BlockStatus::Ok as u32,
+                    ),
                     Err(_) => {
                         self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
                         self.fallback(io);
-                        ProcessStatus::Continue
+                        (ProcessStatus::Continue, true)
                     }
                 }
             }
+        };
+        if offline && fallback {
+            self.offline_failures = self.offline_failures.wrapping_add(1);
         }
+        status
     }
 }
 
@@ -364,7 +376,7 @@ impl Processor for ExternalProcessor {
             // does with that block, its result is stale by sequence number.
             _ => self.start(ctx, events, io.input, None),
         };
-        self.finish(started, io)
+        self.finish(started, io, ctx.offline)
     }
 
     /// RT: [`Processor::process`] with the device's sidechain, which goes into the plugin's
@@ -381,7 +393,7 @@ impl Processor for ExternalProcessor {
         // number once this one goes out.
         self.begun = None;
         let started = self.start(ctx, events, io.input, Some(sidechain));
-        self.finish(started, io)
+        self.finish(started, io, ctx.offline)
     }
 
     /// RT: starts the block (wire events, `begin_block`, futex wake) so that the bridge works
@@ -394,6 +406,10 @@ impl Processor for ExternalProcessor {
     /// RT: the latency the bridge published in shared memory.
     fn latency(&self) -> u32 {
         self.client.region().latency()
+    }
+
+    fn offline_failures(&self) -> u64 {
+        self.offline_failures
     }
 
     /// RT: sets `BLOCK_FLAG_RESET` on the next block.

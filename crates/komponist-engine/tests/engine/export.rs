@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use komponist_engine::export::{
-    BitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB, Progress, export,
+    BitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB, Progress, TrackExport,
+    export, export_track,
 };
 use komponist_engine::testing::{Logged, TestSine};
 use komponist_engine::{Command, EngineEvent, Program, TransportState};
@@ -216,6 +217,118 @@ fn the_tail_starts_no_note_and_cuts_the_sounding_ones() {
     assert_eq!(onsets(&left), [0, sample(&p, BAR - 480, rate) as usize]);
     assert!(left[end - 64..end].iter().any(|&x| x != 0.0));
     assert!(left[end..].iter().all(|&x| x == 0.0), "the tail is silent");
+}
+
+#[test]
+fn export_owns_its_staging_and_preserves_existing_sibling_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.wav");
+    let sibling = dir.path().join(".out.wav.part");
+    std::fs::write(&output, b"previous export").unwrap();
+    std::fs::write(&sibling, b"unrelated file").unwrap();
+    let program = program(120.0, vec![track(1, 0, vec![note(0, 480, 60)])]);
+    let mut rig = sine_rig(RATE, &program);
+    let render = job(output.clone(), RATE, 0..48_000, 0);
+    let cancel = AtomicBool::new(false);
+    let result = export(
+        &mut rig.engine,
+        &mut rig.handle,
+        &program,
+        &render,
+        &cancel,
+        |_| {
+            cancel.store(true, Ordering::Relaxed);
+        },
+    );
+    assert!(matches!(result, Err(ExportError::Cancelled)));
+    assert_eq!(std::fs::read(&output).unwrap(), b"previous export");
+    assert_eq!(std::fs::read(&sibling).unwrap(), b"unrelated file");
+    assert_eq!(files(dir.path()), [".out.wav.part", "out.wav"]);
+    rig.engine.settle();
+
+    run(&mut rig, &program, &render).0.unwrap();
+    assert_eq!(std::fs::read(&sibling).unwrap(), b"unrelated file");
+    assert_eq!(files(dir.path()), [".out.wav.part", "out.wav"]);
+    assert_eq!(read(&output).frames, 48_000);
+}
+
+#[test]
+fn track_export_restores_the_other_live_tracks_after_success_and_cancel() {
+    use komponist_engine::compile::{self, NoEnv};
+    use komponist_model::edits::{NewClip, NewClipContent, NewNote, NewTrack, add_clip, add_track};
+    use komponist_model::{PluginFormat, PluginRef, Project};
+
+    let empty_track = NewTrack {
+        name: None,
+        hue: None,
+        index: None,
+        arm_exclusive: false,
+        instrument: None,
+    };
+    let (project, target) = add_track(&Project::new("Track render"), empty_track.clone()).unwrap();
+    let (project, neighbour) = add_track(
+        &project,
+        NewTrack {
+            instrument: Some(PluginRef {
+                format: PluginFormat::Builtin,
+                id: "test-sine".into(),
+                name: "Sine".into(),
+                vendor: String::new(),
+                version: String::new(),
+                module: "".into(),
+            }),
+            ..empty_track
+        },
+    )
+    .unwrap();
+    let notes = NewClip {
+        start: Tick::ZERO,
+        length: Tick(480),
+        name: "MIDI".into(),
+        content: NewClipContent::Midi {
+            notes: vec![NewNote {
+                start: Tick::ZERO,
+                length: Tick(480),
+                pitch: 60,
+                velocity: 127,
+            }],
+            take_name: String::new(),
+        },
+    };
+    let (project, _) = add_clip(&project, target, notes.clone()).unwrap();
+    let (project, _) = add_clip(&project, neighbour, notes).unwrap();
+    let live = compile::build(&project, None, &NoEnv);
+    let slot = live.track(neighbour).unwrap().chain[0].slot;
+    let scoped = TrackExport::new(&project, target).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for should_cancel in [false, true] {
+        let mut rig = Rig::new(RATE, 2048);
+        rig.insert(slot.0, TestSine::new());
+        rig.set_program(&live);
+        let path = dir.path().join(format!("track-{should_cancel}.wav"));
+        let job = job(path.clone(), RATE, 0..12_000, 0);
+        let cancel = AtomicBool::new(false);
+        let result = export_track(
+            &mut rig.engine,
+            &mut rig.handle,
+            &live,
+            (&scoped, &project),
+            &job,
+            &cancel,
+            |_| cancel.store(should_cancel, Ordering::Relaxed),
+        );
+        if should_cancel {
+            assert!(matches!(result, Err(ExportError::Cancelled)));
+            assert!(!path.exists());
+        } else {
+            assert_eq!(result.unwrap().frames, 12_000);
+            assert!(read(&path).samples.iter().all(|&sample| sample == 0.0));
+        }
+        // No app-level SetProgram command: the neighbouring instrument must audible immediately.
+        rig.send(Command::Play);
+        let played = rig.process(512, 512);
+        assert!(rig.l[played].iter().any(|sample| sample.abs() > 0.1));
+    }
 }
 
 #[test]

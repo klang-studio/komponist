@@ -234,6 +234,28 @@ impl App {
         self.audio_recording.folder()
     }
 
+    /// A destination for generated audio, with the same first-save migration as a take.
+    pub(crate) fn generated_audio_folder(&self) -> std::io::Result<(PathBuf, bool)> {
+        if let Some(directory) = self.project_dir() {
+            let target = directory.join("Takes");
+            std::fs::create_dir_all(&target)?;
+            return Ok((target, false));
+        }
+        let root = self
+            .audio_recording
+            .root_override
+            .clone()
+            .or_else(files::provisional_root)
+            .ok_or_else(|| std::io::Error::other(self.lang.audio_record_folder_unavailable()))?;
+        std::fs::create_dir_all(&root)?;
+        Ok((root, true))
+    }
+
+    /// Owns an unsaved render until the project is saved, including across undo and redo.
+    pub(crate) fn track_provisional_audio(&mut self, path: PathBuf) {
+        self.audio_recording.provisional.insert(path);
+    }
+
     pub(crate) fn prepare_audio_take(&mut self, from: Tick) -> bool {
         if self.audio_recording.capture.is_some() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);

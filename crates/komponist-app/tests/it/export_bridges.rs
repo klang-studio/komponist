@@ -11,10 +11,10 @@ use common::*;
 use komponist_app::actions::{ExportRange, ExportSettings};
 use komponist_app::device_host::PluginHost;
 use komponist_app::settings;
-use komponist_app::{Action, ProjectAction, TransportAction};
+use komponist_app::{Action, EditAction, ProjectAction, TransportAction};
 use komponist_engine::TransportState;
 use komponist_engine::export::ExportJob;
-use komponist_model::{Project, Tick, TickRange};
+use komponist_model::{ClipContent, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
 const BAR: i64 = 3840;
@@ -46,14 +46,9 @@ fn read(path: &std::path::Path) -> (hound::WavSpec, Vec<f32>) {
     (spec, samples)
 }
 
-#[test]
-fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
-    let Some(dirs) = fixture_dirs() else {
-        return;
-    };
-    let dir = scratch("export-bridges");
-    let mut host = PluginHost::new(config(&dir));
-    komponist_app::device_host::DeviceHost::start_scan(&mut host, &dirs);
+fn scanned_host(dir: &std::path::Path, dirs: &komponist_plugins::PluginDirs) -> PluginHost {
+    let mut host = PluginHost::new(config(dir));
+    komponist_app::device_host::DeviceHost::start_scan(&mut host, dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {
         for event in komponist_app::device_host::DeviceHost::poll(&mut host) {
@@ -64,6 +59,16 @@ fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
         assert!(Instant::now() < deadline, "scan");
         std::thread::sleep(Duration::from_millis(5));
     }
+    host
+}
+
+#[test]
+fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
+    let Some(dirs) = fixture_dirs() else {
+        return;
+    };
+    let dir = scratch("export-bridges");
+    let host = scanned_host(&dir, &dirs);
     let mut app = app_with(pad_bar(), host);
     app.step();
     let bridged = bridged(app.project());
@@ -149,5 +154,40 @@ fn bridges_load_reactivate_at_the_export_rate_and_sound_from_the_first_note() {
         a.transport() == TransportState::Playing && a.engine().playhead() > Tick::ZERO
     });
     app.dispatch(Action::Transport(TransportAction::TogglePlay));
+    app.shutdown();
+}
+
+#[test]
+fn flatten_reactivates_the_bridges_and_undo_restores_their_states() {
+    let Some(dirs) = fixture_dirs() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let host = scanned_host(dir.path(), &dirs);
+    let project = pad_bar();
+    let track = project.tracks[0].id;
+    let mut app =
+        app_with(project.clone(), host).with_recording_directory(dir.path().join("audio"));
+    app.step();
+    app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
+    step_until(&mut app, "flatten finished", |app| !app.is_exporting());
+    let clip = &app.project().track(track).unwrap().clips[0];
+    let ClipContent::Audio(audio) = &clip.content else {
+        panic!("flatten failed: {:?}", app.ui().status);
+    };
+    let wav = crate::export::read(&audio.file.abs);
+    assert!(rms(&wav.samples[512..8192]) > 0.01);
+    app.dispatch(Action::Edit(EditAction::Undo));
+    let restored = app.project().track(track).unwrap();
+    assert_eq!(restored.clips, project.tracks[0].clips);
+    assert_eq!(restored.channel.devices.len(), 3);
+    assert!(
+        restored
+            .channel
+            .devices
+            .iter()
+            .all(|device| device.state.is_some())
+    );
+    step_until(&mut app, "undo bridge state", all_ok);
     app.shutdown();
 }

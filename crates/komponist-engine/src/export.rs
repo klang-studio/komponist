@@ -20,9 +20,9 @@
 //!    call it reports [`Progress`]; before every call it checks the cancel flag.
 //! 3. Peak → optional normalisation ([`normalize_gain`]) → TPDF dither ([`tpdf`], 16 and 24 bit
 //!    only; float is never dithered) → quantisation ([`quantize`]) → WAV. The file is written as
-//!    a hidden `.<name>.part` next to the target and renamed onto it when complete, so a cancel or
-//!    an error leaves no partial file (and an existing file at the target untouched). The `.part`
-//!    file is created before step 1, so an unwritable target fails before anything changes.
+//!    an exclusively created file in a private staging directory next to the target. It is
+//!    renamed onto the target when complete. Cancellation or errors remove the staging directory
+//!    and preserve any existing export. Staging is created before step 1.
 //! 4. Queues `Stop` twice (hard cut: the export's tail never rings on), `SetProgram` with the caller's program and `Locate` to the playhead from
 //!    before the export, whatever the outcome. They take effect at the engine's next call, so the
 //!    transport is stopped where it was (ARCHITECTURE §6.7: the transport stops during export).
@@ -56,7 +56,6 @@
 //! Selection = the selection's time range, each converted with [`ExportJob::frames_of`]; the tail
 //! ("Nachlauf") with [`ExportJob::tail_frames`]; "Normalisieren" = [`NORMALIZE_TARGET_DB`].
 
-use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -77,11 +76,20 @@ use crate::compile::{self, CompileEnv};
 use crate::engine::Engine;
 use crate::program::{MidiPort, Program, SeqNote, TrackProgram};
 
+mod track;
+pub use track::TrackExport;
+
 /// Peak level of "Normalisieren" (S08) in dBFS.
 pub const NORMALIZE_TARGET_DB: f32 = -1.0;
 
 /// Default "Nachlauf" (S08) in seconds.
 pub const DEFAULT_TAIL_SECONDS: f32 = 2.0;
+
+/// Maximum tail for a flattened track, including sustained or self-oscillating effects.
+pub const TRACK_TAIL_SECONDS: f32 = 30.0;
+
+/// Leave this much padding after the last signal so whole-tick clip lengths preserve the decay.
+const TRACK_END_PADDING_SECONDS: f32 = 0.1;
 
 /// Seed of the dither noise, so the same render always gives the same file.
 const DITHER_SEED: u32 = 0x5eed_d17e;
@@ -185,6 +193,10 @@ pub enum ExportError {
     Cancelled,
     /// The job's range ends before it starts. Nothing was changed.
     InvalidRange,
+    /// The requested MIDI track has no clips or could not be compiled on its own.
+    InvalidTrack,
+    /// A device required for a track render was missing or failed while processing.
+    DeviceFailed(DeviceId),
     /// The engine runs at another rate than the job asks for. Nothing was changed.
     SampleRate {
         /// The engine's rate in Hz.
@@ -212,6 +224,10 @@ impl fmt::Display for ExportError {
         match self {
             ExportError::Cancelled => f.write_str("export cancelled"),
             ExportError::InvalidRange => f.write_str("export range ends before it starts"),
+            ExportError::InvalidTrack => f.write_str("MIDI track could not be rendered"),
+            ExportError::DeviceFailed(device) => {
+                write!(f, "render processor {} unavailable", device.0)
+            }
             ExportError::SampleRate { engine, job } => write!(
                 f,
                 "the engine runs at {engine} Hz, the export asks for {job} Hz"
@@ -256,6 +272,43 @@ pub fn export(
     program: &Program,
     job: &ExportJob,
     cancel: &AtomicBool,
+    progress: impl FnMut(Progress),
+) -> Result<ExportReport, ExportError> {
+    export_inner(engine, handle, program, job, None, cancel, progress)
+}
+
+/// Renders one MIDI track using its live processor slots, before the channel strip. Processes
+/// its sidechain dependencies as control signals, and fails if a required processor drops out.
+/// Queues the live program again after rendering on success, cancellation or error.
+pub fn export_track(
+    engine: &mut Engine,
+    handle: &mut EngineHandle,
+    program: &Program,
+    track: (&TrackExport, &Project),
+    job: &ExportJob,
+    cancel: &AtomicBool,
+    progress: impl FnMut(Progress),
+) -> Result<ExportReport, ExportError> {
+    let (track, project) = track;
+    let compiled = track.compile(engine, project, program)?;
+    export_inner(
+        engine,
+        handle,
+        &compiled,
+        job,
+        Some((track, program)),
+        cancel,
+        progress,
+    )
+}
+
+fn export_inner(
+    engine: &mut Engine,
+    handle: &mut EngineHandle,
+    program: &Program,
+    job: &ExportJob,
+    track_render: Option<(&TrackExport, &Program)>,
+    cancel: &AtomicBool,
     mut progress: impl FnMut(Progress),
 ) -> Result<ExportReport, ExportError> {
     if job.range.end < job.range.start {
@@ -281,17 +334,32 @@ pub fn export(
     if handle.commands.slots() < COMMANDS {
         return Err(ExportError::QueueFull);
     }
-    check_audio_files(program, job)?;
-    let output = Output::create(job)?;
+    let (track, restore) =
+        track_render.map_or((None, program), |(track, live)| (Some(track), live));
     let map = &program.tempo_map;
     let rate = f64::from(job.sample_rate);
-    let (from, preroll) = locate_point(map, rate, job.range.start);
+    let start = track.map_or(job.range.start, |track| {
+        (map.tick_to_sample(track.preroll(), rate).max(0) as u64).min(job.range.start)
+    });
+    let (from, preroll) = locate_point(map, rate, start);
     // The sound of song frame f leaves the master at f + latency: skip that many more frames, so
     // the file lines up with the song timeline and the delayed tail is rendered in full.
-    let preroll = preroll + engine.project_latency(program);
+    let preroll = preroll + (job.range.start - start) + engine.project_latency(program);
     let end = end_tick(map, rate, job.range.end);
     let playhead = handle.telemetry().playhead();
-    let exporting = export_program(program, end, job.range.end as i64);
+    let exporting = export_program(program, end, job.range.end as i64, track);
+    let render_frames = start as i64..(job.range.end + job.tail) as i64;
+    check_audio_files(
+        if track.is_some() { &exporting } else { program },
+        &render_frames,
+    )?;
+    let output = Output::create(job)?;
+    let devices = track
+        .into_iter()
+        .flat_map(TrackExport::devices)
+        .filter_map(|id| program.slots.slot(id).map(|slot| (id, slot)))
+        .map(|(id, slot)| (id, slot, engine.processor_offline_failures(slot)))
+        .collect::<Vec<_>>();
     let failures: Vec<_> = exporting
         .tracks
         .iter()
@@ -300,13 +368,30 @@ pub fn export(
             plan.segments()
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| {
-                    s.start < (job.range.end + job.tail) as i64 && s.end > job.range.start as i64
-                })
+                .filter(|(_, s)| s.start < render_frames.end && s.end > render_frames.start)
                 .map(|(i, s)| (Arc::clone(plan), i, s.clip))
                 .collect::<Vec<_>>()
         })
         .collect();
+    let check = |engine: &Engine| {
+        for &(device, slot, initial) in &devices {
+            if initial.is_none() || engine.processor_offline_failures(slot) != initial {
+                return Err(ExportError::DeviceFailed(device));
+            }
+        }
+        for (plan, i, clip) in &failures {
+            if plan.failure_count(*i) != 0 {
+                return Err(ExportError::Stretch {
+                    clip: *clip,
+                    reason: plan
+                        .failure_reason(*i)
+                        .unwrap_or(crate::audio::StretchError::Backend),
+                });
+            }
+        }
+        Ok(())
+    };
+    check(engine)?;
     send_all(
         handle,
         [
@@ -318,15 +403,23 @@ pub fn export(
             Command::Play,
         ],
     )?;
-    let result = render(engine, job, preroll, cancel, &mut progress, &failures)
-        .and_then(|(samples, peak)| output.write(job, samples, peak, cancel));
+    let result = render(
+        engine,
+        job,
+        preroll,
+        cancel,
+        &mut progress,
+        check,
+        track.is_some(),
+    )
+    .and_then(|(samples, peak)| output.write(job, samples, peak, cancel));
     let restored = send_all(
         handle,
         [
             // The export's tail is not for the speakers: hard cut.
             Command::Stop,
             Command::Stop,
-            Command::SetProgram(Box::new(program.clone())),
+            Command::SetProgram(Box::new(restore.clone())),
             Command::Locate(playhead),
         ],
     );
@@ -390,11 +483,10 @@ impl CompileEnv for EngineEnv<'_> {
 /// The audio files the clips in the render's range play must be there (looked for right now, no
 /// retry delay): an export would be silent where a clip is, and the user should hear about it
 /// before, not find out in the file.
-fn check_audio_files(program: &Program, job: &ExportJob) -> Result<(), ExportError> {
-    let (from, to) = (job.range.start as i64, (job.range.end + job.tail) as i64);
+fn check_audio_files(program: &Program, frames: &Range<i64>) -> Result<(), ExportError> {
     for plan in program.tracks.iter().filter_map(|t| t.audio.as_ref()) {
         for segment in plan.segments() {
-            if segment.start < to && segment.end > from {
+            if segment.start < frames.end && segment.end > frames.start {
                 let source = &plan.sources()[segment.source as usize];
                 if source.open_now() != SourceStatus::Ready {
                     return Err(ExportError::MissingAudio(source.link().abs.clone()));
@@ -448,13 +540,20 @@ fn end_tick(map: &TempoMap, rate: f64, end: u64) -> Tick {
 
 /// The program the export plays: `program` with loop and metronome off, without notes starting
 /// at or after `end`, notes sounding at `end` cut there, and fresh track meters.
-fn export_program(program: &Program, end: Tick, audio_end: i64) -> Program {
+fn export_program(
+    program: &Program,
+    end: Tick,
+    audio_end: i64,
+    target: Option<&TrackExport>,
+) -> Program {
     let tracks = program
         .tracks
         .iter()
         .map(|track| {
+            // Dependency tracks may continue feeding the target's sidechains during its tail.
+            let limit = target.is_none_or(|target| track.id == target.id());
             let inside = |n: &SeqNote| n.start.0 + n.length.0 <= end.0;
-            let notes = if track.notes.iter().all(inside) {
+            let notes = if !limit || track.notes.iter().all(inside) {
                 Arc::clone(&track.notes)
             } else {
                 track
@@ -468,7 +567,10 @@ fn export_program(program: &Program, end: Tick, audio_end: i64) -> Program {
                     .collect()
             };
             // Audio is cut at the exact sample boundary. Its offline plan owns a fresh ring.
-            let audio = track.audio.as_ref().map(|plan| plan.for_export(audio_end));
+            let audio = track
+                .audio
+                .as_ref()
+                .map(|plan| plan.for_export(if limit { audio_end } else { i64::MAX }));
             Arc::new(TrackProgram {
                 notes,
                 meter: Arc::new(TrackMeter::new()),
@@ -499,21 +601,9 @@ fn render(
     preroll: u64,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(Progress),
-    failures: &[(Arc<crate::AudioPlan>, usize, komponist_model::ClipId)],
+    check: impl Fn(&Engine) -> Result<(), ExportError>,
+    track_tail: bool,
 ) -> Result<(Vec<f32>, f32), ExportError> {
-    let check = || -> Result<(), ExportError> {
-        for (plan, i, clip) in failures {
-            if plan.failure_count(*i) != 0 {
-                return Err(ExportError::Stretch {
-                    clip: *clip,
-                    reason: plan
-                        .failure_reason(*i)
-                        .unwrap_or(crate::audio::StretchError::Backend),
-                });
-            }
-        }
-        Ok(())
-    };
     let too_long = || io::Error::new(io::ErrorKind::OutOfMemory, "export too long for memory");
     let len = usize::try_from(job.frames())
         .ok()
@@ -528,10 +618,12 @@ fn render(
         }
         let n = skip.min(MAX_BLOCK as u64) as usize;
         render_block(engine, n);
-        check()?;
+        check(engine)?;
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
+    let body = ((job.range.end - job.range.start) as usize) * 2;
+    let mut last_signal = body;
     while samples.len() < len {
         if cancel.load(Ordering::Relaxed) {
             return Err(ExportError::Cancelled);
@@ -539,31 +631,48 @@ fn render(
         let n = MAX_BLOCK.min((len - samples.len()) / 2);
         let first = samples.len();
         samples.extend_from_slice(render_block(engine, n));
-        check()?;
-        for s in &mut samples[first..] {
+        check(engine)?;
+        for (i, s) in samples[first..].iter_mut().enumerate() {
             if !s.is_finite() {
                 *s = 0.0;
             }
             peak = peak.max(s.abs());
+            if track_tail && *s != 0.0 {
+                last_signal = last_signal.max(first + i + 1);
+            }
         }
         progress(Progress {
             fraction: (samples.len() as f64 / len as f64) as f32,
             peak_db: gain_to_db(peak),
         });
     }
+    if track_tail {
+        // Effects can produce sound after a silent gap. Inspect the whole budget before trimming.
+        let padding =
+            ExportJob::tail_frames(TRACK_END_PADDING_SECONDS, job.sample_rate) as usize * 2;
+        samples.truncate(last_signal.next_multiple_of(2).saturating_add(padding));
+    }
     Ok((samples, peak))
 }
 
 /// The open temporary file of an export.
 struct Output {
-    // Dropped first: the writer closes its file before the part file is removed.
+    // Dropped first: the writer closes its file before the directory is removed.
     writer: hound::WavWriter<io::BufWriter<fs::File>>,
-    part: Part,
+    staging: tempfile::TempDir,
 }
 
+const STAGING_WAV: &str = "audio.wav";
+
 impl Output {
-    /// Creates the part file next to the target and writes the WAV header for `job`.
+    /// Creates and holds the staging file before writing the WAV header.
     fn create(job: &ExportJob) -> io::Result<Output> {
+        if job.path.file_name().is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "export path has no file name",
+            ));
+        }
         let spec = hound::WavSpec {
             channels: 2,
             sample_rate: job.sample_rate,
@@ -573,12 +682,28 @@ impl Output {
                 BitDepth::Int16 | BitDepth::Int24 => hound::SampleFormat::Int,
             },
         };
-        let part = Part::new(&job.path)?;
-        let writer = hound::WavWriter::create(&part.path, spec).map_err(wav_error)?;
-        Ok(Output { writer, part })
+        let parent = job
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(".komponist-export-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        let staging = builder.tempdir_in(parent)?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(staging.path().join(STAGING_WAV))?;
+        let writer = hound::WavWriter::new(io::BufWriter::new(file), spec).map_err(wav_error)?;
+        Ok(Output { writer, staging })
     }
 
-    /// Normalises, dithers, quantises and writes `samples` (peak `peak`), then renames the part
+    /// Normalises, dithers, quantises and writes `samples` (peak `peak`), then renames the staged
     /// file onto the target.
     fn write(
         mut self,
@@ -587,6 +712,7 @@ impl Output {
         peak: f32,
         cancel: &AtomicBool,
     ) -> Result<ExportReport, ExportError> {
+        let frames = samples.len() as u64 / 2;
         let gain = job.normalize.map_or(1.0, |db| normalize_gain(peak, db));
         if gain != 1.0 {
             scale(&mut samples, gain);
@@ -617,11 +743,14 @@ impl Output {
         if cancel.load(Ordering::Relaxed) {
             return Err(ExportError::Cancelled);
         }
-        let Output { writer, part } = self;
+        let Output { writer, staging } = self;
         writer.finalize().map_err(wav_error)?;
-        part.commit()?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
+        }
+        fs::rename(staging.path().join(STAGING_WAV), &job.path)?;
         Ok(ExportReport {
-            frames: job.frames(),
+            frames,
             peak_db: gain_to_db(peak),
             gain_db: if gain == 1.0 { 0.0 } else { gain_to_db(gain) },
         })
@@ -633,46 +762,6 @@ fn wav_error(error: hound::Error) -> io::Error {
     match error {
         hound::Error::IoError(error) => error,
         other => io::Error::other(other),
-    }
-}
-
-/// The hidden temporary file `.<name>.part` next to the export target. Removed when dropped,
-/// unless [`Part::commit`] renamed it onto the target.
-struct Part {
-    path: PathBuf,
-    target: PathBuf,
-    done: bool,
-}
-
-impl Part {
-    fn new(target: &Path) -> io::Result<Part> {
-        let name = target.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "export path has no file name")
-        })?;
-        let mut part = OsString::from(".");
-        part.push(name);
-        part.push(".part");
-        Ok(Part {
-            path: target.with_file_name(part),
-            target: target.to_owned(),
-            done: false,
-        })
-    }
-
-    /// Renames the complete file onto the target.
-    fn commit(mut self) -> io::Result<()> {
-        fs::rename(&self.path, &self.target)?;
-        self.done = true;
-        Ok(())
-    }
-}
-
-impl Drop for Part {
-    fn drop(&mut self) {
-        if !self.done {
-            // Nothing to do if it was never created.
-            let _ = fs::remove_file(&self.path);
-        }
     }
 }
 
@@ -1020,7 +1109,7 @@ mod tests {
             slots: Arc::new(SlotMap::default()),
             routing: Default::default(),
         };
-        let export = export_program(&program, Tick(1000), 25_000);
+        let export = export_program(&program, Tick(1000), 25_000, None);
         assert!(!export.loop_on && !export.metronome);
         assert_eq!(export.song_end, program.song_end);
         assert_eq!(
@@ -1037,7 +1126,7 @@ mod tests {
             &program.tracks[1].meter
         ));
         assert!(
-            export_program(&program, Tick(0), 0)
+            export_program(&program, Tick(0), 0, None)
                 .tracks
                 .iter()
                 .all(|t| t.notes.is_empty())

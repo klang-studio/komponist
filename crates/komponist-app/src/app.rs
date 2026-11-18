@@ -1557,6 +1557,7 @@ impl App {
                     self.select_tracks(vec![id], SelectMode::Replace);
                 }
             }
+            EditAction::FlattenMidiTrack(track) => self.start_flatten(track),
             EditAction::RemoveTracks(tracks) => {
                 if self.apply("undo-delete-tracks", |p| edits::remove_tracks(p, &tracks)) {
                     self.prune_selection();
@@ -2317,18 +2318,7 @@ impl App {
                     self.cancel_export();
                     return;
                 }
-                // Esc reaches both the keymap and the modal; the second close changes nothing.
-                if self.ui.dialog.take().is_none() {
-                    return;
-                }
-                self.ui.focus = self
-                    .shell
-                    .focus_before_dialog
-                    .take()
-                    .unwrap_or(FocusArea::Arrangement);
-                if let Some(next) = self.dialogs.queued.take() {
-                    self.open_dialog(next);
-                }
+                self.close_modal_dialog();
             }
             UiAction::ToggleKeyboardMidi => {
                 self.ui.keyboard_midi = !self.ui.keyboard_midi;
@@ -2437,11 +2427,42 @@ impl App {
         }
     }
 
+    /// Removes the modal it owns, preserving any file or unsaved-changes overlay above it.
+    pub(crate) fn close_modal_dialog(&mut self) {
+        // Esc reaches both the keymap and the modal; the second close changes nothing.
+        if self.ui.dialog.take().is_none() {
+            return;
+        }
+        let focus = self
+            .shell
+            .focus_before_dialog
+            .take()
+            .unwrap_or(FocusArea::Arrangement);
+        if self.dialogs.overlay.is_some() {
+            if self.dialogs.overlay_focus == Some(FocusArea::Dialog) {
+                self.dialogs.overlay_focus = Some(focus);
+            }
+        } else {
+            self.ui.focus = focus;
+            self.open_queued_dialog();
+        }
+    }
+
+    pub(crate) fn open_queued_dialog(&mut self) {
+        if self.ui.dialog.is_none()
+            && let Some(next) = self.dialogs.queued.take()
+        {
+            self.open_dialog(next);
+        }
+    }
+
     pub(crate) fn open_dialog(&mut self, dialog: Dialog) {
         // The export dialog shows the progress and Esc cancels: another dialog (S06 after a late
         // scan, Strg , settings) waits until it closes.
-        if self.export.is_active() && matches!(self.ui.dialog, Some(Dialog::Export(_))) {
-            if !matches!(dialog, Dialog::Export(_)) {
+        if self.export.is_active()
+            && matches!(self.ui.dialog, Some(Dialog::Export(_) | Dialog::Flatten))
+        {
+            if !matches!(dialog, Dialog::Export(_) | Dialog::Flatten) {
                 self.dialogs.queued = Some(dialog);
             }
             return;

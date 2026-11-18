@@ -41,8 +41,9 @@ pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
 
 pub use audio::{
     AudioClipProp, NewAudioTrack, add_audio_take, add_audio_track, add_audio_track_in,
-    remove_audio_take, rename_audio_take, rewrite_audio_files, select_audio_take,
-    set_audio_clip_file, set_audio_clip_prop, set_audio_clip_warp, trim_audio_clip_start,
+    flatten_midi_track, remove_audio_take, rename_audio_take, rewrite_audio_files,
+    select_audio_take, set_audio_clip_file, set_audio_clip_prop, set_audio_clip_warp,
+    trim_audio_clip_start,
 };
 
 pub use routes::{

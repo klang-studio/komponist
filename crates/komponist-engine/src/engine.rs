@@ -489,6 +489,16 @@ impl Engine {
             .map_or(0, |p| p.latency())
     }
 
+    /// A processor's offline fallback count, or None if it is missing or has failed.
+    pub(crate) fn processor_offline_failures(&self, slot: SlotId) -> Option<u64> {
+        self.core
+            .slots
+            .get(slot.0 as usize)
+            .filter(|slot| !slot.failed)
+            .and_then(|slot| slot.processor.as_ref())
+            .map(|processor| processor.offline_failures())
+    }
+
     /// Non-RT (engine out of the audio callback). Applies the queued commands: renders single
     /// frames until the queue is empty (at most a few rounds: a command that retires garbage waits
     /// while nobody collects it), so processors report the latency their parameters give them and

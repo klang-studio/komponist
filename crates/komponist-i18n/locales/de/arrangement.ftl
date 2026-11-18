@@ -98,5 +98,6 @@ arrangement-delete = Löschen
 
 # Accessible name of the header context menu of a track.
 arrangement-track-menu = Spur
+arrangement-flatten-track = In Audiospur umwandeln
 
 arrangement-new-track-hint-audio = Instrument oder Audio-Datei hierher ziehen · { $midi } · { $audio }

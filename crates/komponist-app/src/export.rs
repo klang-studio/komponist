@@ -49,12 +49,12 @@ use std::time::{Duration, Instant};
 
 use komponist_engine::export::{
     BitDepth as EngineBitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB,
-    Progress, export, recompile,
+    Progress, TrackExport, export, export_track, recompile,
 };
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
 use komponist_model::format::fmt_bar_pos;
-use komponist_model::{Project, Tick, TickRange};
+use komponist_model::{ClipId, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
@@ -68,6 +68,9 @@ use crate::engine_sync::DetachedEngine;
 use crate::ui_state::{
     Dialog, ExportDialog, ExportProgress, ExportStage, StatusKind, StatusMessage,
 };
+
+mod flatten;
+use flatten::Flatten;
 
 /// How long the export waits for devices re-activating at the export rate before it renders
 /// without them (fallback audio).
@@ -107,6 +110,11 @@ impl Exports {
     /// Whether an export runs (devices, render).
     pub(crate) fn is_active(&self) -> bool {
         self.run.is_some()
+    }
+
+    /// Whether a render is preparing to replace a track of the current project.
+    pub(crate) fn is_flattening(&self) -> bool {
+        self.run.as_ref().is_some_and(|run| run.flatten.is_some())
     }
 
     /// Records a failed slot while the events of an export are drained.
@@ -149,6 +157,8 @@ struct Run {
     /// The rendered length (range + tail) in seconds.
     seconds: f64,
     phase: Phase,
+    /// A project audio asset and a pending track replacement, for a single-track render.
+    flatten: Option<Flatten>,
 }
 
 enum Phase {
@@ -162,8 +172,8 @@ enum Phase {
 struct Worker {
     thread: Option<JoinHandle<()>>,
     messages: Receiver<Message>,
-    /// Go on after the re-activation (`true`) or stop (`false`).
-    go: Option<Sender<bool>>,
+    /// Go on after re-activation, or stop with the reason reported by the UI.
+    go: Option<Sender<Result<(), ExportError>>>,
     /// When the worker reported `Prepared` (the UI waits for re-activating devices).
     prepared: Option<Instant>,
     cancel: Arc<AtomicBool>,
@@ -216,6 +226,7 @@ impl SharedProgress {
 struct Input {
     project: Arc<Project>,
     program: Program,
+    track: Option<Arc<TrackExport>>,
 }
 
 /// The worker: export rate, wait for the UI, render, device rate, engine back.
@@ -226,7 +237,7 @@ fn work(
     cancel: Arc<AtomicBool>,
     progress: Arc<SharedProgress>,
     to_ui: Sender<Message>,
-    go: Receiver<bool>,
+    go: Receiver<Result<(), ExportError>>,
 ) {
     let mut failed = Vec::new();
     let device_rate = engine.engine().sample_rate();
@@ -235,27 +246,40 @@ fn work(
     if changed && let Err(errors) = engine.engine().set_sample_rate(export_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
-    let Input { project, program } = input;
+    let Input {
+        project,
+        program,
+        track,
+    } = input;
+    let flattening = track.is_some();
     let _ = to_ui.send(Message::Prepared);
-    let go_on = go.recv().unwrap_or(false);
-    let result = if go_on {
-        // The UI waited until the devices run at the export rate: now the compensation and the
-        // skip come from the same processors, in frames of the export rate.
-        let export_program = recompile(engine.engine(), &project, &program);
-        let (e, h) = engine.parts();
-        export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
-    } else {
-        Err(ExportError::Cancelled)
-    };
+    let result = go
+        .recv()
+        .unwrap_or(Err(ExportError::Cancelled))
+        .and_then(|()| {
+            // The UI waited until the devices run at the export rate: now the compensation and the
+            // skip come from the same processors, in frames of the export rate.
+            if let Some(track) = track {
+                let (e, h) = engine.parts();
+                export_track(e, h, &program, (&track, &project), &job, &cancel, |p| {
+                    progress.store(p)
+                })
+            } else {
+                let export_program = recompile(engine.engine(), &project, &program);
+                let (e, h) = engine.parts();
+                export(e, h, &export_program, &job, &cancel, |p| progress.store(p))
+            }
+        });
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
-    // `export` queued the recompiled program behind its Stop: the stream plays the program the
-    // app sent, as before the export (its slots are the same).
-    let _ = engine
-        .parts()
-        .1
-        .send(Command::SetProgram(Box::new(program)));
+    if !flattening {
+        // Full export queued the program at the export rate; restore the original program.
+        let _ = engine
+            .parts()
+            .1
+            .send(Command::SetProgram(Box::new(program)));
+    }
     // `export` queued Stop, the program and the old playhead; one frame lets them take
     // effect here, so the transport and the playhead the UI reads are right as soon as the
     // engine is back (else a Play right after the export could see the export's "playing" and
@@ -437,6 +461,7 @@ impl App {
             job,
             seconds,
             phase: Phase::Devices,
+            flatten: None,
         });
         self.poll_export();
     }
@@ -480,14 +505,19 @@ impl App {
         };
         match &mut run.phase {
             Phase::Devices => {
+                let flattening = run.flatten.is_some();
                 self.export.run = None;
                 self.close_export_dialog();
-                self.set_status(self.lang.export_cancelled(), StatusKind::Info);
+                if flattening {
+                    self.flatten_error(ExportError::Cancelled);
+                } else {
+                    self.set_status(self.lang.export_cancelled(), StatusKind::Info);
+                }
             }
             Phase::Running(worker) => {
                 worker.cancel.store(true, Ordering::Relaxed);
                 if let Some(go) = worker.go.take() {
-                    let _ = go.send(false);
+                    let _ = go.send(Err(ExportError::Cancelled));
                 }
             }
         }
@@ -496,11 +526,27 @@ impl App {
     /// Advances the export: starts it when the devices are ready, shows the progress, takes
     /// the worker's messages. Called every frame.
     pub(crate) fn poll_export(&mut self) {
+        self.poll_export_step();
+        self.resume_after_flatten();
+    }
+
+    fn poll_export_step(&mut self) {
         let Some(run) = &self.export.run else {
             return;
         };
         if matches!(run.phase, Phase::Devices) {
-            if self.devices_not_ready().is_empty() {
+            if let Some(flatten) = &run.flatten {
+                match flatten.unavailable(self) {
+                    None => self.launch_export(),
+                    Some((_, DeviceStatus::Loading))
+                        if flatten.requested.elapsed() < READY_TIMEOUT => {}
+                    Some((id, _)) => {
+                        self.export.run = None;
+                        self.close_export_dialog();
+                        self.flatten_error(ExportError::DeviceFailed(id));
+                    }
+                }
+            } else if self.devices_not_ready().is_empty() {
                 self.launch_export();
             }
             return;
@@ -528,10 +574,22 @@ impl App {
                     break;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    // The worker panicked; the engine is gone with it.
+                    let flattening = self
+                        .export
+                        .run
+                        .as_ref()
+                        .is_some_and(|run| run.flatten.is_some());
                     self.export.run = None;
+                    self.dialogs.after_flatten = None;
                     self.close_export_dialog();
-                    self.set_status(self.lang.export_failed("worker stopped"), StatusKind::Error);
+                    if flattening {
+                        self.flatten_failed(self.lang.flatten_worker_failed());
+                    } else {
+                        self.set_status(
+                            self.lang.export_failed("worker stopped"),
+                            StatusKind::Error,
+                        );
+                    }
                     return;
                 }
             }
@@ -545,6 +603,7 @@ impl App {
             self.export.run,
             Some(Run {
                 phase: Phase::Devices,
+                flatten: None,
                 ..
             })
         ) {
@@ -554,70 +613,97 @@ impl App {
 
     /// Step 3 of the module docs.
     fn launch_export(&mut self) {
-        let Some(run) = &self.export.run else {
+        let Some(mut run) = self.export.run.take() else {
             return;
+        };
+        let flattening = run.flatten.is_some();
+        let fail = |app: &mut App, reason: &dyn std::fmt::Display| {
+            app.close_export_dialog();
+            if flattening {
+                app.flatten_failed(reason);
+            } else {
+                app.set_status(app.lang.export_failed(reason), StatusKind::Error);
+            }
         };
         let job = run.job.clone();
         if let Some(folder) = job.path.parent()
             && let Err(e) = std::fs::create_dir_all(folder)
         {
-            self.export.run = None;
+            fail(self, &e);
+            return;
+        }
+        if let Some(flatten) = &mut run.flatten
+            && let Err(error) = flatten.prepare(self)
+        {
             self.close_export_dialog();
-            self.set_status(self.lang.export_failed(e), StatusKind::Error);
+            self.flatten_failed(error);
             return;
         }
         self.engine.sync(&self.doc);
         let Some(program) = self.engine.program().cloned() else {
+            fail(self, &self.lang.flatten_worker_failed());
             return;
         };
         let project = Arc::clone(self.doc.project());
-        let detached = match self.engine.detach() {
-            Ok(d) => d,
-            Err(e) => {
-                self.export.run = None;
-                self.close_export_dialog();
-                self.set_status(self.lang.export_failed(e), StatusKind::Error);
-                return;
-            }
-        };
-        self.engine.host_mut().set_render_mode(RenderMode::Offline);
+        let track = run
+            .flatten
+            .as_ref()
+            .map(|flatten| Arc::clone(&flatten.scope));
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(SharedProgress::new());
         let (to_ui, messages) = mpsc::channel();
         let (go, from_ui) = mpsc::channel();
+        // Spawn before detaching, so a failed thread start never takes the engine with it.
+        let (send_engine, receive_engine) = mpsc::channel();
         let thread = {
             let (cancel, progress) = (Arc::clone(&cancel), Arc::clone(&progress));
             std::thread::Builder::new()
                 .name("komponist-export".into())
                 .spawn(move || {
-                    let input = Input { project, program };
-                    work(detached, input, job, cancel, progress, to_ui, from_ui)
+                    if let Ok(detached) = receive_engine.recv() {
+                        let input = Input {
+                            project,
+                            program,
+                            track,
+                        };
+                        work(detached, input, job, cancel, progress, to_ui, from_ui);
+                    }
                 })
         };
         let thread = match thread {
             Ok(t) => t,
             Err(e) => {
-                // The closure (and with it the engine) is gone; nothing to give back.
-                self.export.run = None;
-                self.close_export_dialog();
-                self.set_status(self.lang.export_failed(e), StatusKind::Error);
+                fail(self, &e);
                 return;
             }
         };
+        let detached = match self.engine.detach() {
+            Ok(d) => d,
+            Err(e) => {
+                fail(self, &e);
+                return;
+            }
+        };
+        self.set_export_render_mode(&run, RenderMode::Offline);
+        if let Err(error) = send_engine.send(detached) {
+            self.set_export_render_mode(&run, RenderMode::Realtime);
+            self.engine.attach(error.0);
+            fail(self, &self.lang.flatten_worker_failed());
+            return;
+        }
         if let Some(Dialog::Export(dialog)) = &mut self.ui.dialog {
             dialog.stage = ExportStage::Rendering;
         }
-        if let Some(run) = &mut self.export.run {
-            run.phase = Phase::Running(Worker {
-                thread: Some(thread),
-                messages,
-                go: Some(go),
-                prepared: None,
-                cancel,
-                progress,
-                started: Instant::now(),
-            });
-        }
+        run.phase = Phase::Running(Worker {
+            thread: Some(thread),
+            messages,
+            go: Some(go),
+            prepared: None,
+            cancel,
+            progress,
+            started: Instant::now(),
+        });
+        self.export.run = Some(run);
         self.update_progress();
     }
 
@@ -627,6 +713,7 @@ impl App {
     fn release_when_ready(&mut self) {
         let Some(Run {
             phase: Phase::Running(worker),
+            flatten,
             ..
         }) = &self.export.run
         else {
@@ -638,20 +725,35 @@ impl App {
         if worker.go.is_none() {
             return;
         }
-        let loading = self
-            .devices_not_ready()
-            .iter()
-            .any(|row| row.state == DeviceState::Loading);
-        if loading && prepared.elapsed() < READY_TIMEOUT {
-            return;
-        }
+        let ready = if let Some(flatten) = flatten {
+            match flatten.unavailable(self) {
+                Some((_, DeviceStatus::Loading)) if prepared.elapsed() < READY_TIMEOUT => return,
+                Some((id, _)) => Err(ExportError::DeviceFailed(id)),
+                None => flatten
+                    .bad_sampler_pad(self)
+                    .map_or(Ok(()), |(id, _)| Err(ExportError::DeviceFailed(id))),
+            }
+        } else {
+            let loading = self
+                .devices_not_ready()
+                .iter()
+                .any(|row| row.state == DeviceState::Loading);
+            if loading && prepared.elapsed() < READY_TIMEOUT {
+                return;
+            }
+            Ok(())
+        };
         if let Some(Run {
             phase: Phase::Running(worker),
             ..
         }) = &mut self.export.run
             && let Some(go) = worker.go.take()
         {
-            let go_on = !worker.cancel.load(Ordering::Relaxed);
+            let go_on = if worker.cancel.load(Ordering::Relaxed) {
+                Err(ExportError::Cancelled)
+            } else {
+                ready
+            };
             let _ = go.send(go_on);
             worker.started = Instant::now();
         }
@@ -682,13 +784,25 @@ impl App {
         let Some(mut run) = self.export.run.take() else {
             return;
         };
+        let cancelled = run.flatten.is_some()
+            && matches!(&run.phase, Phase::Running(worker)
+            if worker.cancel.load(Ordering::Relaxed));
         if let Phase::Running(worker) = &mut run.phase
             && let Some(thread) = worker.thread.take()
         {
             let _ = thread.join();
         }
+        let result = result.and_then(|report| {
+            if cancelled {
+                return Err(ExportError::Cancelled);
+            }
+            run.flatten
+                .as_ref()
+                .and_then(|flatten| flatten.unavailable(self))
+                .map_or(Ok(report), |(id, _)| Err(ExportError::DeviceFailed(id)))
+        });
+        self.set_export_render_mode(&run, RenderMode::Realtime);
         self.engine.attach(engine);
-        self.engine.host_mut().set_render_mode(RenderMode::Realtime);
         self.export.failed = failed;
         self.export.collecting = true;
         self.drain_events();
@@ -696,6 +810,10 @@ impl App {
         let failed = std::mem::take(&mut self.export.failed);
         let dropped = self.dropped_devices(failed);
         self.close_export_dialog();
+        if let Some(flatten) = run.flatten.take() {
+            flatten.finish(self, result);
+            return;
+        }
         match result {
             Ok(_report) => {
                 let path = run.job.path.clone();
@@ -733,17 +851,34 @@ impl App {
                 StatusKind::Error,
             ),
             Err(ExportError::Stretch { clip, reason }) => {
-                let name = self
-                    .project()
-                    .find_clip(clip)
-                    .map(|(_, clip)| &clip.name)
-                    .filter(|name| !name.trim().is_empty())
-                    .map_or_else(|| clip.0.to_string(), String::clone);
-                let lang = self.lang;
-                let why = crate::audio_error::reason(lang, reason);
-                self.set_status(lang.export_warp_failed(name, why), StatusKind::Error);
+                let (name, why) = self.warp_error(clip, reason);
+                self.set_status(self.lang.export_warp_failed(name, why), StatusKind::Error);
             }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
+        }
+    }
+
+    fn warp_error(
+        &self,
+        clip: ClipId,
+        reason: komponist_engine::audio::StretchError,
+    ) -> (String, &'static str) {
+        let name = self
+            .project()
+            .find_clip(clip)
+            .map(|(_, clip)| &clip.name)
+            .filter(|name| !name.trim().is_empty())
+            .map_or_else(|| clip.0.to_string(), String::clone);
+        (name, crate::audio_error::reason(self.lang, reason))
+    }
+
+    fn set_export_render_mode(&mut self, run: &Run, mode: RenderMode) {
+        let host = self.engine.host_mut();
+        if let Some(flatten) = &run.flatten {
+            let ids: Vec<_> = flatten.scope.devices().collect();
+            host.set_selected_render_mode(&ids, mode);
+        } else {
+            host.set_render_mode(mode);
         }
     }
 
@@ -771,8 +906,10 @@ impl App {
 
     /// Closes the export dialog (and gives the focus back) once no export runs.
     fn close_export_dialog(&mut self) {
-        if matches!(self.ui.dialog, Some(Dialog::Export(_))) && !self.export.is_active() {
-            self.dispatch(Action::Ui(UiAction::CloseDialog));
+        if matches!(self.ui.dialog, Some(Dialog::Export(_) | Dialog::Flatten))
+            && !self.export.is_active()
+        {
+            self.close_modal_dialog();
         }
     }
 
@@ -856,6 +993,26 @@ impl App {
 
     /// Draws the export dialog and applies what the user did (the shell calls it each frame).
     pub(crate) fn draw_export(&mut self, ctx: &egui::Context) {
+        if let Some(flatten) = self
+            .export
+            .run
+            .as_ref()
+            .and_then(|run| run.flatten.as_ref())
+        {
+            let worker = self.export.run.as_ref().and_then(|run| match &run.phase {
+                Phase::Devices => None,
+                Phase::Running(worker) => Some(worker),
+            });
+            let fraction = worker
+                .filter(|worker| worker.go.is_none())
+                .map(|worker| worker.progress.load().0);
+            let cancelling = worker.is_some_and(|worker| worker.cancel.load(Ordering::Relaxed));
+            if view::show_flatten(ctx, &flatten.name, fraction, cancelling) {
+                self.queue.push(Action::Ui(UiAction::CloseDialog));
+            }
+            ctx.request_repaint_after(PROGRESS_REPAINT);
+            return;
+        }
         let Some(Dialog::Export(dialog)) = &self.ui.dialog else {
             return;
         };

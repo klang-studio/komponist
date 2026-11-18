@@ -51,8 +51,8 @@ use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginK
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::{
-    Catalog, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError, PluginManager,
-    PluginManagerConfig, PluginManagerEvent, ProcessorSetup, ScanReport,
+    Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
+    PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, ScanReport,
 };
 
 /// Creates processors for devices and reports their runtime status.
@@ -261,10 +261,24 @@ pub trait DeviceHost {
         Vec::new()
     }
 
+    /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
+    /// bridges must return an error if any selected bridge lacks a usable snapshot.
+    fn snapshot_selected_states(
+        &mut self,
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        Ok(Vec::new())
+    }
+
     /// Switches every bridge to realtime or offline processing (around an export).
     fn set_render_mode(&mut self, mode: RenderMode) {
         let _ = mode;
     }
+
+    /// Switches only the devices needed for an isolated offline render. Hosts with bridges
+    /// implement the scoped switch independently of the full-project switch.
+    fn set_selected_render_mode(&mut self, _devices: &[DeviceId], _mode: RenderMode) {}
 
     /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
     fn shutdown(&mut self) {}
@@ -765,8 +779,20 @@ impl DeviceHost for PluginHost {
         self.manager.snapshot_states(timeout)
     }
 
+    fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        self.manager.snapshot_selected_states(devices, timeout)
+    }
+
     fn set_render_mode(&mut self, mode: RenderMode) {
         self.manager.set_render_mode(mode);
+    }
+
+    fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
+        self.manager.set_selected_render_mode(devices, mode);
     }
 
     fn shutdown(&mut self) {

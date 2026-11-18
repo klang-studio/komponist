@@ -2,6 +2,19 @@
 
 # S08 title of the settings dialog.
 export-title = Export WAV
+flatten-title = Rendering { $track }
+flatten-waiting = Waiting for track devices…
+flatten-done = Flattened { $track } to audio
+flatten-cancelled = Flatten cancelled
+flatten-failed = Could not flatten track · { $error }
+flatten-device-failed = Device unavailable · { $device }
+flatten-no-clips = Choose a MIDI track with clips.
+flatten-track-changed = The track or its signal sources changed during rendering.
+flatten-worker-failed = Rendering was interrupted.
+flatten-missing-sample = Sample missing · { $file }
+flatten-pad-failed = Could not load { $device } pad { $pad } “{ $sample }”.
+flatten-state-failed = Could not capture the current state of “{ $device }” for undo.
+flatten-warp-failed = Warp in audio clip “{ $clip }” · { $reason }
 
 # S08 row label and name of the range control.
 export-range = Range

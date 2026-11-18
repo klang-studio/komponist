@@ -13,6 +13,7 @@ komponist-stretch.workspace = true
 klang-dsp.workspace = true
 rtrb.workspace = true
 hound.workspace = true
+tempfile.workspace = true
 # Realtime set-up of the workers (SCHED_FIFO, time-constraint policy, audio workgroup) and the
 # macOS os_sync wait with its timer-leeway compensation (#45).
 komponist-rt.workspace = true

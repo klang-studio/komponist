@@ -56,6 +56,7 @@ undo-add-tracks = Spuren anlegen
 
 # Undo step: Spuren löschen.
 undo-delete-tracks = Spuren löschen
+undo-flatten-track = MIDI-Spur in Audio umwandeln
 
 # Undo step: Spuren verschieben.
 undo-move-tracks = Spuren verschieben

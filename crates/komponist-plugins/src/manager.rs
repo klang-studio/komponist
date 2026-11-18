@@ -88,6 +88,9 @@ pub enum FailReason {
     Unresponsive,
 }
 
+/// State blobs captured from running plugin bridges.
+pub type DeviceSnapshots = Vec<(DeviceId, Arc<[u8]>)>;
+
 /// Something the app has to react to, returned by [`PluginManager::poll`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginManagerEvent {
@@ -633,10 +636,41 @@ impl PluginManager {
     /// document), and so are devices with a [`Self::state_warning`]. Sorted by device id; a late
     /// answer arrives later as a `StateSnapshot` event.
     pub fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+        self.snapshot_states_if(timeout, |_| true)
+    }
+
+    /// Captures every running bridge on the track to be replaced. Devices without a running
+    /// bridge keep their document state. Returns the first bridge that could not be snapshotted.
+    pub fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        let live: Vec<_> = devices
+            .iter()
+            .copied()
+            .filter(|device| self.bridges.get(device).is_some_and(Bridge::is_running))
+            .collect();
+        let states = self.snapshot_states_if(timeout, |device| live.contains(&device));
+        if let Some(device) = live
+            .into_iter()
+            .find(|device| !states.iter().any(|(captured, _)| captured == device))
+        {
+            return Err(device);
+        }
+        Ok(states)
+    }
+
+    fn snapshot_states_if(
+        &mut self,
+        timeout: Duration,
+        include: impl Fn(DeviceId) -> bool,
+    ) -> Vec<(DeviceId, Arc<[u8]>)> {
         let deadline = Instant::now() + timeout;
         let mut waiting: BTreeMap<DeviceId, u32> = self
             .bridges
             .iter_mut()
+            .filter(|&(&device, _)| include(device))
             .filter_map(|(&device, b)| Some((device, b.request_state(StatePurpose::Collect)?)))
             .collect();
         let mut states = Vec::new();
@@ -657,7 +691,7 @@ impl PluginManager {
                             .push(PluginManagerEvent::StateSnapshot { device, state });
                     }
                 }
-                if !bridge.is_running() {
+                if !bridge.is_running() || !bridge.state_request_pending(request) {
                     waiting.remove(&device);
                 }
             }
@@ -788,6 +822,15 @@ impl PluginManager {
         self.render_mode = mode;
         for bridge in self.bridges.values_mut() {
             bridge.set_render_mode(mode, &mut self.pending);
+        }
+    }
+
+    /// Sets the render mode of a subset of running bridges, leaving the default unchanged.
+    pub fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
+        for device in devices {
+            if let Some(bridge) = self.bridges.get_mut(device) {
+                bridge.set_render_mode(mode, &mut self.pending);
+            }
         }
     }
 
