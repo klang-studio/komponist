@@ -633,6 +633,8 @@ pub(crate) struct Cache {
     pub(crate) lit: HashMap<String, Instant>,
     /// Scroll the page to this section in the next frame.
     pub(crate) scroll_to: Option<SettingsSection>,
+    /// Fixed plugin folder rows for settings fixtures.
+    plugin_rows: Option<Vec<DirRow>>,
 }
 
 impl Cache {
@@ -710,6 +712,13 @@ impl Cache {
 }
 
 impl crate::App {
+    /// Uses fixed plugin folder rows in the settings dialog, so its layout in tests is
+    /// independent of installed plugins and host directories.
+    pub fn with_settings_plugin_rows(mut self, rows: Vec<DirRow>) -> Self {
+        self.dialogs.settings.plugin_rows = Some(rows);
+        self
+    }
+
     /// The S07 model from the settings, the engine, the MIDI inputs and the device host. Opening
     /// the dialog reads the drivers and refreshes the MIDI inputs; the device list is read again
     /// when the driver changes or "Erneut suchen" is pressed. System enumeration runs on a worker
@@ -835,7 +844,10 @@ impl crate::App {
             latency,
             realtime_denied: self.engine.stats().realtime_denied(),
             midi,
-            dirs: dir_rows(&self.settings, host.last_scan()),
+            dirs: cache
+                .plugin_rows
+                .clone()
+                .unwrap_or_else(|| dir_rows(&self.settings, host.last_scan())),
             scan: scan_summary(t, host.last_scan(), host.is_scanning(), SystemTime::now()),
             scanning: host.is_scanning(),
             ui_scale: self.settings.ui_scale,
