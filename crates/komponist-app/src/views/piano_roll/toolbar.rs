@@ -128,7 +128,11 @@ pub fn show(
         })
         .collect();
     if row
-        .add(Segmented::new(t.piano_roll_tools(), &mut tool, &items).tips(&tips))
+        .add(
+            Segmented::new(t.piano_roll_tools(), &mut tool, &items)
+                .icons(&[Icon::MousePointer, Icon::Pencil, Icon::Eraser])
+                .tips(&tips),
+        )
         .changed()
     {
         ctx.send(Action::Ui(UiAction::SetTool(tools[tool])));
