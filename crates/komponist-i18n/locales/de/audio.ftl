@@ -158,6 +158,7 @@ audio-tempo-detect = Tempo erkennen
 audio-tempo-analyzing = Tempo wird analysiert …
 audio-tempo-unknown = Kein stabiles Tempo erkannt
 audio-tempo-failed = Tempoanalyse fehlgeschlagen
+audio-tempo-retry = Tempo erneut erkennen
 audio-tempo-estimate = { $bpm } BPM · { $confidence } % Konfidenz
 audio-tempo-use = { $bpm } BPM übernehmen
 audio-tempo-use-half = { $bpm } BPM übernehmen (halb)

@@ -1,7 +1,7 @@
 //! Approved Warp UI: real view snapshots and localized model/AccessKit interactions.
 use super::audio_editor::{data, enter, harness};
 use egui::{Key, Role, vec2};
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::views::{
     View, ViewCtx,
@@ -325,6 +325,88 @@ fn tempo_detection_uses_the_active_take_and_only_confirmed_tempo_is_undoable() {
         h.state_mut().dispatch(Action::Edit(EditAction::Undo));
         h.run_steps(3);
         assert_eq!(data(&h, c), before);
+    }
+}
+
+#[test]
+fn failed_source_tempo_can_be_retried_for_the_same_open_file() {
+    use komponist_audiofile::{FilePool, TempoState};
+    use std::fs::{FileTimes, OpenOptions};
+
+    for t in [Lang::De, Lang::En] {
+        let dir = crate::common::scratch(&format!("warp-retry-tempo-{t:?}"));
+        let path = dir.join("Retry.wav");
+        let write = |first_sample| {
+            let mut wav = hound::WavWriter::create(
+                &path,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: 48000,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                },
+            )
+            .unwrap();
+            wav.write_sample(first_sample).unwrap();
+            for _ in 1..48000 {
+                wav.write_sample(0.0_f32).unwrap();
+            }
+            wav.finalize().unwrap();
+        };
+        write(f32::NAN);
+        let file = FilePool::global().open(&path).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let (p, c) = project(&path, 48000, 1, false);
+        let mut h = harness(app(p, c, t));
+        let unchanged = data(&h, c);
+        h.get_by_role_and_label(Role::Group, t.audio_file())
+            .get_by_role_and_label(Role::Button, t.audio_file_actions())
+            .click();
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::MenuItem, t.audio_tempo_detect())
+            .click();
+        let wait_for_state = |h: &mut Harness<'_, App>, expected: fn(&TempoState) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                h.run_steps(1);
+                let state = file.tempo_state();
+                if expected(&state) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "unexpected tempo state {state:?}"
+                );
+                std::thread::yield_now();
+            }
+            h.run_steps(3);
+        };
+        wait_for_state(&mut h, |state| matches!(state, TempoState::Failed(_)));
+        assert!(
+            h.get_by_role_and_label(Role::MenuItem, t.audio_tempo_failed())
+                .accesskit_node()
+                .is_disabled()
+        );
+        h.render()
+            .unwrap()
+            .save(dir.join("tempo-retry.png"))
+            .unwrap();
+
+        // Repair the samples without changing the file identity so the old handle stays loaded.
+        write(0.0_f32);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(Arc::ptr_eq(&file, &FilePool::global().open(&path).unwrap()));
+        h.get_by_role_and_label(Role::MenuItem, t.audio_tempo_retry())
+            .click();
+        wait_for_state(&mut h, |state| matches!(state, TempoState::Ready(None)));
+        h.get_by_role_and_label(Role::MenuItem, t.audio_tempo_unknown());
+        assert_eq!(data(&h, c), unchanged);
+        assert_eq!(h.state().undo_text(), None);
     }
 }
 

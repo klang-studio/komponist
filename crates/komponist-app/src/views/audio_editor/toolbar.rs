@@ -70,6 +70,12 @@ pub fn file_actions(
     } else {
         detect.disabled()
     });
+    if matches!(tempo, Some(TempoState::Failed(_))) {
+        entries.push(Entry::action(
+            t.audio_tempo_retry(),
+            FileAction::DetectTempo,
+        ));
+    }
     let mut choices = Vec::new();
     if let Some(TempoState::Ready(Some(value))) = tempo {
         let half = (value.bpm * 50.0).round() / 100.0;

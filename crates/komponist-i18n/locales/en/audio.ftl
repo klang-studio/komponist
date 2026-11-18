@@ -158,6 +158,7 @@ audio-tempo-detect = Detect Tempo
 audio-tempo-analyzing = Analyzing source tempo…
 audio-tempo-unknown = No regular tempo detected
 audio-tempo-failed = Could not analyze source tempo
+audio-tempo-retry = Retry Tempo Detection
 audio-tempo-estimate = { $bpm } BPM · { $confidence }% confidence
 audio-tempo-use = Use { $bpm } BPM
 audio-tempo-use-half = Use { $bpm } BPM (half)

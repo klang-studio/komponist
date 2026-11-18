@@ -1240,17 +1240,18 @@ and worker threads and hand finished `Arc`s over.
   decode without holding the file in memory. `query_rms(channel, start, end, columns)` returns RMS amplitudes at the
   same resolution: each bucket stores the sum of squared samples in `f64`, higher levels sum energies, and the
   query weights the final partial bucket by its actual frame count. Unaligned columns include whole intersecting
-  buckets, as min/max queries do. Cache version `KPK2` stores energy beside min/max; older caches are regenerated.
+  buckets, as min/max queries do. Cache version `KPK3` stores energy beside min/max and uses a lossless path key
+  with signed timestamps. `KPK2` files can still be read when the old key is unambiguous.
 - **File pool (`FilePool`, `PoolFile`).** One entry per file, keyed by `FileId` (canonical path, size, mtime), so
   symlinks and spellings of a path are one entry and a changed file is a new one. The pool holds entries weakly:
   the refcount is the `Arc<PoolFile>` the users hold, and an entry and its memory go with the last user. Per entry,
   computed once however many users ask: the header (`info`), the decoded audio (`decoded`; in memory while somebody
   holds it), data derived from it (`derived::<T>`, e.g. the Sampler's `Arc<Sample>`, so two Samplers share one buffer),
   and the peaks. The Sampler's loader and the audio clips use the process-wide `FilePool::global()`.
-- **Peak cache.** `request_peaks(on_done)` queues the entry on the pool's one worker thread and returns at once; the UI
+- **Peak cache.** `request_peaks(on_done)` queues the entry on the waveform worker and returns at once; the UI
   polls `peaks_state()` / `peaks_ready()` and passes a repaint request as `on_done`. The worker reads the on-disk cache
   first (`FilePool::set_cache_dir`, a folder in the user's cache directory, never the repository or the project folder;
-  one `<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
+  one `v3-<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
   streaming pass and writes the cache. Without a cache folder peaks live in memory only.
 
 
@@ -1326,8 +1327,8 @@ clip duration. Original tempo and bar-count edits retain existing grouped Number
 clamping, source-limit and phase reanchor semantics. Takes share the mode/original tempo.
 
 **Source tempo analysis (#14 WP-F).** The shared file actions menu requests an estimate for the
-active take. The audio file pool runs analysis off-thread and caches the result by file identity
-and algorithm version. Analysis decodes up to 60 seconds of the full source. It resamples to
+active take. The audio file pool runs analysis on its tempo worker, independently of waveform peaks.
+It caches the result by file identity and algorithm version. Failed requests can be retried. Analysis decodes up to 60 seconds of the full source. It resamples to
 12 kHz, extracts spectral flux independently per channel and ranks periodic onsets from
 40 to 240 BPM. Confidence reflects onset regularity and the separation between candidates.
 The confirmed, half or double estimate uses the same undoable original-tempo edit as manual entry.
