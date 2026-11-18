@@ -12,7 +12,14 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const QUEUE_CHUNKS: usize = 32;
+// Buffer half a second of actual audio frames, within a fixed per-track memory bound.
+// Metadata capacity also protects against pathological sub-eight-frame segments.
+const MAX_QUEUE_FRAMES: usize = 65_536;
+const WRITE_BATCH_PERIOD: Duration = Duration::from_millis(8);
+
+fn queue_frames(sample_rate: u32) -> usize {
+    (sample_rate as usize / 2).clamp(8_192, MAX_QUEUE_FRAMES)
+}
 const WAVE_BUCKETS: usize = 4096;
 const BASE_WAVE_FRAMES: u64 = 128;
 static SESSION: AtomicU64 = AtomicU64::new(1);
@@ -145,9 +152,8 @@ pub struct RecordingProgress {
     /// 4096 buckets. Here each bucket's `samples` is its duration in frames.
     pub channel_waveforms: Vec<Vec<RecordingPeak>>,
 }
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Chunk {
-    samples: [f32; crate::MAX_BLOCK * 2],
     frames: usize,
     at: i64,
     start: Tick,
@@ -157,7 +163,6 @@ struct Chunk {
 impl Chunk {
     fn new(at: i64, start: Tick, lap: u32) -> Self {
         Self {
-            samples: [0.0; crate::MAX_BLOCK * 2],
             frames: 0,
             at,
             start,
@@ -268,6 +273,30 @@ impl LiveWave {
         }
     }
 }
+/// Current waveform and at most two completed overlays for a track.
+pub struct TrackRecordingProgress {
+    /// The pass receiving samples.
+    pub current: RecordingProgress,
+    /// The linear lead-in and the most recent completed cycle, in that order.
+    pub completed: [Option<Arc<RecordingProgress>>; 2],
+}
+
+struct ProgressWave {
+    current: LiveWave,
+    current_is_cycle: bool,
+    completed: [Option<Arc<RecordingProgress>>; 2],
+}
+
+impl ProgressWave {
+    fn new(channels: u16) -> Self {
+        Self {
+            current: LiveWave::new(channels),
+            current_is_cycle: false,
+            completed: [None, None],
+        }
+    }
+}
+
 struct Progress {
     track: TrackId,
     path: Mutex<PathBuf>,
@@ -276,13 +305,25 @@ struct Progress {
     frames: AtomicU64,
     lap: AtomicU32,
     peak: AtomicU32,
-    wave: Mutex<LiveWave>,
+    wave: Mutex<ProgressWave>,
 }
 impl Progress {
     fn snapshot(&self) -> RecordingProgress {
+        let wave = self.wave.lock().unwrap_or_else(|e| e.into_inner());
+        self.snapshot_locked(&wave.current, self.peak.swap(0, Ordering::Relaxed))
+    }
+
+    fn visible(&self) -> TrackRecordingProgress {
+        let wave = self.wave.lock().unwrap_or_else(|e| e.into_inner());
+        TrackRecordingProgress {
+            current: self.snapshot_locked(&wave.current, self.peak.swap(0, Ordering::Relaxed)),
+            completed: wave.completed.clone(),
+        }
+    }
+
+    fn snapshot_locked(&self, wave: &LiveWave, peak: u32) -> RecordingProgress {
         // Publication and polling both acquire wave before path. Keep the waveform guard
         // through the metadata reads so a lap change cannot produce a mixed snapshot.
-        let wave = self.wave.lock().unwrap_or_else(|e| e.into_inner());
         let path = self.path.lock().unwrap_or_else(|e| e.into_inner()).clone();
         RecordingProgress {
             track: self.track,
@@ -291,7 +332,7 @@ impl Progress {
             channels: self.channels,
             frames: self.frames.load(Ordering::Acquire),
             lap: self.lap.load(Ordering::Acquire),
-            peak: f32::from_bits(self.peak.swap(0, Ordering::Relaxed)),
+            peak: f32::from_bits(peak),
             waveform: wave.combined.snapshot(),
             channel_waveforms: wave.channels.iter().map(Wave::snapshot).collect(),
         }
@@ -303,10 +344,19 @@ struct Shared {
     failure: AtomicU8,
     progress: Vec<Arc<Progress>>,
 }
+struct LaneWriter {
+    chunks: rtrb::Producer<Chunk>,
+    samples: rtrb::Producer<f32>,
+    scratch: [f32; crate::MAX_BLOCK * 2],
+}
+struct LaneReader {
+    chunks: rtrb::Consumer<Chunk>,
+    samples: rtrb::Consumer<f32>,
+}
 struct Lane {
     spec: RecordingTrack,
     // SAFETY: only the one engine job for this track may access its producer, once per segment.
-    tx: UnsafeCell<rtrb::Producer<Chunk>>,
+    writer: UnsafeCell<LaneWriter>,
 }
 /// Audio-thread endpoint. Install it with `Command::SetRecorder`, retire through engine garbage.
 pub struct Recorder {
@@ -386,6 +436,11 @@ impl RecordingSession {
     pub fn progress(&self) -> Vec<RecordingProgress> {
         self.shared.progress.iter().map(|p| p.snapshot()).collect()
     }
+
+    /// Atomically pairs each current pass with its shared, bounded completed overlays.
+    pub fn visible_progress(&self) -> Vec<TrackRecordingProgress> {
+        self.shared.progress.iter().map(|p| p.visible()).collect()
+    }
 }
 impl Drop for RecordingSession {
     fn drop(&mut self) {
@@ -452,6 +507,9 @@ impl Recorder {
         let Some(lane) = self.lanes.iter().find(|lane| lane.spec.track == track) else {
             return;
         };
+        // SAFETY: capture's scheduling contract keeps this lane's producer and scratch exclusive.
+        let writer = unsafe { &mut *lane.writer.get() };
+        let channels = usize::from(lane.spec.channels);
         let first = self.start.unwrap_or(window.at);
         let has_lead_in = window.lp.is_some_and(|(lo, _)| first < lo);
         let mut chunk = Chunk::new(0, Tick::ZERO, window.lap);
@@ -483,7 +541,7 @@ impl Recorder {
                 lap = lap.saturating_add(1);
             }
             if chunk.frames > 0 && (chunk.lap != lap || chunk.at + chunk.frames as i64 != at) {
-                if !self.push(lane, chunk) {
+                if !self.push(writer, chunk, channels) {
                     return;
                 }
                 chunk = Chunk::new(0, Tick::ZERO, lap);
@@ -498,31 +556,36 @@ impl Recorder {
             let sample = |x: f32| if x.is_finite() { x } else { 0.0 };
             let left = sample(l);
             let right = sample(r);
-            let channels = usize::from(lane.spec.channels);
-            chunk.samples[chunk.frames * channels] = left;
+            writer.scratch[chunk.frames * channels] = left;
             if channels == 2 {
-                chunk.samples[chunk.frames * 2 + 1] = right;
+                writer.scratch[chunk.frames * 2 + 1] = right;
             }
             chunk.frames += 1;
             if chunk.frames == crate::MAX_BLOCK {
-                if !self.push(lane, chunk) {
+                if !self.push(writer, chunk, channels) {
                     return;
                 }
                 chunk = Chunk::new(0, Tick::ZERO, lap);
             }
         }
         if chunk.frames > 0 {
-            self.push(lane, chunk);
+            self.push(writer, chunk, channels);
         }
     }
-    fn push(&self, lane: &Lane, chunk: Chunk) -> bool {
-        // SAFETY: `capture`'s scheduling contract keeps this lane's producer exclusive.
-        if unsafe { &mut *lane.tx.get() }.push(chunk).is_err() {
+    fn push(&self, writer: &mut LaneWriter, chunk: Chunk, channels: usize) -> bool {
+        let samples = &writer.scratch[..chunk.frames * channels];
+        if writer.chunks.is_full() || writer.samples.slots() < samples.len() {
             self.fail(1);
-            false
-        } else {
-            true
+            return false;
         }
+        // The consumer only reads samples after receiving a descriptor. Once both checks
+        // pass it can only free more space before we publish the two entries.
+        writer
+            .samples
+            .push_entire_slice(samples)
+            .expect("sample slots checked");
+        writer.chunks.push(chunk).expect("chunk slot checked");
+        true
     }
 }
 #[derive(Clone, Copy)]
@@ -790,6 +853,51 @@ fn relocate_outputs_with(
     Ok(())
 }
 
+fn publish_batch(
+    output: &mut Output,
+    progress: &Progress,
+    lap: u32,
+    samples: &[f32],
+) -> Result<(), RecordingError> {
+    output
+        .writer
+        .as_mut()
+        .expect("active WAV writer")
+        .flush()
+        .map_err(|error| RecordingError::Io(error.to_string()))?;
+    let channels = usize::from(progress.channels);
+    let mut wave = progress.wave.lock().unwrap_or_else(|e| e.into_inner());
+    let old_frames = progress.frames.load(Ordering::Relaxed);
+    if old_frames == 0 || progress.lap.load(Ordering::Relaxed) != lap {
+        if old_frames != 0 {
+            let old =
+                progress.snapshot_locked(&wave.current, progress.peak.load(Ordering::Relaxed));
+            let index = usize::from(wave.current_is_cycle);
+            wave.completed[index] = Some(Arc::new(old));
+        }
+        wave.current = LiveWave::new(progress.channels);
+        wave.current_is_cycle = output.window.is_some();
+        let prefix = output
+            .frames
+            .saturating_sub((samples.len() / channels) as u64);
+        for _ in 0..prefix {
+            wave.current.push(&[0.0; 2][..channels]);
+        }
+    }
+    for frame in samples.chunks_exact(channels) {
+        wave.current.push(frame);
+    }
+    *progress.path.lock().unwrap_or_else(|e| e.into_inner()) = output.path.clone();
+    progress.start.store(output.start.0, Ordering::Release);
+    progress.frames.store(output.frames, Ordering::Release);
+    progress.lap.store(lap, Ordering::Release);
+    let peak = samples
+        .iter()
+        .fold(0.0_f32, |a, &sample| a.max(sample.abs()));
+    progress.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+    Ok(())
+}
+
 /// Preallocates bounded queues and opens the initial WAVs before starting the writer thread.
 /// Every path is unique and created exclusively; names supplied by the UI never become paths.
 pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingSession)> {
@@ -840,12 +948,21 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 return Err(e);
             }
         };
-        let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CHUNKS);
+        let capacity = queue_frames(config.sample_rate);
+        let (chunk_tx, chunk_rx) = rtrb::RingBuffer::new(capacity / 8);
+        let (sample_tx, sample_rx) = rtrb::RingBuffer::new(capacity * usize::from(spec.channels));
         lanes.push(Lane {
             spec: spec.clone(),
-            tx: UnsafeCell::new(tx),
+            writer: UnsafeCell::new(LaneWriter {
+                chunks: chunk_tx,
+                samples: sample_tx,
+                scratch: [0.0; crate::MAX_BLOCK * 2],
+            }),
         });
-        readers.push(rx);
+        readers.push(LaneReader {
+            chunks: chunk_rx,
+            samples: sample_rx,
+        });
         outputs.push(initial);
         progress.push(Arc::new(Progress {
             track: spec.track,
@@ -855,7 +972,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             frames: AtomicU64::new(0),
             lap: AtomicU32::new(0),
             peak: AtomicU32::new(0),
-            wave: Mutex::new(LiveWave::new(spec.channels)),
+            wave: Mutex::new(ProgressWave::new(spec.channels)),
         }));
     }
     let shared = Arc::new(Shared {
@@ -879,6 +996,8 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 .map(|o| BTreeMap::from([(0, o)]))
                 .collect();
             let mut failure = None;
+            let mut input = [0.0; crate::MAX_BLOCK * 2];
+            let mut pending_wave = Vec::with_capacity(queue_frames(config.sample_rate) * 2);
             loop {
                 // Collect requests before draining: a checkpoint must include samples queued
                 // before the request, even if they arrived just after the previous drain.
@@ -886,10 +1005,31 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 let ended = shared.ended.load(Ordering::Acquire);
                 let mut worked = false;
                 for (i, reader) in readers.iter_mut().enumerate() {
-                    while let Ok(chunk) = reader.pop() {
+                    let spec = &config.tracks[i];
+                    let mut batch_lap = None;
+                    pending_wave.clear();
+                    // Drain a finite snapshot. Both producers can keep queuing during disk IO.
+                    for _ in 0..reader.chunks.slots() {
+                        let Ok(chunk) = reader.chunks.pop() else { break };
+                        let samples = &mut input[..chunk.frames * usize::from(spec.channels)];
+                        reader.samples.pop_entire_slice(samples).expect("published chunk has samples");
                         worked = true;
                         if shared.cancelled.load(Ordering::Acquire) || failure.is_some() {
                             continue;
+                        }
+                        if batch_lap.is_some_and(|lap| lap != chunk.lap) {
+                            let lap = batch_lap.take().expect("batch lap");
+                            if let Err(error) = publish_batch(
+                                all[i].get_mut(&lap).expect("batch output"),
+                                &shared.progress[i],
+                                lap,
+                                &pending_wave,
+                            ) {
+                                failure = Some(error);
+                                shared.ended.store(true, Ordering::Release);
+                                continue;
+                            }
+                            pending_wave.clear();
                         }
                         // A later timestamped lap proves this lane has no more input for earlier
                         // laps, even with latency correction. Close them now to bound open FDs.
@@ -904,7 +1044,6 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                         if failure.is_some() {
                             continue;
                         }
-                        let spec = &config.tracks[i];
                         if let std::collections::btree_map::Entry::Vacant(entry) =
                             all[i].entry(chunk.lap)
                         {
@@ -952,7 +1091,6 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             shared.ended.store(true, Ordering::Release);
                             continue;
                         }
-                        let channels = usize::from(spec.channels);
                         let mut write_error = None;
                         let writer = output.writer.as_mut().expect("active WAV writer");
                         let bytes_per_frame = u64::from(writer.spec().channels)
@@ -969,7 +1107,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             shared.ended.store(true, Ordering::Release);
                             continue;
                         }
-                        for &sample in &chunk.samples[..chunk.frames * channels] {
+                        for &sample in samples.iter() {
                             let result = match config.format {
                                 RecordingFormat::Float32 => writer.write_sample(sample),
                                 RecordingFormat::Pcm24 => writer.write_sample(
@@ -989,36 +1127,21 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             shared.ended.store(true, Ordering::Release);
                             continue;
                         }
-                        if let Err(e) = writer.flush() {
-                            failure = Some(RecordingError::Io(e.to_string()));
-                            shared.ended.store(true, Ordering::Release);
-                            continue;
-                        }
                         output.frames += chunk.frames as u64;
                         output.next += chunk.frames as i64;
-                        let p = &shared.progress[i];
-                        let mut wave = p.wave.lock().unwrap_or_else(|e| e.into_inner());
-                        if p.lap.load(Ordering::Relaxed) != chunk.lap
-                            || p.frames.load(Ordering::Relaxed) == 0
-                        {
-                            *wave = LiveWave::new(p.channels);
-                            let prefix = output.frames.saturating_sub(chunk.frames as u64);
-                            for _ in 0..prefix {
-                                wave.push(&[0.0; 2][..channels]);
-                            }
-                        }
-                        for frame in chunk.samples[..chunk.frames * channels].chunks_exact(channels)
-                        {
-                            wave.push(frame);
-                        }
-                        *p.path.lock().unwrap_or_else(|e| e.into_inner()) = output.path.clone();
-                        p.start.store(output.start.0, Ordering::Release);
-                        p.frames.store(output.frames, Ordering::Release);
-                        p.lap.store(chunk.lap, Ordering::Release);
-                        let peak = chunk.samples[..chunk.frames * channels]
-                            .iter()
-                            .fold(0.0_f32, |a, &s| a.max(s.abs()));
-                        p.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+                        batch_lap = Some(chunk.lap);
+                        pending_wave.extend_from_slice(samples);
+                    }
+                    if let Some(lap) = batch_lap
+                        && let Err(error) = publish_batch(
+                            all[i].get_mut(&lap).expect("batch output"),
+                            &shared.progress[i],
+                            lap,
+                            &pending_wave,
+                        )
+                    {
+                        failure = Some(error);
+                        shared.ended.store(true, Ordering::Release);
                     }
                 }
                 for control in controls {
@@ -1033,8 +1156,13 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                                 config.directory = directory;
                                 for (i, passes) in all.iter().enumerate() {
                                     let progress = &shared.progress[i];
-                                    let _wave =
+                                    let mut wave =
                                         progress.wave.lock().unwrap_or_else(|e| e.into_inner());
+                                    for completed in wave.completed.iter_mut().flatten() {
+                                        if let Some(output) = passes.get(&completed.lap) {
+                                            Arc::make_mut(completed).path = output.path.clone();
+                                        }
+                                    }
                                     let lap = progress.lap.load(Ordering::Acquire);
                                     if let Some(output) = passes.get(&lap) {
                                         *progress.path.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -1059,8 +1187,8 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 if ended && !worked {
                     break;
                 }
-                if !worked {
-                    std::thread::sleep(Duration::from_millis(2));
+                if !ended {
+                    std::thread::sleep(WRITE_BATCH_PERIOD);
                 }
             }
             let mut takes = Vec::new();
@@ -1108,6 +1236,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             let code = shared.failure.load(Ordering::Acquire);
             if trace {
                 match code {
+                    1 => eprintln!("komponist: recording trace engine-queue-overrun code=1"),
                     2 => eprintln!("komponist: recording trace engine-input-discontinuity code=2"),
                     3 => eprintln!("komponist: recording trace engine-input-unavailable code=3"),
                     _ => {}
@@ -1155,7 +1284,7 @@ mod tests {
             frames: AtomicU64::new(1),
             lap: AtomicU32::new(0),
             peak: AtomicU32::new(0),
-            wave: Mutex::new(LiveWave::new(1)),
+            wave: Mutex::new(ProgressWave::new(1)),
         });
         // Holding path forces the reader to stop between its two acquisitions. Observing
         // wave locked proves the lock order without relying on thread scheduling or sleeps.
@@ -1186,8 +1315,8 @@ mod tests {
         let publishing = std::thread::spawn(move || {
             for lap in 1..1000_u32 {
                 let mut wave = publisher.wave.lock().unwrap();
-                *wave = LiveWave::new(1);
-                wave.push(&[lap as f32]);
+                wave.current = LiveWave::new(1);
+                wave.current.push(&[lap as f32]);
                 *publisher.path.lock().unwrap() = PathBuf::from(format!("{lap}.wav"));
                 publisher.start.store(i64::from(lap), Ordering::Release);
                 publisher
@@ -1288,46 +1417,201 @@ mod tests {
         assert_eq!(summary[1].samples, 17);
         assert_eq!(summary.iter().map(|peak| peak.samples).sum::<u64>(), frames);
     }
-    #[test]
-    fn a_full_capture_queue_fails_explicitly_without_allocating_or_freeing() {
-        let (tx, rx) = rtrb::RingBuffer::new(2);
-        let shared = Arc::new(Shared {
-            ended: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-            failure: AtomicU8::new(0),
-            progress: Vec::new(),
-        });
-        let recorder = Recorder {
-            lanes: vec![Lane {
-                spec: RecordingTrack {
-                    track: TrackId(1),
-                    name: "Take".into(),
-                    channels: 2,
+    const PERIOD: usize = 64;
+
+    fn stalled_writer_fixture(track_count: u64) -> (PathBuf, Box<Recorder>, RecordingSession) {
+        let directory = std::env::temp_dir().join(format!(
+            "komponist-64-frame-recording-{}-{}",
+            std::process::id(),
+            SESSION.fetch_add(1, Ordering::Relaxed)
+        ));
+        let config = RecordingConfig {
+            directory: directory.clone(),
+            sample_rate: 48000,
+            format: RecordingFormat::Pcm24,
+            tracks: (1..=track_count)
+                .map(|id| RecordingTrack {
+                    track: TrackId(id),
+                    name: format!("Track {id}"),
+                    channels: id as u16,
                     input: AudioInput::Hardware(HardwareInput {
                         first: 0,
-                        stereo: true,
+                        stereo: id == 2,
                     }),
-                },
-                tx: UnsafeCell::new(tx),
-            }],
-            shared: shared.clone(),
-            rate: 48000,
-            start: Some(0),
+                })
+                .collect(),
         };
-        let window = CaptureWindow {
-            at: 0,
-            lap: 0,
-            lp: None,
-            map: TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR),
-        };
+        let (mut recorder, session) = prepare(config).unwrap();
+        recorder.start = Some(0);
+        (directory, recorder, session)
+    }
+
+    fn completed_session(
+        session: &mut RecordingSession,
+    ) -> Result<RecordingResult, RecordingError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = session.poll() {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn assert_pcm24(path: &std::path::Path, channels: u16, frames: u64, captured: u64) {
+        let mut reader = hound::WavReader::open(path).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.bits_per_sample, 24);
+        assert_eq!(spec.sample_rate, 48000);
+        assert_eq!(spec.channels, channels);
+        assert_eq!(u64::from(reader.duration()), frames);
+        for (sample, value) in reader.samples::<i32>().enumerate() {
+            let expected = if (sample / usize::from(channels)) as u64 >= captured {
+                0
+            } else if channels == 2 && sample % 2 == 1 {
+                -4_194_304
+            } else {
+                2_097_152
+            };
+            assert_eq!(
+                value.unwrap(),
+                expected,
+                "sample {sample} from {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_stalled_writer_keeps_64_frame_capture_loop_overlays_and_relocated_pcm24() {
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        let (lo, hi) = (1280_i64, 3200_i64);
+        let span = hi - lo;
+        for track_count in [1, 2] {
+            let (directory, recorder, mut session) = stalled_writer_fixture(track_count);
+            let relocated = directory.join("project-takes");
+            // A writer which has dequeued samples must stop at progress publication. Push enough
+            // callbacks and lap changes to exceed the old 32-entry queue, even on its first drain.
+            let stalled = session.shared.progress[0].wave.lock().unwrap();
+            for block in 0..100 {
+                let frame = (block * PERIOD) as i64;
+                let (at, lap) = if frame < hi {
+                    (frame, 0)
+                } else {
+                    (lo + (frame - hi) % span, (1 + (frame - hi) / span) as u32)
+                };
+                let window = CaptureWindow {
+                    at,
+                    lap,
+                    lp: Some((lo, hi)),
+                    map,
+                };
+                assert_no_alloc::assert_no_alloc(|| {
+                    for track in 1..=track_count {
+                        recorder.capture(TrackId(track), &[0.25; PERIOD], &[-0.5; PERIOD], window);
+                    }
+                });
+            }
+            drop(stalled);
+            assert!(recorder.active());
+            let checkpoint = session.checkpoint().unwrap();
+            assert_eq!(checkpoint.len(), track_count as usize * 4);
+            let visible = session.visible_progress();
+            let repeated = session.visible_progress();
+            for (track, again) in visible.iter().zip(repeated.iter()) {
+                assert_eq!((track.current.lap, track.current.frames), (3, 1280));
+                assert_eq!(
+                    track
+                        .current
+                        .waveform
+                        .iter()
+                        .map(|bucket| bucket.samples)
+                        .sum::<u64>(),
+                    track.current.frames * u64::from(track.current.channels)
+                );
+                for ((progress, same), (lap, frames)) in track
+                    .completed
+                    .iter()
+                    .zip(&again.completed)
+                    .zip([(0, 1280), (2, 1920)])
+                {
+                    let (progress, same) = (progress.as_ref().unwrap(), same.as_ref().unwrap());
+                    assert_eq!((progress.lap, progress.frames), (lap, frames));
+                    assert!(Arc::ptr_eq(progress, same));
+                }
+            }
+
+            session.relocate(&relocated).unwrap();
+            for track in session.visible_progress() {
+                assert!(track.current.path.starts_with(&relocated));
+                for progress in track.completed.iter().flatten() {
+                    assert!(progress.path.starts_with(&relocated));
+                    assert_pcm24(
+                        &progress.path,
+                        progress.channels,
+                        progress.frames,
+                        progress.frames,
+                    );
+                }
+            }
+
+            recorder.finish();
+            let result = completed_session(&mut session).unwrap();
+            assert_eq!(result.takes.len(), track_count as usize * 4);
+            for take in result.takes {
+                let captured = if take.lap == 0 || take.lap == 3 {
+                    1280
+                } else {
+                    span as u64
+                };
+                let expected_file = if take.lap == 0 { captured } else { span as u64 };
+                assert!(take.path.starts_with(&relocated));
+                assert_eq!(take.frames, expected_file);
+                assert_pcm24(&take.path, take.channels, expected_file, captured);
+            }
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_full_capture_queue_fails_explicitly_and_preserves_its_written_prefix() {
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        let (directory, recorder, mut session) = stalled_writer_fixture(1);
+        let stalled = session.shared.progress[0].wave.lock().unwrap();
+        let mut accepted = 0;
         assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..3 {
-                recorder.capture(TrackId(1), &[0.5; 32], &[0.25; 32], window);
+            for i in 0..3 * queue_frames(48000) / PERIOD {
+                recorder.capture(
+                    TrackId(1),
+                    &[0.25; PERIOD],
+                    &[-0.5; PERIOD],
+                    CaptureWindow {
+                        at: (i * PERIOD) as i64,
+                        lap: 0,
+                        lp: None,
+                        map,
+                    },
+                );
+                if !recorder.active() {
+                    break;
+                }
+                accepted += PERIOD as u64;
             }
         });
-        assert_eq!(shared.failure.load(Ordering::Acquire), 1);
-        assert!(shared.ended.load(Ordering::Acquire));
-        drop(rx);
+        drop(stalled);
+        assert!(!recorder.active());
+        assert!(accepted >= queue_frames(48000) as u64);
+        assert_eq!(
+            completed_session(&mut session).unwrap_err(),
+            RecordingError::Overrun
+        );
+        let path = session.progress()[0].path.clone();
+        assert_pcm24(&path, 1, accepted, accepted);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
