@@ -108,7 +108,6 @@ impl<'a> InputBuffer<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Frame {
     samples: [f32; MAX_INPUT_CHANNELS],
     at: Instant,
@@ -246,18 +245,16 @@ impl InputReader {
             return InputBuffer::empty();
         }
         let dropped = self.shared.dropped.load(Ordering::Acquire);
-        let mut gap = dropped != self.dropped || self.lost();
+        let overflow = dropped != self.dropped;
+        let mut gap = overflow || self.lost();
         self.dropped = dropped;
-        // After a stall, discard bounded old backlog instead of monitoring seconds behind.
-        let queued = self.rx.slots();
-        if queued > self.target.saturating_mul(3) {
-            for _ in 0..queued.saturating_sub(self.target) {
+        // A large input callback can legitimately deliver several output periods at once.
+        // Only shorten the queue after confirmed loss to bring monitoring latency back down.
+        if overflow {
+            for _ in 0..self.rx.slots().saturating_sub(self.target) {
                 let _ = self.rx.pop();
             }
-            self.left = None;
-            self.right = None;
-            self.phase = 0.0;
-            gap = true;
+            self.reset_interpolator();
         }
         // Build a small lead once instead of repeatedly consuming a partially filled device
         // callback and underflowing. Neither callback waits for the other.
@@ -276,41 +273,47 @@ impl InputReader {
             if self.left.is_none() {
                 self.left = self.rx.pop().ok();
             }
-            if self.right.is_none() {
-                self.right = self.rx.pop().ok();
+            // Advance the source only when the next output frame is needed. The last frame of
+            // an output callback need not have its successor waiting in this callback.
+            while self.phase >= 1.0
+                && let Some(sequence) = self.left.as_ref().map(|frame| frame.sequence)
+            {
+                self.left = self.right.take().or_else(|| self.rx.pop().ok());
+                if let Some(next) = &self.left {
+                    gap |= next.sequence != sequence.wrapping_add(1);
+                }
+                self.phase -= 1.0;
             }
-            let (Some(left), Some(right)) = (self.left, self.right) else {
-                gap = true;
-                self.left = None;
-                self.right = None;
-                self.phase = 0.0;
-                self.primed = false;
-                continue;
+            let right = if self.phase == 0.0 {
+                self.left.as_ref()
+            } else {
+                if self.left.is_some() && self.right.is_none() {
+                    self.right = self.rx.pop().ok();
+                }
+                self.right.as_ref()
             };
-            if right.sequence != left.sequence.wrapping_add(1) {
+            let (Some(left), Some(right)) = (self.left.as_ref(), right) else {
                 gap = true;
-            }
+                self.reset_interpolator();
+                break;
+            };
+            gap |= self.phase != 0.0 && right.sequence != left.sequence.wrapping_add(1);
             first_at.get_or_insert(left.at);
             for (channel, sample) in frame.iter_mut().enumerate() {
                 *sample = left.samples[channel]
                     + (right.samples[channel] - left.samples[channel]) * self.phase as f32;
             }
             self.phase += step;
-            while self.phase >= 1.0 {
-                self.phase -= 1.0;
-                self.left = self.right;
-                self.right = self.rx.pop().ok();
-                if self.right.is_none() {
-                    self.left = None;
-                    self.phase = 0.0;
-                    gap = true;
-                    self.primed = false;
-                    break;
-                }
-            }
         }
         let latency = first_at.map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
         InputBuffer::new(out, self.channels, latency, gap)
+    }
+
+    fn reset_interpolator(&mut self) {
+        self.left = None;
+        self.right = None;
+        self.phase = 0.0;
+        self.primed = false;
     }
 }
 
@@ -624,6 +627,171 @@ mod tests {
         });
         assert_eq!(out[15], 0.0);
     }
+    #[test]
+    fn larger_input_periods_do_not_interrupt_small_output_periods() {
+        let (mut source, mut reader) = test_input(2, 48_000, 512).unwrap();
+        let at = Instant::now();
+        let samples: Vec<_> = (0..1280).flat_map(|i| [i as f32, -(i as f32)]).collect();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let mut out = [0.0; 128];
+        assert_no_alloc(|| {
+            assert!(source.push(&samples[..256], at));
+            assert!(
+                !reader
+                    .read(&mut out, 48_000, capture_at(128))
+                    .discontinuous()
+            );
+
+            // An input callback delivers six output periods at once, without overflowing the
+            // ring. Each of those periods must preserve the ordered samples already queued.
+            for source_start in [128..512, 512..896, 896..1280] {
+                assert!(source.push(
+                    &samples[2 * source_start.start..2 * source_start.end],
+                    capture_at(source_start.start as u64)
+                ));
+                for period in 0..6 {
+                    let expected = source_start.start - 64 + period * 64;
+                    let input = reader.read(
+                        &mut out,
+                        48_000,
+                        capture_at((source_start.end + period * 64) as u64),
+                    );
+                    assert!(!input.discontinuous(), "at output frame {expected}");
+                    assert!((input.sample(0, 0) - expected as f32).abs() < 3.0);
+                    assert_eq!(input.sample(1, 0), -input.sample(0, 0));
+                    assert!(
+                        input
+                            .data()
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|f| f[0])
+                            .is_sorted()
+                    );
+                }
+            }
+            assert_eq!(source.dropped(), 0);
+            assert!(!reader.lost());
+        });
+    }
+
+    #[test]
+    fn smaller_input_periods_accumulate_for_large_output_periods() {
+        let (mut source, mut reader) = test_input(1, 48_000, 512).unwrap();
+        let at = Instant::now();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let samples: Vec<f32> = (0..1280).map(|frame| frame as f32).collect();
+        let mut out = [0.0; 384];
+        assert!(source.push(&samples[..128], at));
+        for output_frame in [0, 384, 768] {
+            for start in (output_frame + 128..output_frame + 512).step_by(64) {
+                assert!(source.push(&samples[start..start + 64], capture_at(start as u64)));
+            }
+            let input = reader.read(&mut out, 48_000, capture_at((output_frame + 512) as u64));
+            assert!(!input.discontinuous());
+            assert!((input.sample(0, 0) - output_frame as f32).abs() < 3.0);
+            assert!(input.data().windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert_eq!(source.dropped(), 0);
+    }
+
+    #[test]
+    fn capture_primes_without_discarding_and_reports_a_real_underrun() {
+        let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
+        let at = Instant::now();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let mut out = [0.0; 4];
+        assert!(source.push(&[1.0, 2.0, 3.0], at));
+        let input = reader.read(&mut out, 48_000, capture_at(3));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[0.0; 4]);
+
+        assert!(source.push(&[4.0], capture_at(3)));
+        let input = reader.read(&mut out, 48_000, capture_at(4));
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[1.0, 2.0, 3.0, 4.0]);
+
+        // The empty queue matters only when the next callback actually needs samples.
+        let input = reader.read(&mut out, 48_000, capture_at(8));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[0.0; 4]);
+
+        assert!(source.push(&[9.0, 10.0, 11.0, 12.0], capture_at(8)));
+        let input = reader.read(&mut out, 48_000, capture_at(12));
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[9.0, 10.0, 11.0, 12.0]);
+        assert_eq!(input.latency(), capture_at(12) - capture_at(8));
+
+        reader.shared.lost.store(true, Ordering::Release);
+        assert!(source.push(&[13.0, 14.0, 15.0, 16.0], capture_at(12)));
+        let input = reader.read(&mut out, 48_000, capture_at(16));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[13.0, 14.0, 15.0, 16.0]);
+    }
+
+    #[test]
+    fn overflow_reduces_monitoring_backlog_and_detects_the_sequence_gap() {
+        let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
+        let at = Instant::now();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let samples: Vec<f32> = (0..28).map(|frame| frame as f32).collect();
+        let mut out = [0.0; 2];
+        assert!(source.push(&samples[..4], at));
+        assert!(!reader.read(&mut out, 48_000, capture_at(4)).discontinuous());
+
+        // Two frames remain after the first read. Another eighteen fill the ring and
+        // drop four frames. Monitoring resumes at the freshest retained four.
+        assert!(!source.push(&samples[4..22], capture_at(4)));
+        assert_eq!(source.dropped(), 4);
+        let input = reader.read(&mut out, 48_000, capture_at(22));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[14.0, 15.0]);
+        assert_eq!(input.latency(), capture_at(22) - capture_at(14));
+
+        // Detect the dropped interval even if it arrives after the overflow flag was read.
+        assert!(source.push(&samples[22..], capture_at(22)));
+        let input = reader.read(&mut out, 48_000, capture_at(24));
+        assert!(input.discontinuous());
+        let input = reader.read(&mut out, 48_000, capture_at(26));
+        assert!((input.sample(0, 0) - 22.0).abs() < 0.1);
+        let input = reader.read(&mut out, 48_000, capture_at(28));
+        assert!(!input.discontinuous());
+        assert!((input.sample(0, 0) - 24.0).abs() < 0.1);
+        assert_eq!(
+            input.latency(),
+            capture_at(28) - capture_at(22) - crate::frames_to_duration(2, 48_000)
+        );
+    }
+
+    #[test]
+    fn clock_follower_keeps_capture_continuous_within_its_correction_range() {
+        // One extra frame every sixteen 64-frame periods is about 0.1% drift.
+        // One every four periods is about 0.4% and outruns the 0.2% follower.
+        for (extra_every, expect_overflow) in [(16, false), (4, true)] {
+            let (mut source, mut reader) = test_input(1, 48_000, 256).unwrap();
+            let at = Instant::now();
+            let samples = [0.25; 65];
+            let mut queued_until = 64;
+            let mut out = [0.0; 64];
+            assert!(source.push(&samples[..64], at));
+            for period in 1..=2_000 {
+                let frames = 64 + usize::from(period % extra_every == 0);
+                let complete = source.push(
+                    &samples[..frames],
+                    at + crate::frames_to_duration(queued_until, 48_000),
+                );
+                queued_until += frames as u64;
+                let now = at + crate::frames_to_duration(queued_until, 48_000);
+                let input = reader.read(&mut out, 48_000, now);
+                assert_eq!(input.discontinuous(), !complete, "period {period}");
+                if !complete {
+                    break;
+                }
+            }
+            assert_eq!(source.dropped() > 0, expect_overflow);
+        }
+    }
+
     #[test]
     fn another_input_rate_is_converted_without_allocation() {
         let (mut source, mut reader) = test_input(1, 24_000, 64).unwrap();

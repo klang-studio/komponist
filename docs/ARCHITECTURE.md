@@ -1278,7 +1278,9 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   its default implementation preserves output-only processors. A bounded SPSC bridge carries
   timestamped frames from the input callback to the output callback. Linear rate conversion and
   a queue-depth clock follower (at most ±0.2%) align separate device clocks; a short priming lead
-  avoids recurring startup underruns. `InputBuffer::latency` includes capture and queue delay.
+  avoids recurring startup underruns. Input and output callback sizes can differ: the bridge keeps
+  queued frames across complete input bursts and trims stale backlog to the re-prime threshold after
+  a confirmed overflow. `InputBuffer::latency` includes capture and queue delay.
   Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
   instead of joining samples across a gap. Callback buffers and queue storage are preallocated.
   ASIO capture uses the output's driver and caches input metadata during normal enumeration;
