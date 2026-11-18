@@ -633,10 +633,28 @@ impl PluginManager {
     /// document), and so are devices with a [`Self::state_warning`]. Sorted by device id; a late
     /// answer arrives later as a `StateSnapshot` event.
     pub fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
+        self.snapshot_states_if(timeout, |_| true)
+    }
+
+    /// Captures only the external devices that a single-track render will replace.
+    pub fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Vec<(DeviceId, Arc<[u8]>)> {
+        self.snapshot_states_if(timeout, |device| devices.contains(&device))
+    }
+
+    fn snapshot_states_if(
+        &mut self,
+        timeout: Duration,
+        include: impl Fn(DeviceId) -> bool,
+    ) -> Vec<(DeviceId, Arc<[u8]>)> {
         let deadline = Instant::now() + timeout;
         let mut waiting: BTreeMap<DeviceId, u32> = self
             .bridges
             .iter_mut()
+            .filter(|&(&device, _)| include(device))
             .filter_map(|(&device, b)| Some((device, b.request_state(StatePurpose::Collect)?)))
             .collect();
         let mut states = Vec::new();
@@ -788,6 +806,15 @@ impl PluginManager {
         self.render_mode = mode;
         for bridge in self.bridges.values_mut() {
             bridge.set_render_mode(mode, &mut self.pending);
+        }
+    }
+
+    /// Sets the render mode of a subset of running bridges, leaving the default unchanged.
+    pub fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
+        for device in devices {
+            if let Some(bridge) = self.bridges.get_mut(device) {
+                bridge.set_render_mode(mode, &mut self.pending);
+            }
         }
     }
 
