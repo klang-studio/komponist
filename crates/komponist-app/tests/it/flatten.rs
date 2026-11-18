@@ -204,8 +204,8 @@ impl Processor for TestProcessor {
         let Self::Tail { value, remaining } = self else {
             return self.process(ctx, events, io);
         };
-        for i in 0..ctx.frames as usize {
-            let dry = io.input[0][i] * side[0][i];
+        for (i, &side_sample) in side[0][..ctx.frames as usize].iter().enumerate() {
+            let dry = io.input[0][i] * side_sample;
             let sample = if dry != 0.0 {
                 *value = dry;
                 *remaining = TAIL;
