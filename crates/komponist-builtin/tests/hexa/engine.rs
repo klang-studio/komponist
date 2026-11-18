@@ -54,6 +54,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     });
     let track = TrackProgram {
         id: TrackId(1),

@@ -1,6 +1,6 @@
 //! Project files `*.komponist` (ARCHITECTURE §5.5, decision D7).
 //!
-//! One JSON file: `{ "format": "komponist", "version": 3, "project": { … } }`. Plugin states are
+//! One JSON file: `{ "format": "komponist", "version": 4, "project": { … } }`. Plugin states are
 //! base64 strings. A missing plugin keeps its state byte-identical through load and save (S06).
 //! Older versions are upgraded on load by a chain of `migrate_vN_to_vN+1` functions on the JSON
 //! value, one per version step, each with its own test.
@@ -14,6 +14,7 @@
 //!   on tracks, clip content `{"kind": "audio", …}` ([`crate::AudioClip`]). Everything is new
 //!   optional data, so `migrate_v2_to_v3` changes nothing; the bump keeps builds from before audio
 //!   from opening a project that may hold audio clips as if it were complete.
+//! - 4 (#65): optional track and master automation and MIDI/step clip envelopes.
 //!
 //! Thread: any non-RT thread (loading and saving run on workers).
 
@@ -33,7 +34,7 @@ use crate::time::Tick;
 pub const FORMAT_TAG: &str = "komponist";
 
 /// Version written by this build; files with a higher version are rejected.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// File name extension, without the dot.
 pub const FILE_EXTENSION: &str = "komponist";
@@ -184,7 +185,7 @@ type MigrationStep = fn(Value) -> Result<Value, String>;
 
 /// All migration steps, oldest first.
 const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] =
-    [migrate_v1_to_v2, migrate_v2_to_v3];
+    [migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4];
 
 /// Version 1 → 2 (wave 9, routing): every track outputs to the master. Sends, groups and
 /// sidechains are optional fields and absent in version 1, which means none. A malformed track
@@ -209,6 +210,11 @@ fn migrate_v2_to_v3(project: Value) -> Result<Value, String> {
     Ok(project)
 }
 
+/// Version 3 → 4 (automation): all automation fields have empty defaults.
+fn migrate_v3_to_v4(project: Value) -> Result<Value, String> {
+    Ok(project)
+}
+
 /// After loading: rejects what the program cannot work with (meter, tempo, takes, pattern
 /// lengths, a routing cycle, a bus with clips or an instrument) and repairs what is cheap to
 /// repair (`next_id` below an existing id, unsorted clips and notes, routing references to
@@ -229,6 +235,7 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
         .devices
         .iter()
         .map(|d| d.id.0)
+        .chain(project.master_automation.lanes.iter().map(|lane| lane.id.0))
         .max()
         .unwrap_or(0);
     for track in &mut project.tracks {
@@ -241,6 +248,7 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
         let mut ids = vec![track.id.0];
         ids.extend(track.channel.devices.iter().map(|d| d.id.0));
         ids.extend(track.sends.iter().map(|s| s.id.0));
+        ids.extend(track.automation.lanes.iter().map(|lane| lane.id.0));
         if !track.clips.is_sorted_by_key(|c| (c.start, c.id)) {
             Arc::make_mut(track).clips.sort_by_key(|c| (c.start, c.id));
         }
@@ -324,6 +332,7 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
     }
     repair_routing(project);
     repair_audio_inputs(project);
+    crate::edits::automation::repair_loaded(project).map_err(|error| error.to_string())?;
     crate::edits::normalize_audio_overlaps(project).map_err(|error| error.to_string())?;
     routing::check(project).map_err(|issue| issue.to_string())
 }
@@ -482,7 +491,7 @@ mod tests {
         let text = to_json(&demo_project()).unwrap();
         assert!(
             text.starts_with(
-                "{\n  \"format\": \"komponist\",\n  \"version\": 3,\n  \"project\": {"
+                "{\n  \"format\": \"komponist\",\n  \"version\": 4,\n  \"project\": {"
             )
         );
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -657,8 +666,8 @@ mod tests {
             );
         }
         assert_eq!(
-            from_json(r#"{"format": "komponist", "version": 4, "project": {}}"#),
-            Err(PersistError::TooNew { found: 4 })
+            from_json(r#"{"format": "komponist", "version": 5, "project": {}}"#),
+            Err(PersistError::TooNew { found: 5 })
         );
         assert!(matches!(
             from_json(r#"{"format": "komponist", "version": 0, "project": {}}"#),
@@ -1033,8 +1042,8 @@ mod tests {
     #[test]
     fn errors_display() {
         assert_eq!(
-            PersistError::TooNew { found: 4 }.to_string(),
-            "project file version 4 is newer than 3"
+            PersistError::TooNew { found: 5 }.to_string(),
+            "project file version 5 is newer than 4"
         );
     }
 
@@ -1095,7 +1104,7 @@ mod tests {
     fn audio_projects_round_trip() {
         let p = audio_project();
         let text = to_json(&p).unwrap();
-        assert!(text.contains("\"version\": 3"));
+        assert!(text.contains("\"version\": 4"));
         assert!(text.contains("\"kind\": \"audio\""));
         assert!(text.contains("\"time_mode\": \"repitch\""));
         assert_eq!(from_json(&text).unwrap(), p);
@@ -1117,8 +1126,8 @@ mod tests {
         let loaded = from_json(&v2.to_string()).unwrap();
         assert_eq!(loaded, demo_project());
         assert!(loaded.tracks.iter().all(|t| !t.is_audio()));
-        // Saving writes version 3.
-        assert!(to_json(&loaded).unwrap().contains("\"version\": 3"));
+        // Saving writes the current format version.
+        assert!(to_json(&loaded).unwrap().contains("\"version\": 4"));
         // Audio clip fields that are missing read as the defaults (Fixed, 0 dB, no fades).
         let mut av = serde_json::to_value(audio_project()).unwrap();
         let clip = &mut av["tracks"][1]["clips"][0]["content"];
@@ -1280,5 +1289,82 @@ mod tests {
             from_json(&envelope.to_string()),
             Err(PersistError::Malformed(_))
         ));
+    }
+    #[test]
+    fn projects_without_automation_keep_their_wire_content() {
+        let p = audio_project();
+        let current = to_json(&p).unwrap();
+        let previous = current.replacen("\"version\": 4", "\"version\": 3", 1);
+        assert!(!current.contains("automation"));
+        assert_eq!(
+            migrate_v3_to_v4(serde_json::to_value(&p).unwrap()).unwrap(),
+            serde_json::to_value(&p).unwrap()
+        );
+        assert_eq!(from_json(&previous).unwrap(), p);
+        assert_eq!(to_json(&from_json(&previous).unwrap()).unwrap(), current);
+    }
+
+    #[test]
+    fn all_automation_shapes_targets_owners_and_modes_round_trip() {
+        use crate::automation::{Point, Points};
+        let project = crate::fixtures::automation_project();
+        let text = to_json(&project).unwrap();
+        assert!(text.contains("[[0,0.25],[960,0.5,0.5],[1920,0.75,\"hold\"],[3840,0.5]]"));
+        assert!(!text.contains("\"mode\": \"read\""));
+        let loaded = from_json(&text).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(to_json(&loaded).unwrap(), text);
+        let points = Points::new(
+            (0..2_000)
+                .map(|i| Point::linear(Tick(i * 20), (i % 100) as f32 / 100.0))
+                .collect(),
+        );
+        assert!(serde_json::to_string_pretty(&points).unwrap().len() < 20 * 2_000);
+    }
+
+    #[test]
+    fn loading_repairs_duplicate_lanes_and_points_but_keeps_an_unresolved_target() {
+        use crate::automation::{AutomationMode, AutomationTarget, LANE_HEIGHT_MAX};
+        let p = crate::fixtures::automation_project();
+        let mut serialized: Value = serde_json::to_value(&p).unwrap();
+        let lanes = serialized["tracks"][2]["automation"]["lanes"]
+            .as_array_mut()
+            .unwrap();
+        lanes[0]["height"] = 999.into();
+        lanes[0]["target"]["device"] = 999999.into();
+        lanes[0]["points"] = serde_json::json!([[50, 2.0], [10, -1.0, 5.0], [10, 0.3], [10, 0.5]]);
+        let duplicate = lanes[0].clone();
+        let id = lanes[0]["id"].clone();
+        lanes.push(duplicate);
+        let file =
+            serde_json::json!({ "format": "komponist", "version": 4, "project": serialized });
+        let loaded = from_json(&file.to_string()).unwrap();
+        let repaired = &loaded.tracks[2].automation.lanes[0];
+        assert_eq!(repaired.id.0, id.as_u64().unwrap());
+        assert_eq!(repaired.mode, AutomationMode::Read);
+        assert_eq!(repaired.height, LANE_HEIGHT_MAX);
+        assert!(
+            matches!(repaired.target, AutomationTarget::Param { device, .. } if device.0 == 999999)
+        );
+        assert_eq!(repaired.points.as_slice().len(), 3);
+        assert_eq!(repaired.points.as_slice()[0].value, 0.0);
+        assert_eq!(repaired.points.as_slice()[1].value, 0.5);
+        assert_eq!(repaired.points.as_slice()[2].value, 1.0);
+        assert_eq!(
+            loaded.tracks[2]
+                .automation
+                .lanes
+                .iter()
+                .filter(|lane| lane.target == repaired.target)
+                .count(),
+            1
+        );
+        // The original clip target is still live, so load gives its envelope a Read lane.
+        assert!(
+            loaded.tracks[2]
+                .automation
+                .lane(&loaded.tracks[2].clips[0].automation[0].target)
+                .is_some()
+        );
     }
 }

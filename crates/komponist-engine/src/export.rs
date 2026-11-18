@@ -1062,6 +1062,7 @@ mod tests {
             sends: Vec::new(),
             folder: false,
             folded: false,
+            automation: Default::default(),
         });
         let track = |notes: Vec<SeqNote>| {
             Arc::new(TrackProgram {

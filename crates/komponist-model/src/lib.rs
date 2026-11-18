@@ -24,6 +24,7 @@
 //! Nothing in this crate runs on the audio thread.
 
 pub mod audio;
+pub mod automation;
 pub mod document;
 pub mod edits;
 pub mod fixtures;
@@ -46,7 +47,7 @@ pub use audio::{
 };
 pub use document::{Document, Gesture, UNDO_LIMIT, UndoStep};
 pub use edits::EditError;
-pub use ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
+pub use ids::{ClipId, DeviceId, LaneId, NoteId, SendId, TrackId};
 pub use project::{
     Channel, ChannelRef, Clip, ClipContent, ClipKind, Device, DeviceRole, Hue, MidiChannelSel,
     MidiClip, MidiInputSel, Note, PluginFormat, PluginRef, Project, Sidechain, Step, StepClip,

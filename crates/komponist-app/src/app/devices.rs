@@ -2,11 +2,11 @@
 //! neighbour selection of ← →, and the scroll requests of the mixer jump and the chain head.
 
 use komponist_model::edits::{self, NewDevice};
-use komponist_model::{ChannelRef, Device, DeviceId, DeviceRole, TrackId};
+use komponist_model::{ChannelRef, Device, DeviceId, DeviceRole, Project, TrackId};
 
 use super::App;
 use crate::actions::{PluginAction, SelectMode, SelectionChange, UiAction};
-use crate::ui_state::{DockTab, ParamTouch, Reveal};
+use crate::ui_state::{CopiedDevice, DockTab, ParamTouch, Reveal};
 
 /// A device as the spec of a copy: plugin, state and sidechain (kept where its source can still
 /// feed the copy, #7), not bypassed.
@@ -17,6 +17,26 @@ fn spec(device: &Device) -> NewDevice {
         state: device.state.clone(),
         sidechain: device.sidechain,
     }
+}
+
+fn capture(project: &Project, device: &Device) -> CopiedDevice {
+    CopiedDevice {
+        device: device.clone(),
+        lanes: edits::automation::device_lanes(project, device.id),
+    }
+}
+
+fn insert_copy(
+    project: &Project,
+    channel: ChannelRef,
+    index: usize,
+    copy: CopiedDevice,
+) -> Result<(Project, DeviceId), edits::EditError> {
+    let (project, id) = edits::insert_device(project, channel, index, spec(&copy.device))?;
+    Ok((
+        edits::automation::paste_device_lanes(&project, id, &copy.lanes)?,
+        id,
+    ))
 }
 
 impl App {
@@ -30,22 +50,22 @@ impl App {
         ))
     }
 
-    /// Inserts copies of `specs` from `index` on, as one undo step; selects them.
+    /// Inserts devices and their lanes from `index` on, as one undo step; selects them.
     fn insert_copies(
         &mut self,
         label: &str,
         channel: ChannelRef,
         index: usize,
-        specs: Vec<NewDevice>,
+        copies: Vec<CopiedDevice>,
     ) {
-        if specs.is_empty() {
+        if copies.is_empty() {
             return;
         }
         let ids = self.apply_with(label, |p| {
             let mut p = p.clone();
-            let mut ids = Vec::with_capacity(specs.len());
-            for (i, spec) in specs.into_iter().enumerate() {
-                let (next, id) = edits::insert_device(&p, channel, index + i, spec)?;
+            let mut ids = Vec::with_capacity(copies.len());
+            for (i, copy) in copies.into_iter().enumerate() {
+                let (next, id) = insert_copy(&p, channel, index + i, copy)?;
                 p = next;
                 ids.push(id);
             }
@@ -64,7 +84,7 @@ impl App {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        let specs = vec![spec(d)];
+        let copies = vec![capture(self.project(), d)];
         let index = match (d.role, to) {
             (DeviceRole::Instrument, ChannelRef::Track(track)) => self
                 .project()
@@ -72,7 +92,7 @@ impl App {
                 .map_or(index, |t| t.channel.midi_effect_count()),
             _ => index,
         };
-        self.insert_copies("undo-copy-device", to, index, specs);
+        self.insert_copies("undo-copy-device", to, index, copies);
     }
 
     /// Ctrl D: every selected effect copied behind itself.
@@ -81,13 +101,13 @@ impl App {
             return;
         };
         let p = self.project().clone();
-        let chosen: Vec<(usize, NewDevice)> = chain
+        let chosen: Vec<(usize, CopiedDevice)> = chain
             .iter()
             .enumerate()
             .filter(|(_, id)| self.ui.selection.devices.contains(id))
             .filter_map(|(i, id)| {
                 let (_, _, d) = p.find_device(*id)?;
-                (d.role != DeviceRole::Instrument).then(|| (i, spec(d)))
+                (d.role != DeviceRole::Instrument).then(|| (i, capture(&p, d)))
             })
             .collect();
         if chosen.is_empty() {
@@ -97,8 +117,8 @@ impl App {
             let mut p = p.clone();
             let mut ids = Vec::new();
             // Back to front, so the earlier indices stay valid.
-            for (i, spec) in chosen.into_iter().rev() {
-                let (next, id) = edits::insert_device(&p, ChannelRef::Track(track), i + 1, spec)?;
+            for (i, copy) in chosen.into_iter().rev() {
+                let (next, id) = insert_copy(&p, ChannelRef::Track(track), i + 1, copy)?;
                 p = next;
                 ids.push(id);
             }
@@ -115,11 +135,12 @@ impl App {
             return;
         };
         let p = self.project().clone();
-        let copied: Vec<Device> = chain
+        let copied: Vec<CopiedDevice> = chain
             .iter()
             .filter(|id| self.ui.selection.devices.contains(id))
-            .filter_map(|id| p.find_device(*id).map(|(_, _, d)| (**d).clone()))
+            .filter_map(|id| p.find_device(*id).map(|(_, _, d)| d))
             .filter(|d| d.role != DeviceRole::Instrument)
+            .map(|d| capture(&p, d))
             .collect();
         if !copied.is_empty() {
             // egui-winit sends `Event::Paste` for Strg V only while the system clipboard holds
@@ -137,12 +158,17 @@ impl App {
         let Some((track, chain)) = self.selected_chain() else {
             return;
         };
-        let specs: Vec<NewDevice> = self.ui.devices.clipboard.iter().map(spec).collect();
+        let copies = self.ui.devices.clipboard.clone();
         let index = chain
             .iter()
             .rposition(|id| self.ui.selection.devices.contains(id))
             .map_or(chain.len(), |i| i + 1);
-        self.insert_copies("undo-paste-devices", ChannelRef::Track(track), index, specs);
+        self.insert_copies(
+            "undo-paste-devices",
+            ChannelRef::Track(track),
+            index,
+            copies,
+        );
     }
 
     /// Entf: remove the selected devices of the chain.

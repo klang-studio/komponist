@@ -49,11 +49,11 @@ fn setup() -> (Project, ClipId) {
 }
 
 #[test]
-fn optional_wire_uses_fixed_legacy_mode_and_no_format_bump() {
+fn optional_wire_uses_fixed_legacy_mode() {
     let (p, c) = setup();
     let text = persist::to_json(&p).unwrap();
     let wire: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(wire["version"], 3);
+    assert_eq!(wire["version"], persist::FORMAT_VERSION);
     let value = &wire["project"]["tracks"][0]["clips"][0]["content"];
     assert_eq!(value["time_mode"], "fixed");
     assert_eq!(

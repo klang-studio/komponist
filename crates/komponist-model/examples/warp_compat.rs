@@ -34,14 +34,28 @@ fn fixture() -> (Project, komponist_model::ClipId) {
     .unwrap();
     (p, c)
 }
+// These fixtures intentionally exercise Warp in the pre-automation wire format.
+fn v3_json(project: &Project) -> String {
+    let text = persist::to_json(project).unwrap();
+    assert!(project.master_automation.is_empty());
+    assert!(
+        project
+            .tracks
+            .iter()
+            .all(|track| track.automation.is_empty()
+                && track.clips.iter().all(|clip| clip.automation.is_empty()))
+    );
+    text.replacen(
+        &format!("\"version\": {}", persist::FORMAT_VERSION),
+        "\"version\": 3",
+        1,
+    )
+}
+
 fn prepare(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     let (plain, _) = fixture();
-    std::fs::write(
-        dir.join("source-plain.komponist"),
-        persist::to_json(&plain).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(dir.join("source-plain.komponist"), v3_json(&plain)).unwrap();
     for (name, ratio) in [
         ("050", 0.5),
         ("075", 0.75),
@@ -59,16 +73,13 @@ fn prepare(dir: &Path) {
         .unwrap();
         let p = edits::set_audio_clip_warp(&p, c, true).unwrap();
         let p = edits::set_clip_length(&p, c, Tick((15360.0 * ratio).round() as i64)).unwrap();
-        let text = persist::to_json(&p).unwrap();
-        assert_eq!(
-            persist::to_json(&persist::from_json(&text).unwrap()).unwrap(),
-            text
-        );
+        let text = v3_json(&p);
+        assert_eq!(v3_json(&persist::from_json(&text).unwrap()), text);
         std::fs::write(dir.join(format!("source-{name}.komponist")), text).unwrap();
         let (p, _) = edits::split_clips(&p, &[c], Tick(1137)).unwrap();
         std::fs::write(
             dir.join(format!("source-{name}-split.komponist")),
-            persist::to_json(&p).unwrap(),
+            v3_json(&p),
         )
         .unwrap();
     }
@@ -90,7 +101,7 @@ fn verify(dir: &Path) {
             }
         }
         assert_eq!(
-            persist::to_json(&p).unwrap(),
+            v3_json(&p),
             text,
             "non-Warp serialization changed for {name}"
         );

@@ -258,6 +258,7 @@ impl Recording {
                 mute: false,
                 transpose: 0,
                 velocity_pct: 0,
+                automation: Vec::new(),
                 content: ClipContent::Midi(MidiClip {
                     takes: vec![Take {
                         name: take,
@@ -468,6 +469,7 @@ fn placeholder_clip(id: ClipId) -> Clip {
         mute: false,
         transpose: 0,
         velocity_pct: 0,
+        automation: Vec::new(),
         content: ClipContent::Midi(MidiClip {
             takes: vec![Take {
                 name: String::new(),

@@ -92,6 +92,7 @@ pub fn add_audio_track_in(
             sends: Vec::new(),
             folder: false,
             folded: false,
+            automation: Default::default(),
         }),
     );
     crate::routing::normalize_groups(&mut p);
@@ -432,12 +433,19 @@ pub fn flatten_midi_track(
     let track = Arc::make_mut(&mut next.tracks[index]);
     track.kind = TrackKind::Audio;
     track.channel.devices.clear();
+    track.automation.lanes.retain(|lane| {
+        !matches!(
+            lane.target,
+            crate::automation::AutomationTarget::Param { .. }
+        )
+    });
     track.clips.clear();
     track.arm = false;
     track.monitor = false;
     track.input = Default::default();
     track.midi_channel = Default::default();
     track.audio = Default::default();
+    super::automation::prune_hidden_unused(&mut next, id)?;
     super::add_clip(
         &next,
         id,

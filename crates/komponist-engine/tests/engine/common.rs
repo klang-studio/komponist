@@ -81,6 +81,7 @@ fn model_track(id: u64) -> Arc<Track> {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     })
 }
 

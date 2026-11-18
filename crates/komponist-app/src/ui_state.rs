@@ -7,8 +7,10 @@
 //! Thread: UI thread only.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
+use komponist_model::automation::Lane;
 use komponist_model::params::ParamId;
 use komponist_model::{
     ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId,
@@ -423,9 +425,16 @@ pub struct DevicesView {
     /// bring it into view.
     pub reveal: Option<(DeviceId, Reveal)>,
     /// Ctrl C: the copied devices (Ctrl V inserts them behind the selected device).
-    pub clipboard: Vec<Device>,
+    pub clipboard: Vec<CopiedDevice>,
     /// The parameter touched last (WP-89): the inspector's "Parameter" section.
     pub touched: Option<ParamTouch>,
+}
+
+/// A device and the lane contents captured by Copy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopiedDevice {
+    pub device: Device,
+    pub lanes: Vec<Arc<Lane>>,
 }
 
 /// The parameter of a device the user touched last.

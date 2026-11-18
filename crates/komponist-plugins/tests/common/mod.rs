@@ -267,6 +267,7 @@ pub fn track(id: u64, devices: Vec<Device>) -> Track {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     }
 }
 

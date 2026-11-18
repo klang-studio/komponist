@@ -59,7 +59,7 @@ fn effective(scale: Scale, min: f64, max: f64) -> Scale {
 }
 
 /// `v` (inside `min ..= max`, `min < max`) as 0–1.
-pub(super) fn to_normalized(scale: Scale, min: f64, max: f64, v: f64) -> f64 {
+pub fn to_normalized(scale: Scale, min: f64, max: f64, v: f64) -> f64 {
     match effective(scale, min, max) {
         Scale::Lin | Scale::Pan => (v - min) / (max - min),
         Scale::Log => (v / min).ln() / (max / min).ln(),
@@ -75,7 +75,7 @@ pub(super) fn to_normalized(scale: Scale, min: f64, max: f64, v: f64) -> f64 {
 }
 
 /// 0–1 position `n` as a plain value inside `min ..= max`.
-pub(super) fn to_plain(scale: Scale, min: f64, max: f64, n: f64) -> f64 {
+pub fn to_plain(scale: Scale, min: f64, max: f64, n: f64) -> f64 {
     match effective(scale, min, max) {
         Scale::Lin | Scale::Pan => min + n * (max - min),
         Scale::Log => min * (max / min).powf(n),

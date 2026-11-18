@@ -35,6 +35,7 @@ use crate::project::{
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
 mod audio;
+pub mod automation;
 mod routes;
 
 pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
@@ -593,6 +594,7 @@ pub fn add_track_in(
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     };
     p.tracks.insert(index, Arc::new(track));
     crate::routing::normalize_groups(&mut p);
@@ -742,6 +744,7 @@ pub fn add_clip(
         mute: false,
         transpose: 0,
         velocity_pct: 0,
+        automation: Vec::new(),
         content,
     };
     insert_clip(track_mut(&mut p, track_index), Arc::new(clip));
@@ -757,9 +760,11 @@ pub fn remove_clips(project: &Project, clips: &[ClipId]) -> EditResult {
     let mut p = project.clone();
     for index in 0..p.tracks.len() {
         if p.tracks[index].clips.iter().any(|c| clips.contains(&c.id)) {
+            let track_id = p.tracks[index].id;
             track_mut(&mut p, index)
                 .clips
                 .retain(|c| !clips.contains(&c.id));
+            automation::prune_hidden_unused(&mut p, track_id)?;
         }
     }
     Ok(p)
@@ -800,6 +805,32 @@ pub fn move_clips(
     }
     let moved: Vec<ClipId> = group.clips.iter().map(|(_, c)| c.id).collect();
     audio::cut_below(&mut p, &moved)?;
+    if group.track_delta != 0
+        && group
+            .clips
+            .iter()
+            .any(|(_, clip)| !clip.automation.is_empty())
+    {
+        for index in unique(
+            &group
+                .clips
+                .iter()
+                .map(|(index, _)| group.target(*index))
+                .collect::<Vec<_>>(),
+        ) {
+            automation::ensure_clip_lanes(&mut p, index)?;
+        }
+        for index in unique(
+            &group
+                .clips
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>(),
+        ) {
+            let track_id = p.tracks[index].id;
+            automation::prune_hidden_unused(&mut p, track_id)?;
+        }
+    }
     Ok(p)
 }
 
@@ -824,6 +855,22 @@ pub fn copy_clips(
         );
     }
     audio::cut_below(&mut p, &copies)?;
+    if group.track_delta != 0
+        && group
+            .clips
+            .iter()
+            .any(|(_, clip)| !clip.automation.is_empty())
+    {
+        for index in unique(
+            &group
+                .clips
+                .iter()
+                .map(|(index, _)| group.target(*index))
+                .collect::<Vec<_>>(),
+        ) {
+            automation::ensure_clip_lanes(&mut p, index)?;
+        }
+    }
     Ok((p, copies))
 }
 
@@ -1252,6 +1299,9 @@ pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
         })
         .collect::<Result<_, EditError>>()?;
     update_clip(&mut p, location, |c| {
+        for envelope in &mut c.automation {
+            envelope.points = crate::automation::unroll_envelope(source, envelope);
+        }
         c.loop_length = None;
         c.content = ClipContent::Midi(MidiClip {
             takes: vec![Take {
@@ -1364,9 +1414,18 @@ pub fn replace_instrument(
         state: None,
         sidechain: None,
     });
-    let channel = &mut track_mut(&mut p, track_index).channel;
+    let track_value = track_mut(&mut p, track_index);
+    let channel = &mut track_value.channel;
     match channel.instrument() {
-        Some((index, _)) => channel.devices[index] = device,
+        Some((index, old)) => {
+            let removed = old.id;
+            channel.devices[index] = device;
+            automation::remove_device_lanes(
+                &mut p,
+                crate::automation::AutomationOwner::Track(track),
+                removed,
+            )?;
+        }
         None => {
             let index = channel.midi_effect_count();
             channel.devices.insert(index, device);
@@ -1382,6 +1441,7 @@ pub fn remove_device(project: &Project, device: DeviceId) -> EditResult {
         .ok_or(EditError::DeviceNotFound(device))?;
     let mut p = project.clone();
     channel_mut(&mut p, channel)?.devices.remove(index);
+    automation::remove_device_lanes(&mut p, channel.into(), device)?;
     Ok(p)
 }
 
@@ -1834,6 +1894,11 @@ fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Cli
     right.start = clip.start + at;
     right.length = clip.length - at;
     left.length = at;
+    for (index, envelope) in clip.automation.iter().enumerate() {
+        let (before, after) = crate::automation::split_envelope(clip, envelope, at);
+        left.automation[index].points = before;
+        right.automation[index].points = after;
+    }
     match &mut right.content {
         ClipContent::Midi(right_midi) => {
             let ClipContent::Midi(left_midi) = &mut left.content else {
