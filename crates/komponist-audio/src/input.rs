@@ -132,6 +132,8 @@ pub struct RoutedInput<'a> {
     pub history: &'a [f32],
     /// The next ring frame to write.
     pub history_cursor: usize,
+    /// Continuous prior frames per slot, excluding frames before its latest discontinuity.
+    pub history_valid: &'a [u32],
 }
 
 /// Borrowed, interleaved input at the output sample rate, for one processing callback.

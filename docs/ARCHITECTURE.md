@@ -1392,7 +1392,11 @@ are retained in the WP-E internal notes.
   It can run on JACK or PipeWire-JACK and does not start or configure the server. Graph changes
   are reconciled outside the process callback. Loss of a capture route invalidates its slot until
   the exact port reconnects. Other slots can continue capturing and the same client keeps playing.
-  Each input is compensated by its route's latency. Stereo legs are aligned using a bounded history.
+  A take uses the same initial route latencies for alignment and placement. Latency reports can
+  change with the graph quantum, so updates alone do not mark a capture interruption. Stereo
+  monitoring uses bounded, per-slot history and stops reading it across a proven capture gap.
+  Spare automatic capture slots can use a single patchbay link. Automatic playback only links an
+  unconnected output, or replaces a default link owned by the application.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back

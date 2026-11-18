@@ -4,7 +4,7 @@ mod active;
 
 use self::active::ActiveClient;
 use std::ffi::{CStr, c_char};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -336,7 +336,7 @@ const CAPTURE_REVISION: u32 = 4;
 struct CaptureState {
     state: AtomicU64,
     // The canonical peer expected for the upcoming graph operation.
-    peer: AtomicUsize,
+    peer: AtomicU32,
 }
 
 impl CaptureState {
@@ -354,7 +354,7 @@ impl CaptureState {
             });
     }
 
-    fn connection_event(&self, peer: usize, connected: bool) {
+    fn connection_event(&self, peer: jack::PortId, connected: bool) {
         // A delayed notification for the intended initial connection cannot invalidate the
         // controller's verification. Any other connection invalidates it before the next period.
         if !connected || self.peer.load(Ordering::Acquire) != peer {
@@ -368,7 +368,7 @@ impl CaptureState {
 
     fn publish(&self, before: u64, latency: Option<u32>) -> bool {
         let mut next = u64::from(before as u32) & !CAPTURE_READY;
-        if before & CAPTURE_READY != 0 && latency != Some((before >> 32) as u32) {
+        if before & CAPTURE_READY != 0 && latency.is_none() {
             next |= CAPTURE_GAP;
         }
         if let Some(latency) = latency {
@@ -392,7 +392,7 @@ impl CaptureState {
 struct Notifications {
     signals: Arc<Signals>,
     stats: Arc<StreamStats>,
-    capture_ports: Vec<usize>,
+    capture_ports: Vec<jack::PortId>,
 }
 
 impl Notifications {
@@ -416,16 +416,9 @@ impl Notifications {
         self.graph_changed();
     }
 
-    fn ports_connected(
-        &self,
-        client: *mut jack_sys::jack_client_t,
-        a: jack::PortId,
-        b: jack::PortId,
-        connected: bool,
-    ) {
-        // SAFETY: the active client owns the JACK handle for the duration of the notification.
-        let raw = |id| unsafe { jack_sys::jack_port_by_id(client, id) } as usize;
-        let [a, b] = [raw(a), raw(b)];
+    fn ports_connected(&self, a: jack::PortId, b: jack::PortId, connected: bool) {
+        // The callback may run with JACK's process lock held. Only compare pre-resolved IDs.
+
         if let Some((index, peer)) =
             self.capture_ports
                 .iter()
@@ -461,6 +454,7 @@ struct PeriodRenderer<P: AudioProcess> {
     prepared_frames: usize,
     history: Vec<f32>,
     history_cursor: usize,
+    history_valid: [u32; MAX_INPUT_CHANNELS],
     rate: u32,
 }
 
@@ -478,6 +472,7 @@ impl<P: AudioProcess> PeriodRenderer<P> {
                 Vec::new()
             },
             history_cursor: 0,
+            history_valid: [0; MAX_INPUT_CHANNELS],
             rate: params.sample_rate,
         }
     }
@@ -518,6 +513,12 @@ impl<P: AudioProcess> PeriodRenderer<P> {
             } else {
                 0
             };
+            for (index, valid) in self.history_valid[..channels].iter_mut().enumerate() {
+                let bit = 1 << index;
+                if timing.capture.available & bit == 0 || discontinuous & bit != 0 {
+                    *valid = 0;
+                }
+            }
             let latency = timing.capture.latencies[..channels]
                 .iter()
                 .copied()
@@ -535,6 +536,7 @@ impl<P: AudioProcess> PeriodRenderer<P> {
                 discontinuous,
                 history: &self.history,
                 history_cursor: self.history_cursor,
+                history_valid: &self.history_valid[..channels],
             });
             let info = CallbackInfo {
                 sample_rate: self.rate,
@@ -552,6 +554,11 @@ impl<P: AudioProcess> PeriodRenderer<P> {
                     let dst = self.history_cursor * channels;
                     self.history[dst..dst + channels].copy_from_slice(frame);
                     self.history_cursor = (self.history_cursor + 1) % CAPTURE_HISTORY_FRAMES;
+                }
+                for (index, valid) in self.history_valid[..channels].iter_mut().enumerate() {
+                    if timing.capture.available & (1 << index) != 0 {
+                        *valid = (*valid + frames as u32).min(CAPTURE_HISTORY_FRAMES as u32);
+                    }
                 }
             }
             for ((left, right), frame) in left[offset..end]
@@ -602,27 +609,36 @@ struct Duplex<P: AudioProcess> {
 struct Cycle {
     first_frame: jack::Frames,
     frames: jack::Frames,
+    scheduled: Option<u64>,
     entered: Instant,
 }
 
 impl Cycle {
     fn missed_before(self, current: Self, rate: u32) -> bool {
-        // A driver switch can rebase JACK frame time. Across a changed quantum, require a
-        // whole number of omitted new periods and corroborating monotonic elapsed time.
         let advance = current.first_frame.wrapping_sub(self.first_frame);
-        let elapsed = current.entered.saturating_duration_since(self.entered);
-        if advance <= self.frames || advance > rate {
-            return false;
-        }
-        if self.frames != current.frames
-            && (current.frames == 0 || !(advance - self.frames).is_multiple_of(current.frames))
+        if advance <= self.frames
+            || advance > rate
+            || current.frames == 0
+            || !(advance - self.frames).is_multiple_of(current.frames)
         {
             return false;
         }
-        let tolerance = if self.frames == current.frames {
-            self.frames / 2
-        } else {
-            current.frames / 2
+        // Use the server's cycle clock when available. Unlike the process entry time, it is
+        // unaffected by the previous callback waking up late. A driver handover can still
+        // rebase frame time, so require corroboration in the monotonic clock domain.
+        let (elapsed, tolerance) = match self.scheduled.zip(current.scheduled) {
+            Some((before, after)) => (
+                Duration::from_micros(after.saturating_sub(before)),
+                current.frames / 2,
+            ),
+            None if self.frames == current.frames => (
+                current.entered.saturating_duration_since(self.entered),
+                self.frames,
+            ),
+            None => (
+                current.entered.saturating_duration_since(self.entered),
+                current.frames / 2,
+            ),
         };
         elapsed >= frames_to_duration(u64::from(advance.saturating_sub(tolerance)), rate)
     }
@@ -631,10 +647,13 @@ impl Cycle {
 impl<P: AudioProcess> Duplex<P> {
     fn process(&mut self, scope: &jack::ProcessScope) -> Control {
         let [left, right] = &mut self.output;
+        let entered = Instant::now();
+        let times = scope.cycle_times().ok();
         let cycle = Cycle {
-            entered: Instant::now(),
-            first_frame: scope.last_frame_time(),
+            entered,
+            first_frame: times.map_or_else(|| scope.last_frame_time(), |time| time.current_frames),
             frames: scope.n_frames(),
+            scheduled: times.map(|time| time.current_usecs),
         };
         if !self.signals.active_period.load(Ordering::Relaxed) {
             self.signals.active_period.store(true, Ordering::Release);
@@ -754,7 +773,13 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                 .register_port("playback_R", AudioOut::default())
                 .map_err(jack_error)?,
         ];
-        let capture_ports = input.iter().map(|port| port.raw() as usize).collect();
+        let capture_ports = input
+            .iter()
+            .map(|port| port_id(&client, port))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                AudioError::Backend("JACK: could not resolve capture port IDs".into())
+            })?;
         let capture = input
             .iter()
             .map(Port::name)
@@ -822,14 +847,35 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         self.capture_sources.clear();
         for (index, (local, lane)) in self.capture.iter().zip(&self.signals.capture).enumerate() {
             let target = desired.capture.get(index).map(String::as_str);
-            let peer = canonical_peer(client, target, JackDirection::Capture, &graph);
+            let manual = self.route.capture.is_none() && target.is_none();
+            let local_port = manual.then(|| canonical_port(client, local)).flatten();
+            let patched = if manual {
+                local_port.as_ref().and_then(|port| {
+                    let connections = port.get_connections();
+                    single_connection(&connections).map(str::to_owned)
+                })
+            } else {
+                None
+            };
+            let target = target.or(patched.as_deref());
+            let peer = canonical_peer(client, target, JackDirection::Capture, &graph)
+                .and_then(|port| port_id(client, &port).map(|id| (port, id)));
             lane.peer.store(
-                peer.as_ref().map_or(0, |port| port.raw() as usize),
+                peer.as_ref().map_or(u32::MAX, |(_, id)| *id),
                 Ordering::Release,
             );
+            let peer = peer.as_ref().map(|(port, _)| port);
             let mut before = lane.snapshot();
-            let latency =
-                exclusive_port(client, local, peer.as_ref(), JackDirection::Capture, || {
+            let latency = if manual {
+                // Surplus auto inputs are left to the patchbay. A mixed or unavailable slot
+                // cannot be used for capture, but we do not remove the user's links.
+                local_port.as_ref().zip(peer).and_then(|(port, peer)| {
+                    let name = peer.name().ok()?;
+                    sole_peer(&port.get_connections(), Some(&name))
+                        .then(|| port.get_latency_range(jack::LatencyType::Capture).1)
+                })
+            } else {
+                exclusive_port(client, local, peer, JackDirection::Capture, || {
                     if before & CAPTURE_READY != 0 {
                         lane.changed();
                         before = lane.snapshot();
@@ -837,7 +883,8 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                             trace.note(TRACE_LINK_REPAIR);
                         }
                     }
-                });
+                })
+            };
             if !lane.publish(before, latency) {
                 self.signals.graph_changed.store(true, Ordering::Release);
             } else if let Some(trace) = &self.signals.trace
@@ -849,13 +896,11 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                     TRACE_ROUTE_UNAVAILABLE
                 });
             }
-            if let Some(name) = target {
-                self.capture_sources.push(capture_channel(
-                    name,
-                    &graph,
-                    lane.snapshot() & CAPTURE_READY != 0,
-                ));
-            }
+            let entry = target.map_or_else(
+                || JackCaptureChannel::missing(local),
+                |name| capture_channel(name, &graph, lane.snapshot() & CAPTURE_READY != 0),
+            );
+            self.capture_sources.push(entry);
         }
         let mut playback_latency = 0;
         let automatic = self.route.playback.iter().all(Option::is_none);
@@ -988,6 +1033,29 @@ fn capture_channel(name: &str, graph: &[JackPort], connected: bool) -> JackCaptu
         )
 }
 
+fn port_id<S: PortSpec>(client: &Client, port: &Port<S>) -> Option<jack::PortId> {
+    // SAFETY: the control thread owns the live client and these ports.
+    let uuid = unsafe { jack_sys::jack_port_uuid(port.raw()) };
+    let index = unsafe { jack_sys::jack_uuid_to_index(uuid) };
+    // PipeWire's UUID index is limited to 24 bits, while callback serials are 32 bits.
+    // Verify the ID against the actual registered port before installing it in the callback.
+    [index, (uuid as u32).wrapping_sub(1)]
+        .into_iter()
+        .find(|&id| {
+            client
+                .port_by_id(id)
+                .is_some_and(|resolved| resolved.raw() == port.raw())
+        })
+}
+
+fn single_connection(connections: &[String]) -> Option<&str> {
+    if let [connection] = connections {
+        Some(connection)
+    } else {
+        None
+    }
+}
+
 fn canonical_port(client: &Client, name: &str) -> Option<Port<jack::Unowned>> {
     let port = client.port_by_name(name)?;
     (port.name().ok().as_deref() == Some(name)).then_some(port)
@@ -1005,7 +1073,7 @@ fn canonical_peer(
 
 fn sole_peer(connections: &[String], target: Option<&str>) -> bool {
     match target {
-        Some(target) => connections.len() == 1 && connections[0] == target,
+        Some(target) => single_connection(connections) == Some(target),
         None => connections.is_empty(),
     }
 }
@@ -1067,7 +1135,7 @@ fn automatic_playback(
         let _ = client.disconnect_ports_by_name(local, &old);
     }
     if let Some(target) = target
-        && !port.get_connections().contains(&target)
+        && port.get_connections().is_empty()
         && client.connect_ports_by_name(local, &target).is_ok()
     {
         *managed = Some(target);
@@ -1258,11 +1326,13 @@ mod tests {
         let previous = Cycle {
             first_frame: 1024,
             frames: 64,
+            scheduled: None,
             entered: time,
         };
         let at = |first_frame, frames, elapsed| Cycle {
             first_frame,
             frames,
+            scheduled: None,
             entered: time + frames_to_duration(elapsed, 48_000),
         };
         assert!(!previous.missed_before(at(1088, 64, 64), 48_000));
@@ -1276,21 +1346,65 @@ mod tests {
     }
 
     #[test]
+    fn a_late_entry_does_not_hide_the_next_skipped_period() {
+        let started = Instant::now();
+        let old = Cycle {
+            first_frame: 1024,
+            frames: 64,
+            scheduled: Some(10_000),
+            entered: started + frames_to_duration(48, 48_000),
+        };
+        let resumed = Cycle {
+            first_frame: 1152,
+            frames: 64,
+            scheduled: Some(12_667),
+            entered: started + frames_to_duration(128, 48_000),
+        };
+        assert!(old.missed_before(resumed, 48_000));
+        assert!(
+            Cycle {
+                scheduled: None,
+                ..old
+            }
+            .missed_before(
+                Cycle {
+                    scheduled: None,
+                    ..resumed
+                },
+                48_000
+            )
+        );
+    }
+
+    #[test]
+    fn an_updated_latency_keeps_the_same_connected_capture_continuous() {
+        let lane = CaptureState::default();
+        assert!(lane.publish(lane.snapshot(), Some(64)));
+        assert!(lane.publish(lane.snapshot(), Some(256)));
+        assert_eq!(lane.take_period(), (Some(256), false));
+        assert!(lane.publish(lane.snapshot(), None));
+        assert_eq!(lane.take_period(), (None, true));
+    }
+
+    #[test]
     fn pipewire_driver_xrun_does_not_discard_locally_continuous_capture() {
         let now = Instant::now();
         let previous = Cycle {
             first_frame: 4096,
             frames: 64,
+            scheduled: None,
             entered: now,
         };
         let received = Cycle {
             first_frame: 4160,
             frames: 64,
+            scheduled: None,
             entered: now + frames_to_duration(64, 48_000),
         };
         let skipped = Cycle {
             first_frame: 4224,
             frames: 64,
+            scheduled: None,
             entered: now + frames_to_duration(128, 48_000),
         };
         let pipewire = XrunScope::from_version(c"3.1.6.10 (using PipeWire 1.6.10)");

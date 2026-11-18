@@ -511,13 +511,12 @@ fn dropdown_ignores_enter_after_a_port_list_refresh_reorders_options() {
             false,
         ),
         |ui, (pick, refreshed)| {
-            let names = if *refreshed {
-                ["Automatic", "USB:A", "USB:B"]
+            let ids = if *refreshed {
+                [None, Some("USB:A"), Some("USB:B")]
             } else {
-                ["Automatic", "USB:B", "USB:C"]
+                [None, Some("USB:B"), Some("USB:C")]
             };
-            let items = names.map(DropItem::new);
-            let ids = [None, Some(names[1]), Some(names[2])];
+            let items = ["Automatic", "USB", "USB"].map(DropItem::new);
             let response = ui.add(Dropdown::new("Ports", &mut pick.value, &items).option_ids(&ids));
             pick.changes += u32::from(response.changed());
         },
@@ -569,9 +568,29 @@ fn a_fitting_dropdown_reveals_and_can_select_its_last_port() {
     h.event(egui::Event::Text("Port 63".into()));
     h.run_steps(4);
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, 240.0));
-    let last = h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Port 63");
-    assert!(viewport.contains_rect(last.rect()));
-    last.click();
+    let last_port = |h: &egui_kittest::Harness<'_, Pick>| {
+        h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Port 63")
+            .rect()
+    };
+    assert!(viewport.contains_rect(last_port(&h)));
+
+    h.hover_at(last_port(&h).center());
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 2_000.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: Modifiers::NONE,
+    });
+    // Expire the prefix without moving the pointer or selecting a different row.
+    h.run_steps(90);
+    assert!(!viewport.contains_rect(last_port(&h)));
+
+    h.event(egui::Event::Text("Port 63".into()));
+    h.run_steps(4);
+    assert!(viewport.contains_rect(last_port(&h)));
+    h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Port 63")
+        .click();
     h.run();
     assert_eq!(h.state().value, 63);
     assert_eq!(h.state().changes, 1);

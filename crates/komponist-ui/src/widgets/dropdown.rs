@@ -276,6 +276,7 @@ pub struct Dropdown<'a> {
     name: &'a str,
     selected: &'a mut usize,
     items: &'a [Item<'a>],
+    id: Option<Id>,
     width: Option<f32>,
     still_open: Option<Option<usize>>,
     label: Option<&'a str>,
@@ -294,6 +295,7 @@ impl<'a> Dropdown<'a> {
             name,
             selected,
             items,
+            id: None,
             width: None,
             still_open: None,
             label: None,
@@ -303,6 +305,17 @@ impl<'a> Dropdown<'a> {
             row_details: &[],
             option_ids: None,
         }
+    }
+
+    /// Identifies this field and its popup independently of other widgets inserted around it.
+    pub fn id(mut self, id: Id) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    /// The floating popup belonging to a field with an explicit ID.
+    pub fn popup_id(field_id: Id) -> Id {
+        field_id.with("list")
     }
 
     /// A label inside the box before the value ("Raster 1/16 ▾": `text.3`, then 10 px gap), as
@@ -436,7 +449,7 @@ impl<'a> Dropdown<'a> {
         self.items.get(*self.selected).map_or("", |i| i.label)
     }
 
-    fn paint_field(&self, ui: &Ui, rect: Rect, l: FieldLook) {
+    fn paint_field(&self, ui: &Ui, rect: Rect, response: &Response, l: FieldLook) {
         let style = self.field_style();
         let painter = ui.painter();
         let ppp = ui.pixels_per_point();
@@ -464,6 +477,9 @@ impl<'a> Dropdown<'a> {
                 style.line_height,
             )
         };
+        if galley.elided {
+            super::tooltip::Tip::new(self.current_label()).attach(response);
+        }
         let pos = super::text_pos(rect, &galley, x, ppp);
         if self.device {
             // Long values are cut before the caret.
@@ -507,7 +523,7 @@ impl<'a> Dropdown<'a> {
         } - 2.0 * space::SPACE_1;
         let pos = field.rect.left_bottom() + vec2(0.0, LIST_GAP);
         let selected = *self.selected;
-        let area = Area::new(field.id.with("list"))
+        let area = Area::new(Self::popup_id(field.id))
             .order(Order::Foreground)
             .kind(UiKind::Popup)
             .fixed_pos(pos)
@@ -521,8 +537,10 @@ impl<'a> Dropdown<'a> {
                     if let Some(max_height) = self.list_height {
                         let viewport_height =
                             ui.ctx().content_rect().height() - 2.0 * space::SPACE_4;
+                        let height = max_height.min(viewport_height.max(size::MENU_ROW));
                         egui::ScrollArea::vertical()
-                            .max_height(max_height.min(viewport_height.max(size::MENU_ROW)))
+                            .max_height(height)
+                            .min_scrolled_height(height.min(size::MENU_ROW))
                             .auto_shrink([true, true])
                             .show(ui, |ui| {
                                 list_rows_v(
@@ -568,10 +586,16 @@ impl Widget for Dropdown<'_> {
 impl Dropdown<'_> {
     fn field(self, ui: &mut Ui, still_open: bool) -> Response {
         let width = self.width.unwrap_or_else(|| self.natural_width(ui));
-        let (rect, mut response) =
-            ui.allocate_exact_size(vec2(width, self.height()), super::sense(ui, Sense::click()));
+        let field_size = vec2(width, self.height());
+        let sense = super::sense(ui, Sense::click());
+        let (rect, mut response) = if let Some(id) = self.id {
+            let (_, rect) = ui.allocate_space(field_size);
+            (rect, ui.interact(rect, id, sense))
+        } else {
+            ui.allocate_exact_size(field_size, sense)
+        };
         let id = response.id;
-        let list_id = id.with("list");
+        let list_id = Self::popup_id(id);
         let still = super::is_still(ui);
         let ctx = ui.ctx().clone();
         let mut mem: Memory = ui.data(|d| d.get_temp(list_id)).unwrap_or_default();
@@ -591,10 +615,15 @@ impl Dropdown<'_> {
             open = false;
             mem.highlight = None;
             mem.type_ahead = TypeAhead::default();
+            ui.input_mut(|input| {
+                input.consume_key(Modifiers::NONE, Key::Enter);
+                input.consume_key(Modifiers::NONE, Key::Space);
+            });
         }
         let before = mem.highlight;
         let was_open = open;
         let mut choose: Option<usize> = None;
+        let mut reveal_match = false;
 
         if !still && enabled && !options_changed {
             let mut key_handled = false;
@@ -642,6 +671,7 @@ impl Dropdown<'_> {
                         super::type_ahead(labels(), &prefix, start % flags.len().max(1))
                     {
                         mem.highlight = Some(i);
+                        reveal_match = true;
                     }
                 }
                 if accept {
@@ -710,7 +740,7 @@ impl Dropdown<'_> {
         });
         super::accesskit(&response, |n| n.set_expanded(open || still_open));
         if ui.is_rect_visible(rect) {
-            self.paint_field(ui, rect, field_look(open || still_open, st));
+            self.paint_field(ui, rect, &response, field_look(open || still_open, st));
         }
 
         if open {
@@ -720,7 +750,7 @@ impl Dropdown<'_> {
                     .option_ids
                     .map(|ids| ids.iter().map(|key| key.map(str::to_owned)).collect());
             }
-            let reveal = if !was_open || mem.highlight != before {
+            let reveal = if !was_open || mem.highlight != before || reveal_match {
                 mem.highlight
             } else {
                 None

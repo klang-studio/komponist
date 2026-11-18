@@ -392,6 +392,13 @@ fn input_columns(ui: &mut Ui, fit_names: bool, draw: impl FnOnce(&mut Ui, &mut U
     ui.advance_cursor_after_rect(Rect::from_min_size(top, vec2(ui.available_width(), height)));
 }
 
+#[derive(Clone)]
+enum ChooserSource {
+    Buses,
+    Jack,
+    Device(InputConfig),
+}
+
 fn chooser(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
@@ -443,10 +450,17 @@ fn chooser(
     };
     let mut source = ui
         .ctx()
-        .data(|data| data.get_temp::<usize>(selected_key))
-        .unwrap_or(initial)
-        .min(devices.len());
-    let mut source_changed = false;
+        .data(|data| data.get_temp::<ChooserSource>(selected_key))
+        .and_then(|source| match source {
+            ChooserSource::Buses => Some(devices.len()),
+            ChooserSource::Jack if jack_sources.is_some() && !devices.is_empty() => Some(0),
+            ChooserSource::Device(config) if jack_sources.is_none() => {
+                config.device_index(&devices)
+            }
+            _ => None,
+        })
+        .unwrap_or(initial);
+    let mut new_source = None;
     let rows = if source == devices.len() {
         project.tracks.iter().filter(|track| track.is_bus()).count()
     } else if let Some(groups) = &jack_choices {
@@ -504,7 +518,14 @@ fn chooser(
                                     Tip::new(&label).attach(&row);
                                     if row.clicked() {
                                         source = i;
-                                        source_changed = true;
+                                        new_source = Some(if jack_sources.is_some() {
+                                            ChooserSource::Jack
+                                        } else {
+                                            ChooserSource::Device(InputConfig {
+                                                device: Some(device.name.clone()),
+                                                device_id: device.id.clone(),
+                                            })
+                                        });
                                     }
                                 }
                                 if menu_row(
@@ -516,7 +537,7 @@ fn chooser(
                                 .clicked()
                                 {
                                     source = devices.len();
-                                    source_changed = true;
+                                    new_source = Some(ChooserSource::Buses);
                                 }
                                 if source == devices.len() {
                                     let allowed =
@@ -641,7 +662,7 @@ fn chooser(
                 });
             });
         });
-    if source_changed {
+    if let Some(source) = new_source {
         ui.ctx()
             .data_mut(|data| data.insert_temp(selected_key, source));
     }
@@ -950,6 +971,33 @@ mod tests {
                     .accesskit_node()
                     .is_disabled()
             );
+            let sources = h.state().engine.jack_capture_sources().unwrap().to_vec();
+            let mut refreshed = sources.clone();
+            refreshed.swap(0, 1);
+            let tracks_before = h.state().project().tracks.len();
+            h.key_press(egui::Key::ArrowUp);
+            h.run_steps(2);
+            h.state_mut()
+                .engine_mut()
+                .set_test_jack_capture_sources(refreshed);
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert!(h.query_by_role(Role::ListBox).is_none());
+            assert_eq!(h.state().project().tracks.len(), tracks_before);
+            assert_eq!(
+                h.get_by_role_and_label(Role::ComboBox, lang.new_track_input())
+                    .accesskit_node()
+                    .value()
+                    .as_deref(),
+                Some(EXTRA)
+            );
+
+            h.state_mut()
+                .engine_mut()
+                .set_test_jack_capture_sources(sources);
+            h.get_by_role_and_label(Role::ComboBox, lang.new_track_input())
+                .click();
+            h.run_steps(3);
             h.get_by_role_and_label(Role::ListBoxOption, RIGHT).click();
             h.run_steps(3);
             h.get_by_role_and_label(Role::Button, lang.new_track_create())

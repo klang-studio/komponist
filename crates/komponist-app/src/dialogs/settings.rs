@@ -1461,10 +1461,12 @@ fn jack_dropdown(
         })
         .collect();
     let ids: Vec<_> = entries.iter().map(|port| port.name.as_deref()).collect();
+    let id = ui.make_persistent_id(("jack-port-field", label));
     let mut changed = None;
     grid_row(ui, label, |ui| {
         let response = ui.add(
             Dropdown::new(label, &mut selected, &items)
+                .id(id)
                 .width(width)
                 .fitting_list(
                     size::MENU_ROW * crate::views::audio_inputs::MAX_ROWS as f32,

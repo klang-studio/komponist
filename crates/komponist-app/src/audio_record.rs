@@ -429,28 +429,40 @@ impl App {
                 let lang = self.lang;
                 let directory = self.project_dir();
                 self.doc.end_gesture();
-                let clips = self.apply_with(&label, |project| {
+                let applied = self.apply_with(&label, |project| {
                     let (project, mut clips) = match &midi {
                         Some(commit) => commit.apply(project)?,
                         None => (project.clone(), Vec::new()),
                     };
-                    let (project, audio) =
+                    let (project, mut audio) =
                         apply_takes(&project, &result.takes, lang, directory.as_deref())?;
-                    clips.extend(audio);
-                    Ok((project, clips))
+                    clips.append(&mut audio.clips);
+                    audio.clips = clips;
+                    Ok((project, audio))
                 });
-                let applied = clips.as_ref().is_some_and(|clips| !clips.is_empty());
-                if clips.is_none() {
+                if let Some(applied) = applied {
+                    if let Some(first) = applied.clips.first() {
+                        self.dispatch(Action::Ui(UiAction::OpenClip(*first)));
+                    }
+                    if !applied.unlinked.is_empty() {
+                        let paths = applied
+                            .unlinked
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        self.set_status(
+                            self.lang.audio_record_unlinked(applied.linked, paths),
+                            StatusKind::Info,
+                        );
+                    } else if applied.linked > 0 {
+                        self.set_status(
+                            self.lang.audio_record_complete(applied.linked),
+                            StatusKind::Success,
+                        );
+                    }
+                } else {
                     self.set_status(self.lang.audio_record_apply_failed(), StatusKind::Error);
-                }
-                if let Some(first) = clips.and_then(|clips| clips.first().copied()) {
-                    self.dispatch(Action::Ui(UiAction::OpenClip(first)));
-                }
-                if applied && !result.takes.is_empty() {
-                    self.set_status(
-                        self.lang.audio_record_complete(result.takes.len()),
-                        StatusKind::Success,
-                    );
                 }
             }
             Err(recording::RecordingError::Cancelled) => {
@@ -685,12 +697,19 @@ impl App {
     }
 }
 
+#[derive(Default)]
+struct AppliedTakes {
+    clips: Vec<ClipId>,
+    linked: usize,
+    unlinked: Vec<PathBuf>,
+}
+
 fn apply_takes(
     project: &Project,
     takes: &[RecordedTake],
     lang: komponist_i18n::Lang,
     directory: Option<&Path>,
-) -> Result<(Project, Vec<ClipId>), EditError> {
+) -> Result<(Project, AppliedTakes), EditError> {
     // The linear lead-in and the cycle have different clip geometry.
     let mut grouped = BTreeMap::<(TrackId, Tick, Option<u64>), Vec<&RecordedTake>>::new();
     for take in takes.iter().filter(|take| take.frames > 0) {
@@ -700,12 +719,15 @@ fn apply_takes(
             .push(take);
     }
     let mut project = project.clone();
-    let mut clips = Vec::new();
+    let mut applied = AppliedTakes::default();
     for ((track, _, _), mut takes) in grouped {
         if project
             .track(track)
             .is_none_or(|track| track.kind != TrackKind::Audio)
         {
+            applied
+                .unlinked
+                .extend(takes.iter().map(|take| take.path.clone()));
             continue;
         }
         takes.sort_by_key(|take| take.lap);
@@ -724,6 +746,9 @@ fn apply_takes(
         if length == Tick::ZERO {
             // A sub-tick span has no clip geometry. Its WAV is already saved for recovery,
             // so continue committing the representable passes on this and the other tracks.
+            applied
+                .unlinked
+                .extend(takes.iter().map(|take| take.path.clone()));
             continue;
         }
         let name = lang.record_take(edits::next_take_number(&project));
@@ -758,6 +783,7 @@ fn apply_takes(
         {
             audio.takes[0].name = name;
         }
+        applied.linked += takes.len();
         for take in takes.into_iter().skip(1) {
             let name = lang.record_take(edits::next_take_number(&project));
             project = edits::add_audio_take(
@@ -772,9 +798,9 @@ fn apply_takes(
             .0;
             project = edits::set_clip_prop(&project, id, edits::ClipProp::Name(name))?;
         }
-        clips.push(id);
+        applied.clips.push(id);
     }
-    Ok((project, clips))
+    Ok((project, applied))
 }
 
 #[cfg(test)]
@@ -942,6 +968,25 @@ mod tests {
     }
 
     #[test]
+    fn an_audio_driver_change_cannot_interrupt_a_take() {
+        let (_scratch, mut app, track) = rig();
+        begin(&mut app, track);
+        let previous = app.settings.audio.clone();
+        let mut config = previous.clone();
+        config.host = komponist_audio::HostKind::Jack;
+        app.dispatch(Action::Settings(crate::actions::SettingsAction::SetAudio(
+            config,
+        )));
+
+        assert_eq!(app.settings.audio, previous);
+        assert!(app.audio_recording().is_some());
+        assert_eq!(
+            app.ui.status.as_ref().unwrap().text,
+            app.lang.settings_audio_driver_change_recording()
+        );
+    }
+
+    #[test]
     fn a_jack_playback_route_change_does_not_restart_an_active_take() {
         let scratch = Scratch::new();
         let (mut app, track) = rig_at(&scratch.0);
@@ -1005,7 +1050,7 @@ mod tests {
         writer.finalize().unwrap();
         let lead_in = make_take(0, Tick(719), 16, None, take.clone());
         let checkpoint = make_take(1, Tick(720), 32, Some(2400), cycle.clone());
-        let (project, clips) = apply_takes(
+        let (project, applied) = apply_takes(
             &project,
             &[lead_in, checkpoint],
             komponist_i18n::Lang::En,
@@ -1014,7 +1059,9 @@ mod tests {
         .unwrap();
         let mut retained = hound::WavReader::open(&take).unwrap();
         assert!(retained.samples::<i16>().map(Result::unwrap).eq(0..32));
-        assert_eq!(clips.len(), 1);
+        assert_eq!(applied.clips.len(), 1);
+        assert_eq!(applied.linked, 1);
+        assert_eq!(applied.unlinked, [take]);
         let clip = &project.track(track).unwrap().clips[0];
         assert_eq!(clip.start, Tick(720));
         let ClipContent::Audio(audio) = &clip.content else {
@@ -1048,14 +1095,14 @@ mod tests {
             loop_pass.path.clone(),
             loop_checkpoint.path.clone(),
         ];
-        let (project, inserted) = apply_takes(
+        let (project, applied) = apply_takes(
             &project,
             &[loop_checkpoint, first, loop_pass],
             komponist_i18n::Lang::En,
             None,
         )
         .unwrap();
-        assert_eq!(inserted.len(), 2);
+        assert_eq!(applied.clips.len(), 2);
         let clips = &project.track(track).unwrap().clips;
         assert_eq!(clips.len(), 2);
         assert_eq!((clips[0].start, clips[0].length), (Tick::ZERO, loop_start));

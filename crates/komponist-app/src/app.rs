@@ -2849,6 +2849,15 @@ impl App {
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
+        let changes_driver = matches!(&action, SettingsAction::SetAudio(config)
+            if config.host != self.settings.audio.host);
+        if changes_driver && (self.audio_recording().is_some() || self.recording.is_some()) {
+            self.set_status(
+                self.lang.settings_audio_driver_change_recording(),
+                StatusKind::Error,
+            );
+            return;
+        }
         let changes_input = matches!(
             &action,
             SettingsAction::SetAudioInput(_)

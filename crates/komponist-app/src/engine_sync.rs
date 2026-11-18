@@ -238,6 +238,7 @@ impl AudioProcess for EngineProcess {
                         discontinuous: routes.discontinuous,
                         history: routes.history,
                         history_cursor: routes.history_cursor,
+                        history_valid: routes.history_valid,
                     }),
             },
         );

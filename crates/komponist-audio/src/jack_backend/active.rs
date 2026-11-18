@@ -148,9 +148,7 @@ unsafe extern "C" fn ports_connected<P: AudioProcess>(
     data: *mut c_void,
 ) {
     let state = unsafe { callback::<P>(data) };
-    state
-        .notifications
-        .ports_connected(state.client, a, b, connected != 0);
+    state.notifications.ports_connected(a, b, connected != 0);
 }
 
 unsafe extern "C" fn graph_reorder<P: AudioProcess>(data: *mut c_void) -> c_int {

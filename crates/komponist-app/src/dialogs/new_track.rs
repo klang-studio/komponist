@@ -85,6 +85,7 @@ pub fn input_choices(project: &Project, t: Lang, channels: u16) -> Vec<(AudioInp
 
 struct InputChoice {
     input: AudioInput,
+    id: Option<String>,
     label: String,
     enabled: bool,
     heading: Option<&'static str>,
@@ -102,6 +103,10 @@ fn track_input_items(
         .into_iter()
         .map(|(input, label)| InputChoice {
             input,
+            id: match input {
+                AudioInput::Bus(track) => Some(format!("bus:{}", track.0)),
+                _ => None,
+            },
             label,
             enabled: true,
             heading: None,
@@ -118,16 +123,19 @@ fn track_input_items(
         .into_iter()
         .zip(groups)
         .flat_map(|(heading, group)| {
-            group
-                .into_iter()
-                .enumerate()
-                .map(move |(index, source)| InputChoice {
+            group.into_iter().enumerate().map(move |(index, source)| {
+                let slot = usize::from(source.input.first);
+                let first = &jack[slot].port.name;
+                let second = source.input.stereo.then(|| &jack[slot + 1].port.name);
+                InputChoice {
                     input: AudioInput::Hardware(source.input),
+                    id: Some(format!("jack:{first:?}:{second:?}")),
                     label: source.label(lang),
                     enabled: source.available,
                     heading: (index == 0).then_some(heading),
                     detail: source.detail,
-                })
+                }
+            })
         });
         choices.splice(1..1, named);
         if let Some(bus) = choices
@@ -360,9 +368,14 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
     let t = komponist_ui::lang(ctx);
     let search_id = Id::unique(SEARCH_ID);
     let name_id = Id::unique(NAME_ID);
+    let input_id = Id::unique("new-track-audio-input");
+    let input_popup = Dropdown::popup_id(input_id);
     let focused = ctx.memory(|mem| mem.focused());
-    // Enter and ↑ ↓ belong to the dialog while no button and no number entry has the focus.
-    let keys = focused.is_none() || focused == Some(search_id) || focused == Some(name_id);
+    // An open input popup gets Enter first, including when its sources change this frame.
+    let input_open =
+        s.kind == KIND_AUDIO && komponist_ui::widgets::floating::is_open(ctx, input_popup);
+    let keys = !input_open
+        && (focused.is_none() || focused == Some(search_id) || focused == Some(name_id));
     let bus = s.kind != 0;
     let (mut up, mut down, mut enter) = (false, false, false);
     if keys {
@@ -451,6 +464,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                             })
                             .collect();
                         let dropdown = Dropdown::new(t.new_track_input(), &mut selected, &items)
+                            .id(input_id)
                             .width(control);
                         let details: Vec<_> = choices
                             .iter()
@@ -460,10 +474,17 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                             })
                             .collect();
                         let response = if jack_capture_sources.is_some() {
-                            ui.add(dropdown.fitting_list(
-                                crate::views::audio_inputs::MAX_ROWS as f32 * size::MENU_ROW,
-                                &details,
-                            ))
+                            let ids: Vec<_> =
+                                choices.iter().map(|choice| choice.id.as_deref()).collect();
+                            ui.add(
+                                dropdown
+                                    .fitting_list(
+                                        crate::views::audio_inputs::MAX_ROWS as f32
+                                            * size::MENU_ROW,
+                                        &details,
+                                    )
+                                    .option_ids(&ids),
+                            )
                         } else {
                             ui.add(dropdown)
                         };
@@ -547,6 +568,9 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
         } else if response.should_close() {
             out = Some(Output::Cancel);
         }
+    }
+    if s.kind != KIND_AUDIO || out.is_some() {
+        komponist_ui::widgets::floating::close(ctx, input_popup);
     }
     out
 }

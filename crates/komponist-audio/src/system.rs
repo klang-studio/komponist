@@ -1064,6 +1064,9 @@ impl<P: AudioProcess> AudioSystem<P> {
     ) -> Result<StreamConfig, AudioError> {
         use crate::jack_backend::JackStream;
 
+        if uses_saved_jack_output(config) {
+            backend::find_device(&backend::host(HostKind::Jack)?, config)?;
+        }
         let (client, params, inactive_rate) = JackStream::<P>::open(active_rate)?;
         let automatic_capture = if config.jack_routes.capture.is_some() {
             false
@@ -1246,7 +1249,7 @@ impl<P: AudioProcess> AudioSystem<P> {
         let has_input = self.input.is_some();
         let present = move |config: &StreamConfig| {
             #[cfg(target_os = "linux")]
-            if native_jack_route(config, has_input) {
+            if native_jack_route(config, has_input) && !uses_saved_jack_output(config) {
                 return crate::jack_backend::server_present();
             }
             backend::device_present(config)
@@ -1287,6 +1290,12 @@ impl<P: AudioProcess> Drop for AudioSystem<P> {
 #[cfg(target_os = "linux")]
 fn native_jack_route(config: &StreamConfig, has_input: bool) -> bool {
     config.host == HostKind::Jack && (!config.jack_routes.is_automatic() || has_input)
+}
+
+#[cfg(target_os = "linux")]
+fn uses_saved_jack_output(config: &StreamConfig) -> bool {
+    config.jack_routes.playback.iter().all(Option::is_none)
+        && (config.device.is_some() || config.device_id.is_some())
 }
 
 #[cfg(target_os = "linux")]
@@ -1658,6 +1667,23 @@ mod tests {
         };
         system.arm_retry(asio);
         assert_eq!(system.retry.as_ref().unwrap().interval, ASIO_RETRY_INTERVAL);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn jack_capture_only_routing_keeps_the_saved_output_selection() {
+        let mut config = null(64);
+        config.host = HostKind::Jack;
+        config.jack_routes.capture = Some(vec!["USB:mic".into()]);
+        assert!(!uses_saved_jack_output(&config));
+        config.device = Some("Retired JACK Output".into());
+        assert!(uses_saved_jack_output(&config));
+        config.jack_routes.playback[0] = Some("Current Speaker:left".into());
+        assert!(!uses_saved_jack_output(&config));
+        config.jack_routes.playback[0] = None;
+        config.device = None;
+        config.device_id = Some(DeviceId("jack:output".into()));
+        assert!(uses_saved_jack_output(&config));
     }
 
     #[cfg(target_os = "linux")]

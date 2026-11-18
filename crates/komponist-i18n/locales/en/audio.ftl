@@ -136,6 +136,7 @@ audio-record-folder-unavailable = No recording folder available
 audio-record-failed = Recording failed: { $reason }
 audio-record-move-failed = Recording remains provisional: { $reason }
 audio-record-complete = Recording finished · { $count } takes
+audio-record-unlinked = { $count } takes added · Unlinked WAV files saved at { $paths }
 audio-record-apply-failed = Could not add recording to the project · files are preserved
 audio-monitor-tip = Monitoring: { $mode }
 status-recording-input = ● Recording · { $tracks } · { $input }

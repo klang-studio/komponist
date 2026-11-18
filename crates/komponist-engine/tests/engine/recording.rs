@@ -754,6 +754,7 @@ fn healthy_jack_mono_uses_its_own_latency_through_an_unrelated_port_gap() {
                     discontinuous: if offset == 128 { 2 } else { 0 },
                     history: &[],
                     history_cursor: 0,
+                    history_valid: &[0; 2],
                 }),
             },
         );
@@ -799,11 +800,12 @@ fn differently_delayed_jack_stereo_legs_share_aligned_samples_and_a_stop_tail() 
                 latency: 256,
                 discontinuous: false,
                 routes: Some(AudioInputRoutes {
-                    latencies: &[64, 256],
+                    latencies: if offset < 256 { &[64, 256] } else { &[64, 320] },
                     available: 3,
                     discontinuous: 0,
                     history: &history,
                     history_cursor: 0,
+                    history_valid: &[192; 2],
                 }),
             },
         );
@@ -818,5 +820,106 @@ fn differently_delayed_jack_stereo_legs_share_aligned_samples_and_a_stop_tail() 
         .collect();
     for (i, frame) in captured.as_chunks::<2>().0.iter().enumerate() {
         assert_eq!(*frame, [i as f32 / 1024.0; 2]);
+    }
+}
+
+#[test]
+fn stereo_monitoring_silences_history_before_a_confirmed_port_gap() {
+    let (project, _) = project(MonitorMode::On, false);
+    let mut rig = Rig::new(RATE, 64);
+    rig.set_program(&compile::build(&project, None, &NoEnv));
+    let data: Vec<_> = (0..64).flat_map(|_| [0.25, 0.5]).collect();
+    let history: Vec<_> = (0..4).flat_map(|_| [0.9, 0.9]).collect();
+    let (left, right) = feed_routed(
+        &mut rig,
+        0,
+        &AudioInputBuffer {
+            data: &data,
+            channels: 2,
+            latency: 4,
+            discontinuous: true,
+            routes: Some(AudioInputRoutes {
+                latencies: &[0, 4],
+                available: 3,
+                discontinuous: 1,
+                history: &history,
+                history_cursor: 0,
+                history_valid: &[0, 4],
+            }),
+        },
+    );
+    assert_eq!(&left[..4], &[0.0; 4]);
+    assert!(left[4..].iter().all(|&value| value == 0.25));
+    assert!(right.iter().all(|&value| value == 0.5));
+}
+
+#[test]
+fn a_shorter_finished_jack_lane_cannot_abort_another_lanes_tail() {
+    let (project, left) = project(MonitorMode::Off, true);
+    let mono = |first| {
+        AudioInput::Hardware(HardwareInput {
+            first,
+            stereo: false,
+        })
+    };
+    let project = edits::set_track_prop(&project, &[left], TrackProp::AudioInput(mono(0))).unwrap();
+    let (project, right) = edits::add_audio_track(
+        &project,
+        NewAudioTrack {
+            input: mono(1),
+            ..NewAudioTrack::default()
+        },
+    )
+    .unwrap();
+    let project = edits::set_track_prop(&project, &[right], TrackProp::Arm(true)).unwrap();
+    let (_scratch, rec, mut session) = prepare(&project, &[left, right], RecordingFormat::Float32);
+    let mut rig = Rig::new(RATE, 64);
+    rig.set_program(&compile::build(&project, None, &NoEnv));
+    rig.send(Command::SetRecorder(rec));
+    rig.send(Command::Record { from: Tick::ZERO });
+    let data: Vec<_> = (0..768)
+        .flat_map(|i| [i as f32 / 1024.0, -(i as f32) / 1024.0])
+        .collect();
+    for offset in (0..768).step_by(64) {
+        if offset == 512 {
+            rig.send(Command::Stop);
+        }
+        let lost = offset >= 576;
+        feed_routed(
+            &mut rig,
+            0,
+            &AudioInputBuffer {
+                data: &data[offset * 2..(offset + 64) * 2],
+                channels: 2,
+                latency: 256,
+                discontinuous: lost,
+                routes: Some(AudioInputRoutes {
+                    latencies: &[64, 256],
+                    available: if lost { 2 } else { 3 },
+                    discontinuous: u64::from(lost),
+                    history: &[],
+                    history_cursor: 0,
+                    history_valid: &[0; 2],
+                }),
+            },
+        );
+    }
+    let result = finished(&mut session).unwrap();
+    assert_eq!(result.takes.len(), 2);
+    for take in result.takes {
+        assert_eq!((take.frames, take.start), (512, Tick::ZERO));
+        let captured = hound::WavReader::open(&take.path)
+            .unwrap()
+            .into_samples::<f32>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        for (i, frame) in captured.as_chunks::<2>().0.iter().enumerate() {
+            let expected = if take.track == left {
+                (i + 64) as f32
+            } else {
+                -((i + 256) as f32)
+            };
+            assert_eq!(*frame, [expected / 1024.0; 2]);
+        }
     }
 }

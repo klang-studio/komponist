@@ -166,6 +166,8 @@ pub struct AudioInputRoutes<'a> {
     pub history: &'a [f32],
     /// Frame index in the ring where this buffer begins.
     pub history_cursor: usize,
+    /// Continuous prior frames for each slot, counted from its most recent audio gap.
+    pub history_valid: &'a [u32],
 }
 
 /// Borrowed interleaved capture at the engine rate; independent of the device/backend crate.
@@ -221,17 +223,10 @@ impl AudioInputBuffer<'_> {
     }
 
     fn stereo_delays(&self, first: usize) -> [usize; 2] {
-        let Some(latencies) = self
-            .routes
-            .and_then(|routes| routes.latencies.get(first..first.saturating_add(2)))
-        else {
-            return [0; 2];
-        };
-        let highest = latencies[0].max(latencies[1]);
-        [
-            (highest - latencies[0]) as usize,
-            (highest - latencies[1]) as usize,
-        ]
+        stereo_delays(
+            self.routes
+                .and_then(|routes| routes.latencies.get(first..first.saturating_add(2))),
+        )
     }
 
     fn aligned_sample(&self, channel: usize, frame: usize, delay: usize) -> f32 {
@@ -243,13 +238,26 @@ impl AudioInputBuffer<'_> {
         };
         let history_frames = routes.history.len().checked_div(self.channels).unwrap_or(0);
         let before = delay - frame;
-        if before > history_frames || channel >= self.channels || history_frames == 0 {
+        let valid = routes.history_valid.get(channel).copied().unwrap_or(0) as usize;
+        if before > history_frames
+            || before > valid
+            || channel >= self.channels
+            || history_frames == 0
+        {
             return 0.0;
         }
         let row = (routes.history_cursor + history_frames - before) % history_frames;
         let sample = routes.history[row * self.channels + channel];
         if sample.is_finite() { sample } else { 0.0 }
     }
+}
+
+fn stereo_delays(latencies: Option<&[u32]>) -> [usize; 2] {
+    let Some([left, right]) = latencies else {
+        return [0; 2];
+    };
+    let highest = (*left).max(*right);
+    [(highest - left) as usize, (highest - right) as usize]
 }
 
 fn port_mask(first: usize, channels: usize) -> u64 {
@@ -283,6 +291,10 @@ impl CaptureTiming {
             timing.ports[..timing.count].copy_from_slice(&routes.latencies[..timing.count]);
         }
         timing
+    }
+
+    fn stereo_delays(&self, first: usize) -> [usize; 2] {
+        stereo_delays(self.ports[..self.count].get(first..first.saturating_add(2)))
     }
 
     fn correction(&self, input: komponist_model::HardwareInput) -> u32 {
@@ -1077,6 +1089,19 @@ impl TrackJobs<'_> {
         let [l, r] = &mut state.input_audio;
         l[..n].fill(0.0);
         r[..n].fill(0.0);
+        let take = self
+            .recorder
+            .zip(self.capture)
+            .filter(|(rec, (_, _, draining))| {
+                rec.input(track.id).is_some() && (track.arm || draining.is_some())
+            });
+        let remaining = |correction: u32| {
+            take.map_or(0, |(_, (_, frames, draining))| {
+                draining.map_or(frames, |progress| {
+                    frames.min(correction.saturating_sub(progress) as usize)
+                })
+            })
+        };
         let mut available = true;
         let mut correction = 0;
         let mut capture_gap = false;
@@ -1090,7 +1115,12 @@ impl TrackJobs<'_> {
                 correction = self.capture_timing.correction(hw);
                 if available {
                     let [left_delay, right_delay] = if hw.stereo {
-                        self.audio.stereo_delays(first)
+                        if remaining(correction) != 0 {
+                            // Align with the same timing that places the samples in the take.
+                            self.capture_timing.stereo_delays(first)
+                        } else {
+                            self.audio.stereo_delays(first)
+                        }
                     } else {
                         [0; 2]
                     };
@@ -1130,10 +1160,9 @@ impl TrackJobs<'_> {
             }
         }
         track.meter.record_input(peak(&l[..n]), peak(&r[..n]));
-        if let Some(rec) = self.recorder
-            && rec.input(track.id).is_some()
-            && let Some((mut window, frames, draining)) = self.capture
-            && (track.arm || draining.is_some())
+        let frames = remaining(correction);
+        if frames != 0
+            && let Some((rec, (mut window, _, _))) = take
         {
             if !available {
                 rec.fail(3);
@@ -1141,9 +1170,6 @@ impl TrackJobs<'_> {
                 rec.fail(2);
             } else {
                 window.at = window.at.saturating_sub(i64::from(correction));
-                let frames = draining.map_or(frames, |progress| {
-                    frames.min(correction.saturating_sub(progress) as usize)
-                });
                 rec.capture(track.id, &l[..frames], &r[..frames], window);
             }
         }
@@ -2011,6 +2037,7 @@ impl Core {
                     lap: tail.lap,
                     lp: tail.cycle,
                     map: song.map,
+                    loop_start: self.song.loop_range.start,
                 },
                 (tail.left as usize).min(n),
                 Some(tail.total - tail.left),
@@ -2025,6 +2052,7 @@ impl Core {
                         .as_ref()
                         .and_then(|rec| rec.cycle_window(loop_samples)),
                     map: song.map,
+                    loop_start: self.song.loop_range.start,
                 },
                 n,
                 None,

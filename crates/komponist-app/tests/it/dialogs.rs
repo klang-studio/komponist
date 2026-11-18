@@ -2016,11 +2016,14 @@ fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languag
             },
         ]);
         let app = App::headless(demo_project()).with_lang(lang);
+        let scan_failed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let scan_failed_model = scan_failed.clone();
         let mut h = komponist_ui::snapshot::builder::<App>(1.0)
             .with_size(vec2(W, H))
             .build_ui_state(
                 move |ui, app: &mut App| {
                     app.show(ui);
+                    model.jack_scan_failed = scan_failed_model.get();
                     for output in settings::show(ui.ctx(), &model, None) {
                         match output {
                             settings::Output::Act(Action::Settings(SettingsAction::SetAudio(
@@ -2076,6 +2079,15 @@ fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languag
 
         h.get_by_role_and_label(Role::ComboBox, &capture).click();
         h.run_steps(4);
+        scan_failed.set(true);
+        h.run_steps(4);
+        assert_eq!(
+            h.get_by_role_and_label(Role::ComboBox, &capture)
+                .accesskit_node()
+                .data()
+                .is_expanded(),
+            Some(true)
+        );
         for name in [
             "Hotone MP80 · Interface:left",
             "Hotone MP80 · Interface:right",

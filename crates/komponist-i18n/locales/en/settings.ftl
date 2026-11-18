@@ -140,6 +140,7 @@ settings-capture-format = Recording format
 settings-capture-pcm24 = 24-bit WAV
 settings-capture-float32 = 32-bit Float WAV
 
+settings-audio-driver-change-recording = Finish recording before changing the audio driver.
 settings-jack-playback-change-recording = Finish recording before changing the JACK outputs.
 settings-jack-playback-left = Master left
 settings-jack-playback-right = Master right

@@ -545,8 +545,7 @@ impl Recorder {
                 chunk.at = at;
                 chunk.start = window.map.sample_to_tick(at, f64::from(self.rate));
                 chunk.lap = lap;
-                chunk.window = cycle
-                    .map(|(lo, hi)| (lo, hi, window.map.sample_to_tick(lo, f64::from(self.rate))));
+                chunk.window = cycle.map(|(lo, hi)| (lo, hi, window.loop_start));
             }
             let sample = |x: f32| if x.is_finite() { x } else { 0.0 };
             let left = sample(l);
@@ -588,6 +587,7 @@ pub(crate) struct CaptureWindow {
     pub(crate) at: i64,
     pub(crate) lap: u32,
     pub(crate) lp: Option<(i64, i64)>,
+    pub(crate) loop_start: Tick,
     pub(crate) map: TempoMap,
 }
 type Writer = hound::WavWriter<BufWriter<File>>;
@@ -1169,8 +1169,17 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 for control in controls {
                     match control {
                         Control::Checkpoint(reply) => {
-                            let result =
-                                flush_all(&mut all).map(|()| snapshot_outputs(&all, &config));
+                            let result = if shared.cancelled.load(Ordering::Acquire) {
+                                Err(RecordingError::Cancelled)
+                            } else if let Some(error) = &failure {
+                                Err(error.clone())
+                            } else {
+                                match shared.failure.load(Ordering::Acquire) {
+                                    0 => flush_all(&mut all)
+                                        .map(|()| snapshot_outputs(&all, &config)),
+                                    code => Err(error(code)),
+                                }
+                            };
                             let _ = reply.send(result);
                         }
                         Control::Relocate(directory, reply) => {
@@ -1551,6 +1560,7 @@ mod tests {
                     at,
                     lap,
                     lp: Some((lo, hi)),
+                    loop_start: map.sample_to_tick(lo, 48_000.0),
                     map,
                 };
                 assert_no_alloc::assert_no_alloc(|| {
@@ -1635,6 +1645,7 @@ mod tests {
                         at: (i * PERIOD) as i64,
                         lap: 0,
                         lp: None,
+                        loop_start: Tick::ZERO,
                         map,
                     },
                 );
@@ -1661,28 +1672,72 @@ mod tests {
         let lp = Some((128, 256));
         for (first, next, lap) in [(0, 144, 0), (128, 128, 1)] {
             let (_directory, recorder, mut session) = stalled_writer_fixture(1);
+            let stalled = session.shared.progress[0].wave.lock().unwrap();
+            let loop_start = map.sample_to_tick(128, 48_000.0);
             for window in [
                 CaptureWindow {
                     at: first,
                     lap: 0,
                     lp,
+                    loop_start,
                     map,
                 },
                 CaptureWindow {
                     at: next,
                     lap,
                     lp,
+                    loop_start,
                     map,
                 },
             ] {
                 recorder.capture(TrackId(1), &[0.25; PERIOD], &[0.0; PERIOD], window);
             }
-            recorder.finish();
+            let (tx, rx) = mpsc::sync_channel(1);
+            session.control.send(Control::Checkpoint(tx)).unwrap();
+            drop(stalled);
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap_err(),
+                RecordingError::Discontinuity
+            );
             assert_eq!(
                 completed_session(&mut session).unwrap_err(),
                 RecordingError::Discontinuity
             );
+            let path = session.progress()[0].path.clone();
+            assert_pcm24(&path, 1, if first == 0 { 64 } else { 128 }, 64);
         }
+    }
+
+    #[test]
+    fn a_cycle_take_keeps_the_exact_loop_start_tick() {
+        let map = TempoMap::constant(Tempo::new(122.0), Meter::FOUR_FOUR);
+        let loop_start = Tick(3840);
+        let at = map.tick_to_sample(loop_start, 48_000.0);
+        assert_eq!(map.sample_to_tick(at, 48_000.0), Tick(3839));
+
+        let (_directory, mut recorder, mut session) = stalled_writer_fixture(1);
+        recorder.start = Some(at);
+        recorder.capture(
+            TrackId(1),
+            &[0.25; PERIOD],
+            &[0.0; PERIOD],
+            CaptureWindow {
+                at,
+                lap: 0,
+                lp: Some((at, at + 512)),
+                loop_start,
+                map,
+            },
+        );
+        assert_eq!(session.checkpoint().unwrap()[0].start, loop_start);
+        assert_eq!(session.progress()[0].start, loop_start);
+        recorder.finish();
+        assert_eq!(
+            completed_session(&mut session).unwrap().takes[0].start,
+            loop_start
+        );
     }
 
     #[test]
