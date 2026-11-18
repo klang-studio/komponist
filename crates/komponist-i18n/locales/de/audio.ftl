@@ -72,6 +72,8 @@ missing-audio-place = Spur { $track } · Clip { $clip }
 
 # Audio input, monitoring and recording UI (approved audio proposal).
 audio-input-none = Kein Eingang
+audio-input-device-source = Eingang: { $name }
+audio-input-device-monitor = Ausgabe-Monitor: { $name }
 audio-input-mono = Eingang { $n }
 audio-input-pair = Eingang { $a }+{ $b }
 audio-input-bus = Bus { $name }

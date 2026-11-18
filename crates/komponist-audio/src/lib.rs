@@ -41,8 +41,8 @@ mod workgroup;
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 pub use input::{
-    InputBuffer, InputConfig, InputDeviceInfo, InputReader, TestAudioSource, input_devices,
-    test_input,
+    InputBuffer, InputConfig, InputDeviceInfo, InputDeviceRole, InputReader, TestAudioSource,
+    input_devices, test_input,
 };
 pub use midi::{
     MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, MidiStamped, TestMidiSource,

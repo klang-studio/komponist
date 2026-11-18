@@ -72,6 +72,8 @@ missing-audio-place = Track { $track } · Clip { $clip }
 
 # Audio input, monitoring and recording UI (approved audio proposal).
 audio-input-none = No input
+audio-input-device-source = Input: { $name }
+audio-input-device-monitor = Output monitor: { $name }
 audio-input-mono = Input { $n }
 audio-input-pair = Input { $a }+{ $b }
 audio-input-bus = Bus { $name }

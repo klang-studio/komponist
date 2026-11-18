@@ -188,11 +188,11 @@ use egui::accesskit::Role;
 use egui::vec2;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{SelectMode, SelectionChange, UiAction};
+use komponist_app::actions::{SelectMode, SelectionChange, SettingsAction, UiAction};
 use komponist_app::dialogs::settings::{self, AudioDevices};
 use komponist_i18n::Lang;
 
-struct CaptureDevices;
+struct CaptureDevices(Vec<komponist_audio::InputDeviceInfo>);
 impl AudioDevices for CaptureDevices {
     fn hosts(&self) -> Vec<komponist_audio::HostKind> {
         vec![komponist_audio::HostKind::Null]
@@ -201,13 +201,7 @@ impl AudioDevices for CaptureDevices {
         vec![]
     }
     fn input_devices(&self, _: komponist_audio::HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
-        vec![komponist_audio::InputDeviceInfo {
-            id: Some(komponist_audio::DeviceId("test:capture".into())),
-            name: "Test Capture".into(),
-            channels: 4,
-            is_default: true,
-            sample_rate: 48_000,
-        }]
+        self.0.clone()
     }
 }
 fn harness(app: App) -> Harness<'static, App> {
@@ -269,7 +263,15 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
         .unwrap();
         let mut app = App::headless(p)
             .with_lang(lang)
-            .with_audio_devices(Box::new(CaptureDevices));
+            .with_audio_devices(Box::new(CaptureDevices(vec![
+                komponist_audio::InputDeviceInfo {
+                    id: Some(komponist_audio::DeviceId("test:capture".into())),
+                    name: "Test Capture".into(),
+                    channels: 4,
+                    is_default: true,
+                    sample_rate: 48_000,
+                },
+            ])));
         let _source = app.engine_mut().set_test_audio_input(4, 48_000).unwrap();
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
             tracks: vec![track],
@@ -382,6 +384,270 @@ fn capture_device_choices_distinguish_disabled_default_and_disconnected() {
     let (entries, index) = settings::input_entries(Lang::En, &[], Some(&missing));
     assert_eq!(entries[index].config, Some(missing));
     assert!(entries[index].label.contains("Disconnected"));
+}
+
+#[test]
+fn reselecting_the_same_input_retries_saving_settings() {
+    use komponist_app::device_host::BuiltinHost;
+    use komponist_app::engine_sync::EngineSync;
+    use komponist_app::settings::Settings;
+    use komponist_audio::{DeviceId, HostKind, InputConfig};
+    use komponist_model::Document;
+
+    let dir = crate::export::scratch("capture-settings-write");
+    let path = dir.join("settings.json");
+    let previous = InputConfig {
+        device: Some("Previous capture input".into()),
+        device_id: Some(DeviceId("fake:previous".into())),
+    };
+    let other = InputConfig {
+        device: Some("New capture input".into()),
+        device_id: Some(DeviceId("fake:new".into())),
+    };
+    let mut settings = Settings::default();
+    settings.audio.host = HostKind::Null;
+    settings.audio_input = Some(previous.clone());
+    settings.save(&path).unwrap();
+    // A directory at the temporary-write path fails on all platforms, independent of user IDs.
+    let blocked = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let (project, _) = audio(AudioInput::None);
+    let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
+    let choose = || Action::Settings(SettingsAction::SetAudioInput(Some(other.clone())));
+    app.dispatch(choose());
+    assert_eq!(app.settings().audio_input, Some(other.clone()));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
+    std::fs::remove_dir(blocked).unwrap();
+    app.dispatch(choose());
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(other));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_track_input_selection_keeps_the_previous_route_and_device() {
+    use komponist_app::device_host::BuiltinHost;
+    use komponist_app::engine_sync::EngineSync;
+    use komponist_app::settings::Settings;
+    use komponist_audio::{DeviceId, HostKind, InputConfig, StreamConfig};
+    use komponist_model::Document;
+
+    let dir = crate::export::scratch("capture-settings-rollback");
+    let path = dir.join("settings.json");
+    let config = |name: &str| InputConfig {
+        device: Some(name.into()),
+        device_id: Some(DeviceId(format!("test:{name}"))),
+    };
+    let previous = config("previous");
+    let attempted = config("failed");
+    let mut settings = Settings::default();
+    settings.audio.host = HostKind::Null;
+    settings.audio_input = Some(previous.clone());
+    settings.save(&path).unwrap();
+
+    let mut engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    engine.set_audio_input(Some(previous.clone())).unwrap();
+    // Reject the stream launch without asking a hardware backend to open a device.
+    assert!(
+        engine
+            .set_audio(&StreamConfig {
+                sample_rate: 0,
+                ..settings.audio.clone()
+            })
+            .is_err()
+    );
+    let old_route = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    let new_route = AudioInput::Hardware(HardwareInput {
+        first: 1,
+        stereo: false,
+    });
+    let (project, track) = audio(old_route);
+    let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
+    app.dispatch(Action::Settings(SettingsAction::ChooseTrackAudioInput {
+        track,
+        input: new_route,
+        device: attempted.clone(),
+    }));
+    assert_eq!(app.project().track(track).unwrap().audio.input, old_route);
+    assert_eq!(app.engine().audio_input_config(), Some(&previous));
+    assert_eq!(app.settings().audio_input, Some(previous.clone()));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
+
+    app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+        attempted.clone(),
+    ))));
+    assert_eq!(app.engine().audio_input_config(), Some(&attempted));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(attempted));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn track_input_choice_validates_the_open_streams_channel_count() {
+    use komponist_audio::{AudioState, DeviceId, InputConfig};
+
+    let config = InputConfig {
+        device: Some("Two-channel input".into()),
+        device_id: Some(DeviceId("mock:capture".into())),
+    };
+    let initial = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    let (project, track) = audio(initial);
+    let mut app = App::headless(project);
+    app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+        config.clone(),
+    ))));
+    let _source = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
+    let choose = |input| {
+        Action::Settings(SettingsAction::ChooseTrackAudioInput {
+            track,
+            input: AudioInput::Hardware(input),
+            device: config.clone(),
+        })
+    };
+
+    // A stale four-channel inventory may still have offered stereo channels three and four.
+    app.dispatch(choose(HardwareInput {
+        first: 2,
+        stereo: true,
+    }));
+    assert_eq!(app.project().track(track).unwrap().audio.input, initial);
+    assert_eq!(app.settings().audio_input.as_ref(), Some(&config));
+    assert_eq!(app.engine().audio_input_config(), Some(&config));
+    assert_eq!(app.engine().audio_input_channels(), 2);
+    assert!(matches!(
+        app.engine().audio_state(),
+        AudioState::Running { .. }
+    ));
+
+    let stereo = HardwareInput {
+        first: 0,
+        stereo: true,
+    };
+    app.dispatch(choose(stereo));
+    assert_eq!(
+        app.project().track(track).unwrap().audio.input,
+        AudioInput::Hardware(stereo)
+    );
+}
+
+#[test]
+fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
+    use komponist_audio::{DeviceId, InputConfig, InputDeviceInfo};
+
+    let name = "Hotone MP80";
+    let devices: Vec<_> = [
+        "pipewire:alsa_output.usb-Hotone-MP80.analog-stereo",
+        "pipewire:alsa_input.usb-Hotone-MP80.analog-stereo",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, id)| InputDeviceInfo {
+        id: Some(DeviceId(id.into())),
+        name: name.into(),
+        channels: 2,
+        is_default: index == 0,
+        sample_rate: 48_000,
+    })
+    .collect();
+    let source = InputConfig {
+        device: Some(name.into()),
+        device_id: devices[1].id.clone(),
+    };
+    let legacy = InputConfig {
+        device: source.device.clone(),
+        device_id: None,
+    };
+    assert_eq!(source.device_index(&devices), Some(1));
+    assert_eq!(source.device_index(&devices[..1]), None);
+    assert_eq!(legacy.device_index(&devices), None);
+    assert_eq!(legacy.device_index(&devices[1..]), Some(0));
+    assert_eq!(InputConfig::default().device_index(&devices), Some(0));
+
+    for (lang, monitor_label, source_label) in [
+        (
+            Lang::De,
+            "Ausgabe-Monitor: Hotone MP80",
+            "Eingang: Hotone MP80",
+        ),
+        (
+            Lang::En,
+            "Output monitor: Hotone MP80",
+            "Input: Hotone MP80",
+        ),
+    ] {
+        let (entries, selected) = settings::input_entries(lang, &devices, Some(&source));
+        assert_eq!(entries.len(), 4);
+        assert_eq!(selected, 3);
+        assert_eq!(entries[2].label, monitor_label);
+        assert_eq!(entries[2].config.as_ref().unwrap().device_id, devices[0].id);
+        assert_eq!(entries[3].label, source_label);
+        assert_eq!(entries[3].config, Some(source.clone()));
+
+        let (p, track) = audio(AudioInput::Hardware(HardwareInput {
+            first: 0,
+            stereo: false,
+        }));
+        let mut app = App::headless(p)
+            .with_lang(lang)
+            .with_audio_devices(Box::new(CaptureDevices(devices.clone())));
+        app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+            source.clone(),
+        ))));
+        let _input = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        let mut h = harness(app);
+        let label = lang.audio_input_tip(lang.audio_input_mono(1));
+        h.get_all_by_role_and_label(Role::Button, &label)
+            .next()
+            .unwrap()
+            .click();
+        h.run_steps(3);
+        for _ in 0..100 {
+            if h.query_by_role_and_label(Role::MenuItem, source_label)
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            h.run_steps(1);
+        }
+        h.get_by_role_and_label(Role::MenuItem, monitor_label);
+        assert_eq!(
+            h.get_by_role_and_label(Role::MenuItem, source_label)
+                .accesskit_node()
+                .is_selected(),
+            Some(true)
+        );
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        h.state_mut().dispatch(Action::Ui(UiAction::OpenSettings(
+            komponist_app::ui_state::SettingsSection::Audio,
+        )));
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::ComboBox, lang.settings_input_device())
+            .click();
+        h.run_steps(3);
+        for _ in 0..100 {
+            if h.query_by_role_and_label(Role::ListBoxOption, source_label)
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            h.run_steps(1);
+        }
+        h.get_by_role_and_label(Role::ListBoxOption, monitor_label);
+        h.get_by_role_and_label(Role::ListBoxOption, source_label);
+    }
 }
 
 #[test]

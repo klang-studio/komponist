@@ -1353,12 +1353,26 @@ are retained in the WP-E internal notes.
   `AudioProcess::process_input` receives a borrowed interleaved `InputBuffer` at the output rate;
   its default implementation preserves output-only processors. A bounded SPSC bridge carries
   timestamped frames from the input callback to the output callback. Linear rate conversion and
-  a queue-depth clock follower (at most ±0.2%) align separate device clocks; a short priming lead
-  avoids recurring startup underruns. `InputBuffer::latency` includes capture and queue delay.
+  a clock follower (at most ±0.2%) align separate device clocks. The follower computes the remaining
+  reserve and the complete burst size from published boundaries and the consumer's live queue
+  position, including frames already read when a burst is published. This excludes
+  callback batching and keeps overlapping callbacks from reusing a stale depth. The bridge keeps
+  queued frames across complete bursts and trims stale backlog to the re-prime threshold after
+  a confirmed overflow. `InputBuffer::latency` includes capture and queue delay.
   Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
-  instead of joining samples across a gap. Callback buffers and queue storage are preallocated.
-  ASIO capture uses the output's driver and caches input metadata during normal enumeration;
-  it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
+  instead of joining samples across a gap. Monitoring holds the last sample instead of
+  interpolating across sequence gaps. Capture failures leave the output stream running and the
+  requested input available for reselection. Reconnects use the exact ID of an identified source,
+  including a saved input that was missing at startup. If a backend exposes only a synthetic default
+  instead of an exact source ID, the System Default and driver-default aliases deliberately follow
+  the corresponding backend route. A background worker prepares and starts
+  the replacement capture stream. Its input remains disabled until the current output accepts its
+  reader. The callback takes the reader from a bounded queue and sends retired storage back to the
+  control thread. Input inventory and startup use the same eligible channel and sample formats.
+  Callback buffers and queue storage are preallocated.
+  ASIO opens capture and playback together on the selected driver and caches input metadata during
+  normal enumeration. Reapplying the capture or output configuration rebuilds both streams. An
+  isolated capture failure leaves working output active and waits for reconfiguration. `test_input` and `set_test_input`
   inject synthetic capture into the same bridge/null backend without opening hardware.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
