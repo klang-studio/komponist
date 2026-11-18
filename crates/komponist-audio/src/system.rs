@@ -429,6 +429,20 @@ struct CaptureRetry {
 }
 
 impl CaptureRetry {
+    fn for_output(
+        host: HostKind,
+        target: Option<CaptureTarget>,
+        interval: Duration,
+    ) -> Option<Self> {
+        // CPAL's ASIO input and output share a driver buffer set. Opening input while output
+        // is active can replace that set even on failure. Reconfigure the two streams together
+        // in start_device, without restarting a healthy output in response to a capture error.
+        if host == HostKind::Asio {
+            return None;
+        }
+        Some(Self::new(target?, interval))
+    }
+
     fn new(target: CaptureTarget, interval: Duration) -> Self {
         Self {
             open: Retry::new(target, interval),
@@ -493,23 +507,8 @@ struct DeviceStreams {
     _stream: cpal::Stream,
     capture: Option<CaptureStream>,
     capture_transfer: crate::input::CaptureTransfer,
-    asio_device: Option<AsioDeviceFactory>,
     /// Declared after the streams: the open ASIO count drops only once they are gone.
     _open: Option<backend::AsioOpen>,
-}
-
-type AsioDeviceFactory = Arc<dyn Fn() -> cpal::Device + Send + Sync>;
-
-fn asio_device_factory(device: &cpal::Device) -> Option<AsioDeviceFactory> {
-    // The platform Device enum can contain a non-Send COM endpoint on Windows. Retain only
-    // the concrete ASIO device so the audio system remains movable between control threads.
-    #[cfg(all(windows, feature = "asio"))]
-    if let cpal::platform::DeviceInner::Asio(loaded) = device.as_inner() {
-        let loaded = loaded.clone();
-        return Some(Arc::new(move || cpal::Device::from(loaded.clone())));
-    }
-    let _ = device;
-    None
 }
 
 impl DeviceStreams {
@@ -521,10 +520,7 @@ impl DeviceStreams {
     ) -> Option<Result<u16, AudioError>> {
         let transfer_ready = self.capture_transfer.ready();
         if let Some(lost) = self.capture.take_if(|capture| capture.lost()) {
-            self.capture_retry = lost
-                .target()
-                .cloned()
-                .map(|target| CaptureRetry::new(target, retry_interval(host, interval)));
+            self.capture_retry = CaptureRetry::for_output(host, lost.target().cloned(), interval);
             return Some(Err(AudioError::NoDevice("capture input lost".into())));
         }
         let retry = self.capture_retry.as_mut()?;
@@ -534,14 +530,10 @@ impl DeviceStreams {
 
         let rate = params.sample_rate;
         let frames = params.max_frames;
-        let asio_device = self.asio_device.clone();
         let result = retry.poll(move |target, current| {
             check_current_capture(current)?;
-            // For ASIO retain only the output's already loaded driver, without enumerating
-            // other drivers. Other backends obtain their device inside this worker.
-            let duplex = asio_device.map(|device| device());
             let (capture, reader) =
-                CaptureStream::prepare(host, &target.selection(), rate, frames, duplex.as_ref())?;
+                CaptureStream::prepare(host, &target.selection(), rate, frames, None)?;
             check_current_capture(current)?;
             capture.play()?;
             check_current_capture(current)?;
@@ -909,14 +901,12 @@ impl<P: AudioProcess> AudioSystem<P> {
                 Some(&device),
             )
         });
-        let capture_retry = self
+        let target = self
             .input
             .as_ref()
             .zip(self.input_error.as_ref())
-            .and_then(|(input, error)| CaptureTarget::missing_at_start(input, error))
-            .map(|target| {
-                CaptureRetry::new(target, retry_interval(config.host, self.retry_interval))
-            });
+            .and_then(|(input, error)| CaptureTarget::missing_at_start(input, error));
+        let capture_retry = CaptureRetry::for_output(config.host, target, self.retry_interval);
         let mut callback =
             StreamCallback::new(slot, callback_params, Arc::clone(&shared)).with_input(reader);
         let capture_transfer = callback.enable_capture_reconnect();
@@ -931,7 +921,6 @@ impl<P: AudioProcess> AudioSystem<P> {
                 _stream: stream,
                 capture,
                 capture_transfer,
-                asio_device: asio_device_factory(&device),
                 _open: open,
             })),
             handle,
@@ -1455,6 +1444,14 @@ mod tests {
         };
         system.arm_retry(asio);
         assert_eq!(system.retry.as_ref().unwrap().interval, ASIO_RETRY_INTERVAL);
+    }
+
+    #[test]
+    fn asio_output_never_arms_a_capture_only_reopen() {
+        let target = CaptureTarget::Exact(DeviceId("asio:duplex".into()));
+        assert!(CaptureRetry::for_output(HostKind::Asio, Some(target), Duration::ZERO).is_none());
+        let target = CaptureTarget::Exact(DeviceId("wasapi:capture".into()));
+        assert!(CaptureRetry::for_output(HostKind::Wasapi, Some(target), Duration::ZERO).is_some());
     }
 
     #[test]

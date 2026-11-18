@@ -196,6 +196,7 @@ struct Shared {
     lost: AtomicBool,
     enabled: AtomicBool,
     burst_start: AtomicU64,
+    burst_end: AtomicU64,
 }
 
 impl Default for Shared {
@@ -205,18 +206,25 @@ impl Default for Shared {
             lost: AtomicBool::new(false),
             enabled: AtomicBool::new(false),
             burst_start: AtomicU64::new(NO_BURST),
+            burst_end: AtomicU64::new(0),
         }
     }
 }
 
 impl Shared {
-    fn publish_burst(&self, first_frame: u64) {
+    fn publish_burst(&self, first_frame: u64, end_frame: u64) {
+        self.burst_end.store(end_frame, Ordering::Relaxed);
         self.burst_start.fetch_min(first_frame, Ordering::Release);
     }
 
-    fn take_burst(&self) -> Option<u64> {
+    fn take_burst(&self) -> Option<(u64, u64)> {
         let first_frame = self.burst_start.swap(NO_BURST, Ordering::Acquire);
-        (first_frame != NO_BURST).then_some(first_frame)
+        if first_frame == NO_BURST {
+            return None;
+        }
+        // The marker publishes the end of its completed burst. If another burst completes
+        // before this load, include it in the size estimate for this batch.
+        Some((first_frame, self.burst_end.load(Ordering::Relaxed)))
     }
 }
 
@@ -246,7 +254,7 @@ impl TestAudioSource {
         }
         let first_frame = self.queued_frames;
         let complete = self.enqueue(samples, at);
-        self.shared.publish_burst(first_frame);
+        self.shared.publish_burst(first_frame, self.queued_frames);
         complete
     }
 
@@ -370,7 +378,7 @@ impl InputReader {
         if self.lost() {
             return InputBuffer::new(out, self.channels, Duration::ZERO, true);
         }
-        let first_burst_frame = self.shared.take_burst();
+        let burst = self.shared.take_burst();
         let dropped = self.shared.dropped.load(Ordering::Acquire);
         let overflow = dropped != self.dropped;
         let mut gap = overflow;
@@ -382,12 +390,20 @@ impl InputReader {
                 let _ = self.pop_frame();
             }
             self.reset_interpolator();
-        } else if let Some(first_frame) = first_burst_frame {
+        } else if let Some((first_frame, end_frame)) = burst {
             let queued = self.rx.slots();
             // Compare completed pushes with completed pops, excluding dropped frames from
             // both counters. This cannot count reserve that was read while a burst arrived.
-            self.lead = (first_frame.saturating_sub(self.dequeued_frames) as usize).min(queued);
-            self.burst = self.burst.max(queued.saturating_sub(self.lead));
+            self.lead = first_frame
+                .saturating_sub(self.dequeued_frames)
+                .min(queued as u64) as usize;
+            // Use the completed burst extent even when some of it was read before publication.
+            let completed = end_frame
+                .saturating_sub(first_frame)
+                .min(self.rx.buffer().capacity() as u64) as usize;
+            self.burst = self
+                .burst
+                .max(completed.max(queued.saturating_sub(self.lead)));
             self.correction_frames = self.burst;
         }
         let rate_ratio = f64::from(self.rate) / f64::from(output_rate);
@@ -1034,7 +1050,7 @@ mod tests {
         // before the producer has finished publishing its next burst.
         assert!(!reader.read(&mut [0.0; 8], 48_000, at).discontinuous());
         assert!(source.enqueue(&[0.25; 4], at));
-        source.shared.publish_burst(boundary);
+        source.shared.publish_burst(boundary, source.queued_frames);
         let mut out = [0.0; 4];
         assert!(!reader.read(&mut out, 48_000, at).discontinuous());
         assert_eq!(reader.lead, 0);
@@ -1067,11 +1083,36 @@ mod tests {
                     assert_eq!(out, [0.25; 64]);
                     let frames = if period % 16 == 15 { 64 + drift } else { 64 };
                     assert!(source.enqueue(&samples[..frames as usize], time));
-                    source.shared.publish_burst(boundary);
+                    source.shared.publish_burst(boundary, source.queued_frames);
                 }
             });
             assert_eq!(source.dropped(), 0);
         }
+    }
+
+    #[test]
+    fn a_full_burst_includes_frames_read_before_its_marker() {
+        let (mut source, mut reader) = test_input(1, 48_000, 4096).unwrap();
+        reader.target = 128;
+        let at = Instant::now();
+        let mut out = [0.0; 64];
+        let samples = [0.25; 4096];
+
+        assert_no_alloc(|| {
+            for _ in 0..4 {
+                let boundary = source.queued_frames;
+                assert!(source.enqueue(&samples, at));
+                assert!(!reader.read(&mut out, 48_000, at).discontinuous());
+                source.shared.publish_burst(boundary, source.queued_frames);
+                for _ in 1..64 {
+                    assert!(!reader.read(&mut out, 48_000, at).discontinuous());
+                    assert_eq!(out, [0.25; 64]);
+                }
+                assert_eq!(reader.burst, 4096);
+                assert_eq!(reader.rx.slots(), 0);
+            }
+        });
+        assert_eq!(source.dropped(), 0);
     }
 
     #[test]
