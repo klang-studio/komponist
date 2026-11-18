@@ -141,7 +141,7 @@ audio-clip-mode = Mode
 audio-clip-fixed = Fixed
 audio-clip-warp = Warp
 audio-clip-mode-help = Fixed: original speed. Re-Pitch: follow tempo, change pitch. Warp: follow tempo, preserve pitch.
-audio-clip-source-bars-help = Entire active source file in the current meter, not the trimmed clip. No tempo detection.
+audio-clip-source-bars-help = Calculates the original tempo for the entire active source file from the number of bars in the current meter.
 audio-clip-duration = Duration
 audio-clip-duration-value = Duration { $ratio }×
 audio-clip-duration-help = Output duration / source duration: { $ratio }× · original tempo / project tempo
@@ -152,3 +152,13 @@ audio-source-time = Source { $source } ↔ Song { $song }
 audio-warp-error = Warp error observed: { $reason }
 audio-source-ruler-short = Source
 audio-song-ruler = Song
+
+# Audio file analysis and explicit original-tempo confirmation.
+audio-tempo-detect = Detect Tempo
+audio-tempo-analyzing = Analyzing source tempo…
+audio-tempo-unknown = No regular tempo detected
+audio-tempo-failed = Could not analyze source tempo
+audio-tempo-estimate = { $bpm } BPM · { $confidence }% confidence
+audio-tempo-use = Use { $bpm } BPM
+audio-tempo-use-half = Use { $bpm } BPM (half)
+audio-tempo-use-double = Use { $bpm } BPM (double)

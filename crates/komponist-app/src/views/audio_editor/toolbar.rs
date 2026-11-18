@@ -5,10 +5,12 @@ use super::{
     source::Source,
 };
 use crate::actions::ProjectAction;
+use crate::project_io::fmt_bpm;
 use crate::views::ViewCtx;
 use crate::{Action, EditAction};
 use egui::{Align, Layout, Rect, Ui, UiBuilder, vec2};
-use komponist_model::{AudioClip, Clip, ClipTimeMode, Project};
+use komponist_audiofile::TempoState;
+use komponist_model::{AudioClip, Clip, ClipTimeMode, Project, Tempo, edits::AudioClipProp};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, size, space, typography};
 use komponist_ui::widgets::{
@@ -22,6 +24,8 @@ enum FileAction {
     Replace,
     Show,
     Copy,
+    DetectTempo,
+    ApplyTempo(Tempo),
 }
 /// File menu shared with the inspector.
 pub fn file_actions(
@@ -32,27 +36,86 @@ pub fn file_actions(
     source: &Source,
 ) {
     let t = ctx.lang;
-    let path = source.path(a);
     let response = ui.add(Button::icon(Icon::Ellipsis, t.audio_file_actions()).compact());
     if response.clicked() {
         ContextMenu::<FileAction>::open_at(ui.ctx(), response.id, response.rect.left_bottom());
+        // The opening press may share this frame with the release from an accessibility click.
+        // Render the menu next frame so that press is not treated as an outside dismissal.
+        ui.ctx().request_repaint();
+        return;
     }
-    let entries = [
+    if !ContextMenu::<FileAction>::is_open(ui.ctx(), response.id) && !response.secondary_clicked() {
+        return;
+    }
+    let mut entries = vec![
         Entry::action(t.audio_file_replace(), FileAction::Replace),
         Entry::action(t.audio_file_show(), FileAction::Show),
         Entry::action(t.audio_file_copy_path(), FileAction::Copy),
+        Entry::separator(),
     ];
+    let tempo = source.file.as_ref().map(|file| file.tempo_state());
+    let description = match &tempo {
+        Some(TempoState::Pending) => t.audio_tempo_analyzing().to_owned(),
+        Some(TempoState::Ready(Some(value))) => t.audio_tempo_estimate(
+            fmt_bpm(value.bpm),
+            format!("{:.0}", value.confidence * 100.0),
+        ),
+        Some(TempoState::Ready(None)) => t.audio_tempo_unknown().to_owned(),
+        Some(TempoState::Failed(_)) => t.audio_tempo_failed().to_owned(),
+        _ => t.audio_tempo_detect().to_owned(),
+    };
+    let detect = Entry::action(&description, FileAction::DetectTempo);
+    entries.push(if matches!(tempo, Some(TempoState::Idle)) {
+        detect
+    } else {
+        detect.disabled()
+    });
+    let mut choices = Vec::new();
+    if let Some(TempoState::Ready(Some(value))) = tempo {
+        let half = (value.bpm * 50.0).round() / 100.0;
+        let double = value.bpm * 2.0;
+        for (bpm, label) in [
+            (value.bpm, t.audio_tempo_use(fmt_bpm(value.bpm))),
+            (half, t.audio_tempo_use_half(fmt_bpm(half))),
+            (double, t.audio_tempo_use_double(fmt_bpm(double))),
+        ] {
+            if (Tempo::MIN_BPM..=Tempo::MAX_BPM).contains(&bpm) {
+                choices.push((Tempo::new(bpm), label));
+            }
+        }
+    }
+    entries.extend(
+        choices
+            .iter()
+            .map(|(tempo, label)| Entry::action(label, FileAction::ApplyTempo(*tempo))),
+    );
     if let Some(action) = ContextMenu::new(t.audio_file_actions(), &entries).show_on(&response) {
         match action {
             FileAction::Replace => ctx.send(Action::Project(ProjectAction::ReplaceAudio(clip.id))),
             FileAction::Show => {
-                if let Some(folder) = path.parent() {
+                if let Some(folder) = source.path(a).parent() {
                     ctx.send(Action::Project(ProjectAction::ShowInFolder(
                         folder.to_owned(),
                     )));
                 }
             }
-            FileAction::Copy => ui.ctx().copy_text(path.display().to_string()),
+            FileAction::Copy => ui.ctx().copy_text(source.path(a).display().to_string()),
+            FileAction::DetectTempo => {
+                if let Some(file) = &source.file {
+                    let repaint = ui.ctx().clone();
+                    file.request_tempo(move || repaint.request_repaint());
+                    ContextMenu::<FileAction>::open_at(
+                        ui.ctx(),
+                        response.id,
+                        response.rect.left_bottom(),
+                    );
+                    ui.ctx().request_repaint();
+                }
+            }
+            FileAction::ApplyTempo(tempo) => ctx.send(Action::Edit(EditAction::SetAudioClipProp {
+                clip: clip.id,
+                prop: AudioClipProp::OriginalTempo(tempo),
+            })),
         }
     }
 }

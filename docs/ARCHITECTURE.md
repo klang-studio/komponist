@@ -1314,7 +1314,7 @@ The extreme guard is 10 cents; these bounds describe the Default algorithm's qua
 than a pitch correction. The isolated release load probe at 48 kHz, 256-frame callbacks and
 8 stereo voices used 12.2–18.4% of one core; 16 voices used 22.6–35.9%, with zero underruns at
 ratios 1/6, 1.5 and 6. Host-specific results, native sanitizer checks and platform limitations
-are recorded in the WP-D internal notes. Warp UI is described below; tempo detection remains a later work package.
+are recorded in the WP-D internal notes. The Warp UI and source tempo analysis are described below.
 
 
 **Warp UI (#14 WP-E, approved variant A).** The existing audio editor and inspector share one
@@ -1324,6 +1324,15 @@ bars/read-only duration ratio. At narrow widths the latter may wrap; essential c
 visible. Source bars describes the full active take file in the current meter, not the cropped
 clip duration. Original tempo and bar-count edits retain existing grouped NumberField/undo,
 clamping, source-limit and phase reanchor semantics. Takes share the mode/original tempo.
+
+**Source tempo analysis (#14 WP-F).** The shared file actions menu requests an estimate for the
+active take. The audio file pool runs analysis off-thread and caches the result by file identity
+and algorithm version. Analysis decodes up to 60 seconds of the full source. It resamples to
+12 kHz, extracts spectral flux independently per channel and ranks periodic onsets from
+40 to 240 BPM. Confidence reflects onset regularity and the separation between candidates.
+The confirmed, half or double estimate uses the same undoable original-tempo edit as manual entry.
+The deterministic suite evaluates 22 labeled synthetic loops at 55–205 BPM and 12–48 kHz,
+plus the demo’s Pulse 90 source in both UI languages. This measures performance on those fixtures.
 
 The waveform uses song musical ticks and a secondary native-source clock. One `Mapping` helper
 projects full-source peaks/context, the clip window, pointer/readout and viewport bounds;
