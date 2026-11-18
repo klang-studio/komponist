@@ -581,6 +581,41 @@ fn velocity_lane_sets_the_nearest_start() {
 }
 
 #[test]
+fn velocity_lane_drag_keeps_the_grabbed_marker() {
+    let (app, clip) = lead_a();
+    let mut h = harness(app);
+    let g = geometry(&h, clip);
+    let lane = g.lane.unwrap();
+    let notes = notes_of(h.state(), clip);
+    let grabbed = notes.iter().find(|n| n.start == Tick(4 * 240)).unwrap();
+    let other = notes.iter().find(|n| n.start > grabbed.start).unwrap();
+    let base = lane.bottom() - 4.0;
+    let from = pos2(g.x_of_local(grabbed.start) + 2.0, base - 26.0);
+    let over_other = pos2(g.x_of_local(other.start) + 2.0, base - 13.0);
+    let past_lane = pos2(lane.right() + 10.0, base - 39.0);
+
+    h.hover_at(from);
+    h.step();
+    press(&mut h, from, Modifiers::NONE, true);
+    h.step();
+    h.hover_at(over_other);
+    h.step();
+    let mut expected = notes.clone();
+    let index = expected.iter().position(|n| n.id == grabbed.id).unwrap();
+    expected[index].velocity = 32;
+    assert_eq!(notes_of(h.state(), clip), expected);
+
+    h.hover_at(past_lane);
+    h.step();
+    press(&mut h, past_lane, Modifiers::NONE, false);
+    h.run_steps(2);
+    expected[index].velocity = 95;
+    assert_eq!(notes_of(h.state(), clip), expected);
+    undo(&mut h);
+    assert_eq!(notes_of(h.state(), clip), notes);
+}
+
+#[test]
 fn notes_past_the_clip_end_lengthen_it() {
     let (mut app, clip) = lead_a();
     app.dispatch(Action::Ui(UiAction::SetTool(Tool::Pencil)));

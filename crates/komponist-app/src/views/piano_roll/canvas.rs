@@ -14,7 +14,7 @@
 //! | note | Ctrl-drag ↕ | velocity of the selected notes, value in the tooltip |
 //! | grid, eraser | click / drag | deletes the notes under the pointer |
 //! | keyboard | press / slide | plays the key (`LiveNote`) |
-//! | velocity lane | press / drag | sets the velocity of the nearest note start |
+//! | velocity lane | press / drag | sets the velocity of the notes grabbed at the press |
 //! | ruler | press / drag | playhead (to the beat) |
 //! | anywhere | wheel / Shift wheel / Ctrl wheel | keys / time / zoom around the pointer |
 //!
@@ -110,10 +110,12 @@ pub enum Gesture {
     Box(BoxDrag),
     /// Velocity lane.
     Lane {
+        /// Notes grabbed at the press.
+        notes: Vec<NoteId>,
         /// `BeginGesture` sent.
         begun: bool,
-        /// Notes and value set last.
-        last: Option<(Vec<NoteId>, u8)>,
+        /// Velocity set last.
+        last: Option<u8>,
     },
     /// A key of the keyboard held.
     Key,
@@ -358,10 +360,18 @@ impl PianoRoll {
                 self.audition(ctx, f.track, Some(f.geo.pitch_at_clamped(at.y)));
             }
             Area::Lane => {
-                self.gesture = Some(Gesture::Lane {
-                    begun: false,
-                    last: None,
-                })
+                let at_tick = f.geo.local_tick_at(at.x);
+                let max = f64::from(m::VELOCITY_PICK_DISTANCE / f.geo.axis.px_per_tick);
+                let notes = edit::lane_targets(f.notes, &f.selection, at_tick, max);
+                self.gesture = Some(if notes.is_empty() {
+                    Gesture::Held
+                } else {
+                    Gesture::Lane {
+                        notes,
+                        begun: false,
+                        last: None,
+                    }
+                });
             }
             Area::Ruler => self.gesture = Some(Gesture::Ruler { last: None }),
             Area::Grid => self.press_grid(ctx, f, at, mods),
@@ -574,22 +584,18 @@ impl PianoRoll {
                     ctx.send(select(ids, SelectMode::Replace));
                 }
             }
-            Some(Gesture::Lane { begun, last }) => {
+            Some(Gesture::Lane { notes, begun, last }) => {
                 if let Some(lane) = f.geo.lane {
-                    let at_tick = f.geo.local_tick_at(at.x);
-                    let max = f64::from(m::VELOCITY_PICK_DISTANCE / f.geo.axis.px_per_tick);
-                    let targets = edit::lane_targets(f.notes, &f.selection, at_tick, max);
                     let v = edit::lane_velocity(lane.bottom() - m::VELOCITY_BOTTOM - at.y);
-                    let next = (targets, v);
-                    if !next.0.is_empty() && last.as_ref() != Some(&next) {
+                    if *last != Some(v) {
                         begin(ctx, begun, "undo-velocity");
                         ctx.send(Action::Edit(EditAction::SetNotesVelocity {
                             clip,
-                            notes: next.0.clone(),
+                            notes: notes.clone(),
                             change: VelocityChange::Set(v),
                         }));
                         status(ctx, ctx.lang.piano_roll_velocity_status(v));
-                        *last = Some(next);
+                        *last = Some(v);
                     }
                 }
             }
@@ -1108,9 +1114,7 @@ impl PianoRoll {
                 d.rect,
                 edit::fmt_note_length((d.length + d.last).max(Tick(1)), f.meter),
             ),
-            Some(Gesture::Lane {
-                last: Some((_, v)), ..
-            }) => {
+            Some(Gesture::Lane { last: Some(v), .. }) => {
                 let at = ui.input(|i| i.pointer.latest_pos()).unwrap_or_default();
                 (Rect::from_center_size(at, vec2(0.0, 0.0)), v.to_string())
             }
