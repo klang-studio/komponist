@@ -425,6 +425,66 @@ fn reselecting_the_same_input_retries_saving_settings() {
 }
 
 #[test]
+fn failed_track_input_selection_keeps_the_previous_route_and_device() {
+    use komponist_app::device_host::BuiltinHost;
+    use komponist_app::engine_sync::EngineSync;
+    use komponist_app::settings::Settings;
+    use komponist_audio::{DeviceId, HostKind, InputConfig, StreamConfig};
+    use komponist_model::Document;
+
+    let dir = crate::export::scratch("capture-settings-rollback");
+    let path = dir.join("settings.json");
+    let config = |name: &str| InputConfig {
+        device: Some(name.into()),
+        device_id: Some(DeviceId(format!("test:{name}"))),
+    };
+    let previous = config("previous");
+    let attempted = config("failed");
+    let mut settings = Settings::default();
+    settings.audio.host = HostKind::Null;
+    settings.audio_input = Some(previous.clone());
+    settings.save(&path).unwrap();
+
+    let mut engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    engine.set_audio_input(Some(previous.clone())).unwrap();
+    // Reject the stream launch without asking a hardware backend to open a device.
+    assert!(
+        engine
+            .set_audio(&StreamConfig {
+                sample_rate: 0,
+                ..settings.audio.clone()
+            })
+            .is_err()
+    );
+    let old_route = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    let new_route = AudioInput::Hardware(HardwareInput {
+        first: 1,
+        stereo: false,
+    });
+    let (project, track) = audio(old_route);
+    let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
+    app.dispatch(Action::Settings(SettingsAction::ChooseTrackAudioInput {
+        track,
+        input: new_route,
+        device: attempted.clone(),
+    }));
+    assert_eq!(app.project().track(track).unwrap().audio.input, old_route);
+    assert_eq!(app.engine().audio_input_config(), Some(&previous));
+    assert_eq!(app.settings().audio_input, Some(previous.clone()));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
+
+    app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+        attempted.clone(),
+    ))));
+    assert_eq!(app.engine().audio_input_config(), Some(&attempted));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(attempted));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
     use komponist_audio::{DeviceId, InputConfig, InputDeviceInfo};
 

@@ -2792,24 +2792,13 @@ impl App {
         self.ui.focus = FocusArea::Arrangement;
     }
 
-    fn apply_audio_input(&mut self, input: Option<komponist_audio::InputConfig>) -> bool {
-        let result = self.engine.set_audio_input(input);
+    fn persist_audio_input(&mut self, successful_choice: bool) {
         let requested = self.engine.audio_input_config();
         // A previous write may have failed after the in-memory preference changed.
-        if result.is_ok() || self.settings.audio_input.as_ref() != requested {
+        if successful_choice || self.settings.audio_input.as_ref() != requested {
             self.settings.audio_input = requested.cloned();
             self.save_settings();
         }
-        if let Err(error) = result {
-            // Active playback and capture failures already have state-driven status messages.
-            if self.engine.audio_input_error().is_none()
-                && !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
-            {
-                self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
-            }
-            return false;
-        }
-        true
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
@@ -2828,18 +2817,43 @@ impl App {
                 self.save_settings();
             }
             SettingsAction::SetAudioInput(input) => {
-                self.apply_audio_input(input);
+                let result = self.engine.set_audio_input(input);
+                self.persist_audio_input(result.is_ok());
+                if let Err(error) = result
+                    && self.engine.audio_input_error().is_none()
+                    && !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
+                {
+                    self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+                }
             }
             SettingsAction::ChooseTrackAudioInput {
                 track,
                 input,
                 device,
             } => {
-                if self.apply_audio_input(Some(device)) {
-                    self.dispatch(Action::Edit(EditAction::SetTrackProp {
-                        tracks: vec![track],
-                        prop: TrackProp::AudioInput(input),
-                    }));
+                let previous = self.engine.audio_input_config().cloned();
+                match self.engine.set_audio_input(Some(device)) {
+                    Ok(()) => {
+                        self.persist_audio_input(true);
+                        self.dispatch(Action::Edit(EditAction::SetTrackProp {
+                            tracks: vec![track],
+                            prop: TrackProp::AudioInput(input),
+                        }));
+                    }
+                    Err(error) => {
+                        let capture_failed = self.engine.audio_input_error().is_some();
+                        if self.engine.audio_input_config() != previous.as_ref() {
+                            let _ = self.engine.set_audio_input(previous);
+                        }
+                        if capture_failed
+                            || !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
+                        {
+                            self.set_status(
+                                self.lang.audio_input_open_failed(error),
+                                StatusKind::Error,
+                            );
+                        }
+                    }
                 }
             }
             SettingsAction::SetCaptureFormat(format) => {
