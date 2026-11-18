@@ -1,7 +1,8 @@
 //! Explicit JACK routes use a single duplex client and the server's sample clock.
 
-use std::sync::Arc;
+use std::ffi::{CStr, c_char};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, PortFlags, PortSpec};
@@ -189,12 +190,128 @@ fn default_targets(client: &Client, route: &Route) -> Targets {
     targets
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum XrunScope {
+    Jack,
+    PipeWireGraph,
+}
+
+impl XrunScope {
+    fn from_version(version: &CStr) -> Self {
+        if version
+            .to_bytes()
+            .windows(b"(using PipeWire ".len())
+            .any(|part| part == b"(using PipeWire ")
+        {
+            Self::PipeWireGraph
+        } else {
+            Self::Jack
+        }
+    }
+
+    fn detect() -> Self {
+        static SCOPE: OnceLock<XrunScope> = OnceLock::new();
+        *SCOPE.get_or_init(|| {
+            let Ok(library) = jack_sys::library() else {
+                return Self::Jack;
+            };
+            // SAFETY: libjack exports this signature and returns a NUL-terminated string with
+            // library lifetime. The library is the same handle used by the JACK Rust binding.
+            unsafe {
+                let Ok(version) = library
+                    .get::<unsafe extern "C" fn() -> *const c_char>(b"jack_get_version_string")
+                else {
+                    return Self::Jack;
+                };
+                let value = version();
+                if value.is_null() {
+                    Self::Jack
+                } else {
+                    Self::from_version(CStr::from_ptr(value))
+                }
+            }
+        })
+    }
+
+    fn capture_gap(self, xrun: bool, missed_period: bool, route_gap: bool) -> bool {
+        // PipeWire-JACK reports changes in the driver's graph-wide XRUN counter. It can
+        // notify a client whose own capture callbacks and links stayed continuous.
+        missed_period || route_gap || (xrun && self == Self::Jack)
+    }
+}
+
+const TRACE_XRUN: u32 = 1 << 0;
+const TRACE_MISSED_PERIOD: u32 = 1 << 1;
+const TRACE_LINK_GAP: u32 = 1 << 2;
+const TRACE_DELIVERED_GAP: u32 = 1 << 3;
+const TRACE_LINK_DISCONNECT: u32 = 1 << 4;
+const TRACE_LINK_REPAIR: u32 = 1 << 5;
+const TRACE_ROUTE_UNAVAILABLE: u32 = 1 << 6;
+const TRACE_ROUTE_READY: u32 = 1 << 7;
+
+/// Optional breadcrumbs shared by the process/graph callbacks and the control thread.
+#[derive(Default)]
+struct CaptureTrace {
+    pending: AtomicU32,
+    // Latest callback interval in microseconds (high bits) and JACK frame advance (low bits).
+    timing: AtomicU64,
+}
+
+impl CaptureTrace {
+    fn note(&self, flags: u32) {
+        self.pending.fetch_or(flags, Ordering::Release);
+    }
+
+    fn note_period(&self, flags: u32, previous: Option<Cycle>, current: Cycle) {
+        if flags == 0 {
+            return;
+        }
+        if let Some(previous) = previous {
+            let delta = current.first_frame.wrapping_sub(previous.first_frame);
+            let elapsed = current.entered.saturating_duration_since(previous.entered);
+            let micros = elapsed.as_micros().min(u128::from(u32::MAX)) as u32;
+            self.timing.store(
+                (u64::from(micros) << 32) | u64::from(delta),
+                Ordering::Relaxed,
+            );
+        }
+        self.note(flags);
+    }
+
+    fn report(&self, period: u32, rate: u32, ready: bool) {
+        let flags = self.pending.swap(0, Ordering::AcqRel);
+        if flags == 0 {
+            return;
+        }
+        let events = [
+            (TRACE_XRUN, "server-xrun"),
+            (TRACE_MISSED_PERIOD, "missed-local-period"),
+            (TRACE_LINK_GAP, "capture-link-gap"),
+            (TRACE_DELIVERED_GAP, "input-discontinuity-sent"),
+            (TRACE_LINK_DISCONNECT, "capture-link-disconnected"),
+            (TRACE_LINK_REPAIR, "capture-link-repair"),
+            (TRACE_ROUTE_UNAVAILABLE, "capture-route-unavailable"),
+            (TRACE_ROUTE_READY, "capture-route-ready"),
+        ]
+        .into_iter()
+        .filter_map(|(bit, name)| (flags & bit != 0).then_some(name))
+        .collect::<Vec<_>>();
+        let timing = self.timing.load(Ordering::Relaxed);
+        eprintln!(
+            "komponist: JACK capture trace events={events:?} ready={ready} period={period} rate={rate} frame_advance={} interval_us={}",
+            timing as u32,
+            timing >> 32,
+        );
+    }
+}
+
 #[derive(Default)]
 struct Signals {
     shutdown: AtomicBool,
     graph_changed: AtomicBool,
     capture: CaptureState,
     xrun: AtomicBool,
+    trace: Option<CaptureTrace>,
     sample_rate: AtomicU32,
     period: AtomicU32,
     // Playback in the low 32 bits, capture in the high 32 bits, both in frames.
@@ -295,6 +412,9 @@ impl jack::NotificationHandler for Notifications {
             })
         {
             self.signals.capture.changed();
+            if let Some(trace) = &self.signals.trace {
+                trace.note(TRACE_LINK_DISCONNECT);
+            }
         }
         self.graph_changed();
     }
@@ -404,6 +524,7 @@ struct Duplex<P: AudioProcess> {
     output: [Port<AudioOut>; 2],
     signals: Arc<Signals>,
     previous: Option<Cycle>,
+    xrun_scope: XrunScope,
 }
 
 #[derive(Clone, Copy)]
@@ -436,15 +557,24 @@ impl<P: AudioProcess + 'static> jack::ProcessHandler for Duplex<P> {
             frames: scope.n_frames(),
         };
         let xrun = self.signals.xrun.swap(false, Ordering::AcqRel);
-        let discontinuous = self
-            .previous
-            .replace(cycle)
-            .is_some_and(|previous| xrun || previous.missed_before(cycle, self.render.rate));
+        let previous = self.previous.replace(cycle);
+        let missed_period =
+            previous.is_some_and(|before| before.missed_before(cycle, self.render.rate));
         let mut input = [&[][..]; MAX_INPUT_CHANNELS];
         // JACK supplies silence for unconnected inputs. Route state establishes whether that
         // silence is valid capture.
         let (capture_ready, route_gap) = self.signals.capture.take_period();
         let channels = if capture_ready { self.input.len() } else { 0 };
+        let discontinuous =
+            self.xrun_scope
+                .capture_gap(xrun && previous.is_some(), missed_period, route_gap);
+        if let Some(trace) = &self.signals.trace {
+            let flags = (u32::from(xrun) * TRACE_XRUN)
+                | (u32::from(missed_period) * TRACE_MISSED_PERIOD)
+                | (u32::from(route_gap) * TRACE_LINK_GAP)
+                | (u32::from(discontinuous && channels != 0) * TRACE_DELIVERED_GAP);
+            trace.note_period(flags, previous, cycle);
+        }
         for (samples, port) in input.iter_mut().zip(&self.input[..channels]) {
             *samples = port.as_slice(scope);
         }
@@ -458,7 +588,7 @@ impl<P: AudioProcess + 'static> jack::ProcessHandler for Duplex<P> {
             Timing {
                 capture_latency: frames_to_duration(capture_frames, self.render.rate),
                 playback_latency: frames_to_duration(playback_frames, self.render.rate),
-                discontinuous: discontinuous || route_gap,
+                discontinuous,
             },
         );
         Control::Continue
@@ -530,7 +660,18 @@ impl<P: AudioProcess + 'static> JackStream<P> {
             output[0].name().map_err(jack_error)?,
             output[1].name().map_err(jack_error)?,
         ];
+        let xrun_scope = XrunScope::detect();
+        let trace = (std::env::var_os("KOMPONIST_JACK_CAPTURE_TRACE").as_deref()
+            == Some(std::ffi::OsStr::new("1")))
+        .then(CaptureTrace::default);
+        if trace.is_some() {
+            eprintln!(
+                "komponist: JACK capture trace started xrun_scope={xrun_scope:?} rate={} period={} capture_ports={}",
+                params.sample_rate, params.max_frames, route.capture_channels,
+            );
+        }
         let signals = Arc::new(Signals {
+            trace,
             sample_rate: AtomicU32::new(params.sample_rate),
             period: AtomicU32::new(params.max_frames),
             ..Signals::default()
@@ -549,6 +690,7 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                     output,
                     signals: Arc::clone(&signals),
                     previous: None,
+                    xrun_scope,
                 },
             )
             .map_err(jack_error)?;
@@ -580,7 +722,7 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                 target,
                 JackDirection::Capture,
                 &graph,
-                Some(&self.signals.capture),
+                Some(&self.signals),
             );
             if self.route.capture.is_some() || target.is_some() {
                 ready &= latency.is_some();
@@ -605,6 +747,14 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         );
         if !self.signals.capture.publish(before, ready) {
             self.signals.graph_changed.store(true, Ordering::Release);
+        } else if let Some(trace) = &self.signals.trace
+            && (before & CAPTURE_READY != 0) != ready
+        {
+            trace.note(if ready {
+                TRACE_ROUTE_READY
+            } else {
+                TRACE_ROUTE_UNAVAILABLE
+            });
         }
         self.next_check = Instant::now() + ROUTE_RECHECK;
     }
@@ -633,15 +783,17 @@ impl<P: AudioProcess + 'static> JackStream<P> {
     }
 
     pub(crate) fn poll(&mut self) -> bool {
-        if self.signals.shutdown.load(Ordering::Acquire) {
-            return false;
-        }
-        if self.signals.graph_changed.swap(false, Ordering::AcqRel)
-            || Instant::now() >= self.next_check
+        let running = !self.signals.shutdown.load(Ordering::Acquire);
+        if running
+            && (self.signals.graph_changed.swap(false, Ordering::AcqRel)
+                || Instant::now() >= self.next_check)
         {
             self.reconcile();
         }
-        true
+        if let Some(trace) = &self.signals.trace {
+            trace.report(self.period(), self.sample_rate(), self.channels() != 0);
+        }
+        running
     }
 }
 
@@ -651,15 +803,15 @@ fn reconcile_port(
     target: Option<&str>,
     direction: JackDirection,
     graph: &[JackPort],
-    capture: Option<&CaptureState>,
+    signals: Option<&Signals>,
 ) -> Option<u32> {
     let target = exact_target(target, direction, graph);
     let port = client.port_by_name(local)?;
     // A client/session manager can attach to our ports. Treat the route as exclusive, so capture
     // cannot accidentally mix with another link. Only touch links on ports we own.
     let connections = port.get_connections();
-    if let Some(capture) = capture
-        && capture.snapshot() & CAPTURE_READY != 0
+    if let Some(signals) = signals
+        && signals.capture.snapshot() & CAPTURE_READY != 0
         && match target {
             Some(target) => connections.len() != 1 || connections[0] != target,
             None => !connections.is_empty(),
@@ -667,7 +819,10 @@ fn reconcile_port(
     {
         // A ready channel lost its chosen link or picked up a second link. Latch the gap
         // before repairing it, even if the server never notified us.
-        capture.changed();
+        signals.capture.changed();
+        if let Some(trace) = &signals.trace {
+            trace.note(TRACE_LINK_REPAIR);
+        }
     }
     for other in connections {
         if target != Some(other.as_str()) {
@@ -820,6 +975,37 @@ mod tests {
         assert!(!previous.missed_before(at(1, 64, 64), 48_000));
         assert!(!previous.missed_before(at(1280, 256, 256), 48_000));
         assert!(previous.missed_before(at(1152, 64, 128), 48_000));
+    }
+
+    #[test]
+    fn pipewire_driver_xrun_does_not_discard_locally_continuous_capture() {
+        let now = Instant::now();
+        let previous = Cycle {
+            first_frame: 4096,
+            frames: 64,
+            entered: now,
+        };
+        let received = Cycle {
+            first_frame: 4160,
+            frames: 64,
+            entered: now + frames_to_duration(64, 48_000),
+        };
+        let skipped = Cycle {
+            first_frame: 4224,
+            frames: 64,
+            entered: now + frames_to_duration(128, 48_000),
+        };
+        let pipewire = XrunScope::from_version(c"3.1.6.10 (using PipeWire 1.6.10)");
+        let jack = XrunScope::from_version(c"jackdmp 1.9.22");
+        let continuous = previous.missed_before(received, 48_000);
+        let missed_period = previous.missed_before(skipped, 48_000);
+        assert!(!continuous);
+        assert!(missed_period);
+        assert!(!pipewire.capture_gap(true, continuous, false));
+        assert!(jack.capture_gap(true, continuous, false));
+        assert!(pipewire.capture_gap(true, missed_period, false));
+        assert!(pipewire.capture_gap(false, missed_period, false));
+        assert!(pipewire.capture_gap(false, continuous, true));
     }
 
     #[test]

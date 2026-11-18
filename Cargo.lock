@@ -2553,6 +2553,7 @@ dependencies = [
  "assert_no_alloc",
  "cpal",
  "jack",
+ "jack-sys",
  "klang-dsp",
  "komponist-rt",
  "midir",

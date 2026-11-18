@@ -144,13 +144,17 @@ fn hardware_recording_corrects_both_latencies_and_drains_the_tail_after_stop() {
     let input: Vec<_> = (0..512)
         .flat_map(|i| [i as f32 / 1000.0, -(i as f32) / 1000.0])
         .collect();
-    let (l, r) = feed(&mut rig, &input, 6, 4, false);
-    assert!(l.iter().chain(&r).all(|v| *v == 0.0));
+    // A driver can update its reported latency while every input frame still arrives.
+    // Keep the take positioned with its initial correction through capture and drain.
+    for (samples, output, capture) in [(&input[..512], 6, 4), (&input[512..], 32, 21)] {
+        let (l, r) = feed(&mut rig, samples, output, capture, false);
+        assert!(l.iter().chain(&r).all(|v| *v == 0.0));
+    }
     rig.send(Command::Stop);
     let tail: Vec<_> = (512..576)
         .flat_map(|i| [i as f32 / 1000.0, -(i as f32) / 1000.0])
         .collect();
-    feed(&mut rig, &tail, 6, 4, false);
+    feed(&mut rig, &tail, 16, 0, false);
     let result = finished(&mut session).unwrap();
     assert_eq!(result.takes.len(), 1);
     let take = &result.takes[0];

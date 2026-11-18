@@ -855,6 +855,8 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
     let (result_tx, rx) = mpsc::sync_channel(1);
     let (control, control_rx) = mpsc::channel();
     let writer_shared = shared.clone();
+    let trace = std::env::var_os("KOMPONIST_JACK_CAPTURE_TRACE").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
     let worker = std::thread::Builder::new()
         .name("komponist-record".into())
         .spawn(move || {
@@ -928,6 +930,12 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             }
                         }
                         if output.next != chunk.at {
+                            if trace {
+                                eprintln!(
+                                    "komponist: recording trace writer-timestamp-gap track={} lap={} expected_frame={} actual_frame={}",
+                                    spec.track.0, chunk.lap, output.next, chunk.at,
+                                );
+                            }
                             failure = Some(RecordingError::Discontinuity);
                             shared.ended.store(true, Ordering::Release);
                             continue;
@@ -1086,6 +1094,13 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             }
             takes.sort_by_key(|t| (t.lap, t.track.0));
             let code = shared.failure.load(Ordering::Acquire);
+            if trace {
+                match code {
+                    2 => eprintln!("komponist: recording trace engine-input-discontinuity code=2"),
+                    3 => eprintln!("komponist: recording trace engine-input-unavailable code=3"),
+                    _ => {}
+                }
+            }
             let result = if shared.cancelled.load(Ordering::Acquire) {
                 Err(RecordingError::Cancelled)
             } else if let Some(e) = failure {

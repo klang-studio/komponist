@@ -1292,7 +1292,10 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   ports by full JACK name. Aliases are for display. Without explicit routing, the existing CPAL
   JACK backend still provides playback-only system auto-connect. With capture enabled or explicit
   routing, a native JACK client manages the routes and processes capture and playback in the same
-  server period. Automatic routes use the server's advertised default ports.
+  server period. Automatic routes use the server's advertised default ports. PipeWire-JACK's
+  graph-wide XRUN notifications update stream statistics. A missed local process period or a
+  capture-link loss still marks the input discontinuous. Set `KOMPONIST_JACK_CAPTURE_TRACE=1`
+  to report XRUN, timing, routing and recorder failure evidence on stderr outside the audio callback.
   It can run on JACK or PipeWire-JACK and does not start or configure the server. Graph changes
   are reconciled outside the process callback. Loss of a selected capture route invalidates
   input until the exact ports reconnect, while the same client continues playback.
