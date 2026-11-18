@@ -6,11 +6,36 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <random>
 
 namespace {
 constexpr std::size_t chunk = 512;
 thread_local std::uint64_t native_calls = 0;
-using Engine = signalsmith::stretch::SignalsmithStretch<float>;
+// Match the evaluated libstdc++ phase sequence. Both the default engine and the
+// conversion of its non-power-of-two range to floats vary across standard libraries.
+// Exact 24-bit samples let uniform_real_distribution convert one draw to float.
+class PhaseRandom {
+public:
+    using result_type = std::uint32_t;
+    explicit PhaseRandom(long seed) : generator(seed) {}
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return (1u << 24) - 1; }
+
+    result_type operator()() {
+        constexpr auto range = std::minstd_rand0::max() - std::minstd_rand0::min() + 1;
+        constexpr auto bucket = range / (max() + 1);
+        for (;;) {
+            const auto value = (generator() - std::minstd_rand0::min()) / bucket;
+            if (value <= max())
+                return static_cast<result_type>(value);
+        }
+    }
+
+private:
+    std::minstd_rand0 generator;
+};
+
+using Engine = signalsmith::stretch::SignalsmithStretch<float, PhaseRandom>;
 struct Stretch {
     std::uint32_t rate, channels;
     std::unique_ptr<Engine> engine;
