@@ -47,7 +47,6 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use komponist_engine::audio::StretchError;
 use komponist_engine::export::{
     BitDepth as EngineBitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB,
     Progress, export, recompile,
@@ -741,15 +740,7 @@ impl App {
                     .filter(|name| !name.trim().is_empty())
                     .map_or_else(|| clip.0.to_string(), String::clone);
                 let lang = self.lang;
-                let why = match reason {
-                    StretchError::Settings => lang.export_warp_settings(),
-                    StretchError::Input => lang.export_warp_input(),
-                    StretchError::Position => lang.export_warp_position(),
-                    StretchError::Backend => lang.export_warp_backend(),
-                    StretchError::SourceRead => lang.export_warp_source_read(),
-                    StretchError::SourceSeek => lang.export_warp_source_seek(),
-                    StretchError::SourceResample => lang.export_warp_source_resample(),
-                };
+                let why = crate::audio_error::reason(lang, reason);
                 self.set_status(lang.export_warp_failed(name, why), StatusKind::Error);
             }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),

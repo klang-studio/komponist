@@ -93,3 +93,5 @@ pub use ui_state::{FocusArea, UiState};
 #[cfg(all(test, debug_assertions))]
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+mod audio_error;

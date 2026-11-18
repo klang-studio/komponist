@@ -452,13 +452,7 @@ impl AudioEditor {
                 .filter_map(|t| t.audio.as_ref())
                 .find_map(|p| p.stretch_error(clip.id))
         }) {
-            use komponist_engine::audio::StretchError as E;
-            let reason = match error {
-                E::Settings => ctx.lang.audio_warp_settings(),
-                E::Input => ctx.lang.audio_warp_input(),
-                E::Position => ctx.lang.audio_warp_position(),
-                E::Backend => ctx.lang.audio_warp_backend(),
-            };
+            let reason = crate::audio_error::reason(ctx.lang, error);
             let message = ctx.lang.audio_warp_error(reason);
             row.add(
                 egui::Label::new(
