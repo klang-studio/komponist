@@ -1114,7 +1114,10 @@ mod tests {
             b.set(false);
         })));
         other.write_all(b"x").unwrap();
-        lp.run_for(None, Duration::from_millis(5));
+        assert!(
+            run_until(&lp, None, || calls.get() > 0),
+            "the dispatcher did not receive the fd event"
+        );
         // One callout entered the dispatcher; the fd stayed suspended inside the nested loop.
         assert_eq!(calls.get(), 1);
         let handled = handled.borrow();
