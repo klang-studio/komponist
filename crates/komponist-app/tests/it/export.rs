@@ -283,8 +283,16 @@ fn missing_audio_aborts_export_with_a_localized_status_and_restores_the_engine()
 
 #[test]
 fn a_warp_error_names_the_clip_and_localizes_the_reason() {
-    for lang in [Lang::De, Lang::En] {
-        let dir = scratch(&format!("warp-error-{lang:?}"));
+    for (case, (lang, name)) in [
+        (Lang::De, "Broken take"),
+        (Lang::En, "Broken take"),
+        (Lang::De, ""),
+        (Lang::En, "   "),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = scratch(&format!("warp-error-{case}"));
         let path = dir.join("invalid.wav");
         let mut writer = hound::WavWriter::create(
             &path,
@@ -303,7 +311,6 @@ fn a_warp_error_names_the_clip_and_localizes_the_reason() {
         let (project, track) =
             edits::add_audio_track(&Project::new("Audio"), edits::NewAudioTrack::default())
                 .unwrap();
-        let name = "Broken take";
         let (project, clip) = edits::add_clip(
             &project,
             track,
@@ -323,13 +330,20 @@ fn a_warp_error_names_the_clip_and_localizes_the_reason() {
         let mut app = app.with_lang(lang);
         app.step();
         export(&mut app, export_settings(&dir, ExportRange::Song));
-        assert_eq!(
-            status(&app),
-            (
-                lang.export_warp_failed(name, lang.export_warp_input()),
-                StatusKind::Error
+        let label = if name.trim().is_empty() {
+            clip.0.to_string()
+        } else {
+            name.to_owned()
+        };
+        let expected = match lang {
+            Lang::De => format!(
+                "Export fehlgeschlagen · Warp im Audioclip „{label}“ · Die Audiodaten enthalten ungültige Samples"
             ),
-        );
+            Lang::En => format!(
+                "Export failed · Warp in audio clip “{label}” · The audio contains invalid samples"
+            ),
+        };
+        assert_eq!(status(&app), (expected, StatusKind::Error));
         assert!(app.exported().is_empty());
         assert!(!dir.join("out/Night Drive.wav").exists());
     }

@@ -737,7 +737,9 @@ impl App {
                 let name = self
                     .project()
                     .find_clip(clip)
-                    .map_or_else(|| clip.0.to_string(), |(_, clip)| clip.name.clone());
+                    .map(|(_, clip)| &clip.name)
+                    .filter(|name| !name.trim().is_empty())
+                    .map_or_else(|| clip.0.to_string(), String::clone);
                 let lang = self.lang;
                 let why = match reason {
                     StretchError::Settings => lang.export_warp_settings(),

@@ -158,7 +158,7 @@ export-warp-position = Die Warp-Position liegt außerhalb des gültigen Bereichs
 export-warp-backend = Die Zeitdehnung ist fehlgeschlagen
 export-warp-source-read = Die Audiodatei lässt sich nicht lesen
 export-warp-source-seek = Die Position in der Audiodatei lässt sich nicht ansteuern
-export-warp-source-resample = Die Samplerate der Audiodatei lässt sich nicht umrechnen
+export-warp-source-resample = Die Abtastrate der Audiodatei lässt sich nicht umrechnen
 
 # Status: "Im Ordner zeigen" failed; `$why` is the cause.
 export-open-failed = Ordner lässt sich nicht öffnen · { $why }
