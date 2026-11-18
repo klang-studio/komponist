@@ -144,6 +144,29 @@ fn seamless_splits_keep_spectral_state_and_gain_fades_remain_after_stretching() 
 }
 
 #[test]
+fn a_real_native_frame_gap_keeps_the_warp_cut_and_source_offset() {
+    let mut s = Studio::new("warp-seam-native-gap");
+    let track = s.track();
+    let file = s.wav("source.wav", 48000, 2, 96000, sine(440.0, 48000));
+    let left = s.clip(track, &file, 0, 960, 0);
+    let right = s.clip(track, &file, 960, 960, 24000);
+    for clip in [left, right] {
+        s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
+    }
+    let joined = s.program();
+    assert!(!joined.tracks[0].audio.as_ref().unwrap().segments()[1].edge_in);
+    let continuous = play(&joined, 48000, Tick::ZERO, 48000, 512);
+    s.prop(right, edits::AudioClipProp::SourceOffset(24003));
+    let gapped = s.program();
+    let segments = gapped.tracks[0].audio.as_ref().unwrap().segments();
+    assert!(segments[0].edge_out && segments[1].edge_in);
+    let sequential = play(&gapped, 48000, Tick::ZERO, 48000, 512);
+    let located = play(&s.program(), 48000, Tick(960), 24000, 512);
+    assert_eq!(&sequential.l[24000..], &located.l);
+    assert_ne!(&sequential.l[24144..], &continuous.l[24144..]);
+}
+
+#[test]
 fn repeated_unaligned_loops_and_locates_reprime_deterministically() {
     let (mut s, _) = setup("warp-loop", 44100, 441, 180.0, 120.0);
     s.project.loop_on = true;
@@ -660,6 +683,7 @@ fn seamless_warp_splits_tolerate_native_and_timeline_frame_quantization() {
         let p = compile::build(&s.project, None, &Env(rate));
         let frames = p.tracks[0].audio.as_ref().unwrap().segments()[0].end as usize;
         let original = play(&p, rate, Tick::ZERO, frames, 1024);
+        assert!(original.l.iter().any(|s| s.abs() > 0.1), "silent case {i}");
         s.project = edits::split_clips(&s.project, &[c], Tick(137)).unwrap().0;
         let p = compile::build(&s.project, None, &Env(rate));
         let segments = p.tracks[0].audio.as_ref().unwrap().segments();

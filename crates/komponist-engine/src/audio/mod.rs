@@ -35,6 +35,7 @@ use klang_dsp::units::db_to_gain;
 use komponist_audiofile::{FilePool, PoolFile};
 use komponist_model::{
     AudioClip, CLIP_GAIN_DB_MIN, Clip, ClipContent, ClipId, EDGE_FADE_MS, TempoMap, Tick, Track,
+    WarpMap,
 };
 
 pub use ring::{RING_FRAMES, Ring};
@@ -392,6 +393,35 @@ pub(crate) fn plan_matches(previous: &AudioPlan, clips: &[Arc<Clip>], env: &Plan
             .all(|(a, b)| Arc::ptr_eq(a, b))
 }
 
+/// Keep the model coordinates during compilation so seamless Warp joins do not have to
+/// infer continuity from rounded engine frames.
+struct PlannedSegment {
+    segment: Segment,
+    clip_start: Tick,
+    clip_length: Tick,
+    warp_map: Option<WarpMap>,
+}
+
+impl PlannedSegment {
+    fn warp_continues_with(&self, next: &Self) -> bool {
+        let (Some(origin), Some(continuation)) = (self.warp_map, next.warp_map) else {
+            return false;
+        };
+        let at = next.clip_start - self.clip_start;
+        // The Native-frame boundaries must match the first piece's phase, as they do for a
+        // model split. Matching the pair alone could accumulate independent rounding errors.
+        [(at, Tick::ZERO), (at + next.clip_length, next.clip_length)]
+            .into_iter()
+            .all(|(left, right)| {
+                origin
+                    .source_frame(left)
+                    .ok()
+                    .zip(continuation.source_frame(right).ok())
+                    .is_some_and(|(left, right)| left == right)
+            })
+    }
+}
+
 /// The plan of audio track `track`: one segment per unmuted clip with frames, the files from
 /// `cache`, the ring of `previous` if there is one.
 pub(crate) fn build_plan(
@@ -404,7 +434,7 @@ pub(crate) fn build_plan(
     let map = &env.tempo;
     let frame = |tick: Tick| map.tick_to_sample(tick, rate);
     let mut sources: Vec<Arc<ClipSource>> = Vec::new();
-    let mut segments: Vec<Segment> = Vec::new();
+    let mut planned = Vec::new();
     for clip in track.clips.iter().filter(|c| !c.mute) {
         let ClipContent::Audio(audio) = &clip.content else {
             continue;
@@ -421,26 +451,27 @@ pub(crate) fn build_plan(
                 sources.len() - 1
             }
         };
-        segments.push(segment(
-            clip,
-            audio,
-            index as u32,
-            (start, end),
-            env,
-            &frame,
-        ));
+        planned.push(PlannedSegment {
+            segment: segment(clip, audio, index as u32, (start, end), env, &frame),
+            clip_start: clip.start,
+            clip_length: clip.length,
+            warp_map: audio.warp_map(audio.active_take).ok(),
+        });
     }
-    segments.sort_by_key(|s| s.start);
+    planned.sort_by_key(|s| s.segment.start);
     // The model keeps audio clips apart; a hand-made track that overlaps loses the earlier one's
-    // end (the later clip starts, so it wins).
-    for i in 1..segments.len() {
-        let next = segments[i].start;
-        if segments[i - 1].end > next {
-            segments[i - 1].end = next;
+    // end (the later clip starts, so it wins). It cannot join with its now mismatched Warp map.
+    for i in 1..planned.len() {
+        let next = planned[i].segment.start;
+        let prev = &mut planned[i - 1];
+        if prev.segment.end > next {
+            prev.segment.end = next;
+            prev.warp_map = None;
         }
     }
-    segments.retain(|s| s.end > s.start);
-    join_seamless(&mut segments, &sources, env.rate);
+    planned.retain(|s| !s.segment.is_empty());
+    join_seamless(&mut planned);
+    let segments: Vec<_> = planned.into_iter().map(|s| s.segment).collect();
     let edge = (EDGE_FADE_MS / 1000.0 * rate).round().max(1.0) as u32;
     AudioPlan {
         id: NEXT_PLAN.fetch_add(1, Ordering::Relaxed),
@@ -501,40 +532,42 @@ fn segment(
     }
 }
 
-/// Clears the edge fades between two segments that are one continuous stretch of the same file
-/// (a clip that was split in two): same file, speed and gain, no clip fade at the cut, the second
-/// starting where the first stops. Warp includes native-frame and song-frame quantization;
-/// the legacy paths retain their one-engine-frame tolerance.
-fn join_seamless(segments: &mut [Segment], sources: &[Arc<ClipSource>], rate: u32) {
-    for i in 1..segments.len() {
-        let (a, b) = (&segments[i - 1], &segments[i]);
-        let same_file = Arc::ptr_eq(&sources[a.source as usize], &sources[b.source as usize]);
-        let played = (a.len() as f64 * a.warp.map_or(a.speed, |w| 1.0 / w.ratio)).round() as i64;
-        let tolerance = a.warp.map_or(1, |w| {
-            // Model splits quantize to native source frames; timeline endpoints quantize
-            // independently at the engine rate. At large SRC ratios a native frame spans
-            // many engine frames, and fast compression magnifies a timeline-frame error.
-            i128::from(rate.div_ceil(sources[a.source as usize].link.sample_rate))
-                + (1.0 / w.ratio).ceil() as i128
-                + 1
-        });
-        let distance = (i128::from(b.x0) - i128::from(a.x0) - i128::from(played)).abs();
-        let seamless = same_file
+/// Carries Warp history only across exact model-space joins. Fixed and Re-Pitch
+/// retain their one-engine-frame tolerance.
+fn join_seamless(planned: &mut [PlannedSegment]) {
+    let mut chain = 0;
+    for i in 1..planned.len() {
+        let (prev, next) = (&planned[i - 1], &planned[i]);
+        let (a, b) = (&prev.segment, &next.segment);
+        let continuous = match (a.warp, b.warp) {
+            (Some(a), Some(b)) => {
+                a.ratio == b.ratio
+                    && prev.clip_start + prev.clip_length == next.clip_start
+                    && prev.warp_continues_with(next)
+                    && planned[chain].warp_continues_with(next)
+            }
+            (None, None) => {
+                let played = (a.len() as f64 * a.speed).round() as i64;
+                (i128::from(b.x0) - i128::from(a.x0) - i128::from(played)).abs() <= 1
+            }
+            _ => false,
+        };
+        let seamless = a.source == b.source
             && a.end == b.start
             && a.speed == b.speed
-            && a.warp.map(|w| w.ratio) == b.warp.map(|w| w.ratio)
             && a.gain == b.gain
             && a.fade_out == 0
             && b.fade_in == 0
-            && distance <= tolerance;
+            && continuous;
         if seamless {
-            segments[i - 1].edge_out = false;
-            segments[i].edge_in = false;
-            if let Some(w) = segments[i - 1].warp
-                && let Some(next) = &mut segments[i].warp
-            {
-                next.chain_start = w.chain_start;
+            let origin = planned[chain].segment.start;
+            planned[i - 1].segment.edge_out = false;
+            planned[i].segment.edge_in = false;
+            if let Some(next) = &mut planned[i].segment.warp {
+                next.chain_start = origin;
             }
+        } else {
+            chain = i;
         }
     }
 }
