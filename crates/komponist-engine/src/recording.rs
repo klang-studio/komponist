@@ -1,7 +1,7 @@
 //! Bounded audio capture: fixed chunks cross per-track SPSC queues; a worker alone writes WAVs.
 //! Preparation and session polling are non-RT. Engine jobs never allocate, lock, perform IO, or
 //! destroy a recorder. The command/garbage protocol returns retired recorders to the UI thread.
-use komponist_model::{AudioInput, TempoMap, Tick, TrackId};
+use komponist_model::{AudioInput, TempoMap, Tick, TickRange, TrackId};
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -68,6 +68,8 @@ pub struct RecordedTake {
     pub frames: u64,
     /// Common cycle window while a checkpoint is still a growing prefix; final results are padded.
     pub window_frames: Option<u64>,
+    /// Exact end tick of the loop for a cycle take.
+    pub window_end: Option<Tick>,
     /// Native file rate.
     pub sample_rate: u32,
     /// One or two channels.
@@ -152,13 +154,21 @@ pub struct RecordingProgress {
     /// 4096 buckets. Here each bucket's `samples` is its duration in frames.
     pub channel_waveforms: Vec<Vec<RecordingPeak>>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CycleWindow {
+    lo: i64,
+    hi: i64,
+    ticks: TickRange,
+    file_frames: u64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Chunk {
     frames: usize,
     at: i64,
     start: Tick,
     lap: u32,
-    window: Option<(i64, i64, Tick)>,
+    window: Option<CycleWindow>,
 }
 impl Chunk {
     fn new(at: i64, start: Tick, lap: u32) -> Self {
@@ -506,7 +516,22 @@ impl Recorder {
         let writer = unsafe { &mut *lane.writer.get() };
         let channels = usize::from(lane.spec.channels);
         let first = self.start.unwrap_or(window.at);
-        let has_lead_in = window.lp.is_some_and(|(lo, _)| first < lo);
+        let cycle = window.lp.map(|(lo, hi)| {
+            let ticks = window.loop_range;
+            // The transport rounds each boundary to the nearest frame. Pad the WAV by
+            // at most one extra frame when the floored source duration would lose a tick.
+            let minimum = window
+                .map
+                .tick_to_samples(ticks.len(), f64::from(self.rate))
+                .ceil() as u64;
+            CycleWindow {
+                lo,
+                hi,
+                ticks,
+                file_frames: ((hi - lo) as u64).max(minimum),
+            }
+        });
+        let has_lead_in = cycle.is_some_and(|cycle| first < cycle.lo);
         let mut chunk = Chunk::new(0, Tick::ZERO, window.lap);
         for (i, (&l, &r)) in l.iter().zip(r).enumerate() {
             let mut at = window.at.saturating_add(i as i64);
@@ -531,7 +556,7 @@ impl Recorder {
             }
             // A take that begins before the loop keeps its lead-in as a linear clip.
             // Assign a separate lap to the first cycle after correcting for latency.
-            let cycle = window.lp.filter(|&(lo, _)| at >= lo);
+            let cycle = cycle.filter(|cycle| at >= cycle.lo);
             if has_lead_in && cycle.is_some() {
                 lap = lap.saturating_add(1);
             }
@@ -545,7 +570,7 @@ impl Recorder {
                 chunk.at = at;
                 chunk.start = window.map.sample_to_tick(at, f64::from(self.rate));
                 chunk.lap = lap;
-                chunk.window = cycle.map(|(lo, hi)| (lo, hi, window.loop_start));
+                chunk.window = cycle;
             }
             let sample = |x: f32| if x.is_finite() { x } else { 0.0 };
             let left = sample(l);
@@ -587,7 +612,7 @@ pub(crate) struct CaptureWindow {
     pub(crate) at: i64,
     pub(crate) lap: u32,
     pub(crate) lp: Option<(i64, i64)>,
-    pub(crate) loop_start: Tick,
+    pub(crate) loop_range: TickRange,
     pub(crate) map: TempoMap,
 }
 type Writer = hound::WavWriter<BufWriter<File>>;
@@ -597,7 +622,7 @@ struct Output {
     frames: u64,
     next: i64,
     start: Tick,
-    window: Option<(i64, i64)>,
+    window: Option<CycleWindow>,
     closed: bool,
 }
 fn create(path: PathBuf, config: &RecordingConfig, channels: u16) -> io::Result<Output> {
@@ -631,15 +656,15 @@ fn create(path: PathBuf, config: &RecordingConfig, channels: u16) -> io::Result<
     })
 }
 fn starts_next_pass(previous_lap: u32, previous: &Output, chunk: &Chunk) -> bool {
-    let Some((lo, hi, _)) = chunk.window else {
+    let Some(window) = chunk.window else {
         return false;
     };
-    if previous_lap.checked_add(1) != Some(chunk.lap) || chunk.at != lo {
+    if previous_lap.checked_add(1) != Some(chunk.lap) || chunk.at != window.lo {
         return false;
     }
     match previous.window {
-        None => previous.next == lo,
-        Some((start, end)) => start == lo && end == hi && previous.next == hi,
+        None => previous.next == window.lo,
+        Some(prior) => prior == window && previous.next == window.hi,
     }
 }
 
@@ -680,8 +705,12 @@ fn pad_output(
     Ok(())
 }
 fn close_output(output: &mut Output, format: RecordingFormat) -> Result<(), RecordingError> {
-    if let Some((_, hi)) = output.window {
-        pad_output(output, hi.saturating_sub(output.next).max(0) as u64, format)?;
+    if let Some(window) = output.window {
+        pad_output(
+            output,
+            window.file_frames.saturating_sub(output.frames),
+            format,
+        )?;
     }
     if let Some(writer) = output.writer.take() {
         writer
@@ -729,7 +758,8 @@ fn snapshot_outputs(all: &[BTreeMap<u32, Output>], config: &RecordingConfig) -> 
                     track: config.tracks[i].track,
                     path: o.path.clone(),
                     frames: o.frames,
-                    window_frames: o.window.map(|(lo, hi)| (hi - lo) as u64),
+                    window_frames: o.window.map(|window| window.file_frames),
+                    window_end: o.window.map(|window| window.ticks.end),
                     sample_rate: config.sample_rate,
                     channels: config.tracks[i].channels,
                     start: o.start,
@@ -1086,12 +1116,15 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                         }
                         let output = all[i].get_mut(&chunk.lap).expect("created pass exists");
                         if output.frames == 0 {
-                            if let Some((lo, hi, start)) = chunk.window {
-                                output.start = start;
-                                output.next = lo;
-                                output.window = Some((lo, hi));
-                                if let Err(e) =
-                                    pad_output(output, (chunk.at - lo).max(0) as u64, config.format)
+                            if let Some(window) = chunk.window {
+                                output.start = window.ticks.start;
+                                output.next = window.lo;
+                                output.window = Some(window);
+                                if let Err(e) = pad_output(
+                                    output,
+                                    (chunk.at - window.lo).max(0) as u64,
+                                    config.format,
+                                )
                                 {
                                     failure = Some(e);
                                     shared.ended.store(true, Ordering::Release);
@@ -1227,14 +1260,15 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 for (lap, mut output) in passes {
                     if output.frames > 0
                         && !shared.cancelled.load(Ordering::Acquire)
-                        && let Some((_, hi)) = output.window
+                        && let Some(window) = output.window
                     {
-                        let remaining = hi.saturating_sub(output.next).max(0) as u64;
+                        let remaining = window.file_frames.saturating_sub(output.frames);
                         if let Err(e) = pad_output(&mut output, remaining, config.format) {
                             failure = Some(e);
                         }
                     }
-                    let window_frames = output.window.map(|(lo, hi)| (hi - lo) as u64);
+                    let window_frames = output.window.map(|window| window.file_frames);
+                    let window_end = output.window.map(|window| window.ticks.end);
                     let Output {
                         writer,
                         path,
@@ -1255,6 +1289,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             path,
                             frames,
                             window_frames,
+                            window_end,
                             sample_rate: config.sample_rate,
                             channels: config.tracks[i].channels,
                             start,
@@ -1540,7 +1575,8 @@ mod tests {
 
     #[test]
     fn a_stalled_writer_keeps_64_frame_capture_loop_overlays_and_relocated_pcm24() {
-        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        // 32 frames per tick makes both synthetic sample boundaries exact ticks.
+        let map = TempoMap::constant(Tempo::new(93.75), Meter::FOUR_FOUR);
         let (lo, hi) = (1280_i64, 3200_i64);
         let span = hi - lo;
         for track_count in [1, 2] {
@@ -1560,7 +1596,10 @@ mod tests {
                     at,
                     lap,
                     lp: Some((lo, hi)),
-                    loop_start: map.sample_to_tick(lo, 48_000.0),
+                    loop_range: TickRange::new(
+                        map.sample_to_tick(lo, 48_000.0),
+                        map.sample_to_tick(hi, 48_000.0),
+                    ),
                     map,
                 };
                 assert_no_alloc::assert_no_alloc(|| {
@@ -1645,7 +1684,7 @@ mod tests {
                         at: (i * PERIOD) as i64,
                         lap: 0,
                         lp: None,
-                        loop_start: Tick::ZERO,
+                        loop_range: TickRange::default(),
                         map,
                     },
                 );
@@ -1673,20 +1712,23 @@ mod tests {
         for (first, next, lap) in [(0, 144, 0), (128, 128, 1)] {
             let (_directory, recorder, mut session) = stalled_writer_fixture(1);
             let stalled = session.shared.progress[0].wave.lock().unwrap();
-            let loop_start = map.sample_to_tick(128, 48_000.0);
+            let loop_range = TickRange::new(
+                map.sample_to_tick(128, 48_000.0),
+                map.sample_to_tick(256, 48_000.0),
+            );
             for window in [
                 CaptureWindow {
                     at: first,
                     lap: 0,
                     lp,
-                    loop_start,
+                    loop_range,
                     map,
                 },
                 CaptureWindow {
                     at: next,
                     lap,
                     lp,
-                    loop_start,
+                    loop_range,
                     map,
                 },
             ] {
@@ -1711,11 +1753,13 @@ mod tests {
     }
 
     #[test]
-    fn a_cycle_take_keeps_the_exact_loop_start_tick() {
+    fn a_cycle_take_keeps_exact_loop_ticks_and_pads_to_the_required_frame_count() {
         let map = TempoMap::constant(Tempo::new(122.0), Meter::FOUR_FOUR);
-        let loop_start = Tick(3840);
-        let at = map.tick_to_sample(loop_start, 48_000.0);
+        let loop_range = TickRange::new(Tick(3840), Tick(7680));
+        let at = map.tick_to_sample(loop_range.start, 48_000.0);
+        let end = map.tick_to_sample(loop_range.end, 48_000.0);
         assert_eq!(map.sample_to_tick(at, 48_000.0), Tick(3839));
+        assert_eq!(end - at, 94_426);
 
         let (_directory, mut recorder, mut session) = stalled_writer_fixture(1);
         recorder.start = Some(at);
@@ -1726,18 +1770,21 @@ mod tests {
             CaptureWindow {
                 at,
                 lap: 0,
-                lp: Some((at, at + 512)),
-                loop_start,
+                lp: Some((at, end)),
+                loop_range,
                 map,
             },
         );
-        assert_eq!(session.checkpoint().unwrap()[0].start, loop_start);
-        assert_eq!(session.progress()[0].start, loop_start);
+        let checkpoint = session.checkpoint().unwrap();
+        assert_eq!(checkpoint[0].start, loop_range.start);
+        assert_eq!(checkpoint[0].window_end, Some(loop_range.end));
+        assert_eq!(checkpoint[0].window_frames, Some(94_427));
+        assert_eq!(session.progress()[0].start, loop_range.start);
         recorder.finish();
-        assert_eq!(
-            completed_session(&mut session).unwrap().takes[0].start,
-            loop_start
-        );
+        let result = completed_session(&mut session).unwrap();
+        assert_eq!(result.takes[0].start, loop_range.start);
+        assert_eq!(result.takes[0].window_end, Some(loop_range.end));
+        assert_pcm24(&result.takes[0].path, 1, 94_427, PERIOD as u64);
     }
 
     #[test]

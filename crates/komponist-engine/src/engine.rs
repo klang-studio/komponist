@@ -1115,12 +1115,13 @@ impl TrackJobs<'_> {
                 correction = self.capture_timing.correction(hw);
                 if available {
                     let [left_delay, right_delay] = if hw.stereo {
-                        if remaining(correction) != 0 {
-                            // Align with the same timing that places the samples in the take.
-                            self.capture_timing.stereo_delays(first)
-                        } else {
-                            self.audio.stereo_delays(first)
-                        }
+                        let delays = self.audio.stereo_delays(first);
+                        // A new relative delay would skip or repeat samples in one leg of the
+                        // take. End it at the intact prefix. Monitoring follows the current
+                        // alignment, and a common latency shift keeps the take continuous.
+                        capture_gap |= remaining(correction) != 0
+                            && delays != self.capture_timing.stereo_delays(first);
+                        delays
                     } else {
                         [0; 2]
                     };
@@ -2037,7 +2038,7 @@ impl Core {
                     lap: tail.lap,
                     lp: tail.cycle,
                     map: song.map,
-                    loop_start: self.song.loop_range.start,
+                    loop_range: song.loop_range,
                 },
                 (tail.left as usize).min(n),
                 Some(tail.total - tail.left),
@@ -2052,7 +2053,7 @@ impl Core {
                         .as_ref()
                         .and_then(|rec| rec.cycle_window(loop_samples)),
                     map: song.map,
-                    loop_start: self.song.loop_range.start,
+                    loop_range: song.loop_range,
                 },
                 n,
                 None,

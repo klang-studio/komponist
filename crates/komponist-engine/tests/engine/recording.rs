@@ -800,7 +800,11 @@ fn differently_delayed_jack_stereo_legs_share_aligned_samples_and_a_stop_tail() 
                 latency: 256,
                 discontinuous: false,
                 routes: Some(AudioInputRoutes {
-                    latencies: if offset < 256 { &[64, 256] } else { &[64, 320] },
+                    latencies: if offset < 256 {
+                        &[64, 256]
+                    } else {
+                        &[128, 320]
+                    },
                     available: 3,
                     discontinuous: 0,
                     history: &history,
@@ -820,6 +824,67 @@ fn differently_delayed_jack_stereo_legs_share_aligned_samples_and_a_stop_tail() 
         .collect();
     for (i, frame) in captured.as_chunks::<2>().0.iter().enumerate() {
         assert_eq!(*frame, [i as f32 / 1024.0; 2]);
+    }
+}
+
+#[test]
+fn changed_jack_stereo_skew_ends_the_take_with_only_the_aligned_prefix() {
+    for change_at in [384, 576] {
+        let (project, track) = project(MonitorMode::Off, true);
+        let (scratch, rec, mut session) = prepare(&project, &[track], RecordingFormat::Float32);
+        let mut rig = Rig::new(RATE, 64);
+        rig.set_program(&compile::build(&project, None, &NoEnv));
+        rig.send(Command::SetRecorder(rec));
+        rig.send(Command::Record { from: Tick::ZERO });
+        let source = |first: i32, end, [left, right]: [i32; 2]| {
+            (first..end)
+                .flat_map(|i| [(i - left) as f32 / 1024.0, (i - right) as f32 / 1024.0])
+                .collect::<Vec<_>>()
+        };
+        for offset in (0..=change_at).step_by(64) {
+            if offset == 512 {
+                rig.send(Command::Stop);
+            }
+            let latencies = if offset < change_at {
+                [64, 256]
+            } else {
+                [256, 64]
+            };
+            let data = source(offset, offset + 64, latencies.map(|value| value as i32));
+            let history = source(offset - 192, offset, [64, 256]);
+            feed_routed(
+                &mut rig,
+                0,
+                &AudioInputBuffer {
+                    data: &data,
+                    channels: 2,
+                    latency: 256,
+                    discontinuous: false,
+                    routes: Some(AudioInputRoutes {
+                        latencies: &latencies,
+                        available: 3,
+                        discontinuous: 0,
+                        history: &history,
+                        history_cursor: 0,
+                        history_valid: &[192; 2],
+                    }),
+                },
+            );
+        }
+        assert_eq!(
+            finished(&mut session).unwrap_err(),
+            RecordingError::Discontinuity
+        );
+        let files: Vec<_> = std::fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        let wav = hound::WavReader::open(&files[0]).unwrap();
+        assert_eq!(wav.duration(), (change_at - 256) as u32);
+        for (i, sample) in wav.into_samples::<f32>().enumerate() {
+            assert_eq!(sample.unwrap(), (i / 2) as f32 / 1024.0);
+        }
     }
 }
 

@@ -274,6 +274,7 @@ mod tests {
             path: path.clone(),
             frames: 64,
             window_frames: Some(128),
+            window_end: None,
             sample_rate: 48_000,
             channels: 1,
             start: komponist_model::Tick::ZERO,

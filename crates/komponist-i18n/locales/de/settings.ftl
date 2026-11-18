@@ -142,6 +142,7 @@ settings-capture-float32 = 32 bit Float WAV
 
 settings-audio-driver-change-recording = Beende die Aufnahme, bevor du den Audiotreiber änderst.
 settings-jack-playback-change-recording = Beende die Aufnahme, bevor du die JACK-Ausgänge änderst.
+settings-jack-reset-output = JACK-Standardausgänge verwenden
 settings-jack-playback-left = Master links
 settings-jack-playback-right = Master rechts
 settings-jack-automatic = Automatisch

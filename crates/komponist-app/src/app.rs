@@ -2851,7 +2851,11 @@ impl App {
     fn settings_action(&mut self, action: SettingsAction) {
         let changes_driver = matches!(&action, SettingsAction::SetAudio(config)
             if config.host != self.settings.audio.host);
-        if changes_driver && (self.audio_recording().is_some() || self.recording.is_some()) {
+        if changes_driver
+            && (self.shell.take_expected
+                || self.audio_recording().is_some()
+                || self.recording.is_some())
+        {
             self.set_status(
                 self.lang.settings_audio_driver_change_recording(),
                 StatusKind::Error,
@@ -2866,7 +2870,10 @@ impl App {
         ) || matches!(&action, SettingsAction::SetAudio(config)
             if config.jack_routes.capture != self.settings.audio.jack_routes.capture);
         let changes_jack_output = matches!(&action, SettingsAction::SetAudio(config)
-            if config.jack_routes.playback != self.settings.audio.jack_routes.playback);
+            if config.jack_routes.playback != self.settings.audio.jack_routes.playback
+                || (config.host == komponist_audio::HostKind::Jack
+                    && (config.device != self.settings.audio.device
+                        || config.device_id != self.settings.audio.device_id)));
         if self.audio_recording().is_some() {
             let message = if changes_input {
                 Some(self.lang.audio_input_change_recording())
@@ -3256,6 +3263,25 @@ mod tests {
         app.cancel_count_in();
         app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
         assert!(app.recording().is_none());
+    }
+
+    #[test]
+    fn an_audio_driver_change_is_blocked_before_the_midi_take_event() {
+        let mut app = recording_app();
+        let old = app.settings.audio.clone();
+        let mut next = old.clone();
+        next.host = komponist_audio::HostKind::Jack;
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.shell.take_expected);
+        assert!(app.audio_recording().is_none() && app.recording().is_none());
+        app.dispatch(Action::Settings(SettingsAction::SetAudio(next)));
+        assert_eq!(app.settings.audio, old);
+        assert_eq!(
+            app.ui.status.as_ref().unwrap().text,
+            app.lang.settings_audio_driver_change_recording()
+        );
+        app.cancel_count_in();
+        assert!(!app.shell.take_expected);
     }
 
     #[test]

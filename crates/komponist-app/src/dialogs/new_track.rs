@@ -92,6 +92,20 @@ struct InputChoice {
     detail: Option<String>,
 }
 
+fn jack_input_id(
+    sources: &[komponist_audio::JackCaptureChannel],
+    input: HardwareInput,
+) -> Option<String> {
+    let slot = usize::from(input.first);
+    let first = &sources.get(slot)?.port.name;
+    let second = if input.stereo {
+        Some(&sources.get(slot + 1)?.port.name)
+    } else {
+        None
+    };
+    Some(format!("jack:{first:?}:{second:?}"))
+}
+
 fn track_input_items(
     project: &Project,
     lang: Lang,
@@ -123,19 +137,17 @@ fn track_input_items(
         .into_iter()
         .zip(groups)
         .flat_map(|(heading, group)| {
-            group.into_iter().enumerate().map(move |(index, source)| {
-                let slot = usize::from(source.input.first);
-                let first = &jack[slot].port.name;
-                let second = source.input.stereo.then(|| &jack[slot + 1].port.name);
-                InputChoice {
+            group
+                .into_iter()
+                .enumerate()
+                .map(move |(index, source)| InputChoice {
                     input: AudioInput::Hardware(source.input),
-                    id: Some(format!("jack:{first:?}:{second:?}")),
+                    id: jack_input_id(jack, source.input),
                     label: source.label(lang),
                     enabled: source.available,
                     heading: (index == 0).then_some(heading),
                     detail: source.detail,
-                }
-            })
+                })
         });
         choices.splice(1..1, named);
         if let Some(bus) = choices
@@ -190,6 +202,8 @@ pub struct State {
     pub instrument: Option<PluginRef>,
     /// Input chosen for new audio tracks.
     pub input: AudioInput,
+    /// Canonical JACK source selected for the current hardware slot.
+    jack_input: Option<String>,
     /// Configured capture channel count; zero on the null backend.
     pub available_input_channels: u16,
     /// The search text.
@@ -213,6 +227,7 @@ impl State {
             kind: 0,
             instrument,
             input: AudioInput::None,
+            jack_input: None,
             available_input_channels: 0,
             query: String::new(),
             name: String::new(),
@@ -230,18 +245,36 @@ impl State {
     ) {
         let channels = engine.audio_input_channels();
         self.available_input_channels = channels;
-        self.input = match engine.jack_capture_sources() {
-            Some(sources) => first_unused_jack_input(project, channels, sources),
-            None => first_unused_input(project, channels),
+        let sources = engine.jack_capture_sources();
+        let input = sources.map_or_else(
+            || first_unused_input(project, channels),
+            |sources| first_unused_jack_input(project, channels, sources),
+        );
+        self.select_input(input, sources);
+    }
+
+    fn select_input(
+        &mut self,
+        input: AudioInput,
+        sources: Option<&[komponist_audio::JackCaptureChannel]>,
+    ) {
+        self.input = input;
+        self.jack_input = match input {
+            AudioInput::Hardware(input) => {
+                sources.and_then(|sources| jack_input_id(sources, input))
+            }
+            _ => None,
         };
     }
 
     fn revalidate_jack_input(&mut self, engine: &crate::engine_sync::EngineSync) {
-        if engine.jack_capture_sources().is_some()
-            && let AudioInput::Hardware(input) = self.input
-            && !engine.hardware_input_available(input)
+        let sources = engine.jack_capture_sources();
+        if let AudioInput::Hardware(input) = self.input
+            && (sources.is_some() || self.jack_input.is_some())
+            && (self.jack_input != sources.and_then(|sources| jack_input_id(sources, input))
+                || !engine.hardware_input_available(input))
         {
-            self.input = AudioInput::None;
+            self.select_input(AudioInput::None, sources);
         }
     }
 
@@ -489,7 +522,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                             ui.add(dropdown)
                         };
                         if response.changed() {
-                            s.input = choices[selected].input;
+                            s.select_input(choices[selected].input, jack_capture_sources);
                         }
                         if jack_capture_sources.is_some()
                             && matches!(choices[selected].input, AudioInput::Hardware(_))

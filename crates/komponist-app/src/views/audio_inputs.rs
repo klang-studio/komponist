@@ -307,7 +307,7 @@ pub fn input_button(
             floating::close(ui.ctx(), popup)
         } else {
             ui.ctx()
-                .data_mut(|data| data.remove::<usize>(popup.with("source")));
+                .data_mut(|data| data.remove::<ChooserSource>(popup.with("source")));
             refresh_inventory(ui);
             floating::open(ui.ctx(), popup)
         }
@@ -990,6 +990,28 @@ mod tests {
                     .value()
                     .as_deref(),
                 Some(EXTRA)
+            );
+
+            h.state_mut()
+                .engine_mut()
+                .set_test_jack_capture_sources(sources.clone());
+            h.get_by_role_and_label(Role::ComboBox, lang.new_track_input())
+                .click();
+            h.run_steps(3);
+            h.get_by_role_and_label(Role::ListBoxOption, RIGHT).click();
+            h.run_steps(3);
+            let mut replaced = sources.clone();
+            replaced[1].port.name = "DI:out".into();
+            h.state_mut()
+                .engine_mut()
+                .set_test_jack_capture_sources(replaced);
+            h.run_steps(3);
+            assert_eq!(
+                h.get_by_role_and_label(Role::ComboBox, lang.new_track_input())
+                    .accesskit_node()
+                    .value()
+                    .as_deref(),
+                Some(lang.new_track_no_input())
             );
 
             h.state_mut()

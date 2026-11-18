@@ -4,7 +4,7 @@ mod active;
 
 use self::active::ActiveClient;
 use std::ffi::{CStr, c_char};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -318,6 +318,7 @@ struct Signals {
     shutdown: AtomicBool,
     graph_changed: AtomicBool,
     capture: Vec<CaptureState>,
+    capture_revision: AtomicU64,
     xrun: AtomicBool,
     trace: Option<CaptureTrace>,
     sample_rate: AtomicU32,
@@ -590,6 +591,19 @@ impl Default for CapturePeriod {
     }
 }
 
+impl CapturePeriod {
+    // Keep the last whole latency update if this callback overlapped the control thread's
+    // publication. Never restore a lane that a graph notification just made unavailable.
+    fn use_committed_timing(&mut self, before: u64, after: u64, committed: &mut Self) {
+        if before == after && before.is_multiple_of(2) {
+            *committed = *self;
+        } else {
+            self.available &= committed.available;
+            self.latencies = committed.latencies;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Timing {
     playback_latency: Duration,
@@ -602,6 +616,7 @@ struct Duplex<P: AudioProcess> {
     output: [Port<AudioOut>; 2],
     signals: Arc<Signals>,
     previous: Option<Cycle>,
+    committed_capture: CapturePeriod,
     xrun_scope: XrunScope,
 }
 
@@ -616,17 +631,28 @@ struct Cycle {
 impl Cycle {
     fn missed_before(self, current: Self, rate: u32) -> bool {
         let advance = current.first_frame.wrapping_sub(self.first_frame);
-        if advance <= self.frames
-            || advance > rate
-            || current.frames == 0
-            || !(advance - self.frames).is_multiple_of(current.frames)
-        {
+        if advance <= self.frames || advance > rate || self.frames == 0 || current.frames == 0 {
             return false;
         }
-        // Use the server's cycle clock when available. Unlike the process entry time, it is
-        // unaffected by the previous callback waking up late. A driver handover can still
-        // rebase frame time, so require corroboration in the monotonic clock domain.
-        let (elapsed, tolerance) = match self.scheduled.zip(current.scheduled) {
+        let skipped = advance - self.frames;
+        let scheduled = self.scheduled.zip(current.scheduled);
+        // Across a resize a skipped cycle may be of either size. Use the smaller quantum to
+        // distinguish a full missed period from a clock rebase, and require corroboration from
+        // the two scheduled starts (entry times can jitter across the buffer-size callback).
+        if let Some((before, after)) = scheduled
+            && self.frames != current.frames
+        {
+            let shorter = self.frames.min(current.frames);
+            let elapsed = Duration::from_micros(after.saturating_sub(before));
+            let expected = frames_to_duration(u64::from(advance), rate);
+            return skipped >= shorter
+                && elapsed.abs_diff(expected) <= frames_to_duration(u64::from(shorter / 2), rate);
+        }
+        if !skipped.is_multiple_of(current.frames) {
+            return false;
+        }
+        // Scheduled starts are unaffected by the previous callback waking up late.
+        let (elapsed, tolerance) = match scheduled {
             Some((before, after)) => (
                 Duration::from_micros(after.saturating_sub(before)),
                 current.frames / 2,
@@ -676,6 +702,7 @@ impl<P: AudioProcess> Duplex<P> {
             previous.is_some_and(|before| before.missed_before(cycle, self.render.rate));
         let mut input = [&[][..]; MAX_INPUT_CHANNELS];
         let mut capture = CapturePeriod::default();
+        let revision = self.signals.capture_revision.load(Ordering::Acquire);
         for (index, (port, lane)) in self.input.iter().zip(&self.signals.capture).enumerate() {
             let (latency, route_gap) = lane.take_period();
             let bit = 1 << index;
@@ -688,6 +715,12 @@ impl<P: AudioProcess> Duplex<P> {
                 capture.discontinuous |= bit;
             }
         }
+        fence(Ordering::Acquire);
+        capture.use_committed_timing(
+            revision,
+            self.signals.capture_revision.load(Ordering::Relaxed),
+            &mut self.committed_capture,
+        );
         let discontinuous =
             self.xrun_scope
                 .capture_gap(xrun && previous.is_some(), missed_period, false);
@@ -725,6 +758,7 @@ pub(crate) struct JackStream<P: AudioProcess + 'static> {
     route: Route,
     capture: Vec<String>,
     capture_sources: Vec<JackCaptureChannel>,
+    managed_capture: Vec<Option<String>>,
     playback: [String; 2],
     playback_connected: [bool; 2],
     managed_playback: [Option<String>; 2],
@@ -821,15 +855,18 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                 output,
                 signals: Arc::clone(&signals),
                 previous: None,
+                committed_capture: CapturePeriod::default(),
                 xrun_scope,
             },
         )?;
+        let managed_capture = vec![None; route.capture_channels];
         let mut stream = Self {
             client,
             signals,
             route,
             capture,
             capture_sources: Vec::new(),
+            managed_capture,
             playback,
             playback_connected: [false; 2],
             managed_playback: [None, None],
@@ -845,46 +882,69 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         let graph = graph(client);
         let desired = self.route.targets(&default_targets(client, &self.route));
         self.capture_sources.clear();
+        let mut pending = [(0, None); MAX_INPUT_CHANNELS];
         for (index, (local, lane)) in self.capture.iter().zip(&self.signals.capture).enumerate() {
             let target = desired.capture.get(index).map(String::as_str);
-            let manual = self.route.capture.is_none() && target.is_none();
-            let local_port = manual.then(|| canonical_port(client, local)).flatten();
-            let patched = if manual {
-                local_port.as_ref().and_then(|port| {
-                    let connections = port.get_connections();
-                    single_connection(&connections).map(str::to_owned)
-                })
-            } else {
-                None
+            let automatic = self.route.capture.is_none();
+            let mut before = lane.snapshot();
+            let invalidate = |before: &mut u64| {
+                if *before & CAPTURE_READY != 0 {
+                    lane.changed();
+                    *before = lane.snapshot();
+                    if let Some(trace) = &self.signals.trace {
+                        trace.note(TRACE_LINK_REPAIR);
+                    }
+                }
             };
-            let target = target.or(patched.as_deref());
+            let local_port = automatic.then(|| canonical_port(client, local)).flatten();
+            let connections = local_port.as_ref().map(|port| {
+                let default = canonical_peer(client, target, JackDirection::Capture, &graph);
+                automatic_capture(
+                    client,
+                    local,
+                    port,
+                    default.as_ref(),
+                    &mut self.managed_capture[index],
+                    || invalidate(&mut before),
+                )
+            });
+            let target = match connections.as_deref() {
+                Some(connections) if !connections.is_empty() => single_connection(connections),
+                _ => target,
+            };
             let peer = canonical_peer(client, target, JackDirection::Capture, &graph)
                 .and_then(|port| port_id(client, &port).map(|id| (port, id)));
-            lane.peer.store(
-                peer.as_ref().map_or(u32::MAX, |(_, id)| *id),
-                Ordering::Release,
-            );
+            let new_peer = peer.as_ref().map_or(u32::MAX, |(_, id)| *id);
+            if lane.peer.swap(new_peer, Ordering::AcqRel) != new_peer {
+                invalidate(&mut before);
+            }
             let peer = peer.as_ref().map(|(port, _)| port);
-            let mut before = lane.snapshot();
-            let latency = if manual {
-                // Surplus auto inputs are left to the patchbay. A mixed or unavailable slot
-                // cannot be used for capture, but we do not remove the user's links.
+            let latency = if automatic {
+                // The actual sole connection may be manual. A mix remains untouched and is
+                // unavailable to the recorder, even if one of the links is the default.
                 local_port.as_ref().zip(peer).and_then(|(port, peer)| {
                     let name = peer.name().ok()?;
-                    sole_peer(&port.get_connections(), Some(&name))
-                        .then(|| port.get_latency_range(jack::LatencyType::Capture).1)
+                    (sole_peer(&port.get_connections(), Some(&name))
+                        && canonical_port(client, &name)?.raw() == peer.raw())
+                    .then(|| port.get_latency_range(jack::LatencyType::Capture).1)
                 })
             } else {
                 exclusive_port(client, local, peer, JackDirection::Capture, || {
-                    if before & CAPTURE_READY != 0 {
-                        lane.changed();
-                        before = lane.snapshot();
-                        if let Some(trace) = &self.signals.trace {
-                            trace.note(TRACE_LINK_REPAIR);
-                        }
-                    }
+                    invalidate(&mut before);
                 })
             };
+            pending[index] = (before, latency);
+            let entry = target.map_or_else(
+                || JackCaptureChannel::missing(local),
+                |name| capture_channel(name, &graph, false),
+            );
+            self.capture_sources.push(entry);
+        }
+        // Publish related port latencies together. Graph queries and mutations above can
+        // block, so this odd revision covers just the bounded series of atomic updates.
+        self.signals.capture_revision.fetch_add(1, Ordering::AcqRel);
+        for (index, lane) in self.signals.capture.iter().enumerate() {
+            let (before, latency) = pending[index];
             if !lane.publish(before, latency) {
                 self.signals.graph_changed.store(true, Ordering::Release);
             } else if let Some(trace) = &self.signals.trace
@@ -896,12 +956,11 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                     TRACE_ROUTE_UNAVAILABLE
                 });
             }
-            let entry = target.map_or_else(
-                || JackCaptureChannel::missing(local),
-                |name| capture_channel(name, &graph, lane.snapshot() & CAPTURE_READY != 0),
-            );
-            self.capture_sources.push(entry);
+            self.capture_sources[index].connected = lane.snapshot() & CAPTURE_READY != 0;
         }
+        self.signals
+            .capture_revision
+            .fetch_add(1, Ordering::Release);
         let mut playback_latency = 0;
         let automatic = self.route.playback.iter().all(Option::is_none);
         for (index, (local, target)) in self.playback.iter().zip(&desired.playback).enumerate() {
@@ -1118,6 +1177,52 @@ fn exclusive_port(
         JackDirection::Playback => jack::LatencyType::Playback,
     };
     Some(port.get_latency_range(latency_type).1)
+}
+
+fn automatic_capture_patch<'a>(
+    connections: &[String],
+    managed: Option<&'a str>,
+    default: Option<&str>,
+) -> (Option<&'a str>, bool) {
+    let remove = managed.filter(|name| {
+        Some(*name) != default && connections.iter().any(|connected| connected == *name)
+    });
+    let add = default.is_some() && connections.len() == usize::from(remove.is_some());
+    (remove, add)
+}
+
+fn automatic_capture(
+    client: &Client,
+    local: &str,
+    port: &Port<jack::Unowned>,
+    default: Option<&Port<jack::Unowned>>,
+    managed: &mut Option<String>,
+    invalidated: impl FnOnce(),
+) -> Vec<String> {
+    let connections = port.get_connections();
+    let default = default.and_then(|port| port.name().ok());
+    if managed
+        .as_ref()
+        .is_some_and(|old| !connections.contains(old))
+    {
+        *managed = None;
+    }
+    let (remove, add) =
+        automatic_capture_patch(&connections, managed.as_deref(), default.as_deref());
+    if let Some(remove) = remove {
+        invalidated();
+        if client.disconnect_ports_by_name(remove, local).is_ok() {
+            *managed = None;
+        }
+    }
+    if add
+        && let Some(default) = default
+        && port.get_connections().is_empty()
+        && client.connect_ports_by_name(&default, local).is_ok()
+    {
+        *managed = Some(default);
+    }
+    port.get_connections()
 }
 
 fn automatic_playback(
@@ -1346,6 +1451,46 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_clock_detects_an_old_size_skip_before_a_quantum_change() {
+        let time = Instant::now();
+        let old = Cycle {
+            first_frame: 1024,
+            frames: 64,
+            scheduled: Some(10_000),
+            entered: time,
+        };
+        let resized = |first_frame, usecs| Cycle {
+            first_frame,
+            frames: 256,
+            scheduled: Some(usecs),
+            entered: time,
+        };
+        assert!(old.missed_before(resized(1152, 12_667), 48_000));
+        assert!(!old.missed_before(resized(1088, 11_333), 48_000));
+        assert!(!old.missed_before(resized(1152, 11_333), 48_000));
+        assert!(!old.missed_before(resized(10_000, 12_667), 48_000));
+    }
+
+    #[test]
+    fn automatic_capture_keeps_a_manual_peer_when_a_default_appears() {
+        let manual = "Synth:out";
+        let built_in = "system:capture_1";
+        let next_default = "USB:capture_2";
+        let patch = |names: &[&str], managed| {
+            let connections: Vec<_> = names.iter().map(|name| (*name).to_owned()).collect();
+            automatic_capture_patch(&connections, managed, Some(next_default))
+        };
+        assert_eq!(patch(&[manual], None), (None, false));
+        assert_eq!(patch(&[], None), (None, true));
+        assert_eq!(patch(&[built_in], Some(built_in)), (Some(built_in), true));
+        assert_eq!(
+            patch(&[built_in, manual], Some(built_in)),
+            (Some(built_in), false)
+        );
+        assert_eq!(patch(&[next_default], Some(next_default)), (None, false));
+    }
+
+    #[test]
     fn a_late_entry_does_not_hide_the_next_skipped_period() {
         let started = Instant::now();
         let old = Cycle {
@@ -1374,6 +1519,31 @@ mod tests {
                 48_000
             )
         );
+    }
+
+    #[test]
+    fn capture_uses_a_whole_latency_update_and_keeps_link_gaps_immediate() {
+        let mut committed = CapturePeriod {
+            available: 3,
+            ..CapturePeriod::default()
+        };
+        committed.latencies[..2].copy_from_slice(&[64, 256]);
+        let mut partial = committed;
+        partial.latencies[0] = 128;
+        partial.use_committed_timing(2, 3, &mut committed);
+        assert_eq!(&partial.latencies[..2], &[64, 256]);
+        assert_eq!(partial.available, 3);
+
+        let mut link_lost = partial;
+        link_lost.available = 1;
+        link_lost.discontinuous = 2;
+        link_lost.use_committed_timing(3, 3, &mut committed);
+        assert_eq!((link_lost.available, link_lost.discontinuous), (1, 2));
+
+        let mut settled = partial;
+        settled.latencies[..2].copy_from_slice(&[128, 320]);
+        settled.use_committed_timing(4, 4, &mut committed);
+        assert_eq!(&committed.latencies[..2], &[128, 320]);
     }
 
     #[test]

@@ -452,7 +452,9 @@ impl App {
         if !self.await_audio_take() {
             return false;
         }
-        self.migrate_recordings_for_save(&path);
+        if self.migrate_recordings_for_save(&path).is_err() {
+            return false;
+        }
         // The bridged plugins' current states go into the file (blocking, bounded).
         for (device, state) in self
             .engine

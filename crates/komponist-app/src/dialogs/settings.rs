@@ -1311,6 +1311,10 @@ fn jack_playback(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<
         if let Some(port) = jack_dropdown(ui, label, width, &entries, selected) {
             let mut next = config.clone();
             next.jack_routes.playback[channel] = port;
+            if next.jack_routes.playback.iter().all(Option::is_none) {
+                next.device = None;
+                next.device_id = None;
+            }
             out.push(set_audio(next));
         }
         if let Some(port) = playback[channel].as_deref()
@@ -1321,6 +1325,22 @@ fn jack_playback(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<
         {
             jack_warning(ui, &t.settings_jack_playback_unconnected(port), width);
         }
+    }
+    if playback.iter().all(Option::is_none)
+        && (config.device.is_some() || config.device_id.is_some())
+    {
+        grid_row(ui, "", |ui| {
+            if ActionButton::dialog(t.settings_jack_reset_output(), Kind::Secondary, 4)
+                .show(ui)
+                .clicked()
+            {
+                out.push(set_audio(StreamConfig {
+                    device: None,
+                    device_id: None,
+                    ..config.clone()
+                }));
+            }
+        });
     }
 }
 
