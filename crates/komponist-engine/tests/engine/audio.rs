@@ -323,8 +323,9 @@ fn a_split_clip_plays_through_the_cut_without_a_seam() {
     );
     let rig = offline(&program, 0, 2 * BEAT_FRAMES + 2000);
     let at = 2 * BEAT_FRAMES;
-    for j in at - 10..at + 10 {
-        close(rig.l[j], noise(500 + j, 0), "across the cut");
+    let start = at - 10;
+    for (i, &sample) in rig.l[start..at + 10].iter().enumerate() {
+        close(sample, noise(500 + start + i, 0), "across the cut");
     }
 }
 

@@ -108,9 +108,9 @@ fn split_and_overlap_cuts_keep_every_takes_exact_mapping_and_source_links() {
         panic!("audio")
     };
     assert_eq!(right.warp.unwrap().phase(), Tick(200));
-    for i in 0..right.takes.len() {
+    for (i, take) in right.takes.iter().enumerate() {
         assert_eq!(
-            right.takes[i].offset,
+            take.offset,
             before.warp_map(i).unwrap().source_frame(Tick(200)).unwrap()
         );
     }
