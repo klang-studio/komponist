@@ -7,12 +7,14 @@
 //! loop, and an offline render (export, tests) calls it itself before every block
 //! ([`StreamShared::ensure`]), so that its result does not depend on thread timing.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::render::{SegmentRenderer, render_head};
+use super::stretch::{BadInput, until_next_seek_anchor};
 use super::{AudioPlan, Heads, Ring};
 
 /// Frames rendered per step.
@@ -60,7 +62,12 @@ struct StreamVoice {
     renderer: SegmentRenderer,
     /// Frames written so far (all epochs).
     produced: u64,
-    failed: Option<(usize, std::time::Instant)>,
+    failed: HashMap<usize, Retry>,
+}
+
+struct Retry {
+    until: std::time::Instant,
+    input: Option<BadInput>,
 }
 
 struct HeadJob {
@@ -134,7 +141,7 @@ impl Streamer {
                         v.renderer.reset();
                     }
                     v.renderer.restart();
-                    v.failed = None;
+                    v.failed.clear();
                     v.plan = plan;
                     v.epoch = epoch;
                     v.cursor = pos;
@@ -149,7 +156,7 @@ impl Streamer {
                     since_wrap: None,
                     renderer: SegmentRenderer::new(),
                     produced: 0,
-                    failed: None,
+                    failed: HashMap::new(),
                 }),
             }
         }
@@ -163,7 +170,7 @@ impl Streamer {
         for v in self.voices.iter_mut().filter(|v| !v.plan.offline) {
             for _ in 0..PASS_CHUNKS {
                 let before = v.produced;
-                if v.produce(&mut self.buf) {
+                if v.produce(&mut self.buf, CHUNK_FRAMES) {
                     progress = true;
                     self.stats
                         .frames
@@ -191,11 +198,18 @@ impl Streamer {
         else {
             return;
         };
-        while ring
-            .written(epoch)
-            .is_some_and(|w| (w.wrapping_sub(upto) as i32) < 0)
-        {
-            if !v.produce(&mut self.buf) {
+        while let Some(written) = ring.written(epoch) {
+            let need = upto.wrapping_sub(written) as i32;
+            if need <= 0 {
+                break;
+            }
+            // Export must not diagnose a failure from frames it never consumes.
+            let limit = if v.plan.offline {
+                need as usize
+            } else {
+                CHUNK_FRAMES
+            };
+            if !v.produce(&mut self.buf, limit) {
                 break;
             }
         }
@@ -237,13 +251,13 @@ impl Streamer {
 
 impl StreamVoice {
     /// Renders and writes one chunk if the ring has room. Returns whether it wrote.
-    fn produce(&mut self, buf: &mut [Vec<f32>; 2]) -> bool {
+    fn produce(&mut self, buf: &mut [Vec<f32>; 2], limit: usize) -> bool {
         let plan = &*self.plan;
         let free = plan.ring.free(self.epoch);
         if free < MIN_FREE {
             return false;
         }
-        let mut k = free.min(CHUNK_FRAMES) as i64;
+        let mut k = free.min(CHUNK_FRAMES).min(limit) as i64;
         if let Some((_, end)) = self.lp
             && self.cursor < end
         {
@@ -255,38 +269,69 @@ impl StreamVoice {
             Err(Some(next)) => k = k.min(next - self.cursor),
             Err(None) => {}
         }
-        let n = k as usize;
+        let mut n = k as usize;
         let [bl, br] = buf;
-        let (l, r) = (&mut bl[..n], &mut br[..n]);
         let available = match segment {
             Ok(i) => {
-                let throttled = self.failed.is_some_and(|(failed, until)| {
-                    failed == i && std::time::Instant::now() < until
-                });
-                let ok = if throttled {
+                let seg = &plan.segments[i];
+                let j = self.cursor - seg.start;
+                let mut blocked = false;
+                if let Some(retry) = self.failed.get(&i)
+                    && std::time::Instant::now() < retry.until
+                {
+                    if let Some(input) = retry.input {
+                        // A clean request in this same segment can proceed without waiting.
+                        if !self.renderer.continues_warp(seg, j) {
+                            n = n.min(until_next_seek_anchor(plan, j));
+                            blocked = input.blocks(plan, seg, j, n);
+                        }
+                    } else {
+                        blocked = true;
+                    }
+                }
+                if blocked {
                     false
                 } else {
-                    let j0 = self.cursor - plan.segments[i].start;
-                    match self.renderer.render(plan, i, j0, [&mut *l, &mut *r]) {
+                    match self
+                        .renderer
+                        .render(plan, i, j, [&mut bl[..n], &mut br[..n]])
+                    {
                         Ok(()) => true,
-                        Err(_) => {
-                            self.failed = Some((i, std::time::Instant::now() + super::RETRY_AFTER));
-                            false
+                        Err(error) => {
+                            if !plan.offline {
+                                self.failed.insert(
+                                    i,
+                                    Retry {
+                                        until: std::time::Instant::now() + super::RETRY_AFTER,
+                                        input: error.input,
+                                    },
+                                );
+                            }
+                            if error.rendered > 0 {
+                                // Publish the valid prefix before advancing through the fault.
+                                n = error.rendered;
+                                true
+                            } else {
+                                if error.input.is_some() {
+                                    n = n.min(until_next_seek_anchor(plan, j));
+                                }
+                                false
+                            }
                         }
                     }
-                };
-                if !ok {
-                    l.fill(0.0);
-                    r.fill(0.0);
                 }
-                ok
             }
             Err(_) => {
-                l.fill(0.0);
-                r.fill(0.0);
+                bl[..n].fill(0.0);
+                br[..n].fill(0.0);
                 true
             }
         };
+        let (l, r) = (&mut bl[..n], &mut br[..n]);
+        if !available {
+            l.fill(0.0);
+            r.fill(0.0);
+        }
         self.wrap_fades(l, r);
         if available {
             plan.ring.push(self.epoch, l, r);
@@ -295,6 +340,7 @@ impl StreamVoice {
         }
         self.produced += n as u64;
         let before = self.cursor;
+        let k = n as i64;
         self.cursor = advance(before, k, self.lp);
         let wrapped = matches!(self.lp, Some((_, end)) if before < end && before + k == end);
         if wrapped {

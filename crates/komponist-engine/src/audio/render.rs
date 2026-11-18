@@ -11,7 +11,7 @@
 
 use komponist_audiofile::{AudioFile, PoolFile, StreamResampler};
 
-use super::stretch::WarpState;
+use super::stretch::{WarpFailure, WarpState};
 use super::{AudioPlan, Segment, StretchError};
 
 /// File frames per decoder read.
@@ -220,6 +220,10 @@ impl SegmentRenderer {
         self.warp = None;
     }
 
+    pub(super) fn continues_warp(&self, seg: &Segment, j0: i64) -> bool {
+        self.warp.as_ref().is_some_and(|w| w.matches(seg, j0))
+    }
+
     /// Renders frames `j0 .. j0 + out.len()` of segment `i` of `plan` (clip gain, fades and edge
     /// fades applied) into `out`, which it overwrites. A file that is not there gives silence.
     pub(crate) fn render(
@@ -228,7 +232,7 @@ impl SegmentRenderer {
         i: usize,
         j0: i64,
         out: [&mut [f32]; 2],
-    ) -> Result<(), StretchError> {
+    ) -> Result<(), WarpFailure> {
         let seg = &plan.segments[i];
         let n = out[0].len();
         match self.select(plan, seg) {
@@ -236,7 +240,7 @@ impl SegmentRenderer {
             Err(error) if seg.warp.is_some() => {
                 self.warp = None;
                 plan.diagnostics.fail(i, error);
-                return Err(error);
+                return Err(error.into());
             }
             Ok(false) | Err(_) => {
                 out[0].fill(0.0);
@@ -245,11 +249,13 @@ impl SegmentRenderer {
                 return Ok(());
             }
         }
+        let continues = self.continues_warp(seg, j0);
         let reader = &mut self.current.as_mut().expect("selected").1;
         let [out_l, out_r] = out;
+        let mut failure = None;
         if seg.warp.is_some() {
             let result = (|| {
-                if !self.warp.as_ref().is_some_and(|w| w.matches(seg, j0)) {
+                if !continues {
                     self.warp = None;
                     self.warp = Some(WarpState::new(plan, seg, j0, reader)?);
                 }
@@ -261,15 +267,15 @@ impl SegmentRenderer {
             if let Err(error) = result {
                 self.warp = None;
                 if matches!(
-                    error,
+                    error.reason,
                     StretchError::SourceRead
                         | StretchError::SourceSeek
                         | StretchError::SourceResample
                 ) {
                     self.current = None;
                 }
-                plan.diagnostics.fail(i, error);
-                return Err(error);
+                plan.diagnostics.fail(i, error.reason);
+                failure = Some(error);
             }
         } else if seg.speed == 1.0 {
             self.warp = None;
@@ -295,12 +301,17 @@ impl SegmentRenderer {
                 *r = cubic(&src_r[at - 1..=at + 2], t);
             }
         }
-        for (k, (l, r)) in out_l.iter_mut().zip(out_r.iter_mut()).enumerate() {
+        let rendered = failure.map_or(n, |error| error.rendered);
+        for (k, (l, r)) in out_l[..rendered]
+            .iter_mut()
+            .zip(&mut out_r[..rendered])
+            .enumerate()
+        {
             let g = envelope(seg, j0 + k as i64, plan.edge_frames);
             *l *= g;
             *r *= g;
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
     /// Selects the segment's decoder. Live unresolved sources keep the existing silence path.
@@ -358,11 +369,9 @@ pub(crate) fn render_head(plan: &AudioPlan, i: usize) -> [Box<[f32]>; 2] {
         .unwrap_or(0)
         .min(plan.head_frames);
     let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
-    if SegmentRenderer::new()
-        .render(plan, i, 0, [&mut l, &mut r])
-        .is_err()
-    {
-        return [Box::new([]), Box::new([])];
+    if let Err(error) = SegmentRenderer::new().render(plan, i, 0, [&mut l, &mut r]) {
+        l.truncate(error.rendered);
+        r.truncate(error.rendered);
     }
     [l.into(), r.into()]
 }

@@ -80,24 +80,55 @@ impl Ring {
         left: &mut [f32],
         right: &mut [f32],
     ) -> bool {
-        let start = from as usize;
         let mut valid = true;
-        for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-            let at = (start + i) & MASK;
-            let available = self.available[at].load(Ordering::Relaxed);
-            valid &= available;
-            *l = if available {
-                f32::from_bits(self.data[0][at].load(Ordering::Relaxed))
-            } else {
-                0.0
-            };
-            *r = if available {
-                f32::from_bits(self.data[1][at].load(Ordering::Relaxed))
-            } else {
-                0.0
-            };
-        }
+        self.copy_out_runs(from, left, right, |_, available, _, _| valid &= available);
         valid
+    }
+
+    /// RT. Copies the ring and reports contiguous runs of available or unavailable audio.
+    pub(crate) fn copy_out_runs(
+        &self,
+        from: u32,
+        left: &mut [f32],
+        right: &mut [f32],
+        mut run: impl FnMut(usize, bool, &mut [f32], &mut [f32]),
+    ) {
+        let start = from as usize;
+        let mut end = 0;
+        while end < left.len() {
+            let first = end;
+            let mut at = start.wrapping_add(end) & MASK;
+            let available = self.available[at].load(Ordering::Relaxed);
+            loop {
+                left[end] = if available {
+                    f32::from_bits(self.data[0][at].load(Ordering::Relaxed))
+                } else {
+                    0.0
+                };
+                right[end] = if available {
+                    f32::from_bits(self.data[1][at].load(Ordering::Relaxed))
+                } else {
+                    0.0
+                };
+                end += 1;
+                at = (at + 1) & MASK;
+                if end == left.len() || self.available[at].load(Ordering::Relaxed) != available {
+                    break;
+                }
+            }
+            run(
+                first,
+                available,
+                &mut left[first..end],
+                &mut right[first..end],
+            );
+        }
+    }
+
+    /// RT. Check an already published, unconsumed window without moving the read cursor.
+    pub(crate) fn all_available(&self, from: u32, frames: usize) -> bool {
+        let start = from as usize;
+        (0..frames).all(|i| self.available[start.wrapping_add(i) & MASK].load(Ordering::Relaxed))
     }
 
     // --- Producer (streamer) -------------------------------------------------------------------

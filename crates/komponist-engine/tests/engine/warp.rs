@@ -280,12 +280,7 @@ fn export_never_reuses_a_failed_live_ring() {
     let mut r = Rig::new(RATE, 1024);
     r.set_program(&program);
     r.process(64, 64);
-    let stats = r.engine.stream_stats();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while stats.frames() < 24000 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert!(stats.frames() >= 24000);
+    wait_for_queued_frames(&r, 24000);
     assert!(plan.stretch_failures() > 0);
     let out = s.dir.join("out.wav");
     let result = export::export(
@@ -486,6 +481,92 @@ fn a_failed_warp_is_counted_without_blocking_other_tracks_or_later_clips() {
     .unwrap();
 }
 
+fn wait_for_queued_frames(rig: &Rig, total: u64) {
+    let stats = rig.engine.stream_stats();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while stats.frames() < total && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(
+        stats.frames() >= total,
+        "streamer did not queue the expected frames"
+    );
+}
+
+#[test]
+fn a_failed_warp_prime_reports_pending_and_recovers_within_the_same_clip() {
+    let mut s = Studio::new("warp-retry-nearby-clean-input");
+    let t = s.track();
+    let file = s.wav("fault.wav", 48000, 2, 96000, |i, _| {
+        if i == 0 { f32::NAN } else { 0.25 }
+    });
+    let c = s.clip(t, &file, 0, 3840, 0);
+    s.project = edits::set_audio_clip_warp(&s.project, c, true).unwrap();
+    let p = s.program();
+    let mut r = Rig::new(RATE, 1024);
+    r.set_program(&p);
+    r.process(64, 64);
+    wait_for_queued_frames(&r, 32768);
+    r.process(64, 64);
+    assert_eq!(r.handle.telemetry().audio_pending(), 1);
+    r.send(Command::Play);
+    let range = r.render(24576, 1024);
+    let output = &r.l[range];
+    assert!(output[..4800].iter().all(|&s| s == 0.0));
+    // Once fresh seeking no longer reads frame zero, recovery does not wait for the cooldown.
+    assert!(output[5100..24576].iter().all(|&s| s > 0.1));
+}
+
+#[test]
+fn successfully_rendered_chunks_survive_a_later_read_in_the_same_worker_request() {
+    let mut s = Studio::new("warp-retry-valid-prefix");
+    let t = s.track();
+    let file = s.wav("fault.wav", 48000, 2, 96000, |i, _| {
+        if i == 7424 { f32::NAN } else { 0.25 }
+    });
+    let c = s.clip(t, &file, 0, 3840, 0);
+    s.project = edits::set_audio_clip_warp(&s.project, c, true).unwrap();
+    let p = s.program();
+    let mut r = Rig::new(RATE, 1024);
+    r.set_program(&p);
+    r.process(64, 64);
+    wait_for_queued_frames(&r, 32768);
+    r.send(Command::Play);
+    let range = r.render(2304, 1024);
+    let output = &r.l[range];
+    assert!(output[256..1536].iter().all(|&s| s > 0.1));
+    assert!(output[1536..2304].iter().all(|&s| s == 0.0));
+}
+
+#[test]
+fn two_failed_segments_in_a_short_loop_keep_separate_retry_deadlines() {
+    let mut s = Studio::new("warp-retry-two-faults");
+    let t = s.track();
+    let file = s.wav("fault.wav", 48000, 2, 48000, |_, _| f32::NAN);
+    let a = s.clip(t, &file, 0, 20, 0);
+    let b = s.clip(t, &file, 20, 20, 1000);
+    for clip in [a, b] {
+        s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
+    }
+    s.project.loop_on = true;
+    s.project.loop_range = TickRange::new(Tick::ZERO, Tick(40));
+    let p = s.program();
+    let plan = p.tracks[0].audio.as_ref().unwrap();
+    let mut r = Rig::new(RATE, 1024);
+    r.set_program(&p);
+    r.send(Command::Play);
+    r.process(64, 64);
+    wait_for_queued_frames(&r, 32768);
+    assert!(plan.stretch_error(a).is_some() && plan.stretch_error(b).is_some());
+    // The ring contains at least 32 laps. Its two bad clips must not retry on every lap.
+    // A generous upper bound keeps this insensitive to a delayed worker or head diagnostics.
+    assert!(
+        plan.stretch_failures() < 16,
+        "retries: {}",
+        plan.stretch_failures()
+    );
+}
+
 #[test]
 #[ignore = "paced worker load measurement; run separately to avoid contention"]
 fn worker_load_eight_and_sixteen_stereo_voices_at_ratio_extrema() {
@@ -596,28 +677,19 @@ fn an_incompatible_continuation_head_is_an_underrun_and_recovery_fades_in_positi
     assert_eq!(&r.l[range.start..range.start + 3425], &reference.l[..3425]);
     assert!(r.l[range.start + 3425..range.end].iter().all(|&x| x == 0.0));
     assert!(r.handle.telemetry().audio_underruns() > 0);
+    let queued_before = r.engine.stream_stats().frames();
     r.engine.stall_streaming(false);
-    let mut position = 5000;
-    let mut heard = false;
-    for _ in 0..100 {
-        let range = r.process(512, 512);
-        if r.l[range.clone()].iter().any(|x| x.abs() > 0.01) {
-            for j in 144..512 {
-                assert!(
-                    (r.l[range.start + j] - reference.l[position + j]).abs() < 1e-5,
-                    "recovery position {position}"
-                );
-            }
-            heard = true;
-            break;
-        }
-        position += 512;
-        if position + 512 >= reference.l.len() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    // Keep the playhead fixed while waiting for the writer to catch up to it, so the
+    // reference covers the recovered block regardless of worker scheduling.
+    wait_for_queued_frames(&r, queued_before + 5000 + 512);
+    let range = r.process(512, 512);
+    for (j, &actual) in r.l[range].iter().enumerate() {
+        let gain = (j as f32 / 144.0).min(1.0);
+        assert!(
+            (actual - reference.l[5000 + j] * gain).abs() < 1e-5,
+            "recovery sample {j}"
+        );
     }
-    assert!(heard);
 }
 
 #[test]
