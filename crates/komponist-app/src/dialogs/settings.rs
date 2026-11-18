@@ -244,34 +244,32 @@ pub fn input_entries(
         },
     ];
     entries.extend(devices.iter().map(|device| InputEntry {
-        label: device.name.clone(),
+        label: crate::views::audio_inputs::input_device_label(t, device),
         config: Some(komponist_audio::InputConfig {
             device: Some(device.name.clone()),
             device_id: device.id.clone(),
         }),
     }));
-    let selected = entries
-        .iter()
-        .position(|entry| {
-            entry.config.as_ref() == configured
-                || configured.is_some_and(|config| {
-                    config.device_id.as_ref().is_some_and(|id| {
-                        entry.config.as_ref().and_then(|c| c.device_id.as_ref()) == Some(id)
-                    })
-                })
-        })
-        .unwrap_or_else(|| {
-            let label = t.audio_input_unavailable(
-                configured
-                    .and_then(|c| c.device.as_deref())
-                    .unwrap_or(t.settings_default_device()),
-            );
-            entries.push(InputEntry {
-                label,
-                config: configured.cloned(),
-            });
-            entries.len() - 1
-        });
+    let selected = match configured {
+        None => 0,
+        Some(config) if config.device.is_none() && config.device_id.is_none() => 1,
+        Some(config) => config.device_index(devices).map_or_else(
+            || {
+                let label = t.audio_input_unavailable(
+                    config
+                        .device
+                        .as_deref()
+                        .unwrap_or(t.settings_default_device()),
+                );
+                entries.push(InputEntry {
+                    label,
+                    config: Some(config.clone()),
+                });
+                entries.len() - 1
+            },
+            |index| index + 2,
+        ),
+    };
     (entries, selected)
 }
 

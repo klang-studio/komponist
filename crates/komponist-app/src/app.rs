@@ -2786,6 +2786,20 @@ impl App {
         self.ui.focus = FocusArea::Arrangement;
     }
 
+    fn apply_audio_input(&mut self, input: Option<komponist_audio::InputConfig>) -> bool {
+        let result = self.engine.set_audio_input(input);
+        let requested = self.engine.audio_input_config();
+        if self.settings.audio_input.as_ref() != requested {
+            self.settings.audio_input = requested.cloned();
+            self.save_settings();
+        }
+        if let Err(error) = result {
+            self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+            return false;
+        }
+        true
+    }
+
     fn settings_action(&mut self, action: SettingsAction) {
         let changes_input = matches!(
             &action,
@@ -2816,33 +2830,20 @@ impl App {
                 self.save_settings();
             }
             SettingsAction::SetAudioInput(input) => {
-                match self.engine.set_audio_input(input.clone()) {
-                    Ok(()) => {
-                        self.settings.audio_input = input;
-                        self.save_settings();
-                    }
-                    Err(error) => {
-                        self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error)
-                    }
-                }
+                self.apply_audio_input(input);
             }
             SettingsAction::ChooseTrackAudioInput {
                 track,
                 input,
                 device,
-            } => match self.engine.set_audio_input(Some(device.clone())) {
-                Ok(()) => {
-                    self.settings.audio_input = Some(device);
-                    self.save_settings();
+            } => {
+                if self.apply_audio_input(Some(device)) {
                     self.dispatch(Action::Edit(EditAction::SetTrackProp {
                         tracks: vec![track],
                         prop: TrackProp::AudioInput(input),
                     }));
                 }
-                Err(error) => {
-                    self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error)
-                }
-            },
+            }
             SettingsAction::SetCaptureFormat(format) => {
                 self.settings.capture_format = format;
                 self.save_settings();

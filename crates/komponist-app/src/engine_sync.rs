@@ -790,9 +790,13 @@ impl EngineSync {
         self.audio.set_test_input(channels, rate)
     }
 
-    /// Current capture configuration, independent of per-track channel selection.
+    /// Requested capture configuration, independent of per-track channel selection.
     pub fn audio_input_config(&self) -> Option<&komponist_audio::InputConfig> {
         self.audio.input()
+    }
+    /// Why the capture stream is unavailable while playback is running.
+    pub fn audio_input_error(&self) -> Option<&AudioError> {
+        self.audio.input_error()
     }
     /// Input channels currently available from the configured device.
     pub fn audio_input_channels(&self) -> u16 {

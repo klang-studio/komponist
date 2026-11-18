@@ -1,7 +1,7 @@
 //! Timestamped audio capture, independent of the engine. Device and synthetic inputs share
 //! the same bounded SPSC bridge. All allocation happens before either callback starts.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -21,10 +21,64 @@ const MAX_CLOCK_CORRECTION: f64 = 0.002;
 /// configuration disables capture. Old settings therefore never open a microphone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputConfig {
-    /// Display name, used if the saved stable id is unavailable.
+    /// Display name, used as a fallback when it identifies a unique compatible device.
     pub device: Option<String>,
     /// Stable backend identity.
     pub device_id: Option<DeviceId>,
+}
+
+impl InputConfig {
+    /// Resolves the same stored selection used to open the capture stream.
+    pub fn device_index(&self, devices: &[InputDeviceInfo]) -> Option<usize> {
+        self.match_device(devices.iter())
+    }
+
+    fn match_device<'a>(
+        &self,
+        devices: impl IntoIterator<Item = &'a InputDeviceInfo>,
+    ) -> Option<usize> {
+        let mut candidates = devices
+            .into_iter()
+            .enumerate()
+            .filter(|(_, device)| device.is_usable());
+        if self.device.is_none() && self.device_id.is_none() {
+            return candidates.find_map(|(index, device)| device.is_default.then_some(index));
+        }
+        let expected_role = self.device_id.as_ref().and_then(pipewire_input_role);
+        let mut fallback = None;
+        let mut ambiguous = false;
+        for (index, device) in candidates {
+            if self.device_id.is_some() && self.device_id == device.id {
+                return Some(index);
+            }
+            if self.device.as_deref() == Some(device.name.as_str())
+                && expected_role.is_none_or(|role| device.role() == Some(role))
+            {
+                ambiguous |= fallback.replace(index).is_some();
+            }
+        }
+        // A saved name alone cannot distinguish devices with the same display label.
+        fallback.filter(|_| !ambiguous)
+    }
+}
+
+/// Capture roles identifiable from a PipeWire ALSA node's stable name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputDeviceRole {
+    /// Audio from a hardware input.
+    Input,
+    /// Audio playing through a hardware output (loopback).
+    OutputMonitor,
+}
+
+fn pipewire_input_role(id: &DeviceId) -> Option<InputDeviceRole> {
+    if id.0.starts_with("pipewire:alsa_input.") {
+        Some(InputDeviceRole::Input)
+    } else if id.0.starts_with("pipewire:alsa_output.") {
+        Some(InputDeviceRole::OutputMonitor)
+    } else {
+        None
+    }
 }
 
 /// Capture device metadata, enumerated without opening a stream.
@@ -40,6 +94,18 @@ pub struct InputDeviceInfo {
     pub is_default: bool,
     /// Default native rate. Capture is converted to the output clock by the bridge.
     pub sample_rate: u32,
+}
+
+impl InputDeviceInfo {
+    /// The identifiable PipeWire ALSA node role, if present.
+    pub fn role(&self) -> Option<InputDeviceRole> {
+        self.id.as_ref().and_then(pipewire_input_role)
+    }
+
+    fn is_usable(&self) -> bool {
+        (1..=MAX_INPUT_CHANNELS).contains(&usize::from(self.channels))
+            && crate::backend::valid_sample_rate(self.sample_rate)
+    }
 }
 
 /// Borrowed, interleaved input at the output sample rate, for one processing callback.
@@ -108,17 +174,27 @@ impl<'a> InputBuffer<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Frame {
     samples: [f32; MAX_INPUT_CHANNELS],
     at: Instant,
     sequence: u64,
 }
 
-#[derive(Default)]
 struct Shared {
     dropped: AtomicU64,
     lost: AtomicBool,
+    // Minimum queue depth before any input burst since the last output read.
+    pre_burst_depth: AtomicUsize,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            dropped: AtomicU64::new(0),
+            lost: AtomicBool::new(false),
+            pre_burst_depth: AtomicUsize::new(usize::MAX),
+        }
+    }
 }
 
 /// Producer used by the device callback and deterministic synthetic-input tests.
@@ -141,8 +217,13 @@ impl TestAudioSource {
         T: cpal::Sample + Copy,
         f32: cpal::FromSample<T>,
     {
+        let frames = samples.chunks_exact(self.channels);
+        if frames.len() == 0 {
+            return true;
+        }
+        let pre_burst_depth = self.tx.buffer().capacity() - self.tx.slots();
         let mut complete = true;
-        for (index, source) in samples.chunks_exact(self.channels).enumerate() {
+        for (index, source) in frames.enumerate() {
             let mut frame = Frame {
                 samples: [0.0; MAX_INPUT_CHANNELS],
                 at: at
@@ -160,6 +241,9 @@ impl TestAudioSource {
                 complete = false;
             }
         }
+        self.shared
+            .pre_burst_depth
+            .fetch_min(pre_burst_depth, Ordering::Release);
         complete
     }
     /// Total source frames that did not fit in the bounded queue.
@@ -181,6 +265,8 @@ pub struct InputReader {
     dropped: u64,
     target: usize,
     primed: bool,
+    lead: usize,
+    burst: usize,
 }
 
 /// Creates a synthetic input bridge, without enumerating or connecting any hardware.
@@ -220,6 +306,8 @@ pub fn test_input(
             dropped: 0,
             target: (capacity / 4).max(1),
             primed: false,
+            lead: 0,
+            burst: 0,
         },
     ))
 }
@@ -245,72 +333,99 @@ impl InputReader {
         if output_rate == 0 || !out.len().is_multiple_of(self.channels) {
             return InputBuffer::empty();
         }
-        let dropped = self.shared.dropped.load(Ordering::Acquire);
-        let mut gap = dropped != self.dropped || self.lost();
-        self.dropped = dropped;
-        // After a stall, discard bounded old backlog instead of monitoring seconds behind.
+        if self.lost() {
+            return InputBuffer::new(out, self.channels, Duration::ZERO, true);
+        }
+        let lead = self
+            .shared
+            .pre_burst_depth
+            .swap(usize::MAX, Ordering::Acquire);
         let queued = self.rx.slots();
-        if queued > self.target.saturating_mul(3) {
+        let dropped = self.shared.dropped.load(Ordering::Acquire);
+        let overflow = dropped != self.dropped;
+        let mut gap = overflow;
+        self.dropped = dropped;
+        // Only discard queued audio after confirmed loss to bring monitoring latency back down.
+        if overflow {
             for _ in 0..queued.saturating_sub(self.target) {
                 let _ = self.rx.pop();
             }
-            self.left = None;
-            self.right = None;
-            self.phase = 0.0;
-            gap = true;
+            self.reset_interpolator();
+        } else if lead != usize::MAX {
+            self.lead = lead;
+            self.burst = self.burst.max(queued.saturating_sub(lead));
         }
-        // Build a small lead once instead of repeatedly consuming a partially filled device
-        // callback and underflowing. Neither callback waits for the other.
-        if !self.primed {
+        // Start at the nominal rate once enough data is queued. During playback follow the
+        // reserve before input arrived, excluding the sawtooth of input/output callback batching.
+        // Leave room for the largest observed batch and for normal scheduling variation.
+        let correction = if self.primed {
+            let spare = self.rx.buffer().capacity().saturating_sub(self.burst);
+            let reserve = self.target.min(spare / 2);
+            ((self.lead as f64 - reserve as f64) / self.target as f64).clamp(-1.0, 1.0)
+                * MAX_CLOCK_CORRECTION
+        } else {
             if self.rx.slots() < self.target {
                 return InputBuffer::new(out, self.channels, Duration::ZERO, true);
             }
             self.primed = true;
-        }
-        let depth = self.rx.slots() as f64;
-        let correction = ((depth - self.target as f64) / self.target as f64).clamp(-1.0, 1.0)
-            * MAX_CLOCK_CORRECTION;
+            0.0
+        };
         let step = f64::from(self.rate) / f64::from(output_rate) * (1.0 + correction);
         let mut first_at = None;
         for frame in out.chunks_exact_mut(self.channels) {
             if self.left.is_none() {
                 self.left = self.rx.pop().ok();
             }
-            if self.right.is_none() {
-                self.right = self.rx.pop().ok();
+            // Advance the source only when the next output frame is needed. The last frame of
+            // an output callback need not have its successor waiting in this callback.
+            while self.phase >= 1.0
+                && let Some(sequence) = self.left.as_ref().map(|frame| frame.sequence)
+            {
+                self.left = self.right.take().or_else(|| self.rx.pop().ok());
+                if let Some(next) = &self.left {
+                    gap |= next.sequence != sequence.wrapping_add(1);
+                }
+                self.phase -= 1.0;
             }
-            let (Some(left), Some(right)) = (self.left, self.right) else {
-                gap = true;
-                self.left = None;
-                self.right = None;
-                self.phase = 0.0;
-                self.primed = false;
-                continue;
+            let right = if self.phase == 0.0 {
+                self.left.as_ref()
+            } else {
+                if self.left.is_some() && self.right.is_none() {
+                    self.right = self.rx.pop().ok();
+                }
+                self.right.as_ref()
             };
-            if right.sequence != left.sequence.wrapping_add(1) {
+            let (Some(left), Some(right)) = (self.left.as_ref(), right) else {
                 gap = true;
-            }
+                self.reset_interpolator();
+                break;
+            };
+            // Hold the last real sample up to the sequence break without blending across it.
+            // Keep the successor so the next integral advance can resume there.
+            let right = if self.phase != 0.0 && right.sequence != left.sequence.wrapping_add(1) {
+                gap = true;
+                left
+            } else {
+                right
+            };
             first_at.get_or_insert(left.at);
             for (channel, sample) in frame.iter_mut().enumerate() {
                 *sample = left.samples[channel]
                     + (right.samples[channel] - left.samples[channel]) * self.phase as f32;
             }
             self.phase += step;
-            while self.phase >= 1.0 {
-                self.phase -= 1.0;
-                self.left = self.right;
-                self.right = self.rx.pop().ok();
-                if self.right.is_none() {
-                    self.left = None;
-                    self.phase = 0.0;
-                    gap = true;
-                    self.primed = false;
-                    break;
-                }
-            }
         }
         let latency = first_at.map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
         InputBuffer::new(out, self.channels, latency, gap)
+    }
+
+    fn reset_interpolator(&mut self) {
+        self.left = None;
+        self.right = None;
+        self.phase = 0.0;
+        self.primed = false;
+        self.lead = 0;
+        self.burst = 0;
     }
 }
 
@@ -327,39 +442,21 @@ pub fn input_devices(kind: HostKind) -> Result<Vec<InputDeviceInfo>, AudioError>
     }
     let host = crate::backend::host(kind)?;
     let default = host.default_input_device();
-    let mut entries = Vec::new();
-    for device in host.input_devices().map_err(crate::backend::map_err)? {
-        let Ok(config) = device.default_input_config() else {
-            continue;
-        };
-        if usize::from(config.channels()) > MAX_INPUT_CHANNELS {
-            continue;
-        }
-        let Ok(description) = device.description() else {
-            continue;
-        };
-        entries.push(InputDeviceInfo {
-            id: device.id().ok().map(|id| DeviceId(id.to_string())),
-            name: description.name().to_owned(),
-            channels: config.channels(),
-            is_default: default.as_ref() == Some(&device),
-            sample_rate: config.sample_rate(),
-        });
-    }
+    let entries = host
+        .input_devices()
+        .map_err(crate::backend::map_err)?
+        .filter_map(|device| {
+            let (mut info, _) = describe_input(&device)?;
+            info.is_default = default.as_ref() == Some(&device);
+            info.is_usable().then_some(info)
+        })
+        .collect();
     Ok(entries)
 }
 
-static ASIO_INPUTS: Mutex<Vec<InputDeviceInfo>> = Mutex::new(Vec::new());
-
-/// Called while the output enumeration already has this ASIO driver loaded, so opening the
-/// input chooser never enumerates other drivers while an ASIO stream is running.
-pub(crate) fn remember_asio(device: &cpal::Device) {
-    let Ok(config) = device.default_input_config() else {
-        return;
-    };
-    let Ok(description) = device.description() else {
-        return;
-    };
+fn describe_input(device: &cpal::Device) -> Option<(InputDeviceInfo, cpal::SupportedStreamConfig)> {
+    let config = device.default_input_config().ok()?;
+    let description = device.description().ok()?;
     let info = InputDeviceInfo {
         id: device.id().ok().map(|id| DeviceId(id.to_string())),
         name: description.name().to_owned(),
@@ -367,6 +464,20 @@ pub(crate) fn remember_asio(device: &cpal::Device) {
         is_default: false,
         sample_rate: config.sample_rate(),
     };
+    Some((info, config))
+}
+
+static ASIO_INPUTS: Mutex<Vec<InputDeviceInfo>> = Mutex::new(Vec::new());
+
+/// Called while the output enumeration already has this ASIO driver loaded, so opening the
+/// input chooser never enumerates other drivers while an ASIO stream is running.
+pub(crate) fn remember_asio(device: &cpal::Device) {
+    let Some((info, _)) = describe_input(device) else {
+        return;
+    };
+    if !info.is_usable() {
+        return;
+    }
     let mut cache = ASIO_INPUTS.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(old) = cache
         .iter_mut()
@@ -395,8 +506,13 @@ impl CaptureStream {
         duplex_device: Option<&cpal::Device>,
     ) -> Result<(Self, InputReader), AudioError> {
         let host = crate::backend::host(kind)?;
-        let mut found = None;
-        let devices = if kind == HostKind::Asio {
+        let open_default = |device: cpal::Device| -> Result<_, AudioError> {
+            let native = device
+                .default_input_config()
+                .map_err(crate::backend::map_err)?;
+            Ok((device, native))
+        };
+        let (device, native) = if kind == HostKind::Asio {
             // ASIO can load only one driver: capture must use the already selected output.
             let device =
                 duplex_device.ok_or_else(|| AudioError::NoDevice("ASIO output missing".into()))?;
@@ -413,39 +529,27 @@ impl CaptureStream {
                     "ASIO input and output must use the same driver".into(),
                 ));
             }
-            found = Some(device.clone());
-            Vec::new()
+            open_default(device.clone())?
+        } else if selection.device.is_none() && selection.device_id.is_none() {
+            open_default(
+                host.default_input_device()
+                    .ok_or_else(|| AudioError::NoDevice("no default capture input".into()))?,
+            )?
         } else {
-            host.input_devices()
+            let devices: Vec<_> = host
+                .input_devices()
                 .map_err(crate::backend::map_err)?
-                .collect::<Vec<_>>()
+                .filter_map(|device| {
+                    let (info, native) = describe_input(&device)?;
+                    Some((device, info, native))
+                })
+                .collect();
+            selection
+                .match_device(devices.iter().map(|(_, info, _)| info))
+                .and_then(|index| devices.into_iter().nth(index))
+                .map(|(device, _, native)| (device, native))
+                .ok_or_else(|| AudioError::NoDevice("capture input unavailable".into()))?
         };
-        for device in devices {
-            let same_id = selection
-                .device_id
-                .as_ref()
-                .is_some_and(|id| device.id().is_ok_and(|own| own.to_string() == id.0));
-            let same_name = selection
-                .device
-                .as_ref()
-                .is_some_and(|name| device.description().is_ok_and(|d| d.name() == name));
-            if same_id || (found.is_none() && same_name) {
-                found = Some(device);
-                if same_id {
-                    break;
-                }
-            }
-        }
-        let device = found
-            .or_else(|| {
-                (selection.device.is_none() && selection.device_id.is_none())
-                    .then(|| host.default_input_device())
-                    .flatten()
-            })
-            .ok_or_else(|| AudioError::NoDevice("capture input unavailable".into()))?;
-        let native = device
-            .default_input_config()
-            .map_err(crate::backend::map_err)?;
         let formats = [
             cpal::SampleFormat::F32,
             cpal::SampleFormat::I32,
@@ -624,6 +728,266 @@ mod tests {
         });
         assert_eq!(out[15], 0.0);
     }
+    #[test]
+    fn equal_clock_batches_need_no_extra_preload() {
+        for (input_frames, output_frames) in [(256, 64), (64, 256), (512, 64), (64, 512)] {
+            let (mut source, mut reader) = test_input(1, 48_000, 512).unwrap();
+            let at = Instant::now();
+            let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+            let samples = [0.25; 512];
+            let mut out = [0.0; 512];
+            let batch_frames = input_frames.max(output_frames);
+            assert_no_alloc(|| {
+                for batch in 0..2000 {
+                    for i in (0..batch_frames).step_by(input_frames) {
+                        assert!(source.push(
+                            &samples[..input_frames],
+                            capture_at((batch * batch_frames + i) as u64)
+                        ));
+                    }
+                    for i in (0..batch_frames).step_by(output_frames) {
+                        let input = reader.read(
+                            &mut out[..output_frames],
+                            48_000,
+                            capture_at((batch * batch_frames + i + output_frames) as u64),
+                        );
+                        assert!(
+                            !input.discontinuous(),
+                            "{input_frames}→{output_frames}, batch {batch}, frame {i}"
+                        );
+                        assert!(input.data().iter().all(|&sample| sample == 0.25));
+                    }
+                }
+            });
+            assert_eq!(source.dropped(), 0);
+        }
+    }
+
+    #[test]
+    fn larger_input_periods_do_not_interrupt_small_output_periods() {
+        let (mut source, mut reader) = test_input(2, 48_000, 512).unwrap();
+        let at = Instant::now();
+        let samples: Vec<_> = (0..1280).flat_map(|i| [i as f32, -(i as f32)]).collect();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let mut out = [0.0; 128];
+        assert_no_alloc(|| {
+            assert!(source.push(&samples[..256], at));
+            assert!(
+                !reader
+                    .read(&mut out, 48_000, capture_at(128))
+                    .discontinuous()
+            );
+
+            // An input callback delivers six output periods at once, without overflowing the
+            // ring. Each of those periods must preserve the ordered samples already queued.
+            for source_start in [128..512, 512..896, 896..1280] {
+                assert!(source.push(
+                    &samples[2 * source_start.start..2 * source_start.end],
+                    capture_at(source_start.start as u64)
+                ));
+                for period in 0..6 {
+                    let expected = source_start.start - 64 + period * 64;
+                    let input = reader.read(
+                        &mut out,
+                        48_000,
+                        capture_at((source_start.end + period * 64) as u64),
+                    );
+                    assert!(!input.discontinuous(), "at output frame {expected}");
+                    assert!((input.sample(0, 0) - expected as f32).abs() < 3.0);
+                    assert_eq!(input.sample(1, 0), -input.sample(0, 0));
+                    assert!(
+                        input
+                            .data()
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|f| f[0])
+                            .is_sorted()
+                    );
+                }
+            }
+            assert_eq!(source.dropped(), 0);
+            assert!(!reader.lost());
+        });
+    }
+
+    #[test]
+    fn smaller_input_periods_accumulate_for_large_output_periods() {
+        let (mut source, mut reader) = test_input(1, 48_000, 512).unwrap();
+        let at = Instant::now();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let samples: Vec<f32> = (0..1280).map(|frame| frame as f32).collect();
+        let mut out = [0.0; 384];
+        assert!(source.push(&samples[..128], at));
+        for output_frame in [0, 384, 768] {
+            for start in (output_frame + 128..output_frame + 512).step_by(64) {
+                assert!(source.push(&samples[start..start + 64], capture_at(start as u64)));
+            }
+            let input = reader.read(&mut out, 48_000, capture_at((output_frame + 512) as u64));
+            assert!(!input.discontinuous());
+            assert!((input.sample(0, 0) - output_frame as f32).abs() < 3.0);
+            assert!(input.data().windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert_eq!(source.dropped(), 0);
+    }
+
+    #[test]
+    fn capture_primes_without_discarding_and_reports_a_real_underrun() {
+        let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
+        let at = Instant::now();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let mut out = [0.0; 4];
+        assert!(source.push(&[1.0, 2.0, 3.0], at));
+        let input = reader.read(&mut out, 48_000, capture_at(3));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[0.0; 4]);
+
+        assert!(source.push(&[4.0], capture_at(3)));
+        let input = reader.read(&mut out, 48_000, capture_at(4));
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[1.0, 2.0, 3.0, 4.0]);
+
+        // The empty queue matters only when the next callback actually needs samples.
+        let input = reader.read(&mut out, 48_000, capture_at(8));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[0.0; 4]);
+
+        assert!(source.push(&[9.0, 10.0, 11.0, 12.0], capture_at(8)));
+        let input = reader.read(&mut out, 48_000, capture_at(12));
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[9.0, 10.0, 11.0, 12.0]);
+        assert_eq!(input.latency(), capture_at(12) - capture_at(8));
+
+        reader.shared.lost.store(true, Ordering::Release);
+        assert!(source.push(&[13.0, 14.0, 15.0, 16.0], capture_at(12)));
+        let input = reader.read(&mut out, 48_000, capture_at(16));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[0.0; 4]);
+    }
+
+    #[test]
+    fn overflow_reduces_monitoring_backlog_and_detects_the_sequence_gap() {
+        let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
+        let at = Instant::now();
+        let capture_at = |frame| at + crate::frames_to_duration(frame, 48_000);
+        let samples: Vec<f32> = (0..28).map(|frame| frame as f32).collect();
+        let mut out = [0.0; 2];
+        assert!(source.push(&samples[..4], at));
+        assert!(!reader.read(&mut out, 48_000, capture_at(4)).discontinuous());
+
+        // Two frames remain after the first read. Another eighteen fill the ring and
+        // drop four frames. Monitoring resumes at the freshest retained four.
+        assert!(!source.push(&samples[4..22], capture_at(4)));
+        assert_eq!(source.dropped(), 4);
+        let input = reader.read(&mut out, 48_000, capture_at(22));
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[14.0, 15.0]);
+        assert_eq!(input.latency(), capture_at(22) - capture_at(14));
+
+        // Detect the dropped interval even if it arrives after the overflow flag was read.
+        assert!(source.push(&samples[22..], capture_at(22)));
+        let input = reader.read(&mut out, 48_000, capture_at(24));
+        assert!(!input.discontinuous());
+        let input = reader.read(&mut out, 48_000, capture_at(26));
+        assert!(input.discontinuous());
+        assert_eq!(input.sample(0, 0), 17.0);
+        assert!((input.sample(0, 1) - 23.0).abs() < 0.1);
+        let input = reader.read(&mut out, 48_000, capture_at(28));
+        assert!(!input.discontinuous());
+        assert!((input.sample(0, 0) - 24.0).abs() < 0.1);
+        assert_eq!(
+            input.latency(),
+            capture_at(28) - capture_at(22) - crate::frames_to_duration(1, 48_000)
+        );
+    }
+
+    #[test]
+    fn sequence_gap_never_blends_samples_even_across_output_blocks() {
+        let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
+        let at = Instant::now();
+        let mut first = [0.0; 5];
+        let mut out = [0.0; 2];
+        assert!(source.push(&[0.25; 2], at));
+        source.sequence += 4;
+        assert!(source.push(&[-0.75; 5], at));
+        let input = reader.read(&mut first, 192_000, at);
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[0.25; 5]);
+        for _ in 0..2 {
+            let input = reader.read(&mut out, 192_000, at);
+            assert!(input.discontinuous());
+            assert_eq!(input.data(), &[0.25; 2]);
+        }
+        let input = reader.read(&mut out, 192_000, at);
+        assert!(input.discontinuous());
+        assert_eq!(input.data(), &[-0.75; 2]);
+        let input = reader.read(&mut out, 192_000, at);
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[-0.75; 2]);
+    }
+
+    #[test]
+    fn only_usable_devices_contribute_to_name_ambiguity() {
+        let device = |id: &str, channels, sample_rate| InputDeviceInfo {
+            id: Some(DeviceId(id.into())),
+            name: "Same label".into(),
+            channels,
+            is_default: false,
+            sample_rate,
+        };
+        let legacy = InputConfig {
+            device: Some("Same label".into()),
+            device_id: None,
+        };
+        let available = [
+            device("no-channels", 0, 48_000),
+            device("usable", 2, 48_000),
+            device("too-many-channels", 96, 48_000),
+            device("invalid-rate", 2, 0),
+        ];
+        assert_eq!(legacy.device_index(&available), Some(1));
+        let mut selected = legacy.clone();
+        selected.device_id = available[1].id.clone();
+        let two_usable = [device("other-usable", 2, 48_000), available[1].clone()];
+        assert_eq!(legacy.device_index(&two_usable), None);
+        assert_eq!(selected.device_index(&two_usable), Some(1));
+    }
+
+    #[test]
+    fn clock_follower_keeps_capture_continuous_within_its_correction_range() {
+        // One added or missing frame every sixteen 64-frame periods is about 0.1% drift.
+        // One every four periods is about 0.4% and outruns the 0.2% follower.
+        for (direction, every) in [(1, 16), (1, 4), (-1, 16), (-1, 4)] {
+            let (mut source, mut reader) = test_input(1, 48_000, 256).unwrap();
+            let at = Instant::now();
+            let samples = [0.25; 65];
+            let mut queued_until = 64;
+            let mut out = [0.0; 64];
+            assert!(source.push(&samples[..64], at));
+            let mut discontinuous = false;
+            for period in 1..=2_000 {
+                let extra = if period % every == 0 { direction } else { 0 };
+                let frames = (64 + extra) as usize;
+                let complete = source.push(
+                    &samples[..frames],
+                    at + crate::frames_to_duration(queued_until, 48_000),
+                );
+                queued_until += frames as u64;
+                let now = at + crate::frames_to_duration(queued_until, 48_000);
+                let input = reader.read(&mut out, 48_000, now);
+                discontinuous = input.discontinuous();
+                if direction > 0 {
+                    assert_eq!(discontinuous, !complete, "period {period}");
+                }
+                if discontinuous {
+                    break;
+                }
+            }
+            assert_eq!(discontinuous, every == 4, "drift direction {direction}");
+            assert_eq!(source.dropped() > 0, direction > 0 && every == 4);
+        }
+    }
+
     #[test]
     fn another_input_rate_is_converted_without_allocation() {
         let (mut source, mut reader) = test_input(1, 24_000, 64).unwrap();

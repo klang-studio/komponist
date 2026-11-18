@@ -1277,10 +1277,14 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   `AudioProcess::process_input` receives a borrowed interleaved `InputBuffer` at the output rate;
   its default implementation preserves output-only processors. A bounded SPSC bridge carries
   timestamped frames from the input callback to the output callback. Linear rate conversion and
-  a queue-depth clock follower (at most ±0.2%) align separate device clocks; a short priming lead
-  avoids recurring startup underruns. `InputBuffer::latency` includes capture and queue delay.
+  a clock follower (at most ±0.2%) align separate device clocks. The follower measures the queue
+  reserve before input bursts so differing callback periods do not skew the estimate. The bridge
+  keeps queued frames across complete bursts and trims stale backlog to the re-prime threshold after
+  a confirmed overflow. `InputBuffer::latency` includes capture and queue delay.
   Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
-  instead of joining samples across a gap. Callback buffers and queue storage are preallocated.
+  instead of joining samples across a gap. Monitoring holds the last sample instead of
+  interpolating across sequence gaps. Capture failures leave the output stream running and the
+  requested input available for reselection. Callback buffers and queue storage are preallocated.
   ASIO capture uses the output's driver and caches input metadata during normal enumeration;
   it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
   inject synthetic capture into the same bridge/null backend without opening hardware.
