@@ -183,7 +183,8 @@ impl App {
             .clone()
             .or_else(files::provisional_root)
             .ok_or_else(|| std::io::Error::other(self.lang.audio_record_folder_unavailable()))?;
-        Ok((files::directory(&root, &self.project().name)?, true))
+        std::fs::create_dir_all(&root)?;
+        Ok((root, true))
     }
 
     /// Owns an unsaved render until the project is saved, including across undo and redo.

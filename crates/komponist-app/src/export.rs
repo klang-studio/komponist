@@ -54,7 +54,7 @@ use komponist_engine::export::{
 use komponist_engine::{Command, Program, SlotId, TransportState};
 use komponist_ipc::RenderMode;
 use komponist_model::format::fmt_bar_pos;
-use komponist_model::{Project, Tick, TickRange};
+use komponist_model::{ClipId, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
@@ -251,6 +251,7 @@ fn work(
         program,
         track,
     } = input;
+    let flattening = track.is_some();
     let _ = to_ui.send(Message::Prepared);
     let result = go
         .recv()
@@ -272,12 +273,13 @@ fn work(
     if changed && let Err(errors) = engine.engine().set_sample_rate(device_rate) {
         failed.extend(errors.into_iter().map(|(slot, _)| slot));
     }
-    // `export` queued the recompiled program behind its Stop: the stream plays the program the
-    // app sent, as before the export (its slots are the same).
-    let _ = engine
-        .parts()
-        .1
-        .send(Command::SetProgram(Box::new(program)));
+    if !flattening {
+        // Full export queued the program at the export rate; restore the original program.
+        let _ = engine
+            .parts()
+            .1
+            .send(Command::SetProgram(Box::new(program)));
+    }
     // `export` queued Stop, the program and the old playhead; one frame lets them take
     // effect here, so the transport and the playhead the UI reads are right as soon as the
     // engine is back (else a Play right after the export could see the export's "playing" and
@@ -524,6 +526,11 @@ impl App {
     /// Advances the export: starts it when the devices are ready, shows the progress, takes
     /// the worker's messages. Called every frame.
     pub(crate) fn poll_export(&mut self) {
+        self.poll_export_step();
+        self.resume_after_flatten();
+    }
+
+    fn poll_export_step(&mut self) {
         let Some(run) = &self.export.run else {
             return;
         };
@@ -573,6 +580,7 @@ impl App {
                         .as_ref()
                         .is_some_and(|run| run.flatten.is_some());
                     self.export.run = None;
+                    self.dialogs.after_flatten = None;
                     self.close_export_dialog();
                     if flattening {
                         self.flatten_failed(self.lang.flatten_worker_failed());
@@ -628,7 +636,7 @@ impl App {
             && let Err(error) = flatten.prepare(self)
         {
             self.close_export_dialog();
-            self.flatten_error(error);
+            self.flatten_failed(error);
             return;
         }
         self.engine.sync(&self.doc);
@@ -721,7 +729,9 @@ impl App {
             match flatten.unavailable(self) {
                 Some((_, DeviceStatus::Loading)) if prepared.elapsed() < READY_TIMEOUT => return,
                 Some((id, _)) => Err(ExportError::DeviceFailed(id)),
-                None => Ok(()),
+                None => flatten
+                    .bad_sampler_pad(self)
+                    .map_or(Ok(()), |(id, _)| Err(ExportError::DeviceFailed(id))),
             }
         } else {
             let loading = self
@@ -841,18 +851,25 @@ impl App {
                 StatusKind::Error,
             ),
             Err(ExportError::Stretch { clip, reason }) => {
-                let name = self
-                    .project()
-                    .find_clip(clip)
-                    .map(|(_, clip)| &clip.name)
-                    .filter(|name| !name.trim().is_empty())
-                    .map_or_else(|| clip.0.to_string(), String::clone);
-                let lang = self.lang;
-                let why = crate::audio_error::reason(lang, reason);
-                self.set_status(lang.export_warp_failed(name, why), StatusKind::Error);
+                let (name, why) = self.warp_error(clip, reason);
+                self.set_status(self.lang.export_warp_failed(name, why), StatusKind::Error);
             }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }
+    }
+
+    fn warp_error(
+        &self,
+        clip: ClipId,
+        reason: komponist_engine::audio::StretchError,
+    ) -> (String, &'static str) {
+        let name = self
+            .project()
+            .find_clip(clip)
+            .map(|(_, clip)| &clip.name)
+            .filter(|name| !name.trim().is_empty())
+            .map_or_else(|| clip.0.to_string(), String::clone);
+        (name, crate::audio_error::reason(self.lang, reason))
     }
 
     fn set_export_render_mode(&mut self, run: &Run, mode: RenderMode) {
@@ -892,7 +909,7 @@ impl App {
         if matches!(self.ui.dialog, Some(Dialog::Export(_) | Dialog::Flatten))
             && !self.export.is_active()
         {
-            self.dispatch(Action::Ui(UiAction::CloseDialog));
+            self.close_modal_dialog();
         }
     }
 

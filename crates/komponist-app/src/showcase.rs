@@ -23,7 +23,8 @@
 //! The routing is built with the model's edits (`add_bus`, `add_send`, `set_send`, `set_sidechain`),
 //! so the demo holds exactly what the UI creates: a group, an effect bus with sends and a sidechain.
 //! The Arp track's context menu can flatten its MIDI effects, instrument and delay together into
-//! audio while the other tracks keep playing their original material.
+//! audio. Playback stops during rendering and the other tracks play their original material
+//! when playback resumes.
 //!
 //! Device states are written like the presets of the UI do: `{"params": …, "preset": "<name>"}`
 //! ([`Internal::preset_state`]); hexa's state is the factory patch.

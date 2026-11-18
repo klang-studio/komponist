@@ -162,11 +162,12 @@ fn flatten_reactivates_the_bridges_and_undo_restores_their_states() {
     let Some(dirs) = fixture_dirs() else {
         return;
     };
-    let dir = scratch("flatten-bridges");
-    let host = scanned_host(&dir, &dirs);
+    let dir = tempfile::tempdir().unwrap();
+    let host = scanned_host(dir.path(), &dirs);
     let project = pad_bar();
     let track = project.tracks[0].id;
-    let mut app = app_with(project.clone(), host).with_recording_directory(dir.join("audio"));
+    let mut app =
+        app_with(project.clone(), host).with_recording_directory(dir.path().join("audio"));
     app.step();
     app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
     step_until(&mut app, "flatten finished", |app| !app.is_exporting());

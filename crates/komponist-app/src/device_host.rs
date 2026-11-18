@@ -51,8 +51,8 @@ use komponist_ipc::{GuiSize, GuiTarget, NoteName, ParamInfo, ParamValue, PluginK
 use komponist_model::project::BUILTIN_HEXA;
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project};
 use komponist_plugins::{
-    Catalog, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError, PluginManager,
-    PluginManagerConfig, PluginManagerEvent, ProcessorSetup, ScanReport,
+    Catalog, DeviceSnapshots, DeviceStatus, FailReason, MissingPlugin, PluginDirs, PluginError,
+    PluginManager, PluginManagerConfig, PluginManagerEvent, ProcessorSetup, ScanReport,
 };
 
 /// Creates processors for devices and reports their runtime status.
@@ -261,16 +261,14 @@ pub trait DeviceHost {
         Vec::new()
     }
 
-    /// Snapshots bridged devices on a MIDI track before replacing its chain.
+    /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
+    /// bridges must return an error if any selected bridge lacks a usable snapshot.
     fn snapshot_selected_states(
         &mut self,
-        devices: &[DeviceId],
-        timeout: Duration,
-    ) -> Vec<(DeviceId, Arc<[u8]>)> {
-        self.snapshot_states(timeout)
-            .into_iter()
-            .filter(|(device, _)| devices.contains(device))
-            .collect()
+        _devices: &[DeviceId],
+        _timeout: Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        Ok(Vec::new())
     }
 
     /// Switches every bridge to realtime or offline processing (around an export).
@@ -278,11 +276,9 @@ pub trait DeviceHost {
         let _ = mode;
     }
 
-    /// Switches only the devices needed for an isolated offline render.
-    fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
-        let _ = devices;
-        self.set_render_mode(mode);
-    }
+    /// Switches only the devices needed for an isolated offline render. Hosts with bridges
+    /// implement the scoped switch independently of the full-project switch.
+    fn set_selected_render_mode(&mut self, _devices: &[DeviceId], _mode: RenderMode) {}
 
     /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
     fn shutdown(&mut self) {}
@@ -787,7 +783,7 @@ impl DeviceHost for PluginHost {
         &mut self,
         devices: &[DeviceId],
         timeout: Duration,
-    ) -> Vec<(DeviceId, Arc<[u8]>)> {
+    ) -> Result<DeviceSnapshots, DeviceId> {
         self.manager.snapshot_selected_states(devices, timeout)
     }
 

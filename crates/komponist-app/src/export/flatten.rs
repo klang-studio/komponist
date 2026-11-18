@@ -1,16 +1,16 @@
 //! Transaction around a single-track offline render. The document is edited only after success.
 
-use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use komponist_builtin::sampler::PadStatus;
 use komponist_engine::export::{
     BitDepth, ExportError, ExportJob, ExportReport, TRACK_TAIL_SECONDS, TrackExport,
 };
 use komponist_model::{DeviceId, Project, TrackId, TrackKind, edits};
-use komponist_plugins::DeviceStatus;
+use komponist_plugins::{DeviceSnapshots, DeviceStatus};
 
 use super::{Phase, Run};
 use crate::actions::{Action, SelectMode, SelectionChange, UiAction};
@@ -22,65 +22,51 @@ pub(super) struct Flatten {
     pub(super) name: String,
     pub(super) scope: Arc<TrackExport>,
     pub(super) requested: Instant,
-    snapshots: Vec<(DeviceId, Arc<[u8]>)>,
+    snapshots: DeviceSnapshots,
     original: Option<Arc<Project>>,
     asset: Asset,
 }
 
-/// The empty reservation and the rendered file have the same owner. Cancellation and every
-/// failure remove the reservation, or the WAV if the worker had already written it.
+/// A private project audio directory owns the WAV until the document references it.
 struct Asset {
     path: PathBuf,
     provisional: bool,
-    keep: bool,
+    directory: tempfile::TempDir,
 }
 
 impl Asset {
     fn reserve(app: &App, id: TrackId) -> io::Result<Self> {
         let (folder, provisional) = app.generated_audio_folder()?;
-        for index in 0..10_000 {
-            let path = folder.join(format!("flatten-{}-{index}.wav", id.0));
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
-                Ok(_) => {
-                    return Ok(Self {
-                        path,
-                        provisional,
-                        keep: false,
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("flatten-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
         }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "render file names exhausted",
-        ))
-    }
-}
-
-impl Drop for Asset {
-    fn drop(&mut self) {
-        if !self.keep {
-            let _ = fs::remove_file(&self.path);
-            if self.provisional
-                && let Some(folder) = self.path.parent()
-            {
-                let _ = fs::remove_dir(folder);
-            }
-        }
+        let directory = builder.tempdir_in(folder)?;
+        let path = directory.path().join(format!("flatten-{}.wav", id.0));
+        Ok(Self {
+            path,
+            provisional,
+            directory,
+        })
     }
 }
 
 impl Flatten {
-    pub(super) fn prepare(&mut self, app: &mut App) -> Result<(), ExportError> {
+    pub(super) fn prepare(&mut self, app: &mut App) -> Result<(), String> {
+        let changed = || app.lang.flatten_track_changed().to_owned();
         let project = Arc::clone(app.doc.project());
-        let scope = TrackExport::new(&project, self.id)?;
+        let scope = TrackExport::new(&project, self.id).map_err(|_| changed())?;
         if scope.range() != self.scope.range() || project.tempo != self.scope.project().tempo {
-            return Err(ExportError::InvalidTrack);
+            return Err(changed());
         }
         self.scope = Arc::new(scope);
-        let track = project.track(self.id).ok_or(ExportError::InvalidTrack)?;
+        if let Some((_, problem)) = self.bad_sampler_pad(app) {
+            return Err(problem);
+        }
+        let track = project.track(self.id).ok_or_else(changed)?;
         let ids: Vec<_> = track
             .channel
             .devices
@@ -90,7 +76,8 @@ impl Flatten {
         self.snapshots = app
             .engine
             .host_mut()
-            .snapshot_selected_states(&ids, SNAPSHOT_TIMEOUT);
+            .snapshot_selected_states(&ids, SNAPSHOT_TIMEOUT)
+            .map_err(|id| app.lang.flatten_state_failed(app.device_name(id)))?;
         self.original = Some(project);
         Ok(())
     }
@@ -99,16 +86,58 @@ impl Flatten {
         self.scope
             .devices()
             .filter_map(|id| {
-                let status = app.engine.device_status(id);
-                (status != DeviceStatus::Ok).then_some((id, status))
+                let host = app.engine.host();
+                match host.status(id) {
+                    DeviceStatus::Ok
+                        if host.sampler(id).is_some_and(|sampler| !sampler.is_idle()) =>
+                    {
+                        Some((id, DeviceStatus::Loading))
+                    }
+                    DeviceStatus::Ok => None,
+                    status => Some((id, status)),
+                }
             })
             .min_by_key(|(_, status)| *status == DeviceStatus::Loading)
     }
 
-    pub(super) fn finish(mut self, app: &mut App, result: Result<ExportReport, ExportError>) {
-        if let Err(error) = result {
-            app.flatten_error(error);
-            return;
+    pub(super) fn bad_sampler_pad(&self, app: &App) -> Option<(DeviceId, String)> {
+        for id in self.scope.devices() {
+            let Some(sampler) = app.engine.host().sampler(id) else {
+                continue;
+            };
+            for (pad, view) in sampler.views().into_iter().enumerate() {
+                if view.link.is_some()
+                    && matches!(view.status, PadStatus::Missing | PadStatus::Failed(_))
+                {
+                    return Some((
+                        id,
+                        app.lang
+                            .flatten_pad_failed(app.device_name(id), pad + 1, view.name),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn finish(self, app: &mut App, result: Result<ExportReport, ExportError>) {
+        match result {
+            Err(ExportError::DeviceFailed(id))
+                if let Some((failed, problem)) = self.bad_sampler_pad(app)
+                    && failed == id =>
+            {
+                app.flatten_failed(problem);
+                return;
+            }
+            Err(error) => {
+                app.flatten_error(error);
+                return;
+            }
+            Ok(_) if let Some((_, problem)) = self.bad_sampler_pad(app) => {
+                app.flatten_failed(problem);
+                return;
+            }
+            Ok(_) => {}
         }
         let Some(original) = self.original.as_ref() else {
             app.flatten_failed(app.lang.flatten_worker_failed());
@@ -173,7 +202,7 @@ impl Flatten {
         if self.asset.provisional {
             app.track_provisional_audio(self.asset.path.clone());
         }
-        self.asset.keep = true;
+        let _ = self.asset.directory.keep();
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Clips {
             clips: vec![clip],
             mode: SelectMode::Replace,
@@ -280,6 +309,10 @@ impl App {
             }
             ExportError::MissingAudio(path) => {
                 self.flatten_failed(self.lang.export_missing_audio(path.display()))
+            }
+            ExportError::Stretch { clip, reason } => {
+                let (name, why) = self.warp_error(clip, reason);
+                self.flatten_failed(self.lang.flatten_warp_failed(name, why));
             }
             error => self.flatten_failed(error),
         }

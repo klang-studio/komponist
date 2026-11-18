@@ -255,19 +255,6 @@ pub fn fmt_bpm(bpm: f64) -> String {
 impl App {
     /// New, open, save, save as and the S06 answers (`ProjectAction`, module docs).
     pub(crate) fn lifecycle_action(&mut self, action: ProjectAction) {
-        // A native menu or a desktop file-open request can arrive while the render modal is up.
-        // Give back the engine and discard the pending replacement before changing documents.
-        if self.export.is_flattening()
-            && matches!(
-                action,
-                ProjectAction::New
-                    | ProjectAction::Open
-                    | ProjectAction::OpenPath(_)
-                    | ProjectAction::ShowStartScreen
-            )
-        {
-            self.shutdown_export();
-        }
         match action {
             ProjectAction::New => self.guard(Pending::New),
             ProjectAction::Open => self.guard(Pending::Open),
@@ -338,11 +325,31 @@ impl App {
 
     /// `next` replaces the open project: asks first if it has unsaved changes.
     fn guard(&mut self, next: Pending) {
+        // Native menu and desktop file-open requests can arrive above the render modal. Cancel
+        // without blocking the UI and reconsider unsaved changes once the engine is back.
+        if next == Pending::Quit {
+            self.dialogs.after_flatten = None;
+        } else if self.export.is_flattening() {
+            self.dialogs.after_flatten = Some(next);
+            self.cancel_export();
+            self.resume_after_flatten();
+            return;
+        }
         if self.ui.screen == Screen::Project && self.has_unsaved() {
             self.dialogs.pending = Some(next);
             self.open_overlay(Overlay::Unsaved);
         } else {
             self.proceed(next);
+        }
+    }
+
+    pub(crate) fn resume_after_flatten(&mut self) {
+        if !self.export.is_flattening()
+            && !self.engine.is_detached()
+            && self.dialogs.overlay.is_none()
+            && let Some(next) = self.dialogs.after_flatten.take()
+        {
+            self.guard(next);
         }
     }
 
@@ -366,6 +373,9 @@ impl App {
             Pending::Open => self.open_file_browser(Purpose::Open),
             Pending::OpenPath(path) => self.open_path(path),
             Pending::Quit => {
+                if self.export.is_flattening() {
+                    self.cancel_export();
+                }
                 self.dialogs.quit_confirmed = true;
                 self.dialogs.close_now = true;
             }
@@ -377,6 +387,9 @@ impl App {
     /// "Speichern" or "Nicht speichern" the window closes by itself.
     pub fn close_requested(&mut self) -> bool {
         if self.dialogs.quit_confirmed || self.ui.screen != Screen::Project || !self.has_unsaved() {
+            if self.export.is_flattening() {
+                self.cancel_export();
+            }
             return true;
         }
         if !matches!(self.dialogs.overlay, Some(Overlay::Unsaved)) {
@@ -599,6 +612,7 @@ impl App {
         if let Some(focus) = self.dialogs.overlay_focus.take() {
             self.ui.focus = focus;
         }
+        self.open_queued_dialog();
         true
     }
 

@@ -60,6 +60,8 @@ pub(crate) struct DialogState {
     pub(crate) overlay_focus: Option<FocusArea>,
     /// What continues after the unsaved-changes prompt or the save dialog it opened.
     pub(crate) pending: Option<Pending>,
+    /// A project change waiting for the cancelled flatten worker to return the engine.
+    pub(crate) after_flatten: Option<Pending>,
     /// A dialog that arrived while an export ran: it opens when the export dialog closes
     /// (the export dialog stays on top while it renders).
     pub(crate) queued: Option<crate::ui_state::Dialog>,

@@ -2541,6 +2541,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "windows-sys 0.61.2",
  "winit",
  "x11rb 0.14.0",
@@ -2629,6 +2630,7 @@ dependencies = [
  "komponist-stretch",
  "rtrb",
  "rustix 1.1.6",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 

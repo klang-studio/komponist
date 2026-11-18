@@ -376,6 +376,22 @@ fn a_state_that_fails_to_load_is_kept_until_the_user_changes_something() {
     let states = rig.manager.snapshot_states(PATIENCE);
     let devices: Vec<u64> = states.iter().map(|(d, _)| d.0).collect();
     assert_eq!(devices, [20]);
+    // Ordinary save can use the last known state. Replacing a running device requires a fresh,
+    // restorable snapshot and rejects it if the bridge kept an unusable blob.
+    assert_eq!(
+        rig.manager
+            .snapshot_selected_states(&[DeviceId(10), DeviceId(20)], PATIENCE),
+        Err(DeviceId(10))
+    );
+    // A device with no running bridge does not require a live snapshot.
+    let only_healthy = rig
+        .manager
+        .snapshot_selected_states(&[DeviceId(20), DeviceId(999)], PATIENCE)
+        .unwrap();
+    assert_eq!(
+        only_healthy.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        [DeviceId(20)]
+    );
     let mut document = Document::new(original);
     for (device, state) in states {
         document

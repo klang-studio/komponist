@@ -88,6 +88,9 @@ pub enum FailReason {
     Unresponsive,
 }
 
+/// State blobs captured from running plugin bridges.
+pub type DeviceSnapshots = Vec<(DeviceId, Arc<[u8]>)>;
+
 /// Something the app has to react to, returned by [`PluginManager::poll`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginManagerEvent {
@@ -636,13 +639,26 @@ impl PluginManager {
         self.snapshot_states_if(timeout, |_| true)
     }
 
-    /// Captures only the external devices that a single-track render will replace.
+    /// Captures every running bridge on the track to be replaced. Devices without a running
+    /// bridge keep their document state. Returns the first bridge that could not be snapshotted.
     pub fn snapshot_selected_states(
         &mut self,
         devices: &[DeviceId],
         timeout: Duration,
-    ) -> Vec<(DeviceId, Arc<[u8]>)> {
-        self.snapshot_states_if(timeout, |device| devices.contains(&device))
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        let live: Vec<_> = devices
+            .iter()
+            .copied()
+            .filter(|device| self.bridges.get(device).is_some_and(Bridge::is_running))
+            .collect();
+        let states = self.snapshot_states_if(timeout, |device| live.contains(&device));
+        if let Some(device) = live
+            .into_iter()
+            .find(|device| !states.iter().any(|(captured, _)| captured == device))
+        {
+            return Err(device);
+        }
+        Ok(states)
     }
 
     fn snapshot_states_if(
@@ -675,7 +691,7 @@ impl PluginManager {
                             .push(PluginManagerEvent::StateSnapshot { device, state });
                     }
                 }
-                if !bridge.is_running() {
+                if !bridge.is_running() || !bridge.state_request_pending(request) {
                     waiting.remove(&device);
                 }
             }

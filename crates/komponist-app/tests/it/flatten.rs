@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
@@ -9,26 +10,30 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::device_host::{BuiltinHost, DeviceHost};
 use komponist_app::project_io::{load_project, save_project};
-use komponist_app::ui_state::StatusKind;
+use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
 use komponist_builtin::Internal;
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
 };
 use komponist_i18n::Lang;
+use komponist_ipc::RenderMode;
 use komponist_model::edits::{self, NewBus, NewClip, NewClipContent, NewDevice, NewNote, NewTrack};
 use komponist_model::{
     ChannelRef, ClipContent, Device, DeviceId, DeviceRole, PluginFormat, PluginRef, Project,
     Sidechain, Tap, Tick, TrackId, TrackKind,
 };
-use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
+use komponist_plugins::{
+    Catalog, DeviceSnapshots, DeviceStatus, PluginManagerEvent, ProcessorSetup,
+};
 
-use crate::export::{read, scratch, step_until};
+use crate::export::{read, step_until};
 
 const FIRST: Tick = Tick(1920);
 const SECOND: Tick = Tick(4800);
 const LENGTH: Tick = Tick(480);
 const TAIL: usize = 115_200; // 2.4 s at 48 kHz
+const ECHO_GAP: usize = 192_000; // 4 s at 48 kHz
 
 fn plugin(id: &str) -> PluginRef {
     PluginRef {
@@ -136,7 +141,11 @@ fn fixture() -> (Project, TrackId, DeviceId) {
 
 enum TestProcessor {
     Instrument(f32),
-    Tail { value: f32, remaining: usize },
+    Tail {
+        value: f32,
+        remaining: usize,
+        delay: usize,
+    },
     Broken,
 }
 
@@ -150,7 +159,9 @@ impl Processor for TestProcessor {
     fn reset(&mut self) {
         match self {
             Self::Instrument(level) => *level = 0.0,
-            Self::Tail { value, remaining } => {
+            Self::Tail {
+                value, remaining, ..
+            } => {
                 *value = 0.0;
                 *remaining = 0;
             }
@@ -201,18 +212,27 @@ impl Processor for TestProcessor {
         io: &mut StereoIo<'_>,
         side: [&[f32]; 2],
     ) -> ProcessStatus {
-        let Self::Tail { value, remaining } = self else {
+        let Self::Tail {
+            value,
+            remaining,
+            delay,
+        } = self
+        else {
             return self.process(ctx, events, io);
         };
         for (i, &side_sample) in side[0][..ctx.frames as usize].iter().enumerate() {
             let dry = io.input[0][i] * side_sample;
             let sample = if dry != 0.0 {
                 *value = dry;
-                *remaining = TAIL;
-                dry
+                *remaining = TAIL + *delay;
+                if *delay == 0 { dry } else { 0.0 }
             } else if *remaining > 0 {
                 *remaining -= 1;
-                *value * (*remaining as f32 / TAIL as f32) * 0.25
+                if *remaining < TAIL {
+                    *value * (*remaining as f32 / TAIL as f32) * 0.25
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             };
@@ -223,11 +243,20 @@ impl Processor for TestProcessor {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fixture {
+    Ready,
+    Broken,
+    Loading,
+    WasNotSnapshotted,
+    DelayedEcho,
+}
+
 struct Host {
     builtins: BuiltinHost,
-    state: Option<DeviceId>,
-    fail: bool,
-    loading: bool,
+    state: DeviceId,
+    fixture: Fixture,
+    global_mode_changes: Arc<AtomicUsize>,
 }
 
 impl DeviceHost for Host {
@@ -238,10 +267,15 @@ impl DeviceHost for Host {
     ) -> Option<Box<dyn Processor>> {
         match device.plugin.id.as_str() {
             "instrument" => Some(Box::new(TestProcessor::Instrument(0.0))),
-            "tail" if self.fail => Some(Box::new(TestProcessor::Broken)),
+            "tail" if self.fixture == Fixture::Broken => Some(Box::new(TestProcessor::Broken)),
             "tail" => Some(Box::new(TestProcessor::Tail {
                 value: 0.0,
                 remaining: 0,
+                delay: if self.fixture == Fixture::DelayedEcho {
+                    ECHO_GAP
+                } else {
+                    0
+                },
             })),
             _ => self.builtins.create_processor(device, setup),
         }
@@ -250,7 +284,7 @@ impl DeviceHost for Host {
         self.builtins.release(device);
     }
     fn status(&self, device: DeviceId) -> DeviceStatus {
-        if self.loading && self.state == Some(device) {
+        if self.fixture == Fixture::Loading && self.state == device {
             DeviceStatus::Loading
         } else {
             self.builtins.status(device)
@@ -268,20 +302,43 @@ impl DeviceHost for Host {
     fn catalog(&self) -> &Catalog {
         self.builtins.catalog()
     }
-    fn snapshot_states(&mut self, _: std::time::Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
-        self.state
-            .map(|id| (id, Arc::from(&b"latest plugin settings"[..])))
-            .into_iter()
-            .collect()
+    fn snapshot_selected_states(
+        &mut self,
+        ids: &[DeviceId],
+        _: std::time::Duration,
+    ) -> Result<DeviceSnapshots, DeviceId> {
+        if !ids.contains(&self.state) {
+            return Ok(Vec::new());
+        }
+        if self.fixture == Fixture::WasNotSnapshotted {
+            return Err(self.state);
+        }
+        Ok(vec![(
+            self.state,
+            Arc::from(&b"latest plugin settings"[..]),
+        )])
+    }
+    fn set_render_mode(&mut self, _: RenderMode) {
+        self.global_mode_changes.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-fn app(project: Project, folder: &Path, effect: DeviceId, fail: bool, loading: bool) -> App {
+fn app(project: Project, folder: &Path, effect: DeviceId, fixture: Fixture) -> App {
+    app_with_mode_counter(project, folder, effect, fixture, Arc::default())
+}
+
+fn app_with_mode_counter(
+    project: Project,
+    folder: &Path,
+    effect: DeviceId,
+    fixture: Fixture,
+    global_mode_changes: Arc<AtomicUsize>,
+) -> App {
     let host = Host {
         builtins: BuiltinHost::new(),
-        state: Some(effect),
-        fail,
-        loading,
+        state: effect,
+        fixture,
+        global_mode_changes,
     };
     let mut app = App::headless(project)
         .with_device_host(Box::new(host))
@@ -308,10 +365,22 @@ fn audio_path(app: &App, track: TrackId) -> PathBuf {
 
 #[test]
 fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
-    let dir = scratch("flatten-chain");
+    let dir = tempfile::tempdir().unwrap();
     let (project, track, effect) = fixture();
-    let mut app = app(project.clone(), &dir, effect, false, false);
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut app = app_with_mode_counter(
+        project.clone(),
+        dir.path(),
+        effect,
+        Fixture::Ready,
+        Arc::clone(&count),
+    );
     flatten(&mut app, track);
+    assert_eq!(
+        count.load(Ordering::Relaxed),
+        0,
+        "flatten must never switch the whole host"
+    );
 
     let path = audio_path(&app, track);
     let old = project.track(track).unwrap();
@@ -369,21 +438,207 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
 
 #[test]
 fn a_failed_render_leaves_the_original_project_history_and_no_wav() {
-    let dir = scratch("flatten-failure");
+    let dir = tempfile::tempdir().unwrap();
     let (project, track, effect) = fixture();
-    let mut app = app(project.clone(), &dir, effect, true, false);
+    let mut app = app(project.clone(), dir.path(), effect, Fixture::Broken);
     flatten(&mut app, track);
     assert_eq!(app.project().as_ref(), &project);
     assert!(!app.doc().is_dirty());
     assert!(app.doc().undo_label().is_none());
-    assert!(dir.read_dir().unwrap().next().is_none());
+    assert!(dir.path().read_dir().unwrap().next().is_none());
     assert_eq!(app.ui().status.as_ref().unwrap().kind, StatusKind::Error);
     assert!(!app.engine().is_detached());
 }
 
 #[test]
+fn a_failed_live_snapshot_blocks_replacing_the_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let (project, track, effect) = fixture();
+    let mut app = app(
+        project.clone(),
+        dir.path(),
+        effect,
+        Fixture::WasNotSnapshotted,
+    );
+    flatten(&mut app, track);
+    assert_eq!(app.project().as_ref(), &project);
+    assert!(app.doc().undo_label().is_none());
+    assert!(!app.engine().is_detached());
+    assert!(dir.path().read_dir().unwrap().next().is_none());
+    let lang = app.lang();
+    assert_eq!(
+        app.ui().status.as_ref().unwrap().text,
+        lang.flatten_failed(lang.flatten_state_failed("tail"))
+    );
+}
+
+#[test]
+fn flatten_keeps_a_wet_only_echo_after_four_seconds_of_silence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (project, track, effect) = fixture();
+    let mut app = app(project.clone(), dir.path(), effect, Fixture::DelayedEcho);
+    flatten(&mut app, track);
+    let wav = read(&audio_path(&app, track));
+    assert_eq!(wav.spec.sample_rate, 48_000);
+    let body = project
+        .tempo_map()
+        .tick_to_sample(SECOND + LENGTH - FIRST, 48_000.0) as usize;
+    let echo = (body + ECHO_GAP) * 2;
+    assert!(wav.samples[..echo].iter().all(|&sample| sample == 0.0));
+    assert!(
+        wav.samples[echo..echo + 512]
+            .iter()
+            .any(|&sample| sample > 0.08)
+    );
+}
+
+#[test]
+fn an_unreadable_linked_pad_blocks_flattening() {
+    use komponist_builtin::sampler::links::{self, SampleLink};
+
+    let dir = tempfile::tempdir().unwrap();
+    let sample = dir.path().join("corrupt.wav");
+    std::fs::write(&sample, b"unreadable sample").unwrap();
+    let (project, track) = edits::add_track(
+        &Project::new("Sampler"),
+        NewTrack {
+            name: None,
+            hue: None,
+            index: None,
+            arm_exclusive: false,
+            instrument: Some(Internal::Sampler.plugin_ref()),
+        },
+    )
+    .unwrap();
+    let id = project.track(track).unwrap().channel.devices[0].id;
+    let state = links::write(None, 0, Some(&SampleLink::new(&sample, None)));
+    let project = edits::set_device_state(&project, id, Some(state.into())).unwrap();
+    let project = clip(&project, track, FIRST, 36, LENGTH);
+    let output = dir.path().join("render");
+    let mut app = App::headless(project.clone()).with_recording_directory(&output);
+    app.step();
+    flatten(&mut app, track);
+    let lang = app.lang();
+    assert_eq!(
+        app.ui().status.as_ref().unwrap().text,
+        lang.flatten_failed(lang.flatten_pad_failed("Sampler", 1, "corrupt"))
+    );
+    assert_eq!(app.project().as_ref(), &project);
+    assert!(output.read_dir().unwrap().next().is_none());
+}
+
+#[test]
+fn a_warp_failure_names_the_sidechain_clip_in_both_languages() {
+    let dir = tempfile::tempdir().unwrap();
+    let sample = dir.path().join("invalid.wav");
+    let mut writer = hound::WavWriter::create(
+        &sample,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )
+    .unwrap();
+    for _ in 0..48_000 {
+        writer.write_sample(f32::NAN).unwrap();
+    }
+    writer.finalize().unwrap();
+    let (project, track, effect) = fixture();
+    let (project, sidechain) =
+        edits::add_audio_track(&project, edits::NewAudioTrack::default()).unwrap();
+    let (project, clip) = edits::add_clip(
+        &project,
+        sidechain,
+        NewClip {
+            start: FIRST,
+            length: Tick(960),
+            name: "Warp control".into(),
+            content: NewClipContent::Audio {
+                file: komponist_model::AudioFile::new(&sample, None, 48_000, 48_000, 1),
+                offset: 0,
+            },
+        },
+    )
+    .unwrap();
+    let project = edits::set_audio_clip_warp(&project, clip, true).unwrap();
+    let project = edits::set_sidechain(&project, effect, Some(Sidechain::new(sidechain))).unwrap();
+    for lang in [Lang::De, Lang::En] {
+        let output = dir.path().join(lang.code());
+        let mut app = app(project.clone(), &output, effect, Fixture::Ready).with_lang(lang);
+        flatten(&mut app, track);
+        assert_eq!(app.project().as_ref(), &project);
+        assert!(output.read_dir().unwrap().next().is_none());
+        assert_eq!(
+            app.ui().status.as_ref().unwrap().text,
+            lang.flatten_failed(lang.flatten_warp_failed("Warp control", lang.export_warp_input()))
+        );
+    }
+}
+
+#[test]
+fn opening_a_project_cancels_flatten_without_waiting_on_the_ui_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (project, track, effect) = fixture();
+    let path = dir.path().join("Next.komponist");
+    save_project(&path, &Project::new("Next")).unwrap();
+    let output = dir.path().join("render");
+    let mut app = app(project.clone(), &output, effect, Fixture::Ready);
+    app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
+    assert!(app.engine().is_detached());
+    app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
+    assert_eq!(app.project().as_ref(), &project);
+    assert!(app.is_exporting());
+    step_until(&mut app, "pending project open", |app| {
+        app.project_path() == Some(path.as_path())
+    });
+    assert!(!app.engine().is_detached());
+    assert!(!app.is_exporting());
+    assert!(output.read_dir().unwrap().next().is_none());
+}
+
+#[test]
+fn finishing_flatten_keeps_the_quit_prompt_and_its_save_action() {
+    let dir = tempfile::tempdir().unwrap();
+    let (project, track, effect) = fixture();
+    let path = dir.path().join("Work.komponist");
+    save_project(&path, &project).unwrap();
+    let mut app = app(Project::new(""), dir.path(), effect, Fixture::Ready);
+    app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
+    app.step();
+    app.dispatch(Action::Project(ProjectAction::ContinueWithMissing));
+    app.dispatch(Action::Edit(EditAction::SetTrackProp {
+        tracks: vec![track],
+        prop: edits::TrackProp::Name("Edited lead".into()),
+    }));
+    app.dispatch(Action::Edit(EditAction::FlattenMidiTrack(track)));
+    assert!(app.is_exporting());
+    assert!(!app.close_requested());
+    step_until(&mut app, "flatten finished below quit prompt", |app| {
+        !app.is_exporting()
+    });
+    assert_eq!(app.ui().focus, FocusArea::Dialog);
+    assert!(app.ui().dialog.is_none());
+    assert!(audio_path(&app, track).is_file());
+    let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+        .with_size(vec2(1440.0, 900.0))
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run_steps(3);
+    h.get_by_value("Änderungen speichern?");
+    h.get_by_label("Speichern").click();
+    h.run_steps(3);
+    assert!(h.state_mut().close_requested());
+    assert_eq!(
+        load_project(&path).unwrap().track(track).unwrap().kind,
+        TrackKind::Audio
+    );
+}
+
+#[test]
 fn a_saved_render_reopens_from_the_project_takes_folder() {
-    let dir = scratch("flatten-reopen");
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path();
     let (mut project, track, effect) = fixture();
     let source = Arc::make_mut(project.tracks.iter_mut().find(|t| t.id == track).unwrap());
     source.channel.mute = false;
@@ -391,7 +646,7 @@ fn a_saved_render_reopens_from_the_project_takes_folder() {
     Arc::make_mut(&mut project.master).mute = false;
     let path = dir.join("Flatten.komponist");
     save_project(&path, &project).unwrap();
-    let mut app = app(Project::new(""), &dir, effect, false, false);
+    let mut app = app(Project::new(""), dir, effect, Fixture::Ready);
     app.dispatch(Action::Project(ProjectAction::OpenPath(path.clone())));
     app.step();
     app.dispatch(Action::Project(ProjectAction::ContinueWithMissing));
@@ -406,7 +661,7 @@ fn a_saved_render_reopens_from_the_project_takes_folder() {
     reopened.engine_mut().hold_engine().unwrap();
     reopened.step();
     assert_eq!(audio_path(&reopened, track), file);
-    let settings = crate::export::export_settings(&dir, komponist_app::actions::ExportRange::Song);
+    let settings = crate::export::export_settings(dir, komponist_app::actions::ExportRange::Song);
     crate::export::export(&mut reopened, settings);
     let played = read(&reopened.exported()[0]);
     let first = project
@@ -441,7 +696,8 @@ fn click_at(h: &mut Harness<'_, App>, pos: Pos2, button: PointerButton) {
 
 #[test]
 fn first_save_moves_the_demo_render_even_when_it_is_only_in_redo_history() {
-    let dir = scratch("flatten-first-save");
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path();
     let project = komponist_app::showcase::showcase_project();
     let track = project
         .tracks
@@ -486,9 +742,9 @@ fn first_save_moves_the_demo_render_even_when_it_is_only_in_redo_history() {
 fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
     let mut results = SnapshotResults::new();
     for (lang, name) in [(Lang::De, "flatten-wait-de"), (Lang::En, "flatten-wait-en")] {
-        let dir = scratch(name);
+        let dir = tempfile::tempdir().unwrap();
         let (project, track, effect) = fixture();
-        let app = app(project.clone(), &dir, effect, false, true).with_lang(lang);
+        let app = app(project.clone(), dir.path(), effect, Fixture::Loading).with_lang(lang);
         let mut h = komponist_ui::snapshot::builder::<App>(1.0)
             .with_size(vec2(1440.0, 900.0))
             .with_options(SnapshotOptions::new().output_path("tests/snapshots"))
@@ -525,7 +781,7 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
         assert!(!h.state().is_exporting());
         assert_eq!(h.state().project().as_ref(), &project);
         assert!(h.state().project().track(track).unwrap().kind == TrackKind::Midi);
-        assert!(dir.read_dir().unwrap().next().is_none());
+        assert!(dir.path().read_dir().unwrap().next().is_none());
         results.extend_harness(&mut h);
     }
 }

@@ -12,6 +12,9 @@ flatten-no-clips = Wähle eine MIDI-Spur mit Clips.
 flatten-track-changed = Die Spur oder ihre Signalquellen haben sich während des Renderns geändert.
 flatten-worker-failed = Der Rendervorgang wurde unterbrochen.
 flatten-missing-sample = Sample nicht gefunden · { $file }
+flatten-pad-failed = { $device }, Pad { $pad } „{ $sample }“ konnte nicht geladen werden.
+flatten-state-failed = Der aktuelle Zustand von „{ $device }“ konnte für Rückgängig nicht gesichert werden.
+flatten-warp-failed = Warp im Audioclip „{ $clip }“ · { $reason }
 
 # S08 row label and name of the range control.
 export-range = Bereich
