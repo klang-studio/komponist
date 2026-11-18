@@ -21,8 +21,8 @@ audio-clip-source-start = Quell-Start
 audio-clip-gain = Gain
 audio-clip-repitch = Re-Pitch
 audio-clip-original-tempo = Originaltempo
-audio-clip-bar-count = Takte
-audio-clip-bars = = { $n } Takte
+audio-clip-bar-count = Quelle auf
+audio-clip-bars = { $n } Takte
 audio-waveform-title = Wellenform, { $name }
 audio-source-start = Dateianfang
 audio-source-end = Dateiende
@@ -135,3 +135,20 @@ audio-record-complete = Aufnahme abgeschlossen · { $count } Takes
 audio-record-apply-failed = Aufnahme konnte nicht ins Projekt übernommen werden · Dateien bleiben erhalten
 audio-monitor-tip = Monitoring: { $mode }
 status-recording-input = ● Aufnahme läuft · { $tracks } · { $input }
+
+# Approved #14 Warp UI: exclusive playback mode and full-source interpretation.
+audio-clip-mode = Modus
+audio-clip-fixed = Fix
+audio-clip-warp = Warp
+audio-clip-mode-help = Fix: Originalgeschwindigkeit. Re-Pitch: Tempo folgen, Tonhöhe ändern. Warp: Tempo folgen, Tonhöhe beibehalten.
+audio-clip-source-bars-help = Gesamte aktive Quelldatei im aktuellen Taktmaß, nicht der getrimmte Clip. Keine Tempoerkennung.
+audio-clip-duration = Dauer
+audio-clip-duration-value = Dauer { $ratio }×
+audio-clip-duration-help = Ausgabedauer / Quelldauer: { $ratio }× · Originaltempo / Projekttempo
+audio-clip-preserve-pitch = Tonhöhe beibehalten
+audio-clip-original-speed = Originalgeschwindigkeit
+audio-source-ruler = Quellzeit
+audio-source-time = Quelle { $source } ↔ Song { $song }
+audio-warp-error = Warp-Fehler aufgetreten: { $reason }
+audio-source-ruler-short = Quelle
+audio-song-ruler = Song

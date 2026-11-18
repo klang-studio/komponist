@@ -113,7 +113,7 @@ pub fn number(
         .default_value(default)
         .unit(unit)
         .width(width);
-    if key && field != Field::Bars {
+    if key {
         widget = widget.key(name);
     }
     widget = match field {
@@ -143,9 +143,16 @@ pub fn number(
         _ => widget.decimals(0),
     };
     let r = ui.add_enabled(
-        !matches!(field, Field::Tempo | Field::Bars) || a.time_mode == ClipTimeMode::RePitch,
+        !matches!(field, Field::Tempo | Field::Bars)
+            || a.time_mode == ClipTimeMode::RePitch
+            || a.warp_enabled(),
         widget,
     );
+    if matches!(field, Field::Tempo | Field::Bars) {
+        komponist_ui::widgets::accesskit(&r, |node| {
+            node.set_description(ctx.lang.audio_clip_source_bars_help())
+        });
+    }
     let (prop, label) = match field {
         Field::Gain => (AudioClipProp::GainDb(value as f32), "undo-clip-gain"),
         Field::FadeIn => (

@@ -68,7 +68,18 @@ pub(super) fn section(
             match &clip.content {
                 ClipContent::Midi(_) => midi_fields(ui, ctx, project, col, clip),
                 ClipContent::Step(step) => step_fields(ui, ctx, project, col, clip, step),
-                ClipContent::Audio(a) => super::audio::fields(ui, ctx, project, col, clip, a),
+                ClipContent::Audio(a) => {
+                    insp.audio_source.refresh(a, ctx, ui.ctx());
+                    super::audio::fields(
+                        ui,
+                        ctx,
+                        project,
+                        col,
+                        clip,
+                        a,
+                        insp.audio_source.file.is_some(),
+                    );
+                }
             }
             if let ClipContent::Audio(audio) = &clip.content {
                 super::audio_takes::show(&mut insp.audio_takes, ui, ctx, col, clip, audio);

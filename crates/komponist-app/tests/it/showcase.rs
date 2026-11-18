@@ -128,7 +128,7 @@ fn the_song_is_the_design_fixtures_song() {
         .filter(|t| !t.is_bus() && !t.is_audio())
         .collect();
     assert_eq!(songs.len(), fixture.tracks.len());
-    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 4);
+    assert_eq!(showcase.tracks.len(), fixture.tracks.len() + 5);
     for (i, (a, b)) in songs.iter().zip(&fixture.tracks).enumerate() {
         assert_eq!(
             (&a.name, a.hue, a.channel.pan),
@@ -299,7 +299,7 @@ fn loading_the_demo_synthesizes_deterministic_non_silent_audio_files() {
     let dir = scratch("demo-audio");
     let p = komponist_app::samples::demo_with_kit(showcase_project(), &dir.join("a")).unwrap();
     let second = komponist_app::samples::demo_with_kit(showcase_project(), &dir.join("b")).unwrap();
-    for name in ["Shaker", "Sweep"] {
+    for name in ["Shaker", "Sweep", "Pulse 90"] {
         let clip = &track_named(&p, name).clips[0];
         let ClipContent::Audio(audio) = &clip.content else {
             panic!("audio clip");
@@ -407,4 +407,29 @@ fn render_levels() {
     // The master's Limiter has 3 dB of input gain; keep its peak reduction around 2 dB or less.
     let reduction = input_peak + 3.0 - master_peak;
     assert!(reduction <= 2.0, "limiter peak reduction {reduction} dB");
+}
+
+#[test]
+fn synthesized_pulse_loop_uses_opt_in_warp_without_changing_the_showcase_tempo() {
+    let p = showcase_project();
+    let pulse = track_named(&p, "Pulse 90");
+    let c = &pulse.clips[0];
+    let ClipContent::Audio(a) = &c.content else {
+        panic!("audio")
+    };
+    assert_eq!(p.tempo.bpm, 124.0);
+    assert_eq!(
+        (c.start, c.length),
+        (
+            komponist_model::Tick(4 * 3840),
+            komponist_model::Tick(2 * 3840)
+        )
+    );
+    assert!(a.warp_enabled());
+    assert_eq!(a.original_tempo.bpm, 90.0);
+    assert_eq!(
+        (a.file.frames, a.file.sample_rate, a.file.channels),
+        (256000, 48000, 2)
+    );
+    assert_eq!(a.source_frames(c.length, p.tempo), 256000);
 }
