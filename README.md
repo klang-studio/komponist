@@ -28,7 +28,7 @@ English and German; it follows your desktop language, and Settings › Appearanc
 
 ### Arrangement, piano roll, step sequencer
 
-Arrange MIDI, step and linked audio clips on tracks, with a snapping grid, loop range, split, duplicate, and a full undo history.
+Arrange MIDI, step and linked audio clips on tracks, with a snapping grid, split, duplicate, and a full undo history.
 Open a clip in the dock below to edit it. The demo includes a mono Shaker loop and a stereo Sweep alongside the instruments.
 
 ![The arrangement of the demo project with the playhead running](docs/media/arrangement.png)

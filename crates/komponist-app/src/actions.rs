@@ -72,9 +72,9 @@ pub enum TransportAction {
     ToggleCountIn,
     /// Pos1: to the loop start (loop on) or tick 0.
     GoToStart,
-    /// Ruler top: set the playhead.
+    /// Set the playhead.
     Locate(Tick),
-    /// Ruler bottom (loop bar): set the loop range (bar-aligned by the caller) and turn loop on.
+    /// Set the loop range and turn loop on.
     SetLoopRange(TickRange),
     /// Computer keyboard MIDI or step-row audition: a live note on `track`, or with `None` on the
     /// first armed track, else the selected track (prototype `liveTrack`). Velocity 0 = note off.

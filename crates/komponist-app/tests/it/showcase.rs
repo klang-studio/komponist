@@ -119,8 +119,8 @@ fn the_song_is_the_design_fixtures_song() {
     let showcase = showcase_project();
     assert_eq!(showcase.name, fixture.name);
     assert_eq!(showcase.tempo, fixture.tempo);
-    assert_eq!(showcase.loop_range, fixture.loop_range);
-    assert_eq!(showcase.loop_on, fixture.loop_on);
+    assert!(!showcase.loop_on);
+    assert_eq!(showcase.loop_range, Project::new("").loop_range);
     // The two buses (group and Reverb) are the showcase's own; the tracks are the song's.
     let songs: Vec<&Arc<Track>> = showcase
         .tracks

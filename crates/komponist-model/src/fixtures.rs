@@ -47,13 +47,15 @@ pub fn demo_project() -> Project {
         ],
         Ids(1),
     );
+    project.loop_range = TickRange::new(Tick::from_steps(128), Tick::from_steps(192));
+    project.loop_on = true;
     // Prototype: `t[5].M = true`.
     Arc::make_mut(&mut project.tracks[5]).channel.mute = true;
     project
 }
 
-/// The song "Night Drive" of [`demo_project`] without any device and with the Arp track unmuted:
-/// the same tempo, loop, tracks (order, names, hues, volumes, pans) and clips with their notes.
+/// The song "Night Drive" of [`demo_project`] with the default transport settings, no devices
+/// and the Arp track unmuted: the same tempo, tracks and clips with their notes.
 /// The app's showcase demo adds its own device chains. Ids continue after the song's (`next_id`).
 pub fn demo_song() -> Project {
     song([&[]; 6], Ids(1))
@@ -102,8 +104,6 @@ fn song(chains: [&[DemoPlugin]; 6], mut ids: Ids) -> Project {
 
     let mut project = Project::new(DEMO_PROJECT_NAME);
     project.tempo = Tempo::new(124.0);
-    project.loop_range = TickRange::new(Tick::from_steps(128), Tick::from_steps(192));
-    project.loop_on = true;
     project.tracks = tracks.into_iter().map(Arc::new).collect();
     project.next_id = ids.0;
     project
