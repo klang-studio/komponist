@@ -24,7 +24,7 @@ use crate::widgets::metrics::device::mini_fader as metrics;
 use crate::widgets::number_field::{
     Formatter, GetSet, Parser, absolute_drag_gesture, accesskit_requests, clamp_finite, entry,
     expose_value, format_number, get_set, is_still, key_steps, normalized, range_bounds, sense,
-    take_focus_on_press, value_tooltip_live, wheel_steps,
+    update_pointer_focus, value_tooltip_live, wheel_steps,
 };
 use crate::{focus, px, tooltip};
 
@@ -248,7 +248,7 @@ impl Widget for MiniFader<'_> {
         let key_step = (max - min) * KEY_STEP;
 
         if live && !entry::is_open(&ctx, id) {
-            take_focus_on_press(&response);
+            update_pointer_focus(&response);
             if ClickAction::of_control(&response) == ClickAction::Reset {
                 value = self.default;
             }

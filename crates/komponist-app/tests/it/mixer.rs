@@ -565,6 +565,94 @@ fn double_click_resets_fader_and_pan_in_one_undo_step() {
 }
 
 #[test]
+fn space_toggles_playback_after_dragging_a_mixer_control() {
+    let mut h = harness(s04());
+    for name in [Lang::De.mixer_volume("Drums"), Lang::De.mixer_pan("Drums")] {
+        let control = in_strip(&h, "Drums", Role::Slider, &name);
+        let from = control.center();
+        let to = from - vec2(0.0, 30.0);
+        drag_to(&mut h, from, to);
+        h.state_mut().clear_dispatched();
+        press(&mut h, to, false, Modifiers::NONE);
+        // The first Space can arrive together with the mouse release.
+        for expected in 1..=2 {
+            h.key_press(egui::Key::Space);
+            h.run_steps(2);
+            let toggles = h
+                .state()
+                .dispatched()
+                .filter(|a| matches!(a, Action::Transport(TransportAction::TogglePlay)))
+                .count();
+            assert_eq!(toggles, expected, "Space after dragging {name}");
+        }
+
+        click(&mut h, from);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::TextInput, &format!("{name} Eingabe"));
+        h.state_mut().clear_dispatched();
+        h.key_press(egui::Key::Space);
+        h.run_steps(2);
+        assert!(
+            !h.state()
+                .dispatched()
+                .any(|a| matches!(a, Action::Transport(TransportAction::TogglePlay))),
+            "the value editor keeps Space"
+        );
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+    }
+}
+
+#[test]
+fn vertical_arrows_adjust_the_hovered_mixer_control() {
+    let mut h = harness(s04());
+    let name = Lang::De.mixer_volume("Drums");
+    let fader = in_strip(&h, "Drums", Role::Slider, &name).center();
+    let before = h.state().project().tracks[0].channel.volume_db;
+
+    // Send the movement and key in the same frame, with no click on the fader.
+    h.hover_at(fader);
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().project().tracks[0].channel.volume_db,
+        before + 1.0
+    );
+    assert!(!h.ctx.egui_wants_keyboard_input());
+
+    // Coarse steps take priority over the app's Ctrl/Command+Up dock shortcut.
+    for (key, expected) in [
+        (egui::Key::ArrowDown, before - 9.0),
+        (egui::Key::ArrowUp, before + 1.0),
+    ] {
+        h.key_press_modifiers(Modifiers::COMMAND, key);
+        h.run_steps(2);
+        assert_eq!(h.state().project().tracks[0].channel.volume_db, expected);
+        assert!(h.state().ui().layout.dock_maximized);
+    }
+
+    click(&mut h, fader);
+    let pan = Lang::De.mixer_pan("Drums");
+    let knob = in_strip(&h, "Drums", Role::Slider, &pan).center();
+    let before_pan = h.state().project().tracks[0].channel.pan;
+    h.hover_at(knob);
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(2);
+    assert!(h.state().project().tracks[0].channel.pan < before_pan);
+    assert_eq!(
+        h.state().project().tracks[0].channel.volume_db,
+        before + 1.0
+    );
+
+    // Once the pointer leaves the controls, the clicked fader takes the arrows again.
+    h.event(Event::PointerGone);
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(2);
+    assert_eq!(h.state().project().tracks[0].channel.volume_db, before);
+}
+
+#[test]
 fn fader_menu_and_enter_reset_and_enter_values() {
     let mut app = App::headless(demo_project());
     app.dispatch(Action::Ui(UiAction::ToggleMixer));

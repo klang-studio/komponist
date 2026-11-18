@@ -10,7 +10,7 @@
 //! | Shift / Ctrl drag | fine (step × 0.1, 1 px = 0.1 step) / coarse (step × 10) |
 //! | Double-click | text entry with the value preselected; Enter applies, Esc discards, a click elsewhere applies |
 //! | Alt-click | the default value |
-//! | ↑ ↓ (focused), mouse wheel (hovered) | one step, Shift fine, Ctrl coarse |
+//! | ↑ ↓ (focused or hovered), mouse wheel (hovered) | one step, Shift fine, Ctrl coarse |
 //! | Enter (focused) | text entry, for keyboard users |
 //!
 //! [`NumberField::key`] puts the name inside the box, as the editors' toolbars draw their fields
@@ -30,9 +30,9 @@ use egui::accesskit::{Action, ActionData};
 use egui::emath::Numeric;
 use egui::text::CCursorRange;
 use egui::{
-    Align, Area, Color32, Context, CornerRadius, CursorIcon, Event, EventFilter, Frame, Id, Key,
-    Margin, MouseWheelUnit, Order, Painter, Rect, Response, Role, Sense, Stroke, StrokeKind,
-    TextEdit, Ui, Vec2, Widget, WidgetInfo, pos2, vec2,
+    Align, Area, Color32, Context, CornerRadius, CursorIcon, Event, EventFilter, FocusDirection,
+    Frame, Id, IdSet, Key, Margin, MouseWheelUnit, Order, Painter, Rect, Response, Role, Sense,
+    Stroke, StrokeKind, TextEdit, Ui, Vec2, Widget, WidgetInfo, pos2, vec2,
 };
 use komponist_model::format::MINUS;
 use komponist_tokens::egui_support::color32;
@@ -377,7 +377,7 @@ impl Widget for NumberField<'_> {
         let live = !is_still(ui) && response.enabled();
 
         if live && !entry::is_open(&ctx, id) {
-            take_focus_on_press(&response);
+            update_pointer_focus(&response);
             match ClickAction::of(&response) {
                 ClickAction::Reset => value = self.default,
                 ClickAction::TextEntry if self.text_entry => {
@@ -694,49 +694,146 @@ pub(crate) fn drag_gesture_with(
     }
 }
 
-/// Gives the control behind `response` the keyboard focus when it is clicked or dragged, so ↑ ↓
-/// work after using the mouse (the ring stays hidden: focus-visible, [`crate::focus`]).
-pub(crate) fn take_focus_on_press(response: &Response) {
-    if response.clicked() || response.drag_started() {
+/// A click gives the control focus for keyboard editing. Finish a mouse drag by releasing
+/// the focus taken for that gesture so application shortcuts work again.
+pub(crate) fn update_pointer_focus(response: &Response) {
+    if response.drag_stopped() {
+        response.surrender_focus();
+    } else if response.clicked() || response.drag_started() {
         response.request_focus();
     }
 }
 
-/// ↑ ↓ on the focused control behind `response`: the steps of this pass, with the speed of the
-/// modifiers ([`drag::speed`]: Shift 0.1, Ctrl 10). Keeps the arrows from moving the focus.
-pub(crate) fn key_steps(ui: &Ui, response: &Response) -> f64 {
-    if !response.has_focus() {
-        return 0.0;
-    }
-    ui.memory_mut(|m| {
-        m.set_focus_lock_filter(
-            response.id,
-            EventFilter {
-                vertical_arrows: true,
-                ..Default::default()
-            },
-        );
-    });
-    ui.input(|i| {
-        i.events
-            .iter()
-            .map(|e| match e {
-                Event::Key {
-                    key: Key::ArrowUp,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => drag::step_delta(1.0, 1.0, *modifiers),
-                Event::Key {
-                    key: Key::ArrowDown,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => drag::step_delta(-1.0, 1.0, *modifiers),
-                _ => 0.0,
-            })
-            .sum()
+#[derive(Clone, Default)]
+struct ValueControls {
+    pass: u64,
+    current: IdSet,
+    previous: IdSet,
+    hovered_steps: Option<(Id, f64)>,
+}
+
+fn with_value_controls<R>(ctx: &Context, f: impl FnOnce(&mut ValueControls) -> R) -> R {
+    let pass = ctx.cumulative_pass_nr();
+    let key =
+        Id::unique("komponist_ui::widgets::number_field::value_controls").with(ctx.viewport_id());
+    ctx.data_mut(|data| {
+        let controls = data.get_temp_mut_or_default::<ValueControls>(key);
+        if controls.pass != pass {
+            std::mem::swap(&mut controls.current, &mut controls.previous);
+            controls.current.clear();
+            controls.hovered_steps = None;
+            if controls.pass + 1 != pass {
+                controls.previous.clear();
+            }
+            controls.pass = pass;
+        }
+        f(controls)
     })
+}
+
+/// The value control under the mouse that takes ↑ and ↓. egui hit-tests against the previous
+/// pass, so only controls that accepted value input in that pass are eligible.
+fn hovered_value_control(ctx: &Context) -> Option<Id> {
+    if ctx.text_edit_focused()
+        || super::floating::current(ctx).is_some()
+        || ctx.input(|i| !i.focused || i.pointer.any_down())
+    {
+        return None;
+    }
+    let hovered = ctx.interaction_snapshot(|i| i.hovered.clone());
+    let id = with_value_controls(ctx, |controls| {
+        hovered
+            .into_iter()
+            .find(|id| controls.previous.contains(id))
+    })?;
+    let response = ctx.read_response(id)?;
+    (response.enabled()
+        && response.hovered()
+        && ctx.memory(|m| m.is_above_modal_layer(response.layer_id)))
+    .then_some(id)
+}
+
+fn arrow_step(event: &Event) -> Option<f64> {
+    let Event::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    let direction = match key {
+        Key::ArrowUp => 1.0,
+        Key::ArrowDown => -1.0,
+        _ => return None,
+    };
+    Some(drag::step_delta(direction, 1.0, *modifiers))
+}
+
+/// Updates value control focus and routes hover keys before the app handles shortcuts.
+pub fn prepare_value_control_input(ctx: &Context) {
+    // A key press can arrive in the same pass as the mouse release.
+    if let Some(id) = ctx.interaction_snapshot(|i| i.drag_stopped)
+        && ctx.memory(|m| m.has_focus(id))
+        && with_value_controls(ctx, |controls| controls.previous.contains(&id))
+    {
+        ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+    route_hovered_value_keys(ctx);
+}
+
+fn route_hovered_value_keys(ctx: &Context) {
+    if !ctx.input(|i| i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowDown)) {
+        return;
+    }
+    let Some(id) = hovered_value_control(ctx) else {
+        return;
+    };
+    let mut steps = 0.0;
+    ctx.input_mut(|i| {
+        i.events.retain(|event| {
+            if let Some(step) = arrow_step(event) {
+                steps += step;
+                false
+            } else {
+                true
+            }
+        });
+    });
+    ctx.memory_mut(|m| m.move_focus(FocusDirection::None));
+    with_value_controls(ctx, |controls| controls.hovered_steps = Some((id, steps)));
+}
+
+/// ↑ ↓ on the hovered or focused control, with Shift for fine steps and Ctrl for coarse ones.
+pub(crate) fn key_steps(ui: &Ui, response: &Response) -> f64 {
+    let ctx = ui.ctx();
+    // Standalone widgets use the same routing even when there is no application shortcut handler.
+    route_hovered_value_keys(ctx);
+    let hovered_steps = with_value_controls(ctx, |controls| {
+        controls.current.insert(response.id);
+        controls.hovered_steps
+    });
+    let focused = response.has_focus();
+    if focused {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                EventFilter {
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+    }
+    if let Some((id, steps)) = hovered_steps {
+        return if id == response.id { steps } else { 0.0 };
+    }
+    if focused && super::floating::current(ctx).is_none() {
+        ui.input(|i| i.events.iter().filter_map(arrow_step).sum())
+    } else {
+        0.0
+    }
 }
 
 /// Mouse-wheel notches over the control behind `response` (+ up), with the speed of the

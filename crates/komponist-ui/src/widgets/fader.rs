@@ -15,7 +15,7 @@
 //! | Enter (focused), context menu "Wert eingeben" ([`super::value_menu`]) | text entry in dB |
 //! | Double-click on the value under the fader ([`DbValue`]) | text entry in dB (a text readout, like a number field) |
 //! | Wheel (hovered) | 1 dB per notch, Shift 0.1 dB, Ctrl 10 dB; touchpads accumulate (owner decision 2026-11-15) |
-//! | ↑ ↓ (focused) | ±1 dB, Shift 0.1 dB, Ctrl 10 dB (keyboard access, not in `ix.fader`) |
+//! | ↑ ↓ (focused or hovered) | ±1 dB, Shift 0.1 dB, Ctrl 10 dB (keyboard access, not in `ix.fader`) |
 //!
 //! The level is in dB, `−70` ([`VOLUME_DB_MIN`]) meaning −∞, as stored in the project
 //! (`Track::volume_db`). AccessKit: role `Slider`, the caller's German name, value as number and
@@ -36,8 +36,8 @@ use super::metrics::fader as metrics;
 use super::metrics::meter as meter_metrics;
 use super::number_field::{
     absolute_drag_gesture, accesskit_requests, caption, column, entry, expose_value, galley,
-    is_still, key_steps, paint_entry_ring, sense, snap_to, take_focus_on_press, text_pos,
-    text_width, value_label, value_tooltip_live, wheel_steps,
+    is_still, key_steps, paint_entry_ring, sense, snap_to, text_pos, text_width,
+    update_pointer_focus, value_label, value_tooltip_live, wheel_steps,
 };
 use crate::drag::ClickAction;
 use crate::state::State;
@@ -446,7 +446,7 @@ impl Widget for Fader<'_> {
         let live = !is_still(ui) && response.enabled();
 
         if live && !entry::is_open(&ctx, id) {
-            take_focus_on_press(&response);
+            update_pointer_focus(&response);
             if ClickAction::of_control(&response) == ClickAction::Reset {
                 db = 0.0;
             }
