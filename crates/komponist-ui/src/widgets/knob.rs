@@ -10,7 +10,7 @@
 //! | Double-click, Alt-click | the default value (pan: centre); owner decision 2026-11-15 |
 //! | Enter (focused), context menu "Wert eingeben" ([`super::value_menu`]) | text entry in the place of the tooltip; Enter applies, Esc discards |
 //! | Wheel (hovered) | 1 % of the range per notch, Shift fine, Ctrl coarse; touchpads accumulate (owner decision 2026-11-15) |
-//! | ↑ ↓ (focused) | 1 % of the range, Shift fine, Ctrl coarse (keyboard access, not in `ix.knob`) |
+//! | ↑ ↓ (focused or hovered) | 1 % of the range, Shift fine, Ctrl coarse (keyboard access, not in `ix.knob`) |
 //!
 //! Keyboard focus shows as an accent value arc, as the design's "fokus" sample does, not as a
 //! ring. AccessKit: role `Slider`, the caller's German name, value as number and text.
@@ -35,7 +35,7 @@ use super::metrics::knob as metrics;
 use super::number_field::{
     self, Formatter, GetSet, Parser, accesskit_requests, caption, clamp_finite, column,
     drag_gesture, entry, expose_value, format_number, get_set, is_still, key_steps, normalized,
-    range_bounds, sample_row, sense, take_focus_on_press, text_width, value_tooltip_live,
+    range_bounds, sample_row, sense, text_width, update_pointer_focus, value_tooltip_live,
     wheel_steps,
 };
 use crate::drag::{ClickAction, ValueDrag};
@@ -390,7 +390,7 @@ impl Widget for Knob<'_> {
         let key_step = (max - min) * KEY_STEP;
 
         if live && !entry::is_open(&ctx, id) {
-            take_focus_on_press(&response);
+            update_pointer_focus(&response);
             if ClickAction::of_control(&response) == ClickAction::Reset {
                 value = self.default;
             }
