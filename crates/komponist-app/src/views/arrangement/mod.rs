@@ -16,8 +16,7 @@
 //!
 //! | Where | Input | Action |
 //! |---|---|---|
-//! | ruler, top half | press, drag | `Transport(Locate)` on beats (Shift: free) |
-//! | ruler, bottom half (loop bar) | press, drag | `Transport(SetLoopRange)` in whole bars |
+//! | ruler | press, drag | `Transport(Locate)` on beats (Shift: free) |
 //! | header | click / Shift / Strg | `Ui(Select(Tracks))` replace / range / toggle |
 //! | header name | double-click, F2 (first selected track), context menu „Umbenennen“ | rename in place, Enter applies, Esc discards, an empty name keeps the old one |
 //! | header | drag ↕ | `Edit(MoveTracks)` at the 2 px insert line |
@@ -89,15 +88,8 @@ pub fn count_line(lang: komponist_i18n::Lang, project: &komponist_model::Project
 /// What the pointer is dragging.
 #[derive(Clone, Debug, PartialEq)]
 enum Drag {
-    /// Ruler top: the playhead and the last tick sent during this gesture.
+    /// Ruler: the playhead and the last tick sent during this gesture.
     Playhead { last: Option<Tick> },
-    /// Ruler bottom: the loop range, from the bar pressed first.
-    LoopRange {
-        /// Start of the bar pressed first.
-        bar: Tick,
-        /// The range last sent.
-        last: Option<(Tick, Tick)>,
-    },
     /// Clips moved or copied.
     Move(MoveDrag),
     /// The end of a clip.
@@ -429,7 +421,7 @@ impl Arrangement {
                     },
                 )));
             }
-            Drag::Playhead { .. } | Drag::LoopRange { .. } | Drag::Reorder { .. } => {}
+            Drag::Playhead { .. } | Drag::Reorder { .. } => {}
         }
     }
 
@@ -485,7 +477,7 @@ impl Arrangement {
                     ctx.send(Action::Edit(EditAction::MoveTracks { tracks, to_index }));
                 }
             }
-            Drag::Playhead { .. } | Drag::LoopRange { .. } | Drag::Box { .. } => {}
+            Drag::Playhead { .. } | Drag::Box { .. } => {}
         }
     }
 

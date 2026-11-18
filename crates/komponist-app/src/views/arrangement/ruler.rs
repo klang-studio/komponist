@@ -1,10 +1,9 @@
-//! The ruler row: the track count over the headers, the ruler over the lanes (bar numbers, loop
-//! range, playhead cap) and its interaction (S01 "Lineal ziehen: Oben: Playhead setzen. Unten
-//! (Loop-Leiste): Loop-Bereich aufziehen."; prototype `rulerDown`).
+//! The ruler row shows the track count over the headers and the bar numbers and playhead over
+//! the lanes. Clicking or dragging the ruler sets the playhead.
 
-use egui::{CursorIcon, Id, Sense, Ui};
+use egui::{Id, Sense, Ui};
 use komponist_engine::TransportState;
-use komponist_model::{Project, Tick, TickRange};
+use komponist_model::{Project, Tick};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, typography};
 use komponist_ui::timeline::{RulerKind, RulerModel, paint_ruler, ruler_access};
@@ -24,16 +23,6 @@ pub fn playhead_at(t: f64, beat: i64, free: bool) -> Tick {
     } else {
         Tick((t / beat as f64).round() as i64 * beat)
     }
-}
-
-/// The loop range of a drag that pressed in the bar starting at `bar` and is at fractional tick
-/// `t` now: whole bars from the earlier to the later end, at least the pressed bar (prototype
-/// `rulerDown`).
-pub fn loop_range(bar: Tick, t: f64, bar_ticks: i64) -> TickRange {
-    let cur = ((t.max(0.0) / bar_ticks as f64).round() as i64) * bar_ticks;
-    let start = bar.0.min(cur);
-    let end = (bar.0 + bar_ticks).max(cur);
-    TickRange::new(Tick(start), Tick(end))
 }
 
 impl Arrangement {
@@ -72,9 +61,7 @@ impl Arrangement {
         let model = RulerModel {
             axis: g.axis,
             meter: project.meter,
-            kind: RulerKind::Arrangement {
-                loop_range: project.loop_on.then_some(project.loop_range),
-            },
+            kind: RulerKind::Arrangement { loop_range: None },
             playhead: Some(ctx.engine.playhead()).filter(|t| *t >= Tick::ZERO),
             recording,
         };
@@ -93,13 +80,6 @@ impl Arrangement {
         );
         let lang = komponist_ui::lang(ui.ctx());
         response.widget_info(|| ruler_access(lang, &model).widget_info());
-        let half = g.ruler.center().y;
-        if let Some(p) = response.hover_pos()
-            && p.y >= half
-        {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-        }
-
         let (pressed, down, pos, shift) = ui.input(|i| {
             (
                 i.pointer.primary_pressed(),
@@ -111,41 +91,19 @@ impl Arrangement {
         let Some(pos) = pos else {
             return;
         };
-        let meter = project.meter;
-        let t = g.tick_at(pos.x);
-        if pressed && response.is_pointer_button_down_on() || pressed && response.clicked() {
-            if pos.y < half {
-                self.drag = Some(Drag::Playhead { last: None });
-            } else {
-                let bar_ticks = meter.ticks_per_bar();
-                let bar = Tick((t.max(0.0) as i64).div_euclid(bar_ticks) * bar_ticks);
-                self.drag = Some(Drag::LoopRange { bar, last: None });
-            }
+        if pressed && (response.is_pointer_button_down_on() || response.clicked()) {
+            self.drag = Some(Drag::Playhead { last: None });
         }
-        match &mut self.drag {
-            Some(Drag::Playhead { last }) => {
-                let at = playhead_at(t, meter.ticks_per_beat(), shift);
-                // Seeking every frame would keep restarting playback while the pointer is held.
-                if *last != Some(at) {
-                    *last = Some(at);
-                    ctx.send(Action::Transport(TransportAction::Locate(at)));
-                }
-                if !down {
-                    self.drag = None;
-                }
+        if let Some(Drag::Playhead { last }) = &mut self.drag {
+            let at = playhead_at(g.tick_at(pos.x), project.meter.ticks_per_beat(), shift);
+            // Seeking every frame would keep restarting playback while the pointer is held.
+            if *last != Some(at) {
+                *last = Some(at);
+                ctx.send(Action::Transport(TransportAction::Locate(at)));
             }
-            Some(Drag::LoopRange { bar, last }) => {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-                let range = loop_range(*bar, t, meter.ticks_per_bar());
-                if *last != Some((range.start, range.end)) {
-                    *last = Some((range.start, range.end));
-                    ctx.send(Action::Transport(TransportAction::SetLoopRange(range)));
-                }
-                if !down {
-                    self.drag = None;
-                }
+            if !down {
+                self.drag = None;
             }
-            _ => {}
         }
     }
 }
@@ -219,19 +177,5 @@ mod tests {
         );
         assert!(frame(vec![button(to, false)]).is_empty());
         assert_eq!(frame(vec![button(to, true)]), [locate(Tick(5 * beat))]);
-    }
-
-    #[test]
-    fn loop_ranges_cover_whole_bars() {
-        let bar = 3840;
-        // Press in bar 9 (tick 8 × 3840), no move: bar 9.
-        let r = loop_range(Tick(8 * bar), 8.4 * bar as f64, bar);
-        assert_eq!((r.start, r.end), (Tick(8 * bar), Tick(9 * bar)));
-        // Dragged right to bar 12's end.
-        let r = loop_range(Tick(8 * bar), 11.8 * bar as f64, bar);
-        assert_eq!((r.start, r.end), (Tick(8 * bar), Tick(12 * bar)));
-        // Dragged left to bar 5's start: the pressed bar stays in.
-        let r = loop_range(Tick(8 * bar), 4.2 * bar as f64, bar);
-        assert_eq!((r.start, r.end), (Tick(4 * bar), Tick(9 * bar)));
     }
 }

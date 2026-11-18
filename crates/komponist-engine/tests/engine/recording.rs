@@ -594,7 +594,7 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
 #[test]
 fn night_drive_recording_before_its_loop_keeps_the_linear_take() {
     let (mut project, track) = project(MonitorMode::Off, true);
-    let demo = komponist_model::fixtures::demo_song();
+    let demo = komponist_model::fixtures::demo_project();
     project.tempo = demo.tempo;
     project.meter = demo.meter;
     project.loop_on = demo.loop_on;
