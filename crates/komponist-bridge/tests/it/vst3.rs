@@ -152,10 +152,17 @@ fn vst3_param_changes_from_the_app_reach_the_plugin() {
     let quiet = bridge.peak(0..BLOCK);
     assert!(quiet < level * 0.05, "−60 dB expected, level {quiet}");
 
-    // Automation from the engine travels through the shared event ring.
-    bridge.block(&[param(0, gain, 0.5)]);
-    let level = bridge.peak(0..BLOCK);
+    // Automation follows its frame offset through the shared event ring.
+    let at = BLOCK / 2;
+    bridge.block(&[param(at as u32, gain, 0.5)]);
+    assert!(
+        bridge.peak(0..at) < 0.002,
+        "old level before the automation point"
+    );
+    let level = bridge.peak(at..BLOCK);
     assert!((0.025..0.04).contains(&level), "level {level}");
+    assert_eq!(bridge.monitor.pop_output_event(), None, "no GUI edit echo");
+    assert_eq!(bridge.expect_value(gain).0, 0.5, "VST3 controller value");
 
     // Deactivated and active again: the plugin kept the last value.
     bridge.send(ControlMsg::Deactivate);

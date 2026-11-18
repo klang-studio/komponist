@@ -346,10 +346,16 @@ fn param_changes_from_the_app_reach_the_plugin() {
     let loud = bridge.peak(0..BLOCK);
     assert!((0.9..1.01).contains(&loud), "0 dB expected, level {loud}");
 
-    // Automation from the engine travels through the shared event ring.
-    bridge.block(&[param(0, gain, 0.5)]);
-    let level = bridge.peak(0..BLOCK);
+    // Automation follows its frame offset through the shared event ring.
+    let at = BLOCK / 2;
+    bridge.block(&[param(at as u32, gain, 0.5)]);
+    assert!(
+        bridge.peak(0..at) > 0.85,
+        "old level before the automation point"
+    );
+    let level = bridge.peak(at..BLOCK);
     assert!((0.025..0.04).contains(&level), "level {level}");
+    assert_eq!(bridge.monitor.pop_output_event(), None, "no GUI edit echo");
 
     // Deactivated and active again: the plugin kept the last value.
     bridge.send(ControlMsg::Deactivate);
