@@ -139,3 +139,14 @@ settings-input-device = Eingabegerät
 settings-capture-format = Aufnahmeformat
 settings-capture-pcm24 = 24 bit WAV
 settings-capture-float32 = 32 bit Float WAV
+
+settings-jack-playback-left = Master links
+settings-jack-playback-right = Master rechts
+settings-jack-automatic = Automatisch
+settings-jack-disconnected = Nicht verbunden
+settings-jack-capture-channel = Eingang { $channel }
+settings-jack-add-capture = Eingangsport hinzufügen
+settings-jack-remove-capture = Eingang entfernen
+settings-jack-auto-capture = Automatische Eingangsverbindung
+settings-jack-port-missing = Nicht verbunden · { $port }
+settings-jack-inputs = JACK-Eingangsports

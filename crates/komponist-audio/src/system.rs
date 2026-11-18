@@ -12,7 +12,7 @@ use crate::backend::{self, NullStream, StreamCallback, StreamShared};
 use crate::midi::MidiReceiver;
 use crate::process::{AudioProcess, StreamParams};
 use crate::slot::{DetachStep, EngineSlot, SlotHandle};
-use crate::workgroup;
+use crate::{JackRoutes, workgroup};
 
 /// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
 const LOAD_SMOOTHING: f32 = 0.05;
@@ -140,6 +140,9 @@ pub struct StreamConfig {
     /// host. Configurations saved without it deserialise with `None`.
     #[serde(default)]
     pub device_id: Option<DeviceId>,
+    /// Explicit JACK channel routing, used only with the JACK host.
+    #[serde(skip_serializing_if = "JackRoutes::is_automatic")]
+    pub jack_routes: JackRoutes,
     /// Sample rate in Hz ("48000 Hz").
     pub sample_rate: u32,
     /// Buffer size in frames (segments 64 / 128 / 256 / 512 / 1024 in S07).
@@ -154,6 +157,8 @@ struct StoredStreamConfig {
     device: Option<String>,
     #[serde(default)]
     device_id: Option<DeviceId>,
+    #[serde(default)]
+    jack_routes: JackRoutes,
     sample_rate: u32,
     buffer_frames: u32,
 }
@@ -169,6 +174,7 @@ impl From<StoredStreamConfig> for StreamConfig {
             host,
             device,
             device_id,
+            jack_routes: stored.jack_routes,
             sample_rate: stored.sample_rate,
             buffer_frames: stored.buffer_frames,
         }
@@ -183,6 +189,7 @@ impl Default for StreamConfig {
             host: HostKind::platform_default(),
             device: None,
             device_id: None,
+            jack_routes: JackRoutes::default(),
             sample_rate: 48_000,
             buffer_frames: 256,
         }
@@ -390,7 +397,7 @@ struct Retry {
 /// The running stream.
 struct Current<P: AudioProcess> {
     /// Declared first: dropped before the handle, so the slot has handed back by then.
-    backend: Backend,
+    backend: Backend<P>,
     handle: SlotHandle<P>,
     params: StreamParams,
     shared: Arc<StreamShared>,
@@ -399,10 +406,16 @@ struct Current<P: AudioProcess> {
 }
 
 /// Held for its `Drop`, which stops the stream.
-enum Backend {
+enum Backend<P: AudioProcess> {
     // CPAL streams are large on Windows; allocate their storage only when starting a device.
     Device(Box<DeviceStreams>),
-    Null { _stream: NullStream },
+    Null {
+        _stream: NullStream,
+        #[cfg(not(target_os = "linux"))]
+        _processor: std::marker::PhantomData<P>,
+    },
+    #[cfg(target_os = "linux")]
+    Jack(crate::jack_backend::JackStream<P>),
 }
 
 struct DeviceStreams {
@@ -468,8 +481,18 @@ impl<P: AudioProcess> AudioSystem<P> {
             return Ok(());
         }
         self.input = input;
-        let config = self.current.as_ref().map(|c| c.requested.clone());
-        if let Some(config) = config {
+        let config = match &self.state {
+            AudioState::NoDevice { config, .. }
+                if config.host == HostKind::Jack && !config.jack_routes.is_automatic() =>
+            {
+                Some(config.clone())
+            }
+            _ => self.current.as_ref().map(|c| c.requested.clone()),
+        };
+        if let Some(config) = config
+            && !(config.host == HostKind::Jack && config.jack_routes.capture.is_some())
+        {
+            // A JACK capture override is independent of the legacy input-device preference.
             self.start(&config)?;
         }
         Ok(())
@@ -482,6 +505,14 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Channels available from the current capture stream (zero without capture).
     pub fn input_channels(&self) -> u16 {
+        #[cfg(target_os = "linux")]
+        if let Some(Current {
+            backend: Backend::Jack(jack),
+            ..
+        }) = &self.current
+        {
+            return jack.channels();
+        }
         self.input_channels
     }
 
@@ -531,6 +562,8 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.teardown();
         let result = match config.host {
             HostKind::Null => self.start_null(config).map(|()| config.clone()),
+            #[cfg(target_os = "linux")]
+            HostKind::Jack if !config.jack_routes.is_automatic() => self.start_jack(config),
             _ => self.start_device(config),
         };
         match result {
@@ -594,6 +627,8 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.collect_retired();
         let mut returned = None;
         let mut failure = None;
+        #[cfg(target_os = "linux")]
+        let mut restart = None;
         if let Some(current) = self.current.as_mut() {
             returned = current.handle.try_take_engine();
             let reason = current
@@ -617,17 +652,44 @@ impl<P: AudioProcess> AudioSystem<P> {
                         .is_closed()
                         .then(|| "audio stream stopped".to_owned())
                 });
+            #[cfg(target_os = "linux")]
+            let reason = if let Backend::Jack(jack) = &mut current.backend {
+                if jack.sample_rate() != current.params.sample_rate {
+                    restart = Some(current.requested.clone());
+                }
+                if restart.is_some() || jack.poll() {
+                    reason
+                } else {
+                    Some("JACK server stopped".to_owned())
+                }
+            } else {
+                reason
+            };
             match reason {
                 Some(reason) => failure = Some((current.requested.clone(), reason)),
                 None => {
-                    if let AudioState::Running { latency, .. } = &mut self.state {
+                    if let AudioState::Running {
+                        config: _config,
+                        latency,
+                    } = &mut self.state
+                    {
                         *latency = current.shared.latency();
+                        #[cfg(target_os = "linux")]
+                        if let Backend::Jack(jack) = &current.backend {
+                            _config.buffer_frames = jack.period();
+                            *latency = jack.latency(current.params.sample_rate);
+                        }
                     }
                 }
             }
         }
         if let Some(engine) = returned {
             self.keep_engine(engine);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(config) = restart {
+            let _ = self.start(&config);
+            return;
         }
         if let Some((config, reason)) = failure {
             self.teardown();
@@ -745,6 +807,36 @@ impl<P: AudioProcess> AudioSystem<P> {
         Ok(negotiated.effective)
     }
 
+    /// Explicit JACK routes share one server clock and one process callback.
+    #[cfg(target_os = "linux")]
+    fn start_jack(&mut self, config: &StreamConfig) -> Result<StreamConfig, AudioError> {
+        use crate::jack_backend::JackStream;
+
+        let (client, params) = JackStream::<P>::open()?;
+        let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
+        let jack = JackStream::start(
+            client,
+            &params,
+            &config.jack_routes,
+            self.input.is_some(),
+            slot,
+            Arc::clone(&self.stats),
+        )?;
+        let effective = StreamConfig {
+            sample_rate: params.sample_rate,
+            buffer_frames: params.max_frames,
+            ..config.clone()
+        };
+        self.install(Current {
+            backend: Backend::Jack(jack),
+            handle,
+            params,
+            shared: Arc::new(StreamShared::default()),
+            requested: config.clone(),
+        });
+        Ok(effective)
+    }
+
     /// Starts the null backend with `config`'s rate and buffer size (stereo).
     fn start_null(&mut self, config: &StreamConfig) -> Result<(), AudioError> {
         backend::validate(config)?;
@@ -762,7 +854,11 @@ impl<P: AudioProcess> AudioSystem<P> {
             StreamCallback::new(slot, params.clone(), Arc::clone(&shared)).with_input(reader);
         let stream = NullStream::start(callback)?;
         self.install(Current {
-            backend: Backend::Null { _stream: stream },
+            backend: Backend::Null {
+                _stream: stream,
+                #[cfg(not(target_os = "linux"))]
+                _processor: std::marker::PhantomData,
+            },
             handle,
             params,
             shared,
@@ -938,6 +1034,7 @@ fn null_config(config: &StreamConfig) -> StreamConfig {
         } else {
             defaults.buffer_frames
         },
+        jack_routes: Default::default(),
     }
 }
 
@@ -962,6 +1059,7 @@ mod tests {
             device_id: None,
             sample_rate: 48_000,
             buffer_frames,
+            jack_routes: Default::default(),
         }
     }
 
@@ -1135,6 +1233,7 @@ mod tests {
             device_id: None,
             sample_rate: 44_100,
             buffer_frames: 128,
+            jack_routes: Default::default(),
         };
         let err = system.start(&config).unwrap_err();
         assert!(
@@ -1285,6 +1384,7 @@ mod tests {
             ))),
             sample_rate: 48_000,
             buffer_frames: 64,
+            jack_routes: Default::default(),
         };
         assert!(system.start(&config).is_err());
         assert!(system.is_retrying());

@@ -277,6 +277,7 @@ fn main() {
             device_id: None,
             sample_rate,
             buffer_frames: buffer,
+            jack_routes: Default::default(),
         };
         let stats = Arc::clone(system.stats());
         let (callbacks0, xruns0, frames0) = (

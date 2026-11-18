@@ -26,6 +26,9 @@
 mod asio_registry;
 mod backend;
 pub mod input;
+#[cfg(target_os = "linux")]
+mod jack_backend;
+mod jack_ports;
 pub mod midi;
 pub mod process;
 pub mod slot;
@@ -44,6 +47,7 @@ pub use input::{
     InputBuffer, InputConfig, InputDeviceInfo, InputReader, TestAudioSource, input_devices,
     test_input,
 };
+pub use jack_ports::{JackDirection, JackPort, JackRoutes, jack_ports};
 pub use midi::{
     MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, MidiStamped, TestMidiSource,
 };

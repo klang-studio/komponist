@@ -211,10 +211,14 @@ impl AudioProcess for EngineProcess {
             }
         }
         let frames = out.frames().min(self.left.len());
-        let latency = info.output_latency.as_secs_f64() * f64::from(info.sample_rate);
+        // JACK reports whole frames. Converting via Duration truncates to nanoseconds, so
+        // round on the way back to avoid losing another frame at common sample rates.
+        let latency_frames = |duration: Duration| {
+            (duration.as_secs_f64() * f64::from(info.sample_rate)).round() as u32
+        };
         let input = LiveInput {
             midi: &self.midi,
-            output_latency: latency as u32,
+            output_latency: latency_frames(info.output_latency),
         };
         let (left, right) = (&mut self.left[..frames], &mut self.right[..frames]);
         self.engine.process_with_audio(
@@ -224,7 +228,7 @@ impl AudioProcess for EngineProcess {
             &komponist_engine::AudioInputBuffer {
                 data: audio.data(),
                 channels: audio.channels(),
-                latency: (audio.latency().as_secs_f64() * f64::from(info.sample_rate)) as u32,
+                latency: latency_frames(audio.latency()),
                 discontinuous: audio.discontinuous(),
             },
         );
@@ -688,7 +692,12 @@ impl EngineSync {
     /// Call every UI frame: polls the audio system, retries queued commands, drains the engine's
     /// events (dropping garbage here) and the device host's events.
     pub fn poll(&mut self) -> Vec<SyncEvent> {
+        let before = self.sample_rate();
         self.audio.poll();
+        if self.sample_rate() != before {
+            self.synced = None;
+            self.fast = None;
+        }
         if self.midi.is_some() && Instant::now() >= self.next_midi_scan {
             self.scan_midi();
         }

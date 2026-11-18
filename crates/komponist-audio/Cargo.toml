@@ -33,6 +33,7 @@ serde_json.workspace = true
 # `realtime-dbus`: cpal promotes its PipeWire and ALSA audio threads to real-time priority through
 # RTKit (audio_thread_priority); plain `realtime` is a no-op on Linux in audio_thread_priority 0.35.
 cpal = { workspace = true, features = ["realtime-dbus", "pipewire", "jack"] }
+jack.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # `realtime`: cpal's WASAPI thread registers with MMCSS ("Audio") when the stream starts, with

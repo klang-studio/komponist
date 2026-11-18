@@ -410,6 +410,10 @@ pub(crate) fn find_device(
 
 /// Whether `config`'s device can be found (the reconnect probe; runs on its own thread).
 pub(crate) fn device_present(config: &StreamConfig) -> bool {
+    #[cfg(target_os = "linux")]
+    if config.host == HostKind::Jack && !config.jack_routes.is_automatic() {
+        return crate::jack_backend::server_present();
+    }
     config.host == HostKind::Null
         || host(config.host).is_ok_and(|h| find_device(&h, config).is_ok())
 }
@@ -660,6 +664,7 @@ pub(crate) fn negotiate(
             host: kind,
             device: requested.device.clone(),
             device_id: requested.device_id.clone(),
+            jack_routes: requested.jack_routes.clone(),
             sample_rate,
             buffer_frames,
         },

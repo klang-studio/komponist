@@ -880,7 +880,9 @@ impl App {
                 ctx.request_repaint_after(left);
             }
         }
-        if self.engine.host().needs_polling() {
+        let jack_routes = self.settings.audio.host == komponist_audio::HostKind::Jack
+            && !self.settings.audio.jack_routes.is_automatic();
+        if self.engine.host().needs_polling() || jack_routes {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         }
         // A frame now and then looks for MIDI devices that were plugged in meanwhile.
@@ -2784,11 +2786,12 @@ impl App {
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
-        if matches!(
+        let changes_input = matches!(
             &action,
             SettingsAction::SetAudioInput(_) | SettingsAction::ChooseTrackAudioInput { .. }
-        ) && self.audio_recording().is_some()
-        {
+        ) || matches!(&action, SettingsAction::SetAudio(config)
+            if config.jack_routes != self.settings.audio.jack_routes);
+        if changes_input && self.audio_recording().is_some() {
             self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
             return;
         }
@@ -2835,6 +2838,7 @@ impl App {
                 let _ = self.engine.set_audio(&config);
                 // The device list may have changed too.
                 self.dialogs.settings.devices_host = None;
+                self.dialogs.settings.invalidate_jack_ports();
             }
             SettingsAction::SetMidiInput { name, enabled } => {
                 if let Some(hub) = self.engine.midi_mut() {

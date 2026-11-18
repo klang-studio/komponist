@@ -281,8 +281,31 @@ fn chooser(
     anchor: &Response,
     id: Id,
 ) {
-    let devices = inventory(ui, ctx);
     let t = ctx.lang;
+    let explicit_jack = match ctx.engine.audio_state() {
+        komponist_audio::AudioState::Running { config, .. }
+        | komponist_audio::AudioState::NoDevice { config, .. }
+            if config.host == HostKind::Jack =>
+        {
+            config
+                .jack_routes
+                .capture
+                .as_ref()
+                .map(|ports| (ports.len() as u16, config.sample_rate))
+        }
+        _ => None,
+    };
+    let devices = match explicit_jack {
+        Some((0, _)) => Vec::new(),
+        Some((channels, sample_rate)) => vec![InputDeviceInfo {
+            id: None,
+            name: t.settings_jack_inputs().to_owned(),
+            channels,
+            is_default: true,
+            sample_rate,
+        }],
+        None => inventory(ui, ctx),
+    };
     let selected_key = id.with("source");
     let initial = if matches!(track.audio.input, AudioInput::Bus(_)) {
         devices.len()
@@ -405,8 +428,8 @@ fn chooser(
                                         device: Some(device.name.clone()),
                                         device_id: device.id.clone(),
                                     };
-                                    let current =
-                                        ctx.engine.audio_input_config().is_some_and(|c| {
+                                    let current = explicit_jack.is_some()
+                                        || ctx.engine.audio_input_config().is_some_and(|c| {
                                             c == &config
                                                 || (c.device.is_none()
                                                     && c.device_id.is_none()
@@ -444,13 +467,20 @@ fn chooser(
                                         )
                                         .clicked()
                                         {
-                                            ctx.send(Action::Settings(
-                                                SettingsAction::ChooseTrackAudioInput {
-                                                    track: track.id,
-                                                    input: value,
-                                                    device: config.clone(),
-                                                },
-                                            ));
+                                            if explicit_jack.is_some() {
+                                                ctx.send(Action::Edit(EditAction::SetTrackProp {
+                                                    tracks: vec![track.id],
+                                                    prop: komponist_model::edits::TrackProp::AudioInput(value),
+                                                }));
+                                            } else {
+                                                ctx.send(Action::Settings(
+                                                    SettingsAction::ChooseTrackAudioInput {
+                                                        track: track.id,
+                                                        input: value,
+                                                        device: config.clone(),
+                                                    },
+                                                ));
+                                            }
                                             floating::close(right.ctx(), id);
                                         }
                                     }

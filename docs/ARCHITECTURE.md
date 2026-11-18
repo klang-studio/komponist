@@ -1284,6 +1284,13 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   ASIO capture uses the output's driver and caches input metadata during normal enumeration;
   it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
   inject synthetic capture into the same bridge/null backend without opening hardware.
+- **Explicit JACK routes (#120, Linux):** S07 stores ordered capture ports and the left/right master
+  ports by full JACK name. Aliases are for display. Without explicit routing, the existing CPAL
+  JACK backend still provides system auto-connect. With explicit routing, a native JACK client
+  connects the selected ports and processes capture and playback in the same server period.
+  It can run on JACK or PipeWire-JACK and does not start or configure the server. Graph changes
+  are reconciled outside the process callback. Loss of a selected capture route invalidates
+  input until the exact ports reconnect, while the same client continues playback.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back

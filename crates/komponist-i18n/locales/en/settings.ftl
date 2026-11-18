@@ -139,3 +139,14 @@ settings-input-device = Input device
 settings-capture-format = Recording format
 settings-capture-pcm24 = 24-bit WAV
 settings-capture-float32 = 32-bit Float WAV
+
+settings-jack-playback-left = Master left
+settings-jack-playback-right = Master right
+settings-jack-automatic = Automatic
+settings-jack-disconnected = Disconnected
+settings-jack-capture-channel = Input { $channel }
+settings-jack-add-capture = Add input port
+settings-jack-remove-capture = Remove input
+settings-jack-auto-capture = Automatic input routing
+settings-jack-port-missing = Disconnected · { $port }
+settings-jack-inputs = JACK input ports

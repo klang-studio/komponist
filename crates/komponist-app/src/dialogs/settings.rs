@@ -28,7 +28,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
-use komponist_audio::{AudioSystem, DeviceInfo, HostKind, StreamConfig};
+use komponist_audio::{AudioSystem, DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig};
 use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, typography};
@@ -107,6 +107,8 @@ pub fn drivers_here() -> Vec<(HostKind, &'static str)> {
 
 /// How long the MIDI activity dot stays lit after a message.
 const ACTIVITY_HOLD: Duration = Duration::from_millis(150);
+/// The available JACK ports can change without switching drivers or reopening the dialog.
+const JACK_REFRESH: Duration = Duration::from_secs(1);
 
 // ------------------------------------------------------------------------------------------------
 // Device enumeration
@@ -121,6 +123,10 @@ pub trait AudioDevices: Send + Sync {
     fn devices(&self, host: HostKind) -> Vec<DeviceInfo>;
     /// Capture devices; providers used by headless tests expose none unless explicitly set.
     fn input_devices(&self, _host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
+        Vec::new()
+    }
+    /// JACK graph metadata; the fixed/headless provider never contacts a real JACK server.
+    fn jack_ports(&self) -> Vec<JackPort> {
         Vec::new()
     }
     /// Whether enumeration may take long enough to stall a frame, so the dialog runs it on a
@@ -146,6 +152,10 @@ impl AudioDevices for SystemDevices {
 
     fn input_devices(&self, host: HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
         AudioSystem::<EngineProcess>::input_devices(host).unwrap_or_default()
+    }
+
+    fn jack_ports(&self) -> Vec<JackPort> {
+        komponist_audio::jack_ports().unwrap_or_default()
     }
 
     fn is_slow(&self) -> bool {
@@ -359,7 +369,7 @@ pub enum BufferLimit {
 
 /// The buffer sizes `host` allows on `entry`. `running` is the configuration the stream really
 /// runs on (the engine's `AudioState::Running`): WASAPI's real size is the period it reports.
-/// Linux and macOS drivers stay [`BufferLimit::Free`] (JACK's server size shows in the latency).
+/// With an explicit JACK route, the server supplies the actual period.
 pub fn buffer_limit(
     host: HostKind,
     devices: &[DeviceInfo],
@@ -373,6 +383,9 @@ pub fn buffer_limit(
             .map(|r| r.buffer_frames)
             .or(range.map(|(min, _)| min))
             .map_or(BufferLimit::Free, BufferLimit::Fixed),
+        HostKind::Jack => running
+            .filter(|r| r.host == HostKind::Jack && !r.jack_routes.is_automatic())
+            .map_or(BufferLimit::Free, |r| BufferLimit::Fixed(r.buffer_frames)),
         HostKind::Asio => match range {
             Some((min, max)) if min == max => BufferLimit::Fixed(min),
             Some((min, max)) => BufferLimit::Range(min, max),
@@ -476,6 +489,8 @@ pub struct Model {
     pub input_devices: Vec<InputEntry>,
     /// Configured capture choice.
     pub input_device: usize,
+    /// JACK audio ports, once the graph's first enumeration completed.
+    pub jack_ports: Option<Vec<JackPort>>,
     /// WAV encoding for future recordings.
     pub capture_format: crate::settings::CaptureFormat,
     /// Device dropdown entries ([`device_entries`]).
@@ -606,6 +621,9 @@ pub(crate) struct Cache {
     pending_inputs: Option<(HostKind, Receiver<Vec<komponist_audio::InputDeviceInfo>>)>,
     input_host: Option<HostKind>,
     inputs: Vec<komponist_audio::InputDeviceInfo>,
+    jack_ports: Option<Vec<JackPort>>,
+    pending_jack_ports: Option<Receiver<Vec<JackPort>>>,
+    next_jack_refresh: Option<Instant>,
     /// When each MIDI port (by name) last had activity.
     pub(crate) lit: HashMap<String, Instant>,
     /// Scroll the page to this section in the next frame.
@@ -613,15 +631,30 @@ pub(crate) struct Cache {
 }
 
 impl Cache {
+    pub(crate) fn invalidate_jack_ports(&mut self) {
+        self.next_jack_refresh = None;
+    }
+
     /// Whether an enumeration is still running (the dialog repaints until it arrives).
     pub(crate) fn enumerating(&self) -> bool {
         self.pending_hosts.is_some()
             || self.pending_devices.is_some()
             || self.pending_inputs.is_some()
+            || self.pending_jack_ports.is_some()
     }
 
     /// Takes finished enumerations.
     fn collect(&mut self) {
+        if let Some(rx) = &self.pending_jack_ports {
+            match rx.try_recv() {
+                Ok(ports) => {
+                    self.jack_ports = Some(ports);
+                    self.pending_jack_ports = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.pending_jack_ports = None,
+            }
+        }
         if let Some((host, rx)) = &self.pending_inputs {
             match rx.try_recv() {
                 Ok(inputs) => {
@@ -680,6 +713,7 @@ impl crate::App {
                 Some(enumerate(&self.audio_devices, |d| d.hosts()));
             self.dialogs.settings.devices_host = None;
             self.dialogs.settings.input_host = None;
+            self.dialogs.settings.next_jack_refresh = None;
             self.dialogs.settings.scroll_to.get_or_insert(section);
             self.engine.scan_midi();
         }
@@ -702,14 +736,33 @@ impl crate::App {
                 }),
             ));
         }
+        if config.host == HostKind::Jack
+            && cache.pending_jack_ports.is_none()
+            && cache
+                .next_jack_refresh
+                .is_none_or(|next| Instant::now() >= next)
+        {
+            cache.pending_jack_ports = Some(enumerate(&self.audio_devices, |d| d.jack_ports()));
+            cache.next_jack_refresh = Some(Instant::now() + JACK_REFRESH);
+        }
         cache.collect();
         let t = self.lang;
         let (devices, device) = device_entries(t, config.host, &cache.devices, &config);
-        let rates = rates(config.host, &cache.devices, &devices[device], &config);
         let running = match self.engine.audio_state() {
             komponist_audio::AudioState::Running { config, .. } => Some(config.clone()),
             _ => None,
         };
+        let rates = running
+            .as_ref()
+            .filter(|r| {
+                config.host == HostKind::Jack
+                    && r.host == HostKind::Jack
+                    && !r.jack_routes.is_automatic()
+            })
+            .map_or_else(
+                || rates(config.host, &cache.devices, &devices[device], &config),
+                |r| vec![r.sample_rate],
+            );
         let buffer = buffer_limit(
             config.host,
             &cache.devices,
@@ -726,7 +779,12 @@ impl crate::App {
                 latency,
             } if running.host == config.host => (
                 None,
-                format::latency(t, running.buffer_frames, running.sample_rate, *latency),
+                if running.host == HostKind::Jack && !running.jack_routes.is_automatic() {
+                    // Native JACK's playback range already includes the graph's device periods.
+                    format::latency(t, 0, running.sample_rate, *latency)
+                } else {
+                    format::latency(t, running.buffer_frames, running.sample_rate, *latency)
+                },
             ),
             _ => (
                 None,
@@ -755,6 +813,7 @@ impl crate::App {
         Model {
             input_devices,
             input_device,
+            jack_ports: cache.jack_ports.clone(),
             capture_format: self.settings.capture_format,
             section,
             hosts: cache.hosts.clone(),
@@ -996,7 +1055,7 @@ fn asio_logo(ui: &mut Ui, t: Lang) {
     });
 }
 
-fn capture_fields(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+fn capture_device(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
     let mut selected = model.input_device;
     let items: Vec<_> = model
         .input_devices
@@ -1013,6 +1072,9 @@ fn capture_fields(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec
             )));
         }
     });
+}
+
+fn capture_format(ui: &mut Ui, t: Lang, model: &Model, out: &mut Vec<Output>) {
     grid_row(ui, t.settings_capture_format(), |ui| {
         let items = [
             komponist_ui::widgets::tabs::Item::new(t.settings_capture_pcm24()),
@@ -1079,28 +1141,22 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
         }
     });
 
-    let items: Vec<Item<'_>> = model.devices.iter().map(|d| Item::new(&d.label)).collect();
-    let mut device = model.device;
-    grid_row(ui, t.settings_device(), |ui| {
-        let r = ui.add(Dropdown::new(t.settings_device(), &mut device, &items).width(field_width));
-        if model.no_device.is_some() {
-            // `box-shadow: inset 0 0 0 1px #ff5a5f` (`state.error`).
-            px::inner_border(ui.painter(), r.rect, color32(color::STATE_ERROR));
-        }
-        if r.changed()
-            && let Some(entry) = model.devices.get(device)
-        {
-            out.push(set_audio(StreamConfig {
-                device: entry.name.clone(),
-                device_id: entry.id.clone(),
-                ..config.clone()
-            }));
-        }
-    });
+    if config.host == HostKind::Jack {
+        jack_playback(ui, t, model, field_width, out);
+    } else {
+        output_device(ui, t, model, field_width, out);
+    }
     if model.no_device.is_some() {
         grid_row(ui, "", |ui| notice(ui, t, field_width, out));
     }
-    capture_fields(ui, t, model, field_width, out);
+    if config.host != HostKind::Jack || config.jack_routes.capture.is_none() {
+        capture_device(ui, t, model, field_width, out);
+    }
+    if config.host == HostKind::Jack {
+        ui.ctx().request_repaint_after(JACK_REFRESH);
+        jack_capture(ui, t, model, field_width, out);
+    }
+    capture_format(ui, t, model, out);
 
     let labels: Vec<String> = model.rates.iter().map(|r| format!("{r} Hz")).collect();
     let rate_items: Vec<Item<'_>> = labels.iter().map(|l| Item::new(l)).collect();
@@ -1191,6 +1247,197 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
             super::paint_text(ui, g, t.settings_no_realtime());
         });
     }
+}
+
+fn output_device(ui: &mut Ui, t: Lang, model: &Model, field_width: f32, out: &mut Vec<Output>) {
+    let config = &model.config;
+    let items: Vec<Item<'_>> = model.devices.iter().map(|d| Item::new(&d.label)).collect();
+    let mut device = model.device;
+    grid_row(ui, t.settings_device(), |ui| {
+        let r = ui.add(Dropdown::new(t.settings_device(), &mut device, &items).width(field_width));
+        if model.no_device.is_some() {
+            // `box-shadow: inset 0 0 0 1px #ff5a5f` (`state.error`).
+            px::inner_border(ui.painter(), r.rect, color32(color::STATE_ERROR));
+        }
+        if r.changed()
+            && let Some(entry) = model.devices.get(device)
+        {
+            out.push(set_audio(StreamConfig {
+                device: entry.name.clone(),
+                device_id: entry.id.clone(),
+                ..config.clone()
+            }));
+        }
+    });
+}
+
+fn jack_playback(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+    let config = &model.config;
+    let playback = &config.jack_routes.playback;
+    let ports = model.jack_ports.as_deref();
+    for (channel, label) in [
+        t.settings_jack_playback_left(),
+        t.settings_jack_playback_right(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let other = playback[1 - channel].as_deref();
+        let empty = if other.is_none() {
+            t.settings_jack_automatic()
+        } else {
+            t.settings_jack_disconnected()
+        };
+        let (entries, selected) = jack_entries(
+            t,
+            ports,
+            JackDirection::Playback,
+            playback[channel].as_deref(),
+            empty,
+            |name| other != Some(name),
+        );
+        if let Some(port) = jack_dropdown(ui, label, width, &entries, selected) {
+            let mut next = config.clone();
+            next.jack_routes.playback[channel] = port;
+            out.push(set_audio(next));
+        }
+    }
+}
+
+fn jack_capture(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
+    let config = &model.config;
+    let capture = config.jack_routes.capture.as_deref().unwrap_or_default();
+    let ports = model.jack_ports.as_deref();
+    for (channel, name) in capture.iter().enumerate() {
+        let label = t.settings_jack_capture_channel(channel as u32 + 1);
+        let (entries, selected) = jack_entries(
+            t,
+            ports,
+            JackDirection::Capture,
+            Some(name),
+            t.settings_jack_remove_capture(),
+            |_| true,
+        );
+        if let Some(port) = jack_dropdown(ui, &label, width, &entries, selected) {
+            let mut next = config.clone();
+            let list = next.jack_routes.capture.as_mut().expect("explicit capture");
+            if let Some(port) = port {
+                if let Some(other) = list.iter().position(|name| *name == port) {
+                    list.swap(channel, other);
+                } else {
+                    list[channel] = port;
+                }
+            } else {
+                list.remove(channel);
+            }
+            out.push(set_audio(next));
+        }
+    }
+    if capture.len() < komponist_audio::input::MAX_INPUT_CHANNELS {
+        let (entries, selected) = jack_entries(
+            t,
+            ports,
+            JackDirection::Capture,
+            None,
+            t.settings_jack_add_capture(),
+            |name| !capture.iter().any(|chosen| chosen == name),
+        );
+        if let Some(Some(port)) =
+            jack_dropdown(ui, t.settings_jack_inputs(), width, &entries, selected)
+        {
+            let mut next = config.clone();
+            next.jack_routes.capture.get_or_insert_default().push(port);
+            out.push(set_audio(next));
+        }
+    }
+    if config.jack_routes.capture.is_some() {
+        grid_row(ui, "", |ui| {
+            if ActionButton::dialog(t.settings_jack_auto_capture(), Kind::Secondary, 4)
+                .show(ui)
+                .clicked()
+            {
+                let mut next = config.clone();
+                next.jack_routes.capture = None;
+                out.push(set_audio(next));
+            }
+        });
+    }
+}
+
+struct JackPortEntry {
+    name: Option<String>,
+    label: String,
+    available: bool,
+}
+
+fn jack_entries(
+    t: Lang,
+    ports: Option<&[JackPort]>,
+    direction: JackDirection,
+    saved: Option<&str>,
+    unassigned_label: &str,
+    include: impl Fn(&str) -> bool,
+) -> (Vec<JackPortEntry>, usize) {
+    let mut entries = vec![JackPortEntry {
+        name: None,
+        label: unassigned_label.to_owned(),
+        available: true,
+    }];
+    entries.extend(
+        ports
+            .unwrap_or_default()
+            .iter()
+            .filter(|port| port.direction == direction && include(&port.name))
+            .map(|port| JackPortEntry {
+                name: Some(port.name.clone()),
+                label: port.label(),
+                available: true,
+            }),
+    );
+    let selected = entries
+        .iter()
+        .position(|entry| entry.name.as_deref() == saved)
+        .unwrap_or_else(|| {
+            let saved = saved.expect("unassigned entry exists");
+            entries.push(JackPortEntry {
+                name: Some(saved.to_owned()),
+                label: if ports.is_some() {
+                    t.settings_jack_port_missing(saved)
+                } else {
+                    saved.to_owned()
+                },
+                available: ports.is_none(),
+            });
+            entries.len() - 1
+        });
+    (entries, selected)
+}
+
+fn jack_dropdown(
+    ui: &mut Ui,
+    label: &str,
+    width: f32,
+    entries: &[JackPortEntry],
+    mut selected: usize,
+) -> Option<Option<String>> {
+    let items: Vec<_> = entries
+        .iter()
+        .map(|port| Item {
+            label: &port.label,
+            enabled: port.available,
+        })
+        .collect();
+    let mut changed = None;
+    grid_row(ui, label, |ui| {
+        let response = ui.add(Dropdown::new(label, &mut selected, &items).width(width));
+        if !entries[selected].available {
+            px::inner_border(ui.painter(), response.rect, color32(color::STATE_ERROR));
+        }
+        if response.changed() {
+            changed = Some(entries[selected].name.clone());
+        }
+    });
+    changed
 }
 
 fn set_audio(config: StreamConfig) -> Output {
