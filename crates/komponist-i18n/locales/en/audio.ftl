@@ -21,8 +21,8 @@ audio-clip-source-start = Source start
 audio-clip-gain = Gain
 audio-clip-repitch = Re-Pitch
 audio-clip-original-tempo = Original tempo
-audio-clip-bar-count = Bars
-audio-clip-bars = = { $n } bars
+audio-clip-bar-count = Set source to
+audio-clip-bars = { $n } bars
 audio-waveform-title = Waveform, { $name }
 audio-source-start = File start
 audio-source-end = File end
@@ -135,3 +135,24 @@ audio-record-complete = Recording finished · { $count } takes
 audio-record-apply-failed = Could not add recording to the project · files are preserved
 audio-monitor-tip = Monitoring: { $mode }
 status-recording-input = ● Recording · { $tracks } · { $input }
+
+# Approved #14 Warp UI: exclusive playback mode and full-source interpretation.
+audio-clip-mode = Mode
+audio-clip-fixed = Fixed
+audio-clip-warp = Warp
+audio-clip-mode-help = Fixed: original speed. Re-Pitch: follow tempo, change pitch. Warp: follow tempo, preserve pitch.
+audio-clip-source-bars-help = Entire active source file in the current meter, not the trimmed clip. No tempo detection.
+audio-clip-duration = Duration
+audio-clip-duration-value = Duration { $ratio }×
+audio-clip-duration-help = Output duration / source duration: { $ratio }× · original tempo / project tempo
+audio-clip-preserve-pitch = Preserve pitch
+audio-clip-original-speed = Original speed
+audio-source-ruler = Source time
+audio-source-time = Source { $source } ↔ Song { $song }
+audio-warp-error = Warp error observed: { $reason }
+audio-warp-settings = Unsupported audio settings
+audio-warp-input = Invalid audio input
+audio-warp-position = Source position out of range
+audio-warp-backend = Audio processing failed
+audio-source-ruler-short = Source
+audio-song-ruler = Song

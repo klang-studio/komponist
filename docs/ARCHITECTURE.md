@@ -1048,7 +1048,7 @@ tracks only; MIDI props (`Input`, `MidiChannel`, `Monitor`) are ignored on them,
 All edits are pure functions as in §5.3, one undo step each. Added: `add_audio_track(_in)` (`NewAudioTrack`, default
 name „Audio“, `DefaultNames::audio`), `NewClipContent::Audio { file, offset }` for `add_clip`, `set_audio_clip_prop`
 (`AudioClipProp::{GainDb, FadeIn, FadeOut, TimeMode, OriginalTempo, SourceOffset}`), `set_audio_clip_file` (relink),
-`trim_audio_clip_start` (left edge: the window follows the edge), `set_audio_clip_warp` (model-only mode),
+`trim_audio_clip_start` (left edge: the window follows the edge), `set_audio_clip_warp` (opt-in playback mode),
 `TrackProp::{AudioInput, MonitorMode}`.
 `split_clips` advances the right part's offset; `set_clip_length` clamps to the file.
 
@@ -1314,7 +1314,34 @@ The extreme guard is 10 cents; these bounds describe the Default algorithm's qua
 than a pitch correction. The isolated release load probe at 48 kHz, 256-frame callbacks and
 8 stereo voices used 12.2–18.4% of one core; 16 voices used 22.6–35.9%, with zero underruns at
 ratios 1/6, 1.5 and 6. Host-specific results, native sanitizer checks and platform limitations
-are recorded in the WP-D internal notes. UI and tempo detection remain later work packages.
+are recorded in the WP-D internal notes. Warp UI is described below; tempo detection remains a later work package.
+
+
+**Warp UI (#14 WP-E, approved variant A).** The existing audio editor and inspector share one
+exclusive Fixed/Re-Pitch/Warp dropdown; new clips remain Fixed. The dock has two compact
+control rows: envelopes/source start/file actions/zoom, then mode/original tempo/full-source
+bars/read-only duration ratio. At narrow widths the latter may wrap; essential controls stay
+visible. Source bars describes the full active take file in the current meter, not the cropped
+clip duration. Original tempo and bar-count edits retain existing grouped NumberField/undo,
+clamping, source-limit and phase reanchor semantics. Takes share the mode/original tempo.
+
+The waveform uses song musical ticks and a secondary native-source clock. One `Mapping` helper
+projects full-source peaks/context, the clip window, pointer/readout and viewport bounds;
+trim/fade/gain hit tests and ruler seeks share the song axis. `WarpMap` exposes a continuous
+render-only projection using its exact rational phase remainder, avoiding cancellation after
+cuts. Native edits/readouts keep the exact integer map. Playhead outside the clip and pointers
+outside source bounds fall back to a real clip anchor; clamped file zero is never paired with
+an unrelated song tick. Ctrl+wheel retains its pointer anchor; existing zoom buttons remain.
+Observed worker failures use localized historical-error wording; no automatic mode fallback.
+
+DE/EN AccessKit tests cover exclusive choice, keyboard focus/Escape, undo/redo, full-source
+bar interpretation, takes, song seeking, zoom and valid source/song pairs. Real dock snapshots
+cover mono/stereo, 640/1280 px, full/trimmed source, all modes and missing sources at 1×/2×.
+A UI-driven float export matches the offline playback path sample-for-sample. The synthesized
+`Pulse 90` stereo loop adds two bars of opt-in Warp to the existing 124-BPM showcase without
+changing its tempo or removing Re-Pitch examples. No markers, transpose/formant controls or
+automatic tempo analysis are introduced. The approved design and local live/render validation
+are retained in the WP-E internal notes.
 
 ---
 

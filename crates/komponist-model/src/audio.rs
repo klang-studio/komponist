@@ -9,7 +9,7 @@
 //!   tracks refuse them, there are no hybrid tracks.
 //! - Clip **positions** follow the bar grid ([`crate::Clip::start`] in ticks); the **content** stays
 //!   fixed in Fixed mode. Fixed clips keep seconds across tempo changes; Re-Pitch and enabled
-//!   Warp keep ticks. Warp describes pitch-preserving tempo-follow mapping for a future worker;
+//!   Warp keep ticks. Warp describes pitch-preserving tempo-follow mapping for the worker;
 //!   the legacy resampling speed does not implement it.
 //! - Files are **linked** like the Sampler's samples ([`AudioFile`]: absolute path and path relative
 //!   to the project file); „Sammeln und speichern“ copies them next to the project.
@@ -355,8 +355,8 @@ impl AudioClip {
         &self.takes[self.active_take]
     }
 
-    /// Whether the optional Warp mode is enabled. `speed` deliberately remains legacy playback
-    /// until the worker integration; use `warp_map` for pitch-preserving source/tick mapping.
+    /// Whether the optional Warp mode is enabled. `speed` remains the legacy resampling path;
+    /// use `warp_map` for pitch-preserving source/tick mapping.
     pub fn warp_enabled(&self) -> bool {
         self.warp.is_some_and(AudioWarp::enabled)
     }

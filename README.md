@@ -48,10 +48,15 @@ arrangement. **Ctrl+Shift+T** opens the audio-track dialog. Files stay linked to
 copies supported audio sources into the project folder for moving or sharing a session.
 
 The waveform editor shows mono and stereo sources. Trim clips, change their source start, adjust clip gain and linear
-fades, and use **Re-Pitch** to follow the project tempo from an original BPM or bar count. Edits leave the source file
-intact. Missing files keep their clips and can be relinked with **Replace File…**.
+fades, and choose **Warp** to follow the project tempo while preserving pitch. **Fixed** remains the default;
+**Re-Pitch** follows tempo with a pitch change. Enter the original BPM or set the **entire source file** to a known
+bar count; this does not fit a trimmed clip to that many bars. The duration factor and linked song/source rulers show
+the playback mapping. Edits leave the source intact. Missing files can be relinked with **Replace File…**.
 
-![The waveform editor in the dock, showing the stereo Sweep with its fade-in and clip controls](docs/media/audio-editor.png)
+Warp data is optional: older v3 builds open the source unstretched, may shorten long spans, and can discard Warp
+settings when saving. Tempo detection is not included.
+
+![The stereo Warp editor with original tempo, full-source bars and the duration factor](docs/media/audio-editor.png)
 
 ### Audio recording and takes
 

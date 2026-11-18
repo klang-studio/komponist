@@ -1,6 +1,7 @@
 //! Full-source waveform dock with per-channel envelopes, editable clip window and file recovery.
 pub mod fields;
 pub mod live;
+pub mod mapping;
 pub mod metrics;
 pub mod source;
 pub mod toolbar;
@@ -9,7 +10,8 @@ use self::{metrics as m, source::Source};
 use crate::views::{View, ViewCtx};
 use crate::{Action, EditAction, TransportAction};
 use egui::{
-    Align2, CursorIcon, Id, Pos2, Rect, Role, Sense, Stroke, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+    Align, Align2, CursorIcon, Id, Layout, Pos2, Rect, Role, Sense, Stroke, Ui, UiBuilder,
+    WidgetInfo, pos2, vec2,
 };
 use komponist_model::edits::AudioClipProp;
 use komponist_model::{AudioClip, Clip, ClipContent, ClipId, PPQ, Project, Tick, TickRange};
@@ -83,16 +85,19 @@ impl View for AudioEditor {
         let ClipContent::Audio(a) = &clip.content else {
             return;
         };
+        let mapping = mapping::Mapping::new(clip, a, project.tempo);
+        let bounds = mapping.bounds();
         if self.shown != Some(clip.id) {
             if self.gesture.take().is_some() {
                 ctx.send(Action::Edit(EditAction::CancelGesture));
             }
             self.shown = Some(clip.id);
-            ctx.ui.waveform.scroll_tick = a.frames_to_ticks(a.offset, project.tempo).0 as f64;
+            ctx.ui.waveform.scroll_tick = clip.start.0 as f64;
         }
         self.source.refresh(a, ctx, ui.ctx());
         let body = ui.max_rect();
-        let toolbar_rect = Rect::from_min_size(body.min, vec2(body.width(), size::PANEL_HEADER));
+        let toolbar_rect =
+            Rect::from_min_size(body.min, vec2(body.width(), toolbar::height(body.width())));
         toolbar::show(ui, toolbar_rect, ctx, &project, clip, a, &self.source);
         let rest = Rect::from_min_max(pos2(body.left(), toolbar_rect.bottom()), body.max);
         if self.source.file.is_none() {
@@ -104,28 +109,35 @@ impl View for AudioEditor {
             pos2(gutter.right(), rest.top()),
             pos2(rest.right(), rest.top() + m::RULER_H),
         );
-        let canvas = Rect::from_min_max(pos2(gutter.right(), ruler.bottom()), rest.max);
+        let source_ruler = Rect::from_min_size(
+            pos2(gutter.right(), ruler.bottom()),
+            vec2(ruler.width(), m::RULER_H),
+        );
+        let canvas = Rect::from_min_max(
+            pos2(gutter.right(), source_ruler.bottom()),
+            rest.max - vec2(0.0, m::SOURCE_READOUT_H),
+        );
         if let Some(previous) = self.last_ppb
             && previous != ctx.ui.waveform.px_per_bar
         {
             let old = previous / project.meter.ticks_per_bar() as f32;
             let new = ctx.ui.waveform.px_per_bar / project.meter.ticks_per_bar() as f32;
             let anchor = ctx.ui.waveform.scroll_tick + f64::from(canvas.width() / 2.0 / old);
-            ctx.ui.waveform.scroll_tick = (anchor - f64::from(canvas.width() / 2.0 / new)).max(0.0);
+            ctx.ui.waveform.scroll_tick = anchor - f64::from(canvas.width() / 2.0 / new);
         }
-        self.wheel(ui, ctx, canvas, a, &project);
+        self.wheel(ui, ctx, canvas, mapping, &project);
         self.last_ppb = Some(ctx.ui.waveform.px_per_bar);
         let ppt = ctx.ui.waveform.px_per_bar / project.meter.ticks_per_bar() as f32;
-        let full_ticks = a.frames_to_ticks(a.file.frames, project.tempo);
+        let full_ticks = bounds.end - bounds.start;
         ctx.ui.waveform.scroll_tick = ctx.ui.waveform.scroll_tick.clamp(
-            0.0,
-            (full_ticks.0 as f64 - f64::from(canvas.width() / ppt)).max(0.0),
+            bounds.start,
+            (bounds.end - f64::from(canvas.width() / ppt)).max(bounds.start),
         );
         let axis = TimeAxis {
             x0: canvas.left() - ctx.ui.waveform.scroll_tick as f32 * ppt,
             px_per_tick: ppt,
         };
-        let source_start = a.frames_to_ticks(a.offset, project.tempo);
+        let source_start = clip.start;
         let source_end = source_start + clip.length;
         let palette = TrackPalette::new(track.hue.0);
         let ruler_model = RulerModel {
@@ -139,6 +151,13 @@ impl View for AudioEditor {
             recording: false,
         };
         paint_ruler(ui.painter(), ruler, &ruler_model);
+        ui.painter().text(
+            pos2(gutter.center().x, ruler.center().y),
+            Align2::CENTER_CENTER,
+            ctx.lang.audio_song_ruler(),
+            fonts::font_id(&typography::VALUE_S),
+            color32(color::TEXT_3),
+        );
         let channels = usize::from(a.file.channels.min(2));
         let lane_h = canvas.height() / channels as f32;
         let lanes: Vec<Rect> = (0..channels)
@@ -177,7 +196,7 @@ impl View for AudioEditor {
         let peaks = self.source.peaks(ui.ctx());
         if let Some(peaks) = peaks {
             let full_spec = WaveSpec {
-                width: full_ticks.0 as f32 * ppt,
+                width: full_ticks as f32 * ppt,
                 px_per_tick: ppt,
                 body_height: (lane_h - 2.0 * m::WAVE_PAD).max(1.0),
                 offset: 0,
@@ -245,8 +264,8 @@ impl View for AudioEditor {
         for (ch, lane) in lanes.iter().copied().enumerate() {
             let inner = lane.shrink2(vec2(0.0, m::WAVE_PAD));
             let full = Rect::from_min_max(
-                pos2(axis.x0, inner.top()),
-                pos2(axis.x(full_ticks), inner.bottom()),
+                pos2(axis.x0 + bounds.start as f32 * ppt, inner.top()),
+                pos2(axis.x0 + bounds.end as f32 * ppt, inner.bottom()),
             );
             let window = Rect::from_min_max(
                 pos2(axis.x(source_start), inner.top()),
@@ -290,8 +309,16 @@ impl View for AudioEditor {
             self.scale(ui, gutter, lane, ch, channels, ctx.lang);
         }
         for (tick, text, align) in [
-            (Tick::ZERO, ctx.lang.audio_source_start(), Align2::LEFT_TOP),
-            (full_ticks, ctx.lang.audio_source_end(), Align2::RIGHT_TOP),
+            (
+                Tick(bounds.start.round() as i64),
+                ctx.lang.audio_source_start(),
+                Align2::LEFT_TOP,
+            ),
+            (
+                Tick(bounds.end.round() as i64),
+                ctx.lang.audio_source_end(),
+                Align2::RIGHT_TOP,
+            ),
         ] {
             let x = axis.x(tick);
             px::vline(&painter, x, canvas.y_range(), color32(color::TEXT_3));
@@ -321,12 +348,9 @@ impl View for AudioEditor {
         }
         let playhead = ctx.engine.playhead();
         if playhead >= clip.start && playhead <= clip.end() {
-            paint_playhead(
-                &painter,
-                axis.x(source_start + playhead - clip.start),
-                canvas.y_range(),
-            );
+            paint_playhead(&painter, axis.x(playhead), canvas.y_range());
         }
+        self.source_axis(ui, ctx, clip, a, mapping, axis, source_ruler, canvas, rest);
         let ruler_response = ui.interact(
             ruler,
             Id::unique(("audio-editor-ruler", clip.id.0)),
@@ -337,15 +361,117 @@ impl View for AudioEditor {
         if (ruler_response.clicked() || ruler_response.dragged())
             && let Some(pos) = ruler_response.interact_pointer_pos()
         {
-            let source = Tick(axis.tick_at(pos.x).round() as i64);
-            let at = (clip.start + source - source_start)
-                .max(clip.start)
-                .min(clip.end());
+            let at = Tick(axis.tick_at(pos.x).round() as i64).max(Tick::ZERO);
             ctx.send(Action::Transport(TransportAction::Locate(at)));
         }
     }
 }
 impl AudioEditor {
+    #[allow(clippy::too_many_arguments)]
+    fn source_axis(
+        &self,
+        ui: &mut Ui,
+        ctx: &ViewCtx<'_>,
+        clip: &Clip,
+        a: &AudioClip,
+        mapping: mapping::Mapping<'_>,
+        axis: TimeAxis,
+        ruler: Rect,
+        canvas: Rect,
+        rest: Rect,
+    ) {
+        let painter = ui.painter().with_clip_rect(ruler.intersect(ui.clip_rect()));
+        px::fill(&painter, ruler, 0.0, color32(color::SURFACE_1));
+        let bar = ctx.project.meter.ticks_per_bar() as f64;
+        let mut stride = bar;
+        while stride * f64::from(axis.px_per_tick) < f64::from(m::SOURCE_LABEL_MIN_W) {
+            stride *= 2.0;
+        }
+        let mut tick = (axis.tick_at(ruler.left()) / stride).ceil() * stride;
+        while axis.x0 + tick as f32 * axis.px_per_tick <= ruler.right() {
+            let frame = mapping.frame_at_song(tick);
+            if frame >= -0.5 && frame <= a.file.frames as f64 + 0.5 {
+                painter.text(
+                    pos2(axis.x0 + tick as f32 * axis.px_per_tick, ruler.center().y),
+                    if axis.x0 + tick as f32 * axis.px_per_tick + m::SOURCE_LABEL_MIN_W
+                        > ruler.right()
+                    {
+                        Align2::RIGHT_CENTER
+                    } else {
+                        Align2::LEFT_CENTER
+                    },
+                    komponist_model::format::fmt_time(frame / f64::from(a.file.sample_rate)),
+                    fonts::font_id(&typography::VALUE_S),
+                    color32(color::TEXT_3),
+                );
+            }
+            tick += stride;
+        }
+        let key = Rect::from_min_max(
+            pos2(rest.left(), ruler.top()),
+            pos2(canvas.left(), ruler.bottom()),
+        );
+        ui.painter().text(
+            key.center(),
+            Align2::CENTER_CENTER,
+            ctx.lang.audio_source_ruler_short(),
+            fonts::font_id(&typography::VALUE_S),
+            color32(color::TEXT_3),
+        );
+        let at = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| canvas.contains(*p) || ruler.contains(*p))
+            .map_or(ctx.engine.playhead().max(clip.start).min(clip.end()), |p| {
+                Tick(axis.tick_at(p.x).round() as i64)
+            });
+        let at = if mapping.contains_song(at) {
+            at
+        } else {
+            clip.start
+        };
+        let text = ctx.lang.audio_source_time(
+            komponist_model::format::fmt_time(mapping.source_seconds(at)),
+            komponist_model::format::fmt_pos(at, ctx.project.meter),
+        );
+        let footer = Rect::from_min_max(pos2(rest.left(), canvas.bottom()), rest.max);
+        let mut row = ui.new_child(
+            UiBuilder::new()
+                .max_rect(footer.shrink2(vec2(space::SPACE_2, 0.0)))
+                .id_salt("audio-source-readout")
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        let response = row.label(
+            egui::RichText::new(&text)
+                .font(fonts::font_id(&typography::VALUE_S))
+                .color(color32(color::TEXT_2)),
+        );
+        response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
+        if let Some(error) = ctx.engine.program().and_then(|p| {
+            p.tracks
+                .iter()
+                .filter_map(|t| t.audio.as_ref())
+                .find_map(|p| p.stretch_error(clip.id))
+        }) {
+            use komponist_engine::audio::StretchError as E;
+            let reason = match error {
+                E::Settings => ctx.lang.audio_warp_settings(),
+                E::Input => ctx.lang.audio_warp_input(),
+                E::Position => ctx.lang.audio_warp_position(),
+                E::Backend => ctx.lang.audio_warp_backend(),
+            };
+            let message = ctx.lang.audio_warp_error(reason);
+            row.add(
+                egui::Label::new(
+                    egui::RichText::new(&message)
+                        .font(fonts::font_id(&typography::VALUE_S))
+                        .color(color32(color::STATE_ERROR)),
+                )
+                .truncate(),
+            )
+            .on_hover_text(&message)
+            .widget_info(|| WidgetInfo::labeled(Role::Label, true, &message));
+        }
+    }
     fn missing(&self, ui: &mut Ui, ctx: &mut ViewCtx<'_>, clip: &Clip, a: &AudioClip, rect: Rect) {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         px::fill(&painter, rect, 0.0, color32(color::STATE_ERROR_SURFACE));
@@ -458,7 +584,7 @@ impl AudioEditor {
         ui: &mut Ui,
         ctx: &mut ViewCtx<'_>,
         canvas: Rect,
-        a: &AudioClip,
+        mapping: mapping::Mapping<'_>,
         project: &Project,
     ) {
         if !ui.rect_contains_pointer(canvas) {
@@ -476,13 +602,11 @@ impl AudioEditor {
             let anchor = view.scroll_tick + f64::from(x / old);
             view.px_per_bar = (view.px_per_bar * zoom).clamp(m::PPB_MIN, m::PPB_MAX);
             let next = view.px_per_bar / project.meter.ticks_per_bar() as f32;
-            view.scroll_tick = (anchor - f64::from(x / next)).max(0.0);
+            view.scroll_tick = anchor - f64::from(x / next);
         } else {
             let ppt = view.px_per_bar / project.meter.ticks_per_bar() as f32;
-            view.scroll_tick = (view.scroll_tick - f64::from((delta.x + delta.y) / ppt)).clamp(
-                0.0,
-                a.frames_to_ticks(a.file.frames, project.tempo).0 as f64,
-            );
+            view.scroll_tick = (view.scroll_tick - f64::from((delta.x + delta.y) / ppt))
+                .clamp(mapping.bounds().start, mapping.bounds().end);
         }
         ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
     }

@@ -1,5 +1,5 @@
 //! Audio clip and linked-file inspector sections (approved audio proposal §4).
-use super::{Col, Meta, field_grid, field_key, frame, label, place, switch_field};
+use super::{Col, Meta, field_grid, field_key, frame, label, place};
 use crate::views::{
     ViewCtx,
     audio_editor::{
@@ -19,8 +19,9 @@ pub(super) fn fields(
     col: &mut Col,
     clip: &Clip,
     a: &AudioClip,
+    available: bool,
 ) {
-    let cells = field_grid(col, 9);
+    let cells = field_grid(col, 10);
     super::clip::position_fields(ui, ctx, project, &cells, clip);
     for (index, kind) in [
         (2, Field::SourceStart),
@@ -33,30 +34,35 @@ pub(super) fn fields(
         let (key, field) = cells[index];
         field_key(ui, key, kind.label(ctx.lang));
         place(ui, field, kind, |ui| {
-            fields::number(ui, ctx, clip, a, kind, field.width(), false)
+            ui.add_enabled_ui(available, |ui| {
+                fields::number(ui, ctx, clip, a, kind, field.width(), false)
+            })
+            .inner
         });
     }
     let (key, field) = cells[6];
-    field_key(ui, key, ctx.lang.audio_clip_repitch());
-    let on = a.time_mode == komponist_model::ClipTimeMode::RePitch;
-    if switch_field(
-        ui,
-        ctx.lang,
-        field,
-        ctx.lang.audio_clip_repitch(),
-        on,
-        false,
-    ) {
-        ctx.send(crate::Action::Edit(crate::EditAction::SetAudioClipProp {
-            clip: clip.id,
-            prop: komponist_model::edits::AudioClipProp::TimeMode(if on {
-                komponist_model::ClipTimeMode::Fixed
-            } else {
-                komponist_model::ClipTimeMode::RePitch
-            }),
-        }));
-    }
-    if on {
+    field_key(ui, key, ctx.lang.audio_clip_mode());
+    place(ui, field, "audio-mode", |ui| {
+        ui.add_enabled_ui(available, |ui| {
+            toolbar::mode(ui, ctx, clip, a, field.width(), false)
+        });
+    });
+    let (key, field) = cells[9];
+    field_key(ui, key, ctx.lang.audio_clip_duration());
+    place(ui, field, "audio-duration", |ui| {
+        toolbar::duration(ui, a, project, ctx.lang, false);
+    });
+    if a.warp_enabled() {
+        let r = col.take(typography::MONO_XS.line_height);
+        label(
+            ui,
+            r,
+            ctx.lang.audio_clip_preserve_pitch(),
+            &typography::MONO_XS,
+            None,
+            color::TEXT_3,
+        );
+    } else if a.time_mode == komponist_model::ClipTimeMode::RePitch {
         let r = col.take(typography::MONO_XS.line_height);
         label(
             ui,

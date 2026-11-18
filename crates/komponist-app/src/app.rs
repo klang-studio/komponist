@@ -1617,11 +1617,16 @@ impl App {
                     edits::AudioClipProp::FadeIn(_) | edits::AudioClipProp::FadeOut(_) => {
                         "undo-clip-fade"
                     }
-                    edits::AudioClipProp::TimeMode(_) => "undo-clip-repitch",
+                    edits::AudioClipProp::TimeMode(_) => "undo-clip-audio-mode",
                     edits::AudioClipProp::OriginalTempo(_) => "undo-clip-original-tempo",
                 };
                 self.apply_delta(label, |p| {
                     edits::set_audio_clip_prop(p, clip, prop).map(|p| (p, ()))
+                });
+            }
+            EditAction::SetAudioClipWarp { clip, enabled } => {
+                self.apply_delta("undo-clip-audio-mode", |p| {
+                    edits::set_audio_clip_warp(p, clip, enabled).map(|p| (p, ()))
                 });
             }
             EditAction::SetClipLoop {

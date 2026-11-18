@@ -226,6 +226,8 @@ pub enum EditAction {
         /// New property value.
         prop: komponist_model::edits::AudioClipProp,
     },
+    /// Opt in/out of the optional pitch-preserving Warp mapping.
+    SetAudioClipWarp { clip: ClipId, enabled: bool },
     /// `edits::set_clip_loop` (corner drag, inspector).
     SetClipLoop {
         /// The clip.

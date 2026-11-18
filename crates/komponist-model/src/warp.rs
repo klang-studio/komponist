@@ -220,6 +220,26 @@ impl WarpMap {
         let delta = self.position(length)? - i128::from(self.offset);
         u64::try_from(delta).map_err(|_| WarpError::SourcePosition)
     }
+    /// Continuous native source position for waveform projection. The exact phase remainder
+    /// avoids subtracting huge floating-point origins after repeated cuts. Rendering only:
+    /// edits and source readouts use the checked, rounded `source_frame` contract above.
+    pub fn source_position(self, local: f64) -> f64 {
+        let product = u128::from(self.phase.0.unsigned_abs()) * self.numerator;
+        let remainder = product % self.denominator;
+        let nearest = u128::from(remainder >= self.denominator.div_ceil(2));
+        let fraction = remainder as f64 / self.denominator as f64 - nearest as f64;
+        let correction = if self.phase.0 < 0 {
+            -fraction
+        } else {
+            fraction
+        };
+        self.offset as f64 + correction + local * self.numerator as f64 / self.denominator as f64
+    }
+    /// Inverse of `source_position`, for sub-tick waveform layout and pointer anchoring.
+    pub fn tick_at_source_position(self, frame: f64) -> f64 {
+        (frame - self.source_position(0.0)) * self.denominator as f64 / self.numerator as f64
+    }
+
     /// Latest local tick whose rounded source position does not exceed `frame`, clamped to
     /// the bounded mapping domain. Errors when `frame` precedes the entire domain.
     pub fn tick_at_source_frame(self, frame: u64) -> Result<Tick, WarpError> {
@@ -270,8 +290,8 @@ impl WarpMap {
         }
         Tick(low)
     }
-    /// Output/input duration ratio at the project tempo; model-valid ratios can exceed the
-    /// first DSP wrapper's tested 0.5..=2.0 domain. Callers must check backend capabilities.
+    /// Output/input duration ratio at the project tempo (1/6–6 for valid model tempos).
+    /// Callers must also check backend sample-rate and source-input capabilities.
     pub fn duration_ratio(self, project: Tempo) -> Result<f64, WarpError> {
         if !(Tempo::MIN_BPM..=Tempo::MAX_BPM).contains(&project.bpm) {
             return Err(WarpError::Tempo);
