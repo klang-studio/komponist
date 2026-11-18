@@ -219,7 +219,7 @@ fn id(len: u64, mtime_ns: u64) -> FileId {
     FileId {
         path: "/some/file.wav".into(),
         len,
-        mtime_ns,
+        mtime_ns: Some(i128::from(mtime_ns)),
     }
 }
 
@@ -238,7 +238,7 @@ fn stale_or_damaged_cache_files_are_misses() {
     assert_eq!(cache::from_bytes(&bytes, &id(78, 88)), None);
     assert_eq!(cache::from_bytes(&bytes, &id(77, 89)), None);
     let mut shape = bytes.clone();
-    shape[40..48].copy_from_slice(&256u64.to_le_bytes()); // a block size no level has
+    shape[48..56].copy_from_slice(&256u64.to_le_bytes()); // a block size no level has
     assert_eq!(cache::from_bytes(&shape, &id(77, 88)), None);
     // Truncated at every length, wrong magic, trailing junk, a count that promises too much.
     for cut in [0, 3, 10, 40, bytes.len() / 2, bytes.len() - 1] {
@@ -255,7 +255,7 @@ fn stale_or_damaged_cache_files_are_misses() {
     long.push(0);
     assert_eq!(cache::from_bytes(&long, &id(77, 88)), None);
     let mut huge = bytes.clone();
-    huge[48..56].copy_from_slice(&u64::MAX.to_le_bytes()); // bucket count of level 0
+    huge[56..64].copy_from_slice(&u64::MAX.to_le_bytes()); // bucket count of level 0
     assert_eq!(cache::from_bytes(&huge, &id(77, 88)), None);
 }
 
@@ -283,8 +283,30 @@ fn the_cache_folder_is_created_and_files_are_named_by_identity() {
             .to_str()
             .unwrap()
             .len(),
-        16 + ".kpeaks".len()
+        "v3-".len() + 16 + ".kpeaks".len()
     );
+}
+
+#[test]
+fn legacy_peak_files_are_found_under_the_existing_cache_key() {
+    let dir = Scratch::new("peaks-legacy-cache");
+    let data = PeakData::from_planar(44100, &[vec![0.25; 500]]);
+    let file = id(77, 88);
+    let mut legacy = cache::to_bytes(&data, &file);
+    legacy[..4].copy_from_slice(b"KPK2");
+    legacy.splice(24..40, 88u64.to_le_bytes());
+    // FNV-1a of the UTF-8 path followed by the little-endian size and old unsigned mtime.
+    let key = b"/some/file.wav"
+        .iter()
+        .copied()
+        .chain(77u64.to_le_bytes())
+        .chain(88u64.to_le_bytes())
+        .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    std::fs::write(dir.path(&format!("{key:016x}.kpeaks")), legacy).unwrap();
+    assert!(!cache::path_for(&dir.0, &file).exists());
+    assert_eq!(cache::read(&dir.0, &file), Some(data));
 }
 
 fn assert_rms_close(actual: f32, expected: f64) {
@@ -385,7 +407,7 @@ fn rms_channels_empty_ranges_and_outside_file_match_peak_queries() {
 fn old_peak_caches_and_invalid_rms_energy_are_misses() {
     let p = PeakData::from_planar(48000, &[vec![0.5; 128]]);
     let bytes = cache::to_bytes(&p, &id(11, 22));
-    assert_eq!(&bytes[..4], b"KPK2");
+    assert_eq!(&bytes[..4], b"KPK3");
     let mut old = bytes.clone();
     old[..4].copy_from_slice(b"KPK1");
     assert_eq!(cache::from_bytes(&old, &id(11, 22)), None);
@@ -397,8 +419,8 @@ fn old_peak_caches_and_invalid_rms_energy_are_misses() {
         f64::MAX,
     ] {
         let mut corrupt = bytes.clone();
-        // 40-byte header + 16-byte level header + min/max pair.
-        corrupt[64..72].copy_from_slice(&invalid.to_le_bytes());
+        // 48-byte header + 16-byte level header + min/max pair.
+        corrupt[72..80].copy_from_slice(&invalid.to_le_bytes());
         assert_eq!(cache::from_bytes(&corrupt, &id(11, 22)), None);
     }
 }

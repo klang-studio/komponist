@@ -1160,6 +1160,14 @@ impl TrackJobs<'_> {
                 }
             }
         }
+        if matches!(input, AudioInput::Hardware(_)) {
+            let db = track.source.audio.input_gain_tenths_db.clamp(-600, 600) as f32 / 10.0;
+            let gain = 10.0_f32.powf(db / 20.0);
+            for i in 0..n {
+                l[i] *= gain;
+                r[i] *= gain;
+            }
+        }
         track.meter.record_input(peak(&l[..n]), peak(&r[..n]));
         let frames = remaining(correction);
         if frames != 0

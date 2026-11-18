@@ -301,3 +301,88 @@ fn a_panicking_peak_computation_does_not_kill_the_worker() {
     wait(&rx);
     assert!(b.peaks_ready().is_some());
 }
+
+#[test]
+fn a_blocked_tempo_lane_does_not_delay_a_cached_waveform() {
+    let dir = Scratch::new("pool-separate-workers");
+    let peak_path = wav(&dir, "peaks.wav", 5000);
+    let cache_dir = dir.path("cache");
+    let writing = FilePool::new();
+    writing.set_cache_dir(Some(cache_dir.clone()));
+    let original = writing.open(&peak_path).unwrap();
+    let planted = PeakData::from_planar(44100, &[vec![0.125; 1000]]);
+    cache::write(&cache_dir, original.id(), &planted).unwrap();
+
+    let pool = FilePool::new();
+    pool.set_cache_dir(Some(cache_dir));
+    let tempo = pool.open(&wav(&dir, "tempo.wav", 1000)).unwrap();
+    let wave = pool.open(&peak_path).unwrap();
+    let (started, wait_for_start) = mpsc::channel();
+    let (release, stalled) = mpsc::channel();
+    tempo.request_tempo(move || {
+        started.send(()).unwrap();
+        stalled.recv().unwrap();
+    });
+    wait(&wait_for_start);
+    let (ready, wave_ready) = mpsc::channel();
+    wave.request_peaks(move || ready.send(()).unwrap());
+    let result = wave_ready.recv_timeout(Duration::from_secs(20));
+    release.send(()).unwrap();
+    result.expect("waveform completed while the tempo worker was blocked");
+    assert_eq!(*wave.peaks_ready().unwrap(), planted);
+}
+
+#[test]
+fn panicking_callbacks_preserve_other_callbacks_and_queued_jobs_in_both_lanes() {
+    use komponist_audiofile::TempoState;
+
+    for mode in ["peaks", "tempo"] {
+        let dir = Scratch::new(&format!("pool-completion-{mode}"));
+        let pool = FilePool::new();
+        let first = pool.open(&wav(&dir, "first.wav", 1000)).unwrap();
+        let target = pool.open(&wav(&dir, "target.wav", 1000)).unwrap();
+        let next = pool.open(&wav(&dir, "next.wav", 1000)).unwrap();
+        let request = |file: &Arc<komponist_audiofile::PoolFile>,
+                       callback: Box<dyn FnOnce() + Send>| {
+            if mode == "peaks" {
+                assert!(matches!(file.request_peaks(callback), PeakState::Pending));
+            } else {
+                assert!(matches!(file.request_tempo(callback), TempoState::Pending));
+            }
+        };
+        let (started, wait_for_start) = mpsc::channel();
+        let (release, stalled) = mpsc::channel();
+        request(
+            &first,
+            Box::new(move || {
+                started.send(()).unwrap();
+                stalled.recv().unwrap();
+            }),
+        );
+        wait(&wait_for_start);
+
+        request(
+            &target,
+            Box::new(|| panic!("injected completion callback failure")),
+        );
+        let (ready, finished) = mpsc::channel();
+        let next_ready = ready.clone();
+        request(
+            &target,
+            Box::new(move || ready.send("other callback").unwrap()),
+        );
+        request(
+            &next,
+            Box::new(move || next_ready.send("next job").unwrap()),
+        );
+        release.send(()).unwrap();
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(20)).unwrap(),
+            "other callback"
+        );
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(20)).unwrap(),
+            "next job"
+        );
+    }
+}

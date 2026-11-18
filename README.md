@@ -54,7 +54,8 @@ bar count; this does not fit a trimmed clip to that many bars. The duration fact
 the playback mapping. Edits leave the source intact. Missing files can be relinked with **Replace File…**.
 
 Warp data is optional: older v3 builds open the source unstretched, may shorten long spans, and can discard Warp
-settings when saving. Tempo detection is not included.
+settings when saving. Use **File actions › Detect Tempo** to estimate the active source’s original tempo. The
+menu shows the estimate and its confidence and lets you apply it at the suggested, half or double rate.
 
 ![The stereo Warp editor with original tempo, full-source bars and the duration factor](docs/media/audio-editor.png)
 

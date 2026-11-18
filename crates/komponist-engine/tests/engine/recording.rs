@@ -988,3 +988,113 @@ fn a_shorter_finished_jack_lane_cannot_abort_another_lanes_tail() {
         }
     }
 }
+
+#[test]
+fn input_trim_is_shared_by_capture_meter_and_monitoring() {
+    for stereo in [false, true] {
+        for gain_db in [0, 200] {
+            for format in [RecordingFormat::Float32, RecordingFormat::Pcm24] {
+                let (p, track) = project(MonitorMode::On, true);
+                let input = AudioInput::Hardware(HardwareInput { first: 0, stereo });
+                let p = edits::set_track_prop(&p, &[track], TrackProp::AudioInput(input)).unwrap();
+                let p = edits::set_track_prop(&p, &[track], TrackProp::InputGain(gain_db)).unwrap();
+                let scratch = directory();
+                let (rec, mut session) = recording::prepare(RecordingConfig {
+                    directory: scratch.0.clone(),
+                    sample_rate: 48000,
+                    format,
+                    tracks: vec![RecordingTrack {
+                        track,
+                        name: "Take".into(),
+                        channels: if stereo { 2 } else { 1 },
+                        input,
+                    }],
+                })
+                .unwrap();
+                let program = compile::build(&p, None, &NoEnv);
+                let meter = program.meter(track).unwrap().clone();
+                let mut rig = Rig::new(RATE, 256);
+                rig.set_program(&program);
+                rig.send(Command::SetRecorder(rec));
+                rig.send(Command::Record { from: Tick::ZERO });
+                let input: Vec<_> = (0..256).flat_map(|_| [0.025, 0.05]).collect();
+                // JACK's right leg arrives four frames later. The trim applies to the
+                // aligned input, and both legs use that same gain for monitoring and capture.
+                let routes = AudioInputRoutes {
+                    latencies: &[0, 4],
+                    available: 3,
+                    discontinuous: 0,
+                    history: &[0.0; 8],
+                    history_cursor: 0,
+                    history_valid: &[0; 2],
+                };
+                let audio = AudioInputBuffer {
+                    data: &input,
+                    channels: 2,
+                    latency: 4,
+                    discontinuous: false,
+                    routes: Some(routes),
+                };
+                let (l, r) = feed_routed(&mut rig, 0, &audio);
+                if stereo {
+                    assert_eq!(&l[..4], &[0.0; 4]);
+                }
+                let factor = if gain_db == 0 { 1.0 } else { 10.0 };
+                let expected = (
+                    0.025 * factor,
+                    if stereo {
+                        0.05 * factor
+                    } else {
+                        0.025 * factor
+                    },
+                );
+                assert!((l[255] - expected.0).abs() < 1e-5);
+                assert!((r[255] - expected.1).abs() < 1e-5);
+                let measured = meter.take_input();
+                assert!((measured.0 - expected.0).abs() < 1e-5);
+                assert!((measured.1 - expected.1).abs() < 1e-5);
+                rig.send(Command::Stop);
+                let tail = AudioInputBuffer {
+                    data: &input[..8],
+                    routes: Some(AudioInputRoutes {
+                        history: &input[input.len() - 8..],
+                        history_valid: &[4; 2],
+                        ..routes
+                    }),
+                    ..audio
+                };
+                feed_routed(&mut rig, 0, &tail);
+                let result = finished(&mut session).unwrap();
+                assert_eq!(result.takes[0].frames, 256);
+                let mut reader = hound::WavReader::open(&result.takes[0].path).unwrap();
+                let samples: Vec<f32> = match format {
+                    RecordingFormat::Float32 => {
+                        reader.samples::<f32>().map(Result::unwrap).collect()
+                    }
+                    RecordingFormat::Pcm24 => reader
+                        .samples::<i32>()
+                        .map(|v| v.unwrap() as f32 / 8_388_608.0)
+                        .collect(),
+                };
+                assert!((samples[0] - expected.0).abs() < 1e-5);
+                assert_eq!(reader.spec().channels, if stereo { 2 } else { 1 });
+                if stereo {
+                    assert!((samples[1] - expected.1).abs() < 1e-5);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn input_trim_meter_reports_gain_induced_clipping() {
+    let (p, track) = project(MonitorMode::On, true);
+    let p = edits::set_track_prop(&p, &[track], TrackProp::InputGain(200)).unwrap();
+    let program = compile::build(&p, None, &NoEnv);
+    let meter = program.meter(track).unwrap().clone();
+    let mut rig = Rig::new(RATE, 256);
+    rig.set_program(&program);
+    let (l, _) = feed(&mut rig, &[0.2; 512], 0, 0, false);
+    assert!(l[255] > 1.0);
+    assert!(meter.take_input().0 > 1.0);
+}

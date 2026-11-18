@@ -146,7 +146,7 @@ audio-clip-mode = Modus
 audio-clip-fixed = Fix
 audio-clip-warp = Warp
 audio-clip-mode-help = Fix: Originalgeschwindigkeit. Re-Pitch: Tempo folgen, Tonhöhe ändern. Warp: Tempo folgen, Tonhöhe beibehalten.
-audio-clip-source-bars-help = Gesamte aktive Quelldatei im aktuellen Taktmaß, nicht der getrimmte Clip. Keine Tempoerkennung.
+audio-clip-source-bars-help = Berechnet das Originaltempo der gesamten aktiven Quelldatei aus der Taktzahl im aktuellen Taktmaß.
 audio-clip-duration = Dauer
 audio-clip-duration-value = Dauer { $ratio }×
 audio-clip-duration-help = Ausgabedauer / Quelldauer: { $ratio }× · Originaltempo / Projekttempo
@@ -157,3 +157,16 @@ audio-source-time = Quelle { $source } ↔ Song { $song }
 audio-warp-error = Warp-Fehler aufgetreten: { $reason }
 audio-source-ruler-short = Quelle
 audio-song-ruler = Song
+
+# Audio file analysis and explicit original-tempo confirmation.
+audio-tempo-detect = Tempo erkennen
+audio-tempo-analyzing = Tempo wird analysiert …
+audio-tempo-unknown = Kein stabiles Tempo erkannt
+audio-tempo-failed = Tempoanalyse fehlgeschlagen
+audio-tempo-retry = Tempo erneut erkennen
+audio-tempo-estimate = { $bpm } BPM · { $confidence } % Konfidenz
+audio-tempo-use = { $bpm } BPM übernehmen
+audio-tempo-use-half = { $bpm } BPM übernehmen (halb)
+audio-tempo-use-double = { $bpm } BPM übernehmen (doppelt)
+
+audio-input-gain = Eingangsverstärkung

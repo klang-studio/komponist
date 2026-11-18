@@ -1244,17 +1244,18 @@ and worker threads and hand finished `Arc`s over.
   decode without holding the file in memory. `query_rms(channel, start, end, columns)` returns RMS amplitudes at the
   same resolution: each bucket stores the sum of squared samples in `f64`, higher levels sum energies, and the
   query weights the final partial bucket by its actual frame count. Unaligned columns include whole intersecting
-  buckets, as min/max queries do. Cache version `KPK2` stores energy beside min/max; older caches are regenerated.
+  buckets, as min/max queries do. Cache version `KPK3` stores energy beside min/max and uses a lossless path key
+  with signed timestamps. `KPK2` files can still be read when the old key is unambiguous.
 - **File pool (`FilePool`, `PoolFile`).** One entry per file, keyed by `FileId` (canonical path, size, mtime), so
   symlinks and spellings of a path are one entry and a changed file is a new one. The pool holds entries weakly:
   the refcount is the `Arc<PoolFile>` the users hold, and an entry and its memory go with the last user. Per entry,
   computed once however many users ask: the header (`info`), the decoded audio (`decoded`; in memory while somebody
   holds it), data derived from it (`derived::<T>`, e.g. the Sampler's `Arc<Sample>`, so two Samplers share one buffer),
   and the peaks. The Sampler's loader and the audio clips use the process-wide `FilePool::global()`.
-- **Peak cache.** `request_peaks(on_done)` queues the entry on the pool's one worker thread and returns at once; the UI
+- **Peak cache.** `request_peaks(on_done)` queues the entry on the waveform worker and returns at once; the UI
   polls `peaks_state()` / `peaks_ready()` and passes a repaint request as `on_done`. The worker reads the on-disk cache
   first (`FilePool::set_cache_dir`, a folder in the user's cache directory, never the repository or the project folder;
-  one `<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
+  one `v3-<hash>.kpeaks` file per audio file, validated by size and mtime, any damage is a miss), else decodes in a
   streaming pass and writes the cache. Without a cache folder peaks live in memory only.
 
 
@@ -1318,7 +1319,7 @@ The extreme guard is 10 cents; these bounds describe the Default algorithm's qua
 than a pitch correction. The isolated release load probe at 48 kHz, 256-frame callbacks and
 8 stereo voices used 12.2–18.4% of one core; 16 voices used 22.6–35.9%, with zero underruns at
 ratios 1/6, 1.5 and 6. Host-specific results, native sanitizer checks and platform limitations
-are recorded in the WP-D internal notes. Warp UI is described below; tempo detection remains a later work package.
+are recorded in the WP-D internal notes. The Warp UI and source tempo analysis are described below.
 
 
 **Warp UI (#14 WP-E, approved variant A).** The existing audio editor and inspector share one
@@ -1328,6 +1329,15 @@ bars/read-only duration ratio. At narrow widths the latter may wrap; essential c
 visible. Source bars describes the full active take file in the current meter, not the cropped
 clip duration. Original tempo and bar-count edits retain existing grouped NumberField/undo,
 clamping, source-limit and phase reanchor semantics. Takes share the mode/original tempo.
+
+**Source tempo analysis (#14 WP-F).** The shared file actions menu requests an estimate for the
+active take. The audio file pool runs analysis on its tempo worker, independently of waveform peaks.
+It caches the result by file identity and algorithm version. Failed requests can be retried. Analysis decodes up to 60 seconds of the full source. It resamples to
+12 kHz, extracts spectral flux independently per channel and ranks periodic onsets from
+40 to 240 BPM. Confidence reflects onset regularity and the separation between candidates.
+The confirmed, half or double estimate uses the same undoable original-tempo edit as manual entry.
+The deterministic suite evaluates 22 labeled synthetic loops at 55–205 BPM and 12–48 kHz,
+plus the demo’s Pulse 90 source in both UI languages. This measures performance on those fixtures.
 
 The waveform uses song musical ticks and a secondary native-source clock. One `Mapping` helper
 projects full-source peaks/context, the clip window, pointer/readout and viewport bounds;

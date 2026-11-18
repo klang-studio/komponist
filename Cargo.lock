@@ -2568,6 +2568,7 @@ name = "komponist-audiofile"
 version = "0.2.0"
 dependencies = [
  "hound",
+ "realfft",
  "rubato",
  "symphonia",
 ]

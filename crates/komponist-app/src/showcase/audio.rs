@@ -45,6 +45,7 @@ pub(super) fn add_tracks(project: &mut Project) {
         ..Default::default()
     };
     let (p, shaker) = edits::add_audio_track(project, spec).unwrap();
+    let p = edits::set_track_prop(&p, &[shaker], edits::TrackProp::InputGain(60)).unwrap();
     *project = edits::set_output(&p, &[shaker], TrackOutput::Bus(rhythm)).unwrap();
     let file = AudioFile::new(Path::new(SHAKER), None, SHAKER_FRAMES, RATE, 1);
     for (bar, bars, gain, fade_in, fade_out) in [

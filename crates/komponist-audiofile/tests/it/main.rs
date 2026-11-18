@@ -5,3 +5,4 @@ mod decode;
 mod peaks;
 mod pool;
 mod resample;
+mod tempo;
