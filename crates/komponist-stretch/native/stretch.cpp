@@ -9,6 +9,7 @@
 
 namespace {
 constexpr std::size_t chunk = 512;
+thread_local std::uint64_t native_calls = 0;
 using Engine = signalsmith::stretch::SignalsmithStretch<float>;
 struct Stretch {
     std::uint32_t rate, channels;
@@ -39,7 +40,8 @@ template <class F> int guarded(F &&f) noexcept {
 extern "C" {
 int kp_stretch_new(std::uint32_t rate, std::uint32_t channels, void **out,
                    std::size_t *input_latency, std::size_t *output_latency) noexcept {
-    if (!out || !input_latency || !output_latency || rate < 8000 || rate > 192000 || channels < 1 ||
+    ++native_calls;
+    if (!out || !input_latency || !output_latency || rate < 8000 || rate > 384000 || channels < 1 ||
         channels > 2)
         return 3;
     *out = nullptr;
@@ -51,13 +53,15 @@ int kp_stretch_new(std::uint32_t rate, std::uint32_t channels, void **out,
     });
 }
 int kp_stretch_reset(void *opaque) noexcept {
+    ++native_calls;
     if (!opaque)
         return 3;
     return guarded([&] { static_cast<Stretch *>(opaque)->reset(); });
 }
 int kp_stretch_prime(void *opaque, const float *const *input, std::size_t frames,
                      double ratio) noexcept {
-    if (!opaque || !input || !std::isfinite(ratio) || ratio < 0.5 || ratio > 2)
+    ++native_calls;
+    if (!opaque || !input || !std::isfinite(ratio) || ratio < 1.0 / 6.0 || ratio > 6.0)
         return 3;
     auto &s = *static_cast<Stretch *>(opaque);
     const auto lookahead = std::size_t(s.engine->inputLatency());
@@ -85,7 +89,8 @@ int kp_stretch_prime(void *opaque, const float *const *input, std::size_t frames
 }
 int kp_stretch_process(void *opaque, const float *const *input, std::size_t input_frames,
                        float *const *output, std::size_t output_frames) noexcept {
-    if (!opaque || !input || !output || input_frames > chunk * 2 || !output_frames ||
+    ++native_calls;
+    if (!opaque || !input || !output || input_frames > chunk * 6 || !output_frames ||
         output_frames > chunk)
         return 3;
     auto &s = *static_cast<Stretch *>(opaque);
@@ -95,5 +100,6 @@ int kp_stretch_process(void *opaque, const float *const *input, std::size_t inpu
     return guarded(
         [&] { s.engine->process(input, int(input_frames), output, int(output_frames)); });
 }
-void kp_stretch_delete(void *opaque) noexcept { delete static_cast<Stretch *>(opaque); }
+void kp_stretch_delete(void *opaque) noexcept { ++native_calls; delete static_cast<Stretch *>(opaque); }
+std::uint64_t kp_stretch_thread_calls() noexcept { return native_calls; }
 }

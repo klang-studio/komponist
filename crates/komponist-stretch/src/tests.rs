@@ -263,7 +263,7 @@ fn invalid_dimensions_and_samples_are_rejected_without_advancing_state() {
 
 #[test]
 fn configuration_and_counter_bounds_are_checked_before_native_calls() {
-    for rate in [0, 7999, 192001, u32::MAX] {
+    for rate in [0, 7999, 384001, u32::MAX] {
         assert!(matches!(
             Stretcher::new(rate, 2, 1.0),
             Err(Error::SampleRate)
@@ -276,7 +276,14 @@ fn configuration_and_counter_bounds_are_checked_before_native_calls() {
         ));
     }
     let mut s = Stretcher::new(48000, 1, 1.0).unwrap();
-    for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.49, 2.01] {
+    for ratio in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        MIN_RATIO.next_down(),
+        MAX_RATIO.next_up(),
+    ] {
         assert!(matches!(Stretcher::new(48000, 2, ratio), Err(Error::Ratio)));
         assert_eq!(s.set_ratio(ratio), Err(Error::Ratio));
         assert_eq!(s.ratio(), 1.0);
@@ -347,6 +354,91 @@ fn bounded_high_headroom_noise_stays_finite() {
     for ratio in RATIOS {
         for channel in render(&source, 192000, ratio) {
             assert!(channel.iter().all(|s| s.is_finite()));
+        }
+    }
+}
+
+// Oversampled narrow-band DFT peak. Phase-randomized extreme expansion can add tiny zero
+// crossings, so count-based frequency is not the dominant sinusoidal pitch metric here.
+fn dominant_tone_hz(x: &[f32], rate: u32) -> f64 {
+    let stride = (rate / 4000).max(1) as usize;
+    let samples: Vec<f64> = x
+        .iter()
+        .step_by(stride)
+        .enumerate()
+        .map(|(i, &v)| {
+            let n = x.len().div_ceil(stride);
+            f64::from(v) * (0.5 - 0.5 * (TAU * i as f64 / (n - 1) as f64).cos())
+        })
+        .collect();
+    let effective = f64::from(rate) / stride as f64;
+    let powers: Vec<f64> = (0..=80)
+        .map(|k| {
+            let angle = TAU * (430.0 + k as f64 * 0.25) / effective;
+            let (sin, cos) = angle.sin_cos();
+            let (mut re, mut im, mut zr, mut zi) = (0.0, 0.0, 1.0, 0.0);
+            for &v in &samples {
+                re += v * zr;
+                im += v * zi;
+                let next = zr * cos - zi * sin;
+                zi = zi * cos + zr * sin;
+                zr = next;
+            }
+            re * re + im * im
+        })
+        .collect();
+    let k = (1..80)
+        .max_by(|&a, &b| powers[a].total_cmp(&powers[b]))
+        .unwrap();
+    let (a, b, c) = (powers[k - 1].ln(), powers[k].ln(), powers[k + 1].ln());
+    430.0 + (k as f64 + 0.5 * (a - c) / (a - 2.0 * b + c)) * 0.25
+}
+
+#[test]
+fn model_tempo_extrema_preserve_duration_pitch_silence_and_repeatability() {
+    for rate in [8000, 48000, 192000, 384000] {
+        let source = tone(rate, rate as usize * 2, 2);
+        for ratio in [1.0 / 6.0, 0.25, 1.0 / 3.0, 3.0, 4.0, 6.0] {
+            let state = Stretcher::new(rate, 2, ratio);
+            assert!(
+                state.is_ok(),
+                "rate={rate} ratio={ratio}: {:?}",
+                state.err()
+            );
+            let out = render(&source, rate, ratio);
+            assert_eq!(
+                out[0].len(),
+                output_length(source[0].len() as u64, ratio).unwrap() as usize
+            );
+            assert!(out.iter().flatten().all(|x| x.is_finite()));
+            let x = &out[0][out[0].len() / 4..out[0].len() * 3 / 4];
+            let crossings: Vec<_> = x
+                .windows(2)
+                .enumerate()
+                .filter(|(_, p)| p[0] <= 0.0 && p[1] > 0.0)
+                .map(|(j, p)| j as f64 + (-p[0] as f64) / (p[1] as f64 - p[0] as f64))
+                .collect();
+            let hz = (crossings.len() - 1) as f64 * rate as f64
+                / (crossings.last().unwrap() - crossings[0]);
+            let cents = 1200.0 * (hz / 440.0).log2();
+            let spectral = 1200.0 * (dominant_tone_hz(x, rate) / 440.0).log2();
+            println!(
+                "rate={rate} ratio={ratio}: dominant {spectral:.3} cents, crossing {cents:.3} cents"
+            );
+            assert!(
+                spectral.abs() < 10.0,
+                "rate={rate} ratio={ratio} dominant pitch={spectral} cents"
+            );
+            let mut s = Stretcher::new(rate, 2, ratio).unwrap();
+            let first = render_with(&mut s, &source, 0, 12001, 64);
+            assert_eq!(first, render_with(&mut s, &source, 0, 12001, 1024));
+            let quiet = vec![vec![0.0; rate as usize]; 2];
+            assert!(
+                render_with(&mut s, &quiet, 0, 4096, 64)
+                    .iter()
+                    .flatten()
+                    .all(|x| x.abs() < 1e-8)
+            );
         }
     }
 }
