@@ -227,6 +227,7 @@ pub struct AudioPlan {
     segments: Arc<[Segment]>,
     ring: Arc<Ring>,
     heads: OnceLock<Heads>,
+    offline: bool,
     edge_frames: u32,
     head_frames: usize,
     diagnostics: stretch::Diagnostics,
@@ -311,13 +312,9 @@ impl AudioPlan {
         }
     }
 
-    /// A copy that plays nothing at or after song frame `end` (the export cuts audio at the end of
-    /// its range like it cuts notes). It has a ring of its own. `None` if nothing reaches past
-    /// `end`.
-    pub fn cut_at(&self, end: i64) -> Option<Arc<AudioPlan>> {
-        if self.segments.iter().all(|s| s.end <= end) {
-            return None;
-        }
+    /// A fresh offline plan with its own ring and diagnostics, even if no clip needs trimming.
+    /// Only the export's synchronous streamer services the plan, and nothing plays from `end`.
+    pub(crate) fn for_export(&self, end: i64) -> Arc<AudioPlan> {
         let segments: Vec<Segment> = self
             .segments
             .iter()
@@ -328,7 +325,7 @@ impl AudioPlan {
                 ..s.clone()
             })
             .collect();
-        Some(Arc::new(AudioPlan {
+        Arc::new(AudioPlan {
             id: NEXT_PLAN.fetch_add(1, Ordering::Relaxed),
             rate: self.rate,
             tempo: self.tempo,
@@ -338,10 +335,11 @@ impl AudioPlan {
             segments: segments.into(),
             ring: Arc::new(Ring::new()),
             heads: OnceLock::new(),
+            offline: true,
             edge_frames: self.edge_frames,
             head_frames: self.head_frames,
             clips: self.clips.clone(),
-        }))
+        })
     }
 }
 
@@ -454,6 +452,7 @@ pub(crate) fn build_plan(
         segments: segments.into(),
         ring: previous.map_or_else(|| Arc::new(Ring::new()), |p| Arc::clone(&p.ring)),
         heads: OnceLock::new(),
+        offline: false,
         edge_frames: edge.min(MAX_EDGE_FRAMES as u32),
         head_frames: (HEAD_MS / 1000.0 * rate).round() as usize,
         clips: track.clips.clone(),

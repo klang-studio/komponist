@@ -230,6 +230,7 @@ impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ExportError::Io(error) => Some(error),
+            ExportError::Stretch { reason, .. } => Some(reason),
             _ => None,
         }
     }
@@ -291,7 +292,7 @@ pub fn export(
                 .filter(|(_, s)| {
                     s.start < (job.range.end + job.tail) as i64 && s.end > job.range.start as i64
                 })
-                .map(|(i, s)| (Arc::clone(plan), i, s.clip, plan.failure_count(i)))
+                .map(|(i, s)| (Arc::clone(plan), i, s.clip))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -460,7 +461,7 @@ fn export_program(program: &Program, end: Tick) -> Program {
             // own ring, so the export does not touch the live stream).
             let audio = track.audio.as_ref().map(|plan| {
                 let end = map.tick_to_sample(end, f64::from(plan.rate()));
-                plan.cut_at(end).unwrap_or_else(|| Arc::clone(plan))
+                plan.for_export(end)
             });
             Arc::new(TrackProgram {
                 notes,
@@ -492,11 +493,11 @@ fn render(
     preroll: u64,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(Progress),
-    failures: &[(Arc<crate::AudioPlan>, usize, komponist_model::ClipId, u64)],
+    failures: &[(Arc<crate::AudioPlan>, usize, komponist_model::ClipId)],
 ) -> Result<(Vec<f32>, f32), ExportError> {
     let check = || -> Result<(), ExportError> {
-        for (plan, i, clip, before) in failures {
-            if plan.failure_count(*i) > *before {
+        for (plan, i, clip) in failures {
+            if plan.failure_count(*i) != 0 {
                 return Err(ExportError::Stretch {
                     clip: *clip,
                     reason: plan

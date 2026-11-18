@@ -121,7 +121,10 @@ impl Streamer {
         {
             any = true;
             plan.ring.begin_write(epoch);
-            if !plan.heads_ready() && !self.head_queue.iter().any(|p| Arc::ptr_eq(p, &plan)) {
+            if !plan.offline
+                && !plan.heads_ready()
+                && !self.head_queue.iter().any(|p| Arc::ptr_eq(p, &plan))
+            {
                 self.head_queue.push(Arc::clone(&plan));
             }
             let same = |v: &StreamVoice| Arc::ptr_eq(&v.plan.ring, &plan.ring);
@@ -157,7 +160,7 @@ impl Streamer {
     /// Returns whether it did anything.
     pub(crate) fn service(&mut self) -> bool {
         let mut progress = self.drain();
-        for v in &mut self.voices {
+        for v in self.voices.iter_mut().filter(|v| !v.plan.offline) {
             for _ in 0..PASS_CHUNKS {
                 let before = v.produced;
                 if v.produce(&mut self.buf) {

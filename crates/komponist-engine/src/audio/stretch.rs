@@ -20,6 +20,9 @@ pub enum StretchError {
     Input,
     Position,
     Backend,
+    SourceRead,
+    SourceSeek,
+    SourceResample,
 }
 impl StretchError {
     fn code(self) -> u8 {
@@ -28,6 +31,9 @@ impl StretchError {
             Self::Input => 2,
             Self::Position => 3,
             Self::Backend => 4,
+            Self::SourceRead => 5,
+            Self::SourceSeek => 6,
+            Self::SourceResample => 7,
         }
     }
     fn from_code(n: u8) -> Option<Self> {
@@ -36,6 +42,9 @@ impl StretchError {
             1 => Some(Self::Settings),
             2 => Some(Self::Input),
             3 => Some(Self::Position),
+            5 => Some(Self::SourceRead),
+            6 => Some(Self::SourceSeek),
+            7 => Some(Self::SourceResample),
             _ => Some(Self::Backend),
         }
     }
@@ -47,6 +56,9 @@ impl std::fmt::Display for StretchError {
             Self::Input => "invalid audio samples for stretching",
             Self::Position => "audio stretch position out of range",
             Self::Backend => "audio stretch backend failed",
+            Self::SourceRead => "could not read the audio source for stretching",
+            Self::SourceSeek => "could not seek in the audio source for stretching",
+            Self::SourceResample => "could not resample the audio source for stretching",
         })
     }
 }
@@ -165,7 +177,7 @@ impl WarpState {
             c.resize(n, 0.0);
         }
         let [l, r] = &mut self.input;
-        reader.read(self.input_at, [l, r]);
+        reader.read(self.input_at, [l, r])?;
         self.input_at = end;
         Ok(())
     }
