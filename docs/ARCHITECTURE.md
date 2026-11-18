@@ -1286,8 +1286,9 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   inject synthetic capture into the same bridge/null backend without opening hardware.
 - **Explicit JACK routes (#120, Linux):** S07 stores ordered capture ports and the left/right master
   ports by full JACK name. Aliases are for display. Without explicit routing, the existing CPAL
-  JACK backend still provides system auto-connect. With explicit routing, a native JACK client
-  connects the selected ports and processes capture and playback in the same server period.
+  JACK backend still provides playback-only system auto-connect. With capture enabled or explicit
+  routing, a native JACK client manages the routes and processes capture and playback in the same
+  server period. Automatic routes use the server's advertised default ports.
   It can run on JACK or PipeWire-JACK and does not start or configure the server. Graph changes
   are reconciled outside the process callback. Loss of a selected capture route invalidates
   input until the exact ports reconnect, while the same client continues playback.

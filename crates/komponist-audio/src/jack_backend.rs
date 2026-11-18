@@ -108,34 +108,85 @@ impl Route {
         })
     }
 
-    fn targets(&self, graph: &[JackPort]) -> Targets {
-        let system_ports = |direction, prefix: &'static str| {
-            graph
-                .iter()
-                .filter(move |port| port.direction == direction && port.name.starts_with(prefix))
-                .map(|port| port.name.clone())
-        };
+    fn targets(&self, automatic: &Targets) -> Targets {
         let capture = self.capture.clone().unwrap_or_else(|| {
-            system_ports(JackDirection::Capture, "system:capture_")
+            automatic
+                .capture
+                .iter()
                 .take(self.capture_channels)
+                .cloned()
                 .collect()
         });
-        let mut playback = self.playback.clone();
-        if playback.iter().all(Option::is_none) {
-            for (slot, name) in playback
-                .iter_mut()
-                .zip(system_ports(JackDirection::Playback, "system:playback_"))
-            {
-                *slot = Some(name);
-            }
-        }
+        let playback = if self.playback.iter().all(Option::is_none) {
+            automatic.playback.clone()
+        } else {
+            self.playback.clone()
+        };
         Targets { capture, playback }
     }
 }
 
+#[derive(Default)]
 struct Targets {
     capture: Vec<String>,
     playback: [Option<String>; 2],
+}
+
+fn server_default_ports(client: &Client, direction: JackDirection) -> Vec<String> {
+    let audio = AudioIn::default();
+    let (pattern, flags) = match direction {
+        JackDirection::Capture => ("^system:capture_[0-9]+$", PortFlags::IS_OUTPUT),
+        JackDirection::Playback => ("^system:playback_[0-9]+$", PortFlags::IS_INPUT),
+    };
+    // PipeWire-JACK matches "system:*" against its default-node metadata, even if the
+    // returned names are the real device ports. A local prefix filter misses those ports.
+    let mut ports = client.ports(Some(pattern), Some(audio.jack_port_type()), flags);
+    if direction == JackDirection::Capture {
+        ports.retain(|name| !is_monitor(name));
+    }
+    if ports.is_empty() {
+        let mut physical = client.ports(
+            None,
+            Some(audio.jack_port_type()),
+            flags | PortFlags::IS_PHYSICAL,
+        );
+        if direction == JackDirection::Capture {
+            physical.retain(|name| !is_monitor(name));
+        }
+        // Without a server default, use a single unambiguous hardware device in server channel order.
+        if let Some((owner, _)) = physical.first().and_then(|name| name.rsplit_once(':'))
+            && physical.iter().all(|name| {
+                name.rsplit_once(':')
+                    .is_some_and(|(client, _)| client == owner)
+            })
+        {
+            return physical;
+        }
+    }
+    ports
+}
+
+fn is_monitor(name: &str) -> bool {
+    name.rsplit_once(':').is_some_and(|(owner, port)| {
+        owner.ends_with(" Monitor") || owner.ends_with(" (Monitor)") || port.starts_with("monitor_")
+    })
+}
+
+fn default_targets(client: &Client, route: &Route) -> Targets {
+    let mut targets = Targets::default();
+    if route.capture.is_none() && route.capture_channels != 0 {
+        targets.capture = server_default_ports(client, JackDirection::Capture);
+    }
+    if route.playback.iter().all(Option::is_none) {
+        for (slot, name) in targets
+            .playback
+            .iter_mut()
+            .zip(server_default_ports(client, JackDirection::Playback))
+        {
+            *slot = Some(name);
+        }
+    }
+    targets
 }
 
 #[derive(Default)]
@@ -232,15 +283,17 @@ impl jack::NotificationHandler for Notifications {
         client: &Client,
         a: jack::PortId,
         b: jack::PortId,
-        _connected: bool,
+        connected: bool,
     ) {
-        // The JACK notification thread can identify the affected local port. Use its handle
-        // only as an identity; no graph mutation or audio processing happens here.
-        if [a, b].into_iter().any(|id| {
-            client
-                .port_by_id(id)
-                .is_some_and(|port| self.capture_ports.contains(&(port.raw() as usize)))
-        }) {
+        // Connect notifications may reach us after the controller already verified the route.
+        // Only a disconnect can invalidate a ready route here.
+        if !connected
+            && [a, b].into_iter().any(|id| {
+                client
+                    .port_by_id(id)
+                    .is_some_and(|port| self.capture_ports.contains(&(port.raw() as usize)))
+            })
+        {
             self.signals.capture.changed();
         }
         self.graph_changed();
@@ -350,21 +403,43 @@ struct Duplex<P: AudioProcess> {
     input: Vec<Port<AudioIn>>,
     output: [Port<AudioOut>; 2],
     signals: Arc<Signals>,
-    previous_end: Option<jack::Frames>,
+    previous: Option<Cycle>,
+}
+
+#[derive(Clone, Copy)]
+struct Cycle {
+    first_frame: jack::Frames,
+    frames: jack::Frames,
+    entered: Instant,
+}
+
+impl Cycle {
+    fn missed_before(self, current: Self, rate: u32) -> bool {
+        // PipeWire reports the current graph driver's clock. A new driver or quantum can
+        // rebase that position without dropping this client's input. Corroborate a forward
+        // jump in a stable period with elapsed monotonic time.
+        let advance = current.first_frame.wrapping_sub(self.first_frame);
+        self.frames == current.frames
+            && advance > self.frames
+            && advance <= rate
+            && current.entered.saturating_duration_since(self.entered)
+                >= frames_to_duration(u64::from(self.frames) * 3 / 2, rate)
+    }
 }
 
 impl<P: AudioProcess + 'static> jack::ProcessHandler for Duplex<P> {
     fn process(&mut self, _: &Client, scope: &jack::ProcessScope) -> Control {
         let [left, right] = &mut self.output;
-        let now = Instant::now();
-        let first_frame = scope.last_frame_time();
-        let period = scope.n_frames();
-        if self.signals.period.swap(period, Ordering::Relaxed) != period {
-            self.signals.graph_changed.store(true, Ordering::Release);
-        }
-        let discontinuous = self.signals.xrun.swap(false, Ordering::AcqRel)
-            || self.previous_end.is_some_and(|end| end != first_frame);
-        self.previous_end = Some(first_frame.wrapping_add(period));
+        let cycle = Cycle {
+            entered: Instant::now(),
+            first_frame: scope.last_frame_time(),
+            frames: scope.n_frames(),
+        };
+        let xrun = self.signals.xrun.swap(false, Ordering::AcqRel);
+        let discontinuous = self
+            .previous
+            .replace(cycle)
+            .is_some_and(|previous| xrun || previous.missed_before(cycle, self.render.rate));
         let mut input = [&[][..]; MAX_INPUT_CHANNELS];
         // JACK supplies silence for unconnected inputs. Route state establishes whether that
         // silence is valid capture.
@@ -379,13 +454,19 @@ impl<P: AudioProcess + 'static> jack::ProcessHandler for Duplex<P> {
         self.render.process(
             [left.as_mut_slice(scope), right.as_mut_slice(scope)],
             &input[..channels],
-            now,
+            cycle.entered,
             Timing {
                 capture_latency: frames_to_duration(capture_frames, self.render.rate),
                 playback_latency: frames_to_duration(playback_frames, self.render.rate),
                 discontinuous: discontinuous || route_gap,
             },
         );
+        Control::Continue
+    }
+
+    fn buffer_size(&mut self, _: &Client, frames: jack::Frames) -> Control {
+        self.signals.period.store(frames, Ordering::Relaxed);
+        self.signals.graph_changed.store(true, Ordering::Release);
         Control::Continue
     }
 }
@@ -467,7 +548,7 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                     input,
                     output,
                     signals: Arc::clone(&signals),
-                    previous_end: None,
+                    previous: None,
                 },
             )
             .map_err(jack_error)?;
@@ -488,12 +569,19 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         let client = self.client.as_client();
         let before = self.signals.capture.snapshot();
         let graph = graph(client);
-        let desired = self.route.targets(&graph);
+        let desired = self.route.targets(&default_targets(client, &self.route));
         let mut ready = !desired.capture.is_empty();
         let mut capture_latency = 0;
         for (index, local) in self.capture.iter().enumerate() {
             let target = desired.capture.get(index).map(String::as_str);
-            let latency = reconcile_port(client, local, target, JackDirection::Capture, &graph);
+            let latency = reconcile_port(
+                client,
+                local,
+                target,
+                JackDirection::Capture,
+                &graph,
+                Some(&self.signals.capture),
+            );
             if self.route.capture.is_some() || target.is_some() {
                 ready &= latency.is_some();
                 capture_latency = capture_latency.max(latency.unwrap_or(0));
@@ -507,6 +595,7 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                 target.as_deref(),
                 JackDirection::Playback,
                 &graph,
+                None,
             );
             playback_latency = playback_latency.max(latency.unwrap_or(0));
         }
@@ -562,12 +651,25 @@ fn reconcile_port(
     target: Option<&str>,
     direction: JackDirection,
     graph: &[JackPort],
+    capture: Option<&CaptureState>,
 ) -> Option<u32> {
     let target = exact_target(target, direction, graph);
     let port = client.port_by_name(local)?;
     // A client/session manager can attach to our ports. Treat the route as exclusive, so capture
     // cannot accidentally mix with another link. Only touch links on ports we own.
-    for other in port.get_connections() {
+    let connections = port.get_connections();
+    if let Some(capture) = capture
+        && capture.snapshot() & CAPTURE_READY != 0
+        && match target {
+            Some(target) => connections.len() != 1 || connections[0] != target,
+            None => !connections.is_empty(),
+        }
+    {
+        // A ready channel lost its chosen link or picked up a second link. Latch the gap
+        // before repairing it, even if the server never notified us.
+        capture.changed();
+    }
+    for other in connections {
         if target != Some(other.as_str()) {
             let (source, sink) = edge(direction, local, &other);
             let _ = client.disconnect_ports_by_name(source, sink);
@@ -641,7 +743,7 @@ mod tests {
             port("other:right", Capture),
         ];
         assert_ne!(graph[3].label(), graph[4].label());
-        let targets = route.targets(&graph);
+        let targets = route.targets(&Targets::default());
         assert_eq!(targets.capture, ["USB:right", "USB:left"]);
         assert_eq!(targets.playback, [Some("USB:speaker_2".into()), None]);
         assert_eq!(
@@ -666,26 +768,58 @@ mod tests {
     }
 
     #[test]
-    fn automatic_ports_and_explicitly_disabled_capture_are_separate() {
-        use JackDirection::{Capture, Playback};
-        let graph = vec![
-            port("system:capture_1", Capture),
-            port("system:playback_1", Playback),
-        ];
+    fn auto_uses_default_canonical_ports_with_explicit_outputs_and_respects_disabled_capture() {
+        let defaults = Targets {
+            capture: vec![
+                "Hotone MP80:capture_FL".into(),
+                "Hotone MP80:capture_FR".into(),
+            ],
+            playback: [
+                Some("Hotone MP80:playback_FL".into()),
+                Some("Hotone MP80:playback_FR".into()),
+            ],
+        };
         let config = JackRoutes::default();
         assert!(config.is_automatic());
-        let route = Route::new(&config, true).unwrap();
-        let targets = route.targets(&graph);
-        assert_eq!(targets.capture, ["system:capture_1"]);
-        assert_eq!(targets.playback, [Some("system:playback_1".into()), None]);
+        let targets = Route::new(&config, true).unwrap().targets(&defaults);
+        assert_eq!(targets.capture, defaults.capture);
+        assert_eq!(targets.playback, defaults.playback);
+        let config = JackRoutes {
+            playback: [Some("Speakers:left".into()), Some("Speakers:right".into())],
+            ..config
+        };
+        let targets = Route::new(&config, true).unwrap().targets(&defaults);
+        assert_eq!(targets.capture, defaults.capture);
+        assert_eq!(targets.playback, config.playback);
         let config = JackRoutes {
             capture: Some(vec![]),
             ..config
         };
-        assert!(!config.is_automatic());
-        let targets = Route::new(&config, true).unwrap().targets(&graph);
+        let targets = Route::new(&config, true).unwrap().targets(&defaults);
         assert!(targets.capture.is_empty());
-        assert_eq!(targets.playback, [Some("system:playback_1".into()), None]);
+        assert!(is_monitor("Hotone MP80 Monitor:monitor_FL"));
+        assert!(is_monitor("Hotone MP80:monitor_FR"));
+        assert!(!is_monitor("Hotone MP80:capture_FR"));
+    }
+
+    #[test]
+    fn clock_rebases_and_quantum_changes_do_not_invent_capture_gaps() {
+        let time = Instant::now();
+        let previous = Cycle {
+            first_frame: 1024,
+            frames: 64,
+            entered: time,
+        };
+        let at = |first_frame, frames, elapsed| Cycle {
+            first_frame,
+            frames,
+            entered: time + frames_to_duration(elapsed, 48_000),
+        };
+        assert!(!previous.missed_before(at(1088, 64, 64), 48_000));
+        assert!(!previous.missed_before(at(12_288, 64, 64), 48_000));
+        assert!(!previous.missed_before(at(1, 64, 64), 48_000));
+        assert!(!previous.missed_before(at(1280, 256, 256), 48_000));
+        assert!(previous.missed_before(at(1152, 64, 128), 48_000));
     }
 
     #[test]

@@ -2019,11 +2019,18 @@ fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languag
                 move |ui, app: &mut App| {
                     app.show(ui);
                     for output in settings::show(ui.ctx(), &model, None) {
-                        if let settings::Output::Act(Action::Settings(SettingsAction::SetAudio(
-                            config,
-                        ))) = output
-                        {
-                            model.config = config;
+                        match output {
+                            settings::Output::Act(Action::Settings(SettingsAction::SetAudio(
+                                config,
+                            ))) => {
+                                model.config = config;
+                            }
+                            settings::Output::Act(Action::Settings(
+                                SettingsAction::SetJackCaptureAutomatic,
+                            )) => {
+                                model.config.jack_routes.capture = None;
+                            }
+                            _ => {}
                         }
                     }
                 },
@@ -2090,6 +2097,14 @@ fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languag
             .click();
         h.run_steps(4);
         assert_eq!(combo_value(&h, right), "Interface:speaker_right");
+        h.get_by_role_and_label(Role::Button, lang.settings_jack_auto_capture())
+            .click();
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::ComboBox, lang.settings_input_device());
+        assert!(
+            h.query_by_role_and_label(Role::ComboBox, &capture)
+                .is_none()
+        );
     }
 }
 

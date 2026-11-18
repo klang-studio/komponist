@@ -482,9 +482,7 @@ impl<P: AudioProcess> AudioSystem<P> {
         }
         self.input = input;
         let config = match &self.state {
-            AudioState::NoDevice { config, .. }
-                if config.host == HostKind::Jack && !config.jack_routes.is_automatic() =>
-            {
+            AudioState::NoDevice { config, .. } if config.host == HostKind::Jack => {
                 Some(config.clone())
             }
             _ => self.current.as_ref().map(|c| c.requested.clone()),
@@ -563,7 +561,9 @@ impl<P: AudioProcess> AudioSystem<P> {
         let result = match config.host {
             HostKind::Null => self.start_null(config).map(|()| config.clone()),
             #[cfg(target_os = "linux")]
-            HostKind::Jack if !config.jack_routes.is_automatic() => self.start_jack(config),
+            HostKind::Jack if !config.jack_routes.is_automatic() || self.input.is_some() => {
+                self.start_jack(config)
+            }
             _ => self.start_device(config),
         };
         match result {

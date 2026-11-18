@@ -369,7 +369,7 @@ pub enum BufferLimit {
 
 /// The buffer sizes `host` allows on `entry`. `running` is the configuration the stream really
 /// runs on (the engine's `AudioState::Running`): WASAPI's real size is the period it reports.
-/// With an explicit JACK route, the server supplies the actual period.
+/// With JACK, the server supplies the actual period.
 pub fn buffer_limit(
     host: HostKind,
     devices: &[DeviceInfo],
@@ -384,7 +384,7 @@ pub fn buffer_limit(
             .or(range.map(|(min, _)| min))
             .map_or(BufferLimit::Free, BufferLimit::Fixed),
         HostKind::Jack => running
-            .filter(|r| r.host == HostKind::Jack && !r.jack_routes.is_automatic())
+            .filter(|r| r.host == HostKind::Jack)
             .map_or(BufferLimit::Free, |r| BufferLimit::Fixed(r.buffer_frames)),
         HostKind::Asio => match range {
             Some((min, max)) if min == max => BufferLimit::Fixed(min),
@@ -754,11 +754,7 @@ impl crate::App {
         };
         let rates = running
             .as_ref()
-            .filter(|r| {
-                config.host == HostKind::Jack
-                    && r.host == HostKind::Jack
-                    && !r.jack_routes.is_automatic()
-            })
+            .filter(|r| config.host == HostKind::Jack && r.host == HostKind::Jack)
             .map_or_else(
                 || rates(config.host, &cache.devices, &devices[device], &config),
                 |r| vec![r.sample_rate],
@@ -779,7 +775,9 @@ impl crate::App {
                 latency,
             } if running.host == config.host => (
                 None,
-                if running.host == HostKind::Jack && !running.jack_routes.is_automatic() {
+                if running.host == HostKind::Jack
+                    && (!running.jack_routes.is_automatic() || self.settings.audio_input.is_some())
+                {
                     // Native JACK's playback range already includes the graph's device periods.
                     format::latency(t, 0, running.sample_rate, *latency)
                 } else {
@@ -1356,9 +1354,9 @@ fn jack_capture(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<O
                 .show(ui)
                 .clicked()
             {
-                let mut next = config.clone();
-                next.jack_routes.capture = None;
-                out.push(set_audio(next));
+                out.push(Output::Act(Action::Settings(
+                    SettingsAction::SetJackCaptureAutomatic,
+                )));
             }
         });
     }

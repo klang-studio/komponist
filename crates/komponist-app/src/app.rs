@@ -881,7 +881,8 @@ impl App {
             }
         }
         let jack_routes = self.settings.audio.host == komponist_audio::HostKind::Jack
-            && !self.settings.audio.jack_routes.is_automatic();
+            && (!self.settings.audio.jack_routes.is_automatic()
+                || self.settings.audio_input.is_some());
         if self.engine.host().needs_polling() || jack_routes {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         }
@@ -2788,9 +2789,11 @@ impl App {
     fn settings_action(&mut self, action: SettingsAction) {
         let changes_input = matches!(
             &action,
-            SettingsAction::SetAudioInput(_) | SettingsAction::ChooseTrackAudioInput { .. }
+            SettingsAction::SetAudioInput(_)
+                | SettingsAction::SetJackCaptureAutomatic
+                | SettingsAction::ChooseTrackAudioInput { .. }
         ) || matches!(&action, SettingsAction::SetAudio(config)
-            if config.jack_routes != self.settings.audio.jack_routes);
+            if config.jack_routes.capture != self.settings.audio.jack_routes.capture);
         if changes_input && self.audio_recording().is_some() {
             self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
             return;
@@ -2799,6 +2802,17 @@ impl App {
             SettingsAction::SetAudio(config) => {
                 let _ = self.engine.set_audio(&config);
                 self.settings.audio = config;
+                self.save_settings();
+            }
+            SettingsAction::SetJackCaptureAutomatic => {
+                let input = Some(komponist_audio::InputConfig::default());
+                if let Err(error) = self.engine.set_audio_input(input.clone()) {
+                    self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+                    return;
+                }
+                self.settings.audio_input = input;
+                self.settings.audio.jack_routes.capture = None;
+                let _ = self.engine.set_audio(&self.settings.audio);
                 self.save_settings();
             }
             SettingsAction::SetAudioInput(input) => {

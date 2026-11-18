@@ -599,6 +599,8 @@ pub enum SettingsAction {
     SetAudio(StreamConfig),
     /// Explicit capture device selection; None disables capture.
     SetAudioInput(Option<komponist_audio::InputConfig>),
+    /// Enable automatic JACK capture and clear the explicit capture-port override.
+    SetJackCaptureAutomatic,
     /// Open a capture device, then assign its channels only if opening succeeded.
     ChooseTrackAudioInput {
         track: TrackId,
