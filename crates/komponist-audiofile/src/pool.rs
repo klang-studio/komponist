@@ -4,7 +4,7 @@
 //! to the same file (a symlink, `./x` and `x`, two Samplers, a Sampler pad and an audio clip) are
 //! one entry, and a file that changed on disk is a new entry. The pool holds its entries weakly:
 //! an entry lives as long as somebody holds the `Arc<PoolFile>` (the refcount) and goes away with
-//! the last user, taking its memory (decoded audio, derived data, peaks) with it. Hold the
+//! the last user, taking its memory (decoded audio, derived data, peaks, tempo) with it. Hold the
 //! `Arc<PoolFile>` for as long as you use the file.
 //!
 //! What an entry shares, each computed once however many users ask:
@@ -13,7 +13,8 @@
 //!   `Arc<Decoded>`) and data derived from it ([`PoolFile::derived`], strong, e.g. the Sampler's
 //!   `Arc<Sample>`, so two Samplers with one file share one buffer);
 //! - the waveform peaks ([`PoolFile::peaks`], [`PoolFile::request_peaks`]): in memory, then in
-//!   the disk cache if the pool has a cache folder.
+//!   the disk cache if the pool has a cache folder;
+//! - the tempo estimate ([`PoolFile::request_tempo`]) with the same memory/disk cache lifetime.
 //!
 //! Streaming users (#11) open their own [`AudioFile`] on [`PoolFile::path`]: a decoder has a
 //! position, so it is not shared.
@@ -33,6 +34,7 @@ use std::time::UNIX_EPOCH;
 use crate::AudioError;
 use crate::decode::{AudioFile, AudioInfo, Decoded, decode_all};
 use crate::peaks::{PeakData, cache};
+use crate::tempo::{self, TempoEstimate};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -104,20 +106,36 @@ enum PeakSlot {
     Failed(AudioError),
 }
 
-struct Job {
-    file: Arc<PoolFile>,
+/// State of off-thread tempo analysis. A ready result can have no credible beat period.
+#[derive(Debug, Clone)]
+pub enum TempoState {
+    Idle,
+    Pending,
+    Ready(Option<TempoEstimate>),
+    Failed(AudioError),
+}
+
+enum TempoSlot {
+    Idle,
+    Pending(Vec<Callback>),
+    Done(Result<Option<TempoEstimate>, AudioError>),
+}
+
+enum Job {
+    Peaks(Arc<PoolFile>),
+    Tempo(Arc<PoolFile>),
 }
 
 struct PoolInner {
     entries: Mutex<HashMap<FileId, Weak<PoolFile>>>,
     cache_dir: Mutex<Option<PathBuf>>,
-    /// The peak worker's queue, started with the first request.
+    /// The analysis worker's queue, started with the first request.
     worker: Mutex<Option<Sender<Job>>>,
     /// Test hook: the next peak computation panics.
     panic_next: AtomicBool,
 }
 
-/// Starts the peak worker: one thread, ends when the pool and all entries are gone and the queue
+/// Starts the analysis worker: one thread, ends when the pool and all entries are gone and the queue
 /// is empty.
 fn spawn_worker() -> Sender<Job> {
     let (tx, rx) = mpsc::channel::<Job>();
@@ -125,7 +143,10 @@ fn spawn_worker() -> Sender<Job> {
         .name("komponist-peaks".into())
         .spawn(move || {
             while let Ok(job) = rx.recv() {
-                job.file.compute_peaks();
+                match job {
+                    Job::Peaks(file) => file.compute_peaks(),
+                    Job::Tempo(file) => file.compute_tempo(),
+                }
             }
         })
         .expect("the peak worker starts");
@@ -169,7 +190,7 @@ impl FilePool {
         GLOBAL.get_or_init(FilePool::new)
     }
 
-    /// Sets the folder of the on-disk peak cache (`None`: memory only). It is the caller's
+    /// Sets the folder of the on-disk analysis cache (`None`: memory only). It is the caller's
     /// choice, normally a folder in the user's cache directory; the pool creates it on the first write.
     pub fn set_cache_dir(&self, dir: Option<PathBuf>) {
         *lock(&self.inner.cache_dir) = dir;
@@ -182,7 +203,7 @@ impl FilePool {
         self.inner.panic_next.store(true, Ordering::SeqCst);
     }
 
-    /// The peak cache folder, if one is set.
+    /// The analysis cache folder, if one is set.
     pub fn cache_dir(&self) -> Option<PathBuf> {
         lock(&self.inner.cache_dir).clone()
     }
@@ -209,6 +230,7 @@ impl FilePool {
             decodes: AtomicU32::new(0),
             derived: Mutex::new(HashMap::new()),
             peaks: Mutex::new(PeakSlot::Idle),
+            tempo: Mutex::new(TempoSlot::Idle),
         });
         entries.insert(id, Arc::downgrade(&file));
         Ok(file)
@@ -236,6 +258,7 @@ pub struct PoolFile {
     decodes: AtomicU32,
     derived: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
     peaks: Mutex<PeakSlot>,
+    tempo: Mutex<TempoSlot>,
 }
 
 impl std::fmt::Debug for PoolFile {
@@ -340,26 +363,91 @@ impl PoolFile {
                 PeakSlot::Idle => *slot = PeakSlot::Pending(vec![Box::new(on_done)]),
             }
         }
+        if self.enqueue(Job::Peaks(Arc::clone(self))) {
+            return PeakState::Pending;
+        }
+        let err = AudioError::Malformed("peak worker unavailable".into());
+        self.finish_peaks(Err(err.clone()));
+        PeakState::Failed(err)
+    }
+
+    fn enqueue(&self, mut job: Job) -> bool {
         let mut worker = lock(&self.pool.worker);
-        let mut job = Job {
-            file: Arc::clone(self),
-        };
         // A worker that died (its receiver is gone) is replaced once; if the new one is gone
         // too, the request fails instead of staying pending forever.
         for _ in 0..2 {
             let tx = worker.get_or_insert_with(spawn_worker);
             match tx.send(job) {
-                Ok(()) => return PeakState::Pending,
+                Ok(()) => return true,
                 Err(mpsc::SendError(back)) => {
                     job = back;
                     *worker = None;
                 }
             }
         }
-        drop(worker);
-        let err = AudioError::Malformed("peak worker unavailable".into());
-        self.finish_peaks(Err(err.clone()));
-        PeakState::Failed(err)
+        false
+    }
+
+    /// Return the original-tempo estimate without waiting or starting analysis.
+    pub fn tempo_state(&self) -> TempoState {
+        match &*lock(&self.tempo) {
+            TempoSlot::Idle => TempoState::Idle,
+            TempoSlot::Pending(_) => TempoState::Pending,
+            TempoSlot::Done(Ok(estimate)) => TempoState::Ready(*estimate),
+            TempoSlot::Done(Err(error)) => TempoState::Failed(error.clone()),
+        }
+    }
+
+    /// Analyze the active file on the worker. Requests for the same file share their result.
+    pub fn request_tempo(self: &Arc<Self>, on_done: impl FnOnce() + Send + 'static) -> TempoState {
+        {
+            let mut slot = lock(&self.tempo);
+            match &mut *slot {
+                TempoSlot::Idle => *slot = TempoSlot::Pending(vec![Box::new(on_done)]),
+                TempoSlot::Pending(callbacks) => {
+                    callbacks.push(Box::new(on_done));
+                    return TempoState::Pending;
+                }
+                TempoSlot::Done(Ok(estimate)) => return TempoState::Ready(*estimate),
+                TempoSlot::Done(Err(error)) => return TempoState::Failed(error.clone()),
+            }
+        }
+        if self.enqueue(Job::Tempo(Arc::clone(self))) {
+            return TempoState::Pending;
+        }
+        let err = AudioError::Malformed("tempo worker unavailable".into());
+        self.finish_tempo(Err(err.clone()));
+        TempoState::Failed(err)
+    }
+
+    fn compute_tempo(&self) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = lock(&self.pool.cache_dir).clone();
+            if FileId::of(self.path())? != self.id {
+                return Err(AudioError::Io(
+                    "audio source changed before tempo analysis".into(),
+                ));
+            }
+            if let Some(cached) = dir.as_ref().and_then(|dir| tempo::cached(dir, &self.id)) {
+                return Ok(cached);
+            }
+            let estimate = tempo::estimate(&self.id)?;
+            if let Some(dir) = &dir {
+                let _ = tempo::cache(dir, &self.id, estimate);
+            }
+            Ok(estimate)
+        }))
+        .unwrap_or_else(|_| Err(AudioError::Malformed("tempo analysis panicked".into())));
+        self.finish_tempo(result);
+    }
+
+    fn finish_tempo(&self, result: Result<Option<TempoEstimate>, AudioError>) {
+        let old = std::mem::replace(&mut *lock(&self.tempo), TempoSlot::Done(result));
+        if let TempoSlot::Pending(callbacks) = old {
+            for callback in callbacks {
+                callback();
+            }
+        }
     }
 
     /// The peaks, waiting for them (computes them on the calling thread if nobody did). For

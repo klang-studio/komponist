@@ -10,3 +10,5 @@ description = "Audio files for komponist: seekable chunked decoding, sample-rate
 hound.workspace = true
 symphonia.workspace = true
 rubato.workspace = true
+# Original-tempo analysis computes spectral flux off the audio thread.
+realfft.workspace = true
