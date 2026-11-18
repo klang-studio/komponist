@@ -175,7 +175,9 @@ fn tempo_cache_is_versioned_and_does_not_reuse_a_replaced_file() {
     assert_ne!(replacement, original);
 }
 
-#[cfg(unix)]
+// APFS accepts only valid UTF-8 filenames. Portable native-path hashing is tested
+// without filesystem access in pool::tests.
+#[cfg(target_os = "linux")]
 #[test]
 fn cache_keeps_non_utf8_paths_and_pre_epoch_versions_distinct() {
     use std::ffi::OsString;

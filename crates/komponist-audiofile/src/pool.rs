@@ -586,6 +586,65 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn native_path_hash_preserves_distinct_invalid_unicode() {
+        #[cfg(unix)]
+        let paths = {
+            use std::os::unix::ffi::OsStringExt;
+            [vec![0xfe], vec![0xff]].map(std::ffi::OsString::from_vec)
+        };
+        #[cfg(windows)]
+        let paths = {
+            use std::os::windows::ffi::OsStringExt;
+            [0xd800, 0xd801].map(|unit| std::ffi::OsString::from_wide(&[unit]))
+        };
+        let [a, b] = paths.map(|path| FileId {
+            path: path.into(),
+            len: 100,
+            mtime_ns: Some(10),
+        });
+        assert_eq!(a.path.to_string_lossy(), b.path.to_string_lossy());
+        assert_ne!(a.stable_hash(), b.stable_hash());
+        assert!(a.legacy_peak_key().is_none());
+        assert!(b.legacy_peak_key().is_none());
+    }
+
+    #[test]
+    fn signed_mtimes_distinguish_missing_epoch_and_pre_epoch() {
+        let base = FileId {
+            path: "source.wav".into(),
+            len: 100,
+            mtime_ns: None,
+        };
+        let examples = [
+            base.clone(),
+            FileId {
+                mtime_ns: Some(signed_nanos(UNIX_EPOCH)),
+                ..base.clone()
+            },
+            FileId {
+                mtime_ns: Some(signed_nanos(UNIX_EPOCH - Duration::from_secs(60))),
+                ..base.clone()
+            },
+            FileId {
+                mtime_ns: Some(signed_nanos(UNIX_EPOCH - Duration::from_secs(120))),
+                ..base
+            },
+        ];
+        assert_eq!(examples[1].mtime_ns, Some(0));
+        assert_eq!(examples[2].mtime_ns, Some(-60_000_000_000));
+        assert_eq!(examples[3].mtime_ns, Some(-120_000_000_000));
+        assert_eq!(
+            examples
+                .iter()
+                .map(FileId::stable_hash)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            examples.len()
+        );
+    }
+
     #[test]
     fn worker_startup_failures_complete_pending_requests_and_tempo_can_retry() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stereo-440-880.flac");
