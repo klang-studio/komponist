@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use egui::{
     Align, Area, Id, Order, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
-use komponist_audio::{HostKind, InputConfig, InputDeviceInfo};
+use komponist_audio::{HostKind, InputConfig, InputDeviceInfo, InputDeviceRole};
 use komponist_i18n::Lang;
 use komponist_model::{AudioInput, HardwareInput, MonitorMode, Project, Track};
 use komponist_tokens::egui_support::color32;
@@ -273,6 +273,15 @@ fn menu_row(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> Response
     response
 }
 
+/// The same localized capture device label used in Settings and the track chooser.
+pub(crate) fn input_device_label(t: Lang, device: &InputDeviceInfo) -> String {
+    match device.role() {
+        Some(InputDeviceRole::Input) => t.audio_input_device_source(&device.name),
+        Some(InputDeviceRole::OutputMonitor) => t.audio_input_device_monitor(&device.name),
+        None => device.name.clone(),
+    }
+}
+
 fn chooser(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
@@ -284,23 +293,15 @@ fn chooser(
     let devices = inventory(ui, ctx);
     let t = ctx.lang;
     let selected_key = id.with("source");
+    let configured_device = ctx
+        .engine
+        .audio_input_config()
+        .and_then(|config| config.device_index(&devices));
     let initial = if matches!(track.audio.input, AudioInput::Bus(_)) {
         devices.len()
     } else {
-        ctx.engine
-            .audio_input_config()
-            .and_then(|config| {
-                devices.iter().position(|device| {
-                    config
-                        .device_id
-                        .as_ref()
-                        .is_some_and(|id| device.id.as_ref() == Some(id))
-                        || config.device.as_deref() == Some(device.name.as_str())
-                        || (config.device.is_none()
-                            && config.device_id.is_none()
-                            && device.is_default)
-                })
-            })
+        configured_device
+            .or_else(|| InputConfig::default().device_index(&devices))
             .unwrap_or(0)
     };
     let mut source = ui
@@ -355,7 +356,11 @@ fn chooser(
                                     &typography::LABEL,
                                 ));
                                 for (i, device) in devices.iter().enumerate() {
-                                    if menu_row(left, &device.name, source == i, true).clicked() {
+                                    let label = input_device_label(t, device);
+                                    let row = menu_row(left, &label, source == i, true);
+                                    w::accesskit(&row, |node| node.set_selected(source == i));
+                                    Tip::new(&label).attach(&row);
+                                    if row.clicked() {
                                         source = i;
                                         source_changed = true;
                                     }
@@ -405,13 +410,7 @@ fn chooser(
                                         device: Some(device.name.clone()),
                                         device_id: device.id.clone(),
                                     };
-                                    let current =
-                                        ctx.engine.audio_input_config().is_some_and(|c| {
-                                            c == &config
-                                                || (c.device.is_none()
-                                                    && c.device_id.is_none()
-                                                    && device.is_default)
-                                        });
+                                    let current = configured_device == Some(source);
                                     let channels = (0..device.channels)
                                         .map(|first| HardwareInput {
                                             first,

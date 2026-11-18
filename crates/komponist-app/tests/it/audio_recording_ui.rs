@@ -192,7 +192,7 @@ use komponist_app::actions::{SelectMode, SelectionChange, UiAction};
 use komponist_app::dialogs::settings::{self, AudioDevices};
 use komponist_i18n::Lang;
 
-struct CaptureDevices;
+struct CaptureDevices(Vec<komponist_audio::InputDeviceInfo>);
 impl AudioDevices for CaptureDevices {
     fn hosts(&self) -> Vec<komponist_audio::HostKind> {
         vec![komponist_audio::HostKind::Null]
@@ -201,13 +201,7 @@ impl AudioDevices for CaptureDevices {
         vec![]
     }
     fn input_devices(&self, _: komponist_audio::HostKind) -> Vec<komponist_audio::InputDeviceInfo> {
-        vec![komponist_audio::InputDeviceInfo {
-            id: Some(komponist_audio::DeviceId("test:capture".into())),
-            name: "Test Capture".into(),
-            channels: 4,
-            is_default: true,
-            sample_rate: 48_000,
-        }]
+        self.0.clone()
     }
 }
 fn harness(app: App) -> Harness<'static, App> {
@@ -269,7 +263,15 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
         .unwrap();
         let mut app = App::headless(p)
             .with_lang(lang)
-            .with_audio_devices(Box::new(CaptureDevices));
+            .with_audio_devices(Box::new(CaptureDevices(vec![
+                komponist_audio::InputDeviceInfo {
+                    id: Some(komponist_audio::DeviceId("test:capture".into())),
+                    name: "Test Capture".into(),
+                    channels: 4,
+                    is_default: true,
+                    sample_rate: 48_000,
+                },
+            ])));
         let _source = app.engine_mut().set_test_audio_input(4, 48_000).unwrap();
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
             tracks: vec![track],
@@ -382,6 +384,118 @@ fn capture_device_choices_distinguish_disabled_default_and_disconnected() {
     let (entries, index) = settings::input_entries(Lang::En, &[], Some(&missing));
     assert_eq!(entries[index].config, Some(missing));
     assert!(entries[index].label.contains("Disconnected"));
+}
+
+#[test]
+fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
+    use komponist_audio::{DeviceId, InputConfig, InputDeviceInfo};
+
+    let name = "Hotone MP80";
+    let devices: Vec<_> = [
+        "pipewire:alsa_output.usb-Hotone-MP80.analog-stereo",
+        "pipewire:alsa_input.usb-Hotone-MP80.analog-stereo",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, id)| InputDeviceInfo {
+        id: Some(DeviceId(id.into())),
+        name: name.into(),
+        channels: 2,
+        is_default: index == 1,
+        sample_rate: 48_000,
+    })
+    .collect();
+    let source = InputConfig {
+        device: Some(name.into()),
+        device_id: devices[1].id.clone(),
+    };
+    let legacy = InputConfig {
+        device: source.device.clone(),
+        device_id: None,
+    };
+    assert_eq!(source.device_index(&devices), Some(1));
+    assert_eq!(source.device_index(&devices[..1]), None);
+    assert_eq!(legacy.device_index(&devices), None);
+    assert_eq!(legacy.device_index(&devices[1..]), Some(0));
+    assert_eq!(InputConfig::default().device_index(&devices), Some(1));
+
+    for (lang, monitor_label, source_label) in [
+        (
+            Lang::De,
+            "Ausgabe-Monitor: Hotone MP80",
+            "Eingang: Hotone MP80",
+        ),
+        (
+            Lang::En,
+            "Output monitor: Hotone MP80",
+            "Input: Hotone MP80",
+        ),
+    ] {
+        let (entries, selected) = settings::input_entries(lang, &devices, Some(&source));
+        assert_eq!(entries.len(), 4);
+        assert_eq!(selected, 3);
+        assert_eq!(entries[2].label, monitor_label);
+        assert_eq!(entries[2].config.as_ref().unwrap().device_id, devices[0].id);
+        assert_eq!(entries[3].label, source_label);
+        assert_eq!(entries[3].config, Some(source.clone()));
+
+        let (p, track) = audio(AudioInput::Hardware(HardwareInput {
+            first: 0,
+            stereo: false,
+        }));
+        let mut app = App::headless(p)
+            .with_lang(lang)
+            .with_audio_devices(Box::new(CaptureDevices(devices.clone())));
+        let _input = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        let mut h = harness(app);
+        let label = lang.audio_input_tip(lang.audio_input_mono(1));
+        h.get_all_by_role_and_label(Role::Button, &label)
+            .next()
+            .unwrap()
+            .click();
+        h.run_steps(3);
+        for _ in 0..100 {
+            if h.query_by_role_and_label(Role::MenuItem, source_label)
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            h.run_steps(1);
+        }
+        h.get_by_role_and_label(Role::MenuItem, monitor_label);
+        assert_eq!(
+            h.get_by_role_and_label(Role::MenuItem, source_label)
+                .accesskit_node()
+                .is_selected(),
+            Some(true)
+        );
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+
+        h.state_mut().dispatch(Action::Ui(UiAction::OpenSettings(
+            komponist_app::ui_state::SettingsSection::Audio,
+        )));
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::ComboBox, lang.settings_input_device())
+            .click();
+        h.run_steps(3);
+        for _ in 0..100 {
+            if h.query_by_role_and_label(Role::ListBoxOption, source_label)
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            h.run_steps(1);
+        }
+        h.get_by_role_and_label(Role::ListBoxOption, monitor_label);
+        h.get_by_role_and_label(Role::ListBoxOption, source_label);
+    }
 }
 
 #[test]

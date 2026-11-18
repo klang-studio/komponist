@@ -21,10 +21,65 @@ const MAX_CLOCK_CORRECTION: f64 = 0.002;
 /// configuration disables capture. Old settings therefore never open a microphone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputConfig {
-    /// Display name, used if the saved stable id is unavailable.
+    /// Display name, used as a fallback when it identifies a unique compatible device.
     pub device: Option<String>,
     /// Stable backend identity.
     pub device_id: Option<DeviceId>,
+}
+
+impl InputConfig {
+    /// Resolves the same stored selection used to open the capture stream.
+    pub fn device_index(&self, devices: &[InputDeviceInfo]) -> Option<usize> {
+        if self.device.is_none() && self.device_id.is_none() {
+            return devices.iter().position(|device| device.is_default);
+        }
+        self.match_device(
+            devices
+                .iter()
+                .map(|device| (device.id.as_ref(), Some(device.name.as_str()))),
+        )
+    }
+
+    fn match_device<'a>(
+        &self,
+        candidates: impl IntoIterator<Item = (Option<&'a DeviceId>, Option<&'a str>)>,
+    ) -> Option<usize> {
+        let expected_role = self.device_id.as_ref().and_then(pipewire_input_role);
+        let mut fallback = None;
+        let mut ambiguous = false;
+        for (index, (id, name)) in candidates.into_iter().enumerate() {
+            if self.device_id.is_some() && self.device_id.as_ref() == id {
+                return Some(index);
+            }
+            if self.device.is_some()
+                && self.device.as_deref() == name
+                && expected_role.is_none_or(|role| id.and_then(pipewire_input_role) == Some(role))
+            {
+                ambiguous |= fallback.replace(index).is_some();
+            }
+        }
+        // A saved name alone cannot distinguish devices with the same display label.
+        fallback.filter(|_| !ambiguous)
+    }
+}
+
+/// Capture roles identifiable from a PipeWire ALSA node's stable name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputDeviceRole {
+    /// Audio from a hardware input.
+    Input,
+    /// Audio playing through a hardware output (loopback).
+    OutputMonitor,
+}
+
+fn pipewire_input_role(id: &DeviceId) -> Option<InputDeviceRole> {
+    if id.0.starts_with("pipewire:alsa_input.") {
+        Some(InputDeviceRole::Input)
+    } else if id.0.starts_with("pipewire:alsa_output.") {
+        Some(InputDeviceRole::OutputMonitor)
+    } else {
+        None
+    }
 }
 
 /// Capture device metadata, enumerated without opening a stream.
@@ -40,6 +95,13 @@ pub struct InputDeviceInfo {
     pub is_default: bool,
     /// Default native rate. Capture is converted to the output clock by the bridge.
     pub sample_rate: u32,
+}
+
+impl InputDeviceInfo {
+    /// The identifiable PipeWire ALSA node role, if present.
+    pub fn role(&self) -> Option<InputDeviceRole> {
+        self.id.as_ref().and_then(pipewire_input_role)
+    }
 }
 
 /// Borrowed, interleaved input at the output sample rate, for one processing callback.
@@ -398,8 +460,7 @@ impl CaptureStream {
         duplex_device: Option<&cpal::Device>,
     ) -> Result<(Self, InputReader), AudioError> {
         let host = crate::backend::host(kind)?;
-        let mut found = None;
-        let devices = if kind == HostKind::Asio {
+        let device = if kind == HostKind::Asio {
             // ASIO can load only one driver: capture must use the already selected output.
             let device =
                 duplex_device.ok_or_else(|| AudioError::NoDevice("ASIO output missing".into()))?;
@@ -416,36 +477,27 @@ impl CaptureStream {
                     "ASIO input and output must use the same driver".into(),
                 ));
             }
-            found = Some(device.clone());
-            Vec::new()
+            Some(device.clone())
+        } else if selection.device.is_none() && selection.device_id.is_none() {
+            host.default_input_device()
         } else {
-            host.input_devices()
+            let devices: Vec<_> = host
+                .input_devices()
                 .map_err(crate::backend::map_err)?
-                .collect::<Vec<_>>()
-        };
-        for device in devices {
-            let same_id = selection
-                .device_id
-                .as_ref()
-                .is_some_and(|id| device.id().is_ok_and(|own| own.to_string() == id.0));
-            let same_name = selection
-                .device
-                .as_ref()
-                .is_some_and(|name| device.description().is_ok_and(|d| d.name() == name));
-            if same_id || (found.is_none() && same_name) {
-                found = Some(device);
-                if same_id {
-                    break;
-                }
-            }
+                .map(|device| {
+                    let id = device.id().ok().map(|id| DeviceId(id.to_string()));
+                    let description = device.description().ok();
+                    (device, id, description)
+                })
+                .collect();
+            selection
+                .match_device(devices.iter().map(|(_, id, description)| {
+                    (id.as_ref(), description.as_ref().map(|value| value.name()))
+                }))
+                .and_then(|index| devices.into_iter().nth(index))
+                .map(|(device, _, _)| device)
         }
-        let device = found
-            .or_else(|| {
-                (selection.device.is_none() && selection.device_id.is_none())
-                    .then(|| host.default_input_device())
-                    .flatten()
-            })
-            .ok_or_else(|| AudioError::NoDevice("capture input unavailable".into()))?;
+        .ok_or_else(|| AudioError::NoDevice("capture input unavailable".into()))?;
         let native = device
             .default_input_config()
             .map_err(crate::backend::map_err)?;
