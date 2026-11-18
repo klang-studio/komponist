@@ -2812,13 +2812,13 @@ impl App {
         device: InputConfig,
         mut set_input: impl FnMut(&mut EngineSync, Option<InputConfig>) -> Result<(), AudioError>,
     ) {
-        use crate::views::audio_inputs::{hardware_input_available, input_label};
+        use crate::views::audio_inputs::input_label;
 
         let previous = self.engine.audio_input_config().cloned();
         let problem = match set_input(&mut self.engine, Some(device)) {
             Ok(())
                 if matches!(input, AudioInput::Hardware(hardware)
-                    if !hardware_input_available(hardware, self.engine.audio_input_channels())) =>
+                    if !self.engine.hardware_input_available(hardware)) =>
             {
                 let label = input_label(self.lang, self.project(), input);
                 Some(self.lang.audio_input_unavailable(label))
@@ -2856,9 +2856,20 @@ impl App {
                 | SettingsAction::ChooseTrackAudioInput { .. }
         ) || matches!(&action, SettingsAction::SetAudio(config)
             if config.jack_routes.capture != self.settings.audio.jack_routes.capture);
-        if changes_input && self.audio_recording().is_some() {
-            self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
-            return;
+        let changes_jack_output = matches!(&action, SettingsAction::SetAudio(config)
+            if config.jack_routes.playback != self.settings.audio.jack_routes.playback);
+        if self.audio_recording().is_some() {
+            let message = if changes_input {
+                Some(self.lang.audio_input_change_recording())
+            } else if changes_jack_output {
+                Some(self.lang.settings_jack_playback_change_recording())
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                self.set_status(message, StatusKind::Error);
+                return;
+            }
         }
         match action {
             SettingsAction::SetAudio(config) => {

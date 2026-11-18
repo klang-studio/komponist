@@ -720,7 +720,12 @@ fn apply_takes(
             )
         };
         let audio = AudioClip::new(source(first), 0, project.tempo);
-        let length = audio.max_length(project.tempo).max(Tick(1));
+        let length = audio.max_length(project.tempo);
+        if length == Tick::ZERO {
+            // A sub-tick span has no clip geometry. Its WAV is already saved for recovery,
+            // so continue committing the representable passes on this and the other tracks.
+            continue;
+        }
         let name = lang.record_take(edits::next_take_number(&project));
         let (next, id) = edits::add_clip(
             &project,
@@ -778,14 +783,48 @@ mod tests {
     use crate::actions::{EditAction, TransportAction};
     use std::time::{Duration, Instant};
 
-    fn rig() -> (App, TrackId, PathBuf) {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "komponist-audio-lifecycle-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "komponist-audio-lifecycle-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("could not create recording fixture: {error}"),
+                }
+            }
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn rig() -> (Scratch, App, TrackId) {
+        let root = Scratch::new();
+        let (app, track) = rig_at(&root.0);
+        (root, app, track)
+    }
+
+    fn rig_at(root: &Path) -> (App, TrackId) {
         let mut project = Project::new("Captured audio");
         project.count_in_bars = 0;
         project.loop_on = false;
@@ -809,7 +848,7 @@ mod tests {
         let mut app = App::headless(project).with_recording_directory(root.join("Provisional"));
         app.engine_mut().hold_engine().unwrap();
         app.step();
-        (app, track, root)
+        (app, track)
     }
     fn wait(app: &mut App, done: impl Fn(&App) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -837,7 +876,8 @@ mod tests {
     }
     #[test]
     fn arrangement_keeps_the_lead_in_and_last_loop_overlay_while_the_next_take_grows() {
-        let (mut app, track, root) = rig();
+        let scratch = Scratch::new();
+        let (mut app, track) = rig_at(&scratch.0);
         let lo = Tick(32);
         let hi = Tick(64);
         let range = komponist_model::TickRange::new(lo, hi);
@@ -899,8 +939,89 @@ mod tests {
             panic!("loop audio clip");
         };
         assert_eq!(cycle.takes.len(), 2);
-        drop(app);
-        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_jack_playback_route_change_does_not_restart_an_active_take() {
+        let scratch = Scratch::new();
+        let (mut app, track) = rig_at(&scratch.0);
+        begin(&mut app, track);
+        let previous = app.settings.audio.clone();
+        let mut config = previous.clone();
+        config.jack_routes.playback[0] = Some("system:playback_1".into());
+        app.dispatch(Action::Settings(crate::actions::SettingsAction::SetAudio(
+            config.clone(),
+        )));
+
+        assert_eq!(app.settings.audio, previous);
+        assert!(app.audio_recording().is_some());
+        assert_eq!(
+            app.ui.status.as_ref().unwrap().text,
+            app.lang.settings_jack_playback_change_recording()
+        );
+
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        app.dispatch(Action::Settings(crate::actions::SettingsAction::SetAudio(
+            config.clone(),
+        )));
+        assert_eq!(app.settings.audio, config);
+    }
+
+    #[test]
+    fn a_sub_tick_lead_in_keeps_its_file_and_does_not_block_loop_takes() {
+        let (project, track) = edits::add_audio_track(
+            &Project::new("Recorded loop"),
+            edits::NewAudioTrack::default(),
+        )
+        .unwrap();
+        let scratch = Scratch::new();
+        let take = scratch.0.join("lead-in.wav");
+        let cycle = scratch.0.join("loop.wav");
+        let make_take = |lap, start, frames, window_frames, path| RecordedTake {
+            track,
+            path,
+            frames,
+            window_frames,
+            sample_rate: 48_000,
+            channels: 2,
+            start,
+            lap,
+        };
+        let mut writer = hound::WavWriter::create(
+            &take,
+            hound::WavSpec {
+                sample_rate: 48_000,
+                channels: 2,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in 0..32_i16 {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let lead_in = make_take(0, Tick(719), 16, None, take.clone());
+        let checkpoint = make_take(1, Tick(720), 32, Some(2400), cycle.clone());
+        let (project, clips) = apply_takes(
+            &project,
+            &[lead_in, checkpoint],
+            komponist_i18n::Lang::En,
+            None,
+        )
+        .unwrap();
+        let mut retained = hound::WavReader::open(&take).unwrap();
+        assert!(retained.samples::<i16>().map(Result::unwrap).eq(0..32));
+        assert_eq!(clips.len(), 1);
+        let clip = &project.track(track).unwrap().clips[0];
+        assert_eq!(clip.start, Tick(720));
+        let ClipContent::Audio(audio) = &clip.content else {
+            panic!("loop audio clip");
+        };
+        assert_eq!(audio.file.frames, 2400);
+        assert_eq!(audio.file.abs, cycle);
     }
 
     #[test]
@@ -963,7 +1084,7 @@ mod tests {
 
     #[test]
     fn stopped_audio_is_one_undo_step_and_undo_keeps_its_file_for_redo() {
-        let (mut app, track, root) = rig();
+        let (_root, mut app, track) = rig();
         begin(&mut app, track);
         assert!(
             app.recording.is_none(),
@@ -992,11 +1113,10 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::Redo));
         assert_eq!(app.project().track(track).unwrap().clips[0], clip);
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn opening_export_waits_for_the_stopped_take_before_computing_its_song_range() {
-        let (mut app, audio, root) = rig();
+        let (_root, mut app, audio) = rig();
         begin(&mut app, audio);
         app.dispatch(Action::Transport(TransportAction::Stop));
         assert!(app.engine_mut().run_held(256, &[], 0));
@@ -1009,11 +1129,10 @@ mod tests {
             Some(crate::ui_state::Dialog::Export(_))
         ));
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn save_during_capture_has_independent_assets_that_survive_esc() {
-        let (mut app, track, root) = rig();
+        let (root, mut app, track) = rig();
         begin(&mut app, track);
         let project_file = root.join("Song.komponist");
         assert!(app.save_to(&project_file));
@@ -1048,11 +1167,10 @@ mod tests {
         assert!(app.project().track(track).unwrap().clips.is_empty());
         assert!(hound::WavReader::open(snapshot).unwrap().duration() > 0);
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn first_save_migrates_every_undo_state_and_keeps_redo_playable() {
-        let (mut app, track, root) = rig();
+        let (root, mut app, track) = rig();
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
@@ -1074,11 +1192,10 @@ mod tests {
         assert!(audio.file.abs.starts_with(root.join("Takes")));
         assert!(audio.file.abs.is_file());
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn failed_move_keeps_originals_provisional_and_reports_the_reason_after_saving() {
-        let (mut app, track, root) = rig();
+        let (root, mut app, track) = rig();
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
@@ -1097,11 +1214,10 @@ mod tests {
         assert!(!original.is_file());
         assert!(app.provisional_recordings_folder().is_none());
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn failed_project_write_keeps_originals_and_retry_to_another_folder_updates_links() {
-        let (mut app, track, root) = rig();
+        let (root, mut app, track) = rig();
         begin(&mut app, track);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
@@ -1127,7 +1243,6 @@ mod tests {
         assert!(!original.is_file());
         assert!(app.provisional_recordings_folder().is_none());
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn add_midi(app: &mut App) -> TrackId {
@@ -1176,7 +1291,7 @@ mod tests {
     }
     #[test]
     fn mixed_audio_and_midi_stop_as_one_undo_step() {
-        let (mut app, audio, root) = rig();
+        let (_root, mut app, audio) = rig();
         let midi = add_midi(&mut app);
         begin_mixed(&mut app);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
@@ -1192,11 +1307,10 @@ mod tests {
         assert_eq!(app.project().track(midi).unwrap().clips.len(), 1);
         assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn audio_failure_freezes_and_preserves_the_active_midi_overlay_once() {
-        let (mut app, audio, root) = rig();
+        let (_root, mut app, audio) = rig();
         let midi = add_midi(&mut app);
         begin_mixed(&mut app);
         app.engine_mut().send(Command::AbortAudioRecording);
@@ -1208,11 +1322,10 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::Undo));
         assert!(app.project().track(midi).unwrap().clips.is_empty());
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn deleting_a_midi_track_during_audio_finalization_does_not_drop_audio() {
-        let (mut app, audio, root) = rig();
+        let (_root, mut app, audio) = rig();
         let midi = add_midi(&mut app);
         begin_mixed(&mut app);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
@@ -1230,11 +1343,10 @@ mod tests {
         assert!(app.project().track(midi).is_none());
         assert!(app.project().track(audio).unwrap().clips.is_empty());
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn save_during_count_in_does_not_leave_a_stale_provisional_path() {
-        let (mut app, audio, root) = rig();
+        let (root, mut app, audio) = rig();
         app.dispatch(Action::Transport(TransportAction::ToggleCountIn));
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
@@ -1248,16 +1360,14 @@ mod tests {
         app.step();
         assert!(app.provisional_recordings_folder().is_none());
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn unsaved_guard_sees_recording_before_the_ui_has_consumed_worker_progress() {
-        let (mut app, _, root) = rig();
+        let (_root, mut app, _) = rig();
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(1024, &[], 0));
         assert!(app.has_unsaved_take());
         app.dispatch(Action::Transport(TransportAction::DiscardTake));
         drop(app);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

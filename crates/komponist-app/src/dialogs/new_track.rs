@@ -228,6 +228,15 @@ impl State {
         };
     }
 
+    fn revalidate_jack_input(&mut self, engine: &crate::engine_sync::EngineSync) {
+        if engine.jack_capture_sources().is_some()
+            && let AudioInput::Hardware(input) = self.input
+            && !engine.hardware_input_available(input)
+        {
+            self.input = AudioInput::None;
+        }
+    }
+
     /// What "Anlegen" creates.
     pub fn spec(&self) -> Spec {
         let name = self.name.trim();
@@ -301,8 +310,8 @@ pub struct View<'a> {
     pub project: &'a Project,
     /// The instruments matching a search text, in list order.
     pub instruments: &'a dyn Fn(&str) -> Vec<Row>,
-    /// JACK capture sources ordered exactly as the track's hardware indices.
-    pub jack_capture_sources: Option<&'a [komponist_audio::JackCaptureChannel]>,
+    /// Current capture routes for the Audio Input menu.
+    pub engine: &'a crate::engine_sync::EngineSync,
 }
 
 /// The words default names are made of in `t` (`MIDI`, `Drums`, `Bus`, `Gruppe` / `Group`): what
@@ -346,6 +355,8 @@ fn plugin_of(row: &Row) -> Option<&PluginRef> {
 
 /// Draws the dialog and handles its keys; returns the answer in the frame it is given.
 pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
+    let jack_capture_sources = view.engine.jack_capture_sources();
+    s.revalidate_jack_input(view.engine);
     let t = komponist_ui::lang(ctx);
     let search_id = Id::unique(SEARCH_ID);
     let name_id = Id::unique(NAME_ID);
@@ -410,12 +421,24 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                 }
                 if s.kind == KIND_AUDIO {
                     row(ui, t.new_track_input(), |ui| {
-                        let choices = track_input_items(
+                        let mut choices = track_input_items(
                             view.project,
                             t,
                             s.available_input_channels,
-                            view.jack_capture_sources,
+                            jack_capture_sources,
                         );
+                        if jack_capture_sources.is_some() {
+                            for choice in &mut choices {
+                                if let AudioInput::Hardware(input) = choice.input
+                                    && !view.engine.hardware_input_available(input)
+                                {
+                                    if choice.enabled {
+                                        choice.label = t.audio_input_unavailable(&choice.label);
+                                    }
+                                    choice.enabled = false;
+                                }
+                            }
+                        }
                         let mut selected = choices
                             .iter()
                             .position(|choice| choice.input == s.input)
@@ -436,7 +459,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                                 detail: choice.detail.as_deref(),
                             })
                             .collect();
-                        let response = if view.jack_capture_sources.is_some() {
+                        let response = if jack_capture_sources.is_some() {
                             ui.add(dropdown.fitting_list(
                                 crate::views::audio_inputs::MAX_ROWS as f32 * size::MENU_ROW,
                                 &details,
@@ -447,7 +470,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                         if response.changed() {
                             s.input = choices[selected].input;
                         }
-                        if view.jack_capture_sources.is_some()
+                        if jack_capture_sources.is_some()
                             && matches!(choices[selected].input, AudioInput::Hardware(_))
                         {
                             let choice = &choices[selected];
@@ -510,6 +533,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                     out = Some(Output::Cancel);
                 }
                 if r[1].clicked() {
+                    s.revalidate_jack_input(view.engine);
                     out = Some(Output::Create(s.spec()));
                 }
             });
@@ -518,6 +542,7 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
     });
     if out.is_none() {
         if enter {
+            s.revalidate_jack_input(view.engine);
             out = Some(Output::Create(s.spec()));
         } else if response.should_close() {
             out = Some(Output::Cancel);

@@ -801,12 +801,20 @@ impl Arrangement {
                     .and_then(|recording| recording.clip(track.id))
                     .filter(|current| current.id != rec.id && current.start == rec.start);
                 let background_clip = foreground.map(|current| g.clip_rect(i, current));
-                let clipped;
-                let overlay_painter = if let Some(covered) = background_clip {
+                let visible = if let Some(covered) = background_clip {
                     if covered.right() >= rect.right() {
                         continue;
                     }
-                    let visible = rect.with_min_x(covered.right());
+                    rect.with_min_x(covered.right())
+                } else {
+                    rect
+                };
+                let bounds = visible.intersect(lanes);
+                if !bounds.is_positive() {
+                    continue;
+                }
+                let clipped;
+                let overlay_painter = if background_clip.is_some() {
                     clipped = painter.with_clip_rect(painter.clip_rect().intersect(visible));
                     &clipped
                 } else {
@@ -856,9 +864,10 @@ impl Arrangement {
                     preview: None,
                 };
                 paint_clip(overlay_painter, rect, &model, ClipState::REST);
-                if background_clip.is_some() {
-                    continue;
-                }
+                let model = ClipModel {
+                    name: rec.name.trim_start_matches("● "),
+                    ..model
+                };
                 let access = clip_access(
                     ctx.lang,
                     &model,
@@ -868,7 +877,7 @@ impl Arrangement {
                     ClipState::REST,
                 );
                 let node = ui.interact(
-                    rect.intersect(lanes),
+                    bounds,
                     Id::unique(("arrangement-audio-recording", rec.id.0)),
                     Sense::hover(),
                 );

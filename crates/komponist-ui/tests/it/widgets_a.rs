@@ -9,7 +9,7 @@ use komponist_tokens::{Icon, color, space};
 use komponist_ui::snapshot::{self, Snapshots};
 use komponist_ui::widgets::button::Button;
 use komponist_ui::widgets::context_menu::{self, ContextMenu, DemoAction};
-use komponist_ui::widgets::dropdown::{Dropdown, GRID_ITEMS};
+use komponist_ui::widgets::dropdown::{Dropdown, GRID_ITEMS, Item as DropItem};
 use komponist_ui::widgets::panel_header::{self, PanelHeader};
 use komponist_ui::widgets::switch::Switch;
 use komponist_ui::widgets::tabs::{self, Item, Segmented, TabBar};
@@ -497,6 +497,84 @@ fn dropdown_ui(ui: &mut Ui, p: &mut Pick) {
 
 fn is_open<S>(h: &egui_kittest::Harness<'_, S>) -> bool {
     h.query_by_role(egui::accesskit::Role::ListBox).is_some()
+}
+
+#[test]
+fn dropdown_ignores_enter_after_a_port_list_refresh_reorders_options() {
+    let mut h = h(
+        vec2(300.0, 320.0),
+        (
+            Pick {
+                value: 0,
+                changes: 0,
+            },
+            false,
+        ),
+        |ui, (pick, refreshed)| {
+            let names = if *refreshed {
+                ["Automatic", "USB:A", "USB:B"]
+            } else {
+                ["Automatic", "USB:B", "USB:C"]
+            };
+            let items = names.map(DropItem::new);
+            let ids = [None, Some(names[1]), Some(names[2])];
+            let response = ui.add(Dropdown::new("Ports", &mut pick.value, &items).option_ids(&ids));
+            pick.changes += u32::from(response.changed());
+        },
+    );
+    h.key_press(Key::Tab);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(is_open(&h));
+    h.key_press(Key::ArrowDown);
+    h.run();
+    h.state_mut().1 = true;
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(!is_open(&h));
+    assert_eq!(h.state().0.changes, 0);
+    assert_eq!(h.state().0.value, 0);
+
+    h.key_press(Key::Enter);
+    h.run();
+    h.key_press(Key::ArrowDown);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    assert_eq!(h.state().0.value, 1);
+    assert_eq!(h.state().0.changes, 1);
+}
+
+#[test]
+fn a_fitting_dropdown_reveals_and_can_select_its_last_port() {
+    let mut h = h(
+        vec2(300.0, 240.0),
+        Pick {
+            value: 0,
+            changes: 0,
+        },
+        |ui, pick| {
+            let names: Vec<_> = (0..64).map(|port| format!("Port {port:02}")).collect();
+            let items: Vec<_> = names.iter().map(|name| DropItem::new(name)).collect();
+            let response =
+                ui.add(Dropdown::new("Ports", &mut pick.value, &items).fitting_list(120.0, &[]));
+            pick.changes += u32::from(response.changed());
+        },
+    );
+    h.key_press(Key::Tab);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    h.event(egui::Event::Text("Port 63".into()));
+    h.run_steps(4);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(300.0, 240.0));
+    let last = h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Port 63");
+    assert!(viewport.contains_rect(last.rect()));
+    last.click();
+    h.run();
+    assert_eq!(h.state().value, 63);
+    assert_eq!(h.state().changes, 1);
 }
 
 #[test]

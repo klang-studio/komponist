@@ -119,6 +119,21 @@ impl InputDeviceInfo {
     }
 }
 
+/// Per-port timing for a synchronous capture backend.
+#[derive(Debug, Clone, Copy)]
+pub struct RoutedInput<'a> {
+    /// Each slot's capture latency in output-rate frames.
+    pub latencies: &'a [u32],
+    /// Slots carrying valid input, without compacting missing slots.
+    pub available: u64,
+    /// Slots with a capture gap at the start of this buffer.
+    pub discontinuous: u64,
+    /// Interleaved previous samples retained for stereo leg alignment.
+    pub history: &'a [f32],
+    /// The next ring frame to write.
+    pub history_cursor: usize,
+}
+
 /// Borrowed, interleaved input at the output sample rate, for one processing callback.
 #[derive(Debug, Clone, Copy)]
 pub struct InputBuffer<'a> {
@@ -126,6 +141,7 @@ pub struct InputBuffer<'a> {
     channels: usize,
     latency: Duration,
     discontinuous: bool,
+    routes: Option<RoutedInput<'a>>,
 }
 
 impl<'a> InputBuffer<'a> {
@@ -139,6 +155,7 @@ impl<'a> InputBuffer<'a> {
             channels,
             latency,
             discontinuous,
+            routes: None,
         }
     }
     /// No configured capture input.
@@ -148,7 +165,18 @@ impl<'a> InputBuffer<'a> {
             channels: 0,
             latency: Duration::ZERO,
             discontinuous: false,
+            routes: None,
         }
+    }
+    /// Attaches slot timing and availability without changing the interleaved layout.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_routes(mut self, routes: RoutedInput<'a>) -> Self {
+        self.routes = Some(routes);
+        self
+    }
+    /// Slot-level timing on native duplex hosts.
+    pub fn routes(&self) -> Option<RoutedInput<'a>> {
+        self.routes
     }
     /// Number of channels; zero means disabled or unavailable.
     pub fn channels(&self) -> usize {

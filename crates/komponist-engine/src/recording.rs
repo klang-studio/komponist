@@ -475,11 +475,6 @@ impl Recorder {
             .find(|l| l.spec.track == track)
             .map(|l| l.spec.input)
     }
-    pub(crate) fn has_hardware(&self) -> bool {
-        self.lanes
-            .iter()
-            .any(|l| matches!(l.spec.input, AudioInput::Hardware(_)))
-    }
     /// A recording at or beyond the loop end follows the transport linearly.
     pub(crate) fn cycle_window(&self, loop_range: Option<(i64, i64)>) -> Option<(i64, i64)> {
         let first = self.start?;
@@ -635,6 +630,19 @@ fn create(path: PathBuf, config: &RecordingConfig, channels: u16) -> io::Result<
         closed: false,
     })
 }
+fn starts_next_pass(previous_lap: u32, previous: &Output, chunk: &Chunk) -> bool {
+    let Some((lo, hi, _)) = chunk.window else {
+        return false;
+    };
+    if previous_lap.checked_add(1) != Some(chunk.lap) || chunk.at != lo {
+        return false;
+    }
+    match previous.window {
+        None => previous.next == lo,
+        Some((start, end)) => start == lo && end == hi && previous.next == hi,
+    }
+}
+
 fn pad_output(
     output: &mut Output,
     frames: u64,
@@ -1031,8 +1039,22 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             }
                             pending_wave.clear();
                         }
-                        // A later timestamped lap proves this lane has no more input for earlier
-                        // laps, even with latency correction. Close them now to bound open FDs.
+                        if let Some((&previous_lap, previous)) = all[i].last_key_value()
+                            && previous.frames > 0
+                            && chunk.lap != previous_lap
+                            && !starts_next_pass(previous_lap, previous, &chunk)
+                        {
+                            if trace {
+                                eprintln!(
+                                    "komponist: recording trace writer-pass-gap track={} previous_lap={previous_lap} next_frame={} lap={} actual_frame={}",
+                                    spec.track.0, previous.next, chunk.lap, chunk.at,
+                                );
+                            }
+                            failure = Some(RecordingError::Discontinuity);
+                            shared.ended.store(true, Ordering::Release);
+                            continue;
+                        }
+                        // The preceding pass has ended. Close it now to bound open FDs.
                         for (_, old) in all[i].range_mut(..chunk.lap) {
                             if !old.closed
                                 && let Err(e) = close_output(old, config.format)
@@ -1419,14 +1441,35 @@ mod tests {
     }
     const PERIOD: usize = 64;
 
-    fn stalled_writer_fixture(track_count: u64) -> (PathBuf, Box<Recorder>, RecordingSession) {
-        let directory = std::env::temp_dir().join(format!(
-            "komponist-64-frame-recording-{}-{}",
-            std::process::id(),
-            SESSION.fetch_add(1, Ordering::Relaxed)
-        ));
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            loop {
+                let directory = std::env::temp_dir().join(format!(
+                    "komponist-64-frame-recording-{}-{}",
+                    std::process::id(),
+                    SESSION.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&directory) {
+                    Ok(()) => return Self(directory),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("could not create recording fixture: {error}"),
+                }
+            }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn stalled_writer_fixture(track_count: u64) -> (Scratch, Box<Recorder>, RecordingSession) {
+        let directory = Scratch::new();
         let config = RecordingConfig {
-            directory: directory.clone(),
+            directory: directory.0.clone(),
             sample_rate: 48000,
             format: RecordingFormat::Pcm24,
             tracks: (1..=track_count)
@@ -1493,7 +1536,7 @@ mod tests {
         let span = hi - lo;
         for track_count in [1, 2] {
             let (directory, recorder, mut session) = stalled_writer_fixture(track_count);
-            let relocated = directory.join("project-takes");
+            let relocated = directory.0.join("project-takes");
             // A writer which has dequeued samples must stop at progress publication. Push enough
             // callbacks and lap changes to exceed the old 32-entry queue, even on its first drain.
             let stalled = session.shared.progress[0].wave.lock().unwrap();
@@ -1573,14 +1616,13 @@ mod tests {
                 assert_eq!(take.frames, expected_file);
                 assert_pcm24(&take.path, take.channels, expected_file, captured);
             }
-            std::fs::remove_dir_all(directory).unwrap();
         }
     }
 
     #[test]
     fn a_full_capture_queue_fails_explicitly_and_preserves_its_written_prefix() {
         let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
-        let (directory, recorder, mut session) = stalled_writer_fixture(1);
+        let (_directory, recorder, mut session) = stalled_writer_fixture(1);
         let stalled = session.shared.progress[0].wave.lock().unwrap();
         let mut accepted = 0;
         assert_no_alloc::assert_no_alloc(|| {
@@ -1611,7 +1653,36 @@ mod tests {
         );
         let path = session.progress()[0].path.clone();
         assert_pcm24(&path, 1, accepted, accepted);
-        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_writer_detects_a_gap_at_loop_entry_and_wrap() {
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        let lp = Some((128, 256));
+        for (first, next, lap) in [(0, 144, 0), (128, 128, 1)] {
+            let (_directory, recorder, mut session) = stalled_writer_fixture(1);
+            for window in [
+                CaptureWindow {
+                    at: first,
+                    lap: 0,
+                    lp,
+                    map,
+                },
+                CaptureWindow {
+                    at: next,
+                    lap,
+                    lp,
+                    map,
+                },
+            ] {
+                recorder.capture(TrackId(1), &[0.25; PERIOD], &[0.0; PERIOD], window);
+            }
+            recorder.finish();
+            assert_eq!(
+                completed_session(&mut session).unwrap_err(),
+                RecordingError::Discontinuity
+            );
+        }
     }
 
     #[test]

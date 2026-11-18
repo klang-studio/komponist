@@ -1382,13 +1382,17 @@ are retained in the WP-E internal notes.
   ports by full JACK name. Aliases are for display. Without explicit routing, the existing CPAL
   JACK backend still provides playback-only system auto-connect. With capture enabled or explicit
   routing, a native JACK client manages the routes and processes capture and playback in the same
-  server period. Automatic routes use the server's advertised default ports. PipeWire-JACK's
+  server period. Automatic routes use the server's advertised default ports. Without an advertised
+  default, the native client uses physical ports in server order when they belong to one device.
+  If the physical ports span multiple devices, choose ports explicitly. Automatic playback
+  preserves manual patchbay links. PipeWire-JACK's
   graph-wide XRUN notifications update stream statistics. A missed local process period or a
   capture-link loss still marks the input discontinuous. Set `KOMPONIST_JACK_CAPTURE_TRACE=1`
   to report XRUN, timing, routing and recorder failure evidence on stderr outside the audio callback.
   It can run on JACK or PipeWire-JACK and does not start or configure the server. Graph changes
-  are reconciled outside the process callback. Loss of a selected capture route invalidates
-  input until the exact ports reconnect, while the same client continues playback.
+  are reconciled outside the process callback. Loss of a capture route invalidates its slot until
+  the exact port reconnects. Other slots can continue capturing and the same client keeps playing.
+  Each input is compensated by its route's latency. Stereo legs are aligned using a bounded history.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back

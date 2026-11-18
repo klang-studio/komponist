@@ -215,8 +215,10 @@ pub fn input_button(
         || input_label(t, project, track.audio.input),
         |source| source.name.clone(),
     );
-    let available = input_available(project, track, ctx.engine.audio_input_channels())
-        && jack.is_none_or(|_| named.as_ref().is_some_and(|source| source.available));
+    let available = match track.audio.input {
+        AudioInput::Hardware(input) => ctx.engine.hardware_input_available(input),
+        _ => input_available(project, track, ctx.engine.audio_input_channels()),
+    };
     let text = if available {
         label.clone()
     } else {
@@ -555,8 +557,9 @@ fn chooser(
                                             ui.label(fonts::rich_text(heading, &typography::LABEL));
                                             for choice in choices {
                                                 let value = AudioInput::Hardware(choice.input);
-                                                let label = choice.label(t);
-                                                let row = menu_row(ui, &label, track.audio.input == value, choice.available);
+                                                let available = ctx.engine.hardware_input_available(choice.input);
+                                                let label = if available { choice.name.clone() } else { t.audio_input_unavailable(&choice.name) };
+                                                let row = menu_row(ui, &label, track.audio.input == value, available);
                                                 let mut tip = Tip::new(&label);
                                                 if let Some(detail) = &choice.detail {
                                                     tip = tip.detail(detail);

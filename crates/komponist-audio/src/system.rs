@@ -512,7 +512,7 @@ enum Backend<P: AudioProcess> {
         _processor: std::marker::PhantomData<P>,
     },
     #[cfg(target_os = "linux")]
-    Jack(crate::jack_backend::JackStream<P>),
+    Jack(Box<crate::jack_backend::JackStream<P>>),
 }
 
 struct DeviceStreams {
@@ -677,6 +677,34 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.input_channels
     }
 
+    /// Whether all requested slots can supply audio, without compacting missing JACK slots.
+    pub fn input_route_available(&self, first: u16, count: u16) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(Current {
+            backend: Backend::Jack(jack),
+            ..
+        }) = &self.current
+        {
+            return jack.input_route_available(first, count);
+        }
+        first
+            .checked_add(count)
+            .is_some_and(|end| count != 0 && end <= self.input_channels())
+    }
+
+    /// Verified active JACK playback links in master left/right order.
+    pub fn jack_playback_connections(&self) -> Option<[bool; 2]> {
+        #[cfg(target_os = "linux")]
+        if let Some(Current {
+            backend: Backend::Jack(jack),
+            ..
+        }) = &self.current
+        {
+            return Some(jack.playback_connections());
+        }
+        None
+    }
+
     /// Actual JACK capture sources, ordered by input channel. A selected port keeps its slot
     /// even when unavailable. None means this backend has no active JACK capture configuration.
     pub fn jack_capture_sources(&self) -> Option<&[JackCaptureChannel]> {
@@ -746,8 +774,8 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.start_with(config, |system, config| match config.host {
             HostKind::Null => system.start_null(config).map(|()| config.clone()),
             #[cfg(target_os = "linux")]
-            HostKind::Jack if !config.jack_routes.is_automatic() || system.input.is_some() => {
-                system.start_jack(config)
+            HostKind::Jack if native_jack_route(config, system.input.is_some()) => {
+                system.start_jack(config, None)
             }
             _ => system.start_device(config),
         })
@@ -850,8 +878,10 @@ impl<P: AudioProcess> AudioSystem<P> {
             });
             #[cfg(target_os = "linux")]
             let reason = if let Backend::Jack(jack) = &mut current.backend {
-                if jack.sample_rate() != current.params.sample_rate {
-                    restart = Some(current.requested.clone());
+                if let Some(rate) = jack.active_rate()
+                    && rate != current.params.sample_rate
+                {
+                    restart = Some((current.requested.clone(), rate));
                 }
                 if restart.is_some() || jack.poll() {
                     reason
@@ -901,8 +931,10 @@ impl<P: AudioProcess> AudioSystem<P> {
             self.keep_engine(engine);
         }
         #[cfg(target_os = "linux")]
-        if let Some(config) = restart {
-            let _ = self.start(&config);
+        if let Some((config, rate)) = restart {
+            let _ = self.start_with(&config, |system, config| {
+                system.start_jack(config, Some(rate))
+            });
             return;
         }
         if let Some((config, reason)) = failure {
@@ -1025,16 +1057,33 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Explicit JACK routes share one server clock and one process callback.
     #[cfg(target_os = "linux")]
-    fn start_jack(&mut self, config: &StreamConfig) -> Result<StreamConfig, AudioError> {
+    fn start_jack(
+        &mut self,
+        config: &StreamConfig,
+        active_rate: Option<u32>,
+    ) -> Result<StreamConfig, AudioError> {
         use crate::jack_backend::JackStream;
 
-        let (client, params) = JackStream::<P>::open()?;
+        let (client, params, inactive_rate) = JackStream::<P>::open(active_rate)?;
+        let automatic_capture = if config.jack_routes.capture.is_some() {
+            false
+        } else {
+            match jack_capture_enabled(self.input.as_ref(), || crate::input_devices(HostKind::Jack))
+            {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    self.input_error = Some(error);
+                    false
+                }
+            }
+        };
         let (slot, handle) = EngineSlot::empty(Arc::clone(&self.stats));
         let jack = JackStream::start(
             client,
             &params,
+            inactive_rate,
             &config.jack_routes,
-            self.input.is_some(),
+            automatic_capture,
             slot,
             Arc::clone(&self.stats),
         )?;
@@ -1044,7 +1093,7 @@ impl<P: AudioProcess> AudioSystem<P> {
             ..config.clone()
         };
         self.install(Current {
-            backend: Backend::Jack(jack),
+            backend: Backend::Jack(Box::new(jack)),
             handle,
             params,
             shared: Arc::new(StreamShared::default()),
@@ -1111,6 +1160,12 @@ impl<P: AudioProcess> AudioSystem<P> {
         let Some(current) = self.current.as_mut() else {
             return;
         };
+        #[cfg(target_os = "linux")]
+        if let Backend::Jack(jack) = &current.backend
+            && jack.active_rate() != Some(current.params.sample_rate)
+        {
+            return;
+        }
         if let Some(midi) = self.midi.take()
             && let Err(midi) = current.handle.attach_midi(midi)
         {
@@ -1187,8 +1242,17 @@ impl<P: AudioProcess> AudioSystem<P> {
 
     /// Restarts the output once a probe finds it. Capture reconnection runs independently.
     fn poll_retry(&mut self) {
+        #[cfg(target_os = "linux")]
+        let has_input = self.input.is_some();
+        let present = move |config: &StreamConfig| {
+            #[cfg(target_os = "linux")]
+            if native_jack_route(config, has_input) {
+                return crate::jack_backend::server_present();
+            }
+            backend::device_present(config)
+        };
         if let Some(retry) = self.retry.as_mut()
-            && retry.poll("komponist-audio-probe", backend::device_present) == Some(true)
+            && retry.poll("komponist-audio-probe", present) == Some(true)
         {
             let config = retry.target.clone();
             let _ = self.start(&config);
@@ -1218,6 +1282,27 @@ impl<P: AudioProcess> Drop for AudioSystem<P> {
     fn drop(&mut self) {
         self.teardown();
     }
+}
+
+#[cfg(target_os = "linux")]
+fn native_jack_route(config: &StreamConfig, has_input: bool) -> bool {
+    config.host == HostKind::Jack && (!config.jack_routes.is_automatic() || has_input)
+}
+
+#[cfg(target_os = "linux")]
+fn jack_capture_enabled(
+    input: Option<&crate::InputConfig>,
+    devices: impl FnOnce() -> Result<Vec<crate::InputDeviceInfo>, AudioError>,
+) -> Result<bool, AudioError> {
+    let Some(input) = input else { return Ok(false) };
+    if input == &crate::InputConfig::default() || input.device_index(&devices()?).is_some() {
+        return Ok(true);
+    }
+    let name = input
+        .device
+        .clone()
+        .or_else(|| input.device_id.as_ref().map(|id| id.0.clone()));
+    Err(AudioError::NoDevice(name.unwrap_or_default()))
 }
 
 /// The null backend's configuration for a stream that could not open: the requested rate and
@@ -1573,6 +1658,36 @@ mod tests {
         };
         system.arm_retry(asio);
         assert_eq!(system.retry.as_ref().unwrap().interval, ASIO_RETRY_INTERVAL);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn jack_saved_input_never_falls_back_to_an_unrelated_default() {
+        let inventory = || {
+            Ok(vec![crate::InputDeviceInfo {
+                id: Some(DeviceId("jack:input".into())),
+                name: "JACK Input".into(),
+                channels: 2,
+                is_default: true,
+                sample_rate: 48_000,
+            }])
+        };
+        let saved = |name: &str| crate::InputConfig {
+            device: Some(name.into()),
+            device_id: None,
+        };
+        assert!(!jack_capture_enabled(None, || panic!("disabled capture cannot scan")).unwrap());
+        assert!(
+            jack_capture_enabled(Some(&crate::InputConfig::default()), || panic!(
+                "default is explicit"
+            ))
+            .unwrap()
+        );
+        assert!(jack_capture_enabled(Some(&saved("JACK Input")), inventory).unwrap());
+        assert!(matches!(
+            jack_capture_enabled(Some(&saved("Retired JACK Input")), inventory),
+            Err(AudioError::NoDevice(_))
+        ));
     }
 
     #[test]

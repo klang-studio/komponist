@@ -230,6 +230,15 @@ impl AudioProcess for EngineProcess {
                 channels: audio.channels(),
                 latency: latency_frames(audio.latency()),
                 discontinuous: audio.discontinuous(),
+                routes: audio
+                    .routes()
+                    .map(|routes| komponist_engine::AudioInputRoutes {
+                        latencies: routes.latencies,
+                        available: routes.available,
+                        discontinuous: routes.discontinuous,
+                        history: routes.history,
+                        history_cursor: routes.history_cursor,
+                    }),
             },
         );
         out.write_stereo(left, right);
@@ -806,6 +815,24 @@ impl EngineSync {
     pub fn audio_input_channels(&self) -> u16 {
         self.audio.input_channels()
     }
+    /// Whether the selected hardware lane or stereo pair is available on the open stream.
+    pub fn hardware_input_available(&self, input: komponist_model::HardwareInput) -> bool {
+        #[cfg(test)]
+        if let Some(sources) = self.test_jack_capture_sources.as_ref() {
+            let first = usize::from(input.first);
+            return sources
+                .get(first..first + usize::from(input.channel_count()))
+                .is_some_and(|ports| ports.iter().all(|port| port.connected));
+        }
+        self.audio
+            .input_route_available(input.first, input.channel_count())
+    }
+
+    /// Verified native JACK master links, in left/right order.
+    pub fn jack_playback_connections(&self) -> Option<[bool; 2]> {
+        self.audio.jack_playback_connections()
+    }
+
     /// Source port metadata for the capture channel order of the active JACK route.
     pub fn jack_capture_sources(&self) -> Option<&[komponist_audio::JackCaptureChannel]> {
         #[cfg(test)]
@@ -1125,6 +1152,8 @@ impl EngineSync {
         } = engine;
         self.handle = Some(handle);
         self.frozen = None;
+        self.synced = None;
+        self.fast = None;
         if let Some(setting) = self.workers_after_export.take() {
             process.apply_worker_setting(setting);
             if held {
@@ -1262,6 +1291,25 @@ mod tests {
             sync.telemetry().transport() == TransportState::Stopped
         }));
         sync.shutdown();
+    }
+
+    #[test]
+    fn reattaching_at_a_new_rate_recompiles_the_same_document_revision() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        let sent = sync.programs_sent;
+        let detached = sync.detach().unwrap();
+        sync.set_audio(&StreamConfig {
+            host: HostKind::Null,
+            sample_rate: 44_100,
+            ..StreamConfig::default()
+        })
+        .unwrap();
+        sync.attach(detached);
+        assert_eq!(sync.sample_rate(), 44_100);
+        sync.sync(&doc);
+        assert_eq!(sync.programs_sent, sent + 1);
     }
 
     /// WP-65: the stream starts the automatic worker pool; the setting changes it (with the

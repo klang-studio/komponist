@@ -153,6 +153,21 @@ pub struct LiveInput<'a> {
     pub output_latency: u32,
 }
 
+/// Slot-level timing and pre-roll history for hardware routed by a synchronous backend.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioInputRoutes<'a> {
+    /// One capture latency in engine frames per interleaved channel.
+    pub latencies: &'a [u32],
+    /// Bit mask of connected slots.
+    pub available: u64,
+    /// Bit mask of slots with a capture discontinuity in this block.
+    pub discontinuous: u64,
+    /// Interleaved ring of frames before this buffer for aligning stereo legs.
+    pub history: &'a [f32],
+    /// Frame index in the ring where this buffer begins.
+    pub history_cursor: usize,
+}
+
 /// Borrowed interleaved capture at the engine rate; independent of the device/backend crate.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AudioInputBuffer<'a> {
@@ -164,6 +179,8 @@ pub struct AudioInputBuffer<'a> {
     pub latency: u32,
     /// The capture bridge lost samples; recording fails explicitly.
     pub discontinuous: bool,
+    /// Native per-slot capture metadata, when supplied by the backend.
+    pub routes: Option<AudioInputRoutes<'a>>,
 }
 impl AudioInputBuffer<'_> {
     /// No input, used by existing process callers and offline renders.
@@ -173,6 +190,7 @@ impl AudioInputBuffer<'_> {
             channels: 0,
             latency: 0,
             discontinuous: false,
+            routes: None,
         }
     }
     fn sample(&self, channel: usize, frame: usize) -> f32 {
@@ -190,6 +208,91 @@ impl AudioInputBuffer<'_> {
     fn available(&self, first: usize, channels: usize, frames: usize) -> bool {
         self.channels >= first.saturating_add(channels)
             && self.data.len().checked_div(self.channels).unwrap_or(0) >= frames
+            && self.routes.is_none_or(|routes| {
+                let requested = port_mask(first, channels);
+                requested != 0 && routes.available & requested == requested
+            })
+    }
+
+    fn route_gap(&self, first: usize, channels: usize) -> bool {
+        self.routes.map_or(self.discontinuous, |routes| {
+            routes.discontinuous & port_mask(first, channels) != 0
+        })
+    }
+
+    fn stereo_delays(&self, first: usize) -> [usize; 2] {
+        let Some(latencies) = self
+            .routes
+            .and_then(|routes| routes.latencies.get(first..first.saturating_add(2)))
+        else {
+            return [0; 2];
+        };
+        let highest = latencies[0].max(latencies[1]);
+        [
+            (highest - latencies[0]) as usize,
+            (highest - latencies[1]) as usize,
+        ]
+    }
+
+    fn aligned_sample(&self, channel: usize, frame: usize, delay: usize) -> f32 {
+        if let Some(at) = frame.checked_sub(delay) {
+            return self.sample(channel, at);
+        }
+        let Some(routes) = self.routes else {
+            return 0.0;
+        };
+        let history_frames = routes.history.len().checked_div(self.channels).unwrap_or(0);
+        let before = delay - frame;
+        if before > history_frames || channel >= self.channels || history_frames == 0 {
+            return 0.0;
+        }
+        let row = (routes.history_cursor + history_frames - before) % history_frames;
+        let sample = routes.history[row * self.channels + channel];
+        if sample.is_finite() { sample } else { 0.0 }
+    }
+}
+
+fn port_mask(first: usize, channels: usize) -> u64 {
+    if first >= u64::BITS as usize
+        || channels == 0
+        || first.saturating_add(channels) > u64::BITS as usize
+    {
+        return 0;
+    }
+    (u64::MAX >> (u64::BITS as usize - channels)) << first
+}
+
+#[derive(Clone, Copy)]
+struct CaptureTiming {
+    output: u32,
+    common: u32,
+    count: usize,
+    ports: [u32; 64],
+}
+
+impl CaptureTiming {
+    fn new(output: u32, audio: &AudioInputBuffer<'_>) -> Self {
+        let mut timing = Self {
+            output,
+            common: audio.latency,
+            count: 0,
+            ports: [0; 64],
+        };
+        if let Some(routes) = audio.routes {
+            timing.count = routes.latencies.len().min(timing.ports.len());
+            timing.ports[..timing.count].copy_from_slice(&routes.latencies[..timing.count]);
+        }
+        timing
+    }
+
+    fn correction(&self, input: komponist_model::HardwareInput) -> u32 {
+        let first = usize::from(input.first);
+        let end = first + usize::from(input.channel_count());
+        let capture = self.ports[..self.count]
+            .get(first..end)
+            .and_then(|latencies| latencies.iter().copied().max())
+            .unwrap_or(self.common);
+        self.output.saturating_add(capture)
     }
 }
 
@@ -234,7 +337,7 @@ impl Engine {
             recorder: None,
             capture_tail: None,
             capture_lap: 0,
-            capture_latency: 0,
+            capture_timing: CaptureTiming::new(0, &AudioInputBuffer::empty()),
             record_latency: None,
             song: Song::default(),
             transport: Transport::default(),
@@ -600,8 +703,8 @@ struct Core {
     recorder: Option<Box<crate::recording::Recorder>>,
     capture_tail: Option<CaptureTail>,
     capture_lap: u32,
-    capture_latency: u32,
-    record_latency: Option<u32>,
+    capture_timing: CaptureTiming,
+    record_latency: Option<CaptureTiming>,
     /// The read-ahead of the audio clips and the queue the audio thread asks it through.
     stream: Arc<StreamShared>,
     stream_tx: rtrb::Producer<Msg>,
@@ -721,7 +824,7 @@ struct TrackJobs<'a> {
     frame0: usize,
     recorder: Option<&'a crate::recording::Recorder>,
     capture: Option<(crate::recording::CaptureWindow, usize, Option<u32>)>,
-    capture_latency: u32,
+    capture_timing: &'a CaptureTiming,
 }
 
 // SAFETY: the raw pointers are only dereferenced in `TrackJobs::run`, whose contract keeps the
@@ -975,19 +1078,38 @@ impl TrackJobs<'_> {
         l[..n].fill(0.0);
         r[..n].fill(0.0);
         let mut available = true;
-        let mut bus_latency = 0;
+        let mut correction = 0;
+        let mut capture_gap = false;
         match input {
             AudioInput::None => available = false,
             AudioInput::Hardware(hw) => {
                 let first = usize::from(hw.first);
-                available =
-                    self.audio
-                        .available(first, usize::from(hw.channel_count()), self.frame0 + n);
-                for i in 0..n {
-                    l[i] = self.audio.sample(first, self.frame0 + i);
-                    r[i] = self
-                        .audio
-                        .sample(first + usize::from(hw.stereo), self.frame0 + i);
+                let channels = usize::from(hw.channel_count());
+                available = self.audio.available(first, channels, self.frame0 + n);
+                capture_gap = self.audio.route_gap(first, channels);
+                correction = self.capture_timing.correction(hw);
+                if available {
+                    let [left_delay, right_delay] = if hw.stereo {
+                        self.audio.stereo_delays(first)
+                    } else {
+                        [0; 2]
+                    };
+                    if let Some(routes) = self.audio.routes {
+                        available = left_delay.max(right_delay)
+                            <= routes.history.len() / self.audio.channels;
+                    }
+                    if available {
+                        for i in 0..n {
+                            l[i] = self
+                                .audio
+                                .aligned_sample(first, self.frame0 + i, left_delay);
+                            r[i] = self.audio.aligned_sample(
+                                first + usize::from(hw.stereo),
+                                self.frame0 + i,
+                                right_delay,
+                            );
+                        }
+                    }
                 }
             }
             AudioInput::Bus(_) => {
@@ -1001,7 +1123,7 @@ impl TrackJobs<'_> {
                     };
                     l[..n].copy_from_slice(&source_state.post[0][..n]);
                     r[..n].copy_from_slice(&source_state.post[1][..n]);
-                    bus_latency = self.routing.node(usize::from(source.from)).latency_out;
+                    correction = self.routing.node(usize::from(source.from)).latency_out;
                 } else {
                     available = false;
                 }
@@ -1015,14 +1137,9 @@ impl TrackJobs<'_> {
         {
             if !available {
                 rec.fail(3);
-            } else if matches!(input, AudioInput::Hardware(_)) && self.audio.discontinuous {
+            } else if capture_gap {
                 rec.fail(2);
             } else {
-                let correction = if matches!(input, AudioInput::Hardware(_)) {
-                    self.capture_latency
-                } else {
-                    bus_latency
-                };
                 window.at = window.at.saturating_sub(i64::from(correction));
                 let frames = draining.map_or(frames, |progress| {
                     frames.min(correction.saturating_sub(progress) as usize)
@@ -1178,7 +1295,7 @@ impl Core {
     ) {
         // Taken once per callback; every segment and processor shares it.
         let entered = std::time::Instant::now();
-        self.capture_latency = latency.saturating_add(audio.latency);
+        self.capture_timing = CaptureTiming::new(latency, audio);
         self.outbox.flush();
         self.drain_commands();
         if let Some(rec) = &self.recorder
@@ -1200,7 +1317,7 @@ impl Core {
             if let Some(at) = self.transport.count_in_done(&self.song, rate) {
                 if let Some(rec) = &mut self.recorder {
                     rec.start = Some(self.transport.pos);
-                    self.record_latency = Some(self.capture_latency);
+                    self.record_latency = Some(self.capture_timing);
                 }
                 self.send(EngineEvent::CountInDone { at });
             }
@@ -1313,21 +1430,22 @@ impl Core {
         if let Some(rec) = &self.recorder
             && rec.active()
         {
-            let mut latency = if rec.has_hardware() {
-                self.record_latency.unwrap_or(self.capture_latency)
-            } else {
-                0
-            };
+            let timing = self.record_latency.as_ref().unwrap_or(&self.capture_timing);
+            let mut latency = 0;
             if let Some(program) = &self.program {
                 for (i, track) in program.tracks.iter().enumerate() {
-                    if matches!(
-                        rec.input(track.id),
-                        Some(komponist_model::AudioInput::Bus(_))
-                    ) && let Some(input) = program.routing.node(i).audio_input
-                    {
-                        latency =
-                            latency.max(program.routing.node(usize::from(input.from)).latency_out);
-                    }
+                    let correction = match rec.input(track.id) {
+                        Some(komponist_model::AudioInput::Hardware(input)) => {
+                            timing.correction(input)
+                        }
+                        Some(komponist_model::AudioInput::Bus(_)) => {
+                            program.routing.node(i).audio_input.map_or(0, |input| {
+                                program.routing.node(usize::from(input.from)).latency_out
+                            })
+                        }
+                        _ => 0,
+                    };
+                    latency = latency.max(correction);
                 }
             }
             if rec.start.is_some() && latency > 0 {
@@ -1414,7 +1532,7 @@ impl Core {
                     self.transport.state = TransportState::Recording;
                     if let Some(rec) = &mut self.recorder {
                         rec.start = Some(self.transport.pos);
-                        self.record_latency = Some(self.capture_latency);
+                        self.record_latency = Some(self.capture_timing);
                     }
                     let at = self.transport.tick(&self.song, rate);
                     self.send(EngineEvent::CountInDone { at });
@@ -1883,9 +2001,7 @@ impl Core {
             frames: n as u32,
             playing: transport.playing(),
         };
-        let capture_latency = self
-            .record_latency
-            .unwrap_or(latency.saturating_add(audio.latency));
+        let capture_timing = self.record_latency.unwrap_or(self.capture_timing);
         let recording = transport.state == TransportState::Recording;
         let loop_samples = song.loop_samples(rate);
         let capture = if let Some(tail) = self.capture_tail {
@@ -2206,7 +2322,7 @@ impl Core {
                     frame0,
                     recorder: recorder.as_deref(),
                     capture,
-                    capture_latency,
+                    capture_timing: &capture_timing,
                 };
                 // SAFETY: `Pool::run_graph` gives every thread its own lane (0 here, 1 ..= threads
                 // for the workers, all < `lanes.len()`) and claims every job once, when it was

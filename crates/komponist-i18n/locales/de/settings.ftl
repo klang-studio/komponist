@@ -140,6 +140,7 @@ settings-capture-format = Aufnahmeformat
 settings-capture-pcm24 = 24 bit WAV
 settings-capture-float32 = 32 bit Float WAV
 
+settings-jack-playback-change-recording = Beende die Aufnahme, bevor du die JACK-Ausgänge änderst.
 settings-jack-playback-left = Master links
 settings-jack-playback-right = Master rechts
 settings-jack-automatic = Automatisch
@@ -149,4 +150,6 @@ settings-jack-add-capture = Eingangsport hinzufügen
 settings-jack-remove-capture = Eingang entfernen
 settings-jack-auto-capture = Automatische Eingangsverbindung
 settings-jack-port-missing = Nicht verbunden · { $port }
+settings-jack-scan-failed = JACK-Ports konnten nicht gelesen werden.
+settings-jack-playback-unconnected = JACK-Ausgang konnte nicht verbunden werden · { $port }
 settings-jack-inputs = JACK-Eingangsports

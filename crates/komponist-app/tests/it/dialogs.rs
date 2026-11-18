@@ -1276,6 +1276,8 @@ fn s07_model_in(lang: Lang) -> settings::Model {
         }],
         input_device: 0,
         jack_ports: None,
+        jack_scan_failed: false,
+        jack_playback_connections: None,
         capture_format: komponist_app::settings::CaptureFormat::Pcm24,
         section: SettingsSection::Audio,
         hosts: vec![
@@ -1989,6 +1991,7 @@ fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languag
             Some(vec!["Interface:right".into(), "Missing:left".into()]);
         model.config.jack_routes.playback = [Some("Interface:speaker_left".into()), None];
         model.no_device = None;
+        model.jack_playback_connections = Some([false, false]);
         model.buffer = settings::BufferLimit::Fixed(64);
         model.jack_ports = Some(vec![
             JackPort {
@@ -2052,6 +2055,11 @@ fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languag
         assert_eq!(
             combo_value(&h, &capture),
             lang.settings_jack_port_missing("Missing:left")
+        );
+
+        h.get_by_role_and_label(
+            Role::Label,
+            &lang.settings_jack_playback_unconnected("Interface:speaker_left"),
         );
 
         if let Some(dir) = std::env::var_os("KOMPONIST_RENDER_DIR") {

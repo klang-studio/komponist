@@ -28,7 +28,9 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use egui::{Align, Color32, Context, Rect, Role, Sense, Ui, UiBuilder, pos2, vec2};
-use komponist_audio::{AudioSystem, DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig};
+use komponist_audio::{
+    AudioError, AudioSystem, DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig,
+};
 use komponist_i18n::Lang;
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{Icon, color, radius, size, typography};
@@ -126,8 +128,8 @@ pub trait AudioDevices: Send + Sync {
         Vec::new()
     }
     /// JACK graph metadata; the fixed/headless provider never contacts a real JACK server.
-    fn jack_ports(&self) -> Vec<JackPort> {
-        Vec::new()
+    fn jack_ports(&self) -> Result<Vec<JackPort>, AudioError> {
+        Ok(Vec::new())
     }
     /// Whether enumeration may take long enough to stall a frame, so the dialog runs it on a
     /// worker thread and shows the previous list meanwhile (WP-61 measured 7–10 ms for the
@@ -154,8 +156,8 @@ impl AudioDevices for SystemDevices {
         AudioSystem::<EngineProcess>::input_devices(host).unwrap_or_default()
     }
 
-    fn jack_ports(&self) -> Vec<JackPort> {
-        komponist_audio::jack_ports().unwrap_or_default()
+    fn jack_ports(&self) -> Result<Vec<JackPort>, AudioError> {
+        komponist_audio::jack_ports()
     }
 
     fn is_slow(&self) -> bool {
@@ -489,6 +491,10 @@ pub struct Model {
     pub input_device: usize,
     /// JACK audio ports, once the graph's first enumeration completed.
     pub jack_ports: Option<Vec<JackPort>>,
+    /// The most recent JACK enumeration failed.
+    pub jack_scan_failed: bool,
+    /// Current connection state for the two JACK master outputs, when the native stream is running.
+    pub jack_playback_connections: Option<[bool; 2]>,
     /// WAV encoding for future recordings.
     pub capture_format: crate::settings::CaptureFormat,
     /// Device dropdown entries ([`device_entries`]).
@@ -620,7 +626,8 @@ pub(crate) struct Cache {
     input_host: Option<HostKind>,
     inputs: Vec<komponist_audio::InputDeviceInfo>,
     jack_ports: Option<Vec<JackPort>>,
-    pending_jack_ports: Option<Receiver<Vec<JackPort>>>,
+    pending_jack_ports: Option<Receiver<Result<Vec<JackPort>, AudioError>>>,
+    jack_scan_failed: bool,
     next_jack_refresh: Option<Instant>,
     /// When each MIDI port (by name) last had activity.
     pub(crate) lit: HashMap<String, Instant>,
@@ -645,12 +652,16 @@ impl Cache {
     fn collect(&mut self) {
         if let Some(rx) = &self.pending_jack_ports {
             match rx.try_recv() {
-                Ok(ports) => {
+                Ok(Ok(ports)) => {
                     self.jack_ports = Some(ports);
+                    self.jack_scan_failed = false;
                     self.pending_jack_ports = None;
                 }
                 Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.pending_jack_ports = None,
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+                    self.jack_scan_failed = true;
+                    self.pending_jack_ports = None;
+                }
             }
         }
         if let Some((host, rx)) = &self.pending_inputs {
@@ -810,6 +821,8 @@ impl crate::App {
             input_devices,
             input_device,
             jack_ports: cache.jack_ports.clone(),
+            jack_scan_failed: cache.jack_scan_failed,
+            jack_playback_connections: self.engine.jack_playback_connections(),
             capture_format: self.settings.capture_format,
             section,
             hosts: cache.hosts.clone(),
@@ -1139,6 +1152,9 @@ fn audio(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>)
 
     if config.host == HostKind::Jack {
         jack_playback(ui, t, model, field_width, out);
+        if model.jack_scan_failed {
+            jack_warning(ui, t.settings_jack_scan_failed(), field_width);
+        }
     } else {
         output_device(ui, t, model, field_width, out);
     }
@@ -1297,7 +1313,28 @@ fn jack_playback(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<
             next.jack_routes.playback[channel] = port;
             out.push(set_audio(next));
         }
+        if let Some(port) = playback[channel].as_deref()
+            && entries[selected].available
+            && model
+                .jack_playback_connections
+                .is_some_and(|links| !links[channel])
+        {
+            jack_warning(ui, &t.settings_jack_playback_unconnected(port), width);
+        }
     }
+}
+
+fn jack_warning(ui: &mut Ui, text: &str, width: f32) {
+    grid_row(ui, "", |ui| {
+        let g = styled(
+            ui,
+            text,
+            &typography::SMALL,
+            color32(color::STATE_ERROR),
+            Some(width),
+        );
+        super::paint_text(ui, g, text);
+    });
 }
 
 fn jack_capture(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Output>) {
@@ -1423,9 +1460,18 @@ fn jack_dropdown(
             enabled: port.available,
         })
         .collect();
+    let ids: Vec<_> = entries.iter().map(|port| port.name.as_deref()).collect();
     let mut changed = None;
     grid_row(ui, label, |ui| {
-        let response = ui.add(Dropdown::new(label, &mut selected, &items).width(width));
+        let response = ui.add(
+            Dropdown::new(label, &mut selected, &items)
+                .width(width)
+                .fitting_list(
+                    size::MENU_ROW * crate::views::audio_inputs::MAX_ROWS as f32,
+                    &[],
+                )
+                .option_ids(&ids),
+        );
         if !entries[selected].available {
             px::inner_border(ui.painter(), response.rect, color32(color::STATE_ERROR));
         }
@@ -1744,6 +1790,33 @@ fn keyboard(ui: &mut Ui, t: Lang, model: &Model, width: f32, out: &mut Vec<Outpu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_jack_refresh_keeps_the_last_inventory() {
+        let port = JackPort {
+            name: "Interface:left".into(),
+            alias: None,
+            direction: JackDirection::Capture,
+        };
+        let mut cache = Cache::default();
+        let mut complete = |result| {
+            let (sender, receiver) = mpsc::channel();
+            sender.send(result).unwrap();
+            cache.pending_jack_ports = Some(receiver);
+            cache.collect();
+            (cache.jack_ports.clone(), cache.jack_scan_failed)
+        };
+
+        assert_eq!(
+            complete(Ok(vec![port.clone()])),
+            (Some(vec![port.clone()]), false)
+        );
+        assert_eq!(
+            complete(Err(AudioError::Backend("scan unavailable".into()))),
+            (Some(vec![port]), true),
+        );
+        assert_eq!(complete(Ok(Vec::new())), (Some(Vec::new()), false));
+    }
     use komponist_audio::DeviceId;
 
     fn device(host: HostKind, name: &str, id: &str, default: bool) -> DeviceInfo {

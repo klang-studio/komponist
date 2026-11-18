@@ -5,7 +5,7 @@ use komponist_engine::recording::{
     self, RecordingConfig, RecordingError, RecordingFormat, RecordingResult, RecordingSession,
     RecordingTrack,
 };
-use komponist_engine::{AudioInputBuffer, Command, LiveInput};
+use komponist_engine::{AudioInputBuffer, AudioInputRoutes, Command, LiveInput};
 use komponist_model::edits::{self, ChannelProp, NewAudioTrack, NewBus, TrackProp};
 use komponist_model::{
     AudioInput, HardwareInput, MonitorMode, Project, Tick, TickRange, TrackId, TrackOutput,
@@ -14,14 +14,27 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 static NEXT: AtomicU64 = AtomicU64::new(1);
-fn directory() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "komponist-record-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn directory() -> Scratch {
+    loop {
+        let dir = std::env::temp_dir().join(format!(
+            "komponist-record-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Scratch(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("create {}: {error}", dir.display()),
+        }
+    }
 }
 fn hardware() -> AudioInput {
     AudioInput::Hardware(HardwareInput {
@@ -50,10 +63,10 @@ fn prepare(
     p: &Project,
     tracks: &[TrackId],
     format: RecordingFormat,
-) -> (Box<recording::Recorder>, RecordingSession, PathBuf) {
+) -> (Scratch, Box<recording::Recorder>, RecordingSession) {
     let directory = directory();
     let (rec, session) = recording::prepare(RecordingConfig {
-        directory: directory.clone(),
+        directory: directory.0.clone(),
         sample_rate: 48000,
         format,
         tracks: tracks
@@ -67,7 +80,7 @@ fn prepare(
             .collect(),
     })
     .unwrap();
-    (rec, session, directory)
+    (directory, rec, session)
 }
 fn feed(
     rig: &mut Rig,
@@ -76,21 +89,30 @@ fn feed(
     input_latency: u32,
     discontinuous: bool,
 ) -> (Vec<f32>, Vec<f32>) {
-    let frames = data.len() / 2;
+    let audio = AudioInputBuffer {
+        data,
+        channels: 2,
+        latency: input_latency,
+        discontinuous,
+        routes: None,
+    };
+    feed_routed(rig, output_latency, &audio)
+}
+
+fn feed_routed(
+    rig: &mut Rig,
+    output_latency: u32,
+    audio: &AudioInputBuffer<'_>,
+) -> (Vec<f32>, Vec<f32>) {
+    let frames = audio.data.len() / audio.channels;
     let mut l = vec![0.0; frames];
     let mut r = vec![0.0; frames];
     let live = LiveInput {
         midi: &[],
         output_latency,
     };
-    let audio = AudioInputBuffer {
-        data,
-        channels: 2,
-        latency: input_latency,
-        discontinuous,
-    };
     assert_no_alloc::assert_no_alloc(|| {
-        rig.engine.process_with_audio(&mut l, &mut r, &live, &audio)
+        rig.engine.process_with_audio(&mut l, &mut r, &live, audio)
     });
     (l, r)
 }
@@ -136,7 +158,7 @@ fn hardware_monitoring_off_auto_and_on_follow_arm_in_stopped_and_playing_states(
 #[test]
 fn hardware_recording_corrects_both_latencies_and_drains_the_tail_after_stop() {
     let (p, track) = project(MonitorMode::Off, true);
-    let (rec, mut session, _) = prepare(&p, &[track], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.set_program(&compile::build(&p, None, &NoEnv));
     rig.send(Command::SetRecorder(rec));
@@ -170,7 +192,7 @@ fn cycle_recording_pads_first_and_last_partial_passes_to_the_common_loop_window(
     let (mut p, track) = project(MonitorMode::Off, true);
     p.loop_on = true;
     p.loop_range = TickRange::new(Tick::ZERO, Tick(16));
-    let (rec, mut session, _) = prepare(&p, &[track], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.set_program(&compile::build(&p, None, &NoEnv));
     rig.send(Command::SetRecorder(rec));
@@ -205,7 +227,7 @@ fn cycle_recording_pads_first_and_last_partial_passes_to_the_common_loop_window(
 fn count_in_is_not_recorded_and_pcm24_headers_are_finalized() {
     let (mut p, track) = project(MonitorMode::Off, true);
     p.count_in_bars = 1;
-    let (rec, mut session, _) = prepare(&p, &[track], RecordingFormat::Pcm24);
+    let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Pcm24);
     let mut rig = Rig::new(RATE, 256);
     rig.set_program(&compile::build(&p, None, &NoEnv));
     rig.send(Command::SetRecorder(rec));
@@ -224,7 +246,7 @@ fn count_in_is_not_recorded_and_pcm24_headers_are_finalized() {
 #[test]
 fn checkpoints_include_all_samples_submitted_before_the_request() {
     let (p, track) = project(MonitorMode::Off, true);
-    let (rec, mut session, _) = prepare(&p, &[track], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.set_program(&compile::build(&p, None, &NoEnv));
     rig.send(Command::SetRecorder(rec));
@@ -246,7 +268,7 @@ fn checkpoints_include_all_samples_submitted_before_the_request() {
 #[test]
 fn checkpoint_and_relocation_keep_capture_running_and_a_failed_move_keeps_old_paths() {
     let (p, track) = project(MonitorMode::Off, true);
-    let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.set_program(&compile::build(&p, None, &NoEnv));
     rig.send(Command::SetRecorder(rec));
@@ -257,14 +279,14 @@ fn checkpoint_and_relocation_keep_capture_running_and_a_failed_move_keeps_old_pa
     let reader = hound::WavReader::open(&checkpoint[0].path).unwrap();
     assert_eq!(reader.duration(), 64);
     drop(reader);
-    let blocked = dir.join("blocked");
+    let blocked = _dir.0.join("blocked");
     std::fs::write(&blocked, b"not a directory").unwrap();
     assert!(session.relocate(&blocked).is_err());
     feed(&mut rig, &[0.25; 128], 0, 0, false);
     let checkpoint = session.checkpoint().unwrap();
     assert_eq!(checkpoint[0].frames, 128);
-    assert!(checkpoint[0].path.starts_with(&dir));
-    let destination = directory().join("Takes");
+    assert!(checkpoint[0].path.starts_with(&_dir.0));
+    let destination = _dir.0.join("Takes");
     let moved = session.relocate(&destination).unwrap();
     assert!(moved[0].path.starts_with(&destination));
     assert!(!checkpoint[0].path.exists());
@@ -286,7 +308,7 @@ fn interrupted_input_and_rate_changes_fail_explicitly_and_cancel_removes_files()
         (4, RecordingError::SourceChanged),
     ] {
         let (p, track) = project(MonitorMode::Off, true);
-        let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
+        let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
         let mut rig = Rig::new(RATE, 256);
         rig.set_program(&compile::build(&p, None, &NoEnv));
         rig.send(Command::SetRecorder(rec));
@@ -322,7 +344,7 @@ fn interrupted_input_and_rate_changes_fail_explicitly_and_cancel_removes_files()
         }
         assert_eq!(finished(&mut session).unwrap_err(), expected);
         if case == 3 {
-            assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+            assert_eq!(std::fs::read_dir(&_dir.0).unwrap().count(), 0);
         }
     }
 }
@@ -356,7 +378,7 @@ fn bus_recording_reads_post_fader_pan_mute_without_hardware_latency_correction()
         let to = program.tracks.iter().position(|t| t.id == record).unwrap();
         assert!(program.routing.node(from).post);
         assert!(program.routing.node(to).waits > 0);
-        let (rec, mut session, _) = prepare(&p, &[record], RecordingFormat::Float32);
+        let (_dir, rec, mut session) = prepare(&p, &[record], RecordingFormat::Float32);
         let mut rig = Rig::new(RATE, 256);
         rig.engine.set_workers(2, None);
         rig.set_program(&program);
@@ -385,8 +407,9 @@ fn mono_pcm24_records_the_selected_input_channel_and_saturates_at_full_scale() {
         stereo: false,
     });
     let p = edits::set_track_prop(&p, &[track], TrackProp::AudioInput(input)).unwrap();
+    let dir = directory();
     let (rec, mut session) = recording::prepare(RecordingConfig {
-        directory: directory(),
+        directory: dir.0.clone(),
         sample_rate: 48000,
         format: RecordingFormat::Pcm24,
         tracks: vec![RecordingTrack {
@@ -457,7 +480,7 @@ fn bus_latency_is_compensated_once_and_its_delayed_tail_is_drained() {
     .unwrap();
     let p = edits::set_track_prop(&p, &[record], TrackProp::Arm(true)).unwrap();
     let program = compile::build(&p, None, &Env);
-    let (rec, mut session, _) = prepare(&p, &[record], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[record], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.send(Command::InsertProcessor {
         slot: program.slots.slot(device).unwrap(),
@@ -527,7 +550,7 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
     .unwrap();
     let p = edits::set_track_prop(&p, &[record], TrackProp::Arm(true)).unwrap();
     let program = compile::build(&p, None, &Env);
-    let (rec, mut session, _) = prepare(&p, &[source, record], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[source, record], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.send(Command::InsertProcessor {
         slot: program.slots.slot(device).unwrap(),
@@ -582,7 +605,7 @@ fn night_drive_recording_before_its_loop_keeps_the_linear_take() {
     let span = project.meter.ticks_per_bar();
     assert_eq!(map.tick_to_sample(project.loop_range.start, rate), 743_226);
     for (from, first_frame) in [(Tick(5 * span), 464_516), (Tick::ZERO, 0)] {
-        let (rec, mut session, dir) = prepare(&project, &[track], RecordingFormat::Float32);
+        let (_dir, rec, mut session) = prepare(&project, &[track], RecordingFormat::Float32);
         assert_eq!(map.tick_to_sample(from, rate), first_frame);
         let mut rig = Rig::new(RATE, 256);
         rig.set_program(&compile::build(&project, None, &NoEnv));
@@ -610,7 +633,6 @@ fn night_drive_recording_before_its_loop_keeps_the_linear_take() {
                 .into_samples::<f32>()
                 .all(|sample| sample.unwrap() == 0.25)
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
@@ -619,7 +641,7 @@ fn recording_from_before_the_loop_keeps_the_intro_and_full_and_partial_laps() {
     let (mut p, track) = project(MonitorMode::Off, true);
     p.loop_on = true;
     p.loop_range = TickRange::new(Tick(8), Tick(16)); // Frames 200..400 at 120 BPM.
-    let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
+    let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
     let mut rig = Rig::new(RATE, 256);
     rig.set_program(&compile::build(&p, None, &NoEnv));
     rig.send(Command::SetRecorder(rec));
@@ -663,7 +685,6 @@ fn recording_from_before_the_loop_keeps_the_intro_and_full_and_partial_laps() {
         assert_eq!(&captured[..to - from], &input[from..to]);
         assert!(captured[to - from..].iter().all(|&sample| sample == 0.0));
     }
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -678,7 +699,7 @@ fn recording_at_or_past_loop_end_drains_the_latency_tail_without_wrapping() {
         })
         .collect();
     for from in [Tick(16), Tick(24)] {
-        let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
+        let (_dir, rec, mut session) = prepare(&p, &[track], RecordingFormat::Float32);
         let mut rig = Rig::new(RATE, 256);
         rig.set_program(&compile::build(&p, None, &NoEnv));
         rig.send(Command::SetRecorder(rec));
@@ -696,6 +717,106 @@ fn recording_at_or_past_loop_end_drains_the_latency_tail_without_wrapping() {
         let mut reader = hound::WavReader::open(&take.path).unwrap();
         let captured: Vec<f32> = reader.samples().map(Result::unwrap).collect();
         assert_eq!(captured, input[20..]);
-        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn healthy_jack_mono_uses_its_own_latency_through_an_unrelated_port_gap() {
+    let (mut project, track) = project(MonitorMode::Off, true);
+    let input = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    project = edits::set_track_prop(&project, &[track], TrackProp::AudioInput(input)).unwrap();
+    let (_scratch, rec, mut session) = prepare(&project, &[track], RecordingFormat::Float32);
+    let mut rig = Rig::new(RATE, 64);
+    rig.set_program(&compile::build(&project, None, &NoEnv));
+    rig.send(Command::SetRecorder(rec));
+    rig.send(Command::Record { from: Tick::ZERO });
+    for offset in (0..576).step_by(64) {
+        if offset == 512 {
+            rig.send(Command::Stop);
+        }
+        let data: Vec<_> = (offset..offset + 64)
+            .flat_map(|i| [i as f32 / 1024.0, 0.0])
+            .collect();
+        feed_routed(
+            &mut rig,
+            0,
+            &AudioInputBuffer {
+                data: &data,
+                channels: 2,
+                latency: 256,
+                discontinuous: offset == 128,
+                routes: Some(AudioInputRoutes {
+                    latencies: &[64, 256],
+                    available: if offset < 128 { 3 } else { 1 },
+                    discontinuous: if offset == 128 { 2 } else { 0 },
+                    history: &[],
+                    history_cursor: 0,
+                }),
+            },
+        );
+    }
+    let result = finished(&mut session).unwrap();
+    let take = &result.takes[0];
+    assert_eq!((take.frames, take.start), (512, Tick::ZERO));
+    let captured: Vec<_> = hound::WavReader::open(&take.path)
+        .unwrap()
+        .into_samples::<f32>()
+        .map(Result::unwrap)
+        .collect();
+    for (i, frame) in captured.as_chunks::<2>().0.iter().enumerate() {
+        assert_eq!(*frame, [(i + 64) as f32 / 1024.0; 2]);
+    }
+}
+
+#[test]
+fn differently_delayed_jack_stereo_legs_share_aligned_samples_and_a_stop_tail() {
+    let (project, track) = project(MonitorMode::Off, true);
+    let (_scratch, rec, mut session) = prepare(&project, &[track], RecordingFormat::Float32);
+    let mut rig = Rig::new(RATE, 64);
+    rig.set_program(&compile::build(&project, None, &NoEnv));
+    rig.send(Command::SetRecorder(rec));
+    rig.send(Command::Record { from: Tick::ZERO });
+    let source = |first: i32, end| {
+        (first..end)
+            .flat_map(|i| [(i - 64) as f32 / 1024.0, (i - 256) as f32 / 1024.0])
+            .collect::<Vec<_>>()
+    };
+    for offset in (0..768).step_by(64) {
+        if offset == 512 {
+            rig.send(Command::Stop);
+        }
+        let data = source(offset, offset + 64);
+        let history = source(offset - 192, offset);
+        feed_routed(
+            &mut rig,
+            0,
+            &AudioInputBuffer {
+                data: &data,
+                channels: 2,
+                latency: 256,
+                discontinuous: false,
+                routes: Some(AudioInputRoutes {
+                    latencies: &[64, 256],
+                    available: 3,
+                    discontinuous: 0,
+                    history: &history,
+                    history_cursor: 0,
+                }),
+            },
+        );
+    }
+    let result = finished(&mut session).unwrap();
+    let take = &result.takes[0];
+    assert_eq!((take.frames, take.start), (512, Tick::ZERO));
+    let captured: Vec<_> = hound::WavReader::open(&take.path)
+        .unwrap()
+        .into_samples::<f32>()
+        .map(Result::unwrap)
+        .collect();
+    for (i, frame) in captured.as_chunks::<2>().0.iter().enumerate() {
+        assert_eq!(*frame, [i as f32 / 1024.0; 2]);
     }
 }
