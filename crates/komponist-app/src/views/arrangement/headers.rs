@@ -13,18 +13,20 @@ use komponist_model::{Project, Track, TrackId, routing};
 use komponist_plugins::{DeviceStatus, FailReason};
 use komponist_tokens::typography;
 use komponist_ui::State;
-use komponist_ui::timeline::{HeaderModel, header_access, header_layout, paint_track_header};
+use komponist_ui::timeline::{
+    HeaderModel, header_access, header_layout_with_reserve, paint_track_header_with_reserve,
+};
 use komponist_ui::widgets::meter::{Meter, MeterState};
 use komponist_ui::widgets::metrics::timeline as tm;
 use komponist_ui::widgets::rename_field::{RenameField, RenameOutcome, RenameState};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::{fonts, px};
 
-use super::buses;
 use super::geometry::{Geometry, RowKind, row_height, stored_height};
 use super::{
     Arrangement, Drag, Rename, click_mode, metrics, register, select_clips, select_tracks,
 };
+use super::{automation, buses};
 use crate::actions::{Action, EditAction, SelectMode, UiAction};
 use crate::engine_sync::EngineSync;
 use crate::meters::Meters;
@@ -87,7 +89,7 @@ pub fn toggle_on(track: &Track, kind: ToggleKind) -> bool {
 /// The name line of a header at `rect` (where the rename field goes): the text column, one
 /// `type.track` line high, as `paint_track_header` centres name and instrument.
 fn name_rect(rect: Rect, ppp: f32) -> Rect {
-    let l = header_layout(rect);
+    let l = header_layout_with_reserve(rect, automation::HEADER_RESERVE);
     let block = typography::TRACK.line_height + tm::HEADER_TEXT_GAP + typography::SMALL.line_height;
     let top = px::snap(l.body.center().y - block / 2.0, ppp);
     Rect::from_min_max(
@@ -156,7 +158,7 @@ impl Arrangement {
         };
         let implied_mute =
             gates.is_some_and(|g| !track.channel.solo && g.output(track.id).solo_muted);
-        let l = header_layout(rect);
+        let l = header_layout_with_reserve(rect, automation::HEADER_RESERVE);
         let name = if track.is_bus() {
             self.bus_header(
                 ui,
@@ -195,7 +197,13 @@ impl Arrangement {
                 implied_mute,
                 meter: None,
             };
-            paint_track_header(ui.painter(), rect, &model, state);
+            paint_track_header_with_reserve(
+                ui.painter(),
+                rect,
+                &model,
+                state,
+                automation::HEADER_RESERVE,
+            );
             let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
             register(&response, &access);
             if track.is_audio() {
@@ -237,7 +245,11 @@ impl Arrangement {
         // Select, rename, reorder.
         if response.double_clicked()
             && response.interact_pointer_pos().is_some_and(|p| {
-                name.contains(p) || (!track.is_audio() && header_layout(rect).text.contains(p))
+                name.contains(p)
+                    || (!track.is_audio()
+                        && header_layout_with_reserve(rect, automation::HEADER_RESERVE)
+                            .text
+                            .contains(p))
             })
         {
             self.rename = Some(Rename {
@@ -295,6 +307,8 @@ impl Arrangement {
                 ToggleKind::ALL.into_iter().zip(l.toggles).collect();
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
         }
+        self.automation
+            .track_toggle(ui, ctx, track, l.toggles[2].left(), l.body.center().y);
         for action in header_meter(ui, ctx.lang, ctx.meters, track, l.meter, mods.alt) {
             ctx.send(action);
         }

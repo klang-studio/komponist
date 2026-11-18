@@ -40,6 +40,8 @@ pub enum Action {
     Transport(TransportAction),
     /// Document changes and history.
     Edit(EditAction),
+    /// Automation lane, point and clip-envelope edits.
+    Automation(crate::views::automation::Action),
     /// View state: panels, focus, zoom, selection, dialogs.
     Ui(UiAction),
     /// Plugins: add from the browser, GUI windows, reload, parameters.

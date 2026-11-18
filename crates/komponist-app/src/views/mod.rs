@@ -22,6 +22,7 @@
 pub mod arrangement;
 pub mod audio_editor;
 pub mod audio_inputs;
+pub mod automation;
 pub mod browser;
 pub mod devices;
 pub mod grid;

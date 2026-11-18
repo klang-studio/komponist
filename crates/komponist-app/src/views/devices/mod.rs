@@ -100,7 +100,27 @@ impl View for Devices {
             return;
         };
         let mut cards = model::cards(ctx.lang, track, ctx.engine.host(), &ctx.ui.plugin_windows);
+        let owner = komponist_model::automation::AutomationOwner::Track(track.id);
+        let base = komponist_tokens::TrackPalette::new(track.hue.0).base;
+        let ink = komponist_tokens::egui_support::color32(base);
         for c in &mut cards {
+            c.automation_owner = Some(owner);
+            for param in &mut c.params {
+                let target = komponist_model::automation::AutomationTarget::Param {
+                    device: c.device,
+                    param: param.info.id.clone(),
+                };
+                if let Some(value) = super::automation::automation_controls(
+                    &project,
+                    owner,
+                    &target,
+                    ctx.engine.playhead(),
+                ) {
+                    param.value = param.info.to_plain(f64::from(value));
+                    param.text = param.info.format(param.value);
+                    c.automation.insert(param.info.id.clone(), ink);
+                }
+            }
             c.page = ctx.ui.devices.page(c.device);
             c.collapsed = ctx.ui.devices.collapsed.contains(&c.device);
             let fit = frame::head_width(ui, c);

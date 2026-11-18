@@ -135,6 +135,7 @@ impl Arrangement {
 
         if response.drag_started()
             && let Some(origin) = origin
+            && !g.automation_at(origin.y)
         {
             match g.clip_at(project, origin) {
                 Some(hit) => self.start_clip_drag(ctx, project, hit, origin, mods),

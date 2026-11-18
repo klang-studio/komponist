@@ -1162,6 +1162,7 @@ impl App {
         match action {
             Action::Transport(a) => self.transport_action(a),
             Action::Edit(a) => self.edit_action(a),
+            Action::Automation(a) => self.automation_action(a),
             Action::Ui(a) => self.ui_action(a),
             Action::Plugin(a) => self.plugin_action(a),
             Action::Project(a) => self.project_action(a),
@@ -1169,6 +1170,96 @@ impl App {
         }
         if !self.keyboard_midi_active() {
             self.release_keyboard_notes_if(|_| true);
+        }
+    }
+
+    fn automation_action(&mut self, action: crate::views::automation::Action) {
+        use crate::views::automation::{Action as Automation, Source, lanes};
+        use komponist_model::edits::automation;
+
+        match action {
+            Automation::Shown(owner, shown) => {
+                self.apply("undo-automation-shown", |p| {
+                    automation::set_shown(p, owner, shown)
+                });
+            }
+            Automation::ShowTarget {
+                owner,
+                replace,
+                target,
+                label,
+            } => {
+                let old = lanes(self.project(), owner);
+                let exists = old.is_some_and(|a| a.lane(&target).is_some());
+                let reuse = replace.filter(|id| {
+                    old.is_some_and(|a| {
+                        a.lanes
+                            .iter()
+                            .any(|lane| lane.id == *id && lane.points.is_empty())
+                    })
+                });
+                let undo = if exists {
+                    "undo-automation-shown"
+                } else if reuse.is_some() {
+                    "undo-automation-retarget-lane"
+                } else {
+                    "undo-automation-add-lane"
+                };
+                self.apply(undo, |p| {
+                    if exists {
+                        return automation::set_shown(p, owner, true);
+                    }
+                    let project = if let Some(id) = reuse {
+                        automation::retarget_lane(p, owner, id, target, label)?
+                    } else {
+                        automation::add_lane(p, owner, target, label)?.0
+                    };
+                    automation::set_shown(&project, owner, true)
+                });
+            }
+            Automation::Remove(Source::Lane(owner, id)) => {
+                self.apply("undo-automation-remove-lane", |p| {
+                    automation::remove_lane(p, owner, id)
+                });
+            }
+            Automation::Remove(Source::Clip(clip, target)) => {
+                self.apply("undo-automation-clip-remove", |p| {
+                    automation::remove_clip_automation(p, clip, &target)
+                });
+            }
+            Automation::Clear(owner, id) => {
+                self.apply("undo-automation-clear-lane", |p| {
+                    automation::clear_lane(p, owner, id)
+                });
+            }
+            Automation::Height(owner, id, height) => {
+                self.apply("undo-automation-lane-height", |p| {
+                    automation::set_lane_height(p, owner, id, height)
+                });
+            }
+            Automation::Mode(owner, id, mode) => {
+                self.apply("undo-automation-mode", |p| {
+                    automation::set_lane_mode(p, owner, id, mode)
+                });
+            }
+            Automation::AllModes(owner, mode) => {
+                self.apply("undo-automation-modes", |p| {
+                    automation::set_all_modes(p, owner, mode)
+                });
+            }
+            Automation::Points(source, points, undo) => {
+                self.apply(undo, |p| match source {
+                    Source::Lane(owner, id) => automation::set_lane_points(p, owner, id, points),
+                    Source::Clip(clip, target) => {
+                        automation::set_clip_points(p, clip, &target, points)
+                    }
+                });
+            }
+            Automation::AddClip(clip, target, label) => {
+                self.apply("undo-automation-clip-add", |p| {
+                    automation::add_clip_automation(p, clip, target, label)
+                });
+            }
         }
     }
 

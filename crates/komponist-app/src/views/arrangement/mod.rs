@@ -39,6 +39,7 @@
 //! Keys (Strg D, Strg E, 0, Entf, +, −, Z, Strg [ ]) are the keymap's.
 
 mod audio_drop;
+mod automation;
 mod buses;
 mod cache;
 mod files;
@@ -231,6 +232,7 @@ pub struct Arrangement {
     /// A press on M S R I opened a gesture (ended on release).
     toggle_gesture: bool,
     memo: Option<Memo>,
+    automation: automation::State,
 }
 
 impl Arrangement {
@@ -299,6 +301,7 @@ impl View for Arrangement {
         self.lanes(&mut lanes, ctx, &project, &g);
         self.headers(&mut tracks, ctx, &project, &g);
         self.new_track_area(&mut tracks, ctx, &g);
+        self.automation.show(&mut tracks, ctx, &project, &g);
         self.overlays(&mut tracks, ctx, &project, &g);
         if project.tracks.is_empty() {
             self.empty_hint(&mut tracks, ctx, &g);

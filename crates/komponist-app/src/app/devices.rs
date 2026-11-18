@@ -285,11 +285,16 @@ impl App {
                 param,
                 dragging,
             } => {
-                self.ui.devices.touched = Some(ParamTouch {
+                let touch = ParamTouch {
                     device: *device,
                     param: param.clone(),
                     dragging: *dragging,
-                });
+                };
+                let recent = &mut self.ui.devices.automation_recent;
+                recent.retain(|old| old.device != *device || old.param != *param);
+                recent.insert(0, touch.clone());
+                recent.truncate(crate::views::automation::RECENT_TARGETS);
+                self.ui.devices.touched = Some(touch);
             }
             _ => return false,
         }

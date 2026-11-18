@@ -8,12 +8,13 @@
 //! output list on a bus).
 
 use egui::{Rect, Response, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use komponist_model::automation::{AutomationMode, AutomationOwner};
 use komponist_model::edits::TrackProp;
 use komponist_model::{Hue, Project, Track, TrackId, TrackOutput, routing};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{color, radius, space, typography};
 use komponist_ui::State;
-use komponist_ui::timeline::{Access, header_layout};
+use komponist_ui::timeline::{Access, header_layout_with_reserve};
 use komponist_ui::widgets::context_menu::{Colors, ContextMenu, Entry};
 use komponist_ui::widgets::tooltip::Tip;
 use komponist_ui::widgets::{self as w, accesskit};
@@ -23,7 +24,7 @@ use komponist_i18n::Lang;
 
 use super::cache::Palettes;
 use super::geometry::{Geometry, RowKind};
-use super::{Arrangement, Rename, metrics};
+use super::{Arrangement, Rename, automation, metrics};
 use crate::actions::{Action, EditAction};
 use crate::views::routing as rt;
 use crate::views::{ViewCtx, elided_galley};
@@ -42,7 +43,7 @@ struct BusLayout {
 }
 
 fn bus_layout(rect: Rect, ppp: f32, kind: RowKind) -> BusLayout {
-    let l = header_layout(rect);
+    let l = header_layout_with_reserve(rect, automation::HEADER_RESERVE);
     let group = matches!(kind, RowKind::Group { .. });
     let mut x = l.color_bar.max.x + space::SPACE_1;
     let cy = l.body.center().y;
@@ -129,7 +130,7 @@ impl Arrangement {
         response: &Response,
     ) {
         let ppp = ui.pixels_per_point();
-        let l = header_layout(rect);
+        let l = header_layout_with_reserve(rect, automation::HEADER_RESERVE);
         let lay = bus_layout(rect, ppp, kind);
         let dim = track.channel.mute || implied_mute;
         let palette = self.palettes.get(track.hue.0);
@@ -315,6 +316,9 @@ impl Arrangement {
             SendTo(TrackId),
             Output(TrackOutput),
             NewBusOutput,
+            AutomationShow,
+            AutomationAdd,
+            AutomationMode(AutomationMode),
             Ungroup,
             Delete,
         }
@@ -402,6 +406,31 @@ impl Arrangement {
                 None => delete,
             });
         }
+        let modes = crate::views::automation::mode_names(t)
+            .map(|(mode, label)| Entry::action(label, Pick::AutomationMode(mode)));
+        entries.push(Entry::separator());
+        entries.push(Entry::action(
+            if track.automation.shown {
+                t.automation_hide_menu()
+            } else {
+                t.automation_show_menu()
+            },
+            if track.automation.lanes.is_empty() {
+                Pick::AutomationAdd
+            } else {
+                Pick::AutomationShow
+            },
+        ));
+        entries.push(Entry::action(
+            t.automation_add_lane_menu(),
+            Pick::AutomationAdd,
+        ));
+        let bulk = Entry::submenu(t.automation_mode_all(), &modes);
+        entries.push(if track.automation.lanes.is_empty() {
+            bulk.disabled()
+        } else {
+            bulk
+        });
         let _ = Pick::NewBusOutput;
         let name = if track.is_bus() {
             t.routing_kind_bus()
@@ -427,6 +456,16 @@ impl Arrangement {
                 MenuAction::Edit(Action::Edit(EditAction::SetOutput { tracks, output }))
             }
             Pick::NewBusOutput => MenuAction::Rename,
+            Pick::AutomationShow => {
+                MenuAction::Edit(Action::Automation(crate::views::automation::Action::Shown(
+                    AutomationOwner::Track(track.id),
+                    !track.automation.shown,
+                )))
+            }
+            Pick::AutomationAdd => MenuAction::AutomationAdd,
+            Pick::AutomationMode(mode) => MenuAction::Edit(Action::Automation(
+                crate::views::automation::Action::AllModes(AutomationOwner::Track(track.id), mode),
+            )),
             Pick::Ungroup | Pick::Delete => {
                 MenuAction::Edit(Action::Edit(EditAction::RemoveTracks(tracks)))
             }
@@ -438,6 +477,8 @@ impl Arrangement {
 pub(super) enum MenuAction {
     /// Edit the name in place.
     Rename,
+    /// Open the parameter chooser of this track.
+    AutomationAdd,
     /// Send an action.
     Edit(Action),
 }
@@ -452,6 +493,9 @@ impl MenuAction {
                     edit: RenameState::new(&track.name),
                 });
             }
+            MenuAction::AutomationAdd => arrangement
+                .automation
+                .request(AutomationOwner::Track(track.id)),
             MenuAction::Edit(action) => ctx.send(action),
         }
     }

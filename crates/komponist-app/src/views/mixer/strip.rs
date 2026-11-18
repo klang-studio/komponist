@@ -981,10 +981,35 @@ fn sends_area(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, label: Rect, rows: 
     }
 }
 
+fn automation_value(
+    ctx: &ViewCtx<'_>,
+    strip: &Strip,
+    target: &komponist_model::automation::AutomationTarget,
+) -> Option<f32> {
+    super::super::automation::automation_controls(
+        ctx.project,
+        strip.channel.into(),
+        target,
+        ctx.engine.playhead(),
+    )
+}
+
+fn automation_dot(ui: &Ui, at: egui::Pos2, s: &Strip) {
+    let ink = s.hue.map_or(color::TEXT_2, |hue| {
+        komponist_tokens::TrackPalette::new(hue).base
+    });
+    ui.painter().circle_filled(
+        at,
+        komponist_tokens::widget::knob::automation_dot::SIZE / 2.0,
+        color32(ink),
+    );
+}
+
 /// The pan knob ("Ziehen relativ, Shift fein, Doppelklick oder Alt-Klick Standard, Enter oder
 /// Rechtsklick Texteingabe") and its value.
 fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
-    let mut pan = s.pan;
+    let automated = automation_value(ctx, s, &komponist_model::automation::AutomationTarget::Pan);
+    let mut pan = automated.map_or(s.pan, |value| value * 2.0 - 1.0);
     let name = ctx.lang.mixer_pan(&s.name);
     let response = place(ui, rows.knob, "pan", |ui| {
         let knob = Knob::pan(&mut pan, name);
@@ -996,6 +1021,9 @@ fn pan(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, rows: &Rows, tier: Tier) {
     if value_menu::show(&response, || fmt_pan(pan)) {
         pan = 0.0;
         ctx.send(channel_edit(s, ChannelProp::Pan(pan)));
+    }
+    if automated.is_some() {
+        automation_dot(ui, rows.knob.left_top(), s);
     }
     if tier.lean {
         return;
@@ -1131,7 +1159,14 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
     let left = px::snap(area.center().x - m::fader_group_width(scale) / 2.0, ppp);
     let fader_w = komponist_ui::widgets::fader::Layout::desired_size(m::FADER, scale, length).x;
     let fader_rect = Rect::from_min_size(pos2(left, area.top()), vec2(fader_w, area.height()));
-    let mut db = s.volume_db;
+    let automated = automation_value(
+        ctx,
+        s,
+        &komponist_model::automation::AutomationTarget::Volume,
+    );
+    let mut db = automated.map_or(s.volume_db, |value| {
+        komponist_model::params::p_to_db(1.0 - value)
+    });
     let name = ctx.lang.mixer_volume(&s.name);
     let response = place(ui, fader_rect, "fader", |ui| {
         ui.add(
@@ -1194,7 +1229,14 @@ fn fader_and_meter(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, area: Rect, mo
 /// the peak value (click resets peak and clip, Alt-click all strips), red after clipping. The
 /// lean strip has the level only.
 fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifiers, tier: Tier) {
-    let mut db = s.volume_db;
+    let automated = automation_value(
+        ctx,
+        s,
+        &komponist_model::automation::AutomationTarget::Volume,
+    );
+    let mut db = automated.map_or(s.volume_db, |value| {
+        komponist_model::params::p_to_db(1.0 - value)
+    });
     let name = ctx.lang.mixer_volume_value(&s.name);
     // The level stands left in the row (S04 `justify-content:space-between`).
     let value = komponist_ui::widgets::fader::VALUE_TEXT;
@@ -1216,6 +1258,10 @@ fn values(ui: &mut Ui, ctx: &mut ViewCtx<'_>, s: &Strip, row: Rect, mods: Modifi
             track: s.track(),
             all: false,
         }));
+    }
+
+    if automated.is_some() {
+        automation_dot(ui, level.left_top(), s);
     }
 
     // The lean strip shows no peak value (the meter LED carries peak and clip; its click resets

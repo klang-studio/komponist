@@ -1,0 +1,642 @@
+//! Discovers targets from the owning channel, and presents them in the shared parameter chooser.
+
+use egui::{
+    Color32, Id, Key, Modifiers, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+};
+use komponist_i18n::Lang;
+use komponist_model::automation::{self, AutomationMode, AutomationOwner, AutomationTarget};
+use komponist_model::params::{ParamInfo, ParamKind, Scale, Unit};
+use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
+use komponist_model::{Channel, Device, Project, TrackSend};
+use komponist_plugins::DeviceStatus;
+use komponist_tokens::egui_support::color32;
+use komponist_tokens::{Icon, color, radius, size, space, typography};
+use komponist_ui::widgets::dropdown::{Dropdown, Item};
+use komponist_ui::widgets::tooltip::Tip;
+use komponist_ui::{focus, icons, px, widgets};
+
+use super::{lanes, metrics as m};
+use crate::device_host::{internal_kind, is_hexa};
+use crate::views::devices::model as devices;
+use crate::views::{ViewCtx, elided_galley, plugin_name};
+
+#[derive(Clone)]
+pub(crate) struct Target {
+    pub key: AutomationTarget,
+    pub label: String,
+    pub info: ParamInfo,
+    pub base: f32,
+}
+
+impl Target {
+    fn new(key: AutomationTarget, label: String, info: ParamInfo, plain: f64) -> Target {
+        Target {
+            key,
+            label,
+            base: info.to_normalized(plain) as f32,
+            info,
+        }
+    }
+
+    pub fn format(&self, value: f32) -> String {
+        self.info.format(self.info.to_plain(f64::from(value)))
+    }
+
+    pub fn parse(&self, text: &str) -> Option<f32> {
+        let text = text.trim();
+        let plain = match self.info.unit {
+            Unit::Db => f64::from(komponist_model::format::parse_db(text)?),
+            Unit::Percent => widgets::number_field::parse_number(text, "%")? / 100.0,
+            Unit::Hz if text.ends_with("kHz") => {
+                widgets::number_field::parse_number(text, "kHz")? * 1000.0
+            }
+            Unit::Hz => widgets::number_field::parse_number(text, "Hz")?,
+            Unit::Ms if text.ends_with('s') && !text.ends_with("ms") => {
+                widgets::number_field::parse_number(text, "s")? * 1000.0
+            }
+            Unit::Ms => widgets::number_field::parse_number(text, "ms")?,
+            Unit::S if text.ends_with("ms") => {
+                widgets::number_field::parse_number(text, "ms")? / 1000.0
+            }
+            Unit::S => widgets::number_field::parse_number(text, "s")?,
+            Unit::Semitones => widgets::number_field::parse_number(text, "st")?,
+            Unit::Cents => widgets::number_field::parse_number(text, "ct")?,
+            Unit::Octaves => widgets::number_field::parse_number(text, "oct")?,
+            Unit::Ratio => widgets::number_field::parse_number(text, ":1")?,
+            Unit::Meters => widgets::number_field::parse_number(text, "m")?,
+            Unit::None => match &self.info.kind {
+                ParamKind::Float {
+                    scale: Scale::Pan, ..
+                } => f64::from(komponist_model::format::parse_pan(text)?),
+                ParamKind::Enum(choices) => choices
+                    .iter()
+                    .position(|choice| choice.eq_ignore_ascii_case(text))
+                    .map(|i| i as f64)
+                    .or_else(|| widgets::number_field::parse_number(text, ""))?,
+                ParamKind::Bool if self.info.format(0.0).eq_ignore_ascii_case(text) => 0.0,
+                ParamKind::Bool if self.info.format(1.0).eq_ignore_ascii_case(text) => 1.0,
+                _ => widgets::number_field::parse_number(text, "")?,
+            },
+        };
+        Some(self.info.to_normalized(self.info.snap(plain)) as f32)
+    }
+}
+
+pub(crate) fn percentage(lang: Lang, value: f32) -> String {
+    ParamInfo::new("automation", String::new(), ParamKind::lin(0.0, 1.0), 0.0)
+        .unit(Unit::Percent)
+        .texts(komponist_builtin::value_texts(lang))
+        .format(f64::from(value))
+}
+
+type Section = (String, Vec<Target>);
+
+pub(crate) struct Catalog<'a, 'view> {
+    ctx: &'a ViewCtx<'view>,
+    owner: AutomationOwner,
+    channel: &'a Channel,
+    sends: &'a [TrackSend],
+}
+
+impl<'a, 'view> Catalog<'a, 'view> {
+    pub fn new(ctx: &'a ViewCtx<'view>, owner: AutomationOwner) -> Option<Catalog<'a, 'view>> {
+        let (channel, sends) = match owner {
+            AutomationOwner::Track(id) => {
+                let track = ctx.project.track(id)?;
+                (&track.channel, track.sends.as_slice())
+            }
+            AutomationOwner::Master => (ctx.project.master.as_ref(), &[][..]),
+        };
+        Some(Catalog {
+            ctx,
+            owner,
+            channel,
+            sends,
+        })
+    }
+
+    fn gain(&self, key: AutomationTarget, name: String, db: f32) -> Target {
+        let info = ParamInfo::new(
+            "volume",
+            name.clone(),
+            ParamKind::scaled(
+                f64::from(VOLUME_DB_MIN),
+                f64::from(VOLUME_DB_MAX),
+                Scale::Db,
+            ),
+            0.0,
+        )
+        .unit(Unit::Db);
+        Target::new(key, name, info, f64::from(db))
+    }
+
+    fn send(&self, send: &TrackSend) -> Target {
+        let bus = self
+            .ctx
+            .project
+            .track(send.target)
+            .map_or("", |track| track.name.as_str());
+        self.gain(
+            AutomationTarget::Send { send: send.id },
+            self.ctx.lang.automation_send(bus),
+            send.level_db,
+        )
+    }
+
+    fn pan(&self) -> Target {
+        let name = self.ctx.lang.param_pan().to_owned();
+        let info = ParamInfo::new(
+            "pan",
+            name.clone(),
+            ParamKind::scaled(-1.0, 1.0, Scale::Pan),
+            0.0,
+        );
+        Target::new(
+            AutomationTarget::Pan,
+            name,
+            info,
+            f64::from(self.channel.pan),
+        )
+    }
+
+    fn volume(&self) -> Target {
+        self.gain(
+            AutomationTarget::Volume,
+            self.ctx.lang.param_volume().to_owned(),
+            self.channel.volume_db,
+        )
+    }
+
+    fn device_params(&self, device: &Device) -> Vec<devices::Param> {
+        let lang = self.ctx.lang;
+        let host = self.ctx.engine.host();
+        if let Some(kind) = internal_kind(device) {
+            return devices::internal_params(lang, kind, device);
+        }
+        if is_hexa(device) {
+            let mut params = devices::hexa_params(lang, device);
+            params.extend(devices::hexa_macro_params(lang, device));
+            return params;
+        }
+        host.params(device.id).map_or_else(Vec::new, |infos| {
+            devices::all_plugin_params(lang, infos, |id| host.param_value(device.id, id))
+        })
+    }
+
+    fn device_target(&self, device: &Device, param: devices::Param, prefix: &str) -> Target {
+        let key = AutomationTarget::Param {
+            device: device.id,
+            param: param.info.id.clone(),
+        };
+        let label = format!("{prefix} · {}", param.info.name);
+        Target::new(key, label, param.info, param.value)
+    }
+
+    pub fn resolve(&self, target: &AutomationTarget) -> Result<Target, Option<String>> {
+        let lang = self.ctx.lang;
+        match target {
+            AutomationTarget::Volume => Ok(self.volume()),
+            AutomationTarget::Pan => Ok(self.pan()),
+            AutomationTarget::Send { send } => self
+                .sends
+                .iter()
+                .find(|s| s.id == *send)
+                .map(|s| self.send(s))
+                .ok_or_else(|| Some(lang.automation_param_missing().to_owned())),
+            AutomationTarget::Param { device, param } => {
+                let device = self
+                    .channel
+                    .devices
+                    .iter()
+                    .find(|d| d.id == *device)
+                    .ok_or_else(|| Some(lang.automation_not_on_track().to_owned()))?;
+                let name = plugin_name(lang, &device.plugin);
+                match self.ctx.engine.device_status(device.id) {
+                    DeviceStatus::Missing | DeviceStatus::Crashed(_) => {
+                        return Err(Some(lang.arrangement_plugin_missing(&name)));
+                    }
+                    DeviceStatus::Loading => return Err(None),
+                    DeviceStatus::Ok => {}
+                }
+                let found = self
+                    .device_params(device)
+                    .into_iter()
+                    .find(|p| &p.info.id == param);
+                if let Some(p) = found {
+                    if p.info.automatable {
+                        return Ok(self.device_target(device, p, &name));
+                    }
+                    return Err(Some(lang.automation_not_automatable().to_owned()));
+                }
+                let hidden = param.plugin_id().is_some_and(|id| {
+                    self.ctx
+                        .engine
+                        .host()
+                        .params(device.id)
+                        .is_some_and(|infos| infos.iter().any(|p| p.id == id))
+                });
+                Err(Some(
+                    if hidden {
+                        lang.automation_not_automatable()
+                    } else {
+                        lang.automation_param_missing()
+                    }
+                    .to_owned(),
+                ))
+            }
+            // #76 adds track macros and mapped-target status to the shared chooser.
+            AutomationTarget::Macro { .. } => Err(Some(lang.automation_param_missing().to_owned())),
+        }
+    }
+
+    fn sections(&self, query: &str) -> Vec<Section> {
+        let lang = self.ctx.lang;
+        let mut mixer = vec![self.volume(), self.pan()];
+        mixer.extend(self.sends.iter().map(|send| self.send(send)));
+        let mut sections = vec![(lang.automation_mixer().to_owned(), mixer)];
+        for device in self.channel.devices.iter() {
+            let name = plugin_name(lang, &device.plugin);
+            let mut targets = self
+                .device_params(device)
+                .into_iter()
+                .filter(|p| p.info.automatable)
+                .map(|param| self.device_target(device, param, &name))
+                .collect::<Vec<_>>();
+            if let Some(infos) = self.ctx.engine.host().params(device.id) {
+                for target in &mut targets {
+                    if let Some(id) = target.info.id.plugin_id()
+                        && let Some(info) = infos
+                            .iter()
+                            .find(|info| info.id == id && !info.module.is_empty())
+                    {
+                        target.label = format!("{name} · {} · {}", info.module, info.name);
+                    }
+                }
+            }
+            sections.push((name, targets));
+        }
+        let recent = self
+            .ctx
+            .ui
+            .devices
+            .automation_recent
+            .iter()
+            .filter_map(|touch| {
+                self.resolve(&AutomationTarget::Param {
+                    device: touch.device,
+                    param: touch.param.clone(),
+                })
+                .ok()
+            })
+            .take(m::RECENT_TARGETS)
+            .collect::<Vec<_>>();
+        if !recent.is_empty() {
+            sections.insert(0, (lang.automation_recent().to_owned(), recent));
+        }
+        let query = query.to_lowercase();
+        if !query.is_empty() {
+            for (_, targets) in &mut sections {
+                targets.retain(|target| target.label.to_lowercase().contains(&query));
+            }
+            sections.retain(|(_, targets)| !targets.is_empty());
+        }
+        sections
+    }
+
+    fn already_automated(&self, target: &AutomationTarget) -> bool {
+        lanes(self.ctx.project, self.owner)
+            .is_some_and(|a| a.lanes.iter().any(|lane| &lane.target == target))
+    }
+}
+
+pub(crate) fn mode_names(lang: Lang) -> [(AutomationMode, &'static str); 4] {
+    [
+        (AutomationMode::Off, lang.automation_mode_off()),
+        (AutomationMode::Read, lang.automation_mode_read()),
+        (AutomationMode::Touch, lang.automation_mode_touch()),
+        (AutomationMode::Latch, lang.automation_mode_latch()),
+    ]
+}
+
+pub(crate) fn mode_chip(
+    ui: &mut Ui,
+    rect: Rect,
+    id: Id,
+    lang: Lang,
+    param: &str,
+    mode: AutomationMode,
+) -> Option<AutomationMode> {
+    let names = mode_names(lang);
+    let items = names.map(|(_, label)| Item::new(label));
+    let mut selected = names.iter().position(|(m, _)| *m == mode).unwrap_or(1);
+    let before = selected;
+    let label = lang.automation_mode_lane(param);
+    let mut child = ui.new_child(UiBuilder::new().id_salt(id).max_rect(rect));
+    child.add(
+        Dropdown::new(&label, &mut selected, &items)
+            .compact()
+            .width(rect.width())
+            .id(id),
+    );
+    (selected != before).then_some(names[selected].0)
+}
+
+pub(crate) fn automation_controls(
+    project: &Project,
+    owner: AutomationOwner,
+    key: &AutomationTarget,
+    at: komponist_model::Tick,
+) -> Option<f32> {
+    let lane = lanes(project, owner)?
+        .lanes
+        .iter()
+        .find(|lane| &lane.target == key)?;
+    if lane.mode == AutomationMode::Off {
+        return None;
+    }
+    match owner {
+        AutomationOwner::Track(id) => automation::effective_value_at(project.track(id)?, key, at),
+        AutomationOwner::Master => automation::value_at(lane.points.as_slice(), at),
+    }
+}
+
+pub(crate) fn chooser_button(ui: &mut Ui, rect: Rect, id: Id, lang: Lang, label: &str) -> Response {
+    let r = ui.interact(rect, id, Sense::click());
+    r.widget_info(|| WidgetInfo::labeled(Role::ComboBox, true, lang.a11y_automation_chooser()));
+    px::fill(
+        ui.painter(),
+        rect,
+        radius::S,
+        color32(if r.hovered() {
+            color::SURFACE_4
+        } else {
+            color::SURFACE_3
+        }),
+    );
+    let mut text = rect.shrink2(vec2(space::SPACE_1, 0.0));
+    text.max.x -= size::ICON;
+    let style = typography::SMALL;
+    let galley = elided_galley(
+        ui,
+        label,
+        komponist_ui::fonts::font_id(&style),
+        style.line_height,
+        text.width().max(0.0),
+    );
+    let at = widgets::text_pos(text, &galley, text.left(), ui.pixels_per_point());
+    ui.painter().galley(at, galley, color32(color::TEXT_1));
+    let icon = Rect::from_center_size(
+        pos2(rect.right() - size::ICON / 2.0, rect.center().y),
+        vec2(space::SPACE_1_5, space::SPACE_1_5),
+    );
+    icons::paint_in(ui, icon, Icon::ChevronDown, color32(color::TEXT_2));
+    if focus::ring_visible(&r) {
+        focus::paint_ring(ui.painter(), rect, radius::S);
+    }
+    Tip::new(label).attach(&r);
+    r
+}
+
+pub(crate) fn toggle(
+    ui: &mut Ui,
+    right: f32,
+    center_y: f32,
+    id: Id,
+    lang: Lang,
+    shown: bool,
+    tint: Color32,
+) -> Response {
+    let rect = Rect::from_min_size(
+        pos2(right - m::TOGGLE_WIDTH, center_y - m::TOGGLE_HEIGHT / 2.0),
+        vec2(m::TOGGLE_WIDTH, m::TOGGLE_HEIGHT),
+    );
+    let label = if shown {
+        lang.automation_hide()
+    } else {
+        lang.automation_show()
+    };
+    let r = ui.interact(rect, id, Sense::click());
+    r.widget_info(|| WidgetInfo::selected(Role::Button, true, shown, label));
+    widgets::accesskit(&r, |node| {
+        node.set_toggled(if shown {
+            egui::accesskit::Toggled::True
+        } else {
+            egui::accesskit::Toggled::False
+        })
+    });
+    let fill = if shown {
+        Some(color::SURFACE_5)
+    } else if r.hovered() {
+        Some(color::SURFACE_4)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        px::fill(ui.painter(), rect, radius::S, color32(fill));
+    }
+    icons::paint_in(
+        ui,
+        Rect::from_center_size(rect.center(), vec2(m::TOGGLE_ICON, m::TOGGLE_ICON)),
+        Icon::Spline,
+        tint,
+    );
+    if focus::ring_visible(&r) {
+        focus::paint_ring(ui.painter(), rect, radius::S);
+    }
+    Tip::new(label).attach(&r);
+    r
+}
+
+/// One popover is active at a time per editor. The query and its highlighted entry belong to
+/// the popup rather than to the document.
+#[derive(Debug, Default)]
+pub(crate) struct Chooser {
+    active: Option<Id>,
+    query: String,
+    highlighted: usize,
+}
+
+impl Chooser {
+    pub fn open(&mut self, id: Id) {
+        if self.active != Some(id) {
+            self.active = Some(id);
+            self.query.clear();
+            self.highlighted = 0;
+        } else {
+            self.active = None;
+        }
+    }
+
+    pub fn show(
+        &mut self,
+        ui: &Ui,
+        id: Id,
+        anchor: Rect,
+        catalog: &Catalog<'_, '_>,
+        add: bool,
+    ) -> Option<Choice> {
+        if self.active != Some(id) {
+            return None;
+        }
+        let lang = catalog.ctx.lang;
+        let content = ui.ctx().content_rect();
+        let gap = space::SPACE_0_5;
+        let below = content.bottom() - anchor.bottom();
+        let above = anchor.top() - content.top();
+        let down = below >= m::CHOOSER_HEIGHT || below >= above;
+        let height = m::CHOOSER_HEIGHT.min(if down { below } else { above } - gap);
+        let pos = if down {
+            anchor.left_bottom() + vec2(0.0, gap)
+        } else {
+            anchor.left_top() - vec2(0.0, gap)
+        };
+        let popup_id = id.with("automation-chooser");
+        let mut result = None;
+        let mut cancel = false;
+        let popup = egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            .pivot(if down {
+                egui::Align2::LEFT_TOP
+            } else {
+                egui::Align2::LEFT_BOTTOM
+            })
+            .fixed_pos(pos)
+            .constrain(true)
+            .show(ui.ctx(), |ui| {
+                widgets::menu_frame().show(ui, |ui| {
+                    ui.set_width(m::CHOOSER_WIDTH);
+                    let search_id = popup_id.with("search");
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .id(search_id)
+                            .hint_text(lang.automation_search())
+                            .desired_width(m::CHOOSER_WIDTH),
+                    );
+                    search.widget_info(|| {
+                        WidgetInfo::labeled(Role::TextInput, true, lang.automation_search())
+                    });
+                    if !ui.memory(|mem| mem.has_focus(search_id)) {
+                        search.request_focus();
+                    }
+                    if search.changed() {
+                        self.highlighted = 0;
+                    }
+                    let sections = catalog.sections(&self.query);
+                    let count = sections.iter().map(|(_, rows)| rows.len()).sum::<usize>()
+                        + usize::from(add);
+                    let up = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp));
+                    let down = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown));
+                    let enter = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+                    cancel = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+                    if up {
+                        self.highlighted = self.highlighted.saturating_sub(1);
+                    }
+                    if down {
+                        self.highlighted = (self.highlighted + 1).min(count.saturating_sub(1));
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height((height - search.rect.height()).max(0.0))
+                        .show(ui, |ui| {
+                            let mut index = 0;
+                            for (name, targets) in sections {
+                                let label_style = typography::LABEL;
+                                ui.label(
+                                    egui::RichText::new(name)
+                                        .font(komponist_ui::fonts::font_id(&label_style))
+                                        .color(color32(color::TEXT_3)),
+                                );
+                                if targets.is_empty() {
+                                    ui.label(lang.automation_no_params());
+                                }
+                                for target in targets {
+                                    let dot = catalog.already_automated(&target.key);
+                                    let response = chooser_row(
+                                        ui,
+                                        index,
+                                        &target.label,
+                                        self.highlighted == index,
+                                        dot,
+                                    );
+                                    if self.highlighted == index && (up || down) {
+                                        response.scroll_to_me(None);
+                                    }
+                                    if response.clicked() || (enter && self.highlighted == index) {
+                                        result = Some(Choice::Target(target));
+                                    }
+                                    index += 1;
+                                }
+                            }
+                            if add {
+                                let response = chooser_row(
+                                    ui,
+                                    index,
+                                    lang.automation_add_lane(),
+                                    self.highlighted == index,
+                                    false,
+                                );
+                                if self.highlighted == index && (up || down) {
+                                    response.scroll_to_me(None);
+                                }
+                                if response.clicked() || (enter && self.highlighted == index) {
+                                    result = Some(Choice::Add);
+                                }
+                            }
+                        });
+                });
+            });
+        let outside = ui.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|at| !popup.response.rect.contains(at) && !anchor.contains(at))
+        });
+        if result.is_some() || cancel || outside {
+            self.active = None;
+            ui.memory_mut(|memory| memory.surrender_focus(popup_id.with("search")));
+        }
+        result
+    }
+}
+
+pub(crate) enum Choice {
+    Target(Target),
+    Add,
+}
+
+fn chooser_row(ui: &mut Ui, index: usize, text: &str, highlighted: bool, dot: bool) -> Response {
+    ui.push_id(index, |ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(ui.available_width(), size::MENU_ROW), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(Role::ListBoxOption, true, text));
+        let look =
+            komponist_ui::widgets::dropdown::row_look(highlighted || response.hovered(), true);
+        if let Some(bg) = look.fill {
+            px::fill(ui.painter(), rect, radius::S, bg);
+        }
+        let style = typography::UI;
+        let offset = if dot {
+            space::SPACE_1 + space::SPACE_2
+        } else {
+            space::SPACE_1
+        };
+        let galley = elided_galley(
+            ui,
+            text,
+            komponist_ui::fonts::font_id(&style),
+            style.line_height,
+            (rect.width() - offset).max(0.0),
+        );
+        let pos = widgets::text_pos(rect, &galley, rect.left() + offset, ui.pixels_per_point());
+        ui.painter().galley(pos, galley, look.text);
+        if dot {
+            ui.painter().circle_filled(
+                pos2(rect.left() + space::SPACE_1, rect.center().y),
+                komponist_tokens::widget::knob::automation_dot::SIZE / 2.0,
+                look.text,
+            );
+        }
+        response
+    })
+    .inner
+}

@@ -1895,3 +1895,62 @@ fn audio_move_and_both_trim_edges_honor_disabled_grid_snapping() {
         Tick(2 * BAR)
     );
 }
+
+#[test]
+fn automation_lane_edits_and_undo_keep_the_arrangement_clip_selection() {
+    use komponist_app::views::automation::{Action as Automation, Source};
+    use komponist_model::automation::{AutomationOwner, AutomationTarget};
+
+    let mut app = demo();
+    let track = app.project().tracks[0].id;
+    let owner = AutomationOwner::Track(track);
+    app.dispatch(Action::Automation(Automation::ShowTarget {
+        owner,
+        replace: None,
+        target: AutomationTarget::Volume,
+        label: de::PARAM_VOLUME.to_owned(),
+    }));
+    let mut h = harness(app);
+    let lane = h.state().project().track(track).unwrap().automation.lanes[0].id;
+    let name = format!(
+        "Automation {}, {}",
+        de::PARAM_VOLUME,
+        h.state().project().tracks[0].name
+    );
+    let group = h
+        .get_all_by_role_and_label(Role::Group, &name)
+        .map(|node| node.rect())
+        .max_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap();
+    double_click(pos2(group.left() + 25.0, group.center().y), &mut h);
+    let points = &h.state().project().track(track).unwrap().automation.lanes[0].points;
+    assert_eq!(points.as_slice().len(), 1);
+    assert!(h.state().ui().selection.clips.is_empty());
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    assert!(
+        h.state().project().track(track).unwrap().automation.lanes[0]
+            .points
+            .is_empty()
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Redo));
+    assert_eq!(
+        h.state().project().track(track).unwrap().automation.lanes[0]
+            .points
+            .as_slice()
+            .len(),
+        1
+    );
+    h.state_mut()
+        .dispatch(Action::Automation(Automation::Remove(Source::Lane(
+            owner, lane,
+        ))));
+    assert!(
+        h.state()
+            .project()
+            .track(track)
+            .unwrap()
+            .automation
+            .lanes
+            .is_empty()
+    );
+}

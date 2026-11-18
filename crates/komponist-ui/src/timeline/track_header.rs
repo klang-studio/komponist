@@ -122,6 +122,11 @@ pub struct HeaderLayout {
 /// The layout of a header in `rect` (any height from `size.track.min` to `size.track.max`;
 /// contents are centred vertically, the colour bar and the meter stretch).
 pub fn header_layout(rect: Rect) -> HeaderLayout {
+    header_layout_with_reserve(rect, 0.0)
+}
+
+/// Leaves room before mute and solo for an extra control, while preserving their alignment.
+pub fn header_layout_with_reserve(rect: Rect, reserve: f32) -> HeaderLayout {
     let sep = line::WIDTH;
     let body = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - sep));
     let separator = Rect::from_min_max(pos2(rect.min.x, rect.max.y - sep), rect.max);
@@ -152,7 +157,8 @@ pub fn header_layout(rect: Rect) -> HeaderLayout {
     let toggles_left = toggles_right - toggles_w;
     let ty = body.center().y - th / 2.0;
     let toggles = std::array::from_fn(|i| {
-        let x = toggles_left + ToggleKind::row_offset(i, tw, space::SPACE_0_5);
+        let x = toggles_left + ToggleKind::row_offset(i, tw, space::SPACE_0_5)
+            - if i < 2 { reserve } else { 0.0 };
         Rect::from_min_size(pos2(x, ty), vec2(tw, th))
     });
 
@@ -161,7 +167,7 @@ pub fn header_layout(rect: Rect) -> HeaderLayout {
             color_bar.max.x + space::SPACE_1 + space::SPACE_1_5,
             body.min.y,
         ),
-        pos2(toggles_left - space::SPACE_1, body.max.y),
+        pos2(toggles_left - reserve - space::SPACE_1, body.max.y),
     );
     HeaderLayout {
         body,
@@ -177,7 +183,18 @@ pub fn header_layout(rect: Rect) -> HeaderLayout {
 /// Paints a track header in `rect` in `state` (hovered, selected, focused; pressed counts as
 /// hovered + 1 step).
 pub fn paint_track_header(painter: &Painter, rect: Rect, model: &HeaderModel<'_>, state: State) {
-    let l = header_layout(rect);
+    paint_track_header_with_reserve(painter, rect, model, state, 0.0);
+}
+
+/// Paints the track header with an additional gap before mute and solo.
+pub fn paint_track_header_with_reserve(
+    painter: &Painter,
+    rect: Rect,
+    model: &HeaderModel<'_>,
+    state: State,
+    reserve: f32,
+) {
+    let l = header_layout_with_reserve(rect, reserve);
     let dimmed = model.dimmed();
 
     px::fill(painter, l.body, 0.0, state::row_fill(2, state));

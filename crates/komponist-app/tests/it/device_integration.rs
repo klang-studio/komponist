@@ -198,8 +198,9 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
         .accesskit_node();
     let range = range.label().or_else(|| range.value()).unwrap_or_default();
     assert!(range.contains(" bis "), "{range}");
+    section.get_by_label("Automation zeigen");
     // No buttons for what is only prepared.
-    for hidden in ["Automation zeigen", "MIDI lernen", "Makro"] {
+    for hidden in ["MIDI lernen", "Makro"] {
         assert!(h.query_by_label_contains(hidden).is_none(), "{hidden}");
     }
 }
@@ -282,7 +283,7 @@ fn touching_another_parameter_replaces_the_selection() {
 // The right-click menu
 
 #[test]
-fn the_context_menu_of_a_parameter_has_standard_and_wert_eingeben_only() {
+fn the_context_menu_of_a_parameter_offers_automation_alongside_value_edits() {
     let (app, _, hall) = app_with_hall();
     let mut h = harness(app);
     h.run_steps(30);
@@ -304,12 +305,13 @@ fn the_context_menu_of_a_parameter_has_standard_and_wert_eingeben_only() {
         .query_all_by_role(Role::MenuItem)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    assert_eq!(
-        labels.len(),
-        2,
-        "nothing else for now (automation, MIDI learn and macros are only prepared): {labels:?}"
-    );
+    assert_eq!(labels.len(), 3, "automation and value edits: {labels:?}");
     assert!(labels.iter().any(|l| l.starts_with(de::DEVICES_TO_DEFAULT)));
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with(de::AUTOMATION_SHOW_MENU))
+    );
     assert!(
         labels
             .iter()

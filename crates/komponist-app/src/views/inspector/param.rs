@@ -3,8 +3,8 @@
 //! (device handoff §9). Read-only; the buttons for automation, MIDI learn and macros are prepared
 //! and stay hidden until a later wave specifies them.
 
-use egui::{Rangef, Rect, Ui, vec2};
-use komponist_i18n::Lang;
+use egui::{Rangef, Rect, Sense, Ui, pos2, vec2};
+use komponist_model::automation::{AutomationOwner, AutomationTarget};
 use komponist_tokens::{color, typography};
 
 use super::{
@@ -27,7 +27,37 @@ pub(super) fn touched(ctx: &ViewCtx<'_>, track: komponist_model::TrackId) -> Opt
 }
 
 /// The section for `param`.
-pub(super) fn section(ui: &mut Ui, t: Lang, x: Rangef, y: &mut f32, param: &TouchedParam) {
+pub(super) fn section(
+    ui: &mut Ui,
+    ctx: &mut ViewCtx<'_>,
+    x: Rangef,
+    y: &mut f32,
+    param: &TouchedParam,
+) {
+    let t = ctx.lang;
+    let owner = param
+        .track
+        .map_or(AutomationOwner::Master, AutomationOwner::Track);
+    let Some(touch) = &ctx.ui.devices.touched else {
+        return;
+    };
+    let target = AutomationTarget::Param {
+        device: touch.device,
+        param: touch.param.clone(),
+    };
+    let resolved = crate::views::automation::Catalog::new(ctx, owner)
+        .and_then(|catalog| catalog.resolve(&target).ok());
+    let value = crate::views::automation::automation_controls(
+        ctx.project,
+        owner,
+        &target,
+        ctx.engine.playhead(),
+    )
+    .and_then(|value| resolved.as_ref().map(|target| target.format(value)));
+    let lane = crate::views::automation::lanes(ctx.project, owner)
+        .and_then(|a| a.lane(&target))
+        .map(|lane| (lane.id, lane.points.as_slice().len(), lane.mode));
+    let mut actions = Vec::new();
     frame(
         ui,
         x,
@@ -53,7 +83,10 @@ pub(super) fn section(ui: &mut Ui, t: Lang, x: Rangef, y: &mut f32, param: &Touc
 
             let cells = field_grid(col, 2);
             for ((key, field), (k, v)) in cells.into_iter().zip([
-                (t.inspector_param_value(), &param.value),
+                (
+                    t.inspector_param_value(),
+                    value.as_ref().unwrap_or(&param.value),
+                ),
                 (t.inspector_param_default(), &param.default),
             ]) {
                 field_key(ui, key, k);
@@ -67,6 +100,63 @@ pub(super) fn section(ui: &mut Ui, t: Lang, x: Rangef, y: &mut f32, param: &Touc
             );
             field_key(ui, key, t.inspector_param_range());
             read_only_field(ui, field, t.inspector_param_range(), &param.range, "");
+            if let Some(target) = &resolved {
+                let area = col.take(crate::views::automation::CHIP_HEIGHT);
+                let left = Rect::from_min_max(
+                    area.min,
+                    pos2(
+                        area.right() - crate::views::automation::MODE_WIDTH,
+                        area.bottom(),
+                    ),
+                );
+                let r = ui.interact(left, ui.scope_id().with("show-automation"), Sense::click());
+                r.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, t.automation_show())
+                });
+                let title = if let Some((_, points, _)) = lane {
+                    format!("{} · {}", t.automation_title(), t.automation_points(points))
+                } else {
+                    t.automation_show().to_owned()
+                };
+                let galley = crate::views::elided_galley(
+                    ui,
+                    &title,
+                    komponist_ui::fonts::font_id(&small),
+                    small.line_height,
+                    left.width(),
+                );
+                let y = area.center().y - small.line_height / 2.0;
+                ui.painter().galley(
+                    pos2(left.left(), y),
+                    galley,
+                    komponist_tokens::egui_support::color32(color::TEXT_2),
+                );
+                if r.clicked() {
+                    actions.push(crate::views::automation::Action::ShowTarget {
+                        owner,
+                        replace: None,
+                        target: target.key.clone(),
+                        label: target.label.clone(),
+                    });
+                }
+                if let Some((id, _, mode)) = lane {
+                    let chip = Rect::from_min_max(pos2(left.right(), area.top()), area.max);
+                    let widget = ui.scope_id().with("automation-mode");
+                    if let Some(mode) = crate::views::automation::mode_chip(
+                        ui,
+                        chip,
+                        widget,
+                        t,
+                        &target.label,
+                        mode,
+                    ) {
+                        actions.push(crate::views::automation::Action::Mode(owner, id, mode));
+                    }
+                }
+            }
         },
     );
+    for action in actions {
+        ctx.send(crate::actions::Action::Automation(action));
+    }
 }

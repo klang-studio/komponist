@@ -6,6 +6,7 @@ use komponist_builtin::Macro;
 use komponist_i18n::Lang;
 use komponist_ipc::ParamValue;
 use komponist_ipc::control::ParamInfo as WireInfo;
+use komponist_model::automation::AutomationOwner;
 use komponist_model::params::{ParamId, ParamInfo, ParamKind, auto_layout};
 use komponist_model::{Device, DeviceId, DeviceRole, Track};
 use komponist_plugins::params::{is_listed, param_info};
@@ -157,6 +158,10 @@ pub struct SamplerView {
 pub struct Card {
     /// The device.
     pub device: DeviceId,
+    /// Owning track or master when this card belongs to a project.
+    pub automation_owner: Option<AutomationOwner>,
+    /// Parameters driven by a curve at the playhead, with the colour of their automation dot.
+    pub automation: std::collections::BTreeMap<ParamId, egui::Color32>,
     /// Plugin name.
     pub name: String,
     /// "INTERN" / "CLAP" / "VST3".
@@ -403,6 +408,8 @@ fn card(lang: Lang, device: &Device, host: &dyn DeviceHost, windows: &[PluginWin
         .or(loaded.map(|(index, _)| index));
     Card {
         device: device.id,
+        automation_owner: None,
+        automation: Default::default(),
         name: crate::views::plugin_name(lang, &device.plugin),
         tag: format_tag(lang, device.plugin.format),
         instrument,
