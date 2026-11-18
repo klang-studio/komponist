@@ -590,6 +590,7 @@ impl Vst3Plugin {
             return;
         };
         while let Ok((id, value)) = active.from_processor.pop() {
+            self.edits.mark_controller_sync(id);
             // SAFETY: main thread.
             unsafe { controller.setParamNormalized(id, value) };
         }
@@ -922,6 +923,11 @@ impl HostedPlugin for Vst3Plugin {
             // SAFETY: main thread.
             unsafe { controller.setParamNormalized(id, value.clamp(0.0, 1.0)) };
         }
+    }
+
+    fn sync_controller_param(&mut self, id: u32, value: f64) {
+        self.edits.mark_controller_sync(id);
+        self.set_param(id, value);
     }
 
     fn flush_params(&mut self, input: &[WireEvent], _output: &mut Vec<WireEvent>) {

@@ -84,7 +84,7 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// bridge's own frame window on macOS) and the frame messages (`HeaderState`, `ActivateFrame`,
 /// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
 /// frame's last rect, `RaiseFrame` and `FrameWindow`).
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
 pub const MAX_FRAME: usize = 64 * 1024;

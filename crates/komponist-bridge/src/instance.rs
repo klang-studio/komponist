@@ -68,8 +68,8 @@ use rustix::event::{PollFd, PollFlags};
 use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
 #[cfg(target_os = "linux")]
 use crate::event_loop::EventLoop;
-use crate::notify::{BridgeNotify, LOG_PENDING};
-use crate::rt::{Fallback, RtConfig, RtThread, StartReport};
+use crate::notify::{BridgeNotify, CONTROLLER_VALUES_PENDING, LOG_PENDING};
+use crate::rt::{ControllerValues, Fallback, RtConfig, RtThread, StartReport};
 #[cfg(windows)]
 use crate::win_loop::{ControlReader, WinEventLoop as EventLoop};
 use crate::{exit, sched};
@@ -80,6 +80,8 @@ pub const RT_LOG_PREFIX: &str = "RT priority:";
 
 /// At most one `ParamValues` message per interval (about 30 Hz).
 pub const VALUES_INTERVAL: Duration = Duration::from_millis(33);
+/// Bound VST3 controller sync to sixty updates per second.
+const CONTROLLER_INTERVAL: Duration = Duration::from_millis(17);
 
 /// Longest `poll()` when nothing is scheduled; the control socket and the eventfd wake it earlier.
 /// (Windows: the relay's idle wait, `win_loop`.)
@@ -183,6 +185,7 @@ fn receive_region(channel: &BridgeChannel) -> Result<ShmRegion, String> {
 /// The processing state while active.
 struct Active {
     rt: RtThread,
+    controller: Option<Arc<ControllerValues>>,
     config: ActivateConfig,
 }
 
@@ -208,6 +211,8 @@ struct Bridge {
     pending_values: BTreeMap<u32, f64>,
     values_due: Option<Instant>,
     values_sent: Option<Instant>,
+    controller_due: Option<Instant>,
+    controller_sent: Option<Instant>,
     shutdown: bool,
     /// The plugin frame window this bridge owns (macOS #52, Windows W6).
     #[cfg(bridge_frame)]
@@ -240,6 +245,8 @@ impl Bridge {
             pending_values: BTreeMap::new(),
             values_due: None,
             values_sent: None,
+            controller_due: None,
+            controller_sent: None,
             shutdown: false,
             #[cfg(bridge_frame)]
             frame: frame::Slot::default(),
@@ -253,7 +260,7 @@ impl Bridge {
         while !self.shutdown {
             let now = Instant::now();
             let wait = self
-                .values_due
+                .value_deadline()
                 .map_or(IDLE_WAIT, |due| due.saturating_duration_since(now))
                 .min(IDLE_WAIT);
             let (control, ready) = {
@@ -336,7 +343,7 @@ impl Bridge {
     fn rearm(&mut self) {
         let due = [
             self.event_loop.next_timer(),
-            self.values_due,
+            self.value_deadline(),
             frame::deadline(self),
         ]
         .into_iter()
@@ -419,7 +426,7 @@ impl Bridge {
             }
         }
         let frame_due = frame::deadline(self);
-        let due = match (self.values_due, frame_due) {
+        let due = match (self.value_deadline(), frame_due) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -453,6 +460,7 @@ impl Bridge {
             self.read_control();
         }
         self.forward_logs();
+        self.sync_controller_if_due();
         self.send_values_if_due();
         #[cfg(bridge_frame)]
         frame::tick(self);
@@ -517,6 +525,29 @@ impl Bridge {
     // Parameter values
     // --------------------------------------------------------------------------------------------
 
+    fn value_deadline(&self) -> Option<Instant> {
+        self.values_due.into_iter().chain(self.controller_due).min()
+    }
+
+    fn sync_controller_if_due(&mut self) {
+        let now = Instant::now();
+        if self.controller_due.is_none_or(|due| due > now) {
+            return;
+        }
+        let Some(controller) = self.active.as_ref().and_then(|a| a.controller.clone()) else {
+            self.controller_due = None;
+            return;
+        };
+        self.controller_due = None;
+        self.controller_sent = Some(now);
+        for (id, value) in controller.drain() {
+            if let Some(plugin) = self.plugin.as_mut() {
+                plugin.sync_controller_param(id, value);
+            }
+            self.queue_value(id, value);
+        }
+    }
+
     /// Queues `value` of parameter `id` for the next `ParamValues`.
     fn queue_value(&mut self, id: u32, value: f64) {
         self.pending_values.insert(id, value);
@@ -579,6 +610,13 @@ impl Bridge {
 
     fn handle_notifications(&mut self) {
         let (pending, gui_size) = self.notify.take();
+        if pending & CONTROLLER_VALUES_PENDING != 0 && self.controller_due.is_none() {
+            let now = Instant::now();
+            self.controller_due = Some(
+                self.controller_sent
+                    .map_or(now, |sent| (sent + CONTROLLER_INTERVAL).max(now)),
+            );
+        }
         if pending & !LOG_PENDING == 0 {
             return;
         }
@@ -958,7 +996,14 @@ impl Bridge {
             fallback,
         };
         let server = BridgeServer::new(self.region.clone());
-        let (rt, report) = match RtThread::start(server, processor, rt_config) {
+        let controller =
+            (plugin.descriptor().format == komponist_ipc::PluginFormat::Vst3).then(|| {
+                Arc::new(ControllerValues::new(
+                    plugin.params().into_iter().map(|p| p.id).collect(),
+                    self.notify.clone(),
+                ))
+            });
+        let (rt, report) = match RtThread::start(server, processor, rt_config, controller.clone()) {
             Ok(started) => started,
             Err(failure) => {
                 plugin.deactivate(failure.processor);
@@ -969,7 +1014,12 @@ impl Bridge {
         let latency = plugin.latency();
         self.region.set_latency(latency);
         self.region.set_bridge_state(BridgeState::Active);
-        self.active = Some(Active { rt, config });
+        self.controller_due = None;
+        self.active = Some(Active {
+            rt,
+            config,
+            controller,
+        });
         self.report_rt_priority(&report);
         // Right before `Activated` (sent by the caller), on every activation.
         let rt_status = BridgeMsg::RtPriority {

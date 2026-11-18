@@ -573,7 +573,12 @@ impl App {
                 // reports its own status.
                 SyncEvent::Engine(event) => self.engine_event(&event, playhead),
                 SyncEvent::Device(event) => {
-                    recompile |= matches!(event, PluginManagerEvent::LatencyChanged { .. });
+                    recompile |= matches!(
+                        event,
+                        PluginManagerEvent::LatencyChanged { .. }
+                            | PluginManagerEvent::ParamsChanged { .. }
+                            | PluginManagerEvent::StatusChanged { .. }
+                    );
                     self.handle_device_event(&event);
                     self.shell.device_events.push(event);
                 }
@@ -601,6 +606,16 @@ impl App {
             }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
+            EngineEvent::PluginParams { slot, ref events } => {
+                if let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot)) {
+                    for change in events.as_slice() {
+                        use komponist_engine::processor::ParameterEditKind;
+                        if let ParameterEditKind::Value { id, value } = change.kind {
+                            self.engine.host_mut().edited_param(device, id, value);
+                        }
+                    }
+                }
+            }
             _ => {
                 if let Some(rec) = &mut self.recording {
                     rec.handle(event, playhead, self.doc.project());

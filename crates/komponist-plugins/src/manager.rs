@@ -607,12 +607,28 @@ impl PluginManager {
         self.bridges.get(&device)?.values.get(&id)
     }
 
+    /// Value before any automation. The live cache may contain playback values.
+    pub fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
+        self.bridges.get(&device)?.base_values.get(&id).copied()
+    }
+
     /// Sets a parameter from the generic view or a device-card knob (sent over the control socket;
     /// the bridge delivers it to the plugin's audio side too).
     pub fn set_param(&mut self, device: DeviceId, id: u32, value: f64) {
         if let Some(bridge) = self.bridges.get_mut(&device) {
             bridge.set_param(id, value);
         }
+    }
+
+    /// Records an edit already sent to the processor, either from the app or a plugin GUI.
+    pub fn edited_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        let Some(bridge) = self.bridges.get_mut(&device).filter(|b| b.running()) else {
+            return false;
+        };
+        bridge.edited_param(id, value);
+        self.pending
+            .push(PluginManagerEvent::ParamValuesChanged { device });
+        true
     }
 
     /// Restores `state` in the running plugin of `device` (undo or redo changed the device's

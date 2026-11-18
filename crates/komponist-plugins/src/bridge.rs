@@ -42,9 +42,8 @@ use std::time::{Duration, Instant};
 
 use komponist_ipc::control::{PROTOCOL_VERSION, socket_pair};
 use komponist_ipc::{
-    AppChannel, BridgeClient, BridgeMonitor, BridgeMsg, ChannelError, ControlMsg, ErrorContext,
-    GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode,
-    ShmRegion, WireEventKind,
+    AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
+    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
 };
 use komponist_model::{DeviceId, DeviceRole};
 
@@ -180,7 +179,6 @@ pub(crate) struct Bridge {
     channel: Arc<AppChannel>,
     writer: Option<mpsc::Sender<ControlMsg>>,
     watcher: ProcessWatcher,
-    monitor: BridgeMonitor,
     shared: Arc<Shared>,
     phase: Phase,
     status: DeviceStatus,
@@ -206,6 +204,7 @@ pub(crate) struct Bridge {
     pub last_state: Option<Arc<[u8]>>,
     pub params: Vec<ParamInfo>,
     pub values: BTreeMap<u32, ParamValue>,
+    pub base_values: BTreeMap<u32, f64>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
@@ -302,7 +301,6 @@ impl Bridge {
             channel,
             writer: Some(writer),
             watcher,
-            monitor: BridgeMonitor::new(region),
             shared,
             phase: Phase::Hello,
             status: DeviceStatus::Loading,
@@ -321,6 +319,7 @@ impl Bridge {
             last_state: s.state,
             params: Vec::new(),
             values: BTreeMap::new(),
+            base_values: BTreeMap::new(),
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
@@ -437,15 +436,19 @@ impl Bridge {
         if self.phase != Phase::Running {
             return;
         }
-        self.user_changed();
         self.send(ControlMsg::SetParam { id, value });
+        self.edited_param(id, value);
+    }
+
+    /// Applies the document's base-value edit to the manager's cache.
+    fn keep_base_value(&mut self, id: u32, value: f64) {
+        self.base_values.insert(id, value);
         let entry = self.values.entry(id).or_insert_with(|| ParamValue {
             id,
             value,
             text: String::new(),
         });
         entry.value = value;
-        self.snapshot_soon();
     }
 
     /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
@@ -575,7 +578,7 @@ impl Bridge {
         }
     }
 
-    /// Non-blocking: reads messages and plugin output events, checks the process and the
+    /// Non-blocking: reads control messages, checks the process and the
     /// watchdog. `collected` receives answers to `Collect` state requests.
     pub(crate) fn poll(
         &mut self,
@@ -583,7 +586,6 @@ impl Bridge {
         collected: &mut Vec<Collected>,
     ) {
         self.read_messages(events, collected);
-        self.read_output_events(events);
         self.check_process(events);
         if self.exited {
             return;
@@ -658,6 +660,7 @@ impl Bridge {
             BridgeMsg::Loaded(info) => {
                 let info = *info;
                 self.params = info.params;
+                self.base_values = info.values.iter().map(|v| (v.id, v.value)).collect();
                 self.values = info.values.into_iter().map(|v| (v.id, v)).collect();
                 self.note_names = info.note_names;
                 self.has_gui = info.has_gui;
@@ -702,6 +705,7 @@ impl Bridge {
             }
             BridgeMsg::ParamValues(values) => {
                 for value in values {
+                    self.base_values.entry(value.id).or_insert(value.value);
                     self.values.insert(value.id, value);
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
@@ -855,32 +859,26 @@ impl Bridge {
         }
     }
 
-    /// Parameter changes the plugin made during processing (its GUI), from the shared ring.
-    fn read_output_events(&mut self, events: &mut Vec<PluginManagerEvent>) {
-        let mut changed = false;
-        while let Some(event) = self.monitor.pop_output_event() {
-            if let Some(WireEventKind::ParamValue { id, value }) = event.decode() {
-                let entry = self.values.entry(id).or_insert_with(|| ParamValue {
-                    id,
-                    value,
-                    text: String::new(),
-                });
-                if entry.value != value {
-                    entry.value = value;
-                    // No text for values from the audio thread; the generic view formats them.
-                    entry.text.clear();
-                }
-                changed = true;
-            }
+    /// Updates the cached value and schedules a snapshot for a user's edit.
+    pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
+        if self.phase != Phase::Running {
+            return;
         }
-        if changed {
-            events.push(PluginManagerEvent::ParamValuesChanged {
-                device: self.device,
-            });
-            // Values from the audio thread are edits in the plugin's GUI.
-            self.user_changed();
-            self.snapshot_soon();
+        if self
+            .values
+            .get(&id)
+            .is_some_and(|entry| entry.value != value)
+            && let Some(entry) = self.values.get_mut(&id)
+        {
+            entry.text.clear();
         }
+        self.keep_base_value(id, value);
+        self.user_changed();
+        self.snapshot_soon();
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        self.phase == Phase::Running
     }
 
     fn check_process(&mut self, events: &mut Vec<PluginManagerEvent>) {

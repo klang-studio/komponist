@@ -27,7 +27,7 @@
 //! `PluginError` or `Inactive`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -98,6 +98,57 @@ pub struct StartFailure {
     pub error: HostingError,
 }
 
+/// Latest engine value per VST3 parameter. The NaN sentinel is outside the value domain.
+#[derive(Debug)]
+pub(crate) struct ControllerValues {
+    entries: Vec<(u32, AtomicU64)>,
+    dirty: AtomicBool,
+    notify: Arc<notify::BridgeNotify>,
+}
+
+impl ControllerValues {
+    const CLEAN: u64 = f64::NAN.to_bits();
+
+    pub(crate) fn new(mut ids: Vec<u32>, notify: Arc<notify::BridgeNotify>) -> Self {
+        ids.sort_unstable();
+        ids.dedup();
+        Self {
+            entries: ids
+                .into_iter()
+                .map(|id| (id, AtomicU64::new(Self::CLEAN)))
+                .collect(),
+            dirty: AtomicBool::new(false),
+            notify,
+        }
+    }
+
+    fn publish(&self, events: &[WireEvent]) {
+        let mut changed = false;
+        for event in events {
+            let Some(WireEventKind::ParamValue { id, value }) = event.decode() else {
+                continue;
+            };
+            if value.is_finite()
+                && let Ok(i) = self.entries.binary_search_by_key(&id, |(id, _)| *id)
+            {
+                self.entries[i].1.store(value.to_bits(), Ordering::Relaxed);
+                changed = true;
+            }
+        }
+        if changed && !self.dirty.swap(true, Ordering::Release) {
+            self.notify.controller_values_ready();
+        }
+    }
+
+    pub(crate) fn drain(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
+        self.dirty.swap(false, Ordering::Acquire);
+        self.entries.iter().filter_map(|(id, slot)| {
+            let value = slot.swap(Self::CLEAN, Ordering::Relaxed);
+            (value != Self::CLEAN).then(|| (*id, f64::from_bits(value)))
+        })
+    }
+}
+
 /// A running RT thread with its processor.
 #[derive(Debug)]
 pub struct RtThread {
@@ -123,6 +174,7 @@ impl RtThread {
         server: BridgeServer,
         processor: Box<dyn HostedProcessor>,
         config: RtConfig,
+        controller: Option<Arc<ControllerValues>>,
     ) -> Result<(RtThread, StartReport), StartFailure> {
         let (params_tx, params_rx) = RingBuffer::new(PARAM_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
@@ -139,6 +191,7 @@ impl RtThread {
                     &thread_stop,
                     config,
                     report_tx,
+                    controller,
                 )
             })
             .expect("spawn the RT thread");
@@ -193,6 +246,7 @@ fn rt_main(
     stop: &AtomicBool,
     config: RtConfig,
     report: mpsc::SyncSender<(StartReport, Result<(), HostingError>)>,
+    controller: Option<Arc<ControllerValues>>,
 ) -> Returned {
     notify::mark_rt_thread();
     let priority = komponist_rt::set_current_thread_realtime(config.period, config.priority);
@@ -248,6 +302,7 @@ fn rt_main(
                         &mut scratch,
                         &request,
                         &config,
+                        controller.as_deref(),
                     );
                     if cycle && let Some(interval) = &interval {
                         let _ = interval.finish();
@@ -300,6 +355,7 @@ fn serve(
     scratch: &mut Scratch,
     request: &BlockRequest,
     config: &RtConfig,
+    controller: Option<&ControllerValues>,
 ) {
     // Values from `SetParam` first: offset 0 keeps the list sorted.
     let mut count = 0;
@@ -310,6 +366,7 @@ fn serve(
         scratch.events_in[count] = WireEvent::new(0, WireEventKind::ParamValue { id, value });
         count += 1;
     }
+    let queued = count;
     while let Some(event) = server.pop_event() {
         if let Some(slot) = scratch.events_in.get_mut(count) {
             *slot = event;
@@ -347,7 +404,10 @@ fn serve(
         )
     };
     for event in &scratch.events_out[..produced] {
-        if !server.push_output_event(*event) {
+        if !server.push_output_event(WireEvent {
+            reserved: request.seq,
+            ..*event
+        }) {
             dropped += 1;
         }
     }
@@ -358,5 +418,28 @@ fn serve(
             BlockStatus::PluginError
         }
     };
+    if status == BlockStatus::Ok
+        && let Some(controller) = controller
+    {
+        controller.publish(&scratch.events_in[queued..count]);
+    }
     server.finish(result(status, dropped));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_updates_coalesce_without_allocating() {
+        let notify = Arc::new(notify::BridgeNotify::new().unwrap());
+        let values = ControllerValues::new(vec![2, 1], notify.clone());
+        let event = |id, value| WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        assert_no_alloc::assert_no_alloc(|| {
+            values.publish(&[event(2, 0.3), event(1, 0.4), event(2, 0.7), event(99, 0.1)]);
+        });
+        assert_ne!(notify.take().0 & notify::CONTROLLER_VALUES_PENDING, 0);
+        assert_eq!(values.drain().collect::<Vec<_>>(), [(1, 0.4), (2, 0.7)]);
+        assert_eq!(values.drain().count(), 0);
+    }
 }

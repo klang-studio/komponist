@@ -166,6 +166,10 @@ pub trait HostedPlugin {
     /// [`HostedPlugin::flush_params`].
     fn set_param(&mut self, id: u32, value: f64);
 
+    /// Syncs a value that the audio processor already received to its editor controller.
+    /// Controller-less formats need no separate update.
+    fn sync_controller_param(&mut self, _id: u32, _value: f64) {}
+
     /// Only while not processing: hands `input` events (parameter values) to the plugin and collects
     /// the parameter events it emits into `output` (CLAP `params.flush`; VST3 applies them to the
     /// processor and controller directly). Offsets are ignored.
