@@ -1,9 +1,8 @@
 //! The app's demo project (`komponist --demo`): "Night Drive" with built-in devices only.
 //!
-//! The song is [`komponist_model::fixtures::demo_song`], the same tempo, loop, tracks, clips and
-//! notes as the design fixture `demo_project()` (which keeps its third-party plugins for the
-//! missing-plugin tests). Only the device chains differ, and the Arp track plays held chords for
-//! the Arpeggiator, so the demo opens without "Plugin fehlt" and shows the built-in devices:
+//! The song is [`komponist_model::fixtures::demo_song`], with the tempo, tracks and clips of the
+//! design fixture `demo_project()` and looping off. The showcase uses built-in devices and the
+//! Arp track plays held chords for the Arpeggiator:
 //!
 //! | Track | Volume | Chain (preset) |
 //! |---|---|---|

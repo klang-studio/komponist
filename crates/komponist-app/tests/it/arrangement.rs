@@ -936,7 +936,7 @@ fn esc_during_a_drag_cancels_it() {
 // Ruler, zoom, grid, scroll
 
 #[test]
-fn ruler_top_sets_the_playhead_bottom_drags_the_loop() {
+fn ruler_sets_the_playhead_across_its_height() {
     let mut h = harness(demo());
     let ruler = rect_of(&h, Role::Slider, de::A11Y_RULER);
     // Top half at bar 5 + a bit: on the beat.
@@ -950,20 +950,25 @@ fn ruler_top_sets_the_playhead_bottom_drags_the_loop() {
         value_of(&h, Role::Slider, de::A11Y_RULER).as_deref(),
         Some("5.1.000")
     );
-    // Bottom half: from bar 3 to the end of bar 6.
+    // Drag in the former loop strip while looping is off.
     let y = ruler.bottom() - 3.0;
-    let from = pos2(x_of(&h, Tick(2 * BAR + 500)), y);
-    let to = pos2(x_of(&h, Tick(6 * BAR - 400)), y);
+    let from = pos2(x_of(&h, Tick(2 * BAR)), y);
+    let target = Tick(6 * BAR);
+    let to = pos2(x_of(&h, target), y);
     h.state_mut()
         .dispatch(Action::Transport(TransportAction::ToggleLoop));
     assert!(!h.state().project().loop_on);
+    let loop_range = h.state().project().loop_range;
     drag(from, to, &mut h);
-    let p = project(&h);
-    assert!(p.loop_on);
-    assert_eq!(
-        (p.loop_range.start, p.loop_range.end),
-        (Tick(2 * BAR), Tick(6 * BAR))
+    // The tempo map rounds to a sample and floors back to a tick.
+    assert!(
+        step_until(&mut h, |a| a.engine().playhead().0.abs_diff(target.0) <= 1),
+        "playhead at {:?}, expected {target:?}",
+        h.state().engine().playhead()
     );
+    let p = project(&h);
+    assert!(!p.loop_on);
+    assert_eq!(p.loop_range, loop_range);
 }
 
 #[test]
