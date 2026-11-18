@@ -1267,10 +1267,10 @@ length. Ratio changes require re-priming. The C++17 backend is optimized in dev/
 the portable FFT without fast-math or host-specific instruction flags.
 
 `AudioPlan` compiles enabled Warp with the original/project tempo ratio and the active take's
-native offset, converted to the engine rate. `SegmentRenderer` owns the decoder, rate converter
-and `WarpState` on the existing per-track streamer worker; offline `ensure` uses this same path.
-Warp seam detection includes native-frame and timeline-frame quantization, preserving cuts even
-when one native frame spans many engine frames. Source resampling precedes stretch; clip gain/fades
+native offset, converted to the engine rate. Each track's `SegmentRenderer` owns the decoder, rate
+converter and `WarpState`. One read-ahead worker per engine services all tracks, and offline
+`ensure` uses the same renderer. Warp joins use the model's native source boundaries from the
+chain origin, preserving genuine splits even when a native frame spans many engine frames. Source resampling precedes stretch; clip gain/fades
 and loop wraps follow it. Fixed/RePitch keep
 their existing renderer. No native object is carried by the plan or realtime voice.
 
@@ -1286,12 +1286,18 @@ it never constructs, processes, resets or frees the native backend, nor reads so
 Cached heads receive the same dynamic loop fades as streamed data, and recovery after a Warp
 underrun ramps in over the existing 3 ms transition period.
 
-Per-frame ring availability distinguishes backend failure from valid silence. A failing Warp
-clip advances with unavailable zeros and a per-segment diagnostic, without blocking other
-tracks or later clips; retries are throttled to 500 ms. Export observes new failures within its
-requested range and returns `ExportError::Stretch`, removes the partial output and restores the
-previous program. No silent ratio clamp or shortened-duration fallback is used. Pending source
-metadata keeps the existing source-loading behavior.
+Per-frame ring availability distinguishes unavailable audio from valid silence. A failing
+Warp clip keeps any buffered valid prefix, and publishes unavailable zeros for failed frames
+without blocking other tracks or later clips. Each failing segment has its own 500 ms retry
+deadline. For an invalid input frame, only seek windows that need that sample are throttled.
+Recovery starts on the first valid sample of the affected Warp chain, even inside a callback.
+A stopped playhead is primed only when its queued window is available.
+
+Export owns fresh rings and diagnostics and fills them synchronously without preparing live
+clip heads. Source read, seek or sample-rate conversion failures for Warp propagate to
+`ExportError::Stretch`; clean end-of-file still pads with zeros. A failed export leaves no
+partial output and restores the previous program. Pending live source metadata keeps the
+existing source-loading behavior.
 
 Generated-source tests cover pitch, exact length, resampling, native offsets, trim/takes,
 block-size independence, seamless splits, heads/loops/locates, post-stretch gain/fades,

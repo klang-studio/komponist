@@ -588,7 +588,7 @@ fn worker_load_eight_and_sixteen_stereo_voices_at_ratio_extrema() {
             r.set_program(&p);
             wait_primed(&mut r, &p);
             let stats = r.engine.stream_stats();
-            let (busy, frames) = (stats.busy(), stats.frames());
+            let (busy, frames) = stats.snapshot();
             r.send(Command::Play);
             let start = std::time::Instant::now();
             let mut done = 0;
@@ -600,8 +600,9 @@ fn worker_load_eight_and_sixteen_stereo_voices_at_ratio_extrema() {
                 std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
             }
             let elapsed = start.elapsed();
-            let spent = stats.busy() - busy;
-            let produced = stats.frames() - frames;
+            let (now_busy, now_frames) = stats.snapshot();
+            let spent = now_busy - busy;
+            let produced = now_frames - frames;
             let us256 = spent.as_secs_f64() * 1e6 / (produced as f64 / voices as f64 / 256.0);
             println!(
                 "voices={voices} ratio={} worker_us_per_256={us256:.1} normalized_core_percent={:.2} wall_core_percent={:.2} underruns={}",

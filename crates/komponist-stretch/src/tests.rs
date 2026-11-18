@@ -398,7 +398,8 @@ fn dominant_tone_hz(x: &[f32], rate: u32) -> f64 {
 fn model_tempo_extrema_preserve_duration_pitch_silence_and_repeatability() {
     for rate in [8000, 48000, 192000, 384000] {
         let source = tone(rate, rate as usize * 2, 2);
-        for ratio in [1.0 / 6.0, 0.25, 1.0 / 3.0, 3.0, 4.0, 6.0] {
+        for (numerator, denominator) in [(1, 6), (1, 4), (1, 3), (3, 1), (4, 1), (6, 1)] {
+            let ratio = numerator as f64 / denominator as f64;
             let state = Stretcher::new(rate, 2, ratio);
             assert!(
                 state.is_ok(),
@@ -406,10 +407,9 @@ fn model_tempo_extrema_preserve_duration_pitch_silence_and_repeatability() {
                 state.err()
             );
             let out = render(&source, rate, ratio);
-            assert_eq!(
-                out[0].len(),
-                output_length(source[0].len() as u64, ratio).unwrap() as usize
-            );
+            // Rational reference duration, rounded to the nearest output frame.
+            let expected = (source[0].len() * numerator + denominator / 2) / denominator;
+            assert!(out.iter().all(|channel| channel.len() == expected));
             assert!(out.iter().flatten().all(|x| x.is_finite()));
             let x = &out[0][out[0].len() / 4..out[0].len() * 3 / 4];
             let crossings: Vec<_> = x

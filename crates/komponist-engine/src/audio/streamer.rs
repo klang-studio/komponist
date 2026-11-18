@@ -80,6 +80,7 @@ struct HeadJob {
 pub struct StreamStats {
     busy_ns: AtomicU64,
     frames: AtomicU64,
+    sequence: AtomicU64,
 }
 
 impl StreamStats {
@@ -92,11 +93,34 @@ impl StreamStats {
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Relaxed)
     }
+
+    /// Time and frames from the same set of completed background streamer passes.
+    pub fn snapshot(&self) -> (Duration, u64) {
+        loop {
+            let before = self.sequence.load(Ordering::SeqCst);
+            if before & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let elapsed = self.busy_ns.load(Ordering::SeqCst);
+            let frames = self.frames.load(Ordering::SeqCst);
+            if self.sequence.load(Ordering::SeqCst) == before {
+                return (Duration::from_nanos(elapsed), frames);
+            }
+        }
+    }
+
+    // The only writer publishes after the entire pass, with no IO inside the sequence window.
+    fn record(&self, busy_ns: u64, frames: u64) {
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+        self.busy_ns.fetch_add(busy_ns, Ordering::SeqCst);
+        self.frames.fetch_add(frames, Ordering::SeqCst);
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// The streamer's state. See the module docs.
 pub(crate) struct Streamer {
-    stats: Arc<StreamStats>,
     rx: rtrb::Consumer<Msg>,
     voices: Vec<StreamVoice>,
     head_queue: Vec<Arc<AudioPlan>>,
@@ -105,9 +129,8 @@ pub(crate) struct Streamer {
 }
 
 impl Streamer {
-    pub(crate) fn new(rx: rtrb::Consumer<Msg>, stats: Arc<StreamStats>) -> Streamer {
+    pub(crate) fn new(rx: rtrb::Consumer<Msg>) -> Streamer {
         Streamer {
-            stats,
             rx,
             voices: Vec::new(),
             head_queue: Vec::new(),
@@ -164,17 +187,16 @@ impl Streamer {
     }
 
     /// One pass: messages, a few chunks per voice, and (when nothing else was to do) some heads.
-    /// Returns whether it did anything.
-    pub(crate) fn service(&mut self) -> bool {
+    /// Returns the number of frames produced if there was any work.
+    pub(crate) fn service(&mut self) -> Option<u64> {
         let mut progress = self.drain();
+        let mut frames = 0;
         for v in self.voices.iter_mut().filter(|v| !v.plan.offline) {
             for _ in 0..PASS_CHUNKS {
                 let before = v.produced;
                 if v.produce(&mut self.buf, CHUNK_FRAMES) {
                     progress = true;
-                    self.stats
-                        .frames
-                        .fetch_add(v.produced - before, Ordering::Relaxed);
+                    frames += v.produced - before;
                 } else {
                     break;
                 }
@@ -185,7 +207,7 @@ impl Streamer {
         if !progress {
             progress = self.build_heads();
         }
-        progress
+        progress.then_some(frames)
     }
 
     /// Offline: produces until `epoch` of `ring` has `upto` frames written.
@@ -389,10 +411,9 @@ impl StreamShared {
     /// The shared state and the queue's producer for the audio thread.
     pub(crate) fn new() -> (Arc<StreamShared>, rtrb::Producer<Msg>) {
         let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
-        let stats = Arc::new(StreamStats::default());
         let shared = Arc::new(StreamShared {
-            stats: Arc::clone(&stats),
-            core: Mutex::new(Streamer::new(rx, stats)),
+            stats: Arc::new(StreamStats::default()),
+            core: Mutex::new(Streamer::new(rx)),
             stop: AtomicBool::new(false),
             stalled: AtomicBool::new(false),
         });
@@ -434,12 +455,12 @@ impl StreamShared {
                         core.voices.clear();
                         core.head_job = None;
                         core.head_queue.clear();
-                        false
+                        None
                     })
             };
-            if progress {
+            if let Some(frames) = progress {
                 let spent = began.elapsed().as_nanos() as u64;
-                self.stats.busy_ns.fetch_add(spent, Ordering::Relaxed);
+                self.stats.record(spent, frames);
             } else {
                 std::thread::sleep(IDLE);
             }
