@@ -635,13 +635,17 @@ fn apply_takes(
     lang: komponist_i18n::Lang,
     directory: Option<&Path>,
 ) -> Result<(Project, Vec<ClipId>), EditError> {
-    let mut grouped = BTreeMap::<TrackId, Vec<&RecordedTake>>::new();
+    // The linear lead-in and the cycle have different clip geometry.
+    let mut grouped = BTreeMap::<(TrackId, Tick, Option<u64>), Vec<&RecordedTake>>::new();
     for take in takes.iter().filter(|take| take.frames > 0) {
-        grouped.entry(take.track).or_default().push(take);
+        grouped
+            .entry((take.track, take.start, take.window_frames))
+            .or_default()
+            .push(take);
     }
     let mut project = project.clone();
     let mut clips = Vec::new();
-    for (track, mut takes) in grouped {
+    for ((track, _, _), mut takes) in grouped {
         if project
             .track(track)
             .is_none_or(|track| track.kind != TrackKind::Audio)
@@ -775,6 +779,64 @@ mod tests {
                 .is_some_and(|progress| progress.frames > 0)
         });
     }
+    #[test]
+    fn recording_lead_in_and_cycle_takes_make_separate_clips() {
+        let project = Project::new("Recorded loop");
+        let (project, track) =
+            edits::add_audio_track(&project, edits::NewAudioTrack::default()).unwrap();
+        let loop_start = Tick::from_steps(8);
+        let make = |lap, start, frames, window_frames| RecordedTake {
+            track,
+            path: std::env::temp_dir().join(format!("komponist-loop-{lap}.wav")),
+            frames,
+            window_frames,
+            sample_rate: 48_000,
+            channels: 2,
+            start,
+            lap,
+        };
+        let first = make(0, Tick::ZERO, 48_000, None);
+        let loop_pass = make(1, loop_start, 48_000, Some(48_000));
+        let loop_checkpoint = make(2, loop_start, 24_000, Some(48_000));
+        let expected_paths = [
+            first.path.clone(),
+            loop_pass.path.clone(),
+            loop_checkpoint.path.clone(),
+        ];
+        let (project, inserted) = apply_takes(
+            &project,
+            &[loop_checkpoint, first, loop_pass],
+            komponist_i18n::Lang::En,
+            None,
+        )
+        .unwrap();
+        assert_eq!(inserted.len(), 2);
+        let clips = &project.track(track).unwrap().clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!((clips[0].start, clips[0].length), (Tick::ZERO, loop_start));
+        assert_eq!(clips[1].start, loop_start);
+        assert_eq!(clips[1].length, loop_start);
+        let files: Vec<_> = clips
+            .iter()
+            .flat_map(|clip| {
+                let ClipContent::Audio(audio) = &clip.content else {
+                    panic!("audio clip")
+                };
+                audio
+                    .takes
+                    .iter()
+                    .map(|take| (&take.file.abs, take.file.frames))
+            })
+            .collect();
+        assert_eq!(
+            files,
+            expected_paths
+                .iter()
+                .map(|path| (path, 48_000))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn stopped_audio_is_one_undo_step_and_undo_keeps_its_file_for_redo() {
         let (mut app, track, root) = rig();

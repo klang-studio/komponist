@@ -425,6 +425,12 @@ impl Recorder {
             .iter()
             .any(|l| matches!(l.spec.input, AudioInput::Hardware(_)))
     }
+    /// A recording at or beyond the loop end follows the transport linearly.
+    pub(crate) fn cycle_window(&self, loop_range: Option<(i64, i64)>) -> Option<(i64, i64)> {
+        let first = self.start?;
+        loop_range.filter(|&(_, end)| first < end)
+    }
+
     pub(crate) fn active(&self) -> bool {
         !self.shared.ended.load(Ordering::Acquire) && !self.shared.cancelled.load(Ordering::Acquire)
     }
@@ -447,6 +453,7 @@ impl Recorder {
             return;
         };
         let first = self.start.unwrap_or(window.at);
+        let has_lead_in = window.lp.is_some_and(|(lo, _)| first < lo);
         let mut chunk = Chunk::new(0, Tick::ZERO, window.lap);
         for (i, (&l, &r)) in l.iter().zip(r).enumerate() {
             let mut at = window.at.saturating_add(i as i64);
@@ -469,6 +476,12 @@ impl Recorder {
             if lap == 0 && at < first {
                 continue;
             }
+            // A take that begins before the loop keeps its lead-in as a linear clip.
+            // Assign a separate lap to the first cycle after correcting for latency.
+            let cycle = window.lp.filter(|&(lo, _)| at >= lo);
+            if has_lead_in && cycle.is_some() {
+                lap = lap.saturating_add(1);
+            }
             if chunk.frames > 0 && (chunk.lap != lap || chunk.at + chunk.frames as i64 != at) {
                 if !self.push(lane, chunk) {
                     return;
@@ -479,8 +492,7 @@ impl Recorder {
                 chunk.at = at;
                 chunk.start = window.map.sample_to_tick(at, f64::from(self.rate));
                 chunk.lap = lap;
-                chunk.window = window
-                    .lp
+                chunk.window = cycle
                     .map(|(lo, hi)| (lo, hi, window.map.sample_to_tick(lo, f64::from(self.rate))));
             }
             let sample = |x: f32| if x.is_finite() { x } else { 0.0 };

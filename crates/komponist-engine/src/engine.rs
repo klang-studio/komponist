@@ -593,6 +593,7 @@ struct CaptureTail {
     lap: u32,
     left: u32,
     total: u32,
+    cycle: Option<(i64, i64)>,
 }
 
 struct Core {
@@ -1225,7 +1226,7 @@ impl Core {
                 let advanced = (len as u32).min(tail.left);
                 tail.left -= advanced;
                 tail.pos = tail.pos.saturating_add(i64::from(advanced));
-                if let Some((lo, hi)) = self.song.loop_samples(rate)
+                if let Some((lo, hi)) = tail.cycle
                     && tail.pos >= hi
                 {
                     let wraps = (tail.pos - lo) / (hi - lo);
@@ -1335,6 +1336,7 @@ impl Core {
                     lap: self.capture_lap,
                     left: latency,
                     total: latency,
+                    cycle: rec.cycle_window(self.song.loop_samples(f64::from(self.sample_rate))),
                 });
             } else {
                 rec.finish();
@@ -1885,12 +1887,13 @@ impl Core {
             .record_latency
             .unwrap_or(latency.saturating_add(audio.latency));
         let recording = transport.state == TransportState::Recording;
+        let loop_samples = song.loop_samples(rate);
         let capture = if let Some(tail) = self.capture_tail {
             Some((
                 crate::recording::CaptureWindow {
                     at: tail.pos,
                     lap: tail.lap,
-                    lp: song.loop_samples(rate),
+                    lp: tail.cycle,
                     map: song.map,
                 },
                 (tail.left as usize).min(n),
@@ -1901,7 +1904,10 @@ impl Core {
                 crate::recording::CaptureWindow {
                     at: transport.pos,
                     lap: self.capture_lap,
-                    lp: song.loop_samples(rate),
+                    lp: self
+                        .recorder
+                        .as_ref()
+                        .and_then(|rec| rec.cycle_window(loop_samples)),
                     map: song.map,
                 },
                 n,
@@ -1910,7 +1916,6 @@ impl Core {
         } else {
             None
         };
-        let loop_samples = song.loop_samples(rate);
         // Song tick of captured input at `sample`, corrected by the output latency (and back over
         // the loop start after a wrap).
         let record_tick = |sample: i64| {

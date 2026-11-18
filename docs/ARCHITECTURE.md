@@ -1156,8 +1156,10 @@ Install the returned `Recorder` with `Command::SetRecorder` before `Record`; rep
 `Garbage::Recorder`. Track jobs enqueue fixed-size chunks without allocation, locks, logging or IO. The worker
 writes either signed PCM24 (default) or Float32 WAVs, flushes valid headers before progress publication, and
 finalizes old laps as soon as their input is complete, bounding open file handles. Cycle passes are padded with
-silence to their common loop window, including first/last partial passes. A growing checkpoint also reports
-`window_frames`, so the app can preserve that window before final padding.
+silence to their common loop window, including first/last partial passes. Recording before the loop
+keeps the lead-in as a separate linear clip. A take that begins at or after the loop end stays linear,
+including its latency tail. A growing checkpoint reports `window_frames` for cycle passes, so the app
+can preserve their shared geometry before final padding.
 
 `RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
 buckets per track, both combined and separately for each native channel. Buckets carry exact sample counts;

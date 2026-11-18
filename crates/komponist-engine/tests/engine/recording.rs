@@ -567,3 +567,135 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
         assert_eq!(samples[samples.len() - 1], expected);
     }
 }
+
+#[test]
+fn night_drive_recording_before_its_loop_keeps_the_linear_take() {
+    let (mut project, track) = project(MonitorMode::Off, true);
+    let demo = komponist_model::fixtures::demo_song();
+    project.tempo = demo.tempo;
+    project.meter = demo.meter;
+    project.loop_on = demo.loop_on;
+    project.loop_range = demo.loop_range;
+    project.count_in_bars = demo.count_in_bars;
+    let map = komponist_model::TempoMap::constant(project.tempo, project.meter);
+    let rate = f64::from(RATE);
+    let span = project.meter.ticks_per_bar();
+    assert_eq!(map.tick_to_sample(project.loop_range.start, rate), 743_226);
+    for (from, first_frame) in [(Tick(5 * span), 464_516), (Tick::ZERO, 0)] {
+        let (rec, mut session, dir) = prepare(&project, &[track], RecordingFormat::Float32);
+        assert_eq!(map.tick_to_sample(from, rate), first_frame);
+        let mut rig = Rig::new(RATE, 256);
+        rig.set_program(&compile::build(&project, None, &NoEnv));
+        rig.send(Command::SetRecorder(rec));
+        rig.send(Command::Record { from });
+        let begin = Tick(from.0 - i64::from(project.count_in_bars) * span);
+        let count_in_frames = (first_frame - map.tick_to_sample(begin, rate)) as usize;
+        feed(&mut rig, &vec![0.9; count_in_frames * 2], 0, 0, false);
+        feed(&mut rig, &[0.25; 256], 0, 0, false);
+        rig.send(Command::Stop);
+        feed(&mut rig, &[0.0; 2], 0, 0, false);
+        let result = finished(&mut session);
+        assert!(
+            result.is_ok(),
+            "demo recording at frame {first_frame}: {result:?}"
+        );
+        let result = result.unwrap();
+        assert_eq!(result.takes.len(), 1);
+        let take = &result.takes[0];
+        assert_eq!(take.start, map.sample_to_tick(first_frame, rate));
+        assert_eq!((take.frames, take.window_frames, take.lap), (128, None, 0));
+        assert!(
+            hound::WavReader::open(&take.path)
+                .unwrap()
+                .into_samples::<f32>()
+                .all(|sample| sample.unwrap() == 0.25)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn recording_from_before_the_loop_keeps_the_intro_and_full_and_partial_laps() {
+    let (mut p, track) = project(MonitorMode::Off, true);
+    p.loop_on = true;
+    p.loop_range = TickRange::new(Tick(8), Tick(16)); // Frames 200..400 at 120 BPM.
+    let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
+    let mut rig = Rig::new(RATE, 256);
+    rig.set_program(&compile::build(&p, None, &NoEnv));
+    rig.send(Command::SetRecorder(rec));
+    rig.send(Command::Record { from: Tick::ZERO });
+    let input: Vec<_> = (0..660)
+        .flat_map(|i| {
+            let value = i as f32 / 1000.0;
+            [value, -value]
+        })
+        .collect();
+    feed(&mut rig, &input[..1300], 6, 4, false);
+
+    let checkpoint = session.checkpoint().unwrap();
+    assert_eq!(checkpoint.len(), 4);
+    assert_eq!(
+        (checkpoint[0].frames, checkpoint[0].window_frames),
+        (200, None)
+    );
+    assert_eq!(
+        (checkpoint[3].frames, checkpoint[3].window_frames),
+        (40, Some(200))
+    );
+    rig.send(Command::Stop);
+    feed(&mut rig, &input[1300..], 6, 4, false);
+    let result = finished(&mut session).unwrap();
+    assert_eq!(result.takes.len(), 4);
+    for (i, take) in result.takes.iter().enumerate() {
+        let (start, window) = if i == 0 {
+            (Tick::ZERO, None)
+        } else {
+            (Tick(8), Some(200))
+        };
+        assert_eq!(
+            (take.lap, take.start, take.frames, take.window_frames),
+            (i as u32, start, 200, window)
+        );
+        let mut reader = hound::WavReader::open(&take.path).unwrap();
+        let captured: Vec<f32> = reader.samples().map(Result::unwrap).collect();
+        let from = 2 * (10 + i * 200);
+        let to = (from + 400).min(input.len());
+        assert_eq!(&captured[..to - from], &input[from..to]);
+        assert!(captured[to - from..].iter().all(|&sample| sample == 0.0));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn recording_at_or_past_loop_end_drains_the_latency_tail_without_wrapping() {
+    let (mut p, track) = project(MonitorMode::Off, true);
+    p.loop_on = true;
+    p.loop_range = TickRange::new(Tick(8), Tick(16));
+    let input: Vec<_> = (0..74)
+        .flat_map(|i| {
+            let value = i as f32 / 100.0;
+            [value, -value]
+        })
+        .collect();
+    for from in [Tick(16), Tick(24)] {
+        let (rec, mut session, dir) = prepare(&p, &[track], RecordingFormat::Float32);
+        let mut rig = Rig::new(RATE, 256);
+        rig.set_program(&compile::build(&p, None, &NoEnv));
+        rig.send(Command::SetRecorder(rec));
+        rig.send(Command::Record { from });
+        feed(&mut rig, &input[..128], 6, 4, false);
+        rig.send(Command::Stop);
+        feed(&mut rig, &input[128..], 6, 4, false);
+        let result = finished(&mut session).unwrap();
+        assert_eq!(result.takes.len(), 1);
+        let take = &result.takes[0];
+        assert_eq!(
+            (take.lap, take.start, take.frames, take.window_frames),
+            (0, from, 64, None)
+        );
+        let mut reader = hound::WavReader::open(&take.path).unwrap();
+        let captured: Vec<f32> = reader.samples().map(Result::unwrap).collect();
+        assert_eq!(captured, input[20..]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
