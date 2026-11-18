@@ -150,5 +150,15 @@ export-failed = Export fehlgeschlagen · { $why }
 # Status: an audio clip's linked file could not be opened; `$file` is its path.
 export-missing-audio = Export fehlgeschlagen · Audiodatei fehlt oder lässt sich nicht öffnen: { $file }
 
+# Status: Warp failed on the named audio clip during export.
+export-warp-failed = Export fehlgeschlagen · Warp im Audioclip „{ $clip }“ · { $why }
+export-warp-settings = Die Warp-Einstellungen werden nicht unterstützt
+export-warp-input = Die Audiodaten enthalten ungültige Samples
+export-warp-position = Die Warp-Position liegt außerhalb des gültigen Bereichs
+export-warp-backend = Die Zeitdehnung ist fehlgeschlagen
+export-warp-source-read = Die Audiodatei lässt sich nicht lesen
+export-warp-source-seek = Die Position in der Audiodatei lässt sich nicht ansteuern
+export-warp-source-resample = Die Samplerate der Audiodatei lässt sich nicht umrechnen
+
 # Status: "Im Ordner zeigen" failed; `$why` is the cause.
 export-open-failed = Ordner lässt sich nicht öffnen · { $why }

@@ -47,6 +47,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use komponist_engine::audio::StretchError;
 use komponist_engine::export::{
     BitDepth as EngineBitDepth, ExportError, ExportJob, ExportReport, NORMALIZE_TARGET_DB,
     Progress, export, recompile,
@@ -732,6 +733,23 @@ impl App {
                 self.lang.export_missing_audio(path.display()),
                 StatusKind::Error,
             ),
+            Err(ExportError::Stretch { clip, reason }) => {
+                let name = self
+                    .project()
+                    .find_clip(clip)
+                    .map_or_else(|| clip.0.to_string(), |(_, clip)| clip.name.clone());
+                let lang = self.lang;
+                let why = match reason {
+                    StretchError::Settings => lang.export_warp_settings(),
+                    StretchError::Input => lang.export_warp_input(),
+                    StretchError::Position => lang.export_warp_position(),
+                    StretchError::Backend => lang.export_warp_backend(),
+                    StretchError::SourceRead => lang.export_warp_source_read(),
+                    StretchError::SourceSeek => lang.export_warp_source_seek(),
+                    StretchError::SourceResample => lang.export_warp_source_resample(),
+                };
+                self.set_status(lang.export_warp_failed(name, why), StatusKind::Error);
+            }
             Err(e) => self.set_status(self.lang.export_failed(e), StatusKind::Error),
         }
     }
