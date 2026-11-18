@@ -1087,6 +1087,7 @@ mod tests {
         });
         let p = set_track_prop(&p, &[a], TrackProp::AudioInput(hw)).unwrap();
         let p = set_track_prop(&p, &[a], TrackProp::MonitorMode(MonitorMode::Auto)).unwrap();
+        let p = set_track_prop(&p, &[a], TrackProp::InputGain(120)).unwrap();
         set_track_prop(&p, &[b], TrackProp::AudioInput(AudioInput::Bus(bus))).unwrap()
     }
 

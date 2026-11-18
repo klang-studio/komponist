@@ -224,6 +224,8 @@ pub enum TrackProp {
     AudioInput(AudioInput),
     /// Monitoring mode of an audio track (`Invalid` on other kinds).
     MonitorMode(MonitorMode),
+    /// Software input trim in tenths of a decibel.
+    InputGain(i16),
     /// Fold or unfold a group in the arrangement; ignored on other tracks and on effect buses.
     Folded(bool),
 }
@@ -1563,7 +1565,9 @@ fn apply_track_prop(track: &mut Track, prop: &TrackProp) -> Result<(), EditError
         TrackProp::Folded(folded) => track.folded = *folded && track.is_group(),
         TrackProp::Input(input) => track.input = input.clone(),
         TrackProp::MidiChannel(channel) => track.midi_channel = *channel,
-        TrackProp::AudioInput(_) | TrackProp::MonitorMode(_) if !track.is_audio() => {
+        TrackProp::AudioInput(_) | TrackProp::MonitorMode(_) | TrackProp::InputGain(_)
+            if !track.is_audio() =>
+        {
             return Err(EditError::Invalid("only an audio track has an audio input"));
         }
         TrackProp::AudioInput(input) => {
@@ -1576,6 +1580,7 @@ fn apply_track_prop(track: &mut Track, prop: &TrackProp) -> Result<(), EditError
             track.audio.input = *input;
         }
         TrackProp::MonitorMode(mode) => track.audio.monitor = *mode,
+        TrackProp::InputGain(gain) => track.audio.input_gain_tenths_db = (*gain).clamp(-600, 600),
         TrackProp::Height(height) => {
             track.height = (*height).clamp(TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX)
         }

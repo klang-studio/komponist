@@ -986,3 +986,42 @@ fn live_audio_inspector_and_input_status_render_in_both_languages() {
     }
     results.unwrap();
 }
+
+#[test]
+fn input_gain_is_accessible_and_accepts_keyboard_entry_in_both_languages() {
+    let mut results = SnapshotResults::new();
+    for lang in [Lang::De, Lang::En] {
+        let (p, track) = audio(AudioInput::Hardware(HardwareInput {
+            first: 0,
+            stereo: false,
+        }));
+        let mut app = App::headless(p).with_lang(lang);
+        app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
+            tracks: vec![track],
+            mode: SelectMode::Replace,
+        })));
+        let mut h = harness(app);
+        let field = h.get_by_role_and_label(Role::SpinButton, lang.audio_input_gain());
+        field.focus();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        let entry = lang.ui_number_entry(lang.audio_input_gain());
+        h.get_by_role_and_label(Role::TextInput, &entry)
+            .type_text("12");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(
+            h.state()
+                .project()
+                .track(track)
+                .unwrap()
+                .audio
+                .input_gain_tenths_db,
+            120
+        );
+        let name = h.state().project().track(track).unwrap().name.clone();
+        h.get_by_role_and_label(Role::Meter, &lang.audio_input_meter(name));
+        snapshot(&mut h, &mut results, lang, "input-gain");
+    }
+    results.unwrap();
+}
