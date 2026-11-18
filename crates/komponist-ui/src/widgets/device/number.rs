@@ -22,7 +22,7 @@ use crate::widgets::metrics::device as metrics;
 use crate::widgets::number_field::{
     self, Formatter, GetSet, Parser, Quantise, accesskit_requests, clamp_finite, drag_gesture,
     drag_gesture_with, entry, expose_value, format_number, get_set, is_still, key_steps,
-    range_bounds, sense, snap_to, take_focus_on_press, wheel_steps,
+    range_bounds, sense, snap_to, update_pointer_focus, wheel_steps,
 };
 use crate::{focus, fonts, px};
 
@@ -210,7 +210,7 @@ impl Widget for Number<'_> {
         let step = self.step.unwrap_or((max - min) * KEY_STEP);
 
         if live && !entry::is_open(&ctx, id) {
-            take_focus_on_press(&response);
+            update_pointer_focus(&response);
             match ClickAction::of(&response) {
                 ClickAction::Reset => value = self.default,
                 ClickAction::TextEntry => entry::open(&ctx, id, self.text(value)),

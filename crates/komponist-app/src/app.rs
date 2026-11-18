@@ -484,6 +484,7 @@ impl App {
         }
         self.poll_engine(ctx.input(|i| i.time));
         self.poll_export();
+        komponist_ui::widgets::number_field::prepare_value_control_input(&ctx);
         self.handle_keys(&ctx);
         // The whole window, whatever frame the host put around `ui` (kittest adds a margin).
         let screen = ctx.content_rect();
