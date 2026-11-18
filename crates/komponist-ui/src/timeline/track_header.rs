@@ -125,7 +125,7 @@ pub fn header_layout(rect: Rect) -> HeaderLayout {
     header_layout_with_reserve(rect, 0.0)
 }
 
-/// Leaves room before mute and solo for an extra control, while preserving their alignment.
+/// Reserves space before the toggles for an extra control without moving the original ones.
 pub fn header_layout_with_reserve(rect: Rect, reserve: f32) -> HeaderLayout {
     let sep = line::WIDTH;
     let body = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - sep));
@@ -157,8 +157,7 @@ pub fn header_layout_with_reserve(rect: Rect, reserve: f32) -> HeaderLayout {
     let toggles_left = toggles_right - toggles_w;
     let ty = body.center().y - th / 2.0;
     let toggles = std::array::from_fn(|i| {
-        let x = toggles_left + ToggleKind::row_offset(i, tw, space::SPACE_0_5)
-            - if i < 2 { reserve } else { 0.0 };
+        let x = toggles_left + ToggleKind::row_offset(i, tw, space::SPACE_0_5);
         Rect::from_min_size(pos2(x, ty), vec2(tw, th))
     });
 

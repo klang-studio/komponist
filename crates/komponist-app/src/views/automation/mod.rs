@@ -6,11 +6,11 @@ mod metrics;
 
 use chooser::Target;
 pub(crate) use chooser::{
-    Catalog, Choice, Chooser, automation_controls, chooser_button, mode_chip, mode_names,
-    percentage, toggle,
+    Catalog, Choice, Chooser, automation_controls, chooser_button, mode_chip, mode_chip_width,
+    mode_names, percentage, toggle,
 };
 pub(crate) use curve::{Editor, LaneFrame, Override, Paint};
-pub(crate) use metrics::{CHIP_HEIGHT, MODE_WIDTH, RECENT_TARGETS, TOGGLE_WIDTH};
+pub(crate) use metrics::{CHIP_HEIGHT, RECENT_TARGETS, TOGGLE_WIDTH};
 
 use komponist_model::automation::{
     AutomationMode, AutomationOwner, AutomationTarget, LaneId, Points, TrackAutomation,

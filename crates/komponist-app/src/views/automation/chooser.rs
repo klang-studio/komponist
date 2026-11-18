@@ -318,6 +318,14 @@ pub(crate) fn mode_names(lang: Lang) -> [(AutomationMode, &'static str); 4] {
     ]
 }
 
+pub(crate) fn mode_chip_width(ui: &Ui, lang: Lang) -> f32 {
+    let items = mode_names(lang).map(|(_, label)| Item::new(label));
+    let mut selected = 0;
+    Dropdown::new("", &mut selected, &items)
+        .compact()
+        .natural_width(ui)
+}
+
 pub(crate) fn mode_chip(
     ui: &mut Ui,
     rect: Rect,
@@ -561,7 +569,10 @@ impl Chooser {
                                         response.scroll_to_me(None);
                                     }
                                     if response.clicked() || (enter && self.highlighted == index) {
-                                        result = Some(Choice::Target(target));
+                                        result = Some(Choice::Target {
+                                            key: target.key,
+                                            label: target.label,
+                                        });
                                     }
                                     index += 1;
                                 }
@@ -600,7 +611,10 @@ impl Chooser {
 }
 
 pub(crate) enum Choice {
-    Target(Target),
+    Target {
+        key: AutomationTarget,
+        label: String,
+    },
     Add,
 }
 

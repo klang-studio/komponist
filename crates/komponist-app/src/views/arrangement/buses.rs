@@ -62,8 +62,12 @@ fn bus_layout(rect: Rect, ppp: f32, kind: RowKind) -> BusLayout {
         fold = Some(f);
         folder = Some(i);
     }
-    // M and S of a bus stand at the right end; the name has the room up to them.
-    let right = l.toggles[0].min.x - space::SPACE_1;
+    // Effect buses place the automation icon directly before M and S.
+    let right = if group {
+        l.toggles[0].left() - space::SPACE_1
+    } else {
+        l.toggles[2].left() - automation::HEADER_RESERVE
+    };
     let name_h = typography::TRACK.line_height;
     let sub_h = typography::SMALL.line_height;
     let block = if group {

@@ -8,9 +8,11 @@ use egui::{
     Align, CursorIcon, Id, Layout, Rangef, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2,
 };
 use komponist_i18n::Lang;
+use komponist_model::automation::AutomationOwner;
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
 use komponist_model::{Project, Track, TrackId, routing};
 use komponist_plugins::{DeviceStatus, FailReason};
+use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_ui::State;
 use komponist_ui::timeline::{
@@ -291,24 +293,38 @@ impl Arrangement {
         if response.drag_stopped() {
             self.finish_drag(ctx);
         }
-        if let Some(action) = self.header_menu(ctx, project, track, &response) {
-            action.apply(self, ctx, track);
-        }
-
         if track.is_bus() {
             // Toggles and meter of a bus header: M and S only, right-aligned.
             let [_, _, m, s] = l.toggles;
             let rects = [(ToggleKind::Mute, m), (ToggleKind::Solo, s)];
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
-            let record = l.toggles[0].union(l.toggles[1]);
-            crate::views::audio_inputs::record_bus_button(ui, ctx, track, record, true);
+            if matches!(row.kind, RowKind::Group { .. }) {
+                let record = l.toggles[0].union(l.toggles[1]);
+                crate::views::audio_inputs::record_bus_button(ui, ctx, track, record, true);
+            }
         } else {
             let rects: Vec<(ToggleKind, Rect)> =
                 ToggleKind::ALL.into_iter().zip(l.toggles).collect();
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
         }
-        self.automation
-            .track_toggle(ui, ctx, track, l.toggles[2].left(), l.body.center().y);
+        let ink = color32(self.palettes.get(track.hue.0).base);
+        let anchor = match row.kind {
+            RowKind::EffectBus => l.toggles[2].left(),
+            _ => l.toggles[0].left(),
+        };
+        let automation = self.automation.owner_toggle(
+            ui,
+            ctx,
+            AutomationOwner::Track(track.id),
+            anchor,
+            l.body.center().y,
+            ink,
+        );
+        // A secondary click on the automation toggle still opens the track's menu.
+        let menu = automation.map_or_else(|| response.clone(), |toggle| response.union(toggle));
+        if let Some(action) = self.header_menu(ctx, project, track, &menu) {
+            action.apply(self, ctx, track);
+        }
         for action in header_meter(ui, ctx.lang, ctx.meters, track, l.meter, mods.alt) {
             ctx.send(action);
         }

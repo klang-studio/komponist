@@ -4,12 +4,12 @@ use egui::{
     Align, Color32, CursorIcon, Id, Layout, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2,
     vec2,
 };
+use komponist_model::Project;
 use komponist_model::automation::{
     self, AutomationMode, AutomationOwner, LANE_HEIGHT_DEFAULT, LANE_HEIGHT_MAX, LANE_HEIGHT_MIN,
     Lane,
 };
 use komponist_model::edits::ChannelProp;
-use komponist_model::{Project, Track};
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::{TrackPalette, color, line, space, typography};
 use komponist_ui::timeline::{header_layout, paint_playhead};
@@ -24,8 +24,8 @@ use crate::actions::{Action, EditAction};
 use crate::meters::Meters;
 use crate::views::ViewCtx;
 use crate::views::automation::{
-    Action as Automation, CHIP_HEIGHT, Catalog, Choice, Chooser, Editor, LaneFrame, MODE_WIDTH,
-    Override, Paint, Source, TOGGLE_WIDTH, chooser_button, mode_chip, mode_names, toggle,
+    Action as Automation, CHIP_HEIGHT, Catalog, Choice, Chooser, Editor, LaneFrame, Override,
+    Paint, Source, TOGGLE_WIDTH, chooser_button, mode_chip, mode_chip_width, mode_names, toggle,
 };
 
 /// Space for the spline toggle in the header, with its own group gap.
@@ -62,20 +62,7 @@ impl State {
         self.request = Some(owner);
     }
 
-    pub(super) fn track_toggle(
-        &mut self,
-        ui: &mut Ui,
-        ctx: &mut ViewCtx<'_>,
-        track: &Track,
-        right: f32,
-        y: f32,
-    ) {
-        let owner = AutomationOwner::Track(track.id);
-        let palette = TrackPalette::new(track.hue.0);
-        self.owner_toggle(ui, ctx, owner, right, y, color32(palette.base));
-    }
-
-    fn owner_toggle(
+    pub(super) fn owner_toggle(
         &mut self,
         ui: &mut Ui,
         ctx: &mut ViewCtx<'_>,
@@ -83,10 +70,8 @@ impl State {
         right: f32,
         y: f32,
         owner_ink: Color32,
-    ) {
-        let Some(lanes) = crate::views::automation::lanes(ctx.project, owner) else {
-            return;
-        };
+    ) -> Option<egui::Response> {
+        let lanes = crate::views::automation::lanes(ctx.project, owner)?;
         let id = ui.scope_id().with(("automation-owner-toggle", owner));
         let tint = if lanes.shown {
             color32(color::TEXT_1)
@@ -115,17 +100,18 @@ impl State {
             self.chooser.open(id);
             self.request = None;
         }
-        let Some(catalog) = Catalog::new(ctx, owner) else {
-            return;
-        };
-        if let Some(Choice::Target(target)) = self.chooser.show(ui, id, r.rect, &catalog, false) {
+        if let Some(catalog) = Catalog::new(ctx, owner)
+            && let Some(Choice::Target { key, label }) =
+                self.chooser.show(ui, id, r.rect, &catalog, false)
+        {
             ctx.send(Action::Automation(Automation::ShowTarget {
                 owner,
                 replace: None,
-                target: target.key,
-                label: target.label,
+                target: key,
+                label,
             }));
         }
+        Some(r)
     }
 
     pub(super) fn show(
@@ -136,6 +122,7 @@ impl State {
         g: &Geometry,
     ) {
         self.master(ui, ctx, project, g);
+        let mut mode_width = None;
         for row in g
             .automation
             .iter()
@@ -145,7 +132,8 @@ impl State {
                 && let Some(lane) = lanes.lanes.iter().find(|lane| lane.id == row.lane)
             {
                 let last = lanes.lanes.last().is_some_and(|last| last.id == lane.id);
-                self.lane(ui, ctx, project, g, row, lane, last);
+                let mode_width = *mode_width.get_or_insert_with(|| mode_chip_width(ui, ctx.lang));
+                self.lane(ui, ctx, project, g, row, lane, last, mode_width);
             }
         }
         self.editor.finish_frame(ui, ctx);
@@ -217,13 +205,13 @@ impl State {
                 value,
             ))));
         }
-        self.owner_toggle(
+        let _ = self.owner_toggle(
             &mut child,
             ctx,
             AutomationOwner::Master,
             mute.left() - space::SPACE_0_5,
             header.center().y,
-            color32(color::TEXT_2),
+            color32(color::ACCENT),
         );
 
         let mut meter_ui = child.new_child(
@@ -271,6 +259,7 @@ impl State {
         row: &AutomationRow,
         lane: &Lane,
         last: bool,
+        mode_width: f32,
     ) {
         let t = ctx.lang;
         let Some(resolved) =
@@ -355,8 +344,8 @@ impl State {
             header.center().y - CHIP_HEIGHT / 2.0
         };
         let chip = Rect::from_min_size(
-            pos2(header.right() - space::SPACE_1 - MODE_WIDTH, top),
-            vec2(MODE_WIDTH, CHIP_HEIGHT),
+            pos2(header.right() - space::SPACE_1 - mode_width, top),
+            vec2(mode_width, CHIP_HEIGHT),
         );
         let left = header.left() + f32::from(row.depth) * metrics::MEMBER_INDENT + space::SPACE_1;
         let chooser = Rect::from_min_max(
@@ -416,12 +405,14 @@ impl State {
             .chooser
             .show(&child, choice_id, chooser, &catalog, last)
         {
-            Some(Choice::Target(target)) => ctx.send(Action::Automation(Automation::ShowTarget {
-                owner: row.owner,
-                replace: lane.points.is_empty().then_some(lane.id),
-                target: target.key,
-                label: target.label,
-            })),
+            Some(Choice::Target { key, label }) => {
+                ctx.send(Action::Automation(Automation::ShowTarget {
+                    owner: row.owner,
+                    replace: lane.points.is_empty().then_some(lane.id),
+                    target: key,
+                    label,
+                }))
+            }
             Some(Choice::Add) => self.request(row.owner),
             None => {}
         }

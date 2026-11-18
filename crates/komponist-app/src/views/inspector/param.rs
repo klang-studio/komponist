@@ -102,13 +102,10 @@ pub(super) fn section(
             read_only_field(ui, field, t.inspector_param_range(), &param.range, "");
             if let Some(target) = &resolved {
                 let area = col.take(crate::views::automation::CHIP_HEIGHT);
-                let left = Rect::from_min_max(
-                    area.min,
-                    pos2(
-                        area.right() - crate::views::automation::MODE_WIDTH,
-                        area.bottom(),
-                    ),
-                );
+                let mode_width =
+                    lane.map_or(0.0, |_| crate::views::automation::mode_chip_width(ui, t));
+                let left =
+                    Rect::from_min_max(area.min, pos2(area.right() - mode_width, area.bottom()));
                 let r = ui.interact(left, ui.scope_id().with("show-automation"), Sense::click());
                 r.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::Button, true, t.automation_show())

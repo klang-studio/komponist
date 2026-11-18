@@ -12,8 +12,7 @@ pub const POINT_DENSITY: f32 = 3.0;
 /// Chooser width, including the hints to the right of a parameter.
 pub const CHOOSER_WIDTH: f32 = 280.0;
 pub const CHOOSER_HEIGHT: f32 = 320.0;
-/// Width and height of the mode chip.
-pub const MODE_WIDTH: f32 = 52.0;
+/// Height of the compact mode chip.
 pub const CHIP_HEIGHT: f32 = 20.0;
 /// Toggle size and icon in the track header.
 pub const TOGGLE_WIDTH: f32 = 18.0;
