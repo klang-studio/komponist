@@ -4,6 +4,8 @@
 use klang_dsp::buffer::gain_ramp;
 use klang_dsp::pan::balance;
 
+use crate::automation::MixerValues;
+
 /// Highest linear gain the engine applies (+24 dB); larger and non-finite values are clamped.
 const MAX_GAIN: f32 = 16.0;
 
@@ -51,6 +53,30 @@ impl Fader {
         gain_ramp(r, self.r, target.1);
         self.l = target.0;
         self.r = target.1;
+    }
+
+    /// RT. Apply the absolute automation ramp to a running strip. Muting and manual
+    /// changes still take the established fader path when no active ramp drives it.
+    pub(crate) fn apply_automation(
+        &mut self,
+        l: &mut [f32],
+        r: &mut [f32],
+        (gain, pan): (f32, f32),
+        open: bool,
+        mut volume: Option<MixerValues<'_>>,
+        mut balance: Option<MixerValues<'_>>,
+    ) {
+        if !open || (volume.is_none() && balance.is_none()) {
+            self.apply(l, r, targets(gain, pan, open));
+            return;
+        }
+        for (l, r) in l.iter_mut().zip(r) {
+            let gain = volume.as_mut().map_or(gain, |value| value.value(gain));
+            let pan = balance.as_mut().map_or(pan, |value| value.value(pan));
+            (self.l, self.r) = targets(gain, pan, true);
+            *l *= self.l;
+            *r *= self.r;
+        }
     }
 }
 

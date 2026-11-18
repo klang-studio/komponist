@@ -18,9 +18,11 @@
 //! its note-offs reach the stage chain (not the instrument) and survive program swaps as before.
 
 use komponist_model::DeviceRole;
+use komponist_model::time::PPQ;
 
 use crate::MAX_STAGES;
-use crate::processor::{Event, EventKind, EventSink, ProcessContext};
+use crate::automation;
+use crate::processor::{Event, EventKind, EventProcessor, EventSink, ProcessContext};
 use crate::program::{ChainSlot, SlotId};
 use crate::sequencer::{EventList, MAX_ACTIVE_NOTES};
 use crate::slots::SlotTable;
@@ -242,6 +244,7 @@ pub(crate) struct StageLists {
     a: EventList,
     b: EventList,
     out: EventList,
+    rebased: Vec<Event>,
 }
 
 impl StageLists {
@@ -251,6 +254,7 @@ impl StageLists {
             a: EventList::new(capacity),
             b: EventList::new(capacity),
             out: EventList::new(capacity),
+            rebased: Vec::with_capacity(capacity),
         }
     }
 }
@@ -262,6 +266,7 @@ impl StageLists {
 ///
 /// `stages` is the number of leading MIDI effects of `chain`. With none, `input` passes through
 /// and only the guard's leftover note-offs are added.
+#[allow(clippy::too_many_arguments)] // Related to the track's prepared event lists.
 pub(crate) fn run<'a, T: SlotTable + ?Sized>(
     chain: &[ChainSlot],
     stages: usize,
@@ -270,8 +275,9 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
     input: &[Event],
     state: &mut StageState,
     lists: &'a mut StageLists,
+    automation: &automation::State,
 ) -> (&'a [Event], u32) {
-    let StageLists { a, b, out } = lists;
+    let StageLists { a, b, out, rebased } = lists;
     out.clear();
     let inst = chain
         .get(stages)
@@ -334,7 +340,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
                 Some(true) => (b.sorted(), &mut *a),
             };
             dst.clear();
-            stage.process_events(ctx, src, &mut EventSink::new(dst, ctx.frames));
+            process_stage(stage, ctx, src, dst, automation.events(d.slot), rebased);
             dst.finish();
             last = Some(matches!(last, Some(false)));
         }
@@ -351,6 +357,57 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
         && let Some(slot) = slots.slot_mut(d.slot.0 as usize)
     {
         slot.params.drain_into(out, state.notes.len() + 2);
+        if stages > 0 {
+            dropped += automation.add_events(d.slot, out);
+        }
     }
     (out.finish(), dropped)
+}
+
+/// Process a MIDI stage over contiguous windows ending at an automated parameter change. The
+/// stage's immediate setter takes effect at the correct sample, before input at that offset.
+fn process_stage(
+    stage: &mut dyn EventProcessor,
+    context: &ProcessContext,
+    mut input: &[Event],
+    output: &mut EventList,
+    automation: impl Iterator<Item = Event>,
+    rebased: &mut Vec<Event>,
+) {
+    let mut automation = automation.peekable();
+    if automation.peek().is_none() {
+        stage.process_events(context, input, &mut EventSink::new(output, context.frames));
+        return;
+    }
+    let mut start = 0;
+    while start < context.frames {
+        while let Some(event) = automation.next_if(|event| event.offset == start) {
+            if let EventKind::Param { id, value } = event.kind {
+                stage.set_param(id, value);
+            }
+        }
+        let end = automation
+            .peek()
+            .map_or(context.frames, |param| param.offset);
+        let n = input.partition_point(|event| event.offset < end);
+        let (events, left) = input.split_at(n);
+        input = left;
+        rebased.clear();
+        rebased.extend(events.iter().map(|event| Event {
+            offset: event.offset - start,
+            ..*event
+        }));
+        let mut ctx = *context;
+        ctx.frames = end - start;
+        if ctx.transport.playing {
+            ctx.transport.position_ticks += f64::from(start) * ctx.transport.tempo_bpm * PPQ as f64
+                / (60.0 * f64::from(ctx.sample_rate));
+        }
+        stage.process_events(
+            &ctx,
+            rebased,
+            &mut EventSink::in_segment(output, start, ctx.frames),
+        );
+        start = end;
+    }
 }

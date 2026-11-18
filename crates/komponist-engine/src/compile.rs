@@ -40,6 +40,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use komponist_model::params::ParamId;
 use komponist_model::project::{VOLUME_DB_MAX, VOLUME_DB_MIN};
 use komponist_model::{
     Clip, ClipContent, Device, DeviceId, DeviceRole, MidiChannelSel, MidiClip, MidiInputSel,
@@ -48,6 +49,7 @@ use komponist_model::{
 
 use crate::api::TrackMeter;
 use crate::audio::{PlanEnv, SourceCache, build_plan, plan_matches};
+use crate::automation::Parameter;
 use crate::program::{
     ChainSlot, InputFilter, MasterProgram, MidiPort, PROBABILITY_FOLLOW, Program, SeqNote, SlotId,
     SlotMap, TrackProgram,
@@ -55,6 +57,7 @@ use crate::program::{
 use crate::route::GateTable;
 use crate::{MAX_SLOTS, MAX_STAGES, MAX_TRACKS};
 
+mod automation;
 mod graph;
 
 /// What the compiler needs from outside the document. Implemented by the app (from
@@ -66,6 +69,12 @@ pub trait CompileEnv {
     /// Latency of `device`'s processor in frames at the engine's sample rate (0 if unknown or
     /// builtin without latency).
     fn device_latency(&self, device: DeviceId) -> u32;
+
+    /// Resolves one automatable parameter of the current device state. The descriptor is
+    /// refreshed on every compile even when the project is unchanged, to handle plugin reloads.
+    fn automation_parameter(&self, _device: &Device, _param: &ParamId) -> Option<Parameter> {
+        None
+    }
 
     /// The engine's sample rate in Hz: audio clips are compiled to frames of it (a program whose
     /// audio plan has another rate than the engine plays silence). Default 48 kHz.
@@ -162,12 +171,13 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         .zip(&graph.delays)
         .map(|((track, chain), &pdc_delay)| {
             let routing = TrackEnv {
+                chain_latency: chain_latency(&chain, env),
                 chain,
                 input: input_filter(track, env),
                 pdc_delay,
             };
             let previous = previous.and_then(|p| p.track(track.id));
-            track_program(track, routing, previous, &plan_env, &mut cache)
+            track_program(track, routing, previous, &plan_env, &mut cache, env)
         })
         .collect();
 
@@ -181,6 +191,9 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         song_end: project.song_end(),
         tracks,
         master: MasterProgram {
+            automation: automation::master(project, &master_chain, env, previous),
+            automation_source: Arc::clone(&project.master_automation),
+            chain_latency: chain_latency(&master_chain, env),
             chain: master_chain,
             gain: fader_gain(master.volume_db),
             pan: balance(master.pan),
@@ -343,6 +356,7 @@ struct TrackEnv {
     chain: Vec<ChainSlot>,
     input: InputFilter,
     pdc_delay: u32,
+    chain_latency: u32,
 }
 
 /// The program of `track`. Reuses `previous` (the previous program of the same track id) when the
@@ -354,13 +368,17 @@ fn track_program(
     previous: Option<&Arc<TrackProgram>>,
     plan_env: &PlanEnv<'_>,
     cache: &mut SourceCache,
+    env: &dyn CompileEnv,
 ) -> Arc<TrackProgram> {
     // An audio track keeps its plan (its ring, its heads, its open files) while its clips, the
     // rate, the tempo map and the project folder are the same.
     let kept_plan = previous
         .and_then(|p| p.audio.as_ref())
         .filter(|plan| plan_matches(plan, &track.clips, plan_env));
+    let automation = automation::track(track, &routing.chain, env, previous.map(Arc::as_ref));
     if let Some(prev) = previous
+        && Arc::ptr_eq(&prev.automation, &automation)
+        && prev.chain_latency == routing.chain_latency
         && Arc::ptr_eq(&prev.source, track)
         && prev.chain == routing.chain
         && prev.input == routing.input
@@ -387,6 +405,8 @@ fn track_program(
         id: track.id,
         source: Arc::clone(track),
         notes,
+        automation,
+        chain_latency: routing.chain_latency,
         chain: routing.chain,
         gain: fader_gain(channel.volume_db),
         pan: balance(channel.pan),

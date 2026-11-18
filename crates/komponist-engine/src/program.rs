@@ -11,11 +11,13 @@
 
 use std::sync::Arc;
 
+use komponist_model::automation::{AutomationOwner, AutomationTarget, TrackAutomation};
 use komponist_model::{DeviceId, DeviceRole, Tick, TickRange, TrackId};
 use komponist_model::{TempoMap, Track};
 
 use crate::api::TrackMeter;
 use crate::audio::{AudioPlan, ClipSource};
+use crate::automation::{CompiledTarget, EngineTarget};
 use crate::route::Routing;
 
 /// [`SeqNote::probability`] value meaning "plays if and only if the last rolled note with the same
@@ -68,6 +70,49 @@ impl Program {
     /// The program of track `id`.
     pub fn track(&self, id: TrackId) -> Option<&Arc<TrackProgram>> {
         self.tracks.iter().find(|t| t.id == id)
+    }
+
+    /// Resolved target of a lane in the installed program.
+    pub fn automation_target(
+        &self,
+        owner: AutomationOwner,
+        target: &AutomationTarget,
+    ) -> Option<EngineTarget> {
+        self.automation_of(owner)?
+            .iter()
+            .find(|lane| &lane.model == target)
+            .map(|lane| lane.target)
+    }
+
+    /// Compiled base value of this lane, in its normalised domain.
+    pub fn automation_base(
+        &self,
+        owner: AutomationOwner,
+        target: &AutomationTarget,
+    ) -> Option<f32> {
+        self.automation_of(owner)?
+            .iter()
+            .find(|lane| &lane.model == target)
+            .map(|lane| lane.base)
+    }
+
+    /// Project identity corresponding to an engine capture event.
+    pub fn automation_model_target(
+        &self,
+        owner: AutomationOwner,
+        target: EngineTarget,
+    ) -> Option<&AutomationTarget> {
+        self.automation_of(owner)?
+            .iter()
+            .find(|lane| lane.target == target)
+            .map(|lane| &lane.model)
+    }
+
+    fn automation_of(&self, owner: AutomationOwner) -> Option<&[CompiledTarget]> {
+        match owner {
+            AutomationOwner::Track(id) => Some(&self.track(id)?.automation),
+            AutomationOwner::Master => Some(&self.master.automation),
+        }
     }
 
     /// The level meter of track `id` (the UI reads it every frame with [`TrackMeter::take`]).
@@ -140,6 +185,10 @@ pub struct TrackProgram {
     /// Peak meter after fader, pan, mute and solo (buses too); the same `Arc` survives rebuilds of
     /// the track.
     pub meter: Arc<TrackMeter>,
+    /// Compiled automation lanes, sorted by target.
+    pub automation: Arc<[CompiledTarget]>,
+    /// Delay to the fader from processors in this track.
+    pub chain_latency: u32,
     /// What an audio track plays (`Some` on audio tracks, also without clips); its source node
     /// replaces sequencer and instrument at the head of the chain (ARCHITECTURE §6.9.3).
     pub audio: Option<Arc<AudioPlan>>,
@@ -165,6 +214,12 @@ impl TrackProgram {
 /// The master strip of a program.
 #[derive(Debug, Clone)]
 pub struct MasterProgram {
+    /// Compiled automation lanes, sorted by target.
+    pub automation: Arc<[CompiledTarget]>,
+    /// Source lanes retained for incremental compilation.
+    pub automation_source: Arc<TrackAutomation>,
+    /// Delay to the master fader from master inserts.
+    pub chain_latency: u32,
     /// Master inserts in order (effects only).
     pub chain: Vec<ChainSlot>,
     /// Master fader gain, linear.
@@ -241,6 +296,13 @@ impl SlotMap {
             .binary_search_by_key(&device, |(d, _)| *d)
             .ok()
             .map(|i| self.entries[i].1)
+    }
+
+    /// The device assigned to `slot`, for delivering engine events to the UI.
+    pub fn device(&self, slot: SlotId) -> Option<DeviceId> {
+        self.entries
+            .iter()
+            .find_map(|&(device, assigned)| (assigned == slot).then_some(device))
     }
 
     /// All `(device, slot)` pairs, sorted by device id.

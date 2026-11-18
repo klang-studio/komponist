@@ -67,6 +67,34 @@ impl EdgeState {
         self.gain = gain;
     }
 
+    /// An automated send, after its alignment delay. The gain curve is timed to the
+    /// source heard at this tap.
+    pub(crate) fn add_automated_send(
+        &mut self,
+        sum: [&mut [f32]; 2],
+        tap: [&[f32]; 2],
+        scratch: [&mut [f32]; 2],
+        delay: u32,
+        fallback: f32,
+        gain: &mut crate::automation::MixerValues<'_>,
+    ) {
+        let n = sum[0].len();
+        let source = if delay > 0 {
+            let [l, r] = scratch;
+            self.delayed([&mut l[..n], &mut r[..n]], tap, delay);
+            [&l[..n], &r[..n]]
+        } else {
+            self.line.forget();
+            tap
+        };
+        let [out_l, out_r] = sum;
+        for i in 0..n {
+            self.gain = gain.value(fallback);
+            out_l[i] += source[0][i] * self.gain;
+            out_r[i] += source[1][i] * self.gain;
+        }
+    }
+
     /// RT. Copies `tap` into `out`, delayed by `delay` frames (a sidechain input).
     pub(crate) fn delayed(&mut self, out: [&mut [f32]; 2], tap: [&[f32]; 2], delay: u32) {
         let [l, r] = out;

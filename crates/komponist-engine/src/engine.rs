@@ -74,11 +74,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use klang_dsp::buffer::{add, peak};
+use komponist_model::automation::AutomationOwner;
 use komponist_model::{Tap, Tick, TrackId};
 
 use crate::api::{Command, EngineEvent, EngineHandle, Garbage, Telemetry, TransportState};
 use crate::audio::streamer::{Msg, StreamShared};
 use crate::audio::voice::{Prepare, Voice};
+use crate::automation::{self, AutomationBoundary, EngineTarget, MixerClock, MixerValues};
 use crate::garbage::Outbox;
 use crate::graph::EdgeState;
 use crate::metronome::Metronome;
@@ -105,6 +107,8 @@ const PARALLEL_MIN_FRAMES: usize = 32;
 /// How long the dispatching thread of an offline render waits for running track jobs before it
 /// looks again (offline renders have no deadline; nothing is counted as late).
 const OFFLINE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+mod automation_capture;
 
 /// Engine settings fixed at creation (the sample rate can change later with
 /// [`Engine::set_sample_rate`]).
@@ -358,6 +362,11 @@ impl Engine {
             slots: (0..MAX_SLOTS).map(|_| Slot::empty()).collect(),
             master_fader: Fader::at((1.0, 1.0)),
             master_gain: None,
+            master_pan: None,
+            master_automation: automation::State::new(),
+            automation_time: 0,
+            automation_pass_started: false,
+            offline: false,
             metronome: Metronome::default(),
             cut: None,
             bufs: Bufs::new(),
@@ -424,6 +433,7 @@ impl Engine {
         core.telemetry.master_tap.set_rate(sample_rate);
         core.finish_cut();
         core.metronome.silence();
+        core.reassert_automation();
         let mut errors = Vec::new();
         for (index, slot) in core.slots.iter_mut().enumerate() {
             if let Some(processor) = slot.processor.as_mut()
@@ -626,6 +636,7 @@ fn stereo() -> [Box<[f32]>; 2] {
 /// Runtime state of one track or bus (a node of the routing graph), kept across program swaps by
 /// track id.
 struct TrackState {
+    automation: automation::State,
     /// Hardware input notes and releases pending after a routing change (channel × key).
     hardware: [u128; 16],
     release_hardware: [u128; 16],
@@ -668,6 +679,7 @@ struct TrackState {
 impl TrackState {
     fn new() -> TrackState {
         TrackState {
+            automation: automation::State::new(),
             hardware: [0; 16],
             release_hardware: [0; 16],
             id: None,
@@ -745,6 +757,11 @@ struct Core {
     slots: Box<[Slot]>,
     master_fader: Fader,
     master_gain: Option<f32>,
+    master_pan: Option<f32>,
+    master_automation: automation::State,
+    automation_time: u64,
+    automation_pass_started: bool,
+    offline: bool,
     metronome: Metronome,
     /// The fade of a hard cut in progress (`Command::Stop` while stopped).
     cut: Option<Cut>,
@@ -835,6 +852,7 @@ struct TrackJobs<'a> {
     /// Fast-path send levels by gate index (NaN = as compiled).
     send_gains: &'a [f32],
     ctx: &'a ProcessContext,
+    mixer_clock: MixerClock<'a>,
     any_solo: bool,
     n: usize,
     /// Song frame of the segment's first frame, whether the transport runs, and the engine rate:
@@ -905,9 +923,14 @@ struct Hook<'h> {
     edges: Edges,
     side: &'h mut [Box<[f32]>; 2],
     n: usize,
+    automation: &'h automation::State,
+    dropped: u32,
 }
 
 impl ChainHook for Hook<'_> {
+    fn automation(&mut self, slot: SlotId, out: &mut EventList) {
+        self.dropped += self.automation.add_events(slot, out);
+    }
     fn head(&mut self, l: &mut [f32], r: &mut [f32]) {
         if let Some(delay) = self.head {
             // SAFETY: the head delay's line belongs to this job's track.
@@ -1019,6 +1042,7 @@ impl TrackJobs<'_> {
                 &state.events,
                 &mut state.stage,
                 stage_lists,
+                &state.automation,
             );
             state.stage_dropped = dropped;
             events
@@ -1038,6 +1062,8 @@ impl TrackJobs<'_> {
             edges: self.edges,
             side,
             n,
+            automation: &state.automation,
+            dropped: 0,
         };
         let (result, failed) = run_chain(
             &track.chain,
@@ -1051,6 +1077,7 @@ impl TrackJobs<'_> {
             &mut hook,
         );
         state.failed = failed;
+        state.stage_dropped += hook.dropped;
         let gain = state.gain.unwrap_or(track.gain);
         let pan = state.pan.unwrap_or(track.pan);
         let (open, muted) = match self.gates {
@@ -1066,6 +1093,25 @@ impl TrackJobs<'_> {
             state.pre[0][..n].copy_from_slice(l);
             state.pre[1][..n].copy_from_slice(r);
         }
+        let clock = self
+            .mixer_clock
+            .delayed(track.chain_latency.max(route.latency_out));
+        let volume = || {
+            MixerValues::new(
+                &state.automation,
+                &track.automation,
+                EngineTarget::Gain,
+                clock,
+            )
+        };
+        let balance = || {
+            MixerValues::new(
+                &state.automation,
+                &track.automation,
+                EngineTarget::Pan,
+                clock,
+            )
+        };
         if route.post {
             let target = targets(gain, pan, !muted);
             if !state.post_on {
@@ -1074,10 +1120,19 @@ impl TrackJobs<'_> {
             let [pl, pr] = &mut state.post;
             pl[..n].copy_from_slice(l);
             pr[..n].copy_from_slice(r);
-            state.post_fader.apply(&mut pl[..n], &mut pr[..n], target);
+            state.post_fader.apply_automation(
+                &mut pl[..n],
+                &mut pr[..n],
+                (gain, pan),
+                !muted,
+                volume(),
+                balance(),
+            );
         }
         state.post_on = route.post;
-        state.fader.apply(l, r, targets(gain, pan, open));
+        state
+            .fader
+            .apply_automation(l, r, (gain, pan), open, volume(), balance());
         track.meter.record(peak(l), peak(r));
         state.pdc.process(l, r, track.pdc_delay);
         state.out[0][..n].copy_from_slice(l);
@@ -1241,22 +1296,41 @@ impl TrackJobs<'_> {
                 .is_none_or(|g| g.send_open(usize::from(send.gate)));
             // SAFETY: the send's line belongs to its target bus, which runs this job.
             let edge = unsafe { self.edges.get(send.delay) };
-            edge.add_send(
-                [&mut al[..n], &mut ar[..n]],
-                [&tap[0][..n], &tap[1][..n]],
-                [&mut bl[..n], &mut br[..n]],
-                send.delay.frames,
-                if open {
-                    let fast = self
-                        .send_gains
-                        .get(usize::from(send.gate))
-                        .copied()
-                        .filter(|g| !g.is_nan());
-                    fast.unwrap_or(send.gain)
-                } else {
-                    0.0
-                },
-            );
+            let gain = if open {
+                let fast = self
+                    .send_gains
+                    .get(usize::from(send.gate))
+                    .copied()
+                    .filter(|g| !g.is_nan());
+                fast.unwrap_or(send.gain)
+            } else {
+                0.0
+            };
+            let sum = [&mut al[..n], &mut ar[..n]];
+            let tap = [&tap[0][..n], &tap[1][..n]];
+            let scratch = [&mut bl[..n], &mut br[..n]];
+            let route = self.routing.node(usize::from(input.from));
+            let clock = self
+                .mixer_clock
+                .delayed(route.latency_out)
+                .delayed(send.delay.frames);
+            let auto = open
+                .then(|| self.routing.sends.get(usize::from(send.gate)))
+                .flatten()
+                .and_then(|&id| {
+                    let track = &self.tracks[usize::from(input.from)];
+                    MixerValues::new(
+                        &source.automation,
+                        &track.automation,
+                        EngineTarget::Send(id),
+                        clock,
+                    )
+                });
+            if let Some(mut auto) = auto {
+                edge.add_automated_send(sum, tap, scratch, send.delay.frames, gain, &mut auto);
+            } else {
+                edge.add_send(sum, tap, scratch, send.delay.frames, gain);
+            }
         }
     }
 }
@@ -1340,6 +1414,7 @@ impl Core {
     ) {
         // Taken once per callback; every segment and processor shares it.
         let entered = std::time::Instant::now();
+        self.offline = offline;
         self.capture_timing = CaptureTiming::new(latency, audio);
         self.outbox.flush();
         self.drain_commands();
@@ -1367,6 +1442,7 @@ impl Core {
                 self.send(EngineEvent::CountInDone { at });
             }
             let max = (n - done).min(self.max_block);
+            let max = self.expire_automation_touches(max);
             let (len, end) = self.transport.next_segment(max, &self.song, rate);
             let seg_end = done + len;
             let midi_first = midi_next;
@@ -1404,7 +1480,13 @@ impl Core {
                     self.capture_tail = Some(tail);
                 }
             }
+            self.automation_time = self.automation_time.saturating_add(len as u64);
             if let Some(to) = self.transport.advance(len, end, &self.song, rate) {
+                self.automation_boundary(
+                    AutomationBoundary::LoopWrap,
+                    self.song.loop_range.end,
+                    Some(to),
+                );
                 if self.transport.state == TransportState::Recording {
                     // Every lap is its own take: keys held across the wrap end at the loop end.
                     self.close_captures(self.song.loop_range.end);
@@ -1417,6 +1499,7 @@ impl Core {
                     seq.chase();
                 }
                 self.send(EngineEvent::LoopWrapped { to });
+                self.restart_automation_touch(to);
             }
             done = seg_end;
         }
@@ -1538,7 +1621,9 @@ impl Core {
                 self.stop_audio_capture();
                 // A second Stop (already stopped) is the hard cut: reset, tails end at once.
                 let hard = !self.transport.playing();
-                self.close_captures(self.transport.tick(&self.song, rate));
+                let tick = self.transport.tick(&self.song, rate);
+                self.close_captures(tick);
+                self.automation_boundary(AutomationBoundary::Stop, tick, None);
                 self.transport.state = TransportState::Stopped;
                 if hard {
                     self.begin_cut();
@@ -1547,6 +1632,11 @@ impl Core {
                 }
             }
             Command::Locate(tick) => {
+                self.automation_boundary(
+                    AutomationBoundary::Locate,
+                    self.transport.tick(&self.song, rate),
+                    None,
+                );
                 if self.capture_tail.is_none()
                     && let Some(rec) = &self.recorder
                     && rec.start.is_some()
@@ -1602,6 +1692,7 @@ impl Core {
             }
             Command::InsertProcessor { slot, processor } => {
                 self.finish_cut();
+                self.chase_automation_slot(slot);
                 self.forget_slot(slot);
                 match self.slots.get_mut(slot.0 as usize) {
                     Some(entry) => {
@@ -1630,7 +1721,16 @@ impl Core {
                     self.outbox.retire(Garbage::Processor(slot, old));
                 }
             }
+            Command::Touch {
+                owner,
+                target,
+                begin,
+            } => self.automation_touch(owner, target, begin),
+            Command::CancelAutomationWrite => self.cancel_automation_write(),
             Command::SetParam { slot, id, value } => {
+                if let Some(owner) = self.slot_owner(slot) {
+                    self.manual_automation(owner, EngineTarget::Slot { slot, wire_id: id }, value);
+                }
                 if let Some(entry) = self.slots.get_mut(slot.0 as usize)
                     && !entry.params.set(id, value)
                 {
@@ -1638,11 +1738,21 @@ impl Core {
                 }
             }
             Command::SetTrackGain { track, gain } => {
+                self.manual_automation(
+                    AutomationOwner::Track(track),
+                    EngineTarget::Gain,
+                    f64::from(gain),
+                );
                 if let Some(state) = self.state_of(track) {
                     state.gain = Some(gain);
                 }
             }
             Command::SetTrackPan { track, pan } => {
+                self.manual_automation(
+                    AutomationOwner::Track(track),
+                    EngineTarget::Pan,
+                    f64::from(pan),
+                );
                 if let Some(state) = self.state_of(track) {
                     state.pan = Some(pan);
                 }
@@ -1657,9 +1767,23 @@ impl Core {
                     state.solo = Some(solo);
                 }
             }
-            Command::SetMasterGain(gain) => self.master_gain = Some(gain),
+            Command::SetMasterGain(gain) => {
+                self.manual_automation(
+                    AutomationOwner::Master,
+                    EngineTarget::Gain,
+                    f64::from(gain),
+                );
+                self.master_gain = Some(gain);
+            }
+            Command::SetMasterPan(pan) => {
+                self.manual_automation(AutomationOwner::Master, EngineTarget::Pan, f64::from(pan));
+                self.master_pan = Some(pan);
+            }
             Command::SetGates(gates) => self.gates = Some(gates),
             Command::SetSendGain { send, gain } => {
+                if let Some(owner) = self.send_owner(send) {
+                    self.manual_automation(owner, EngineTarget::Send(send), f64::from(gain));
+                }
                 if let Some(program) = self.program.as_deref()
                     && let Some(gate) = program.routing.sends.iter().position(|s| *s == send)
                     && let Some(slot) = self.send_gains.get_mut(gate)
@@ -1723,6 +1847,7 @@ impl Core {
     fn start(&mut self, state: TransportState) {
         self.transport.state = state;
         self.transport.wrapped = false;
+        self.chase_automation();
         let count = self.track_count();
         for &index in &self.map[..count] {
             let state = &mut self.tracks[usize::from(index)];
@@ -1877,6 +2002,12 @@ impl Core {
                             state.hardware[channel] = 0;
                         }
                     }
+                    let old = self
+                        .program
+                        .as_deref()
+                        .and_then(|p| p.track(track.id))
+                        .map_or(&[][..], |t| &t.automation);
+                    state.automation.install(old, &track.automation);
                     state.clear_fast_path();
                     break;
                 }
@@ -1895,6 +2026,7 @@ impl Core {
             map[i] = free as u16;
             let state = &mut self.tracks[free];
             state.id = Some(track.id);
+            state.automation.install(&[], &track.automation);
             state.seq.clear();
             state.hardware.fill(0);
             state.release_hardware.fill(0);
@@ -1987,6 +2119,12 @@ impl Core {
             self.master_fader = Fader::at(targets(master.gain, master.pan, !master.mute));
         }
         self.master_gain = None;
+        self.master_pan = None;
+        let old = self
+            .program
+            .as_deref()
+            .map_or(&[][..], |p| &p.master.automation);
+        self.master_automation.install(old, &master.automation);
         self.song = song;
         if let Some(old) = self.program.replace(program) {
             self.outbox.retire(Garbage::Program(old));
@@ -2049,6 +2187,12 @@ impl Core {
         let capture_timing = self.record_latency.unwrap_or(self.capture_timing);
         let recording = transport.state == TransportState::Recording;
         let loop_samples = song.loop_samples(rate);
+        let mixer_clock = MixerClock {
+            window: win,
+            time: self.automation_time,
+            delay: 0,
+            wrapped_loop: loop_samples.filter(|_| transport.wrapped),
+        };
         let capture = if let Some(tail) = self.capture_tail {
             Some((
                 crate::recording::CaptureWindow {
@@ -2111,6 +2255,9 @@ impl Core {
             telemetry,
             master_fader,
             master_gain,
+            master_pan,
+            master_automation,
+            automation_time,
             metronome,
             unreported,
             dropped,
@@ -2156,6 +2303,16 @@ impl Core {
                 let tracks_and_states = program.tracks[..count].iter().zip(&map[..count]);
                 for (index, (track, &state)) in tracks_and_states.enumerate() {
                     let state = &mut tracks[usize::from(state)];
+                    *dropped += state.automation.prepare(
+                        &track.automation,
+                        win,
+                        *automation_time,
+                        |slot| {
+                            slots
+                                .get(slot.0 as usize)
+                                .is_some_and(|slot| slot.runs(slot.bypassed))
+                        },
+                    );
                     if let Some(plan) = &track.audio {
                         // Audio clips: does the playhead continue the stream, or does it jump?
                         if plan.rate() == sample_rate.round() as u32 {
@@ -2294,6 +2451,9 @@ impl Core {
                         },
                     );
                     state.events.clear();
+                    if !staged && let Some(slot) = instrument {
+                        *dropped += state.automation.add_events(slot, events);
+                    }
                     state.events.extend_from_slice(events.finish());
                     let sidechained = routed
                         && routing
@@ -2360,6 +2520,7 @@ impl Core {
                     gates: gate_table,
                     send_gains,
                     ctx: &ctx,
+                    mixer_clock,
                     any_solo,
                     n,
                     at_frame: transport.pos,
@@ -2427,6 +2588,12 @@ impl Core {
                 a[0][..n].copy_from_slice(&bus[0][..n]);
                 a[1][..n].copy_from_slice(&bus[1][..n]);
                 let master = &program.master;
+                *dropped +=
+                    master_automation.prepare(&master.automation, win, *automation_time, |slot| {
+                        slots
+                            .get(slot.0 as usize)
+                            .is_some_and(|slot| slot.runs(slot.bypassed))
+                    });
                 let mut hook = Hook {
                     sidechains: if routed {
                         routing.sidechains(routing.master.sidechains)
@@ -2442,6 +2609,8 @@ impl Core {
                     },
                     side,
                     n,
+                    automation: master_automation,
+                    dropped: 0,
                 };
                 let (result, failed) = run_chain(
                     &master.chain,
@@ -2455,9 +2624,36 @@ impl Core {
                     &mut hook,
                 );
                 *unreported |= failed;
+                *dropped += hook.dropped;
                 let (l, r) = bufs.pair(result, n);
                 let gain = master_gain.unwrap_or(master.gain);
-                master_fader.apply(l, r, targets(gain, master.pan, !master.mute));
+                let pan = master_pan.unwrap_or(master.pan);
+                let input_latency = if routed {
+                    routing.master.latency_in
+                } else {
+                    program
+                        .tracks
+                        .iter()
+                        .map(|track| track.chain_latency)
+                        .max()
+                        .unwrap_or(0)
+                };
+                let clock = mixer_clock
+                    .delayed(input_latency)
+                    .delayed(master.chain_latency);
+                let volume = MixerValues::new(
+                    master_automation,
+                    &master.automation,
+                    EngineTarget::Gain,
+                    clock,
+                );
+                let balance = MixerValues::new(
+                    master_automation,
+                    &master.automation,
+                    EngineTarget::Pan,
+                    clock,
+                );
+                master_fader.apply_automation(l, r, (gain, pan), !master.mute, volume, balance);
                 telemetry.master.record(peak(l), peak(r));
                 // The transport bar's scope (#34): only while it looks, and not in an export.
                 let tap = &telemetry.master_tap;
@@ -2474,6 +2670,7 @@ impl Core {
         } else {
             metronome.render(out_l, out_r);
         }
+        self.collect_parameter_edits(win);
     }
 }
 
