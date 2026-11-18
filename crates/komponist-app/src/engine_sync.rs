@@ -350,6 +350,8 @@ pub struct EngineSync {
     /// See [`EngineProcess`]'s `workgroup_notice`.
     workgroup_notice: Arc<AtomicBool>,
     worker_stats: Arc<WorkerStats>,
+    #[cfg(test)]
+    test_jack_capture_sources: Option<Vec<komponist_audio::JackCaptureChannel>>,
 }
 
 impl core::fmt::Debug for EngineSync {
@@ -425,6 +427,8 @@ impl EngineSync {
             worker_notice,
             workgroup_notice,
             worker_stats,
+            #[cfg(test)]
+            test_jack_capture_sources: None,
         };
         let started = sync.audio.start(config);
         (sync, started)
@@ -802,6 +806,23 @@ impl EngineSync {
     pub fn audio_input_channels(&self) -> u16 {
         self.audio.input_channels()
     }
+    /// Source port metadata for the capture channel order of the active JACK route.
+    pub fn jack_capture_sources(&self) -> Option<&[komponist_audio::JackCaptureChannel]> {
+        #[cfg(test)]
+        if let Some(sources) = self.test_jack_capture_sources.as_deref() {
+            return Some(sources);
+        }
+        self.audio.jack_capture_sources()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_jack_capture_sources(
+        &mut self,
+        sources: Vec<komponist_audio::JackCaptureChannel>,
+    ) {
+        self.test_jack_capture_sources = Some(sources);
+    }
+
     /// Metadata-only input enumeration for the active host (no stream is opened).
     pub fn audio_input_devices(&self) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
         let host = match self.audio.state() {

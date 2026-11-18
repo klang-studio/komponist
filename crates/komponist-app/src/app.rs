@@ -2055,11 +2055,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| Some(hexa_ref()));
         let mut state = crate::dialogs::new_track::State::new(instrument);
-        state.available_input_channels = self.engine.audio_input_channels();
-        state.input = crate::dialogs::new_track::first_unused_input(
-            self.project(),
-            state.available_input_channels,
-        );
+        state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
     }
 

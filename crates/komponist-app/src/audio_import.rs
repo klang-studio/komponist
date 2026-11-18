@@ -57,8 +57,7 @@ impl App {
         }
         let mut state = new_track::State::new(None);
         state.kind = new_track::KIND_AUDIO;
-        state.available_input_channels = self.engine.audio_input_channels();
-        state.input = new_track::first_unused_input(self.project(), state.available_input_channels);
+        state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
     }
 

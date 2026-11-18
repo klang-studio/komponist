@@ -47,7 +47,7 @@ pub use input::{
     InputBuffer, InputConfig, InputDeviceInfo, InputDeviceRole, InputReader, TestAudioSource,
     input_devices, test_input,
 };
-pub use jack_ports::{JackDirection, JackPort, JackRoutes, jack_ports};
+pub use jack_ports::{JackCaptureChannel, JackDirection, JackPort, JackRoutes, jack_ports};
 pub use midi::{
     MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, MidiStamped, TestMidiSource,
 };

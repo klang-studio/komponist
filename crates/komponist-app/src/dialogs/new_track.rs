@@ -83,9 +83,86 @@ pub fn input_choices(project: &Project, t: Lang, channels: u16) -> Vec<(AudioInp
     choices
 }
 
+struct InputChoice {
+    input: AudioInput,
+    label: String,
+    enabled: bool,
+    heading: Option<&'static str>,
+    detail: Option<String>,
+}
+
+fn track_input_items(
+    project: &Project,
+    lang: Lang,
+    channels: u16,
+    jack: Option<&[komponist_audio::JackCaptureChannel]>,
+) -> Vec<InputChoice> {
+    let generic = input_choices(project, lang, if jack.is_some() { 0 } else { channels });
+    let mut choices: Vec<_> = generic
+        .into_iter()
+        .map(|(input, label)| InputChoice {
+            input,
+            label,
+            enabled: true,
+            heading: None,
+            detail: None,
+        })
+        .collect();
+    if let Some(jack) = jack {
+        use crate::views::audio_inputs::jack_input_choices;
+        let groups = jack_input_choices(jack);
+        let named = [
+            lang.audio_input_section_mono(),
+            lang.audio_input_section_stereo(),
+        ]
+        .into_iter()
+        .zip(groups)
+        .flat_map(|(heading, group)| {
+            group
+                .into_iter()
+                .enumerate()
+                .map(move |(index, source)| InputChoice {
+                    input: AudioInput::Hardware(source.input),
+                    label: source.label(lang),
+                    enabled: source.available,
+                    heading: (index == 0).then_some(heading),
+                    detail: source.detail,
+                })
+        });
+        choices.splice(1..1, named);
+        if let Some(bus) = choices
+            .iter_mut()
+            .find(|option| matches!(option.input, AudioInput::Bus(_)))
+        {
+            bus.heading = Some(lang.audio_input_section_bus());
+        }
+    }
+    choices
+}
+
 /// First unused mono channel of the configured capture device; no input on the null backend.
 pub fn first_unused_input(project: &Project, channels: u16) -> AudioInput {
-    (0..channels).find(|channel| !project.tracks.iter().any(|track| {
+    first_unused_mono(project, 0..channels)
+}
+
+/// Selects only connected channels in the JACK route, keeping their hardware indices.
+fn first_unused_jack_input(
+    project: &Project,
+    channels: u16,
+    sources: &[komponist_audio::JackCaptureChannel],
+) -> AudioInput {
+    first_unused_mono(
+        project,
+        (0..channels).filter(|&first| {
+            sources
+                .get(usize::from(first))
+                .is_some_and(|source| source.connected)
+        }),
+    )
+}
+
+fn first_unused_mono(project: &Project, mut channels: impl Iterator<Item = u16>) -> AudioInput {
+    channels.find(|channel| !project.tracks.iter().any(|track| {
         matches!(track.audio.input, AudioInput::Hardware(h) if h.first == *channel || (h.stereo && h.first.checked_add(1) == Some(*channel)))
     })).map_or(AudioInput::None, |first| AudioInput::Hardware(HardwareInput { first, stereo: false }))
 }
@@ -136,6 +213,19 @@ impl State {
             focus_search: true,
             scroll: false,
         }
+    }
+
+    pub(crate) fn choose_default_input(
+        &mut self,
+        project: &Project,
+        engine: &crate::engine_sync::EngineSync,
+    ) {
+        let channels = engine.audio_input_channels();
+        self.available_input_channels = channels;
+        self.input = match engine.jack_capture_sources() {
+            Some(sources) => first_unused_jack_input(project, channels, sources),
+            None => first_unused_input(project, channels),
+        };
     }
 
     /// What "Anlegen" creates.
@@ -211,6 +301,8 @@ pub struct View<'a> {
     pub project: &'a Project,
     /// The instruments matching a search text, in list order.
     pub instruments: &'a dyn Fn(&str) -> Vec<Row>,
+    /// JACK capture sources ordered exactly as the track's hardware indices.
+    pub jack_capture_sources: Option<&'a [komponist_audio::JackCaptureChannel]>,
 }
 
 /// The words default names are made of in `t` (`MIDI`, `Drums`, `Bus`, `Gruppe` / `Group`): what
@@ -318,23 +410,52 @@ pub fn show(ctx: &Context, s: &mut State, view: &View<'_>) -> Option<Output> {
                 }
                 if s.kind == KIND_AUDIO {
                     row(ui, t.new_track_input(), |ui| {
-                        let choices = input_choices(view.project, t, s.available_input_channels);
+                        let choices = track_input_items(
+                            view.project,
+                            t,
+                            s.available_input_channels,
+                            view.jack_capture_sources,
+                        );
                         let mut selected = choices
                             .iter()
-                            .position(|(input, _)| *input == s.input)
+                            .position(|choice| choice.input == s.input)
                             .unwrap_or(0);
                         let items: Vec<_> = choices
                             .iter()
-                            .map(|(_, name)| DropItem::new(name))
+                            .map(|choice| DropItem {
+                                label: &choice.label,
+                                enabled: choice.enabled,
+                            })
                             .collect();
-                        if ui
-                            .add(
-                                Dropdown::new(t.new_track_input(), &mut selected, &items)
-                                    .width(control),
-                            )
-                            .changed()
+                        let dropdown = Dropdown::new(t.new_track_input(), &mut selected, &items)
+                            .width(control);
+                        let details: Vec<_> = choices
+                            .iter()
+                            .map(|choice| komponist_ui::widgets::dropdown::RowDetails {
+                                heading: choice.heading,
+                                detail: choice.detail.as_deref(),
+                            })
+                            .collect();
+                        let response = if view.jack_capture_sources.is_some() {
+                            ui.add(dropdown.fitting_list(
+                                crate::views::audio_inputs::MAX_ROWS as f32 * size::MENU_ROW,
+                                &details,
+                            ))
+                        } else {
+                            ui.add(dropdown)
+                        };
+                        if response.changed() {
+                            s.input = choices[selected].input;
+                        }
+                        if view.jack_capture_sources.is_some()
+                            && matches!(choices[selected].input, AudioInput::Hardware(_))
                         {
-                            s.input = choices[selected].0;
+                            let choice = &choices[selected];
+                            let mut tip = komponist_ui::widgets::tooltip::Tip::new(&choice.label);
+                            if let Some(detail) = &choice.detail {
+                                tip = tip.detail(detail);
+                            }
+                            tip.attach(&response);
                         }
                     });
                     gap(ui);

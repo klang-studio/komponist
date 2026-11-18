@@ -9,8 +9,9 @@ use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, PortFlags, P
 
 use crate::input::MAX_INPUT_CHANNELS;
 use crate::{
-    AudioError, AudioProcess, CallbackInfo, EngineSlot, HostKind, InputBuffer, JackDirection,
-    JackPort, JackRoutes, OutputBuffer, StreamParams, StreamStats, frames_to_duration,
+    AudioError, AudioProcess, CallbackInfo, EngineSlot, HostKind, InputBuffer, JackCaptureChannel,
+    JackDirection, JackPort, JackRoutes, OutputBuffer, StreamParams, StreamStats,
+    frames_to_duration,
 };
 
 const ROUTE_RECHECK: Duration = Duration::from_secs(1);
@@ -606,6 +607,7 @@ pub(crate) struct JackStream<P: AudioProcess + 'static> {
     signals: Arc<Signals>,
     route: Route,
     capture: Vec<String>,
+    capture_sources: Vec<JackCaptureChannel>,
     playback: [String; 2],
     next_check: Instant,
 }
@@ -699,6 +701,7 @@ impl<P: AudioProcess + 'static> JackStream<P> {
             signals,
             route,
             capture,
+            capture_sources: Vec::new(),
             playback,
             next_check: Instant::now(),
         };
@@ -714,6 +717,7 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         let desired = self.route.targets(&default_targets(client, &self.route));
         let mut ready = !desired.capture.is_empty();
         let mut capture_latency = 0;
+        self.capture_sources.clear();
         for (index, local) in self.capture.iter().enumerate() {
             let target = desired.capture.get(index).map(String::as_str);
             let latency = reconcile_port(
@@ -724,6 +728,10 @@ impl<P: AudioProcess + 'static> JackStream<P> {
                 &graph,
                 Some(&self.signals),
             );
+            if let Some(name) = target {
+                self.capture_sources
+                    .push(capture_channel(name, &graph, latency.is_some()));
+            }
             if self.route.capture.is_some() || target.is_some() {
                 ready &= latency.is_some();
                 capture_latency = capture_latency.max(latency.unwrap_or(0));
@@ -767,6 +775,10 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         }
     }
 
+    pub(crate) fn capture_sources(&self) -> &[JackCaptureChannel] {
+        &self.capture_sources
+    }
+
     pub(crate) fn period(&self) -> u32 {
         self.signals.period.load(Ordering::Relaxed)
     }
@@ -795,6 +807,19 @@ impl<P: AudioProcess + 'static> JackStream<P> {
         }
         running
     }
+}
+
+fn capture_channel(name: &str, graph: &[JackPort], connected: bool) -> JackCaptureChannel {
+    graph
+        .iter()
+        .find(|port| port.name == name && port.direction == JackDirection::Capture)
+        .map_or_else(
+            || JackCaptureChannel::missing(name),
+            |port| JackCaptureChannel {
+                port: port.clone(),
+                connected,
+            },
+        )
 }
 
 fn reconcile_port(
@@ -879,6 +904,38 @@ mod tests {
             alias: Some("Identical alias".to_owned()),
             direction,
         }
+    }
+
+    #[test]
+    fn capture_metadata_follows_route_order_and_keeps_missing_slots() {
+        use JackDirection::{Capture, Playback};
+
+        let mut graph = vec![
+            port("Hotone:left", Capture),
+            port("DI:right", Playback),
+            port("FX:return", Capture),
+        ];
+        let names = ["DI:right", "Hotone:left", "FX:return"];
+        let sources = names.map(|name| capture_channel(name, &graph, name == "Hotone:left"));
+        assert_eq!(
+            sources.each_ref().map(|channel| channel.port.name.as_str()),
+            names
+        );
+        assert_eq!(
+            sources.each_ref().map(|channel| channel.connected),
+            [false, true, false]
+        );
+        assert!(sources[0].port.alias.is_none());
+        assert_eq!(sources[1].port.alias, sources[2].port.alias);
+
+        graph.push(port("DI:right", Capture));
+        assert_eq!(
+            capture_channel(names[0], &graph, true),
+            JackCaptureChannel {
+                port: port("DI:right", Capture),
+                connected: true,
+            }
+        );
     }
 
     #[test]

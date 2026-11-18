@@ -522,6 +522,7 @@ impl crate::App {
                 let view = new_track::View {
                     project,
                     instruments: &instruments,
+                    jack_capture_sources: self.engine.jack_capture_sources(),
                 };
                 match new_track::show(ctx, state, &view) {
                     Some(new_track::Output::Create(spec)) => {

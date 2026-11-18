@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use egui::{
     Align, Area, Id, Order, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
-use komponist_audio::{HostKind, InputConfig, InputDeviceInfo, InputDeviceRole};
+use komponist_audio::{
+    HostKind, InputConfig, InputDeviceInfo, InputDeviceRole, JackCaptureChannel,
+};
 use komponist_i18n::Lang;
 use komponist_model::{AudioInput, HardwareInput, MonitorMode, Project, Track};
 use komponist_tokens::egui_support::color32;
@@ -30,7 +32,7 @@ pub const AUTO_MARK: f32 = 8.0;
 /// Header input line disappears below this row height (audio proposal §5).
 pub const INPUT_LINE_MIN: f32 = 44.0;
 /// Keep D9 within the viewport while allowing longer channel/device inventories to scroll.
-const MAX_ROWS: usize = 10;
+pub(crate) const MAX_ROWS: usize = 10;
 
 pub fn input_label(t: Lang, project: &Project, input: AudioInput) -> String {
     match input {
@@ -44,6 +46,71 @@ pub fn input_label(t: Lang, project: &Project, input: AudioInput) -> String {
                 .track(id)
                 .map_or(t.audio_input_missing_bus(), |t| t.name.as_str()),
         ),
+    }
+}
+
+pub(crate) struct NamedJackInput {
+    pub input: HardwareInput,
+    pub name: String,
+    pub detail: Option<String>,
+    pub available: bool,
+}
+
+fn named_jack_input(
+    sources: &[JackCaptureChannel],
+    input: HardwareInput,
+) -> Option<NamedJackInput> {
+    let first = sources.get(usize::from(input.first))?;
+    let (name, detail, available) = if input.stereo {
+        let second = sources.get(usize::from(input.first) + 1)?;
+        let name = match (
+            first.port.name.split_once(':'),
+            second.port.name.split_once(':'),
+        ) {
+            (Some((owner, left)), Some((other, right))) if owner == other => {
+                format!("{owner}:{left} + {right}")
+            }
+            _ => format!("{} + {}", first.port.name, second.port.name),
+        };
+        let detail = format!("{} + {}", first.port.label(), second.port.label());
+        let detail = (detail != name).then_some(detail);
+        (name, detail, first.connected && second.connected)
+    } else {
+        (
+            first.port.name.clone(),
+            first.port.alias.clone(),
+            first.connected,
+        )
+    };
+    Some(NamedJackInput {
+        input,
+        name,
+        detail,
+        available,
+    })
+}
+
+pub(crate) fn jack_input_choices(sources: &[JackCaptureChannel]) -> [Vec<NamedJackInput>; 2] {
+    let count = sources.len() as u16;
+    let choices = |stereo, count, step| {
+        (0..count)
+            .step_by(step)
+            .filter_map(|first| named_jack_input(sources, HardwareInput { first, stereo }))
+            .collect()
+    };
+    [
+        choices(false, count, 1),
+        choices(true, count.saturating_sub(1), 2),
+    ]
+}
+
+impl NamedJackInput {
+    pub(crate) fn label(&self, t: Lang) -> String {
+        if self.available {
+            self.name.clone()
+        } else {
+            t.audio_input_unavailable(&self.name)
+        }
     }
 }
 
@@ -132,8 +199,20 @@ pub fn input_button(
     if rect.height() >= size::CONTROL {
         px::fill(ui.painter(), rect, radius::S, color32(color::SURFACE_3));
     }
-    let label = input_label(t, project, track.audio.input);
-    let available = input_available(project, track, ctx.engine.audio_input_channels());
+    let jack = ctx
+        .engine
+        .jack_capture_sources()
+        .zip(match track.audio.input {
+            AudioInput::Hardware(input) => Some(input),
+            _ => None,
+        });
+    let named = jack.and_then(|(sources, input)| named_jack_input(sources, input));
+    let label = named.as_ref().map_or_else(
+        || input_label(t, project, track.audio.input),
+        |source| source.name.clone(),
+    );
+    let available = input_available(project, track, ctx.engine.audio_input_channels())
+        && jack.is_none_or(|_| named.as_ref().is_some_and(|source| source.available));
     let text = if available {
         label.clone()
     } else {
@@ -179,7 +258,7 @@ pub fn input_button(
     );
     if rect.width() > 2.0 * size::ICON {
         let x = icon.right() + space::SPACE_1;
-        let compact = if rect.width() < HEADER_INPUT_WIDTH {
+        let compact = if rect.width() < HEADER_INPUT_WIDTH && jack.is_none() {
             match track.audio.input {
                 AudioInput::Hardware(h) if h.stereo => {
                     format!("{}+{}", u32::from(h.first) + 1, u32::from(h.first) + 2)
@@ -206,8 +285,12 @@ pub fn input_button(
             color32(ink),
         );
     }
+    let details = named
+        .as_ref()
+        .and_then(|source| source.detail.as_ref())
+        .map(|source| format!("{} · {source}", t.audio_input_tip2()));
     Tip::new(&text)
-        .detail(t.audio_input_tip2())
+        .detail(details.as_deref().unwrap_or_else(|| t.audio_input_tip2()))
         .attach(&response);
     let popup = response.id.with("chooser");
     if !enabled {
@@ -230,11 +313,8 @@ pub fn input_button(
 }
 
 fn menu_row(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> Response {
-    let (rect, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), size::MENU_ROW), Sense::hover());
-    let response = ui.interact(
-        rect,
-        ui.next_auto_id(),
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), size::MENU_ROW),
         if enabled {
             Sense::click()
         } else {
@@ -282,6 +362,30 @@ pub(crate) fn input_device_label(t: Lang, device: &InputDeviceInfo) -> String {
     }
 }
 
+fn input_columns(ui: &mut Ui, fit_names: bool, draw: impl FnOnce(&mut Ui, &mut Ui)) {
+    if !fit_names {
+        ui.columns_const(|[left, right]| draw(left, right));
+        return;
+    }
+    let spacing = ui.spacing().item_spacing.x;
+    let left_width = (WIDTH - spacing) / 2.0;
+    let top = ui.cursor().min;
+    let bottom = ui.max_rect().bottom();
+    let layout = egui::Layout::top_down_justified(Align::LEFT);
+    let mut left = ui.new_child(
+        UiBuilder::new()
+            .layout(layout)
+            .max_rect(Rect::from_min_max(top, pos2(top.x + left_width, bottom))),
+    );
+    let mut right = ui.new_child(UiBuilder::new().layout(layout).max_rect(Rect::from_min_max(
+        pos2(top.x + left_width + spacing, top.y),
+        pos2(ui.max_rect().right(), bottom),
+    )));
+    draw(&mut left, &mut right);
+    let height = left.min_size().y.max(right.min_size().y);
+    ui.advance_cursor_after_rect(Rect::from_min_size(top, vec2(ui.available_width(), height)));
+}
+
 fn chooser(
     ui: &mut Ui,
     ctx: &mut ViewCtx<'_>,
@@ -291,30 +395,34 @@ fn chooser(
     id: Id,
 ) {
     let t = ctx.lang;
-    let explicit_jack = match ctx.engine.audio_state() {
-        komponist_audio::AudioState::Running { config, .. }
-        | komponist_audio::AudioState::NoDevice { config, .. }
-            if config.host == HostKind::Jack =>
-        {
-            config
-                .jack_routes
-                .capture
-                .as_ref()
-                .map(|ports| (ports.len() as u16, config.sample_rate))
-        }
-        _ => None,
-    };
-    let devices = match explicit_jack {
-        Some((0, _)) => Vec::new(),
-        Some((channels, sample_rate)) => vec![InputDeviceInfo {
+    let jack_sources = ctx.engine.jack_capture_sources();
+    let jack_choices = jack_sources.map(jack_input_choices);
+    let devices = match jack_sources {
+        Some([]) => Vec::new(),
+        Some(sources) => vec![InputDeviceInfo {
             id: None,
             name: t.settings_jack_inputs().to_owned(),
-            channels,
+            channels: sources.len() as u16,
             is_default: true,
-            sample_rate,
+            sample_rate: ctx.engine.sample_rate(),
         }],
         None => inventory(ui, ctx),
     };
+    let width = jack_choices.as_ref().map_or(WIDTH, |groups| {
+        let longest = groups
+            .iter()
+            .flatten()
+            .map(|choice| {
+                w::styled_galley(ui, &choice.label(t), &typography::UI)
+                    .size()
+                    .x
+            })
+            .fold(0.0_f32, f32::max);
+        (WIDTH / 2.0 + longest + 4.0 * space::SPACE_2).clamp(
+            WIDTH,
+            (ui.ctx().content_rect().width() - 4.0 * space::SPACE_4).max(WIDTH),
+        )
+    });
     let selected_key = id.with("source");
     let configured_device = ctx
         .engine
@@ -335,6 +443,12 @@ fn chooser(
     let mut source_changed = false;
     let rows = if source == devices.len() {
         project.tracks.iter().filter(|track| track.is_bus()).count()
+    } else if let Some(groups) = &jack_choices {
+        groups
+            .iter()
+            .filter(|group| !group.is_empty())
+            .map(|group| group.len() + 1)
+            .sum()
     } else {
         devices.get(source).map_or(0, |device| {
             usize::from(device.channels) + usize::from(device.channels / 2)
@@ -348,7 +462,7 @@ fn chooser(
         .fixed_pos(anchor.rect.left_bottom())
         .show(ui.ctx(), |ui| {
             w::menu_frame().show(ui, |ui| {
-                ui.set_width(WIDTH);
+                ui.set_width(width);
                 let builder = UiBuilder::new()
                     .accessibility_role(Role::Menu)
                     .accessibility_label(&title);
@@ -372,8 +486,7 @@ fn chooser(
                         .max_height(height)
                         .min_scrolled_height(height)
                         .show(ui, |ui| {
-                            ui.columns(2, |columns| {
-                                let left = &mut columns[0];
+                            input_columns(ui, jack_choices.is_some(), |left, right| {
                                 left.label(fonts::rich_text(
                                     t.audio_input_sources(),
                                     &typography::LABEL,
@@ -399,7 +512,6 @@ fn chooser(
                                     source = devices.len();
                                     source_changed = true;
                                 }
-                                let right = &mut columns[1];
                                 if source == devices.len() {
                                     let allowed =
                                         komponist_model::routing::input_sources(project, track.id);
@@ -428,12 +540,40 @@ fn chooser(
                                             floating::close(right.ctx(), id);
                                         }
                                     }
+                                } else if let Some(groups) = &jack_choices {
+                                    for (heading, choices) in [t.audio_input_section_mono(), t.audio_input_section_stereo()]
+                                        .into_iter().zip(groups).filter(|(_, choices)| !choices.is_empty())
+                                    {
+                                        let group = UiBuilder::new()
+                                            .accessibility_role(Role::Group)
+                                            .accessibility_label(heading);
+                                        right.scope_builder(group, |ui| {
+                                            ui.label(fonts::rich_text(heading, &typography::LABEL));
+                                            for choice in choices {
+                                                let value = AudioInput::Hardware(choice.input);
+                                                let label = choice.label(t);
+                                                let row = menu_row(ui, &label, track.audio.input == value, choice.available);
+                                                let mut tip = Tip::new(&label);
+                                                if let Some(detail) = &choice.detail {
+                                                    tip = tip.detail(detail);
+                                                }
+                                                tip.attach(&row);
+                                                if row.clicked() {
+                                                    ctx.send(Action::Edit(EditAction::SetTrackProp {
+                                                        tracks: vec![track.id],
+                                                        prop: komponist_model::edits::TrackProp::AudioInput(value),
+                                                    }));
+                                                    floating::close(ui.ctx(), id);
+                                                }
+                                            }
+                                        });
+                                    }
                                 } else if let Some(device) = devices.get(source) {
                                     let config = InputConfig {
                                         device: Some(device.name.clone()),
                                         device_id: device.id.clone(),
                                     };
-                                    let current = explicit_jack.is_some() || configured_device == Some(source);
+                                    let current = configured_device == Some(source);
                                     let channels = (0..device.channels)
                                         .map(|first| HardwareInput {
                                             first,
@@ -466,20 +606,13 @@ fn chooser(
                                         )
                                         .clicked()
                                         {
-                                            if explicit_jack.is_some() {
-                                                ctx.send(Action::Edit(EditAction::SetTrackProp {
-                                                    tracks: vec![track.id],
-                                                    prop: komponist_model::edits::TrackProp::AudioInput(value),
-                                                }));
-                                            } else {
-                                                ctx.send(Action::Settings(
-                                                    SettingsAction::ChooseTrackAudioInput {
-                                                        track: track.id,
-                                                        input: value,
-                                                        device: config.clone(),
-                                                    },
-                                                ));
-                                            }
+                                            ctx.send(Action::Settings(
+                                                SettingsAction::ChooseTrackAudioInput {
+                                                    track: track.id,
+                                                    input: value,
+                                                    device: config.clone(),
+                                                },
+                                            ));
                                             floating::close(right.ctx(), id);
                                         }
                                     }
@@ -652,5 +785,184 @@ pub fn record_bus_button(
         .attach(&response);
     if response.clicked() {
         ctx.send(Action::Edit(EditAction::RecordBus(track.id)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use komponist_audio::{JackDirection, JackPort};
+    use komponist_model::{TrackId, edits};
+
+    const LEFT: &str = "Hotone USB Audio:capture_FL";
+    const RIGHT: &str = "Hotone USB Audio:capture_FR";
+    const MISSING: &str = "Backup Interface:capture_mic";
+    const EXTRA: &str = "Room FX:Stereo return from effects rack channel 2";
+
+    fn source(name: &str, alias: Option<&str>, connected: bool) -> JackCaptureChannel {
+        JackCaptureChannel {
+            port: JackPort {
+                name: name.into(),
+                alias: alias.map(str::to_owned),
+                direction: JackDirection::Capture,
+            },
+            connected,
+        }
+    }
+
+    #[test]
+    fn jack_mono_and_stereo_choices_keep_route_order_and_distinguish_duplicate_aliases() {
+        let [mono, stereo] = jack_input_choices(&[
+            source(RIGHT, Some("alsa:pcm:hotone:capture_2"), true),
+            source(LEFT, Some("alsa:pcm:hotone:capture_1"), true),
+            source(MISSING, Some("Mic"), false),
+            source(EXTRA, Some("Mic"), true),
+            source("Other:dry", None, true),
+        ]);
+        assert_eq!(
+            mono.iter()
+                .map(|choice| (choice.input.first, choice.available))
+                .collect::<Vec<_>>(),
+            [(0, true), (1, true), (2, false), (3, true), (4, true)]
+        );
+        assert_ne!(mono[2].name, mono[3].name);
+        assert_eq!(stereo.len(), 2);
+        assert_eq!(
+            stereo[0].input,
+            HardwareInput {
+                first: 0,
+                stereo: true
+            }
+        );
+        assert_eq!(stereo[0].name, "Hotone USB Audio:capture_FR + capture_FL");
+        assert_eq!(
+            stereo[1].input,
+            HardwareInput {
+                first: 2,
+                stereo: true
+            }
+        );
+        assert!(!stereo[1].available);
+        assert!(stereo[1].name.contains(MISSING) && stereo[1].name.contains(EXTRA));
+    }
+
+    fn fixture(lang: Lang) -> (App, TrackId) {
+        let (project, track) = edits::add_audio_track(
+            &Project::new("JACK capture"),
+            edits::NewAudioTrack {
+                name: Some("Voice".into()),
+                input: AudioInput::Hardware(HardwareInput {
+                    first: 0,
+                    stereo: false,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (project, _) = edits::add_bus(
+            &project,
+            edits::NewBus {
+                name: Some("Backing".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut app = App::headless(project).with_lang(lang);
+        let _source = app.engine_mut().set_test_audio_input(4, 48_000).unwrap();
+        app.engine_mut().set_test_jack_capture_sources(vec![
+            source(LEFT, Some("alsa:pcm:hotone:capture_1"), true),
+            source(RIGHT, Some("alsa:pcm:hotone:capture_2"), true),
+            source(MISSING, None, false),
+            source(EXTRA, None, true),
+        ]);
+        (app, track)
+    }
+
+    #[test]
+    fn jack_choices_set_track_inputs_from_both_uis_without_changing_audio_settings() {
+        for lang in [Lang::De, Lang::En] {
+            let (app, track) = fixture(lang);
+            let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+                .with_size(vec2(1280.0, 800.0))
+                .with_max_steps(64)
+                .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+            h.run_steps(3);
+
+            let pair = "Hotone USB Audio:capture_FL + capture_FR";
+            let missing = lang.audio_input_unavailable(MISSING);
+            h.get_by_role_and_label(Role::Button, &lang.audio_input_tip(LEFT))
+                .click();
+            h.run_steps(3);
+            assert!(
+                h.get_by_role_and_label(Role::Group, lang.audio_input_section_mono())
+                    .get_by_role_and_label(Role::MenuItem, &missing)
+                    .accesskit_node()
+                    .is_disabled()
+            );
+            let choice = h
+                .get_by_role_and_label(Role::Group, lang.audio_input_section_stereo())
+                .get_by_role_and_label(Role::MenuItem, pair);
+            choice.click();
+            h.run_steps(3);
+            assert_eq!(
+                h.state().project().track(track).unwrap().audio.input,
+                AudioInput::Hardware(HardwareInput {
+                    first: 0,
+                    stereo: true
+                })
+            );
+            assert!(
+                h.get_by_role_and_label(Role::Button, &lang.audio_input_tip(pair))
+                    .accesskit_node()
+                    .description()
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("alsa:pcm:hotone:capture_1"))
+            );
+            assert!(h.state().engine.audio_input_config().is_none());
+            assert_eq!(h.state().engine.audio_input_channels(), 4);
+
+            h.key_press_modifiers(
+                egui::Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+                egui::Key::T,
+            );
+            h.run_steps(3);
+            let input = h.get_by_role_and_label(Role::ComboBox, lang.new_track_input());
+            assert_eq!(input.accesskit_node().value().as_deref(), Some(EXTRA));
+            input.click();
+            h.run_steps(3);
+            h.get_by_role_and_label(Role::Heading, lang.audio_input_section_mono());
+            h.get_by_role_and_label(Role::Heading, lang.audio_input_section_stereo());
+            assert!(
+                h.get_by_role_and_label(Role::ListBoxOption, &missing)
+                    .accesskit_node()
+                    .is_disabled()
+            );
+            h.get_by_role_and_label(Role::ListBoxOption, RIGHT).click();
+            h.run_steps(3);
+            h.get_by_role_and_label(Role::Button, lang.new_track_create())
+                .click();
+            h.run_steps(3);
+            let added = h
+                .state()
+                .project()
+                .tracks
+                .iter()
+                .find(|item| item.id != track && item.is_audio())
+                .unwrap();
+            assert_eq!(
+                added.audio.input,
+                AudioInput::Hardware(HardwareInput {
+                    first: 1,
+                    stereo: false
+                })
+            );
+            assert!(h.state().engine.audio_input_config().is_none());
+        }
     }
 }

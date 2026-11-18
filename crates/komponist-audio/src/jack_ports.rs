@@ -50,6 +50,28 @@ impl JackPort {
     }
 }
 
+/// One configured capture channel in track routing order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JackCaptureChannel {
+    /// The full name and optional alias of the source port.
+    pub port: JackPort,
+    /// Whether this source is actually linked to its local capture port.
+    pub connected: bool,
+}
+
+impl JackCaptureChannel {
+    pub(crate) fn missing(name: &str) -> Self {
+        Self {
+            port: JackPort {
+                name: name.to_owned(),
+                alias: None,
+                direction: JackDirection::Capture,
+            },
+            connected: false,
+        }
+    }
+}
+
 /// Enumerates audio ports without activating a stream or starting a JACK server.
 pub fn jack_ports() -> Result<Vec<JackPort>, crate::AudioError> {
     #[cfg(target_os = "linux")]

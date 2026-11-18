@@ -12,7 +12,7 @@ use crate::backend::{self, NullStream, StreamCallback, StreamShared};
 use crate::midi::MidiReceiver;
 use crate::process::{AudioProcess, StreamParams};
 use crate::slot::{DetachStep, EngineSlot, SlotHandle};
-use crate::{JackRoutes, workgroup};
+use crate::{JackCaptureChannel, JackRoutes, workgroup};
 
 /// Weight of one callback's load in the smoothed CPU load (time constant ≈ 20 callbacks).
 const LOAD_SMOOTHING: f32 = 0.05;
@@ -381,6 +381,7 @@ pub struct AudioSystem<P: AudioProcess> {
     input_error: Option<AudioError>,
     input_channels: u16,
     synthetic_input: Option<crate::InputReader>,
+    requested_jack_capture: Option<Vec<JackCaptureChannel>>,
 }
 
 /// Looking for a missing device ([`AudioSystem::poll`]).
@@ -443,6 +444,7 @@ impl<P: AudioProcess> AudioSystem<P> {
             input_error: None,
             input_channels: 0,
             synthetic_input: None,
+            requested_jack_capture: None,
         }
     }
 
@@ -532,6 +534,27 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.input_channels
     }
 
+    /// Actual JACK capture sources, ordered by input channel. A selected port keeps its slot
+    /// even when unavailable. None means this backend has no active JACK capture configuration.
+    pub fn jack_capture_sources(&self) -> Option<&[JackCaptureChannel]> {
+        #[cfg(target_os = "linux")]
+        if let Some(Current {
+            backend: Backend::Jack(jack),
+            ..
+        }) = &self.current
+            && (self.requested_jack_capture.is_some() || self.input.is_some())
+        {
+            return Some(jack.capture_sources());
+        }
+        if self.input.is_some()
+            && matches!(&self.state, AudioState::NoDevice { config, .. } if config.host == HostKind::Jack)
+        {
+            // Preserve explicitly configured names when playback fell back to the null stream.
+            return Some(self.requested_jack_capture.as_deref().unwrap_or_default());
+        }
+        self.requested_jack_capture.as_deref()
+    }
+
     /// Installs synthetic capture on the null backend. Rebuilding a stream retires this
     /// source; tests explicitly install a new one after a rebuild. Never opens hardware.
     pub fn set_test_input(
@@ -595,6 +618,16 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.retry = None;
         self.input_error = None;
         self.teardown();
+        self.requested_jack_capture = if config.host == HostKind::Jack {
+            config.jack_routes.capture.as_ref().map(|capture| {
+                capture
+                    .iter()
+                    .map(|name| JackCaptureChannel::missing(name))
+                    .collect()
+            })
+        } else {
+            None
+        };
         match start_output(self, config) {
             Ok(effective) => {
                 self.state = AudioState::Running {
@@ -631,6 +664,7 @@ impl<P: AudioProcess> AudioSystem<P> {
         self.retry = None;
         self.input_error = None;
         self.teardown();
+        self.requested_jack_capture = None;
         self.state = AudioState::Stopped;
     }
 
@@ -1409,6 +1443,27 @@ mod tests {
         };
         system.arm_retry(asio);
         assert_eq!(system.retry.as_ref().unwrap().interval, ASIO_RETRY_INTERVAL);
+    }
+
+    #[test]
+    fn unavailable_jack_keeps_requested_source_slots_until_switching_hosts() {
+        let (mut system, _, _) = system(0.0);
+        let mut config = null(64);
+        config.host = HostKind::Jack;
+        config.jack_routes.capture = Some(vec!["USB:right".into(), "USB:left".into()]);
+        assert!(
+            system
+                .start_with(&config, |_, _| Err(AudioError::HostUnavailable(
+                    HostKind::Jack
+                )))
+                .is_err()
+        );
+        let sources = system.jack_capture_sources().unwrap();
+        assert_eq!(sources[0].port.name, "USB:right");
+        assert_eq!(sources[1].port.name, "USB:left");
+        assert!(sources.iter().all(|source| !source.connected));
+        system.start(&null(64)).unwrap();
+        assert!(system.jack_capture_sources().is_none());
     }
 
     #[test]
