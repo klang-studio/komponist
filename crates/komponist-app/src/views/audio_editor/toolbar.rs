@@ -178,7 +178,8 @@ pub fn show(
 ) {
     px::fill(ui.painter(), rect, 0.0, color32(color::SURFACE_2));
     let first = Rect::from_min_size(rect.min, vec2(rect.width(), size::PANEL_HEADER));
-    let controls_w = size::CONTROL_COMPACT * 3.0 + space::SPACE_0_5 * 2.0;
+    // Compact icon buttons are 20 high but retain CONTROL (24) width.
+    let controls_w = size::CONTROL * 3.0 + space::SPACE_0_5 * 2.0;
     let values = Rect::from_min_max(
         first.min + vec2(space::SPACE_2, 0.0),
         first.max - vec2(controls_w + space::SPACE_3, 0.0),

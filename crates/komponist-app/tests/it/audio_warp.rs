@@ -401,6 +401,17 @@ fn snapshots_of_warp_modes_full_and_trimmed_sources_in_both_languages() {
                         }
                     }
                 }
+                for label in [
+                    t.audio_file_actions(),
+                    t.audio_zoom_out(),
+                    t.audio_zoom_in(),
+                ] {
+                    let rect = h.get_by_role_and_label(Role::Button, label).rect();
+                    assert!(
+                        rect.right() <= width - komponist_tokens::space::SPACE_2 * 2.0,
+                        "icon extends past dock padding: {label}"
+                    );
+                }
                 if missing {
                     let masks: Vec<_> = h
                         .query_all_by_role_and_label(Role::Label, &path.display().to_string())

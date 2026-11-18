@@ -456,10 +456,22 @@ fn take_rows_expose_selection_duration_and_delete_in_both_languages() {
             panic!("audio")
         };
         assert_eq!(audio.active_take, 0);
-        for _ in 0..12 {
+        // A fixed sleep can capture empty take/arranger waves when the shared peak worker
+        // is busy with other parallel tests. Wait for the actual source state, then paint it.
+        let pooled = komponist_audiofile::FilePool::global().open(&path).unwrap();
+        let deadline = std::time::Instant::now() + crate::common::PATIENCE;
+        while !matches!(
+            pooled.peaks_state(),
+            komponist_audiofile::PeakState::Ready(_)
+        ) {
             h.run_steps(1);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "take waveform never became ready"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+        h.run_steps(3);
         // Scratch paths and CPU are nondeterministic; their labels retain their full accessible value.
         if let Some(path) = h.query_by_role_and_label(Role::Label, lang.audio_file_path()) {
             h.mask(path.rect());
