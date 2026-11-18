@@ -1269,10 +1269,11 @@ the portable FFT without fast-math or host-specific instruction flags.
 `AudioPlan` compiles enabled Warp with the original/project tempo ratio and the active take's
 native offset, converted to the engine rate. Each track's `SegmentRenderer` owns the decoder, rate
 converter and `WarpState`. One read-ahead worker per engine services all tracks, and offline
-`ensure` uses the same renderer. Warp joins use the model's native source boundaries from the
-chain origin, preserving genuine splits even when a native frame spans many engine frames. Source resampling precedes stretch; clip gain/fades
-and loop wraps follow it. Fixed/RePitch keep
-their existing renderer. No native object is carried by the plan or realtime voice.
+`ensure` uses the same renderer. A Warp join compares the model's native source boundaries and
+translated phase against the chain's origin. Genuine splits stay continuous even when a native
+frame spans many engine frames. Source resampling precedes stretch. Clip gain, fades and loop wraps
+follow it. Fixed and Re-Pitch use their existing renderer. The plan and realtime voice carry no
+native stretch object.
 
 Warp always generates full 512-frame chunks and retains their overhang across ring writes,
 100 ms heads and source-continuous split boundaries. Finite clip length truncates publication,
@@ -1293,11 +1294,13 @@ deadline. For an invalid input frame, only seek windows that need that sample ar
 Recovery starts on the first valid sample of the affected Warp chain, even inside a callback.
 A stopped playhead is primed only when its queued window is available.
 
-Export owns fresh rings and diagnostics and fills them synchronously without preparing live
-clip heads. Source read, seek or sample-rate conversion failures for Warp propagate to
-`ExportError::Stretch`; clean end-of-file still pads with zeros. A failed export leaves no
-partial output and restores the previous program. Pending live source metadata keeps the
-existing source-loading behavior.
+Export owns fresh rings and diagnostics and fills them synchronously. It cuts audio at the
+exact output frame. A Warp chain uses full DSP blocks up to its terminal block and carries the
+cut fade across seamless splits. The decoder reads the input needed for those blocks, including
+the sample-rate converter's filter delay and block sizes. Source read, seek and sample-rate
+conversion failures for Warp propagate to `ExportError::Stretch`. Clean end-of-file pads
+with zeros. A failed export leaves no partial output and restores the previous program.
+Pending live source metadata keeps the existing source-loading behavior.
 
 Generated-source tests cover pitch, exact length, resampling, native offsets, trim/takes,
 block-size independence, seamless splits, heads/loops/locates, post-stretch gain/fades,

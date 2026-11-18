@@ -184,7 +184,9 @@ pub(crate) struct WarpState {
     stretch: Stretcher,
     input: [Vec<f32>; 2],
     output: [Vec<f32>; 2],
+    generated: usize,
     used: usize,
+    end: Option<i64>,
 }
 impl WarpState {
     pub(crate) fn matches(&self, seg: &Segment, j: i64) -> bool {
@@ -195,12 +197,21 @@ impl WarpState {
     }
     pub(crate) fn new(
         plan: &AudioPlan,
-        seg: &Segment,
+        i: usize,
         j: i64,
         reader: &mut SourceReader,
     ) -> Result<Self, WarpFailure> {
+        let seg = &plan.segments[i];
         let warp = seg.warp.ok_or(StretchError::Settings)?;
         let stretch = Stretcher::new(plan.rate, 2, warp.ratio)?;
+        // Offline only, the clipped end of this chain is the terminal DSP boundary. A seamless
+        // split shares the current chunk and may consume its overhang in the next segment.
+        let end = plan.offline.then(|| {
+            let chain = &plan.segments[i..];
+            let count = chain
+                .partition_point(|s| s.warp.is_some_and(|w| w.chain_start == warp.chain_start));
+            chain[count - 1].end
+        });
         // Starts within a cached head replay from its origin, so head → ring is identical.
         // Other locates skip at most one chunk; arbitrary seeks never render a whole prefix.
         let anchor = seek_anchor(plan, j);
@@ -217,7 +228,9 @@ impl WarpState {
             stretch,
             input: [Vec::new(), Vec::new()],
             output: [vec![0.0; CHUNK_FRAMES], vec![0.0; CHUNK_FRAMES]],
-            used: CHUNK_FRAMES,
+            generated: 0,
+            used: 0,
+            end,
         };
         state.read_source(reader, state.stretch.prime_frames())?;
         if let Err(error) = state.stretch.seek(&[&state.input[0], &state.input[1]]) {
@@ -226,7 +239,7 @@ impl WarpState {
         let mut skip = (j - anchor) as usize;
         while skip > 0 {
             state.generate(reader)?;
-            let n = skip.min(CHUNK_FRAMES);
+            let n = skip.min(state.generated);
             state.used = n;
             state.next += n as i64;
             skip -= n;
@@ -242,7 +255,7 @@ impl WarpState {
             c.resize(n, 0.0);
         }
         let [l, r] = &mut self.input;
-        reader.read(self.input_at, [l, r])?;
+        reader.read(self.input_at, [l, r], self.end.is_some())?;
         self.input_at = end;
         Ok(())
     }
@@ -264,15 +277,19 @@ impl WarpState {
     }
 
     fn generate(&mut self, reader: &mut SourceReader) -> Result<(), WarpFailure> {
-        let n = self.stretch.input_frames_required(CHUNK_FRAMES)?;
+        let frames = self.end.map_or(CHUNK_FRAMES, |end| {
+            (end - self.next).clamp(0, CHUNK_FRAMES as i64) as usize
+        });
+        let n = self.stretch.input_frames_required(frames)?;
         self.read_source(reader, n)?;
         let [l, r] = &mut self.output;
-        if let Err(error) = self
-            .stretch
-            .process(&[&self.input[0], &self.input[1]], &mut [l, r])
-        {
+        if let Err(error) = self.stretch.process(
+            &[&self.input[0], &self.input[1]],
+            &mut [&mut l[..frames], &mut r[..frames]],
+        ) {
             return Err(self.input_error(error));
         }
+        self.generated = frames;
         self.used = 0;
         Ok(())
     }
@@ -284,13 +301,13 @@ impl WarpState {
         let [l, r] = out;
         let mut at = 0;
         while at < l.len() {
-            if self.used == CHUNK_FRAMES
+            if self.used == self.generated
                 && let Err(mut error) = self.generate(reader)
             {
                 error.rendered = at;
                 return Err(error);
             }
-            let n = (CHUNK_FRAMES - self.used).min(l.len() - at);
+            let n = (self.generated - self.used).min(l.len() - at);
             l[at..at + n].copy_from_slice(&self.output[0][self.used..self.used + n]);
             r[at..at + n].copy_from_slice(&self.output[1][self.used..self.used + n]);
             self.used += n;

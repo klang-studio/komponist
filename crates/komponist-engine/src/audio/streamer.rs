@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::render::{SegmentRenderer, render_head};
 use super::stretch::{BadInput, until_next_seek_anchor};
@@ -66,7 +66,7 @@ struct StreamVoice {
 }
 
 struct Retry {
-    until: std::time::Instant,
+    until: Instant,
     input: Option<BadInput>,
 }
 
@@ -194,7 +194,7 @@ impl Streamer {
         for v in self.voices.iter_mut().filter(|v| !v.plan.offline) {
             for _ in 0..PASS_CHUNKS {
                 let before = v.produced;
-                if v.produce(&mut self.buf, CHUNK_FRAMES) {
+                if v.produce(&mut self.buf, CHUNK_FRAMES, Instant::now) {
                     progress = true;
                     frames += v.produced - before;
                 } else {
@@ -231,7 +231,7 @@ impl Streamer {
             } else {
                 CHUNK_FRAMES
             };
-            if !v.produce(&mut self.buf, limit) {
+            if !v.produce(&mut self.buf, limit, Instant::now) {
                 break;
             }
         }
@@ -273,7 +273,12 @@ impl Streamer {
 
 impl StreamVoice {
     /// Renders and writes one chunk if the ring has room. Returns whether it wrote.
-    fn produce(&mut self, buf: &mut [Vec<f32>; 2], limit: usize) -> bool {
+    fn produce(
+        &mut self,
+        buf: &mut [Vec<f32>; 2],
+        limit: usize,
+        now: impl Fn() -> Instant,
+    ) -> bool {
         let plan = &*self.plan;
         let free = plan.ring.free(self.epoch);
         if free < MIN_FREE {
@@ -299,7 +304,7 @@ impl StreamVoice {
                 let j = self.cursor - seg.start;
                 let mut blocked = false;
                 if let Some(retry) = self.failed.get(&i)
-                    && std::time::Instant::now() < retry.until
+                    && now() < retry.until
                 {
                     if let Some(input) = retry.input {
                         // A clean request in this same segment can proceed without waiting.
@@ -324,7 +329,7 @@ impl StreamVoice {
                                 self.failed.insert(
                                     i,
                                     Retry {
-                                        until: std::time::Instant::now() + super::RETRY_AFTER,
+                                        until: now() + super::RETRY_AFTER,
                                         input: error.input,
                                     },
                                 );
@@ -445,7 +450,7 @@ impl StreamShared {
                 std::thread::sleep(IDLE);
                 continue;
             }
-            let began = std::time::Instant::now();
+            let began = Instant::now();
             let progress = {
                 let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
                 // A decoder that panics must not take the thread's voices down in a loop: the
@@ -477,5 +482,120 @@ impl StreamShared {
     pub(crate) fn ensure(&self, ring: &Arc<Ring>, epoch: u32, upto: u32) {
         let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
         core.ensure(ring, epoch, upto);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::{self, NoEnv};
+    use komponist_model::edits::{self, NewAudioTrack, NewClip, NewClipContent};
+    use komponist_model::{AudioFile, Project, Tick};
+    use std::path::PathBuf;
+
+    struct Source(PathBuf);
+
+    impl Drop for Source {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn bad_warp_plan(name: &str) -> (Source, Arc<AudioPlan>) {
+        let source = Source(std::env::temp_dir().join(format!(
+            "komponist-streamer-{name}-{}.wav",
+            std::process::id(),
+        )));
+        let mut writer = hound::WavWriter::create(
+            &source.0,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for _ in 0..8000 {
+            writer.write_sample(f32::NAN).unwrap();
+        }
+        writer.finalize().unwrap();
+        let file = AudioFile::new(&source.0, None, 8000, 48000, 1);
+        let (mut project, track) =
+            edits::add_audio_track(&Project::new("Retry"), NewAudioTrack::default()).unwrap();
+        for (start, offset) in [(0, 0), (20, 1000)] {
+            let (new_project, clip) = edits::add_clip(
+                &project,
+                track,
+                NewClip {
+                    start: Tick(start),
+                    length: Tick(20),
+                    name: "Invalid source".into(),
+                    content: NewClipContent::Audio {
+                        file: file.clone(),
+                        offset,
+                    },
+                },
+            )
+            .unwrap();
+            project = edits::set_audio_clip_warp(&new_project, clip, true).unwrap();
+        }
+        let program = compile::build(&project, None, &NoEnv);
+        (source, program.tracks[0].audio.as_ref().unwrap().clone())
+    }
+
+    fn start(plan: &Arc<AudioPlan>, lp: Option<(i64, i64)>) -> Streamer {
+        let (mut tx, rx) = rtrb::RingBuffer::new(4);
+        let mut worker = Streamer::new(rx);
+        plan.ring.begin_read(1);
+        assert!(
+            tx.push(Msg::Start {
+                plan: Arc::clone(plan),
+                epoch: 1,
+                pos: 0,
+                lp,
+            })
+            .is_ok()
+        );
+        assert!(worker.drain());
+        worker
+    }
+
+    #[test]
+    fn failed_segments_retry_independently_in_the_ring() {
+        let (_source, plan) = bad_warp_plan("retry");
+        let mut worker = start(&plan, Some((0, 1000)));
+        let first = Instant::now();
+        // Drive the ring without servicing the head queue, which also records diagnostics.
+        for (ms, failures) in [
+            (0, [1, 0]),
+            (100, [1, 1]),
+            (499, [1, 1]),
+            (499, [1, 1]),
+            (500, [2, 1]),
+            (599, [2, 1]),
+            (600, [2, 1]),
+            (600, [2, 2]),
+        ] {
+            assert!(worker.voices[0].produce(&mut worker.buf, CHUNK_FRAMES, || {
+                first + Duration::from_millis(ms)
+            }));
+            assert_eq!([plan.failure_count(0), plan.failure_count(1)], failures);
+        }
+        assert!(!plan.heads_ready());
+    }
+
+    #[test]
+    fn export_plans_only_render_in_synchronous_ensure() {
+        let (_source, live) = bad_warp_plan("offline");
+        let plan = live.for_export(20);
+        let mut worker = start(&plan, None);
+        assert!(worker.head_queue.is_empty());
+        assert!(worker.service().is_none());
+        assert_eq!(plan.ring.written(1), Some(0));
+        assert_eq!(plan.failure_count(0), 0);
+        worker.ensure(&plan.ring, 1, 20);
+        assert_eq!(plan.ring.written(1), Some(20));
+        assert_eq!(plan.failure_count(0), 1);
     }
 }

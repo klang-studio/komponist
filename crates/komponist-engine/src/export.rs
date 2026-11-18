@@ -267,6 +267,17 @@ pub fn export(
             job: job.sample_rate,
         });
     }
+    if job.range.is_empty() && job.tail == 0 {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
+        }
+        let output = Output::create(job)?;
+        progress(Progress {
+            fraction: 1.0,
+            peak_db: gain_to_db(0.0),
+        });
+        return output.write(job, Vec::new(), 0.0, cancel);
+    }
     if handle.commands.slots() < COMMANDS {
         return Err(ExportError::QueueFull);
     }
@@ -280,7 +291,7 @@ pub fn export(
     let preroll = preroll + engine.project_latency(program);
     let end = end_tick(map, rate, job.range.end);
     let playhead = handle.telemetry().playhead();
-    let exporting = export_program(program, end);
+    let exporting = export_program(program, end, job.range.end as i64);
     let failures: Vec<_> = exporting
         .tracks
         .iter()
@@ -437,8 +448,7 @@ fn end_tick(map: &TempoMap, rate: f64, end: u64) -> Tick {
 
 /// The program the export plays: `program` with loop and metronome off, without notes starting
 /// at or after `end`, notes sounding at `end` cut there, and fresh track meters.
-fn export_program(program: &Program, end: Tick) -> Program {
-    let map = &program.tempo_map;
+fn export_program(program: &Program, end: Tick, audio_end: i64) -> Program {
     let tracks = program
         .tracks
         .iter()
@@ -457,12 +467,8 @@ fn export_program(program: &Program, end: Tick) -> Program {
                     })
                     .collect()
             };
-            // Audio is cut at the end of the range like the notes (a plan of its own, with its
-            // own ring, so the export does not touch the live stream).
-            let audio = track.audio.as_ref().map(|plan| {
-                let end = map.tick_to_sample(end, f64::from(plan.rate()));
-                plan.for_export(end)
-            });
+            // Audio is cut at the exact sample boundary. Its offline plan owns a fresh ring.
+            let audio = track.audio.as_ref().map(|plan| plan.for_export(audio_end));
             Arc::new(TrackProgram {
                 notes,
                 meter: Arc::new(TrackMeter::new()),
@@ -526,14 +532,6 @@ fn render(
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
-    let report = |peak: f32, done: usize| Progress {
-        fraction: if len == 0 {
-            1.0
-        } else {
-            (done as f64 / len as f64) as f32
-        },
-        peak_db: gain_to_db(peak),
-    };
     while samples.len() < len {
         if cancel.load(Ordering::Relaxed) {
             return Err(ExportError::Cancelled);
@@ -548,10 +546,10 @@ fn render(
             }
             peak = peak.max(s.abs());
         }
-        progress(report(peak, samples.len()));
-    }
-    if len == 0 {
-        progress(report(peak, 0));
+        progress(Progress {
+            fraction: (samples.len() as f64 / len as f64) as f32,
+            peak_db: gain_to_db(peak),
+        });
     }
     Ok((samples, peak))
 }
@@ -615,6 +613,9 @@ impl Output {
                 };
                 written.map_err(wav_error)?;
             }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
         }
         let Output { writer, part } = self;
         writer.finalize().map_err(wav_error)?;
@@ -1019,7 +1020,7 @@ mod tests {
             slots: Arc::new(SlotMap::default()),
             routing: Default::default(),
         };
-        let export = export_program(&program, Tick(1000));
+        let export = export_program(&program, Tick(1000), 25_000);
         assert!(!export.loop_on && !export.metronome);
         assert_eq!(export.song_end, program.song_end);
         assert_eq!(
@@ -1036,7 +1037,7 @@ mod tests {
             &program.tracks[1].meter
         ));
         assert!(
-            export_program(&program, Tick(0))
+            export_program(&program, Tick(0), 0)
                 .tracks
                 .iter()
                 .all(|t| t.notes.is_empty())

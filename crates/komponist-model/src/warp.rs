@@ -170,6 +170,48 @@ impl WarpMap {
     pub fn source_frame(self, local: Tick) -> Result<u64, WarpError> {
         u64::try_from(self.position(local)?).map_err(|_| WarpError::SourcePosition)
     }
+    /// Whether the next map continues this one from `at` for the following `length` ticks.
+    pub fn continues_with(self, at: Tick, next: Self, length: Tick) -> bool {
+        let Some(end) = at.0.checked_add(length.0).map(Tick) else {
+            return false;
+        };
+        let Ok(source_end) = self.source_frame(end) else {
+            return false;
+        };
+        if length < Tick::ZERO
+            || self.numerator != next.numerator
+            || self.denominator != next.denominator
+            || self.source_frame(at) != Ok(next.offset)
+            || next.source_frame(length) != Ok(source_end)
+        {
+            return false;
+        }
+
+        // At this point the anchor is valid and both maps have the same slope. Translating the
+        // phase by a multiple of the reduced denominator preserves its fractional frame phase.
+        let phase = self.phase.0 + at.0;
+        if phase == next.phase.0 {
+            return true;
+        }
+        let (mut a, mut b) = (self.numerator, self.denominator);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        let period = (self.denominator / a) as i128;
+        let first = i128::from(phase.min(next.phase.0));
+        let shift = i128::from(phase.max(next.phase.0)) - first;
+        if shift % period != 0 {
+            return false;
+        }
+
+        // An exact half-frame rounds in opposite directions on opposite sides of tick zero.
+        // In the earlier phase, those signs differ on [-shift, -1]. Check for a tie there.
+        let crossing_start = first.max(-shift);
+        let crossing_end = (first + i128::from(length.0)).min(-1);
+        period % 2 != 0
+            || (period / 2 - crossing_start).rem_euclid(period) > crossing_end - crossing_start
+    }
+
     /// Native frames consumed by a nonnegative clip-local duration.
     pub fn source_frames(self, length: Tick) -> Result<u64, WarpError> {
         if length < Tick::ZERO {

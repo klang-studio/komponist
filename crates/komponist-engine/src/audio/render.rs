@@ -80,11 +80,20 @@ impl SourceReader {
 
     /// Frames `q0 .. q0 + out.len()` of the engine-rate stream (zeros outside the file) into
     /// `out`.
-    pub(crate) fn read(&mut self, q0: i64, out: [&mut [f32]; 2]) -> Result<(), StretchError> {
+    pub(crate) fn read(
+        &mut self,
+        q0: i64,
+        out: [&mut [f32]; 2],
+        exact: bool,
+    ) -> Result<(), StretchError> {
         let n = out[0].len();
         let lo = q0.max(0) as u64;
         let hi = (q0 + n as i64).max(0) as u64;
-        let filled = if hi > lo { self.fill(lo, hi) } else { Ok(()) };
+        let filled = if hi > lo {
+            self.fill(lo, hi, exact)
+        } else {
+            Ok(())
+        };
         let [out_l, out_r] = out;
         for (k, (l, r)) in out_l.iter_mut().zip(out_r.iter_mut()).enumerate() {
             let q = q0 + k as i64;
@@ -112,13 +121,28 @@ impl SourceReader {
     }
 
     /// Makes the window hold `lo .. hi` (as far as the file reaches).
-    fn fill(&mut self, lo: u64, hi: u64) -> Result<(), StretchError> {
+    fn fill(&mut self, lo: u64, hi: u64, exact: bool) -> Result<(), StretchError> {
         let end = self.win_start + self.win[0].len() as u64;
         if lo < self.win_start || lo > end + RESEEK_GAP {
             self.seek(lo)?;
         }
-        while self.win_start + (self.win[0].len() as u64) < hi && !self.eof {
-            self.pump()?;
+        while !self.eof {
+            let missing = hi.saturating_sub(self.win_start + self.win[0].len() as u64);
+            if missing == 0 {
+                break;
+            }
+            // Offline Warp surfaces real source errors. Read only the missing frames or the
+            // converter's next input block, including blocks needed for its filter delay.
+            let frames = if exact {
+                self.conv
+                    .as_ref()
+                    .map_or(missing.min(READ_FRAMES as u64) as usize, |conv| {
+                        conv.frames_until_next_chunk().min(READ_FRAMES)
+                    })
+            } else {
+                READ_FRAMES
+            };
+            self.pump(frames)?;
         }
         Ok(())
     }
@@ -143,9 +167,9 @@ impl SourceReader {
     }
 
     /// Decodes and converts the next chunk into the window.
-    fn pump(&mut self) -> Result<(), StretchError> {
+    fn pump(&mut self, frames: usize) -> Result<(), StretchError> {
         let channels = self.channels;
-        let read = self.file.read(&mut self.inter);
+        let read = self.file.read(&mut self.inter[..frames * channels]);
         let n = read.as_ref().copied().unwrap_or(0);
         for plane in self.plane_out.iter_mut().chain(self.plane_in.iter_mut()) {
             plane.clear();
@@ -257,7 +281,7 @@ impl SegmentRenderer {
             let result = (|| {
                 if !continues {
                     self.warp = None;
-                    self.warp = Some(WarpState::new(plan, seg, j0, reader)?);
+                    self.warp = Some(WarpState::new(plan, i, j0, reader)?);
                 }
                 self.warp
                     .as_mut()
@@ -280,7 +304,7 @@ impl SegmentRenderer {
         } else if seg.speed == 1.0 {
             self.warp = None;
             // Fixed and Re-Pitch retain the existing best-effort silence on source errors.
-            let _ = reader.read(seg.x0 + j0, [&mut *out_l, &mut *out_r]);
+            let _ = reader.read(seg.x0 + j0, [&mut *out_l, &mut *out_r], false);
         } else {
             self.warp = None;
             let pos = |k: i64| seg.x0 as f64 + (j0 + k) as f64 * seg.speed;
@@ -292,7 +316,7 @@ impl SegmentRenderer {
                 plane.resize(len, 0.0);
             }
             let [src_l, src_r] = &mut self.scratch;
-            let _ = reader.read(first, [&mut src_l[..], &mut src_r[..]]);
+            let _ = reader.read(first, [&mut src_l[..], &mut src_r[..]], false);
             for (k, (l, r)) in out_l.iter_mut().zip(out_r.iter_mut()).enumerate() {
                 let x = pos(k as i64);
                 let at = (x.floor() as i64 - first) as usize;
@@ -301,13 +325,18 @@ impl SegmentRenderer {
                 *r = cubic(&src_r[at - 1..=at + 2], t);
             }
         }
+        let edge_out = plan
+            .export_fade
+            .filter(|(chain, _)| seg.warp.is_some_and(|w| w.chain_start == *chain))
+            .map(|(_, end)| end - seg.start)
+            .or_else(|| seg.edge_out.then(|| seg.len()));
         let rendered = failure.map_or(n, |error| error.rendered);
         for (k, (l, r)) in out_l[..rendered]
             .iter_mut()
             .zip(&mut out_r[..rendered])
             .enumerate()
         {
-            let g = envelope(seg, j0 + k as i64, plan.edge_frames);
+            let g = envelope(seg, j0 + k as i64, plan.edge_frames, edge_out);
             *l *= g;
             *r *= g;
         }
@@ -344,7 +373,7 @@ fn cubic(p: &[f32], t: f32) -> f32 {
 /// The gain of segment frame `j`: the clip gain, the clip's linear fades and the `edge` frames
 /// fade at the borders that have one. Fade-in frame `j` has gain `j / length` (0 at the first
 /// frame), fade-out frame `j` has `(len − 1 − j) / length` (0 at the last frame).
-pub(crate) fn envelope(seg: &Segment, j: i64, edge: u32) -> f32 {
+fn envelope(seg: &Segment, j: i64, edge: u32, edge_out: Option<i64>) -> f32 {
     let from_end = seg.len() - 1 - j;
     let mut gain = seg.gain;
     if j < i64::from(seg.fade_in) {
@@ -357,8 +386,11 @@ pub(crate) fn envelope(seg: &Segment, j: i64, edge: u32) -> f32 {
     if seg.edge_in && j < i64::from(edge) {
         gain *= j as f32 / edge_len;
     }
-    if seg.edge_out && from_end < i64::from(edge) {
-        gain *= from_end as f32 / edge_len;
+    if let Some(end) = edge_out {
+        let from_edge = end - 1 - j;
+        if from_edge < i64::from(edge) {
+            gain *= from_edge as f32 / edge_len;
+        }
     }
     gain
 }

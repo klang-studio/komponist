@@ -229,6 +229,8 @@ pub struct AudioPlan {
     ring: Arc<Ring>,
     heads: OnceLock<Heads>,
     offline: bool,
+    /// The Warp chain cut by an export and its exact cut frame.
+    export_fade: Option<(i64, i64)>,
     edge_frames: u32,
     head_frames: usize,
     diagnostics: stretch::Diagnostics,
@@ -316,13 +318,24 @@ impl AudioPlan {
     /// A fresh offline plan with its own ring and diagnostics, even if no clip needs trimming.
     /// Only the export's synchronous streamer services the plan, and nothing plays from `end`.
     pub(crate) fn for_export(&self, end: i64) -> Arc<AudioPlan> {
+        let export_fade = self.locate(end).ok().and_then(|i| {
+            let cut = &self.segments[i];
+            // A cut at a seamless split can need a fade across both neighboring segments.
+            cut.warp
+                .filter(|_| cut.start < end || !cut.edge_in)
+                .map(|warp| (warp.chain_start, end))
+        });
         let segments: Vec<Segment> = self
             .segments
             .iter()
             .filter(|s| s.start < end)
             .map(|s| Segment {
                 end: s.end.min(end),
-                edge_out: s.edge_out || s.end > end,
+                edge_out: if s.end > end {
+                    s.warp.is_none()
+                } else {
+                    s.edge_out
+                },
                 ..s.clone()
             })
             .collect();
@@ -337,6 +350,7 @@ impl AudioPlan {
             ring: Arc::new(Ring::new()),
             heads: OnceLock::new(),
             offline: true,
+            export_fade,
             edge_frames: self.edge_frames,
             head_frames: self.head_frames,
             clips: self.clips.clone(),
@@ -408,17 +422,7 @@ impl PlannedSegment {
             return false;
         };
         let at = next.clip_start - self.clip_start;
-        // The Native-frame boundaries must match the first piece's phase, as they do for a
-        // model split. Matching the pair alone could accumulate independent rounding errors.
-        [(at, Tick::ZERO), (at + next.clip_length, next.clip_length)]
-            .into_iter()
-            .all(|(left, right)| {
-                origin
-                    .source_frame(left)
-                    .ok()
-                    .zip(continuation.source_frame(right).ok())
-                    .is_some_and(|(left, right)| left == right)
-            })
+        origin.continues_with(at, continuation, next.clip_length)
     }
 }
 
@@ -484,6 +488,7 @@ pub(crate) fn build_plan(
         ring: previous.map_or_else(|| Arc::new(Ring::new()), |p| Arc::clone(&p.ring)),
         heads: OnceLock::new(),
         offline: false,
+        export_fade: None,
         edge_frames: edge.min(MAX_EDGE_FRAMES as u32),
         head_frames: (HEAD_MS / 1000.0 * rate).round() as usize,
         clips: track.clips.clone(),
