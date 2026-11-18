@@ -34,6 +34,10 @@ pub(crate) struct Voice {
     epoch: u32,
     /// The song frame the next read continues at (the transport's, after the loop rule).
     next_pos: i64,
+    /// Origin of the last explicit seek/loop wrap, for compatible Warp head fallback.
+    head_origin: i64,
+    after_wrap: bool,
+    recovering_warp: bool,
     /// Frames of the epoch consumed.
     elapsed: u32,
     /// The loop the epoch was started with.
@@ -78,6 +82,9 @@ impl Voice {
             ring: 0,
             epoch: 0,
             next_pos: 0,
+            head_origin: 0,
+            after_wrap: false,
+            recovering_warp: false,
             elapsed: 0,
             lp: None,
             active: false,
@@ -96,6 +103,7 @@ impl Voice {
         self.plan = 0;
         self.ring = 0;
         self.active = false;
+        self.recovering_warp = false;
         self.ramp = None;
         self.tail_len = 0;
         self.underrun = false;
@@ -152,6 +160,9 @@ impl Voice {
         self.epoch = self.epoch.wrapping_add(1).max(1);
         self.elapsed = 0;
         self.next_pos = p.pos;
+        self.head_origin = p.pos;
+        self.after_wrap = false;
+        self.recovering_warp = false;
         self.lp = p.lp;
         plan.ring.begin_read(self.epoch);
         let msg = || Msg::Start {
@@ -242,7 +253,7 @@ impl Voice {
         self.primed = ahead.is_some_and(|a| a >= PRIME_FRAMES);
         let from_ring = ahead.map_or(0, |a| a.clamp(0, n as i32) as usize);
         if from_ring > 0 {
-            plan.ring.copy_out(
+            self.underrun |= !plan.ring.copy_out_available(
                 self.elapsed,
                 &mut out_l[..from_ring],
                 &mut out_r[..from_ring],
@@ -251,11 +262,27 @@ impl Voice {
         if from_ring < n {
             self.fill_from_heads(plan, pos, from_ring, out_l, out_r);
         }
+        if self.underrun {
+            if plan
+                .locate(pos)
+                .is_ok_and(|i| plan.segments[i].warp.is_some())
+            {
+                self.recovering_warp = true;
+            }
+        } else if self.recovering_warp {
+            self.recovering_warp = false;
+            self.ramp = Some(0);
+        }
         if let Some(done) = self.ramp {
             self.ramp = self.fade_in(plan, pos, done, out_l, out_r);
         }
         self.elapsed = self.elapsed.wrapping_add(n as u32);
         self.next_pos = advance(pos, n as i64, self.lp);
+        if self.next_pos != pos + n as i64 {
+            self.head_origin = self.next_pos;
+            self.after_wrap = true;
+        }
+        self.primed &= !self.underrun;
         plan.ring.set_read(self.epoch, self.elapsed);
     }
 
@@ -280,11 +307,36 @@ impl Voice {
                     let seg = &plan.segments[i];
                     let run = remaining.min((seg.end - q) as usize);
                     let j = (q - seg.start) as usize;
-                    let head = heads.and_then(|h| h.segments.get(i));
+                    // A continuous Warp split carries spectral history across the cut. Its
+                    // standalone head is valid for an explicit seek here, not for an earlier
+                    // epoch's running chain; missing data must be a counted silence instead.
+                    let compatible = seg.warp.is_none_or(|w| {
+                        w.chain_start == seg.start
+                            || (self.head_origin >= seg.start
+                                && self.head_origin < seg.start + plan.head_frames as i64)
+                    });
+                    let head = heads.filter(|_| compatible).and_then(|h| h.segments.get(i));
                     let covered = head.map_or(0, |h| h[0].len().saturating_sub(j)).min(run);
                     if let Some(head) = head.filter(|_| covered > 0) {
                         out_l[k..k + covered].copy_from_slice(&head[0][j..j + covered]);
                         out_r[k..k + covered].copy_from_slice(&head[1][j..j + covered]);
+                        // Ring frames already carry loop fades; cached head samples need the
+                        // same dynamic wrap envelope, without touching the stretcher on RT.
+                        if let Some((start, end)) = self.lp {
+                            let edge = i64::from(plan.edge_frames);
+                            for z in 0..covered {
+                                let at = q + z as i64;
+                                let mut gain = 1.0;
+                                if at < end && end - at <= edge {
+                                    gain *= (end - at - 1) as f32 / edge as f32;
+                                }
+                                if self.after_wrap && at >= start && at - start < edge {
+                                    gain *= (at - start) as f32 / edge as f32;
+                                }
+                                out_l[k + z] *= gain;
+                                out_r[k + z] *= gain;
+                            }
+                        }
                     }
                     if covered < run {
                         out_l[k + covered..k + run].fill(0.0);

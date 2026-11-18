@@ -22,6 +22,7 @@
 mod render;
 mod ring;
 pub(crate) mod streamer;
+mod stretch;
 pub(crate) mod voice;
 
 use std::collections::HashMap;
@@ -38,6 +39,7 @@ use komponist_model::{
 
 pub use ring::{RING_FRAMES, Ring};
 pub use streamer::StreamStats;
+pub use stretch::{StretchError, WarpSegment};
 
 /// Length in milliseconds of the head every segment keeps in memory: what plays right after a
 /// locate or a jump while the streamer refills the ring.
@@ -179,6 +181,8 @@ pub struct Segment {
     /// Engine-rate source frames per output frame: 1 for a Fixed clip, `project / original` tempo
     /// for Re-Pitch.
     pub speed: f64,
+    /// Worker-only pitch-preserving transform, independent of the legacy resampling speed.
+    pub warp: Option<WarpSegment>,
     /// Clip gain, linear.
     pub gain: f32,
     /// Fade-in and fade-out of the clip in frames (linear amplitude).
@@ -225,6 +229,7 @@ pub struct AudioPlan {
     heads: OnceLock<Heads>,
     edge_frames: u32,
     head_frames: usize,
+    diagnostics: stretch::Diagnostics,
     /// The clips this was compiled from, for the incremental rebuild.
     clips: Vec<Arc<Clip>>,
 }
@@ -260,6 +265,25 @@ impl AudioPlan {
     pub fn source_of(&self, clip: ClipId) -> Option<&Arc<ClipSource>> {
         let segment = self.segments.iter().find(|s| s.clip == clip)?;
         self.sources.get(segment.source as usize)
+    }
+
+    pub(crate) fn failure_count(&self, i: usize) -> u64 {
+        self.diagnostics.count(i)
+    }
+    pub(crate) fn failure_reason(&self, i: usize) -> Option<StretchError> {
+        self.diagnostics.error(i)
+    }
+
+    /// Number of worker stretch failures observed by this plan (including head preparation).
+    pub fn stretch_failures(&self) -> u64 {
+        self.diagnostics.total()
+    }
+    /// Last observed failure for a clip; historical until the plan is replaced.
+    pub fn stretch_error(&self, clip: ClipId) -> Option<StretchError> {
+        self.segments
+            .iter()
+            .position(|s| s.clip == clip)
+            .and_then(|i| self.diagnostics.error(i))
     }
 
     /// Whether the heads of all segments are in memory (they are built in the background after
@@ -310,6 +334,7 @@ impl AudioPlan {
             tempo: self.tempo,
             dir: self.dir.clone(),
             sources: self.sources.clone(),
+            diagnostics: stretch::Diagnostics::new(segments.len()),
             segments: segments.into(),
             ring: Arc::new(Ring::new()),
             heads: OnceLock::new(),
@@ -417,7 +442,7 @@ pub(crate) fn build_plan(
         }
     }
     segments.retain(|s| s.end > s.start);
-    join_seamless(&mut segments, &sources);
+    join_seamless(&mut segments, &sources, env.rate);
     let edge = (EDGE_FADE_MS / 1000.0 * rate).round().max(1.0) as u32;
     AudioPlan {
         id: NEXT_PLAN.fetch_add(1, Ordering::Relaxed),
@@ -425,6 +450,7 @@ pub(crate) fn build_plan(
         tempo: env.tempo,
         dir: env.dir.map(Into::into),
         sources,
+        diagnostics: stretch::Diagnostics::new(segments.len()),
         segments: segments.into(),
         ring: previous.map_or_else(|| Arc::new(Ring::new()), |p| Arc::clone(&p.ring)),
         heads: OnceLock::new(),
@@ -456,8 +482,18 @@ fn segment(
         start,
         end,
         source,
-        x0: (audio.offset as f64 * ratio).round() as i64,
+        x0: if audio.warp_enabled() {
+            let native = u128::from(audio.file.sample_rate);
+            let frame = (u128::from(audio.offset) * u128::from(env.rate) + native / 2) / native;
+            i64::try_from(frame).unwrap_or(i64::MAX)
+        } else {
+            (audio.offset as f64 * ratio).round() as i64
+        },
         speed: audio.speed(env.tempo.tempo),
+        warp: audio.warp_enabled().then(|| WarpSegment {
+            ratio: audio.original_tempo.bpm / env.tempo.tempo.bpm,
+            chain_start: start,
+        }),
         gain,
         fade_in: fade_in as u32,
         fade_out: fade_out as u32,
@@ -468,22 +504,38 @@ fn segment(
 
 /// Clears the edge fades between two segments that are one continuous stretch of the same file
 /// (a clip that was split in two): same file, speed and gain, no clip fade at the cut, the second
-/// starting where the first stops, within a frame.
-fn join_seamless(segments: &mut [Segment], sources: &[Arc<ClipSource>]) {
+/// starting where the first stops. Warp includes native-frame and song-frame quantization;
+/// the legacy paths retain their one-engine-frame tolerance.
+fn join_seamless(segments: &mut [Segment], sources: &[Arc<ClipSource>], rate: u32) {
     for i in 1..segments.len() {
         let (a, b) = (&segments[i - 1], &segments[i]);
         let same_file = Arc::ptr_eq(&sources[a.source as usize], &sources[b.source as usize]);
-        let played = (a.len() as f64 * a.speed).round() as i64;
+        let played = (a.len() as f64 * a.warp.map_or(a.speed, |w| 1.0 / w.ratio)).round() as i64;
+        let tolerance = a.warp.map_or(1, |w| {
+            // Model splits quantize to native source frames; timeline endpoints quantize
+            // independently at the engine rate. At large SRC ratios a native frame spans
+            // many engine frames, and fast compression magnifies a timeline-frame error.
+            i128::from(rate.div_ceil(sources[a.source as usize].link.sample_rate))
+                + (1.0 / w.ratio).ceil() as i128
+                + 1
+        });
+        let distance = (i128::from(b.x0) - i128::from(a.x0) - i128::from(played)).abs();
         let seamless = same_file
             && a.end == b.start
             && a.speed == b.speed
+            && a.warp.map(|w| w.ratio) == b.warp.map(|w| w.ratio)
             && a.gain == b.gain
             && a.fade_out == 0
             && b.fade_in == 0
-            && (b.x0 - (a.x0 + played)).abs() <= 1;
+            && distance <= tolerance;
         if seamless {
             segments[i - 1].edge_out = false;
             segments[i].edge_in = false;
+            if let Some(w) = segments[i - 1].warp
+                && let Some(next) = &mut segments[i].warp
+            {
+                next.chain_start = w.chain_start;
+            }
         }
     }
 }

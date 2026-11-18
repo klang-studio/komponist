@@ -197,6 +197,11 @@ pub enum ExportError {
     /// An audio clip in the range plays a file that is missing or cannot be read (the path of the
     /// link). Nothing was changed: an export without it would be silent where the clip is.
     MissingAudio(PathBuf),
+    /// A worker could not render a warped clip. No silent/partial export is committed.
+    Stretch {
+        clip: komponist_model::ClipId,
+        reason: crate::audio::StretchError,
+    },
     /// The target cannot be created (checked before anything changes), the render does not fit
     /// into memory, or writing failed. No partial file is left.
     Io(io::Error),
@@ -215,6 +220,7 @@ impl fmt::Display for ExportError {
             ExportError::MissingAudio(path) => {
                 write!(f, "audio file missing or unreadable: {}", path.display())
             }
+            ExportError::Stretch { clip, reason } => write!(f, "audio clip {}: {reason}", clip.0),
             ExportError::Io(error) => write!(f, "{error}"),
         }
     }
@@ -273,18 +279,34 @@ pub fn export(
     let preroll = preroll + engine.project_latency(program);
     let end = end_tick(map, rate, job.range.end);
     let playhead = handle.telemetry().playhead();
+    let exporting = export_program(program, end);
+    let failures: Vec<_> = exporting
+        .tracks
+        .iter()
+        .filter_map(|t| t.audio.as_ref())
+        .flat_map(|plan| {
+            plan.segments()
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    s.start < (job.range.end + job.tail) as i64 && s.end > job.range.start as i64
+                })
+                .map(|(i, s)| (Arc::clone(plan), i, s.clip, plan.failure_count(i)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
     send_all(
         handle,
         [
             // Two Stops: the second is the hard cut, so no live tail bleeds into the file.
             Command::Stop,
             Command::Stop,
-            Command::SetProgram(Box::new(export_program(program, end))),
+            Command::SetProgram(Box::new(exporting)),
             Command::Locate(from),
             Command::Play,
         ],
     )?;
-    let result = render(engine, job, preroll, cancel, &mut progress)
+    let result = render(engine, job, preroll, cancel, &mut progress, &failures)
         .and_then(|(samples, peak)| output.write(job, samples, peak, cancel));
     let restored = send_all(
         handle,
@@ -470,7 +492,21 @@ fn render(
     preroll: u64,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(Progress),
+    failures: &[(Arc<crate::AudioPlan>, usize, komponist_model::ClipId, u64)],
 ) -> Result<(Vec<f32>, f32), ExportError> {
+    let check = || -> Result<(), ExportError> {
+        for (plan, i, clip, before) in failures {
+            if plan.failure_count(*i) > *before {
+                return Err(ExportError::Stretch {
+                    clip: *clip,
+                    reason: plan
+                        .failure_reason(*i)
+                        .unwrap_or(crate::audio::StretchError::Backend),
+                });
+            }
+        }
+        Ok(())
+    };
     let too_long = || io::Error::new(io::ErrorKind::OutOfMemory, "export too long for memory");
     let len = usize::try_from(job.frames())
         .ok()
@@ -485,6 +521,7 @@ fn render(
         }
         let n = skip.min(MAX_BLOCK as u64) as usize;
         render_block(engine, n);
+        check()?;
         skip -= n as u64;
     }
     let mut peak = 0.0_f32;
@@ -503,6 +540,7 @@ fn render(
         let n = MAX_BLOCK.min((len - samples.len()) / 2);
         let first = samples.len();
         samples.extend_from_slice(render_block(engine, n));
+        check()?;
         for s in &mut samples[first..] {
             if !s.is_finite() {
                 *s = 0.0;

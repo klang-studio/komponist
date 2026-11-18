@@ -1,4 +1,4 @@
-//! Rendering of segments: file → engine rate → speed → gain and fades (streamer thread; allocates
+//! Rendering of segments: file → engine rate → speed/Warp → gain and fades (streamer thread; allocates
 //! and does file IO, never on the audio thread).
 //!
 //! The source of a segment is the **file resampled to the engine rate**, an infinite stream with
@@ -6,11 +6,13 @@
 //! position: it seeks before the position (a pre-roll aligned to the rate ratio so the converter's
 //! phase is right) and decodes forward, so a seek, a locate and a continuous play give the same
 //! frames. A Fixed clip copies the stream; a Re-Pitch clip reads it at `speed` frames per output
-//! frame with a four-point cubic (Catmull-Rom) interpolation.
+//! frame with a four-point cubic (Catmull-Rom) interpolation. Warp uses fixed buffered
+//! Signalsmith chunks, with priming/latency compensation before clip gain and fades.
 
 use komponist_audiofile::{AudioFile, PoolFile, StreamResampler};
 
-use super::{AudioPlan, Segment};
+use super::stretch::WarpState;
+use super::{AudioPlan, Segment, StretchError};
 
 /// File frames per decoder read.
 const READ_FRAMES: usize = 4096;
@@ -182,6 +184,7 @@ impl SourceReader {
 pub(crate) struct SegmentRenderer {
     current: Option<(u32, SourceReader)>,
     scratch: [Vec<f32>; 2],
+    warp: Option<WarpState>,
 }
 
 impl SegmentRenderer {
@@ -189,29 +192,66 @@ impl SegmentRenderer {
         SegmentRenderer {
             current: None,
             scratch: [Vec::new(), Vec::new()],
+            warp: None,
         }
     }
 
     /// Forgets the open decoder (a new epoch or plan).
     pub(crate) fn reset(&mut self) {
         self.current = None;
+        self.warp = None;
+    }
+    /// A transport jump discards DSP history/overhang on the worker, retaining the decoder.
+    pub(crate) fn restart(&mut self) {
+        self.warp = None;
     }
 
     /// Renders frames `j0 .. j0 + out.len()` of segment `i` of `plan` (clip gain, fades and edge
     /// fades applied) into `out`, which it overwrites. A file that is not there gives silence.
-    pub(crate) fn render(&mut self, plan: &AudioPlan, i: usize, j0: i64, out: [&mut [f32]; 2]) {
+    pub(crate) fn render(
+        &mut self,
+        plan: &AudioPlan,
+        i: usize,
+        j0: i64,
+        out: [&mut [f32]; 2],
+    ) -> Result<(), StretchError> {
         let seg = &plan.segments[i];
         let n = out[0].len();
         if !self.select(plan, seg) {
+            if seg.warp.is_some()
+                && plan.sources[seg.source as usize].status() == super::SourceStatus::Ready
+            {
+                plan.diagnostics.fail(i, StretchError::Backend);
+                return Err(StretchError::Backend);
+            }
             out[0].fill(0.0);
             out[1].fill(0.0);
-            return;
+            self.warp = None;
+            return Ok(());
         }
         let reader = &mut self.current.as_mut().expect("selected").1;
         let [out_l, out_r] = out;
-        if seg.speed == 1.0 {
+        if seg.warp.is_some() {
+            let result = (|| {
+                if !self.warp.as_ref().is_some_and(|w| w.matches(seg, j0)) {
+                    self.warp = None;
+                    self.warp = Some(WarpState::new(plan, seg, j0, reader)?);
+                }
+                self.warp
+                    .as_mut()
+                    .expect("initialized")
+                    .render(reader, [&mut *out_l, &mut *out_r])
+            })();
+            if let Err(error) = result {
+                self.warp = None;
+                plan.diagnostics.fail(i, error);
+                return Err(error);
+            }
+        } else if seg.speed == 1.0 {
+            self.warp = None;
             reader.read(seg.x0 + j0, [&mut *out_l, &mut *out_r]);
         } else {
+            self.warp = None;
             let pos = |k: i64| seg.x0 as f64 + (j0 + k) as f64 * seg.speed;
             let first = pos(0).floor() as i64 - 1;
             let last = pos(n as i64 - 1).floor() as i64 + 2;
@@ -235,6 +275,7 @@ impl SegmentRenderer {
             *l *= g;
             *r *= g;
         }
+        Ok(())
     }
 
     /// Makes the open decoder the one of `seg`'s source; `false` when it cannot be opened.
@@ -293,6 +334,11 @@ pub(crate) fn render_head(plan: &AudioPlan, i: usize) -> [Box<[f32]>; 2] {
         .unwrap_or(0)
         .min(plan.head_frames);
     let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
-    SegmentRenderer::new().render(plan, i, 0, [&mut l, &mut r]);
+    if SegmentRenderer::new()
+        .render(plan, i, 0, [&mut l, &mut r])
+        .is_err()
+    {
+        return [Box::new([]), Box::new([])];
+    }
     [l.into(), r.into()]
 }

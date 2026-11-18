@@ -60,6 +60,7 @@ struct StreamVoice {
     renderer: SegmentRenderer,
     /// Frames written so far (all epochs).
     produced: u64,
+    failed: Option<(usize, std::time::Instant)>,
 }
 
 struct HeadJob {
@@ -129,6 +130,8 @@ impl Streamer {
                     if v.plan.id != plan.id {
                         v.renderer.reset();
                     }
+                    v.renderer.restart();
+                    v.failed = None;
                     v.plan = plan;
                     v.epoch = epoch;
                     v.cursor = pos;
@@ -143,6 +146,7 @@ impl Streamer {
                     since_wrap: None,
                     renderer: SegmentRenderer::new(),
                     produced: 0,
+                    failed: None,
                 }),
             }
         }
@@ -251,23 +255,47 @@ impl StreamVoice {
         let n = k as usize;
         let [bl, br] = buf;
         let (l, r) = (&mut bl[..n], &mut br[..n]);
-        match segment {
+        let available = match segment {
             Ok(i) => {
-                let j0 = self.cursor - plan.segments[i].start;
-                self.renderer.render(plan, i, j0, [&mut *l, &mut *r]);
+                let throttled = self.failed.is_some_and(|(failed, until)| {
+                    failed == i && std::time::Instant::now() < until
+                });
+                let ok = if throttled {
+                    false
+                } else {
+                    let j0 = self.cursor - plan.segments[i].start;
+                    match self.renderer.render(plan, i, j0, [&mut *l, &mut *r]) {
+                        Ok(()) => true,
+                        Err(_) => {
+                            self.failed = Some((i, std::time::Instant::now() + super::RETRY_AFTER));
+                            false
+                        }
+                    }
+                };
+                if !ok {
+                    l.fill(0.0);
+                    r.fill(0.0);
+                }
+                ok
             }
             Err(_) => {
                 l.fill(0.0);
                 r.fill(0.0);
+                true
             }
-        }
+        };
         self.wrap_fades(l, r);
-        plan.ring.push(self.epoch, l, r);
+        if available {
+            plan.ring.push(self.epoch, l, r);
+        } else {
+            plan.ring.push_available(self.epoch, l, r, false);
+        }
         self.produced += n as u64;
         let before = self.cursor;
         self.cursor = advance(before, k, self.lp);
         let wrapped = matches!(self.lp, Some((_, end)) if before < end && before + k == end);
         if wrapped {
+            self.renderer.restart();
             self.since_wrap = Some(0);
         } else if let Some(done) = self.since_wrap {
             let done = done.saturating_add(n as u32);

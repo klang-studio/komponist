@@ -9,7 +9,7 @@
 //! the epoch in their high half, so a word that belongs to an older epoch is never mistaken for
 //! the current one.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Frames a ring holds (a power of two): the read-ahead is at most this far ahead of the playhead,
 /// about 0.7 s at 48 kHz.
@@ -20,6 +20,7 @@ const MASK: usize = RING_FRAMES - 1;
 /// Single-producer single-consumer ring of rendered audio. See the module docs.
 pub struct Ring {
     data: [Box<[AtomicU32]>; 2],
+    available: Box<[AtomicBool]>,
     /// `epoch << 32 | frames written in the epoch` (the producer's).
     write: AtomicU64,
     /// `epoch << 32 | frames consumed in the epoch` (the consumer's).
@@ -42,6 +43,7 @@ impl Ring {
         let plane = || (0..RING_FRAMES).map(|_| AtomicU32::new(0)).collect();
         Ring {
             data: [plane(), plane()],
+            available: (0..RING_FRAMES).map(|_| AtomicBool::new(false)).collect(),
             write: AtomicU64::new(0),
             read: AtomicU64::new(0),
         }
@@ -69,12 +71,33 @@ impl Ring {
     /// RT. Copies the frames `from ..` of the stream into `left` and `right` (equal lengths).
     /// The caller has checked that they are written ([`Ring::written`]) and not yet released.
     pub fn copy_out(&self, from: u32, left: &mut [f32], right: &mut [f32]) {
+        self.copy_out_available(from, left, right);
+    }
+    /// RT. Invalid worker frames are silence and return false, preserving underrun telemetry.
+    pub(crate) fn copy_out_available(
+        &self,
+        from: u32,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> bool {
         let start = from as usize;
+        let mut valid = true;
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
             let at = (start + i) & MASK;
-            *l = f32::from_bits(self.data[0][at].load(Ordering::Relaxed));
-            *r = f32::from_bits(self.data[1][at].load(Ordering::Relaxed));
+            let available = self.available[at].load(Ordering::Relaxed);
+            valid &= available;
+            *l = if available {
+                f32::from_bits(self.data[0][at].load(Ordering::Relaxed))
+            } else {
+                0.0
+            };
+            *r = if available {
+                f32::from_bits(self.data[1][at].load(Ordering::Relaxed))
+            } else {
+                0.0
+            };
         }
+        valid
     }
 
     // --- Producer (streamer) -------------------------------------------------------------------
@@ -104,11 +127,15 @@ impl Ring {
 
     /// Appends `left` and `right` (equal lengths, at most [`Ring::free`]) to `epoch`.
     pub(crate) fn push(&self, epoch: u32, left: &[f32], right: &[f32]) {
+        self.push_available(epoch, left, right, true);
+    }
+    pub(crate) fn push_available(&self, epoch: u32, left: &[f32], right: &[f32], available: bool) {
         let w = self.write.load(Ordering::Relaxed);
         debug_assert_eq!((w >> 32) as u32, epoch);
         let start = w as u32;
         for (i, (l, r)) in left.iter().zip(right).enumerate() {
             let at = (start as usize).wrapping_add(i) & MASK;
+            self.available[at].store(available, Ordering::Relaxed);
             self.data[0][at].store(l.to_bits(), Ordering::Relaxed);
             self.data[1][at].store(r.to_bits(), Ordering::Relaxed);
         }
@@ -167,5 +194,31 @@ mod tests {
         ring.copy_out((RING_FRAMES - 10) as u32, &mut a, &mut b);
         assert_eq!(a.to_vec(), x);
         assert_eq!(b.to_vec(), x);
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+    #[test]
+    fn unavailable_frames_are_zero_and_counted_through_wrap_and_new_epochs() {
+        let ring = Ring::new();
+        ring.begin_read(1);
+        ring.begin_write(1);
+        let block = vec![0.25; RING_FRAMES - 3];
+        ring.push(1, &block, &block);
+        ring.set_read(1, (RING_FRAMES - 3) as u32);
+        ring.push_available(1, &[9.0; 7], &[9.0; 7], false);
+        ring.push(1, &[0.5; 4], &[0.5; 4]);
+        let (mut l, mut r) = ([1.0; 11], [1.0; 11]);
+        assert!(!ring.copy_out_available((RING_FRAMES - 3) as u32, &mut l, &mut r));
+        assert_eq!(&l[..7], &[0.0; 7]);
+        assert_eq!(&l[7..], &[0.5; 4]);
+        assert_eq!(l, r);
+        ring.begin_read(2);
+        ring.begin_write(2);
+        ring.push(2, &[0.75; 11], &[0.75; 11]);
+        assert!(ring.copy_out_available(0, &mut l, &mut r));
+        assert_eq!(l, [0.75; 11]);
     }
 }
