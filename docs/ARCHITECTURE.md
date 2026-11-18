@@ -1284,7 +1284,10 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
   instead of joining samples across a gap. Monitoring holds the last sample instead of
   interpolating across sequence gaps. Capture failures leave the output stream running and the
-  requested input available for reselection. Callback buffers and queue storage are preallocated.
+  requested input available for reselection. A previously opened source can reconnect by its exact
+  stable ID without restarting output. The callback takes the replacement reader from a bounded
+  queue and sends the retired storage back to the control thread. Input inventory and startup use
+  the same eligible channel and sample formats. Callback buffers and queue storage are preallocated.
   ASIO capture uses the output's driver and caches input metadata during normal enumeration;
   it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
   inject synthetic capture into the same bridge/null backend without opening hardware.

@@ -131,7 +131,8 @@ pub(crate) struct StreamCallback<P: AudioProcess> {
     params: StreamParams,
     /// Interleaved, `max_frames × channels`.
     scratch: Vec<f32>,
-    input: Option<(crate::InputReader, Vec<f32>)>,
+    input: Option<crate::input::CallbackInput>,
+    capture_updates: Option<crate::input::CaptureUpdates>,
     shared: Arc<StreamShared>,
 }
 
@@ -148,17 +149,23 @@ impl<P: AudioProcess> StreamCallback<P> {
             params,
             scratch,
             input: None,
+            capture_updates: None,
             shared,
         }
     }
 
     /// Non-RT. Installs a capture consumer and preallocates its interleaved scratch space.
     pub(crate) fn with_input(mut self, reader: Option<crate::InputReader>) -> Self {
-        self.input = reader.map(|reader| {
-            let scratch = vec![0.0; self.params.max_frames as usize * reader.channels()];
-            (reader, scratch)
-        });
+        self.input =
+            reader.map(|reader| crate::input::callback_input(reader, self.params.max_frames));
         self
+    }
+
+    /// Non-RT. Allows the control thread to replace capture while this output stays open.
+    pub(crate) fn enable_capture_reconnect(&mut self) -> crate::input::CaptureTransfer {
+        let (transfer, updates) = crate::input::capture_transfer();
+        self.capture_updates = Some(updates);
+        transfer
     }
 
     /// RT. Fills `data` (interleaved, `params.channels` channels). Runs inside `assert_no_alloc`,
@@ -174,6 +181,9 @@ impl<P: AudioProcess> StreamCallback<P> {
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
+        if let Some(updates) = &mut self.capture_updates {
+            updates.install_pending(&mut self.input);
+        }
         let now = Instant::now();
         let StreamParams {
             sample_rate,

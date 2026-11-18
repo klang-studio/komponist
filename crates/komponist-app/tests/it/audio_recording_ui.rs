@@ -387,6 +387,44 @@ fn capture_device_choices_distinguish_disabled_default_and_disconnected() {
 }
 
 #[test]
+fn reselecting_the_same_input_retries_saving_settings() {
+    use komponist_app::device_host::BuiltinHost;
+    use komponist_app::engine_sync::EngineSync;
+    use komponist_app::settings::Settings;
+    use komponist_audio::{DeviceId, HostKind, InputConfig};
+    use komponist_model::Document;
+
+    let dir = crate::export::scratch("capture-settings-write");
+    let path = dir.join("settings.json");
+    let previous = InputConfig {
+        device: Some("Previous capture input".into()),
+        device_id: Some(DeviceId("fake:previous".into())),
+    };
+    let other = InputConfig {
+        device: Some("New capture input".into()),
+        device_id: Some(DeviceId("fake:new".into())),
+    };
+    let mut settings = Settings::default();
+    settings.audio.host = HostKind::Null;
+    settings.audio_input = Some(previous.clone());
+    settings.save(&path).unwrap();
+    // A directory at the temporary-write path fails on all platforms, independent of user IDs.
+    let blocked = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    let engine = EngineSync::null(Box::new(BuiltinHost::new()));
+    let (project, _) = audio(AudioInput::None);
+    let mut app = App::new(Document::new(project), engine, settings, Some(path.clone()));
+    let choose = || Action::Settings(SettingsAction::SetAudioInput(Some(other.clone())));
+    app.dispatch(choose());
+    assert_eq!(app.settings().audio_input, Some(other.clone()));
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(previous));
+    std::fs::remove_dir(blocked).unwrap();
+    app.dispatch(choose());
+    assert_eq!(Settings::load(&path).unwrap().audio_input, Some(other));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
     use komponist_audio::{DeviceId, InputConfig, InputDeviceInfo};
 

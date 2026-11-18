@@ -117,7 +117,11 @@ pub fn model(app: &App, now: Instant) -> StatusModel {
             StatusKind::Error => color::STATE_ERROR,
             StatusKind::Success | StatusKind::Info => color::TEXT_2,
         };
-    } else if let Some(error) = app.engine().audio_input_error() {
+    } else if matches!(
+        app.transport(),
+        TransportState::Stopped | TransportState::Playing
+    ) && let Some(error) = app.engine().audio_input_error()
+    {
         s.left = t.audio_input_open_failed(error);
         s.left_color = color::STATE_ERROR;
     }

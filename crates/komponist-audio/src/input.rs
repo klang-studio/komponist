@@ -1,7 +1,7 @@
 //! Timestamped audio capture, independent of the engine. Device and synthetic inputs share
 //! the same bounded SPSC bridge. All allocation happens before either callback starts.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,19 @@ pub const MAX_INPUT_CHANNELS: usize = 64;
 const MAX_QUEUE_FRAMES: usize = 65_536;
 /// The clock follower corrects separate device clocks by at most 0.2 percent.
 const MAX_CLOCK_CORRECTION: f64 = 0.002;
+/// Low bits hold the minimum pre-burst depth. High bits identify the current output read interval.
+const NO_BURST_DEPTH: u64 = u32::MAX as u64;
+const BURST_EPOCH: u64 = NO_BURST_DEPTH + 1;
+const CAPTURE_FORMATS: [cpal::SampleFormat; 3] = [
+    cpal::SampleFormat::F32,
+    cpal::SampleFormat::I32,
+    cpal::SampleFormat::I16,
+];
+
+fn capture_dimensions_valid(channels: u16, sample_rate: u32) -> bool {
+    (1..=MAX_INPUT_CHANNELS).contains(&usize::from(channels))
+        && crate::backend::valid_sample_rate(sample_rate)
+}
 
 /// An enabled input device. Optional fields choose the host default; `None` for the whole
 /// configuration disables capture. Old settings therefore never open a microphone.
@@ -92,7 +105,7 @@ pub struct InputDeviceInfo {
     pub channels: u16,
     /// Whether the host selects this device by default.
     pub is_default: bool,
-    /// Default native rate. Capture is converted to the output clock by the bridge.
+    /// Preferred native capture rate. The bridge converts to the output clock.
     pub sample_rate: u32,
 }
 
@@ -103,8 +116,7 @@ impl InputDeviceInfo {
     }
 
     fn is_usable(&self) -> bool {
-        (1..=MAX_INPUT_CHANNELS).contains(&usize::from(self.channels))
-            && crate::backend::valid_sample_rate(self.sample_rate)
+        capture_dimensions_valid(self.channels, self.sample_rate)
     }
 }
 
@@ -183,8 +195,7 @@ struct Frame {
 struct Shared {
     dropped: AtomicU64,
     lost: AtomicBool,
-    // Minimum queue depth before any input burst since the last output read.
-    pre_burst_depth: AtomicUsize,
+    burst_depth: AtomicU64,
 }
 
 impl Default for Shared {
@@ -192,9 +203,48 @@ impl Default for Shared {
         Self {
             dropped: AtomicU64::new(0),
             lost: AtomicBool::new(false),
-            pre_burst_depth: AtomicUsize::new(usize::MAX),
+            burst_depth: AtomicU64::new(NO_BURST_DEPTH),
         }
     }
+}
+
+impl Shared {
+    fn measure_read_epoch(&self) -> u64 {
+        self.burst_depth.load(Ordering::Acquire) & !NO_BURST_DEPTH
+    }
+
+    fn publish_burst_depth(&self, epoch: u64, depth: usize) {
+        // The low bit of the epoch is set while an output read can drain the queue.
+        if epoch & BURST_EPOCH != 0 {
+            return;
+        }
+        let _ = self
+            .burst_depth
+            .try_update(Ordering::Release, Ordering::Relaxed, |state| {
+                (state & !NO_BURST_DEPTH == epoch)
+                    .then_some(epoch | (state & NO_BURST_DEPTH).min(depth as u64))
+            });
+    }
+
+    fn begin_read(&self) -> Option<usize> {
+        let old = self
+            .burst_depth
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |state| {
+                Some(state.wrapping_add(BURST_EPOCH) | NO_BURST_DEPTH)
+            })
+            .unwrap_or_else(|state| state);
+        let depth = old & NO_BURST_DEPTH;
+        (depth != NO_BURST_DEPTH).then_some(depth as usize)
+    }
+
+    fn finish_read(&self) {
+        self.burst_depth.fetch_add(BURST_EPOCH, Ordering::Release);
+    }
+}
+
+struct BurstMeasurement {
+    epoch: u64,
+    depth: usize,
 }
 
 /// Producer used by the device callback and deterministic synthetic-input tests.
@@ -217,11 +267,27 @@ impl TestAudioSource {
         T: cpal::Sample + Copy,
         f32: cpal::FromSample<T>,
     {
-        let frames = samples.chunks_exact(self.channels);
-        if frames.len() == 0 {
+        if samples.len() < self.channels {
             return true;
         }
-        let pre_burst_depth = self.tx.buffer().capacity() - self.tx.slots();
+        let measurement = self.measure_burst();
+        self.push_measured(samples, at, measurement)
+    }
+
+    fn measure_burst(&self) -> BurstMeasurement {
+        let epoch = self.shared.measure_read_epoch();
+        BurstMeasurement {
+            epoch,
+            depth: self.tx.buffer().capacity() - self.tx.slots(),
+        }
+    }
+
+    fn push_measured<T>(&mut self, samples: &[T], at: Instant, measured: BurstMeasurement) -> bool
+    where
+        T: cpal::Sample + Copy,
+        f32: cpal::FromSample<T>,
+    {
+        let frames = samples.chunks_exact(self.channels);
         let mut complete = true;
         for (index, source) in frames.enumerate() {
             let mut frame = Frame {
@@ -242,8 +308,7 @@ impl TestAudioSource {
             }
         }
         self.shared
-            .pre_burst_depth
-            .fetch_min(pre_burst_depth, Ordering::Release);
+            .publish_burst_depth(measured.epoch, measured.depth);
         complete
     }
     /// Total source frames that did not fit in the bounded queue.
@@ -275,16 +340,12 @@ pub fn test_input(
     rate: u32,
     capacity: usize,
 ) -> Result<(TestAudioSource, InputReader), AudioError> {
-    let channels = usize::from(channels);
-    if channels == 0
-        || channels > MAX_INPUT_CHANNELS
-        || !crate::backend::valid_sample_rate(rate)
-        || !(2..=MAX_QUEUE_FRAMES).contains(&capacity)
-    {
+    if !capture_dimensions_valid(channels, rate) || !(2..=MAX_QUEUE_FRAMES).contains(&capacity) {
         return Err(AudioError::UnsupportedConfig(
             "invalid capture dimensions".into(),
         ));
     }
+    let channels = usize::from(channels);
     let (tx, rx) = rtrb::RingBuffer::new(capacity);
     let shared = Arc::new(Shared::default());
     Ok((
@@ -336,24 +397,33 @@ impl InputReader {
         if self.lost() {
             return InputBuffer::new(out, self.channels, Duration::ZERO, true);
         }
-        let lead = self
-            .shared
-            .pre_burst_depth
-            .swap(usize::MAX, Ordering::Acquire);
-        let queued = self.rx.slots();
+        let lead = self.shared.begin_read();
+        let input = self.read_queued(out, output_rate, now, lead);
+        self.shared.finish_read();
+        input
+    }
+
+    fn read_queued<'a>(
+        &mut self,
+        out: &'a mut [f32],
+        output_rate: u32,
+        now: Instant,
+        lead: Option<usize>,
+    ) -> InputBuffer<'a> {
         let dropped = self.shared.dropped.load(Ordering::Acquire);
         let overflow = dropped != self.dropped;
         let mut gap = overflow;
         self.dropped = dropped;
         // Only discard queued audio after confirmed loss to bring monitoring latency back down.
         if overflow {
-            for _ in 0..queued.saturating_sub(self.target) {
+            // A producer can fill the ring after the reserve measurement was taken.
+            for _ in 0..self.rx.slots().saturating_sub(self.target) {
                 let _ = self.rx.pop();
             }
             self.reset_interpolator();
-        } else if lead != usize::MAX {
+        } else if let Some(lead) = lead {
             self.lead = lead;
-            self.burst = self.burst.max(queued.saturating_sub(lead));
+            self.burst = self.burst.max(self.rx.slots().saturating_sub(lead));
         }
         // Start at the nominal rate once enough data is queued. During playback follow the
         // reserve before input arrived, excluding the sawtooth of input/output callback batching.
@@ -429,6 +499,67 @@ impl InputReader {
     }
 }
 
+/// Capture-reader storage sized on the control thread for the output callback.
+pub(crate) type CallbackInput = (InputReader, Vec<f32>);
+
+pub(crate) fn callback_input(reader: InputReader, output_frames: u32) -> CallbackInput {
+    let scratch = vec![0.0; output_frames as usize * reader.channels()];
+    (reader, scratch)
+}
+
+/// Control side of a bounded capture-reader handoff.
+pub(crate) struct CaptureTransfer {
+    pending: rtrb::Producer<CallbackInput>,
+    retired: rtrb::Consumer<CallbackInput>,
+}
+
+/// Callback side of a bounded capture-reader handoff. The control side frees retired readers.
+pub(crate) struct CaptureUpdates {
+    pending: rtrb::Consumer<CallbackInput>,
+    retired: rtrb::Producer<CallbackInput>,
+}
+
+pub(crate) fn capture_transfer() -> (CaptureTransfer, CaptureUpdates) {
+    let (send, receive) = rtrb::RingBuffer::new(1);
+    let (retire, reclaim) = rtrb::RingBuffer::new(1);
+    (
+        CaptureTransfer {
+            pending: send,
+            retired: reclaim,
+        },
+        CaptureUpdates {
+            pending: receive,
+            retired: retire,
+        },
+    )
+}
+
+impl CaptureTransfer {
+    pub(crate) fn ready(&mut self) -> bool {
+        let _ = self.retired.pop();
+        !self.pending.is_full()
+    }
+
+    pub(crate) fn install(&mut self, reader: InputReader, frames: u32) -> Result<(), AudioError> {
+        self.pending
+            .push(callback_input(reader, frames))
+            .map_err(|_| AudioError::Backend("capture reader update is still pending".into()))
+    }
+}
+
+impl CaptureUpdates {
+    pub(crate) fn install_pending(&mut self, active: &mut Option<CallbackInput>) {
+        if !self.retired.is_full()
+            && let Ok(next) = self.pending.pop()
+            && let Some(previous) = active.replace(next)
+        {
+            // There is a slot and only this callback produces retired readers.
+            let retired = self.retired.push(previous);
+            debug_assert!(retired.is_ok());
+        }
+    }
+}
+
 /// Lists input devices without starting capture. Null intentionally exposes no hardware.
 pub fn input_devices(kind: HostKind) -> Result<Vec<InputDeviceInfo>, AudioError> {
     if kind == HostKind::Null {
@@ -455,7 +586,7 @@ pub fn input_devices(kind: HostKind) -> Result<Vec<InputDeviceInfo>, AudioError>
 }
 
 fn describe_input(device: &cpal::Device) -> Option<(InputDeviceInfo, cpal::SupportedStreamConfig)> {
-    let config = device.default_input_config().ok()?;
+    let config = default_capture_config(device).ok()?;
     let description = device.description().ok()?;
     let info = InputDeviceInfo {
         id: device.id().ok().map(|id| DeviceId(id.to_string())),
@@ -465,6 +596,77 @@ fn describe_input(device: &cpal::Device) -> Option<(InputDeviceInfo, cpal::Suppo
         sample_rate: config.sample_rate(),
     };
     Some((info, config))
+}
+
+fn default_capture_config(
+    device: &cpal::Device,
+) -> Result<cpal::SupportedStreamConfig, AudioError> {
+    let native = device
+        .default_input_config()
+        .map_err(crate::backend::map_err)?;
+    if capture_dimensions_valid(native.channels(), native.sample_rate())
+        && CAPTURE_FORMATS.contains(&native.sample_format())
+    {
+        return Ok(native);
+    }
+    let ranges = device
+        .supported_input_configs()
+        .map_err(crate::backend::map_err)?;
+    fallback_capture_config(&native, ranges)
+        .ok_or_else(|| AudioError::UnsupportedConfig("no supported capture format".into()))
+}
+
+fn fallback_capture_config(
+    native: &cpal::SupportedStreamConfig,
+    ranges: impl IntoIterator<Item = cpal::SupportedStreamConfigRange>,
+) -> Option<cpal::SupportedStreamConfig> {
+    // Keep the native channel layout whenever possible. Choose it independently of the output
+    // rate so an input's channel count is the same in the menu and in the capture bridge.
+    let best = ranges
+        .into_iter()
+        .filter_map(|range| {
+            let first = range.min_sample_rate().max(1);
+            if first > range.max_sample_rate() || !capture_dimensions_valid(range.channels(), first)
+            {
+                return None;
+            }
+            let preference = CAPTURE_FORMATS
+                .iter()
+                .position(|format| range.sample_format() == *format)?;
+            Some((range, first, preference))
+        })
+        .min_by_key(|(range, _, preference)| {
+            (range.channels().abs_diff(native.channels()), *preference)
+        })?;
+    let (range, first, _) = best;
+    let desired = if crate::backend::valid_sample_rate(native.sample_rate()) {
+        native.sample_rate().clamp(first, range.max_sample_rate())
+    } else {
+        first
+    };
+    range.try_with_sample_rate(desired)
+}
+
+fn capture_at_output_rate(
+    device: &cpal::Device,
+    native: cpal::SupportedStreamConfig,
+    output_rate: u32,
+) -> Result<cpal::SupportedStreamConfig, AudioError> {
+    let ranges: Vec<_> = device
+        .supported_input_configs()
+        .map_err(crate::backend::map_err)?
+        .collect();
+    Ok(CAPTURE_FORMATS
+        .iter()
+        .find_map(|format| {
+            ranges
+                .iter()
+                .filter(|range| {
+                    range.sample_format() == *format && range.channels() == native.channels()
+                })
+                .find_map(|range| range.try_with_sample_rate(output_rate))
+        })
+        .unwrap_or(native))
 }
 
 static ASIO_INPUTS: Mutex<Vec<InputDeviceInfo>> = Mutex::new(Vec::new());
@@ -492,12 +694,18 @@ pub(crate) fn remember_asio(device: &cpal::Device) {
 pub(crate) struct CaptureStream {
     _stream: cpal::Stream,
     shared: Arc<Shared>,
+    device_id: Option<DeviceId>,
 }
 
 impl CaptureStream {
     pub(crate) fn lost(&self) -> bool {
         self.shared.lost.load(Ordering::Acquire)
     }
+
+    pub(crate) fn device_id(&self) -> Option<&DeviceId> {
+        self.device_id.as_ref()
+    }
+
     pub(crate) fn start(
         kind: HostKind,
         selection: &InputConfig,
@@ -507,10 +715,8 @@ impl CaptureStream {
     ) -> Result<(Self, InputReader), AudioError> {
         let host = crate::backend::host(kind)?;
         let open_default = |device: cpal::Device| -> Result<_, AudioError> {
-            let native = device
-                .default_input_config()
-                .map_err(crate::backend::map_err)?;
-            Ok((device, native))
+            let config = default_capture_config(&device)?;
+            Ok((device, config))
         };
         let (device, native) = if kind == HostKind::Asio {
             // ASIO can load only one driver: capture must use the already selected output.
@@ -550,29 +756,8 @@ impl CaptureStream {
                 .map(|(device, _, native)| (device, native))
                 .ok_or_else(|| AudioError::NoDevice("capture input unavailable".into()))?
         };
-        let formats = [
-            cpal::SampleFormat::F32,
-            cpal::SampleFormat::I32,
-            cpal::SampleFormat::I16,
-        ];
-        let ranges: Vec<_> = device
-            .supported_input_configs()
-            .map_err(crate::backend::map_err)?
-            .collect();
-        let config = formats
-            .iter()
-            .find_map(|format| {
-                ranges
-                    .iter()
-                    .find(|r| {
-                        r.sample_format() == *format
-                            && r.channels() == native.channels()
-                            && r.min_sample_rate() <= output_rate
-                            && r.max_sample_rate() >= output_rate
-                    })
-                    .map(|r| r.with_sample_rate(output_rate))
-            })
-            .unwrap_or(native);
+        let config = capture_at_output_rate(&device, native, output_rate)?;
+        let device_id = device.id().ok().map(|id| DeviceId(id.to_string()));
         let rate = config.sample_rate();
         let channels = config.channels();
         let capacity = ((buffer as usize).saturating_mul(8)).clamp(4096, MAX_QUEUE_FRAMES);
@@ -596,6 +781,7 @@ impl CaptureStream {
             Self {
                 _stream: stream,
                 shared,
+                device_id,
             },
             reader,
         ))
@@ -728,6 +914,53 @@ mod tests {
         });
         assert_eq!(out[15], 0.0);
     }
+    #[test]
+    fn a_returning_input_replaces_capture_at_the_next_callback_without_rt_drops() {
+        let (_, original) = test_input(1, 48_000, 16).unwrap();
+        let (mut transfer, mut updates) = capture_transfer();
+        let mut active = Some(callback_input(original, 4));
+        let (mut source, restored) = test_input(2, 48_000, 16).unwrap();
+        let at = Instant::now();
+        assert!(source.push(&[0.25; 8], at));
+        assert!(transfer.ready());
+        transfer.install(restored, 4).unwrap();
+        assert_no_alloc(|| {
+            updates.install_pending(&mut active);
+            let (reader, buffer) = active.as_mut().unwrap();
+            let input = reader.read(buffer, 48_000, at);
+            assert_eq!(input.channels(), 2);
+            assert_eq!(input.data(), &[0.25; 8]);
+        });
+        assert_eq!(transfer.retired.slots(), 1);
+        assert!(transfer.ready());
+        assert_eq!(transfer.retired.slots(), 0);
+    }
+
+    #[test]
+    fn a_read_between_burst_measurement_and_enqueue_invalidates_the_measurement() {
+        let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
+        let at = Instant::now();
+        assert!(source.push(&[0.25; 12], at));
+        assert!(!reader.read(&mut [0.0; 4], 48_000, at).discontinuous());
+        let delayed = source.measure_burst();
+        assert_eq!(delayed.depth, 8);
+
+        assert!(!reader.read(&mut [0.0; 8], 48_000, at).discontinuous());
+        assert!(source.push_measured(&[0.25; 4], at, delayed));
+        let mut out = [0.0; 4];
+        let input = reader.read(&mut out, 48_000, at);
+        assert!(!input.discontinuous());
+        assert_eq!(input.data(), &[0.25; 4]);
+        assert_eq!(reader.lead, 0);
+        assert_eq!(source.dropped(), 0);
+
+        assert!(source.push(&[0.25; 4], at));
+        assert!(source.push(&[0.25; 4], at));
+        let lead = reader.rx.slots() - 8;
+        assert!(!reader.read(&mut out, 48_000, at).discontinuous());
+        assert_eq!(reader.lead, lead);
+    }
+
     #[test]
     fn equal_clock_batches_need_no_extra_preload() {
         for (input_frames, output_frames) in [(256, 64), (64, 256), (512, 64), (64, 512)] {
@@ -924,6 +1157,35 @@ mod tests {
         let input = reader.read(&mut out, 192_000, at);
         assert!(!input.discontinuous());
         assert_eq!(input.data(), &[-0.75; 2]);
+    }
+
+    #[test]
+    fn unsupported_default_format_can_use_a_compatible_alternate() {
+        use cpal::{
+            SampleFormat, SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
+        };
+
+        let native =
+            SupportedStreamConfig::new(2, 48_000, SupportedBufferSize::Unknown, SampleFormat::U16);
+        let config = |channels, min, max, format| {
+            SupportedStreamConfigRange::new(
+                channels,
+                min,
+                max,
+                SupportedBufferSize::Unknown,
+                format,
+            )
+        };
+        let unsupported = config(2, 44_100, 48_000, SampleFormat::U16);
+        let invalid = config(96, 44_100, 48_000, SampleFormat::F32);
+        assert!(fallback_capture_config(&native, [unsupported, invalid]).is_none());
+
+        let mono = config(1, 48_000, 48_000, SampleFormat::F32);
+        let stereo = config(2, 44_100, 44_100, SampleFormat::I16);
+        let fallback = fallback_capture_config(&native, [unsupported, mono, stereo]).unwrap();
+        assert_eq!(fallback.channels(), 2);
+        assert_eq!(fallback.sample_rate(), 44_100);
+        assert_eq!(fallback.sample_format(), SampleFormat::I16);
     }
 
     #[test]

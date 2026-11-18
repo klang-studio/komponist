@@ -85,6 +85,8 @@ const KEYBOARD_VELOCITY: u8 = 100;
 /// How often an idle app still polls a device host that has work (bridges loading, running or
 /// crashing, a scan): status changes show up within this time.
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Check capture availability on an otherwise idle project.
+const CAPTURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Delay of the frame a MIDI message requests (the audio callback takes the message first).
 const MIDI_REPAINT_DELAY: Duration = Duration::from_millis(10);
@@ -882,6 +884,13 @@ impl App {
         }
         if self.engine.host().needs_polling() {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
+        } else if self.engine.audio_input_config().is_some()
+            && matches!(
+                self.engine.audio_state(),
+                AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
+            )
+        {
+            ctx.request_repaint_after(CAPTURE_POLL_INTERVAL);
         }
         // A frame now and then looks for MIDI devices that were plugged in meanwhile.
         if self.engine.midi().is_some() {
@@ -2786,12 +2795,18 @@ impl App {
     fn apply_audio_input(&mut self, input: Option<komponist_audio::InputConfig>) -> bool {
         let result = self.engine.set_audio_input(input);
         let requested = self.engine.audio_input_config();
-        if self.settings.audio_input.as_ref() != requested {
+        // A previous write may have failed after the in-memory preference changed.
+        if result.is_ok() || self.settings.audio_input.as_ref() != requested {
             self.settings.audio_input = requested.cloned();
             self.save_settings();
         }
         if let Err(error) = result {
-            self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+            // Active playback and capture failures already have state-driven status messages.
+            if self.engine.audio_input_error().is_none()
+                && !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
+            {
+                self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+            }
             return false;
         }
         true

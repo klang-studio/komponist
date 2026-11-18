@@ -368,7 +368,7 @@ pub struct AudioSystem<P: AudioProcess> {
     /// Handles of torn-down streams that have not handed back yet.
     retired: Vec<SlotHandle<P>>,
     /// Reconnection while the configured device is missing.
-    retry: Option<Retry>,
+    retry: Option<Retry<StreamConfig>>,
     retry_interval: Duration,
     input: Option<crate::InputConfig>,
     input_error: Option<AudioError>,
@@ -376,16 +376,60 @@ pub struct AudioSystem<P: AudioProcess> {
     synthetic_input: Option<crate::InputReader>,
 }
 
-/// Looking for a missing device ([`AudioSystem::poll`]).
-struct Retry {
-    /// The configuration to start once the device is back.
-    config: StreamConfig,
+/// Looking for a missing output or a previously opened capture input.
+struct Retry<T> {
+    target: T,
     /// Time between two probes.
     interval: Duration,
     /// When the next probe starts.
     next: Instant,
     /// A probe running on its own thread: is the device present?
     probe: Option<JoinHandle<bool>>,
+}
+
+impl<T: Clone + Send + 'static> Retry<T> {
+    fn new(target: T, interval: Duration) -> Self {
+        Self {
+            target,
+            interval,
+            next: Instant::now() + interval,
+            probe: None,
+        }
+    }
+
+    fn available(
+        &mut self,
+        thread_name: &str,
+        present: impl FnOnce(&T) -> bool + Send + 'static,
+    ) -> bool {
+        match self.probe.take() {
+            Some(probe) if probe.is_finished() => {
+                self.next = Instant::now() + self.interval;
+                return probe.join().unwrap_or(false);
+            }
+            Some(probe) => self.probe = Some(probe),
+            None if Instant::now() >= self.next => {
+                let target = self.target.clone();
+                self.probe = thread::Builder::new()
+                    .name(thread_name.to_owned())
+                    .spawn(move || present(&target))
+                    .ok();
+                if self.probe.is_none() {
+                    self.next = Instant::now() + self.interval;
+                }
+            }
+            None => {}
+        }
+        false
+    }
+}
+
+fn retry_interval(host: HostKind, nominal: Duration) -> Duration {
+    if host == HostKind::Asio {
+        nominal.max(ASIO_RETRY_INTERVAL)
+    } else {
+        nominal
+    }
 }
 
 /// The running stream.
@@ -409,8 +453,83 @@ enum Backend {
 struct DeviceStreams {
     _stream: cpal::Stream,
     capture: Option<crate::input::CaptureStream>,
+    capture_transfer: crate::input::CaptureTransfer,
+    capture_retry: Option<Retry<DeviceId>>,
+    asio_device: Option<AsioDeviceFactory>,
     /// Declared after the streams: the open ASIO count drops only once they are gone.
     _open: Option<backend::AsioOpen>,
+}
+
+type AsioDeviceFactory = Box<dyn Fn() -> cpal::Device + Send>;
+
+fn asio_device_factory(device: &cpal::Device) -> Option<AsioDeviceFactory> {
+    // The platform Device enum can contain a non-Send COM endpoint on Windows. Retain only
+    // the concrete ASIO device so the audio system remains movable between control threads.
+    #[cfg(all(windows, feature = "asio"))]
+    if let cpal::platform::DeviceInner::Asio(loaded) = device.as_inner() {
+        let loaded = loaded.clone();
+        return Some(Box::new(move || cpal::Device::from(loaded.clone())));
+    }
+    let _ = device;
+    None
+}
+
+impl DeviceStreams {
+    fn poll_capture(
+        &mut self,
+        host: HostKind,
+        params: &StreamParams,
+        interval: Duration,
+    ) -> Option<Result<u16, AudioError>> {
+        let transfer_ready = self.capture_transfer.ready();
+        if let Some(lost) = self.capture.take_if(|capture| capture.lost()) {
+            self.capture_retry = lost
+                .device_id()
+                .cloned()
+                .map(|id| Retry::new(id, retry_interval(host, interval)));
+            return Some(Err(AudioError::NoDevice("capture input lost".into())));
+        }
+
+        let retry = self.capture_retry.as_mut()?;
+        if !transfer_ready
+            || !retry.available("komponist-capture-probe", move |id| {
+                // ASIO can only use the output's already loaded driver. Its input does not need
+                // enumeration, which might try to load another driver while playback is running.
+                host == HostKind::Asio
+                    || crate::input_devices(host).is_ok_and(|devices| {
+                        devices.iter().any(|device| device.id.as_ref() == Some(id))
+                    })
+            })
+        {
+            return None;
+        }
+
+        // Reconnect the source that really opened, even if it was originally selected by name
+        // or as the default. An exact ID cannot fall back to another device.
+        let target = crate::InputConfig {
+            device: None,
+            device_id: Some(retry.target.clone()),
+        };
+        let asio_device = self.asio_device.as_ref().map(|device| device());
+        match crate::input::CaptureStream::start(
+            host,
+            &target,
+            params.sample_rate,
+            params.max_frames,
+            asio_device.as_ref(),
+        ) {
+            Ok((capture, reader)) => {
+                let channels = reader.channels() as u16;
+                if let Err(error) = self.capture_transfer.install(reader, params.max_frames) {
+                    return Some(Err(error));
+                }
+                self.capture = Some(capture);
+                self.capture_retry = None;
+                Some(Ok(channels))
+            }
+            Err(error) => Some(Err(error)),
+        }
+    }
 }
 
 impl<P: AudioProcess> AudioSystem<P> {
@@ -616,8 +735,8 @@ impl<P: AudioProcess> AudioSystem<P> {
     }
 
     /// UI thread, every frame: notices a lost device (→ `NoDevice`, engine to the null backend) and
-    /// collects engines handed back by torn-down streams. A lost capture input is dropped
-    /// independently while playback keeps running.
+    /// collects engines handed back by torn-down streams. A lost capture input disconnects and
+    /// probes for its stable ID independently while playback keeps running.
     ///
     /// It also hands an engine that came back late (after a timed-out detach) to the stream again
     /// and copies the stream's output latency into the `Running` state.
@@ -644,14 +763,22 @@ impl<P: AudioProcess> AudioSystem<P> {
                 Some(reason) => failure = Some((current.requested.clone(), reason)),
                 None => {
                     if let Backend::Device(streams) = &mut current.backend
-                        && streams
-                            .capture
-                            .as_ref()
-                            .is_some_and(|capture| capture.lost())
+                        && let Some(capture) = streams.poll_capture(
+                            current.requested.host,
+                            &current.params,
+                            self.retry_interval,
+                        )
                     {
-                        streams.capture = None;
-                        self.input_channels = 0;
-                        self.input_error = Some(AudioError::NoDevice("capture input lost".into()));
+                        match capture {
+                            Ok(channels) => {
+                                self.input_channels = channels;
+                                self.input_error = None;
+                            }
+                            Err(error) => {
+                                self.input_channels = 0;
+                                self.input_error = Some(error);
+                            }
+                        }
                     }
                     if let AudioState::Running { latency, .. } = &mut self.state {
                         *latency = current.shared.latency();
@@ -750,8 +877,9 @@ impl<P: AudioProcess> AudioSystem<P> {
                 Some(&device),
             )
         });
-        let callback =
+        let mut callback =
             StreamCallback::new(slot, callback_params, Arc::clone(&shared)).with_input(reader);
+        let capture_transfer = callback.enable_capture_reconnect();
         // Before the stream exists, so no enumeration sees an ASIO driver that is loading.
         let open = (config.host == HostKind::Asio).then(|| backend::AsioOpen::new(&device));
         let stream =
@@ -761,6 +889,9 @@ impl<P: AudioProcess> AudioSystem<P> {
             backend: Backend::Device(Box::new(DeviceStreams {
                 _stream: stream,
                 capture,
+                capture_transfer,
+                capture_retry: None,
+                asio_device: asio_device_factory(&device),
                 _open: open,
             })),
             handle,
@@ -893,49 +1024,19 @@ impl<P: AudioProcess> AudioSystem<P> {
         }
     }
 
-    /// Looks for `config`'s device from the next `poll` on.
+    /// Starts probing for a missing output device.
     fn arm_retry(&mut self, config: StreamConfig) {
-        let interval = if config.host == HostKind::Asio {
-            self.retry_interval.max(ASIO_RETRY_INTERVAL)
-        } else {
-            self.retry_interval
-        };
-        self.retry = Some(Retry {
-            config,
-            interval,
-            next: Instant::now() + interval,
-            probe: None,
-        });
+        let interval = retry_interval(config.host, self.retry_interval);
+        self.retry = Some(Retry::new(config, interval));
     }
 
-    /// Starts a probe when one is due and restarts the stream once a probe found the device.
+    /// Restarts the output once a probe finds it. Capture reconnection runs independently.
     fn poll_retry(&mut self) {
-        let Some(retry) = self.retry.as_mut() else {
-            return;
-        };
-        let interval = retry.interval;
-        match retry.probe.take() {
-            Some(probe) if probe.is_finished() => {
-                if probe.join().unwrap_or(false) {
-                    let config = retry.config.clone();
-                    // Success clears the retry; another failure arms it again.
-                    let _ = self.start(&config);
-                } else {
-                    retry.next = Instant::now() + interval;
-                }
-            }
-            Some(probe) => retry.probe = Some(probe),
-            None if Instant::now() >= retry.next => {
-                let config = retry.config.clone();
-                retry.probe = thread::Builder::new()
-                    .name("komponist-audio-probe".to_owned())
-                    .spawn(move || backend::device_present(&config))
-                    .ok();
-                if retry.probe.is_none() {
-                    retry.next = Instant::now() + interval;
-                }
-            }
-            None => {}
+        if let Some(retry) = self.retry.as_mut()
+            && retry.available("komponist-audio-probe", backend::device_present)
+        {
+            let config = retry.target.clone();
+            let _ = self.start(&config);
         }
     }
 
@@ -1314,6 +1415,32 @@ mod tests {
         };
         system.arm_retry(asio);
         assert_eq!(system.retry.as_ref().unwrap().interval, ASIO_RETRY_INTERVAL);
+    }
+
+    #[test]
+    fn capture_retry_probes_only_the_identified_source() {
+        let original = DeviceId("pipewire:alsa_input.capture".into());
+        let mut retry = Retry::new(original.clone(), Duration::ZERO);
+        assert!(!retry.available("komponist-test-capture-probe", |target| {
+            target.0 == "pipewire:alsa_input.different_capture"
+        }));
+        assert!(wait_until(WAIT, || retry
+            .probe
+            .as_ref()
+            .unwrap()
+            .is_finished()));
+        assert!(!retry.available("komponist-test-capture-probe", |_| unreachable!()));
+        assert!(
+            !retry.available("komponist-test-capture-probe", move |target| {
+                *target == original
+            })
+        );
+        assert!(wait_until(WAIT, || retry
+            .probe
+            .as_ref()
+            .unwrap()
+            .is_finished()));
+        assert!(retry.available("komponist-test-capture-probe", |_| unreachable!()));
     }
 
     #[test]
