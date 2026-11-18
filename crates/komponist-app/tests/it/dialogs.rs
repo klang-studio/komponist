@@ -20,7 +20,9 @@ use komponist_app::project_io::{self, RecentList};
 use komponist_app::settings::{Language, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartView};
 use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
-use komponist_audio::{DeviceId as AudioDeviceId, DeviceInfo, HostKind, StreamConfig};
+use komponist_audio::{
+    DeviceId as AudioDeviceId, DeviceInfo, HostKind, JackDirection, JackPort, StreamConfig,
+};
 use komponist_engine::Processor;
 use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
@@ -1257,6 +1259,7 @@ fn s07_model_in(lang: Lang) -> settings::Model {
         )),
         sample_rate: 48_000,
         buffer_frames: 256,
+        jack_routes: Default::default(),
     };
     let (devices, device) = settings::device_entries(lang, HostKind::PipeWire, &[], &config);
     let dir = |clap: bool, label: &str, n: usize| settings::DirRow {
@@ -1272,6 +1275,9 @@ fn s07_model_in(lang: Lang) -> settings::Model {
             config: None,
         }],
         input_device: 0,
+        jack_ports: None,
+        jack_scan_failed: false,
+        jack_playback_connections: None,
         capture_format: komponist_app::settings::CaptureFormat::Pcm24,
         section: SettingsSection::Audio,
         hosts: vec![
@@ -1425,6 +1431,7 @@ fn s07_with_wasapi_shows_the_fixed_buffer_and_a_busy_midi_input() {
             device_id: None,
             sample_rate: 48_000,
             buffer_frames: 256,
+            jack_routes: Default::default(),
         };
         let (devices, device) = settings::device_entries(lang, HostKind::Wasapi, &[], &config);
         let mut model = s07_model_in(lang);
@@ -1491,6 +1498,7 @@ fn s07_shows_the_asio_logo_where_asio_is_offered() {
             device_id: None,
             sample_rate: 48_000,
             buffer_frames: 256,
+            jack_routes: Default::default(),
         };
         let (devices, device) = settings::device_entries(lang, HostKind::Asio, &[], &config);
         let mut model = s07_model_in(lang);
@@ -1972,4 +1980,172 @@ fn a_file_from_the_desktop_asks_to_save_a_dirty_project_first() {
             .starts_with("„Kaputt.komponist“ lässt sich nicht öffnen")
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn s07_jack_ports_show_direction_missing_ports_and_update_routes_in_both_languages() {
+    for lang in [Lang::De, Lang::En] {
+        let mut model = s07_model_in(lang);
+        model.config.host = HostKind::Jack;
+        model.config.jack_routes.capture =
+            Some(vec!["Interface:right".into(), "Missing:left".into()]);
+        model.config.jack_routes.playback = [Some("Interface:speaker_left".into()), None];
+        model.no_device = None;
+        model.jack_playback_connections = Some([false, false]);
+        model.buffer = settings::BufferLimit::Fixed(64);
+        model.jack_ports = Some(vec![
+            JackPort {
+                name: "Interface:left".into(),
+                alias: Some("Hotone MP80".into()),
+                direction: JackDirection::Capture,
+            },
+            JackPort {
+                name: "Interface:right".into(),
+                alias: Some("Hotone MP80".into()),
+                direction: JackDirection::Capture,
+            },
+            JackPort {
+                name: "Interface:speaker_left".into(),
+                alias: None,
+                direction: JackDirection::Playback,
+            },
+            JackPort {
+                name: "Interface:speaker_right".into(),
+                alias: None,
+                direction: JackDirection::Playback,
+            },
+        ]);
+        let app = App::headless(demo_project()).with_lang(lang);
+        let scan_failed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let scan_failed_model = scan_failed.clone();
+        let mut h = komponist_ui::snapshot::builder::<App>(1.0)
+            .with_size(vec2(W, H))
+            .build_ui_state(
+                move |ui, app: &mut App| {
+                    app.show(ui);
+                    model.jack_scan_failed = scan_failed_model.get();
+                    for output in settings::show(ui.ctx(), &model, None) {
+                        match output {
+                            settings::Output::Act(Action::Settings(SettingsAction::SetAudio(
+                                config,
+                            ))) => {
+                                model.config = config;
+                            }
+                            settings::Output::Act(Action::Settings(
+                                SettingsAction::SetJackCaptureAutomatic,
+                            )) => {
+                                model.config.jack_routes.capture = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                },
+                app,
+            );
+        h.run_steps(4);
+        let combo_value = |h: &Harness<'_, App>, label: &str| {
+            h.get_by_role_and_label(Role::ComboBox, label)
+                .accesskit_node()
+                .value()
+                .unwrap()
+                .to_owned()
+        };
+        let left = lang.settings_jack_playback_left();
+        let right = lang.settings_jack_playback_right();
+        let capture = lang.settings_jack_capture_channel(2);
+        assert_eq!(combo_value(&h, left), "Interface:speaker_left");
+        assert_eq!(combo_value(&h, right), lang.settings_jack_disconnected());
+        assert_eq!(
+            combo_value(&h, &capture),
+            lang.settings_jack_port_missing("Missing:left")
+        );
+
+        h.get_by_role_and_label(
+            Role::Label,
+            &lang.settings_jack_playback_unconnected("Interface:speaker_left"),
+        );
+
+        if let Some(dir) = std::env::var_os("KOMPONIST_RENDER_DIR") {
+            let filename = if lang == Lang::De {
+                "s07-jack-de.png"
+            } else {
+                "s07-jack-en.png"
+            };
+            h.render()
+                .expect("render")
+                .save(Path::new(&dir).join(filename))
+                .unwrap();
+        }
+
+        h.get_by_role_and_label(Role::ComboBox, &capture).click();
+        h.run_steps(4);
+        scan_failed.set(true);
+        h.run_steps(4);
+        assert_eq!(
+            h.get_by_role_and_label(Role::ComboBox, &capture)
+                .accesskit_node()
+                .data()
+                .is_expanded(),
+            Some(true)
+        );
+        for name in [
+            "Hotone MP80 · Interface:left",
+            "Hotone MP80 · Interface:right",
+        ] {
+            h.get_by_role_and_label(Role::ListBoxOption, name);
+        }
+        assert!(
+            h.query_by_role_and_label(Role::ListBoxOption, "Interface:speaker_right")
+                .is_none()
+        );
+        h.get_by_role_and_label(Role::ListBoxOption, "Hotone MP80 · Interface:right")
+            .click();
+        h.run_steps(4);
+        assert_eq!(
+            combo_value(&h, &lang.settings_jack_capture_channel(1)),
+            lang.settings_jack_port_missing("Missing:left")
+        );
+        assert_eq!(combo_value(&h, &capture), "Hotone MP80 · Interface:right");
+
+        h.get_by_role_and_label(Role::ComboBox, right).click();
+        h.run_steps(4);
+        assert!(
+            h.query_by_role_and_label(Role::ListBoxOption, "Hotone MP80 · Interface:right")
+                .is_none()
+        );
+        h.get_by_role_and_label(Role::ListBoxOption, "Interface:speaker_right")
+            .click();
+        h.run_steps(4);
+        assert_eq!(combo_value(&h, right), "Interface:speaker_right");
+        h.get_by_role_and_label(Role::Button, lang.settings_jack_auto_capture())
+            .click();
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::ComboBox, lang.settings_input_device());
+        assert!(
+            h.query_by_role_and_label(Role::ComboBox, &capture)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn jack_port_choices_survive_a_settings_file_round_trip() {
+    let dir = scratch("jack-routes");
+    let path = dir.join("settings.json");
+    let config = StreamConfig {
+        host: HostKind::Jack,
+        jack_routes: komponist_audio::JackRoutes {
+            capture: Some(vec!["usb:rear".into(), "usb:front".into()]),
+            playback: [Some("mixer:left".into()), Some("mixer:right".into())],
+        },
+        ..StreamConfig::default()
+    };
+    let settings = Settings {
+        audio: config,
+        ..Default::default()
+    };
+    settings.save(&path).unwrap();
+    let loaded = Settings::load(&path).unwrap();
+    assert_eq!(loaded.audio.jack_routes, settings.audio.jack_routes);
+    std::fs::remove_dir_all(dir).unwrap();
 }

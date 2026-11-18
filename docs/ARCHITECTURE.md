@@ -1151,18 +1151,22 @@ before marking the session ended. A source contributes only its own delayed tail
 sessions. Count-in samples and corrected pre-roll before the recording start are excluded.
 
 `recording::prepare(RecordingConfig)` runs non-RT, creates exclusive unique WAV paths, preallocates per-track
-SPSC queues (32 chunks of at most 2048 stereo frames, about 0.5 MB per prepared track) and starts the file worker.
-Install the returned `Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through
-`Garbage::Recorder`. Track jobs enqueue fixed-size chunks without allocation, locks, logging or IO. The worker
-writes either signed PCM24 (default) or Float32 WAVs, flushes valid headers before progress publication, and
-finalizes old laps as soon as their input is complete, bounding open file handles. Cycle passes are padded with
-silence to their common loop window, including first/last partial passes. A growing checkpoint also reports
-`window_frames`, so the app can preserve that window before final padding.
+SPSC queues for audio samples and segment timestamps, and starts the file worker. Each sample queue holds
+half a second at the prepared sample rate, bounded between 8192 and 65536 frames. Install the returned
+`Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through `Garbage::Recorder`.
+Track jobs enqueue segments without allocation, locks, logging or IO. The worker writes signed PCM24 (default)
+or Float32 WAVs in bounded batches and flushes their headers before publishing progress. It finalizes old laps
+as soon as their input is complete, bounding open file handles. Cycle passes are padded with
+silence to their common loop window, including first/last partial passes. Recording before the loop
+keeps the lead-in as a separate linear clip. A take that begins at or after the loop end stays linear,
+including its latency tail. A growing checkpoint reports `window_frames` for cycle passes, so the app
+can preserve their shared geometry before final padding.
 
 `RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
 buckets per track, both combined and separately for each native channel. Buckets carry exact sample counts;
 per-channel counts equal source frames, including a final partial bucket. The worker compacts pairs by summing
-sample energy/counts; UI polling clones only summaries. Progress locks always follow waveform → path order.
+sample energy and counts. A shared, bounded snapshot of the lead-in and the latest completed cycle remains
+available to the arrangement while it draws the current pass. Progress locks follow waveform → path order.
 `poll` returns finalized files after queues drain. `checkpoint` flushes and returns saveable prefixes (2 s timeout);
 `relocate` closes handles, stages exclusive hard links on one filesystem and reopens every append handle before
 publishing paths and unlinking originals. Failed moves remove only their own links and retain the old paths;
@@ -1384,6 +1388,25 @@ are retained in the WP-E internal notes.
   normal enumeration. Reapplying the capture or output configuration rebuilds both streams. An
   isolated capture failure leaves working output active and waits for reconfiguration. `test_input` and `set_test_input`
   inject synthetic capture into the same bridge/null backend without opening hardware.
+- **Explicit JACK routes (#120, Linux):** S07 stores ordered capture ports and the left/right master
+  ports by full JACK name. Aliases are for display. Without explicit routing, the existing CPAL
+  JACK backend still provides playback-only system auto-connect. With capture enabled or explicit
+  routing, a native JACK client manages the routes and processes capture and playback in the same
+  server period. Automatic routes use the server's advertised default ports. Without an advertised
+  default, the native client uses physical ports in server order when they belong to one device.
+  If the physical ports span multiple devices, choose ports explicitly. Automatic playback
+  preserves manual patchbay links. PipeWire-JACK's
+  graph-wide XRUN notifications update stream statistics. A missed local process period or a
+  capture-link loss still marks the input discontinuous. Set `KOMPONIST_JACK_CAPTURE_TRACE=1`
+  to report XRUN, timing, routing and recorder failure evidence on stderr outside the audio callback.
+  It can run on JACK or PipeWire-JACK and does not start or configure the server. Graph changes
+  are reconciled outside the process callback. Loss of a capture route invalidates its slot until
+  the exact port reconnects. Other slots can continue capturing and the same client keeps playing.
+  A take uses the same initial route latencies for alignment and placement. Latency reports can
+  change with the graph quantum, so updates alone do not mark a capture interruption. Stereo
+  monitoring uses bounded, per-slot history and stops reading it across a proven capture gap.
+  Spare automatic capture slots can use a single patchbay link. Automatic playback only links an
+  unconnected output, or replaces a default link owned by the application.
 - **Engine handoff without restart (R1):** the callback closure owns an `EngineSlot<P>` holding
   `Box<P>`, where `P: AudioProcess` is a small callback trait defined in `komponist-audio`. The app
   implements it for the engine, so `komponist-audio` does not depend on `komponist-engine`. On stream teardown the slot's `Drop` (non-RT, cpal teardown) sends the engine back

@@ -211,10 +211,14 @@ impl AudioProcess for EngineProcess {
             }
         }
         let frames = out.frames().min(self.left.len());
-        let latency = info.output_latency.as_secs_f64() * f64::from(info.sample_rate);
+        // JACK reports whole frames. Converting via Duration truncates to nanoseconds, so
+        // round on the way back to avoid losing another frame at common sample rates.
+        let latency_frames = |duration: Duration| {
+            (duration.as_secs_f64() * f64::from(info.sample_rate)).round() as u32
+        };
         let input = LiveInput {
             midi: &self.midi,
-            output_latency: latency as u32,
+            output_latency: latency_frames(info.output_latency),
         };
         let (left, right) = (&mut self.left[..frames], &mut self.right[..frames]);
         self.engine.process_with_audio(
@@ -224,8 +228,18 @@ impl AudioProcess for EngineProcess {
             &komponist_engine::AudioInputBuffer {
                 data: audio.data(),
                 channels: audio.channels(),
-                latency: (audio.latency().as_secs_f64() * f64::from(info.sample_rate)) as u32,
+                latency: latency_frames(audio.latency()),
                 discontinuous: audio.discontinuous(),
+                routes: audio
+                    .routes()
+                    .map(|routes| komponist_engine::AudioInputRoutes {
+                        latencies: routes.latencies,
+                        available: routes.available,
+                        discontinuous: routes.discontinuous,
+                        history: routes.history,
+                        history_cursor: routes.history_cursor,
+                        history_valid: routes.history_valid,
+                    }),
             },
         );
         out.write_stereo(left, right);
@@ -346,6 +360,8 @@ pub struct EngineSync {
     /// See [`EngineProcess`]'s `workgroup_notice`.
     workgroup_notice: Arc<AtomicBool>,
     worker_stats: Arc<WorkerStats>,
+    #[cfg(test)]
+    test_jack_capture_sources: Option<Vec<komponist_audio::JackCaptureChannel>>,
 }
 
 impl core::fmt::Debug for EngineSync {
@@ -421,6 +437,8 @@ impl EngineSync {
             worker_notice,
             workgroup_notice,
             worker_stats,
+            #[cfg(test)]
+            test_jack_capture_sources: None,
         };
         let started = sync.audio.start(config);
         (sync, started)
@@ -688,7 +706,12 @@ impl EngineSync {
     /// Call every UI frame: polls the audio system, retries queued commands, drains the engine's
     /// events (dropping garbage here) and the device host's events.
     pub fn poll(&mut self) -> Vec<SyncEvent> {
+        let before = self.sample_rate();
         self.audio.poll();
+        if self.sample_rate() != before {
+            self.synced = None;
+            self.fast = None;
+        }
         if self.midi.is_some() && Instant::now() >= self.next_midi_scan {
             self.scan_midi();
         }
@@ -793,6 +816,41 @@ impl EngineSync {
     pub fn audio_input_channels(&self) -> u16 {
         self.audio.input_channels()
     }
+    /// Whether the selected hardware lane or stereo pair is available on the open stream.
+    pub fn hardware_input_available(&self, input: komponist_model::HardwareInput) -> bool {
+        #[cfg(test)]
+        if let Some(sources) = self.test_jack_capture_sources.as_ref() {
+            let first = usize::from(input.first);
+            return sources
+                .get(first..first + usize::from(input.channel_count()))
+                .is_some_and(|ports| ports.iter().all(|port| port.connected));
+        }
+        self.audio
+            .input_route_available(input.first, input.channel_count())
+    }
+
+    /// Verified native JACK master links, in left/right order.
+    pub fn jack_playback_connections(&self) -> Option<[bool; 2]> {
+        self.audio.jack_playback_connections()
+    }
+
+    /// Source port metadata for the capture channel order of the active JACK route.
+    pub fn jack_capture_sources(&self) -> Option<&[komponist_audio::JackCaptureChannel]> {
+        #[cfg(test)]
+        if let Some(sources) = self.test_jack_capture_sources.as_deref() {
+            return Some(sources);
+        }
+        self.audio.jack_capture_sources()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_jack_capture_sources(
+        &mut self,
+        sources: Vec<komponist_audio::JackCaptureChannel>,
+    ) {
+        self.test_jack_capture_sources = Some(sources);
+    }
+
     /// Metadata-only input enumeration for the active host (no stream is opened).
     pub fn audio_input_devices(&self) -> Result<Vec<komponist_audio::InputDeviceInfo>, AudioError> {
         let host = match self.audio.state() {
@@ -1095,6 +1153,8 @@ impl EngineSync {
         } = engine;
         self.handle = Some(handle);
         self.frozen = None;
+        self.synced = None;
+        self.fast = None;
         if let Some(setting) = self.workers_after_export.take() {
             process.apply_worker_setting(setting);
             if held {
@@ -1232,6 +1292,25 @@ mod tests {
             sync.telemetry().transport() == TransportState::Stopped
         }));
         sync.shutdown();
+    }
+
+    #[test]
+    fn reattaching_at_a_new_rate_recompiles_the_same_document_revision() {
+        let mut sync = EngineSync::null(Box::new(BuiltinHost::new()));
+        let doc = Document::new(demo_project());
+        sync.sync(&doc);
+        let sent = sync.programs_sent;
+        let detached = sync.detach().unwrap();
+        sync.set_audio(&StreamConfig {
+            host: HostKind::Null,
+            sample_rate: 44_100,
+            ..StreamConfig::default()
+        })
+        .unwrap();
+        sync.attach(detached);
+        assert_eq!(sync.sample_rate(), 44_100);
+        sync.sync(&doc);
+        assert_eq!(sync.programs_sent, sent + 1);
     }
 
     /// WP-65: the stream starts the automatic worker pool; the setting changes it (with the

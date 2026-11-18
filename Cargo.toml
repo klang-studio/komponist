@@ -58,6 +58,8 @@ raw-window-handle = "0.6.2"
 # Audio and MIDI I/O.
 # Backend features are per target, in crates/komponist-audio/Cargo.toml (pipewire, jack: Linux only).
 cpal = "0.18.2"
+jack = "0.13.5"
+jack-sys = "0.5.1"
 midir = "0.11.1"
 
 # Plugin format layer (linked only by komponist-bridge via komponist-hosting; the komponist binary

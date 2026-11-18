@@ -670,6 +670,7 @@ pub(crate) fn negotiate(
             host: kind,
             device: requested.device.clone(),
             device_id: requested.device_id.clone(),
+            jack_routes: requested.jack_routes.clone(),
             sample_rate,
             buffer_frames,
         },

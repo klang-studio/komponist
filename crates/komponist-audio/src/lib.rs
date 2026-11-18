@@ -26,6 +26,9 @@
 mod asio_registry;
 mod backend;
 pub mod input;
+#[cfg(target_os = "linux")]
+mod jack_backend;
+mod jack_ports;
 pub mod midi;
 pub mod process;
 pub mod slot;
@@ -41,9 +44,10 @@ mod workgroup;
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 pub use input::{
-    InputBuffer, InputConfig, InputDeviceInfo, InputDeviceRole, InputReader, TestAudioSource,
-    input_devices, test_input,
+    InputBuffer, InputConfig, InputDeviceInfo, InputDeviceRole, InputReader, RoutedInput,
+    TestAudioSource, input_devices, test_input,
 };
+pub use jack_ports::{JackCaptureChannel, JackDirection, JackPort, JackRoutes, jack_ports};
 pub use midi::{
     MidiError, MidiInputHub, MidiPortId, MidiPortInfo, MidiReceiver, MidiStamped, TestMidiSource,
 };

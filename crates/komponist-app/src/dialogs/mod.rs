@@ -522,6 +522,7 @@ impl crate::App {
                 let view = new_track::View {
                     project,
                     instruments: &instruments,
+                    engine: &self.engine,
                 };
                 match new_track::show(ctx, state, &view) {
                     Some(new_track::Output::Create(spec)) => {

@@ -2552,6 +2552,8 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "cpal",
+ "jack",
+ "jack-sys",
  "klang-dsp",
  "komponist-rt",
  "midir",

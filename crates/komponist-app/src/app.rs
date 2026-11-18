@@ -882,7 +882,10 @@ impl App {
                 ctx.request_repaint_after(left);
             }
         }
-        if self.engine.host().needs_polling() {
+        let jack_routes = self.settings.audio.host == komponist_audio::HostKind::Jack
+            && (!self.settings.audio.jack_routes.is_automatic()
+                || self.settings.audio_input.is_some());
+        if self.engine.host().needs_polling() || jack_routes {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
         } else if self.engine.audio_input_config().is_some()
             && matches!(
@@ -2066,11 +2069,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| Some(hexa_ref()));
         let mut state = crate::dialogs::new_track::State::new(instrument);
-        state.available_input_channels = self.engine.audio_input_channels();
-        state.input = crate::dialogs::new_track::first_unused_input(
-            self.project(),
-            state.available_input_channels,
-        );
+        state.choose_default_input(self.project(), &self.engine);
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
     }
 
@@ -2813,13 +2812,13 @@ impl App {
         device: InputConfig,
         mut set_input: impl FnMut(&mut EngineSync, Option<InputConfig>) -> Result<(), AudioError>,
     ) {
-        use crate::views::audio_inputs::{hardware_input_available, input_label};
+        use crate::views::audio_inputs::input_label;
 
         let previous = self.engine.audio_input_config().cloned();
         let problem = match set_input(&mut self.engine, Some(device)) {
             Ok(())
                 if matches!(input, AudioInput::Hardware(hardware)
-                    if !hardware_input_available(hardware, self.engine.audio_input_channels())) =>
+                    if !self.engine.hardware_input_available(hardware)) =>
             {
                 let label = input_label(self.lang, self.project(), input);
                 Some(self.lang.audio_input_unavailable(label))
@@ -2850,18 +2849,59 @@ impl App {
     }
 
     fn settings_action(&mut self, action: SettingsAction) {
-        if matches!(
-            &action,
-            SettingsAction::SetAudioInput(_) | SettingsAction::ChooseTrackAudioInput { .. }
-        ) && self.audio_recording().is_some()
+        let changes_driver = matches!(&action, SettingsAction::SetAudio(config)
+            if config.host != self.settings.audio.host);
+        if changes_driver
+            && (self.shell.take_expected
+                || self.audio_recording().is_some()
+                || self.recording.is_some())
         {
-            self.set_status(self.lang.audio_input_change_recording(), StatusKind::Error);
+            self.set_status(
+                self.lang.settings_audio_driver_change_recording(),
+                StatusKind::Error,
+            );
             return;
+        }
+        let changes_input = matches!(
+            &action,
+            SettingsAction::SetAudioInput(_)
+                | SettingsAction::SetJackCaptureAutomatic
+                | SettingsAction::ChooseTrackAudioInput { .. }
+        ) || matches!(&action, SettingsAction::SetAudio(config)
+            if config.jack_routes.capture != self.settings.audio.jack_routes.capture);
+        let changes_jack_output = matches!(&action, SettingsAction::SetAudio(config)
+            if config.jack_routes.playback != self.settings.audio.jack_routes.playback
+                || (config.host == komponist_audio::HostKind::Jack
+                    && (config.device != self.settings.audio.device
+                        || config.device_id != self.settings.audio.device_id)));
+        if self.audio_recording().is_some() {
+            let message = if changes_input {
+                Some(self.lang.audio_input_change_recording())
+            } else if changes_jack_output {
+                Some(self.lang.settings_jack_playback_change_recording())
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                self.set_status(message, StatusKind::Error);
+                return;
+            }
         }
         match action {
             SettingsAction::SetAudio(config) => {
                 let _ = self.engine.set_audio(&config);
                 self.settings.audio = config;
+                self.save_settings();
+            }
+            SettingsAction::SetJackCaptureAutomatic => {
+                let input = Some(komponist_audio::InputConfig::default());
+                if let Err(error) = self.engine.set_audio_input(input.clone()) {
+                    self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
+                    return;
+                }
+                self.settings.audio_input = input;
+                self.settings.audio.jack_routes.capture = None;
+                let _ = self.engine.set_audio(&self.settings.audio);
                 self.save_settings();
             }
             SettingsAction::SetAudioInput(input) => {
@@ -2888,6 +2928,7 @@ impl App {
                 let _ = self.engine.set_audio(&config);
                 // The device list may have changed too.
                 self.dialogs.settings.devices_host = None;
+                self.dialogs.settings.invalidate_jack_ports();
             }
             SettingsAction::SetMidiInput { name, enabled } => {
                 if let Some(hub) = self.engine.midi_mut() {
@@ -3222,6 +3263,25 @@ mod tests {
         app.cancel_count_in();
         app.engine_event(&EngineEvent::CountInDone { at: Tick::ZERO }, Tick::ZERO);
         assert!(app.recording().is_none());
+    }
+
+    #[test]
+    fn an_audio_driver_change_is_blocked_before_the_midi_take_event() {
+        let mut app = recording_app();
+        let old = app.settings.audio.clone();
+        let mut next = old.clone();
+        next.host = komponist_audio::HostKind::Jack;
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.shell.take_expected);
+        assert!(app.audio_recording().is_none() && app.recording().is_none());
+        app.dispatch(Action::Settings(SettingsAction::SetAudio(next)));
+        assert_eq!(app.settings.audio, old);
+        assert_eq!(
+            app.ui.status.as_ref().unwrap().text,
+            app.lang.settings_audio_driver_change_recording()
+        );
+        app.cancel_count_in();
+        assert!(!app.shell.take_expected);
     }
 
     #[test]

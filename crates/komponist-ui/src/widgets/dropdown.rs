@@ -150,6 +150,15 @@ pub struct ListOutput {
     pub clicked: Option<usize>,
 }
 
+/// Optional heading and tooltip for one popup row.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RowDetails<'a> {
+    /// A section heading immediately above this row.
+    pub heading: Option<&'a str>,
+    /// Full context for the displayed label.
+    pub detail: Option<&'a str>,
+}
+
 /// Draws the rows of a list, `width` wide (inside [`super::menu_frame`]): the current value
 /// `selected` with ✓, the row `highlight` highlighted. Rows sense clicks but take no focus.
 pub fn list_rows(
@@ -159,7 +168,7 @@ pub fn list_rows(
     highlight: Option<usize>,
     width: f32,
 ) -> ListOutput {
-    ui.vertical(|ui| list_rows_v(ui, items, selected, highlight, width))
+    ui.vertical(|ui| list_rows_v(ui, items, selected, highlight, width, None, None))
         .inner
 }
 
@@ -169,12 +178,23 @@ fn list_rows_v(
     selected: usize,
     highlight: Option<usize>,
     width: f32,
+    reveal: Option<usize>,
+    details: Option<&[RowDetails<'_>]>,
 ) -> ListOutput {
     let style = typography::UI;
     let mut out = ListOutput::default();
     let moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_pressed());
     ui.spacing_mut().item_spacing.y = 0.0;
+    let fitting = details.is_some();
     for (i, item) in items.iter().enumerate() {
+        let details = details
+            .and_then(|rows| rows.get(i))
+            .copied()
+            .unwrap_or_default();
+        if let Some(heading) = details.heading {
+            let title = ui.label(fonts::rich_text(heading, &typography::LABEL));
+            title.widget_info(|| WidgetInfo::labeled(Role::Heading, true, heading));
+        }
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, size::MENU_ROW), super::sense(ui, Sense::CLICK));
         let (enabled, current) = (item.enabled && ui.is_enabled(), i == selected);
@@ -182,6 +202,9 @@ fn list_rows_v(
             WidgetInfo::selected(Role::ListBoxOption, enabled, current, item.label)
         });
         super::accesskit(&response, |n| n.set_selected(current));
+        if reveal == Some(i) && !ui.clip_rect().contains_rect(rect) {
+            response.scroll_to_me(None);
+        }
         if enabled && response.hovered() && moved {
             out.hovered = Some(i);
         }
@@ -198,11 +221,43 @@ fn list_rows_v(
         if current {
             super::paint_check(ui, rect, left, l.check);
         }
-        let galley = super::galley(ui, item.label, fonts::font_id(&style), style.line_height);
-        let pos = super::text_pos(rect, &galley, left + metrics::CHECK_COLUMN, ppp);
+        let x = left + metrics::CHECK_COLUMN;
+        let room = (rect.right() - space::SPACE_2 - x).max(0.0);
+        let galley = if fitting {
+            fitted_galley(ui, item.label, &style, room)
+        } else {
+            super::galley(ui, item.label, fonts::font_id(&style), style.line_height)
+        };
+        if let Some(detail) = details.detail {
+            super::tooltip::Tip::new(item.label)
+                .detail(detail)
+                .attach(&response);
+        } else if galley.elided {
+            super::tooltip::Tip::new(item.label).attach(&response);
+        }
+        let pos = super::text_pos(rect, &galley, x, ppp);
         painter.galley(pos, galley, l.text);
     }
     out
+}
+
+fn fitted_galley(
+    ui: &Ui,
+    label: &str,
+    style: &typography::TypeStyle,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        label.to_owned(),
+        egui::TextFormat {
+            font_id: fonts::font_id(style),
+            line_height: Some(style.line_height),
+            color: Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
+    ui.painter().layout_job(job)
 }
 
 /// Open-list state kept between passes.
@@ -211,6 +266,7 @@ struct Memory {
     highlight: Option<usize>,
     type_ahead: TypeAhead,
     list_rect: Option<Rect>,
+    option_ids: Option<Vec<Option<String>>>,
 }
 
 /// A dropdown choosing one of `items` by index. The response is `changed()` when the value
@@ -220,11 +276,15 @@ pub struct Dropdown<'a> {
     name: &'a str,
     selected: &'a mut usize,
     items: &'a [Item<'a>],
+    id: Option<Id>,
     width: Option<f32>,
     still_open: Option<Option<usize>>,
     label: Option<&'a str>,
     compact: bool,
     device: bool,
+    list_height: Option<f32>,
+    row_details: &'a [RowDetails<'a>],
+    option_ids: Option<&'a [Option<&'a str>]>,
 }
 
 impl<'a> Dropdown<'a> {
@@ -235,12 +295,27 @@ impl<'a> Dropdown<'a> {
             name,
             selected,
             items,
+            id: None,
             width: None,
             still_open: None,
             label: None,
             compact: false,
             device: false,
+            list_height: None,
+            row_details: &[],
+            option_ids: None,
         }
+    }
+
+    /// Identifies this field and its popup independently of other widgets inserted around it.
+    pub fn id(mut self, id: Id) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    /// The floating popup belonging to a field with an explicit ID.
+    pub fn popup_id(field_id: Id) -> Id {
+        field_id.with("list")
     }
 
     /// A label inside the box before the value ("Raster 1/16 ▾": `text.3`, then 10 px gap), as
@@ -316,6 +391,20 @@ impl<'a> Dropdown<'a> {
         self
     }
 
+    /// Fits the popup to its labels, constrained by the window, and scrolls long lists.
+    pub fn fitting_list(mut self, max_height: f32, details: &'a [RowDetails<'a>]) -> Self {
+        self.list_height = Some(max_height);
+        self.row_details = details;
+        self
+    }
+
+    /// Closes an open list if its option identities change before a choice is confirmed.
+    pub fn option_ids(mut self, ids: &'a [Option<&'a str>]) -> Self {
+        debug_assert_eq!(ids.len(), self.items.len());
+        self.option_ids = Some(ids);
+        self
+    }
+
     /// Draws the list open below the field, in the layout, with row `highlight` highlighted
     /// (gallery and snapshots; use it inside [`state::force`]).
     pub fn open_still(mut self, highlight: Option<usize>) -> Self {
@@ -360,7 +449,7 @@ impl<'a> Dropdown<'a> {
         self.items.get(*self.selected).map_or("", |i| i.label)
     }
 
-    fn paint_field(&self, ui: &Ui, rect: Rect, l: FieldLook) {
+    fn paint_field(&self, ui: &Ui, rect: Rect, response: &Response, l: FieldLook) {
         let style = self.field_style();
         let painter = ui.painter();
         let ppp = ui.pixels_per_point();
@@ -377,12 +466,20 @@ impl<'a> Dropdown<'a> {
             };
             painter.galley(pos, galley, colour);
         }
-        let galley = super::galley(
-            ui,
-            self.current_label(),
-            fonts::font_id(&style),
-            style.line_height,
-        );
+        let galley = if self.list_height.is_some() {
+            let room = rect.right() - self.pad_x() - self.caret_size()[0] - space::SPACE_2 - x;
+            fitted_galley(ui, self.current_label(), &style, room)
+        } else {
+            super::galley(
+                ui,
+                self.current_label(),
+                fonts::font_id(&style),
+                style.line_height,
+            )
+        };
+        if galley.elided {
+            super::tooltip::Tip::new(self.current_label()).attach(response);
+        }
         let pos = super::text_pos(rect, &galley, x, ppp);
         if self.device {
             // Long values are cut before the caret.
@@ -415,11 +512,18 @@ impl<'a> Dropdown<'a> {
         ui: &mut Ui,
         field: &Response,
         highlight: Option<usize>,
+        reveal: Option<usize>,
     ) -> (ListOutput, Rect) {
-        let width = field.rect.width() - 2.0 * space::SPACE_1;
+        let width = if self.list_height.is_some() {
+            self.natural_width(ui)
+                .max(field.rect.width())
+                .min(ui.ctx().content_rect().width() - 2.0 * space::SPACE_4)
+        } else {
+            field.rect.width()
+        } - 2.0 * space::SPACE_1;
         let pos = field.rect.left_bottom() + vec2(0.0, LIST_GAP);
         let selected = *self.selected;
-        let area = Area::new(field.id.with("list"))
+        let area = Area::new(Self::popup_id(field.id))
             .order(Order::Foreground)
             .kind(UiKind::Popup)
             .fixed_pos(pos)
@@ -430,7 +534,29 @@ impl<'a> Dropdown<'a> {
         let inner = area.show(ui.ctx(), |ui| {
             super::menu_frame()
                 .show(ui, |ui| {
-                    list_rows(ui, self.items, selected, highlight, width)
+                    if let Some(max_height) = self.list_height {
+                        let viewport_height =
+                            ui.ctx().content_rect().height() - 2.0 * space::SPACE_4;
+                        let height = max_height.min(viewport_height.max(size::MENU_ROW));
+                        egui::ScrollArea::vertical()
+                            .max_height(height)
+                            .min_scrolled_height(height.min(size::MENU_ROW))
+                            .auto_shrink([true, true])
+                            .show(ui, |ui| {
+                                list_rows_v(
+                                    ui,
+                                    self.items,
+                                    selected,
+                                    highlight,
+                                    width,
+                                    reveal,
+                                    Some(self.row_details),
+                                )
+                            })
+                            .inner
+                    } else {
+                        list_rows(ui, self.items, selected, highlight, width)
+                    }
                 })
                 .inner
         });
@@ -460,19 +586,46 @@ impl Widget for Dropdown<'_> {
 impl Dropdown<'_> {
     fn field(self, ui: &mut Ui, still_open: bool) -> Response {
         let width = self.width.unwrap_or_else(|| self.natural_width(ui));
-        let (rect, mut response) =
-            ui.allocate_exact_size(vec2(width, self.height()), super::sense(ui, Sense::click()));
+        let field_size = vec2(width, self.height());
+        let sense = super::sense(ui, Sense::click());
+        let (rect, mut response) = if let Some(id) = self.id {
+            let (_, rect) = ui.allocate_space(field_size);
+            (rect, ui.interact(rect, id, sense))
+        } else {
+            ui.allocate_exact_size(field_size, sense)
+        };
         let id = response.id;
-        let list_id = id.with("list");
+        let list_id = Self::popup_id(id);
         let still = super::is_still(ui);
         let ctx = ui.ctx().clone();
         let mut mem: Memory = ui.data(|d| d.get_temp(list_id)).unwrap_or_default();
         let enabled = ui.is_enabled();
         let flags = self.enabled_flags();
         let mut open = !still && floating::is_open(&ctx, list_id);
+        let options_changed = open
+            && self.option_ids.is_some_and(|ids| {
+                mem.option_ids.as_ref().is_none_or(|previous| {
+                    previous
+                        .iter()
+                        .map(Option::as_deref)
+                        .ne(ids.iter().copied())
+                })
+            });
+        if options_changed {
+            open = false;
+            mem.highlight = None;
+            mem.type_ahead = TypeAhead::default();
+            ui.input_mut(|input| {
+                input.consume_key(Modifiers::NONE, Key::Enter);
+                input.consume_key(Modifiers::NONE, Key::Space);
+            });
+        }
+        let before = mem.highlight;
+        let was_open = open;
         let mut choose: Option<usize> = None;
+        let mut reveal_match = false;
 
-        if !still && enabled {
+        if !still && enabled && !options_changed {
             let mut key_handled = false;
             if response.has_focus() {
                 ui.memory_mut(|m| {
@@ -518,6 +671,7 @@ impl Dropdown<'_> {
                         super::type_ahead(labels(), &prefix, start % flags.len().max(1))
                     {
                         mem.highlight = Some(i);
+                        reveal_match = true;
                     }
                 }
                 if accept {
@@ -586,12 +740,22 @@ impl Dropdown<'_> {
         });
         super::accesskit(&response, |n| n.set_expanded(open || still_open));
         if ui.is_rect_visible(rect) {
-            self.paint_field(ui, rect, field_look(open || still_open, st));
+            self.paint_field(ui, rect, &response, field_look(open || still_open, st));
         }
 
         if open {
             floating::open(&ctx, list_id);
-            let (out, list_rect) = self.show_list(ui, &response, mem.highlight);
+            if !was_open {
+                mem.option_ids = self
+                    .option_ids
+                    .map(|ids| ids.iter().map(|key| key.map(str::to_owned)).collect());
+            }
+            let reveal = if !was_open || mem.highlight != before || reveal_match {
+                mem.highlight
+            } else {
+                None
+            };
+            let (out, list_rect) = self.show_list(ui, &response, mem.highlight, reveal);
             mem.list_rect = Some(list_rect);
             if let Some(h) = out.hovered {
                 mem.highlight = Some(h);
@@ -603,6 +767,7 @@ impl Dropdown<'_> {
         } else {
             floating::close(&ctx, list_id);
             mem.list_rect = None;
+            mem.option_ids = None;
         }
         if !still {
             ui.data_mut(|d| d.insert_temp(list_id, mem));
