@@ -307,6 +307,7 @@ impl Arrangement {
         #[derive(Clone, Copy)]
         enum Pick {
             Rename,
+            Flatten,
             Record,
             Color(usize),
             Group,
@@ -386,6 +387,14 @@ impl Arrangement {
             entries.push(Entry::action(t.routing_send_to_new_bus(), Pick::SendNew));
             entries.push(Entry::submenu(t.routing_send_to(), &send_entries));
             entries.push(Entry::submenu(t.routing_output_to(), &output_entries));
+            if !track.is_audio() {
+                let flatten = Entry::action(t.arrangement_flatten_track(), Pick::Flatten);
+                entries.push(if track.clips.is_empty() {
+                    flatten.disabled()
+                } else {
+                    flatten
+                });
+            }
             entries.push(Entry::separator());
             let delete = Entry::action(t.arrangement_delete(), Pick::Delete);
             entries.push(match &delete_key {
@@ -402,6 +411,7 @@ impl Arrangement {
         let picked = ContextMenu::new(name, &entries).show_on(response)?;
         Some(match picked {
             Pick::Rename => MenuAction::Rename,
+            Pick::Flatten => MenuAction::Edit(Action::Edit(EditAction::FlattenMidiTrack(track.id))),
             Pick::Record => MenuAction::Edit(Action::Edit(EditAction::RecordBus(track.id))),
             Pick::Color(i) => MenuAction::Edit(Action::Edit(EditAction::SetTrackProp {
                 tracks,

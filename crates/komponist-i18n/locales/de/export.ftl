@@ -2,6 +2,16 @@
 
 # S08 title of the settings dialog.
 export-title = WAV exportieren
+flatten-title = { $track } wird gerendert
+flatten-waiting = Warte auf die Geräte der Spur …
+flatten-done = { $track } in Audio umgewandelt
+flatten-cancelled = Spur-Umwandlung abgebrochen
+flatten-failed = Spur konnte nicht umgewandelt werden · { $error }
+flatten-device-failed = Gerät nicht verfügbar · { $device }
+flatten-no-clips = Wähle eine MIDI-Spur mit Clips.
+flatten-track-changed = Die Spur oder ihre Signalquellen haben sich während des Renderns geändert.
+flatten-worker-failed = Der Rendervorgang wurde unterbrochen.
+flatten-missing-sample = Sample nicht gefunden · { $file }
 
 # S08 row label and name of the range control.
 export-range = Bereich

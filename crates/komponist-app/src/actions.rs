@@ -150,6 +150,8 @@ pub enum EditAction {
     AddTrack(NewTrack),
     /// `edits::remove_tracks`.
     RemoveTracks(Vec<TrackId>),
+    /// Renders an individual MIDI track into an audio clip, then replaces the track.
+    FlattenMidiTrack(TrackId),
     /// `edits::move_tracks`.
     MoveTracks {
         /// Tracks to move.

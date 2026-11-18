@@ -557,6 +557,8 @@ pub enum Dialog {
     Settings(SettingsSection),
     /// S08 export.
     Export(ExportDialog),
+    /// Progress of replacing a MIDI track with audio.
+    Flatten,
     /// S06 missing plugins after opening a project.
     MissingPlugins(Vec<MissingPlugin>),
 }

@@ -255,6 +255,19 @@ pub fn fmt_bpm(bpm: f64) -> String {
 impl App {
     /// New, open, save, save as and the S06 answers (`ProjectAction`, module docs).
     pub(crate) fn lifecycle_action(&mut self, action: ProjectAction) {
+        // A native menu or a desktop file-open request can arrive while the render modal is up.
+        // Give back the engine and discard the pending replacement before changing documents.
+        if self.export.is_flattening()
+            && matches!(
+                action,
+                ProjectAction::New
+                    | ProjectAction::Open
+                    | ProjectAction::OpenPath(_)
+                    | ProjectAction::ShowStartScreen
+            )
+        {
+            self.shutdown_export();
+        }
         match action {
             ProjectAction::New => self.guard(Pending::New),
             ProjectAction::Open => self.guard(Pending::Open),

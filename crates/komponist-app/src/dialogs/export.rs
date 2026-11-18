@@ -618,6 +618,43 @@ fn cancel_button(ui: &mut Ui, t: Lang) -> Response {
     cancel.show(ui)
 }
 
+/// Shows the same renderer's progress for a track, which has an adaptive tail.
+pub(crate) fn show_flatten(
+    ctx: &Context,
+    track: &str,
+    fraction: Option<f32>,
+    cancelling: bool,
+) -> bool {
+    let t = komponist_ui::lang(ctx);
+    let mut cancel = false;
+    small_dialog(
+        ctx,
+        "flatten-progress",
+        &t.flatten_title(track),
+        |ui, width| {
+            let value = fraction.map(percent_text);
+            let (text, ty) = value
+                .as_deref()
+                .map_or((t.flatten_waiting(), &typography::UI), |value| {
+                    (value, &typography::VALUE_L)
+                });
+            let g = styled(ui, text, ty, color32(color::TEXT_1), Some(width));
+            super::paint_text(ui, g, text);
+            if let Some(fraction) = fraction {
+                ui.add_space(m::PROGRESS_GAP);
+                progress_bar(ui, width, fraction, text, t.export_progress());
+            }
+        },
+        |ui| {
+            cancel = ui
+                .add_enabled_ui(!cancelling, |ui| cancel_button(ui, t))
+                .inner
+                .clicked();
+        },
+    );
+    cancel
+}
+
 fn progress_dialog(ctx: &Context, model: &Model, view: &ProgressView) -> Vec<Output> {
     let t = komponist_ui::lang(ctx);
     let mut out = Vec::new();
@@ -648,13 +685,14 @@ fn baseline(g: &Galley) -> f32 {
     })
 }
 
+fn percent_text(fraction: f32) -> String {
+    format!("{} %", (fraction.clamp(0.0, 1.0) * 100.0).round() as u32)
+}
+
 fn progress_body(ui: &mut Ui, t: Lang, width: f32, view: &ProgressView) {
     let ppp = ui.pixels_per_point();
     // "62 %" and "00:19.6 von 00:33.0" on one baseline (`align-items:baseline`).
-    let percent = format!(
-        "{} %",
-        (view.fraction.clamp(0.0, 1.0) * 100.0).round() as u32
-    );
+    let percent = percent_text(view.fraction);
     let big = styled(
         ui,
         &percent,
@@ -685,28 +723,7 @@ fn progress_body(ui: &mut Ui, t: Lang, width: f32, view: &ProgressView) {
         Role::Label,
     );
     ui.add_space(m::PROGRESS_GAP);
-
-    let (bar, response) = ui.allocate_exact_size(vec2(width, m::BAR_HEIGHT), Sense::hover());
-    let fraction = view.fraction.clamp(0.0, 1.0);
-    px::fill(ui.painter(), bar, radius::S, color32(color::SURFACE_3));
-    if fraction > 0.0 {
-        let done = Rect::from_min_size(bar.min, vec2(bar.width() * fraction, bar.height()));
-        // `overflow:hidden` on the rounded track: the fill keeps the track's corners.
-        let clip = ui.painter().with_clip_rect(done.intersect(ui.clip_rect()));
-        px::fill(&clip, bar, radius::S, color32(color::ACCENT));
-    }
-    let progress_name = t.export_progress();
-    response.widget_info(|| {
-        let mut info = WidgetInfo::labeled(Role::ProgressIndicator, true, progress_name);
-        info.value = Some(f64::from(fraction));
-        info
-    });
-    w::accesskit(&response, |node| {
-        node.set_min_numeric_value(0.0);
-        node.set_max_numeric_value(1.0);
-        node.set_numeric_value(f64::from(fraction));
-        node.set_value(percent.clone());
-    });
+    progress_bar(ui, width, view.fraction, &percent, t.export_progress());
     ui.add_space(m::PROGRESS_GAP);
 
     let speed = view
@@ -745,6 +762,28 @@ fn progress_body(ui: &mut Ui, t: Lang, width: f32, view: &ProgressView) {
             ui.add_space(m::VALUES_GAP[1]);
         }
     }
+}
+
+fn progress_bar(ui: &mut Ui, width: f32, fraction: f32, percent: &str, name: &str) {
+    let (bar, response) = ui.allocate_exact_size(vec2(width, m::BAR_HEIGHT), Sense::hover());
+    let fraction = fraction.clamp(0.0, 1.0);
+    px::fill(ui.painter(), bar, radius::S, color32(color::SURFACE_3));
+    if fraction > 0.0 {
+        let done = Rect::from_min_size(bar.min, vec2(bar.width() * fraction, bar.height()));
+        let clip = ui.painter().with_clip_rect(done.intersect(ui.clip_rect()));
+        px::fill(&clip, bar, radius::S, color32(color::ACCENT));
+    }
+    response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(Role::ProgressIndicator, true, name);
+        info.value = Some(f64::from(fraction));
+        info
+    });
+    w::accesskit(&response, |node| {
+        node.set_min_numeric_value(0.0);
+        node.set_max_numeric_value(1.0);
+        node.set_numeric_value(f64::from(fraction));
+        node.set_value(percent);
+    });
 }
 
 fn devices_dialog(ctx: &Context, model: &Model, rows: &[DeviceRow]) -> Vec<Output> {

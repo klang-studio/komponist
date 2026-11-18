@@ -1554,6 +1554,7 @@ impl App {
                     self.select_tracks(vec![id], SelectMode::Replace);
                 }
             }
+            EditAction::FlattenMidiTrack(track) => self.start_flatten(track),
             EditAction::RemoveTracks(tracks) => {
                 if self.apply("undo-delete-tracks", |p| edits::remove_tracks(p, &tracks)) {
                     self.prune_selection();
@@ -2441,8 +2442,10 @@ impl App {
     pub(crate) fn open_dialog(&mut self, dialog: Dialog) {
         // The export dialog shows the progress and Esc cancels: another dialog (S06 after a late
         // scan, Strg , settings) waits until it closes.
-        if self.export.is_active() && matches!(self.ui.dialog, Some(Dialog::Export(_))) {
-            if !matches!(dialog, Dialog::Export(_)) {
+        if self.export.is_active()
+            && matches!(self.ui.dialog, Some(Dialog::Export(_) | Dialog::Flatten))
+        {
+            if !matches!(dialog, Dialog::Export(_) | Dialog::Flatten) {
                 self.dialogs.queued = Some(dialog);
             }
             return;

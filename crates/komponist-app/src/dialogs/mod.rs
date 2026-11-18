@@ -478,7 +478,7 @@ impl crate::App {
                     self.queue.push(action);
                 }
             }
-            Some(Dialog::Export(_)) | None => {}
+            Some(Dialog::Export(_) | Dialog::Flatten) | None => {}
         }
         if !matches!(self.ui.dialog, Some(Dialog::Settings(_))) {
             self.dialogs.settings.open = false;

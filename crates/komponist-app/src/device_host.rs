@@ -261,9 +261,27 @@ pub trait DeviceHost {
         Vec::new()
     }
 
+    /// Snapshots bridged devices on a MIDI track before replacing its chain.
+    fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Vec<(DeviceId, Arc<[u8]>)> {
+        self.snapshot_states(timeout)
+            .into_iter()
+            .filter(|(device, _)| devices.contains(device))
+            .collect()
+    }
+
     /// Switches every bridge to realtime or offline processing (around an export).
     fn set_render_mode(&mut self, mode: RenderMode) {
         let _ = mode;
+    }
+
+    /// Switches only the devices needed for an isolated offline render.
+    fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
+        let _ = devices;
+        self.set_render_mode(mode);
     }
 
     /// Shuts every bridge down (app exit). Blocking, at most a couple of seconds.
@@ -765,8 +783,20 @@ impl DeviceHost for PluginHost {
         self.manager.snapshot_states(timeout)
     }
 
+    fn snapshot_selected_states(
+        &mut self,
+        devices: &[DeviceId],
+        timeout: Duration,
+    ) -> Vec<(DeviceId, Arc<[u8]>)> {
+        self.manager.snapshot_selected_states(devices, timeout)
+    }
+
     fn set_render_mode(&mut self, mode: RenderMode) {
         self.manager.set_render_mode(mode);
+    }
+
+    fn set_selected_render_mode(&mut self, devices: &[DeviceId], mode: RenderMode) {
+        self.manager.set_selected_render_mode(devices, mode);
     }
 
     fn shutdown(&mut self) {
