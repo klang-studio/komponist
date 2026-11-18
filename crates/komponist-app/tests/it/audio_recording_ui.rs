@@ -485,6 +485,57 @@ fn failed_track_input_selection_keeps_the_previous_route_and_device() {
 }
 
 #[test]
+fn track_input_choice_validates_the_open_streams_channel_count() {
+    use komponist_audio::{AudioState, DeviceId, InputConfig};
+
+    let config = InputConfig {
+        device: Some("Two-channel input".into()),
+        device_id: Some(DeviceId("mock:capture".into())),
+    };
+    let initial = AudioInput::Hardware(HardwareInput {
+        first: 0,
+        stereo: false,
+    });
+    let (project, track) = audio(initial);
+    let mut app = App::headless(project);
+    app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+        config.clone(),
+    ))));
+    let _source = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
+    let choose = |input| {
+        Action::Settings(SettingsAction::ChooseTrackAudioInput {
+            track,
+            input: AudioInput::Hardware(input),
+            device: config.clone(),
+        })
+    };
+
+    // A stale four-channel inventory may still have offered stereo channels three and four.
+    app.dispatch(choose(HardwareInput {
+        first: 2,
+        stereo: true,
+    }));
+    assert_eq!(app.project().track(track).unwrap().audio.input, initial);
+    assert_eq!(app.settings().audio_input.as_ref(), Some(&config));
+    assert_eq!(app.engine().audio_input_config(), Some(&config));
+    assert_eq!(app.engine().audio_input_channels(), 2);
+    assert!(matches!(
+        app.engine().audio_state(),
+        AudioState::Running { .. }
+    ));
+
+    let stereo = HardwareInput {
+        first: 0,
+        stereo: true,
+    };
+    app.dispatch(choose(stereo));
+    assert_eq!(
+        app.project().track(track).unwrap().audio.input,
+        AudioInput::Hardware(stereo)
+    );
+}
+
+#[test]
 fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
     use komponist_audio::{DeviceId, InputConfig, InputDeviceInfo};
 

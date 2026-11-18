@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use egui::{Context, Event, FocusDirection, Ui};
-use komponist_audio::AudioState;
+use komponist_audio::{AudioError, AudioState, InputConfig};
 use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_i18n::Lang;
 use komponist_ipc::LogLevel;
@@ -44,8 +44,8 @@ use komponist_model::edits::{
 };
 use komponist_model::project::{BUILTIN_HEXA, VOLUME_DB_MIN};
 use komponist_model::{
-    ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat, PluginRef,
-    Project, Tick, TickRange, TrackId,
+    AudioInput, ChannelRef, ClipContent, DeviceId, DeviceRole, Document, EditError, PluginFormat,
+    PluginRef, Project, Tick, TickRange, TrackId,
 };
 use komponist_plugins::manager::STATE_LOG_PREFIX;
 use komponist_plugins::{DeviceStatus, FailReason, PluginManagerEvent};
@@ -2801,6 +2801,49 @@ impl App {
         }
     }
 
+    fn choose_track_audio_input(
+        &mut self,
+        track: TrackId,
+        input: AudioInput,
+        device: InputConfig,
+        mut set_input: impl FnMut(&mut EngineSync, Option<InputConfig>) -> Result<(), AudioError>,
+    ) {
+        use crate::views::audio_inputs::{hardware_input_available, input_label};
+
+        let previous = self.engine.audio_input_config().cloned();
+        let problem = match set_input(&mut self.engine, Some(device)) {
+            Ok(())
+                if matches!(input, AudioInput::Hardware(hardware)
+                    if !hardware_input_available(hardware, self.engine.audio_input_channels())) =>
+            {
+                let label = input_label(self.lang, self.project(), input);
+                Some(self.lang.audio_input_unavailable(label))
+            }
+            Ok(()) => {
+                self.persist_audio_input(true);
+                self.dispatch(Action::Edit(EditAction::SetTrackProp {
+                    tracks: vec![track],
+                    prop: TrackProp::AudioInput(input),
+                }));
+                return;
+            }
+            Err(error)
+                if self.engine.audio_input_error().is_some()
+                    || !matches!(self.engine.audio_state(), AudioState::NoDevice { .. }) =>
+            {
+                Some(self.lang.audio_input_open_failed(error))
+            }
+            Err(_) => None,
+        };
+
+        if self.engine.audio_input_config() != previous.as_ref() {
+            let _ = set_input(&mut self.engine, previous);
+        }
+        if let Some(problem) = problem {
+            self.set_status(problem, StatusKind::Error);
+        }
+    }
+
     fn settings_action(&mut self, action: SettingsAction) {
         if matches!(
             &action,
@@ -2830,32 +2873,7 @@ impl App {
                 track,
                 input,
                 device,
-            } => {
-                let previous = self.engine.audio_input_config().cloned();
-                match self.engine.set_audio_input(Some(device)) {
-                    Ok(()) => {
-                        self.persist_audio_input(true);
-                        self.dispatch(Action::Edit(EditAction::SetTrackProp {
-                            tracks: vec![track],
-                            prop: TrackProp::AudioInput(input),
-                        }));
-                    }
-                    Err(error) => {
-                        let capture_failed = self.engine.audio_input_error().is_some();
-                        if self.engine.audio_input_config() != previous.as_ref() {
-                            let _ = self.engine.set_audio_input(previous);
-                        }
-                        if capture_failed
-                            || !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
-                        {
-                            self.set_status(
-                                self.lang.audio_input_open_failed(error),
-                                StatusKind::Error,
-                            );
-                        }
-                    }
-                }
-            }
+            } => self.choose_track_audio_input(track, input, device, EngineSync::set_audio_input),
             SettingsAction::SetCaptureFormat(format) => {
                 self.settings.capture_format = format;
                 self.save_settings();
@@ -3114,6 +3132,68 @@ mod tests {
         let mut app = App::headless(empty_project());
         app.dispatch(Action::Edit(EditAction::NewMidiTrack));
         app
+    }
+
+    #[test]
+    fn capture_open_failure_rolls_back_the_track_choice_while_output_runs() {
+        use komponist_model::{HardwareInput, edits::NewAudioTrack};
+
+        let old_route = AudioInput::Hardware(HardwareInput {
+            first: 0,
+            stereo: false,
+        });
+        let new_route = AudioInput::Hardware(HardwareInput {
+            first: 1,
+            stereo: false,
+        });
+        let (project, track) = edits::add_audio_track(
+            &empty_project(),
+            NewAudioTrack {
+                input: old_route,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut app = App::headless(project);
+        let previous = InputConfig {
+            device: Some("Previous input".into()),
+            device_id: None,
+        };
+        let failed = InputConfig {
+            device: Some("Unavailable input".into()),
+            device_id: None,
+        };
+        app.engine.set_audio_input(Some(previous.clone())).unwrap();
+        app.settings.audio_input = Some(previous.clone());
+        let scratch = std::env::temp_dir().join(format!(
+            "komponist-track-capture-rollback-{}",
+            std::process::id()
+        ));
+        let settings_path = scratch.join("settings.json");
+        app.settings.save(&settings_path).unwrap();
+        app.settings_path = Some(settings_path.clone());
+
+        app.choose_track_audio_input(track, new_route, failed.clone(), |engine, input| {
+            let capture_rejected = input.as_ref() == Some(&failed);
+            engine.set_audio_input(input)?;
+            assert!(matches!(engine.audio_state(), AudioState::Running { .. }));
+            if capture_rejected {
+                return Err(AudioError::NoDevice("test capture open failed".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            app.engine.audio_state(),
+            AudioState::Running { .. }
+        ));
+        assert_eq!(app.engine.audio_input_config(), Some(&previous));
+        assert_eq!(app.project().track(track).unwrap().audio.input, old_route);
+        assert_eq!(app.settings.audio_input, Some(previous.clone()));
+        assert_eq!(
+            Settings::load(&settings_path).unwrap().audio_input,
+            Some(previous)
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     /// A count-in whose end is still in flight while a project opens (the audio block ends it
