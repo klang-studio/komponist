@@ -6,21 +6,23 @@
 //! that changed under the same name never reads stale peaks, and a damaged or foreign file
 //! reads as a miss. All of it is best effort: every error is a miss on read and ignored on write.
 //!
-//! Layout (little-endian): `"KPK2"`, sample rate `u32`, frames `u64`, file size `u64`, mtime
-//! nanoseconds `u64`, channels `u32`, level count `u32`, then per level the block size `u64`,
+//! Layout (little-endian): `"KPK3"`, sample rate `u32`, frames `u64`, file size `u64`, signed mtime
+//! nanoseconds `i128` (minimum for missing), channels `u32`, level count `u32`, then per level the block size `u64`,
 //! the bucket count `u64`, and `channels × buckets` min/max `f32` pairs and sum-of-squares `f64` values.
+//! Legacy KPK2 records used an unsigned mtime and still work for unambiguous legacy identities.
 
 use std::path::{Path, PathBuf};
 
 use super::{Level, Peak, PeakData};
 use crate::FileId;
 
-const MAGIC: &[u8; 4] = b"KPK2";
-const HEADER: usize = 4 + 4 + 8 + 8 + 8 + 4 + 4;
+const MAGIC: &[u8; 4] = b"KPK3";
+const LEGACY_MAGIC: &[u8; 4] = b"KPK2";
+const HEADER: usize = 4 + 4 + 8 + 8 + 16 + 4 + 4;
 
 /// The cache file of `id` inside `dir`.
 pub fn path_for(dir: &Path, id: &FileId) -> PathBuf {
-    dir.join(format!("{:016x}.kpeaks", id.stable_hash()))
+    dir.join(format!("v3-{:016x}.kpeaks", id.stable_hash()))
 }
 
 /// Serialises `data` for the file `id`.
@@ -30,7 +32,7 @@ pub fn to_bytes(data: &PeakData, id: &FileId) -> Vec<u8> {
     out.extend_from_slice(&data.sample_rate.to_le_bytes());
     out.extend_from_slice(&data.frames.to_le_bytes());
     out.extend_from_slice(&id.len.to_le_bytes());
-    out.extend_from_slice(&id.mtime_ns.to_le_bytes());
+    out.extend_from_slice(&id.mtime_bytes());
     out.extend_from_slice(&(data.channels() as u32).to_le_bytes());
     out.extend_from_slice(&(data.levels.len() as u32).to_le_bytes());
     for level in &data.levels {
@@ -50,12 +52,18 @@ pub fn to_bytes(data: &PeakData, id: &FileId) -> Vec<u8> {
 /// Parses what [`to_bytes`] wrote; `None` for anything else or for peaks of another version of the file.
 pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
     let mut r = Reader(bytes);
-    if r.take(4)? != MAGIC {
-        return None;
-    }
+    let magic = r.take(4)?;
     let sample_rate = r.u32()?;
     let frames = r.u64()?;
-    if r.u64()? != id.len || r.u64()? != id.mtime_ns {
+    if r.u64()? != id.len {
+        return None;
+    }
+    let matches = match magic {
+        current if current == MAGIC => r.take(16)? == id.mtime_bytes(),
+        legacy if legacy == LEGACY_MAGIC => r.u64()? == id.legacy_peak_key()?.1,
+        _ => false,
+    };
+    if !matches {
         return None;
     }
     let channels = r.u32()? as usize;
@@ -114,7 +122,15 @@ pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
 
 /// Reads the cached peaks of `id` from `dir`.
 pub fn read(dir: &Path, id: &FileId) -> Option<PeakData> {
-    from_bytes(&std::fs::read(path_for(dir, id)).ok()?, id)
+    if let Some(data) = std::fs::read(path_for(dir, id))
+        .ok()
+        .and_then(|bytes| from_bytes(&bytes, id))
+    {
+        return Some(data);
+    }
+    let (key, _) = id.legacy_peak_key()?;
+    let bytes = std::fs::read(dir.join(format!("{key:016x}.kpeaks"))).ok()?;
+    from_bytes(&bytes, id)
 }
 
 /// Writes the peaks of `id` into `dir` (created if needed), through a temporary file and a rename.
@@ -148,5 +164,50 @@ impl<'a> Reader<'a> {
     }
     fn f32(&mut self) -> Option<f32> {
         Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_legacy_records_only_for_unambiguous_keys() {
+        let id = FileId {
+            path: PathBuf::from("/audio.wav"),
+            len: 818,
+            mtime_ns: Some(300),
+        };
+        let data = PeakData::from_planar(44100, &[vec![0.125; 500]]);
+        let mut legacy = to_bytes(&data, &id);
+        legacy[..4].copy_from_slice(LEGACY_MAGIC);
+        legacy.splice(24..40, 300u64.to_le_bytes());
+        assert_eq!(from_bytes(&legacy, &id), Some(data));
+        assert!(id.legacy_peak_key().is_some());
+        for suspect in [
+            FileId {
+                path: PathBuf::from("/audio-�.wav"),
+                ..id.clone()
+            },
+            FileId {
+                mtime_ns: None,
+                ..id.clone()
+            },
+            FileId {
+                mtime_ns: Some(0),
+                ..id.clone()
+            },
+            FileId {
+                mtime_ns: Some(-300),
+                ..id.clone()
+            },
+            FileId {
+                mtime_ns: Some(i128::from(u64::MAX) + 1),
+                ..id.clone()
+            },
+        ] {
+            assert!(suspect.legacy_peak_key().is_none());
+            assert!(from_bytes(&legacy, &suspect).is_none());
+        }
     }
 }

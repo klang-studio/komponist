@@ -21,12 +21,14 @@ mod error;
 pub mod peaks;
 mod pool;
 mod resample;
+mod tempo;
 
 pub use decode::{AudioFile, AudioInfo, Decoded, Format, decode_all};
 pub use error::AudioError;
 pub use peaks::{Peak, PeakBuilder, PeakData};
-pub use pool::{FileId, FilePool, PeakState, PoolFile};
+pub use pool::{FileId, FilePool, PeakState, PoolFile, TempoState};
 pub use resample::{StreamResampler, resample};
+pub use tempo::TempoEstimate;
 
 /// Longest channel count the decoders deliver: files with more channels give their first two.
 pub const MAX_CHANNELS: usize = 2;
