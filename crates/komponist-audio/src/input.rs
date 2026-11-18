@@ -16,9 +16,8 @@ pub const MAX_INPUT_CHANNELS: usize = 64;
 const MAX_QUEUE_FRAMES: usize = 65_536;
 /// The clock follower corrects separate device clocks by at most 0.2 percent.
 const MAX_CLOCK_CORRECTION: f64 = 0.002;
-/// Low bits hold the minimum pre-burst depth. High bits identify the current output read interval.
-const NO_BURST_DEPTH: u64 = u32::MAX as u64;
-const BURST_EPOCH: u64 = NO_BURST_DEPTH + 1;
+/// Marks an interval for which the producer has not published a complete burst.
+const NO_BURST: u64 = u64::MAX;
 const CAPTURE_FORMATS: [cpal::SampleFormat; 3] = [
     cpal::SampleFormat::F32,
     cpal::SampleFormat::I32,
@@ -195,7 +194,8 @@ struct Frame {
 struct Shared {
     dropped: AtomicU64,
     lost: AtomicBool,
-    burst_depth: AtomicU64,
+    enabled: AtomicBool,
+    burst_start: AtomicU64,
 }
 
 impl Default for Shared {
@@ -203,48 +203,21 @@ impl Default for Shared {
         Self {
             dropped: AtomicU64::new(0),
             lost: AtomicBool::new(false),
-            burst_depth: AtomicU64::new(NO_BURST_DEPTH),
+            enabled: AtomicBool::new(false),
+            burst_start: AtomicU64::new(NO_BURST),
         }
     }
 }
 
 impl Shared {
-    fn measure_read_epoch(&self) -> u64 {
-        self.burst_depth.load(Ordering::Acquire) & !NO_BURST_DEPTH
+    fn publish_burst(&self, first_frame: u64) {
+        self.burst_start.fetch_min(first_frame, Ordering::Release);
     }
 
-    fn publish_burst_depth(&self, epoch: u64, depth: usize) {
-        // The low bit of the epoch is set while an output read can drain the queue.
-        if epoch & BURST_EPOCH != 0 {
-            return;
-        }
-        let _ = self
-            .burst_depth
-            .try_update(Ordering::Release, Ordering::Relaxed, |state| {
-                (state & !NO_BURST_DEPTH == epoch)
-                    .then_some(epoch | (state & NO_BURST_DEPTH).min(depth as u64))
-            });
+    fn take_burst(&self) -> Option<u64> {
+        let first_frame = self.burst_start.swap(NO_BURST, Ordering::Acquire);
+        (first_frame != NO_BURST).then_some(first_frame)
     }
-
-    fn begin_read(&self) -> Option<usize> {
-        let old = self
-            .burst_depth
-            .try_update(Ordering::AcqRel, Ordering::Relaxed, |state| {
-                Some(state.wrapping_add(BURST_EPOCH) | NO_BURST_DEPTH)
-            })
-            .unwrap_or_else(|state| state);
-        let depth = old & NO_BURST_DEPTH;
-        (depth != NO_BURST_DEPTH).then_some(depth as usize)
-    }
-
-    fn finish_read(&self) {
-        self.burst_depth.fetch_add(BURST_EPOCH, Ordering::Release);
-    }
-}
-
-struct BurstMeasurement {
-    epoch: u64,
-    depth: usize,
 }
 
 /// Producer used by the device callback and deterministic synthetic-input tests.
@@ -253,6 +226,7 @@ pub struct TestAudioSource {
     channels: usize,
     rate: u32,
     sequence: u64,
+    queued_frames: u64,
     shared: Arc<Shared>,
 }
 
@@ -270,19 +244,13 @@ impl TestAudioSource {
         if samples.len() < self.channels {
             return true;
         }
-        let measurement = self.measure_burst();
-        self.push_measured(samples, at, measurement)
+        let first_frame = self.queued_frames;
+        let complete = self.enqueue(samples, at);
+        self.shared.publish_burst(first_frame);
+        complete
     }
 
-    fn measure_burst(&self) -> BurstMeasurement {
-        let epoch = self.shared.measure_read_epoch();
-        BurstMeasurement {
-            epoch,
-            depth: self.tx.buffer().capacity() - self.tx.slots(),
-        }
-    }
-
-    fn push_measured<T>(&mut self, samples: &[T], at: Instant, measured: BurstMeasurement) -> bool
+    fn enqueue<T>(&mut self, samples: &[T], at: Instant) -> bool
     where
         T: cpal::Sample + Copy,
         f32: cpal::FromSample<T>,
@@ -305,10 +273,10 @@ impl TestAudioSource {
             if self.tx.push(frame).is_err() {
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                 complete = false;
+            } else {
+                self.queued_frames = self.queued_frames.wrapping_add(1);
             }
         }
-        self.shared
-            .publish_burst_depth(measured.epoch, measured.depth);
         complete
     }
     /// Total source frames that did not fit in the bounded queue.
@@ -332,6 +300,8 @@ pub struct InputReader {
     primed: bool,
     lead: usize,
     burst: usize,
+    correction_frames: usize,
+    dequeued_frames: u64,
 }
 
 /// Creates a synthetic input bridge, without enumerating or connecting any hardware.
@@ -354,6 +324,7 @@ pub fn test_input(
             channels,
             rate,
             sequence: 0,
+            queued_frames: 0,
             shared: shared.clone(),
         },
         InputReader {
@@ -369,6 +340,8 @@ pub fn test_input(
             primed: false,
             lead: 0,
             burst: 0,
+            correction_frames: 0,
+            dequeued_frames: 0,
         },
     ))
 }
@@ -397,19 +370,7 @@ impl InputReader {
         if self.lost() {
             return InputBuffer::new(out, self.channels, Duration::ZERO, true);
         }
-        let lead = self.shared.begin_read();
-        let input = self.read_queued(out, output_rate, now, lead);
-        self.shared.finish_read();
-        input
-    }
-
-    fn read_queued<'a>(
-        &mut self,
-        out: &'a mut [f32],
-        output_rate: u32,
-        now: Instant,
-        lead: Option<usize>,
-    ) -> InputBuffer<'a> {
+        let first_burst_frame = self.shared.take_burst();
         let dropped = self.shared.dropped.load(Ordering::Acquire);
         let overflow = dropped != self.dropped;
         let mut gap = overflow;
@@ -418,21 +379,28 @@ impl InputReader {
         if overflow {
             // A producer can fill the ring after the reserve measurement was taken.
             for _ in 0..self.rx.slots().saturating_sub(self.target) {
-                let _ = self.rx.pop();
+                let _ = self.pop_frame();
             }
             self.reset_interpolator();
-        } else if let Some(lead) = lead {
-            self.lead = lead;
-            self.burst = self.burst.max(self.rx.slots().saturating_sub(lead));
+        } else if let Some(first_frame) = first_burst_frame {
+            let queued = self.rx.slots();
+            // Compare completed pushes with completed pops, excluding dropped frames from
+            // both counters. This cannot count reserve that was read while a burst arrived.
+            self.lead = (first_frame.saturating_sub(self.dequeued_frames) as usize).min(queued);
+            self.burst = self.burst.max(queued.saturating_sub(self.lead));
+            self.correction_frames = self.burst;
         }
-        // Start at the nominal rate once enough data is queued. During playback follow the
-        // reserve before input arrived, excluding the sawtooth of input/output callback batching.
-        // Leave room for the largest observed batch and for normal scheduling variation.
+        let rate_ratio = f64::from(self.rate) / f64::from(output_rate);
+        let planned = ((out.len() / self.channels) as f64 * rate_ratio).ceil() as usize;
         let correction = if self.primed {
             let spare = self.rx.buffer().capacity().saturating_sub(self.burst);
             let reserve = self.target.min(spare / 2);
+            // A measurement can cover several reads in the same input period. Stop correcting
+            // once that period's worth of source frames is exhausted without a fresh burst.
+            let weight = self.correction_frames.min(planned) as f64 / planned.max(1) as f64;
             ((self.lead as f64 - reserve as f64) / self.target as f64).clamp(-1.0, 1.0)
                 * MAX_CLOCK_CORRECTION
+                * weight
         } else {
             if self.rx.slots() < self.target {
                 return InputBuffer::new(out, self.channels, Duration::ZERO, true);
@@ -440,18 +408,19 @@ impl InputReader {
             self.primed = true;
             0.0
         };
-        let step = f64::from(self.rate) / f64::from(output_rate) * (1.0 + correction);
+        self.correction_frames = self.correction_frames.saturating_sub(planned);
+        let step = rate_ratio * (1.0 + correction);
         let mut first_at = None;
         for frame in out.chunks_exact_mut(self.channels) {
             if self.left.is_none() {
-                self.left = self.rx.pop().ok();
+                self.left = self.pop_frame();
             }
             // Advance the source only when the next output frame is needed. The last frame of
             // an output callback need not have its successor waiting in this callback.
             while self.phase >= 1.0
                 && let Some(sequence) = self.left.as_ref().map(|frame| frame.sequence)
             {
-                self.left = self.right.take().or_else(|| self.rx.pop().ok());
+                self.left = self.right.take().or_else(|| self.pop_frame());
                 if let Some(next) = &self.left {
                     gap |= next.sequence != sequence.wrapping_add(1);
                 }
@@ -461,7 +430,7 @@ impl InputReader {
                 self.left.as_ref()
             } else {
                 if self.left.is_some() && self.right.is_none() {
-                    self.right = self.rx.pop().ok();
+                    self.right = self.pop_frame();
                 }
                 self.right.as_ref()
             };
@@ -489,6 +458,12 @@ impl InputReader {
         InputBuffer::new(out, self.channels, latency, gap)
     }
 
+    fn pop_frame(&mut self) -> Option<Frame> {
+        let next = self.rx.pop().ok()?;
+        self.dequeued_frames = self.dequeued_frames.wrapping_add(1);
+        Some(next)
+    }
+
     fn reset_interpolator(&mut self) {
         self.left = None;
         self.right = None;
@@ -496,6 +471,7 @@ impl InputReader {
         self.primed = false;
         self.lead = 0;
         self.burst = 0;
+        self.correction_frames = 0;
     }
 }
 
@@ -601,28 +577,52 @@ fn describe_input(device: &cpal::Device) -> Option<(InputDeviceInfo, cpal::Suppo
 fn default_capture_config(
     device: &cpal::Device,
 ) -> Result<cpal::SupportedStreamConfig, AudioError> {
-    let native = device
-        .default_input_config()
-        .map_err(crate::backend::map_err)?;
-    if capture_dimensions_valid(native.channels(), native.sample_rate())
-        && CAPTURE_FORMATS.contains(&native.sample_format())
-    {
-        return Ok(native);
-    }
-    let ranges = device
-        .supported_input_configs()
-        .map_err(crate::backend::map_err)?;
-    fallback_capture_config(&native, ranges)
-        .ok_or_else(|| AudioError::UnsupportedConfig("no supported capture format".into()))
+    capture_default(
+        device
+            .default_input_config()
+            .map_err(crate::backend::map_err),
+        || {
+            device
+                .supported_input_configs()
+                .map_err(crate::backend::map_err)
+        },
+    )
+}
+
+fn capture_default<R>(
+    native: Result<cpal::SupportedStreamConfig, AudioError>,
+    supported_ranges: impl FnOnce() -> Result<R, AudioError>,
+) -> Result<cpal::SupportedStreamConfig, AudioError>
+where
+    R: IntoIterator<Item = cpal::SupportedStreamConfigRange>,
+{
+    let (native, native_error) = match native {
+        Ok(config)
+            if capture_dimensions_valid(config.channels(), config.sample_rate())
+                && CAPTURE_FORMATS.contains(&config.sample_format()) =>
+        {
+            return Ok(config);
+        }
+        Ok(config) => (Some(config), None),
+        Err(error) => (None, Some(error)),
+    };
+    fallback_capture_config(native.as_ref(), supported_ranges()?).ok_or_else(|| {
+        native_error
+            .unwrap_or_else(|| AudioError::UnsupportedConfig("no supported capture format".into()))
+    })
 }
 
 fn fallback_capture_config(
-    native: &cpal::SupportedStreamConfig,
+    native: Option<&cpal::SupportedStreamConfig>,
     ranges: impl IntoIterator<Item = cpal::SupportedStreamConfigRange>,
 ) -> Option<cpal::SupportedStreamConfig> {
-    // Keep the native channel layout whenever possible. Choose it independently of the output
-    // rate so an input's channel count is the same in the menu and in the capture bridge.
-    let best = ranges
+    // Keep the native channel layout whenever possible. Without a default, prefer the largest
+    // usable layout and a rate near 48 kHz. The layout is independent of the output rate.
+    let desired = native
+        .map(cpal::SupportedStreamConfig::sample_rate)
+        .filter(|&rate| crate::backend::valid_sample_rate(rate))
+        .unwrap_or(48_000);
+    ranges
         .into_iter()
         .filter_map(|range| {
             let first = range.min_sample_rate().max(1);
@@ -630,21 +630,24 @@ fn fallback_capture_config(
             {
                 return None;
             }
-            let preference = CAPTURE_FORMATS
+            let format = CAPTURE_FORMATS
                 .iter()
                 .position(|format| range.sample_format() == *format)?;
-            Some((range, first, preference))
+            let rate = desired.clamp(first, range.max_sample_rate());
+            let channels = range.channels();
+            let fewer_channels = u16::MAX - channels;
+            let layout_distance = native.map_or(0, |config| channels.abs_diff(config.channels()));
+            let preference = (
+                layout_distance,
+                fewer_channels,
+                format,
+                desired.abs_diff(rate),
+                rate,
+            );
+            Some((preference, range.try_with_sample_rate(rate)?))
         })
-        .min_by_key(|(range, _, preference)| {
-            (range.channels().abs_diff(native.channels()), *preference)
-        })?;
-    let (range, first, _) = best;
-    let desired = if crate::backend::valid_sample_rate(native.sample_rate()) {
-        native.sample_rate().clamp(first, range.max_sample_rate())
-    } else {
-        first
-    };
-    range.try_with_sample_rate(desired)
+        .min_by_key(|(preference, _)| *preference)
+        .map(|(_, config)| config)
 }
 
 fn capture_at_output_rate(
@@ -691,10 +694,67 @@ pub(crate) fn remember_asio(device: &cpal::Device) {
     }
 }
 
+/// Reopening an identified input pins its backend ID. The default routes deliberately follow the
+/// backend, including default aliases that older settings files have stored as device IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureTarget {
+    Exact(DeviceId),
+    SystemDefault,
+    BackendAlias(DeviceId),
+}
+
+impl CaptureTarget {
+    fn is_backend_alias(id: &DeviceId) -> bool {
+        matches!(
+            id.0.as_str(),
+            "pipewire:input_default"
+                | "pipewire:sink_default"
+                | "alsa:default"
+                | "alsa:sysdefault"
+                | "alsa:pipewire"
+                | "alsa:pulse"
+                | "jack:input"
+        )
+    }
+
+    fn opened(kind: HostKind, selection: &InputConfig, id: Option<DeviceId>) -> Option<Self> {
+        if selection.device.is_none()
+            && selection.device_id.is_none()
+            && kind != HostKind::Asio
+            && id.as_ref().is_none_or(Self::is_backend_alias)
+        {
+            return Some(Self::SystemDefault);
+        }
+        id.map(|id| {
+            if Self::is_backend_alias(&id) {
+                Self::BackendAlias(id)
+            } else {
+                Self::Exact(id)
+            }
+        })
+    }
+
+    pub(crate) fn missing_at_start(selection: &InputConfig, error: &AudioError) -> Option<Self> {
+        let id = selection.device_id.as_ref()?;
+        (matches!(error, AudioError::NoDevice(_)) && !Self::is_backend_alias(id))
+            .then(|| Self::Exact(id.clone()))
+    }
+
+    pub(crate) fn selection(&self) -> InputConfig {
+        match self {
+            Self::Exact(id) | Self::BackendAlias(id) => InputConfig {
+                device: None,
+                device_id: Some(id.clone()),
+            },
+            Self::SystemDefault => InputConfig::default(),
+        }
+    }
+}
+
 pub(crate) struct CaptureStream {
-    _stream: cpal::Stream,
+    stream: cpal::Stream,
     shared: Arc<Shared>,
-    device_id: Option<DeviceId>,
+    target: Option<CaptureTarget>,
 }
 
 impl CaptureStream {
@@ -702,11 +762,34 @@ impl CaptureStream {
         self.shared.lost.load(Ordering::Acquire)
     }
 
-    pub(crate) fn device_id(&self) -> Option<&DeviceId> {
-        self.device_id.as_ref()
+    pub(crate) fn target(&self) -> Option<&CaptureTarget> {
+        self.target.as_ref()
+    }
+
+    pub(crate) fn play(&self) -> Result<(), AudioError> {
+        self.stream.play().map_err(crate::backend::map_err)
+    }
+
+    /// The device may run on its own thread before the control thread accepts a reconnect.
+    /// Keep its callbacks from queueing audio until the reader belongs to the current output.
+    pub(crate) fn enable(&self) {
+        self.shared.enabled.store(true, Ordering::Release);
     }
 
     pub(crate) fn start(
+        kind: HostKind,
+        selection: &InputConfig,
+        output_rate: u32,
+        buffer: u32,
+        duplex_device: Option<&cpal::Device>,
+    ) -> Result<(Self, InputReader), AudioError> {
+        let (capture, reader) = Self::prepare(kind, selection, output_rate, buffer, duplex_device)?;
+        capture.enable();
+        capture.play()?;
+        Ok((capture, reader))
+    }
+
+    pub(crate) fn prepare(
         kind: HostKind,
         selection: &InputConfig,
         output_rate: u32,
@@ -776,12 +859,11 @@ impl CaptureStream {
                 )));
             }
         }?;
-        stream.play().map_err(crate::backend::map_err)?;
         Ok((
             Self {
-                _stream: stream,
+                stream,
                 shared,
-                device_id,
+                target: CaptureTarget::opened(kind, selection, device_id),
             },
             reader,
         ))
@@ -798,10 +880,14 @@ where
     T: cpal::SizedSample + Copy,
     f32: cpal::FromSample<T>,
 {
+    let active = Arc::clone(&shared);
     device
         .build_input_stream::<T, _, _>(
             config,
             move |data, info| {
+                if !active.enabled.load(Ordering::Acquire) {
+                    return;
+                }
                 let timestamp = info.timestamp();
                 let age = timestamp
                     .callback
@@ -937,28 +1023,55 @@ mod tests {
     }
 
     #[test]
-    fn a_read_between_burst_measurement_and_enqueue_invalidates_the_measurement() {
+    fn a_delayed_burst_uses_the_reserve_remaining_at_the_consumer_cursor() {
         let (mut source, mut reader) = test_input(1, 48_000, 16).unwrap();
         let at = Instant::now();
         assert!(source.push(&[0.25; 12], at));
         assert!(!reader.read(&mut [0.0; 4], 48_000, at).discontinuous());
-        let delayed = source.measure_burst();
-        assert_eq!(delayed.depth, 8);
+        let boundary = source.queued_frames;
 
+        // The producer starts measuring while eight queued frames remain. The read drains them
+        // before the producer has finished publishing its next burst.
         assert!(!reader.read(&mut [0.0; 8], 48_000, at).discontinuous());
-        assert!(source.push_measured(&[0.25; 4], at, delayed));
+        assert!(source.enqueue(&[0.25; 4], at));
+        source.shared.publish_burst(boundary);
         let mut out = [0.0; 4];
-        let input = reader.read(&mut out, 48_000, at);
-        assert!(!input.discontinuous());
-        assert_eq!(input.data(), &[0.25; 4]);
-        assert_eq!(reader.lead, 0);
-        assert_eq!(source.dropped(), 0);
-
-        assert!(source.push(&[0.25; 4], at));
-        assert!(source.push(&[0.25; 4], at));
-        let lead = reader.rx.slots() - 8;
         assert!(!reader.read(&mut out, 48_000, at).discontinuous());
-        assert_eq!(reader.lead, lead);
+        assert_eq!(reader.lead, 0);
+        assert_eq!(out, [0.25; 4]);
+    }
+
+    #[test]
+    fn sustained_overlap_keeps_capture_continuous_with_equal_and_nearby_clocks() {
+        for (capacity, target, periods, drift) in [
+            (4096, 128, 32_000, 0),
+            (256, 64, 6_000, -1),
+            (256, 64, 6_000, 1),
+        ] {
+            let (mut source, mut reader) = test_input(1, 48_000, capacity).unwrap();
+            reader.target = target;
+            let at = Instant::now();
+            assert!(source.push(&[0.25; 128], at));
+            let mut out = [0.0; 64];
+            let samples = [0.25; 65];
+            assert_no_alloc(|| {
+                for period in 0..periods {
+                    // Model a producer that starts before each read and publishes only once
+                    // the consumer has already drained that output period.
+                    let boundary = source.queued_frames;
+                    let time = at + crate::frames_to_duration(period * 64, 48_000);
+                    assert!(
+                        !reader.read(&mut out, 48_000, time).discontinuous(),
+                        "period {period}, drift direction {drift}"
+                    );
+                    assert_eq!(out, [0.25; 64]);
+                    let frames = if period % 16 == 15 { 64 + drift } else { 64 };
+                    assert!(source.enqueue(&samples[..frames as usize], time));
+                    source.shared.publish_burst(boundary);
+                }
+            });
+            assert_eq!(source.dropped(), 0);
+        }
     }
 
     #[test]
@@ -1178,14 +1291,103 @@ mod tests {
         };
         let unsupported = config(2, 44_100, 48_000, SampleFormat::U16);
         let invalid = config(96, 44_100, 48_000, SampleFormat::F32);
-        assert!(fallback_capture_config(&native, [unsupported, invalid]).is_none());
+        assert!(fallback_capture_config(Some(&native), [unsupported, invalid]).is_none());
 
         let mono = config(1, 48_000, 48_000, SampleFormat::F32);
         let stereo = config(2, 44_100, 44_100, SampleFormat::I16);
-        let fallback = fallback_capture_config(&native, [unsupported, mono, stereo]).unwrap();
+        let fallback = fallback_capture_config(Some(&native), [unsupported, mono, stereo]).unwrap();
         assert_eq!(fallback.channels(), 2);
         assert_eq!(fallback.sample_rate(), 44_100);
         assert_eq!(fallback.sample_format(), SampleFormat::I16);
+    }
+
+    #[test]
+    fn failed_default_query_can_use_supported_ranges() {
+        use cpal::{SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+        let range = |channels, rate, sample_format| {
+            SupportedStreamConfigRange::new(
+                channels,
+                rate,
+                rate,
+                SupportedBufferSize::Unknown,
+                sample_format,
+            )
+        };
+        let fallback = capture_default(
+            Err(AudioError::UnsupportedConfig(
+                "native format is not supported".into(),
+            )),
+            || {
+                Ok([
+                    range(2, 44_100, SampleFormat::F32),
+                    range(2, 48_000, SampleFormat::F32),
+                    range(1, 48_000, SampleFormat::F32),
+                    range(96, 48_000, SampleFormat::F32),
+                ])
+            },
+        )
+        .unwrap();
+        assert_eq!(fallback.channels(), 2);
+        assert_eq!(fallback.sample_rate(), 48_000);
+        assert_eq!(fallback.sample_format(), SampleFormat::F32);
+    }
+
+    #[test]
+    fn reconnect_distinguishes_the_host_default_backend_aliases_and_device_ids() {
+        let alias = DeviceId("pipewire:input_default".into());
+        let exact = DeviceId("pipewire:alsa_input.usb-Hotone.analog-stereo".into());
+        let config = |id| InputConfig {
+            device: Some("Shared label".into()),
+            device_id: id,
+        };
+        let missing = AudioError::NoDevice("gone".into());
+        let disabled = AudioError::UnsupportedConfig("permanent failure".into());
+
+        let target = CaptureTarget::opened(
+            HostKind::PipeWire,
+            &InputConfig::default(),
+            Some(alias.clone()),
+        );
+        assert_eq!(target, Some(CaptureTarget::SystemDefault));
+        assert_eq!(target.unwrap().selection(), InputConfig::default());
+        assert_eq!(
+            CaptureTarget::opened(
+                HostKind::CoreAudio,
+                &InputConfig::default(),
+                Some(exact.clone())
+            ),
+            Some(CaptureTarget::Exact(exact.clone()))
+        );
+        assert_eq!(
+            CaptureTarget::opened(
+                HostKind::PipeWire,
+                &config(Some(alias.clone())),
+                Some(alias.clone())
+            ),
+            Some(CaptureTarget::BackendAlias(alias.clone()))
+        );
+        assert_eq!(
+            CaptureTarget::missing_at_start(&config(Some(alias)), &missing),
+            None
+        );
+        assert_eq!(
+            CaptureTarget::missing_at_start(&config(None), &missing),
+            None
+        );
+        assert_eq!(
+            CaptureTarget::missing_at_start(&config(Some(exact.clone())), &disabled),
+            None
+        );
+        let target =
+            CaptureTarget::missing_at_start(&config(Some(exact.clone())), &missing).unwrap();
+        assert_eq!(target, CaptureTarget::Exact(exact.clone()));
+        assert_eq!(
+            target.selection(),
+            InputConfig {
+                device: None,
+                device_id: Some(exact)
+            }
+        );
     }
 
     #[test]

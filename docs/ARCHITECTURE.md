@@ -1277,17 +1277,22 @@ buffering, playback/export integration, warp persistence, UI and tempo detection
   `AudioProcess::process_input` receives a borrowed interleaved `InputBuffer` at the output rate;
   its default implementation preserves output-only processors. A bounded SPSC bridge carries
   timestamped frames from the input callback to the output callback. Linear rate conversion and
-  a clock follower (at most ±0.2%) align separate device clocks. The follower measures the queue
-  reserve before input bursts so differing callback periods do not skew the estimate. The bridge
-  keeps queued frames across complete bursts and trims stale backlog to the re-prime threshold after
+  a clock follower (at most ±0.2%) align separate device clocks. The follower computes the remaining
+  reserve from published burst boundaries and the consumer's live queue position. This excludes
+  callback batching and keeps overlapping callbacks from reusing a stale depth. The bridge keeps
+  queued frames across complete bursts and trims stale backlog to the re-prime threshold after
   a confirmed overflow. `InputBuffer::latency` includes capture and queue delay.
   Overflow, underflow and device loss set `discontinuous`, so recording can fail explicitly
   instead of joining samples across a gap. Monitoring holds the last sample instead of
   interpolating across sequence gaps. Capture failures leave the output stream running and the
-  requested input available for reselection. A previously opened source can reconnect by its exact
-  stable ID without restarting output. The callback takes the replacement reader from a bounded
-  queue and sends the retired storage back to the control thread. Input inventory and startup use
-  the same eligible channel and sample formats. Callback buffers and queue storage are preallocated.
+  requested input available for reselection. Reconnects use the exact ID of an identified source,
+  including a saved input that was missing at startup. If a backend exposes only a synthetic default
+  instead of an exact source ID, the System Default and driver-default aliases deliberately follow
+  the corresponding backend route. A background worker prepares and starts
+  the replacement capture stream. Its input remains disabled until the current output accepts its
+  reader. The callback takes the reader from a bounded queue and sends retired storage back to the
+  control thread. Input inventory and startup use the same eligible channel and sample formats.
+  Callback buffers and queue storage are preallocated.
   ASIO capture uses the output's driver and caches input metadata during normal enumeration;
   it never loads another ASIO driver beside a running one. `test_input` and `set_test_input`
   inject synthetic capture into the same bridge/null backend without opening hardware.
