@@ -22,3 +22,8 @@ fast-math and no `-march=native`. `cc` selects the platform compiler/C++ standar
 GCC/Clang + libstdc++ on Linux, Xcode Clang + libc++ on macOS, MSVC + its runtime on Windows.
 Builds use local sources and perform no network access. Native platform validation is documented
 in the WP-B internal notes; support is not inferred merely from a cross Rust target being installed.
+
+WP-D extends the checked wrapper domain to 8–384 kHz and duration ratios 1/6–6. Upstream
+headers remain unchanged. Native sanitizer/domain and worker integration results are recorded
+in the WP-D internal notes; the earlier native platform qualification does not substitute for
+running the expanded wrapper on macOS/MSVC. See architecture §6.11 for the engine contract.

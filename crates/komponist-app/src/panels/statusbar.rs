@@ -288,12 +288,10 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) -> bool {
         clip.circle_filled(c, ERROR_DOT / 2.0, color32(dot));
         x += ERROR_DOT + space::SPACE_2;
     }
-    let left_limit = right_rect.left() - space::SPACE_4;
-    let text_clip = clip.with_clip_rect(Rect::from_x_y_ranges(
-        inner.left()..=left_limit,
-        inner.y_range(),
-    ));
-    let mut parts: Vec<(Rect, &str)> = Vec::new();
+    let left_limit = (right_rect.left() - space::SPACE_4).max(inner.left());
+    let left_bounds = Rect::from_x_y_ranges(inner.left()..=left_limit, inner.y_range());
+    let text_clip = clip.with_clip_rect(left_bounds);
+    let mut parts = Vec::new();
     let mut link_rect = None;
     let link = model.link.as_deref().unwrap_or("");
     for (i, (text, col)) in [
@@ -319,19 +317,28 @@ pub fn show(ui: &mut Ui, rect: Rect, model: &StatusModel) -> bool {
         text_clip.galley(pos, g, color32(col));
         if i == 1 {
             link_rect = Some(r.intersect(inner));
+        } else if i == 0 {
+            parts.push((r.intersect(left_bounds), text, r.right() > left_limit));
         } else {
-            parts.push((r.intersect(inner), text));
+            parts.push((r.intersect(inner), text, false));
         }
     }
     clip.galley(right_rect.min, right, color32(model.right_color));
-    parts.push((right_rect, model.right.as_str()));
-    for (i, (r, text)) in parts.into_iter().enumerate() {
+    parts.push((right_rect, model.right.as_str(), false));
+    for (i, (r, text, clipped)) in parts.into_iter().enumerate() {
         if text.is_empty() || r.width() <= 0.0 {
             continue;
         }
         let id = ui.scope_id().with(("komponist_status", i));
         let response = ui.interact(r, id, Sense::hover());
         response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+        if clipped {
+            response.on_hover_ui(|ui| {
+                let screen_width = ui.ctx().content_rect().width() - 2.0 * space::SPACE_4;
+                ui.set_max_width(ui.spacing().tooltip_width.min(screen_width.max(1.0)));
+                ui.add(egui::Label::new(text).wrap());
+            });
+        }
     }
     let Some(r) = link_rect.filter(|r| r.width() > 0.0) else {
         return false;
@@ -365,6 +372,42 @@ mod tests {
         );
         assert_eq!(fmt_rate(44_100), "44.1 kHz");
         assert_eq!(fmt_rate(96_000), "96 kHz");
+    }
+
+    #[test]
+    fn hovering_the_clipped_left_status_shows_the_full_text() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable as _;
+
+        let message = "Export failed · Warp in audio clip “A long audio clip name that does not fit” · The audio file cannot be read";
+        for (width, expected_labels) in [(420.0, 2), (1400.0, 1)] {
+            let mut h = Harness::builder()
+                .with_size(vec2(width, 200.0))
+                .with_step_dt(0.2)
+                .with_context_setup(komponist_ui::install)
+                .build_ui(|ui| {
+                    let rect = Rect::from_min_size(
+                        ui.min_rect().min,
+                        vec2(ui.available_width(), komponist_tokens::size::STATUSBAR),
+                    );
+                    let model = StatusModel {
+                        left: message.into(),
+                        left_color: color::STATE_ERROR,
+                        ok_dot: false,
+                        link: None,
+                        mid: String::new(),
+                        right: "PipeWire · 48 kHz · 256 samples · 5.3 ms".into(),
+                        right_color: color::TEXT_3,
+                    };
+                    show(ui, rect, &model);
+                });
+            let left = h.get_by_label(message).rect().center();
+            h.event(egui::Event::PointerMoved(left));
+            h.run_steps(6);
+            let labels: Vec<_> = h.query_all_by_label(message).collect();
+            assert_eq!(labels.len(), expected_labels);
+            assert!(labels.iter().all(|node| node.rect().right() <= width));
+        }
     }
 
     #[test]

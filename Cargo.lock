@@ -2625,6 +2625,7 @@ dependencies = [
  "komponist-builtin",
  "komponist-model",
  "komponist-rt",
+ "komponist-stretch",
  "rtrb",
  "rustix 1.1.6",
  "windows-sys 0.61.2",

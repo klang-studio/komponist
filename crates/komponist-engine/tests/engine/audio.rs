@@ -34,13 +34,13 @@ const BEAT_FRAMES: usize = 24_000;
 const EDGE: usize = 144;
 
 /// A project under construction and the folder of its generated files.
-struct Studio {
-    project: Project,
-    dir: PathBuf,
+pub(super) struct Studio {
+    pub(super) project: Project,
+    pub(super) dir: PathBuf,
 }
 
 impl Studio {
-    fn new(name: &str) -> Studio {
+    pub(super) fn new(name: &str) -> Studio {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("audio")
             .join(name);
@@ -52,7 +52,7 @@ impl Studio {
         }
     }
 
-    fn track(&mut self) -> TrackId {
+    pub(super) fn track(&mut self) -> TrackId {
         let spec = NewAudioTrack {
             name: None,
             hue: None,
@@ -65,7 +65,7 @@ impl Studio {
     }
 
     /// Writes a 32-bit float WAV of `frames` frames, `f(frame, channel)`, and returns its link.
-    fn wav(
+    pub(super) fn wav(
         &self,
         name: &str,
         rate: u32,
@@ -91,7 +91,7 @@ impl Studio {
     }
 
     #[track_caller]
-    fn clip(
+    pub(super) fn clip(
         &mut self,
         track: TrackId,
         file: &AudioFile,
@@ -116,11 +116,11 @@ impl Studio {
     }
 
     #[track_caller]
-    fn prop(&mut self, clip: ClipId, prop: AudioClipProp) {
+    pub(super) fn prop(&mut self, clip: ClipId, prop: AudioClipProp) {
         self.project = edits::set_audio_clip_prop(&self.project, clip, prop).unwrap();
     }
 
-    fn program(&self) -> Program {
+    pub(super) fn program(&self) -> Program {
         compile::build(&self.project, None, &NoEnv)
     }
 }
@@ -151,7 +151,7 @@ fn offline(program: &Program, from: i64, frames: usize) -> Rig {
 
 /// Waits (running stopped blocks like a device would) until the audio tracks are primed and their
 /// heads exist.
-fn wait_primed(rig: &mut Rig, program: &Program) {
+pub(super) fn wait_primed(rig: &mut Rig, program: &Program) {
     let start = Instant::now();
     loop {
         rig.process(512, 512);
@@ -169,7 +169,7 @@ fn wait_primed(rig: &mut Rig, program: &Program) {
 }
 
 /// `frames` of realtime playback in blocks of 512, paced like a device (10 ms per block).
-fn paced(rig: &mut Rig, frames: usize) -> std::ops::Range<usize> {
+pub(super) fn paced(rig: &mut Rig, frames: usize) -> std::ops::Range<usize> {
     let start = rig.frames();
     let mut done = 0;
     while done < frames {
@@ -333,12 +333,12 @@ fn a_split_clip_plays_through_the_cut_without_a_seam() {
 // ------------------------------------------------------------------------------------------------
 
 /// Frequency in Hz of a sine in `x`, from the rising zero crossings.
-fn frequency(x: &[f32], rate: f32) -> f32 {
+pub(super) fn frequency(x: &[f32], rate: f32) -> f32 {
     let crossings = x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
     (crossings as f32 - 1.0).max(0.0) / ((x.len() as f32) / rate)
 }
 
-fn sine(freq: f32, rate: u32) -> impl Fn(usize, usize) -> f32 {
+pub(super) fn sine(freq: f32, rate: u32) -> impl Fn(usize, usize) -> f32 {
     move |i, _| 0.5 * (std::f32::consts::TAU * freq * i as f32 / rate as f32).sin()
 }
 

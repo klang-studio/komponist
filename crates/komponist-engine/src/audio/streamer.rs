@@ -7,12 +7,14 @@
 //! loop, and an offline render (export, tests) calls it itself before every block
 //! ([`StreamShared::ensure`]), so that its result does not depend on thread timing.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::render::{SegmentRenderer, render_head};
+use super::stretch::{BadInput, until_next_seek_anchor};
 use super::{AudioPlan, Heads, Ring};
 
 /// Frames rendered per step.
@@ -60,6 +62,12 @@ struct StreamVoice {
     renderer: SegmentRenderer,
     /// Frames written so far (all epochs).
     produced: u64,
+    failed: HashMap<usize, Retry>,
+}
+
+struct Retry {
+    until: Instant,
+    input: Option<BadInput>,
 }
 
 struct HeadJob {
@@ -72,6 +80,7 @@ struct HeadJob {
 pub struct StreamStats {
     busy_ns: AtomicU64,
     frames: AtomicU64,
+    sequence: AtomicU64,
 }
 
 impl StreamStats {
@@ -84,11 +93,34 @@ impl StreamStats {
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Relaxed)
     }
+
+    /// Time and frames from the same set of completed background streamer passes.
+    pub fn snapshot(&self) -> (Duration, u64) {
+        loop {
+            let before = self.sequence.load(Ordering::SeqCst);
+            if before & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let elapsed = self.busy_ns.load(Ordering::SeqCst);
+            let frames = self.frames.load(Ordering::SeqCst);
+            if self.sequence.load(Ordering::SeqCst) == before {
+                return (Duration::from_nanos(elapsed), frames);
+            }
+        }
+    }
+
+    // The only writer publishes after the entire pass, with no IO inside the sequence window.
+    fn record(&self, busy_ns: u64, frames: u64) {
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+        self.busy_ns.fetch_add(busy_ns, Ordering::SeqCst);
+        self.frames.fetch_add(frames, Ordering::SeqCst);
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// The streamer's state. See the module docs.
 pub(crate) struct Streamer {
-    stats: Arc<StreamStats>,
     rx: rtrb::Consumer<Msg>,
     voices: Vec<StreamVoice>,
     head_queue: Vec<Arc<AudioPlan>>,
@@ -97,9 +129,8 @@ pub(crate) struct Streamer {
 }
 
 impl Streamer {
-    pub(crate) fn new(rx: rtrb::Consumer<Msg>, stats: Arc<StreamStats>) -> Streamer {
+    pub(crate) fn new(rx: rtrb::Consumer<Msg>) -> Streamer {
         Streamer {
-            stats,
             rx,
             voices: Vec::new(),
             head_queue: Vec::new(),
@@ -120,7 +151,10 @@ impl Streamer {
         {
             any = true;
             plan.ring.begin_write(epoch);
-            if !plan.heads_ready() && !self.head_queue.iter().any(|p| Arc::ptr_eq(p, &plan)) {
+            if !plan.offline
+                && !plan.heads_ready()
+                && !self.head_queue.iter().any(|p| Arc::ptr_eq(p, &plan))
+            {
                 self.head_queue.push(Arc::clone(&plan));
             }
             let same = |v: &StreamVoice| Arc::ptr_eq(&v.plan.ring, &plan.ring);
@@ -129,6 +163,8 @@ impl Streamer {
                     if v.plan.id != plan.id {
                         v.renderer.reset();
                     }
+                    v.renderer.restart();
+                    v.failed.clear();
                     v.plan = plan;
                     v.epoch = epoch;
                     v.cursor = pos;
@@ -143,6 +179,7 @@ impl Streamer {
                     since_wrap: None,
                     renderer: SegmentRenderer::new(),
                     produced: 0,
+                    failed: HashMap::new(),
                 }),
             }
         }
@@ -150,17 +187,16 @@ impl Streamer {
     }
 
     /// One pass: messages, a few chunks per voice, and (when nothing else was to do) some heads.
-    /// Returns whether it did anything.
-    pub(crate) fn service(&mut self) -> bool {
+    /// Returns the number of frames produced if there was any work.
+    pub(crate) fn service(&mut self) -> Option<u64> {
         let mut progress = self.drain();
-        for v in &mut self.voices {
+        let mut frames = 0;
+        for v in self.voices.iter_mut().filter(|v| !v.plan.offline) {
             for _ in 0..PASS_CHUNKS {
                 let before = v.produced;
-                if v.produce(&mut self.buf) {
+                if v.produce(&mut self.buf, CHUNK_FRAMES, Instant::now) {
                     progress = true;
-                    self.stats
-                        .frames
-                        .fetch_add(v.produced - before, Ordering::Relaxed);
+                    frames += v.produced - before;
                 } else {
                     break;
                 }
@@ -171,7 +207,7 @@ impl Streamer {
         if !progress {
             progress = self.build_heads();
         }
-        progress
+        progress.then_some(frames)
     }
 
     /// Offline: produces until `epoch` of `ring` has `upto` frames written.
@@ -184,11 +220,18 @@ impl Streamer {
         else {
             return;
         };
-        while ring
-            .written(epoch)
-            .is_some_and(|w| (w.wrapping_sub(upto) as i32) < 0)
-        {
-            if !v.produce(&mut self.buf) {
+        while let Some(written) = ring.written(epoch) {
+            let need = upto.wrapping_sub(written) as i32;
+            if need <= 0 {
+                break;
+            }
+            // Export must not diagnose a failure from frames it never consumes.
+            let limit = if v.plan.offline {
+                need as usize
+            } else {
+                CHUNK_FRAMES
+            };
+            if !v.produce(&mut self.buf, limit, Instant::now) {
                 break;
             }
         }
@@ -230,13 +273,18 @@ impl Streamer {
 
 impl StreamVoice {
     /// Renders and writes one chunk if the ring has room. Returns whether it wrote.
-    fn produce(&mut self, buf: &mut [Vec<f32>; 2]) -> bool {
+    fn produce(
+        &mut self,
+        buf: &mut [Vec<f32>; 2],
+        limit: usize,
+        now: impl Fn() -> Instant,
+    ) -> bool {
         let plan = &*self.plan;
         let free = plan.ring.free(self.epoch);
         if free < MIN_FREE {
             return false;
         }
-        let mut k = free.min(CHUNK_FRAMES) as i64;
+        let mut k = free.min(CHUNK_FRAMES).min(limit) as i64;
         if let Some((_, end)) = self.lp
             && self.cursor < end
         {
@@ -248,26 +296,82 @@ impl StreamVoice {
             Err(Some(next)) => k = k.min(next - self.cursor),
             Err(None) => {}
         }
-        let n = k as usize;
+        let mut n = k as usize;
         let [bl, br] = buf;
-        let (l, r) = (&mut bl[..n], &mut br[..n]);
-        match segment {
+        let available = match segment {
             Ok(i) => {
-                let j0 = self.cursor - plan.segments[i].start;
-                self.renderer.render(plan, i, j0, [&mut *l, &mut *r]);
+                let seg = &plan.segments[i];
+                let j = self.cursor - seg.start;
+                let mut blocked = false;
+                if let Some(retry) = self.failed.get(&i)
+                    && now() < retry.until
+                {
+                    if let Some(input) = retry.input {
+                        // A clean request in this same segment can proceed without waiting.
+                        if !self.renderer.continues_warp(seg, j) {
+                            n = n.min(until_next_seek_anchor(plan, j));
+                            blocked = input.blocks(plan, seg, j, n);
+                        }
+                    } else {
+                        blocked = true;
+                    }
+                }
+                if blocked {
+                    false
+                } else {
+                    match self
+                        .renderer
+                        .render(plan, i, j, [&mut bl[..n], &mut br[..n]])
+                    {
+                        Ok(()) => true,
+                        Err(error) => {
+                            if !plan.offline {
+                                self.failed.insert(
+                                    i,
+                                    Retry {
+                                        until: now() + super::RETRY_AFTER,
+                                        input: error.input,
+                                    },
+                                );
+                            }
+                            if error.rendered > 0 {
+                                // Publish the valid prefix before advancing through the fault.
+                                n = error.rendered;
+                                true
+                            } else {
+                                if error.input.is_some() {
+                                    n = n.min(until_next_seek_anchor(plan, j));
+                                }
+                                false
+                            }
+                        }
+                    }
+                }
             }
             Err(_) => {
-                l.fill(0.0);
-                r.fill(0.0);
+                bl[..n].fill(0.0);
+                br[..n].fill(0.0);
+                true
             }
+        };
+        let (l, r) = (&mut bl[..n], &mut br[..n]);
+        if !available {
+            l.fill(0.0);
+            r.fill(0.0);
         }
         self.wrap_fades(l, r);
-        plan.ring.push(self.epoch, l, r);
+        if available {
+            plan.ring.push(self.epoch, l, r);
+        } else {
+            plan.ring.push_available(self.epoch, l, r, false);
+        }
         self.produced += n as u64;
         let before = self.cursor;
+        let k = n as i64;
         self.cursor = advance(before, k, self.lp);
         let wrapped = matches!(self.lp, Some((_, end)) if before < end && before + k == end);
         if wrapped {
+            self.renderer.restart();
             self.since_wrap = Some(0);
         } else if let Some(done) = self.since_wrap {
             let done = done.saturating_add(n as u32);
@@ -312,10 +416,9 @@ impl StreamShared {
     /// The shared state and the queue's producer for the audio thread.
     pub(crate) fn new() -> (Arc<StreamShared>, rtrb::Producer<Msg>) {
         let (tx, rx) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
-        let stats = Arc::new(StreamStats::default());
         let shared = Arc::new(StreamShared {
-            stats: Arc::clone(&stats),
-            core: Mutex::new(Streamer::new(rx, stats)),
+            stats: Arc::new(StreamStats::default()),
+            core: Mutex::new(Streamer::new(rx)),
             stop: AtomicBool::new(false),
             stalled: AtomicBool::new(false),
         });
@@ -347,7 +450,7 @@ impl StreamShared {
                 std::thread::sleep(IDLE);
                 continue;
             }
-            let began = std::time::Instant::now();
+            let began = Instant::now();
             let progress = {
                 let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
                 // A decoder that panics must not take the thread's voices down in a loop: the
@@ -357,12 +460,12 @@ impl StreamShared {
                         core.voices.clear();
                         core.head_job = None;
                         core.head_queue.clear();
-                        false
+                        None
                     })
             };
-            if progress {
+            if let Some(frames) = progress {
                 let spent = began.elapsed().as_nanos() as u64;
-                self.stats.busy_ns.fetch_add(spent, Ordering::Relaxed);
+                self.stats.record(spent, frames);
             } else {
                 std::thread::sleep(IDLE);
             }
@@ -379,5 +482,120 @@ impl StreamShared {
     pub(crate) fn ensure(&self, ring: &Arc<Ring>, epoch: u32, upto: u32) {
         let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
         core.ensure(ring, epoch, upto);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::{self, NoEnv};
+    use komponist_model::edits::{self, NewAudioTrack, NewClip, NewClipContent};
+    use komponist_model::{AudioFile, Project, Tick};
+    use std::path::PathBuf;
+
+    struct Source(PathBuf);
+
+    impl Drop for Source {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn bad_warp_plan(name: &str) -> (Source, Arc<AudioPlan>) {
+        let source = Source(std::env::temp_dir().join(format!(
+            "komponist-streamer-{name}-{}.wav",
+            std::process::id(),
+        )));
+        let mut writer = hound::WavWriter::create(
+            &source.0,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for _ in 0..8000 {
+            writer.write_sample(f32::NAN).unwrap();
+        }
+        writer.finalize().unwrap();
+        let file = AudioFile::new(&source.0, None, 8000, 48000, 1);
+        let (mut project, track) =
+            edits::add_audio_track(&Project::new("Retry"), NewAudioTrack::default()).unwrap();
+        for (start, offset) in [(0, 0), (20, 1000)] {
+            let (new_project, clip) = edits::add_clip(
+                &project,
+                track,
+                NewClip {
+                    start: Tick(start),
+                    length: Tick(20),
+                    name: "Invalid source".into(),
+                    content: NewClipContent::Audio {
+                        file: file.clone(),
+                        offset,
+                    },
+                },
+            )
+            .unwrap();
+            project = edits::set_audio_clip_warp(&new_project, clip, true).unwrap();
+        }
+        let program = compile::build(&project, None, &NoEnv);
+        (source, program.tracks[0].audio.as_ref().unwrap().clone())
+    }
+
+    fn start(plan: &Arc<AudioPlan>, lp: Option<(i64, i64)>) -> Streamer {
+        let (mut tx, rx) = rtrb::RingBuffer::new(4);
+        let mut worker = Streamer::new(rx);
+        plan.ring.begin_read(1);
+        assert!(
+            tx.push(Msg::Start {
+                plan: Arc::clone(plan),
+                epoch: 1,
+                pos: 0,
+                lp,
+            })
+            .is_ok()
+        );
+        assert!(worker.drain());
+        worker
+    }
+
+    #[test]
+    fn failed_segments_retry_independently_in_the_ring() {
+        let (_source, plan) = bad_warp_plan("retry");
+        let mut worker = start(&plan, Some((0, 1000)));
+        let first = Instant::now();
+        // Drive the ring without servicing the head queue, which also records diagnostics.
+        for (ms, failures) in [
+            (0, [1, 0]),
+            (100, [1, 1]),
+            (499, [1, 1]),
+            (499, [1, 1]),
+            (500, [2, 1]),
+            (599, [2, 1]),
+            (600, [2, 1]),
+            (600, [2, 2]),
+        ] {
+            assert!(worker.voices[0].produce(&mut worker.buf, CHUNK_FRAMES, || {
+                first + Duration::from_millis(ms)
+            }));
+            assert_eq!([plan.failure_count(0), plan.failure_count(1)], failures);
+        }
+        assert!(!plan.heads_ready());
+    }
+
+    #[test]
+    fn export_plans_only_render_in_synchronous_ensure() {
+        let (_source, live) = bad_warp_plan("offline");
+        let plan = live.for_export(20);
+        let mut worker = start(&plan, None);
+        assert!(worker.head_queue.is_empty());
+        assert!(worker.service().is_none());
+        assert_eq!(plan.ring.written(1), Some(0));
+        assert_eq!(plan.failure_count(0), 0);
+        worker.ensure(&plan.ring, 1, 20);
+        assert_eq!(plan.ring.written(1), Some(20));
+        assert_eq!(plan.failure_count(0), 1);
     }
 }

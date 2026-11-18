@@ -1,0 +1,322 @@
+//! Worker-owned Warp transform. Fixed DSP chunks are buffered across heads, ring writes and
+//! seamless segment boundaries; neither callback block size nor export changes the algorithm.
+use super::render::SourceReader;
+use super::{AudioPlan, Segment};
+use komponist_stretch::{CHUNK_FRAMES, MAX_SAMPLE_MAGNITUDE, Stretcher};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WarpSegment {
+    /// Output/input duration ratio; compiled from the clip's original and project tempo.
+    pub ratio: f64,
+    /// Song frame of the first segment in this source-continuous Warp chain.
+    pub chain_start: i64,
+}
+
+/// A worker failure. Realtime produces a counted clip underrun; export returns an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StretchError {
+    Settings,
+    Input,
+    Position,
+    Backend,
+    SourceRead,
+    SourceSeek,
+    SourceResample,
+}
+impl StretchError {
+    fn code(self) -> u8 {
+        match self {
+            Self::Settings => 1,
+            Self::Input => 2,
+            Self::Position => 3,
+            Self::Backend => 4,
+            Self::SourceRead => 5,
+            Self::SourceSeek => 6,
+            Self::SourceResample => 7,
+        }
+    }
+    fn from_code(n: u8) -> Option<Self> {
+        match n {
+            0 => None,
+            1 => Some(Self::Settings),
+            2 => Some(Self::Input),
+            3 => Some(Self::Position),
+            5 => Some(Self::SourceRead),
+            6 => Some(Self::SourceSeek),
+            7 => Some(Self::SourceResample),
+            _ => Some(Self::Backend),
+        }
+    }
+}
+impl std::fmt::Display for StretchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Settings => "unsupported audio stretch settings",
+            Self::Input => "invalid audio samples for stretching",
+            Self::Position => "audio stretch position out of range",
+            Self::Backend => "audio stretch backend failed",
+            Self::SourceRead => "could not read the audio source for stretching",
+            Self::SourceSeek => "could not seek in the audio source for stretching",
+            Self::SourceResample => "could not resample the audio source for stretching",
+        })
+    }
+}
+impl std::error::Error for StretchError {}
+impl From<komponist_stretch::Error> for StretchError {
+    fn from(e: komponist_stretch::Error) -> Self {
+        use komponist_stretch::Error as E;
+        match e {
+            E::SampleRate | E::Ratio | E::Channels => Self::Settings,
+            E::Input => Self::Input,
+            E::FrameLimit => Self::Position,
+            _ => Self::Backend,
+        }
+    }
+}
+
+pub(crate) struct Diagnostics {
+    errors: Box<[AtomicU8]>,
+    counts: Box<[AtomicU64]>,
+}
+impl Diagnostics {
+    pub(crate) fn new(n: usize) -> Self {
+        Self {
+            errors: (0..n).map(|_| AtomicU8::new(0)).collect(),
+            counts: (0..n).map(|_| AtomicU64::new(0)).collect(),
+        }
+    }
+    pub(crate) fn fail(&self, i: usize, e: StretchError) {
+        self.errors[i].store(e.code(), Ordering::Relaxed);
+        self.counts[i].fetch_add(1, Ordering::Release);
+    }
+    pub(crate) fn count(&self, i: usize) -> u64 {
+        self.counts[i].load(Ordering::Acquire)
+    }
+    pub(crate) fn error(&self, i: usize) -> Option<StretchError> {
+        StretchError::from_code(self.errors[i].load(Ordering::Acquire))
+    }
+    pub(crate) fn total(&self) -> u64 {
+        self.counts.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+    }
+}
+
+/// A failure with the part of the requested output that was already rendered successfully.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct WarpFailure {
+    pub(super) reason: StretchError,
+    pub(super) rendered: usize,
+    pub(super) input: Option<BadInput>,
+}
+
+impl From<StretchError> for WarpFailure {
+    fn from(reason: StretchError) -> Self {
+        Self {
+            reason,
+            rendered: 0,
+            input: None,
+        }
+    }
+}
+
+impl From<komponist_stretch::Error> for WarpFailure {
+    fn from(error: komponist_stretch::Error) -> Self {
+        StretchError::from(error).into()
+    }
+}
+
+/// An invalid engine-rate input frame, with the decoder demand for a fresh Warp seek.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BadInput {
+    frame: i64,
+    latency: komponist_stretch::Latency,
+}
+
+impl BadInput {
+    /// A new seek will fail again only if the priming or output chunks touch this frame.
+    pub(super) fn blocks(self, plan: &AudioPlan, seg: &Segment, j: i64, n: usize) -> bool {
+        let anchor = seek_anchor(plan, j);
+        let Some(first) = input_anchor(seg, anchor) else {
+            return false;
+        };
+        if self.frame < first {
+            return false;
+        }
+        let chunks = ((j - anchor) as usize + n).div_ceil(CHUNK_FRAMES);
+        let output = self.latency.output_frames + chunks * CHUNK_FRAMES;
+        let ratio = seg.warp.expect("Warp failure on a Warp segment").ratio;
+        // Prime plus the additional demand telescopes to this rounded cumulative boundary.
+        let consumed = self.latency.input_frames as i64 + (output as f64 / ratio).round() as i64;
+        self.frame - first < consumed
+    }
+}
+
+fn seek_anchor(plan: &AudioPlan, j: i64) -> i64 {
+    if j < plan.head_frames as i64 {
+        0
+    } else {
+        j / CHUNK_FRAMES as i64 * CHUNK_FRAMES as i64
+    }
+}
+
+/// A rejected request can advance this far before the next opportunity to seek past bad input.
+pub(super) fn until_next_seek_anchor(plan: &AudioPlan, j: i64) -> usize {
+    if j < plan.head_frames as i64 {
+        plan.head_frames - j as usize
+    } else {
+        CHUNK_FRAMES - j as usize % CHUNK_FRAMES
+    }
+}
+
+fn input_anchor(seg: &Segment, anchor: i64) -> Option<i64> {
+    let advance = (anchor as f64 / seg.warp?.ratio).round();
+    (advance.is_finite() && advance >= 0.0 && advance < i64::MAX as f64)
+        .then(|| seg.x0.checked_add(advance as i64))
+        .flatten()
+}
+
+pub(crate) struct WarpState {
+    source: u32,
+    chain: i64,
+    ratio: f64,
+    next: i64,
+    input_at: i64,
+    stretch: Stretcher,
+    input: [Vec<f32>; 2],
+    output: [Vec<f32>; 2],
+    generated: usize,
+    used: usize,
+    end: Option<i64>,
+}
+impl WarpState {
+    pub(crate) fn matches(&self, seg: &Segment, j: i64) -> bool {
+        seg.warp
+            .is_some_and(|w| w.ratio == self.ratio && w.chain_start == self.chain)
+            && seg.source == self.source
+            && seg.start.checked_add(j) == Some(self.next)
+    }
+    pub(crate) fn new(
+        plan: &AudioPlan,
+        i: usize,
+        j: i64,
+        reader: &mut SourceReader,
+    ) -> Result<Self, WarpFailure> {
+        let seg = &plan.segments[i];
+        let warp = seg.warp.ok_or(StretchError::Settings)?;
+        let stretch = Stretcher::new(plan.rate, 2, warp.ratio)?;
+        // Offline only, the clipped end of this chain is the terminal DSP boundary. A seamless
+        // split shares the current chunk and may consume its overhang in the next segment.
+        let end = plan.offline.then(|| {
+            let chain = &plan.segments[i..];
+            let count = chain
+                .partition_point(|s| s.warp.is_some_and(|w| w.chain_start == warp.chain_start));
+            chain[count - 1].end
+        });
+        // Starts within a cached head replay from its origin, so head → ring is identical.
+        // Other locates skip at most one chunk; arbitrary seeks never render a whole prefix.
+        let anchor = seek_anchor(plan, j);
+        let input_at = input_anchor(seg, anchor).ok_or(StretchError::Position)?;
+        let mut state = Self {
+            source: seg.source,
+            chain: warp.chain_start,
+            ratio: warp.ratio,
+            next: seg
+                .start
+                .checked_add(anchor)
+                .ok_or(StretchError::Position)?,
+            input_at,
+            stretch,
+            input: [Vec::new(), Vec::new()],
+            output: [vec![0.0; CHUNK_FRAMES], vec![0.0; CHUNK_FRAMES]],
+            generated: 0,
+            used: 0,
+            end,
+        };
+        state.read_source(reader, state.stretch.prime_frames())?;
+        if let Err(error) = state.stretch.seek(&[&state.input[0], &state.input[1]]) {
+            return Err(state.input_error(error));
+        }
+        let mut skip = (j - anchor) as usize;
+        while skip > 0 {
+            state.generate(reader)?;
+            let n = skip.min(state.generated);
+            state.used = n;
+            state.next += n as i64;
+            skip -= n;
+        }
+        Ok(state)
+    }
+    fn read_source(&mut self, reader: &mut SourceReader, n: usize) -> Result<(), StretchError> {
+        let end = self
+            .input_at
+            .checked_add(n as i64)
+            .ok_or(StretchError::Position)?;
+        for c in &mut self.input {
+            c.resize(n, 0.0);
+        }
+        let [l, r] = &mut self.input;
+        reader.read(self.input_at, [l, r], self.end.is_some())?;
+        self.input_at = end;
+        Ok(())
+    }
+    fn input_error(&self, error: komponist_stretch::Error) -> WarpFailure {
+        let mut failure = WarpFailure::from(error);
+        if failure.reason == StretchError::Input {
+            let [left, right] = &self.input;
+            let invalid = |s: f32| !s.is_finite() || s.abs() > MAX_SAMPLE_MAGNITUDE;
+            failure.input = left
+                .iter()
+                .zip(right)
+                .position(|(&l, &r)| invalid(l) || invalid(r))
+                .map(|at| BadInput {
+                    frame: self.input_at - left.len() as i64 + at as i64,
+                    latency: self.stretch.latency(),
+                });
+        }
+        failure
+    }
+
+    fn generate(&mut self, reader: &mut SourceReader) -> Result<(), WarpFailure> {
+        let frames = self.end.map_or(CHUNK_FRAMES, |end| {
+            (end - self.next).clamp(0, CHUNK_FRAMES as i64) as usize
+        });
+        let n = self.stretch.input_frames_required(frames)?;
+        self.read_source(reader, n)?;
+        let [l, r] = &mut self.output;
+        if let Err(error) = self.stretch.process(
+            &[&self.input[0], &self.input[1]],
+            &mut [&mut l[..frames], &mut r[..frames]],
+        ) {
+            return Err(self.input_error(error));
+        }
+        self.generated = frames;
+        self.used = 0;
+        Ok(())
+    }
+    pub(crate) fn render(
+        &mut self,
+        reader: &mut SourceReader,
+        out: [&mut [f32]; 2],
+    ) -> Result<(), WarpFailure> {
+        let [l, r] = out;
+        let mut at = 0;
+        while at < l.len() {
+            if self.used == self.generated
+                && let Err(mut error) = self.generate(reader)
+            {
+                error.rendered = at;
+                return Err(error);
+            }
+            let n = (self.generated - self.used).min(l.len() - at);
+            l[at..at + n].copy_from_slice(&self.output[0][self.used..self.used + n]);
+            r[at..at + n].copy_from_slice(&self.output[1][self.used..self.used + n]);
+            self.used += n;
+            at += n;
+            self.next = self
+                .next
+                .checked_add(n as i64)
+                .ok_or(StretchError::Position)?;
+        }
+        Ok(())
+    }
+}

@@ -66,6 +66,20 @@ fn mapping_inverse_and_backwards_limits_observe_rounded_native_boundaries() {
 }
 
 #[test]
+fn phase_continuity_checks_half_frame_ties_when_the_translated_origins_cross_zero() {
+    let mut early = clip(2880, 800, 120.0);
+    early.warp = Some(early.warp.unwrap().shifted(Tick(-2)).unwrap());
+    let early = early.warp_map(0).unwrap();
+    let later = clip(2880, 800, 120.0).warp_map(0).unwrap();
+    assert_eq!(early.source_frame(Tick(2)), later.source_frame(Tick(2)));
+    assert_ne!(early.source_frame(Tick(1)), later.source_frame(Tick(1)));
+    assert!(!early.continues_with(Tick::ZERO, later, Tick(2)));
+
+    let later = clip(2880, 803, 120.0).warp_map(0).unwrap();
+    assert!(early.continues_with(Tick(2), later, Tick(8)));
+}
+
+#[test]
 fn model_ratios_are_not_limited_to_the_current_dsp_wrapper_domain() {
     let a = clip(48000, 0, 40.0);
     assert_eq!(

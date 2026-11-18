@@ -116,6 +116,14 @@ impl StreamResampler {
         self.frames_out = 0;
     }
 
+    /// Additional input frames needed for the next converter block. The initial blocks can
+    /// produce no visible output while the filter delay is being discarded.
+    pub fn frames_until_next_chunk(&self) -> usize {
+        self.inner
+            .as_ref()
+            .map_or(1, |inner| inner.input_frames_next() - self.pending[0].len())
+    }
+
     /// Converts `input` (one slice per channel, equal lengths) and appends the output to `out`.
     /// Input that does not fill a converter chunk waits for the next call.
     pub fn push<V: AsRef<[f32]>>(

@@ -34,6 +34,11 @@ pub(crate) struct Voice {
     epoch: u32,
     /// The song frame the next read continues at (the transport's, after the loop rule).
     next_pos: i64,
+    /// Origin of the last explicit seek/loop wrap, for compatible Warp head fallback.
+    head_origin: i64,
+    after_wrap: bool,
+    /// The Warp chain and valid frames heard since its last underrun.
+    warp_recovery: Option<(i64, u32)>,
     /// Frames of the epoch consumed.
     elapsed: u32,
     /// The loop the epoch was started with.
@@ -78,6 +83,9 @@ impl Voice {
             ring: 0,
             epoch: 0,
             next_pos: 0,
+            head_origin: 0,
+            after_wrap: false,
+            warp_recovery: None,
             elapsed: 0,
             lp: None,
             active: false,
@@ -96,6 +104,7 @@ impl Voice {
         self.plan = 0;
         self.ring = 0;
         self.active = false;
+        self.warp_recovery = None;
         self.ramp = None;
         self.tail_len = 0;
         self.underrun = false;
@@ -131,8 +140,11 @@ impl Voice {
             }
             self.active = true;
         } else {
-            if was_active && !stale {
-                self.capture_tail(plan);
+            if was_active {
+                if !stale {
+                    self.capture_tail(plan);
+                }
+                self.primed = false;
             }
             self.active = false;
         }
@@ -152,6 +164,10 @@ impl Voice {
         self.epoch = self.epoch.wrapping_add(1).max(1);
         self.elapsed = 0;
         self.next_pos = p.pos;
+        self.head_origin = p.pos;
+        self.after_wrap = false;
+        self.warp_recovery = None;
+        self.primed = false;
         self.lp = p.lp;
         plan.ring.begin_read(self.epoch);
         let msg = || Msg::Start {
@@ -215,10 +231,13 @@ impl Voice {
         } else {
             // Stopped: nothing plays, but the read-ahead fills for the position the playhead is at,
             // so that starting is immediate.
-            self.primed = plan
+            let queued = plan
                 .ring
                 .written(self.epoch)
                 .is_some_and(|w| (w.wrapping_sub(self.elapsed) as i32) >= PRIME_FRAMES);
+            // Once checked, this unconsumed window stays published until the next restart.
+            self.primed = queued
+                && (self.primed || plan.ring.all_available(self.elapsed, PRIME_FRAMES as usize));
             out_l.fill(0.0);
             out_r.fill(0.0);
         }
@@ -241,13 +260,14 @@ impl Voice {
         let ahead = written.map(|w| w.wrapping_sub(self.elapsed) as i32);
         self.primed = ahead.is_some_and(|a| a >= PRIME_FRAMES);
         let from_ring = ahead.map_or(0, |a| a.clamp(0, n as i32) as usize);
-        if from_ring > 0 {
-            plan.ring.copy_out(
-                self.elapsed,
-                &mut out_l[..from_ring],
-                &mut out_r[..from_ring],
-            );
-        }
+        plan.ring.copy_out_runs(
+            self.elapsed,
+            &mut out_l[..from_ring],
+            &mut out_r[..from_ring],
+            |offset, available, l, r| {
+                self.recover_warp(plan, pos + offset as i64, available, l, r);
+            },
+        );
         if from_ring < n {
             self.fill_from_heads(plan, pos, from_ring, out_l, out_r);
         }
@@ -256,6 +276,11 @@ impl Voice {
         }
         self.elapsed = self.elapsed.wrapping_add(n as u32);
         self.next_pos = advance(pos, n as i64, self.lp);
+        if self.next_pos != pos + n as i64 {
+            self.head_origin = self.next_pos;
+            self.after_wrap = true;
+        }
+        self.primed &= !self.underrun;
         plan.ring.set_read(self.epoch, self.elapsed);
     }
 
@@ -280,16 +305,50 @@ impl Voice {
                     let seg = &plan.segments[i];
                     let run = remaining.min((seg.end - q) as usize);
                     let j = (q - seg.start) as usize;
-                    let head = heads.and_then(|h| h.segments.get(i));
+                    // A continuous Warp split carries spectral history across the cut. Its
+                    // standalone head is valid for an explicit seek here, not for an earlier
+                    // epoch's running chain; missing data must be a counted silence instead.
+                    let compatible = seg.warp.is_none_or(|w| {
+                        w.chain_start == seg.start
+                            || (self.head_origin >= seg.start
+                                && self.head_origin < seg.start + plan.head_frames as i64)
+                    });
+                    let head = heads.filter(|_| compatible).and_then(|h| h.segments.get(i));
                     let covered = head.map_or(0, |h| h[0].len().saturating_sub(j)).min(run);
                     if let Some(head) = head.filter(|_| covered > 0) {
                         out_l[k..k + covered].copy_from_slice(&head[0][j..j + covered]);
                         out_r[k..k + covered].copy_from_slice(&head[1][j..j + covered]);
+                        // Ring frames already carry loop fades; cached head samples need the
+                        // same dynamic wrap envelope, without touching the stretcher on RT.
+                        if let Some((start, end)) = self.lp {
+                            let edge = i64::from(plan.edge_frames);
+                            for z in 0..covered {
+                                let at = q + z as i64;
+                                let mut gain = 1.0;
+                                if at < end && end - at <= edge {
+                                    gain *= (end - at - 1) as f32 / edge as f32;
+                                }
+                                if self.after_wrap && at >= start && at - start < edge {
+                                    gain *= (at - start) as f32 / edge as f32;
+                                }
+                                out_l[k + z] *= gain;
+                                out_r[k + z] *= gain;
+                            }
+                        }
+                        self.recover_warp(
+                            plan,
+                            q,
+                            true,
+                            &mut out_l[k..k + covered],
+                            &mut out_r[k..k + covered],
+                        );
                     }
                     if covered < run {
-                        out_l[k + covered..k + run].fill(0.0);
-                        out_r[k + covered..k + run].fill(0.0);
-                        self.underrun = true;
+                        let l = &mut out_l[k + covered..k + run];
+                        let r = &mut out_r[k + covered..k + run];
+                        l.fill(0.0);
+                        r.fill(0.0);
+                        self.recover_warp(plan, q + covered as i64, false, l, r);
                     }
                     k += run;
                 }
@@ -297,9 +356,57 @@ impl Voice {
                     let run = next.map_or(remaining, |s| remaining.min((s - q) as usize));
                     out_l[k..k + run].fill(0.0);
                     out_r[k..k + run].fill(0.0);
+                    self.warp_recovery = None;
                     k += run;
                 }
             }
+        }
+    }
+
+    /// RT. A Warp recovery fades in the first available samples of the affected chain, even
+    /// inside a callback. Keep this ramp separate from the transport's start or jump fade.
+    fn recover_warp(
+        &mut self,
+        plan: &AudioPlan,
+        pos: i64,
+        available: bool,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
+        self.underrun |= !available;
+        let mut k = 0;
+        while k < left.len() && (!available || self.warp_recovery.is_some()) {
+            let frame = pos + k as i64;
+            let segment = plan.locate(frame);
+            let (warp, end) = match segment {
+                Ok(i) => (plan.segments[i].warp, Some(plan.segments[i].end)),
+                Err(next) => (None, next),
+            };
+            let run = end
+                .map_or(left.len() - k, |end| (end - frame) as usize)
+                .min(left.len() - k);
+            match warp {
+                Some(warp) if !available => self.warp_recovery = Some((warp.chain_start, 0)),
+                Some(warp) => {
+                    if let Some((chain, done)) = self.warp_recovery
+                        && chain == warp.chain_start
+                    {
+                        let edge = plan.edge_frames;
+                        let ramp = (edge - done).min(run as u32);
+                        for i in 0..ramp {
+                            let gain = (done + i) as f32 / edge as f32;
+                            left[k + i as usize] *= gain;
+                            right[k + i as usize] *= gain;
+                        }
+                        let done = done + ramp;
+                        self.warp_recovery = (done < edge).then_some((chain, done));
+                    } else {
+                        self.warp_recovery = None;
+                    }
+                }
+                None => self.warp_recovery = None,
+            }
+            k += run;
         }
     }
 
@@ -341,6 +448,59 @@ mod tests {
     use crate::compile::{self, NoEnv};
     use komponist_model::edits::{self, AudioClipProp, NewAudioTrack, NewClip, NewClipContent};
     use komponist_model::{AudioFile, Project, Tick};
+
+    #[test]
+    fn warp_recovery_fades_the_first_valid_run_inside_a_callback() {
+        let (project, track) =
+            edits::add_audio_track(&Project::new("Recovery"), NewAudioTrack::default()).unwrap();
+        let (project, clip) = edits::add_clip(
+            &project,
+            track,
+            NewClip {
+                start: Tick(1),
+                length: Tick(960),
+                name: "Recovery".into(),
+                content: NewClipContent::Audio {
+                    file: AudioFile::new(
+                        std::path::Path::new("unused.wav"),
+                        None,
+                        48_000,
+                        48_000,
+                        2,
+                    ),
+                    offset: 0,
+                },
+            },
+        )
+        .unwrap();
+        let project = edits::set_audio_clip_warp(&project, clip, true).unwrap();
+        let program = compile::build(&project, None, &NoEnv);
+        let plan = program.tracks[0].audio.as_ref().unwrap();
+        let mut voice = Voice::new();
+        voice.epoch = 1;
+        plan.ring.begin_read(1);
+        plan.ring.begin_write(1);
+        // Song frame 25 begins the clip. This callback starts in a gap, then reads 64
+        // missing Warp frames and continues with valid samples from the same clip.
+        plan.ring.push(1, &[0.0; 25], &[0.0; 25]);
+        plan.ring.push_available(1, &[0.0; 64], &[0.0; 64], false);
+        plan.ring.push(1, &[1.0; 400], &[1.0; 400]);
+        let mut l = [0.0; 200];
+        let mut r = [0.0; 200];
+        voice.render(plan, 0, true, false, [&mut l, &mut r]);
+        assert!(voice.underrun);
+        assert_eq!(l, r);
+        assert!(l[..89].iter().all(|&v| v == 0.0));
+        for (i, &v) in l[89..].iter().enumerate() {
+            assert!((v - i as f32 / 144.0).abs() < 1e-6);
+        }
+        voice.render(plan, 200, true, false, [&mut l, &mut r]);
+        assert!(!voice.underrun);
+        assert_eq!(l, r);
+        for (i, &v) in l.iter().enumerate() {
+            assert!((v - ((111 + i) as f32 / 144.0).min(1.0)).abs() < 1e-6);
+        }
+    }
 
     #[test]
     fn a_plan_change_captures_only_the_outgoing_rings_tail() {

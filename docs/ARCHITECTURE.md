@@ -156,7 +156,7 @@ komponist/
     komponist-builtin/          Hexa adapter (Processor), internal devices; builds device, parameter and page names per `Lang` from the catalog
     komponist-ipc/              shared memory, futex signalling, SPSC rings, control protocol
     komponist-audiofile/        audio files: seekable chunked decoding (hound, symphonia), sample-rate conversion (rubato), waveform peak cache, the file pool; leaf crate, no studio dependency
-    komponist-stretch/          worker-only Signalsmith Default chunks, priming/reset and latency; no engine integration yet (#14 WP-B)
+    komponist-stretch/          worker-only Signalsmith Default chunks, priming/reset and latency (#14 WP-B/D)
     komponist-rt/               realtime thread set-up: SCHED_FIFO, time-constraint policy, audio workgroups, os_sync waits (macOS); depends on libc only
     komponist-hosting/          CLAP (clack-host) and VST3 (vst3) hosting, scanning
     komponist-bridge/           lib `run()` (instance mode, scan mode) + bin `komponist-bridge`; `komponist --bridge` calls it
@@ -1018,7 +1018,7 @@ clip moves/copies keep the same source mapping. Right trim keeps the map, tempo 
 Warp ticks/fades, and an original-tempo edit reanchors at the current native source starts.
 `set_audio_clip_warp` is a pure undoable edit; selecting Fixed/RePitch disables Warp. The map
 reports duration ratio `original / project`, including model-valid ratios beyond the first
-worker wrapper's tested range; playback integration must handle backend capabilities.
+worker wrapper's original tested range; the worker now supports the full 1/6–6 domain (§6.11).
 
 Enabled Warp writes legacy `time_mode: "fixed"`, never an unknown enum variant, and retains
 active `file`/`offset` plus optional takes. There is no project version bump: older v3 builds open
@@ -1026,7 +1026,7 @@ and play the selected source unwarped. They may shorten a stretched timeline spa
 source length, compressed clips play only their fixed-duration source portion, and old resaves
 discard Warp data. Non-Warp files retain their existing serialization. Warp metadata/version,
 tempo, tick phase/span and native frame bounds are validated on load; no marker editing exists.
-The current engine does not consume the Warp map or perform pitch-preserving playback yet.
+The engine consumes enabled Warp through the worker-owned pitch-preserving path (§6.11).
 
 **Files.** `AudioFile` is the Sampler's link (§8.5, `sampler::links`): the file is found through `rel` against the
 folder of the project file first, then through `abs` (`AudioFile::resolve`). Saving rebases resolving links to the new
@@ -1254,18 +1254,67 @@ and worker threads and hand finished `Arc`s over.
   streaming pass and writes the cache. Without a cache folder peaks live in memory only.
 
 
-### 6.11 Stretch chunks (`komponist-stretch`, #14 WP-B)
+### 6.11 Stretch chunks and Warp playback (`komponist-stretch`, #14 WP-B/D)
 
 A leaf crate wraps vendored Signalsmith Stretch/Linear (MIT, exact commits and notices in
 `vendor/signalsmith-stretch/VENDORED.md`) behind a checked Rust/C++ boundary. All construction,
 seek/reset, processing and destruction belong off the audio thread. Mono/stereo planar input
-and output share an 8–192 kHz rate; duration ratios are output/input, validated at 0.5–2.0.
-`seek` consumes source look-ahead and discards algorithmic output delay before publishing audio.
-The worker API emits fixed 512-frame chunks and an optional terminal partial chunk; callers
-zero-pad EOF reads and control rounded finite output length. Ratio changes require re-priming.
-The C++17 backend is optimized in dev/test too, using the portable FFT without fast-math or
-host-specific instruction flags. The current engine does not use this crate: track-ring/head
-buffering, playback/export integration, warp persistence, UI and tempo detection follow later.
+and output share an 8–384 kHz rate; duration ratios are output/input, validated at 1/6–6 to cover
+the model's 40–240 BPM domain without changing output duration. `seek` consumes source look-ahead
+and discards algorithmic output delay before publishing audio. The wrapper emits 512-frame
+chunks and an optional terminal partial chunk; callers zero-pad EOF and control finite output
+length. Ratio changes require re-priming. The C++17 backend is optimized in dev/test too, using
+the portable FFT without fast-math or host-specific instruction flags.
+
+`AudioPlan` compiles enabled Warp with the original/project tempo ratio and the active take's
+native offset, converted to the engine rate. Each track's `SegmentRenderer` owns the decoder, rate
+converter and `WarpState`. One read-ahead worker per engine services all tracks, and offline
+`ensure` uses the same renderer. A Warp join compares the model's native source boundaries and
+translated phase against the chain's origin. Genuine splits stay continuous even when a native
+frame spans many engine frames. Source resampling precedes stretch. Clip gain, fades and loop wraps
+follow it. Fixed and Re-Pitch use their existing renderer. The plan and realtime voice carry no
+native stretch object.
+
+Warp always generates full 512-frame chunks and retains their overhang across ring writes,
+100 ms heads and source-continuous split boundaries. Finite clip length truncates publication,
+not DSP processing. A locate, loop wrap or changed plan drops and re-primes worker history.
+Starts within a cached head replay from its segment origin, making head-to-ring handoff exact;
+later seeks align to a nearby chunk and skip at most 511 frames, avoiding an unbounded prefix
+render. A fresh seek may have different spectral phase from uninterrupted playback. A split's
+standalone head is usable after a fresh locate there, but is withheld during a continuous epoch
+whose carried spectral history differs. The callback uses ring/head data or counted silence;
+it never constructs, processes, resets or frees the native backend, nor reads source files.
+Cached heads receive the same dynamic loop fades as streamed data, and recovery after a Warp
+underrun ramps in over the existing 3 ms transition period.
+
+Per-frame ring availability distinguishes unavailable audio from valid silence. A failing
+Warp clip keeps any buffered valid prefix, and publishes unavailable zeros for failed frames
+without blocking other tracks or later clips. Each failing segment has its own 500 ms retry
+deadline. For an invalid input frame, only seek windows that need that sample are throttled.
+Recovery starts on the first valid sample of the affected Warp chain, even inside a callback.
+A stopped playhead is primed only when its queued window is available.
+
+Export owns fresh rings and diagnostics and fills them synchronously. It cuts audio at the
+exact output frame. A Warp chain uses full DSP blocks up to its terminal block and carries the
+cut fade across seamless splits. The decoder reads the input needed for those blocks, including
+the sample-rate converter's filter delay and block sizes. Source read, seek and sample-rate
+conversion failures for Warp propagate to `ExportError::Stretch`. A Warp read after a Fixed
+or Re-Pitch read-ahead failure can retry from the last successful decoder position and keep
+the resampler's input grid. Missing data within the declared WAV or compressed stream length
+reports a read failure. Clean end-of-file pads with zeros.
+A failed export leaves no partial output and restores the previous program.
+Pending live source metadata keeps the existing source-loading behavior.
+
+Generated-source tests cover pitch, exact length, resampling, native offsets, trim/takes,
+block-size independence, seamless splits, heads/loops/locates, post-stretch gain/fades,
+underrun recovery, export/stem equivalence and callback native-call/allocation exclusion.
+Extreme-domain wrapper tests cover 8/48/192/384 kHz: maximum measured dominant-tone error was
+7 cents (48 kHz at 6×: 4.76 cents); the original 0.5–2× pitch tests retain their 1-cent guard.
+The extreme guard is 10 cents; these bounds describe the Default algorithm's quality rather
+than a pitch correction. The isolated release load probe at 48 kHz, 256-frame callbacks and
+8 stereo voices used 12.2–18.4% of one core; 16 voices used 22.6–35.9%, with zero underruns at
+ratios 1/6, 1.5 and 6. Host-specific results, native sanitizer checks and platform limitations
+are recorded in the WP-D internal notes. UI and tempo detection remain later work packages.
 
 ---
 
