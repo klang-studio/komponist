@@ -188,7 +188,7 @@ use egui::accesskit::Role;
 use egui::vec2;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::actions::{SelectMode, SelectionChange, UiAction};
+use komponist_app::actions::{SelectMode, SelectionChange, SettingsAction, UiAction};
 use komponist_app::dialogs::settings::{self, AudioDevices};
 use komponist_i18n::Lang;
 
@@ -401,7 +401,7 @@ fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
         id: Some(DeviceId(id.into())),
         name: name.into(),
         channels: 2,
-        is_default: index == 1,
+        is_default: index == 0,
         sample_rate: 48_000,
     })
     .collect();
@@ -417,7 +417,7 @@ fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
     assert_eq!(source.device_index(&devices[..1]), None);
     assert_eq!(legacy.device_index(&devices), None);
     assert_eq!(legacy.device_index(&devices[1..]), Some(0));
-    assert_eq!(InputConfig::default().device_index(&devices), Some(1));
+    assert_eq!(InputConfig::default().device_index(&devices), Some(0));
 
     for (lang, monitor_label, source_label) in [
         (
@@ -446,6 +446,9 @@ fn pipewire_capture_and_monitor_keep_distinct_labels_and_selections() {
         let mut app = App::headless(p)
             .with_lang(lang)
             .with_audio_devices(Box::new(CaptureDevices(devices.clone())));
+        app.dispatch(Action::Settings(SettingsAction::SetAudioInput(Some(
+            source.clone(),
+        ))));
         let _input = app.engine_mut().set_test_audio_input(2, 48_000).unwrap();
         app.dispatch(Action::Ui(UiAction::Select(SelectionChange::Tracks {
             tracks: vec![track],

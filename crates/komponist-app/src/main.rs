@@ -221,7 +221,7 @@ fn run_app() -> eframe::Result {
         && let Err(error) = app.engine_mut().set_audio_input(Some(input))
     {
         app.set_status(
-            lang.audio_record_failed(error),
+            lang.audio_input_open_failed(error),
             komponist_app::ui_state::StatusKind::Error,
         );
     }
