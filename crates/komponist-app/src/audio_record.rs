@@ -14,8 +14,8 @@ use komponist_engine::recording::{
 };
 use komponist_model::edits::{self, EditError, NewClip, NewClipContent};
 use komponist_model::{
-    AudioClip, AudioFile, AudioInput, AudioTake, Clip, ClipContent, ClipId, Project, Tick, TrackId,
-    TrackKind,
+    AudioClip, AudioFile, AudioInput, AudioTake, Clip, ClipContent, ClipId, Project, Tempo, Tick,
+    TrackId, TrackKind,
 };
 
 use crate::actions::{Action, UiAction};
@@ -33,6 +33,7 @@ pub struct AudioRecording {
     pub head: Tick,
     progress: Vec<RecordingProgress>,
     clips: Vec<(TrackId, Arc<Clip>)>,
+    completed: Vec<(Arc<Clip>, Arc<RecordingProgress>)>,
 }
 
 impl AudioRecording {
@@ -49,6 +50,7 @@ impl AudioRecording {
             head,
             progress,
             clips,
+            completed: Vec::new(),
         }
     }
 
@@ -69,6 +71,18 @@ impl AudioRecording {
             .iter()
             .find(|progress| progress.track == track)
     }
+    /// Completed overlays first, followed by the current pass.
+    pub fn overlays(
+        &self,
+        track: TrackId,
+    ) -> impl Iterator<Item = (&Arc<Clip>, &RecordingProgress)> {
+        self.completed
+            .iter()
+            .filter(move |(_, progress)| progress.track == track)
+            .map(|(clip, progress)| (clip, progress.as_ref()))
+            .chain(self.clip(track).zip(self.progress(track)))
+    }
+
     /// Tracks represented in the live view.
     pub fn tracks(&self) -> impl Iterator<Item = TrackId> + '_ {
         self.progress.iter().map(|progress| progress.track)
@@ -85,6 +99,56 @@ struct Capture {
     rate: u32,
     owned: BTreeSet<PathBuf>,
     material: bool,
+}
+
+impl Capture {
+    fn remember_progress(
+        &mut self,
+        progress: &RecordingProgress,
+        provisional: &mut BTreeSet<PathBuf>,
+    ) -> bool {
+        if progress.path.as_os_str().is_empty() {
+            return false;
+        }
+        self.owned.insert(progress.path.clone());
+        if progress.frames == 0 {
+            return false;
+        }
+        self.material = true;
+        if self.provisional {
+            provisional.insert(progress.path.clone());
+        }
+        true
+    }
+}
+
+fn recording_preview(
+    progress: &RecordingProgress,
+    rate: u32,
+    tempo: Tempo,
+    id: ClipId,
+    name: String,
+) -> Arc<Clip> {
+    let file = AudioFile::new(
+        &progress.path,
+        None,
+        progress.frames,
+        rate,
+        progress.channels,
+    );
+    let source = AudioClip::new(file, 0, tempo);
+    let length = source.frames_to_ticks(progress.frames, tempo).max(Tick(1));
+    Arc::new(Clip {
+        id,
+        name,
+        start: progress.start,
+        length,
+        loop_length: None,
+        mute: false,
+        transpose: 0,
+        velocity_pct: 0,
+        content: ClipContent::Audio(source),
+    })
 }
 
 /// Session-owned files survive undo. Only an explicit discard deletes an active session.
@@ -269,54 +333,46 @@ impl App {
             return;
         };
         capture.view.head = head;
-        capture.view.progress = capture.session.progress();
-        let track_count = capture.view.progress.len().max(1) as u32;
+        let visible = capture.session.visible_progress();
+        let track_count = visible.len().max(1) as u32;
         capture.view.clips.clear();
-        for (index, progress) in capture.view.progress.iter().enumerate() {
-            if progress.path.as_os_str().is_empty() {
-                continue;
-            }
-            capture.owned.insert(progress.path.clone());
-            if progress.frames == 0 {
-                continue;
-            }
-            capture.material = true;
-            if capture.provisional {
-                self.audio_recording
-                    .provisional
-                    .insert(progress.path.clone());
-            }
-            let file = AudioFile::new(
-                &progress.path,
-                None,
-                progress.frames.max(1),
-                capture.rate,
-                progress.channels,
-            );
-            let source = AudioClip::new(file, 0, project.tempo);
-            let length = source
-                .frames_to_ticks(progress.frames, project.tempo)
-                .max(Tick(1));
+        capture.view.progress.clear();
+        capture.view.completed.clear();
+        let provisional = &mut self.audio_recording.provisional;
+        let label = |base: u32, index: usize, lap: u32| {
             let take = self.lang.record_take(
-                capture
-                    .base
-                    .saturating_add(index as u32)
-                    .saturating_add(progress.lap.saturating_mul(track_count)),
+                base.saturating_add(index as u32)
+                    .saturating_add(lap.saturating_mul(track_count)),
             );
-            capture.view.clips.push((
-                progress.track,
-                Arc::new(Clip {
-                    id: ClipId(u64::MAX - 1024 - index as u64),
-                    name: self.lang.record_clip(take),
-                    start: progress.start,
-                    length,
-                    loop_length: None,
-                    mute: false,
-                    transpose: 0,
-                    velocity_pct: 0,
-                    content: ClipContent::Audio(source),
-                }),
-            ));
+            self.lang.record_clip(take)
+        };
+        for (index, snapshot) in visible.into_iter().enumerate() {
+            for (slot, progress) in snapshot.completed.into_iter().enumerate() {
+                if let Some(progress) = progress
+                    && capture.remember_progress(&progress, provisional)
+                {
+                    let clip = recording_preview(
+                        &progress,
+                        capture.rate,
+                        project.tempo,
+                        ClipId(u64::MAX - 4096 - (2 * index + slot) as u64),
+                        label(capture.base, index, progress.lap),
+                    );
+                    capture.view.completed.push((clip, progress));
+                }
+            }
+            let progress = snapshot.current;
+            if capture.remember_progress(&progress, provisional) {
+                let clip = recording_preview(
+                    &progress,
+                    capture.rate,
+                    project.tempo,
+                    ClipId(u64::MAX - 1024 - index as u64),
+                    label(capture.base, index, progress.lap),
+                );
+                capture.view.clips.push((progress.track, clip));
+            }
+            capture.view.progress.push(progress);
         }
         let Some(result) = capture.session.poll() else {
             return;
@@ -779,6 +835,74 @@ mod tests {
                 .is_some_and(|progress| progress.frames > 0)
         });
     }
+    #[test]
+    fn arrangement_keeps_the_lead_in_and_last_loop_overlay_while_the_next_take_grows() {
+        let (mut app, track, root) = rig();
+        let lo = Tick(32);
+        let hi = Tick(64);
+        let range = komponist_model::TickRange::new(lo, hi);
+        app.doc
+            .apply("Set loop", |project| {
+                let project =
+                    edits::set_project_prop(project, edits::ProjectProp::LoopRange(range))?;
+                edits::set_project_prop(&project, edits::ProjectProp::LoopOn(true))
+            })
+            .unwrap();
+        app.step();
+
+        let map = app.project().tempo_map();
+        let rate = f64::from(app.engine_mut().sample_rate());
+        let lead = map.tick_to_sample(lo, rate) as usize;
+        let end = map.tick_to_sample(hi, rate) as usize;
+        let period = 64;
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(lead + period, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording()
+                .and_then(|view| view.progress(track))
+                .is_some_and(|progress| progress.lap == 1)
+        });
+        let view = app.audio_recording().unwrap();
+        let starts: Vec<_> = view
+            .overlays(track)
+            .map(|(clip, progress)| (clip.start, progress.lap))
+            .collect();
+        assert_eq!(starts, [(Tick::ZERO, 0), (lo, 1)]);
+
+        assert!(app.engine_mut().run_held(end - lead, &[], 0));
+        wait(&mut app, |app| {
+            app.audio_recording()
+                .and_then(|view| view.progress(track))
+                .is_some_and(|progress| progress.lap == 2)
+        });
+        let view = app.audio_recording().unwrap();
+        let overlays: Vec<_> = view.overlays(track).collect();
+        assert_eq!(overlays.len(), 3);
+        assert_eq!(
+            (overlays[0].0.start, overlays[0].0.end(), overlays[0].1.lap),
+            (Tick::ZERO, lo, 0)
+        );
+        assert_eq!(
+            (overlays[1].0.start, overlays[1].0.end(), overlays[1].1.lap),
+            (lo, hi, 1)
+        );
+        assert_eq!((overlays[2].0.start, overlays[2].1.lap), (lo, 2));
+        assert_eq!(view.clip(track), Some(overlays[2].0));
+        assert_eq!(view.first(), Some((track, overlays[2].0)));
+
+        app.dispatch(Action::Transport(TransportAction::ToggleRecord));
+        assert!(app.engine_mut().run_held(period, &[], 0));
+        wait(&mut app, |app| !app.audio_recording.is_active());
+        let clips = &app.project().track(track).unwrap().clips;
+        assert_eq!(clips.len(), 2);
+        let ClipContent::Audio(cycle) = &clips[1].content else {
+            panic!("loop audio clip");
+        };
+        assert_eq!(cycle.takes.len(), 2);
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn recording_lead_in_and_cycle_takes_make_separate_clips() {
         let project = Project::new("Recorded loop");

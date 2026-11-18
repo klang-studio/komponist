@@ -789,13 +789,29 @@ impl Arrangement {
             }
             // Audio capture is drawn directly from bounded writer telemetry. Never request
             // peaks from an unfinished WAV; the current lap may contain only a partial bucket.
-            if let Some(recording) = ctx.audio_recording
-                && let Some(rec) = recording.clip(track.id)
-                && let Some(progress) = recording.progress(track.id)
-                && rec.end() >= t0
-                && rec.start <= t1
+            for (rec, progress) in ctx
+                .audio_recording
+                .into_iter()
+                .flat_map(|recording| recording.overlays(track.id))
+                .filter(|(rec, _)| rec.end() >= t0 && rec.start <= t1)
             {
                 let rect = g.clip_rect(i, rec);
+                let foreground = ctx
+                    .audio_recording
+                    .and_then(|recording| recording.clip(track.id))
+                    .filter(|current| current.id != rec.id && current.start == rec.start);
+                let background_clip = foreground.map(|current| g.clip_rect(i, current));
+                let clipped;
+                let overlay_painter = if let Some(covered) = background_clip {
+                    if covered.right() >= rect.right() {
+                        continue;
+                    }
+                    let visible = rect.with_min_x(covered.right());
+                    clipped = painter.with_clip_rect(painter.clip_rect().intersect(visible));
+                    &clipped
+                } else {
+                    painter
+                };
                 let data = crate::views::audio_editor::live::summaries(
                     &progress.waveform,
                     progress.channels,
@@ -827,7 +843,11 @@ impl Arrangement {
                     fade_out: 0.0,
                 };
                 let model = ClipModel {
-                    name: rec.name.trim_start_matches("● "),
+                    name: if background_clip.is_some() {
+                        ""
+                    } else {
+                        rec.name.trim_start_matches("● ")
+                    },
                     palette,
                     muted: false,
                     recording: true,
@@ -835,7 +855,10 @@ impl Arrangement {
                     audio: Some(&audio),
                     preview: None,
                 };
-                paint_clip(painter, rect, &model, ClipState::REST);
+                paint_clip(overlay_painter, rect, &model, ClipState::REST);
+                if background_clip.is_some() {
+                    continue;
+                }
                 let access = clip_access(
                     ctx.lang,
                     &model,
@@ -846,7 +869,7 @@ impl Arrangement {
                 );
                 let node = ui.interact(
                     rect.intersect(lanes),
-                    Id::unique(("arrangement-audio-recording", track.id.0)),
+                    Id::unique(("arrangement-audio-recording", rec.id.0)),
                     Sense::hover(),
                 );
                 register(&node, &access);

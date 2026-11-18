@@ -1151,11 +1151,12 @@ before marking the session ended. A source contributes only its own delayed tail
 sessions. Count-in samples and corrected pre-roll before the recording start are excluded.
 
 `recording::prepare(RecordingConfig)` runs non-RT, creates exclusive unique WAV paths, preallocates per-track
-SPSC queues (32 chunks of at most 2048 stereo frames, about 0.5 MB per prepared track) and starts the file worker.
-Install the returned `Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through
-`Garbage::Recorder`. Track jobs enqueue fixed-size chunks without allocation, locks, logging or IO. The worker
-writes either signed PCM24 (default) or Float32 WAVs, flushes valid headers before progress publication, and
-finalizes old laps as soon as their input is complete, bounding open file handles. Cycle passes are padded with
+SPSC queues for audio samples and segment timestamps, and starts the file worker. Each sample queue holds
+half a second at the prepared sample rate, bounded between 8192 and 65536 frames. Install the returned
+`Recorder` with `Command::SetRecorder` before `Record`; replaced endpoints return through `Garbage::Recorder`.
+Track jobs enqueue segments without allocation, locks, logging or IO. The worker writes signed PCM24 (default)
+or Float32 WAVs in bounded batches and flushes their headers before publishing progress. It finalizes old laps
+as soon as their input is complete, bounding open file handles. Cycle passes are padded with
 silence to their common loop window, including first/last partial passes. Recording before the loop
 keeps the lead-in as a separate linear clip. A take that begins at or after the loop end stays linear,
 including its latency tail. A growing checkpoint reports `window_frames` for cycle passes, so the app
@@ -1164,7 +1165,8 @@ can preserve their shared geometry before final padding.
 `RecordingSession::progress` supplies current file/start/channel metadata and at most 4096 measured waveform
 buckets per track, both combined and separately for each native channel. Buckets carry exact sample counts;
 per-channel counts equal source frames, including a final partial bucket. The worker compacts pairs by summing
-sample energy/counts; UI polling clones only summaries. Progress locks always follow waveform → path order.
+sample energy and counts. A shared, bounded snapshot of the lead-in and the latest completed cycle remains
+available to the arrangement while it draws the current pass. Progress locks follow waveform → path order.
 `poll` returns finalized files after queues drain. `checkpoint` flushes and returns saveable prefixes (2 s timeout);
 `relocate` closes handles, stages exclusive hard links on one filesystem and reopens every append handle before
 publishing paths and unlinking originals. Failed moves remove only their own links and retain the old paths;
