@@ -95,6 +95,7 @@ fn seeking_after_a_wav_read_error_retains_the_original_length_and_channel_alignm
     let path = dir.path("stereo.wav");
     let samples: Vec<_> = (0..5000).flat_map(|i| [i as i16, -(i as i16)]).collect();
     write_wav_i16(&path, 48000, 2, &samples);
+    let original = std::fs::read(&path).unwrap();
     let mut file = AudioFile::open(&path).unwrap();
     let source = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
     let data_offset = source.metadata().unwrap().len() - 5000 * 4;
@@ -115,6 +116,12 @@ fn seeking_after_a_wav_read_error_retains_the_original_length_and_channel_alignm
     );
     file.seek(4000).unwrap();
     assert!(matches!(file.read(&mut buf[..4]), Err(AudioError::Io(_))));
+    source.set_len(0).unwrap();
+    assert!(file.seek(1000).is_err());
+    std::fs::write(&path, original).unwrap();
+    file.seek(4000).unwrap();
+    assert_eq!(file.read(&mut buf[..2]).unwrap(), 1);
+    assert_eq!(&buf[..2], &[4000.0 / 32768.0, -4000.0 / 32768.0]);
 }
 
 #[test]
@@ -367,11 +374,12 @@ fn a_header_that_promises_too_much_fails_or_clamps_cleanly() {
     let data = bytes.windows(4).position(|w| w == b"data").unwrap();
     bytes[data + 4..data + 8].copy_from_slice(&0xFFFF_FFC0u32.to_le_bytes());
     std::fs::write(&path, &bytes).unwrap();
-    // Refused or clamped to what the file holds; never a huge allocation.
-    if let Ok(file) = AudioFile::open(&path) {
-        assert!(file.info().frames <= 4, "{}", file.info().frames);
-        assert!(decode_all(&path, None).is_ok_and(|d| d.frames() <= 4));
-    }
+    // Metadata stays bounded by the file size. Reaching the missing declared data is an error.
+    let mut file = AudioFile::open(&path).unwrap();
+    assert_eq!(file.info().frames, 4);
+    assert_eq!(file.read(&mut [0.0; 4]).unwrap(), 4);
+    assert!(matches!(file.read(&mut [0.0]), Err(AudioError::Io(_))));
+    assert!(matches!(decode_all(&path, None), Err(AudioError::Io(_))));
 }
 
 #[test]

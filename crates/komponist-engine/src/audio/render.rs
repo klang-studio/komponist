@@ -124,12 +124,21 @@ impl SourceReader {
     /// Makes the window hold `lo .. hi` (as far as the file reaches).
     fn fill(&mut self, lo: u64, hi: u64, exact: bool) -> Result<(), StretchError> {
         let end = self.win_start + self.win[0].len() as u64;
-        // A Fixed/Re-Pitch read may have fetched farther than this Warp request needs. Retry
-        // its failed read on the same decoder, with its original source length and an exact
-        // window. Reopening a truncated file could mistake its new, shorter length for EOF.
-        let retry = exact && hi > end && self.terminal.is_some_and(|result| result.is_err());
-        if lo < self.win_start || lo > end + RESEEK_GAP || retry {
+        let retry = if exact && hi > end {
+            self.terminal.and_then(Result::err)
+        } else {
+            None
+        };
+        if lo < self.win_start
+            || lo > end + RESEEK_GAP
+            || retry.is_some_and(|error| error != StretchError::SourceRead)
+        {
             self.seek(lo)?;
+        } else if retry == Some(StretchError::SourceRead) {
+            // A Fixed/Re-Pitch read may have fetched farther than this Warp request needs.
+            // Retry at the last successful native position, keeping its converter grid and
+            // buffered samples. Only a true reposition or a converter error resets them.
+            self.seek_decoder(self.file.position())?;
         }
         loop {
             let missing = hi.saturating_sub(self.win_start + self.win[0].len() as u64);
@@ -165,11 +174,15 @@ impl SourceReader {
         self.win[0].clear();
         self.win[1].clear();
         self.win_start = q_seek;
-        let result = self.file.seek(f_seek).map_err(|_| StretchError::SourceSeek);
-        self.terminal = result.err().map(Err);
         if let Some(conv) = &mut self.conv {
             conv.reset();
         }
+        self.seek_decoder(f_seek)
+    }
+
+    fn seek_decoder(&mut self, frame: u64) -> Result<(), StretchError> {
+        let result = self.file.seek(frame).map_err(|_| StretchError::SourceSeek);
+        self.terminal = result.err().map(Err);
         result
     }
 

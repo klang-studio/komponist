@@ -539,27 +539,31 @@ fn warp_export_distinguishes_out_of_range_reads_from_real_io_errors() {
 
 #[test]
 fn warp_after_fixed_checks_the_same_decoders_read_failure() {
-    let source_frames = 96000;
-    let fixed_end = 24000;
-    let end = fixed_end + 27;
-    let offset = 16400;
-    // At 6× this needs 3360 frames of priming and five more frames. The Fixed decoder's
-    // 4096-frame read past source frame 16384 fails in both cases, but only one loses needed
-    // Warp input. The precise retry must use the same decoder's original WAV length.
-    for (cutoff, succeeds) in [(18000, false), (19900, true)] {
-        let mut s = Studio::new(&format!("warp-after-fixed-{cutoff}"));
+    // Both rates hit an over-read in Fixed. At 24 kHz the valid prefix covers the final
+    // Warp request only when the existing input grid is kept for the resampler. That case
+    // keeps the Warp request ahead of Fixed in both runs so the reference also keeps its grid.
+    for (rate, fixed_ticks, offset, cutoff, succeeds) in [
+        (48000, 320, 16400, 18000, false),
+        (48000, 320, 16400, 19900, true),
+        (24000, 435, 16500, 18000, false),
+        (24000, 435, 16500, 18480, true),
+    ] {
+        let source_frames = rate as usize * 2;
+        let fixed_end = (fixed_ticks * 75) as u64;
+        let end = fixed_end + 27;
+        let mut s = Studio::new(&format!("warp-after-fixed-{rate}-{cutoff}"));
         s.project =
             edits::set_project_prop(&s.project, edits::ProjectProp::Tempo(Tempo::new(40.0)))
                 .unwrap();
         let track = s.track();
-        let file = s.wav("source.wav", 48000, 2, source_frames, sine(440.0, 48000));
-        let fixed = s.clip(track, &file, 0, 320, 0);
+        let file = s.wav("source.wav", rate, 2, source_frames, sine(440.0, rate));
+        let fixed = s.clip(track, &file, 0, fixed_ticks, 0);
         // Keep the Fixed decoder active but isolate the Warp output from the preceding sound.
         s.prop(
             fixed,
             edits::AudioClipProp::GainDb(komponist_model::CLIP_GAIN_DB_MIN),
         );
-        let clip = s.clip(track, &file, 320, 320, offset);
+        let clip = s.clip(track, &file, fixed_ticks, 320, offset);
         s.prop(clip, edits::AudioClipProp::OriginalTempo(Tempo::new(240.0)));
         s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
         let program = s.program();
@@ -620,6 +624,76 @@ fn warp_after_fixed_checks_the_same_decoders_read_failure() {
         }
         assert!(!part.exists());
     }
+}
+
+#[test]
+fn warp_detects_missing_declared_wav_frames_when_the_file_is_already_truncated() {
+    let mut s = Studio::new("warp-already-truncated-wav");
+    let track = s.track();
+    let source = s.dir.join("source.wav");
+    let mut wav = hound::WavWriter::create(
+        &source,
+        hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for _ in 0..96000 {
+        wav.write_sample(8192i16).unwrap();
+        wav.write_sample(-8192i16).unwrap();
+    }
+    wav.finalize().unwrap();
+    let file = komponist_model::AudioFile::new(&source, None, 96000, 48000, 2);
+    let clip = s.clip(track, &file, 0, 960, 0);
+    s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_len(44 + 10000 * 4)
+        .unwrap();
+    let program = s.program();
+    let mut r = Rig::new(RATE, 1024);
+    r.engine.stall_streaming(true);
+    let cancel = AtomicBool::new(false);
+    let prefix = s.dir.join("prefix.wav");
+    let report = export::export(
+        &mut r.engine,
+        &mut r.handle,
+        &program,
+        &job(prefix.clone(), 48000, 0..4000),
+        &cancel,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.frames, 4000);
+    assert!(
+        super::export::read(&prefix)
+            .samples
+            .iter()
+            .any(|v| v.abs() > 0.1)
+    );
+
+    let out = s.dir.join("out.wav");
+    let result = export::export(
+        &mut r.engine,
+        &mut r.handle,
+        &program,
+        &job(out.clone(), 48000, 0..24000),
+        &cancel,
+        |_| {},
+    );
+    assert!(
+        matches!(result, Err(ExportError::Stretch {
+        clip: failed, reason: komponist_engine::audio::StretchError::SourceRead,
+    }) if failed == clip),
+        "{result:?}"
+    );
+    assert!(!out.exists());
+    assert!(!s.dir.join(".out.wav.part").exists());
 }
 
 #[test]
