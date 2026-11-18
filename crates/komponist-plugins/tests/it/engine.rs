@@ -402,8 +402,20 @@ fn bridges_in_series_share_the_callback_deadline() {
         .collect();
     rig.wait_status(10, DeviceStatus::Ok);
     rig.wait_status(20, DeviceStatus::Ok);
-    rig.run(4);
-    let late_before = rig.manager.late_blocks(DeviceId(10)) + rig.manager.late_blocks(DeviceId(20));
+    let late_blocks = |rig: &Rig| [10, 20].map(|id| rig.manager.late_blocks(DeviceId(id)));
+    // A realtime warm-up block can time out with its request still in flight. Wait for both
+    // bridges to complete an offline block so the measured call can submit both requests.
+    let warm_up_deadline = Instant::now() + PATIENCE;
+    let late_before = loop {
+        let before = late_blocks(&rig);
+        rig.render(BLOCK);
+        let after = late_blocks(&rig);
+        if after == before {
+            break after;
+        }
+        assert!(Instant::now() < warm_up_deadline, "bridges stayed busy");
+        std::thread::sleep(Duration::from_millis(1));
+    };
 
     // One callback of 2048 frames (42.7 ms): the deadline is 25.6 ms after its start. Both
     // bridges sleep 50 ms. With one shared deadline the callback returns after about 25.6 ms;
@@ -450,10 +462,10 @@ fn bridges_in_series_share_the_callback_deadline() {
         took < share * 3 / 2,
         "both waited their own budget: {took:?}"
     );
-    let late_after = rig.manager.late_blocks(DeviceId(10)) + rig.manager.late_blocks(DeviceId(20));
-    assert!(
-        late_after >= late_before + 2,
-        "{late_before} → {late_after}"
+    assert_eq!(
+        late_blocks(&rig),
+        late_before.map(|count| count + 1),
+        "both bridges missed the callback deadline"
     );
 }
 
