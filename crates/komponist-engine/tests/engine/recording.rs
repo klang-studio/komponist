@@ -563,3 +563,82 @@ fn double_stop_and_locate_preserve_hardware_and_bus_latency_tails() {
         assert_eq!(samples[samples.len() - 1], expected);
     }
 }
+
+#[test]
+fn input_trim_is_shared_by_capture_meter_and_monitoring() {
+    for stereo in [false, true] {
+        for gain_db in [0, 200] {
+            for format in [RecordingFormat::Float32, RecordingFormat::Pcm24] {
+                let (p, track) = project(MonitorMode::On, true);
+                let input = AudioInput::Hardware(HardwareInput { first: 0, stereo });
+                let p = edits::set_track_prop(&p, &[track], TrackProp::AudioInput(input)).unwrap();
+                let p = edits::set_track_prop(&p, &[track], TrackProp::InputGain(gain_db)).unwrap();
+                let (rec, mut session) = recording::prepare(RecordingConfig {
+                    directory: directory(),
+                    sample_rate: 48000,
+                    format,
+                    tracks: vec![RecordingTrack {
+                        track,
+                        name: "Take".into(),
+                        channels: if stereo { 2 } else { 1 },
+                        input,
+                    }],
+                })
+                .unwrap();
+                let program = compile::build(&p, None, &NoEnv);
+                let meter = program.meter(track).unwrap().clone();
+                let mut rig = Rig::new(RATE, 256);
+                rig.set_program(&program);
+                rig.send(Command::SetRecorder(rec));
+                rig.send(Command::Record { from: Tick::ZERO });
+                let input: Vec<_> = (0..256).flat_map(|_| [0.025, 0.05]).collect();
+                let (l, r) = feed(&mut rig, &input, 0, 0, false);
+                let factor = if gain_db == 0 { 1.0 } else { 10.0 };
+                let expected = (
+                    0.025 * factor,
+                    if stereo {
+                        0.05 * factor
+                    } else {
+                        0.025 * factor
+                    },
+                );
+                assert!((l[255] - expected.0).abs() < 1e-5);
+                assert!((r[255] - expected.1).abs() < 1e-5);
+                let measured = meter.take_input();
+                assert!((measured.0 - expected.0).abs() < 1e-5);
+                assert!((measured.1 - expected.1).abs() < 1e-5);
+                rig.send(Command::Stop);
+                feed(&mut rig, &[0.0; 2], 0, 0, false);
+                let result = finished(&mut session).unwrap();
+                let mut reader = hound::WavReader::open(&result.takes[0].path).unwrap();
+                let samples: Vec<f32> = match format {
+                    RecordingFormat::Float32 => {
+                        reader.samples::<f32>().map(Result::unwrap).collect()
+                    }
+                    RecordingFormat::Pcm24 => reader
+                        .samples::<i32>()
+                        .map(|v| v.unwrap() as f32 / 8_388_608.0)
+                        .collect(),
+                };
+                assert!((samples[0] - expected.0).abs() < 1e-5);
+                assert_eq!(reader.spec().channels, if stereo { 2 } else { 1 });
+                if stereo {
+                    assert!((samples[1] - expected.1).abs() < 1e-5);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn input_trim_meter_reports_gain_induced_clipping() {
+    let (p, track) = project(MonitorMode::On, true);
+    let p = edits::set_track_prop(&p, &[track], TrackProp::InputGain(200)).unwrap();
+    let program = compile::build(&p, None, &NoEnv);
+    let meter = program.meter(track).unwrap().clone();
+    let mut rig = Rig::new(RATE, 256);
+    rig.set_program(&program);
+    let (l, _) = feed(&mut rig, &[0.2; 512], 0, 0, false);
+    assert!(l[255] > 1.0);
+    assert!(meter.take_input().0 > 1.0);
+}

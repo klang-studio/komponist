@@ -165,3 +165,5 @@ audio-tempo-estimate = { $bpm } BPM · { $confidence } % Konfidenz
 audio-tempo-use = { $bpm } BPM übernehmen
 audio-tempo-use-half = { $bpm } BPM übernehmen (halb)
 audio-tempo-use-double = { $bpm } BPM übernehmen (doppelt)
+
+audio-input-gain = Eingangsverstärkung

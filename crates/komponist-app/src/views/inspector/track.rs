@@ -135,7 +135,7 @@ fn audio_fields(
 ) {
     let t = ctx.lang;
     let height = komponist_tokens::size::CONTROL;
-    let area = col.take(2.0 * height + m::DD_ROW_GAP);
+    let area = col.take(4.0 * height + 3.0 * m::DD_ROW_GAP);
     let left = area.left() + m::DD_KEY_WIDTH + m::DD_COLUMN_GAP;
     let key = Rect::from_min_size(area.min, vec2(m::DD_KEY_WIDTH, height));
     let input = Rect::from_x_y_ranges(left..=area.right(), key.y_range());
@@ -167,6 +167,33 @@ fn audio_fields(
             prop: TrackProp::MonitorMode(modes[selected]),
         }));
     }
+    let key = key.translate(vec2(0.0, height + m::DD_ROW_GAP));
+    let title = Rect::from_x_y_ranges(area.x_range(), key.y_range());
+    super::field_key(ui, title, t.audio_input_gain());
+    let key = key.translate(vec2(0.0, height + m::DD_ROW_GAP));
+    let field = Rect::from_x_y_ranges(area.left()..=left, key.y_range());
+    let meter = Rect::from_x_y_ranges(left + m::DD_COLUMN_GAP..=area.right(), key.y_range());
+    crate::views::audio_inputs::input_meter(ui, ctx, track, meter);
+    let mut gain = f64::from(track.audio.input_gain_tenths_db) / 10.0;
+    let response = place(ui, field, "audio_input_gain", |ui| {
+        ui.add_enabled(
+            matches!(track.audio.input, komponist_model::AudioInput::Hardware(_)),
+            komponist_ui::widgets::number_field::NumberField::new(&mut gain, t.audio_input_gain())
+                .range(-60.0..=60.0)
+                .step(0.1)
+                .default_value(0.0)
+                .unit("dB")
+                .format(|v| komponist_model::format::fmt_db(v as f32))
+                .parse(|v| komponist_model::format::parse_db(v).map(f64::from))
+                .width(field.width()),
+        )
+    });
+    crate::views::mixer::send_gesture(ctx, &response, "undo-audio-input", || {
+        Action::Edit(EditAction::SetTrackProp {
+            tracks: vec![track.id],
+            prop: TrackProp::InputGain((gain * 10.0).round() as i16),
+        })
+    });
 }
 
 fn dropdowns(ui: &mut Ui, ctx: &mut ViewCtx<'_>, col: &mut Col, track: &Track) {

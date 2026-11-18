@@ -555,6 +555,9 @@ pub struct AudioIo {
     /// Input monitoring.
     #[serde(default)]
     pub monitor: MonitorMode,
+    /// Software input trim in tenths of a decibel; zero preserves the original level.
+    #[serde(default)]
+    pub input_gain_tenths_db: i16,
 }
 
 impl AudioIo {
