@@ -41,7 +41,8 @@ pub(crate) struct SourceReader {
     win: [Vec<f32>; 2],
     /// Engine-rate frame of `win[0][0]`.
     win_start: u64,
-    eof: bool,
+    /// The decoder reached clean EOF or stopped at a read, seek or conversion error.
+    terminal: Option<Result<(), StretchError>>,
     inter: Vec<f32>,
     plane_in: Vec<Vec<f32>>,
     plane_out: Vec<Vec<f32>>,
@@ -71,7 +72,7 @@ impl SourceReader {
             align: from / gcd(from, to),
             win: [Vec::new(), Vec::new()],
             win_start: 0,
-            eof: false,
+            terminal: None,
             inter: vec![0.0; READ_FRAMES * channels],
             plane_in: vec![Vec::new(); channels],
             plane_out: vec![Vec::new(); channels],
@@ -123,13 +124,20 @@ impl SourceReader {
     /// Makes the window hold `lo .. hi` (as far as the file reaches).
     fn fill(&mut self, lo: u64, hi: u64, exact: bool) -> Result<(), StretchError> {
         let end = self.win_start + self.win[0].len() as u64;
-        if lo < self.win_start || lo > end + RESEEK_GAP {
+        // A Fixed/Re-Pitch read may have fetched farther than this Warp request needs. Retry
+        // its failed read on the same decoder, with its original source length and an exact
+        // window. Reopening a truncated file could mistake its new, shorter length for EOF.
+        let retry = exact && hi > end && self.terminal.is_some_and(|result| result.is_err());
+        if lo < self.win_start || lo > end + RESEEK_GAP || retry {
             self.seek(lo)?;
         }
-        while !self.eof {
+        loop {
             let missing = hi.saturating_sub(self.win_start + self.win[0].len() as u64);
             if missing == 0 {
-                break;
+                return Ok(());
+            }
+            if let Some(result) = self.terminal {
+                return result;
             }
             // Offline Warp surfaces real source errors. Read only the missing frames or the
             // converter's next input block, including blocks needed for its filter delay.
@@ -144,7 +152,6 @@ impl SourceReader {
             };
             self.pump(frames)?;
         }
-        Ok(())
     }
 
     fn seek(&mut self, q: u64) -> Result<(), StretchError> {
@@ -159,7 +166,7 @@ impl SourceReader {
         self.win[1].clear();
         self.win_start = q_seek;
         let result = self.file.seek(f_seek).map_err(|_| StretchError::SourceSeek);
-        self.eof = result.is_err();
+        self.terminal = result.err().map(Err);
         if let Some(conv) = &mut self.conv {
             conv.reset();
         }
@@ -169,23 +176,31 @@ impl SourceReader {
     /// Decodes and converts the next chunk into the window.
     fn pump(&mut self, frames: usize) -> Result<(), StretchError> {
         let channels = self.channels;
-        let read = self.file.read(&mut self.inter[..frames * channels]);
-        let n = read.as_ref().copied().unwrap_or(0);
+        let n = match self.file.read(&mut self.inter[..frames * channels]) {
+            Ok(n) => n,
+            Err(_) => {
+                let failed = Err(StretchError::SourceRead);
+                self.terminal = Some(failed);
+                return failed;
+            }
+        };
         for plane in self.plane_out.iter_mut().chain(self.plane_in.iter_mut()) {
             plane.clear();
         }
         if n == 0 {
-            self.eof = true;
             let finish = if let Some(conv) = &mut self.conv {
                 let result = conv
                     .finish(&mut self.plane_out)
                     .map_err(|_| StretchError::SourceResample);
-                self.append_out();
+                if result.is_ok() {
+                    self.append_out();
+                }
                 result
             } else {
                 Ok(())
             };
-            return read.map_err(|_| StretchError::SourceRead).and(finish);
+            self.terminal = Some(finish);
+            return finish;
         }
         for frame in self.inter[..n * channels].chunks_exact(channels) {
             for (plane, v) in self.plane_in.iter_mut().zip(frame) {
@@ -197,8 +212,10 @@ impl SourceReader {
                 let result = conv
                     .push(&self.plane_in, &mut self.plane_out)
                     .map_err(|_| StretchError::SourceResample);
-                self.eof = result.is_err();
-                self.append_out();
+                self.terminal = result.err().map(Err);
+                if result.is_ok() {
+                    self.append_out();
+                }
                 result
             }
             None => {

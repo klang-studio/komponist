@@ -1298,8 +1298,10 @@ Export owns fresh rings and diagnostics and fills them synchronously. It cuts au
 exact output frame. A Warp chain uses full DSP blocks up to its terminal block and carries the
 cut fade across seamless splits. The decoder reads the input needed for those blocks, including
 the sample-rate converter's filter delay and block sizes. Source read, seek and sample-rate
-conversion failures for Warp propagate to `ExportError::Stretch`. Clean end-of-file pads
-with zeros. A failed export leaves no partial output and restores the previous program.
+conversion failures for Warp propagate to `ExportError::Stretch`. A decoder error stays
+distinct from clean end-of-file when tracks switch from Fixed or Re-Pitch to Warp. Compressed
+files with a declared length report premature EOF. Clean end-of-file pads with zeros.
+A failed export leaves no partial output and restores the previous program.
 Pending live source metadata keeps the existing source-loading behavior.
 
 Generated-source tests cover pitch, exact length, resampling, native offsets, trim/takes,

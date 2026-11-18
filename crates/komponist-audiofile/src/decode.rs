@@ -12,14 +12,14 @@
 //! deliver their first two.
 
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read, Seek};
 use std::path::Path;
 
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Duration, Time, TimeBase, Timestamp};
 
@@ -157,7 +157,18 @@ impl AudioFile {
         }
         let n = match &mut self.backend {
             Backend::Wav(w) => w.read(out, self.info.frames - self.position)?,
-            Backend::Sym(s) => s.read(out)?,
+            Backend::Sym(s) => {
+                let n = s.read(out)?;
+                if n == 0
+                    && let Some(end) = s.declared_frames.filter(|&end| self.position < end)
+                {
+                    return Err(AudioError::Malformed(format!(
+                        "stream ended at frame {} before the declared end at frame {end}",
+                        self.position,
+                    )));
+                }
+                n
+            }
         };
         self.position += n as u64;
         Ok(n)
@@ -219,17 +230,22 @@ fn sniff(magic: &[u8]) -> Format {
 // ---------------------------------------------------------------------------------------- WAV
 
 struct Wav {
-    reader: hound::WavReader<BufReader<File>>,
+    reader: Option<hound::WavReader<BufReader<File>>>,
     spec: hound::WavSpec,
+    needs_rewind: bool,
+}
+
+fn wav_error(error: hound::Error) -> AudioError {
+    match error {
+        hound::Error::IoError(e) => AudioError::Io(e.to_string()),
+        hound::Error::Unsupported => AudioError::Unsupported("WAV variant".into()),
+        e => AudioError::Malformed(e.to_string()),
+    }
 }
 
 impl Wav {
     fn open(path: &Path) -> Result<(AudioInfo, Wav), AudioError> {
-        let reader = hound::WavReader::open(path).map_err(|e| match e {
-            hound::Error::IoError(e) => AudioError::Io(e.to_string()),
-            hound::Error::Unsupported => AudioError::Unsupported("WAV variant".into()),
-            e => AudioError::Malformed(e.to_string()),
-        })?;
+        let reader = hound::WavReader::open(path).map_err(wav_error)?;
         let spec = reader.spec();
         match (spec.sample_format, spec.bits_per_sample) {
             (hound::SampleFormat::Float, 32) | (hound::SampleFormat::Int, 8 | 16 | 24 | 32) => {}
@@ -255,16 +271,47 @@ impl Wav {
             frames: u64::from(reader.duration()).min(holds),
             format: Format::Wav,
         };
-        Ok((info, Wav { reader, spec }))
+        Ok((
+            info,
+            Wav {
+                reader: Some(reader),
+                spec,
+                needs_rewind: false,
+            },
+        ))
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), AudioError> {
         let frame = u32::try_from(frame).map_err(|_| AudioError::TooLong)?;
-        self.reader.seek(frame).map_err(AudioError::from)
+        if self.needs_rewind
+            && let Some(reader) = self.reader.take()
+        {
+            // Hound advances its sample count even if a read fails. Reset that count from the
+            // header on the same file handle before seeking, keeping AudioFile's original length.
+            let mut file = reader.into_inner();
+            file.rewind()?;
+            let reader = hound::WavReader::new(file).map_err(wav_error)?;
+            if reader.spec() != self.spec {
+                return Err(AudioError::Malformed(
+                    "WAV format changed while reading".into(),
+                ));
+            }
+            self.reader = Some(reader);
+        }
+        let reader = self.reader.as_mut().ok_or_else(wav_decoder_unavailable)?;
+        let result = reader.seek(frame).map_err(AudioError::from);
+        self.needs_rewind = result.is_err();
+        result
     }
 
     /// Reads at most `remaining` frames.
     fn read(&mut self, out: &mut [f32], remaining: u64) -> Result<usize, AudioError> {
+        if self.needs_rewind {
+            return Err(AudioError::Malformed(
+                "seek required after a failed WAV read".into(),
+            ));
+        }
+        let reader = self.reader.as_mut().ok_or_else(wav_decoder_unavailable)?;
         let source = usize::from(self.spec.channels);
         let channels = source.min(MAX_CHANNELS);
         let frames = (out.len() / channels).min(usize::try_from(remaining).unwrap_or(usize::MAX));
@@ -279,23 +326,30 @@ impl Wav {
             }
             Ok::<_, hound::Error>(())
         };
+        let unexpected_end = || hound::Error::IoError(io::ErrorKind::UnexpectedEof.into());
         let done = match (self.spec.sample_format, self.spec.bits_per_sample) {
             (hound::SampleFormat::Float, _) => {
-                let mut it = self.reader.samples::<f32>();
-                fill(&mut || it.next().unwrap_or(Ok(0.0)))
+                let mut it = reader.samples::<f32>();
+                fill(&mut || it.next().unwrap_or_else(|| Err(unexpected_end())))
             }
             (_, bits) => {
                 let scale = 1.0 / (1i64 << (bits - 1)) as f32;
-                let mut it = self.reader.samples::<i32>();
-                fill(&mut || it.next().unwrap_or(Ok(0)).map(|v| v as f32 * scale))
+                let mut it = reader.samples::<i32>();
+                fill(&mut || {
+                    it.next()
+                        .unwrap_or_else(|| Err(unexpected_end()))
+                        .map(|v| v as f32 * scale)
+                })
             }
         };
-        done.map_err(|e| match e {
-            hound::Error::IoError(e) => AudioError::Io(e.to_string()),
-            e => AudioError::Malformed(e.to_string()),
-        })?;
+        self.needs_rewind = done.is_err();
+        done.map_err(wav_error)?;
         Ok(frames)
     }
+}
+
+fn wav_decoder_unavailable() -> AudioError {
+    AudioError::Malformed("WAV decoder unavailable after a read error".into())
 }
 
 // ----------------------------------------------------------------------------------- symphonia
@@ -316,6 +370,8 @@ struct Sym {
     /// a seek's landing point and its target, and the encoder delay at the start of a file).
     target: u64,
     ended: bool,
+    /// A duration declared by the container, excluding inferred packet counts or estimates.
+    declared_frames: Option<u64>,
 }
 
 fn map_sym(e: SymError) -> AudioError {
@@ -346,6 +402,14 @@ impl Sym {
         let mut sample_rate = params.sample_rate;
         let mut source_channels = params.channels.as_ref().map(|c| c.count());
         let mut frames = track.num_frames;
+        let declared_frames = if expected == Format::Mp3 {
+            // Symphonia also sets num_frames from a bitrate estimate for seekable MP3s without a
+            // duration tag. A streaming probe cannot make that estimate, so it reports only the
+            // declared value. Keep the ordinary probe for seeking and for the estimated length.
+            frames.filter(|&n| Self::declared_mp3_frames(path).ok().flatten() == Some(n))
+        } else {
+            frames
+        };
         // Rate or channels missing from the header: they are in the first decoded packet.
         let mut planar = Vec::new();
         if sample_rate.is_none() || source_channels.is_none() {
@@ -385,6 +449,7 @@ impl Sym {
             pending_pos: 0,
             target: 0,
             ended: false,
+            declared_frames,
         };
         // Probing consumed packets: start over from the top.
         sym.rewind()?;
@@ -402,23 +467,7 @@ impl Sym {
     fn probe(
         path: &Path,
     ) -> Result<(Box<dyn FormatReader>, Box<dyn AudioDecoder>, u32), AudioError> {
-        let file = File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-        let format = symphonia::default::get_probe()
-            .probe(
-                &hint,
-                mss,
-                FormatOptions::default(),
-                MetadataOptions::default(),
-            )
-            .map_err(|e| match e {
-                SymError::Unsupported(_) => AudioError::Unsupported("unknown audio format".into()),
-                e => map_sym(e),
-            })?;
+        let format = Self::probe_format(path, Box::new(File::open(path)?))?;
         let track = format
             .default_track(TrackType::Audio)
             .ok_or_else(|| AudioError::Unsupported("no audio track".into()))?;
@@ -435,6 +484,36 @@ impl Sym {
                 e => map_sym(e),
             })?;
         Ok((format, decoder, track_id))
+    }
+
+    fn declared_mp3_frames(path: &Path) -> Result<Option<u64>, AudioError> {
+        let media = ReadOnlySource::new(File::open(path)?);
+        let format = Self::probe_format(path, Box::new(media))?;
+        Ok(format
+            .default_track(TrackType::Audio)
+            .and_then(|track| track.num_frames))
+    }
+
+    fn probe_format(
+        path: &Path,
+        media: Box<dyn MediaSource>,
+    ) -> Result<Box<dyn FormatReader>, AudioError> {
+        let mss = MediaSourceStream::new(media, Default::default());
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        symphonia::default::get_probe()
+            .probe(
+                &hint,
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|e| match e {
+                SymError::Unsupported(_) => AudioError::Unsupported("unknown audio format".into()),
+                e => map_sym(e),
+            })
     }
 
     /// Length in frames from the packet durations, reading the file once without decoding.

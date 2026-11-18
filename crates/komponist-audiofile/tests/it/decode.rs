@@ -90,6 +90,34 @@ fn wav_sample_formats_decode_to_the_same_values() {
 }
 
 #[test]
+fn seeking_after_a_wav_read_error_retains_the_original_length_and_channel_alignment() {
+    let dir = Scratch::new("wav-seek-after-error");
+    let path = dir.path("stereo.wav");
+    let samples: Vec<_> = (0..5000).flat_map(|i| [i as i16, -(i as i16)]).collect();
+    write_wav_i16(&path, 48000, 2, &samples);
+    let mut file = AudioFile::open(&path).unwrap();
+    let source = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let data_offset = source.metadata().unwrap().len() - 5000 * 4;
+    source.set_len(data_offset + 2500 * 4).unwrap();
+    let mut buf = vec![0.0; 4000 * 2];
+    assert!(matches!(file.read(&mut buf), Err(AudioError::Io(_))));
+    file.seek(1000).unwrap();
+    assert_eq!(file.info().frames, 5000);
+    assert_eq!(file.read(&mut buf[..4]).unwrap(), 2);
+    assert_eq!(
+        &buf[..4],
+        &[
+            1000.0 / 32768.0,
+            -1000.0 / 32768.0,
+            1001.0 / 32768.0,
+            -1001.0 / 32768.0
+        ]
+    );
+    file.seek(4000).unwrap();
+    assert!(matches!(file.read(&mut buf[..4]), Err(AudioError::Io(_))));
+}
+
+#[test]
 fn files_with_more_than_two_channels_give_the_first_two() {
     let dir = Scratch::new("wav-multi");
     let path = dir.path("six.wav");
@@ -130,6 +158,50 @@ fn compressed_fixtures_decode_to_the_tones_they_hold() {
         assert!(tone_amplitude(l, 880.0, 44100) < 0.02, "{name}");
         assert!(tone_amplitude(r, 440.0, 44100) < 0.02, "{name}");
     }
+}
+
+#[test]
+fn premature_eof_is_an_error_for_compressed_files_with_a_declared_length() {
+    let dir = Scratch::new("declared-eof");
+    for ext in ["flac", "mp3"] {
+        let filename = format!("stereo-440-880.{ext}");
+        let bytes = std::fs::read(fixture(&filename)).unwrap();
+        let path = dir.path(&filename);
+        std::fs::write(&path, &bytes[..bytes.len() * 2 / 3]).unwrap();
+        let mut file = AudioFile::open(&path).unwrap();
+        assert_eq!(file.info().frames, 33075, "{ext}");
+        let mut buf = [0.0; 1024];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => panic!("{ext}: accepted premature EOF at frame {}", file.position()),
+                Ok(_) => (),
+                Err(AudioError::Malformed(_)) => break,
+                Err(error) => panic!("{ext}: {error}"),
+            }
+        }
+        assert!(
+            file.position() > 10_000 && file.position() < 30_000,
+            "{ext}"
+        );
+    }
+}
+
+#[test]
+fn an_mp3_duration_estimate_does_not_make_clean_eof_an_error() {
+    let dir = Scratch::new("estimated-eof");
+    let path = dir.path("tagless.mp3");
+    let mut bytes = std::fs::read(fixture("stereo-440-880.mp3")).unwrap();
+    // Hide the Info tag so the MPEG stream has only a duration estimated from the bitrate.
+    // A zero trailer overestimates the duration without removing any decodable frames.
+    let tag = bytes.windows(4).position(|p| p == b"Info").unwrap();
+    bytes[tag..tag + 4].copy_from_slice(b"NONE");
+    bytes.extend_from_slice(&[0; 4096]);
+    std::fs::write(&path, bytes).unwrap();
+    let mut file = AudioFile::open(&path).unwrap();
+    let mut buf = [0.0; 1024];
+    while file.read(&mut buf).unwrap() > 0 {}
+    assert!(file.position() > 33_000);
+    assert!(file.position() < file.info().frames);
 }
 
 #[test]

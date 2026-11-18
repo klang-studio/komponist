@@ -406,7 +406,7 @@ fn warp_export_only_decodes_the_input_needed_at_the_exact_range_end() {
     let reference = super::export::read(&short).samples;
     assert_eq!(reference.len(), 54);
     assert!(reference.iter().any(|v| v.abs() > 0.0005));
-    for (bad_at, succeeds) in [(prime + 100, true), (prime + 40, true), (prime + 26, false)] {
+    for (bad_at, succeeds) in [(prime + 100, true), (prime + 27, true), (prime + 26, false)] {
         s.wav("source.wav", 48000, 2, 96000, |i, _| {
             if i == bad_at { f32::NAN } else { 0.25 }
         });
@@ -433,9 +433,9 @@ fn warp_export_only_decodes_the_input_needed_at_the_exact_range_end() {
 fn warp_export_preserves_chunk_overhang_across_a_split() {
     let (mut s, clip) = setup("warp-export-split", 44100, 4410, 180.0, 120.0);
     let end = 3479;
-    let path = s.dir.join("out.wav");
-    let job = job(path.clone(), 48000, 0..end);
-    let export = |project: &Studio| {
+    let export = |project: &Studio, name: &str| {
+        let path = project.dir.join(name);
+        let job = job(path.clone(), 48000, 0..end);
         let program = project.program();
         let mut r = Rig::new(RATE, 1024);
         r.engine.stall_streaming(true);
@@ -450,11 +450,11 @@ fn warp_export_preserves_chunk_overhang_across_a_split() {
         .unwrap();
         super::export::read(&path).samples
     };
-    let original = export(&s);
+    let original = export(&s, "unsplit.wav");
     s.project = edits::split_clips(&s.project, &[clip], Tick(137))
         .unwrap()
         .0;
-    let split = export(&s);
+    let split = export(&s, "split.wav");
     assert!(original.iter().any(|s| s.abs() > 0.1));
     assert_eq!(split.len(), original.len());
     assert_eq!(
@@ -490,34 +490,41 @@ fn warp_export_distinguishes_out_of_range_reads_from_real_io_errors() {
         // Derive the data offset from the known original length and stereo f32 frame size.
         let data_offset = source.metadata().unwrap().len() - u64::from(rate) * 4 * 8;
         let out = s.dir.join("out.wav");
-        let job = job(out.clone(), 48000, 0..count);
+        let render = job(out.clone(), 48000, 0..count);
         let cancel = AtomicBool::new(false);
         let reference = succeeds.then(|| {
+            let path = s.dir.join("intact.wav");
             export::export(
                 &mut r.engine,
                 &mut r.handle,
                 &program,
-                &job,
+                &job(path.clone(), 48000, 0..count),
                 &cancel,
                 |_| {},
             )
             .unwrap();
-            super::export::read(&out).samples
+            super::export::read(&path).samples
         });
-        let mut first = true;
+        let mut truncated = false;
         let result = export::export(
             &mut r.engine,
             &mut r.handle,
             &program,
-            &job,
+            &render,
             &cancel,
-            |_| {
-                if std::mem::take(&mut first) {
+            |progress| {
+                if !truncated {
+                    assert!(
+                        progress.fraction < 1.0,
+                        "no decoding remains after this callback"
+                    );
                     // Keep the header but remove samples after this export's decoder opens.
                     source.set_len(data_offset + cutoff * 8).unwrap();
+                    truncated = true;
                 }
             },
         );
+        assert!(truncated, "export reached no progress callback");
         if let Some(expected) = reference {
             assert_eq!(result.unwrap().frames, count);
             assert_eq!(super::export::read(&out).samples, expected);
@@ -527,6 +534,146 @@ fn warp_export_distinguishes_out_of_range_reads_from_real_io_errors() {
             }) if failed == clip));
             assert!(!out.exists());
         }
+    }
+}
+
+#[test]
+fn warp_after_fixed_checks_the_same_decoders_read_failure() {
+    let source_frames = 96000;
+    let fixed_end = 24000;
+    let end = fixed_end + 27;
+    let offset = 16400;
+    // At 6× this needs 3360 frames of priming and five more frames. The Fixed decoder's
+    // 4096-frame read past source frame 16384 fails in both cases, but only one loses needed
+    // Warp input. The precise retry must use the same decoder's original WAV length.
+    for (cutoff, succeeds) in [(18000, false), (19900, true)] {
+        let mut s = Studio::new(&format!("warp-after-fixed-{cutoff}"));
+        s.project =
+            edits::set_project_prop(&s.project, edits::ProjectProp::Tempo(Tempo::new(40.0)))
+                .unwrap();
+        let track = s.track();
+        let file = s.wav("source.wav", 48000, 2, source_frames, sine(440.0, 48000));
+        let fixed = s.clip(track, &file, 0, 320, 0);
+        // Keep the Fixed decoder active but isolate the Warp output from the preceding sound.
+        s.prop(
+            fixed,
+            edits::AudioClipProp::GainDb(komponist_model::CLIP_GAIN_DB_MIN),
+        );
+        let clip = s.clip(track, &file, 320, 320, offset);
+        s.prop(clip, edits::AudioClipProp::OriginalTempo(Tempo::new(240.0)));
+        s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
+        let program = s.program();
+        let mut r = Rig::new(RATE, 1024);
+        r.engine.stall_streaming(true);
+        let out = s.dir.join("out.wav");
+        let cancel = AtomicBool::new(false);
+        let reference = succeeds.then(|| {
+            let path = s.dir.join("intact.wav");
+            export::export(
+                &mut r.engine,
+                &mut r.handle,
+                &program,
+                &job(path.clone(), 48000, 0..end),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+            super::export::read(&path).samples[(fixed_end as usize * 2)..].to_vec()
+        });
+        let source = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file.abs)
+            .unwrap();
+        let data_offset = source.metadata().unwrap().len() - source_frames as u64 * 8;
+        let mut truncated = false;
+        let result = export::export(
+            &mut r.engine,
+            &mut r.handle,
+            &program,
+            &job(out.clone(), 48000, 0..end),
+            &cancel,
+            |progress| {
+                if !truncated {
+                    assert!(progress.fraction < fixed_end as f32 / end as f32);
+                    source.set_len(data_offset + cutoff * 8).unwrap();
+                    truncated = true;
+                }
+            },
+        );
+        assert!(truncated);
+        let part = s.dir.join(".out.wav.part");
+        if let Some(expected) = reference {
+            assert_eq!(result.unwrap().frames, end);
+            assert!(expected.iter().any(|v| v.abs() > 0.0005));
+            assert_eq!(
+                &super::export::read(&out).samples[(fixed_end as usize * 2)..],
+                expected
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ExportError::Stretch {
+                clip: failed, reason: komponist_engine::audio::StretchError::SourceRead,
+            }) if failed == clip),
+                "{result:?}"
+            );
+            assert!(!out.exists());
+        }
+        assert!(!part.exists());
+    }
+}
+
+#[test]
+fn truncated_compressed_warp_source_is_a_read_error() {
+    for ext in ["flac", "mp3"] {
+        let mut s = Studio::new(&format!("warp-truncated-{ext}"));
+        let track = s.track();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../komponist-audiofile/tests/fixtures/stereo-440-880.{ext}"
+        ));
+        let bytes = std::fs::read(fixture).unwrap();
+        let source = s.dir.join(format!("source.{ext}"));
+        std::fs::write(&source, &bytes[..bytes.len() * 2 / 3]).unwrap();
+        let file = komponist_model::AudioFile::new(&source, None, 33075, 44100, 2);
+        let clip = s.clip(track, &file, 0, 960, 0);
+        s.project = edits::set_audio_clip_warp(&s.project, clip, true).unwrap();
+        let program = s.program();
+        let mut r = Rig::new(RATE, 1024);
+        r.engine.stall_streaming(true);
+        let cancel = AtomicBool::new(false);
+        let short = s.dir.join("short.wav");
+        let result = export::export(
+            &mut r.engine,
+            &mut r.handle,
+            &program,
+            &job(short.clone(), 48000, 0..4000),
+            &cancel,
+            |_| {},
+        );
+        assert_eq!(result.unwrap().frames, 4000);
+        assert!(
+            super::export::read(&short)
+                .samples
+                .iter()
+                .any(|v| v.abs() > 0.1)
+        );
+
+        let out = s.dir.join("out.wav");
+        let result = export::export(
+            &mut r.engine,
+            &mut r.handle,
+            &program,
+            &job(out.clone(), 48000, 0..24000),
+            &cancel,
+            |_| {},
+        );
+        assert!(
+            matches!(result, Err(ExportError::Stretch {
+            clip: failed, reason: komponist_engine::audio::StretchError::SourceRead,
+        }) if failed == clip),
+            "{ext}: {result:?}"
+        );
+        assert!(!out.exists());
+        assert!(!s.dir.join(".out.wav.part").exists());
     }
 }
 
@@ -554,6 +701,7 @@ fn warp_export_pads_at_a_clean_end_of_file_with_and_without_resampling() {
         .unwrap();
         let samples = super::export::read(&out).samples;
         assert_eq!(result.frames, 8091);
+        assert_eq!(samples.len(), 8091 * 2);
         assert!(samples[14500..15000].iter().any(|v| v.abs() > 0.1));
         assert!(samples[16000..].iter().all(|v| *v == 0.0));
     }
@@ -584,6 +732,8 @@ fn zero_frame_export_skips_warp_validation_and_preroll() {
     assert_eq!(reports[0].fraction, 1.0);
     assert!(super::export::read(&path).samples.is_empty());
 
+    let previous = b"the pre-existing output must survive cancellation";
+    std::fs::write(&path, previous).unwrap();
     let result = export::export(
         &mut r.engine,
         &mut r.handle,
@@ -595,7 +745,7 @@ fn zero_frame_export_skips_warp_validation_and_preroll() {
         },
     );
     assert!(matches!(result, Err(ExportError::Cancelled)));
-    assert!(super::export::read(&path).samples.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), previous);
     assert!(!s.dir.join(".out.wav.part").exists());
 
     cancel.store(false, Ordering::Relaxed);
