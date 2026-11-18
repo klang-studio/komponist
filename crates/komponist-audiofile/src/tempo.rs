@@ -12,7 +12,7 @@ const WINDOW: usize = 512;
 const MAX_SECONDS: u64 = 60;
 const MIN_BPM: f64 = 40.0;
 const MAX_BPM: f64 = 240.0;
-const CACHE_MAGIC: &[u8; 8] = b"KPTEMPO1";
+const CACHE_MAGIC: &[u8; 8] = b"KPTEMPO2";
 
 /// Candidate original tempo for a source. The confidence is a heuristic measure of regularity.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -195,7 +195,7 @@ fn track_period(flux: &[f32], full_length: bool) -> Option<TempoEstimate> {
 }
 
 fn cache_path(dir: &Path, id: &FileId) -> std::path::PathBuf {
-    dir.join(format!("{:016x}.tempo", id.stable_hash()))
+    dir.join(format!("v2-{:016x}.tempo", id.stable_hash()))
 }
 
 pub(crate) fn cached(dir: &Path, id: &FileId) -> Option<Option<TempoEstimate>> {

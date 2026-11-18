@@ -141,12 +141,31 @@ fn tempo_cache_is_versioned_and_does_not_reuse_a_replaced_file() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].extension().unwrap(), "tempo");
 
+    let cached = TempoEstimate {
+        bpm: 123.45,
+        confidence: original.confidence,
+    };
+    let mut record = std::fs::read(&files[0]).unwrap();
+    assert_eq!(&record[..8], b"KPTEMPO2");
+    record[8..16].copy_from_slice(&cached.bpm.to_le_bytes());
+    std::fs::write(&files[0], &record).unwrap();
+
     let fresh = FilePool::new();
-    fresh.set_cache_dir(Some(cache));
-    assert_eq!(analysis(&fresh.open(&path).unwrap()), Some(original));
-    std::fs::write(&files[0], b"KPTEMPO0").unwrap();
-    assert_eq!(analysis(&fresh.open(&path).unwrap()), Some(original));
-    assert_eq!(&std::fs::read(&files[0]).unwrap()[..8], b"KPTEMPO1");
+    fresh.set_cache_dir(Some(cache.clone()));
+    assert_eq!(analysis(&fresh.open(&path).unwrap()), Some(cached));
+    assert_eq!(std::fs::read(&files[0]).unwrap(), record);
+
+    // Keep a valid but distinguishable payload and change only its version. The second
+    // fresh pool cannot see a Ready entry that is still live on the previous worker.
+    record[..8].copy_from_slice(b"KPTEMPO1");
+    std::fs::write(&files[0], record).unwrap();
+    let after_corruption = FilePool::new();
+    after_corruption.set_cache_dir(Some(cache));
+    assert_eq!(
+        analysis(&after_corruption.open(&path).unwrap()),
+        Some(original)
+    );
+    assert_eq!(&std::fs::read(&files[0]).unwrap()[..8], b"KPTEMPO2");
 
     write_wav_f32(&path, 12000, &[rhythm(12000, 160.0, 8, 1)]);
     let after = pool.open(&path).unwrap();
@@ -154,4 +173,60 @@ fn tempo_cache_is_versioned_and_does_not_reuse_a_replaced_file() {
     let replacement = analysis(&after).unwrap();
     assert!((replacement.bpm - 160.0).abs() < 1.0);
     assert_ne!(replacement, original);
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_keeps_non_utf8_paths_and_pre_epoch_versions_distinct() {
+    use std::ffi::OsString;
+    use std::fs::{FileTimes, OpenOptions};
+    use std::os::unix::ffi::OsStringExt;
+    use std::time::UNIX_EPOCH;
+
+    let scratch = Scratch::new("tempo-native-identity");
+    let cache = scratch.path("cache");
+    let first = scratch
+        .0
+        .join(OsString::from_vec(b"clip-\xff.wav".to_vec()));
+    let second = scratch
+        .0
+        .join(OsString::from_vec(b"clip-\xfe.wav".to_vec()));
+    let past = UNIX_EPOCH - Duration::from_secs(60);
+    let write = |path: &std::path::Path, bpm: f64, beats: usize, mtime| {
+        write_wav_f32(path, 12000, &[rhythm(12000, bpm, beats, 0)]);
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(mtime))
+            .unwrap();
+    };
+    write(&first, 90.0, 4, past);
+    write(&second, 180.0, 8, past);
+    assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+    let pool = FilePool::new();
+    pool.set_cache_dir(Some(cache.clone()));
+    let first_file = pool.open(&first).unwrap();
+    let second_file = pool.open(&second).unwrap();
+    assert_eq!(first_file.id().len, second_file.id().len);
+    assert_eq!(first_file.id().mtime_ns, Some(-60_000_000_000));
+    assert_eq!(first_file.id().mtime_ns, second_file.id().mtime_ns);
+    let a = analysis(&first_file).unwrap();
+    let b = analysis(&second_file).unwrap();
+    assert!((a.bpm - 90.0).abs() < 1.0, "{a:?}");
+    assert!((b.bpm - 180.0).abs() < 1.0, "{b:?}");
+
+    // Rewrite a known source with a different rhythm at the same length, keeping its mtime
+    // before the Unix epoch. Holding the old handle also verifies in-memory invalidation.
+    write(&first, 180.0, 8, past - Duration::from_secs(60));
+    let updated = pool.open(&first).unwrap();
+    assert_eq!(first_file.id().len, updated.id().len);
+    assert!(!Arc::ptr_eq(&first_file, &updated));
+    let result = analysis(&updated).unwrap();
+    assert!((result.bpm - 180.0).abs() < 1.0, "{result:?}");
+
+    let fresh = FilePool::new();
+    fresh.set_cache_dir(Some(cache));
+    assert_eq!(analysis(&fresh.open(&first).unwrap()), Some(result));
+    assert_eq!(analysis(&fresh.open(&second).unwrap()), Some(b));
 }
