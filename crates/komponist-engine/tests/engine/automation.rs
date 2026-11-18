@@ -25,12 +25,11 @@ impl CompileEnv for Parameters {
     }
 
     fn automation_parameter(&self, _: &Device, param: &ParamId) -> Option<Parameter> {
-        Some(Parameter {
+        self.0.then_some(Parameter {
             wire_id: param.plugin_id()?,
             base: 0.25,
             map: PlainMap::linear(0.0, 1.0, 0),
         })
-        .filter(|_| self.0)
     }
 }
 
@@ -39,6 +38,7 @@ struct Probe {
     pos: usize,
     gain: f32,
     log: Option<rtrb::Producer<(usize, u32, f64)>>,
+    edits: Option<std::array::IntoIter<komponist_engine::processor::ParameterEdit, 3>>,
 }
 
 impl Processor for Probe {
@@ -71,6 +71,10 @@ impl Processor for Probe {
         io.output[1][start..].fill(self.gain);
         self.pos += io.frames();
         ProcessStatus::Continue
+    }
+
+    fn pop_parameter_edit(&mut self) -> Option<komponist_engine::processor::ParameterEdit> {
+        self.edits.as_mut()?.next()
     }
 
     fn latency(&self) -> u32 {
@@ -119,6 +123,7 @@ fn rig(project: &Project) -> (Rig, komponist_engine::Program, ParamLog) {
             pos: 0,
             gain: 1.0,
             log: Some(log),
+            edits: None,
         },
     );
     rig.set_program(&program);
@@ -436,6 +441,7 @@ fn ramp_playback_budget() {
                     pos: 0,
                     gain: 0.1,
                     log: None,
+                    edits: None,
                 },
             );
         }
@@ -468,4 +474,145 @@ fn ramp_playback_budget() {
         "16 × 16 automation ramps, 256 @ 48 kHz: {base:?} baseline, {with_automation:?} full, {difference:?} automation"
     );
     assert!(difference <= Duration::from_secs_f64(0.02 * 256.0 / 48_000.0));
+}
+
+#[test]
+fn plugin_gui_edges_and_value_use_the_engine_clock() {
+    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+
+    let (project, owner, device) = source();
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 0),
+        AutomationMode::Latch,
+        Vec::new(),
+    );
+    let program = compile::build(&project, None, &Parameters(true));
+    let slot = program.slots.slot(device).unwrap();
+    let edits = [
+        ParameterEdit {
+            offset: 25,
+            kind: ParameterEditKind::Gesture { id: 0, begin: true },
+        },
+        ParameterEdit {
+            offset: 50,
+            kind: ParameterEditKind::Value { id: 0, value: 0.5 },
+        },
+        ParameterEdit {
+            offset: 75,
+            kind: ParameterEditKind::Gesture {
+                id: 0,
+                begin: false,
+            },
+        },
+    ];
+    let mut rig = Rig::new(RATE, 1024);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 0.25,
+            log: None,
+            edits: Some(edits.into_iter()),
+        },
+    );
+    rig.set_program(&program);
+    rig.send(Command::Play);
+    rig.process(100, 100);
+    let events = rig.take_events();
+    assert!(matches!(
+        &events[0..3],
+        [
+            EngineEvent::AutomationTouch {
+                begin: true,
+                tick: Tick(1),
+                ..
+            },
+            EngineEvent::AutomationValue {
+                value: 0.5,
+                tick: Tick(2),
+                ..
+            },
+            EngineEvent::AutomationTouch {
+                begin: false,
+                tick: Tick(3),
+                ..
+            },
+        ]
+    ));
+    let EngineEvent::PluginParams {
+        slot: captured_slot,
+        events,
+    } = &events[3]
+    else {
+        panic!("expected batched plugin events, got {:?}", events[3]);
+    };
+    assert_eq!(*captured_slot, slot);
+    for (index, event) in events.as_slice().iter().enumerate() {
+        assert_eq!(event.tick, Tick((index + 1) as i64));
+        assert_eq!(event.kind, edits[index].kind);
+    }
+    // Latching continues through release and ends at the exact old playhead on locate.
+    rig.process(100, 100);
+    assert!(matches!(
+        &rig.events[..],
+        [EngineEvent::AutomationValue {
+            value: 0.5,
+            tick: Tick(7),
+            ..
+        }]
+    ));
+    rig.send(Command::Locate(Tick(20)));
+    rig.process(25, 25);
+    assert!(rig.events.iter().any(|event| matches!(
+        event,
+        EngineEvent::AutomationBoundary {
+            kind: AutomationBoundary::Locate,
+            tick: Tick(8)
+        }
+    )));
+}
+
+#[test]
+fn locate_ends_the_pass_even_after_touch_release() {
+    let (project, owner, device) = source();
+    let target = parameter(device, 0);
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Touch,
+        vec![Point::linear(Tick::ZERO, 0.25)],
+    );
+    let (mut rig, program, _) = rig(&project);
+    let target = program.automation_target(owner, &target).unwrap();
+    let slot = program.slots.slot(device).unwrap();
+    rig.send(Command::Play);
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: true,
+    });
+    rig.send(Command::SetParam {
+        slot,
+        id: 0,
+        value: 0.75,
+    });
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: false,
+    });
+    rig.process(100, 100);
+    rig.take_events();
+    rig.send(Command::Locate(Tick(20)));
+    rig.process(25, 25);
+    assert!(matches!(
+        &rig.events[..],
+        [EngineEvent::AutomationBoundary {
+            kind: AutomationBoundary::Locate,
+            tick: Tick(4)
+        }]
+    ));
 }

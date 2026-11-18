@@ -119,16 +119,16 @@ impl Core {
         owner: AutomationOwner,
         target: EngineTarget,
         plain: f64,
-    ) {
+    ) -> bool {
         let tick = self.transport.tick(&self.song, f64::from(self.sample_rate));
         let Some((lanes, state)) = self.locate_automation(owner) else {
-            return;
+            return false;
         };
         let Some((cursor, index)) = state.cursor(lanes, target) else {
-            return;
+            return false;
         };
         let lane = &lanes[index];
-        if lane.mode != AutomationMode::Off && cursor.is_held() {
+        if cursor.is_held() && (lane.reads() || cursor.writes()) {
             let value = match target {
                 EngineTarget::Slot { .. } => lane.map.normalize(plain),
                 EngineTarget::Gain | EngineTarget::Send(_) => {
@@ -138,10 +138,13 @@ impl Core {
                 EngineTarget::Macro(_) => plain as f32,
             };
             cursor.manual_value(tick, value.clamp(0.0, 1.0));
-        } else if lane.reads() {
+            return true;
+        }
+        if lane.reads() {
             // A state sync may update the base while the lane still owns the audible value.
             cursor.reassert();
         }
+        false
     }
 
     pub(super) fn chase_automation_slot(&mut self, slot: SlotId) {

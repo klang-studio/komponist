@@ -218,7 +218,7 @@ pub struct MasterProgram {
     pub automation: Arc<[CompiledTarget]>,
     /// Source lanes retained for incremental compilation.
     pub automation_source: Arc<TrackAutomation>,
-    /// Delay to the master fader from master inserts.
+    /// Delay from the song clock through the longest route and the master inserts.
     pub chain_latency: u32,
     /// Master inserts in order (effects only).
     pub chain: Vec<ChainSlot>,

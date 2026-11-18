@@ -1738,22 +1738,22 @@ impl Core {
                 }
             }
             Command::SetTrackGain { track, gain } => {
-                self.manual_automation(
+                let automated = self.manual_automation(
                     AutomationOwner::Track(track),
                     EngineTarget::Gain,
                     f64::from(gain),
                 );
-                if let Some(state) = self.state_of(track) {
+                if !automated && let Some(state) = self.state_of(track) {
                     state.gain = Some(gain);
                 }
             }
             Command::SetTrackPan { track, pan } => {
-                self.manual_automation(
+                let automated = self.manual_automation(
                     AutomationOwner::Track(track),
                     EngineTarget::Pan,
                     f64::from(pan),
                 );
-                if let Some(state) = self.state_of(track) {
+                if !automated && let Some(state) = self.state_of(track) {
                     state.pan = Some(pan);
                 }
             }
@@ -1768,23 +1768,30 @@ impl Core {
                 }
             }
             Command::SetMasterGain(gain) => {
-                self.manual_automation(
+                if !self.manual_automation(
                     AutomationOwner::Master,
                     EngineTarget::Gain,
                     f64::from(gain),
-                );
-                self.master_gain = Some(gain);
+                ) {
+                    self.master_gain = Some(gain);
+                }
             }
             Command::SetMasterPan(pan) => {
-                self.manual_automation(AutomationOwner::Master, EngineTarget::Pan, f64::from(pan));
-                self.master_pan = Some(pan);
+                if !self.manual_automation(
+                    AutomationOwner::Master,
+                    EngineTarget::Pan,
+                    f64::from(pan),
+                ) {
+                    self.master_pan = Some(pan);
+                }
             }
             Command::SetGates(gates) => self.gates = Some(gates),
             Command::SetSendGain { send, gain } => {
-                if let Some(owner) = self.send_owner(send) {
-                    self.manual_automation(owner, EngineTarget::Send(send), f64::from(gain));
-                }
-                if let Some(program) = self.program.as_deref()
+                let automated = self.send_owner(send).is_some_and(|owner| {
+                    self.manual_automation(owner, EngineTarget::Send(send), f64::from(gain))
+                });
+                if !automated
+                    && let Some(program) = self.program.as_deref()
                     && let Some(gate) = program.routing.sends.iter().position(|s| *s == send)
                     && let Some(slot) = self.send_gains.get_mut(gate)
                 {
@@ -2628,19 +2635,7 @@ impl Core {
                 let (l, r) = bufs.pair(result, n);
                 let gain = master_gain.unwrap_or(master.gain);
                 let pan = master_pan.unwrap_or(master.pan);
-                let input_latency = if routed {
-                    routing.master.latency_in
-                } else {
-                    program
-                        .tracks
-                        .iter()
-                        .map(|track| track.chain_latency)
-                        .max()
-                        .unwrap_or(0)
-                };
-                let clock = mixer_clock
-                    .delayed(input_latency)
-                    .delayed(master.chain_latency);
+                let clock = mixer_clock.delayed(master.chain_latency);
                 let volume = MixerValues::new(
                     master_automation,
                     &master.automation,

@@ -152,6 +152,15 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         env,
         previous.map(|p| &*p.routing),
     );
+    let master_input_latency = if graph.routing.is_flat() {
+        chains
+            .iter()
+            .map(|chain| chain_latency(chain, env))
+            .max()
+            .unwrap_or(0)
+    } else {
+        graph.routing.master.latency_in
+    };
     let dir = env.project_dir();
     let plan_env = PlanEnv {
         rate: env.sample_rate().round().max(1.0) as u32,
@@ -193,7 +202,7 @@ pub fn build(project: &Project, previous: Option<&Program>, env: &dyn CompileEnv
         master: MasterProgram {
             automation: automation::master(project, &master_chain, env, previous),
             automation_source: Arc::clone(&project.master_automation),
-            chain_latency: chain_latency(&master_chain, env),
+            chain_latency: master_input_latency.saturating_add(chain_latency(&master_chain, env)),
             chain: master_chain,
             gain: fader_gain(master.volume_db),
             pan: balance(master.pan),
@@ -376,9 +385,16 @@ fn track_program(
         .and_then(|p| p.audio.as_ref())
         .filter(|plan| plan_matches(plan, &track.clips, plan_env));
     let automation = automation::track(track, &routing.chain, env, previous.map(Arc::as_ref));
+    // Only a track with automation needs its own chain latency. The routing graph already
+    // computes latency compensation for every track independently of these snapshots.
+    let chain_latency = if automation.is_empty() {
+        0
+    } else {
+        routing.chain_latency
+    };
     if let Some(prev) = previous
         && Arc::ptr_eq(&prev.automation, &automation)
-        && prev.chain_latency == routing.chain_latency
+        && prev.chain_latency == chain_latency
         && Arc::ptr_eq(&prev.source, track)
         && prev.chain == routing.chain
         && prev.input == routing.input
@@ -406,7 +422,7 @@ fn track_program(
         source: Arc::clone(track),
         notes,
         automation,
-        chain_latency: routing.chain_latency,
+        chain_latency,
         chain: routing.chain,
         gain: fader_gain(channel.volume_db),
         pan: balance(channel.pan),
