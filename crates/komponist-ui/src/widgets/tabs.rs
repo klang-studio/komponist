@@ -38,7 +38,7 @@ use egui::{
 };
 use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
-use komponist_tokens::{color, radius, size, space};
+use komponist_tokens::{Icon, color, radius, size, space};
 
 use super::metrics;
 use super::tooltip::Tip;
@@ -107,6 +107,7 @@ impl<'a> TabExtra<'a> {
 struct Deco<'a> {
     extra: TabExtra<'a>,
     accent_line: bool,
+    icon: Option<Icon>,
     /// A fixed width instead of the text's ([`Segmented::equal_width`]).
     width: Option<f32>,
 }
@@ -284,9 +285,14 @@ fn item_deco(
         .as_ref()
         .map_or(0.0, |g| dock_metrics::GAP + g.size().x.ceil());
     // As wide as the medium text, so the width does not change with the state.
-    let width = deco
-        .width
-        .unwrap_or_else(|| mark_w + medium.size().x.ceil() + secondary_w + 2.0 * shape.padding());
+    let width = deco.width.unwrap_or_else(|| {
+        let content_width = if deco.icon.is_some() {
+            size::ICON
+        } else {
+            mark_w + medium.size().x.ceil() + secondary_w
+        };
+        content_width + 2.0 * shape.padding()
+    });
     // Only the active entry is a Tab stop; arrows move between entries.
     let sense = if active && enabled {
         Sense::click()
@@ -313,7 +319,9 @@ fn item_deco(
         let ppp = ui.pixels_per_point();
         let medium_w = medium.size().x.ceil();
         let galley = if l.medium { medium } else { regular };
-        if extra.is_empty() && dotted.is_none() {
+        if let Some(icon) = deco.icon {
+            crate::icons::paint(ui, rect, icon, l.text);
+        } else if extra.is_empty() && dotted.is_none() {
             let pos = super::text_pos_centered(rect, &galley, ppp);
             painter.galley(pos, galley, l.text);
         } else {
@@ -381,7 +389,7 @@ pub fn tab_with(
     let deco = Deco {
         extra,
         accent_line,
-        width: None,
+        ..Deco::default()
     };
     item_deco(ui, id, Shape::Tab, label, active, enabled, deco).0
 }
@@ -400,6 +408,16 @@ pub fn segmented_frame<R>(
     focus_ring: impl FnOnce(&R) -> bool,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> InnerResponse<R> {
+    segmented_frame_with_row_height(ui, name, None, focus_ring, add)
+}
+
+fn segmented_frame_with_row_height<R>(
+    ui: &mut Ui,
+    name: &str,
+    row_height: Option<f32>,
+    focus_ring: impl FnOnce(&R) -> bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> InnerResponse<R> {
     let builder = UiBuilder::new()
         .accessibility_role(Role::RadioGroup)
         .accessibility_label(name);
@@ -409,6 +427,9 @@ pub fn segmented_frame<R>(
             .corner_radius(corner_radius(radius::M))
             .inner_margin(Margin::same(space::SPACE_0_5 as i8))
             .show(ui, |ui| {
+                if let Some(height) = row_height {
+                    ui.spacing_mut().interact_size.y = height;
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::SPACE_0_5;
                     add(ui)
@@ -463,6 +484,7 @@ fn show_entries(
     accent_line: bool,
     width: Option<f32>,
     tips: &[Tip<'_>],
+    icons: &[Icon],
 ) -> (Option<usize>, bool) {
     let mut chosen = None;
     let mut focus_to = None;
@@ -473,6 +495,7 @@ fn show_entries(
             extra: extras.get(i).copied().unwrap_or_default(),
             accent_line,
             width,
+            icon: icons.get(i).copied(),
         };
         let (r, st) = item_deco(
             ui,
@@ -561,6 +584,7 @@ impl Widget for TabBar<'_> {
                     self.accent_line,
                     None,
                     &[],
+                    &[],
                 )
             })
             .inner
@@ -583,6 +607,7 @@ pub struct Segmented<'a> {
     items: &'a [Item<'a>],
     equal_width: bool,
     tips: &'a [Tip<'a>],
+    icons: &'a [Icon],
 }
 
 impl<'a> Segmented<'a> {
@@ -594,6 +619,7 @@ impl<'a> Segmented<'a> {
             items,
             equal_width: false,
             tips: &[],
+            icons: &[],
         }
     }
 
@@ -601,6 +627,12 @@ impl<'a> Segmented<'a> {
     /// none.
     pub fn tips(mut self, tips: &'a [Tip<'a>]) -> Self {
         self.tips = tips;
+        self
+    }
+
+    /// Displays an icon instead of text for each supplied index. Item labels remain accessible.
+    pub fn icons(mut self, icons: &'a [Icon]) -> Self {
+        self.icons = icons;
         self
     }
 
@@ -626,9 +658,12 @@ impl Widget for Segmented<'_> {
             .equal_width
             .then(|| equal_segment_width(ui.available_width(), self.items.len()));
         let (items, selected, tips) = (self.items, self.selected, self.tips);
-        let r = segmented_frame(
+        // Account for the frame's vertical padding outside the row of icon segments.
+        let row_height = (!self.icons.is_empty()).then_some(size::CONTROL_COMPACT);
+        let r = segmented_frame_with_row_height(
             ui,
             self.name,
+            row_height,
             |(_, ring): &(Option<usize>, bool)| *ring,
             |ui| {
                 show_entries(
@@ -641,6 +676,7 @@ impl Widget for Segmented<'_> {
                     false,
                     segment_width,
                     tips,
+                    self.icons,
                 )
             },
         );
