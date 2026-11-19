@@ -228,3 +228,14 @@ undo-automation-modes = Automationsmodi
 undo-automation-record = Automation aufnehmen
 undo-automation-clip-add = Clip-Automation hinzufügen
 undo-automation-clip-remove = Clip-Automation löschen
+
+## Track macros
+undo-macro-value = Spur-Makro „{ $name }“ ändern
+undo-macro-value-slot = Spur-Makro { $n } ändern
+undo-macro-rename = Spur-Makro umbenennen
+undo-macro-add-mapping = Zuordnung hinzufügen
+undo-macro-remove-mapping = Zuordnung entfernen
+undo-macro-clear = Alle Zuordnungen entfernen
+undo-macro-range = Zuordnungsbereich ändern
+undo-macro-invert = Zuordnung umkehren
+undo-macro-bend = Zuordnungskurve ändern

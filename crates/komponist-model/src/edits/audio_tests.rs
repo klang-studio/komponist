@@ -107,6 +107,9 @@ fn flattening_carries_clip_mixer_curves_to_the_existing_arrangement_lanes() {
         AutomationMode, AutomationOwner, AutomationTarget, Point, Points, effective_value_at,
     };
     use crate::edits::automation::{add_clip_automation, set_clip_points, set_lane_mode};
+    use crate::edits::macros::{add_mapping, set_macro_value};
+    use crate::macros::Mapping;
+    use crate::params::ParamId;
     use crate::params::db_to_p;
 
     let (p, id) = midi_track(&Project::new("Flatten"));
@@ -123,6 +126,30 @@ fn flattening_carries_clip_mixer_curves_to_the_existing_arrangement_lanes() {
     let (p, bus) = bus(&p);
     let (p, send) = ok_with(add_send(&p, id, bus));
     let p = ok(set_send(&p, send, SendProp::LevelDb(-24.0)));
+    let instrument = PluginRef {
+        format: PluginFormat::Clap,
+        id: "test.synth".into(),
+        name: "Synth".into(),
+        vendor: String::new(),
+        version: String::new(),
+        module: Box::default(),
+    };
+    let (p, device) = ok_with(replace_instrument(&p, id, instrument));
+    let param = AutomationTarget::Param {
+        device,
+        param: ParamId::plugin(7),
+    };
+    let mapping = |target| Mapping {
+        target,
+        label: String::new(),
+        min: 0.25,
+        max: 1.0,
+        invert: true,
+        bend: 0.3,
+    };
+    let p = ok(add_mapping(&p, id, 0, mapping(param.clone())));
+    let p = ok(add_mapping(&p, id, 0, mapping(AutomationTarget::Pan)));
+    let p = ok(set_macro_value(&p, id, 0, 0.5));
     let (p, clip) = ok_with(add_clip(&p, id, midi(240, 1200)));
     let mut p = ok(set_clip_loop(&p, clip, Some(Tick(600)), Tick(1200)));
     let owner = AutomationOwner::Track(id);
@@ -137,6 +164,11 @@ fn flattening_carries_clip_mixer_curves_to_the_existing_arrangement_lanes() {
             AutomationTarget::Send { send },
             AutomationMode::Latch,
             1.0 - db_to_p(-24.0),
+        ),
+        (
+            AutomationTarget::Macro { index: 0 },
+            AutomationMode::Read,
+            0.5,
         ),
     ];
     for (target, mode, _) in &lanes {
@@ -157,6 +189,9 @@ fn flattening_carries_clip_mixer_curves_to_the_existing_arrangement_lanes() {
     let (flattened, _) = ok_with(flatten_midi_track(&p, id, Tick(240), file()));
     let audio = flattened.track(id).unwrap();
     assert!(audio.is_audio());
+    assert!(audio.channel.devices.is_empty());
+    assert_eq!(audio.macros.driver(&param), None);
+    assert_eq!(audio.macros.driver(&AutomationTarget::Pan), Some(0));
     assert_eq!(audio.sends, p.track(id).unwrap().sends);
     assert!(audio.clips.iter().all(|clip| clip.automation.is_empty()));
     for (target, mode, base) in &lanes {

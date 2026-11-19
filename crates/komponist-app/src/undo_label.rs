@@ -37,6 +37,15 @@ pub fn plugin_state(plugin: &str) -> String {
     with_arg("undo-plugin-state", plugin)
 }
 
+/// A track macro changed. The slot index is zero-based in the model.
+pub fn track_macro(name: &str, index: u8) -> String {
+    if name.is_empty() {
+        with_arg("undo-macro-value-slot", &(u16::from(index) + 1).to_string())
+    } else {
+        with_arg("undo-macro-value", name)
+    }
+}
+
 /// The text of a stored `label` in `lang` (module docs).
 pub fn text(lang: Lang, label: &str) -> String {
     if let Some((id, arg)) = label.split_once(SEP) {
@@ -44,6 +53,8 @@ pub fn text(lang: Lang, label: &str) -> String {
             "undo-param" => return lang.undo_param(arg),
             "undo-param-unnamed" => return lang.undo_param_unnamed(arg),
             "undo-plugin-state" => return lang.undo_plugin_state(arg),
+            "undo-macro-value" => return lang.undo_macro_value(arg),
+            "undo-macro-value-slot" => return lang.undo_macro_value_slot(arg),
             _ => {}
         }
     }
@@ -80,6 +91,11 @@ mod tests {
     fn labels_with_names() {
         assert_eq!(text(Lang::De, &param("Cutoff")), "Cutoff ändern");
         assert_eq!(text(Lang::En, &param("Cutoff")), "Change Cutoff");
+        assert_eq!(
+            text(Lang::De, &track_macro("Open", 0)),
+            "Spur-Makro „Open“ ändern"
+        );
+        assert_eq!(text(Lang::En, &track_macro("", 4)), "Change Track Macro 5");
         assert_eq!(
             text(Lang::De, &plugin_state("Surge XT")),
             "Surge XT: Zustand ändern"
@@ -118,7 +134,14 @@ mod tests {
         assert!(found.len() > 40, "{}", found.len());
         for (file, id) in found {
             let known = Lang::De.by_id(&id).is_some()
-                || ["undo-param", "undo-param-unnamed", "undo-plugin-state"].contains(&id.as_str());
+                || [
+                    "undo-param",
+                    "undo-param-unnamed",
+                    "undo-plugin-state",
+                    "undo-macro-value",
+                    "undo-macro-value-slot",
+                ]
+                .contains(&id.as_str());
             assert!(known, "{file}: unknown undo id {id}");
         }
     }

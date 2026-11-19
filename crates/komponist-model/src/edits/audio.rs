@@ -98,6 +98,7 @@ pub fn add_audio_track_in(
             folder: false,
             folded: false,
             automation: Default::default(),
+            macros: Default::default(),
         }),
     );
     crate::routing::normalize_groups(&mut p);
@@ -426,25 +427,28 @@ fn retained_automation_base(track: &Track, target: &AutomationTarget) -> Option<
             .iter()
             .find(|item| item.id == send)
             .map(|item| 1.0 - db_to_p(item.level_db)),
-        _ => None,
+        AutomationTarget::Macro { index } => {
+            track.macros.0.get(usize::from(index)).map(|m| m.value)
+        }
+        AutomationTarget::Param { .. } => None,
     }
 }
 
-/// Checks that the surviving mixer automation can fit into arrangement lanes before rendering.
+/// Checks that automation of the retained mixer controls and macros fits into arrangement lanes.
 /// The arrangement has no compact repeat representation, so the check includes disabled lanes.
 pub fn validate_flatten_automation(track: &Track) -> Result<(), EditError> {
-    let mixer_lanes = track
+    let retained_lanes = track
         .automation
         .lanes
         .iter()
         .filter(|lane| retained_automation_base(track, &lane.target).is_some());
-    let estimate = mixer_lanes
+    let estimate = retained_lanes
         .clone()
         .map(|lane| clip_expansion_points(track, &lane.target))
         .fold(0, u128::saturating_add);
     if estimate > AUTOMATION_EXPANSION_LIMIT {
         let mut budget = AUTOMATION_EXPANSION_LIMIT;
-        for lane in mixer_lanes {
+        for lane in retained_lanes {
             let points = count_clip_expansion(track, &lane.target, budget)
                 .ok_or(EditError::AutomationExpansionTooLarge)?;
             budget -= points;
@@ -474,13 +478,17 @@ pub fn flatten_midi_track(
     let mut next = project.clone();
     let track = Arc::make_mut(&mut next.tracks[index]);
     track.kind = TrackKind::Audio;
+    super::macros::remove_targets(&mut track.macros, |target| {
+        matches!(target, AutomationTarget::Param { device, .. }
+            if track.channel.devices.iter().any(|item| item.id == *device))
+    });
     track.channel.devices.clear();
     track
         .automation
         .lanes
         .retain(|lane| !matches!(lane.target, AutomationTarget::Param { .. }));
-    // The render excludes the track's fader, pan and sends. Preserve their effective curves
-    // on the audio track before deleting the MIDI clips that used to override those lanes.
+    // The render excludes the fader, pan and sends. Preserve their curves and those of track
+    // macros that can still drive them before deleting the MIDI clips that override the lanes.
     for lane in &mut track.automation.lanes {
         if let Some(base) = retained_automation_base(source, &lane.target)
             && let Some(points) = merged_clip_points(source, lane, base)

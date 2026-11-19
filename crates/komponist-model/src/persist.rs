@@ -1,6 +1,6 @@
 //! Project files `*.komponist` (ARCHITECTURE §5.5, decision D7).
 //!
-//! One JSON file: `{ "format": "komponist", "version": 4, "project": { … } }`. Plugin states are
+//! One JSON file: `{ "format": "komponist", "version": 5, "project": { … } }`. Plugin states are
 //! base64 strings. A missing plugin keeps its state byte-identical through load and save (S06).
 //! Older versions are upgraded on load by a chain of `migrate_vN_to_vN+1` functions on the JSON
 //! value, one per version step, each with its own test.
@@ -34,7 +34,7 @@ use crate::time::Tick;
 pub const FORMAT_TAG: &str = "komponist";
 
 /// Version written by this build; files with a higher version are rejected.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// File name extension, without the dot.
 pub const FILE_EXTENSION: &str = "komponist";
@@ -184,8 +184,12 @@ fn rename_builtins(value: &mut Value) {
 type MigrationStep = fn(Value) -> Result<Value, String>;
 
 /// All migration steps, oldest first.
-const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] =
-    [migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4];
+const MIGRATIONS: [MigrationStep; FORMAT_VERSION as usize - 1] = [
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    migrate_v3_to_v4,
+    migrate_v4_to_v5,
+];
 
 /// Version 1 → 2 (wave 9, routing): every track outputs to the master. Sends, groups and
 /// sidechains are optional fields and absent in version 1, which means none. A malformed track
@@ -215,6 +219,11 @@ fn migrate_v3_to_v4(project: Value) -> Result<Value, String> {
     Ok(project)
 }
 
+/// Version 4 → 5 (track macros): tracks without slots deserialize to the default array.
+fn migrate_v4_to_v5(project: Value) -> Result<Value, String> {
+    Ok(project)
+}
+
 /// After loading: rejects what the program cannot work with (meter, tempo, takes, pattern
 /// lengths, a routing cycle, a bus with clips or an instrument) and repairs what is cheap to
 /// repair (`next_id` below an existing id, unsorted clips and notes, routing references to
@@ -239,6 +248,10 @@ fn check_and_repair(project: &mut Project) -> Result<(), String> {
         .max()
         .unwrap_or(0);
     for track in &mut project.tracks {
+        if !track.macros.is_default() {
+            let id = track.id;
+            Arc::make_mut(track).macros.repair(id);
+        }
         if !track.is_audio() && (!track.audio.is_default()) {
             Arc::make_mut(track).audio = crate::AudioIo::default();
         }
@@ -491,7 +504,7 @@ mod tests {
         let text = to_json(&demo_project()).unwrap();
         assert!(
             text.starts_with(
-                "{\n  \"format\": \"komponist\",\n  \"version\": 4,\n  \"project\": {"
+                "{\n  \"format\": \"komponist\",\n  \"version\": 5,\n  \"project\": {"
             )
         );
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -502,7 +515,7 @@ mod tests {
         assert_eq!(track["input"], "all");
         assert_eq!(track["midi_channel"], "omni");
         assert_eq!(track["output"], "master");
-        for absent in ["sends", "folder", "folded"] {
+        for absent in ["sends", "folder", "folded", "macros"] {
             assert!(
                 track.get(absent).is_none(),
                 "{absent} is written only when set"
@@ -665,9 +678,12 @@ mod tests {
                 "{text}"
             );
         }
+        let version = FORMAT_VERSION + 1;
+        let too_new =
+            serde_json::json!({ "format": FORMAT_TAG, "version": version, "project": {} });
         assert_eq!(
-            from_json(r#"{"format": "komponist", "version": 5, "project": {}}"#),
-            Err(PersistError::TooNew { found: 5 })
+            from_json(&too_new.to_string()),
+            Err(PersistError::TooNew { found: version })
         );
         assert!(matches!(
             from_json(r#"{"format": "komponist", "version": 0, "project": {}}"#),
@@ -1042,8 +1058,8 @@ mod tests {
     #[test]
     fn errors_display() {
         assert_eq!(
-            PersistError::TooNew { found: 5 }.to_string(),
-            "project file version 5 is newer than 4"
+            PersistError::TooNew { found: 6 }.to_string(),
+            "project file version 6 is newer than 5"
         );
     }
 
@@ -1104,7 +1120,7 @@ mod tests {
     fn audio_projects_round_trip() {
         let p = audio_project();
         let text = to_json(&p).unwrap();
-        assert!(text.contains("\"version\": 4"));
+        assert!(text.contains("\"version\": 5"));
         assert!(text.contains("\"kind\": \"audio\""));
         assert!(text.contains("\"time_mode\": \"repitch\""));
         assert_eq!(from_json(&text).unwrap(), p);
@@ -1127,7 +1143,7 @@ mod tests {
         assert_eq!(loaded, demo_project());
         assert!(loaded.tracks.iter().all(|t| !t.is_audio()));
         // Saving writes the current format version.
-        assert!(to_json(&loaded).unwrap().contains("\"version\": 4"));
+        assert!(to_json(&loaded).unwrap().contains("\"version\": 5"));
         // Audio clip fields that are missing read as the defaults (Fixed, 0 dB, no fades).
         let mut av = serde_json::to_value(audio_project()).unwrap();
         let clip = &mut av["tracks"][1]["clips"][0]["content"];
@@ -1294,7 +1310,7 @@ mod tests {
     fn projects_without_automation_keep_their_wire_content() {
         let p = audio_project();
         let current = to_json(&p).unwrap();
-        let previous = current.replacen("\"version\": 4", "\"version\": 3", 1);
+        let previous = current.replacen("\"version\": 5", "\"version\": 3", 1);
         assert!(!current.contains("automation"));
         assert_eq!(
             migrate_v3_to_v4(serde_json::to_value(&p).unwrap()).unwrap(),
@@ -1302,6 +1318,102 @@ mod tests {
         );
         assert_eq!(from_json(&previous).unwrap(), p);
         assert_eq!(to_json(&from_json(&previous).unwrap()).unwrap(), current);
+    }
+
+    #[test]
+    fn version_4_projects_have_default_macros_after_migration() {
+        let project = crate::fixtures::automation_project();
+        let value = serde_json::to_value(&project).unwrap();
+        assert_eq!(migrate_v4_to_v5(value.clone()).unwrap(), value);
+        let old = serde_json::json!({ "format": FORMAT_TAG, "version": 4, "project": value });
+        let loaded = from_json(&old.to_string()).unwrap();
+        assert_eq!(loaded, project);
+        assert!(!to_json(&loaded).unwrap().contains("\"macros\""));
+    }
+
+    #[test]
+    fn macros_round_trip_with_defaults_omitted_inside_the_fixed_array() {
+        let mut project = demo_project();
+        let track = Arc::make_mut(&mut project.tracks[0]);
+        let targets = [
+            serde_json::json!({ "kind": "volume" }),
+            serde_json::json!({ "kind": "pan" }),
+            serde_json::json!({ "kind": "send", "send": 998 }),
+            serde_json::json!({ "kind": "param", "device": 999, "param": "cutoff" }),
+        ];
+        let slot = &mut track.macros.0[0];
+        slot.name = "Open".into();
+        slot.value = 0.4;
+        slot.mappings = targets
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| crate::macros::Mapping {
+                target: serde_json::from_value(target).unwrap(),
+                label: "Saved target".into(),
+                min: 0.2,
+                max: 0.9,
+                invert: index == 3,
+                bend: if index == 0 { 0.4 } else { 0.0 },
+            })
+            .collect();
+
+        let text = to_json(&project).unwrap();
+        let json: Value = serde_json::from_str(&text).unwrap();
+        let slots = json["project"]["tracks"][0]["macros"].as_array().unwrap();
+        assert_eq!(slots.len(), crate::macros::MACRO_COUNT);
+        assert!(slots[1..].iter().all(|slot| slot == &serde_json::json!({})));
+        assert!(slots[0]["mappings"][0].get("invert").is_none());
+        assert!(slots[0]["mappings"][3].get("bend").is_none());
+        let loaded = from_json(&text).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(to_json(&loaded).unwrap(), text);
+    }
+
+    #[test]
+    fn macro_loading_repairs_ranges_conflicts_and_array_length() {
+        use crate::automation::AutomationTarget;
+        use crate::macros::{MACRO_COUNT, MAX_MAPPINGS};
+
+        let mut value = demo_value();
+        let track = &mut value["tracks"][0];
+        let mut mappings = vec![
+            serde_json::json!({ "target": { "kind": "pan" }, "label": "Pan", "min": 2.0, "max": -1.0, "bend": 5.0 }),
+            serde_json::json!({ "target": { "kind": "macro", "index": 0 }, "label": "Recursive", "min": 0.0, "max": 1.0 }),
+        ];
+        let missing = |id| {
+            serde_json::json!({
+                "target": { "kind": "param", "device": id, "param": "cutoff" },
+                "label": "Missing",
+                "min": 0.0,
+                "max": 1.0
+            })
+        };
+        mappings.extend((500..500 + MAX_MAPPINGS).map(missing));
+        track["macros"] = serde_json::json!([
+            { "value": 2.0, "mappings": mappings },
+            { "value": -1.0, "mappings": [
+                { "target": { "kind": "pan" }, "label": "Duplicate", "min": 0.0, "max": 1.0 }
+            ] }
+        ]);
+        let loaded = from_json(&file(value.clone())).unwrap();
+        let slots = &loaded.tracks[0].macros;
+        assert_eq!(slots.0[0].value, 1.0);
+        assert_eq!(slots.0[0].mappings.len(), MAX_MAPPINGS + 1);
+        assert_eq!(slots.0[0].mappings[0].min, 0.0);
+        assert_eq!(slots.0[0].mappings[0].max, 1.0);
+        assert_eq!(slots.0[0].mappings[0].bend, 1.0);
+        assert_eq!(slots.driver(&AutomationTarget::Pan), Some(0));
+        assert_eq!(
+            slots.driver(&slots.0[0].mappings[MAX_MAPPINGS].target),
+            None
+        );
+        assert!(slots.0[1..].iter().all(|slot| slot == &Default::default()));
+
+        value["tracks"][0]["macros"] = Value::Array(vec![serde_json::json!({}); MACRO_COUNT + 1]);
+        assert!(matches!(
+            from_json(&file(value)),
+            Err(PersistError::Malformed(_))
+        ));
     }
 
     #[test]

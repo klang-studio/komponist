@@ -228,3 +228,14 @@ undo-automation-modes = Automation Modes
 undo-automation-record = Record Automation
 undo-automation-clip-add = Add Clip Automation
 undo-automation-clip-remove = Delete Clip Automation
+
+## Track macros
+undo-macro-value = Change Track Macro “{ $name }”
+undo-macro-value-slot = Change Track Macro { $n }
+undo-macro-rename = Rename Track Macro
+undo-macro-add-mapping = Add Mapping
+undo-macro-remove-mapping = Remove Mapping
+undo-macro-clear = Remove All Mappings
+undo-macro-range = Change Mapping Range
+undo-macro-invert = Invert Mapping
+undo-macro-bend = Change Mapping Curve

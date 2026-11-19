@@ -1083,6 +1083,7 @@ mod tests {
             folder: false,
             folded: false,
             automation: Default::default(),
+            macros: Default::default(),
         });
         let track = |notes: Vec<SeqNote>| {
             Arc::new(TrackProgram {
