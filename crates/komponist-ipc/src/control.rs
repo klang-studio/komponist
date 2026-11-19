@@ -83,7 +83,8 @@ use crate::frame::{FrameChord, FrameKeyEvent, FrameRect, HeaderEvent, HeaderMode
 /// sidechain audio). 4 (#52): `OpenGui` takes a [`GuiTarget`] (an X11 child on Linux, the
 /// bridge's own frame window on macOS) and the frame messages (`HeaderState`, `ActivateFrame`,
 /// `HeaderAction`, `Shortcut`, `HeaderKey`, `FrameMoved`, `CloseRequested`, `GuiClosed` with the
-/// frame's last rect, `RaiseFrame` and `FrameWindow`).
+/// frame's last rect, `RaiseFrame` and `FrameWindow`). 5 (#67): the engine consumes parameter
+/// edits and a state restore replies with its authoritative parameter values.
 pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Largest frame written to the socket in one `send`; larger messages are fragmented.
@@ -326,8 +327,10 @@ pub enum ControlMsg {
         /// Echoed in the answer.
         request: u32,
     },
-    /// Restore a state blob (from `State` or the project file).
+    /// Restore a state blob (from `State` or the project file). Answer: `StateApplied`.
     SetState {
+        /// Echoed in the answer.
+        request: u32,
         /// Opaque state.
         state: Vec<u8>,
     },
@@ -406,11 +409,18 @@ pub enum BridgeMsg {
     /// Answer to `ListParams`, or unsolicited after the plugin rescanned its parameters.
     Params(Vec<ParamInfo>),
     /// Parameter values with the plugin's text, coalesced to at most one message per 33 ms: values
-    /// that changed on the bridge's main thread (GUI edits outside processing, all values after a
-    /// state load or a parameter rescan) and the echo of every `SetParam` value (so the generic
-    /// view gets the plugin's text, "−12.0 dB"). GUI edits during processing arrive as output
-    /// events in the shared memory instead.
+    /// that changed on the bridge's main thread, including automation playback, parameter
+    /// rescans and the echo of `SetParam`. GUI edits during processing also arrive as output
+    /// events in shared memory.
     ParamValues(Vec<ParamValue>),
+    /// Answer to `SetState`. Successful values represent the newly restored base state,
+    /// independently of any controller updates from automation playback.
+    StateApplied {
+        /// The restore request.
+        request: u32,
+        /// Restored parameter values with display text, or a load error.
+        result: Result<Vec<ParamValue>, String>,
+    },
     /// Answer to `OpenGui`.
     GuiOpened {
         /// Initial size.
@@ -1536,6 +1546,7 @@ mod tests {
             ControlMsg::Deactivate,
             ControlMsg::GetState { request: 7 },
             ControlMsg::SetState {
+                request: 9,
                 state: vec![1, 2, 3],
             },
             ControlMsg::ListParams,
@@ -1622,7 +1633,15 @@ mod tests {
                 state: vec![9; 100],
             },
             BridgeMsg::Params(vec![param]),
-            BridgeMsg::ParamValues(vec![value]),
+            BridgeMsg::ParamValues(vec![value.clone()]),
+            BridgeMsg::StateApplied {
+                request: 8,
+                result: Ok(vec![value]),
+            },
+            BridgeMsg::StateApplied {
+                request: 9,
+                result: Err("bad state".into()),
+            },
             BridgeMsg::GuiOpened {
                 size: GuiSize {
                     width: 640,
@@ -1746,6 +1765,7 @@ mod tests {
         assert_eq!(bridge.try_recv().unwrap(), None);
         // A fragmented message whose first frame is queued is completed.
         let big = ControlMsg::SetState {
+            request: 9,
             state: vec![5; 3 * MAX_FRAME],
         };
         std::thread::scope(|scope| {
@@ -1789,6 +1809,7 @@ mod tests {
         a.set_latency(1);
         b.set_latency(2);
         let big = ControlMsg::SetState {
+            request: 9,
             state: (0..3 * MAX_FRAME).map(|i| i as u8).collect(),
         };
         // Queued back to back before anything is read.
@@ -1863,6 +1884,7 @@ mod tests {
         a.set_latency(1);
         b.set_latency(2);
         let big = ControlMsg::SetState {
+            request: 9,
             state: (0..3 * MAX_FRAME).map(|i| i as u8).collect(),
         };
         // Queued back to back before anything is read: the stream holds them in one piece.

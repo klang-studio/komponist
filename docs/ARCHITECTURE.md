@@ -1523,7 +1523,8 @@ are retained in the WP-E internal notes.
 ### 8.1 Bridge processes (D4)
 
 Each external plugin instance runs in `komponist --bridge --instance`. The app starts it, passes a
-memfd (shared memory) and a socket, and sends `Load`, `Activate{rate, max_block}` and `SetState`.
+memfd (shared memory) and a socket, and sends `Load`, `SetState` when there is a saved state, then
+`Activate{rate, max_block}`.
 While loading, the device reads "Lädt" and the engine passes audio through (S05).
 
 *As built (WP-94):* there is one executable. `komponist-bridge` is a library (`run(args) -> ExitCode`);
@@ -1548,7 +1549,7 @@ events (param changes from the plugin); audio in and out `[2][MAX_BLOCK]`, and s
 sends none, and the bridge then hands the plugin's sidechain port silence, never the previous block's
 data. The sidechain arrives already aligned by the engine (§6.8.5); the bridge adds no latency, so PDC
 counts only what the plugin reports. Both sides check the layout version (`SHM_VERSION`) when the bridge
-maps the memfd, and the control protocol version (`PROTOCOL_VERSION` 4) in `Hello`.
+maps the memfd, and the control protocol version (`PROTOCOL_VERSION` 5) in `Hello`.
 
 **RT handshake per block:** the engine writes input and events → `request_seq += 1` → futex wake →
 futex wait on `done_seq` with a deadline (about 60 % of the block period minus elapsed time).
@@ -1578,15 +1579,22 @@ state. State snapshots are taken on save, on GUI close, and debounced on "state 
 `state.mark_dirty`, VST3 `restartComponent` / edits).
 
 **Control protocol** (postcard over a Unix stream socket, length-prefixed frames; #44), app → bridge:
-`Load`, `Activate`, `Deactivate`, `GetState`, `SetState`, `ListParams`, `SetParam`,
+`Load`, `Activate`, `Deactivate`, `GetState`, `SetState{request, state}`, `ListParams`, `SetParam`,
 `OpenGui(GuiTarget)` (`X11Child{xid, scale}` on Linux, `OwnFrame{header, lang, rect}` on macOS, #52),
 `SetGuiSize`, `CloseGui`, `HeaderState{header, lang}`, `ActivateFrame`, `RaiseFrame`, `SetRenderMode`, `Shutdown`.
 Bridge → app: `Loaded{info, params, latency}`
 (the info's descriptor says whether the plugin has a sidechain port, `PluginDescriptor::sidechain`, #6),
-`State(bytes)`, `ParamValues(batch, ~30 Hz)`, `GuiOpened`, `GuiSizeRequest`, `GuiClosed{rect}`,
+`State`, `StateApplied{request, result}`, `ParamValues(batch, ~30 Hz)`, `GuiOpened`,
+`GuiSizeRequest`, `GuiClosed{rect}`,
 `LatencyChanged`, `RestartRequested`, `StateDirty`, `Log`, `Error`, and from a bridge-owned frame
 (macOS) `HeaderAction`, `Shortcut{chord}`, `HeaderKey`, `FrameMoved(rect)`, `CloseRequested`,
 `FrameWindow(number)` (§8.4).
+
+A successful `StateApplied` returns the restored parameter values and updates the plugin
+manager's base cache, preserving newer user edits. `ParamValues` reports live values and display
+text. For VST3, each render block stamps its controller updates with a control generation so
+`SetParam` and `SetState` can supersede older updates. The bridge applies any remaining controller
+values after it joins the RT thread during deactivation.
 
 **Windows (`komponist-ipc`, port W2):** the same layout, handshake and framing on other primitives.
 The shared memory is a pagefile-backed section of exactly `SHM_SIZE` (`CreateFileMappingW`; its size

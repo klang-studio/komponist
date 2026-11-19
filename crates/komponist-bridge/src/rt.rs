@@ -98,40 +98,114 @@ pub struct StartFailure {
     pub error: HostingError,
 }
 
-/// Latest engine value per VST3 parameter. The NaN sentinel is outside the value domain.
+/// Latest engine value per VST3 parameter. The RT writer stamps values with the control
+/// generation it observed at the start of the block. A later control edit invalidates only
+/// earlier writes to the affected parameter (or all parameters when restoring a state).
 #[derive(Debug)]
 pub(crate) struct ControllerValues {
-    entries: Vec<(u32, AtomicU64)>,
+    entries: Vec<ControllerValue>,
+    generation: AtomicU64,
     dirty: AtomicBool,
     notify: Arc<notify::BridgeNotify>,
 }
 
-impl ControllerValues {
-    const CLEAN: u64 = f64::NAN.to_bits();
+#[derive(Debug)]
+struct ControllerValue {
+    id: u32,
+    /// A sequence lock: odd while the single RT writer stores the generation and value.
+    sequence: AtomicU64,
+    published_generation: AtomicU64,
+    value: AtomicU64,
+    /// These two fields are owned by the main-thread consumer.
+    consumed: AtomicU64,
+    minimum_generation: AtomicU64,
+}
 
+impl ControllerValue {
+    fn new(id: u32) -> Self {
+        Self {
+            id,
+            sequence: AtomicU64::new(0),
+            published_generation: AtomicU64::new(0),
+            value: AtomicU64::new(0),
+            consumed: AtomicU64::new(0),
+            minimum_generation: AtomicU64::new(0),
+        }
+    }
+
+    fn publish(&self, generation: u64, value: f64) {
+        let sequence = self.sequence.load(Ordering::Relaxed);
+        self.sequence
+            .store(sequence.wrapping_add(1), Ordering::SeqCst);
+        self.published_generation
+            .store(generation, Ordering::SeqCst);
+        self.value.store(value.to_bits(), Ordering::SeqCst);
+        self.sequence
+            .store(sequence.wrapping_add(2), Ordering::SeqCst);
+    }
+
+    fn take(&self) -> Option<(u32, f64)> {
+        let sequence = self.sequence.load(Ordering::SeqCst);
+        if sequence & 1 != 0 || sequence == self.consumed.load(Ordering::Relaxed) {
+            return None;
+        }
+        let generation = self.published_generation.load(Ordering::SeqCst);
+        let value = self.value.load(Ordering::SeqCst);
+        if self.sequence.load(Ordering::SeqCst) != sequence {
+            return None;
+        }
+        self.consumed.store(sequence, Ordering::Relaxed);
+        (generation >= self.minimum_generation.load(Ordering::Relaxed))
+            .then(|| (self.id, f64::from_bits(value)))
+    }
+}
+
+impl ControllerValues {
     pub(crate) fn new(mut ids: Vec<u32>, notify: Arc<notify::BridgeNotify>) -> Self {
         ids.sort_unstable();
         ids.dedup();
         Self {
-            entries: ids
-                .into_iter()
-                .map(|id| (id, AtomicU64::new(Self::CLEAN)))
-                .collect(),
+            entries: ids.into_iter().map(ControllerValue::new).collect(),
+            generation: AtomicU64::new(0),
             dirty: AtomicBool::new(false),
             notify,
         }
     }
 
-    fn publish(&self, events: &[WireEvent]) {
+    fn entry(&self, id: u32) -> Option<&ControllerValue> {
+        self.entries
+            .binary_search_by_key(&id, |slot| slot.id)
+            .ok()
+            .map(|i| &self.entries[i])
+    }
+
+    /// Invalidate earlier publications for one parameter, or all of them after a state load.
+    pub(crate) fn invalidate(&self, id: Option<u32>) {
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        match id {
+            Some(id) => {
+                if let Some(slot) = self.entry(id) {
+                    slot.minimum_generation.store(generation, Ordering::Relaxed);
+                }
+            }
+            None => {
+                for slot in &self.entries {
+                    slot.minimum_generation.store(generation, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    fn publish(&self, generation: u64, events: &[WireEvent]) {
         let mut changed = false;
         for event in events {
             let Some(WireEventKind::ParamValue { id, value }) = event.decode() else {
                 continue;
             };
             if value.is_finite()
-                && let Ok(i) = self.entries.binary_search_by_key(&id, |(id, _)| *id)
+                && let Some(slot) = self.entry(id)
             {
-                self.entries[i].1.store(value.to_bits(), Ordering::Relaxed);
+                slot.publish(generation, value);
                 changed = true;
             }
         }
@@ -142,10 +216,7 @@ impl ControllerValues {
 
     pub(crate) fn drain(&self) -> impl Iterator<Item = (u32, f64)> + '_ {
         self.dirty.swap(false, Ordering::Acquire);
-        self.entries.iter().filter_map(|(id, slot)| {
-            let value = slot.swap(Self::CLEAN, Ordering::Relaxed);
-            (value != Self::CLEAN).then(|| (*id, f64::from_bits(value)))
-        })
+        self.entries.iter().filter_map(ControllerValue::take)
     }
 }
 
@@ -154,11 +225,25 @@ impl ControllerValues {
 pub struct RtThread {
     handle: JoinHandle<Returned>,
     stop: Arc<AtomicBool>,
-    params: Producer<(u32, f64)>,
+    params: Producer<QueuedParam>,
+    sync: Arc<RtParamSync>,
+}
+
+#[derive(Debug)]
+struct RtParamSync {
+    state_generation: AtomicU64,
+    controller: Option<Arc<ControllerValues>>,
+}
+
+#[derive(Debug)]
+struct QueuedParam {
+    id: u32,
+    value: f64,
+    state_generation: u64,
 }
 
 /// What the thread hands back when it ends.
-type Returned = (Box<dyn HostedProcessor>, Consumer<(u32, f64)>);
+type Returned = (Box<dyn HostedProcessor>, Consumer<QueuedParam>);
 
 /// Buffers the loop works in, allocated before it starts.
 struct Scratch {
@@ -178,6 +263,11 @@ impl RtThread {
     ) -> Result<(RtThread, StartReport), StartFailure> {
         let (params_tx, params_rx) = RingBuffer::new(PARAM_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
+        let sync = Arc::new(RtParamSync {
+            state_generation: AtomicU64::new(0),
+            controller,
+        });
+        let worker_sync = sync.clone();
         let (report_tx, report_rx) = mpsc::sync_channel(1);
         let thread_stop = stop.clone();
         let handle = std::thread::Builder::new()
@@ -191,7 +281,7 @@ impl RtThread {
                     &thread_stop,
                     config,
                     report_tx,
-                    controller,
+                    &worker_sync,
                 )
             })
             .expect("spawn the RT thread");
@@ -202,6 +292,7 @@ impl RtThread {
                     handle,
                     stop,
                     params: params_tx,
+                    sync,
                 },
                 report,
             )),
@@ -221,7 +312,18 @@ impl RtThread {
 
     /// Queues a parameter value for the next block (offset 0). `false` if the queue is full.
     pub fn set_param(&mut self, id: u32, value: f64) -> bool {
-        self.params.push((id, value)).is_ok()
+        self.params
+            .push(QueuedParam {
+                id,
+                value,
+                state_generation: self.sync.state_generation.load(Ordering::Relaxed),
+            })
+            .is_ok()
+    }
+
+    /// A successful state restore supersedes control values not yet applied by the processor.
+    pub fn reset_pending_params(&self) {
+        self.sync.state_generation.fetch_add(1, Ordering::Release);
     }
 
     /// Stops the thread (within about [`STOP_POLL`]) and returns the stopped processor and the
@@ -229,7 +331,11 @@ impl RtThread {
     pub fn stop(self) -> (Box<dyn HostedProcessor>, Vec<(u32, f64)>) {
         self.stop.store(true, Ordering::Release);
         let (processor, mut params) = join(self.handle);
-        let leftover = std::iter::from_fn(|| params.pop().ok()).collect();
+        let generation = self.sync.state_generation.load(Ordering::Relaxed);
+        let leftover = std::iter::from_fn(|| params.pop().ok())
+            .filter(|param| param.state_generation == generation)
+            .map(|param| (param.id, param.value))
+            .collect();
         (processor, leftover)
     }
 }
@@ -242,11 +348,11 @@ fn join(handle: JoinHandle<Returned>) -> Returned {
 fn rt_main(
     mut server: BridgeServer,
     mut processor: Box<dyn HostedProcessor>,
-    mut params: Consumer<(u32, f64)>,
+    mut params: Consumer<QueuedParam>,
     stop: &AtomicBool,
     config: RtConfig,
     report: mpsc::SyncSender<(StartReport, Result<(), HostingError>)>,
-    controller: Option<Arc<ControllerValues>>,
+    sync: &RtParamSync,
 ) -> Returned {
     notify::mark_rt_thread();
     let priority = komponist_rt::set_current_thread_realtime(config.period, config.priority);
@@ -302,7 +408,7 @@ fn rt_main(
                         &mut scratch,
                         &request,
                         &config,
-                        controller.as_deref(),
+                        sync,
                     );
                     if cycle && let Some(interval) = &interval {
                         let _ = interval.finish();
@@ -351,18 +457,30 @@ fn write_fallback(server: &mut BridgeServer, frames: usize, fallback: Fallback) 
 fn serve(
     server: &mut BridgeServer,
     processor: &mut dyn HostedProcessor,
-    params: &mut Consumer<(u32, f64)>,
+    params: &mut Consumer<QueuedParam>,
     scratch: &mut Scratch,
     request: &BlockRequest,
     config: &RtConfig,
-    controller: Option<&ControllerValues>,
+    sync: &RtParamSync,
 ) {
+    let controller = sync.controller.as_deref();
+    // Snapshot before accepting block input. A control edit racing with this block can still
+    // supersede its controller notifications when the audio thread completes later.
+    let generation = controller.map_or(0, |values| values.generation.load(Ordering::Acquire));
     // Values from `SetParam` first: offset 0 keeps the list sorted.
     let mut count = 0;
     while count < PARAM_QUEUE_CAPACITY {
-        let Ok((id, value)) = params.pop() else {
+        let Ok(QueuedParam {
+            id,
+            value,
+            state_generation: queued,
+        }) = params.pop()
+        else {
             break;
         };
+        if queued != sync.state_generation.load(Ordering::Acquire) {
+            continue;
+        }
         scratch.events_in[count] = WireEvent::new(0, WireEventKind::ParamValue { id, value });
         count += 1;
     }
@@ -421,7 +539,7 @@ fn serve(
     if status == BlockStatus::Ok
         && let Some(controller) = controller
     {
-        controller.publish(&scratch.events_in[queued..count]);
+        controller.publish(generation, &scratch.events_in[queued..count]);
     }
     server.finish(result(status, dropped));
 }
@@ -436,10 +554,31 @@ mod tests {
         let values = ControllerValues::new(vec![2, 1], notify.clone());
         let event = |id, value| WireEvent::new(0, WireEventKind::ParamValue { id, value });
         assert_no_alloc::assert_no_alloc(|| {
-            values.publish(&[event(2, 0.3), event(1, 0.4), event(2, 0.7), event(99, 0.1)]);
+            values.publish(
+                0,
+                &[event(2, 0.3), event(1, 0.4), event(2, 0.7), event(99, 0.1)],
+            );
         });
         assert_ne!(notify.take().0 & notify::CONTROLLER_VALUES_PENDING, 0);
         assert_eq!(values.drain().collect::<Vec<_>>(), [(1, 0.4), (2, 0.7)]);
+        assert_eq!(values.drain().count(), 0);
+    }
+    #[test]
+    fn control_edits_invalidate_older_controller_publications() {
+        let notify = Arc::new(notify::BridgeNotify::new().unwrap());
+        let values = ControllerValues::new(vec![1, 2], notify);
+        let event = |id, value| WireEvent::new(0, WireEventKind::ParamValue { id, value });
+        let older_block = values.generation.load(Ordering::Acquire);
+        values.publish(older_block, &[event(1, 0.25)]);
+        values.invalidate(Some(1));
+        // This block took its generation before SetParam but finished after it.
+        values.publish(older_block, &[event(1, 0.5), event(2, 0.4)]);
+        assert_eq!(values.drain().collect::<Vec<_>>(), [(2, 0.4)]);
+        let newer_block = values.generation.load(Ordering::Acquire);
+        values.publish(newer_block, &[event(1, 0.75)]);
+        assert_eq!(values.drain().collect::<Vec<_>>(), [(1, 0.75)]);
+        values.publish(newer_block, &[event(1, 0.25), event(2, 0.5)]);
+        values.invalidate(None);
         assert_eq!(values.drain().count(), 0);
     }
 }

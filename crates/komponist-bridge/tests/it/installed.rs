@@ -78,10 +78,16 @@ fn exercise(path: &str, plugin_id: &str, sound: bool) {
     let mut second = Bridge::spawn();
     second.load(&bundle, plugin_id);
     second.send(ControlMsg::SetState {
+        request: 41,
         state: state.clone(),
     });
-    // An `Error` for the state would fail `expect`.
-    second.sync();
+    second.expect("StateApplied", |m| match m {
+        BridgeMsg::StateApplied {
+            request: 41,
+            result,
+        } => Some(result.clone().unwrap()),
+        _ => None,
+    });
     second.activate();
     for _ in 0..10 {
         second.block(&[]);

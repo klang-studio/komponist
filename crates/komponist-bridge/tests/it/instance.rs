@@ -52,8 +52,17 @@ fn protocol_errors_keep_the_bridge_alive() {
     bridge.expect_error(ErrorContext::Activate);
     bridge.send(ControlMsg::GetState { request: 1 });
     bridge.expect_error(ErrorContext::State);
-    bridge.send(ControlMsg::SetState { state: vec![1] });
-    bridge.expect_error(ErrorContext::State);
+    bridge.send(ControlMsg::SetState {
+        request: 1,
+        state: vec![1],
+    });
+    bridge.expect("StateApplied", |m| match m {
+        BridgeMsg::StateApplied {
+            request: 1,
+            result: Err(message),
+        } => Some(message.clone()),
+        _ => None,
+    });
     bridge.send(ControlMsg::SetParam { id: 0, value: 0.0 });
     bridge.expect_error(ErrorContext::Params);
     bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
@@ -127,9 +136,16 @@ fn protocol_errors_keep_the_bridge_alive() {
         });
         bridge.expect_error(ErrorContext::Activate);
         bridge.send(ControlMsg::SetState {
+            request: 41,
             state: b"not a state".to_vec(),
         });
-        bridge.expect_error(ErrorContext::State);
+        bridge.expect("StateApplied", |m| match m {
+            BridgeMsg::StateApplied {
+                request: 41,
+                result: Err(message),
+            } => Some(message.clone()),
+            _ => None,
+        });
         // Still serving blocks and the heartbeat.
         bridge.block(&[]);
         bridge.heartbeat();
@@ -409,11 +425,15 @@ fn state_round_trips_between_bridges() {
     let mut second = Bridge::spawn();
     second.load(&bundle, SYNTH);
     second.send(ControlMsg::SetState {
+        request: 41,
         state: state.clone(),
     });
     // After a state load the bridge reports every value.
-    let values = second.expect("ParamValues", |m| match m {
-        BridgeMsg::ParamValues(v) if v.len() == 2 => Some(v.clone()),
+    let values = second.expect("StateApplied", |m| match m {
+        BridgeMsg::StateApplied {
+            request: 41,
+            result: Ok(v),
+        } if v.len() == 2 => Some(v.clone()),
         _ => None,
     });
     let value = |id| values.iter().find(|v| v.id == id).unwrap().value;
@@ -444,7 +464,7 @@ fn state_round_trips_between_bridges() {
     second.expect_value_of(gain, 1.0);
     let loud = play(&mut second, 70);
     assert!(loud > 0.5, "0 dB expected, level {loud}");
-    second.send(ControlMsg::SetState { state });
+    second.send(ControlMsg::SetState { request: 42, state });
     second.expect_value_of(gain, 0.5);
     let level = play(&mut second, 71);
     assert!(

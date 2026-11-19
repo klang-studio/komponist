@@ -138,8 +138,8 @@ fn bridge_main(channel: BridgeChannel) {
                 region.set_bridge_state(BridgeState::Active);
                 let _ = channel.send(&BridgeMsg::Activated { latency: LATENCY });
             }
-            ControlMsg::SetState { state } => {
-                let _ = channel.send(&BridgeMsg::State { request: 0, state });
+            ControlMsg::SetState { request, state } => {
+                let _ = channel.send(&BridgeMsg::State { request, state });
             }
             ControlMsg::Shutdown => break,
             _ => {}
@@ -513,12 +513,13 @@ fn ten_thousand_blocks_round_trip_with_data_checks() {
     bridge
         .channel
         .send(&ControlMsg::SetState {
+            request: 1,
             state: state.clone(),
         })
         .unwrap();
     assert_eq!(
         bridge.channel.recv().unwrap(),
-        BridgeMsg::State { request: 0, state }
+        BridgeMsg::State { request: 1, state }
     );
 
     eprintln!(

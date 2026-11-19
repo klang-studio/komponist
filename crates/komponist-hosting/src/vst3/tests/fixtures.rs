@@ -286,6 +286,33 @@ fn params_are_normalized_and_change_the_sound() {
 }
 
 #[test]
+fn controller_sync_updates_an_independent_vst3_controller() {
+    let Some((bundle, id)) = synth() else {
+        return;
+    };
+    let host = PollLoop::new(false).unwrap();
+    let mut component = super::super::Vst3Plugin::load(&bundle, &id, host.context()).unwrap();
+    // The test synth combines its audio component and controller in one COM object. Use the
+    // controller of a second instance so audio processing cannot update its value by itself.
+    let separate = super::super::Vst3Plugin::load(&bundle, &id, host.context()).unwrap();
+    let original = std::mem::replace(&mut component.controller, separate.controller.clone());
+    let gain = param_id(&component, "Gain");
+    let before = component.param_value(gain).unwrap();
+    let mut processor = component.activate(CONFIG).unwrap();
+    processor.start_processing().unwrap();
+    let mut blocks = Blocks::new();
+    blocks.run(processor.as_mut(), &[param(32, gain, 0.25)]);
+    assert_eq!(component.param_value(gain), Some(before));
+
+    component.sync_controller_param(gain, 0.25);
+    assert_eq!(component.param_value(gain), Some(0.25));
+
+    processor.stop_processing();
+    component.deactivate(processor);
+    component.controller = original;
+}
+
+#[test]
 fn values_flushed_while_inactive_reach_the_processor() {
     let Some((bundle, id)) = synth() else {
         return;

@@ -26,7 +26,7 @@
 //! the bridge answers only between two plugin calls; such a phase may last at most
 //! [`Timing::long_call_timeout`].
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -172,6 +172,22 @@ fn spawn_process(
     Ok((channel, watcher))
 }
 
+#[derive(Debug)]
+struct StateRestore {
+    request: u32,
+    /// Newer user edits already applied optimistically to the manager's cache.
+    later_edits: BTreeSet<u32>,
+}
+
+impl StateRestore {
+    fn new(request: u32) -> Self {
+        Self {
+            request,
+            later_edits: BTreeSet::new(),
+        }
+    }
+}
+
 /// One bridge process and everything the manager knows about its plugin.
 #[derive(Debug)]
 pub(crate) struct Bridge {
@@ -199,6 +215,7 @@ pub(crate) struct Bridge {
     stop_deadline: Option<Instant>,
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<(u32, StatePurpose)>,
+    state_restores: VecDeque<StateRestore>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
@@ -281,8 +298,12 @@ impl Bridge {
             bundle: s.bundle.to_path_buf(),
             plugin_id: s.plugin_id.to_owned(),
         });
+        let mut state_restores = VecDeque::new();
         if let Some(state) = &s.state {
+            let request = 0;
+            state_restores.push_back(StateRestore::new(request));
             let _ = writer.send(ControlMsg::SetState {
+                request,
                 state: state.to_vec(),
             });
         }
@@ -315,6 +336,7 @@ impl Bridge {
             ready_at: None,
             stop_deadline: None,
             state_requests: VecDeque::new(),
+            state_restores,
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
@@ -460,7 +482,10 @@ impl Bridge {
         }
         self.user_changed();
         self.last_state = Some(Arc::clone(state));
+        let request = self.seq();
+        self.state_restores.push_back(StateRestore::new(request));
         self.send(ControlMsg::SetState {
+            request,
             state: state.to_vec(),
         });
         true
@@ -528,6 +553,7 @@ impl Bridge {
         self.gui_open = false;
         self.gui_requests = 0;
         self.state_requests.clear();
+        self.state_restores.clear();
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
     }
@@ -710,6 +736,9 @@ impl Bridge {
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
             }
+            BridgeMsg::StateApplied { request, result } => {
+                self.finish_restore(request, result, events);
+            }
             BridgeMsg::GuiOpened { size, resizable } => {
                 self.gui_answered();
                 self.gui_open = true;
@@ -806,17 +835,6 @@ impl Bridge {
         if fails {
             return self.fail(FailReason::LoadFailed(message), events);
         }
-        if loading && context == ErrorContext::State {
-            // The stored state (`SetState`, the only state request while loading) was refused.
-            self.keep_stored_state = true;
-            events.push(PluginManagerEvent::Log {
-                device: Some(self.device),
-                level: LogLevel::Warning,
-                message: format!("{STATE_LOG_PREFIX} {message}"),
-            });
-            self.state_warning = Some(message);
-            return;
-        }
         match context {
             ErrorContext::State => {
                 // A `GetState` failed (answers come in order).
@@ -836,6 +854,50 @@ impl Bridge {
             level: LogLevel::Error,
             message,
         });
+    }
+
+    fn finish_restore(
+        &mut self,
+        request: u32,
+        result: Result<Vec<ParamValue>, String>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        let Some(index) = self
+            .state_restores
+            .iter()
+            .position(|restore| restore.request == request)
+        else {
+            return;
+        };
+        let restore = self.state_restores.remove(index).expect("matched restore");
+        let device = self.device;
+        match result {
+            Ok(values) => {
+                for value in values {
+                    if !restore.later_edits.contains(&value.id) {
+                        self.base_values.insert(value.id, value.value);
+                        self.values.insert(value.id, value);
+                    }
+                }
+                // The compiler obtains the plugin's restored base by recompiling the program.
+                events.push(PluginManagerEvent::ParamsChanged { device });
+                events.push(PluginManagerEvent::ParamValuesChanged { device });
+            }
+            Err(message) if self.phase != Phase::Running => {
+                self.keep_stored_state = true;
+                events.push(PluginManagerEvent::Log {
+                    device: Some(device),
+                    level: LogLevel::Warning,
+                    message: format!("{STATE_LOG_PREFIX} {message}"),
+                });
+                self.state_warning = Some(message);
+            }
+            Err(message) => events.push(PluginManagerEvent::Log {
+                device: Some(device),
+                level: LogLevel::Error,
+                message,
+            }),
+        }
     }
 
     fn gui_answered(&mut self) {
@@ -871,6 +933,9 @@ impl Bridge {
             && let Some(entry) = self.values.get_mut(&id)
         {
             entry.text.clear();
+        }
+        for restore in &mut self.state_restores {
+            restore.later_edits.insert(id);
         }
         self.keep_base_value(id, value);
         self.user_changed();

@@ -530,16 +530,20 @@ impl Bridge {
     }
 
     fn sync_controller_if_due(&mut self) {
-        let now = Instant::now();
-        if self.controller_due.is_none_or(|due| due > now) {
-            return;
+        if self.controller_due.is_some_and(|due| due <= Instant::now()) {
+            self.sync_controller();
         }
-        let Some(controller) = self.active.as_ref().and_then(|a| a.controller.clone()) else {
-            self.controller_due = None;
-            return;
-        };
+    }
+
+    fn sync_controller(&mut self) {
         self.controller_due = None;
-        self.controller_sent = Some(now);
+        if let Some(controller) = self.active.as_ref().and_then(|a| a.controller.clone()) {
+            self.apply_controller_values(&controller);
+        }
+    }
+
+    fn apply_controller_values(&mut self, controller: &ControllerValues) {
+        self.controller_sent = Some(Instant::now());
         for (id, value) in controller.drain() {
             if let Some(plugin) = self.plugin.as_mut() {
                 plugin.sync_controller_param(id, value);
@@ -764,6 +768,7 @@ impl Bridge {
             }
             ControlMsg::Deactivate => self.deactivate(),
             ControlMsg::GetState { request } => {
+                self.sync_controller();
                 let Some(plugin) = self.plugin.as_mut() else {
                     return self.error(ErrorContext::State, "no plugin loaded");
                 };
@@ -772,15 +777,7 @@ impl Bridge {
                     Err(e) => self.error(ErrorContext::State, e.to_string()),
                 }
             }
-            ControlMsg::SetState { state } => {
-                let Some(plugin) = self.plugin.as_mut() else {
-                    return self.error(ErrorContext::State, "no plugin loaded");
-                };
-                match plugin.load_state(&state) {
-                    Ok(()) => self.queue_all_values(),
-                    Err(e) => self.error(ErrorContext::State, e.to_string()),
-                }
-            }
+            ControlMsg::SetState { request, state } => self.set_state(request, &state),
             ControlMsg::ListParams => {
                 // Answered in every state (an empty list before `Load`).
                 let params = self.plugin.as_ref().map(|p| p.params()).unwrap_or_default();
@@ -909,11 +906,42 @@ impl Bridge {
         self.send(BridgeMsg::Loaded(Box::new(info)));
     }
 
+    fn set_state(&mut self, request: u32, state: &[u8]) {
+        let result = (|| {
+            let plugin = self
+                .plugin
+                .as_mut()
+                .ok_or_else(|| "no plugin loaded".to_owned())?;
+            plugin.load_state(state).map_err(|e| e.to_string())?;
+            if let Some(active) = self.active.as_ref() {
+                active.rt.reset_pending_params();
+                if let Some(controller) = &active.controller {
+                    controller.invalidate(None);
+                }
+            }
+            // Old coalesced values must not follow the authoritative state report.
+            self.pending_values.clear();
+            self.values_due = None;
+            Ok(plugin
+                .params()
+                .into_iter()
+                .filter_map(|info| {
+                    let value = plugin.param_value(info.id)?;
+                    Some(ParamValue {
+                        id: info.id,
+                        value,
+                        text: plugin.param_text(info.id, value).unwrap_or_default(),
+                    })
+                })
+                .collect())
+        })();
+        self.send(BridgeMsg::StateApplied { request, result });
+    }
+
     fn set_param(&mut self, id: u32, value: f64) {
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::Params, "no plugin loaded");
         };
-        plugin.set_param(id, value);
         let mut out = Vec::new();
         match self.active.as_mut() {
             Some(active) => {
@@ -923,11 +951,18 @@ impl Bridge {
                         format!("parameter queue full, value {value} of {id} dropped"),
                     );
                 }
+                if let Some(controller) = &active.controller {
+                    controller.invalidate(Some(id));
+                }
+                plugin.set_param(id, value);
             }
-            None => plugin.flush_params(
-                &[WireEvent::new(0, WireEventKind::ParamValue { id, value })],
-                &mut out,
-            ),
+            None => {
+                plugin.set_param(id, value);
+                plugin.flush_params(
+                    &[WireEvent::new(0, WireEventKind::ParamValue { id, value })],
+                    &mut out,
+                );
+            }
         }
         self.queue_flushed(&out);
         // Echo with the plugin's text, so the generic view can show "−12.0 dB".
@@ -1077,6 +1112,11 @@ impl Bridge {
         // From now on the app's `begin_block` returns `NotActive`.
         self.region.set_bridge_state(BridgeState::Loaded);
         let (processor, leftover) = active.rt.stop();
+        self.controller_due = None;
+        if let Some(controller) = &active.controller {
+            // The thread can have published a final value after the last main-loop deadline.
+            self.apply_controller_values(controller);
+        }
         let Some(plugin) = self.plugin.as_mut() else {
             return;
         };
