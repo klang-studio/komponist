@@ -30,6 +30,7 @@ pub mod edits;
 pub mod fixtures;
 pub mod format;
 pub mod ids;
+pub mod macros;
 pub mod params;
 pub mod paths;
 pub mod persist;

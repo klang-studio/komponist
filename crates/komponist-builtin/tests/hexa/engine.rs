@@ -55,6 +55,7 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         folder: false,
         folded: false,
         automation: Default::default(),
+        macros: Default::default(),
     });
     let track = TrackProgram {
         automation: Default::default(),

@@ -213,13 +213,14 @@ Pure formatting functions provide musical positions, elapsed time, dB, pan and n
 
 ### 5.5 Persistence
 
-A `*.komponist` file is JSON with `format: "komponist"`, **version 4** and a `project` object.
+A `*.komponist` file is JSON with `format: "komponist"`, **version 5** and a `project` object.
 Plugin states are base64 and survive a missing plugin unchanged. Loading validates data and
 routing, repairs defined dangling-reference cases and rejects cycles or invalid track content.
 Explicit migrations give v1 files master outputs and add the audio-capable v3 schema after v2.
 Version 4 adds optional track, clip and master automation. The v3 → v4 migration leaves the
-project JSON unchanged and missing automation fields default to empty. Newer unsupported file
-versions are rejected.
+project JSON unchanged and missing automation fields default to empty. Version 5 adds an optional
+eight-slot macro array to each track. The v4 → v5 migration also leaves the project JSON
+unchanged. Newer unsupported file versions are rejected.
 
 Audio assets remain linked by relative and absolute paths. Save As rebases resolving links;
 Collect and Save copies audio and Sampler sources into the project's sample folder, deduplicating

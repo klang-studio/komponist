@@ -231,6 +231,7 @@ pub fn add_bus_in(
             folder: spec.group,
             folded: false,
             automation: Default::default(),
+            macros: Default::default(),
         }),
     );
     for i in 0..p.tracks.len() {
@@ -303,6 +304,9 @@ pub fn remove_send(project: &Project, send: SendId) -> EditResult {
         .automation
         .lanes
         .retain(|lane| lane.target != AutomationTarget::Send { send });
+    super::macros::remove_targets(&mut track.macros, |target| {
+        *target == AutomationTarget::Send { send }
+    });
     Ok(p)
 }
 
@@ -405,7 +409,7 @@ pub fn duplicate_tracks(
                 })
             })
             .collect::<Result<_, EditError>>()?;
-        super::automation::remap_duplicate(&mut p, &original, &mut copy)?;
+        super::automation::remap_duplicate_targets(&mut p, &original, &mut copy)?;
         let mut end = index + 1;
         while end < p.tracks.len() && routing::group_ancestors(&p, p.tracks[end].id).contains(&id) {
             end += 1;
@@ -478,10 +482,14 @@ pub(super) fn detach_removed(p: &mut Project, before: &Project, removed: &HashSe
         }
         let t = track_mut(p, index);
         t.output = resolve_output(t.output);
-        t.automation.lanes.retain(|lane| {
-            !matches!(lane.target, AutomationTarget::Send { send }
-                if t.sends.iter().any(|item| item.id == send && gone(&item.target)))
-        });
+        let removed_send = |target: &AutomationTarget| {
+            matches!(target, AutomationTarget::Send { send }
+                if t.sends.iter().any(|item| item.id == *send && gone(&item.target)))
+        };
+        t.automation
+            .lanes
+            .retain(|lane| !removed_send(&lane.target));
+        super::macros::remove_targets(&mut t.macros, removed_send);
         t.sends.retain(|s| !gone(&s.target));
         if t.input_bus().is_some_and(|b| gone(&b)) {
             t.audio.input = AudioInput::None;

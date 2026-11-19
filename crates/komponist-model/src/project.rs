@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::audio::{AudioClip, AudioInput, AudioIo};
 use crate::automation::{ClipAutomation, TrackAutomation};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
+use crate::macros::TrackMacros;
 use crate::time::{Meter, StepResolution, Tempo, TempoMap, Tick, TickRange};
 
 /// Name of a new, empty project (S10, prototype `newProject`).
@@ -267,6 +268,9 @@ pub struct Track {
     /// Automation lanes in display order.
     #[serde(default, skip_serializing_if = "TrackAutomation::is_empty")]
     pub automation: TrackAutomation,
+    /// The track's fixed slots of assignable macros.
+    #[serde(default, skip_serializing_if = "TrackMacros::is_default")]
+    pub macros: TrackMacros,
 }
 
 impl Track {

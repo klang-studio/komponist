@@ -268,6 +268,7 @@ pub fn track(id: u64, devices: Vec<Device>) -> Track {
         folder: false,
         folded: false,
         automation: Default::default(),
+        macros: Default::default(),
     }
 }
 

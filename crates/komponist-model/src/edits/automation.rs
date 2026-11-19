@@ -84,7 +84,7 @@ pub fn track_has_target(track: &Track, target: &AutomationTarget) -> bool {
             track.channel.devices.iter().any(|d| d.id == *device)
         }
         AutomationTarget::Send { send } => track.sends.iter().any(|s| s.id == *send),
-        AutomationTarget::Macro { index } => *index < 8,
+        AutomationTarget::Macro { index } => usize::from(*index) < crate::macros::MACRO_COUNT,
         AutomationTarget::Volume | AutomationTarget::Pan => true,
     }
 }
@@ -459,7 +459,7 @@ pub fn paste_device_lanes(project: &Project, device: DeviceId, source: &[Arc<Lan
     Ok(next)
 }
 
-pub(super) fn remap_duplicate(
+pub(super) fn remap_duplicate_targets(
     project: &mut Project,
     original: &Track,
     duplicate: &mut Track,
@@ -492,6 +492,11 @@ pub(super) fn remap_duplicate(
             for envelope in &mut Arc::make_mut(clip).automation {
                 remap(&mut envelope.target);
             }
+        }
+    }
+    for slot in &mut duplicate.macros.0 {
+        for mapping in &mut slot.mappings {
+            remap(&mut mapping.target);
         }
     }
     Ok(())

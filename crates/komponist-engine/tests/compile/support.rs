@@ -47,6 +47,7 @@ pub fn track(id: u64, name: &str, clips: Vec<Clip>) -> Track {
         folder: false,
         folded: false,
         automation: Default::default(),
+        macros: Default::default(),
     }
 }
 

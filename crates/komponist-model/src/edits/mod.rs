@@ -36,6 +36,7 @@ use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
 mod audio;
 pub mod automation;
+pub mod macros;
 mod routes;
 
 pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
@@ -72,6 +73,8 @@ pub enum EditError {
     IdsExhausted,
     /// The rendered automation would exceed the supported arrangement point budget.
     AutomationExpansionTooLarge,
+    /// The destination macro has no room for another mapping.
+    MacroMappingLimit,
     /// No track with this id.
     TrackNotFound(TrackId),
     /// No clip with this id.
@@ -121,6 +124,7 @@ impl fmt::Display for EditError {
             EditError::AutomationExpansionTooLarge => {
                 write!(f, "the edit would create too many automation points")
             }
+            EditError::MacroMappingLimit => write!(f, "the track macro is full"),
             EditError::TrackNotFound(id) => write!(f, "track {} not found", id.0),
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
             EditError::NoteNotFound(id) => write!(f, "note {} not found", id.0),
@@ -600,6 +604,7 @@ pub fn add_track_in(
         folder: false,
         folded: false,
         automation: Default::default(),
+        macros: Default::default(),
     };
     p.tracks.insert(index, Arc::new(track));
     crate::routing::normalize_groups(&mut p);
@@ -1438,6 +1443,7 @@ pub fn replace_instrument(
         Some((index, old)) => {
             let removed = old.id;
             channel.devices[index] = device;
+            macros::remove_device_mappings(&mut track_value.macros, removed);
             automation::remove_device_lanes(
                 &mut p,
                 crate::automation::AutomationOwner::Track(track),
@@ -1459,6 +1465,10 @@ pub fn remove_device(project: &Project, device: DeviceId) -> EditResult {
         .ok_or(EditError::DeviceNotFound(device))?;
     let mut p = project.clone();
     channel_mut(&mut p, channel)?.devices.remove(index);
+    if let ChannelRef::Track(id) = channel {
+        let index = locate_track(&p, id)?;
+        macros::remove_device_mappings(&mut track_mut(&mut p, index).macros, device);
+    }
     automation::remove_device_lanes(&mut p, channel.into(), device)?;
     Ok(p)
 }

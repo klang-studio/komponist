@@ -82,6 +82,7 @@ fn model_track(id: u64) -> Arc<Track> {
         folder: false,
         folded: false,
         automation: Default::default(),
+        macros: Default::default(),
     })
 }
 

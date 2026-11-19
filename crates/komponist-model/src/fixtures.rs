@@ -306,6 +306,7 @@ fn demo_track(
         folder: false,
         folded: false,
         automation: Default::default(),
+        macros: Default::default(),
     }
 }
 
