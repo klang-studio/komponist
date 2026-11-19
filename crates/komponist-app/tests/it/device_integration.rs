@@ -198,10 +198,73 @@ fn touching_a_parameter_shows_it_in_the_inspector_and_while_dragging_in_the_stat
         .accesskit_node();
     let range = range.label().or_else(|| range.value()).unwrap_or_default();
     assert!(range.contains(" bis "), "{range}");
+    section.get_by_label("Automation zeigen");
     // No buttons for what is only prepared.
-    for hidden in ["Automation zeigen", "MIDI lernen", "Makro"] {
+    for hidden in ["MIDI lernen", "Makro"] {
         assert!(h.query_by_label_contains(hidden).is_none(), "{hidden}");
     }
+}
+
+#[test]
+fn a_stopped_read_override_is_shown_on_the_device_card() {
+    use komponist_app::views::automation::{Action as Automation, Source};
+    use komponist_engine::Command;
+    use komponist_model::Tick;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+
+    let (mut app, track, device) = app_with_hall();
+    let owner = AutomationOwner::Track(track);
+    let target = AutomationTarget::Param {
+        device,
+        param: ParamId::new("decay"),
+    };
+    app.dispatch(Action::Automation(Automation::ShowTarget {
+        owner,
+        replace: None,
+        target: target.clone(),
+        label: "Hall · Decay".into(),
+    }));
+    let lane = app.project().track(track).unwrap().automation.lanes[0].id;
+    app.dispatch(Action::Automation(Automation::Points(
+        Source::Lane(owner, lane),
+        Points::new(vec![Point::linear(Tick::ZERO, 0.25)]),
+        "undo-automation-add-point",
+    )));
+    app.engine_mut().hold_engine().unwrap();
+    let mut h = harness(app);
+    let readout = |h: &Harness<'_, App>| {
+        h.get_by_role_and_label(Role::Group, &Lang::De.devices_card("Hall"))
+            .get_by_role_and_label(Role::Slider, "Decay")
+            .accesskit_node()
+            .numeric_value()
+            .unwrap()
+    };
+    let param = &Internal::Hall.params()[decay_wire()];
+    assert!((readout(&h) - 0.25).abs() < 1e-4);
+
+    let program = h.state().engine().program().unwrap();
+    let resolved = program.automation_target(owner, &target).unwrap();
+    let slot = program.slots.slot(device).unwrap();
+    let manual = param.to_plain(0.75);
+    let engine = h.state_mut().engine_mut();
+    engine.send(Command::Touch {
+        owner,
+        target: resolved,
+        begin: true,
+    });
+    engine.send(Command::SetParam {
+        slot,
+        id: decay_wire() as u32,
+        value: manual,
+    });
+    engine.send(Command::Touch {
+        owner,
+        target: resolved,
+        begin: false,
+    });
+    assert!(engine.run_held(256, &[], 0));
+    h.run_steps(2);
+    assert!((readout(&h) - 0.75).abs() < 1e-4);
 }
 
 /// Owner decision 2026-11-15: double-click resets a knob; the wheel over it turns it (Shift
@@ -282,7 +345,7 @@ fn touching_another_parameter_replaces_the_selection() {
 // The right-click menu
 
 #[test]
-fn the_context_menu_of_a_parameter_has_standard_and_wert_eingeben_only() {
+fn the_context_menu_of_a_parameter_offers_automation_alongside_value_edits() {
     let (app, _, hall) = app_with_hall();
     let mut h = harness(app);
     h.run_steps(30);
@@ -304,12 +367,13 @@ fn the_context_menu_of_a_parameter_has_standard_and_wert_eingeben_only() {
         .query_all_by_role(Role::MenuItem)
         .map(|n| n.accesskit_node().label().unwrap_or_default())
         .collect();
-    assert_eq!(
-        labels.len(),
-        2,
-        "nothing else for now (automation, MIDI learn and macros are only prepared): {labels:?}"
-    );
+    assert_eq!(labels.len(), 3, "automation and value edits: {labels:?}");
     assert!(labels.iter().any(|l| l.starts_with(de::DEVICES_TO_DEFAULT)));
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with(de::AUTOMATION_SHOW_MENU))
+    );
     assert!(
         labels
             .iter()

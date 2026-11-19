@@ -107,6 +107,8 @@ icons! {
     Timer => "timer",
     /// `volume-2`: the track toggle "Monitoring" (I).
     Volume2 => "volume-2",
+    /// `spline`: arrangement and clip automation.
+    Spline => "spline",
 }
 
 /// Licence of the icons (Lucide ISC, plus MIT for the icons derived from Feather), for an about or
@@ -144,7 +146,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files, names);
-        assert_eq!(Icon::ALL.len(), 30);
+        assert_eq!(Icon::ALL.len(), 31);
     }
 
     #[test]

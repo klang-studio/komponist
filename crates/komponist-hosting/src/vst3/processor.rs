@@ -17,8 +17,9 @@
 //! go in as `inputParameterChanges`. GUI edits and their gestures (`beginEdit` / `performEdit` /
 //! `endEdit`) are also echoed as output events of the block that applies them, so the engine sees
 //! them with the audio as it does CLAP's. `outputParameterChanges` come back as `ParamValue`
-//! events and go to the controller on the main thread (through a second ring and
-//! `MainThreadCallback`).
+//! events. The bridge reconciles the last DSP output per parameter with mirrored block input
+//! before updating the controller. Standalone hosting sends output to the controller through
+//! a ring and `MainThreadCallback`.
 //!
 //! Everything is allocated in [`Vst3Processor::new`] (activation, main thread); `process` only
 //! copies and converts.
@@ -46,7 +47,7 @@ use super::events::{
     CTRL_AFTERTOUCH, CTRL_PITCH_BEND, EventList, MidiMap, ParameterChanges, RtCom, note_off,
     note_on, poly_pressure,
 };
-use super::host::{Edit, Edits, ParamChange};
+use super::host::{Edit, Edits, ParamChange, QueuedEdit};
 use super::module::Module;
 use crate::host::{HostNotification, HostNotify};
 use crate::plugin::{HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
@@ -278,9 +279,10 @@ pub(crate) struct ProcessorSetup {
     pub(crate) notify: Arc<dyn HostNotify>,
     pub(crate) midi_map: Arc<MidiMap>,
     pub(crate) edits: Arc<Edits>,
-    pub(crate) from_main: rtrb::Consumer<Edit>,
+    pub(crate) from_main: rtrb::Consumer<QueuedEdit>,
     /// Changes made while inactive, applied at offset 0 of the first block.
     pub(crate) initial: Vec<ParamChange>,
+    pub(crate) initial_generation: u64,
     pub(crate) to_controller: rtrb::Producer<ParamChange>,
     /// Cleared when the processor is dropped (the plugin may then call `setActive(false)`).
     pub(crate) alive: Arc<AtomicBool>,
@@ -304,9 +306,11 @@ pub(crate) struct Vst3Processor {
     notify: Arc<dyn HostNotify>,
     midi_map: Arc<MidiMap>,
     edits: Arc<Edits>,
-    from_main: rtrb::Consumer<Edit>,
+    from_main: rtrb::Consumer<QueuedEdit>,
     initial: Vec<ParamChange>,
+    initial_generation: u64,
     to_controller: rtrb::Producer<ParamChange>,
+    host_controller_updates: Option<Vec<ParamChange>>,
     /// Held notes: bit `c` of `held[key]` = channel `c`.
     held: [u16; 128],
     started: bool,
@@ -345,7 +349,9 @@ impl Vst3Processor {
             edits: setup.edits,
             from_main: setup.from_main,
             initial: setup.initial,
+            initial_generation: setup.initial_generation,
             to_controller: setup.to_controller,
+            host_controller_updates: None,
             held: [0; 128],
             started: false,
             release_held: false,
@@ -429,11 +435,19 @@ impl Vst3Processor {
     /// Applies the main thread's changes at offset 0; GUI edits and gestures are echoed into
     /// `echo` (the block's output events) so they travel with the audio like CLAP's.
     fn apply_main_thread_edits(&mut self, mut echo: Option<&mut crate::plugin::EventOut<'_>>) {
-        for (id, value) in self.initial.drain(..) {
-            self.params_in.add(id, 0, value);
+        let generation = self.edits.generation();
+        if self.initial_generation == generation {
+            for (id, value) in self.initial.drain(..) {
+                self.params_in.add(id, 0, value);
+            }
+        } else {
+            self.initial.clear();
         }
-        while let Ok(edit) = self.from_main.pop() {
-            let event = match edit {
+        while let Ok(queued) = self.from_main.pop() {
+            if queued.generation != self.edits.generation() {
+                continue;
+            }
+            let event = match queued.edit {
                 Edit::Set(id, value) => {
                     self.params_in.add(id, 0, value);
                     None
@@ -487,6 +501,9 @@ impl Vst3Processor {
     /// Hands the plugin's output parameter changes to the bridge (events) and the controller.
     fn collect_outputs(&mut self, events_out: &mut crate::plugin::EventOut<'_>) {
         let mut to_controller = false;
+        if let Some(updates) = &mut self.host_controller_updates {
+            updates.clear();
+        }
         for queue in self.params_out.queues() {
             let id = queue.id();
             let points = queue.points();
@@ -497,8 +514,17 @@ impl Vst3Processor {
                 ));
             }
             if let Some(&(_, value)) = points.last() {
-                to_controller |= self.to_controller.push((id, value)).is_ok();
+                if let Some(updates) = &mut self.host_controller_updates {
+                    if value.is_finite() {
+                        updates.push((id, value));
+                    }
+                } else {
+                    to_controller |= self.to_controller.push((id, value)).is_ok();
+                }
             }
+        }
+        if let Some(updates) = &mut self.host_controller_updates {
+            updates.sort_unstable_by_key(|&(id, _)| id);
         }
         if to_controller {
             self.notify.notify(HostNotification::MainThreadCallback);
@@ -544,6 +570,14 @@ impl Vst3Processor {
 }
 
 impl HostedProcessor for Vst3Processor {
+    fn use_host_controller_sync(&mut self) {
+        self.host_controller_updates = Some(Vec::with_capacity(PARAMS_OUT.0));
+    }
+
+    fn controller_updates(&self) -> &[(u32, f64)] {
+        self.host_controller_updates.as_deref().unwrap_or_default()
+    }
+
     fn start_processing(&mut self) -> Result<(), HostingError> {
         if !self.started {
             self.set_processing(true);
@@ -630,9 +664,15 @@ impl Drop for Vst3Processor {
             self.set_processing(false);
         }
         // Changes that never reached a block are applied by the next processor.
+        let generation = self.edits.generation();
         let mut leftover = std::mem::take(&mut self.initial);
-        while let Ok(edit) = self.from_main.pop() {
-            if let Edit::Set(id, value) | Edit::Perform(id, value) = edit {
+        if self.initial_generation != generation {
+            leftover.clear();
+        }
+        while let Ok(queued) = self.from_main.pop() {
+            if queued.generation == generation
+                && let Edit::Set(id, value) | Edit::Perform(id, value) = queued.edit
+            {
                 leftover.push((id, value));
             }
         }

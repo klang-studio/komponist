@@ -58,8 +58,10 @@ fn effective(scale: Scale, min: f64, max: f64) -> Scale {
     }
 }
 
-/// `v` (inside `min ..= max`, `min < max`) as 0–1.
-pub(super) fn to_normalized(scale: Scale, min: f64, max: f64, v: f64) -> f64 {
+/// Maps a plain value to 0–1. The caller supplies finite bounds with `min < max` and a
+/// finite `v` inside `min ..= max`. Use [`super::ParamInfo::to_normalized`] for validation
+/// and clamping.
+pub fn to_normalized(scale: Scale, min: f64, max: f64, v: f64) -> f64 {
     match effective(scale, min, max) {
         Scale::Lin | Scale::Pan => (v - min) / (max - min),
         Scale::Log => (v / min).ln() / (max / min).ln(),
@@ -69,13 +71,19 @@ pub(super) fn to_normalized(scale: Scale, min: f64, max: f64, v: f64) -> f64 {
                 f64::from(db_to_p(max as f32)),
                 f64::from(db_to_p(min as f32)),
             );
-            (bottom - f64::from(db_to_p(v as f32))) / (bottom - top)
+            if top == bottom {
+                (v - min) / (max - min)
+            } else {
+                (bottom - f64::from(db_to_p(v as f32))) / (bottom - top)
+            }
         }
     }
 }
 
-/// 0–1 position `n` as a plain value inside `min ..= max`.
-pub(super) fn to_plain(scale: Scale, min: f64, max: f64, n: f64) -> f64 {
+/// Maps a position to plain units. The caller supplies finite bounds with `min < max` and a
+/// finite `n` inside `0 ..= 1`. Use [`super::ParamInfo::to_plain`] for validation, clamping
+/// and snapping to discrete values.
+pub fn to_plain(scale: Scale, min: f64, max: f64, n: f64) -> f64 {
     match effective(scale, min, max) {
         Scale::Lin | Scale::Pan => min + n * (max - min),
         Scale::Log => min * (max / min).powf(n),
@@ -84,6 +92,9 @@ pub(super) fn to_plain(scale: Scale, min: f64, max: f64, n: f64) -> f64 {
                 f64::from(db_to_p(max as f32)),
                 f64::from(db_to_p(min as f32)),
             );
+            if top == bottom {
+                return min + n * (max - min);
+            }
             let db = f64::from(p_to_db((bottom - n * (bottom - top)) as f32));
             if db.is_finite() {
                 db.clamp(min, max)
@@ -91,5 +102,24 @@ pub(super) fn to_plain(scale: Scale, min: f64, max: f64, n: f64) -> f64 {
                 min
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_db_range_with_equal_taper_positions_uses_linear_mapping() {
+        let min = -6.00000001;
+        let max = -6.0;
+        let mid = (min + max) / 2.0;
+        assert_eq!(db_to_p(min as f32), db_to_p(max as f32));
+        assert_eq!(to_normalized(Scale::Db, min, max, min), 0.0);
+        assert_eq!(to_normalized(Scale::Db, min, max, max), 1.0);
+        assert!((to_normalized(Scale::Db, min, max, mid) - 0.5).abs() < 1e-6);
+        assert_eq!(to_plain(Scale::Db, min, max, 0.0), min);
+        assert_eq!(to_plain(Scale::Db, min, max, 0.5), mid);
+        assert_eq!(to_plain(Scale::Db, min, max, 1.0), max);
     }
 }

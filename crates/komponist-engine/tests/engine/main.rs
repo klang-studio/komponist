@@ -8,6 +8,7 @@
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod audio;
+mod automation;
 mod bench;
 mod chase;
 #[allow(dead_code)]

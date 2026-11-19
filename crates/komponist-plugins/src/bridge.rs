@@ -26,7 +26,7 @@
 //! the bridge answers only between two plugin calls; such a phase may last at most
 //! [`Timing::long_call_timeout`].
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -40,11 +40,10 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use komponist_ipc::control::{PROTOCOL_VERSION, socket_pair};
+use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError, socket_pair};
 use komponist_ipc::{
-    AppChannel, BridgeClient, BridgeMonitor, BridgeMsg, ChannelError, ControlMsg, ErrorContext,
-    GuiTarget, LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode,
-    ShmRegion, WireEventKind,
+    AppChannel, BridgeClient, BridgeMsg, ChannelError, ControlMsg, ErrorContext, GuiTarget,
+    LogLevel, NoteName, ParamInfo, ParamValue, PluginFormat, ProcessWatcher, RenderMode, ShmRegion,
 };
 use komponist_model::{DeviceId, DeviceRole};
 
@@ -173,6 +172,22 @@ fn spawn_process(
     Ok((channel, watcher))
 }
 
+#[derive(Debug)]
+struct StateRestore {
+    request: u32,
+    /// Newer user edits already applied optimistically to the manager's cache.
+    later_edits: BTreeSet<u32>,
+}
+
+impl StateRestore {
+    fn new(request: u32) -> Self {
+        Self {
+            request,
+            later_edits: BTreeSet::new(),
+        }
+    }
+}
+
 /// One bridge process and everything the manager knows about its plugin.
 #[derive(Debug)]
 pub(crate) struct Bridge {
@@ -180,7 +195,6 @@ pub(crate) struct Bridge {
     channel: Arc<AppChannel>,
     writer: Option<mpsc::Sender<ControlMsg>>,
     watcher: ProcessWatcher,
-    monitor: BridgeMonitor,
     shared: Arc<Shared>,
     phase: Phase,
     status: DeviceStatus,
@@ -201,11 +215,13 @@ pub(crate) struct Bridge {
     stop_deadline: Option<Instant>,
     /// `GetState` requests without answer, in send order.
     state_requests: VecDeque<(u32, StatePurpose)>,
+    state_restores: VecDeque<StateRestore>,
     snapshot_due: Option<Instant>,
     /// The latest state: the last snapshot, or the state the bridge was started with.
     pub last_state: Option<Arc<[u8]>>,
     pub params: Vec<ParamInfo>,
     pub values: BTreeMap<u32, ParamValue>,
+    pub base_values: BTreeMap<u32, f64>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
@@ -282,8 +298,12 @@ impl Bridge {
             bundle: s.bundle.to_path_buf(),
             plugin_id: s.plugin_id.to_owned(),
         });
+        let mut state_restores = VecDeque::new();
         if let Some(state) = &s.state {
+            let request = 0;
+            state_restores.push_back(StateRestore::new(request));
             let _ = writer.send(ControlMsg::SetState {
+                request,
                 state: state.to_vec(),
             });
         }
@@ -302,7 +322,6 @@ impl Bridge {
             channel,
             writer: Some(writer),
             watcher,
-            monitor: BridgeMonitor::new(region),
             shared,
             phase: Phase::Hello,
             status: DeviceStatus::Loading,
@@ -317,10 +336,12 @@ impl Bridge {
             ready_at: None,
             stop_deadline: None,
             state_requests: VecDeque::new(),
+            state_restores,
             snapshot_due: None,
             last_state: s.state,
             params: Vec::new(),
             values: BTreeMap::new(),
+            base_values: BTreeMap::new(),
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
@@ -437,15 +458,19 @@ impl Bridge {
         if self.phase != Phase::Running {
             return;
         }
-        self.user_changed();
         self.send(ControlMsg::SetParam { id, value });
+        self.edited_param(id, value);
+    }
+
+    /// Applies the document's base-value edit to the manager's cache.
+    fn keep_base_value(&mut self, id: u32, value: f64) {
+        self.base_values.insert(id, value);
         let entry = self.values.entry(id).or_insert_with(|| ParamValue {
             id,
             value,
             text: String::new(),
         });
         entry.value = value;
-        self.snapshot_soon();
     }
 
     /// Sends `SetState` to the running plugin (an undo or redo changed the device's state); the
@@ -457,7 +482,10 @@ impl Bridge {
         }
         self.user_changed();
         self.last_state = Some(Arc::clone(state));
+        let request = self.seq();
+        self.state_restores.push_back(StateRestore::new(request));
         self.send(ControlMsg::SetState {
+            request,
             state: state.to_vec(),
         });
         true
@@ -525,6 +553,7 @@ impl Bridge {
         self.gui_open = false;
         self.gui_requests = 0;
         self.state_requests.clear();
+        self.state_restores.clear();
         self.snapshot_due = None;
         self.set_status(DeviceStatus::Crashed(reason), events);
     }
@@ -575,7 +604,7 @@ impl Bridge {
         }
     }
 
-    /// Non-blocking: reads messages and plugin output events, checks the process and the
+    /// Non-blocking: reads control messages, checks the process and the
     /// watchdog. `collected` receives answers to `Collect` state requests.
     pub(crate) fn poll(
         &mut self,
@@ -583,7 +612,6 @@ impl Bridge {
         collected: &mut Vec<Collected>,
     ) {
         self.read_messages(events, collected);
-        self.read_output_events(events);
         self.check_process(events);
         if self.exited {
             return;
@@ -658,6 +686,7 @@ impl Bridge {
             BridgeMsg::Loaded(info) => {
                 let info = *info;
                 self.params = info.params;
+                self.base_values = info.values.iter().map(|v| (v.id, v.value)).collect();
                 self.values = info.values.into_iter().map(|v| (v.id, v)).collect();
                 self.note_names = info.note_names;
                 self.has_gui = info.has_gui;
@@ -702,9 +731,13 @@ impl Bridge {
             }
             BridgeMsg::ParamValues(values) => {
                 for value in values {
+                    self.base_values.entry(value.id).or_insert(value.value);
                     self.values.insert(value.id, value);
                 }
                 events.push(PluginManagerEvent::ParamValuesChanged { device });
+            }
+            BridgeMsg::StateApplied { request, result } => {
+                self.finish_restore(request, result, events);
             }
             BridgeMsg::GuiOpened { size, resizable } => {
                 self.gui_answered();
@@ -802,17 +835,6 @@ impl Bridge {
         if fails {
             return self.fail(FailReason::LoadFailed(message), events);
         }
-        if loading && context == ErrorContext::State {
-            // The stored state (`SetState`, the only state request while loading) was refused.
-            self.keep_stored_state = true;
-            events.push(PluginManagerEvent::Log {
-                device: Some(self.device),
-                level: LogLevel::Warning,
-                message: format!("{STATE_LOG_PREFIX} {message}"),
-            });
-            self.state_warning = Some(message);
-            return;
-        }
         match context {
             ErrorContext::State => {
                 // A `GetState` failed (answers come in order).
@@ -832,6 +854,55 @@ impl Bridge {
             level: LogLevel::Error,
             message,
         });
+    }
+
+    fn finish_restore(
+        &mut self,
+        request: u32,
+        result: Result<Vec<ParamValue>, StateRestoreError>,
+        events: &mut Vec<PluginManagerEvent>,
+    ) {
+        let Some(index) = self
+            .state_restores
+            .iter()
+            .position(|restore| restore.request == request)
+        else {
+            return;
+        };
+        let restore = self.state_restores.remove(index).expect("matched restore");
+        let device = self.device;
+        let (values, error) = match result {
+            Ok(values) => (values, None),
+            Err(error) => (error.changed_values, Some(error.message)),
+        };
+        if error.is_none() || !values.is_empty() {
+            for value in values {
+                if !restore.later_edits.contains(&value.id) {
+                    self.base_values.insert(value.id, value.value);
+                    self.values.insert(value.id, value);
+                }
+            }
+            // The compiler obtains the plugin's restored base by recompiling the program.
+            events.push(PluginManagerEvent::ParamsChanged { device });
+            events.push(PluginManagerEvent::ParamValuesChanged { device });
+        }
+        if let Some(message) = error {
+            if self.phase != Phase::Running {
+                self.keep_stored_state = true;
+                events.push(PluginManagerEvent::Log {
+                    device: Some(device),
+                    level: LogLevel::Warning,
+                    message: format!("{STATE_LOG_PREFIX} {message}"),
+                });
+                self.state_warning = Some(message);
+            } else {
+                events.push(PluginManagerEvent::Log {
+                    device: Some(device),
+                    level: LogLevel::Error,
+                    message,
+                });
+            }
+        }
     }
 
     fn gui_answered(&mut self) {
@@ -855,32 +926,29 @@ impl Bridge {
         }
     }
 
-    /// Parameter changes the plugin made during processing (its GUI), from the shared ring.
-    fn read_output_events(&mut self, events: &mut Vec<PluginManagerEvent>) {
-        let mut changed = false;
-        while let Some(event) = self.monitor.pop_output_event() {
-            if let Some(WireEventKind::ParamValue { id, value }) = event.decode() {
-                let entry = self.values.entry(id).or_insert_with(|| ParamValue {
-                    id,
-                    value,
-                    text: String::new(),
-                });
-                if entry.value != value {
-                    entry.value = value;
-                    // No text for values from the audio thread; the generic view formats them.
-                    entry.text.clear();
-                }
-                changed = true;
-            }
+    /// Updates the cached value and schedules a snapshot for a user's edit.
+    pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
+        if self.phase != Phase::Running {
+            return;
         }
-        if changed {
-            events.push(PluginManagerEvent::ParamValuesChanged {
-                device: self.device,
-            });
-            // Values from the audio thread are edits in the plugin's GUI.
-            self.user_changed();
-            self.snapshot_soon();
+        if self
+            .values
+            .get(&id)
+            .is_some_and(|entry| entry.value != value)
+            && let Some(entry) = self.values.get_mut(&id)
+        {
+            entry.text.clear();
         }
+        for restore in &mut self.state_restores {
+            restore.later_edits.insert(id);
+        }
+        self.keep_base_value(id, value);
+        self.user_changed();
+        self.snapshot_soon();
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        self.phase == Phase::Running
     }
 
     fn check_process(&mut self, events: &mut Vec<PluginManagerEvent>) {

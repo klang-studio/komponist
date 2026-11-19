@@ -58,6 +58,9 @@ impl Flatten {
     pub(super) fn prepare(&mut self, app: &mut App) -> Result<(), String> {
         let changed = || app.lang.flatten_track_changed().to_owned();
         let project = Arc::clone(app.doc.project());
+        let track = project.track(self.id).ok_or_else(changed)?;
+        edits::validate_flatten_automation(track)
+            .map_err(|_| app.lang.flatten_automation_too_large().to_owned())?;
         let scope = TrackExport::new(&project, self.id).map_err(|_| changed())?;
         if scope.range() != self.scope.range() || project.tempo != self.scope.project().tempo {
             return Err(changed());
@@ -66,7 +69,6 @@ impl Flatten {
         if let Some((_, problem)) = self.bad_sampler_pad(app) {
             return Err(problem);
         }
-        let track = project.track(self.id).ok_or_else(changed)?;
         let ids: Vec<_> = track
             .channel
             .devices
@@ -216,12 +218,16 @@ impl App {
         if self.export.is_active() || self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
             return;
         }
-        if self
+        let Some(track) = self
             .project()
             .track(id)
-            .is_none_or(|t| t.kind != TrackKind::Midi || t.clips.is_empty())
-        {
+            .filter(|track| track.kind == TrackKind::Midi && !track.clips.is_empty())
+        else {
             self.flatten_error(ExportError::InvalidTrack);
+            return;
+        };
+        if edits::validate_flatten_automation(track).is_err() {
+            self.flatten_failed(self.lang.flatten_automation_too_large());
             return;
         }
         if !self.stop_for_export() {

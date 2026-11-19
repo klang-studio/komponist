@@ -25,6 +25,8 @@ use komponist_ipc::LogLevel;
 
 /// Pending bit for queued log lines (above every `notification_bits` value).
 pub const LOG_PENDING: u32 = 1 << 31;
+/// Pending VST3 values from the engine for the controller.
+pub(crate) const CONTROLLER_VALUES_PENDING: u32 = 1 << 30;
 
 /// Log lines kept between two main-loop ticks; more are dropped and counted.
 const MAX_LOG_LINES: usize = 256;
@@ -115,6 +117,10 @@ impl BridgeNotify {
             // Non-blocking: never blocks (EAGAIN only when a wake-up is pending anyway).
             self.wake.signal();
         }
+    }
+
+    pub(crate) fn controller_values_ready(&self) {
+        self.raise(CONTROLLER_VALUES_PENDING);
     }
 
     /// Clears the wake fd, then takes the pending bits (`notification_bits` and [`LOG_PENDING`])

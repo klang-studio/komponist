@@ -19,7 +19,12 @@ use crate::audio::ClipTimeMode;
 use crate::audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
 };
+use crate::automation::{
+    AUTOMATION_EXPANSION_LIMIT, AutomationTarget, Points, clip_expansion_points,
+    count_clip_expansion, merged_clip_points,
+};
 use crate::ids::{ClipId, TrackId};
+use crate::params::db_to_p;
 use crate::project::{
     Channel, Clip, ClipContent, ClipKind, Hue, MidiChannelSel, MidiInputSel, Project,
     TRACK_HEIGHT_DEFAULT, Track, TrackKind, TrackOutput,
@@ -92,6 +97,7 @@ pub fn add_audio_track_in(
             sends: Vec::new(),
             folder: false,
             folded: false,
+            automation: Default::default(),
         }),
     );
     crate::routing::normalize_groups(&mut p);
@@ -411,6 +417,42 @@ pub(super) fn new_audio(
     Ok((a, length))
 }
 
+fn retained_automation_base(track: &Track, target: &AutomationTarget) -> Option<f32> {
+    match *target {
+        AutomationTarget::Volume => Some(1.0 - db_to_p(track.channel.volume_db)),
+        AutomationTarget::Pan => Some((track.channel.pan.clamp(-1.0, 1.0) + 1.0) * 0.5),
+        AutomationTarget::Send { send } => track
+            .sends
+            .iter()
+            .find(|item| item.id == send)
+            .map(|item| 1.0 - db_to_p(item.level_db)),
+        _ => None,
+    }
+}
+
+/// Checks that the surviving mixer automation can fit into arrangement lanes before rendering.
+/// The arrangement has no compact repeat representation, so the check includes disabled lanes.
+pub fn validate_flatten_automation(track: &Track) -> Result<(), EditError> {
+    let mixer_lanes = track
+        .automation
+        .lanes
+        .iter()
+        .filter(|lane| retained_automation_base(track, &lane.target).is_some());
+    let estimate = mixer_lanes
+        .clone()
+        .map(|lane| clip_expansion_points(track, &lane.target))
+        .fold(0, u128::saturating_add);
+    if estimate > AUTOMATION_EXPANSION_LIMIT {
+        let mut budget = AUTOMATION_EXPANSION_LIMIT;
+        for lane in mixer_lanes {
+            let points = count_clip_expansion(track, &lane.target, budget)
+                .ok_or(EditError::AutomationExpansionTooLarge)?;
+            budget -= points;
+        }
+    }
+    Ok(())
+}
+
 /// Replaces a MIDI track's arrangement clips and device chain with a rendered audio file.
 /// Keeping its ID and channel strip preserves routing, sends and sidechains that read this track.
 pub fn flatten_midi_track(
@@ -428,16 +470,31 @@ pub fn flatten_midi_track(
             "flattening requires a MIDI track with clips",
         ));
     }
+    validate_flatten_automation(source)?;
     let mut next = project.clone();
     let track = Arc::make_mut(&mut next.tracks[index]);
     track.kind = TrackKind::Audio;
     track.channel.devices.clear();
+    track
+        .automation
+        .lanes
+        .retain(|lane| !matches!(lane.target, AutomationTarget::Param { .. }));
+    // The render excludes the track's fader, pan and sends. Preserve their effective curves
+    // on the audio track before deleting the MIDI clips that used to override those lanes.
+    for lane in &mut track.automation.lanes {
+        if let Some(base) = retained_automation_base(source, &lane.target)
+            && let Some(points) = merged_clip_points(source, lane, base)
+        {
+            Arc::make_mut(lane).points = Points::new(points);
+        }
+    }
     track.clips.clear();
     track.arm = false;
     track.monitor = false;
     track.input = Default::default();
     track.midi_channel = Default::default();
     track.audio = Default::default();
+    super::automation::prune_hidden_unused(&mut next, id)?;
     super::add_clip(
         &next,
         id,

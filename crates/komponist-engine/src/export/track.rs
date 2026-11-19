@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use komponist_model::automation::AutomationTarget;
 use komponist_model::routing::{self, EdgeKind};
 use komponist_model::{
     Channel, ChannelRef, DeviceId, Project, Tick, TickRange, TrackId, TrackKind, TrackOutput,
@@ -59,6 +60,7 @@ impl TrackExport {
         }
         let mut scoped = project.clone();
         scoped.master = Arc::new(Channel::default());
+        scoped.master_automation = Default::default();
         scoped
             .tracks
             .retain(|t| needed.contains(&ChannelRef::Track(t.id)));
@@ -67,6 +69,14 @@ impl TrackExport {
             if t.id == id {
                 t.channel.volume_db = 0.0;
                 t.channel.pan = 0.0;
+                // Flatten prints the chain before the track strip. Mixer lanes survive
+                // on the audio track, while device curves are baked into the render.
+                t.automation.lanes.retain(|lane| {
+                    !matches!(
+                        lane.target,
+                        AutomationTarget::Volume | AutomationTarget::Pan
+                    )
+                });
                 t.channel.mute = false;
                 t.channel.solo = false;
                 t.output = TrackOutput::Master;

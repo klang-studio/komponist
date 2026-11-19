@@ -4,6 +4,8 @@
 use klang_dsp::buffer::gain_ramp;
 use klang_dsp::pan::balance;
 
+use crate::automation::MixerValues;
+
 /// Highest linear gain the engine applies (+24 dB); larger and non-finite values are clamped.
 const MAX_GAIN: f32 = 16.0;
 
@@ -34,14 +36,16 @@ pub(crate) fn targets(gain: f32, pan: f32, audible: bool) -> (f32, f32) {
 pub(crate) struct Fader {
     l: f32,
     r: f32,
+    open: bool,
 }
 
 impl Fader {
     /// A fader standing at `gains`.
-    pub(crate) fn at(gains: (f32, f32)) -> Fader {
+    pub(crate) fn at(gains: (f32, f32), open: bool) -> Fader {
         Fader {
             l: gains.0,
             r: gains.1,
+            open,
         }
     }
 
@@ -51,6 +55,42 @@ impl Fader {
         gain_ramp(r, self.r, target.1);
         self.l = target.0;
         self.r = target.1;
+    }
+
+    /// RT. Apply the absolute automation ramp to a running strip. Muting and manual
+    /// changes still take the established fader path when no active ramp drives it.
+    pub(crate) fn apply_automation(
+        &mut self,
+        l: &mut [f32],
+        r: &mut [f32],
+        (gain, pan): (f32, f32),
+        open: bool,
+        mut volume: Option<MixerValues<'_>>,
+        mut balance: Option<MixerValues<'_>>,
+    ) {
+        let was_open = std::mem::replace(&mut self.open, open);
+        if !open || (volume.is_none() && balance.is_none()) {
+            self.apply(l, r, targets(gain, pan, open));
+            return;
+        }
+        let frames = l.len() as f32;
+        for (i, (l, r)) in l.iter_mut().zip(r).enumerate() {
+            let gain = volume.as_mut().map_or(gain, |value| value.value(gain));
+            let pan = balance.as_mut().map_or(pan, |value| value.value(pan));
+            (self.l, self.r) = targets(gain, pan, true);
+            let gate = opening_gain(was_open, i, frames);
+            *l *= self.l * gate;
+            *r *= self.r * gate;
+        }
+    }
+}
+
+/// Independent linear fade from a closed channel to the current automation curve.
+pub(crate) fn opening_gain(was_open: bool, frame: usize, frames: f32) -> f32 {
+    if was_open {
+        1.0
+    } else {
+        (frame + 1) as f32 / frames
     }
 }
 
@@ -139,7 +179,7 @@ mod tests {
 
     #[test]
     fn fader_ramps_once_then_holds() {
-        let mut f = Fader::at((1.0, 1.0));
+        let mut f = Fader::at((1.0, 1.0), true);
         let (mut l, mut r) = ([1.0_f32; 4], [1.0_f32; 4]);
         f.apply(&mut l, &mut r, (0.0, 0.5));
         assert_eq!(l, [0.75, 0.5, 0.25, 0.0]);

@@ -206,9 +206,18 @@ impl App {
 
     /// `PluginAction::SetParam` (module docs).
     pub(crate) fn set_param(&mut self, device: DeviceId, id: u32, value: f64) {
-        // Bridged devices take parameters over their control socket; the document follows with the
-        // plugin's snapshot.
-        if self.engine.host_mut().set_param(device, id, value) {
+        // Active bridges receive edits in the same block path as built-in devices. While a
+        // bridge has no running slot, keep using its control socket.
+        let slot = self.engine.program().and_then(|p| p.slots.slot(device));
+        let bridged = if let Some(slot) = slot
+            && self.engine.host_mut().edited_param(device, id, value)
+        {
+            self.engine.send(Command::SetParam { slot, id, value });
+            true
+        } else {
+            self.engine.host_mut().set_param(device, id, value)
+        };
+        if bridged {
             let label = self.param_label(device, id);
             self.param_undo
                 .turned

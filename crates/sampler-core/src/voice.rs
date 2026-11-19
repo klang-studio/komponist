@@ -38,6 +38,10 @@ pub(crate) struct Voice {
     velocity_gain: f32,
     layer_gain: f32,
     layer_tune: f32,
+    gain: f32,
+    pan: f32,
+    tune: f32,
+    drive: f32,
     /// Per-note value for the random mod source
     random: f32,
     /// Normalized start offset from note-on modulation
@@ -74,6 +78,10 @@ impl Voice {
             velocity_gain: 1.0 - s.velocity_sens * (1.0 - v.velocity.clamp(0.0, 1.0)),
             layer_gain: v.layer_gain,
             layer_tune: v.layer_tune,
+            gain: s.gain,
+            pan: s.pan,
+            tune: s.tune,
+            drive: s.drive,
             random: rng.unipolar(),
             choke_gain: 1.0,
             ..Self::default()
@@ -147,7 +155,14 @@ impl Voice {
         s: &PadSettings,
         sample_rate: f32,
         choke_step: f32,
+        glide: f32,
     ) -> (f32, f32) {
+        // Start at the current pad state on note-on; glide later pad edits without stepping
+        // the amplitude, read increment or saturation of an already sounding sample.
+        chase(&mut self.gain, s.gain, glide);
+        chase(&mut self.pan, s.pan, glide);
+        chase(&mut self.tune, s.tune, glide);
+        chase(&mut self.drive, s.drive, glide);
         // Modulation sources and matrix
         let m = if s.num_slots > 0 {
             let lfo_rate = s.lfo_rate_hz * (self.lfo_rate_mod * LFO_RATE_RANGE_OCT).exp2();
@@ -175,7 +190,7 @@ impl Voice {
 
         let mut x = sample.read(self.pos);
 
-        let pitch = s.tune + self.layer_tune - sample.baked_pitch
+        let pitch = self.tune + self.layer_tune - sample.baked_pitch
             + s.pitch_env_semis * self.pitch_env.next(s.pitch_env_coeff)
             + m.pitch * PITCH_RANGE_SEMIS;
         let rate = (sample.sample_rate / sample_rate) as f64 * semitones_to_ratio(pitch) as f64;
@@ -190,7 +205,7 @@ impl Voice {
             (s.downsample * (m.downsample * DOWNSAMPLE_RANGE_OCT).exp2()).clamp(1.0, 64.0);
         x = self.lofi.process(bits, downsample, x);
 
-        let drive = (s.drive + m.drive).clamp(0.0, 1.0);
+        let drive = (self.drive + m.drive).clamp(0.0, 1.0);
         if drive > 0.0 {
             let k = 1.0 + 15.0 * drive * drive;
             let norm = k.sqrt().recip();
@@ -223,9 +238,19 @@ impl Voice {
             * self.velocity_gain
             * self.layer_gain
             * self.choke_gain
-            * s.gain
+            * self.gain
             * (1.0 + m.volume).max(0.0);
-        let (pan_l, pan_r) = klang_dsp::pan::balance(s.pan + m.pan);
+        let (pan_l, pan_r) = klang_dsp::pan::balance(self.pan + m.pan);
         (x.0 * gain * pan_l, x.1 * gain * pan_r)
     }
+}
+
+#[inline]
+fn chase(value: &mut f32, target: f32, glide: f32) {
+    let delta = target - *value;
+    *value = if delta.abs() < 1e-6 {
+        target
+    } else {
+        *value + glide * delta
+    };
 }

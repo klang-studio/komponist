@@ -416,7 +416,8 @@ impl<'a> Dropdown<'a> {
         self.items.iter().map(|i| i.enabled).collect()
     }
 
-    fn natural_width(&self, ui: &Ui) -> f32 {
+    /// Width that fits the field and every option in its popup.
+    pub fn natural_width(&self, ui: &Ui) -> f32 {
         let widest = |style: typography::TypeStyle| {
             self.items
                 .iter()

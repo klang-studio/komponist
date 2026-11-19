@@ -17,6 +17,7 @@ use super::{
     update_track, valid_db, valid_hue, valid_name,
 };
 use crate::audio::AudioInput;
+use crate::automation::AutomationTarget;
 use crate::ids::{DeviceId, SendId, TrackId};
 use crate::project::{
     Channel, ChannelRef, Device, Hue, MidiChannelSel, MidiInputSel, Project, SEND_LEVEL_DEFAULT_DB,
@@ -229,6 +230,7 @@ pub fn add_bus_in(
             sends: Vec::new(),
             folder: spec.group,
             folded: false,
+            automation: Default::default(),
         }),
     );
     for i in 0..p.tracks.len() {
@@ -295,7 +297,12 @@ pub fn remove_send(project: &Project, send: SendId) -> EditResult {
         .ok_or(EditError::SendNotFound(send))?;
     let track_index = locate_track(project, track.id)?;
     let mut p = project.clone();
-    track_mut(&mut p, track_index).sends.remove(index);
+    let track = track_mut(&mut p, track_index);
+    track.sends.remove(index);
+    track
+        .automation
+        .lanes
+        .retain(|lane| lane.target != AutomationTarget::Send { send });
     Ok(p)
 }
 
@@ -398,6 +405,7 @@ pub fn duplicate_tracks(
                 })
             })
             .collect::<Result<_, EditError>>()?;
+        super::automation::remap_duplicate(&mut p, &original, &mut copy)?;
         let mut end = index + 1;
         while end < p.tracks.len() && routing::group_ancestors(&p, p.tracks[end].id).contains(&id) {
             end += 1;
@@ -470,6 +478,10 @@ pub(super) fn detach_removed(p: &mut Project, before: &Project, removed: &HashSe
         }
         let t = track_mut(p, index);
         t.output = resolve_output(t.output);
+        t.automation.lanes.retain(|lane| {
+            !matches!(lane.target, AutomationTarget::Send { send }
+                if t.sends.iter().any(|item| item.id == send && gone(&item.target)))
+        });
         t.sends.retain(|s| !gone(&s.target));
         if t.input_bus().is_some_and(|b| gone(&b)) {
             t.audio.input = AudioInput::None;

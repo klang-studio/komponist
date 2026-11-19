@@ -54,7 +54,8 @@ pub use grid::{GridSpec, LineWeight, display_step, grid_lines, paint_grid};
 pub use note::{NoteBatch, NoteState, note_access, note_rect, paint_note};
 pub use ruler::{RulerKind, RulerModel, paint_playhead, paint_ruler, ruler_access};
 pub use track_header::{
-    HeaderLayout, HeaderModel, header_access, header_layout, paint_toggle, paint_track_header,
+    HeaderLayout, HeaderModel, header_access, header_layout, header_layout_with_reserve,
+    paint_toggle, paint_track_header, paint_track_header_with_reserve,
 };
 
 /// Maps musical time to screen x: `x = x0 + tick × px_per_tick`.

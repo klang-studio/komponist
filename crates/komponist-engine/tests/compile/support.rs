@@ -46,6 +46,7 @@ pub fn track(id: u64, name: &str, clips: Vec<Clip>) -> Track {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     }
 }
 
@@ -79,6 +80,7 @@ pub fn clip(id: u64, start: i64, length: i64, content: ClipContent) -> Clip {
         mute: false,
         transpose: 0,
         velocity_pct: 0,
+        automation: Vec::new(),
         content,
     }
 }

@@ -150,6 +150,16 @@ pub trait DeviceHost {
         None
     }
 
+    /// Base value of a bridged parameter, independent of live automation.
+    fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
+        self.param_value(device, id).map(|v| v.value)
+    }
+
+    /// Tracks an edit that reached an active bridge through the engine slot.
+    fn edited_param(&mut self, _device: DeviceId, _id: u32, _value: f64) -> bool {
+        false
+    }
+
     /// Sets a parameter of a bridged device; `false` if this host does not handle `device` (the
     /// caller then sends the engine's `SetParam` to the device's slot, as for hexa).
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
@@ -691,6 +701,14 @@ impl DeviceHost for PluginHost {
 
     fn param_value(&self, device: DeviceId, id: u32) -> Option<&ParamValue> {
         self.manager.param_value(device, id)
+    }
+
+    fn param_base(&self, device: DeviceId, id: u32) -> Option<f64> {
+        self.manager.param_base(device, id)
+    }
+
+    fn edited_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {
+        self.manager.edited_param(device, id, value)
     }
 
     fn set_param(&mut self, device: DeviceId, id: u32, value: f64) -> bool {

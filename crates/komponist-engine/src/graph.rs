@@ -8,7 +8,7 @@
 
 use klang_dsp::buffer::add_ramped;
 
-use crate::mixer::DelayLine;
+use crate::mixer::{DelayLine, opening_gain};
 use crate::route::LineKey;
 
 /// State of one edge: its delay line and, for a send, the gain reached at the end of the last
@@ -18,6 +18,7 @@ pub(crate) struct EdgeState {
     key: Option<LineKey>,
     pub(crate) line: DelayLine,
     gain: f32,
+    open: bool,
 }
 
 impl EdgeState {
@@ -27,6 +28,7 @@ impl EdgeState {
             key: None,
             line: DelayLine::new(),
             gain: 0.0,
+            open: false,
         }
     }
 
@@ -37,6 +39,7 @@ impl EdgeState {
             self.key = Some(key);
             self.line.forget();
             self.gain = 0.0;
+            self.open = false;
         }
     }
 
@@ -48,8 +51,9 @@ impl EdgeState {
         tap: [&[f32]; 2],
         scratch: [&mut [f32]; 2],
         delay: u32,
-        gain: f32,
+        (gain, open): (f32, bool),
     ) {
+        self.open = open;
         let [sum_l, sum_r] = sum;
         let n = sum_l.len();
         let source: [&[f32]; 2] = if delay > 0 {
@@ -65,6 +69,36 @@ impl EdgeState {
         add_ramped(sum_l, source[0], self.gain, gain);
         add_ramped(sum_r, source[1], self.gain, gain);
         self.gain = gain;
+    }
+
+    /// An automated send, after its alignment delay. The gain curve is timed to the
+    /// source heard at this tap.
+    pub(crate) fn add_automated_send(
+        &mut self,
+        sum: [&mut [f32]; 2],
+        tap: [&[f32]; 2],
+        scratch: [&mut [f32]; 2],
+        delay: u32,
+        fallback: f32,
+        gain: &mut crate::automation::MixerValues<'_>,
+    ) {
+        let n = sum[0].len();
+        let source = if delay > 0 {
+            let [l, r] = scratch;
+            self.delayed([&mut l[..n], &mut r[..n]], tap, delay);
+            [&l[..n], &r[..n]]
+        } else {
+            self.line.forget();
+            tap
+        };
+        let [out_l, out_r] = sum;
+        let was_open = std::mem::replace(&mut self.open, true);
+        for i in 0..n {
+            self.gain = gain.value(fallback);
+            let level = self.gain * opening_gain(was_open, i, n as f32);
+            out_l[i] += source[0][i] * level;
+            out_r[i] += source[1][i] * level;
+        }
     }
 
     /// RT. Copies `tap` into `out`, delayed by `delay` frames (a sidechain input).
@@ -89,11 +123,23 @@ mod tests {
         let (mut sl, mut sr) = ([0.0_f32; 4], [0.0_f32; 4]);
         let (mut cl, mut cr) = ([0.0_f32; 4], [0.0_f32; 4]);
         // Fades in from 0 to 0.5 over the segment.
-        edge.add_send([&mut sl, &mut sr], [&tap, &tap], [&mut cl, &mut cr], 0, 0.5);
+        edge.add_send(
+            [&mut sl, &mut sr],
+            [&tap, &tap],
+            [&mut cl, &mut cr],
+            0,
+            (0.5, true),
+        );
         assert_eq!(sl, [0.125, 0.25, 0.375, 0.5]);
         // Holds, delayed by 2 frames (the line starts from silence).
         let (mut sl, mut sr) = ([0.0_f32; 4], [0.0_f32; 4]);
-        edge.add_send([&mut sl, &mut sr], [&tap, &tap], [&mut cl, &mut cr], 2, 0.5);
+        edge.add_send(
+            [&mut sl, &mut sr],
+            [&tap, &tap],
+            [&mut cl, &mut cr],
+            2,
+            (0.5, true),
+        );
         assert_eq!(sl, [0.0, 0.0, 0.5, 0.5]);
         assert_eq!(sr, sl);
         // The same key keeps the state; another key resets it.

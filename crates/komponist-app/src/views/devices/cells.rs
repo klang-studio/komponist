@@ -201,6 +201,8 @@ enum ParamMenu {
     Default,
     /// The text entry.
     Enter,
+    /// Reveal the parameter in the arrangement.
+    Automation,
 }
 
 /// A parameter's control was touched: the inspector and the status line follow (`TouchParam`).
@@ -214,7 +216,7 @@ enum ParamMenu {
 /// and the menu's reset are a step each.
 ///
 /// The right-click menu: "Auf Standard" (the reset) and, for a control with text entry, "Wert
-/// eingeben". Nothing else yet (automation, MIDI learn and macros are prepared, not built).
+/// eingeben" and "Automation zeigen" for automatable parameters.
 #[allow(clippy::too_many_arguments)]
 fn touch(
     cu: &Ui,
@@ -245,7 +247,7 @@ fn touch(
     if entry.is_none() {
         enter = enter.disabled();
     }
-    let entries = [
+    let mut entries = vec![
         Entry::action(t.devices_to_default(), ParamMenu::Default).shortcut(
             if double_click_resets {
                 t.devices_to_default_shortcut()
@@ -258,6 +260,13 @@ fn touch(
         ),
         enter,
     ];
+    let owner = card.automation_owner.filter(|_| p.info.automatable);
+    if owner.is_some() {
+        entries.push(Entry::action(
+            t.automation_show_menu(),
+            ParamMenu::Automation,
+        ));
+    }
     match ContextMenu::new(t.devices_parameter(), &entries).show_on(r) {
         Some(ParamMenu::Default) => {
             set(out, card, p, p.info.default);
@@ -268,6 +277,21 @@ fn touch(
                 open_value_entry(cu.ctx(), r.id, text);
             }
             out.push(touch_action(card, p, false));
+        }
+        Some(ParamMenu::Automation) => {
+            if let Some(owner) = owner {
+                out.push(Action::Automation(
+                    crate::views::automation::Action::ShowTarget {
+                        owner,
+                        replace: None,
+                        target: komponist_model::automation::AutomationTarget::Param {
+                            device: card.device,
+                            param: p.info.id.clone(),
+                        },
+                        label: format!("{} · {}", card.name, p.name()),
+                    },
+                ));
+            }
         }
         None => {}
     }
@@ -331,12 +355,11 @@ fn knob(cu: &mut Ui, out: &mut Vec<Action>, card: &Card, cell: &Cell, p: &Param,
         .as_ref()
         .and_then(|id| card.param(id))
         .is_some_and(|flag| flag.value >= 0.5);
-    if unused {
-        w = w.options(KnobCellOptions {
-            disabled: true,
-            ..KnobCellOptions::default()
-        });
-    }
+    w = w.options(KnobCellOptions {
+        disabled: unused,
+        automation_dot: card.automation.get(&p.info.id).copied(),
+        ..KnobCellOptions::default()
+    });
     let r = cu.put(rect, w);
     touch(
         cu,
@@ -1303,6 +1326,8 @@ mod tests {
         Card {
             sampler: None,
             device: DeviceId(7),
+            automation_owner: None,
+            automation: Default::default(),
             name: "Test".into(),
             tag: "INTERN",
             instrument: false,

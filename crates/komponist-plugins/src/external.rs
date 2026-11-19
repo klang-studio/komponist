@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
 use komponist_engine::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
     TransportInfo,
@@ -33,7 +34,8 @@ use komponist_ipc::shm::{
     TRANSPORT_PLAYING, TRANSPORT_RECORDING,
 };
 use komponist_ipc::{
-    BlockError, BlockSpec, BlockStatus, BridgeClient, WireEvent, WireEventKind, WireTransport,
+    BlockError, BlockSpec, BlockStatus, BridgeClient, BridgeMonitor, WireEvent, WireEventKind,
+    WireTransport,
 };
 use komponist_model::{DeviceRole, PPQ};
 
@@ -87,6 +89,9 @@ impl Shared {
 #[derive(Debug)]
 pub struct ExternalProcessor {
     client: BridgeClient,
+    monitor: BridgeMonitor,
+    /// Sequence of this call's completed block, used to distinguish late GUI edits.
+    completed: Option<u32>,
     shared: Arc<Shared>,
     /// Instruments fall back to silence, effects to passthrough.
     role: DeviceRole,
@@ -117,7 +122,9 @@ impl ExternalProcessor {
         setup: ProcessorSetup,
     ) -> ExternalProcessor {
         ExternalProcessor {
+            monitor: BridgeMonitor::new(client.region().clone()),
             client,
+            completed: None,
             shared,
             role,
             setup,
@@ -284,6 +291,7 @@ impl ExternalProcessor {
 
     /// RT. The second half of a call: wait for the bridge's output, or write the fallback.
     fn finish(&mut self, started: Started, io: &mut StereoIo<'_>, offline: bool) -> ProcessStatus {
+        self.completed = None;
         let (status, fallback) = match started.outcome {
             Outcome::Fallback(status) => {
                 self.fallback(io);
@@ -297,10 +305,13 @@ impl ExternalProcessor {
                 {
                     // `PluginError` / `Inactive` results carry the bridge's own fallback in the
                     // output.
-                    Ok(result) => (
-                        ProcessStatus::Continue,
-                        result.status != BlockStatus::Ok as u32,
-                    ),
+                    Ok(result) => {
+                        self.completed = Some(seq);
+                        (
+                            ProcessStatus::Continue,
+                            result.status != BlockStatus::Ok as u32,
+                        )
+                    }
                     Err(_) => {
                         self.shared.late_blocks.fetch_add(1, Ordering::Relaxed);
                         self.fallback(io);
@@ -401,6 +412,29 @@ impl Processor for ExternalProcessor {
     fn begin(&mut self, ctx: &ProcessContext, events: &[Event], input: [&[f32]; 2]) -> bool {
         self.begun = Some(self.start(ctx, events, input, None));
         true
+    }
+
+    fn pop_parameter_edit(&mut self) -> Option<ParameterEdit> {
+        while let Some(event) = self.monitor.pop_output_event() {
+            let kind = match event.decode() {
+                Some(WireEventKind::ParamValue { id, value }) if value.is_finite() => {
+                    ParameterEditKind::Value { id, value }
+                }
+                Some(WireEventKind::ParamGesture { id, begin }) => {
+                    ParameterEditKind::Gesture { id, begin }
+                }
+                _ => continue,
+            };
+            // An edit from a timed-out request was not heard in that block. Keep the edit
+            // and its gesture ordering, but anchor it to the next engine segment.
+            let offset = if self.completed == Some(event.reserved) {
+                event.offset
+            } else {
+                0
+            };
+            return Some(ParameterEdit { offset, kind });
+        }
+        None
     }
 
     /// RT: the latency the bridge published in shared memory.

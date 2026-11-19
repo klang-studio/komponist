@@ -152,13 +152,22 @@ fn vst3_param_changes_from_the_app_reach_the_plugin() {
     let quiet = bridge.peak(0..BLOCK);
     assert!(quiet < level * 0.05, "−60 dB expected, level {quiet}");
 
-    // Automation from the engine travels through the shared event ring.
-    bridge.block(&[param(0, gain, 0.5)]);
-    let level = bridge.peak(0..BLOCK);
+    // Automation follows its frame offset through the shared event ring.
+    let at = BLOCK / 2;
+    bridge.block(&[param(at as u32, gain, 0.5)]);
+    assert!(
+        bridge.peak(0..at) < 0.002,
+        "old level before the automation point"
+    );
+    let level = bridge.peak(at..BLOCK);
     assert!((0.025..0.04).contains(&level), "level {level}");
+    assert_eq!(bridge.monitor.pop_output_event(), None, "no GUI edit echo");
+    assert_eq!(bridge.expect_value(gain).0, 0.5, "controller sync report");
 
-    // Deactivated and active again: the plugin kept the last value.
+    // Deactivation immediately after another block cannot lose its final controller update.
+    bridge.block(&[param(0, gain, 0.625)]);
     bridge.send(ControlMsg::Deactivate);
+    assert_eq!(bridge.expect_value(gain).0, 0.625);
     let deadline = Instant::now() + ANSWER_TIMEOUT;
     while bridge.region().bridge_state() != BridgeState::Loaded {
         assert!(Instant::now() < deadline);
@@ -167,7 +176,10 @@ fn vst3_param_changes_from_the_app_reach_the_plugin() {
     bridge.activate();
     bridge.block(&[note_on(0, 60)]);
     let level = bridge.peak(0..BLOCK);
-    assert!((0.025..0.04).contains(&level), "level {level}");
+    assert!(
+        (0.06..0.09).contains(&level),
+        "−22.5 dB expected, level {level}"
+    );
     assert_eq!(bridge.shutdown(), EXIT_OK);
 }
 
@@ -200,12 +212,11 @@ fn vst3_state_round_trips_between_bridges() {
     let mut second = Bridge::spawn();
     second.load(&bundle, SYNTH_VST3);
     second.send(ControlMsg::SetState {
+        request: 41,
         state: state.clone(),
     });
-    let values = second.expect("ParamValues", |m| match m {
-        BridgeMsg::ParamValues(v) if v.len() == 2 => Some(v.clone()),
-        _ => None,
-    });
+    let values = second.expect_restore(41).unwrap();
+    assert_eq!(values.len(), 2, "{values:?}");
     let value = |id| values.iter().find(|v| v.id == id).unwrap().value;
     assert!((value(gain) - 0.5).abs() < 1e-6, "{values:?}");
     assert!((value(decay) - 0.25).abs() < 1e-6, "{values:?}");
@@ -231,8 +242,16 @@ fn vst3_state_round_trips_between_bridges() {
     });
     second.expect_value_of(gain, 1.0);
     assert!(play(&mut second, 70) > 0.5);
-    second.send(ControlMsg::SetState { state });
-    second.expect_value_of(gain, 0.5);
+    // Leave a control change queued without processing audio. The state supersedes it.
+    second.send(ControlMsg::SetParam {
+        id: gain,
+        value: 0.25,
+    });
+    second.expect_value_of(gain, 0.25);
+    second.send(ControlMsg::SetState { request: 42, state });
+    let values = second.expect_restore(42).unwrap();
+    let restored_gain = values.iter().find(|value| value.id == gain).unwrap();
+    assert!((restored_gain.value - 0.5).abs() < 1e-6, "{values:?}");
     let level = play(&mut second, 71);
     assert!(
         (0.025..0.04).contains(&level),

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 pub use context::{ParamContext, ResolveError, placeholders, resolve};
 pub use layout::{AUTO_COLUMNS, AUTO_MAX, auto_layout};
-pub use scale::{DBT, SILENCE_POSITION, db_to_p, p_to_db};
+pub use scale::{DBT, SILENCE_POSITION, db_to_p, p_to_db, to_normalized, to_plain};
 
 /// The stable id of a parameter, saved in projects (automation, mappings later). Internal devices
 /// use readable keys (`"op1_attack"`), bridged plugins `"p<id>"` ([`ParamId::plugin`]).

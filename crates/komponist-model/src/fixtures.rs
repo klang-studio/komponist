@@ -305,6 +305,7 @@ fn demo_track(
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     }
 }
 
@@ -319,6 +320,7 @@ fn clip(id: ClipId, bar: i64, bars: i64, name: &str, content: ClipContent) -> Cl
         mute: false,
         transpose: 0,
         velocity_pct: 0,
+        automation: Vec::new(),
         content,
     }
 }
@@ -486,6 +488,97 @@ const TAL_CHORUS: DemoPlugin = DemoPlugin {
     vendor: "TAL-Togu Audio Line",
     version: "1.6.3",
 };
+
+/// MIDI and step envelopes, arrangement lanes and a master lane for automation integration tests.
+pub fn automation_project() -> Project {
+    use crate::automation::{
+        AutomationMode, AutomationOwner, AutomationTarget, Point, Points, Shape,
+    };
+    use crate::edits::{self, NewBus, automation::*};
+    use crate::params::ParamId;
+
+    let project = demo_project();
+    let track = project.tracks[2].id;
+    let midi = project.tracks[2].clips[0].id;
+    let drum = project.tracks[0].clips[0].id;
+    let hexa = project.tracks[2].channel.instrument().unwrap().1.id;
+    let (mut project, _) = edits::add_bus(&project, NewBus::effect(vec![track])).unwrap();
+    let send = project.track(track).unwrap().sends[0].id;
+    let owner = AutomationOwner::Track(track);
+    let feedback = AutomationTarget::Param {
+        device: hexa,
+        param: ParamId::new("feedback"),
+    };
+    for (owner, target, label, mode) in [
+        (
+            owner,
+            feedback.clone(),
+            "Hexa · Feedback",
+            AutomationMode::Read,
+        ),
+        (
+            owner,
+            AutomationTarget::Volume,
+            "Volume",
+            AutomationMode::Touch,
+        ),
+        (
+            owner,
+            AutomationTarget::Send { send },
+            "Send",
+            AutomationMode::Latch,
+        ),
+        (
+            owner,
+            AutomationTarget::Macro { index: 2 },
+            "Macro 3",
+            AutomationMode::Off,
+        ),
+        (
+            AutomationOwner::Master,
+            AutomationTarget::Pan,
+            "Pan",
+            AutomationMode::Read,
+        ),
+    ] {
+        let (next, lane) = add_lane(&project, owner, target, label.into()).unwrap();
+        let points = Points::new(vec![
+            Point::linear(Tick::ZERO, 0.25),
+            Point {
+                tick: Tick(960),
+                value: 0.5,
+                shape: Shape::Curve { tension: 0.5 },
+            },
+            Point {
+                tick: Tick(1920),
+                value: 0.75,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(3840), 0.5),
+        ]);
+        project = set_lane_points(&next, owner, lane, points).unwrap();
+        project = set_lane_mode(&project, owner, lane, mode).unwrap();
+    }
+    project = set_shown(&project, owner, true).unwrap();
+    project = edits::set_clip_loop(&project, midi, Some(Tick(1920)), Tick(3840)).unwrap();
+    for (clip, target, label) in [
+        (midi, feedback, "Hexa · Feedback"),
+        (drum, AutomationTarget::Pan, "Pan"),
+    ] {
+        project = add_clip_automation(&project, clip, target.clone(), label.into()).unwrap();
+        project = set_clip_points(
+            &project,
+            clip,
+            &target,
+            Points::new(vec![
+                Point::linear(Tick::ZERO, 0.25),
+                Point::linear(Tick(1920), 0.75),
+            ]),
+        )
+        .unwrap();
+    }
+    project
+}
 
 #[cfg(test)]
 mod tests {

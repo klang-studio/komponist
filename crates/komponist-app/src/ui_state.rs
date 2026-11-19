@@ -7,8 +7,10 @@
 //! Thread: UI thread only.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
+use komponist_model::automation::Lane;
 use komponist_model::params::ParamId;
 use komponist_model::{
     ClipContent, ClipId, Device, DeviceId, Grid, NoteId, Project, TickRange, TrackId,
@@ -202,6 +204,7 @@ impl Default for ArrangementView {
             grid: Grid::Bar,
             snap: true,
             rename_request: None,
+            automation_reveal: None,
         }
     }
 }
@@ -335,6 +338,11 @@ pub struct ArrangementView {
     /// A bus made by Strg G or „Send zu neuem Bus“: its header opens in rename mode (taken by the
     /// arrangement when it shows the track). Only set while the arrangement is visible.
     pub rename_request: Option<TrackId>,
+    /// Scroll to the lane opened from a parameter control or the chooser.
+    pub automation_reveal: Option<(
+        komponist_model::automation::AutomationOwner,
+        komponist_model::automation::LaneId,
+    )>,
 }
 
 /// The editor tab.
@@ -423,9 +431,18 @@ pub struct DevicesView {
     /// bring it into view.
     pub reveal: Option<(DeviceId, Reveal)>,
     /// Ctrl C: the copied devices (Ctrl V inserts them behind the selected device).
-    pub clipboard: Vec<Device>,
+    pub clipboard: Vec<CopiedDevice>,
     /// The parameter touched last (WP-89): the inspector's "Parameter" section.
     pub touched: Option<ParamTouch>,
+    /// Parameters touched most recently, for the automation chooser.
+    pub automation_recent: Vec<ParamTouch>,
+}
+
+/// A device and the lane contents captured by Copy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopiedDevice {
+    pub device: Device,
+    pub lanes: Vec<Arc<Lane>>,
 }
 
 /// The parameter of a device the user touched last.

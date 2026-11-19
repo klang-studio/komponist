@@ -267,6 +267,7 @@ pub fn track(id: u64, devices: Vec<Device>) -> Track {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     }
 }
 
@@ -372,6 +373,16 @@ impl Rig {
     /// Polls the engine and the manager (UI-thread work between callbacks).
     pub fn poll(&mut self) {
         while let Some(event) = self.handle.poll() {
+            if let EngineEvent::PluginParams { slot, ref events } = event
+                && let Some(device) = self.program.slots.device(slot)
+            {
+                for event in events.as_slice() {
+                    use komponist_engine::processor::ParameterEditKind;
+                    if let ParameterEditKind::Value { id, value } = event.kind {
+                        self.manager.edited_param(device, id, value);
+                    }
+                }
+            }
             if !matches!(event, EngineEvent::Retired(_)) {
                 self.engine_events.push(event);
             }

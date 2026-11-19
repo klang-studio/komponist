@@ -31,6 +31,7 @@
 
 pub mod api;
 pub mod audio;
+pub mod automation;
 pub mod compile;
 pub mod engine;
 pub mod export;

@@ -13,15 +13,14 @@
 //!   plugins there pump their own window messages and timers), so `RunLoop` stays empty there.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_void};
 #[cfg(unix)]
 use std::os::fd::{BorrowedFd, RawFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-#[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use komponist_ipc::{GuiSize, LogLevel};
 #[cfg(unix)]
@@ -69,6 +68,12 @@ pub(crate) enum Edit {
     /// A GUI gesture (`beginEdit` = true / `endEdit` = false), echoed as a `ParamGesture` output
     /// event.
     Gesture(u32, bool),
+}
+
+/// An edit is valid only until the next successful component state load.
+pub(crate) struct QueuedEdit {
+    pub(crate) generation: u64,
+    pub(crate) edit: Edit,
 }
 
 /// Whether the interface id behind `iid` is `I`'s.
@@ -370,12 +375,15 @@ impl IAttributeListTrait for HostAttributeList {
 #[derive(Default)]
 pub(crate) struct Edits {
     inner: Mutex<EditsInner>,
+    generation: AtomicU64,
 }
 
 #[derive(Default)]
 struct EditsInner {
-    to_processor: Option<rtrb::Producer<Edit>>,
+    to_processor: Option<rtrb::Producer<QueuedEdit>>,
     pending: Vec<ParamChange>,
+    gestures: HashSet<u32>,
+    controller_sync: HashMap<u32, (Instant, f64)>,
 }
 
 impl EditsInner {
@@ -388,11 +396,47 @@ impl EditsInner {
 }
 
 impl Edits {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_controller_sync(&self, id: u32, value: f64) {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .controller_sync
+            .insert(id, (Instant::now(), value));
+    }
+
+    /// A controller may echo a host value through performEdit without opening a gesture.
+    fn controller_echo(&self, id: u32, value: f64) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        !inner.gestures.contains(&id)
+            && inner
+                .controller_sync
+                .get(&id)
+                .is_some_and(|&(sent, sent_value)| {
+                    sent.elapsed() < Duration::from_millis(50) && sent_value == value
+                })
+    }
+
     /// Queues a change; `false` if the processor's ring is full (the change is lost).
     pub(crate) fn push(&self, edit: Edit) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Edit::Gesture(id, begin) = edit {
+            if begin {
+                inner.gestures.insert(id);
+            } else {
+                inner.gestures.remove(&id);
+            }
+        }
         match (inner.to_processor.as_mut(), edit) {
-            (Some(ring), _) => ring.push(edit).is_ok(),
+            (Some(ring), _) => ring
+                .push(QueuedEdit {
+                    generation: self.generation.load(Ordering::Relaxed),
+                    edit,
+                })
+                .is_ok(),
             (None, Edit::Set(id, value) | Edit::Perform(id, value)) => {
                 inner.keep_pending((id, value));
                 true
@@ -402,10 +446,13 @@ impl Edits {
     }
 
     /// Activation: changes go to `ring` from now on; returns the pending ones.
-    pub(crate) fn connect(&self, ring: rtrb::Producer<Edit>) -> Vec<ParamChange> {
+    pub(crate) fn connect(&self, ring: rtrb::Producer<QueuedEdit>) -> (u64, Vec<ParamChange>) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.to_processor = Some(ring);
-        std::mem::take(&mut inner.pending)
+        (
+            self.generation.load(Ordering::Relaxed),
+            std::mem::take(&mut inner.pending),
+        )
     }
 
     /// Deactivation: changes the processor did not apply become pending again.
@@ -430,11 +477,9 @@ impl Edits {
 
     /// Forgets pending changes (a state load supersedes them).
     pub(crate) fn clear_pending(&self) {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pending
-            .clear();
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.pending.clear();
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Pending changes, for tests.
@@ -487,6 +532,9 @@ impl IComponentHandlerTrait for ComponentHandler {
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
         let value = value.clamp(0.0, 1.0);
+        if self.edits.controller_echo(id, value) {
+            return kResultOk;
+        }
         if !self.edits.push(Edit::Perform(id, value)) {
             self.notify.log(
                 LogLevel::Warning,
@@ -879,6 +927,21 @@ impl IRunLoopTrait for PlugFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controller_echo_guard_allows_an_explicit_user_gesture() {
+        let edits = Edits::default();
+        assert!(!edits.controller_echo(2, 0.0));
+        edits.mark_controller_sync(2, 0.0);
+        assert!(edits.controller_echo(2, 0.0));
+        assert!(!edits.controller_echo(2, 1.0));
+        assert!(!edits.controller_echo(3, 0.0));
+        edits.push(Edit::Gesture(2, true));
+        assert!(!edits.controller_echo(2, 0.0));
+        edits.push(Edit::Gesture(2, false));
+        assert!(edits.controller_echo(2, 0.0));
+    }
+
     use crate::host_loop::{PollLoop, notification_bits as bits};
     #[cfg(unix)]
     use std::sync::atomic::AtomicU32;
@@ -970,11 +1033,18 @@ mod tests {
         assert!(edits.push(Edit::Set(1, 0.75)));
         assert_eq!(edits.pending(), [(1, 0.75), (2, 0.5)]);
         let (producer, mut consumer) = rtrb::RingBuffer::new(2);
-        assert_eq!(edits.connect(producer), [(1, 0.75), (2, 0.5)]);
+        assert_eq!(edits.connect(producer), (0, vec![(1, 0.75), (2, 0.5)]));
         assert!(edits.pending().is_empty());
         assert!(edits.push(Edit::Gesture(3, true)) && edits.push(Edit::Perform(3, 0.1)));
         assert!(!edits.push(Edit::Set(5, 0.3)), "ring full");
-        assert_eq!(consumer.pop(), Ok(Edit::Gesture(3, true)));
+        let early = consumer.pop().unwrap();
+        assert_eq!(early.edit, Edit::Gesture(3, true));
+        edits.clear_pending();
+        let stale = consumer.pop().unwrap();
+        assert_ne!(stale.generation, edits.generation());
+        assert!(edits.push(Edit::Set(5, 0.75)));
+        let fresh = consumer.pop().unwrap();
+        assert_eq!(fresh.generation, edits.generation());
         edits.disconnect([(3, 0.1)]);
         assert!(edits.push(Edit::Set(4, 0.9)));
         assert_eq!(edits.pending(), [(3, 0.1), (4, 0.9)]);

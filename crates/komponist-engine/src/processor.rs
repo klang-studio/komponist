@@ -95,6 +95,12 @@ pub trait Processor: Send {
         0
     }
 
+    /// RT. Pops a parameter value or gesture produced by the plugin GUI in its last block.
+    /// The engine calls this after the chain jobs finish. Offsets are relative to that block.
+    fn pop_parameter_edit(&mut self) -> Option<ParameterEdit> {
+        None
+    }
+
     /// RT. Silences all voices and clears internal state (tails, delay lines) without
     /// deallocating. Called on stop, on locate while playing and when bypass turns on. Not on a loop
     /// wrap: there only the sequenced notes end, so tails keep sounding across the loop.
@@ -108,6 +114,34 @@ pub trait Processor: Send {
     fn event_processor(&mut self) -> Option<&mut dyn EventProcessor> {
         None
     }
+}
+
+/// A plugin GUI edit reported by a processor, with its offset in the current segment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParameterEdit {
+    /// Frame offset in the segment.
+    pub offset: u32,
+    /// Value or gesture edge.
+    pub kind: ParameterEditKind,
+}
+
+/// Edit data, addressed by a processor's wire parameter id.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParameterEditKind {
+    /// The parameter changed to this plain value.
+    Value {
+        /// Wire parameter id.
+        id: u32,
+        /// Plain value.
+        value: f64,
+    },
+    /// An explicit plugin GUI gesture edge.
+    Gesture {
+        /// Wire parameter id.
+        id: u32,
+        /// True at the beginning, false at the end.
+        begin: bool,
+    },
 }
 
 /// The event stage of a MIDI effect (WP-88, ARCHITECTURE §6.4.2): events in, events out, in front of
@@ -149,17 +183,30 @@ pub trait EventProcessor {
 pub struct EventSink<'a> {
     list: &'a mut crate::sequencer::EventList,
     frames: u32,
+    start: u32,
 }
 
 impl<'a> EventSink<'a> {
     pub(crate) fn new(list: &'a mut crate::sequencer::EventList, frames: u32) -> EventSink<'a> {
-        EventSink { list, frames }
+        Self::in_segment(list, 0, frames)
+    }
+
+    pub(crate) fn in_segment(
+        list: &'a mut crate::sequencer::EventList,
+        start: u32,
+        frames: u32,
+    ) -> EventSink<'a> {
+        EventSink {
+            list,
+            frames,
+            start,
+        }
     }
 
     /// RT. Adds an event at `offset` (clamped to the call). `false` when the output is full.
     pub fn push(&mut self, offset: u32, kind: EventKind) -> bool {
         self.list
-            .push(offset.min(self.frames.saturating_sub(1)), kind)
+            .push(self.start + offset.min(self.frames.saturating_sub(1)), kind)
     }
 
     /// Events that still fit.

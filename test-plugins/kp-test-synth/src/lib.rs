@@ -106,7 +106,7 @@ impl Plugin for KpTestSynth {
     }];
 
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
-    const SAMPLE_ACCURATE_AUTOMATION: bool = false;
+    const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type Editor = nice_plug_egui::EguiEditor<editor::SynthEditor>;
     type SysExMessage = ();

@@ -54,8 +54,11 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     });
     let track = TrackProgram {
+        automation: Default::default(),
+        chain_latency: 0,
         id: TrackId(1),
         source,
         notes: notes.into(),
@@ -89,6 +92,9 @@ fn program(bpm: f64, notes: Vec<SeqNote>) -> Program {
         song_end: Tick(0),
         tracks: vec![Arc::new(track)],
         master: MasterProgram {
+            automation: Default::default(),
+            automation_source: Default::default(),
+            chain_latency: 0,
             chain: Vec::new(),
             gain: 1.0,
             pan: 0.0,

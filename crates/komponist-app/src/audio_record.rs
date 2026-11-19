@@ -147,6 +147,7 @@ fn recording_preview(
         mute: false,
         transpose: 0,
         velocity_pct: 0,
+        automation: Vec::new(),
         content: ClipContent::Audio(source),
     })
 }

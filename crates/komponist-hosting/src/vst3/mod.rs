@@ -590,6 +590,7 @@ impl Vst3Plugin {
             return;
         };
         while let Ok((id, value)) = active.from_processor.pop() {
+            self.edits.mark_controller_sync(id, value.clamp(0.0, 1.0));
             // SAFETY: main thread.
             unsafe { controller.setParamNormalized(id, value) };
         }
@@ -723,7 +724,7 @@ impl Vst3Plugin {
 
         let (to_processor, from_main) = rtrb::RingBuffer::new(EDIT_RING);
         let (to_controller, from_processor) = rtrb::RingBuffer::new(TO_CONTROLLER_RING);
-        let initial = self.edits.connect(to_processor);
+        let (initial_generation, initial) = self.edits.connect(to_processor);
         let alive = Arc::new(AtomicBool::new(true));
         let processor = Vst3Processor::new(ProcessorSetup {
             audio: self.audio.clone(),
@@ -738,6 +739,7 @@ impl Vst3Plugin {
             midi_map: self.midi_map.clone(),
             edits: self.edits.clone(),
             from_main,
+            initial_generation,
             initial,
             to_controller,
             alive: alive.clone(),
@@ -924,6 +926,11 @@ impl HostedPlugin for Vst3Plugin {
         }
     }
 
+    fn sync_controller_param(&mut self, id: u32, value: f64) {
+        self.edits.mark_controller_sync(id, value.clamp(0.0, 1.0));
+        self.set_param(id, value);
+    }
+
     fn flush_params(&mut self, input: &[WireEvent], _output: &mut Vec<WireEvent>) {
         // VST3 has no flush with output: the controller takes the values now, the processor in
         // the next processed block (see the module docs).
@@ -974,11 +981,19 @@ impl HostedPlugin for Vst3Plugin {
         // SAFETY: main thread (allowed while active, VST3 threading model).
         let result = stream::read_with(parts.component, |s| unsafe { self.component.setState(s) });
         if result != kResultOk {
+            // A failed load can have changed the component. Use its current state, not the
+            // rejected blob, to bring a separate controller back in sync for parameter reads.
+            if self.separate_controller
+                && let Some(controller) = &self.controller
+                && let Ok(current) = stream::write_with(|s| unsafe { self.component.getState(s) })
+            {
+                stream::read_with(&current, |s| unsafe { controller.setComponentState(s) });
+            }
             return Err(HostingError::State(format!(
                 "IComponent::setState returned {result}"
             )));
         }
-        // A loaded state supersedes edits made while inactive.
+        // A loaded state supersedes queued edits, whether the processor is active or not.
         self.edits.clear_pending();
         if self.separate_controller
             && let Some(controller) = &self.controller

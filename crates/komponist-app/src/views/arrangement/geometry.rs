@@ -8,6 +8,7 @@
 //! [`ArrangementView::scroll_tick`].
 
 use egui::{Pos2, Rangef, Rect, pos2};
+use komponist_model::automation::{AutomationOwner, LaneId, TrackAutomation};
 use komponist_model::project::{TRACK_HEIGHT_MAX, TRACK_HEIGHT_MIN};
 use komponist_model::{Clip, ClipId, Project, Tick, TrackId, routing};
 use komponist_tokens::{line, size};
@@ -82,22 +83,70 @@ fn plan(project: &Project, v_zoom: f32) -> Vec<(f32, RowKind, u8)> {
 /// buses, the „Busse“ section.
 pub fn content_height(project: &Project, v_zoom: f32) -> f32 {
     let rows = plan(project, v_zoom);
-    let main: f32 = rows
+    let tracks = project
+        .tracks
         .iter()
-        .filter(|(_, k, _)| *k != RowKind::EffectBus)
-        .map(|(h, _, _)| h)
-        .sum();
-    let buses: f32 = rows
-        .iter()
-        .filter(|(_, k, _)| *k == RowKind::EffectBus)
-        .map(|(h, _, _)| h)
-        .sum();
-    let section = if buses > 0.0 {
-        metrics::SECTION_LABEL + buses
+        .zip(rows.iter())
+        .map(|(track, (height, kind, _))| {
+            height
+                + if *kind == RowKind::Hidden {
+                    0.0
+                } else {
+                    automation_height(&track.automation)
+                }
+        })
+        .sum::<f32>();
+    let section = if rows.iter().any(|(_, kind, _)| *kind == RowKind::EffectBus) {
+        metrics::SECTION_LABEL
     } else {
         0.0
     };
-    main + metrics::NEW_TRACK_MIN_HEIGHT + section
+    tracks
+        + metrics::NEW_TRACK_MIN_HEIGHT
+        + section
+        + size::track::MIN
+        + automation_height(&project.master_automation)
+}
+
+fn automation_height(automation: &TrackAutomation) -> f32 {
+    if !automation.shown {
+        return 0.0;
+    }
+    automation
+        .lanes
+        .iter()
+        .map(|lane| f32::from(lane.height))
+        .sum()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct AutomationRow {
+    pub owner: AutomationOwner,
+    pub lane: LaneId,
+    pub y: Rangef,
+    pub depth: u8,
+}
+
+fn place_automation(
+    rows: &mut Vec<AutomationRow>,
+    owner: AutomationOwner,
+    automation: &TrackAutomation,
+    y: &mut f32,
+    depth: u8,
+) {
+    if !automation.shown {
+        return;
+    }
+    for lane in &automation.lanes {
+        let bottom = *y + f32::from(lane.height);
+        rows.push(AutomationRow {
+            owner,
+            lane: lane.id,
+            y: Rangef::new(*y, bottom),
+            depth,
+        });
+        *y = bottom;
+    }
 }
 
 /// One track row on screen.
@@ -229,6 +278,9 @@ pub struct Geometry {
     pub rows_end: f32,
     /// The label row of the „Busse“ section, when the project has effect buses.
     pub section: Option<Rect>,
+    /// Master row, beneath tracks, the add-track area and effect buses.
+    pub master: Rangef,
+    pub(super) automation: Vec<AutomationRow>,
 }
 
 impl Geometry {
@@ -251,6 +303,7 @@ impl Geometry {
         let plan = plan(project, view.v_zoom);
         let mut y = tracks.top() - view.scroll_y;
         let mut rows: Vec<Row> = Vec::with_capacity(plan.len());
+        let mut automation = Vec::new();
         for (t, &(h, kind, depth)) in project.tracks.iter().zip(&plan) {
             if kind == RowKind::EffectBus {
                 // Placed below "Neue Spur" once the flow of tracks is laid out.
@@ -269,23 +322,49 @@ impl Geometry {
                 depth,
             });
             y += h;
+            if kind != RowKind::Hidden {
+                place_automation(
+                    &mut automation,
+                    AutomationOwner::Track(t.id),
+                    &t.automation,
+                    &mut y,
+                    depth.saturating_add(1),
+                );
+            }
         }
         let rows_end = y;
         let mut section = None;
+        let mut below = rows_end + metrics::NEW_TRACK_MIN_HEIGHT;
         if rows.iter().any(|r| r.kind == RowKind::EffectBus) {
-            let mut by = rows_end + metrics::NEW_TRACK_MIN_HEIGHT;
+            let by = below;
             section = Some(Rect::from_x_y_ranges(
                 Rangef::new(body.left(), body.right()),
                 Rangef::new(by, by + metrics::SECTION_LABEL),
             ));
-            by += metrics::SECTION_LABEL;
-            for (row, &(h, kind, _)) in rows.iter_mut().zip(&plan) {
+            below += metrics::SECTION_LABEL;
+            for ((row, &(h, kind, _)), track) in rows.iter_mut().zip(&plan).zip(&project.tracks) {
                 if kind == RowKind::EffectBus {
-                    row.y = Rangef::new(by, by + h);
-                    by += h;
+                    row.y = Rangef::new(below, below + h);
+                    below += h;
+                    place_automation(
+                        &mut automation,
+                        AutomationOwner::Track(track.id),
+                        &track.automation,
+                        &mut below,
+                        1,
+                    );
                 }
             }
         }
+        let master = Rangef::new(below, below + size::track::MIN);
+        let mut end = master.max;
+        place_automation(
+            &mut automation,
+            AutomationOwner::Master,
+            &project.master_automation,
+            &mut end,
+            1,
+        );
         Geometry {
             body,
             count,
@@ -297,6 +376,8 @@ impl Geometry {
             rows,
             rows_end,
             section,
+            master,
+            automation,
         }
     }
 
@@ -330,12 +411,16 @@ impl Geometry {
         let top = self.rows_end.clamp(self.tracks.top(), self.tracks.bottom());
         let bottom = match self.section {
             Some(s) => s.top().clamp(top, self.tracks.bottom()),
-            None => self.tracks.bottom(),
+            None => self.master.min.clamp(top, self.tracks.bottom()),
         };
         Rect::from_min_max(
             pos2(self.tracks.left(), top),
             pos2(self.tracks.right(), bottom),
         )
+    }
+
+    pub(super) fn automation_at(&self, y: f32) -> bool {
+        self.master.contains(y) || self.automation.iter().any(|row| row.y.contains(y))
     }
 
     /// Whether row `i` is shown and at least partly visible.

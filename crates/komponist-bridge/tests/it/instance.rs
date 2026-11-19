@@ -52,8 +52,11 @@ fn protocol_errors_keep_the_bridge_alive() {
     bridge.expect_error(ErrorContext::Activate);
     bridge.send(ControlMsg::GetState { request: 1 });
     bridge.expect_error(ErrorContext::State);
-    bridge.send(ControlMsg::SetState { state: vec![1] });
-    bridge.expect_error(ErrorContext::State);
+    bridge.send(ControlMsg::SetState {
+        request: 1,
+        state: vec![1],
+    });
+    bridge.expect_restore(1).unwrap_err();
     bridge.send(ControlMsg::SetParam { id: 0, value: 0.0 });
     bridge.expect_error(ErrorContext::Params);
     bridge.send(ControlMsg::OpenGui(komponist_ipc::GuiTarget::X11Child {
@@ -127,9 +130,10 @@ fn protocol_errors_keep_the_bridge_alive() {
         });
         bridge.expect_error(ErrorContext::Activate);
         bridge.send(ControlMsg::SetState {
+            request: 41,
             state: b"not a state".to_vec(),
         });
-        bridge.expect_error(ErrorContext::State);
+        bridge.expect_restore(41).unwrap_err();
         // Still serving blocks and the heartbeat.
         bridge.block(&[]);
         bridge.heartbeat();
@@ -346,10 +350,16 @@ fn param_changes_from_the_app_reach_the_plugin() {
     let loud = bridge.peak(0..BLOCK);
     assert!((0.9..1.01).contains(&loud), "0 dB expected, level {loud}");
 
-    // Automation from the engine travels through the shared event ring.
-    bridge.block(&[param(0, gain, 0.5)]);
-    let level = bridge.peak(0..BLOCK);
+    // Automation follows its frame offset through the shared event ring.
+    let at = BLOCK / 2;
+    bridge.block(&[param(at as u32, gain, 0.5)]);
+    assert!(
+        bridge.peak(0..at) > 0.85,
+        "old level before the automation point"
+    );
+    let level = bridge.peak(at..BLOCK);
     assert!((0.025..0.04).contains(&level), "level {level}");
+    assert_eq!(bridge.monitor.pop_output_event(), None, "no GUI edit echo");
 
     // Deactivated and active again: the plugin kept the last value.
     bridge.send(ControlMsg::Deactivate);
@@ -403,13 +413,12 @@ fn state_round_trips_between_bridges() {
     let mut second = Bridge::spawn();
     second.load(&bundle, SYNTH);
     second.send(ControlMsg::SetState {
+        request: 41,
         state: state.clone(),
     });
     // After a state load the bridge reports every value.
-    let values = second.expect("ParamValues", |m| match m {
-        BridgeMsg::ParamValues(v) if v.len() == 2 => Some(v.clone()),
-        _ => None,
-    });
+    let values = second.expect_restore(41).unwrap();
+    assert_eq!(values.len(), 2, "{values:?}");
     let value = |id| values.iter().find(|v| v.id == id).unwrap().value;
     assert!((value(gain) - 0.5).abs() < 1e-6, "{values:?}");
     assert!((value(decay) - 0.25).abs() < 1e-6, "{values:?}");
@@ -438,8 +447,10 @@ fn state_round_trips_between_bridges() {
     second.expect_value_of(gain, 1.0);
     let loud = play(&mut second, 70);
     assert!(loud > 0.5, "0 dB expected, level {loud}");
-    second.send(ControlMsg::SetState { state });
-    second.expect_value_of(gain, 0.5);
+    second.send(ControlMsg::SetState { request: 42, state });
+    let values = second.expect_restore(42).unwrap();
+    let restored_gain = values.iter().find(|value| value.id == gain).unwrap();
+    assert!((restored_gain.value - 0.5).abs() < 1e-6, "{values:?}");
     let level = play(&mut second, 71);
     assert!(
         (0.025..0.04).contains(&level),

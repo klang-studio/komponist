@@ -38,6 +38,7 @@
 //! Keys (Strg D, Strg E, 0, Entf, +, −, Z, Strg [ ]) are the keymap's.
 
 mod audio_drop;
+mod automation;
 mod buses;
 mod cache;
 mod files;
@@ -223,6 +224,7 @@ pub struct Arrangement {
     /// A press on M S R I opened a gesture (ended on release).
     toggle_gesture: bool,
     memo: Option<Memo>,
+    automation: automation::State,
 }
 
 impl Arrangement {
@@ -238,6 +240,10 @@ impl Arrangement {
 }
 
 impl View for Arrangement {
+    fn reset_document(&mut self) {
+        self.automation = automation::State::default();
+    }
+
     fn header(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         toolbar::show(ui, ctx);
     }
@@ -250,7 +256,24 @@ impl View for Arrangement {
         self.follow_zoom(ui, ctx, &project, body);
         self.wheel(ui, ctx, &project, body);
         clamp_scroll(&mut ctx.ui.arrangement, &project, body);
-        let g = Geometry::new(body, &project, &ctx.ui.arrangement);
+        let mut g = Geometry::new(body, &project, &ctx.ui.arrangement);
+        if let Some((owner, lane)) = ctx.ui.arrangement.automation_reveal.take()
+            && let Some(row) = g
+                .automation
+                .iter()
+                .find(|row| row.owner == owner && row.lane == lane)
+        {
+            let delta = if row.y.min < g.tracks.top() || row.y.span() > g.tracks.height() {
+                row.y.min - g.tracks.top()
+            } else {
+                (row.y.max - g.tracks.bottom()).max(0.0)
+            };
+            if delta != 0.0 {
+                ctx.ui.arrangement.scroll_y = (ctx.ui.arrangement.scroll_y + delta)
+                    .clamp(0.0, g.max_scroll_y(&project, ctx.ui.arrangement.v_zoom));
+                g = Geometry::new(body, &project, &ctx.ui.arrangement);
+            }
+        }
 
         if escape_pressed(ui) && self.drag.is_some() {
             self.cancel_drag(ctx);
@@ -291,6 +314,7 @@ impl View for Arrangement {
         self.lanes(&mut lanes, ctx, &project, &g);
         self.headers(&mut tracks, ctx, &project, &g);
         self.new_track_area(&mut tracks, ctx, &g);
+        self.automation.show(&mut tracks, ctx, &project, &g);
         self.overlays(&mut tracks, ctx, &project, &g);
         if project.tracks.is_empty() {
             self.empty_hint(&mut tracks, ctx, &g);
@@ -569,10 +593,21 @@ pub fn drop_target_at(project: &Project, g: &Geometry, pos: Pos2) -> Option<Drop
     if !g.tracks.contains(pos) {
         return None;
     }
-    match g.row_at(pos.y) {
-        Some(i) => Some(DropTarget::Track(project.tracks.get(i)?.id)),
-        None => Some(DropTarget::NewTrack { index: None }),
+    if let Some(i) = g.row_at(pos.y) {
+        return Some(DropTarget::Track(project.tracks.get(i)?.id));
     }
+    if let Some(row) = g.automation.iter().find(|row| row.y.contains(pos.y)) {
+        return match row.owner {
+            komponist_model::automation::AutomationOwner::Track(id) => Some(DropTarget::Track(id)),
+            komponist_model::automation::AutomationOwner::Master => None,
+        };
+    }
+    let bottom = g
+        .automation
+        .last()
+        .map_or(g.master.max, |row| g.master.max.max(row.y.max));
+    // The add-track area and unused space below the master accept new tracks.
+    (g.new_track().contains(pos) || pos.y > bottom).then_some(DropTarget::NewTrack { index: None })
 }
 
 /// The `to_index` of `MoveTracks` for `tracks` dropped at insert position `slot` (0 ..= track

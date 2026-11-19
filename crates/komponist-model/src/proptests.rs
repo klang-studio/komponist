@@ -767,6 +767,7 @@ fn raw_project(nodes: &[RawNode], master_sidechain: Option<u8>, forward: bool) -
                 .collect(),
             folder: *bus && *folder,
             folded: false,
+            automation: Default::default(),
         }));
     }
     if let Some(s) = master_sidechain {

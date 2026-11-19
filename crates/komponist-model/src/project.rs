@@ -16,6 +16,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{AudioClip, AudioInput, AudioIo};
+use crate::automation::{ClipAutomation, TrackAutomation};
 use crate::ids::{ClipId, DeviceId, NoteId, SendId, TrackId};
 use crate::time::{Meter, StepResolution, Tempo, TempoMap, Tick, TickRange};
 
@@ -95,6 +96,9 @@ pub struct Project {
     pub tracks: Vec<Arc<Track>>,
     /// The master strip: volume, pan and master inserts (`devices` holds effects only).
     pub master: Arc<Channel>,
+    /// Automation lanes of the master channel.
+    #[serde(default, skip_serializing_if = "TrackAutomation::is_empty")]
+    pub master_automation: Arc<TrackAutomation>,
     /// Next free id for [`TrackId`], [`ClipId`], [`NoteId`] and [`DeviceId`] (one counter for all
     /// kinds). Only grows.
     pub next_id: u64,
@@ -114,6 +118,7 @@ impl Project {
             count_in_bars: 1,
             tracks: Vec::new(),
             master: Arc::new(Channel::default()),
+            master_automation: Arc::default(),
             next_id: 1,
         }
     }
@@ -259,6 +264,9 @@ pub struct Track {
     /// A group whose members are hidden in the arrangement. Only on a [`Track::folder`] bus.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folded: bool,
+    /// Automation lanes in display order.
+    #[serde(default, skip_serializing_if = "TrackAutomation::is_empty")]
+    pub automation: TrackAutomation,
 }
 
 impl Track {
@@ -640,6 +648,9 @@ pub struct Clip {
     pub velocity_pct: i8,
     /// MIDI notes, a step pattern or an audio window.
     pub content: ClipContent,
+    /// Parameter envelopes in content-relative ticks, shared by all takes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation: Vec<ClipAutomation>,
 }
 
 impl Clip {

@@ -158,7 +158,7 @@ impl View for Inspector {
             track::section(self, ui, ctx, &project, x, &mut y, track);
             track::devices_section(self, ui, ctx, x, &mut y, track);
             if let Some(touched) = param::touched(ctx, track.id) {
-                param::section(ui, ctx.lang, x, &mut y, &touched);
+                param::section(ui, ctx, x, &mut y, &touched);
             }
             if sections.channel {
                 channel::section(ui, ctx, x, &mut y, track);

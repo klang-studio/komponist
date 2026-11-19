@@ -574,7 +574,12 @@ impl App {
                 // reports its own status.
                 SyncEvent::Engine(event) => self.engine_event(&event, playhead),
                 SyncEvent::Device(event) => {
-                    recompile |= matches!(event, PluginManagerEvent::LatencyChanged { .. });
+                    recompile |= matches!(
+                        event,
+                        PluginManagerEvent::LatencyChanged { .. }
+                            | PluginManagerEvent::ParamsChanged { .. }
+                            | PluginManagerEvent::StatusChanged { .. }
+                    );
                     self.handle_device_event(&event);
                     self.shell.device_events.push(event);
                 }
@@ -602,6 +607,16 @@ impl App {
             }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
+            EngineEvent::PluginParams { slot, ref events } => {
+                if let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot)) {
+                    for change in events.as_slice() {
+                        use komponist_engine::processor::ParameterEditKind;
+                        if let ParameterEditKind::Value { id, value } = change.kind {
+                            self.engine.host_mut().edited_param(device, id, value);
+                        }
+                    }
+                }
+            }
             _ => {
                 if let Some(rec) = &mut self.recording {
                     rec.handle(event, playhead, self.doc.project());
@@ -1148,6 +1163,7 @@ impl App {
         match action {
             Action::Transport(a) => self.transport_action(a),
             Action::Edit(a) => self.edit_action(a),
+            Action::Automation(a) => self.automation_action(a),
             Action::Ui(a) => self.ui_action(a),
             Action::Plugin(a) => self.plugin_action(a),
             Action::Project(a) => self.project_action(a),
@@ -1155,6 +1171,119 @@ impl App {
         }
         if !self.keyboard_midi_active() {
             self.release_keyboard_notes_if(|_| true);
+        }
+    }
+
+    fn automation_action(&mut self, action: crate::views::automation::Action) {
+        use crate::views::automation::{Action as Automation, Source, lanes};
+        use komponist_model::automation::AutomationOwner;
+        use komponist_model::edits::automation;
+        use komponist_model::routing::group_ancestors;
+
+        match action {
+            Automation::Shown(owner, shown) => {
+                self.apply("undo-automation-shown", |p| {
+                    automation::set_shown(p, owner, shown)
+                });
+            }
+            Automation::ShowTarget {
+                owner,
+                replace,
+                target,
+                label,
+            } => {
+                let old = lanes(self.project(), owner);
+                let exists = old.is_some_and(|a| a.lane(&target).is_some());
+                let reuse = replace.filter(|id| {
+                    old.is_some_and(|a| {
+                        a.lanes
+                            .iter()
+                            .any(|lane| lane.id == *id && lane.points.is_empty())
+                    })
+                });
+                let undo = if exists {
+                    "undo-automation-shown"
+                } else if reuse.is_some() {
+                    "undo-automation-retarget-lane"
+                } else {
+                    "undo-automation-add-lane"
+                };
+                let shown_target = target.clone();
+                if self.apply(undo, |p| {
+                    let edited;
+                    let p = if exists {
+                        p
+                    } else {
+                        edited = if let Some(id) = reuse {
+                            automation::retarget_lane(p, owner, id, target, label)?
+                        } else {
+                            automation::add_lane(p, owner, target, label)?.0
+                        };
+                        &edited
+                    };
+                    let project = automation::set_shown(p, owner, true)?;
+                    if let AutomationOwner::Track(track) = owner {
+                        let mut groups = group_ancestors(&project, track);
+                        groups.retain(|id| project.track(*id).is_some_and(|group| group.folded));
+                        if !groups.is_empty() {
+                            return edits::set_track_prop(
+                                &project,
+                                &groups,
+                                TrackProp::Folded(false),
+                            );
+                        }
+                    }
+                    Ok(project)
+                }) && let Some(lane) =
+                    lanes(self.project(), owner).and_then(|a| a.lane(&shown_target))
+                {
+                    self.ui.arrangement.automation_reveal = Some((owner, lane.id));
+                    self.ui.layout.dock_maximized = false;
+                }
+            }
+            Automation::Remove(Source::Lane(owner, id)) => {
+                self.apply("undo-automation-remove-lane", |p| {
+                    automation::remove_lane(p, owner, id)
+                });
+            }
+            Automation::Remove(Source::Clip(clip, target)) => {
+                self.apply("undo-automation-clip-remove", |p| {
+                    automation::remove_clip_automation(p, clip, &target)
+                });
+            }
+            Automation::Clear(owner, id) => {
+                self.apply("undo-automation-clear-lane", |p| {
+                    automation::clear_lane(p, owner, id)
+                });
+            }
+            Automation::Height(owner, id, height) => {
+                self.apply("undo-automation-lane-height", |p| {
+                    automation::set_lane_height(p, owner, id, height)
+                });
+            }
+            Automation::Mode(owner, id, mode) => {
+                self.apply("undo-automation-mode", |p| {
+                    automation::set_lane_mode(p, owner, id, mode)
+                });
+            }
+            Automation::AllModes(owner, mode) => {
+                self.apply("undo-automation-modes", |p| {
+                    automation::set_all_modes(p, owner, mode)
+                });
+            }
+            Automation::Points(source, points, undo) => {
+                self.apply(undo, |p| match source {
+                    Source::Lane(owner, id) => automation::set_lane_points(p, owner, id, points),
+                    Source::Clip(clip, target) => {
+                        automation::set_clip_points(p, clip, &target, points)
+                    }
+                });
+            }
+            Automation::AddClip(clip, target, label) => {
+                self.apply("undo-automation-clip-add", |p| {
+                    automation::add_clip_automation(p, clip, target, label)
+                });
+            }
         }
     }
 
@@ -2812,9 +2941,11 @@ impl App {
         self.export.forget();
         self.ui.selection = Default::default();
         self.ui.editor = Default::default();
+        self.views.arrangement.reset_document();
         self.ui.plugin_windows.clear();
         self.ui.arrangement.scroll_tick = 0.0;
         self.ui.arrangement.scroll_y = 0.0;
+        self.ui.arrangement.automation_reveal = None;
         self.ui.screen = Screen::Project;
         self.ui.dialog = None;
         self.shell.focus_before_dialog = None;

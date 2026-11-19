@@ -49,3 +49,8 @@ id_type! {
     /// keeps it (ARCHITECTURE §6.8).
     SendId
 }
+
+id_type! {
+    /// Identifies a track or master automation lane within its project.
+    LaneId
+}

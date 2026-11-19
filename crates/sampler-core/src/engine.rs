@@ -19,6 +19,8 @@ pub const MAX_VOICES: usize = 64;
 
 /// Fade time for choked voices
 const CHOKE_FADE_SECS: f32 = 0.005;
+/// One-pole time constant for pitch, gain, pan and drive changes on an active voice.
+const PARAM_GLIDE_SECS: f32 = 0.002;
 
 #[inline]
 pub fn slot_index(pad: usize, layer: usize) -> usize {
@@ -48,6 +50,7 @@ pub struct Engine {
     voices: [Voice; MAX_VOICES],
     sample_rate: f32,
     choke_step: f32,
+    param_glide: f32,
     next_id: u64,
     rng: Rng,
     cursors: [LayerCursor; NUM_PADS],
@@ -62,6 +65,7 @@ impl Engine {
             voices: [Voice::default(); MAX_VOICES],
             sample_rate,
             choke_step: 1.0 / (CHOKE_FADE_SECS * sample_rate),
+            param_glide: 1.0 - (-1.0 / (PARAM_GLIDE_SECS * sample_rate)).exp(),
             next_id: 0,
             rng: Rng::default(),
             cursors: [LayerCursor::default(); NUM_PADS],
@@ -199,7 +203,13 @@ impl Engine {
                 continue;
             };
             let s = &settings[v.pad];
-            let (l, r) = v.render(sample, s, self.sample_rate, self.choke_step);
+            let (l, r) = v.render(
+                sample,
+                s,
+                self.sample_rate,
+                self.choke_step,
+                self.param_glide,
+            );
 
             let out = &mut bus[s.output.min(NUM_OUTPUTS - 1)];
             out[0] += l;

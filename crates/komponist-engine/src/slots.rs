@@ -206,6 +206,9 @@ impl Bufs {
 
 /// What a chain needs from the routing graph (WP-102), asked by [`run_chain`] while it runs.
 pub(crate) trait ChainHook {
+    /// Add automated parameter changes addressed to this processor only.
+    fn automation(&mut self, slot: crate::SlotId, out: &mut EventList);
+
     /// Called once per call with the chain's signal in front of the first audio effect (or behind
     /// the last device when there is none): a MIDI track's head delay (§6.8.5).
     fn head(&mut self, l: &mut [f32], r: &mut [f32]);
@@ -249,8 +252,8 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized, H: ChainHook + ?Sized>(
             let (l, r) = bufs.pair(current, n);
             hook.head(l, r);
         }
-        let sidechain = hook.sidechain(index);
         let Some(slot) = slots.slot_mut(device.slot.0 as usize) else {
+            hook.sidechain(index);
             continue;
         };
         let instrument = track
@@ -261,6 +264,7 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized, H: ChainHook + ?Sized>(
         let all_off = !instrument && core::mem::take(&mut slot.all_off);
         let runs = slot.runs(device.bypass);
         let Some(processor) = slot.processor.as_mut().filter(|_| runs) else {
+            hook.sidechain(index);
             continue;
         };
         let events = if instrument {
@@ -271,8 +275,10 @@ pub(crate) fn run_chain<T: SlotTable + ?Sized, H: ChainHook + ?Sized>(
                 fx_events.push(0, EventKind::AllNotesOff);
             }
             slot.params.drain_into(fx_events, 0);
+            hook.automation(device.slot, fx_events);
             fx_events.finish()
         };
+        let sidechain = hook.sidechain(index);
         let Bufs { a, b, silence, .. } = &mut *bufs;
         let (input, output) = match current {
             Buf::A => (&*a, b),

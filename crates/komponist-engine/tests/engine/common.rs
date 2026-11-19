@@ -81,12 +81,15 @@ fn model_track(id: u64) -> Arc<Track> {
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     })
 }
 
 /// Track `id` playing `notes` on the instrument in `slot`, unity gain, centred.
 pub fn track(id: u64, slot: u32, notes: Vec<SeqNote>) -> TrackProgram {
     TrackProgram {
+        automation: Default::default(),
+        chain_latency: 0,
         id: TrackId(id),
         source: model_track(id),
         notes: notes.into(),
@@ -120,6 +123,9 @@ pub fn program(bpm: f64, tracks: Vec<TrackProgram>) -> Program {
         song_end: Tick(0),
         tracks: tracks.into_iter().map(Arc::new).collect(),
         master: MasterProgram {
+            automation: Default::default(),
+            automation_source: Default::default(),
+            chain_latency: 0,
             chain: Vec::new(),
             gain: 1.0,
             pan: 0.0,

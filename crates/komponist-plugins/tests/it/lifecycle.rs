@@ -63,6 +63,37 @@ fn play(rig: &mut Rig, track: u64, key: u8) -> f32 {
 }
 
 #[test]
+fn restore_updates_parameter_bases_without_overwriting_a_later_edit() {
+    let dir = scratch("state-param-bases");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let initial = rig.manager.param_base(device_id, gain).unwrap();
+    rig.manager.request_state(device_id);
+    let state = next_snapshot(&mut rig, 10);
+
+    rig.manager.set_param(device_id, gain, -24.0);
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(-24.0));
+    assert!(rig.manager.set_state(device_id, &state));
+    run_until(&mut rig, "the restored gain base", |rig| {
+        rig.manager.param_base(device_id, gain) == Some(initial)
+    });
+
+    let from = rig.events.len();
+    assert!(rig.manager.set_state(device_id, &state));
+    rig.manager.set_param(device_id, gain, -30.0);
+    run_until(&mut rig, "the second restore acknowledgement", |rig| {
+        rig.events[from..].contains(&PluginManagerEvent::ParamsChanged { device: device_id })
+    });
+    assert_eq!(rig.manager.param_base(device_id, gain), Some(-30.0));
+}
+
+#[test]
 fn crash_keeps_the_track_running_and_reload_restores_the_state() {
     let dir = scratch("crash");
     let Some(manager) = scanned_manager(&dir) else {
@@ -119,10 +150,12 @@ fn crash_keeps_the_track_running_and_reload_restores_the_state() {
     rig.reload(11);
     assert_eq!(rig.manager.status(DeviceId(11)), DeviceStatus::Loading);
     rig.wait_status(11, DeviceStatus::Ok);
-    run_until(&mut rig, "the restored Crash value", |rig| {
-        rig.manager
-            .param_value(DeviceId(11), crash_param)
-            .is_some_and(|v| v.value == 0.5)
+    run_until(&mut rig, "the restored Crash value and base", |rig| {
+        rig.manager.param_base(DeviceId(11), crash_param) == Some(0.5)
+            && rig
+                .manager
+                .param_value(DeviceId(11), crash_param)
+                .is_some_and(|v| v.value == 0.5)
     });
     rig.manager.request_state(DeviceId(11));
     assert_eq!(next_snapshot(&mut rig, 11), snapshot, "byte for byte");

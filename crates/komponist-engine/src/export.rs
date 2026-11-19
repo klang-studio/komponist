@@ -466,6 +466,26 @@ impl CompileEnv for EngineEnv<'_> {
             .map_or(0, |slot| self.engine.processor_latency(slot))
     }
 
+    fn automation_parameter(
+        &self,
+        device: &komponist_model::Device,
+        param: &komponist_model::params::ParamId,
+    ) -> Option<crate::automation::Parameter> {
+        use komponist_model::automation::AutomationTarget;
+        self.slots
+            .tracks
+            .iter()
+            .flat_map(|track| track.automation.iter())
+            .chain(self.slots.master.automation.iter())
+            .find_map(|target| match &target.model {
+                AutomationTarget::Param {
+                    device: id,
+                    param: key,
+                } if *id == device.id && key == param => target.parameter,
+                _ => None,
+            })
+    }
+
     fn sample_rate(&self) -> f64 {
         f64::from(self.engine.sample_rate())
     }
@@ -1062,9 +1082,12 @@ mod tests {
             sends: Vec::new(),
             folder: false,
             folded: false,
+            automation: Default::default(),
         });
         let track = |notes: Vec<SeqNote>| {
             Arc::new(TrackProgram {
+                automation: Default::default(),
+                chain_latency: 0,
                 id: TrackId(1),
                 source: Arc::clone(&source),
                 notes: notes.into(),
@@ -1101,6 +1124,9 @@ mod tests {
                 track(vec![note(0, 1000, 64)]),
             ],
             master: MasterProgram {
+                automation: Default::default(),
+                automation_source: Default::default(),
+                chain_latency: 0,
                 chain: Vec::new(),
                 gain: 1.0,
                 pan: 0.0,

@@ -35,6 +35,7 @@ use crate::project::{
 use crate::time::{Meter, StepResolution, Tempo, Tick, TickRange};
 
 mod audio;
+pub mod automation;
 mod routes;
 
 pub(crate) use audio::normalize_overlaps as normalize_audio_overlaps;
@@ -43,7 +44,7 @@ pub use audio::{
     AudioClipProp, NewAudioTrack, add_audio_take, add_audio_track, add_audio_track_in,
     flatten_midi_track, remove_audio_take, rename_audio_take, rewrite_audio_files,
     select_audio_take, set_audio_clip_file, set_audio_clip_prop, set_audio_clip_warp,
-    trim_audio_clip_start,
+    trim_audio_clip_start, validate_flatten_automation,
 };
 
 pub use routes::{
@@ -69,6 +70,8 @@ mod warp_tests;
 pub enum EditError {
     /// The project has no unused object identifiers left.
     IdsExhausted,
+    /// The rendered automation would exceed the supported arrangement point budget.
+    AutomationExpansionTooLarge,
     /// No track with this id.
     TrackNotFound(TrackId),
     /// No clip with this id.
@@ -115,6 +118,9 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EditError::IdsExhausted => write!(f, "project object identifiers exhausted"),
+            EditError::AutomationExpansionTooLarge => {
+                write!(f, "the edit would create too many automation points")
+            }
             EditError::TrackNotFound(id) => write!(f, "track {} not found", id.0),
             EditError::ClipNotFound(id) => write!(f, "clip {} not found", id.0),
             EditError::NoteNotFound(id) => write!(f, "note {} not found", id.0),
@@ -593,6 +599,7 @@ pub fn add_track_in(
         sends: Vec::new(),
         folder: false,
         folded: false,
+        automation: Default::default(),
     };
     p.tracks.insert(index, Arc::new(track));
     crate::routing::normalize_groups(&mut p);
@@ -742,6 +749,7 @@ pub fn add_clip(
         mute: false,
         transpose: 0,
         velocity_pct: 0,
+        automation: Vec::new(),
         content,
     };
     insert_clip(track_mut(&mut p, track_index), Arc::new(clip));
@@ -757,9 +765,11 @@ pub fn remove_clips(project: &Project, clips: &[ClipId]) -> EditResult {
     let mut p = project.clone();
     for index in 0..p.tracks.len() {
         if p.tracks[index].clips.iter().any(|c| clips.contains(&c.id)) {
+            let track_id = p.tracks[index].id;
             track_mut(&mut p, index)
                 .clips
                 .retain(|c| !clips.contains(&c.id));
+            automation::prune_hidden_unused(&mut p, track_id)?;
         }
     }
     Ok(p)
@@ -793,6 +803,11 @@ pub fn move_clips(
     for (track_index, clip) in &group.clips {
         let mut clip = Clip::clone(clip);
         clip.start += group.delta;
+        if group.delta != Tick::ZERO || group.track_delta != 0 {
+            for envelope in &mut clip.automation {
+                envelope.precedence = None;
+            }
+        }
         insert_clip(
             track_mut(&mut p, group.target(*track_index)),
             Arc::new(clip),
@@ -800,6 +815,32 @@ pub fn move_clips(
     }
     let moved: Vec<ClipId> = group.clips.iter().map(|(_, c)| c.id).collect();
     audio::cut_below(&mut p, &moved)?;
+    if group.track_delta != 0
+        && group
+            .clips
+            .iter()
+            .any(|(_, clip)| !clip.automation.is_empty())
+    {
+        for index in unique(
+            &group
+                .clips
+                .iter()
+                .map(|(index, _)| group.target(*index))
+                .collect::<Vec<_>>(),
+        ) {
+            automation::ensure_clip_lanes(&mut p, index)?;
+        }
+        for index in unique(
+            &group
+                .clips
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>(),
+        ) {
+            let track_id = p.tracks[index].id;
+            automation::prune_hidden_unused(&mut p, track_id)?;
+        }
+    }
     Ok(p)
 }
 
@@ -824,6 +865,22 @@ pub fn copy_clips(
         );
     }
     audio::cut_below(&mut p, &copies)?;
+    if group.track_delta != 0
+        && group
+            .clips
+            .iter()
+            .any(|(_, clip)| !clip.automation.is_empty())
+    {
+        for index in unique(
+            &group
+                .clips
+                .iter()
+                .map(|(index, _)| group.target(*index))
+                .collect::<Vec<_>>(),
+        ) {
+            automation::ensure_clip_lanes(&mut p, index)?;
+        }
+    }
     Ok((p, copies))
 }
 
@@ -950,7 +1007,15 @@ pub fn set_clip_prop(project: &Project, clip: ClipId, prop: ClipProp) -> EditRes
         let audio = c.kind() == ClipKind::Audio;
         match prop {
             ClipProp::Name(name) => c.name = name,
-            ClipProp::Start(start) => c.start = start.max(Tick::ZERO),
+            ClipProp::Start(start) => {
+                let start = start.max(Tick::ZERO);
+                if start != c.start {
+                    c.start = start;
+                    for envelope in &mut c.automation {
+                        envelope.precedence = None;
+                    }
+                }
+            }
             ClipProp::Transpose(_) | ClipProp::VelocityPct(_) if audio => {
                 return Err(EditError::WrongClipKind {
                     clip: c.id,
@@ -1252,6 +1317,9 @@ pub fn step_clip_to_midi(project: &Project, clip: ClipId) -> EditResult {
         })
         .collect::<Result<_, EditError>>()?;
     update_clip(&mut p, location, |c| {
+        for envelope in &mut c.automation {
+            envelope.points = crate::automation::unroll_envelope(source, envelope);
+        }
         c.loop_length = None;
         c.content = ClipContent::Midi(MidiClip {
             takes: vec![Take {
@@ -1364,9 +1432,18 @@ pub fn replace_instrument(
         state: None,
         sidechain: None,
     });
-    let channel = &mut track_mut(&mut p, track_index).channel;
+    let track_value = track_mut(&mut p, track_index);
+    let channel = &mut track_value.channel;
     match channel.instrument() {
-        Some((index, _)) => channel.devices[index] = device,
+        Some((index, old)) => {
+            let removed = old.id;
+            channel.devices[index] = device;
+            automation::remove_device_lanes(
+                &mut p,
+                crate::automation::AutomationOwner::Track(track),
+                removed,
+            )?;
+        }
         None => {
             let index = channel.midi_effect_count();
             channel.devices.insert(index, device);
@@ -1382,6 +1459,7 @@ pub fn remove_device(project: &Project, device: DeviceId) -> EditResult {
         .ok_or(EditError::DeviceNotFound(device))?;
     let mut p = project.clone();
     channel_mut(&mut p, channel)?.devices.remove(index);
+    automation::remove_device_lanes(&mut p, channel.into(), device)?;
     Ok(p)
 }
 
@@ -1749,6 +1827,9 @@ fn new_step_clip(rows: &[StepRowSpec]) -> StepClip {
 fn copy_clip(project: &mut Project, clip: &Clip) -> Result<Clip, EditError> {
     let mut copy = clip.clone();
     copy.id = ClipId(project.alloc_id()?);
+    for envelope in &mut copy.automation {
+        envelope.precedence = None;
+    }
     if let ClipContent::Midi(m) = &mut copy.content {
         for take in &mut m.takes {
             let notes = take
@@ -1828,12 +1909,21 @@ impl ClipGroup {
 /// Splits `clip` at clip-local `at` (`0 < at < length`) into a left part (same id) and a right
 /// part (new id); see [`split_clips`].
 fn split_clip(project: &mut Project, clip: &Clip, at: Tick) -> Result<(Clip, Clip), EditError> {
+    if !crate::automation::split_envelopes_fit(clip, at) {
+        return Err(EditError::AutomationExpansionTooLarge);
+    }
     let mut left = clip.clone();
     let mut right = clip.clone();
     right.id = ClipId(project.alloc_id()?);
     right.start = clip.start + at;
     right.length = clip.length - at;
     left.length = at;
+    for (index, envelope) in clip.automation.iter().enumerate() {
+        let (before, after) = crate::automation::split_envelope(clip, envelope, at);
+        left.automation[index].points = before;
+        right.automation[index].points = after;
+        right.automation[index].precedence = Some(envelope.precedence(clip));
+    }
     match &mut right.content {
         ClipContent::Midi(right_midi) => {
             let ClipContent::Midi(left_midi) = &mut left.content else {
@@ -1898,6 +1988,9 @@ fn unroll(
     loop_length: Tick,
     length: Tick,
 ) -> Result<Vec<Note>, EditError> {
+    if notes.iter().all(|note| note.start >= loop_length) {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     let mut offset = Tick::ZERO;
     while offset < length {

@@ -12,8 +12,10 @@ use core::fmt;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use komponist_model::automation::AutomationOwner;
 use komponist_model::{SendId, Tick, TrackId};
 
+use crate::automation::{AutomationBoundary, EngineTarget, PluginParamBatch};
 use crate::processor::Processor;
 use crate::program::{Program, SlotId};
 use crate::route::GateTable;
@@ -84,6 +86,17 @@ pub enum Command {
         /// Balance.
         pan: f32,
     },
+    /// A UI gesture starts or ends on a compiled automation target.
+    Touch {
+        /// Channel containing the target.
+        owner: AutomationOwner,
+        /// Resolved target.
+        target: EngineTarget,
+        /// True at the beginning, false at the end.
+        begin: bool,
+    },
+    /// Discard gesture state after the UI has cancelled a recording pass.
+    CancelAutomationWrite,
     /// Fast path: mute of a track, until the next program. Applies to programs with the flat
     /// routing only (without buses, sends and sidechains), and only while no `SetGates` table is
     /// active; otherwise mute and solo come from the gate table.
@@ -112,6 +125,8 @@ pub enum Command {
     },
     /// Fast path: master fader, linear gain ≥ 0, until the next program.
     SetMasterGain(f32),
+    /// Fast path: master balance, −1 to +1, until the next program.
+    SetMasterPan(f32),
     /// Fast path: mute and solo of every output and send of the current program
     /// (`compile::gates`, from `komponist_model::routing::gates`), until the next program. While
     /// it is active, `SetTrackMute` and `SetTrackSolo` have no effect. Faders ramp to the new
@@ -168,6 +183,17 @@ impl fmt::Debug for Command {
                 .field("track", track)
                 .field("pan", pan)
                 .finish(),
+            Command::Touch {
+                owner,
+                target,
+                begin,
+            } => f
+                .debug_struct("Touch")
+                .field("owner", owner)
+                .field("target", target)
+                .field("begin", begin)
+                .finish(),
+            Command::CancelAutomationWrite => f.write_str("CancelAutomationWrite"),
             Command::SetTrackMute { track, mute } => f
                 .debug_struct("SetTrackMute")
                 .field("track", track)
@@ -184,6 +210,7 @@ impl fmt::Debug for Command {
                 .field("gain", gain)
                 .finish(),
             Command::SetMasterGain(g) => f.debug_tuple("SetMasterGain").field(g).finish(),
+            Command::SetMasterPan(p) => f.debug_tuple("SetMasterPan").field(p).finish(),
             Command::SetGates(_) => f.write_str("SetGates(..)"),
             Command::LiveNote {
                 track,
@@ -243,6 +270,42 @@ pub enum EngineEvent {
     ProcessorFailed {
         /// The failing slot.
         slot: SlotId,
+    },
+    /// A gesture edge on a running automation lane.
+    AutomationTouch {
+        /// Channel containing the lane.
+        owner: AutomationOwner,
+        /// Resolved target.
+        target: EngineTarget,
+        /// True at the beginning, false at the end.
+        begin: bool,
+        /// Position at the edit.
+        tick: Tick,
+    },
+    /// Latest value of a writing lane at its exact position in the engine clock.
+    AutomationValue {
+        /// Channel containing the lane.
+        owner: AutomationOwner,
+        /// Resolved target.
+        target: EngineTarget,
+        /// Position at the edit.
+        tick: Tick,
+        /// The value in the lane's normalised domain.
+        value: f32,
+    },
+    /// The transport ended the current writing segment.
+    AutomationBoundary {
+        /// Position before the transport moved.
+        tick: Tick,
+        /// Why this segment ended.
+        kind: AutomationBoundary,
+    },
+    /// Plugin GUI edits that also update the plugin manager's UI and snapshots.
+    PluginParams {
+        /// Slot reporting the changes.
+        slot: SlotId,
+        /// Changes in the order the plugin produced them.
+        events: PluginParamBatch,
     },
     /// Something the engine no longer needs; drop it on the UI thread.
     Retired(Garbage),

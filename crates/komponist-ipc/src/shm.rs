@@ -281,7 +281,7 @@ pub struct WireEvent {
     pub value: f64,
     /// Small payload, see the table.
     pub data: [u8; 4],
-    /// Reserved, 0.
+    /// Originating block sequence for bridge output events. Zero for inputs.
     pub reserved: u32,
 }
 
@@ -1453,7 +1453,7 @@ impl Drop for BridgeServer {
     }
 }
 
-/// The app's UI-thread end: consumer of the plugin's output events. Owned by the plugin manager.
+/// The app's single consumer of the plugin's output events. Owned by the external processor.
 #[derive(Debug)]
 pub struct BridgeMonitor {
     region: Arc<ShmRegion>,

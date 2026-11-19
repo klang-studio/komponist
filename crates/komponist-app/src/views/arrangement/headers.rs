@@ -8,23 +8,27 @@ use egui::{
     Align, CursorIcon, Id, Layout, Rangef, Rect, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2,
 };
 use komponist_i18n::Lang;
+use komponist_model::automation::AutomationOwner;
 use komponist_model::edits::{ChannelProp, ExclusiveFlag, TrackProp};
 use komponist_model::{Project, Track, TrackId, routing};
 use komponist_plugins::{DeviceStatus, FailReason};
+use komponist_tokens::egui_support::color32;
 use komponist_tokens::typography;
 use komponist_ui::State;
-use komponist_ui::timeline::{HeaderModel, header_access, header_layout, paint_track_header};
+use komponist_ui::timeline::{
+    HeaderModel, header_access, header_layout_with_reserve, paint_track_header_with_reserve,
+};
 use komponist_ui::widgets::meter::{Meter, MeterState};
 use komponist_ui::widgets::metrics::timeline as tm;
 use komponist_ui::widgets::rename_field::{RenameField, RenameOutcome, RenameState};
 use komponist_ui::widgets::toggle::{ToggleEvent, ToggleKind, TrackToggle};
 use komponist_ui::{fonts, px};
 
-use super::buses;
 use super::geometry::{Geometry, RowKind, row_height, stored_height};
 use super::{
     Arrangement, Drag, Rename, click_mode, metrics, register, select_clips, select_tracks,
 };
+use super::{automation, buses};
 use crate::actions::{Action, EditAction, SelectMode, UiAction};
 use crate::engine_sync::EngineSync;
 use crate::meters::Meters;
@@ -86,8 +90,8 @@ pub fn toggle_on(track: &Track, kind: ToggleKind) -> bool {
 
 /// The name line of a header at `rect` (where the rename field goes): the text column, one
 /// `type.track` line high, as `paint_track_header` centres name and instrument.
-fn name_rect(rect: Rect, ppp: f32) -> Rect {
-    let l = header_layout(rect);
+fn name_rect(rect: Rect, ppp: f32, reserve: f32) -> Rect {
+    let l = header_layout_with_reserve(rect, reserve);
     let block = typography::TRACK.line_height + tm::HEADER_TEXT_GAP + typography::SMALL.line_height;
     let top = px::snap(l.body.center().y - block / 2.0, ppp);
     Rect::from_min_max(
@@ -156,7 +160,14 @@ impl Arrangement {
         };
         let implied_mute =
             gates.is_some_and(|g| !track.channel.solo && g.output(track.id).solo_muted);
-        let l = header_layout(rect);
+        let compact_input =
+            track.is_audio() && rect.height() < crate::views::audio_inputs::INPUT_LINE_MIN;
+        let reserve = if compact_input {
+            automation::HEADER_RESERVE + komponist_tokens::size::ICON
+        } else {
+            automation::HEADER_RESERVE
+        };
+        let l = header_layout_with_reserve(rect, reserve);
         let name = if track.is_bus() {
             self.bus_header(
                 ui,
@@ -195,12 +206,12 @@ impl Arrangement {
                 implied_mute,
                 meter: None,
             };
-            paint_track_header(ui.painter(), rect, &model, state);
+            paint_track_header_with_reserve(ui.painter(), rect, &model, state, reserve);
             let access = header_access(komponist_ui::lang(ui.ctx()), &model, state);
             register(&response, &access);
             if track.is_audio() {
-                let name = name_rect(rect, ppp);
-                let input = if rect.height() >= crate::views::audio_inputs::INPUT_LINE_MIN {
+                let name = name_rect(rect, ppp, reserve);
+                let input = if !compact_input {
                     Rect::from_min_size(
                         pos2(l.text.left(), name.bottom() + tm::HEADER_TEXT_GAP),
                         egui::vec2(l.text.width(), typography::SMALL.line_height),
@@ -208,16 +219,16 @@ impl Arrangement {
                 } else {
                     Rect::from_center_size(
                         pos2(
-                            l.toggles[0].left() - komponist_tokens::size::ICON / 2.0,
+                            l.toggles[0].left()
+                                - automation::HEADER_RESERVE
+                                - komponist_tokens::size::ICON / 2.0,
                             rect.center().y,
                         ),
                         egui::vec2(komponist_tokens::size::ICON, komponist_tokens::size::ICON),
                     )
                 };
                 crate::views::audio_inputs::input_button(ui, ctx, project, track, input);
-                if rect.height() >= crate::views::audio_inputs::INPUT_LINE_MIN
-                    && (track.arm || crate::views::audio_inputs::monitoring(track))
-                {
+                if !compact_input && (track.arm || crate::views::audio_inputs::monitoring(track)) {
                     let bar = Rect::from_min_size(
                         pos2(
                             input.left(),
@@ -231,14 +242,14 @@ impl Arrangement {
                     crate::views::audio_inputs::input_meter(ui, ctx, track, bar);
                 }
             }
-            name_rect(rect, ppp)
+            name_rect(rect, ppp, reserve)
         };
 
         // Select, rename, reorder.
         if response.double_clicked()
-            && response.interact_pointer_pos().is_some_and(|p| {
-                name.contains(p) || (!track.is_audio() && header_layout(rect).text.contains(p))
-            })
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|p| name.contains(p) || (!track.is_audio() && l.text.contains(p)))
         {
             self.rename = Some(Rename {
                 track: track.id,
@@ -279,21 +290,37 @@ impl Arrangement {
         if response.drag_stopped() {
             self.finish_drag(ctx);
         }
-        if let Some(action) = self.header_menu(ctx, project, track, &response) {
-            action.apply(self, ctx, track);
-        }
-
         if track.is_bus() {
             // Toggles and meter of a bus header: M and S only, right-aligned.
             let [_, _, m, s] = l.toggles;
             let rects = [(ToggleKind::Mute, m), (ToggleKind::Solo, s)];
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
-            let record = l.toggles[0].union(l.toggles[1]);
-            crate::views::audio_inputs::record_bus_button(ui, ctx, track, record, true);
+            if matches!(row.kind, RowKind::Group { .. }) {
+                let record = l.toggles[0].union(l.toggles[1]);
+                crate::views::audio_inputs::record_bus_button(ui, ctx, track, record, true);
+            }
         } else {
             let rects: Vec<(ToggleKind, Rect)> =
                 ToggleKind::ALL.into_iter().zip(l.toggles).collect();
             self.toggles(ui, ctx, project, g, track, &rects, implied_mute);
+        }
+        let ink = color32(self.palettes.get(track.hue.0).base);
+        let anchor = match row.kind {
+            RowKind::EffectBus => l.toggles[2].left(),
+            _ => l.toggles[0].left(),
+        };
+        let automation = self.automation.owner_toggle(
+            ui,
+            ctx,
+            AutomationOwner::Track(track.id),
+            anchor,
+            l.body.center().y,
+            ink,
+        );
+        // A secondary click on the automation toggle still opens the track's menu.
+        let menu = automation.map_or_else(|| response.clone(), |toggle| response.union(toggle));
+        if let Some(action) = self.header_menu(ctx, project, track, &menu) {
+            action.apply(self, ctx, track);
         }
         for action in header_meter(ui, ctx.lang, ctx.meters, track, l.meter, mods.alt) {
             ctx.send(action);
@@ -544,7 +571,7 @@ mod tests {
     #[test]
     fn name_field_sits_on_the_name_line() {
         let r = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(224.0, 56.0));
-        let n = name_rect(r, 1.0);
+        let n = name_rect(r, 1.0, automation::HEADER_RESERVE);
         assert_eq!(n.left(), 13.0);
         assert_eq!(n.height(), 16.0);
         // Block of 16 + 1 + 14 centred in the 55 px body: top at 12.

@@ -263,6 +263,7 @@ fn input_chooser_monitoring_bus_record_and_capture_settings_in_both_languages() 
         .unwrap();
         let mut app = App::headless(p)
             .with_lang(lang)
+            .with_settings_plugin_rows(Vec::new())
             .with_audio_devices(Box::new(CaptureDevices(vec![
                 komponist_audio::InputDeviceInfo {
                     id: Some(komponist_audio::DeviceId("test:capture".into())),

@@ -281,6 +281,62 @@ impl CompileEnv for Env<'_> {
         self.host.latency(device)
     }
 
+    fn automation_parameter(
+        &self,
+        device: &komponist_model::Device,
+        param: &komponist_model::params::ParamId,
+    ) -> Option<komponist_engine::automation::Parameter> {
+        use komponist_engine::automation::{Parameter, PlainMap};
+        use komponist_ipc::control::param_flags;
+
+        if crate::device_host::is_hexa(device) {
+            let card = komponist_builtin::device::param(param)?;
+            let patch = komponist_builtin::decode_state(device.state.as_deref())
+                .unwrap_or_else(|_| komponist_builtin::default_patch());
+            return card.info.automatable.then(|| Parameter {
+                wire_id: card.wire,
+                map: PlainMap::from_kind(&card.info.kind),
+                base: card.field.get(&patch),
+            });
+        }
+        if let Some(kind) = crate::device_host::internal_kind(device) {
+            let wire_id = kind.wire(param)?;
+            let info = &kind.params()[wire_id as usize];
+            let base = kind
+                .decode_state(device.state.as_deref())
+                .ok()
+                .map_or(info.default, |values| values[wire_id as usize]);
+            return info.automatable.then(|| Parameter {
+                wire_id,
+                map: PlainMap::from_kind(&info.kind),
+                base,
+            });
+        }
+        if matches!(
+            self.host.status(device.id),
+            DeviceStatus::Missing | DeviceStatus::Crashed(_)
+        ) {
+            return None;
+        }
+        let wire_id = param.plugin_id()?;
+        let info = self
+            .host
+            .params(device.id)?
+            .iter()
+            .find(|p| p.id == wire_id)?;
+        let excluded = param_flags::HIDDEN | param_flags::READ_ONLY | param_flags::BYPASS;
+        (info.flags & param_flags::AUTOMATABLE != 0 && info.flags & excluded == 0).then(|| {
+            Parameter {
+                wire_id,
+                map: PlainMap::linear(info.min, info.max, info.step_count),
+                base: self
+                    .host
+                    .param_base(device.id, wire_id)
+                    .unwrap_or(info.default),
+            }
+        })
+    }
+
     fn sample_rate(&self) -> f64 {
         self.rate
     }
