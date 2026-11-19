@@ -187,6 +187,48 @@ fn wheel(h: &mut Harness<'_, App>, pointer: Pos2, delta: f32, modifiers: Modifie
 }
 
 #[test]
+fn opening_and_reopening_audio_fits_the_clip_to_the_available_width() {
+    use komponist_app::views::audio_editor::metrics;
+
+    let dir = crate::common::scratch("audio-editor-fit");
+    let path = dir.join("verse.wav");
+    wav(&path, 384000, 1);
+    for lang in [Lang::De, Lang::En] {
+        for width in [960.0, 1920.0] {
+            let (mut app, id) = app(&path, 1, lang);
+            app.ui_mut().waveform.px_per_bar = metrics::PPB_MAX;
+            app.ui_mut().waveform.scroll_tick = 10000.0;
+            let arrangement = app.ui().arrangement.px_per_bar;
+            let mut h = komponist_ui::snapshot::builder(1.0)
+                .with_size(vec2(width, 1080.0))
+                .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+            h.run_steps(3);
+            let assert_fitted = |h: &Harness<'_, App>| {
+                let editor = h
+                    .get_by_role_and_label(Role::Group, &lang.audio_waveform_title("Verse"))
+                    .rect();
+                let view = &h.state().ui().waveform;
+                let clip = h.state().project().find_clip(id).unwrap().1;
+                let displayed_width = view.px_per_bar * clip.length.0 as f32 / BAR as f32;
+                assert!((displayed_width - (editor.width() - metrics::GUTTER)).abs() < 0.01);
+                assert!((view.scroll_tick - clip.start.0 as f64).abs() < 0.01);
+            };
+            assert_fitted(&h);
+            h.state_mut().ui_mut().waveform.px_per_bar *= 2.0;
+            h.run_steps(3);
+            let manual = h.state().ui().waveform.px_per_bar;
+            h.run_steps(3);
+            assert_eq!(h.state().ui().waveform.px_per_bar, manual);
+            h.state_mut().dispatch(Action::Ui(UiAction::OpenClip(id)));
+            h.run_steps(3);
+            assert_fitted(&h);
+            assert_eq!(h.state().ui().arrangement.px_per_bar, arrangement);
+            assert!(!h.state().doc().is_dirty());
+        }
+    }
+}
+
+#[test]
 fn ctrl_wheel_zooms_horizontally_around_the_pointer_without_editing_the_clip() {
     use komponist_app::views::audio_editor::metrics;
 
@@ -194,9 +236,9 @@ fn ctrl_wheel_zooms_horizontally_around_the_pointer_without_editing_the_clip() {
     let path = dir.join("verse.wav");
     wav(&path, 384000, 2);
     for lang in [Lang::De, Lang::En] {
-        let (mut app, id) = app(&path, 2, lang);
-        app.ui_mut().waveform.px_per_bar = 880.0;
+        let (app, id) = app(&path, 2, lang);
         let mut h = harness(app);
+        h.state_mut().ui_mut().waveform.px_per_bar = 880.0;
         h.state_mut().ui_mut().waveform.scroll_tick = 2000.0;
         h.run_steps(2);
         let editor = h
@@ -232,9 +274,10 @@ fn waveform_wheel_preserves_plain_scrolling_and_clamps_zoom() {
     let dir = crate::common::scratch("audio-editor-wheel-bounds");
     let path = dir.join("verse.wav");
     wav(&path, 384000, 1);
-    let (mut app, _) = app(&path, 1, Lang::De);
-    app.ui_mut().waveform.px_per_bar = metrics::PPB_MAX;
+    let (app, _) = app(&path, 1, Lang::De);
     let mut h = harness(app);
+    h.state_mut().ui_mut().waveform.px_per_bar = metrics::PPB_MAX;
+    h.run_steps(2);
     let pointer = h
         .get_by_role_and_label(Role::Group, &Lang::De.audio_waveform_title("Verse"))
         .rect()
