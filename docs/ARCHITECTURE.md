@@ -612,8 +612,10 @@ The engine-owned external processor is the single consumer of the output event r
 locates plugin values and gestures on the song timeline and sends them to both automation capture
 and the plugin manager. Temporary automation gestures update the plugin manager's live values
 while preserving its base cache. If a snapshot would capture a temporary value, the bridge
-defers it and the project keeps its last safe state until the affected parameters return to
-their bases. Events from the current block carry its frame offsets. Late
+defers it until the affected parameters return to their bases. A project save can reuse its last
+safe state for a device with no pending persistent edits. With pending edits, saving waits up to
+the snapshot deadline for a validated state and leaves the file intact if the device cannot
+provide one. Events from the current block carry its frame offsets. Late
 edits are anchored to the next engine segment. VST3 controller updates are coalesced on the bridge
 main thread. The echo guard filters controller replies outside an active gesture, and newer control
 changes supersede stale updates from earlier blocks.

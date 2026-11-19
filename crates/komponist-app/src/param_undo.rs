@@ -196,6 +196,10 @@ impl App {
         self.flush_deferred();
     }
 
+    pub(crate) fn deferred_plugin_states(&self) -> &[(DeviceId, Arc<[u8]>)] {
+        &self.param_undo.deferred
+    }
+
     /// Stores the snapshots that waited for a gesture, once none is open.
     pub(crate) fn flush_deferred(&mut self) {
         if self.doc.in_gesture() || self.param_undo.deferred.is_empty() {
@@ -413,6 +417,9 @@ impl App {
     /// that still holds what it came up with ([`App::device_up`]) gets that state into the
     /// document too (untracked: it is no edit), so the file has it.
     pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &Arc<[u8]>) {
+        self.param_undo
+            .deferred
+            .retain(|(pending, _)| *pending != device);
         let untouched = self
             .param_undo
             .baseline

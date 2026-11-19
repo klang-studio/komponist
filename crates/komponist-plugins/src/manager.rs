@@ -24,7 +24,7 @@
 //!
 //! Thread: UI thread only, non-blocking except where noted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -661,7 +661,49 @@ impl PluginManager {
     /// document), and so are devices with a [`Self::state_warning`]. Sorted by device id; a late
     /// answer arrives later as a `StateSnapshot` event.
     pub fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
-        self.snapshot_states_if(timeout, |_| true)
+        self.snapshot_states_if(timeout, StatePurpose::Collect, |_| true)
+    }
+
+    /// Whether a running plugin has edits that are newer than its last safe state.
+    pub fn has_pending_state_edits(&self) -> bool {
+        self.bridges.values().any(Bridge::needs_snapshot_for_save)
+    }
+
+    /// Collects current plugin states for a project save. A bridge with a persistent edit must
+    /// supply a valid snapshot within the shared time budget before the project can be written.
+    pub fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+        let deadline = Instant::now() + timeout;
+        let mut required: BTreeSet<_> = self
+            .bridges
+            .iter()
+            .filter(|(_, bridge)| bridge.needs_snapshot_for_save())
+            .map(|(&device, _)| device)
+            .collect();
+        let mut states = self.snapshot_states_if(timeout, StatePurpose::Save, |_| true);
+        loop {
+            for (device, _) in &states {
+                required.remove(device);
+            }
+            let Some(&blocked) = required.first() else {
+                states.sort_by_key(|(device, _)| *device);
+                return Ok(states);
+            };
+            let now = Instant::now();
+            if now >= deadline || !self.bridges.get(&blocked).is_some_and(Bridge::is_running) {
+                self.pending.extend(
+                    states
+                        .into_iter()
+                        .map(|(device, state)| PluginManagerEvent::StateSnapshot { device, state }),
+                );
+                return Err(blocked);
+            }
+            std::thread::sleep((deadline - now).min(Duration::from_millis(30)));
+            states.extend(self.snapshot_states_if(
+                deadline.saturating_duration_since(Instant::now()),
+                StatePurpose::Save,
+                |device| required.contains(&device),
+            ));
+        }
     }
 
     /// Captures every running bridge on the track to be replaced. Devices without a running
@@ -676,7 +718,9 @@ impl PluginManager {
             .copied()
             .filter(|device| self.bridges.get(device).is_some_and(Bridge::is_running))
             .collect();
-        let states = self.snapshot_states_if(timeout, |device| live.contains(&device));
+        let states = self.snapshot_states_if(timeout, StatePurpose::Collect, |device| {
+            live.contains(&device)
+        });
         if let Some(device) = live
             .into_iter()
             .find(|device| !states.iter().any(|(captured, _)| captured == device))
@@ -689,6 +733,7 @@ impl PluginManager {
     fn snapshot_states_if(
         &mut self,
         timeout: Duration,
+        purpose: StatePurpose,
         include: impl Fn(DeviceId) -> bool,
     ) -> Vec<(DeviceId, Arc<[u8]>)> {
         let deadline = Instant::now() + timeout;
@@ -696,7 +741,7 @@ impl PluginManager {
             .bridges
             .iter_mut()
             .filter(|&(&device, _)| include(device))
-            .filter_map(|(&device, b)| Some((device, b.request_state(StatePurpose::Collect)?)))
+            .filter_map(|(&device, b)| Some((device, b.request_state(purpose)?)))
             .collect();
         let mut states = Vec::new();
         let mut collected: Vec<Collected> = Vec::new();

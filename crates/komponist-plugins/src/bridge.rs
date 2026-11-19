@@ -105,6 +105,8 @@ pub(crate) enum StatePurpose {
     Event,
     /// Collected by `snapshot_states` (no event).
     Collect,
+    /// Collected for a project save, including validation of edits still awaiting a snapshot.
+    Save,
 }
 
 #[derive(Debug)]
@@ -231,6 +233,7 @@ pub(crate) struct Bridge {
     pub values: BTreeMap<u32, ParamValue>,
     pub base_values: BTreeMap<u32, f64>,
     temporary_params: BTreeSet<u32>,
+    pending_params: BTreeSet<u32>,
     pub note_names: Vec<NoteName>,
     pub has_gui: bool,
     /// The plugin has a sidechain input (#6): from the catalog until `Loaded` says so itself.
@@ -352,6 +355,7 @@ impl Bridge {
             values: BTreeMap::new(),
             base_values: BTreeMap::new(),
             temporary_params: BTreeSet::new(),
+            pending_params: BTreeSet::new(),
             note_names: Vec::new(),
             has_gui: false,
             sidechain: s.sidechain,
@@ -438,12 +442,13 @@ impl Bridge {
         if self.phase != Phase::Running || self.keep_stored_state {
             return None;
         }
-        let checked = !self.temporary_params.is_empty();
+        let checked = !self.temporary_params.is_empty()
+            || (purpose == StatePurpose::Save && !self.pending_params.is_empty());
         let request = self.seq();
         let message = if checked {
             let expected = self
                 .temporary_params
-                .iter()
+                .union(&self.pending_params)
                 .map(|id| self.base_values.get(id).map(|&value| (*id, value)))
                 .collect::<Option<Vec<_>>>()?;
             ControlMsg::GetStateChecked { request, expected }
@@ -458,6 +463,10 @@ impl Bridge {
         });
         self.send(message);
         Some(request)
+    }
+
+    pub(crate) fn needs_snapshot_for_save(&self) -> bool {
+        self.is_running() && !self.pending_params.is_empty()
     }
 
     /// Whether this request still awaits a state reply or a state error.
@@ -506,6 +515,9 @@ impl Bridge {
 
     /// Updates the live cache without retaining a temporary value as a document edit.
     pub(crate) fn preview_param(&mut self, id: u32, value: f64) {
+        if !self.params.iter().any(|param| param.id == id) {
+            return;
+        }
         if self.base_values.get(&id) != Some(&value) {
             self.temporary_params.insert(id);
             self.invalidate_state_requests();
@@ -534,6 +546,8 @@ impl Bridge {
         }
         self.user_changed();
         self.last_state = Some(Arc::clone(state));
+        self.pending_params.clear();
+        self.invalidate_state_requests();
         let request = self.seq();
         self.state_restores.push_back(StateRestore::new(request));
         self.send(ControlMsg::SetState {
@@ -774,10 +788,15 @@ impl Bridge {
                 if pending.as_ref().is_some_and(|pending| pending.checked) {
                     self.temporary_params.clear();
                 }
+                if pending.is_some() {
+                    self.pending_params.clear();
+                }
                 let state: Arc<[u8]> = state.into();
                 self.last_state = Some(state.clone());
                 match pending.map(|request| request.purpose) {
-                    Some(StatePurpose::Collect) => collected.push((request, state)),
+                    Some(StatePurpose::Collect | StatePurpose::Save) => {
+                        collected.push((request, state));
+                    }
                     Some(StatePurpose::Event) | None => {
                         events.push(PluginManagerEvent::StateSnapshot { device, state });
                     }
@@ -789,11 +808,19 @@ impl Bridge {
                 }
             }
             BridgeMsg::Params(params) => {
+                let ids: BTreeSet<_> = params.iter().map(|param| param.id).collect();
+                self.temporary_params.retain(|id| ids.contains(id));
+                self.pending_params.retain(|id| ids.contains(id));
+                self.base_values.retain(|id, _| ids.contains(id));
+                self.values.retain(|id, _| ids.contains(id));
                 self.params = params;
                 events.push(PluginManagerEvent::ParamsChanged { device });
             }
             BridgeMsg::ParamValues(values) => {
                 for value in values {
+                    if !self.params.iter().any(|param| param.id == value.id) {
+                        continue;
+                    }
                     self.base_values.entry(value.id).or_insert(value.value);
                     self.values.insert(value.id, value);
                 }
@@ -991,13 +1018,14 @@ impl Bridge {
 
     /// Updates the cached value and schedules a snapshot for a user's edit.
     pub(crate) fn edited_param(&mut self, id: u32, value: f64) {
-        if self.phase != Phase::Running {
+        if self.phase != Phase::Running || !self.params.iter().any(|param| param.id == id) {
             return;
         }
         for restore in &mut self.state_restores {
             restore.later_edits.insert(id);
         }
-        if self.temporary_params.contains(&id) && self.base_values.get(&id) != Some(&value) {
+        if self.base_values.get(&id) != Some(&value) {
+            self.pending_params.insert(id);
             self.invalidate_state_requests();
         }
         self.base_values.insert(id, value);

@@ -344,6 +344,61 @@ fn temporary_parameter_edit_defers_plugin_snapshot_until_base_returns() {
 }
 
 #[test]
+fn project_save_requires_persistent_edits_even_during_a_temporary_override() {
+    let dir = scratch("save-with-temporary-param");
+    let Some(manager) = scanned_manager(&dir) else {
+        return;
+    };
+    let device_id = DeviceId(10);
+    let synth = device(10, DeviceRole::Instrument, clap_plugin(SYNTH), None);
+    let mut rig = Rig::new(manager, project(vec![track(1, vec![synth])]));
+    rig.wait_status(10, DeviceStatus::Ok);
+    let gain = param_id(&rig.manager, 10, "Gain");
+    let decay = param_id(&rig.manager, 10, "Decay");
+    let base = rig.manager.param_base(device_id, gain).unwrap();
+    let decay_before = rig.manager.param_base(device_id, decay).unwrap();
+    let slot = rig.slots[&device_id];
+    let set = |rig: &mut Rig, id, value| {
+        rig.send(komponist_engine::Command::SetParam { slot, id, value });
+        rig.process(BLOCK);
+    };
+    let temporary = base * 0.5;
+    let decay_after = 0.5;
+    assert_ne!(decay_before, decay_after);
+
+    set(&mut rig, gain, temporary);
+    rig.manager.preview_param(device_id, gain, temporary);
+    let timeout = Duration::from_millis(120);
+    assert_eq!(rig.manager.snapshot_for_save(timeout), Ok(Vec::new()));
+
+    rig.manager.edited_param(device_id, decay, decay_after);
+    set(&mut rig, decay, decay_after);
+    assert_eq!(rig.manager.snapshot_for_save(timeout), Err(device_id));
+
+    set(&mut rig, gain, base);
+    let states = rig.manager.snapshot_for_save(PATIENCE).unwrap();
+    let [(saved_device, saved)] = states.as_slice() else {
+        panic!("expected a single saved state");
+    };
+    assert_eq!(*saved_device, device_id);
+
+    // Change both values again, then load the saved blob to see what really went into the file.
+    rig.manager.edited_param(device_id, decay, decay_before);
+    set(&mut rig, decay, decay_before);
+    rig.manager.edited_param(device_id, gain, temporary);
+    set(&mut rig, gain, temporary);
+    assert!(rig.manager.set_state(device_id, saved));
+    run_until(&mut rig, "the saved bases", |rig| {
+        rig.manager.param_base(device_id, gain) == Some(base)
+            && rig
+                .manager
+                .param_base(device_id, decay)
+                .is_some_and(|v| (v - decay_after).abs() < 1e-6)
+    });
+    rig.manager.shutdown();
+}
+
+#[test]
 fn parameter_changes_are_snapshotted_once_debounced() {
     let dir = scratch("debounce");
     let Some(manager) = scanned_manager(&dir) else {

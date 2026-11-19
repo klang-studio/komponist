@@ -274,6 +274,16 @@ pub trait DeviceHost {
         Vec::new()
     }
 
+    /// Whether a plugin holds a persistent edit that still needs a safe snapshot.
+    fn has_pending_state_edits(&self) -> bool {
+        false
+    }
+
+    /// Snapshots external devices and rejects a save that would omit a persistent plugin edit.
+    fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+        Ok(self.snapshot_states(timeout))
+    }
+
     /// Snapshots bridged devices on a MIDI track before replacing its chain. Hosts with running
     /// bridges must return an error if any selected bridge lacks a usable snapshot.
     fn snapshot_selected_states(
@@ -802,6 +812,14 @@ impl DeviceHost for PluginHost {
 
     fn snapshot_states(&mut self, timeout: Duration) -> Vec<(DeviceId, Arc<[u8]>)> {
         self.manager.snapshot_states(timeout)
+    }
+
+    fn has_pending_state_edits(&self) -> bool {
+        self.manager.has_pending_state_edits()
+    }
+
+    fn snapshot_for_save(&mut self, timeout: Duration) -> Result<DeviceSnapshots, DeviceId> {
+        self.manager.snapshot_for_save(timeout)
     }
 
     fn snapshot_selected_states(
