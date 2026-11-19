@@ -242,11 +242,50 @@ pub struct RtThread {
     sync: Arc<RtParamSync>,
 }
 
+/// Successful audio input and plugin output carry different evidence. A report from the same
+/// block can describe how the plugin rounded an input. A later report supersedes that evidence.
+#[derive(Debug, Default)]
+pub(crate) struct ParamDelivery {
+    input: Option<(u32, f64)>,
+    report: Option<(u32, f64)>,
+}
+
+impl ParamDelivery {
+    fn record_input(&mut self, block: u32, value: f64) {
+        self.input = Some((block, value));
+        self.report = None;
+    }
+
+    fn record_report(&mut self, block: u32, value: f64) {
+        // Some plugins repeat their last output. Keep the block that established that value.
+        if self
+            .report
+            .is_none_or(|(_, previous)| !same_param_value(value, previous))
+        {
+            self.report = Some((block, value));
+        }
+    }
+
+    pub fn confirms_input(&self, expected: f64, actual: f64) -> bool {
+        let Some((block, value)) = self.input else {
+            return false;
+        };
+        value == expected
+            && self.report.is_none_or(|(reported_in, reported)| {
+                reported_in == block && same_param_value(actual, reported)
+            })
+    }
+}
+
+pub(crate) fn same_param_value(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0)
+}
+
 #[derive(Debug)]
 struct RtParamSync {
     activity: AtomicU8,
     params: UnsafeCell<Consumer<(u32, f64)>>,
-    delivered: UnsafeCell<BTreeMap<u32, Option<f64>>>,
+    delivered: UnsafeCell<BTreeMap<u32, ParamDelivery>>,
     controller: Option<Arc<ControllerValues>>,
 }
 
@@ -269,7 +308,7 @@ impl Activity<'_> {
         unsafe { &mut *self.sync.params.get() }
     }
 
-    fn delivered(&mut self) -> &mut BTreeMap<u32, Option<f64>> {
+    fn delivered(&mut self) -> &mut BTreeMap<u32, ParamDelivery> {
         // SAFETY: The same gate protects the delivered values as the consumer.
         unsafe { &mut *self.sync.delivered.get() }
     }
@@ -340,7 +379,12 @@ impl RtThread {
         let sync = Arc::new(RtParamSync {
             activity: AtomicU8::new(0),
             params: UnsafeCell::new(params_rx),
-            delivered: UnsafeCell::new(param_ids.into_iter().map(|id| (id, None)).collect()),
+            delivered: UnsafeCell::new(
+                param_ids
+                    .into_iter()
+                    .map(|id| (id, ParamDelivery::default()))
+                    .collect(),
+            ),
             controller,
         });
         let worker_sync = sync.clone();
@@ -394,10 +438,24 @@ impl RtThread {
         self.params.slots() < PARAM_QUEUE_CAPACITY
     }
 
+    /// Reconciles the delivery map on the control thread before announcing a rescan.
+    pub fn refresh_parameter_ids(&mut self, mut ids: Vec<u32>) -> bool {
+        ids.sort_unstable();
+        let Some(mut pause) = self.sync.pause_for_restore() else {
+            return false;
+        };
+        let delivered = pause.delivered();
+        delivered.retain(|id, _| ids.binary_search(id).is_ok());
+        for id in ids {
+            delivered.entry(id).or_default();
+        }
+        true
+    }
+
     /// Reads state after any in-flight block has finished applying its parameters.
     pub fn snapshot<T>(
         &mut self,
-        capture: impl FnOnce(&BTreeMap<u32, Option<f64>>) -> T,
+        capture: impl FnOnce(&BTreeMap<u32, ParamDelivery>) -> T,
     ) -> Result<T, String> {
         let mut pause = self
             .sync
@@ -416,7 +474,7 @@ impl RtThread {
         if result.1 {
             while pause.params().pop().is_ok() {}
             for value in pause.delivered().values_mut() {
-                *value = None;
+                *value = ParamDelivery::default();
             }
             if let Some(controller) = &self.sync.controller {
                 controller.invalidate(None);
@@ -650,20 +708,24 @@ fn serve(
     };
     if status == BlockStatus::Ok {
         let delivered = processing.delivered();
-        for event in scratch.events_in[..count]
-            .iter()
-            .chain(&scratch.events_out[..produced])
-        {
+        for event in &scratch.events_in[..count] {
             if let Some(WireEventKind::ParamValue { id, value }) = event.decode()
                 && let Some(last) = delivered.get_mut(&id)
             {
-                *last = Some(value);
+                last.record_input(request.seq, value);
+            }
+        }
+        for event in &scratch.events_out[..produced] {
+            if let Some(WireEventKind::ParamValue { id, value }) = event.decode()
+                && let Some(last) = delivered.get_mut(&id)
+            {
+                last.record_report(request.seq, value);
             }
         }
         let controller_updates = processor.controller_updates();
         for &(id, value) in controller_updates {
             if let Some(last) = delivered.get_mut(&id) {
-                *last = Some(value);
+                last.record_report(request.seq, value);
             }
         }
         if let Some(controller) = controller {
@@ -680,6 +742,18 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_later_plugin_report_supersedes_input_evidence() {
+        let mut delivery = ParamDelivery::default();
+        delivery.record_input(1, 0.403);
+        delivery.record_report(1, 0.4);
+        assert!(delivery.confirms_input(0.403, 0.4));
+        delivery.record_report(2, 0.4);
+        assert!(delivery.confirms_input(0.403, 0.4));
+        delivery.record_report(3, 0.8);
+        assert!(!delivery.confirms_input(0.403, 0.8));
+    }
 
     #[test]
     fn controller_updates_coalesce_without_allocating() {
@@ -750,6 +824,13 @@ mod tests {
                         }
                         Some(WireEventKind::ParamValue { id: 1, value }) => {
                             self.retried.store(value.to_bits(), Ordering::Relaxed);
+                            block.events_out.push(WireEvent::new(
+                                0,
+                                WireEventKind::ParamValue {
+                                    id: 1,
+                                    value: (value * 10.0).round() / 10.0,
+                                },
+                            ));
                         }
                         Some(WireEventKind::NoteOn { .. }) => {
                             self.note_ons.fetch_add(1, Ordering::Relaxed);
@@ -897,9 +978,27 @@ mod tests {
             .unwrap();
         assert_eq!(wait(&mut client, after_edit), BlockStatus::Ok as u32);
         assert_eq!(f64::from_bits(value.load(Ordering::Relaxed)), 0.875);
-        assert_eq!(rt.snapshot(|params| params[&0]).unwrap(), Some(0.875));
+        assert!(rt.refresh_parameter_ids(vec![0, 1]));
+        assert!(rt.set_param(1, 0.403));
+        let new_param = client
+            .begin_block(&spec, [&[0.0], &[0.0]], None, &[])
+            .unwrap();
+        assert_eq!(wait(&mut client, new_param), BlockStatus::Ok as u32);
+        rt.snapshot(|params| {
+            assert!(params[&0].confirms_input(0.875, 0.875));
+            assert!(params[&1].confirms_input(0.403, 0.4));
+            assert!(!params[&1].confirms_input(0.403, 0.6));
+        })
+        .unwrap();
         rt.restore(|| ((), true)).unwrap();
-        assert_eq!(rt.snapshot(|params| params[&0]).unwrap(), None);
+        rt.snapshot(|params| {
+            assert!(
+                params
+                    .values()
+                    .all(|value| value.input.is_none() && value.report.is_none())
+            );
+        })
+        .unwrap();
         let _ = rt.stop();
     }
 

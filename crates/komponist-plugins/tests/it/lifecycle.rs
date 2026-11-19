@@ -359,6 +359,17 @@ fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
     let id = param_id(&rig.manager, 10, "Gain");
     let original = rig.manager.snapshot_states(PATIENCE);
     assert_eq!(original.len(), 1);
+
+    let base = rig.manager.param_base(device_id, id).unwrap();
+    let slot = rig.slots[&device_id];
+    let send = |rig: &mut Rig, value| {
+        rig.send(komponist_engine::Command::SetParam { slot, id, value });
+        rig.process(BLOCK);
+    };
+    send(&mut rig, base * 0.5);
+    rig.manager.preview_param(device_id, id, base * 0.5);
+    assert!(rig.manager.snapshot_states(PATIENCE).is_empty());
+    send(&mut rig, base);
     // The synth rounds to its internal 0.1 dB step. The requested value is between steps.
     let value = 0.403;
     assert_ne!(rig.manager.param_base(device_id, id), Some(value));
@@ -377,9 +388,7 @@ fn snapshots_keep_an_edit_pending_until_the_engine_delivers_it() {
         Err(device_id)
     );
 
-    let slot = rig.slots[&device_id];
-    rig.send(komponist_engine::Command::SetParam { slot, id, value });
-    rig.process(BLOCK);
+    send(&mut rig, value);
     rig.manager.request_state(device_id);
     let updated = next_snapshot(&mut rig, 10);
     assert_ne!(updated, original[0].1);

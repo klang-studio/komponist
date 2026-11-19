@@ -1047,7 +1047,10 @@ impl Bridge {
         for restore in &mut self.state_restores {
             restore.later_edits.insert(id);
         }
-        if self.base_values.get(&id) != Some(&value) {
+        // The engine reports a persistent edit only after ownership returns to the user.
+        // Keep verification pending while that edit replaces the previous override.
+        let replaced_override = self.temporary_params.remove(&id);
+        if replaced_override || self.base_values.get(&id) != Some(&value) {
             self.pending_params.insert(id);
             self.invalidate_state_requests();
         }

@@ -53,7 +53,8 @@ use komponist_hosting::FdEvents;
 use komponist_hosting::GuiParent;
 use komponist_hosting::host_loop::notification_bits as bits;
 use komponist_hosting::{
-    ActivateConfig, HostContext, HostedPlugin, HostingError, PluginKind, RenderMode, TimerId,
+    ActivateConfig, HostContext, HostNotification, HostNotify, HostedPlugin, HostingError,
+    PluginKind, RenderMode, TimerId,
 };
 use komponist_ipc::control::{PROTOCOL_VERSION, StateRestoreError};
 use komponist_ipc::shm::MAX_BLOCK;
@@ -69,7 +70,9 @@ use crate::cf_loop::{CfEventLoop as EventLoop, Owner};
 #[cfg(target_os = "linux")]
 use crate::event_loop::EventLoop;
 use crate::notify::{BridgeNotify, CONTROLLER_VALUES_PENDING, LOG_PENDING};
-use crate::rt::{ControllerValues, Fallback, RtConfig, RtThread, StartReport};
+use crate::rt::{
+    ControllerValues, Fallback, ParamDelivery, RtConfig, RtThread, StartReport, same_param_value,
+};
 #[cfg(windows)]
 use crate::win_loop::{ControlReader, WinEventLoop as EventLoop};
 use crate::{exit, sched};
@@ -641,9 +644,7 @@ impl Bridge {
                 self.queue_value(id, value);
             }
         }
-        if pending & bits::PARAMS_CHANGED != 0 {
-            let params = self.plugin.as_ref().map(|p| p.params()).unwrap_or_default();
-            self.send(BridgeMsg::Params(params));
+        if pending & bits::PARAMS_CHANGED != 0 && self.report_params() {
             self.queue_all_values();
         }
         if pending & bits::LATENCY_CHANGED != 0 {
@@ -787,8 +788,7 @@ impl Bridge {
             ControlMsg::SetState { request, state } => self.set_state(request, &state),
             ControlMsg::ListParams => {
                 // Answered in every state (an empty list before `Load`).
-                let params = self.plugin.as_ref().map(|p| p.params()).unwrap_or_default();
-                self.send(BridgeMsg::Params(params));
+                self.report_params();
             }
             ControlMsg::SetParam { id, value } => self.set_param(id, value),
             ControlMsg::OpenGui(target) => self.open_gui(target),
@@ -913,12 +913,26 @@ impl Bridge {
         self.send(BridgeMsg::Loaded(Box::new(info)));
     }
 
+    fn report_params(&mut self) -> bool {
+        let params = self.plugin.as_ref().map(|p| p.params()).unwrap_or_default();
+        if let Some(active) = self.active.as_mut()
+            && !active
+                .rt
+                .refresh_parameter_ids(params.iter().map(|param| param.id).collect())
+        {
+            // Wait for a bounded pause again before the host can send edits for the new IDs.
+            self.notify.notify(HostNotification::ParamsChanged);
+            return false;
+        }
+        self.send(BridgeMsg::Params(params));
+        true
+    }
+
     fn get_state_checked(&mut self, request: u32, expected: &[(u32, f64, bool)]) {
         self.sync_controller();
         let Some(plugin) = self.plugin.as_mut() else {
             return self.error(ErrorContext::State, "no plugin loaded");
         };
-        let close = |actual: f64, value: f64| (actual - value).abs() <= 1e-6 * value.abs().max(1.0);
         // A control message can update a VST3 controller before its processor sees the edit.
         let queued = self
             .active
@@ -928,7 +942,7 @@ impl Bridge {
             !allow_quantized
                 && !plugin
                     .param_value(id)
-                    .is_some_and(|actual| close(actual, value))
+                    .is_some_and(|actual| same_param_value(actual, value))
         });
         if queued || strict_mismatch {
             self.send(BridgeMsg::StateDeferred { request });
@@ -939,7 +953,7 @@ impl Bridge {
             .as_ref()
             .and_then(|active| active.controller.clone());
         let mut updates = Vec::new();
-        let mut snapshot = |delivered: &BTreeMap<u32, Option<f64>>| {
+        let mut snapshot = |delivered: &BTreeMap<u32, ParamDelivery>| {
             // Processing may have produced controller values after the first check.
             if let Some(controller) = &controller {
                 updates.extend(controller.drain());
@@ -953,9 +967,11 @@ impl Bridge {
                 else {
                     return Ok(None);
                 };
-                let processed =
-                    allow_quantized && delivered.get(&id).copied().flatten() == Some(value);
-                if !close(actual, value) && !processed {
+                let processed = allow_quantized
+                    && delivered
+                        .get(&id)
+                        .is_some_and(|delivery| delivery.confirms_input(value, actual));
+                if !same_param_value(actual, value) && !processed {
                     return Ok(None);
                 }
                 verified.push((id, actual));
@@ -964,7 +980,7 @@ impl Bridge {
             let stable = verified.iter().all(|&(id, value)| {
                 plugin
                     .param_value(id)
-                    .is_some_and(|actual| close(actual, value))
+                    .is_some_and(|actual| same_param_value(actual, value))
             });
             Ok(stable.then_some((state, verified)))
         };
