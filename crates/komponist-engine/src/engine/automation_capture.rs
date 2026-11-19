@@ -128,6 +128,7 @@ impl Core {
         let Some((lanes, state)) = self.locate_automation(owner) else {
             return false;
         };
+        state.cancel_restore(lanes, target);
         let Some((cursor, index)) = state.cursor(lanes, target) else {
             return false;
         };
@@ -377,9 +378,7 @@ impl Capture<'_> {
             let Some(slot) = slots.get_mut(device.slot.0 as usize) else {
                 continue;
             };
-            if !slot.runs(device.bypass) {
-                continue;
-            }
+            let runs = slot.runs(device.bypass);
             let Some(processor) = &mut slot.processor else {
                 continue;
             };
@@ -388,7 +387,10 @@ impl Capture<'_> {
                 let Some(edit) = processor.pop_parameter_edit() else {
                     break;
                 };
-                let (tick, time, fractional_tick) = self.clock.at(edit.offset);
+                // Bypass stops DSP, but earlier replies may still contain GUI edits.
+                // With no rendered segment for this slot, stamp those edits at the boundary.
+                let (tick, time, fractional_tick) =
+                    self.clock.at(if runs { edit.offset } else { 0 });
                 let wire_id = match edit.kind {
                     ParameterEditKind::Value { id, .. } | ParameterEditKind::Gesture { id, .. } => {
                         id
@@ -417,7 +419,11 @@ impl Capture<'_> {
                             .begin(lane.mode, self.clock.window.playing, None)
                             .then_some(true),
                         ParameterEditKind::Gesture { begin: false, .. } => {
-                            let notify = cursor.end(lane, fractional_tick, time);
+                            // The edit tick still belongs to the segment just rendered.
+                            // A host return ramp can first change audio in the next one.
+                            let playback_start =
+                                self.clock.time + u64::from(self.clock.window.frames);
+                            let notify = cursor.end(lane, fractional_tick, playback_start);
                             flush_value(cursor, owner, target, None, self.outbox, self.telemetry);
                             notify.then_some(false)
                         }
@@ -461,6 +467,7 @@ impl Capture<'_> {
         }
         let (tick, _, _) = self.clock.at(self.clock.window.frames - 1);
         for (lane, cursor) in lanes.iter().zip(state.cursors()) {
+            lane.publish_override(cursor.override_value(lane, self.clock.window, self.clock.time));
             let repeated = (cursor.writes() && self.clock.window.playing).then_some(tick);
             flush_value(
                 cursor,

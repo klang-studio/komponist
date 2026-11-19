@@ -275,7 +275,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
     input: &[Event],
     state: &mut StageState,
     lists: &'a mut StageLists,
-    automation: &automation::State,
+    automation: &mut automation::State,
 ) -> (&'a [Event], u32) {
     let StageLists { a, b, out, rebased } = lists;
     out.clear();
@@ -340,7 +340,14 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
                 Some(true) => (b.sorted(), &mut *a),
             };
             dst.clear();
-            process_stage(stage, ctx, src, dst, automation.events(d.slot), rebased);
+            process_stage(
+                stage,
+                ctx,
+                src,
+                dst,
+                automation.stage_events(d.slot),
+                rebased,
+            );
             dst.finish();
             last = Some(matches!(last, Some(false)));
         }
@@ -357,9 +364,7 @@ pub(crate) fn run<'a, T: SlotTable + ?Sized>(
         && let Some(slot) = slots.slot_mut(d.slot.0 as usize)
     {
         slot.params.drain_into(out, state.notes.len() + 2);
-        if stages > 0 {
-            dropped += automation.add_events(d.slot, out);
-        }
+        dropped += automation.add_events(d.slot, out);
     }
     (out.finish(), dropped)
 }

@@ -1,15 +1,16 @@
 //! Compiled automation targets and their bounded playback state.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use komponist_model::automation::{
-    AutomationMode, AutomationTarget, Point, Shape, value_at_fractional,
+    AutomationMode, AutomationTarget, Point, Shape, TrackAutomation, value_at_fractional,
 };
 use komponist_model::params::{ParamKind, Scale, db_to_p, p_to_db, to_normalized, to_plain};
 use komponist_model::{SendId, Tick};
 
 use crate::processor::{Event, EventKind, ParameterEditKind};
-use crate::program::SlotId;
+use crate::program::{ChainSlot, SlotId};
 use crate::sequencer::{EventList, Window};
 
 /// A target resolved against the installed program. This identity crosses the RT queues.
@@ -138,6 +139,8 @@ pub struct CompiledTarget {
     /// Merged arrangement and clip curve.
     pub points: Arc<[Point]>,
     pub(crate) jumps: Arc<[Tick]>,
+    applied_override: Arc<AtomicU32>,
+    value_ranges: Arc<[(f32, f32)]>,
     /// Fingerprint of the device descriptor's base value as returned by the compile environment.
     pub(crate) parameter: Option<Parameter>,
 }
@@ -159,6 +162,7 @@ impl CompiledTarget {
             })
             .collect::<Vec<_>>();
         jumps.dedup();
+        let value_ranges = value_ranges(&points);
         Self {
             target,
             model,
@@ -167,35 +171,126 @@ impl CompiledTarget {
             mode,
             points: points.into(),
             jumps: jumps.into(),
+            applied_override: Arc::new(AtomicU32::new(f32::NAN.to_bits())),
+            value_ranges,
             parameter,
         }
+    }
+
+    pub(crate) fn applied_override(&self) -> Option<f32> {
+        let value = f32::from_bits(self.applied_override.load(Ordering::Relaxed));
+        value.is_finite().then_some(value)
+    }
+
+    pub(crate) fn publish_override(&self, value: Option<f32>) {
+        self.applied_override
+            .store(value.unwrap_or(f32::NAN).to_bits(), Ordering::Relaxed);
     }
 
     pub(crate) fn value(&self, tick: f64) -> f32 {
         value_at_fractional(&self.points, tick).unwrap_or(self.base)
     }
 
-    fn changed_since(&self, from: f64, reference: f32, to: f64) -> bool {
-        if to <= from {
-            return false;
+    /// The value immediately before a discontinuity, using the incoming segment.
+    fn jump_left(&self, tick: Tick) -> f32 {
+        let first = self.points.partition_point(|point| point.tick < tick);
+        if let Some(previous) = first.checked_sub(1).and_then(|i| self.points.get(i))
+            && previous.shape == Shape::Hold
+        {
+            return previous.value;
         }
-        if (self.value(to) - reference).abs() > VALUE_EPSILON {
-            return true;
-        }
+        self.points
+            .get(first)
+            .map_or(self.base, |point| point.value)
+    }
+
+    fn read_override(&self, tick: f64) -> ReadOverride {
+        let reference = self.value(tick);
         let first = self
             .points
-            .partition_point(|point| point.tick.0 as f64 <= from);
-        let last = self
-            .points
-            .partition_point(|point| point.tick.0 as f64 <= to);
-        self.points[first..last]
-            .iter()
-            .any(|point| (point.value - reference).abs() > VALUE_EPSILON)
+            .partition_point(|point| point.tick.0 as f64 <= tick);
+        let next = self.next_change(first, reference);
+        ReadOverride {
+            reference,
+            at: tick,
+            next: next.map_or(f64::INFINITY, |point| point.tick.0 as f64),
+        }
+    }
+
+    fn next_change(&self, start: usize, reference: f32) -> Option<&Point> {
+        let find = |points: &[Point]| {
+            points
+                .iter()
+                .find(|point| outside(point.value, reference))
+                .map(|point| point.tick)
+        };
+        let first_block = start.div_ceil(VALUE_RANGE_BLOCK);
+        let first_end = (first_block * VALUE_RANGE_BLOCK).min(self.points.len());
+        let tick = find(&self.points[start..first_end]).or_else(|| {
+            let leaves = self.value_ranges.len() / 2;
+            if leaves == 0 {
+                return find(&self.points[first_end..]);
+            }
+            let block = find_value_block(&self.value_ranges, 1, 0, leaves, first_block, reference)?;
+            let start = block * VALUE_RANGE_BLOCK;
+            find(&self.points[start..(start + VALUE_RANGE_BLOCK).min(self.points.len())])
+        })?;
+        self.points
+            .get(self.points.partition_point(|point| point.tick < tick))
     }
 
     pub(crate) fn reads(&self) -> bool {
         self.mode != AutomationMode::Off && !self.points.is_empty()
     }
+}
+
+/// Off-thread min/max index. Each leaf summarizes a short run of points so a release
+/// on a dense flat curve can find its first meaningful change without scanning the curve.
+const VALUE_RANGE_BLOCK: usize = 32;
+
+fn value_ranges(points: &[Point]) -> Arc<[(f32, f32)]> {
+    let blocks = points.len().div_ceil(VALUE_RANGE_BLOCK);
+    if blocks <= 1 {
+        return Arc::from([]);
+    }
+    let leaves = blocks.next_power_of_two();
+    let mut tree = vec![(f32::INFINITY, f32::NEG_INFINITY); 2 * leaves];
+    for (i, chunk) in points.chunks(VALUE_RANGE_BLOCK).enumerate() {
+        for point in chunk {
+            let (min, max) = &mut tree[leaves + i];
+            *min = min.min(point.value);
+            *max = max.max(point.value);
+        }
+    }
+    for i in (1..leaves).rev() {
+        let (l, r) = (tree[i * 2], tree[i * 2 + 1]);
+        tree[i] = (l.0.min(r.0), l.1.max(r.1));
+    }
+    tree.into()
+}
+
+fn outside(value: f32, reference: f32) -> bool {
+    (value - reference).abs() > VALUE_EPSILON
+}
+
+fn find_value_block(
+    tree: &[(f32, f32)],
+    node: usize,
+    lo: usize,
+    hi: usize,
+    start: usize,
+    reference: f32,
+) -> Option<usize> {
+    let (min, max) = tree[node];
+    if hi <= start || min > max || (!outside(min, reference) && !outside(max, reference)) {
+        return None;
+    }
+    if hi - lo == 1 {
+        return Some(lo);
+    }
+    let mid = lo + (hi - lo) / 2;
+    find_value_block(tree, node * 2, lo, mid, start, reference)
+        .or_else(|| find_value_block(tree, node * 2 + 1, mid, hi, start, reference))
 }
 
 /// Transport change that ended an automation write segment.
@@ -275,21 +370,38 @@ enum Gesture {
         implicit_end: Option<u64>,
     },
     Latch,
-    ReadOverride {
-        reference: f32,
-        at: f64,
-    },
+    ReadOverride(ReadOverride),
     Return {
         from: f32,
         start: u64,
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ReadOverride {
+    reference: f32,
+    at: f64,
+    next: f64,
+}
+
+impl ReadOverride {
+    fn expired(self, lane: &CompiledTarget, tick: f64) -> bool {
+        tick >= self.next
+            || (tick > self.at
+                && tick < self.next
+                && self.next.is_finite()
+                && outside(lane.value(tick), self.reference))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Cursor {
     last: f32,
     chase: bool,
+    restore_base: bool,
     gesture: Gesture,
+    /// A newly held control keeps following the previous state until the first edit.
+    before_edit: Option<Gesture>,
     manual: f32,
     pub(crate) pending_value: Option<(Tick, f32)>,
 }
@@ -299,7 +411,9 @@ impl Cursor {
         Self {
             last: f32::NAN,
             chase: true,
+            restore_base: false,
             gesture: Gesture::Idle,
+            before_edit: None,
             manual: f32::NAN,
             pending_value: None,
         }
@@ -307,7 +421,22 @@ impl Cursor {
 
     pub(crate) fn chase(&mut self) {
         self.chase = true;
-        if let Gesture::ReadOverride { .. } | Gesture::Return { .. } = self.gesture {
+        if matches!(
+            self.playback_gesture(),
+            Gesture::ReadOverride(_) | Gesture::Return { .. }
+        ) {
+            self.clear_playback_override();
+        }
+    }
+
+    fn playback_gesture(&self) -> Gesture {
+        self.before_edit.unwrap_or(self.gesture)
+    }
+
+    fn clear_playback_override(&mut self) {
+        if self.before_edit.is_some() {
+            self.before_edit = Some(Gesture::Idle);
+        } else {
             self.gesture = Gesture::Idle;
         }
     }
@@ -324,6 +453,9 @@ impl Cursor {
                 self.gesture,
                 Gesture::Held { writes: true, .. } | Gesture::Latch
             );
+        if !matches!(self.gesture, Gesture::Held { .. }) {
+            self.before_edit = Some(self.gesture);
+        }
         self.gesture = Gesture::Held {
             writes,
             implicit_end,
@@ -365,6 +497,10 @@ impl Cursor {
         let Gesture::Held { writes, .. } = self.gesture else {
             return false;
         };
+        if let Some(previous) = self.before_edit.take() {
+            self.gesture = previous;
+            return writes;
+        }
         self.gesture = match (lane.mode, writes, self.manual.is_finite()) {
             (AutomationMode::Latch, true, _) => Gesture::Latch,
             (AutomationMode::Touch, true, true) => {
@@ -374,10 +510,7 @@ impl Cursor {
                     start: time,
                 }
             }
-            (_, _, true) if lane.reads() => Gesture::ReadOverride {
-                reference: lane.value(tick),
-                at: tick,
-            },
+            (_, _, true) if lane.reads() => Gesture::ReadOverride(lane.read_override(tick)),
             _ => Gesture::Idle,
         };
         writes
@@ -391,7 +524,11 @@ impl Cursor {
     }
 
     pub(crate) fn manual(&self) -> Option<f32> {
-        self.manual.is_finite().then_some(self.manual)
+        (self
+            .before_edit
+            .is_none_or(|previous| matches!(previous, Gesture::Latch))
+            && self.manual.is_finite())
+        .then_some(self.manual)
     }
 
     pub(crate) fn is_held(&self) -> bool {
@@ -404,6 +541,7 @@ impl Cursor {
     }
 
     pub(crate) fn manual_value(&mut self, tick: Tick, value: f32) {
+        self.before_edit = None;
         self.manual = value;
         self.last = value;
         if matches!(
@@ -419,6 +557,7 @@ impl Cursor {
             && mode == AutomationMode::Touch
             && matches!(self.gesture, Gesture::Held { writes: true, .. });
         if !restarted {
+            self.before_edit = None;
             self.gesture = match self.gesture {
                 Gesture::Held { implicit_end, .. } if keep_touch => Gesture::Held {
                     writes: false,
@@ -432,10 +571,43 @@ impl Cursor {
     }
 
     fn return_end(&self, rate: f64) -> Option<u64> {
-        match self.gesture {
+        match self.playback_gesture() {
             Gesture::Return { start, .. } => Some(start + return_frames(rate)),
             _ => None,
         }
+    }
+
+    pub(crate) fn override_value(
+        &self,
+        lane: &CompiledTarget,
+        window: Window<'_>,
+        time: u64,
+    ) -> Option<f32> {
+        let offset = if window.playing {
+            i64::from(window.frames - 1)
+        } else {
+            0
+        };
+        let sample = window.start + offset;
+        match self.playback_gesture() {
+            Gesture::Idle => return None,
+            Gesture::Held { .. } | Gesture::Latch if !self.manual.is_finite() => return None,
+            Gesture::ReadOverride(state) if state.expired(lane, tick_at(window, sample)) => {
+                return None;
+            }
+            Gesture::Return { .. }
+                if self
+                    .return_end(window.rate)
+                    .is_some_and(|end| end <= time + offset as u64) =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+        if matches!(lane.target, EngineTarget::Slot { .. }) {
+            return self.last.is_finite().then_some(self.last);
+        }
+        self.mixer_value(lane, window, sample, time + offset as u64)
     }
 
     pub(crate) fn mixer_value(
@@ -448,17 +620,16 @@ impl Cursor {
         if lane.mode == AutomationMode::Off {
             return None;
         }
-        if let Gesture::Held { .. } | Gesture::Latch = self.gesture {
+        let gesture = self.playback_gesture();
+        if let Gesture::Held { .. } | Gesture::Latch = gesture {
             return self.manual.is_finite().then_some(self.manual);
         }
-        if !lane.reads() && !matches!(self.gesture, Gesture::Return { .. }) {
+        if !lane.reads() && !matches!(gesture, Gesture::Return { .. }) {
             return None;
         }
         let tick = tick_at(window, sample);
-        Some(match self.gesture {
-            Gesture::ReadOverride { reference, at } if !lane.changed_since(at, reference, tick) => {
-                self.manual
-            }
+        Some(match gesture {
+            Gesture::ReadOverride(state) if !state.expired(lane, tick) => self.manual,
             Gesture::Return { from, start } => {
                 let frames = return_frames(window.rate);
                 let progress = time.saturating_sub(start) as f32 / frames.max(1) as f32;
@@ -481,6 +652,37 @@ struct SlotEvent {
     event: Event,
     important: bool,
     sequence: u32,
+    delivery: Delivery,
+}
+
+#[derive(Clone, Copy)]
+enum Delivery {
+    Lane {
+        index: usize,
+        value: f32,
+        last: bool,
+    },
+    Restore(usize),
+}
+
+struct BaseRestore {
+    target: EngineTarget,
+    value: f64,
+    delivered: bool,
+}
+
+fn delivered(event: SlotEvent, cursors: &mut [Cursor], restores: &mut [BaseRestore]) {
+    match event.delivery {
+        Delivery::Lane { index, value, last } => {
+            let cursor = &mut cursors[index];
+            cursor.last = value;
+            if last {
+                cursor.chase = false;
+                cursor.restore_base = false;
+            }
+        }
+        Delivery::Restore(index) => restores[index].delivered = true,
+    }
 }
 
 /// All per-owner runtime data, allocated when constructing the engine.
@@ -488,6 +690,7 @@ pub(crate) struct State {
     cursors: Vec<Cursor>,
     reuse: Vec<Cursor>,
     params: Vec<SlotEvent>,
+    restores: Vec<BaseRestore>,
 }
 
 impl State {
@@ -496,10 +699,47 @@ impl State {
             cursors: Vec::with_capacity(MAX_TARGETS),
             reuse: Vec::with_capacity(MAX_TARGETS),
             params: Vec::with_capacity(crate::MAX_EVENTS_PER_BLOCK),
+            restores: Vec::with_capacity(MAX_TARGETS),
         }
     }
 
-    pub(crate) fn install(&mut self, old: &[CompiledTarget], new: &[CompiledTarget]) {
+    pub(crate) fn clear(&mut self) {
+        self.cursors.clear();
+        self.restores.clear();
+    }
+
+    pub(crate) fn install(
+        &mut self,
+        old: &[CompiledTarget],
+        new: &[CompiledTarget],
+        chain: &[ChainSlot],
+        source: &TrackAutomation,
+    ) {
+        let ongoing = |target| {
+            matches!(target, EngineTarget::Slot { slot, .. }
+            if chain.iter().any(|device| device.slot == slot))
+        };
+        self.restores.retain(|restore| {
+            !restore.delivered && ongoing(restore.target) && index(new, restore.target).is_none()
+        });
+        for (lane, cursor) in old.iter().zip(&self.cursors) {
+            let missing = index(new, lane.target).is_none();
+            if missing
+                && source.lane(&lane.model).is_none()
+                && ongoing(lane.target)
+                && (lane.reads()
+                    || cursor.restore_base
+                    || (cursor.writes() && cursor.manual().is_some()))
+                && let Some(parameter) = lane.parameter
+                && self.restores.len() < self.restores.capacity()
+            {
+                self.restores.push(BaseRestore {
+                    target: lane.target,
+                    value: parameter.base,
+                    delivered: false,
+                });
+            }
+        }
         self.reuse.clear();
         for lane in new.iter().take(MAX_TARGETS) {
             let state = index(old, lane.target).and_then(|i| {
@@ -513,15 +753,35 @@ impl State {
                     || prev.map != lane.map
                 {
                     cursor.chase = true;
+                    if matches!(cursor.playback_gesture(), Gesture::ReadOverride(_)) {
+                        cursor.clear_playback_override();
+                    }
                 }
                 if prev.mode != lane.mode {
                     cursor = Cursor::new();
+                    cursor.restore_base =
+                        lane.mode == AutomationMode::Off || (prev.reads() && !lane.reads());
+                } else if lane.mode == AutomationMode::Off && prev.base != lane.base
+                    || prev.reads() && !lane.reads()
+                {
+                    cursor.restore_base = true;
                 }
                 Some(cursor)
             });
-            self.reuse.push(state.unwrap_or_else(Cursor::new));
+            self.reuse.push(state.unwrap_or_else(|| Cursor {
+                restore_base: lane.mode == AutomationMode::Off,
+                ..Cursor::new()
+            }));
         }
         std::mem::swap(&mut self.cursors, &mut self.reuse);
+    }
+
+    /// A newer manual edit supersedes a pending one-shot base restore.
+    pub(crate) fn cancel_restore(&mut self, lanes: &[CompiledTarget], target: EngineTarget) {
+        if let Some((cursor, _)) = self.cursor(lanes, target) {
+            cursor.restore_base = false;
+        }
+        self.restores.retain(|restore| restore.target != target);
     }
 
     pub(crate) fn cursor(
@@ -571,7 +831,31 @@ impl State {
         self.params.clear();
         let mut dropped = 0;
         let mut sequence = 0u32;
-        for (lane, cursor) in lanes.iter().zip(&mut self.cursors) {
+        self.restores.retain(|restore| !restore.delivered);
+        for (index, restore) in self.restores.iter().enumerate() {
+            if let EngineTarget::Slot { slot, wire_id } = restore.target
+                && running(slot)
+            {
+                dropped += push_event(
+                    &mut self.params,
+                    SlotEvent {
+                        slot,
+                        event: Event {
+                            offset: 0,
+                            kind: EventKind::Param {
+                                id: wire_id,
+                                value: restore.value,
+                            },
+                        },
+                        important: true,
+                        sequence,
+                        delivery: Delivery::Restore(index),
+                    },
+                );
+                sequence += 1;
+            }
+        }
+        for (index, (lane, cursor)) in lanes.iter().zip(&mut self.cursors).enumerate() {
             let EngineTarget::Slot { slot, wire_id } = lane.target else {
                 continue;
             };
@@ -581,15 +865,18 @@ impl State {
                 continue;
             }
             let mut last_emitted = None;
-            let mut emit = |last: &mut f32, sample: i64, value: f32, important: bool| {
-                if (*last - value).abs() <= VALUE_EPSILON {
+            // This probe advances only while staging. The committed cursor advances when
+            // the processor's list (or a MIDI stage's setter) accepts the event.
+            let mut last = cursor.last;
+            let mut emit = |sample: i64, value: f32, important: bool| {
+                if lane.map.steps == 0 && !outside(last, value) && last.is_finite() {
                     return;
                 }
                 let plain = lane.map.plain(value);
-                if lane.map.steps != 0 && last.is_finite() && lane.map.plain(*last) == plain {
+                if lane.map.steps != 0 && last.is_finite() && lane.map.plain(last) == plain {
                     return;
                 }
-                *last = value;
+                last = value;
                 let event = SlotEvent {
                     slot,
                     event: Event {
@@ -601,78 +888,111 @@ impl State {
                     },
                     important,
                     sequence,
+                    delivery: Delivery::Lane {
+                        index,
+                        value,
+                        last: false,
+                    },
                 };
                 sequence += 1;
                 last_emitted = Some(event);
                 dropped += push_event(&mut self.params, event);
             };
-            if lane.mode == AutomationMode::Off {
-                if std::mem::take(&mut cursor.chase) {
-                    emit(&mut cursor.last, window.start, lane.base, true);
-                }
+            if cursor.restore_base && !lane.reads() {
+                let value = lane
+                    .parameter
+                    .map_or_else(|| lane.map.plain(lane.base), |p| p.base);
+                dropped += push_event(
+                    &mut self.params,
+                    SlotEvent {
+                        slot,
+                        event: Event {
+                            offset: 0,
+                            kind: EventKind::Param { id: wire_id, value },
+                        },
+                        important: true,
+                        sequence,
+                        delivery: Delivery::Lane {
+                            index,
+                            value: lane.base,
+                            last: true,
+                        },
+                    },
+                );
+                sequence += 1;
                 continue;
             }
-            if (lane.points.is_empty() && !matches!(cursor.gesture, Gesture::Return { .. }))
-                || matches!(cursor.gesture, Gesture::Held { .. } | Gesture::Latch)
+            let gesture = cursor.playback_gesture();
+            if lane.mode == AutomationMode::Off
+                || (lane.points.is_empty() && !matches!(gesture, Gesture::Return { .. }))
+                || matches!(gesture, Gesture::Held { .. } | Gesture::Latch)
             {
                 continue;
             }
-            let chase = std::mem::take(&mut cursor.chase);
+            let chase = cursor.chase;
             // Copy gesture state so the event sink can update the last emitted value independently.
             let view = Cursor {
-                gesture: cursor.gesture,
+                gesture,
                 manual: cursor.manual,
                 ..Cursor::new()
             };
             if chase && let Some(value) = view.mixer_value(lane, window, window.start, time) {
                 let value = if matches!(view.gesture, Gesture::Idle) && !window.playing {
-                    let next = lane.jumps.partition_point(|&tick| {
-                        window.map.tick_to_sample(tick, window.rate) <= window.start
+                    let next = lane.points.partition_point(|point| {
+                        window.map.tick_to_sample(point.tick, window.rate) <= window.start
                     });
-                    if let Some(tick) = next.checked_sub(1).and_then(|i| lane.jumps.get(i))
-                        && window.map.tick_to_sample(*tick, window.rate) == window.start
+                    if let Some(point) = next.checked_sub(1).and_then(|i| lane.points.get(i))
+                        && window.map.tick_to_sample(point.tick, window.rate) == window.start
                     {
-                        lane.value(tick.0 as f64)
+                        lane.value(point.tick.0 as f64)
                     } else {
                         value
                     }
                 } else {
                     value
                 };
-                emit(&mut cursor.last, window.start, value, true);
+                emit(window.start, value, true);
             }
             if window.playing {
                 let step = ramp_step(window.rate);
                 let end = window.start + i64::from(window.frames);
                 let mut grid = window.start + (-window.start).rem_euclid(step);
-                let next_jump = lane.jumps.partition_point(|&tick| {
-                    window.map.tick_to_sample(tick, window.rate) < window.start
+                let first = lane.points.partition_point(|point| {
+                    window.map.tick_to_sample(point.tick, window.rate) < window.start
                 });
-                let mut jumps = lane.jumps[next_jump..].iter().peekable();
+                let mut points = lane.points[first..].iter().peekable();
                 let return_end = cursor.return_end(window.rate);
                 let mut return_at = return_end.map_or(end, |at| {
                     window.start.saturating_add(at.saturating_sub(time) as i64)
                 });
-                while grid < end || jumps.peek().is_some() || return_at < end {
-                    let jump = jumps
-                        .peek()
-                        .map_or(end, |&&tick| window.map.tick_to_sample(tick, window.rate));
-                    let sample = grid.min(jump).min(return_at);
+                loop {
+                    let point = points.peek().map_or(end, |point| {
+                        window.map.tick_to_sample(point.tick, window.rate)
+                    });
+                    let sample = grid.min(point).min(return_at);
                     if sample >= end {
                         break;
                     }
                     let elapsed = time + (sample - window.start) as u64;
-                    if jump == sample {
-                        let tick = jumps.next().expect("the jump sample was in the segment");
+                    if point == sample {
+                        // Points that round onto the same sample use the rightmost value.
+                        let mut tick = points.next().expect("scheduled point").tick;
+                        while let Some(next) = points.next_if(|point| {
+                            window.map.tick_to_sample(point.tick, window.rate) == sample
+                        }) {
+                            tick = next.tick;
+                        }
                         let value = if matches!(view.gesture, Gesture::Idle) {
                             lane.value(tick.0 as f64)
                         } else {
                             view.mixer_value(lane, window, sample, elapsed)
                                 .unwrap_or(lane.base)
                         };
-                        emit(&mut cursor.last, sample, value, true);
+                        let important =
+                            sample == return_at || lane.jumps.binary_search(&tick).is_ok();
+                        emit(sample, value, important);
                     } else if let Some(value) = view.mixer_value(lane, window, sample, elapsed) {
-                        emit(&mut cursor.last, sample, value, sample == return_at);
+                        emit(sample, value, sample == return_at);
                     }
                     if return_at == sample {
                         return_at = end;
@@ -682,11 +1002,15 @@ impl State {
                     }
                 }
                 if return_end.is_some_and(|at| at < time + u64::from(window.frames)) {
-                    cursor.gesture = Gesture::Idle;
+                    cursor.clear_playback_override();
                 }
             }
             // Reserve every target's final emitted value even if some intermediate steps were lost.
-            if let Some(last) = last_emitted {
+            cursor.chase = last_emitted.is_some();
+            if let Some(mut last) = last_emitted {
+                if let Delivery::Lane { last, .. } = &mut last.delivery {
+                    *last = true;
+                }
                 if let Some(event) = self
                     .params
                     .iter_mut()
@@ -694,6 +1018,7 @@ impl State {
                     .find(|event| event.sequence == last.sequence)
                 {
                     event.important = true;
+                    event.delivery = last.delivery;
                 } else {
                     dropped += push_event(
                         &mut self.params,
@@ -704,15 +1029,14 @@ impl State {
                     );
                 }
             }
-            if let Gesture::ReadOverride { reference, at } = cursor.gesture
+            if let Gesture::ReadOverride(state) = gesture
                 && window.playing
-                && lane.changed_since(
-                    at,
-                    reference,
+                && state.expired(
+                    lane,
                     tick_at(window, window.start + i64::from(window.frames - 1)),
                 )
             {
-                cursor.gesture = Gesture::Idle;
+                cursor.clear_playback_override();
             }
         }
         self.params
@@ -720,27 +1044,32 @@ impl State {
         dropped
     }
 
-    fn slot_events(&self, slot: SlotId) -> &[SlotEvent] {
+    fn slot_range(&self, slot: SlotId) -> std::ops::Range<usize> {
         let start = self.params.partition_point(|event| event.slot < slot);
         let end = start + self.params[start..].partition_point(|event| event.slot == slot);
-        &self.params[start..end]
+        start..end
     }
 
-    pub(crate) fn events(&self, slot: SlotId) -> impl Iterator<Item = Event> + '_ {
-        self.slot_events(slot).iter().map(|entry| entry.event)
+    /// MIDI stages accept every prepared event directly through their setter.
+    pub(crate) fn stage_events(&mut self, slot: SlotId) -> impl Iterator<Item = Event> + '_ {
+        let range = self.slot_range(slot);
+        self.params[range].iter().map(|&entry| {
+            delivered(entry, &mut self.cursors, &mut self.restores);
+            entry.event
+        })
     }
 
-    pub(crate) fn add_events(&self, slot: SlotId, out: &mut EventList) -> u32 {
-        let events = self.slot_events(slot);
+    pub(crate) fn add_events(&mut self, slot: SlotId, out: &mut EventList) -> u32 {
+        let events = &self.params[self.slot_range(slot)];
         let available = out.room();
         let skip = events.len().saturating_sub(available);
-        // Prefer jumps and each target's final value, retaining the existing note-offs.
+        // Prefer points and each target's final value, retaining the existing note-offs.
         let mut skip_ramps = skip;
-        for event in events {
+        for &event in events {
             if skip_ramps > 0 && !event.important {
                 skip_ramps -= 1;
-            } else {
-                out.push(event.event.offset, event.event.kind);
+            } else if out.push(event.event.offset, event.event.kind) {
+                delivered(event, &mut self.cursors, &mut self.restores);
             }
         }
         skip as u32
@@ -814,7 +1143,8 @@ pub(crate) struct MixerValues<'a> {
     cursor: &'a Cursor,
     clock: MixerClock<'a>,
     step: i64,
-    grid: i64,
+    left_sample: i64,
+    right_sample: i64,
     offset: u32,
     left: f32,
     right: f32,
@@ -828,7 +1158,11 @@ impl<'a> MixerValues<'a> {
         clock: MixerClock<'a>,
     ) -> Option<Self> {
         let (lane, cursor) = state.mixer_lane(lanes, target)?;
-        if lane.mode == AutomationMode::Off || (!lane.reads() && cursor.manual().is_none()) {
+        if lane.mode == AutomationMode::Off
+            || (!lane.reads()
+                && cursor.manual().is_none()
+                && cursor.return_end(clock.window.rate).is_none())
+        {
             return None;
         }
         Some(Self {
@@ -836,7 +1170,8 @@ impl<'a> MixerValues<'a> {
             cursor,
             clock,
             step: ramp_step(clock.window.rate),
-            grid: i64::MIN,
+            left_sample: i64::MIN,
+            right_sample: i64::MIN,
             offset: 0,
             left: 0.0,
             right: 0.0,
@@ -861,19 +1196,138 @@ impl<'a> MixerValues<'a> {
                 .mixer_value(self.lane, self.clock.window, sample, time)
                 .map_or(fallback, |v| self.scale(v));
         }
-        let grid = sample - sample.rem_euclid(self.step);
-        if grid != self.grid {
-            self.grid = grid;
-            let back = (sample - grid) as u64;
-            let value_at = |sample, time| {
-                self.cursor
-                    .mixer_value(self.lane, self.clock.window, sample, time)
-                    .map_or(fallback, |v| self.scale(v))
-            };
-            let left = value_at(grid, time.saturating_sub(back));
-            self.right = value_at(grid + self.step, time + self.step as u64 - back);
-            self.left = left;
+        if sample < self.left_sample || sample >= self.right_sample {
+            self.prepare_interval(sample, time, fallback);
         }
-        self.left + (self.right - self.left) * (sample - grid) as f32 / self.step as f32
+        self.left
+            + (self.right - self.left) * (sample - self.left_sample) as f32
+                / (self.right_sample - self.left_sample) as f32
+    }
+
+    fn prepare_interval(&mut self, sample: i64, time: u64, fallback: f32) {
+        let clock = self.clock.window;
+        let grid = sample - sample.rem_euclid(self.step);
+        let end = grid + self.step;
+        let gesture = self.cursor.playback_gesture();
+        let mut left_jump = None;
+        let mut right_jump = None;
+        if matches!(gesture, Gesture::Idle | Gesture::ReadOverride(_)) {
+            let frame = |tick| clock.map.tick_to_sample(tick, clock.rate);
+            let after = self
+                .lane
+                .jumps
+                .partition_point(|&tick| frame(tick) <= sample);
+            left_jump = after
+                .checked_sub(1)
+                .and_then(|i| self.lane.jumps.get(i))
+                .map(|&tick| (frame(tick), tick))
+                .filter(|(jump, _)| *jump >= grid);
+            right_jump = self
+                .lane
+                .jumps
+                .get(after)
+                .map(|&tick| (frame(tick), tick))
+                .filter(|(jump, _)| *jump <= end);
+        }
+        self.left_sample = left_jump.map_or(grid, |(frame, _)| frame);
+        self.right_sample = right_jump.map_or(end, |(frame, _)| frame);
+
+        let curve_at = |frame, time| {
+            self.cursor
+                .mixer_value(self.lane, clock, frame, time)
+                .map_or(fallback, |value| self.scale(value))
+        };
+        let jump_value = |tick: Tick, left_side| {
+            let at = tick.0 as f64;
+            let check_at = if left_side { at.next_down() } else { at };
+            if let Gesture::ReadOverride(state) = gesture
+                && !state.expired(self.lane, check_at)
+            {
+                return self.scale(self.cursor.manual);
+            }
+            self.scale(if left_side {
+                self.lane.jump_left(tick)
+            } else {
+                self.lane.value(at)
+            })
+        };
+        let left = left_jump.map_or_else(
+            || curve_at(grid, time.saturating_sub((sample - grid) as u64)),
+            |(_, tick)| jump_value(tick, false),
+        );
+        self.right = right_jump.map_or_else(
+            || curve_at(end, time + (end - sample) as u64),
+            |(_, tick)| jump_value(tick, true),
+        );
+        self.left = left;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use komponist_model::params::ParamId;
+    use komponist_model::{DeviceId, Meter, Tempo, TempoMap};
+
+    fn target(points: Vec<Point>) -> CompiledTarget {
+        CompiledTarget::new(
+            EngineTarget::Slot {
+                slot: SlotId(0),
+                wire_id: 0,
+            },
+            AutomationTarget::Param {
+                device: DeviceId(1),
+                param: ParamId::plugin(0),
+            },
+            None,
+            0.25,
+            AutomationMode::Read,
+            points,
+        )
+    }
+
+    #[test]
+    fn read_expiry_search_finds_a_change_after_dense_flat_points() {
+        let mut points = (0..4096)
+            .map(|tick| Point::linear(Tick(tick), 0.25))
+            .collect::<Vec<_>>();
+        points[3600].value = 0.75;
+        let target = target(points);
+        let state = assert_no_alloc::assert_no_alloc(|| target.read_override(97.5));
+        assert_eq!(state.next, 3600.0);
+        assert!(!state.expired(&target, 3599.0));
+        assert!(state.expired(&target, 3601.0));
+        let after = target.read_override(4000.0);
+        assert!(!after.expired(&target, 50_000.0));
+    }
+
+    #[test]
+    fn a_full_destination_list_does_not_commit_the_staged_value() {
+        let mut state = State::new();
+        let lanes = [target(vec![Point::linear(Tick::ZERO, 0.8)])];
+        state.install(&[], &lanes, &[], &TrackAutomation::default());
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        let window = Window {
+            map: &map,
+            rate: 48_000.0,
+            start: 0,
+            frames: 64,
+            playing: false,
+        };
+        let mut full = EventList::new(0);
+        let mut ready = EventList::new(1);
+        assert_no_alloc::assert_no_alloc(|| {
+            state.prepare(&lanes, window, 0, |_| true);
+            assert_eq!(state.add_events(SlotId(0), &mut full), 1);
+            state.prepare(&lanes, window, 64, |_| true);
+            assert_eq!(state.add_events(SlotId(0), &mut ready), 0);
+            assert!(
+                matches!(ready.finish(), [Event { offset: 0, kind: EventKind::Param {id: 0, value} }] if *value == f64::from(0.8_f32))
+            );
+            ready.clear();
+            state.prepare(&lanes, window, 128, |_| true);
+            state.add_events(SlotId(0), &mut ready);
+            assert!(ready.finish().is_empty());
+        });
     }
 }

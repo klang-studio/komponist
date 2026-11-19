@@ -400,7 +400,7 @@ fn overflow_retains_the_latest_value_for_each_target() {
     assert!((0..40).all(|id| {
         events
             .iter()
-            .any(|&(frame, wire, _)| wire == id && frame == 64 * 31)
+            .any(|&(frame, wire, _)| wire == id && frame == 2000)
     }));
 }
 
@@ -661,4 +661,450 @@ fn read_override_does_not_return_on_a_curve_that_visits_the_same_value_again() {
     assert_eq!(rig.l[0], 0.75); // The curve is still on the release value.
     assert_eq!(rig.l[180], 0.25); // The curve changed, then returned within this callback.
     assert!(rig.events.is_empty());
+}
+
+#[test]
+fn a_sub_grid_peak_and_stepped_threshold_reach_the_processor() {
+    struct Stepped;
+    impl CompileEnv for Stepped {
+        fn midi_port(&self, _: &str) -> Option<MidiPort> {
+            None
+        }
+        fn device_latency(&self, _: DeviceId) -> u32 {
+            0
+        }
+        fn automation_parameter(&self, _: &Device, param: &ParamId) -> Option<Parameter> {
+            let wire_id = param.plugin_id()?;
+            Some(Parameter {
+                wire_id,
+                base: 0.0,
+                map: PlainMap::linear(0.0, 1.0, u32::from(wire_id == 1)),
+            })
+        }
+    }
+
+    let (project, owner, device) = source();
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 0),
+        AutomationMode::Read,
+        vec![
+            Point::linear(Tick(0), 0.0),
+            Point::linear(Tick(1), 1.0),
+            Point::linear(Tick(2), 0.0),
+        ],
+    );
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 1),
+        AutomationMode::Read,
+        vec![
+            Point::linear(Tick(0), 0.499999),
+            Point::linear(Tick(1), 0.500001),
+        ],
+    );
+    let (mut rig, initial, mut log) = rig(&project);
+    rig.set_program(&compile::build(&project, Some(&initial), &Stepped));
+    rig.send(Command::Play);
+    rig.process(128, 128);
+    assert_eq!(&rig.l[24..26], &[0.0, 1.0]);
+    assert_eq!(&rig.l[49..51], &[1.0, 0.0]);
+    assert!(core::iter::from_fn(|| log.pop().ok()).any(|event| event == (25, 1, 1.0)));
+}
+
+#[test]
+fn a_master_pan_hold_jumps_at_its_sample_and_reopening_still_fades_in() {
+    let (project, _, _) = source();
+    let (project, _) = lane(
+        &project,
+        AutomationOwner::Master,
+        AutomationTarget::Pan,
+        AutomationMode::Read,
+        vec![
+            Point {
+                tick: Tick(0),
+                value: 0.5,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(3), 1.0),
+        ],
+    );
+    let (mut rig, p, _) = rig(&project);
+    rig.send(Command::Play);
+    rig.process(128, 128);
+    assert_eq!(&rig.l[64..75], &[1.0; 11]);
+    assert_eq!(&rig.l[75..80], &[0.0; 5]);
+    let mut muted = project.clone();
+    std::sync::Arc::make_mut(&mut muted.master).mute = true;
+    let paused = compile::build(&muted, Some(&p), &Parameters(true));
+    rig.set_program(&paused);
+    rig.process(4, 4);
+    assert_eq!(rig.r[131], 0.0);
+    rig.set_program(&p);
+    rig.process(8, 4);
+    assert_eq!(
+        &rig.r[132..140],
+        &[0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0]
+    );
+}
+
+#[test]
+fn deleting_a_lane_restores_base_once_and_off_respects_newer_manual_edits() {
+    let (project, owner, device) = source();
+    let target = parameter(device, 0);
+    let (project, id) = lane(
+        &project,
+        owner,
+        target,
+        AutomationMode::Read,
+        vec![Point::linear(Tick(0), 0.8)],
+    );
+    let (mut rig, p, mut log) = rig(&project);
+    rig.process(64, 64);
+    assert_eq!(rig.l[63], 0.8);
+    let deleted = remove_lane(&project, owner, id).unwrap();
+    rig.set_program(&compile::build(&deleted, Some(&p), &Parameters(true)));
+    rig.process(64, 64);
+    assert_eq!(rig.l[64], 0.25);
+    assert_eq!(
+        core::iter::from_fn(|| log.pop().ok()).last(),
+        Some((64, 0, 0.25))
+    );
+    rig.process(64, 64);
+    assert!(log.pop().is_err());
+
+    rig.set_program(&p);
+    rig.process(64, 64);
+    let off = set_lane_mode(&project, owner, id, AutomationMode::Off).unwrap();
+    rig.set_program(&compile::build(&off, Some(&p), &Parameters(true)));
+    rig.send(Command::SetParam {
+        slot: p.slots.slot(device).unwrap(),
+        id: 0,
+        value: 0.75,
+    });
+    rig.process(64, 64);
+    assert_eq!(rig.l[256], 0.75);
+    rig.send(Command::Play);
+    rig.process(64, 64);
+    assert_eq!(rig.l[320], 0.75);
+}
+
+#[test]
+fn a_fresh_touch_without_movement_does_not_restore_its_previous_value() {
+    let (project, _, _) = source();
+    let owner = AutomationOwner::Master;
+    let target = AutomationTarget::Pan;
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Touch,
+        vec![Point::linear(Tick(0), 0.75)],
+    );
+    let (mut rig, program, _) = rig(&project);
+    let touch = |begin| Command::Touch {
+        owner,
+        target: EngineTarget::Pan,
+        begin,
+    };
+    rig.send(Command::Play);
+    rig.send(touch(true));
+    rig.send(Command::SetMasterPan(-0.5));
+    rig.process(128, 128);
+    assert_eq!(rig.r[127], 0.5);
+    assert_eq!(program.automation_override(owner, &target), Some(0.25));
+    rig.send(touch(false));
+    rig.process(12_256, 512);
+    assert_eq!(rig.r[12_383], 1.0);
+    assert_eq!(program.automation_override(owner, &target), None);
+    rig.take_events();
+
+    rig.send(touch(true));
+    rig.process(128, 128);
+    rig.send(touch(false));
+    rig.process(128, 128);
+    assert_eq!(&rig.r[12_384..], &[1.0; 256]);
+    assert!(
+        !rig.events
+            .iter()
+            .any(|event| matches!(event, EngineEvent::AutomationValue { .. }))
+    );
+}
+
+#[test]
+fn flatten_scope_removes_master_and_target_strip_lanes_only() {
+    use komponist_engine::export::TrackExport;
+    use komponist_model::edits::{NewClip, NewClipContent};
+
+    let (project, owner, device) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let (mut project, _) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(960),
+            name: "Flatten".into(),
+            content: NewClipContent::Midi {
+                notes: Vec::new(),
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let parameter = parameter(device, 0);
+    for (owner, target) in [
+        (owner, AutomationTarget::Volume),
+        (owner, AutomationTarget::Pan),
+        (owner, parameter.clone()),
+        (AutomationOwner::Master, AutomationTarget::Volume),
+    ] {
+        (project, _) = lane(
+            &project,
+            owner,
+            target,
+            AutomationMode::Read,
+            vec![Point::linear(Tick(0), 0.75)],
+        );
+    }
+    let export = TrackExport::new(&project, track).unwrap();
+    assert!(!project.master_automation.lanes.is_empty());
+    assert_eq!(project.track(track).unwrap().automation.lanes.len(), 3);
+    assert!(export.project().master_automation.lanes.is_empty());
+    let lanes = &export.project().track(track).unwrap().automation.lanes;
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].target, parameter);
+}
+
+#[test]
+fn plugin_touch_return_starts_after_the_reporting_block() {
+    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+
+    let (project, owner, device) = source();
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 0),
+        AutomationMode::Touch,
+        vec![Point::linear(Tick::ZERO, 0.25)],
+    );
+    let program = compile::build(&project, None, &Parameters(true));
+    let slot = program.slots.slot(device).unwrap();
+    let edits = [
+        ParameterEdit {
+            offset: 25,
+            kind: ParameterEditKind::Gesture { id: 0, begin: true },
+        },
+        ParameterEdit {
+            offset: 50,
+            kind: ParameterEditKind::Value { id: 0, value: 0.75 },
+        },
+        ParameterEdit {
+            offset: 75,
+            kind: ParameterEditKind::Gesture {
+                id: 0,
+                begin: false,
+            },
+        },
+    ];
+    let (tx, mut log) = rtrb::RingBuffer::new(300);
+    let mut rig = Rig::new(RATE, 2048);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 0.25,
+            log: Some(tx),
+            edits: Some(edits.into_iter()),
+        },
+    );
+    rig.set_program(&program);
+    rig.send(Command::Play);
+    rig.process(2048, 2048);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.25));
+    assert!(rig.events.iter().any(|event| matches!(
+        event,
+        EngineEvent::AutomationTouch {
+            begin: false,
+            tick: Tick(3),
+            ..
+        }
+    )));
+    rig.process(128, 128);
+    let (sample, id, value) = log.pop().unwrap();
+    assert_eq!((sample, id), (2048 + 64, 0));
+    assert!((value - 0.747333).abs() < 1e-6, "{value}");
+}
+
+#[test]
+fn bypass_drains_pending_plugin_edits_at_the_engine_boundary() {
+    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+
+    let (mut project, owner, device) = source();
+    std::sync::Arc::make_mut(
+        &mut std::sync::Arc::make_mut(&mut project.tracks[0])
+            .channel
+            .devices[0],
+    )
+    .bypass = true;
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 0),
+        AutomationMode::Touch,
+        vec![Point::linear(Tick::ZERO, 0.25)],
+    );
+    let program = compile::build(&project, None, &Parameters(true));
+    let slot = program.slots.slot(device).unwrap();
+    let edits = [
+        ParameterEdit {
+            offset: 25,
+            kind: ParameterEditKind::Gesture { id: 0, begin: true },
+        },
+        ParameterEdit {
+            offset: 50,
+            kind: ParameterEditKind::Value { id: 0, value: 0.75 },
+        },
+        ParameterEdit {
+            offset: 75,
+            kind: ParameterEditKind::Gesture {
+                id: 0,
+                begin: false,
+            },
+        },
+    ];
+    let mut rig = Rig::new(RATE, 128);
+    rig.insert(
+        slot.0,
+        Probe {
+            pos: 0,
+            gain: 0.25,
+            log: None,
+            edits: Some(edits.into_iter()),
+        },
+    );
+    rig.set_program(&program);
+    rig.send(Command::Play);
+    rig.process(128, 128);
+    let batch = rig
+        .events
+        .iter()
+        .find_map(|event| match event {
+            EngineEvent::PluginParams { events, .. } => Some(events.as_slice()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(batch.len(), 3);
+    for (received, edit) in batch.iter().zip(edits) {
+        assert_eq!(received.tick, Tick::ZERO);
+        assert_eq!(received.kind, edit.kind);
+    }
+}
+
+#[test]
+fn a_reloaded_wire_rebuilds_the_curve_when_its_model_target_changes() {
+    struct Binding(u32);
+    impl CompileEnv for Binding {
+        fn midi_port(&self, _: &str) -> Option<MidiPort> {
+            None
+        }
+        fn device_latency(&self, _: DeviceId) -> u32 {
+            0
+        }
+        fn automation_parameter(&self, _: &Device, param: &ParamId) -> Option<Parameter> {
+            (param.plugin_id()? == self.0).then_some(Parameter {
+                wire_id: 0,
+                map: PlainMap::linear(0.0, 1.0, 0),
+                base: 0.25,
+            })
+        }
+    }
+    let (project, owner, device) = source();
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 0),
+        AutomationMode::Read,
+        vec![Point::linear(Tick::ZERO, 0.3)],
+    );
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(device, 1),
+        AutomationMode::Read,
+        vec![Point::linear(Tick::ZERO, 0.8)],
+    );
+    let a = compile::build(&project, None, &Binding(0));
+    let b = compile::build(&project, Some(&a), &Binding(1));
+    assert_eq!(b.tracks[0].automation[0].model, parameter(device, 1));
+    assert_eq!(b.tracks[0].automation[0].points[0].value, 0.8);
+}
+
+#[test]
+fn midi_effect_chases_only_when_its_instrument_can_consume_stage_output() {
+    use komponist_engine::testing::{TestMidiFx, TestSine};
+    use komponist_model::edits::{NewClip, NewClipContent, NewDevice, NewNote};
+    use komponist_model::{ChannelRef, DeviceRole};
+    use std::sync::Arc;
+
+    let (project, owner, instrument) = source();
+    let AutomationOwner::Track(track) = owner else {
+        unreachable!()
+    };
+    let effect = NewDevice {
+        role: DeviceRole::MidiEffect,
+        plugin: project.tracks[0].channel.devices[0].plugin.clone(),
+        state: None,
+        sidechain: None,
+    };
+    let (project, effect) =
+        edits::insert_device(&project, ChannelRef::Track(track), 0, effect).unwrap();
+    let (project, _) = edits::add_clip(
+        &project,
+        track,
+        NewClip {
+            start: Tick::ZERO,
+            length: Tick(100),
+            name: "Stage test".into(),
+            content: NewClipContent::Midi {
+                notes: vec![NewNote {
+                    start: Tick(10),
+                    length: Tick(10),
+                    pitch: 60,
+                    velocity: 100,
+                }],
+                take_name: String::new(),
+            },
+        },
+    )
+    .unwrap();
+    let (project, _) = lane(
+        &project,
+        owner,
+        parameter(effect, 0),
+        AutomationMode::Read,
+        vec![Point::linear(Tick::ZERO, 1.0)],
+    );
+    let mut bypassed = project.clone();
+    let track = Arc::make_mut(&mut bypassed.tracks[0]);
+    Arc::make_mut(&mut track.channel.devices[1]).bypass = true;
+    let muted = compile::build(&bypassed, None, &Parameters(true));
+    let unbypassed = compile::build(&project, Some(&muted), &Parameters(true));
+    let (sine, mut log) = TestSine::logged(32);
+    let mut rig = Rig::new(RATE, 256);
+    rig.insert(muted.slots.slot(instrument).unwrap().0, sine);
+    rig.insert(
+        muted.slots.slot(effect).unwrap().0,
+        TestMidiFx::transposing(0),
+    );
+    rig.set_program(&muted);
+    rig.send(Command::Play);
+    rig.process(128, 128);
+    rig.set_program(&unbypassed);
+    rig.process(256, 256);
+    assert_eq!(crate::common::notes(&log.drain())[0].2, 61);
 }

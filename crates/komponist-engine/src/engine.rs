@@ -360,7 +360,7 @@ impl Engine {
             tracks: (0..MAX_TRACKS).map(|_| TrackState::new()).collect(),
             map: vec![0; MAX_TRACKS].into_boxed_slice(),
             slots: (0..MAX_SLOTS).map(|_| Slot::empty()).collect(),
-            master_fader: Fader::at((1.0, 1.0)),
+            master_fader: Fader::at((1.0, 1.0), true),
             master_gain: None,
             master_pan: None,
             master_automation: automation::State::new(),
@@ -684,7 +684,7 @@ impl TrackState {
             release_hardware: [0; 16],
             id: None,
             seq: TrackSeq::new(),
-            fader: Fader::at((0.0, 0.0)),
+            fader: Fader::at((0.0, 0.0), false),
             gain: None,
             pan: None,
             mute: None,
@@ -694,7 +694,7 @@ impl TrackState {
             out: stereo(),
             pre: stereo(),
             post: stereo(),
-            post_fader: Fader::at((0.0, 0.0)),
+            post_fader: Fader::at((0.0, 0.0), false),
             post_on: false,
             failed: false,
             stage: StageState::new(),
@@ -923,7 +923,7 @@ struct Hook<'h> {
     edges: Edges,
     side: &'h mut [Box<[f32]>; 2],
     n: usize,
-    automation: &'h automation::State,
+    automation: &'h mut automation::State,
     dropped: u32,
 }
 
@@ -1042,7 +1042,7 @@ impl TrackJobs<'_> {
                 &state.events,
                 &mut state.stage,
                 stage_lists,
-                &state.automation,
+                &mut state.automation,
             );
             state.stage_dropped = dropped;
             events
@@ -1062,7 +1062,7 @@ impl TrackJobs<'_> {
             edges: self.edges,
             side,
             n,
-            automation: &state.automation,
+            automation: &mut state.automation,
             dropped: 0,
         };
         let (result, failed) = run_chain(
@@ -1115,7 +1115,7 @@ impl TrackJobs<'_> {
         if route.post {
             let target = targets(gain, pan, !muted);
             if !state.post_on {
-                state.post_fader = Fader::at(target);
+                state.post_fader = Fader::at(target, !muted);
             }
             let [pl, pr] = &mut state.post;
             pl[..n].copy_from_slice(l);
@@ -1329,7 +1329,7 @@ impl TrackJobs<'_> {
             if let Some(mut auto) = auto {
                 edge.add_automated_send(sum, tap, scratch, send.delay.frames, gain, &mut auto);
             } else {
-                edge.add_send(sum, tap, scratch, send.delay.frames, gain);
+                edge.add_send(sum, tap, scratch, send.delay.frames, (gain, open));
             }
         }
     }
@@ -2014,7 +2014,12 @@ impl Core {
                         .as_deref()
                         .and_then(|p| p.track(track.id))
                         .map_or(&[][..], |t| &t.automation);
-                    state.automation.install(old, &track.automation);
+                    state.automation.install(
+                        old,
+                        &track.automation,
+                        &track.chain,
+                        &track.source.automation,
+                    );
                     state.clear_fast_path();
                     break;
                 }
@@ -2033,7 +2038,13 @@ impl Core {
             map[i] = free as u16;
             let state = &mut self.tracks[free];
             state.id = Some(track.id);
-            state.automation.install(&[], &track.automation);
+            state.automation.clear();
+            state.automation.install(
+                &[],
+                &track.automation,
+                &track.chain,
+                &track.source.automation,
+            );
             state.seq.clear();
             state.hardware.fill(0);
             state.release_hardware.fill(0);
@@ -2047,7 +2058,7 @@ impl Core {
                 Some(gates) => gates.output_open(i),
                 None => audible(track.mute, track.solo, any_solo),
             };
-            state.fader = Fader::at(targets(track.gain, track.pan, open));
+            state.fader = Fader::at(targets(track.gain, track.pan, open), open);
             state.post_on = false;
         }
         // Removed tracks no longer have a segment in which to send releases. Reset their
@@ -2123,7 +2134,8 @@ impl Core {
         }
         let master = &program.master;
         if self.program.is_none() {
-            self.master_fader = Fader::at(targets(master.gain, master.pan, !master.mute));
+            self.master_fader =
+                Fader::at(targets(master.gain, master.pan, !master.mute), !master.mute);
         }
         self.master_gain = None;
         self.master_pan = None;
@@ -2131,7 +2143,12 @@ impl Core {
             .program
             .as_deref()
             .map_or(&[][..], |p| &p.master.automation);
-        self.master_automation.install(old, &master.automation);
+        self.master_automation.install(
+            old,
+            &master.automation,
+            &master.chain,
+            &master.automation_source,
+        );
         self.song = song;
         if let Some(old) = self.program.replace(program) {
             self.outbox.retire(Garbage::Program(old));
@@ -2310,6 +2327,11 @@ impl Core {
                 let tracks_and_states = program.tracks[..count].iter().zip(&map[..count]);
                 for (index, (track, &state)) in tracks_and_states.enumerate() {
                     let state = &mut tracks[usize::from(state)];
+                    let stage_ready = track.instrument().is_some_and(|instrument| {
+                        slots
+                            .get(instrument.slot.0 as usize)
+                            .is_some_and(|entry| entry.runs(instrument.bypass))
+                    });
                     *dropped += state.automation.prepare(
                         &track.automation,
                         win,
@@ -2318,6 +2340,10 @@ impl Core {
                             slots
                                 .get(slot.0 as usize)
                                 .is_some_and(|slot| slot.runs(slot.bypassed))
+                                && (stage_ready
+                                    || !track.chain[..track.stage_count()]
+                                        .iter()
+                                        .any(|stage| stage.slot == slot))
                         },
                     );
                     if let Some(plan) = &track.audio {
@@ -2458,7 +2484,8 @@ impl Core {
                         },
                     );
                     state.events.clear();
-                    if !staged && let Some(slot) = instrument {
+                    let bypass_stage = !staged && !state.stage.holds_notes();
+                    if bypass_stage && let Some(slot) = instrument {
                         *dropped += state.automation.add_events(slot, events);
                     }
                     state.events.extend_from_slice(events.finish());
@@ -2467,7 +2494,7 @@ impl Core {
                             .sidechains(routing.node(index).sidechains)
                             .iter()
                             .any(|s| usize::from(s.device) == track.stage_count());
-                    if !staged
+                    if bypass_stage
                         && !sidechained
                         && let Some(slot) = instrument
                         && let Some(processor) = slots

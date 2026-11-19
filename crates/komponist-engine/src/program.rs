@@ -96,6 +96,19 @@ impl Program {
             .map(|lane| lane.base)
     }
 
+    /// Latest normalised override applied by the engine, including during stopped playback.
+    /// When the override ends, the current lane curve supplies the effective value.
+    pub fn automation_override(
+        &self,
+        owner: AutomationOwner,
+        target: &AutomationTarget,
+    ) -> Option<f32> {
+        self.automation_of(owner)?
+            .iter()
+            .find(|lane| &lane.model == target)?
+            .applied_override()
+    }
+
     /// Converts a control's plain value to its compiled lane domain.
     ///
     /// Fader and send values are in dB, pan is −1 to +1, and device values are given in

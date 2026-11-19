@@ -87,7 +87,10 @@ fn resolve<'a>(
 fn matches(prev: &[CompiledTarget], resolved: &[Resolved<'_>]) -> bool {
     prev.len() == resolved.len()
         && prev.iter().zip(resolved).all(|(old, new)| {
-            old.target == new.target && old.parameter == new.parameter && old.base == new.base
+            old.model == new.lane.target
+                && old.target == new.target
+                && old.parameter == new.parameter
+                && old.base == new.base
         })
 }
 
@@ -113,7 +116,8 @@ pub(super) fn track(
                 && super::same_clips(&old.source.clips, &track.clips)
                 && old.source.automation.lane(&new.lane.target) == Some(new.lane)
                 && let Some(prev) = old.automation.iter().find(|prev| {
-                    prev.target == new.target
+                    prev.model == new.lane.target
+                        && prev.target == new.target
                         && prev.parameter == new.parameter
                         && prev.base == new.base
                 })
