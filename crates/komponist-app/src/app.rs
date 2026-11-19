@@ -2411,6 +2411,9 @@ impl App {
                 };
                 let empty_midi =
                     matches!(&c.content, ClipContent::Midi(m) if m.active().notes.is_empty());
+                if matches!(&c.content, ClipContent::Audio(_)) {
+                    self.ui.waveform.fit_clip = true;
+                }
                 if self.ui.editor.clip != Some(clip) {
                     self.ui.selection.notes.clear();
                     self.ui.selection.step = None;
