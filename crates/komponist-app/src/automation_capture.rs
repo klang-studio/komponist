@@ -1291,6 +1291,23 @@ mod tests {
         assert_eq!(app.project().as_ref(), &project);
         assert!(app.doc.undo_label().is_none());
 
+        // A published preview can also be owned by the audio writer while it drains.
+        write(&mut app, -0.6);
+        let playhead = app.engine.playhead();
+        app.automation_capture.end_segments(&project, playhead);
+        app.sync_automation_preview();
+        let deferred = app.take_automation_capture();
+        assert!(deferred.was_published());
+        app.audio_recording.defer_automation(deferred);
+        assert!(app.audio_recording.pending_automation_published());
+        let published_program = app.engine.programs_sent();
+        transport(&mut app, TransportAction::DiscardTake);
+        assert!(app.engine.programs_sent() > published_program);
+        assert!(!app.audio_recording.pending_automation_published());
+        advance(&mut app, 64);
+        assert_eq!(app.project().as_ref(), &project);
+        assert!(app.doc.undo_label().is_none());
+
         write(&mut app, 0.6);
         transport(&mut app, TransportAction::Stop);
         advance(&mut app, 256);
