@@ -367,6 +367,7 @@ pub struct TestMidiFx {
     mode: TestMidiMode,
     semitones: i32,
     resets: Arc<AtomicU32>,
+    parameter_log: Option<rtrb::Producer<(u32, f64)>>,
 }
 
 impl TestMidiFx {
@@ -376,6 +377,7 @@ impl TestMidiFx {
             mode,
             semitones: 0,
             resets: Arc::new(AtomicU32::new(0)),
+            parameter_log: None,
         }
     }
 
@@ -390,6 +392,13 @@ impl TestMidiFx {
     /// How often the engine called [`Processor::reset`] (shared counter).
     pub fn resets(&self) -> Arc<AtomicU32> {
         Arc::clone(&self.resets)
+    }
+
+    /// Records parameter writes in a bounded queue for timing tests.
+    pub fn log_parameters(&mut self, capacity: usize) -> rtrb::Consumer<(u32, f64)> {
+        let (tx, rx) = rtrb::RingBuffer::new(capacity);
+        self.parameter_log = Some(tx);
+        rx
     }
 
     fn moved(&self, key: u8, by: i32) -> u8 {
@@ -427,6 +436,9 @@ impl Processor for TestMidiFx {
 
 impl EventProcessor for TestMidiFx {
     fn set_param(&mut self, id: u32, value: f64) {
+        if let Some(log) = &mut self.parameter_log {
+            let _ = log.push((id, value));
+        }
         if id == TEST_TRANSPOSE_PARAM {
             self.semitones = value as i32;
         }

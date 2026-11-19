@@ -400,7 +400,7 @@ fn overflow_retains_the_latest_value_for_each_target() {
     assert!((0..40).all(|id| {
         events
             .iter()
-            .any(|&(frame, wire, _)| wire == id && frame == 2000)
+            .any(|&(frame, wire, value)| wire == id && frame == 2000 && value == 1.0)
     }));
 }
 
@@ -1097,14 +1097,100 @@ fn midi_effect_chases_only_when_its_instrument_can_consume_stage_output() {
     let (sine, mut log) = TestSine::logged(32);
     let mut rig = Rig::new(RATE, 256);
     rig.insert(muted.slots.slot(instrument).unwrap().0, sine);
-    rig.insert(
-        muted.slots.slot(effect).unwrap().0,
-        TestMidiFx::transposing(0),
-    );
+    let mut midi_effect = TestMidiFx::transposing(0);
+    let mut parameter_log = midi_effect.log_parameters(8);
+    rig.insert(muted.slots.slot(effect).unwrap().0, midi_effect);
     rig.set_program(&muted);
     rig.send(Command::Play);
     rig.process(128, 128);
+    assert!(parameter_log.pop().is_err());
     rig.set_program(&unbypassed);
     rig.process(256, 256);
+    assert_eq!(parameter_log.pop().unwrap(), (0, 1.0));
+    assert!(parameter_log.pop().is_err());
     assert_eq!(crate::common::notes(&log.drain())[0].2, 61);
+}
+
+#[test]
+fn sub_grid_mixer_peak_reaches_the_ordinary_point_in_every_block_partition() {
+    let (project, _, _) = source();
+    let (project, _) = lane(
+        &project,
+        AutomationOwner::Master,
+        AutomationTarget::Pan,
+        AutomationMode::Read,
+        vec![
+            Point::linear(Tick::ZERO, 0.5),
+            Point::linear(Tick(1), 0.9),
+            Point::linear(Tick(2), 0.5),
+        ],
+    );
+    let run = |block| {
+        let (mut rig, _, _) = rig(&project);
+        rig.send(Command::Play);
+        rig.process(64, block);
+        rig.l
+    };
+    let samples = run(64);
+    assert_eq!(samples[0], 1.0);
+    assert!((samples[25] - 0.2).abs() < 1e-6);
+    assert_eq!(samples[50], 1.0);
+    assert_eq!(samples, run(17));
+}
+
+#[test]
+fn pending_base_restore_on_a_bypassed_plugin_yields_only_to_a_new_gui_value() {
+    use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
+    use std::sync::Arc;
+
+    for has_value in [false, true] {
+        let (mut project, owner, device) = source();
+        Arc::make_mut(&mut Arc::make_mut(&mut project.tracks[0]).channel.devices[0]).bypass = true;
+        let (project, lane) = lane(
+            &project,
+            owner,
+            parameter(device, 0),
+            AutomationMode::Read,
+            vec![Point::linear(Tick::ZERO, 0.8)],
+        );
+        let (mut rig, program, _) = rig(&project);
+        let slot = program.slots.slot(device).unwrap();
+        let mut deleted = remove_lane(&project, owner, lane).unwrap();
+        let bypassed = compile::build(&deleted, Some(&program), &Parameters(true));
+        let (tx, mut values) = rtrb::RingBuffer::new(8);
+        let begin = ParameterEditKind::Gesture { id: 0, begin: true };
+        let end = ParameterEditKind::Gesture {
+            id: 0,
+            begin: false,
+        };
+        let middle = if has_value {
+            ParameterEditKind::Value { id: 0, value: 0.75 }
+        } else {
+            end
+        };
+        let edits = [begin, middle, end].map(|kind| ParameterEdit { offset: 0, kind });
+        rig.insert(
+            slot.0,
+            Probe {
+                pos: 0,
+                gain: 0.75,
+                log: Some(tx),
+                edits: Some(edits.into_iter()),
+            },
+        );
+        rig.set_program(&bypassed);
+        rig.process(64, 64);
+        assert!(values.pop().is_err());
+        Arc::make_mut(&mut Arc::make_mut(&mut deleted.tracks[0]).channel.devices[0]).bypass = false;
+        let awake = compile::build(&deleted, Some(&bypassed), &Parameters(true));
+        rig.set_program(&awake);
+        rig.process(64, 64);
+        if has_value {
+            assert_eq!(rig.l[64], 0.75);
+            assert!(values.pop().is_err());
+        } else {
+            assert_eq!(rig.l[64], 0.25);
+            assert_eq!(values.pop().unwrap(), (0, 0, 0.25));
+        }
+    }
 }

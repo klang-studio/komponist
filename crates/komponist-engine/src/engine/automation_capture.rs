@@ -400,6 +400,9 @@ impl Capture<'_> {
                     slot: device.slot,
                     wire_id,
                 };
+                if matches!(edit.kind, ParameterEditKind::Value { .. }) {
+                    state.cancel_restore(lanes, target);
+                }
                 if let Some((cursor, index)) = state.cursor(lanes, target)
                     && lanes[index].mode != AutomationMode::Off
                 {

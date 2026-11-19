@@ -191,8 +191,8 @@ impl CompiledTarget {
         value_at_fractional(&self.points, tick).unwrap_or(self.base)
     }
 
-    /// The value immediately before a discontinuity, using the incoming segment.
-    fn jump_left(&self, tick: Tick) -> f32 {
+    /// The value just before a point, using the incoming segment.
+    fn point_left(&self, tick: Tick) -> f32 {
         let first = self.points.partition_point(|point| point.tick < tick);
         if let Some(previous) = first.checked_sub(1).and_then(|i| self.points.get(i))
             && previous.shape == Shape::Hold
@@ -213,35 +213,44 @@ impl CompiledTarget {
         ReadOverride {
             reference,
             at: tick,
-            next: next.map_or(f64::INFINITY, |point| point.tick.0 as f64),
+            next: next.map_or(f64::INFINITY, |tick| tick.0 as f64),
         }
     }
 
-    fn next_change(&self, start: usize, reference: f32) -> Option<&Point> {
-        let find = |points: &[Point]| {
-            points
-                .iter()
-                .find(|point| outside(point.value, reference))
-                .map(|point| point.tick)
+    fn next_change(&self, start: usize, reference: f32) -> Option<Tick> {
+        let find = |start, end| {
+            (start..end)
+                .find(|&i| {
+                    reachable_point(&self.points, i) && outside(self.points[i].value, reference)
+                })
+                .map(|i| self.points[i].tick)
         };
         let first_block = start.div_ceil(VALUE_RANGE_BLOCK);
         let first_end = (first_block * VALUE_RANGE_BLOCK).min(self.points.len());
-        let tick = find(&self.points[start..first_end]).or_else(|| {
+        find(start, first_end).or_else(|| {
             let leaves = self.value_ranges.len() / 2;
             if leaves == 0 {
-                return find(&self.points[first_end..]);
+                return find(first_end, self.points.len());
             }
             let block = find_value_block(&self.value_ranges, 1, 0, leaves, first_block, reference)?;
             let start = block * VALUE_RANGE_BLOCK;
-            find(&self.points[start..(start + VALUE_RANGE_BLOCK).min(self.points.len())])
-        })?;
-        self.points
-            .get(self.points.partition_point(|point| point.tick < tick))
+            find(start, (start + VALUE_RANGE_BLOCK).min(self.points.len()))
+        })
     }
 
     pub(crate) fn reads(&self) -> bool {
         self.mode != AutomationMode::Off && !self.points.is_empty()
     }
+}
+
+/// A duplicate tick has separate incoming and outgoing values. Its incoming value is
+/// unreachable when the preceding segment holds a different value up to the jump.
+fn reachable_point(points: &[Point], i: usize) -> bool {
+    !(i > 0
+        && points
+            .get(i + 1)
+            .is_some_and(|next| next.tick == points[i].tick)
+        && points[i - 1].shape == Shape::Hold)
 }
 
 /// Off-thread min/max index. Each leaf summarizes a short run of points so a release
@@ -256,7 +265,10 @@ fn value_ranges(points: &[Point]) -> Arc<[(f32, f32)]> {
     let leaves = blocks.next_power_of_two();
     let mut tree = vec![(f32::INFINITY, f32::NEG_INFINITY); 2 * leaves];
     for (i, chunk) in points.chunks(VALUE_RANGE_BLOCK).enumerate() {
-        for point in chunk {
+        for (j, point) in chunk.iter().enumerate() {
+            if !reachable_point(points, i * VALUE_RANGE_BLOCK + j) {
+                continue;
+            }
             let (min, max) = &mut tree[leaves + i];
             *min = min.min(point.value);
             *max = max.max(point.value);
@@ -1209,35 +1221,35 @@ impl<'a> MixerValues<'a> {
         let grid = sample - sample.rem_euclid(self.step);
         let end = grid + self.step;
         let gesture = self.cursor.playback_gesture();
-        let mut left_jump = None;
-        let mut right_jump = None;
+        let mut left_point = None;
+        let mut right_point = None;
         if matches!(gesture, Gesture::Idle | Gesture::ReadOverride(_)) {
             let frame = |tick| clock.map.tick_to_sample(tick, clock.rate);
             let after = self
                 .lane
-                .jumps
-                .partition_point(|&tick| frame(tick) <= sample);
-            left_jump = after
+                .points
+                .partition_point(|point| frame(point.tick) <= sample);
+            left_point = after
                 .checked_sub(1)
-                .and_then(|i| self.lane.jumps.get(i))
-                .map(|&tick| (frame(tick), tick))
-                .filter(|(jump, _)| *jump >= grid);
-            right_jump = self
+                .and_then(|i| self.lane.points.get(i))
+                .map(|point| (frame(point.tick), point.tick))
+                .filter(|(frame, _)| *frame >= grid);
+            right_point = self
                 .lane
-                .jumps
+                .points
                 .get(after)
-                .map(|&tick| (frame(tick), tick))
-                .filter(|(jump, _)| *jump <= end);
+                .map(|point| (frame(point.tick), point.tick))
+                .filter(|(frame, _)| *frame <= end);
         }
-        self.left_sample = left_jump.map_or(grid, |(frame, _)| frame);
-        self.right_sample = right_jump.map_or(end, |(frame, _)| frame);
+        self.left_sample = left_point.map_or(grid, |(frame, _)| frame);
+        self.right_sample = right_point.map_or(end, |(frame, _)| frame);
 
         let curve_at = |frame, time| {
             self.cursor
                 .mixer_value(self.lane, clock, frame, time)
                 .map_or(fallback, |value| self.scale(value))
         };
-        let jump_value = |tick: Tick, left_side| {
+        let point_value = |tick: Tick, left_side| {
             let at = tick.0 as f64;
             let check_at = if left_side { at.next_down() } else { at };
             if let Gesture::ReadOverride(state) = gesture
@@ -1246,18 +1258,18 @@ impl<'a> MixerValues<'a> {
                 return self.scale(self.cursor.manual);
             }
             self.scale(if left_side {
-                self.lane.jump_left(tick)
+                self.lane.point_left(tick)
             } else {
                 self.lane.value(at)
             })
         };
-        let left = left_jump.map_or_else(
+        let left = left_point.map_or_else(
             || curve_at(grid, time.saturating_sub((sample - grid) as u64)),
-            |(_, tick)| jump_value(tick, false),
+            |(_, tick)| point_value(tick, false),
         );
-        self.right = right_jump.map_or_else(
+        self.right = right_point.map_or_else(
             || curve_at(end, time + (end - sample) as u64),
-            |(_, tick)| jump_value(tick, true),
+            |(_, tick)| point_value(tick, true),
         );
         self.left = left;
     }
@@ -1299,6 +1311,41 @@ mod tests {
         assert!(state.expired(&target, 3601.0));
         let after = target.read_override(4000.0);
         assert!(!after.expired(&target, 50_000.0));
+    }
+
+    #[test]
+    fn read_ignores_a_duplicate_point_shadowed_by_an_incoming_hold() {
+        // One pair stays in the immediate search, the other crosses the index's leaf boundary.
+        for (at, len) in [(2, 10), (VALUE_RANGE_BLOCK * 2 - 1, VALUE_RANGE_BLOCK * 3)] {
+            for shape in [Shape::Hold, Shape::Linear] {
+                let mut points: Vec<_> = (0..len)
+                    .map(|tick| Point::linear(Tick(tick as i64), 0.2))
+                    .collect();
+                points[at - 1].shape = shape;
+                points[len - 1].value = 0.6;
+                points.insert(at, Point::linear(Tick(at as i64), 0.8));
+                let lane = target(points);
+                let state = assert_no_alloc::assert_no_alloc(|| lane.read_override(0.0));
+                assert_eq!(
+                    state.expired(&lane, at as f64 + 2.0),
+                    shape == Shape::Linear,
+                );
+                assert!(state.expired(&lane, (len - 1) as f64));
+            }
+        }
+
+        let jump = target(vec![
+            Point {
+                tick: Tick::ZERO,
+                value: 0.2,
+                shape: Shape::Hold,
+            },
+            Point::linear(Tick(2), 0.2),
+            Point::linear(Tick(2), 0.8),
+        ]);
+        let state = jump.read_override(0.0);
+        assert!(!state.expired(&jump, 1.99));
+        assert!(state.expired(&jump, 2.0));
     }
 
     #[test]
