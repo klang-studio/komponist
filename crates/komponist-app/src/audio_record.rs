@@ -186,8 +186,28 @@ impl State {
     }
     pub(crate) fn defer_automation(&mut self, pass: crate::automation_capture::AutomationCapture) {
         if pass.has_points() {
-            self.pending_automation = Some(pass);
+            if let Some(previous) = &mut self.pending_automation {
+                previous.merge(pass);
+            } else {
+                self.pending_automation = Some(pass);
+            }
         }
+    }
+
+    pub(crate) fn pending_automation_published(&self) -> bool {
+        self.pending_automation
+            .as_ref()
+            .is_some_and(|pass| pass.was_published())
+    }
+
+    pub(crate) fn references_automation_lane(
+        &self,
+        owner: komponist_model::automation::AutomationOwner,
+        lane: komponist_model::automation::LaneId,
+    ) -> bool {
+        self.pending_automation
+            .as_ref()
+            .is_some_and(|pass| pass.references_lane(owner, lane))
     }
     pub(crate) fn folder(&self) -> Option<&Path> {
         self.capture
@@ -497,6 +517,9 @@ impl App {
             }
             Err(recording::RecordingError::Cancelled) => {
                 self.audio_recording.pending_midi = None;
+                if self.audio_recording.pending_automation_published() {
+                    self.engine.send_project(self.doc.project());
+                }
                 self.audio_recording.pending_automation = None;
             }
             Err(error) => {

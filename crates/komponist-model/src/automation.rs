@@ -754,6 +754,7 @@ pub fn replace_recorded_points(
     };
     let mut merged = Vec::with_capacity(original.len() + replacement.len() + 3);
     if original[0].tick < start {
+        merged.push(Point::linear(original[0].tick, original[0].value));
         append_slice(&mut merged, original, original[0].tick, start, Tick::ZERO);
     } else {
         merged.push(Point::linear(start, original[0].value));
@@ -929,6 +930,18 @@ mod tests {
             assert!(bend(0.5, tension) < 0.5);
             assert!((bend(0.1, tension) + bend(0.9, -tension) - 1.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn recording_after_a_first_tick_jump_keeps_both_sides() {
+        let points = Points::new(vec![
+            Point::linear(Tick(10), 0.2),
+            Point::linear(Tick(10), 0.8),
+        ]);
+        let replacement = Points::new(vec![Point::linear(Tick(50), 0.5)]);
+        let merged = replace_recorded_points(&points, Tick(50), &replacement, 0.0);
+        assert_eq!(value_at(merged.as_slice(), Tick(5)), Some(0.2));
+        assert_eq!(value_at(merged.as_slice(), Tick(10)), Some(0.8));
     }
 
     #[test]

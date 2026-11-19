@@ -559,6 +559,10 @@ impl App {
     /// Handles the events that arrived since the last drain; the device events are added to this
     /// frame's.
     pub(crate) fn drain_events(&mut self) {
+        self.drain_events_with_automation(true);
+    }
+
+    fn drain_events_with_automation(&mut self, capture: bool) {
         let events = self.engine.poll();
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
@@ -582,7 +586,12 @@ impl App {
             match event {
                 // Garbage is dropped inside `EngineSync::poll`; a failed processor's device
                 // reports its own status.
-                SyncEvent::Engine(event) => self.engine_event(&event, playhead),
+                SyncEvent::Engine(event) => {
+                    if capture {
+                        self.capture_automation(&event);
+                    }
+                    self.engine_event(&event, playhead);
+                }
                 SyncEvent::Device(event) => {
                     recompile |= matches!(
                         event,
@@ -609,7 +618,6 @@ impl App {
     /// The recording's part of an engine event: the count-in's end starts the take, captured
     /// notes and loop wraps go into it.
     fn engine_event(&mut self, event: &EngineEvent, playhead: Tick) {
-        self.capture_automation(event);
         match *event {
             EngineEvent::CountInDone { at } => {
                 if std::mem::take(&mut self.shell.take_expected) {
@@ -618,20 +626,6 @@ impl App {
             }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
-            EngineEvent::PluginParams { slot, ref events } => {
-                if let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot)) {
-                    for (change, temporary) in events.iter() {
-                        use komponist_engine::processor::ParameterEditKind;
-                        if let ParameterEditKind::Value { id, value } = change.kind {
-                            if temporary {
-                                self.engine.host_mut().preview_param(device, id, value);
-                            } else {
-                                self.engine.host_mut().edited_param(device, id, value);
-                            }
-                        }
-                    }
-                }
-            }
             _ => {
                 if let Some(rec) = &mut self.recording {
                     rec.handle(event, playhead, self.doc.project());
@@ -655,16 +649,15 @@ impl App {
         }
     }
 
-    /// Punch-out: commits the running take ([`App::commit_take`]) and stops capturing; playback
+    /// Punch-out: commits the running take and stops capturing; playback
     /// goes on. Nothing happens without a take.
     pub(crate) fn stop_take(&mut self) {
+        self.drain_events();
         let capturing_notes_or_audio = self.recording.is_some() || self.audio_recording.is_active();
         let capturing_automation = self.automation_capture.active();
         if capturing_notes_or_audio || capturing_automation {
-            self.commit_take();
-        }
-        if capturing_automation {
-            self.engine.send(Command::CancelAutomationWrite);
+            self.engine.send(Command::FinishAutomationWrite);
+            self.finish_take();
         }
         if capturing_notes_or_audio {
             self.engine.send(Command::StopRecording);
@@ -721,19 +714,7 @@ impl App {
         Ok(changed.then_some(project))
     }
 
-    /// Stop: writes the running take as one undo step "Take n", selects its clip and opens it in
-    /// the editor (prototype `finishRec`). Events still in flight are drained first.
-    fn commit_take(&mut self) {
-        if self.recording.is_some()
-            || self.audio_recording.is_active()
-            || self.automation_capture.active()
-        {
-            self.drain_events();
-            self.finish_take();
-        }
-    }
-
-    /// [`App::commit_take`] without draining (inside a drain).
+    /// Commits the running take from the already-drained events.
     pub(crate) fn finish_take(&mut self) {
         let commit = self
             .recording
@@ -773,12 +754,11 @@ impl App {
     /// Esc while recording (or "Nicht speichern" before leaving the project): the running take is
     /// gone, playback goes on.
     pub(crate) fn discard_take(&mut self) {
-        // A count-in that just ended still starts its take; it goes too.
-        self.drain_events();
-        self.recording = None;
-        self.audio_recording.cancel();
-        self.discard_automation_capture();
         self.shell.take_expected = false;
+        self.recording = None;
+        self.discard_automation_capture();
+        self.audio_recording.cancel();
+        self.drain_events_with_automation(false);
         self.engine.send(Command::StopRecording);
     }
 
@@ -1251,6 +1231,11 @@ impl App {
                 let old = lanes(self.project(), owner);
                 let exists = old.is_some_and(|a| a.lane(&target).is_some());
                 let reuse = replace.filter(|id| {
+                    if self.automation_capture.references_lane(owner, *id)
+                        || self.audio_recording.references_automation_lane(owner, *id)
+                    {
+                        return false;
+                    }
                     old.is_some_and(|a| {
                         a.lanes
                             .iter()

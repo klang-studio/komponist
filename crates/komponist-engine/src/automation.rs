@@ -476,6 +476,7 @@ pub(crate) struct Cursor {
     last: f32,
     chase: bool,
     restore_base: bool,
+    uncommitted_write: bool,
     gesture: Gesture,
     /// A newly held control keeps following the previous state until the first edit.
     before_edit: Option<Gesture>,
@@ -489,6 +490,7 @@ impl Cursor {
             last: f32::NAN,
             chase: true,
             restore_base: false,
+            uncommitted_write: false,
             gesture: Gesture::Idle,
             before_edit: None,
             manual: f32::NAN,
@@ -626,6 +628,7 @@ impl Cursor {
             Gesture::Held { writes: true, .. } | Gesture::Latch
         ) {
             self.pending_value = Some((tick, value));
+            self.uncommitted_write = true;
         }
     }
 
@@ -634,16 +637,20 @@ impl Cursor {
         // no curve to chase, restore the base through the normal bounded event delivery.
         if matches!(lane.target, EngineTarget::Slot { .. })
             && !lane.reads()
-            && self.manual.is_finite()
-            && matches!(
-                self.playback_gesture(),
-                Gesture::Held { writes: true, .. } | Gesture::Latch | Gesture::Return { .. }
-            )
+            && self.uncommitted_write
         {
             self.restore_base = true;
         }
+        self.uncommitted_write = false;
         self.interrupt(false, lane.mode);
         self.pending_value = None;
+    }
+
+    pub(crate) fn finish_write(&mut self, lane: &CompiledTarget) {
+        if self.writes() || matches!(self.playback_gesture(), Gesture::Return { .. }) {
+            self.interrupt(false, lane.mode);
+            self.pending_value = None;
+        }
     }
 
     pub(crate) fn interrupt(&mut self, keep_touch: bool, mode: AutomationMode) -> bool {
@@ -821,9 +828,7 @@ impl State {
             if missing
                 && source.lane(&lane.model).is_none()
                 && ongoing(lane.target)
-                && (lane.reads()
-                    || cursor.restore_base
-                    || (cursor.writes() && cursor.manual().is_some()))
+                && (lane.reads() || cursor.restore_base || cursor.uncommitted_write)
                 && let Some(parameter) = lane.parameter
                 && self.restores.len() < self.restores.capacity()
             {
@@ -871,6 +876,7 @@ impl State {
     pub(crate) fn cancel_restore(&mut self, lanes: &[CompiledTarget], target: EngineTarget) {
         if let Some((cursor, _)) = self.cursor(lanes, target) {
             cursor.restore_base = false;
+            cursor.uncommitted_write = false;
         }
         self.restores.retain(|restore| restore.target != target);
     }

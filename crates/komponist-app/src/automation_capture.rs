@@ -1,6 +1,9 @@
 //! The UI-side automation take. Engine events carry the same clock used for playback.
 //! Captured edits stay in a preview until the pass can be applied as one document edit.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use komponist_engine::automation::{AutomationBoundary, EngineTarget};
 use komponist_engine::{Command, EngineEvent, TransportState};
 use komponist_model::automation::{
@@ -15,7 +18,7 @@ use crate::app::App;
 /// Prevents a single long uninterrupted gesture from retaining unbounded raw data.
 const MAX_RAW_POINTS: usize = 100_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Destination {
     Lane(AutomationOwner, LaneId),
     Clip(ClipId, AutomationTarget),
@@ -58,6 +61,7 @@ struct Segment {
     raw: Vec<Point>,
     /// An exact source cut, kept independently of the captured sample spacing.
     boundary_anchor: bool,
+    release_anchor: Option<Tick>,
 }
 
 impl Segment {
@@ -94,7 +98,6 @@ struct Write {
     lane: LaneId,
     mode: AutomationMode,
     stepped: bool,
-    touch_start: Tick,
     base: f32,
     segment: Option<Segment>,
 }
@@ -107,7 +110,6 @@ enum Finish {
 
 #[derive(Debug, Clone)]
 struct RecordedSegment {
-    destination: Destination,
     start: Tick,
     points: Points,
     base: f32,
@@ -119,11 +121,58 @@ impl RecordedSegment {
     }
 }
 
+/// Completed segments for one destination. Keep the splices so they can be replayed if the
+/// document curve changes, but extend the cached curve only with new segments in the usual case.
+#[derive(Debug, Clone, Default)]
+struct CompletedCurve {
+    segments: Vec<RecordedSegment>,
+    ranges: Vec<(Tick, Tick)>,
+    merged: RefCell<Option<(Points, Points, usize)>>,
+}
+
+impl CompletedCurve {
+    fn push(&mut self, segment: RecordedSegment) {
+        let end = segment
+            .points
+            .as_slice()
+            .last()
+            .expect("finished segment")
+            .tick;
+        let mut start = segment.start;
+        let mut end = end;
+        let first = self.ranges.partition_point(|&(_, right)| right < start);
+        let after = self.ranges.partition_point(|&(left, _)| left <= end);
+        if first < after {
+            start = start.min(self.ranges[first].0);
+            end = end.max(self.ranges[after - 1].1);
+        }
+        self.ranges.splice(first..after, [(start, end)]);
+        self.segments.push(segment);
+    }
+
+    fn merged(&self, original: &Points) -> Points {
+        let mut merged = self.merged.borrow_mut();
+        let (source, points, applied) =
+            merged.get_or_insert_with(|| (original.clone(), original.clone(), 0));
+        if !std::ptr::eq(source.as_slice(), original.as_slice()) {
+            *source = original.clone();
+            *points = original.clone();
+            *applied = 0;
+        }
+        for segment in &self.segments[*applied..] {
+            *points = segment.replace(points);
+        }
+        *applied = self.segments.len();
+        points.clone()
+    }
+}
+
 /// One pass across one or more targets and loop laps.
 #[derive(Debug, Clone, Default)]
 pub struct AutomationCapture {
     writing: Vec<Write>,
-    finished: Vec<RecordedSegment>,
+    finished: HashMap<Destination, CompletedCurve>,
+    completed: usize,
     published: Option<(usize, u64)>,
 }
 
@@ -168,9 +217,9 @@ impl AutomationCapture {
             Source::Clip(clip, target) => Destination::Clip(*clip, target.clone()),
         };
         self.finished
-            .iter()
-            .filter(|segment| segment.destination == destination)
-            .filter_map(|segment| Some((segment.start, segment.points.as_slice().last()?.tick)))
+            .get(&destination)
+            .into_iter()
+            .flat_map(|curve| curve.ranges.iter().copied())
             .chain(self.writing.iter().filter_map(|write| {
                 let segment = write
                     .segment
@@ -202,20 +251,15 @@ impl AutomationCapture {
     }
 
     fn preview(&self, destination: &Destination, original: &Points) -> Option<Points> {
-        let mut result = None;
-        for segment in self
+        let mut result = self
             .finished
-            .iter()
-            .filter(|s| &s.destination == destination)
-        {
-            result = Some(segment.replace(result.as_ref().unwrap_or(original)));
-        }
+            .get(destination)
+            .map(|curve| curve.merged(original));
         for write in &self.writing {
             if let Some(segment) = &write.segment
                 && &segment.destination == destination
             {
                 let preview = RecordedSegment {
-                    destination: destination.clone(),
                     start: segment.start,
                     points: Points::new(segment.raw.clone()),
                     base: write.base,
@@ -226,12 +270,47 @@ impl AutomationCapture {
         result
     }
 
+    pub(crate) fn references_lane(&self, owner: AutomationOwner, lane: LaneId) -> bool {
+        self.is_writing(owner, lane) || self.finished.contains_key(&Destination::Lane(owner, lane))
+    }
+
+    pub(crate) fn was_published(&self) -> bool {
+        self.published.is_some()
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) {
+        debug_assert!(other.writing.is_empty());
+        for (destination, curve) in other.finished {
+            let current = self.finished.entry(destination).or_default();
+            for segment in curve.segments {
+                current.push(segment);
+            }
+        }
+        self.completed += other.completed;
+        self.published = other.published.or(self.published);
+    }
+
+    pub(crate) fn current_clip_value(
+        &self,
+        clip: ClipId,
+        target: &AutomationTarget,
+    ) -> Option<f32> {
+        self.writing
+            .iter()
+            .filter_map(|write| write.segment.as_ref())
+            .find_map(|segment| match &segment.destination {
+                Destination::Clip(id, param) if *id == clip && param == target => {
+                    segment.raw.last().map(|point| point.value)
+                }
+                _ => None,
+            })
+    }
+
     fn open(
         &mut self,
         project: &Project,
         owner: AutomationOwner,
         target: AutomationTarget,
-        tick: Tick,
         stepped: bool,
         base: f32,
     ) {
@@ -255,7 +334,6 @@ impl AutomationCapture {
             lane: lane.id,
             mode: lane.mode,
             stepped,
-            touch_start: tick,
             base,
             segment: None,
         });
@@ -289,7 +367,9 @@ impl AutomationCapture {
             let held = segment.raw.last().map_or(value, |point| point.value);
             if let Some(done) = finish_segment(project, segment, write, next_tick, Finish::Boundary)
             {
-                self.finished.push(done);
+                let (destination, points) = done;
+                self.finished.entry(destination).or_default().push(points);
+                self.completed += 1;
             }
             let mut next = segment_at(project, write, next_tick);
             if next_tick < tick {
@@ -344,13 +424,28 @@ impl AutomationCapture {
                 let fraction = ((t - tick).0 as f32 / return_ticks.max(1) as f32).clamp(0.0, 1.0);
                 last.value + (end_value - last.value) * fraction
             };
+            while segment.end() <= tick && segment.end() < Tick(i64::MAX) {
+                let end = segment.end();
+                if let Some((destination, points)) =
+                    finish_segment(project, segment, &write, end, Finish::Boundary)
+                {
+                    self.finished.entry(destination).or_default().push(points);
+                    self.completed += 1;
+                }
+                segment = segment_at(project, &write, end);
+                segment.append(end, last.value, write.stepped);
+                segment.boundary_anchor = true;
+            }
             segment.append(tick, last.value, write.stepped);
+            segment.release_anchor = Some(tick - segment.origin);
             loop {
                 let end = segment.end().min(return_limit);
                 segment.append(end, value_at(end), write.stepped);
                 if let Some(done) = finish_segment(project, segment, &write, end, Finish::Boundary)
                 {
-                    self.finished.push(done);
+                    let (destination, points) = done;
+                    self.finished.entry(destination).or_default().push(points);
+                    self.completed += 1;
                 }
                 if end == return_limit {
                     break;
@@ -381,7 +476,9 @@ impl AutomationCapture {
             if let Some(segment) = write.segment.take()
                 && let Some(done) = finish_segment(project, segment, &write, tick, finish)
             {
-                self.finished.push(done);
+                let (destination, points) = done;
+                self.finished.entry(destination).or_default().push(points);
+                self.completed += 1;
             }
         }
     }
@@ -390,10 +487,9 @@ impl AutomationCapture {
     /// capture is left removed.
     pub(crate) fn apply(&self, project: &Project) -> EditResult {
         let mut next = project.clone();
-        for segment in &self.finished {
-            if let Some(original) = segment.destination.original(&next) {
-                let points = segment.replace(original);
-                next = segment.destination.store(&next, points)?;
+        for (destination, curve) in &self.finished {
+            if let Some(original) = destination.original(project) {
+                next = destination.store(&next, curve.merged(original))?;
             }
         }
         Ok(next)
@@ -423,7 +519,6 @@ impl AutomationCapture {
 
 fn segment_at(project: &Project, write: &Write, tick: Tick) -> Segment {
     let mut origin = Tick::ZERO;
-    let mut start = Tick::ZERO;
     let mut end = Tick(i64::MAX);
     let mut destination = Destination::Lane(write.owner, write.lane);
     if let AutomationOwner::Track(track) = write.owner
@@ -431,7 +526,6 @@ fn segment_at(project: &Project, write: &Write, tick: Tick) -> Segment {
     {
         for span in automation::clip_override_spans(track, &write.target) {
             if span.end <= tick {
-                start = span.end;
                 continue;
             }
             if tick < span.start {
@@ -440,7 +534,6 @@ fn segment_at(project: &Project, write: &Write, tick: Tick) -> Segment {
             }
             let length = automation::clip_content_length(span.clip);
             origin = tick - Tick((tick - span.clip.start).0 % length.0);
-            start = span.start.max(origin);
             end = span.end.min(Tick(origin.0.saturating_add(length.0)));
             destination = Destination::Clip(span.clip.id, write.target.clone());
             break;
@@ -449,10 +542,11 @@ fn segment_at(project: &Project, write: &Write, tick: Tick) -> Segment {
     Segment {
         destination,
         origin,
-        start: start.max(write.touch_start) - origin,
+        start: tick - origin,
         limit: end - origin,
         raw: Vec::new(),
         boundary_anchor: false,
+        release_anchor: None,
     }
 }
 
@@ -462,13 +556,12 @@ fn finish_segment(
     write: &Write,
     end: Tick,
     finish: Finish,
-) -> Option<RecordedSegment> {
+) -> Option<(Destination, RecordedSegment)> {
     let last = *segment.raw.last()?;
     let end_tick = (end - segment.origin).clamp(last.tick, segment.limit);
     segment.append(end_tick + segment.origin, last.value, write.stepped);
     let keep_anchor = usize::from(segment.boundary_anchor && segment.raw.len() > 1);
-    let thinned = automation::thin(&segment.raw[keep_anchor..], write.stepped);
-    let mut points = Vec::with_capacity(keep_anchor + thinned.as_slice().len() + 1);
+    let mut points = Vec::new();
     if keep_anchor != 0 {
         let mut anchor = segment.raw[0];
         if write.stepped {
@@ -476,7 +569,17 @@ fn finish_segment(
         }
         points.push(anchor);
     }
-    points.extend_from_slice(thinned.as_slice());
+    let raw = &segment.raw[keep_anchor..];
+    if let Some(index) = segment
+        .release_anchor
+        .and_then(|tick| raw.binary_search_by_key(&tick, |point| point.tick).ok())
+    {
+        points.extend_from_slice(automation::thin(&raw[..=index], write.stepped).as_slice());
+        let tail = automation::thin(&raw[index..], write.stepped);
+        points.extend_from_slice(&tail.as_slice()[1..]);
+    } else {
+        points.extend_from_slice(automation::thin(raw, write.stepped).as_slice());
+    }
     let return_tick = match finish {
         Finish::LatchEnd => Tick(end_tick.0.saturating_add(1)),
         Finish::Boundary => end_tick,
@@ -493,12 +596,14 @@ fn finish_segment(
         }
         points.push(Point::linear(return_tick, value));
     }
-    Some(RecordedSegment {
-        destination: segment.destination,
-        start: segment.start,
-        points: Points::new(points),
-        base: write.base,
-    })
+    Some((
+        segment.destination,
+        RecordedSegment {
+            start: segment.start,
+            points: Points::new(points),
+            base: write.base,
+        },
+    ))
 }
 
 impl App {
@@ -562,7 +667,7 @@ impl App {
                 let stepped = self.automation_stepped(target);
                 let base = self.automation_base(owner, &model);
                 self.automation_capture
-                    .open(&project, owner, model, tick, stepped, base);
+                    .open(&project, owner, model, stepped, base);
             }
             EngineEvent::AutomationTouch { begin: false, .. } => {
                 self.automation_capture
@@ -621,7 +726,7 @@ impl App {
 
     /// Gives playback the completed portions of a pass so later laps play the new curve.
     pub(crate) fn sync_automation_preview(&mut self) {
-        let completed = self.automation_capture.finished.len();
+        let completed = self.automation_capture.completed;
         let last_program = self.engine.programs_sent();
         if completed == 0
             || self.automation_capture.published == Some((completed, last_program))
@@ -646,7 +751,9 @@ impl App {
     }
 
     pub(crate) fn discard_automation_capture(&mut self) {
-        if self.automation_capture.published.is_some() {
+        if self.automation_capture.was_published()
+            || self.audio_recording.pending_automation_published()
+        {
             self.engine.send_project(self.doc.project());
         }
         self.automation_capture = AutomationCapture::default();
@@ -699,6 +806,9 @@ impl App {
         let Some(program) = self.engine.program() else {
             return false;
         };
+        if program.automation_mode(owner, target) != Some(lane.mode) {
+            return false;
+        }
         if !program.automation_reads(owner, target)
             && !(playing && matches!(lane.mode, AutomationMode::Touch | AutomationMode::Latch))
         {
@@ -710,6 +820,11 @@ impl App {
         let temporary = lane.mode == AutomationMode::Read || !playing;
         if temporary && let Some(hint) = self.lang.by_id("automation-override-hint") {
             self.set_status(hint, crate::ui_state::StatusKind::Info);
+        }
+        if let Command::SetParam { slot, id, value } = command
+            && let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot))
+        {
+            self.engine.host_mut().preview_param(device, id, value);
         }
         let gesture = self.doc.in_gesture();
         if !self.automation_controls.contains(&(owner, target)) {
@@ -748,6 +863,73 @@ impl App {
 mod tests {
     use super::*;
     use komponist_model::{Document, fixtures};
+
+    #[test]
+    fn touch_starts_at_the_first_edit_and_holds_until_release_across_a_clip_boundary() {
+        let project = fixtures::demo_project();
+        let track = project
+            .tracks
+            .iter()
+            .find(|track| track.name == "Lead")
+            .unwrap();
+        let track_id = track.id;
+        let owner = AutomationOwner::Track(track_id);
+        let (clip, edge) = (track.clips[0].id, track.clips[0].start);
+        let target = AutomationTarget::Pan;
+        let project =
+            edits::add_clip_automation(&project, clip, target.clone(), "Pan".into()).unwrap();
+        let original = Points::new(vec![Point::linear(Tick::ZERO, 0.3)]);
+        let project = edits::set_clip_points(&project, clip, &target, original.clone()).unwrap();
+        let lane = edits::lanes(&project, owner)
+            .unwrap()
+            .lane(&target)
+            .unwrap()
+            .id;
+        let project = edits::set_lane_points(&project, owner, lane, original.clone()).unwrap();
+        let project = edits::set_lane_mode(&project, owner, lane, AutomationMode::Touch).unwrap();
+
+        let mut pass = AutomationCapture::default();
+        pass.open(&project, owner, target.clone(), false, 0.3);
+        pass.value(&project, owner, &target, edge - Tick(100), 0.8);
+        pass.release(&project, owner, &target, edge + Tick(80));
+        let next = pass.apply(&project).unwrap();
+        let track = next.track(track_id).unwrap();
+        assert_eq!(
+            automation::effective_value_at(track, &target, edge - Tick(101)),
+            Some(0.3)
+        );
+        assert_eq!(
+            automation::effective_value_at(track, &target, edge + Tick(79)),
+            Some(0.8)
+        );
+        assert_eq!(
+            automation::effective_value_at(track, &target, edge + Tick(80)),
+            Some(0.8)
+        );
+        assert!(automation::effective_value_at(track, &target, edge + Tick(100)).unwrap() < 0.8);
+    }
+
+    #[test]
+    fn completed_curve_extends_incrementally_and_rebases_after_document_edits() {
+        let mut curve = CompletedCurve::default();
+        let original = Points::new(vec![Point::linear(Tick::ZERO, 0.2)]);
+        for (tick, value) in [(10, 0.4), (20, 0.8)] {
+            curve.push(RecordedSegment {
+                start: Tick(tick),
+                points: Points::new(vec![Point::linear(Tick(tick), value)]),
+                base: 0.2,
+            });
+            assert_eq!(
+                automation::value_at(curve.merged(&original).as_slice(), Tick(tick)),
+                Some(value)
+            );
+        }
+        let rebased = Points::new(vec![Point::linear(Tick::ZERO, 0.3)]);
+        let merged = curve.merged(&rebased);
+        assert_eq!(automation::value_at(merged.as_slice(), Tick(1)), Some(0.3));
+        assert_eq!(automation::value_at(merged.as_slice(), Tick(10)), Some(0.4));
+        assert_eq!(automation::value_at(merged.as_slice(), Tick(20)), Some(0.8));
+    }
 
     #[test]
     fn changing_mode_during_latch_closes_the_write_at_that_tick() {
@@ -818,15 +1000,8 @@ mod tests {
             .unwrap();
 
         let mut capture = AutomationCapture::default();
-        capture.open(&p, owner, target.clone(), Tick(100), false, 0.5);
-        capture.open(
-            &p,
-            AutomationOwner::Master,
-            target.clone(),
-            Tick(100),
-            false,
-            0.7,
-        );
+        capture.open(&p, owner, target.clone(), false, 0.5);
+        capture.open(&p, AutomationOwner::Master, target.clone(), false, 0.7);
         capture.value(&p, owner, &target, Tick(200), 0.2);
         capture.value(&p, AutomationOwner::Master, &target, Tick(200), 0.3);
         capture.release(&p, owner, &target, Tick(210));
@@ -916,14 +1091,7 @@ mod tests {
             .unwrap()
             .points;
         let mut pass = AutomationCapture::default();
-        pass.open(
-            &project,
-            owner,
-            target.clone(),
-            start - Tick(100),
-            false,
-            0.65,
-        );
+        pass.open(&project, owner, target.clone(), false, 0.65);
         pass.value(&project, owner, &target, start - Tick(90), 0.2);
         pass.value(&project, owner, &target, start + Tick(8), 0.4);
         pass.value(&project, owner, &target, end + Tick(12), 0.45);
@@ -1054,6 +1222,9 @@ mod tests {
         };
         write(&mut app, -0.6);
         assert!(app.automation_capture.has_points());
+        // Locate has reached the engine but the app has not drained its boundary yet.
+        transport(&mut app, TransportAction::Locate(start + Tick(100)));
+        assert!(app.engine.run_held(64, &[], 0));
         transport(&mut app, TransportAction::DiscardTake);
         advance(&mut app, 64);
         assert!(!app.automation_capture.active());

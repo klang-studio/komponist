@@ -181,6 +181,15 @@ impl Core {
         });
     }
 
+    pub(super) fn finish_automation_write(&mut self) {
+        self.automation_pass_started = false;
+        self.visit_automation(|_, lanes, state, _, _| {
+            for (lane, cursor) in lanes.iter().zip(state.cursors()) {
+                cursor.finish_write(lane);
+            }
+        });
+    }
+
     pub(super) fn automation_boundary(
         &mut self,
         kind: AutomationBoundary,

@@ -591,6 +591,56 @@ fn cancel_write_restores_the_device_base_on_a_still_empty_lane() {
 }
 
 #[test]
+fn discarding_after_a_loop_wrap_restores_an_empty_latch_lane() {
+    let (mut project, owner, device) = source();
+    project.loop_on = true;
+    project.loop_range = TickRange::new(Tick::ZERO, Tick(6));
+    let target = parameter(device, 0);
+    let (project, _) = lane(
+        &project,
+        owner,
+        target.clone(),
+        AutomationMode::Latch,
+        Vec::new(),
+    );
+    let (mut rig, program, mut log) = rig(&project);
+    let target = program.automation_target(owner, &target).unwrap();
+    let slot = program.slots.slot(device).unwrap();
+    rig.send(Command::Play);
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: true,
+    });
+    rig.send(Command::SetParam {
+        slot,
+        id: 0,
+        value: 0.8,
+    });
+    rig.process(64, 64);
+    rig.send(Command::Touch {
+        owner,
+        target,
+        begin: false,
+    });
+    rig.process(128, 64);
+    assert!(rig.events.iter().any(|event| matches!(
+        event,
+        EngineEvent::AutomationBoundary {
+            kind: AutomationBoundary::LoopWrap,
+            ..
+        }
+    )));
+    assert_eq!(rig.l[191], 0.8);
+    assert_eq!(log.pop().unwrap(), (0, 0, 0.8));
+
+    rig.send(Command::CancelAutomationWrite);
+    rig.process(64, 64);
+    assert_eq!(log.pop().unwrap(), (192, 0, 0.25));
+    assert!(log.pop().is_err());
+}
+
+#[test]
 fn plugin_gui_edges_and_value_use_the_engine_clock() {
     use komponist_engine::processor::{ParameterEdit, ParameterEditKind};
 
@@ -663,6 +713,7 @@ fn plugin_gui_edges_and_value_use_the_engine_clock() {
         panic!("expected batched plugin events, got {:?}", events[3]);
     };
     assert_eq!(*captured_slot, slot);
+    assert_eq!(events.iter().count(), edits.len());
     for (index, (event, temporary)) in events.iter().enumerate() {
         assert_eq!(event.tick, Tick((index + 1) as i64));
         assert_eq!(event.kind, edits[index].kind);
