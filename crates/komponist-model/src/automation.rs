@@ -439,19 +439,22 @@ pub fn effective_points(track: &Track, target: &AutomationTarget, base: f32) -> 
     else {
         return Vec::new();
     };
-    let spans = clip_override_spans(track, target);
-    let points = lane.points.as_slice();
+    merged_clip_points(track, lane, base).unwrap_or_else(|| lane.points.as_slice().to_vec())
+}
+
+/// Combines a lane with its winning clip overrides, including when its mode is Off. Callers
+/// preserving automation during a destructive edit retain the mode separately.
+pub(crate) fn merged_clip_points(track: &Track, lane: &Lane, base: f32) -> Option<Vec<Point>> {
+    let spans = clip_override_spans(track, &lane.target);
     if spans.is_empty() {
-        return points.to_vec();
+        return None;
     }
+    let points = lane.points.as_slice();
     let fallback = [Point::linear(Tick::ZERO, normalized(base))];
     let points = if points.is_empty() { &fallback } else { points };
     let mut cursor = points[0].tick.min(spans[0].start);
-    let mut result = Vec::new();
-    // If the first override starts at or before the first lane point, preserve the left value.
-    if cursor == spans[0].start {
-        result.push(Point::linear(cursor, points[0].value));
-    }
+    // Before either curve starts, hold the first lane point, including the left value of a jump.
+    let mut result = vec![Point::linear(cursor, points[0].value)];
     for span in spans {
         if cursor < span.start {
             append_slice(&mut result, points, cursor, span.start, Tick::ZERO);
@@ -481,7 +484,7 @@ pub fn effective_points(track: &Track, target: &AutomationTarget, base: f32) -> 
             Point::linear(cursor, value_at(points, cursor).unwrap_or(base)),
         );
     }
-    result
+    Some(result)
 }
 
 fn push_point(out: &mut Vec<Point>, point: Point) {
@@ -505,7 +508,14 @@ fn append_clip_span(
 ) {
     let content = clip_content_length(clip);
     let points = clip_points(clip, envelope);
-    if points.is_empty() {
+    let Some(first) = points.first() else {
+        return;
+    };
+    // A flat envelope has the same value in every repetition. Only its outer boundaries
+    // matter, even for a long clip with a one-tick content length.
+    if points.iter().all(|point| point.value == first.value) {
+        push_point(out, Point::linear(start + shift, first.value));
+        push_point(out, Point::linear(end + shift, first.value));
         return;
     }
     while start < end {
@@ -833,6 +843,63 @@ mod tests {
         )
         .unwrap();
         assert!(effective_points(&project.tracks[0], &target, 0.5).is_empty());
+    }
+
+    #[test]
+    fn flattened_curve_preserves_the_first_jump_before_a_later_override() {
+        let project = automation_project();
+        let track = &project.tracks[2];
+        let target = &track.clips[0].automation[0].target;
+        let lane = track.automation.lane(target).unwrap().id;
+        let project = edit::set_lane_points(
+            &project,
+            AutomationOwner::Track(track.id),
+            lane,
+            Points::new(vec![
+                Point::linear(Tick(10), 0.2),
+                Point::linear(Tick(10), 0.8),
+            ]),
+        )
+        .unwrap();
+        let track = &project.tracks[2];
+        let compiled = effective_points(track, target, 0.5);
+        for tick in [Tick(9), Tick(10), Tick(11), track.clips[0].start] {
+            assert_eq!(
+                value_at(&compiled, tick),
+                effective_value_at(track, target, tick)
+            );
+        }
+        assert_eq!(value_at(&compiled, Tick(9)), Some(0.2));
+    }
+
+    #[test]
+    fn constant_loop_envelope_compiles_without_expanding_repetitions() {
+        let project = automation_project();
+        let track = &project.tracks[2];
+        let clip = &track.clips[0];
+        let target = clip.automation[0].target.clone();
+        let project =
+            edits::set_clip_loop(&project, clip.id, Some(Tick(1)), Tick(1_000_000_000)).unwrap();
+        let track = &project.tracks[2];
+        let clip = &track.clips[0];
+        let compiled = effective_points(track, &target, 0.5);
+        assert!(
+            !compiled
+                .iter()
+                .any(|point| clip.start < point.tick && point.tick < clip.end())
+        );
+        for tick in [
+            clip.start - Tick(1),
+            clip.start,
+            clip.start + Tick(500_000_000),
+            clip.end() - Tick(1),
+            clip.end(),
+        ] {
+            assert_eq!(
+                value_at(&compiled, tick),
+                effective_value_at(track, &target, tick)
+            );
+        }
     }
 
     #[test]

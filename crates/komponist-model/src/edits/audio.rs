@@ -19,7 +19,9 @@ use crate::audio::ClipTimeMode;
 use crate::audio::{
     AudioClip, AudioFile, AudioInput, AudioIo, AudioTake, CLIP_GAIN_DB_MAX, CLIP_GAIN_DB_MIN,
 };
+use crate::automation::{AutomationTarget, Points, merged_clip_points};
 use crate::ids::{ClipId, TrackId};
+use crate::params::db_to_p;
 use crate::project::{
     Channel, Clip, ClipContent, ClipKind, Hue, MidiChannelSel, MidiInputSel, Project,
     TRACK_HEIGHT_DEFAULT, Track, TrackKind, TrackOutput,
@@ -433,12 +435,22 @@ pub fn flatten_midi_track(
     let track = Arc::make_mut(&mut next.tracks[index]);
     track.kind = TrackKind::Audio;
     track.channel.devices.clear();
-    track.automation.lanes.retain(|lane| {
-        !matches!(
-            lane.target,
-            crate::automation::AutomationTarget::Param { .. }
-        )
-    });
+    track
+        .automation
+        .lanes
+        .retain(|lane| !matches!(lane.target, AutomationTarget::Param { .. }));
+    // The render is pre-fader. Preserve the effective gain and pan curves on the audio track
+    // before deleting the MIDI clips that used to override those lanes.
+    for lane in &mut track.automation.lanes {
+        let base = match lane.target {
+            AutomationTarget::Volume => 1.0 - db_to_p(source.channel.volume_db),
+            AutomationTarget::Pan => (source.channel.pan.clamp(-1.0, 1.0) + 1.0) * 0.5,
+            _ => continue,
+        };
+        if let Some(points) = merged_clip_points(source, lane, base) {
+            Arc::make_mut(lane).points = Points::new(points);
+        }
+    }
     track.clips.clear();
     track.arm = false;
     track.monitor = false;

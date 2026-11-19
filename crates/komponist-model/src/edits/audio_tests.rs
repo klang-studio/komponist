@@ -101,6 +101,80 @@ fn bus(p: &Project) -> (Project, TrackId) {
     ok_with(add_bus(p, NewBus::default()))
 }
 
+#[test]
+fn flattening_carries_clip_gain_and_pan_to_the_existing_arrangement_lanes() {
+    use crate::automation::{
+        AutomationMode, AutomationOwner, AutomationTarget, Point, Points, effective_value_at,
+    };
+    use crate::edits::automation::{add_clip_automation, set_clip_points, set_lane_mode};
+    use crate::params::db_to_p;
+
+    let (p, id) = midi_track(&Project::new("Flatten"));
+    let p = ok(set_track_prop(
+        &p,
+        &[id],
+        TrackProp::Channel(ChannelProp::VolumeDb(-12.0)),
+    ));
+    let p = ok(set_track_prop(
+        &p,
+        &[id],
+        TrackProp::Channel(ChannelProp::Pan(-0.5)),
+    ));
+    let (p, clip) = ok_with(add_clip(&p, id, midi(240, 1200)));
+    let mut p = ok(set_clip_loop(&p, clip, Some(Tick(600)), Tick(1200)));
+    let owner = AutomationOwner::Track(id);
+    let lanes = [
+        (
+            AutomationTarget::Volume,
+            AutomationMode::Touch,
+            1.0 - db_to_p(-12.0),
+        ),
+        (AutomationTarget::Pan, AutomationMode::Off, 0.25),
+    ];
+    for (target, mode, _) in &lanes {
+        p = ok(add_clip_automation(&p, clip, target.clone(), String::new()));
+        p = ok(set_clip_points(
+            &p,
+            clip,
+            target,
+            Points::new(vec![
+                Point::linear(Tick::ZERO, 0.4),
+                Point::linear(Tick(600), 0.9),
+            ]),
+        ));
+        let lane = p.track(id).unwrap().automation.lane(target).unwrap().id;
+        p = ok(set_lane_mode(&p, owner, lane, *mode));
+    }
+
+    let (flattened, _) = ok_with(flatten_midi_track(&p, id, Tick(240), file()));
+    let audio = flattened.track(id).unwrap();
+    assert!(audio.is_audio());
+    assert!(audio.clips.iter().all(|clip| clip.automation.is_empty()));
+    for (target, mode, base) in &lanes {
+        let original = p.track(id).unwrap().automation.lane(target).unwrap();
+        let retained = audio.automation.lane(target).unwrap();
+        assert_eq!(retained.id, original.id);
+        assert_eq!(retained.mode, *mode);
+        // Compare both curves with playback enabled, including the previously disabled pan lane.
+        let before = ok(set_lane_mode(&p, owner, original.id, AutomationMode::Read));
+        let after = ok(set_lane_mode(
+            &flattened,
+            owner,
+            retained.id,
+            AutomationMode::Read,
+        ));
+        for tick in [0, 239, 240, 619, 839, 840, 1439, 1440, 3840].map(Tick) {
+            let expected =
+                effective_value_at(before.track(id).unwrap(), target, tick).unwrap_or(*base);
+            let actual = effective_value_at(after.track(id).unwrap(), target, tick).unwrap();
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "{target:?} at {tick:?}: {actual} vs {expected}"
+            );
+        }
+    }
+}
+
 // --- Tracks and kinds -------------------------------------------------------------------------
 
 #[test]
