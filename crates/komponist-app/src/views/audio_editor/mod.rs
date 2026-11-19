@@ -92,10 +92,19 @@ impl View for AudioEditor {
                 ctx.send(Action::Edit(EditAction::CancelGesture));
             }
             self.shown = Some(clip.id);
-            ctx.ui.waveform.scroll_tick = clip.start.0 as f64;
+            ctx.ui.waveform.fit_clip = true;
         }
         self.source.refresh(a, ctx, ui.ctx());
         let body = ui.max_rect();
+        let width = body.width() - m::GUTTER;
+        if ctx.ui.waveform.fit_clip && width > 0.0 && clip.length.0 > 0 {
+            ctx.ui.waveform.px_per_bar =
+                width * project.meter.ticks_per_bar() as f32 / clip.length.0 as f32;
+            ctx.ui.waveform.scroll_tick = clip.start.0 as f64;
+            ctx.ui.waveform.fit_clip = false;
+            // Opening starts at the clip's left edge, rather than anchoring the previous zoom.
+            self.last_ppb = None;
+        }
         let toolbar_rect =
             Rect::from_min_size(body.min, vec2(body.width(), toolbar::height(body.width())));
         toolbar::show(ui, toolbar_rect, ctx, &project, clip, a, &self.source);

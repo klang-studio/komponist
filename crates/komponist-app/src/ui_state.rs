@@ -662,6 +662,8 @@ pub struct StatusMessage {
 /// Audio source editor view state; positions are source-local timeline ticks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaveformView {
+    /// Fit the opened clip once the editor's available width is known.
+    pub fit_clip: bool,
     /// Horizontal points per bar.
     pub px_per_bar: f32,
     /// Source-local leftmost tick.
@@ -670,6 +672,7 @@ pub struct WaveformView {
 impl Default for WaveformView {
     fn default() -> Self {
         Self {
+            fit_clip: true,
             px_per_bar: crate::views::audio_editor::metrics::PPB_DEFAULT,
             scroll_tick: 0.0,
         }
