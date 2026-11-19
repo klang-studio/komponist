@@ -341,6 +341,8 @@ struct RtParamSync {
     parameters: UnsafeCell<Arc<ParameterTable>>,
     parameter_updates: UnsafeCell<Consumer<Arc<ParameterTable>>>,
     retired_parameters: UnsafeCell<Producer<Arc<ParameterTable>>>,
+    #[cfg(test)]
+    dequeue_probe: DequeueProbe,
 }
 
 // SAFETY: The live table and the RT ends of the queues are only accessed through an
@@ -426,6 +428,27 @@ impl RtParamSync {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct DequeueProbe {
+    armed: AtomicBool,
+    entered: AtomicBool,
+    proceed: AtomicBool,
+}
+
+#[cfg(test)]
+impl DequeueProbe {
+    fn wait_if_armed(&self) {
+        if self.armed.swap(false, Ordering::AcqRel) {
+            self.entered.store(true, Ordering::Release);
+            let deadline = Instant::now() + RESTORE_WAIT;
+            while !self.proceed.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
 /// Buffers the loop works in, allocated before it starts.
 struct Scratch {
     events_in: Vec<WireEvent>,
@@ -467,6 +490,8 @@ impl RtThread {
             parameters: UnsafeCell::new(parameters.clone()),
             parameter_updates: UnsafeCell::new(updates_rx),
             retired_parameters: UnsafeCell::new(retired_tx),
+            #[cfg(test)]
+            dequeue_probe: DequeueProbe::default(),
         });
         let worker_sync = sync.clone();
         let (report_tx, report_rx) = mpsc::sync_channel(1);
@@ -769,12 +794,13 @@ fn serve(
         server.finish(result(BlockStatus::PluginError, 0));
         return;
     }
-    processing.install_parameter_update();
     let controller = processing.parameters().controller.as_deref();
-    // Snapshot before accepting block input. A control edit racing with this block can still
+    // Snapshot before accepting block input. Replacing the table preserves its generation. A control edit racing with this block can still
     // supersede its controller notifications when the audio thread completes later.
     let generation =
         controller.map_or(0, |values| values.signal.generation.load(Ordering::Acquire));
+    #[cfg(test)]
+    sync.dequeue_probe.wait_if_armed();
     // Values from `SetParam` first: offset 0 keeps the list sorted.
     let mut count = 0;
     while count < PARAM_QUEUE_CAPACITY {
@@ -794,6 +820,9 @@ fn serve(
         scratch.events_in[count] = event;
         count += 1;
     }
+    // A rescan is published before writes for its new IDs. Install after both input queues
+    // have been read so this block can record those writes and publish controller updates.
+    processing.install_parameter_update();
 
     let after_restore = std::mem::take(&mut scratch.reset_after_restore);
     if after_restore || request.flags & BLOCK_FLAG_RESET != 0 {
@@ -914,8 +943,6 @@ mod tests {
 
         #[derive(Default)]
         struct Calls {
-            entered: AtomicBool,
-            proceed: AtomicBool,
             note_ons: AtomicU64,
             note_offs: AtomicU64,
             resets: AtomicU64,
@@ -935,12 +962,6 @@ mod tests {
             }
 
             fn process(&mut self, block: &mut ProcessBlock<'_>) -> ProcessStatus {
-                if !self.0.entered.swap(true, Ordering::Release) {
-                    let deadline = Instant::now() + RESTORE_WAIT;
-                    while !self.0.proceed.load(Ordering::Acquire) && Instant::now() < deadline {
-                        std::thread::yield_now();
-                    }
-                }
                 for event in block.events_in {
                     match event.decode() {
                         Some(WireEventKind::NoteOn { .. }) => {
@@ -948,6 +969,15 @@ mod tests {
                         }
                         Some(WireEventKind::NoteOff { .. }) => {
                             self.0.note_offs.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Some(WireEventKind::ParamValue {
+                            id: 7,
+                            value: 0.403,
+                        }) => {
+                            block.events_out.push(WireEvent::new(
+                                0,
+                                WireEventKind::ParamValue { id: 7, value: 0.4 },
+                            ));
                         }
                         _ => {}
                     }
@@ -983,6 +1013,8 @@ mod tests {
             deadline: None,
             transport: WireTransport::default(),
         };
+        let sync = rt.sync.clone();
+        sync.dequeue_probe.armed.store(true, Ordering::Release);
         let first = client
             .begin_block(
                 &spec,
@@ -1003,17 +1035,17 @@ mod tests {
             )
             .unwrap();
         let deadline = Instant::now() + RESTORE_WAIT;
-        while !calls.entered.load(Ordering::Acquire) && Instant::now() < deadline {
+        while !sync.dequeue_probe.entered.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::yield_now();
         }
-        assert!(calls.entered.load(Ordering::Acquire));
+        assert!(sync.dequeue_probe.entered.load(Ordering::Acquire));
 
-        // The first block is already in the processor. The rescan must finish without taking
-        // the restore pause, and its new controller must also see that block's older ID.
+        // The block has already begun but has yet to read the parameter queue.
         let accepted = rt.refresh_parameter_ids(vec![1, 7]);
+        let queued = rt.set_param(7, 0.403);
         let activity = rt.sync.activity.load(Ordering::Acquire);
-        calls.proceed.store(true, Ordering::Release);
-        assert!(accepted);
+        sync.dequeue_probe.proceed.store(true, Ordering::Release);
+        assert!(accepted && queued);
         assert_eq!(activity, PROCESSING);
 
         let wait = |client: &mut BridgeClient, seq| {
@@ -1023,6 +1055,8 @@ mod tests {
                 .status
         };
         assert_eq!(wait(&mut client, first), BlockStatus::Ok as u32);
+        rt.snapshot(|params| assert!(params.confirms_input(7, 0.403, 0.4)))
+            .unwrap();
         let second = client
             .begin_block(
                 &spec,
