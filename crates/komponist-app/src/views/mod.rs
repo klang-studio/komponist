@@ -138,6 +138,9 @@ impl<'a> ViewCtx<'a> {
 
 /// A view the shell hosts.
 pub trait View {
+    /// Discards view state that belongs to the previous document.
+    fn reset_document(&mut self) {}
+
     /// The content of the panel header right of the title (the arrangement's grid, snap and
     /// zoom controls; the browser's and inspector's header actions), in `ui` laid out right of
     /// the title. Nothing by default.

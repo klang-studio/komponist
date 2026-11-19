@@ -2021,3 +2021,115 @@ fn compact_audio_header_keeps_input_and_automation_controls_separate() {
         .unwrap();
     assert!(input.right() < toggle.left());
 }
+
+#[test]
+fn revealing_automation_unfolds_only_the_owners_ancestor_groups() {
+    use komponist_app::views::automation::Action as Automation;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget};
+    use komponist_model::edits::{self, NewAudioTrack, NewBus, TrackProp};
+
+    let (project, track) =
+        edits::add_audio_track(&Project::new("Nested"), NewAudioTrack::default()).unwrap();
+    let (project, inner) = edits::add_bus(&project, NewBus::group(vec![track])).unwrap();
+    let (project, outer) = edits::add_bus(&project, NewBus::group(vec![inner])).unwrap();
+    let (project, unrelated) = edits::add_bus(&project, NewBus::group(vec![])).unwrap();
+    let project = edits::set_track_prop(
+        &project,
+        &[inner, outer, unrelated],
+        TrackProp::Folded(true),
+    )
+    .unwrap();
+    let owner = AutomationOwner::Track(track);
+    let (project, _) = edits::automation::add_lane(
+        &project,
+        owner,
+        AutomationTarget::Volume,
+        de::PARAM_VOLUME.to_owned(),
+    )
+    .unwrap();
+    let project = edits::automation::set_shown(&project, owner, true).unwrap();
+    let name = Lang::De.a11y_automation_lane(de::PARAM_VOLUME, &project.track(track).unwrap().name);
+    let mut h = harness(App::headless(project));
+    assert!(h.query_by_role_and_label(Role::Group, &name).is_none());
+
+    h.state_mut()
+        .dispatch(Action::Automation(Automation::ShowTarget {
+            owner,
+            replace: None,
+            target: AutomationTarget::Volume,
+            label: de::PARAM_VOLUME.to_owned(),
+        }));
+    h.run_steps(3);
+
+    let revealed = h.state().project();
+    assert!(!revealed.track(inner).unwrap().folded);
+    assert!(!revealed.track(outer).unwrap().folded);
+    assert!(revealed.track(unrelated).unwrap().folded);
+    assert!(
+        h.query_all_by_role_and_label(Role::Group, &name)
+            .next()
+            .is_some()
+    );
+    h.state_mut().dispatch(Action::Edit(EditAction::Undo));
+    let previous = h.state().project();
+    assert!(previous.track(inner).unwrap().folded);
+    assert!(previous.track(outer).unwrap().folded);
+}
+
+#[test]
+fn opening_a_document_clears_automation_selection_even_with_reused_ids() {
+    use komponist_app::ProjectAction;
+    use komponist_app::project_io::save_project;
+    use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
+    use komponist_model::edits::{self, NewAudioTrack};
+
+    let (project, track) =
+        edits::add_audio_track(&Project::new("Original"), NewAudioTrack::default()).unwrap();
+    let owner = AutomationOwner::Track(track);
+    let (project, lane) = edits::automation::add_lane(
+        &project,
+        owner,
+        AutomationTarget::Volume,
+        de::PARAM_VOLUME.to_owned(),
+    )
+    .unwrap();
+    let project = edits::automation::set_shown(&project, owner, true).unwrap();
+    let points = Points::new(vec![Point::linear(Tick(480), 0.4)]);
+    let project =
+        edits::automation::set_lane_points(&project, owner, lane, points.clone()).unwrap();
+    let mut replacement = project.clone();
+    replacement.name = "Replacement".to_owned();
+    let dir = crate::common::scratch("automation-document");
+    let path = dir.join("replacement.komponist");
+    save_project(&path, &replacement).unwrap();
+    let mut h = harness(App::headless(project));
+    fn point<'a>(h: &'a Harness<'_, App>) -> egui_kittest::Node<'a> {
+        h.get_all_by_role(Role::Slider)
+            .find(|node| {
+                node.accesskit_node()
+                    .label()
+                    .is_some_and(|label| label.starts_with("Punkt "))
+            })
+            .unwrap()
+    }
+    point(&h).click_accesskit();
+    h.run_steps(2);
+    assert_eq!(point(&h).accesskit_node().is_selected(), Some(true));
+
+    h.state_mut()
+        .dispatch(Action::Project(ProjectAction::OpenPath(path)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.state().project().name != replacement.name {
+        assert!(Instant::now() < deadline);
+        h.run_steps(1);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    h.run_steps(2);
+
+    assert_eq!(point(&h).accesskit_node().is_selected(), Some(false));
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    let opened = &h.state().project().track(track).unwrap().automation.lanes[0];
+    assert_eq!(opened.id, lane);
+    assert_eq!(opened.points, points);
+}

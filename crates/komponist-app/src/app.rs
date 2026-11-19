@@ -1176,7 +1176,9 @@ impl App {
 
     fn automation_action(&mut self, action: crate::views::automation::Action) {
         use crate::views::automation::{Action as Automation, Source, lanes};
+        use komponist_model::automation::AutomationOwner;
         use komponist_model::edits::automation;
+        use komponist_model::routing::group_ancestors;
 
         match action {
             Automation::Shown(owner, shown) => {
@@ -1208,15 +1210,30 @@ impl App {
                 };
                 let shown_target = target.clone();
                 if self.apply(undo, |p| {
-                    if exists {
-                        return automation::set_shown(p, owner, true);
-                    }
-                    let project = if let Some(id) = reuse {
-                        automation::retarget_lane(p, owner, id, target, label)?
+                    let edited;
+                    let p = if exists {
+                        p
                     } else {
-                        automation::add_lane(p, owner, target, label)?.0
+                        edited = if let Some(id) = reuse {
+                            automation::retarget_lane(p, owner, id, target, label)?
+                        } else {
+                            automation::add_lane(p, owner, target, label)?.0
+                        };
+                        &edited
                     };
-                    automation::set_shown(&project, owner, true)
+                    let project = automation::set_shown(p, owner, true)?;
+                    if let AutomationOwner::Track(track) = owner {
+                        let mut groups = group_ancestors(&project, track);
+                        groups.retain(|id| project.track(*id).is_some_and(|group| group.folded));
+                        if !groups.is_empty() {
+                            return edits::set_track_prop(
+                                &project,
+                                &groups,
+                                TrackProp::Folded(false),
+                            );
+                        }
+                    }
+                    Ok(project)
                 }) && let Some(lane) =
                     lanes(self.project(), owner).and_then(|a| a.lane(&shown_target))
                 {
@@ -2921,6 +2938,7 @@ impl App {
         self.export.forget();
         self.ui.selection = Default::default();
         self.ui.editor = Default::default();
+        self.views.arrangement.reset_document();
         self.ui.plugin_windows.clear();
         self.ui.arrangement.scroll_tick = 0.0;
         self.ui.arrangement.scroll_y = 0.0;

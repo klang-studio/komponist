@@ -240,6 +240,10 @@ impl Arrangement {
 }
 
 impl View for Arrangement {
+    fn reset_document(&mut self) {
+        self.automation = automation::State::default();
+    }
+
     fn header(&mut self, ui: &mut Ui, ctx: &mut ViewCtx<'_>) {
         toolbar::show(ui, ctx);
     }
